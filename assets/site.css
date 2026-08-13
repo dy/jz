@@ -118,6 +118,13 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font); }
 :root[data-theme="light"] .theme-toggle .i-sun  { display: none; }
 :root[data-theme="light"] .theme-toggle .i-moon { display: block; }   /* light theme → show the moon */
 
+/* ─── Content link — the ONE prose-link fashion on every page (bench labels, the landing's hero-demo
+   line and FAQ answers): colour from context, quiet 1px underline in --mute, underline inks to
+   currentColor on hover/focus. Nav, chips and tile links stay underline-free — that's the other,
+   equally deliberate fashion. ─── */
+.lnk { color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--mute); text-underline-offset: 2px; text-decoration-thickness: 1px; transition: text-decoration-color .16s; }
+.lnk:hover, .lnk:focus-visible { text-decoration-color: currentColor; }
+
 /* ─── CTA chip — the ONE call-to-action button, shared: the bench page's "Report a slow case" and the
    landing's "Sponsor the dev". Outline box in ink on paper; inverts on hover. Pattern: a plain 16px
    question in a centred section, then this chip 14px below it. ─── */

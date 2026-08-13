@@ -11,7 +11,7 @@ import { runDemo } from "../lib/jzdemo.js"
 
 const demo = runDemo({
   name: "sandpile",
-  hint: "the abelian sandpile — grains topple in avalanches into a fractal mandala · click = new source, drag = pour",
+  hint: "Abelian sandpile · click seeds a mandala · drag pours grains",
   size: { budget: 1048576 },
   load: (e) => e.seed(),
   frame: (e, t) => e.frame(t),

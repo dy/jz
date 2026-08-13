@@ -37,7 +37,7 @@ if (name === 'sand' && exports.paint) {
   for (let i = 0; i < 80; i++) exports.paint((0.58 + Math.random() * 0.24) * W, (0.5 + Math.random() * 0.2) * H, 9, 2)
 }
 if (name === 'slime' && exports.seed) exports.seed()
-if (name === 'lenia' && exports.seed) exports.seed()
+if (name === 'lenia' && exports.seed) exports.seed(1)
 if (name === 'sandpile' && exports.seed) exports.seed()
 if (name === 'bz' && exports.seed) { exports.clear?.(); exports.seed(0, 0.5, 0.5) }
 if (name === 'blackhole' && exports.setSeed) exports.setSeed(2.1, 7.7, 4.4)
@@ -104,7 +104,7 @@ const FRAME_ARGS = {
   penrose:       () => [0, 0.0, 0.0, 1.0],
   blackhole:     () => [3.0, 80 * Math.PI / 180, 0.5],
   interference:  () => [1.5, 5, 520],   // 5 sources spaced past one wavelength — distinct diffraction orders
-  lenia:         () => [0.2, 0, 0, 0],  // dt is a STEP, not a clock — match the driver's fixed 0.2
+  lenia:         () => [],
   raymarcher:    (f) => { const az = 0.6, el = 0.35, d = 3.7; return [f / 60, Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d] },
   percolation:   (f) => [f / 60, 0.62],
   schrodinger:   (f) => [f / 60],
@@ -113,7 +113,7 @@ const FRAME_ARGS = {
 const WARMUP = { diffusion: 320, nbody: 320, metaballs: 70, attractors: 200,
                  plasma: 40, swarm: 80, sand: 220, slime: 130, boids: 220, voronoi: 50,
                  dla: 600, wireworld: 500, waves: 800, cloth: 130, maze: 200, sph: 500,
-                 erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 800,
+                 erosion: 350, lbm: 1300, watercolor: 200, cradle: 36, lenia: 240,
                  buddhabrot: 120, lorenz: 320, pendulum: 250, fern: 150, ising: 140, dwa: 95,
                  rule30: 480, epicycles: 130, percolation: 120, schrodinger: 230,
                  sandpile: 1000, fireflies: 433, bz: 260, magnet: 250, pathtracer: 450, ocean: 90,

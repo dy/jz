@@ -95,10 +95,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 /* bar rows */
 .row { display: grid; grid-template-columns: 220px 1fr 56px; gap: 0 14px; align-items: center; padding: 3.5px 0; font-size: 12.5px; }
 .row .lab { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* label doubling as the source / tracker link — persistently underlined like every content link
-   across the site (faint by default so a card of them stays calm; full-strength on hover/focus). */
-a.lab.lnk { color: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--mute); text-underline-offset: 2px; text-decoration-thickness: 1px; }
-a.lab.lnk:hover, a.lab.lnk:focus-visible { text-decoration-color: currentColor; }
+/* label doubling as the source / tracker link — the shared .lnk content-link fashion (assets/site.css) */
 .row .lab .cico { vertical-align: -1.5px; margin-right: 4px; }   /* sits just before the label */
 .row .lab .sub { color: var(--mid); font-size: 11px; margin-left: 6px; }
 .row .val { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
@@ -198,7 +195,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 
 <section id="speed">
   <h2>Corpus</h2>
-  <p class="dim">Each row carries three geometric means vs JZ across the corpus — speed, memory, size — JZ = 1×, lower is better. Click a column to sort (the bar draws the sorted metric). Only matching-checksum cases count; memory is peak process RSS, size the shipped artifact.</p>
+  <p class="dim">Each row carries three geometric means vs JZ across the corpus – speed, memory, size – JZ = 1×, lower is better. Click a column to sort (the bar draws the sorted metric). Only matching-checksum cases count; memory is peak process RSS, size the shipped artifact.</p>
   <div id="geomean"></div>
 </section>
 
@@ -220,7 +217,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 </main>
 <footer>
   <div class="fwrap">
-    <a class="wordmark" href="../" aria-label="jz — home"><img src="../jz.svg" width="40" height="40" alt="jz"></a>
+    <a class="wordmark" href="../" aria-label="jz – home"><img src="../jz.svg" width="40" height="40" alt="jz"></a>
     <nav class="fcol">
       <a href="../repl/">repl</a>
       <a href="../examples/">examples</a>
@@ -238,7 +235,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
   </div>
 </footer>
 
-<noscript><p style="padding:0 32px">This page renders measured data with JavaScript — the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
+<noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
 import { headlineStats, CLS_ICO, LAB } from '../assets/headline.js'
@@ -291,33 +288,33 @@ const TARGETS = {
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
 // stays terse: a bare "JSC" row is fine when hovering explains it's Safari’s engine.
 const DESC = {
-  v8: 'Google V8 — the JavaScript engine in Node.js and Chrome.',
-  deno: 'Deno — a V8-based JavaScript/TypeScript runtime.',
-  bun: 'Bun — a fast runtime built on JavaScriptCore.',
-  jsc: 'JavaScriptCore — Safari & WebKit’s JavaScript engine (the standalone `jsc` shell).',
-  spidermonkey: 'SpiderMonkey — Firefox’s JavaScript engine.',
-  graaljs: 'GraalJS — GraalVM’s JavaScript engine.',
-  jz: 'JZ — your JavaScript compiled to WebAssembly, run in this V8.',
-  wat: 'Hand-written WebAssembly text — the practical wasm floor for a kernel.',
-  'jz-wasmtime': 'JZ’s wasm run standalone under Wasmtime (WASI) — no JS host.',
-  as: 'AssemblyScript — a TypeScript-flavoured language compiled to wasm (asc -O3).',
+  v8: 'Google V8 – the JavaScript engine in Node.js and Chrome.',
+  deno: 'Deno – a V8-based JavaScript/TypeScript runtime.',
+  bun: 'Bun – a fast runtime built on JavaScriptCore.',
+  jsc: 'JavaScriptCore – Safari & WebKit’s JavaScript engine (the standalone `jsc` shell).',
+  spidermonkey: 'SpiderMonkey – Firefox’s JavaScript engine.',
+  graaljs: 'GraalJS – GraalVM’s JavaScript engine.',
+  jz: 'JZ – your JavaScript compiled to WebAssembly, run in this V8.',
+  wat: 'Hand-written WebAssembly text – the practical wasm floor for a kernel.',
+  'jz-wasmtime': 'JZ’s wasm run standalone under Wasmtime (WASI) – no JS host.',
+  as: 'AssemblyScript – a TypeScript-flavoured language compiled to wasm (asc -O3).',
   'rust-wasm': 'Rust compiled to wasm (rustc → wasm32-wasi), run in this same V8.',
   'go-wasm': 'Go compiled to wasm (gc → wasm32-wasip1), run in this same V8.',
   'c-wasm': 'C compiled to wasm (clang → wasm32-wasi), run in this same V8.',
   'zig-wasm': 'Zig compiled to wasm (zig → wasm32-wasi), run in this same V8.',
   tinygo: 'Go via the TinyGo compiler → wasm.',
-  moonbit: 'MoonBit — a wasm-first language, run on its moonrun (V8) runner.',
-  jawsm: 'jawsm — a JavaScript → wasm compiler.',
-  javy: 'Javy — the QuickJS interpreter shipped inside a wasm module (Bytecode Alliance).',
-  nat: 'C compiled to a native binary (clang -O3 -march=native) — the speed-of-light ceiling.',
+  moonbit: 'MoonBit – a wasm-first language, run on its moonrun (V8) runner.',
+  jawsm: 'jawsm – a JavaScript → wasm compiler.',
+  javy: 'Javy – the QuickJS interpreter shipped inside a wasm module (Bytecode Alliance).',
+  nat: 'C compiled to a native binary (clang -O3 -march=native) – the speed-of-light ceiling.',
   'jz-w2c': 'JZ’s wasm lowered to a native binary via wasm2c → clang -O3.',
   'jz-w2c2': 'JZ’s wasm lowered to a native binary via w2c2 → clang -O3 (second translator, CI cross-check; no SIMD support so it skips vectorized cases).',
   rust: 'Rust native binary (rustc -O, target-cpu=native).',
   zig: 'Zig native binary (ReleaseFast).',
   go: 'Go native binary (gc).',
-  shermes: 'Static Hermes — JavaScript ahead-of-time compiled to a native binary.',
-  'porf-native': 'Porffor’s `porf native` — JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
-  numpy: 'NumPy — vectorized C kernels driven from Python.',
+  shermes: 'Static Hermes – JavaScript ahead-of-time compiled to a native binary.',
+  'porf-native': 'Porffor’s `porf native` – JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
+  numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
 // can see how that language wrote the kernel. (Every JS engine runs the same <case>.js.)
@@ -352,7 +349,7 @@ const issueHref = (tid, caseId, reason) => {
 // breaks the wasm ceiling. Perf / size / × and the exact command are NOT repeated here — those
 // already ride the row, and the invocations live in results.json.
 const rowTip = (tid, parity, note) => {
-  const status = parity === 'DIFF' ? '⚠ different result — not ranked' : '✓ matches jz'
+  const status = parity === 'DIFF' ? '⚠ different result – not ranked' : '✓ matches jz'
   return [
     [DESC[tid], status].filter(Boolean).join('\n'),
     note || null,
@@ -421,55 +418,55 @@ const TAGS = { biquad: 'dsp · f64', fft: 'fft · f64', synth: 'synth · adsr', 
   strbuild: 'concat · alloc', wordcount: 'keys · dict-mode', immutable: 'alloc · gc' }
 // one-line case description — surfaced as the tag's hover tooltip
 const INSIGHTS = {
-  biquad: 'IIR cascade — every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
-  fft: 'Radix-2 Cooley–Tukey over a precomputed twiddle table — the butterfly inner loop is pure f64 +/−/×; JZ vectorizes it where a JIT won’t from plain JS.',
-  synth: 'Note render — polynomial oscillator + ADSR + biquad, per sample. Transcendental-free, so it stays bit-exact across engines while JZ runs it near native.',
-  bytebeat: 'Classic integer bytebeat — t-indexed bit/shift/modulo synthesis to 8-bit PCM. Pure i32, no NaN-box round-trips.',
-  mat4: 'Fixed-count loops unroll and vectorize to v128 — a JIT won’t do this from plain JS.',
-  poly: 'One sum() fed Float64Array then Int32Array — JZ keeps two typed paths where a JIT goes polymorphic.',
-  dotprod: 'Multiply-accumulate reduction (s += a[i]*b[i]) — JZ vectorizes to 4 independent SIMD accumulators, a deterministic reassociation that hides FP latency and stays bit-stable across engines.',
-  bitwise: 'imul / shift / >>> chains run as raw i32 — no NaN-box round-trips.',
-  tokenizer: 'Byte scan: charCodeAt + branches. AS’s direct string loads win — JZ still boxes the string pointer.',
-  callback: 'Array.map with a closure lowers to a preallocated typed loop — no per-call allocation.',
-  aos: 'Object rows copied into typed columns — memory-bound; schema fields read at fixed offsets.',
-  mandelbrot: 'f64 escape loop with a data-dependent break — everything compiled lands within ~10%.',
+  biquad: 'IIR cascade – every sample depends on the previous, SIMD can’t help; raw f64 loop throughput.',
+  fft: 'Radix-2 Cooley–Tukey over a precomputed twiddle table – the butterfly inner loop is pure f64 +/−/×; JZ vectorizes it where a JIT won’t from plain JS.',
+  synth: 'Note render – polynomial oscillator + ADSR + biquad, per sample. Transcendental-free, so it stays bit-exact across engines while JZ runs it near native.',
+  bytebeat: 'Classic integer bytebeat – t-indexed bit/shift/modulo synthesis to 8-bit PCM. Pure i32, no NaN-box round-trips.',
+  mat4: 'Fixed-count loops unroll and vectorize to v128 – a JIT won’t do this from plain JS.',
+  poly: 'One sum() fed Float64Array then Int32Array – JZ keeps two typed paths where a JIT goes polymorphic.',
+  dotprod: 'Multiply-accumulate reduction (s += a[i]*b[i]) – JZ vectorizes to 4 independent SIMD accumulators, a deterministic reassociation that hides FP latency and stays bit-stable across engines.',
+  bitwise: 'imul / shift / >>> chains run as raw i32 – no NaN-box round-trips.',
+  tokenizer: 'Byte scan: charCodeAt + branches. AS’s direct string loads win – JZ still boxes the string pointer.',
+  callback: 'Array.map with a closure lowers to a preallocated typed loop – no per-call allocation.',
+  aos: 'Object rows copied into typed columns – memory-bound; schema fields read at fixed offsets.',
+  mandelbrot: 'f64 escape loop with a data-dependent break – everything compiled lands within ~10%.',
   json: 'Runtime JSON.parse specialized to the literal’s stable shape.',
-  sort: 'In-place heapsort — call-heavy nested loops, indices provably i32.',
-  crc32: 'Table-driven byte CRC — serially-dependent LUT chain, 2 loads + 4 ALU per byte.',
-  blur: 'Separable box blur on an RGBA8 image — sliding-window stencil with integer accumulation; memory-bound layout codegen.',
-  matmul: 'Dense C = A·Bᵀ, Bᵀ pre-transposed so each output is a contiguous dot — the multiply-accumulate kernel every linear-algebra library lives on; integer-valued, so bit-exact across targets.',
-  heat: 'Explicit-Euler 5-point Laplacian over a double-buffered grid (dst≠src, fixed border) — the clean neighbour-load stencil a[i±1]/a[i±W] jz lifts to f64x2, bit-exact.',
-  nbody: 'O(n²) pairwise gravitational force accumulation in f64 — the physics-step kernel; transcendental-free, so bit-identical across targets (Go arm64 FMA aside).',
-  lorenz: 'Lorenz attractor — explicit-Euler integration of a 3-variable ODE; a tight loop-carried f64 recurrence no target can vectorize.',
-  particle: 'Fixed-timestep particle integrator — N particles in struct-of-arrays (px,py,vx,vy) under constant gravity; pure f64 add/mul, a memory-bound SoA sweep.',
-  spmv: 'Sparse A·x in CSR — the multiply-accumulate inner loop gathers x[col[k]] through an index array; the data-dependent gather dense codegen handles worst.',
-  conv2d: 'Int8 quantized 3×3 conv layer (i32 MAC + ReLU requant) — the spatial-convolution counterpart to dense matmul, the edge-ML inference kernel.',
-  qoi: 'QOI lossless image codec encode+decode — loop-carried run/index/diff/luma ops no target can vectorize; a pure scalar-codegen race.',
-  raytrace: 'Sphere ray tracer — primary ray + closest-hit + Lambert/ambient shading to an f64 framebuffer; a branchy loop-carried scalar sqrt pipeline no target vectorizes.',
-  noise: 'Perlin fBm (5 octaves) — nested permutation-table hashing perm[perm[X]+Y] interleaved with f64 quintic smoothstep; the procedural-generation kernel. AS’s direct typed loads still win the gather.',
-  alpha: 'Alpha compositing — constant-opacity “over” blend of two RGBA8 images in fixed-point i32; the canonical layer-blend / crossfade kernel.',
-  base64: 'Base64 encode+decode round-trip — table-driven 3→4 byte packing; the canonical codec / serialization kernel.',
-  lz: 'LZSS compress+inflate — greedy sliding-window longest-match search; the match finder that dominates every LZ-family codec.',
-  levenshtein: 'Edit-distance rolling-row DP — each cell is min(del,ins,sub) with a diagonal dependency no target vectorizes; the branchy min-reduction over a typed row AS lowers tighter than jz today.',
-  hash: 'MurmurHash3 x86_32 over a byte buffer — table-free multiply/rotate/xor mixing, a different ALU profile from crc32.',
-  sieve: 'Sieve of Eratosthenes — strided composite scatter (i², i²+i, …) guarded by an outer branch; a non-contiguous integer write pattern.',
-  radixsort: 'LSD radix sort (4×8-bit counting passes) over u32 keys — histogram → prefix-sum → scatter with buffer ping-pong; the gather/scatter integer sort.',
-  dict: 'Open-addressing hash table — multiply-shift hash scatter + dependent-load probe-chain gather with unpredictable branches; the gather shape jz lowers least tightly today.',
-  nqueens: 'Bitmask N-Queens counter — deep backtracking recursion + per-node available-columns branch; the call/recursion-codegen probe.',
-  vm: 'Tiny bytecode interpreter — fetch-decode-dispatch if/else opcode chain + indirect code-array loads; the VM/regex-engine inner loop jz wins outright, even vs native clang.',
-  hashjoin: 'Probe-dominated relational hash join — the database/dataframe kernel, and jz’s boss case: probe() returns vals[h], a typed-array element through a function PARAM jz can’t yet prove is i32 — so sum + probe() lowers to the polymorphic number-or-string add (f64 round-trip + __is_str_key + __str_concat) per probe — then the only case jz lost to V8. Propagate the param’s typed-array rep into the return type so the + folds to i32.add: measured 8.7 → 5.2 ms, flipping jz from 1.3× behind V8 to 1.3× ahead — fastest of all.',
-  dispatch: 'One call site fans out to 8 first-class functions picked by data — a JIT call-IC goes megamorphic here, the classic deopt shape. jz lowers it to call_indirect and leads every wasm rival; only V8’s tuned megamorphic call stubs stay ahead. The general fix is bounded-table devirt: guarded direct calls over the 8 known closures.',
-  colorconv: 'sRGB → Oklab per pixel — EOTF pow → 3×3 → cbrt → 3×3. The matrix MAD chains beat V8; Math.cbrt/pow intrinsic quality is the gap.',
-  colorlch: 'sRGB → OkLCh fused in one loop — pow → 3×3 → cbrt → 3×3 → sqrt+atan2. The fused body schedules mixed transcendentals worse than two split loops — a register-pressure/vectorization target.',
-  colorlog: 'ARRI LogC4 → XYZ — runtime-base exp2 decode + 3×3 matrix; runtime-exponent pow/exp2 is where jz trails V8’s intrinsics.',
-  colorpq: 'sRGB → JzAzBz — 3×3 → PQ curve (≈12 signed-pow calls) → 3×3; the sign branch + runtime-exponent pow blocks vectorization.',
-  shapes: 'Records of 8 heterogeneous object shapes hit one access site — a JIT load-IC goes megamorphic, the hidden-class deopt shape. jz’s schema union falls back to a dynamic-property probe (__dyn_get) per field read — the widest gap in the suite (AS’s flat tagged struct ties native C). The general fix is shape-set devirt: a bounded schema union should lower to a tag-switch over direct slot loads.',
-  watr: 'jz-compiled watr (WAT → wasm compiler) vs raw V8 on the same source — a self-host row: V8’s profile-guided JIT tiers the long-running string-heavy bundle, jz trails ~1.1×.',
-  jessie: 'The subscript/jessie JS parser over a source corpus, jz-compiled vs raw V8 — branch-, allocation- and recursion-heavy front-end work on the linear-memory string substrate.',
-  jz: 'The jz compiler compiling JavaScript as jz.wasm — the self-host row; output bytes are checksummed, so the parity gate doubles as a determinism proof.',
-  strbuild: 'Per-record CSV-line formatting — int→string, concat, char fold; the serializer inner loop. jz’s eager linear-memory strings land near V8’s rope-backed concat; AS’s leaner UTF-16 concat leads. (A single giant `out +=` accumulator is deliberately avoided: eager strings with no GC make it quadratic in allocation.)',
-  wordcount: 'Token counting into a plain object with 512 computed string keys — in a JIT the object falls to dictionary mode, the keyed-store deopt. jz’s string-keyed hash store ties AS’s Map but trails V8’s tuned dictionary ~3× — string hashing/interning is the lever.',
-  immutable: 'Every step replaces each particle with a fresh {x,y,vx,vy} — the React/Redux-style immutable update. Value-semantics natives get it free; V8’s young-gen GC + escape analysis wins the managed field; jz pays a real bump allocation per object with no scalar replacement — the escape-analysis/SROA probe.',
+  sort: 'In-place heapsort – call-heavy nested loops, indices provably i32.',
+  crc32: 'Table-driven byte CRC – serially-dependent LUT chain, 2 loads + 4 ALU per byte.',
+  blur: 'Separable box blur on an RGBA8 image – sliding-window stencil with integer accumulation; memory-bound layout codegen.',
+  matmul: 'Dense C = A·Bᵀ, Bᵀ pre-transposed so each output is a contiguous dot – the multiply-accumulate kernel every linear-algebra library lives on; integer-valued, so bit-exact across targets.',
+  heat: 'Explicit-Euler 5-point Laplacian over a double-buffered grid (dst≠src, fixed border) – the clean neighbour-load stencil a[i±1]/a[i±W] jz lifts to f64x2, bit-exact.',
+  nbody: 'O(n²) pairwise gravitational force accumulation in f64 – the physics-step kernel; transcendental-free, so bit-identical across targets (Go arm64 FMA aside).',
+  lorenz: 'Lorenz attractor – explicit-Euler integration of a 3-variable ODE; a tight loop-carried f64 recurrence no target can vectorize.',
+  particle: 'Fixed-timestep particle integrator – N particles in struct-of-arrays (px,py,vx,vy) under constant gravity; pure f64 add/mul, a memory-bound SoA sweep.',
+  spmv: 'Sparse A·x in CSR – the multiply-accumulate inner loop gathers x[col[k]] through an index array; the data-dependent gather dense codegen handles worst.',
+  conv2d: 'Int8 quantized 3×3 conv layer (i32 MAC + ReLU requant) – the spatial-convolution counterpart to dense matmul, the edge-ML inference kernel.',
+  qoi: 'QOI lossless image codec encode+decode – loop-carried run/index/diff/luma ops no target can vectorize; a pure scalar-codegen race.',
+  raytrace: 'Sphere ray tracer – primary ray + closest-hit + Lambert/ambient shading to an f64 framebuffer; a branchy loop-carried scalar sqrt pipeline no target vectorizes.',
+  noise: 'Perlin fBm (5 octaves) – nested permutation-table hashing perm[perm[X]+Y] interleaved with f64 quintic smoothstep; the procedural-generation kernel. AS’s direct typed loads still win the gather.',
+  alpha: 'Alpha compositing – constant-opacity “over” blend of two RGBA8 images in fixed-point i32; the canonical layer-blend / crossfade kernel.',
+  base64: 'Base64 encode+decode round-trip – table-driven 3→4 byte packing; the canonical codec / serialization kernel.',
+  lz: 'LZSS compress+inflate – greedy sliding-window longest-match search; the match finder that dominates every LZ-family codec.',
+  levenshtein: 'Edit-distance rolling-row DP – each cell is min(del,ins,sub) with a diagonal dependency no target vectorizes; the branchy min-reduction over a typed row AS lowers tighter than jz today.',
+  hash: 'MurmurHash3 x86_32 over a byte buffer – table-free multiply/rotate/xor mixing, a different ALU profile from crc32.',
+  sieve: 'Sieve of Eratosthenes – strided composite scatter (i², i²+i, …) guarded by an outer branch; a non-contiguous integer write pattern.',
+  radixsort: 'LSD radix sort (4×8-bit counting passes) over u32 keys – histogram → prefix-sum → scatter with buffer ping-pong; the gather/scatter integer sort.',
+  dict: 'Open-addressing hash table – multiply-shift hash scatter + dependent-load probe-chain gather with unpredictable branches; the gather shape jz lowers least tightly today.',
+  nqueens: 'Bitmask N-Queens counter – deep backtracking recursion + per-node available-columns branch; the call/recursion-codegen probe.',
+  vm: 'Tiny bytecode interpreter – fetch-decode-dispatch if/else opcode chain + indirect code-array loads; the VM/regex-engine inner loop jz wins outright, even vs native clang.',
+  hashjoin: 'Probe-dominated relational hash join – the database/dataframe kernel, and jz’s boss case: probe() returns vals[h], a typed-array element through a function PARAM jz can’t yet prove is i32 – so sum + probe() lowers to the polymorphic number-or-string add (f64 round-trip + __is_str_key + __str_concat) per probe – then the only case jz lost to V8. Propagate the param’s typed-array rep into the return type so the + folds to i32.add: measured 8.7 → 5.2 ms, flipping jz from 1.3× behind V8 to 1.3× ahead – fastest of all.',
+  dispatch: 'One call site fans out to 8 first-class functions picked by data – a JIT call-IC goes megamorphic here, the classic deopt shape. jz lowers it to call_indirect and leads every wasm rival; only V8’s tuned megamorphic call stubs stay ahead. The general fix is bounded-table devirt: guarded direct calls over the 8 known closures.',
+  colorconv: 'sRGB → Oklab per pixel – EOTF pow → 3×3 → cbrt → 3×3. The matrix MAD chains beat V8; Math.cbrt/pow intrinsic quality is the gap.',
+  colorlch: 'sRGB → OkLCh fused in one loop – pow → 3×3 → cbrt → 3×3 → sqrt+atan2. The fused body schedules mixed transcendentals worse than two split loops – a register-pressure/vectorization target.',
+  colorlog: 'ARRI LogC4 → XYZ – runtime-base exp2 decode + 3×3 matrix; runtime-exponent pow/exp2 is where jz trails V8’s intrinsics.',
+  colorpq: 'sRGB → JzAzBz – 3×3 → PQ curve (≈12 signed-pow calls) → 3×3; the sign branch + runtime-exponent pow blocks vectorization.',
+  shapes: 'Records of 8 heterogeneous object shapes hit one access site – a JIT load-IC goes megamorphic, the hidden-class deopt shape. jz’s schema union falls back to a dynamic-property probe (__dyn_get) per field read – the widest gap in the suite (AS’s flat tagged struct ties native C). The general fix is shape-set devirt: a bounded schema union should lower to a tag-switch over direct slot loads.',
+  watr: 'jz-compiled watr (WAT → wasm compiler) vs raw V8 on the same source – a self-host row: V8’s profile-guided JIT tiers the long-running string-heavy bundle, jz trails ~1.1×.',
+  jessie: 'The subscript/jessie JS parser over a source corpus, jz-compiled vs raw V8 – branch-, allocation- and recursion-heavy front-end work on the linear-memory string substrate.',
+  jz: 'The jz compiler compiling JavaScript as jz.wasm – the self-host row; output bytes are checksummed, so the parity gate doubles as a determinism proof.',
+  strbuild: 'Per-record CSV-line formatting – int→string, concat, char fold; the serializer inner loop. jz’s eager linear-memory strings land near V8’s rope-backed concat; AS’s leaner UTF-16 concat leads. (A single giant `out +=` accumulator is deliberately avoided: eager strings with no GC make it quadratic in allocation.)',
+  wordcount: 'Token counting into a plain object with 512 computed string keys – in a JIT the object falls to dictionary mode, the keyed-store deopt. jz’s string-keyed hash store ties AS’s Map but trails V8’s tuned dictionary ~3× – string hashing/interning is the lever.',
+  immutable: 'Every step replaces each particle with a fresh {x,y,vx,vy} – the React/Redux-style immutable update. Value-semantics natives get it free; V8’s young-gen GC + escape analysis wins the managed field; jz pays a real bump allocation per object with no scalar replacement – the escape-analysis/SROA probe.',
 }
 // detected visitor engine
 const ENGINE = (() => {
@@ -623,7 +620,7 @@ const renderGeomean = () => {
       // Corpus tooltip: engine line, then — when it didn't cover the whole corpus — why (two lines,
       // terse). The geomean averages only the cases it ran correctly; the misses show as muted cards.
       const tip = [DESC[r.tid], partial
-        ? `ran ${cov.ran} of ${cov.attempted} — the rest failed or have no ${stripClassSub(r.label, r.sub)} port (see the cards)`
+        ? `ran ${cov.ran} of ${cov.attempted} – the rest failed or have no ${stripClassSub(r.label, r.sub)} port (see the cards)`
         : null].filter(Boolean).join('\n')
       // All three multipliers per row (vs JZ itself, so JZ = 1× in every column and
       // a better row reads <1×); the bar draws the SORTED column, scaled against
@@ -657,20 +654,20 @@ $('geomean').addEventListener('click', e => {
 // Each cell is [key, label, band, tip].
 const STRIP = [
   ['Speed', [
-    ['v8', 'V8', 'js', 'jz vs Node / V8 — geometric-mean speedup across the corpus (your runtime).\nOver 13× on the best single case (dotprod).'],
+    ['v8', 'V8', 'js', 'jz vs Node / V8 – geometric-mean speedup across the corpus (your runtime).\nOver 13× on the best single case (dotprod).'],
     ['rust', 'Rust wasm', 'wasm', 'jz vs Rust → wasm (rustc --target wasm32-wasip1 -C opt-level=3), run in this same V8.\njz beats a systems language, apples-to-apples.'],
-    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) — the speed-of-light ceiling,\nfrom plain JavaScript. Below 1× = native ahead; the deopt probes are the open gap.'],
+    ['nat', 'C native', 'native', 'jz vs native C (clang -O3 -march=native -ffp-contract=off) – the speed-of-light ceiling,\nfrom plain JavaScript. Below 1× = native ahead; the deopt probes are the open gap.'],
   ]],
   // (porfsize retired: the Porffor rewrite compiles through C in-process — it emits
   // no wasm at all, so there are no "Porffor wasm bytes" to compare. MoonBit is the
   // remaining real wasm-artifact rival with corpus-wide coverage.)
   ['Size', [
-    ['assize', 'AssemblyScript', 'wasm', 'jz ÷ AssemblyScript wasm bytes, median over the corpus — each compiler at its smallest:\njz optimize:"size"  vs  asc -Osize --runtime stub --noAssert.\nLower = jz smaller.'],
-    ['moonbitsize', 'MoonBit', 'wasm', 'jz ÷ MoonBit wasm bytes, median over the corpus — jz optimize:"size" vs\nmoon build --target wasm --release; the wasm-first language\'s compiler.'],
+    ['assize', 'AssemblyScript', 'wasm', 'jz ÷ AssemblyScript wasm bytes, median over the corpus – each compiler at its smallest:\njz optimize:"size"  vs  asc -Osize --runtime stub --noAssert.\nLower = jz smaller.'],
+    ['moonbitsize', 'MoonBit', 'wasm', 'jz ÷ MoonBit wasm bytes, median over the corpus – jz optimize:"size" vs\nmoon build --target wasm --release; the wasm-first language\'s compiler.'],
   ]],
   ['Memory', [
-    ['v8mem', 'V8', 'js', 'Node running the same source as plain JS ÷ jz — peak process RSS, geomean.\nSame V8 host for both, so the delta is JIT artifacts + GC heap vs jz\'s linear memory.'],
-    ['javymem', 'Javy QuickJS', 'wasm', 'Javy ÷ jz peak process RSS, geomean — the QuickJS interpreter + its heap inside\nthe module vs jz\'s no-runtime linear memory, same node host.'],
+    ['v8mem', 'V8', 'js', 'Node running the same source as plain JS ÷ jz – peak process RSS, geomean.\nSame V8 host for both, so the delta is JIT artifacts + GC heap vs jz\'s linear memory.'],
+    ['javymem', 'Javy QuickJS', 'wasm', 'Javy ÷ jz peak process RSS, geomean – the QuickJS interpreter + its heap inside\nthe module vs jz\'s no-runtime linear memory, same node host.'],
   ]],
 ]
 const renderStrip = () => {
@@ -721,7 +718,7 @@ const cardRows = c => {
   // e.g. alpha's per-byte blend, or crc32's carry-less-multiply folding.
   const NATIVE_EDGE = 8
   const simdTip = r => r.band === 'native' && base > 0 && base / r.medianUs >= NATIVE_EDGE
-    ? `WebAssembly can't express this kernel as fast — its SIMD is 128-bit with no wide-byte or carry-less multiply, so native pulls far ahead here. A wasm ceiling, not a jz one.`
+    ? `WebAssembly can't express this kernel as fast – its SIMD is 128-bit with no wide-byte or carry-less multiply, so native pulls far ahead here. A wasm ceiling, not a jz one.`
     : null
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
@@ -861,7 +858,7 @@ const runCase = async cid => {
 $('runAll').addEventListener('click', async () => {
   $('runAll').disabled = true
   for (let i = 0; i < CORPUS.length; i++) {
-    $('globalstat').textContent = `${i + 1}/${CORPUS.length} — ${CORPUS[i].id}`
+    $('globalstat').textContent = `${i + 1}/${CORPUS.length} – ${CORPUS[i].id}`
     await runCase(CORPUS[i].id)
   }
   $('globalstat').textContent = 'done'
@@ -883,7 +880,7 @@ try {
   CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
   renderMeta(); renderChips(); renderAll()
 } catch {
-  $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet — run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
+  $('geomean').innerHTML = '<p class="dim">No <code>results.json</code> yet – run <code>node bench/bench.mjs --json</code> to generate the snapshot.</p>'
 }
 </script>
 <script type="module" src="../assets/version.js"></script>

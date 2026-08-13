@@ -5,15 +5,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark' } catch (e) { document.documentElement.dataset.theme = 'dark' } })()</script>
-    <title>JZ — JS→WASM compiler for numeric code (DSP, audio, math)</title>
-    <meta name="description" content="Compile numeric JavaScript to GC-free WebAssembly — no rewrite, annotations, runtime, or GC.">
+    <title>JZ – JS→WASM compiler for numeric code (DSP, audio, math)</title>
+    <meta name="description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
     <link rel="canonical" href="https://dy.github.io/jz/">
     <meta name="theme-color" content="#000000">
     <!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://dy.github.io/jz/">
-    <meta property="og:title" content="JZ — JS→WASM compiler for numeric code (DSP, audio, math)">
-    <meta property="og:description" content="Compile numeric JavaScript to GC-free WebAssembly — no rewrite, annotations, runtime, or GC.">
+    <meta property="og:title" content="JZ – JS→WASM compiler for numeric code (DSP, audio, math)">
+    <meta property="og:description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
     <meta property="og:image" content="https://dy.github.io/jz/assets/og.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -253,7 +253,7 @@
       .phead {
         display: flex;
         align-items: flex-start;
-        gap: clamp(16px, 2.2vw, 32px);
+        gap: 20px;
         min-width: 0;
       }
 
@@ -368,39 +368,27 @@
         text-wrap: pretty;
       }
 
-      /* hero install chip — the conversion action beside the pitch, indented with the sub */
+      /* hero install chip — the conversion action beside the pitch, indented with the sub.
+   Opaque mini-CLI box (same palette as the .cli chip) so it covers the band's grid lines;
+   -16px offsets .pleft's 36px gap → 20px under the slogan */
       .pleft .install {
+        align-self: flex-start;
+        /* .pleft stretches children; the box must hug the command, not span the column */
         margin-left: var(--u2);
-        margin-top: 20px;
+        margin-top: -20px;
+        padding: 12px 16px;
+        background: light-dark(#0c0e11, #000);
+        border: 1px solid light-dark(#20242a, #1c1c25);
+        color: #e8e8ea;
       }
 
-      /* body prose — same type as the FAQ answers; black body text; indented 1 mid-unit (40px) from the logo */
-      .pitch .sub b {
-        color: var(--ink);
-        font-weight: 700;
-        white-space: nowrap;
+      .pleft .install .dollar {
+        color: #6a6f78;
       }
 
-      /* keep "2.2× faster than V8" unbroken */
-      .pitch .sub .ref {
-        font-size: .7em;
-        vertical-align: super;
-        line-height: 0;
-        color: var(--dim);
-        text-decoration: none;
-        padding: 0 1px;
-        transition: color .16s;
+      .pleft .install.copied::after {
+        color: #9aa0a8;
       }
-
-      .pitch .sub .ref:hover {
-        color: light-dark(#000, #fff);
-      }
-
-      .pitch .sub .nb {
-        white-space: nowrap;
-      }
-
-      /* "runs the same source 2.4× faster" stays one line */
 
       /* the FPS readout + JS↔JZ switch (bottom-right quadrant). Fixed FPS width so a changing
    digit count can't shift the switch. */
@@ -419,7 +407,7 @@
         display: flex;
         flex-direction: column;
         align-items: flex-start;
-        gap: 12px;
+        gap: 1.5rem;
         width: 100%;
         min-width: 0;
         max-width: 100%;
@@ -429,31 +417,25 @@
         display: flex;
         align-items: baseline;
         flex-wrap: wrap;
-        gap: 4px 10px;
+        gap: 4px 6px;
         max-width: 100%;
         margin: 0;
         color: var(--dim);
-        font: 11px/16px var(--mono);
+        font-size: 12px;
         font-variant-numeric: tabular-nums;
         letter-spacing: .01em;
       }
 
       .compile-proof .proof-data {
-        display: block;
-        flex: 1 1 100%;
-        width: 100%;
         min-width: 0;
         white-space: normal;
         overflow-wrap: anywhere;
       }
 
-      .compile-proof .proof-kicker {
+      /* "hero demo" — the line's subject, wearing the shared .lnk fashion (site.css): opens this
+   exact source in the REPL below. Only the colour is local — a step brighter than the dim data. */
+      .compile-proof .proof-link {
         color: var(--soft);
-        font-family: var(--font);
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: .13em;
-        text-transform: uppercase;
       }
 
       .compile-proof[data-state="loading"] .proof-data {
@@ -695,12 +677,13 @@
       @media (min-width: 721px) and (max-width: 960px) {
         .pright {
           flex-direction: row;
-          flex-wrap: wrap;
-          align-items: flex-end;
           justify-content: flex-start;
           column-gap: clamp(24px, 4vw, 56px);
           row-gap: 16px;
           margin-left: var(--u2);
+        }
+        .metrics {
+          flex-shrink: 0;
         }
       }
 
@@ -838,9 +821,16 @@
           margin-top: calc(-2 * var(--U));
         }
 
-        /* stacked hero has no room for the install chip — the CLI-section chip serves small screens */
-        .pleft .install {
-          display: none;
+        /* stacked hero content ends lower (install chip + proof line) — bottom padding ≥ the REPL's
+   2-unit ride-up, plus 24px of air, so the REPL can never sit on content */
+        .pitch {
+          padding-bottom: calc(2 * var(--U) + 24px);
+        }
+
+        /* one minor unit down — stacked layouts land the proof text exactly on the 6-unit major rule
+   (reads as strikethrough) */
+        .compile-proof {
+          margin-top: 8px;
         }
       }
 
@@ -1141,9 +1131,19 @@
         }
       }
 
+      /* answer links wear the shared .lnk fashion (site.css) — element-scoped so every prose link gets it */
       .faq .ans a {
         color: var(--ink);
+        text-decoration: underline;
+        text-decoration-color: var(--mute);
+        text-decoration-thickness: 1px;
         text-underline-offset: 2px;
+        transition: text-decoration-color .16s;
+      }
+
+      .faq .ans a:hover,
+      .faq .ans a:focus-visible {
+        text-decoration-color: currentColor;
       }
 
       .faq .ans code {
@@ -1327,10 +1327,11 @@
       <section class="pitch">
         <div class="pcol pleft">
           <div class="phead">
-            <a class="logo" href="./" aria-label="JZ — home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-            <h1>Same JS, <br class="hb">native WASM</h1>
+            <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
+            <h1>Compile JS <br class="hb">to native speed</h1>
           </div>
-          <p class="sub">Compile JS to WASM – no runtime, no GC, tiny output. For DSP, math, visuals and more.</p>
+          <p class="sub">Plain JS in, tiny WASM out. No rewrite, no runtime, no GC.<br> For DSP, math, visuals and more.</p>
+          <button class="install" id="install1" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
         </div>
 
         <div class="pcol pright">
@@ -1354,13 +1355,13 @@
             <div class="cta-live">
               <button class="engine jz" id="engine" role="switch" aria-checked="true" aria-label="Run the live demo as plain JS or as JZ-compiled WASM"><span class="lbl-js">JS</span><span class="lbl-jz">JZ</span><span class="knob"></span></button>
               <div class="fps" aria-label="compute throughput, operations per second">
-                <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second — how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b
+                <canvas class="fps-spark" id="fps-spark"></canvas><span class="metric ms" title="Compute passes per second – how many times the engine runs the whole frame. Uncapped by your ~60 Hz display. Higher is better; flip JS/JZ to compare."><b
                     id="ms-num">··</b><span class="unit">op/s</span></span>
               </div>
             </div>
-            <p class="compile-proof" id="compile-proof" data-state="loading" role="status" aria-live="polite" aria-atomic="true" aria-busy="true">
-              <span class="proof-kicker">Compiled here</span>
-              <span class="proof-data" id="compile-proof-data">same source → compiling in your browser…</span>
+            <p class="compile-proof" id="compile-proof" data-state="loading" aria-live="polite">
+              <a class="proof-link lnk" id="compile-proof-link" href="repl/" title="Open the hero demo source in the REPL">Hero demo</a>
+              <span class="proof-data" id="compile-proof-data">compiling in your browser…</span>
             </p>
           </div>
         </div>
@@ -1371,7 +1372,7 @@
       <div class="try-wrap">
         <!-- the real REPL, embedded (chrome-stripped via ?embed): edit or paste source, Run, read the WAT
          and console. It opens on a runnable preset — hit “js vs wasm” to race the same source. -->
-        <iframe class="repl-embed" src="repl/?embed" title="JZ REPL — edit, compile, run" loading="lazy"></iframe>
+        <iframe class="repl-embed" src="repl/?embed" title="JZ REPL – edit, compile, run" loading="lazy"></iframe>
       </div>
     </section>
 
@@ -1383,7 +1384,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>JZ compiles the distilled JavaScript subset – Crockford’s “good parts” – into native-grade WASM.</p>
+            <p>JZ compiles a distilled JavaScript subset, Crockford’s “good parts” – into native-grade WASM.</p>
             <p><b>Valid JZ is valid JS</b>. Same source runs as plain JS or compiles without rewrite to <code>.wasm</code> – sandboxed, portable, memory-safe. No runtime, no GC, no type annotations, auto-SIMD, deterministic output.</p>
             <table>
               <thead>
@@ -1395,27 +1396,27 @@
               <tbody>
                 <tr>
                   <td>DSP, audio, synthesis</td>
-                  <td>UI, DOM, the frontend</td>
+                  <td>UI, DOM, frontend state</td>
                 </tr>
                 <tr>
-                  <td>Image, video, pixels</td>
-                  <td>Serving HTTP, hot I/O</td>
+                  <td>Images, video, pixels</td>
+                  <td>Network, hot I/O, serving HTTP</td>
                 </tr>
                 <tr>
                   <td>Simulation, physics, games</td>
-                  <td>I/O-bound orchestration</td>
+                  <td>Dynamic object models and monkey-patching</td>
                 </tr>
                 <tr>
                   <td>Parsers, codecs, compression</td>
-                  <td>Dynamic, polymorphic, OOP</td>
+                  <td>Allocation-heavy, long-lived object graphs</td>
                 </tr>
                 <tr>
-                  <td>Scientific, numeric, ML</td>
-                  <td>Security crypto, big-ints</td>
+                  <td>Scientific, numeric, edge ML</td>
+                  <td>Security-sensitive cryptography and arbitrary-precision integers</td>
                 </tr>
                 <tr>
                   <td>Hashing, checksums, RNG</td>
-                  <td>Glue, plumbing, orchestration</td>
+                  <td>Tiny calls where the JS/WASM boundary dominates</td>
                 </tr>
               </tbody>
             </table>
@@ -1427,14 +1428,14 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>A minimal modern functional JS subset — no dynamic constructs or reflection. The jzify layer lowers legacy patterns, generators, and async/await.</p>
+            <p>A minimal modern functional JS subset – no dynamic constructs or reflection. The jzify layer lowers legacy patterns, generators, and async/await.</p>
             <div class="subset">
               <div class="ring out">
                 <span class="rl">Not supported</span>
                 <span class="t">eval</span><span class="t">Proxy Reflect</span><span class="t">defineProperty</span><span class="t">getters/setters</span><span class="t">DOM</span><span class="t">Node Intl</span>
                 <div class="ring mid">
                   <span class="rl">Compat</span>
-                  <span class="t">var</span><span class="t">function</span><span class="t">switch</span><span class="t">class extends</span><span class="t">this super</span><span class="t">static #private</span><span class="t">function* yield</span><span class="t">async/await</span><span class="t">async function*</span><span class="t">for await</span><span class="t">Promise</span><span class="t">using</span><span class="t">prototype</span><span class="t">== !=</span><span class="t">instanceof</span>
+                  <span class="t">var</span><span class="t">function</span><span class="t">switch</span><span class="t">class extends</span><span class="t">this super</span><span class="t">static #private</span><span class="t">function* yield</span><span class="t">async/await</span><span class="t">async function*</span><span class="t">for await</span><span class="t">Promise</span><span class="t">using</span><span class="t">prototype</span><span class="t">== !=</span><span class="t">instanceof</span><a class="t" href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">more →</a>
                   <div class="ring in">
                     <span class="rl">Strict</span>
                     <span class="t">let/const</span><span class="t">=&gt;</span><span class="t">…spread</span><span class="t">destructuring</span><span class="t">import/export</span><span class="t">if/for/while</span><span class="t">try/catch</span><span class="t">numbers</span><span class="t">strings</span><span class="t">arrays objects</span><span class="t">typed arrays</span><span class="t">Math JSON RegExp</span><span class="t">Map Set</span><span class="t">iterator helpers</span><span class="t">Atomics</span>
@@ -1442,7 +1443,6 @@
                 </div>
               </div>
             </div>
-            <p><a href="https://github.com/dy/jz#language" target="_blank" rel="noopener">Full list →</a> · <a href="https://github.com/dy/jz#faq" target="_blank" rel="noopener">what's out by design, and why →</a></p>
           </div>
         </details>
 
@@ -1459,7 +1459,7 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>Different aims. Porffor covers the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript is a typed TypeScript dialect for WASM whose source can’t run as JS.</p>
+            <p>Porffor aims to cover the full JS spec but emits no WASM (its 2026 rewrite compiles through C to native) and runs slower than V8 on the <a href="bench/">cases</a> it completes; scriptc makes native CLI binaries from TypeScript, no WASM target; AssemblyScript is a typed TypeScript dialect for WASM whose source can’t run as JS.</p>
             <p>JZ compiles plain JS that still runs and tests as JS, and the release gate keeps its WASM fastest per case; the price is the overdynamic constructs it refuses.</p>
           </div>
         </details>
@@ -1480,7 +1480,7 @@
             </svg></summary>
           <div class="ans">
             <p>JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
-            <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus — jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
+            <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus – jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
           </div>
         </details>
@@ -1507,10 +1507,10 @@
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
-            <p>It’s <b>experimental</b> (pre-1.0) — ABI can still shift.</p>
+            <p>It’s <b>experimental</b> (pre-1.0) – ABI can still shift.</p>
             <p>But real code already ships on it: <a href="https://github.com/colorjs/color-space#wasm" target="_blank" rel="noopener">color-space v3</a> builds its precompiled 27-space WASM backend with JZ.</p>
             <p>CI gates the full suite, test262, the bench, and the self-compile. A fuzzer diffs every kernel against the same source in V8.</p>
-            <p>And the exit is free: valid JZ is valid JS — drop the compile step and the same file keeps running.</p>
+            <p>And the exit is free: valid JZ is valid JS – drop the compile step and the same file keeps running.</p>
           </div>
         </details>
 
@@ -1561,7 +1561,7 @@
 
     <footer>
       <div class="fwrap">
-        <a class="wordmark" href="./" aria-label="jz — home"><img src="jz.svg" width="40" height="40" alt="jz"></a>
+        <a class="wordmark" href="./" aria-label="jz – home"><img src="jz.svg" width="40" height="40" alt="jz"></a>
         <nav class="fcol">
           <a href="repl/">repl</a>
           <a href="examples/">examples</a>
@@ -1592,6 +1592,24 @@
       const $ = id => document.getElementById(id)
       const compileProof = $('compile-proof')
       const compileProofData = $('compile-proof-data')
+      const compileProofLink = $('compile-proof-link')
+      // the same base64url-of-UTF-8 encoding the repl decodes from its #hash
+      const b64url = (s) => {
+        const b = new TextEncoder().encode(s)
+        let t = ''
+        for (let i = 0; i < b.length; i += 8192) t += String.fromCharCode(...b.subarray(i, i + 8192))
+        return btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+      }
+      // "hero demo": plain click hash-navigates the embedded REPL below to this source (no reload — the
+      // repl's hashchange handler loads + builds it) and scrolls it into view; modified clicks follow
+      // the href, the standalone repl permalink loadSource keeps fresh
+      compileProofLink?.addEventListener('click', (e) => {
+        const embed = document.querySelector('.repl-embed')
+        if (!embed || !src || e.metaKey || e.ctrlKey || e.shiftKey) return
+        e.preventDefault()
+        embed.src = 'repl/?embed#' + b64url(src)
+        embed.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
       const setCompileProof = (state, text) => {
         if (!compileProof || !compileProofData) return
         compileProof.dataset.state = state
@@ -1734,11 +1752,12 @@
       const demoSrc = () => document.documentElement.dataset.theme === 'light' ? 'assets/grid-life.js' : 'assets/grid-current.js'
       let loading = false, pendingTheme = null
       const loadSource = async (path) => {
-        setCompileProof('loading', 'same source → compiling in your browser…')
+        setCompileProof('loading', 'compiling in your browser…')
         let text
         try { text = await (await fetch(path)).text() }
-        catch { setCompileProof('error', 'demo source unavailable'); return }
+        catch { setCompileProof('error', 'source unavailable'); return }
         src = text
+        if (compileProofLink) compileProofLink.href = 'repl/#' + b64url(src)
         let jzEng = null, jsEng = null, jzErr = null
         // Compile ONCE, visibly: the proof line reports this exact source, compile duration and
         // artifact — no canned benchmark. Instantiate the resulting bytes separately so the
@@ -1748,11 +1767,10 @@
           const wasm = jzCompile(src, { optimize: 3 })
           const compileMs = performance.now() - started
           jzEng = instantiateJz(wasm).exports
-          const lines = src.replace(/\s+$/, '').split(/\r?\n/).length
-          setCompileProof('success', `same ${lines}-line JS → ${formatWasmBytes(wasm.byteLength)} WASM in ${formatCompileMs(compileMs)}`)
+          setCompileProof('success', `compiled to ${formatWasmBytes(wasm.byteLength)} WASM in ${formatCompileMs(compileMs)}`)
         } catch (e) {
           jzErr = e
-          setCompileProof('error', 'same source → WASM compile unavailable in this browser')
+          setCompileProof('error', 'compile unavailable in this browser')
           console.error('jz hero compile failed:', e)
         }
         try {                                                                   // the SAME source as plain JS, for the toggle. Safari can reject importing a blob: module — isolate it
@@ -1766,8 +1784,8 @@
         if ((!currentJz || !ArrayBuffer.isView(pxJz)) && currentJs) {
           currentJz = null; setEngineUI('js'); engineEl.disabled = true
           engineEl.style.cursor = 'default'
-          engineEl.title = jzErr ? 'jz compile failed (bug — see console): running as plain JS'
-            : 'WASM engine unavailable in this browser — running the live demo as plain JS'
+          engineEl.title = jzErr ? 'jz compile failed (bug – see console): running as plain JS'
+            : 'WASM engine unavailable in this browser – running the live demo as plain JS'
         } else if (currentJz) {
           engineEl.disabled = false; engineEl.style.cursor = ''; engineEl.removeAttribute('title')
         }

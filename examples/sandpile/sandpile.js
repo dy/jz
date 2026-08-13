@@ -9,8 +9,8 @@
 //
 // Algorithm: `grid` holds a grain count per cell; toppling-eligible sites live in an explicit
 // circular FIFO QUEUE (`queue`/`qHead`/`qTail`/`qCount`), deduplicated by an `inq` flag so a site
-// queues at most once at a time. relax() pops the OLDEST eligible site, drains it fully (it may
-// hold several multiples of 4 at once — e.g. a fresh deposit), and pushes any neighbor that
+// queues at most once at a time. relax() pops the OLDEST eligible site, drains all of its complete
+// groups of 4 in one equivalent transfer (e.g. a fresh deposit), and pushes any neighbor that
 // crosses the threshold — following the avalanche FRONT, never sweeping the whole grid. FIFO
 // (not a LIFO stack) matters once there are several independent emitters: a stack lets whichever
 // front was disturbed most recently monopolize the whole topple budget every frame, starving an
@@ -25,8 +25,9 @@
 // grain BUDGET of ~6·r² (r = a safe fraction of the half-grid) and stops feeding when it's
 // spent: the finished mandala holds on screen instead of overflowing the boundary and washing
 // into the featureless saturated recurrent state. Feeding tapers exponentially with the
-// remaining budget — rings rush out early, the last filigree settles slowly. Once every
-// source is spent, a sparse deterministic RAIN (one grain every couple dozen frames, LCG
+// remaining budget. The centered seed starts with a bounded core already settled, so the first
+// painted frame is a small mandala rather than a dot; the rest still grows visibly.
+// Once every source is spent, a sparse deterministic RAIN (one grain every couple dozen frames, LCG
 // placed) keeps the pile alive: each drop sparks a small avalanche shimmering across the
 // pattern — self-organized criticality itself, at a rate that preserves the artwork.
 //
@@ -59,8 +60,8 @@ let srcN = 0, srcNext = 0
 let capPer = 0            // per-source grain budget ≈ 6·r² — the free-pile capacity of the grid
 
 let frameCount = 0
-let K_MIN = 8, K_MAX = 800   // grains/frame per source: budget-proportional taper, clamped
-let MAXTOPPLE = 150000    // topple budget per frame — bounds worst-case frame cost (~4-5ms measured)
+let K_MIN = 32, K_MAX = 2400 // grains/frame per source: fast budget-proportional taper, clamped
+let MAXTOPPLE = 300000    // logical topples/frame; batching keeps worst-case work near 4-5ms
 let RAIN_EVERY = 24       // idle rain cadence (frames/grain) once every source is spent
 let rng = 1234567         // fixed-seed integer LCG (Math.imul — exact in both engines)
 
@@ -97,11 +98,20 @@ export let clear = () => {
   qHead = 0; qTail = 0; qCount = 0; srcN = 0; srcNext = 0; frameCount = 0
 }
 
-// Reseed a single source dead-center — the canonical single-point mandala.
+// Reseed a single source dead-center. Settle a small canonical core before the first paint;
+// the remaining budget keeps expanding it live instead of presenting an empty starting state.
 export let seed = () => {
   clear()
   srcX[0] = Gw >> 1; srcY[0] = Gh >> 1
-  srcBudget[0] = capPer
+  let starter = (capPer / 8) | 0
+  if (starter > 12000) starter = 12000
+  let center = srcY[0] * Gw + srcX[0]
+  grid[center] = starter
+  push(center)
+  while (qCount > 0) relax(MAXTOPPLE)
+  let i = 0, n = Gw * Gh
+  while (i < n) { heat[i] = 0; i++ }
+  srcBudget[0] = capPer - starter
   srcN = 1; srcNext = 1
 }
 
@@ -140,7 +150,8 @@ export let pour = (x, y, n) => {
 
 
 // Drain the avalanche worklist, front-first, up to `budget` topples. A site may hold several
-// multiples of 4 (e.g. a fresh K-grain deposit) — drained fully in one visit. Open boundary:
+// multiples of 4 (e.g. a fresh K-grain deposit) — transferred as one batch, up to the budget.
+// Open boundary:
 // a neighbor off the grid simply loses the grain (bounds checked once per popped site).
 let relax = (budget) => {
   let done = 0, gw = Gw, gh = Gh
@@ -153,15 +164,16 @@ let relax = (budget) => {
     if (grid[c] >= 4) {                     // always true here — grid[c] only grows while queued
       let gx = c % gw, gy = (c / gw) | 0
       let hasL = gx > 0, hasR = gx < gw - 1, hasU = gy > 0, hasD = gy < gh - 1
-      while (grid[c] >= 4 && done < budget) {
-        grid[c] -= 4
-        if (everToppled[c] === 0) { everToppled[c] = 1; heat[c] = HEAT_MAX }
-        done++
-        if (hasL) { let nb = c - 1;  grid[nb]++; if (grid[nb] >= 4) push(nb) }
-        if (hasR) { let nb = c + 1;  grid[nb]++; if (grid[nb] >= 4) push(nb) }
-        if (hasU) { let nb = c - gw; grid[nb]++; if (grid[nb] >= 4) push(nb) }
-        if (hasD) { let nb = c + gw; grid[nb]++; if (grid[nb] >= 4) push(nb) }
-      }
+      let topples = grid[c] >> 2
+      let room = budget - done
+      if (topples > room) topples = room
+      grid[c] -= topples * 4
+      if (everToppled[c] === 0) { everToppled[c] = 1; heat[c] = HEAT_MAX }
+      done += topples
+      if (hasL) { let nb = c - 1;  grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+      if (hasR) { let nb = c + 1;  grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+      if (hasU) { let nb = c - gw; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
+      if (hasD) { let nb = c + gw; grid[nb] += topples; if (grid[nb] >= 4) push(nb) }
       if (grid[c] >= 4) push(c)             // budget ran out mid-drain — resume next frame
     }
   }
@@ -176,7 +188,7 @@ export let frame = (t) => {
   while (i < srcN) {
     let left = srcBudget[i]
     if (left > 0) {
-      let k = (left * 0.005) | 0
+      let k = (left * 0.025) | 0
       if (k < K_MIN) k = K_MIN
       if (k > K_MAX) k = K_MAX
       if (k > left) k = left

@@ -449,6 +449,14 @@ export const hud = ({ kind = 'jz', onSwitch, src = '', code = '', nav = '', mete
         display: inline-flex; align-items: center; justify-content: center;
         border: 0; background: none; color: #8a8a93; cursor: pointer; transition: color .16s; }
       .jz-code-x:hover { color: #fff; }
+      @media (max-width: 480px) {
+        .jz-bar { gap: 10px; padding: 7px 16px; }
+        .jz-bar .jz-desc { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical;
+          -webkit-line-clamp: 2; font-size: 11px; line-height: 1.2; }
+        .jz-bar .jz-links, .jz-fps .spark, .jz-fps .metric.ms { display: none; }
+        .jz-fps { gap: 0; }
+      }
+      @media (max-width: 360px) { .jz-bar .jz-desc { display: none; } }
     </style>
     <div class="jz-bar">
       <div class="jz-desc"></div>

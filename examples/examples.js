@@ -64,7 +64,7 @@ export const examples = [
   { name: 'game-of-life', title: 'Game of Life',      blurb: "Conway's Life, straight into shared pixel memory" },
   { name: 'sand',         title: 'Falling Sand',      blurb: 'falling-sand automaton — pour sand, water & walls' },
   { name: 'sandpile',     title: 'Sandpile',          blurb: 'Bak–Tang–Wiesenfeld sandpile — avalanches self-organize grains into a fractal mandala' },
-  { name: 'lenia',        title: 'Lenia',             blurb: 'Flow-Lenia — mass-conserving continuous life: creatures that wander, merge and split, forever', show: true },
+  { name: 'lenia',        title: 'Lenia',             blurb: 'Orbium — continuous cellular life gliding through a smooth convolution field', show: true },
   { name: 'slime',        title: 'Slime Mold',        blurb: 'Physarum — two rival colonies contest territory with competing transport networks' },
   { name: 'dla',          title: 'DLA',               blurb: 'diffusion-limited aggregation — click to race competing crystals for the walker supply' },
   { name: 'maze',         title: 'Maze',              blurb: 'recursive-backtracker maze, then BFS solve' },
@@ -169,5 +169,5 @@ export const ORIGIN = {
   'plume':   'https://x.com/Rainmaker1973/status/2075485116856504794',
   'spectra': 'https://x.com/S_Conradi/status/2075661669854843080',
   'waves':   'https://x.com/KZ_LAB_E/status/1979210373921411098',
-  'lenia':   'https://x.com/Waterflowing0/status/2075882228387610847',
+  'lenia':   'https://chakazul.github.io/Lenia/JavaScript/Lenia.html',
 }

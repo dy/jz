@@ -9,36 +9,63 @@
 <script type="module">
 import { runDemo, trackPointer } from "../lib/jzdemo.js"
 
-// Flow-Lenia (see lenia.js — after Waterflowing0's mass-conserving Lenia): creatures emerge
-// from the soup and can never die out or bloom to white, because mass only MOVES. Drag
-// shepherds them — the flow field gains a gentle pull toward the pointer, and whole creatures
-// migrate. Shift-drag (or right-drag) pours fresh mass instead. Double-click or the dice
-// reseed the soup.
-const BR = 9
-let herd = false, pour = false
+// The original Lenia's canonical O2(a) Orbium, rendered as a single grayscale density field.
+// One host-owned seed keeps JS and jz on the same deterministic colony across resize/swap.
+let colonySeed = (Math.random() * 2e9) | 0
+let lastStep = 0
 
 const demo = runDemo({
   name: "lenia",
-  hint: "Flow-Lenia — mass-conserving Lenia · drag shepherds the creatures · shift-drag pours mass · dice reseeds",
-  size: { cap: 192 },              // six ring convolutions per cell — small grid, chunky creatures
+  hint: "Lenia · drag to paint · right-drag to erase",
+  size: { cap: 192 },
   bg: "#000",
-  load: (e) => e.seed(),
-  frame: (e) => { e.frame(0.2, ptr.x * demo.W, ptr.y * demo.H, herd ? 1.0 : 0.0) },
-  randomize: (e) => e.seed(),
+  palette: false,
+  load: (e, d) => { e.seed(colonySeed); lastStep = d.t },
+  // The reference implementation advances at 20 Hz. The canvas still paints at display rate.
+  frame: (e, t) => { if (t - lastStep >= 1 / 20) { lastStep = t; e.frame() } },
+  randomize: (e) => {
+    colonySeed = (colonySeed * 1103515245 + 12345) | 0
+    e.seed(colonySeed)
+  },
 })
 
 const cv = demo.cv
 const ptr = trackPointer(cv)
-cv.addEventListener("contextmenu", (e) => e.preventDefault())   // allow right-drag without a context menu
-cv.addEventListener("pointerdown", (e) => {
-  if (e.shiftKey || e.button === 2) { pour = true; demo.engine?.seedBrush(ptr.x * demo.W, ptr.y * demo.H, BR) }
-  else herd = true
-  try { cv.setPointerCapture(e.pointerId) } catch {}
+const BRUSH = 5
+let drawing = false, erasing = false, lastX = 0, lastY = 0
+
+cv.style.touchAction = "none"
+cv.addEventListener("contextmenu", (e) => e.preventDefault())
+
+const point = () => ({
+  x: Math.max(0, Math.min(demo.W - 0.001, ptr.x * demo.W)),
+  y: Math.max(0, Math.min(demo.H - 0.001, ptr.y * demo.H)),
 })
-cv.addEventListener("pointermove", () => { if (pour) demo.engine?.seedBrush(ptr.x * demo.W, ptr.y * demo.H, BR) })
-cv.addEventListener("pointerup", (e) => { herd = false; pour = false; try { cv.releasePointerCapture(e.pointerId) } catch {} })
-cv.addEventListener("pointerleave", () => { herd = false; pour = false })
-cv.addEventListener("dblclick", () => demo.engine?.seed())
+const stamp = (x, y) => demo.engine?.paint(x, y, BRUSH, erasing ? 1 : 0)
+const stroke = (x, y) => {
+  const dx = x - lastX, dy = y - lastY
+  const count = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (BRUSH * 0.5)))
+  for (let i = 1; i <= count; i++) stamp(lastX + dx * i / count, lastY + dy * i / count)
+  lastX = x; lastY = y
+}
+
+cv.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 && e.button !== 2) return
+  drawing = true
+  erasing = e.button === 2
+  const p = point()
+  lastX = p.x; lastY = p.y
+  stamp(lastX, lastY)
+})
+cv.addEventListener("pointermove", () => {
+  if (!drawing) return
+  const p = point()
+  stroke(p.x, p.y)
+})
+const stopDrawing = () => { drawing = false }
+cv.addEventListener("pointerup", stopDrawing)
+cv.addEventListener("pointercancel", stopDrawing)
+cv.addEventListener("lostpointercapture", stopDrawing)
 </script>
 </body>
 </html>
