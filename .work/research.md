@@ -11544,3 +11544,155 @@ the landing session's own "watr unchanged" claim went unchecked: nothing in
 documented above, all removed after this audit. No source files touched;
 no pins changed; the user's own untracked `.work/archive/` scratch files
 left exactly as found.
+
+## §boolconst O3 miscompile: attribution CORRECTED — region-arena regression (893821ee), not watr (2026-08-13)
+
+**Task.** Root-cause and fix the `boolconst O3` self-host miscompile the
+`1bf0d9cb` attribution audit pinned to "watr 5.7.16's `propagateConditionConsts`
+pass × heal-chain array.js growth." Named lead: bisect inside
+`propagateConditionConsts`/`substGets` (watr `src/optimize.js` ~3160–3205).
+
+**Repro, confirmed 3/3.** Fresh worktrees: watr at `39b74370c` (5.7.16 tip,
+registry-identical), jz at `1bf0d9cb` (main tip). `node test/index.js
+kernel-oracle`: 11/13, same 2 rows every rep — `kernel parity: boolconst O3:
+diverges (native 1994B vs kernel 1844B)`, `kernel oracle: … Unknown local
+$__inl2_0`.
+
+**Minimized specimen — captured directly, not hand-written.**
+`compile(src,{wat:true,optimize:3})` vs `compileViaKernel(src,{wat:true,
+optimize:3})` on the exact CORPUS.boolconst source
+(`const g = (n) => { if (typeof n === 'number') return n; return false }
+export let f = (s) => g(s) === false`) dump byte-identical WAT except one
+node. Native (correct, 1994B):
+```
+(local $__inl2_n f64) (local $__inl2_0 f64)
+…
+(local.tee $__inl2_0 (local.tee $__inl2_n (f64.reinterpret_i64 (local.get $s))))
+(local.get $__inl2_0)                     ;; sibling NaN self-check
+… (i64.eq (i64.reinterpret_f64 (local.get $__inl2_0)) …) ×2   ;; tag checks
+(br $__inl2 (local.get $__inl2_n))
+```
+Kernel (wrong, 1844B): **zero `local` declarations at all** — the tee chain is
+gone, replaced at both its own site and the `br` site by the raw value
+`(f64.reinterpret_i64 (local.get $s))` (a sound elimination of `$__inl2_n`,
+0 refs left) — but `$__inl2_0`'s 3 reads (the sibling compare + both tag
+checks) **survive unchanged, referencing a local with no declaration and no
+write.** Shape: not "propagateConditionConsts substituted something wrong" —
+`conditionConsts()` only tracks `isTinyConst` values (`getConst()` recognizes
+literal `.const` nodes only), and this cond's tee chain's value
+(`f64.reinterpret_i64`) is never const, so propagateConditionConsts's OWN
+substitution is a **no-op on this exact node** (verified: `known?.size` is
+falsy for this `if`, `continue` fires). Ruled out as the direct actor.
+
+**Idempotence check (native, ruling out fixpoint/round-count mechanisms).**
+Fed native's own correct 1994B WAT back through `watr/optimize` with jz's
+exact `resolveWatrOpts(resolveOptimize(3))` config — output byte-identical to
+input. optimize() is stable at its own fixpoint; not a round-count artifact.
+
+**The real asymmetry: region-arena, not watr.** `src/optimize/watr-tail.js`
+threads an optional `regionHooks` param to `watr/optimize`'s round loop —
+`index.js`'s native pipeline never supplies it; `scripts/self.js`'s
+`optimizeTail` (the self-hosted kernel's ONLY entry point) does. Confirmed by
+direct experiment: rebuilt the self-hosted kernel with `optimizeTail`'s
+`regionHooks` forced to `undefined` — **watr 5.7.16 and the heal-chain
+array.js growth held completely unchanged** — `boolconst O3`: native and
+kernel both 1994B, byte-identical. `kernel-oracle` 13/13 ×3, `kernel-parity`
+3/3 (33 assertions). Region-arena's optimize-tail reclaim, not watr's new
+pass, is the proximate trigger.
+
+**Root cause, fully traced.** `scripts/self.js`'s own header comment (lines
+37–104, dated 2026-08-06 and re-audited same day) documents a **pre-existing,
+never-fully-resolved region-arena defect**: "a kernel-oracle regression
+surfaced with regions live (kernel traps compiling the dvnested-mechanism
+source at O2/O3)… O2's failure is NOT deterministic across otherwise-
+identical rebuilds… an address/layout-boundary-sensitive heisenbug… NOT
+bisected further, time did not allow it." Explicit, still-standing decision:
+"Per the stop-on-fail tripwire **the hooks stay OFF**… Re-wire by restoring
+the regionHooks line below (AND flipping REGION_HOOKS_ACTIVE, next)."
+
+The code does not match that decision. `git show 893821ee -- scripts/self.js`
+(commit: "region: watr 5.7.15 pin bump + merge region-final-2026-08-11 +
+REGION FRONT COMPLETE", a squashed 22-commit merge) shows the exact hunk:
+```diff
+-    // regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
++    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
+```
+— uncommenting the pre-existing, deliberately-dormant (landed OFF by
+`e6a251aa`: "hooks DORMANT pending kernel-oracle root-cause… stop-on-fail
+tripwire") `optimizeTail` hook — in the **same commit** that added a
+correctly `REGION_HOOKS_ACTIVE`-gated `regionHooks` to `front()`, two lines
+below. Two call sites, same commit, only one got the ternary. Every
+self-hosted kernel built since `893821ee` has run the optimize-tail
+region-arena reclaim **unconditionally live**, contradicting this file's own
+un-rescinded "hooks stay OFF" decision and `REGION_HOOKS_ACTIVE=false`.
+
+**This recolors the `1bf0d9cb` attribution, not invalidates it.**
+`git log --oneline 893821ee..1bf0d9cb -- scripts/self.js` is **empty** —
+zero commits touched this file between the wiring gap landing and the
+attribution session's own tip. Every worktree that session built
+(`893821ee`, `c407f806`, tip `d29b7686` ×2 builds) necessarily carried the
+identical unconditionally-wired `regionHooks` — every kernel it compiled was
+region-live, a constant axis the session had no way to know existed or vary.
+Its own four-cell table, recolored with the newly-known third axis (all
+cells region-live, confirmed):
+
+| region-arena | watr | heal-chain array.js | result |
+|---|---|---|---|
+| live (constant, unknown) | 5.7.15 | absent (`893821ee`) | clean |
+| live (constant, unknown) | 5.7.16 | absent (`c407f806`) | clean |
+| live (constant, unknown) | 5.7.16 | present (tip `d29b7686`) | **FAILS** |
+| live (constant, unknown) | 5.7.15 (content-reverted) | present | clean |
+| **dormant (this fix)** | 5.7.16 | present | **clean** |
+
+The bug is a genuine **three-way** interaction, not two: region-arena's
+optimize-tail reclaim (an address/layout-boundary-sensitive Cheney-copy
+defect in `module/core.js`'s `__region_copy_rec`/`__region_exit`, ALREADY
+documented and unresolved since 2026-08-06) × watr 5.7.16's added
+`propagateConditionConsts` source (a ~40-line, otherwise-inert-on-this-input
+size perturbation) × the heal chain's array.js primitive growth (another
+size perturbation) — any one of the three removed, clean. Region-arena is
+the mechanism-bearing defect; the other two are innocent co-triggers that
+merely shift self-hosted kernel layout enough to newly cross whatever
+boundary the KNOWN, still-unfixed region-copy heisenbug is sensitive to —
+the SAME bug class this file's own comment already named for
+`dvnested-mechanism` O2/O3 and the `_eqFast` candidate, just landing on a
+different corpus row this time.
+
+**watr disposition: EXONERATED, no watr commit.** `propagateConditionConsts`
+provably never touches the corrupted node on this specimen (no tiny-const
+producer in its cond). It is synchronous and locally-scoped — `known`/`ifs`
+never outlive its own call, and `CNT`/`CNT_FN` are nulled well before any
+region-exit could fire (region-exit runs once per OUTER round, after every
+pass in that round — `propagate()`'s own inner round loop, including
+`propagateConditionConsts`, always completes and clears its state first).
+watr 5.7.16 tip's own native test suite (`node test`, official wasm spec
+corpus + watr's own): **611 total / 591 pass / 0 fail / 20 skip**, clean. A
+watr-side change would be cosmetic — it would not touch the actual defect
+(`module/core.js`'s region-copy fragility), which stays latent and could
+resurface on the next unrelated size shift while `regionHooks` sits gated
+off. No commit made in the watr worktree; branch `condconsts-fix-2026-08-13`
+and worktree removed (nothing to keep — zero diff from `39b74370c`).
+
+**jz fix, landed on main.** `scripts/self.js`: restore the
+`REGION_HOOKS_ACTIVE` ternary to `optimizeTail`'s `regionHooks` — same shape
+as `front()`'s own sibling line, same file's own never-rescinded intent.
+One line, plus a comment recording this root-cause for the next reader.
+
+**Gates, dormant-fixed self-hosted kernel (rebuilt from the real jz main
+checkout, not just the throwaway worktree):**
+
+| gate | result |
+|---|---|
+| `kernel-oracle.js` ×3 | **13/13, 13/13, 13/13** (541 assertions each) — `boolconst` rows clean every rep |
+| `kernel-parity.js` | **3/3** (33 assertions) — `boolconst O3: identical`, all 11 corpus rows × {O0,O2,O3} byte-identical |
+| watr 5.7.16 native test suite (`node test`, `39b74370c`) | **611/611 non-skip pass, 0 fail, 20 skip** |
+| native `npm test` (jz main, post-fix) | **3454 total / 3448 pass / 0 fail / 6 skip** (19788 assertions) — up from the `1bf0d9cb` baseline's 3446 pass / 2 fail (the `boolconst` kernel-oracle/kernel-parity rows, which also register on the default suite); every other row unchanged |
+
+**Files changed on jz main:** `scripts/self.js` (one-line gate + comment),
+this ledger entry. No other files. `dist/` is build output (gitignored),
+rebuilt locally to verify, not committed.
+
+**No watr publish/pin-bump needed** — this closes without any watr-side
+change. The original task framing (root-cause in watr's new pass) does not
+hold under evidence; recorded here for the next reader who re-opens this
+trail expecting a watr fix.

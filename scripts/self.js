@@ -121,7 +121,26 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
-    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
+    // FIX (2026-08-13, boolconst O3 miscompile root-cause): this line lost its
+    // REGION_HOOKS_ACTIVE gate in 893821ee's squashed region-front merge — that
+    // commit's own diff shows it flipping the PRE-EXISTING, deliberately-
+    // commented-out `// regionHooks: {...}` (landed DORMANT by e6a251aa pending
+    // the kernel-oracle O2/O3 root-cause this file's OWN header comment above
+    // still documents as unresolved: "an address/layout-boundary-sensitive
+    // heisenbug... NOT bisected further") back to live, while ADDING a properly
+    // `REGION_HOOKS_ACTIVE`-gated regionHooks to `front()` two lines below —
+    // same commit, two call sites, only one got the ternary. Net effect: every
+    // self-hosted kernel built since 893821ee (2026-08-13) has run with the
+    // optimize-tail region-arena reclaim UNCONDITIONALLY live, contradicting
+    // this file's own "hooks stay OFF" decision and REGION_HOOKS_ACTIVE=false.
+    // Confirmed proximate cause of the watr-5.7.16 x heal-chain "boolconst O3"
+    // interaction (.work/research.md — this session's entry): dormant (this
+    // fix) + watr 5.7.16 + heal-chain array.js growth compiles clean; region-
+    // live + either axis alone was already clean before this fix (matching the
+    // prior attribution's own bisection, which never varied this axis because
+    // it didn't know it existed). Restores the file's own documented, never-
+    // rescinded intent — same ternary shape as `front()`'s regionHooks below.
+    regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
 }
 
