@@ -229,6 +229,19 @@ const dotPairExpr = (a, pairs, useRelaxedFma = false) => {
   return expr
 }
 
+// SLP unification (.work/vectorizer-generality-design.md §2 "SLP (#15-17) → 2"): this is
+// the DOT-SEQUENCE seed tier of the unified SLP packer (`slpPairsIn`, defined after
+// `slpStorePairsIn` below) — seeds on 2 adjacent `matchF64DotSeq` instances (a 4-wide
+// unrolled dot reduction ending in a store) instead of `slpStorePairsIn`'s adjacent
+// element-store seed. Operates on SCALAR register operands only (matchF64DotSeq's
+// `left`/`right` are `local.get` names off an already scalar-replaced unrolled dot, e.g.
+// mat4's cells) — no memory access at all, so unlike the store-pair tier it needs no
+// aliasing/typed-view gate; always tried. Kept as its own matcher rather than rewritten
+// into `slpPackF64x2`'s general recursive walker: its 0/130 corpus reach (census §9 row
+// 18, "unknown(precondition)") means there is no specimen to validate a widened match
+// surface against, and the byte-identical gate would have no way to distinguish a sound
+// generalization from an unintended new-vectorization case — folded in AS-IS (design's own
+// instruction: "do not debug or delete it standalone").
 const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma = false) => {
   if (!isArr(node)) return
   for (let i = 0; i < node.length; i++) {
@@ -554,6 +567,24 @@ const slpStorePairsIn = (node, fnLocals, freshIdRef, newLocalDecls, getCounts) =
     node.splice(u0.lo, u1.hi - u0.lo + 1, ['local.set', t, packed], store)
     i = u0.lo
   }
+}
+
+// ---- Unified SLP recognizer (dispatch entry) --------------------------------
+//
+// Design §2 "SLP (#15-17) → 2 (1 general pack + 1 generalized LICM)": the two PACKERS
+// (`vectorizeStraightLineF64DotPairsIn`'s dot-sequence seed, `slpStorePairsIn`'s
+// element-store seed) are both instances of classic bottom-up SLP — seed on 2 adjacent
+// isomorphic roots, pack when both operand trees match (`slpPackF64x2` does the shared
+// recursive walk for both). Folded into ONE entry point here: same call order as before
+// the merge (dot-sequence tier — unconditional, no memory aliasing — then the
+// element-store tier, gated by `slp` + no-typed-view for aliasing safety), so this is a
+// pure entry-point consolidation — behavior is unchanged by construction.
+// `hoistReductionInvariantsIn` is NOT folded in here — it is a different transform
+// category (LICM: reassociating hoist of loop-invariant partial products, not a packer;
+// design §2 keeps it distinct) and is called separately, before this, at the dispatch.
+function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma, slp) {
+  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
+  if (slp && !assembleView().linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
 }
 
 // ---- Lane type tables ------------------------------------------------------
@@ -7073,10 +7104,8 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   // runs BEFORE the dot-pair vectorizer so a hoisted dot drops below DOT_UNROLL steps
   // and stays scalar (faster here than the pack/extract SIMD form — see the lab).
   if (relaxedFma) hoistReductionInvariantsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll)
-  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
-  // SLP within-iteration store pairs. Sound only with no aliasing typed-array view
-  // in the module (else a shifted view could reorder-hazard the packed read/write).
-  if (slp && !assembleView().linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
+  // Unified SLP packer (dot-sequence tier, then element-store tier) — see slpPairsIn.
+  slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma, slp)
   if (newLocalDeclsAll.length) simdFired = true
 
   // Walk body recursively. Process inner-most matches first (post-order)
