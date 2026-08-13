@@ -4013,123 +4013,6 @@ function tryMemCopyFill(bl, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
-// ---- Byte-scan (memchr) vectorization -------------------------------------
-
-// Match a single-byte compare against a constant or a loop-invariant target:
-//   (f64.eq|ne (f64.convert_i32_u|s (i32.load8_u|s (base + i))) TARGET)   [value-model form]
-//   (i32.eq|ne (i32.load8_u|s (base + i)) TARGET)                          [folded i32 form]
-// TARGET is a const byte or a `local.get` (the `memchr(buf, delim)` runtime case).
-// Returns { base, eq, isF64, c, targetLocal } — exactly one of c (∈[0,255]) / targetLocal set.
-function matchByteCompare(node, ind) {
-  if (!isArr(node) || node.length !== 3) return null
-  let eq
-  if (node[0] === 'f64.eq' || node[0] === 'i32.eq') eq = true
-  else if (node[0] === 'f64.ne' || node[0] === 'i32.ne') eq = false
-  else return null
-  const isF64 = node[0][0] === 'f'
-  const constOf = (x) => isF64
-    ? (isArr(x) && x[0] === 'f64.const' && typeof x[1] === 'number' && Number.isInteger(x[1]) ? x[1] : null)
-    : constNum(x)
-  // Identify which operand is the byte load and which is the target.
-  const isLoadSide = (x) => {
-    let l = x
-    if (isF64) { if (!(isArr(l) && (l[0] === 'f64.convert_i32_u' || l[0] === 'f64.convert_i32_s') && l.length === 2)) return null; l = l[1] }
-    if (!(isArr(l) && (l[0] === 'i32.load8_u' || l[0] === 'i32.load8_s') && l.length === 2)) return null
-    const m = matchAffineAddr(l[1], ind)
-    return m && m.k === 0 ? m.base : null            // byte stride only
-  }
-  let base = isLoadSide(node[1]), target = node[2]
-  if (base == null) { base = isLoadSide(node[2]); target = node[1] }
-  if (base == null) return null
-  const c = constOf(target)
-  if (c != null) return c >= 0 && c <= 255 ? { base, eq, isF64, c } : null
-  // Runtime target: a loop-invariant local (the minimal scan body writes only `i`).
-  if (isArr(target) && target[0] === 'local.get' && typeof target[1] === 'string' && target[1] !== ind)
-    return { base, eq, isF64, targetLocal: target[1] }
-  return null
-}
-
-/**
- * SIMD byte scan — vectorize a memchr-shaped loop the engine runs one byte at a time.
- * Recognizes the pure scan
- *   (block $b (loop $l (br_if $b (eqz (i<bound))) (br_if $b (buf[i] ==/!= C)) (i := i+1) (br $l)))
- * — "find the first index where buf[i] (Uint8/Int8Array) ==/!= a constant byte" — and
- * rewrites it to scan 16 bytes per step with `i8x16.eq` + `i8x16.bitmask`, locating the
- * exact first match via `i32.ctz`, with the original loop kept as the <16-byte tail.
- * Measured ~8× over the scalar scan on V8 (which doesn't auto-vectorize it). Fails closed:
- * any deviation from the exact shape leaves the scalar loop. The 16-wide `v128.load` is
- * in-bounds because it only fires while `i+16 <= bound` and `bound` bounds the scalar
- * reads too. (charCodeAt over a jz string is out of scope — it lowers to per-char
- * bounds/SSO/heap/decode branches, not a flat byte load.)
- */
-function tryByteScan(bl, fnLocals, freshIdRef) {
-  if (!bl || bl.preamble.length) return null
-  const { blockLabel, loopNode, incVar, exitInfo } = bl
-  // Exact shape: [loop, $l, boundExit, matchExit, inc, br] — nothing else. The
-  // scaffold already verified boundExit/inc/back-branch; only the extra match-exit
-  // br_if at loopNode[3] and the strict length remain.
-  if (loopNode.length !== 6) return null
-  const matchExit = loopNode[3]
-  if (!(isArr(matchExit) && matchExit[0] === 'br_if' && matchExit[1] === blockLabel && matchExit.length === 3)) return null
-  const bc = matchByteCompare(matchExit[2], incVar)
-  if (!bc) return null
-  if (fnLocals.get(bc.base) !== 'i32' || bc.base === incVar) return null
-
-  const id = freshIdRef.next++
-  const sd = `$__bscan_brk${id}`, sl = `$__bscan_loop${id}`, mask = `$__bscan_m${id}`
-  const baseGet = ['local.get', bc.base]
-  const iGet = ['local.get', incVar]
-  const bound = exitInfo.bound
-  const newLocalDecls = [['local', mask, 'i32']]
-
-  // The byte to splat across 16 lanes, plus a runtime guard. A constant needs none.
-  // A runtime `delim` (f64-boxed) is only a valid SIMD target when it's an integer in
-  // [0,255]; outside that, NO byte (0–255) equals it, so the scalar tail — which we keep —
-  // reproduces the exact result. The guard makes that branch explicit; cb caches the byte.
-  let splat, guard = null, cbInit = null
-  if (bc.c != null) {
-    splat = ['i32.const', bc.c]
-  } else {
-    const cb = `$__bscan_c${id}`
-    newLocalDecls.push(['local', cb, 'i32'])
-    const tGet = ['local.get', bc.targetLocal]
-    const inRange = ['i32.and', ['i32.ge_s', ['local.get', cb], ['i32.const', 0]], ['i32.le_s', ['local.get', cb], ['i32.const', 255]]]
-    if (bc.isF64) {
-      // cb = (i32)delim; valid iff it round-trips (delim is an integer) and is in [0,255].
-      cbInit = ['local.set', cb, ['i32.trunc_sat_f64_s', cloneNode(tGet)]]
-      guard = ['i32.and', ['f64.eq', ['f64.convert_i32_s', ['local.get', cb]], tGet], inRange]
-    } else {
-      // i32 delim: valid iff already in [0,255] (splat takes the low byte regardless).
-      cbInit = ['local.set', cb, tGet]
-      guard = inRange
-    }
-    splat = ['local.get', cb]
-  }
-
-  // bitmask of the 16-lane eq; for `!=` flip the low 16 bits so ctz finds the first non-match.
-  const eqMask = ['i8x16.bitmask', ['i8x16.eq', ['v128.load', ['i32.add', baseGet, iGet]], ['i8x16.splat', splat]]]
-  const scanMask = bc.eq ? eqMask : ['i32.xor', eqMask, ['i32.const', 0xffff]]
-  const simdBlock = ['block', sd,
-    ['loop', sl,
-      // Stop before a 16-wide load would pass `bound`; the scalar tail mops up the rest.
-      ['br_if', sd, ['i32.gt_s', ['i32.add', iGet, ['i32.const', 16]], cloneNode(bound)]],
-      ['local.set', mask, scanMask],
-      ['if', ['local.get', mask],
-        ['then',
-          ['local.set', incVar, ['i32.add', iGet, ['i32.ctz', ['local.get', mask]]]],
-          ['br', blockLabel]]],
-      ['local.set', incVar, ['i32.add', iGet, ['i32.const', 16]]],
-      ['br', sl]
-    ]
-  ]
-  // Const target: SIMD then scalar tail. Runtime target: cache cb, guard the SIMD, tail.
-  const pre = guard ? [cbInit, ['if', guard, ['then', simdBlock]]] : [simdBlock]
-  return {
-    wrapper: ['block', blockLabel, ...pre, loopNode],
-    newLocalDecls,
-  }
-}
-
 // ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
 //
 // The image-convolution hot shape: 4 adjacent-byte accumulators summed over a
@@ -7182,7 +7065,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // wherever the link resolves an IV name, it is PROVEN to equal `bl.incVar`'s WAT-derived
       // one. Roles invert: the plan becomes the primary source for the name every bl-based
       // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduceVectorize/
-      // tryMapReduceVectorize/tryStencil/tryByteScan/tryToneMap/tryStrengthReduceIV — all share
+      // tryMapReduceVectorize/tryStencil/tryToneMap/tryStrengthReduceIV — all share
       // this one `bl`), and `matchInc1`'s WAT walk above becomes the fail-open FALLBACK (link
       // miss keeps its structurally-derived name) plus, under JZ_DEBUG_INVARIANTS, the shadow
       // (assertLoopPlanAgrees, run just above, already fills that role — nothing left to add).
@@ -7221,7 +7104,6 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? (blurMP ? tryBlurMultiPixel(node, fnLocals, freshIdRef, getBlLoose()) : null)
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose())
-        ?? tryByteScan(bl, fnLocals, freshIdRef)
         ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
         ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
         ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip, op)
