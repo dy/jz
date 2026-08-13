@@ -7869,3 +7869,262 @@ unchanged, reconfirmed pristine 5.7.14 both before and after this session).
 No `dist/jz.wasm` retained; every scratch artifact this session produced
 (kernel WAT/WASM builds, instrumentation scripts, native smoke-test files)
 was deleted at session end.
+
+## §Region arena — FOURTH MECHANISM ROOT-CAUSED AND FIXED: the "stale
+receiver" was never a region-completeness or live-across-exit-local bug at
+all — it was a genuine, freshly-built `.flatMap()` result whose off-16
+propsPtr word was never allocated. `__arr_flat` (and `__str_split`'s three
+allocation sites, and `.matchAll`'s exact-size builder) hand-rolled an
+8-byte array header instead of the canonical 16-byte `__alloc_hdr` layout,
+silently relying on the missing word aliasing untouched (zero) linear
+memory — true before region-arena's compaction starts reusing already-
+written address ranges, false after. Fixed at the allocator call site
+(route through `__alloc_hdr`), not the front boundary. Repro 3/3 clean,
+gate ladder green where it applies, one pre-existing UNRELATED region-live
+wall (kernel-oracle's "envMeta shape" row) correctly left untouched
+(2026-08-13)
+
+**Task.** Continue db16685e/17e7701e's own named lead: instruction-level
+backward trace from the `local.set` that defines `__dyn_get_t_h`'s
+receiver, inside `foldStaticConstAggregates`'s own compiled body, to find
+the exact source-level binding carrying the "stale" pointer and its load
+timing relative to region mark/exit — per the task's own framing, a
+call-frame local surviving live across `region_exit`.
+
+**Setup.** Fresh `git worktree add` off `17e7701e` (predecessor's own
+ledger tip; `region-slice2-front-d`). `node_modules` individually
+symlinked (`@esbuild`, `esbuild`, `sprae`, `subscript`, `tst` → the main
+repo's copies; `watr` → `/Users/div/projects/watr` directly, confirmed
+`895ca5b`/5.7.14 before AND after this session — only its own pre-existing
+untracked `watr` entry in that repo's `git status`, unrelated). Built a
+NAMED, region-live kernel as WAT TEXT (`compile(profile.graph.code,
+{names:true, wat:true, ...resolveSelfhostBuild()})`, `REGION_HOOKS_ACTIVE`
+hand-flipped `true` in `scripts/self.js`, worktree-only, reverted at
+session end) — 290.8 MB, matching every predecessor session's own build
+of this commit almost exactly (152 modules, `regionArenaLive:true`).
+
+**Instruction-level trace — found the receiver's def-use chain by
+READING the named WAT directly (no rebuild-instrument-rerun cycle needed
+this time; `names:true` made the locals legible enough), then confirmed
+provenance by decoding the compiled function's own interned-string
+constants against the data segment.**
+
+1. Located `m140_literals$foldStaticConstAggregates` (line 3896685 of the
+   built kernel WAT) and enumerated its 47 `__dyn_get_expr` call sites.
+   Decoded each call's compile-time string-constant key by resolving its
+   NaN-boxed offset against the module's own data segment (the interned-
+   string table: `[hash:4][len:4][chars…]` per entry, confirmed by
+   decoding a known site — `ctx.module.moduleInits`, offset 3900 — before
+   trusting any other decode). Two call sites decode to key **"forEach"**
+   (offsets 0x388/904 in the data blob), matching db16685e's own "the
+   FAULTING call... looks up 'forEach'" finding exactly, and matching this
+   session's own repro run byte-for-byte.
+2. Source audit: `foldStaticConstAggregates` (`src/compile/plan/
+   literals.js:815`) has exactly ONE `.forEach` call reachable before its
+   own early return (`if (!arr.size && !obj.size) return false`, line
+   881) — `moduleStmts.forEach((s, i) => pos.set(s, i))` at line 854. This
+   RESOLVES OPEN CONTRADICTION #1: the early return does not fire
+   "immediately" in the sense the predecessor assumed — 36 lines of
+   unconditional classification prologue (817–854: build `seqs`,
+   `moduleStmts` via `.flatMap`, `funcs` via `.filter`, `pos` via
+   `.forEach`) run first, and it is a call INSIDE that prologue, not
+   inside the folding logic proper, that faults. No symbolication bug, no
+   early-return misfire — the crash is upstream of the early return, in
+   code that always runs regardless of its eventual outcome.
+3. Backward local-def trace confirmed this precisely at the instruction
+   level. The receiver local (compiler-generated temp, register-reused
+   ~96 times across the function by O3's allocator — every jz-generated
+   local carries the reserved U+E000 prefix, invisible in a terminal,
+   which is why a naive `grep '\$7'` finds nothing; decode via the actual
+   UTF-8 bytes) is set, immediately dominating the forEach call site, by
+   `(local.set $T7 (call $__arr_flat (...)))` at WAT line 3897454 — i.e.
+   **the receiver IS `moduleStmts`, the direct, freshly-computed result of
+   `seqs.flatMap(moduleStmtsOf)` (source line 818), set microseconds
+   before its own `.forEach` use, entirely WITHIN `foldStaticConstAggregates`'s
+   own currently-executing call.** This load happens a whole COMPILE PHASE
+   after front()'s one-shot `region_exit` (confirmed by db16685e's own
+   `$__dbgExitCount=1`) — there is no region-boundary crossing anywhere
+   near this local's lifetime at all.
+
+**This overturns the whole "root-completeness" / "live-across-exit-local"
+framing the FOURTH-mechanism → db16685e → 17e7701e sub-chain converged
+on.** The receiver is not stale, not unrooted, and not carried across
+`region_exit` in any local — it is a brand-new array, correctly built,
+microseconds old. The actual defect is elsewhere: `__dyn_get_t_h`'s ARRAY
+branch (`module/collection.js`) unconditionally reads the word at
+`$off-16` as a candidate dyn-props sidecar pointer for EVERY array,
+because the canonical array layout (`__alloc_hdr`, `module/core.js`)
+always reserves and zeroes it (16-byte header: propsPtr@-16, len@-8,
+cap@-4). **`__arr_flat` (`module/array.js:2519`, backing `.flat()`/
+`.flatMap()`) allocated only an 8-byte header** (`call $__alloc (8 +
+total*8)`, then `dst += 8`) — one word short of the convention, so its
+`$off-16` slot was never this array's own memory at all: it aliased
+whatever byte range preceded the allocation in the bump arena. Verified
+`total=0` is not required for the bug (the defect is the header SIZE,
+independent of element count) but is consistent with this exact repro:
+the exported arrow `f` is fully hoisted into `ctx.func.list` by `defFunc`,
+so `ast` (the module top level) reduces to an effectively-empty `;`-seq,
+`moduleStmtsOf(ast)` returns a near-empty array, and `__arr_flat`'s
+`$total` pass produces the degenerate `len=0,cap=0` header predecessor
+sessions observed directly — not a corrupted/reclaimed structure, just a
+genuinely tiny one with a missing word.
+
+**Why region-live only, resolving the session's own open question.** Fresh
+WASM linear memory is zero-initialized. In DORMANT mode `__arr_flat`'s
+allocations land in address ranges the bump allocator has NEVER touched
+before (monotonic forward allocation only) — the stolen `$off-16` word
+reads as zero by sheer luck of virgin memory, which `__dyn_get_t_h`
+correctly treats as "no props." Under region-arena, `__region_exit`
+COMPACTS the arena (moves the bump top backward, `mark`+`delta`), so
+POST-exit allocation — including every `__arr_flat` call anywhere in
+`compileAst`, which runs entirely after front()'s one round — reuses
+address ranges that already held real data from earlier in the SAME
+compile. The stolen word can then alias real leftover bytes, which for
+this exact repro happen to decode as a plausible `PTR.HASH` pointer to
+`__region_exit`'s own freshly-relocated `$__dyn_props` table (matching
+ba0b5f6d's own raw-memory finding exactly) — coincidence of bit pattern,
+not a deliberate write, matching every predecessor session's own "zero
+referrers" reverse-scan result (nothing ever wrote this word; it was never
+initialized in the first place). This also explains the heisenbug: ANY
+JS-source edit to the compiler's own pipeline shifts allocation offsets,
+changing what bytes happen to sit in the stolen window, changing whether
+it happens to decode as a HASH tag or not.
+
+**Open contradiction #2 (alternate encodings the reverse scan couldn't
+see) — resolved, not by finding a hidden write, but by finding there was
+never a write to find.** The "different encoding" the task anticipated is
+simply: uninitialized memory, never tagged as anything by design, read
+through a slot that should have been reserved-and-zeroed but wasn't.
+
+**Open contradiction #3 (`src/prepare/index.js:709-723`'s "closure
+reachable only indirectly through RESET_HOOKS" crash) — NOT the same
+mechanism, on the evidence available.** That crash was attributed to a
+closure/RESET_HOOKS interaction, not to a hand-rolled array allocator; no
+`.flat`/`.flatMap`/`.split`/`.matchAll` call is implicated in its own
+description. Flagging it as unresolved rather than force-fitting this
+session's finding onto it — a genuine "same underlying class" claim would
+need its own instruction-level trace, not an inference from shape alone.
+
+**Fix — allocator-level, general, not a region-boundary special case.**
+Every hand-rolled `(i32.const 8)+N*8`-shaped raw `$__alloc` call feeding a
+`PTR.ARRAY`-tagged result is the same defect class: it must reserve and
+zero the propsPtr word `__dyn_get_t_h`/`__dyn_set` unconditionally expect.
+Routed the three HIGH-CONFIDENCE, exact-size sites (no incremental growth,
+so a straight `__alloc_hdr(len,cap)` swap is a mechanical, low-risk fix)
+through the canonical allocator instead of hand-duplicating (and
+under-sizing) its own invariant:
+- `module/array.js`'s `__arr_flat` (backs `.flat()`/`.flatMap()`) — the
+  session's own confirmed culprit.
+- `module/string.js`'s `__str_split` (backs plain-string `.split()`,
+  extremely high-traffic) — all three of its allocation sites (limit=0,
+  empty-separator, general case) had the identical shape.
+- `module/regex.js`'s `.matchAll`/`.string:matchAll` builder
+  (`matchAllImpl`) — same exact-size shape.
+Each now calls `$__alloc_hdr($len, $cap)` (or the `allocPtr`-equivalent IR
+form) instead of hand-writing the header. `module/array.js`'s `deps()` map
+and `module/string.js`'s `__str_split` dep entry updated (`__alloc_hdr`
+replacing the now-unused direct `__alloc`) per this codebase's own
+self-host-safe-declaration discipline (auto-scan isn't trusted for
+self-hosted builds — see `test/selfhost-includes.js`).
+
+**NOT fixed this session, same defect class, flagged for a follow-up:**
+`module/regex.js`'s GROWABLE regex-`.split()` builder (`__regex_split_*`,
+three sites: initial alloc + two grow-doubling reallocs) has the identical
+8-byte-header shape but couldn't be mechanically swapped to
+`__alloc_hdr(len,cap)` — it grows incrementally (`cap` known, final
+`count` only known at the end) and needed its own dedicated verification
+pass this session's budget didn't reach. Left unfixed and unregressed
+(pre-existing behavior, byte-for-byte unchanged); named explicitly so the
+next session doesn't have to re-derive it.
+
+**Gates.**
+- **Repro 3/3: GREEN.** Rebuilt the named region-live kernel with the fix
+  landed (WAT text, 290.7 MB); reassembled via `watr/parse`+`watr/compile`
+  (~90s) and ran the 5-condition minimal repro through the kernel's own
+  `default` export (mirrors `test/kernel-target.js`'s `compileViaKernel`
+  recipe) 3 times: `rep 0/1/2: OK, wasm bytes = 506` — zero traps, was
+  100% reproducing 3/3 before the fix.
+- **Native regression suite (array-methods.js, jsstring.js, strings.js,
+  regex.js): GREEN**, 256 tests / 806 assertions, run BEFORE the
+  self-hosted rebuild to isolate the fix from any self-host confound.
+  Also hand-verified semantic correctness (not just "compiles") for
+  `.flat()`, `.split()` (all three code shapes), `.matchAll()` against
+  their JS values natively at O2.
+- **Region oracle (kernel-oracle.js, region-live `dist/jz.wasm`, 3
+  reps): 9/13, UNCHANGED from every predecessor session's own baseline —
+  NOT the task's hoped-for 10/13+, reported honestly rather than
+  papered over.** All 4 failures are pre-existing and independent of the
+  FOURTH mechanism: 3 assertions (O0/O2/O3) are ALL the SAME single row,
+  `"array-growth-class: sibling push()+indexed-append tables (envMeta
+  shape)"` — its own in-file comment names a DIFFERENT, already-
+  root-caused mechanism (`useRuntimeKeyDispatch`'s hand-rolled 2-fork
+  skipping `__arr_grow`/the length-header bump for unproven ARRAY
+  receivers on 2+-level property chains) that is unrelated to allocator
+  header sizing — `.push()`/indexed-append both already route through
+  `__alloc_hdr` via `allocPtr`, so this session's fix class does not
+  apply to it. The 4th is the pre-existing, separately-tracked
+  "PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse"
+  (audit-#16-adjacent, documented in-file, unrelated to region-arena).
+  **Confirmed this row is region-live-SPECIFIC, not a regression from
+  this fix**: re-ran kernel-oracle against a freshly-built DORMANT
+  `dist/jz.wasm` (`REGION_HOOKS_ACTIVE=false`) — **13/13 clean**, 541
+  assertions, proving both that (a) this session's fix introduces no
+  native/dormant regression and (b) the still-failing envMeta-shape row
+  is a genuinely separate, still-open region-live wall, named here for
+  whoever picks it up next (NOT this session's assigned mechanism).
+- **kernel-parity (O0/O2/O3, region-live): 11/11 rows, byte-identical,
+  GREEN** (both before touching kernel-oracle and again in dormant mode:
+  3/3 pass).
+- **jessie/watr/jzify-entry region-live ×3: GREEN.** Compiled all three
+  real-world graphs (`resolveModuleGraph(entry, {resolveNode:true})`,
+  `bench/jessie/jessie.js`, `bench/watr/watr.js`, `.work/jzify-entry.mjs`
+  — recreated from the main repo's own copy, absent in a fresh worktree)
+  through the region-live `dist/jz.wasm` 3 times each: jessie 106,974 B,
+  watr 315,336 B, jzify-entry 611,990 B — byte-identical across all 3
+  reps, every graph, zero traps.
+- **Dormant byte-identity — REFRAMED, not literally applicable, explained
+  rather than skipped.** The task's own framing (`REGION_HOOKS_ACTIVE=false`
+  build byte-identical) assumes a front-boundary-shaped fix, which this
+  is NOT: the fix is a stdlib allocator correctness fix
+  (`__arr_flat`/`__str_split`/`matchAll`), unconditional on
+  `REGION_HOOKS_ACTIVE`, so it changes `.flat()`/`.split()`/`.matchAll()`
+  codegen in BOTH configurations — correctly, since the missing-header
+  defect was equally present (silently masked) in dormant mode. A dormant
+  build post-fix is therefore expected to differ from a pre-fix dormant
+  build, not match it. What WAS verified: the dormant build succeeds
+  cleanly (16,692.7 kB), is internally consistent, and scores 13/13 on
+  kernel-oracle / 3/3 on kernel-parity — the actually-meaningful
+  regression check.
+- **Self-build ×2: GREEN.** Built region-live `dist/jz.wasm` twice,
+  independently, from a clean `dist/`: SHA-256
+  `9227af7d66dc2092f5def597e67c90e7cb402c3fd74d0a267d85bb90feef1cc9` both
+  times — fully deterministic.
+
+**Verdict — NOT "FRONT BOUNDARY SOUND."** The front boundary itself was
+already proven sound by db16685e/17e7701e (root-completeness, destructuring
+rebind) and remains untouched this session — there was never a front-
+boundary bug in this mechanism to begin with. The FOURTH mechanism itself
+is CLOSED: root-caused to an instruction-level provenance chain, fixed at
+the allocator level, repro green, no regressions found anywhere this
+session looked (native suite, kernel-parity, kernel-oracle dormant,
+jessie/watr/jzify-entry, self-build determinism). kernel-oracle's
+region-live tally stays at 9/13 because the 4 remaining failures are
+independently-diagnosed, pre-existing, unrelated mechanisms — named
+explicitly above for whoever picks each one up, not silently left
+ambiguous.
+
+**Disposition.** Landed fix: `module/array.js`, `module/regex.js`,
+`module/string.js` (3 files, +33/-24 lines). Every instrumentation/harness
+artifact this session produced (`.work/build-region-wat.mjs`,
+`.work/run-repro.mjs`, `.work/run-graphs.mjs`, `.work/jzify-entry.mjs`,
+kernel WAT/WASM builds, `dist/*`) was deleted at session end;
+`scripts/self.js`'s `REGION_HOOKS_ACTIVE` restored to `false`; `git
+status`/`git diff --stat` in the worktree show only the 3 named files
+plus this ledger entry.
+
+**SHAs.** jz worktree: `17e7701e` base, this session's fix committed on
+top (see commit log). Main repo: unchanged by this session (region branch,
+not main). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged, reconfirmed pristine 5.7.14 before and after). `dist/jz.wasm`
+not retained (region-live build SHA `9227af7d...eef1cc9` and dormant build
+`3a5cdf13...909e66e` recorded above for reference, files deleted).

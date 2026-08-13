@@ -1319,7 +1319,7 @@ export default (ctx) => {
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
-    inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
+    inc('__str_to_buf', '__str_byteLen', '__alloc_hdr', '__mkptr', `__regex_${id}`)
     const s = temp('mas'), outArr = tempI32('mao')
     return matchAllImpl(asF64(emit(str)), id, nGroups, groupNames, s, outArr)
   }
@@ -1337,7 +1337,7 @@ export default (ctx) => {
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
-    inc('__str_to_buf', '__str_byteLen', '__alloc', '__mkptr', `__regex_${id}`)
+    inc('__str_to_buf', '__str_byteLen', '__alloc_hdr', '__mkptr', `__regex_${id}`)
     const s = temp('mas'), outArr = tempI32('mao')
     return matchAllImpl(typed(['f64.reinterpret_i64', toStrI64(null, asF64(emit(str)))], 'f64'), id, nGroups, groupNames, s, outArr)
   }
@@ -1369,10 +1369,12 @@ export default (ctx) => {
       ['local.set', `$${cnt}`, ['i32.const', 0]],
       ['local.set', `$${pos}`, ['i32.const', 0]],
       scan([['local.set', `$${cnt}`, ['i32.add', ['local.get', `$${cnt}`], ['i32.const', 1]]]]),
-      ['local.set', `$${outArr}`, ['call', '$__alloc', ['i32.add', ['i32.const', 8], ['i32.shl', ['local.get', `$${cnt}`], ['i32.const', 3]]]]],
-      ['i32.store', ['local.get', `$${outArr}`], ['local.get', `$${cnt}`]],
-      ['i32.store', ['i32.add', ['local.get', `$${outArr}`], ['i32.const', 4]], ['local.get', `$${cnt}`]],
-      ['local.set', `$${outArr}`, ['i32.add', ['local.get', `$${outArr}`], ['i32.const', 8]]],
+      // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8, cap@-4),
+      // not a hand-rolled 8-byte alloc — __dyn_get_t_h's ARRAY branch always
+      // reads the propsPtr word at off-16 (FOURTH mechanism, .work/research.md
+      // §Region arena: a short header aliases whatever memory preceded the
+      // allocation, safe only while that memory is untouched/zero).
+      ['local.set', `$${outArr}`, ['call', '$__alloc_hdr', ['local.get', `$${cnt}`], ['local.get', `$${cnt}`]]],
       ['local.set', `$${wi}`, ['i32.const', 0]],
       ['local.set', `$${pos}`, ['i32.const', 0]],
       scan([
