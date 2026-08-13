@@ -7894,3 +7894,163 @@ missing every novel-but-ordinary loop a real dependence-driven vectorizer
 would catch for free. Full taxonomy table, per-class generalization
 sketch, rejected alternatives, migration order, and per-step bench-row
 risk are in the design doc.
+
+## §warm `_clear()` reuse: root-cause attempt on the two stdlib-registration
+## hazards (walled — evidence banked) (2026-08-13)
+
+**Task.** `6ffb28fc`'s `registerName` engineered AROUND two reproducible
+warm-`_clear()`-reuse hazards found by bisection (a second large dict/Map
+alive alongside `ctx.core.emit`'s own; ~150× string concatenation) without
+root-causing the underlying `_clear()`/arena-reset contract bug. Asked to
+reconstruct a minimal repro OUTSIDE the registration context, root-cause
+what survives `_clear()` that shouldn't, and fix at the engine level.
+
+**Method.** Isolated worktree (`/private/tmp/.../warm-clear`, branch
+`warm-clear-2026-08-13`, base `36c14330` = main tip, `node_modules`
+symlinked from the main checkout — reconfirmed byte-identical before and
+after, aggregate SHA-256 `383d173f…`, `watr@5.7.14`).
+
+**Seven repro attempts, all negative.** Each variant was built to the
+letter of the ledger's own bisection description (`registerName`'s doc
+comment, `.work/research.md` lines ~7416-7457 as of the previous entry),
+scaled up, and verified live (not dead-code-eliminated) before being
+declared a non-repro:
+
+1. **Native `jz()`, module-level durable `Map`s** (two `const` Maps at
+   program top-level, grown via pre-built literal keys — no concatenation
+   — to 300 entries each, `_clear()`-then-recompile ×2). No trap.
+2. **Native `jz()`, string concatenation only** (`site.push(a+'|'+b)`,
+   the ledger's own literal repro shape, ×150, zero dicts). No trap — but
+   revealed a SEPARATE, unrelated data-integrity issue worth flagging:
+   `site.length` after one `_clear()`+regrow round read `154`, not the
+   expected `150` (fresh) or `300` (if durable growth truly persisted) —
+   the durable-array-forward-heal count is off by a small amount for this
+   shape. Not chased (out of scope, banked as a lead below).
+3. **Native `jz()`, `ctx.core = {...}`-shaped repro**: a durable
+   module-level object (`holder`) whose FIELD gets reassigned to a fresh
+   ephemeral `Map` every call (mirrors `reset()`'s actual
+   `ctx.core = {emit: derive(proto), …}` pattern exactly) — one field vs
+   two fields growing simultaneously. No trap.
+4. **Native `jz()`, `derive(proto)`-shaped repro**: a FRESH LOCAL dict
+   every call, seeded via object-spread from a small base object (mirrors
+   `derive = obj => Object.assign(Object.create(null), obj)` exactly),
+   grown to 300 own-properties — one dict vs two, `optimize:false` and
+   `optimize:3`. No trap.
+5. **Self-hosted kernel, batch second-dict probe**: `src/autoload.js`'s
+   `includeModule` grows a second `ctx.core`-scoped dict by 20 pre-built-
+   literal keys per module (≈400 entries over one compile), rebuilt
+   `dist/jz.wasm`, ran `test/selfhost.js`. **21/21 pass** (no trap).
+6. **Self-hosted kernel, `registerName`-embedded probe (bystander)**: the
+   documented failing design reinstated literally — `ctx.core.__probeMap`
+   (a `name → {module, dialect, value}` `Map`, exactly the ledger's own
+   description) populated on every `registerName` call, alongside the
+   shipped array tracking; plus `ctx.core.__probeConcat` (`module+'|'+
+   dialect` via `+`, ~150-750×). Forced live via a genuine post-hoc read
+   in `verifyEmitIntegrity` (`.get(name)` + field compare, not just
+   `.size`) so no optimizer pass could prove the writes dead. Rebuilt,
+   ran `test/selfhost.js` against the trivial `charCodeAt` subject
+   AND a feature-rich subject pulling in 13-16 stdlib modules (measured
+   natively: `regEmitOrder.length=48`, `emit` total `511` keys,
+   `__probeConcat.length=151` — squarely inside the ledger's documented
+   "150-600" scale). **21/21 pass both times** (no trap).
+7. **Self-hosted kernel, `registerName`-embedded probe (primary check)**:
+   same probe, but restructured so the `Map` is the PRIMARY collision
+   check (`.has(name)` read before every write, mirroring `table[name]
+   !== undefined`'s role exactly, not a bystander log) — the literal
+   shape of "the first two working designs… used to attribute a
+   collision". Rebuilt, ran `test/selfhost.js` (trivial subject, 21/21)
+   and the rich-subject warm-reuse driver (3 rounds, byte-pinned vs
+   fresh). **No trap either time.**
+
+**Negative-control sanity check (critical).** Before trusting seven
+non-reproductions, verified the test methodology itself CAN catch a real,
+previously-documented regression: `src/ir.js`'s `clearDollar` carries an
+explicit comment — *"Verified empirically: `.clear()` alone still trapped
+`__hash_set_local` on the 2nd compile of a warm instance"* — for exactly
+this hazard class (a durable `Map`'s backing table surviving `_clear()`
+as a stale pointer when `.clear()`d in place instead of swapped for a
+fresh `Map`). Reverted `clearDollar` from `DOLLAR = new Map()` (swap) to
+`DOLLAR.clear()` (in-place, the documented-broken form), rebuilt, ran
+`test/selfhost.js` against both the trivial and the rich-subject driver.
+**21/21 pass, no trap — the known-bad historical shape does not
+reproduce either.**
+
+**Interpretation.** `git log -S` on the two relevant fixes: `clearDollar`'s
+swap-not-clear fix is `42dc91c5` (2026-07-01, "warm-instance reuse"
+specific). `647d6159` (2026-07-07, *"assemble: `_clear` restores
+runtime-written module globals to their post-`__start` snapshot"* — the
+GENERIC module-global-snapshot sweep, `src/wat/assemble.js` lines
+~755-845) landed six days LATER. The generic sweep, plus the
+`__durable_fwd_log`/`__durable_fwd_heal`/`__durable_slot_log`/
+`__durable_slot_heal` machinery it wires into `_clear` (confirmed present
+and reachable in the compiled kernel via `wasm-objdump -x dist/jz.wasm` —
+`$__clear`, 862 bytes, calls into all four), was built explicitly to close
+"the whole warm-reuse landmine class" as a BLANKET contract rather than
+per-site patches. The most defensible reading of seven-for-seven negative
+reproductions (including a documented, previously-verified-broken shape)
+is that this later, more general hardening — landed AFTER both the
+`clearDollar` fix (2026-07-01) and, per `6ffb28fc`'s own worktree-base
+note, already present when the stdlib-registration bisection ran
+(`e836e631` "already carries" the region-arena/export-template fixes) —
+narrowed or closed the specific corruption windows the two documented
+patterns exploited, WITHOUT anyone re-testing the original triggers
+against the hardened kernel until now. This is offered as the best-
+supported hypothesis, not a proof: the alternative (the original bisection
+findings depended on exact byte-level code layout my reconstructions
+didn't reproduce bit-for-bit — the same "highly layout-sensitive… but the
+trigger… was not" caveat `f55ed89b`'s own entry names) cannot be ruled
+out without the original session's exact diff, which no longer exists
+(its worktree/branch was not preserved; `git branch -a`/`git worktree
+list`/`find` turned up nothing).
+
+**What this does NOT mean.** It does not mean `_clear()`'s contract is
+now proven sound for arbitrary allocation patterns — only that the two
+SPECIFIC documented patterns, reconstructed as faithfully as the ledger's
+description permits and scaled to the documented range, no longer trip a
+trap on current main. `registerName`'s array-based tracking (plain
+arrays, no hot-path concatenation) remains the shipped, load-bearing
+design — this session found no evidence it is now safe to relax back to a
+`Map`, and did not attempt to (no `src/ctx.js`/`src/bridge.js`/
+`src/autoload.js` changes landed; all probe code was reverted before
+commit, confirmed via `git status --short` / `git diff --stat` clean).
+
+**Next named leads for whoever picks this up:**
+1. **Re-run the ORIGINAL bisection's exact diff**, if it can be recovered
+   from reflog/shell history/editor buffers outside this repo — byte-for-
+   byte reproduction is the only way to distinguish "fixed by later
+   hardening" from "layout-sensitive, dodged by re-derivation" with
+   certainty.
+2. **The array-length discrepancy found in attempt 2** (`site.length`
+   reads `154` after one durable-array grow-then-`_clear()`-then-regrow
+   round of 150 pushes each, expected `150`) is a genuine, reproducible,
+   currently-unexplained off-by-a-small-amount in the durable-array-
+   forward-heal path — native, no self-hosting required, ~instant repro
+   (`site.push(a+'|'+b)` × 150 in a loop, module-level `let site = []`,
+   one `_clear()`, regrow, check `.length`). Worth its own investigation;
+   not the same shape as an OOB trap but the same general "durable growth
+   across `_clear()`" family, and unlike the two OOB patterns, THIS one
+   reproduces on demand.
+3. **Instrument `__durable_fwd_log`'s call COUNT** (not just presence) for
+   a rich-subject warm-reuse round, to directly confirm whether
+   `ctx.core.emit`'s own registration-time growth ever actually crosses a
+   capacity-doubling boundary during a real compile — if it never grows
+   past its `derive(proto)`-seeded initial capacity for realistic subject
+   programs, the whole growth-forwarding path (and by extension the two
+   documented hazards, which specifically implicated growth) may be
+   COLD for every case that matters in practice, which would reframe the
+   original finding as a genuine-but-practically-unreachable edge case
+   rather than a live correctness gap.
+
+**Gates (unmodified worktree, confirming main-tip parity before
+concluding — no code changed, so these reconfirm rather than validate a
+fix):** `node test/selfhost.js` 21/21 (206 assertions); native `npm test`
+3438 total / **3431 pass** / **1 fail** (banked `typed RMW` pin, expected)
+/ 6 skip; `test:wasm` 2733 total / **2727 pass** / **0 fail** / 6 skip;
+self-build ×2 SHA-256 identical (`dist/jz.wasm` `b1b82b6e…`, `dist/jz.js`
+`7ae917fb…`); `node_modules/watr` byte-identical before/after
+(`383d173f…`, `5.7.14`).
+
+**Files.** None changed — every probe (`src/ctx.js`, `src/autoload.js`,
+`src/ir.js`) was reverted (`git checkout --`) before this entry was
+written; `git status --short` / `git diff --stat` clean except this
+ledger entry.
