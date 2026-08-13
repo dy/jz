@@ -303,6 +303,7 @@ export default (ctx) => {
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type'],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset'],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr'],
+    __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__len', '__ptr_offset_fwd']
       : ['__len', '__ptr_offset', '__ptr_offset_fwd'],
@@ -2532,11 +2533,19 @@ export default (ctx) => {
         (else (local.set $total (i32.add (local.get $total) (i32.const 1)))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl1)))
-    ;; Allocate result
-    (local.set $dst (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $total) (i32.const 3)))))
-    (i32.store (local.get $dst) (local.get $total))
-    (i32.store (i32.add (local.get $dst) (i32.const 4)) (local.get $total))
-    (local.set $dst (i32.add (local.get $dst) (i32.const 8)))
+    ;; Allocate result via the canonical header allocator (NOT a hand-rolled
+    ;; (i32.const 8)+total*8 alloc, which this function used to do directly):
+    ;; __dyn_get_t_h's ARRAY branch unconditionally reads the propsPtr word
+    ;; at off-16 for every ARRAY receiver (module/collection.js). __alloc_hdr
+    ;; reserves and zeroes that word as part of its 16-byte header; a
+    ;; hand-rolled 8-byte header left it out entirely, silently relying on
+    ;; the following bytes being untouched (zero) fresh linear memory — true
+    ;; before region-arena's compaction starts reusing already-written
+    ;; address ranges, false after (FOURTH mechanism, .work/research.md
+    ;; §Region arena: the "stale receiver" was never stale or unrooted — it
+    ;; was a genuine, freshly-built .flatMap() result whose off-16 word
+    ;; aliased a neighboring allocation's leftover bytes).
+    (local.set $dst (call $__alloc_hdr (local.get $total) (local.get $total)))
     ;; Second pass: copy
     (local.set $pos (i32.const 0)) (local.set $i (i32.const 0))
     (block $c2 (loop $cl2

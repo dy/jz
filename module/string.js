@@ -184,7 +184,7 @@ export default (ctx) => {
     __str_repeat: ['__str_byteLen', '__str_copy', '__alloc', '__sso_norm'],
     __str_replace: ['__str_indexof', '__str_slice', '__str_concat'],
     __str_replaceall: ['__str_indexof', '__str_slice', '__str_concat'],
-    __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc'],
+    __str_split: ['__str_slice', '__str_byteLen', '__char_at', '__alloc_hdr'],
     __str_idx: ['__char1byte'],
     __sso_norm: [],
     __bytes_decode: ['__typed_data', '__len', '__alloc', '__mkptr', '__sso_norm'],
@@ -1399,18 +1399,19 @@ export default (ctx) => {
     (local.set $slen (call $__str_byteLen (local.get $str)))
     (local.set $plen (call $__str_byteLen (local.get $sep)))
     ;; limit=0 → empty array
+    ;; NOTE: allocation goes through the canonical __alloc_hdr (16-byte
+    ;; header: propsPtr@-16, len@-8, cap@-4), NOT a hand-rolled (i32.const
+    ;; 8)+N*8 alloc — __dyn_get_t_h's ARRAY branch unconditionally reads the
+    ;; propsPtr word at off-16; a short header leaves it aliasing whatever
+    ;; memory preceded the allocation, which reads as zero on fresh linear
+    ;; memory but not after region-arena's compaction reuses address ranges
+    ;; (FOURTH mechanism, .work/research.md §Region arena).
     (if (i32.eqz (local.get $limit)) (then
-      (local.set $arr (call $__alloc (i32.const 8)))
-      (i32.store (local.get $arr) (i32.const 0))
-      (i32.store (i32.add (local.get $arr) (i32.const 4)) (i32.const 0))
-      (return (call $__mkptr (i32.const 1) (i32.const 0) (i32.add (local.get $arr) (i32.const 8))))))
+      (return (call $__mkptr (i32.const 1) (i32.const 0) (call $__alloc_hdr (i32.const 0) (i32.const 0))))))
     (if (i32.eqz (local.get $plen)) (then
       ;; Empty-separator: split into individual byte-chars, up to $limit
       (local.set $count (select (local.get $limit) (local.get $slen) (i32.lt_u (local.get $limit) (local.get $slen))))
-      (local.set $arr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $count) (i32.const 3)))))
-      (i32.store (local.get $arr) (local.get $count))
-      (i32.store (i32.add (local.get $arr) (i32.const 4)) (local.get $count))
-      (local.set $arr (i32.add (local.get $arr) (i32.const 8)))
+      (local.set $arr (call $__alloc_hdr (local.get $count) (local.get $count)))
       (block $de (loop $le
         (br_if $de (i32.ge_s (local.get $i) (local.get $count)))
         (f64.store (i32.add (local.get $arr) (i32.shl (local.get $i) (i32.const 3)))
@@ -1442,10 +1443,7 @@ export default (ctx) => {
         (br $l1)))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $l1)))
-    (local.set $arr (call $__alloc (i32.add (i32.const 8) (i32.shl (local.get $count) (i32.const 3)))))
-    (i32.store (local.get $arr) (local.get $count))
-    (i32.store (i32.add (local.get $arr) (i32.const 4)) (local.get $count))
-    (local.set $arr (i32.add (local.get $arr) (i32.const 8)))
+    (local.set $arr (call $__alloc_hdr (local.get $count) (local.get $count)))
     (local.set $piece_start (i32.const 0))
     (local.set $piece_idx (i32.const 0))
     (local.set $i (i32.const 0))
