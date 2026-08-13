@@ -7050,3 +7050,266 @@ update).
 overlays (the original audit's finding 4, a different item than this
 session's P4); the full `CompileSession` record (correctly still gated on
 the six-lifetime decomposition per §CompileSession above).
+
+## §Region arena — `closure4232` ROOT-CAUSED AND FIXED: ephemeral-HASH
+reuse cleared only its lane, not its entry bytes — `__coll_order` (blind to
+that convention) misread stale hash words as live, overflowing its own
+scratch buffer; oracle 9/13 → 11/13 region-live, both standing rows CLOSED
+(2026-08-13)
+
+**Setup.** Fresh worktree `region-peel-g` off `475a202d` (detached),
+`npm ci` (installs `watr` + runs `prepare`'s dormant build). `node_modules/
+watr` reconfirmed byte-identical to `/Users/div/projects/watr` (`895ca5b`/
+5.7.14, `watr.js`+`package.json` diff clean) both before and after this
+session. Read `475a202d`'s own ledger entry in full (immediately above)
+plus `ab2f2f40`'s, per the campaign brief.
+
+**Method fix inherited, reused as-is.** Built the region-live kernel via
+`compile(profile.graph.code, {modules, memory, optimize, names:true})` —
+bytes, no `wat:true` (the prior session's own corrected method) — giving
+real, compiler-assigned V8 stack-trace names with zero guessing.
+
+### Step 1 — `closure4232` attribution (name section + `wasm-objdump`, not
+text-position counting)
+
+Reproduced the 9-char repro against the named region-live kernel, 3/3,
+byte-identical crash address to `475a202d`'s own finding:
+```
+RuntimeError: memory access out of bounds
+    at closure4232 (wasm-function[3757]:0x821a6f)
+    at m106_emit$emit (wasm-function[82])
+    at tramp_m106_emit$emit (wasm-function[3398])
+    at m82_bridge$emit (wasm-function[65])
+    at m82_bridge$storedValue (wasm-function[174])
+    at tramp_m82_bridge$storedValue (wasm-function[3315])
+    at closure3219 (wasm-function[747])
+    at closure800 (wasm-function[4427])
+    at m106_emit$emit (wasm-function[82])
+    at m106_emit$emitDecl (wasm-function[2059])
+```
+This full trace (deeper than `475a202d`'s own truncated capture) resolves
+completely, module by module: `emitDecl` → `emit` (the array-literal
+initializer) → `ctx.core.emit['[']` (module/array.js's dynamic,
+non-module-scope array-literal path — `closure800`, confirming
+`475a202d`'s own "leading suspect", now CONFIRMED not just suspected) →
+its nested `emitElem` closure (`closure3219`, module/array.js:730) →
+`src/bridge.js`'s `storedValue`/`emit` (the module↔emit.js indirection
+every `module/*.js` consumer goes through) → back into `compile/emit.js`'s
+own `emit()` dispatcher → `ctx.core.emit['=>']`. **`closure4232` IS
+`compile/emit.js`'s `'=>':` handler itself (line 7035)** — not
+`ctx.closure.make` as `475a202d` hedged ("IS (or directly inlines)"): the
+`if (!ctx.closure.make) err(...)` guard `475a202d` found at its own entry
+is the handler's OWN first statement, not something `.make()` shares.
+Cross-referenced against `wasm-objdump -d` on the same bytes (name section
+confirmed present via `-h`) — `func[3757] <closure4232>`, `func[22]
+<__coll_order>`, `func[3758] <closure4233>` bracket the exact 5098-byte
+body — and independently against a full `wasm2wat --enable-all` dump
+(func-index arithmetic cross-checked: 6 imports + 3751 zero-indexed defined
+funcs before the `closure4232` def line = func[3757], matches exactly).
+
+The faulting instruction (both tools agree): a `hashValuesFromTemp`-shaped
+gather loop (`module/object.js:1206`, `fieldOff=16`, PTR.HASH stride 24,
+no dedup — this is the SET/MAP/HASH-generic column-gather, not
+`objectValuesFromTemp`'s schema-aware walker) compiled inline for
+`Object.values(defaults)` at `compile/emit.js:7067` (`for (const def of
+Object.values(defaults)) findFreeVars(def, paramSet, captures)`) — reached
+UNCONDITIONALLY on every `=>` literal, monomorphically (no runtime
+`__ptr_type` branch immediately guards it — the compiler statically proved
+`defaults` is always PTR.HASH, since it's filled only via computed-key
+writes `defaults[tmp] = c.defValue`). `defaults = {}` is per-call-site
+ephemeral (module/collection.js's "non-escaping lexical dictionary…
+reuse across loop iterations" optimization) — `closure4232`'s own body
+opens with `call $__hash_reuse_eph` on `local 20` before anything else,
+confirming this exact reuse path fires for `defaults` on every re-entry.
+
+### Step 2 — WAT-level breadcrumb (i64 debug globals, atomic snapshot)
+
+Spliced 5 new exported `(mut i64)` globals (`$__dbg_off/$__dbg_cap/
+$__dbg_ord/$__dbg_n/$__dbg_recv`) plus a capture sequence immediately
+before the faulting `f64.load offset=16`, into `wasm2wat`-decompiled text
+(`local 6` = the receiver `t`, re-deriving `off`/`cap` via pure
+`$__ptr_offset`/`$__cap` re-calls since watr's optimizer never spills them
+to a named local; `local 71` = `$ord`, `local 50` = `$n` read from
+`global 9` = `$__coll_order_n`) — then reassembled with `wat2wasm
+--enable-all` (global-index-shift bug caught and fixed mid-session: the
+two insertion points must be applied in DESCENDING original-line order or
+the earlier splice invalidates the later one's pre-computed index; a first
+attempt corrupted `global.set 576`'s apparent type and was caught by
+`wat2wasm`'s own type-checker before ever running). Reran the 9-char
+repro 3/3 against the instrumented binary — same crash, same address:
+```
+__dbg_off  = 2183528  (0x215168)   -- a real, non-degenerate heap address
+__dbg_cap  = 8                     -- the table's real slot capacity
+__dbg_ord  = 2184240  (0x215430)   -- __coll_order's own scratch buffer
+__dbg_n    = 8                     -- == cap: EVERY slot misread as live
+```
+
+**Verdict: WRONG SLOT COUNT, not a wrong base pointer.** `off` is a
+genuine, in-bounds dynamic-heap address (nowhere near `HEAP.START=1024` —
+the "degenerate/static receiver" early-return hypothesis a prior session
+would have reached for is directly refuted by this number). `cap=8` is a
+real, sane table capacity. The corruption is entirely in the OCCUPANCY
+SIGNAL: `__coll_order`'s live-count global reads back 8 for a table that
+had never had a single key written into it this reuse — every one of its
+8 slots misread as occupied.
+
+### Step 3 — backward trace to the write site (binary-level discipline
+throughout; no JS-source edits until the fix itself)
+
+`module/collection.js`'s `__hash_reuse_eph` (the "ephemeral, non-escaping
+dictionary" fast-reuse path `closure4232` calls on `defaults`): on the
+reuse branch (`cap >= want`), it resets the header COUNT word to 0 and
+`memory.fill`s the compact "occupancy LANE" (a separate `cap*4`-byte array
+living right after the entry table) — but does **NOT** touch the 24-byte
+entry region itself, on the documented theory "reused heap bytes in the
+24-byte entry region are unreachable while that lane is zero." That theory
+holds only for a LANE-AWARE reader. `module/core.js`'s `__coll_order` — the
+ONE shared insertion-order walker behind `Object.keys/values/entries`,
+`for-in`, spread, `JSON.stringify`, and every Map/Set-algebra op — has no
+notion of the ephemeral-table lane convention at all: it raw-scans each
+slot's own hash word (`i64 @ slot+0 != 0`), the SAME test a DURABLE hash
+uses, because `PTR.HASH` tags both layouts identically and `__coll_order`
+is generic over both. A reused-but-lane-cleared ephemeral table therefore
+still carries its OLD (nonzero) hash words in the entry region — every
+slot from the PRIOR use of this exact backing memory reads as "occupied."
+
+That mismatch alone would just make `Object.values()` on a reused-but-
+logically-empty dict return the wrong (nonempty) array — a silent
+correctness bug, not a crash. The TRAP itself is a compounding second
+defect, also in `__coll_order` (`module/core.js:1177`): its own scratch
+buffer `$buf` is sized from `i32.load(off-8)` — the header COUNT word
+(which `__hash_reuse_eph` correctly reset to 0) — not from `$cap` (its own
+parameter, and the only value that safely bounds real occupancy: live
+count can never exceed slot count, by construction). Sizing off the
+header gives a **0-byte** buffer; the raw slot scan then (correctly, per
+its own logic, given the stale hash words) finds 8 "occupied" slots and
+writes 8 entries into that 0-byte allocation — a heap-corrupting overflow
+that manifests a few instructions later, when `hashValuesFromTemp` reads
+the now-corrupted `$ord` array back, as the observed OOB trap. `__coll_order`'s
+own doc comment already documents "header and real count are NOT
+guaranteed to agree" as a KNOWN hazard class (the reason every EXTERNAL
+caller was long ago fixed to read `$__coll_order_n` post-call instead of
+trusting the header) — but that fix was never applied to `__coll_order`'s
+OWN internal `buf` sizing, the one place still trusting the header
+directly.
+
+**Why region-only** (not fully re-chased this session — the fix below
+closes the class regardless of the trigger, so this is reported as an
+honest gap, not glossed over): `defaults`'s "ephemeral, non-escaping"
+classification is a purely local, syntactic property of `compile/emit.js`'s
+own source, unconditional on region-arena — so the SAME classification
+should hold dormant. The reuse BRANCH inside `__hash_reuse_eph` only fires
+once `$old` is already a HASH from a PRIOR invocation at the SAME call
+site, which requires some per-call-site value to survive BETWEEN
+invocations of `closure4232` within one compile — plausibly a global whose
+liveness across `region_exit` differs from dormant's equivalent reset
+timing, kin of the campaign's other closure/table-state-not-surviving-
+region_exit mechanisms, but not directly confirmed by a dedicated
+breadcrumb this session (the fix does not depend on this answer).
+
+### Step 4 — the fix (engine level, both call sites, no repro
+special-casing)
+
+`module/collection.js`: both `__hash_reuse_eph` (the same-capacity reuse
+branch) and `__alloc_hash_eph` (the fresh/grow-allocation path, sharing the
+identical "virgin $__alloc memory" assumption that region_exit's
+rewind-and-reuse can equally break) now `memory.fill` the FULL entry
+region (`cap * MAP_ENTRY` bytes) to 0, not just the lane — restoring
+`__hash_reuse_eph`'s own documented contract ("no entry is live
+afterwards") so it is actually true for every consumer, lane-aware or not.
+Cheap at the small caps this path ever allocates. `__coll_order`'s own
+internal `buf`-sizing-off-the-header gap was NOT independently patched —
+once the entry region is genuinely zero after every allocation/reuse, the
+header count and the real raw-scan count can never again disagree in the
+"header under-reports" direction this mechanism exploited, so `buf`'s
+sizing invariant is sound again by construction; flagged here for whoever
+next touches `__coll_order` rather than fixed reflexively, since neither
+this session's evidence nor the existing suite motivates changing it
+independently.
+
+**Verified semantically correct, not just non-trapping**: kernel-compiled
+`f()` for the 9-char repro returns `1` (matches native `jz(src).exports.f()`
+== `1`, both instantiated and actually CALLED, not just inspected as
+bytes).
+
+### Gates
+
+- **Repro: 3/3 green**, region-live named kernel, both pre-fix (confirmed
+  trapping, address `0x821a6f` matching `475a202d`'s own finding exactly)
+  and post-fix (confirmed clean, 3/3, plus the semantic check above).
+- **kernel-oracle region-live: 11/13 ×3 (up from 9/13), fully
+  deterministic.** BOTH previously-standing rows — `array-growth-class:
+  sibling push()+indexed-append tables (envMeta shape)` (line ~327) and
+  `captured-then-read` (the PENDING-FIX row, line ~665) — are now fully
+  GREEN (envMeta-shape: real AGREE-tier pass at O0/O3; captured-then-read:
+  its own designed PENDING-FIX/tripwire structure passes cleanly — no
+  trap, native+kernel still share the SAME pre-existing wrong-value bug
+  the row exists to track, unrelated to this mechanism, unchanged).
+  Remaining 2/13 fails, both rows: `fromnested`
+  (`Int32Array.from([Float64Array.from([5])[0], 2])`) at O2 — this is
+  **NOT** this session's mechanism: `ab2f2f40`'s own predecessor ledger
+  entry ("wall2", `computed member key`/`fromnested` investigation, grep
+  `.work/research.md` for "fromnested") already root-checked this EXACT
+  row against a plain unpadded regionHooks-wired control and found it
+  **traps there too, pre-existing, region-unrelated, disqualified as a
+  discriminator** — a genuinely separate, harder, still-open wall (watr
+  fusion/inlining axis, exhaustively bisected and REFUTED on every named
+  sub-hypothesis in that entry, next lead: a runtime `$__alloc`-entry-style
+  stack-walk trace) that this session did not re-attempt, per the brief's
+  own scope.
+- **jessie/watr/jzify-entry region-live ×3: GREEN**, byte-identical every
+  rep: jessie 107,883 B (47 modules), watr 315,222 B (7 modules),
+  jzify-entry 614,491 B (70 modules), zero traps.
+- **kernel-parity: green** except the same known `fromnested`/O2 row
+  (identical disposition to the oracle finding above — not a new failure).
+- **Native `npm test`: 3436 total / 3426 pass / 4 fail / 6 skip — ZERO new
+  regressions.** The 4 fails: 2 are the same known `fromnested`/O2 row
+  (kernel-parity + kernel-oracle, both region-unrelated per above); the
+  other 2 (`interval walk: strided companion cursor…` and `typed RMW: one
+  guard covers the pure read…`, both in `test/optimizer.js`, both pure
+  NATIVE `jz.compile(..., {wat:true})` bounds-check-count assertions on
+  typed-array-only sources with no Hash/Map/Object anywhere in them) were
+  independently confirmed PRE-EXISTING and unrelated to this fix: `git
+  stash`-ed `module/collection.js` alone, reran `test/optimizer.js` on the
+  bare `475a202d` baseline — same 2 failures, byte-identical error text,
+  confirming this session's fix caused zero regression here.
+- **Self-build ×2: SHA-256 converge.** `f0f48d56f85b9879695065b7b6edc16
+  07b34c3b85b06d94d87f9b0fc9eedefd8`, both independent region-live builds
+  from a clean `dist/`, byte-identical.
+- **Dormant `test:wasm`: 0 fail** (2725 pass / 6 skip / 2731 total,
+  `REGION_HOOKS_ACTIVE=false`, fresh dormant `dist/jz.wasm` rebuild) — no
+  dormant regression from touching the shared `module/collection.js`
+  stdlib (native AND self-hosted builds share this source).
+
+**"REGION FRONT COMPLETE candidate" NOT declared** — oracle is 11/13, not
+13/13 (the gate's own explicit bar). This session's ASSIGNED mechanism
+(the ONE bug both standing rows shared, per `475a202d`'s own framing) is
+CLOSED — root-caused via WAT-level breadcrumb evidence (not guessed),
+fixed at the engine level in the shared stdlib (not repro-special-cased),
+and gated clean across every battery this campaign runs. The remaining 2
+oracle fails are a DIFFERENT, ALREADY-DEEPLY-INVESTIGATED, region-UNRELATED
+wall (`ab2f2f40`'s own "wall2"/`fromnested` entry) — next lead is that
+entry's own next-named step (a runtime `$__alloc`-entry-style stack-walk
+trace pointed directly at `fromnested`'s O2 faulting frame), not a
+continuation of this session's mechanism.
+
+**Disposition.** Landed fix: `module/collection.js` (+43/-5 lines, both
+`__hash_reuse_eph` and `__alloc_hash_eph`). `scripts/self.js`'s
+`REGION_HOOKS_ACTIVE` toggle and every named-kernel/breadcrumb build
+artifact (`kernel.wat`, `kernel-instrumented.wat/.wasm`,
+`kernel-region-live-named*.wasm`, `dist-jz-regionlive-build*.wasm`,
+`full-disasm.txt`, `closure4232.wat.dis`, the `run-*.mjs`/`instrument.py`
+scratch scripts) lived only in the session scratchpad
+(`/private/tmp/…/scratchpad/`), never copied into the worktree; worktree
+`git status` at session end shows only `module/collection.js` and this
+ledger entry.
+
+**SHAs.** jz worktree: `475a202d` base; this session's fix + ledger commit
+on top (see commit log). watr: `895ca5b`/5.7.14, reconfirmed identical
+before and after. Region-live `dist/jz.wasm` (production build, `names`
+not requested): SHA-256 `f0f48d56f85b9879695065b7b6edc1607b34c3b85b06d94
+d87f9b0fc9eedefd8`, reproduced identically across 2 independent builds.
+Dormant `dist/jz.wasm` (final gate rebuild): 16,678.9 kB,
+`REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
+(unchanged from `475a202d` — this session's only edits to that file were
+scratch, built/tested, then discarded via `git checkout --`).
