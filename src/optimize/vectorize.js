@@ -6443,6 +6443,39 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- Unified OUTER-STRIP recognizer (dispatch entry) -------------------------
+//
+// Design §2 "OUTER-STRIP (#8-12, 5 recognizers, 11 reach) → 2 general recognizers": all 5
+// already share the outer-pixel scaffold (matchOuterPixelLoop / `op` — bumpPixelIV,
+// epilogueIsSafe, PPC_CALL2, LANE_PURE.f64/CMP_LANE); only "what happens inside the outer
+// body" is bespoke per function. The design's proposed 2-way split is semantic (masked-
+// divergent {tryDivergentEscapeVectorize, tryIteratedReduce} vs. straight-line/reduction
+// {tryPerPixelColor, tryOuterStrip, tryConvColumn}) — but that grouping does NOT match the
+// current dispatch chain's total order (divergent-escape, per-pixel-color, outer-strip,
+// iterated-reduce, conv-column): tryIteratedReduce sits BETWEEN tryOuterStrip and
+// tryConvColumn, interleaved with the "straight-line" group, not adjacent to
+// tryDivergentEscapeVectorize. Ledger decision (.work/research.md): grouping by the
+// design's semantic split was tried first and FAILED the byte-identity gate —
+// examples/interference (tryOuterStrip's sole specimen) started matching
+// tryIteratedReduce instead once iterated-reduce moved earlier (both produce the identical
+// f64x2 lockstep lift, differing only in local-name prefix — `$__os*` vs `$__ir*` — a pure
+// recognizer-identity swap, WAT-diffed to confirm: same line count, same op sequence, 82
+// changed lines all naming-only). Landed the SAFE alternative instead: `tryDivergentEscapeVectorize`
+// stays a standalone dispatch call at its original position (unchanged — cheapest, zero
+// reordering risk, it was already first), and the remaining 4 — tryPerPixelColor,
+// tryOuterStrip, tryIteratedReduce, tryConvColumn — merge into ONE recognizer
+// (`tryOuterStripRest`) in their EXACT original relative order, so total dispatch order is
+// byte-for-byte unchanged. This is 5 recognizers → 2 dispatch entries (the design's own
+// stated unit, §1: "recognizer = dispatch-chain entry"), just not split along the design's
+// semantic axis — coverage-preserving by construction (order-identical), not by re-derived
+// preconditions. Gate: 130/130 byte-identical, incl. examples/interference unchanged.
+function tryOuterStripRest(blockNode, fnLocals, freshIdRef, pureFuncMap, outerStrip, outer) {
+  return tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer)
+    ?? tryOuterStrip(blockNode, fnLocals, freshIdRef, outerStrip, outer)
+    ?? tryIteratedReduce(blockNode, fnLocals, freshIdRef, outerStrip, outer)
+    ?? tryConvColumn(blockNode, fnLocals, freshIdRef, outerStrip, outer)
+}
+
 // ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
 //
 // Vectorizes the log-tonemap TAIL shared by fern / bifurcation / attractors:
@@ -7119,11 +7152,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
     if (node[0] === 'block') {
       if (_whyNotActive) _whyNotReason = null
       // Recognition layer: match the canonical (block (loop)) scaffold ONCE; the
-      // inner-scaffold lifters (memcpy/map/reduce/map-reduce/byte-scan) consume the
-      // descriptor instead of each re-matching. The outer-pixel + special-shape
-      // recognizers (divergent-escape, ramp-map, blur, channel-reduce, per-pixel)
-      // do their own matching on the raw node. Order is preserved exactly — it is
-      // load-bearing (first match wins).
+      // inner-scaffold lifters (memcpy/map/reduce) consume the descriptor instead of
+      // each re-matching. The outer-pixel + special-shape recognizers (outer-strip
+      // family, ramp-map, channel-reduce) do their own matching on the raw node.
+      // Order is preserved exactly — it is load-bearing (first match wins).
       // allowInlinedLi: accept an inlined LICM preamble (`$__inl*___li*`) too — jz's
       // LICM hoists ToInt32/casts of loop-invariant params just before the loop (e.g.
       // `a[i] & m` with a runtime `m`), and after inlining the snap is renamed off the
@@ -7178,10 +7210,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryStencil(node, fnLocals, freshIdRef, stencil, bl)
         ?? tryRampMap(node, fnLocals, freshIdRef)
         ?? tryChannelReduce(node, fnLocals, freshIdRef, getBlLoose(), blurMP)
-        ?? tryPerPixelColor(node, fnLocals, freshIdRef, pureFuncMap, op)
-        ?? tryOuterStrip(node, fnLocals, freshIdRef, outerStrip, op)
-        ?? tryIteratedReduce(node, fnLocals, freshIdRef, outerStrip, op)
-        ?? tryConvColumn(node, fnLocals, freshIdRef, outerStrip, op)
+        ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
         ?? tryButterfly(node, fnLocals, freshIdRef)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
