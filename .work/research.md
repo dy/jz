@@ -5309,3 +5309,45 @@ crash require SPECIFICALLY `prepareModule`'s prefix-mangling rename loop
 (`ctx.scope.globals.set(mangled, ...); ctx.scope.globals.delete(localName)`
 — a delete-then-insert on a Map, a different mutation shape than plain
 growth) rather than growth per se.
+
+## §test262 re-pin @ 75a9638d (2026-08-12)
+
+Routine re-run of both test262 conformance gates (`npm run test:262`,
+`npm run test:262:builtins`) against jz HEAD `75a9638d` (main, unchanged
+by this session), same pinned corpus (`b363f29d3c43c626dc852744ad64a0b48a
+003693`, tc39/test262 main). Last pin was landed at `56cf785d` (audit-#12
+item 3, `test/test262-baseline.json`); 242 commits separate that pin from
+this HEAD — architecture work (region-arena, carrier program, FunctionVar
+iantPlan, heap-epoch design), one NaN-boxing carrier fix, one formatter
+carrier-dispatch fix, one error-model host-decode fix, one Map-value-census
+revert — none of it touching the test262-tracked surface.
+
+**Tallies — old (pin) → new (HEAD)**:
+| metric | pin (`56cf785d`) | HEAD (`75a9638d`) | delta |
+|---|---|---|---|
+| language pass | 3000 | 3000 | 0 |
+| language fail | 0 (gated) | 0 | 0 |
+| negAccept | ≤1889 (ceiling) | 1889 | 0 |
+| builtins pass | 852 | 852 | 0 |
+| builtins fail | 0 (gated) | 0 | 0 |
+
+Both runners exited clean (no `FAIL:` line, no gate trip) — `results.pass
+>= lock.language/.builtins` and `results.negaccept <= lock.negAcceptCeiling`
+held with exact equality on every metric. Zero regressions, zero new
+passes, zero new xpasses to prune. `test/test262-baseline.json` needed no
+edit — its committed numbers (`language: 3000, builtins: 852,
+negAcceptCeiling: 1889`, corpus unchanged) already match this HEAD
+exactly, so the file is not part of this commit.
+
+**Disposition**: pin confirmed valid at `75a9638d`, no regression triage
+needed (nothing regressed), no wins to bank (nothing newly passed). Ran in
+a disposable worktree (`test262-repin-2026-08-12`, cut from `75a9638d`)
+with `node_modules` symlinked per-package back to the shared tree (same
+pattern as `region-slice2-front`); shared `node_modules/watr` (`5.7.14`)
+verified unchanged before and after. This ledger entry is the only change
+this session makes — no source, no `test262-baseline.json` edit, forbidden
+files (`src/compile/narrow.js`, `src/static.js`, `README.md`) untouched.
+
+**SHAs**. jz: `75a9638d` (main tip at session start, per the task's own
+floor). Worktree base: `75a9638d`. watr: `5.7.14`
+(`/Users/div/projects/jz/node_modules/watr`, unchanged, published).
