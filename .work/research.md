@@ -5436,3 +5436,509 @@ b25b5ba26704/scratchpad/residuals-triage`, base `14553f2b` (main HEAD at
 dispatch, unchanged — matches current `main` HEAD, confirming the other
 agent's narrow.js/static.js work is still uncommitted there and doesn't
 affect this pinned base).
+
+## §Region arena — FOURTH MECHANISM RECLASSIFIED: NOT a dyn-props write bug —
+DIRECT PROOF the crashing ARRAY is unreachable from front()'s region root at
+all (`__region_copy_rec` never visits its address, 1702/1702 calls checked);
+new evidence points at `frontHalf`'s own post-`region_exit` `ctx.*` rebind,
+no fix landed, WALL re-banked with the most concrete lead this chain has
+produced (2026-08-12)
+
+**Task.** Pick up the FOURTH MECHANISM's own banked lead (root WRITE not yet
+found — instrument `__dyn_set`'s ARRAY branch and `__region_exit`'s
+`$__dyn_props` implicit-root verbatim-value-copy block, per that session's
+own two named candidates) and root-cause it via WAT/binary-level
+instrumentation only (JS-source edits to the compiler pipeline are a proven
+heisenbug — this session's own first action reconfirmed it, see below).
+
+**Setup.** Fresh `git worktree add` off `ba0b5f6d` (no reuse of any prior
+scratchpad — none survived). `node_modules/{watr,subscript,sprae,tst,esbuild}`
+symlinked (watr → `/Users/div/projects/watr`, confirmed pristine `895ca5b`,
+5.7.14 — reconfirmed again at session end, unchanged). `REGION_HOOKS_ACTIVE`
+hand-flipped `true` in `scripts/self.js` (worktree-only, reverted at session
+end). Built a NAMED `dist/jz.wasm` (`compile(profile.graph.code, {names:true,
+...resolveSelfhostBuild()})`) and reproduced the 5-condition minimal repro
+(`export let f = (n) => { let x = n; let g = () => x; return g() }`)
+deterministically 3/3, byte-identical stack, matching every predecessor
+session in this chain exactly:
+```
+__dyn_get_t_h ← __dyn_get_t ← __dyn_get_expr ← foldStaticConstAggregates
+← closure2756 (timePhase wrapper) ← compile ← compileSelf
+```
+
+**Reconfirmed the heisenbug directly, first thing, at real cost.** Added a
+single cheap, semantically-inert-looking JS-source edit to `module/
+core.js`'s `__alloc_hdr_n` (one new `declGlobal` + a conditional
+cap-validation branch that, per every code path audited, should never fire)
+and rebuilt the NAMED kernel the same way the FOURTH MECHANISM session
+built its own (which DID reproduce 3/3 with source-level breadcrumbs in
+`__dyn_get_t_h`/`__region_exit`). Result: **the crash vanished — 0/3, no
+trap of any kind.** This is not a contradiction of the predecessor's own
+success (their edits only added `declGlobal`s + `local.tee`-wrapped reads,
+no new branches); it is independent confirmation that ANY edit to the
+compiler's OWN source that reaches self-hosting is unsafe by default, not
+just the specific edits already flagged. Reverted immediately. **Method
+correction for the rest of this session and any future one: do WAT/binary-
+level splicing on the ALREADY-BUILT kernel text only — module/*.js source
+stays 100% read-only for the rest of the investigation.**
+
+**Harness (new, reusable infrastructure — the four prior sessions in this
+chain each rebuilt an ad hoc version; this one is written to survive as a
+recipe, though the .mjs files themselves are disposable and were deleted).**
+1. `.work/build-region-wat.mjs` — native `compile(profile.graph.code, {
+   names:true, wat:true, ...resolveSelfhostBuild()})` → WAT TEXT (not bytes).
+   152-module self-host graph, `regionArenaLive:true`, 277.3 MB, ~193 s.
+2. `.work/instrument.mjs` — line-based (not `watr/parse`-based — every value
+   traced was already a live local at the insertion point, so no AST
+   restructuring was needed) splicing of `(call $dbgtrace (i64.const TAG)
+   (i64 VALUE))` into hand-verified line ranges, each gated by an
+   `assertLine` that throws loudly on ANY text-shape drift (never silently
+   instruments the wrong thing). i64-only throughout — **f64 debug globals/
+   values silently canonicalize NaN payloads to `0x7FF8000000000000`,
+   destroying tag/aux/offset bits** (the prior session's own load-bearing
+   correction, re-applied and re-confirmed here via `i64.extend_i32_u`/
+   `i64.reinterpret_f64` at every trace site, never an `f64.const`/
+   `f64.reinterpret_i64` round-trip through a JS-visible `f64` boundary).
+3. `.work/run-instr.mjs` — reassembles via `watr/parse` (~2.5 s) + `watr/
+   compile` (~60 s), instantiates BY HAND (bypasses `interop.js`'s
+   `instantiate()` — it has no route for an arbitrary `"dbg"` import module,
+   and its `opts.imports` wrapper decodes args as NaN-boxed jz values via
+   `mem.read()`, which raw debug integers are NOT), a real `dbg.trace(i64,
+   i64)` collector reading true `BigInt` args (WASM's own i64-param ABI —
+   no `mem.read()` involved for the tag/value channel at all, sidestepping
+   the whole f64 hazard structurally). `interop.js`'s `memory()` given the
+   full `{instance, exports, module}` shape (the "known"-investigation's own
+   documented gotcha) to build `mem.String()` ABI arguments correctly.
+   `instance.exports.default(srcBits, 0n, 0n, 0n, 0n)` — the raw WASM export
+   is literally named `"default"`, backing func `$compileSelf$exp`, all-i64
+   signature, confirmed directly off the compiled WAT text.
+
+**Reproduced 7 independent times across incrementally deeper instrumentation
+passes, byte-identical stack and byte-identical faulting numbers every
+time** (same `wasm-function[1272]`-shape trap, same receiver `off`, same
+off-16 raw bits) — proof the binary-level splicing technique is genuinely
+non-perturbing, unlike the source-level edit above.
+
+**Instrumented and DEFINITIVELY CLEARED every previously-named write
+candidate, by direct trace, not audit:**
+- `__dyn_set`'s ARRAY branch (`module/collection.js`, off-16 `i64.store`
+  guarded by `i64.ne $props $oldProps`) — 16 calls this run, addresses
+  1,566,416–1,571,968, none within 80,000 bytes of the crashing receiver.
+- `__region_copy_rec`'s ARRAY arm, BOTH branches — durable branch's live-
+  pointer write (`f64.store (off-16) $propsF`) and ephemeral branch's `-1`
+  sentinel write, both instrumented at their exact compiled line — neither
+  fired even once relevant to this receiver.
+- `__arr_grow`/`__arr_grow_known`'s `headerPropsCopyIR` (verbatim old→new
+  props-pointer copy on grow) — instrumented at both compiled clones
+  (`$minCap` is reused via `local.tee` as the new offset in the `_known`
+  clone — a real register-reuse quirk, not a bug, verified by reading the
+  compiled shape directly rather than assuming the source's own variable
+  names survive optimization).
+- `__arr_shift` — traced unconditionally on every call (`off`, `len`, `cap`
+  before the header-shift overwrites anything, to test a hypothesis this
+  session raised and later abandoned — see below); **never called at all**
+  this run (0 events).
+- `__ihash_set_local` — the ONE function that ever writes into the GLOBAL
+  `$__dyn_props` table (every caller: `__dyn_set`'s fallback,
+  `region_copy_rec`'s ARRAY/OBJECT ephemeral re-file, `__region_exit`'s own
+  `$__dyn_props` relocation block, `__dyn_move`, `__arr_shift`, ALL route
+  through this one shared function) — all 3 value-write sites (fresh
+  insert, update-existing, zombie-rescan fallback) instrumented; only 3
+  total calls this whole run, addresses 797,400–800,688, nowhere near the
+  crashing receiver. **This closes lead #1 from the task's own framing**
+  (`__region_exit`'s dyn-props implicit-root verbatim-value-copy block) —
+  it provably never touches this receiver's memory, this run.
+- Every `__alloc_hdr`/`__alloc_hdr_n` specialization (10 clones found by
+  direct enumeration off the built WAT — O3's constant-arg specialization;
+  `__hash_new`/`__hash_new_small`'s DEFAULT path was confirmed, by reading
+  the compiled body directly, to always call `__alloc_hdr_n(0, 8, 28)` —
+  **cap=8, hard-coded, both functions dedup to the identical compiled
+  body** — so a cap=0 HASH is doubly confirmed impossible from any fresh-
+  creation path, at the WAT level, not just by source audit) — return-value
+  traced on every call. One generic (non-specialized) `__alloc_hdr_n` call
+  DID return the exact address (1,652,992) the crashing receiver's off-16
+  slot decodes AS its props target — traced its own params too: `(len=0,
+  cap=8, stride=28)`, i.e. **exactly `__region_exit`'s own `$__dyn_props`-
+  table-relocation call** (`module/core.js:861`, `$dpNewOff = call
+  $__alloc_hdr_n (0) ($dpCap) (28)`) — a real, legitimate, cap=8 table.
+  This is a genuine allocation, not garbage — but it does not explain why
+  the CRASHING ARRAY's own off-16 slot holds a pointer to it (see below).
+- `$__alloc` itself (the ONE fundamental bump allocator) — every call's
+  (requested bytes, returned ptr) traced. This surfaced the decisive
+  finding, not a write site: two SEPARATE clusters of `$__alloc` calls
+  return addresses in the crashing receiver's neighborhood, offset from
+  each other by 8 bytes (e.g. `1,652,800`→`1,652,944` in one cluster,
+  `1,652,808`→`1,652,952` in the other) — the signature of a bump
+  allocator that ran a COMPACTING `memory.copy` in between and then kept
+  allocating forward through the same territory a second time. The
+  crashing receiver's own data-pointer (`1,652,960`) matches ONLY the
+  FIRST cluster's addressing (header at `1,652,944`, cap=2 there, NOT
+  cap=0 — a real, non-degenerate array at the moment it was allocated); by
+  the SECOND cluster's addressing, that exact byte range is occupied by
+  unrelated data (part of a different structure's own element, an 8-byte
+  boxed capture cell, and unrelated raw allocations) — consistent with
+  `mark`/`T` from a single `__region_exit` round.
+
+**The decisive test: does `__region_copy_rec`'s own walk — the WHOLE
+relocation traversal front's region round runs — ever visit the crashing
+receiver's address at all?** Traced `__region_copy_rec`'s own entry
+(`$v`, i.e. every value it is ever asked to relocate) unconditionally.
+**1,702 total calls this run; 71 ARRAY-tagged visits, offsets ranging
+469,896–1,668,840 — ZERO of them fall in the crashing receiver's own
+neighborhood (1,652,700–1,653,300), despite the walk visiting addresses
+both below AND above it.** This is direct, positive proof — not an
+absence-of-evidence — that **the crashing ARRAY is not reachable from
+front()'s region root graph at all**: `regionHooks.exit(mark, [ast,
+ctx.func.list, ctx.module, ctx.schema, ctx.closure])` (`src/front.js:85`)
+never puts a pointer to it in front of `__region_copy_rec`. Combined with
+the allocation-timeline finding above (its memory demonstrably gets reused
+by later, non-region-aware allocation once front's one-shot `region_exit`
+compacts everything else past it), the mechanism is now: **a live ARRAY
+reference survives front()'s one region round outside the root, so its
+backing memory is silently reclaimed (never copied down to `mark`) and
+later overwritten by ordinary bump allocation; the STALE reference is
+dereferenced afterward (in `compileAst`, well after `front()` returns) and
+reads whatever unrelated data now occupies that byte range — which happens,
+in this exact repro, to alias a real, valid-looking `PTR.HASH` pointer (to
+`__region_exit`'s own freshly-relocated `$__dyn_props` table) purely by
+byte-pattern coincidence, not by any deliberate write.** This reframes the
+whole session's own original question ("who wrote the bad value") — nothing
+wrote a bad value; a stale pointer is reading recycled bytes that belong to
+someone else entirely.
+
+**Decoded the exact property being looked up at the fault** (traced `$key`/
+`$h` alongside `$off`/off-16 at `__dyn_get_t_h`'s ARRAY-arm read, decoded
+`$key` via `interop.js`'s `mem.read()` post-run — safe here since `$key` is
+a genuine jz STRING value, not a synthetic debug integer, so none of the
+f64-canonicalization hazard applies): the FAULTING call (the 33rd and
+last of this run's 33 ARRAY-arm reads) looks up **`"forEach"`** on the
+stale receiver. The full 33-key sequence (`push, some, some, filter, some,
+map, ..., loc×12, forEach×2, ..., forEach`) confirms these are ordinary
+`Array.prototype` method-name probes (a receiver whose static type isn't
+provably ARRAY compiles `.forEach(...)`/`.filter(...)`/etc. through the
+generic dyn-prop-then-method-table dispatch, checking for a same-named
+dyn-prop override first) scattered across the WHOLE compile pipeline, not
+specific to one call site — most hit off16=0 (a live, empty-of-dyn-props
+receiver, completely normal); only the LAST one hits the stale/reclaimed
+receiver.
+
+**Named next lead (the most concrete this whole chain has produced) — NOT
+verified to a landed fix this session, budget did not reach it.**
+`src/front.js`'s own doc comment on `frontHalf` states the exact contract a
+bug here would violate: *"Rebinding all five `ctx.*` fields from `exit`'s
+return is NOT optional: `__region_copy_rec` may relocate any of them...
+any later read through a stale `ctx.*` binding is a use-after-free"* — and
+the code:
+```js
+if (regionHooks) {
+  ;[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure] =
+    regionHooks.exit(mark, [ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure])
+}
+```
+is a MIXED destructuring assignment — one plain-identifier target (`ast`)
+alongside four property-access targets (`ctx.func.list`, `ctx.module`,
+`ctx.schema`, `ctx.closure`) assigned from ONE 5-element relocated array.
+A quick native (non-self-hosted, heisenbug-safe) smoke test this session
+ran on an ANALOGOUS pattern (`[out, ctx.a.x, ctx.b.y] = arr`) produced a
+compiled shape (`module/prepare` or `src/compile`'s own destructuring
+lowering — not yet traced to the exact function) worth independent
+scrutiny: the property-target assignments interleave a schema-fast-path
+memory read against the SAME `global.get $ctx` bits used raw (not run
+through `__ptr_offset` first) with a `__dyn_set` fallback immediately
+after — suspicious-looking but NOT confirmed as wrong (this compiler's
+OBJECT arm legitimately dual-paths schema-slot fast writes against dyn
+fallback elsewhere, per this whole investigation's own `module/
+collection.js` reading). **Not chased further — this is a hypothesis, not
+a finding.** The concrete next step for whoever picks this up: verify
+whether `[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure] =
+regionHooks.exit(...)`, AS SELF-HOSTED (i.e. compiled by the NATIVE
+compiler into `dist/jz.wasm`, since `src/front.js` is part of the compiler
+graph that gets self-hosted, same as every module this whole chain has
+audited), actually rebinds ALL FIVE targets correctly — instrument
+`frontHalf`'s own inlined/closure form in the built WAT (find it the same
+way this session found `__region_copy_rec`'s embedded-data-blob false
+hits — the real call site will NOT be inside the source-text data segment)
+and trace each of the 5 stores this destructuring should produce,
+confirming all 5 fire with the RELOCATED (not original) bits. If any of
+the 5 targets is skipped, aliased to the wrong index, or receives
+un-relocated bits, THAT is the root cause, and the fix is a straightforward
+correction to this one destructuring assignment (or, if the compiler's own
+destructuring lowering has the bug, a fix scoped to that codegen path) —
+matching the task's own "fix in the engine, following the shape of the
+four prior fixes" framing far better than any dyn-props write-site
+special-case would have.
+
+**Verified NOT the cause, this session, by direct trace (don't re-chase):**
+every previously-named write candidate (see list above); the
+allocator's own cap floors (`__hash_new`/`__hash_new_small` both
+hard-code cap=8, confirmed off the compiled WAT, not source); `__region_
+copy_rec`'s own forwarding-header/element-relocation writes (traced via
+its unconditional entry log, 1,702 calls, none land on the crashing
+receiver — consistent with it never being visited, not with it being
+visited-and-mis-relocated).
+
+**Disposition — NO FIX LANDED, wall RECLASSIFIED (root-completeness gap,
+not a dyn-props write bug) with the most direct evidence this chain has
+produced (a positive, exhaustive proof of non-reachability from the region
+root, not an inference), wall re-banked.** Every edit this session
+(`scripts/self.js`'s `REGION_HOOKS_ACTIVE` flip, the one aborted `module/
+core.js` edit, all WAT-level splicing) was worktree-only and fully
+reverted/deleted; `git status` in the worktree shows nothing outstanding
+beyond this ledger entry (verified directly before writing it). kernel-
+oracle's array-growth-class row stays unmoved (still 9/13, not re-run — no
+source changed to justify re-verification).
+
+**No gate ladder run** — no fix exists to gate. No milestone change (front
+boundary is still NOT sound; Slice 3 stays not-live). **NOT "FRONT BOUNDARY
+SOUND"** — do not read the reclassification above as progress toward that
+verdict; it narrows the mechanism, it does not close it.
+
+**SHAs.** jz worktree: `ba0b5f6d` (region-final-2026-08-11, HEAD, unchanged
+— no source landed this session, only this ledger entry). Main repo:
+unchanged by this session. watr: `895ca5b` (`/Users/div/projects/watr`,
+unpublished, unchanged, reconfirmed pristine 5.7.14 both before and after
+this session — `require('watr')` resolves from the main repo both times).
+No `dist/jz.wasm` retained; every `.work/*.mjs`/`.wat`/`.json`/`.log`
+scratch artifact this session produced was deleted at session end.
+
+## §Region arena — FOURTH MECHANISM: destructuring rebind CLEARED (Prong A
+sound, direct WAT evidence), REVERSE-POINTER SCAN of the ENTIRE live heap AND
+every mutable global at the exact faulting call finds ZERO references to the
+crashing receiver — the stale pointer is provably not sourced from any
+CURRENTLY-live memory word or global, redirecting the hunt from "root-
+completeness" to a call-stack-local/instruction-level provenance question
+inside `foldStaticConstAggregates`'s own compiled body. NO FIX LANDED, wall
+re-banked, narrower still (2026-08-12)
+
+**Task.** Pick up db16685e's own named next lead (task's Prong A: verify
+`frontHalf`'s mixed destructuring rebind `[ast, ctx.func.list, ctx.module,
+ctx.schema, ctx.closure] = regionHooks.exit(...)` lowers correctly; Prong B if
+A is clean: provenance-trace the stale reference via WAT-level instrumentation
+to find the holder and root it, per the watr SW-bug precedent).
+
+**Setup.** Fresh `git worktree add` off `db16685e` (predecessor's own ledger
+tip). `node_modules/{watr,subscript,sprae,tst,esbuild}` symlinked — watr
+DIRECTLY to `/Users/div/projects/watr` (NOT the main repo's own committed
+`node_modules/watr` copy, confirmed to differ — `diff -rq` shows
+`src/optimize.js` byte-different — the main checkout's npm-installed copy is
+a stale/published snapshot; every predecessor session's own "watr: unpublished,
+unchanged" bookkeeping refers to the standalone dev checkout, not the
+committed copy). Confirmed pristine `895ca5b`/5.7.14 before AND after this
+session (`git rev-parse HEAD` unchanged, only pre-existing untracked `watr`
+entry in that repo's own `git status`, unrelated to this session).
+
+**Prong A — mixed destructuring rebind: SOUND, cleared with direct evidence.**
+Two independent checks, both clean:
+1. **Source-level trace of the lowering itself.** `frontHalf`'s `'='` handler
+   (`src/prepare/index.js:2436`) routes a `[]`-pattern LHS with a single
+   payload node through `expandDestruct` (`src/prepare/index.js:1575`) when
+   `scalarArrayDestruct`'s fast path doesn't apply (it doesn't here — the RHS
+   is a function call, not an inline array literal). `expandDestruct`'s `[]`
+   arm iterates pattern items `j = 0..n-1` and, for each non-pattern,
+   non-default target (a bare identifier like `ast` OR a property-access node
+   like `ctx.func.list`), calls `pushPatternAssign(item, ['[]', source, [,j]],
+   ...)` → `out.push(['=', target, valueExpr])` — an ORDINARY, INDEPENDENT
+   assignment statement per target, each reading `tmp[j]` (tmp = the ONE-TIME-
+   evaluated RHS, bound via a `let` decl emitted first) at its OWN literal
+   index. No batching, no shared destructure opcode, no reordering — five
+   sequential statements `ast=tmp[0]; ctx.func.list=tmp[1]; ctx.module=tmp[2];
+   ctx.schema=tmp[3]; ctx.closure=tmp[4]`, semantically identical to writing
+   them out by hand. This is GENERIC destructuring-assignment lowering,
+   completely unaware of region-arena — the SAME code path handles ANY
+   `[]`-pattern assignment anywhere in a compiled program.
+2. **Native (non-self-hosted, heisenbug-safe) WAT compilation of the EXACT
+   shape**, `[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure] = out5`
+   (5-element array RHS, one bare-identifier target, one two-level nested
+   property target, three one-level property targets, `optimize:0` so the
+   destructure survives to codegen instead of folding away) — compiled WAT
+   (`.work/prong-a2.wat`, deleted at session end, reproduced here for the
+   record) shows exactly the 5 predicted statements in order: `$out5[0]` read
+   into `$ast` (bounds-checked array-index read), `$out5[1]` written via
+   `__dyn_set(ctx_func, "list", …)`, `$out5[2]/[3]/[4]` similarly for
+   module/schema/closure — each index used EXACTLY ONCE, in ORDER, from the
+   SAME `$out5` local, no aliasing, no skip. **Verdict: destructuring lowering
+   is sound. This is not the bug — do not re-chase it.**
+
+**Prong B — WAT-level instrumented trace, reused/rebuilt db16685e's own
+harness shape (a fresh `.work/build-region-wat.mjs` mirroring
+`build-dist.mjs`'s `dist/jz.wasm` recipe with `{names:true, wat:true}`,
+`REGION_HOOKS_ACTIVE` hand-flipped `true` in `scripts/self.js`, worktree-only,
+reverted at session end).** Built the NAMED region-live kernel as WAT TEXT
+(290.8 MB, 318.6 s). Reproduced the 5-condition minimal repro (`export let f =
+(n) => { let x = n; let g = () => x; return g() }`) 3/3, byte-identical
+`memory access out of bounds`, confirmed against THIS session's own build via
+a hand-instantiated raw run (`watr/parse` + `watr/compile` reassembly of the
+spliced WAT, `WebAssembly.Instance` with stub `env.__ext_*`/`print`/`now`
+imports since `compileSelf` needs no more than that per its own header doc —
+`interop.js`'s own `instantiate()` was NOT used this session, a genuine
+methodological choice: it has no route for extra debug exports beyond what a
+bare `WebAssembly.Instance` call already gives, and WASM globals stay readable
+off a live instance after a caught trap without needing interop's own
+marshalling).
+
+**New instrumentation (line-based splice into the ALREADY-BUILT kernel WAT
+text — `module/collection.js`/`module/core.js` JS source stayed 100%
+untouched, matching the established heisenbug-safe discipline): a REVERSE
+POINTER SCAN, not a forward write-trace.** Every prior session in this chain
+(FOURTH MECHANISM through db16685e) traced FORWARD from known write sites
+(`__dyn_set`, `__region_copy_rec`'s own arms, `__ihash_set_local`) asking "does
+any WRITE touch this address" — all came back negative. This session instead
+asked the complementary question directly: **at the exact moment `__dyn_get_t_h`'s
+ARRAY-arm is about to accept the crashing receiver's off-16 slot as a dyn-props
+pointer (the identical program point db16685e's own session instrumented,
+verified by line-for-line comparison against that session's own quoted WAT
+excerpt), does ANY live memory word or global CURRENTLY hold a pointer to this
+exact array?** Two scans, sharing the same `$off` local (the array's own
+physical offset at that call):
+1. **Full heap scan** — every 8-byte-aligned word from `$__heap_start`
+   (676736) to the CURRENT `$__heap` bump top, decoded via the same
+   discriminant `$__ptr_type` itself uses (`f64.eq(w,w)` false ⇒ NaN-shaped;
+   tag bits 47..50 == 1 ⇒ PTR.ARRAY; low 32 bits == `$off`) — the exact
+   positive-proof method `__region_copy_rec`'s own entry-log used in
+   db16685e's session, just run over raw memory instead of over relocation
+   calls.
+2. **Full global scan** — every one of the 445 mutable f64/i64 globals in the
+   built kernel (enumerated by parsing `.work/kernel.wat`'s own `(global
+   $NAME ...)` declarations — includes `m56_ctx$ctx` itself, `m56_ctx$_factStore`,
+   `m56_ctx$RESET_HOOKS`, and every other self-hosted top-level module
+   binding), same decode-and-compare test against each global's own value
+   directly (catches the case where the holder is a bare global, never nested
+   inside a heap slot at all — the heap scan alone cannot see this case).
+
+**Result, 3/3 reps, byte-identical: BOTH scans return ZERO matches.**
+`dbgScanCalls=33` (matches db16685e's own "33 ARRAY-arm reads" count exactly),
+`dbgScanOff=1652960` (matches db16685e's own "data-pointer (1,652,960)" EXACTLY
+— confirms this session's instrumentation targets the identical faulting call/
+receiver as the predecessor's own session, not a different address from
+unrelated inter-session drift), `dbgScanCount=0`, `dbgGScanCount=0`. The
+target address (1652960) is confirmed within the scanned heap range
+(`676736 ≤ 1652960 < 1653944`, the `__heap` top at scan time) — the scan
+genuinely covers the address, it simply finds no referrer.
+
+**This is a decisive, positive result, not an absence-of-evidence gap: it
+proves the stale reference is NOT currently held by ANY heap slot or ANY
+global, anywhere, at the moment just before the crash.** Combined with
+db16685e's own finding (`__region_copy_rec` never visits this address across
+1,702 calls — proving it, too, was never handed a live root pointer to
+relocate), this closes off the ENTIRE "root-completeness gap" framing this
+whole sub-chain (FOURTH MECHANISM → db16685e → this session) has pursued:
+there is no missing root to add and no un-rooted holder structure to drain,
+because there is no CURRENT holder in memory or globals at all. The only
+remaining place a NaN-boxed f64 value can live in a running WASM program
+besides linear memory and globals is a **local/parameter on the active call
+stack** — i.e. the receiver reaching `__dyn_get_t_h` as its `$obj` parameter
+is a value some CALLER read from memory/globals AT AN EARLIER MOMENT (when it
+may well have been a live, correctly-rooted pointer) and has been carrying
+in a register/local ever since, across however many intervening statements —
+and by NOW, whatever memory word ORIGINALLY held it has been legitimately
+overwritten by later, unrelated work. This is a **stale-local / provenance-
+chain** class of bug, not a rooting-omission class — closer in shape to a
+classic "read-then-hold-across-a-boundary" hazard than to the watr SW-bug
+precedent's "missing root" shape the task briefing named.
+
+**Where the local lives.** The crash's immediate JS-level frame,
+`m140_literals$foldStaticConstAggregates` (verified same module number as
+every predecessor session, `awk`-located directly in this session's own
+kernel WAT at the exact function boundary), is confirmed to be
+`foldStaticConstAggregates`'s OWN compiled body (local names inside it —
+`$f`, `$info`, `$k`, `$op`, `$stmtf5729_18` — trace directly back to that
+function's own JS source variables `f`/`info`/`k`/`op`/`stmt`, not evidence of
+some UNRELATED function having been inlined into it). But for THIS EXACT
+repro, `foldStaticConstAggregates`'s own early-exit condition
+(`!arr.size && !obj.size → return false`, `src/compile/plan/literals.js:881`)
+should fire almost immediately: the repro has no module-level array/object
+literal binding for `consider()` to populate (`f` itself is lifted out of
+`moduleStmts` into `ctx.func.list` by `defFunc`, and even if a residual
+`export let f = (n) => …` statement survived, `scalarArrayElems`/
+`scalarObjectProps` both reject an arrow-literal RHS). The observed 33-call,
+"push/some/some/filter/some/map/…loc×12…forEach×2…forEach" key sequence
+(db16685e's own decode) is far more machinery than the early-return path
+alone would touch — meaning this function's SINGLE, large compiled body
+(confirmed NOT a multi-source-function fusion — see above) must be reaching
+FAR PAST the early return for this input, i.e. **the early-return
+precondition analysis above is wrong somewhere, or `moduleStmts`/`funcs`
+resolve non-trivially for this exact repro in a way not yet traced.** NOT
+resolved this session — this is the concrete next step, not further memory
+archaeology: **single-step (or block-by-block breadcrumb) the CONTROL FLOW
+inside `m140_literals$foldStaticConstAggregates`'s own compiled body** (not
+another memory scan — this session's own two scans already proved the
+provenance question is a call-stack/local-history question, not a memory-
+reachability question) to find (a) which branch of the function the crash's
+call chain actually takes for this repro, contradicting the "returns false
+immediately" read of the JS source, and (b) the exact `local.set` that FIRST
+populates the local eventually passed as `__dyn_get_t_h`'s `$obj` parameter —
+walking backward from THAT `local.set` to ITS OWN source (a `local.get` of an
+argument, or a `f64.load` from some address) is what will finally identify
+the true holder/provenance, now that memory/global archaeology is
+conclusively ruled out as the right search space.
+
+**Candidates evaluated by static source audit this session, NOT chased
+further empirically (kept for the next session, not re-litigated by memory
+archaeology since the negative scan result applies regardless of WHICH
+JS-level structure the local's value ultimately traces back to):**
+- `module/schema.js`'s `initSchema(ctx)` — installs `ctx.schema.register`/
+  `.find` as CLOSURES capturing `byKey`/`byProp` (two private `Map`s), plus
+  direct `ctx.schema._byKey`/`_byProp` property writes — triggered by
+  `includeModule('core')` at `src/prepare/index.js:729`, i.e. at `prepare()`'s
+  OWN FIRST LINE, confirmed to run AFTER `mark()` is taken (`frontHalf` takes
+  `mark` before calling `prepare`), making all of this EPHEMERAL. Audited
+  `regionArmObject`'s durable branch (`ctx.schema` itself IS durable, created
+  at `reset()`-time, well before `mark`) — its slot walk is fully generic
+  (`__region_copy_rec` on every fixed-schema slot's raw f64 value regardless
+  of kind), and `regionArmClosure` (also read in full this session) correctly
+  relocates env slots for both cell-mode and plain captures. Structurally
+  sound by source audit; NOT independently verified against a synthetic
+  closure-capturing-a-Map repro this session (budget) — a candidate for
+  confirmation, not a cleared lead.
+- `module/function.js`'s `ctx.closure.mint`/`.make`/`.call` — same shape
+  (closures installed onto the durable, rooted `ctx.closure`), same
+  structural-soundness read, same "not independently verified" caveat.
+- A documented, UNRELATED-looking but suspicious PRIOR finding worth flagging
+  for whoever next touches `prepare/index.js`: its own top-of-file comment
+  (`src/prepare/index.js:709-723`) records that removing a REDUNDANT direct
+  `resetPrepState()` call (redundant because the SAME function is also
+  registered as a `RESET_HOOKS` entry, already invoked by `reset()` before
+  `prepare()` runs) — a change that was byte-identical everywhere natively —
+  **crashed the self-hosted kernel with "memory access out of bounds" on the
+  very first compile**, attributed at the time to "a closure reachable only
+  indirectly through RESET_HOOKS," never chased to a root cause. Given this
+  session's own finding is ALSO a self-hosted-kernel-only "memory access out
+  of bounds" traced to a closure/local-provenance question, this PRIOR,
+  still-open mystery may be the SAME underlying mechanism surfacing a second
+  time under different triggering conditions — worth reopening alongside the
+  next session's own instruction-level trace, not treated as a coincidence.
+
+**Verified NOT the cause, this session (don't re-chase):** the mixed
+destructuring rebind (Prong A, see above — sound, both by source trace and by
+native WAT compilation of the exact shape); every heap-resident or
+global-resident holder of the crashing address (the two reverse scans,
+exhaustive over the live heap and every mutable global, zero matches, 3/3).
+
+**Disposition — NO FIX LANDED, wall re-banked, narrower via a genuinely NEW
+technique (reverse pointer scan, not another forward write-trace) this whole
+chain had not yet tried.** Every edit this session (`scripts/self.js`'s
+`REGION_HOOKS_ACTIVE` flip, all WAT-level splicing, the disposable
+`.work/build-region-wat.mjs`/`instrument.mjs`/`run-instr.mjs`/
+`list-globals.mjs`/`gen-global-scan.mjs`/`global-scan.wat` scripts, the
+disposable `.work/prong-a-test.mjs`/`prong-a-test2.mjs` native smoke tests)
+was worktree-only and fully reverted/deleted; `git status`/`git diff --stat`
+in the worktree show NOTHING outstanding beyond this ledger entry (verified
+directly before writing it — `scripts/self.js` back to
+`REGION_HOOKS_ACTIVE = false`, no `.work/*.mjs`/`.wat`/`.wasm`/`.json`/`.txt`/
+`.log` scratch artifacts remain). kernel-oracle's array-growth-class row stays
+unmoved (still 9/13, not re-run — no source changed to justify
+re-verification).
+
+**No gate ladder run** — no fix exists to gate. No milestone change (front
+boundary is still NOT sound; Slice 3 stays not-live). **NOT "FRONT BOUNDARY
+SOUND"** — the Prong A clearance is real progress (one whole candidate
+mechanism eliminated with direct evidence, sourced AND compiled), but the
+FOURTH mechanism itself remains open.
+
+**SHAs.** jz worktree: `db16685e` (HEAD, unchanged — no source landed this
+session, only this ledger entry, committed on top). Main repo: unchanged by
+this session. watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged, reconfirmed pristine 5.7.14 both before and after this session).
+No `dist/jz.wasm` retained; every scratch artifact this session produced
+(kernel WAT/WASM builds, instrumentation scripts, native smoke-test files)
+was deleted at session end.
