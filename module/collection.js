@@ -2268,8 +2268,19 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + LANE}))))`
   // Fresh, non-escaping dictionaries key occupancy exclusively off the compact
-  // hash lane. Reused heap bytes in the 24-byte entry region are unreachable
-  // while that lane is zero, so clear only cap*4 bytes instead of cap*28.
+  // hash lane for a LANE-AWARE reader — but __coll_order (core.js) and every
+  // generic-HASH consumer built on it (Object.keys/values/entries, for-in,
+  // spread, JSON, Map/Set algebra) raw-scan the 24-byte entry region's own
+  // hash word instead, blind to this lane convention (PTR.HASH tags both
+  // layouts identically). $__alloc's memory is virgin-zero ONLY when the bump
+  // pointer has never visited these bytes before — true for a plain
+  // monotonic-heap compile, FALSE once region-arena's region_exit can rewind
+  // the pointer and hand this same span back for a later allocation (see
+  // __hash_reuse_eph's own doc, this file, for the confirmed live trap this
+  // exact assumption caused — closure4232/wasm-function[3757] OOB,
+  // .work/research.md §Region arena). Clear the full entry region (not just
+  // the lane) so a recycled span reads as genuinely empty to EVERY consumer,
+  // not only lane-aware ones — cheap at the small caps this path allocates.
   ctx.core.stdlib['__alloc_hash_eph'] = `(func $__alloc_hash_eph (param $len i32) (param $cap i32) (result i32)
     (local $ptr i32) (local $data i32) (local $lanes i32)
     (local.set $ptr (call $__alloc (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + LANE})))))
@@ -2277,6 +2288,7 @@ export default (ctx) => {
     (i32.store offset=8 (local.get $ptr) (local.get $len))
     (i32.store offset=12 (local.get $ptr) (local.get $cap))
     (local.set $data (i32.add (local.get $ptr) (i32.const 16)))
+    (memory.fill (local.get $data) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))
     (local.set $lanes (i32.add (local.get $data) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY}))))
     (memory.fill (local.get $lanes) (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))
     (local.get $data))`
@@ -2302,9 +2314,34 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hash_eph (i32.const 0) (local.get $cap))))`
   // A non-escaping lexical dictionary can retain its table across loop
-  // iterations. Clearing the occupancy lane is its complete observable reset;
-  // no entry is live afterwards. First execution allocates, later executions
-  // reuse the same capacity and avoid bump-allocation/page traffic.
+  // iterations. First execution allocates, later executions reuse the same
+  // capacity and avoid bump-allocation/page traffic.
+  //
+  // Region-arena front-boundary mechanism (.work/research.md §Region arena,
+  // 475a202d's own next-lead — closure4232/wasm-function[3757] OOB, root-caused
+  // this session via a WAT-level breadcrumb): this used to clear ONLY the
+  // compact occupancy lane (cap*4 bytes right after the entry table), on the
+  // documented theory that "reused heap bytes in the 24-byte entry region are
+  // unreachable while that lane is zero" — true for a caller that goes through
+  // the lane, but FALSE for __coll_order (core.js) and every consumer built on
+  // it (Object.keys/values/entries, for-in, spread, JSON, Map/Set algebra):
+  // those walk the entry table directly, testing each 24-byte slot's own hash
+  // word for occupancy — the SAME generic convention a durable HASH uses.
+  // PTR.HASH tags both layouts identically, so __coll_order cannot tell an
+  // ephemeral table from a durable one and always raw-scans slot bytes. A
+  // reused-but-"lane-cleared" ephemeral table left its OLD hash words sitting
+  // in the entry region non-zero — __coll_order's occupied-slot test read them
+  // as live, gathering (cap, not 0) phantom entries. Breadcrumb evidence (9-char
+  // repro `let arr=[()=>1]; return arr.length`, defaults={} inside emit.js's own
+  // '=>' handler reused via this exact path): cap=8, and __coll_order's OWN
+  // live-count global read back 8 — every slot in a table that had never been
+  // written this reuse misread as occupied, feeding garbage "entry pointers"
+  // into __coll_order's own scratch buffer (sized off the now-consistent-again
+  // header count, i.e. undersized for 8 phantom writes) — heap corruption that
+  // manifested a few instructions later as the OOB trap. Clearing the entry
+  // region too (below) makes "no entry is live afterwards" true for EVERY
+  // consumer, lane-aware or not, restoring this function's own documented
+  // contract — the lane clear alone only ever satisfied lane-aware readers.
   ctx.core.stdlib['__hash_reuse_eph'] = `(func $__hash_reuse_eph (param $old i64) (param $want i32) (result f64)
     (local $off i32) (local $cap i32)
     (if (i32.eq (call $__ptr_type (local.get $old)) (i32.const ${PTR.HASH}))
@@ -2317,6 +2354,7 @@ export default (ctx) => {
         (if (i32.ge_u (local.get $cap) (local.get $want))
           (then
             (i32.store (i32.sub (local.get $off) (i32.const 8)) (i32.const 0))
+            (memory.fill (local.get $off) (i32.const 0) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))
             (memory.fill
               (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY})))
               (i32.const 0) (i32.shl (local.get $cap) (i32.const 2)))
