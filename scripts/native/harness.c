@@ -8,14 +8,12 @@
 #include <stdint.h>
 #include <time.h>
 
-static inline f64 make_ptr(u32 type, u32 aux, u32 offset) {
-  union { u64 u; f64 d; } v;
+static inline u64 make_ptr(u32 type, u32 aux, u32 offset) {
   u32 hi = 0x7FF80000u | ((type & 0xF) << 15) | (aux & 0x7FFF);
-  v.u = ((u64)hi << 32) | (u64)offset;
-  return v.d;
+  return ((u64)hi << 32) | (u64)offset;
 }
-static inline u32 get_offset(f64 p) { union { u64 u; f64 d; } v; v.d = p; return (u32)(v.u & 0xFFFFFFFFu); }
-static inline u32 get_type(f64 p)   { union { u64 u; f64 d; } v; v.d = p; return ((u32)(v.u >> 32) >> 15) & 0xF; }
+static inline u32 get_offset(u64 p) { return (u32)p; }
+static inline u32 get_type(u64 p)   { return ((u32)(p >> 32) >> 15) & 0xF; }
 
 static char* read_file(const char* path, size_t* lenOut) {
   FILE* f = fopen(path, "rb");
@@ -50,7 +48,7 @@ int main(int argc, char** argv) {
   uint32_t lenLE = (uint32_t)wat_len;
   memcpy(mem->data + raw, &lenLE, 4);
   memcpy(mem->data + raw + 4, wat, wat_len);
-  f64 outPtr = w2c_jzwatr_default(&inst, make_ptr(4, 0, raw + 4));
+  u64 outPtr = w2c_jzwatr_default(&inst, make_ptr(4, 0, raw + 4));
   u32 outType = get_type(outPtr), outOff = get_offset(outPtr);
   uint32_t outLen = 0;
   if (outType == 2 || outType == 3) memcpy(&outLen, mem->data + outOff - 8, 4);

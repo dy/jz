@@ -20,6 +20,16 @@ const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2
 // vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
 // jz case fails to compile to native. Derive it from WABT_W2C_DIR; override via SIMDE_DIR.
 const SIMDE_DIR = process.env.SIMDE_DIR || join(WABT_W2C_DIR, '..', 'third_party', 'simde')
+const W2C_POSTPROCESS = join(ROOT, 'scripts', 'native', 'postprocess-watr.awk')
+// Native-speed profile. Guard-page mmap makes the hoisted memory base stable
+// across memory.grow and preserves OOB trapping after the postprocessor removes
+// inline bounds checks. The unchecked stack-depth counter is WABT's documented
+// nonconforming speed switch; jz's generated call graph is statically bounded.
+const W2C_CFLAGS = [
+  '-O3', process.arch === 'arm64' ? '-mcpu=native' : '-march=native', '-flto', '-fomit-frame-pointer', '-ffp-contract=off',
+  '-DWASM_RT_MEMCHECK_GUARD_PAGES', '-DWASM_RT_USE_MMAP=1',
+  '-DWASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION=1',
+]
 // w2c2 (turbolent/w2c2) — the SECOND wasm→C translator (audit-#12 step 2: a
 // twin lane, same .wasm input, different translator+cc, so a native-lane
 // number is corroborated by two independent codegens instead of resting on
@@ -941,8 +951,9 @@ const targets = {
       const hFile = `${c.id}-w2c.h`
       const host = join(caseBuild(c), `${c.id}-w2c-host.c`)
       execFileSync('wasm2c', [w2cWasmPath(c), '-o', cFile], { cwd: BENCH_DIR, stdio: 'pipe' })
+      writeFileSync(cFile, execFileSync('awk', ['-f', W2C_POSTPROCESS, cFile], { cwd: BENCH_DIR }))
       writeFileSync(host, w2cHost(c, hFile))
-      execFileSync('clang', ['-O3', '-ffp-contract=off', ...macSysrootArgs, `-I${WABT_W2C_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync('clang', [...W2C_CFLAGS, ...macSysrootArgs, `-I${WABT_W2C_DIR}`, ...(existsSync(SIMDE_DIR) ? [`-I${SIMDE_DIR}`] : []), host, cFile, join(WABT_W2C_DIR, 'wasm-rt-impl.c'), join(WABT_W2C_DIR, 'wasm-rt-mem-impl.c'), '-o', w2cBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [w2cBinPath(c)]),
   },
   // w2c2 twin of jz-w2c (audit-#12 step 2): same --no-tail-call wasm input
@@ -1051,7 +1062,7 @@ const TARGET_CMDS = {
   'zig-wasm': 'zig build-exe -target wasm32-wasi -O ReleaseFast <case>.zig (no libc) → node (V8 wasm)',
   'c-wasm': 'zig cc -target wasm32-wasi -O3 -ffp-contract=off <case>.c → node (V8 wasm)',
   'jz-wasmtime': 'jz --host wasi -O3 <case>.js → wasmtime --invoke main',
-  'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → clang -O3 -ffp-contract=off',
+  'jz-w2c': 'jz --host wasi -O3 --no-tail-call → wasm2c → native postprocess → clang -O3 -mcpu/-march=native -flto',
   'jz-w2c2': 'jz --host wasi -O3 --no-tail-call → w2c2 → clang -O3 -ffp-contract=off',
   jawsm: 'jawsm <case>.js → node (V8 wasm)',
   javy: 'javy compile <case>-flat.js → node (V8 wasm) · fenced interpreter reference',

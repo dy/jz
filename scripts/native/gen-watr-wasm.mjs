@@ -1,14 +1,11 @@
-// Compile watr via jz, emit watr.wasm to $BUILD_DIR/jz-watr.wasm,
-// then run wasm-opt -O3 to produce $BUILD_DIR/jz-watr-opt.wasm (the input to wasm2c).
+// Compile watr via jz and emit the watr-optimized module consumed by wasm2c.
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { execSync } from 'child_process'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const JZ_ROOT = path.resolve(__dirname, '../..')
 const BUILD_DIR = process.env.BUILD_DIR || '/tmp/jz-c'
-const WASM_OPT = process.env.WASM_OPT || 'wasm-opt'
 
 const { compile: jzCompile } = await import(path.join(JZ_ROOT, 'index.js'))
 const watrSrc = (p) => fs.readFileSync(path.join(JZ_ROOT, 'node_modules/watr', p), 'utf8')
@@ -32,23 +29,9 @@ const rawPath = path.join(BUILD_DIR, 'jz-watr.wasm')
 fs.writeFileSync(rawPath, bin)
 console.log('wrote', rawPath, bin.length, 'bytes')
 
-const FEATS = [
-  '--enable-bulk-memory', '--enable-bulk-memory-opt',
-  '--enable-exception-handling', '--enable-multivalue',
-  '--enable-nontrapping-float-to-int', '--enable-mutable-globals',
-  '--enable-sign-ext', '--enable-simd',
-  // ^ this FEATS list predates jz's auto-vectorizer (v128 loop codegen) — without
-  // --enable-simd, wasm-opt's validator hard-rejects any v128 op (confirmed live:
-  // "SIMD operations require SIMD [--enable-simd]" on watr's own i8x16.eq/v128.load,
-  // `wasm-validator error`, `Fatal: error validating input`, non-zero exit) instead of
-  // silently stripping it — the native/wasm2c lane could never process a SIMD-bearing
-  // module at all until this flag matched what jzCompile above already emits.
-].join(' ')
-const optPath = path.join(BUILD_DIR, 'jz-watr-opt.wasm')
-execSync(`${WASM_OPT} -O3 ${FEATS} ${rawPath} -o ${optPath}`, { stdio: 'inherit' })
-console.log('wrote', optPath, fs.statSync(optPath).size, 'bytes')
-
-const mod = new WebAssembly.Module(fs.readFileSync(optPath))
+// Validation here is deliberate: stage 0 must fail before wasm2c if an internal
+// optimizer change emits an invalid module. No Binaryen normalization is involved.
+const mod = new WebAssembly.Module(bin)
 console.log('\nImports:')
 for (const i of WebAssembly.Module.imports(mod)) console.log(' ', i.module, i.name, i.kind)
 console.log('\nExports:')

@@ -536,10 +536,20 @@ test('SIMD widening byte-map - alpha blend (mul exceeds byte)', () => {
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main())
   const w = wat(src, SIMD_OPT)
-  // Goes 16-wide in i16x8 (the alpha-blend shape: every intermediate fits u16 —
+  // Goes 64-wide as four independent i16x8 groups (the alpha-blend shape: every intermediate fits u16 —
   // 255*160+255*95+127 = 65152 < 65536 — and the result fits a byte): v128.load 16,
-  // extend_low/high, i16x8 arithmetic, narrow_u, v128.store. (clang's NEON, bit-exact.)
-  ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w) && /v128\.load\b/.test(w), 'expected 16-wide i16x8 widening map')
+  // extend_low/high, i16x8 arithmetic, byte pack, v128.store. The four-vector schedule
+  // matches clang's native unroller while the scalar loop handles the remainder.
+  ok(/i16x8\.mul/.test(w) && /i8x16\.shuffle/.test(w) && /v128\.load\b/.test(w), 'expected 16-wide i16x8 widening map')
+  is((w.match(/i8x16\.shuffle/g) || []).length, 4, 'four-vector widening schedule')
+
+  const tail = `export let main = () => {
+    const a = new Uint8Array(67), b = new Uint8Array(67), out = new Uint8Array(67)
+    for (let i = 0; i < 67; i++) { a[i] = (i * 7) & 255; b[i] = (i * 13) & 255 }
+    for (let i = 0; i < 67; i++) out[i] = (Math.imul(a[i], 160) + Math.imul(b[i], 95) + 127) >> 8
+    let h = 0; for (let i = 0; i < 67; i++) h = (h + out[i]) | 0; return h
+  }`
+  is(runVec(tail, SIMD_OPT).main(), runVec(tail, NOVEC).main(), '64-wide schedule keeps the scalar tail exact')
 
   // When an intermediate would exceed u16, the 16-wide path is unsound — it must fall
   // back to the bit-exact 4-wide (i32x4) widening map. `*200 + *200` peaks at
@@ -567,7 +577,7 @@ test('SIMD widening byte-map - IN-PLACE fixed-point fade (a[i] = (a[i]*k)>>8)', 
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'in-place fade bit-exact')
   const w = wat(src, SIMD_OPT)
-  ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w) && /v128\.load\b/.test(w), 'in-place fade lifts 16-wide')
+  ok(/i16x8\.mul/.test(w) && /i8x16\.shuffle/.test(w) && /v128\.load\b/.test(w), 'in-place fade lifts 16-wide')
 })
 
 test('SIMD widening byte-map - MULTI-CHANNEL in-place fade (boids 4-channel u8 trail)', () => {
@@ -584,7 +594,7 @@ test('SIMD widening byte-map - MULTI-CHANNEL in-place fade (boids 4-channel u8 t
   }`
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'multi-channel fade bit-exact')
   // 4 channels → 4 narrow stores in a single SIMD loop (one v128.store per channel).
-  is((wat(src, SIMD_OPT).match(/i8x16\.narrow_i16x8_u/g) || []).length, 4, 'one narrow store per channel')
+  is((wat(src, SIMD_OPT).match(/i8x16\.shuffle/g) || []).length, 4, 'one packed store per channel')
 })
 
 test('SIMD channel-reduce - RGBA box-filter accumulation', () => {
@@ -1369,7 +1379,7 @@ test('vectorize: Uint8Array right shift lifts via the i16x8 widening path (bit-e
     }
   `
   is(runVec(src, SIMD_OPT).main(), runVec(src).main())
-  ok(/i16x8\.shr_u/.test(wat(src, SIMD_OPT)) && /i8x16\.narrow_i16x8_u/.test(wat(src, SIMD_OPT)),
+  ok(/i16x8\.shr_u/.test(wat(src, SIMD_OPT)) && /i8x16\.shuffle/.test(wat(src, SIMD_OPT)),
     'expected the in-place byte shift to lift via i16x8 widen + narrow')
 })
 

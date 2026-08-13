@@ -2,17 +2,14 @@
 # End-to-end PGO build of jz-compiled watr to a native binary.
 #
 #   jz(watr/src/compile.js) -> $BUILD_DIR/jz-watr.wasm
-#   wasm-opt -O3              -> $BUILD_DIR/jz-watr-opt.wasm     (~10% win on parser-heavy paths)
 #   wasm2c                    -> $BUILD_DIR/watr.c
 #   clang -O3 + PGO           -> $BUILD_DIR/watr-native
 #
 # Why PGO: closes the last ~5% gap on the hottest paths (f230 parser, bump alloc).
-# Why wasm-opt: raw wasm has redundant locals / unhoisted loads; binaryen -O3 cleans
-#   them up before wasm2c's structured output forces clang to re-derive them.
 #
 # Requirements (override with env vars):
 #   WABT_DIR   — wabt repo (uses bin/wasm2c, wasm2c/ headers). Default: /Users/div/projects/wabt
-#   WASM_OPT   — Binaryen wasm-opt. Default: $(which wasm-opt)
+#   SIMDE_DIR  — SIMDe include root. Default: $WABT_DIR/third_party/simde
 #   CC         — clang with LTO+PGO support. Default: clang
 #   BUILD_DIR  — transient outputs. Default: /tmp/jz-c
 #
@@ -24,7 +21,7 @@ set -e
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${BUILD_DIR:-/tmp/jz-c}"
 WABT_DIR="${WABT_DIR:-/Users/div/projects/wabt}"
-WASM_OPT="${WASM_OPT:-$(command -v wasm-opt || echo wasm-opt)}"
+SIMDE_DIR="${SIMDE_DIR:-$WABT_DIR/third_party/simde}"
 CC="${CC:-clang}"
 
 if [ "${1:-}" = "clean" ]; then rm -rf "$BUILD_DIR"; exit 0; fi
@@ -36,43 +33,34 @@ cd "$BUILD_DIR"
 cp "$SRC_DIR/harness.c" "$SRC_DIR/env-stubs.c" "$SRC_DIR/wasm-rt-exceptions-stub.c" .
 cp "$WABT_DIR/wasm2c"/*.{c,h,inc} . 2>/dev/null || true
 
-COMMON="-I. -I$WABT_DIR/wasm2c -DWASM_RT_MEMCHECK_GUARD_PAGES -DWASM_RT_USE_MMAP=1 -DWASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION=1"
+COMMON="-I. -I$WABT_DIR/wasm2c -I$SIMDE_DIR -DWASM_RT_MEMCHECK_GUARD_PAGES -DWASM_RT_USE_MMAP=1 -DWASM_RT_NONCONFORMING_UNCHECKED_STACK_EXHAUSTION=1"
+case "$(uname -m)" in
+  arm64|aarch64) CPU="-mcpu=native" ;;
+  *) CPU="-march=native" ;;
+esac
 # A3: drop C++ EH (we use setjmp/longjmp), unwind tables (no introspection),
 # stack protector (no untrusted input), merge constants (smaller .rodata, better cache).
 EXTRA="-fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-stack-protector"
 
-# Stage 0: regenerate watr.wasm via jz + wasm-opt if missing or stale.
+# Stage 0: regenerate watr.wasm via jz if missing or stale.
 # Stamp depends on every input that affects codegen: gen script, jz sources, watr sources.
 JZ_ROOT="$(cd "$SRC_DIR/../.." && pwd)"
 NEWEST_INPUT=$(find "$SRC_DIR/gen-watr-wasm.mjs" "$JZ_ROOT/index.js" "$JZ_ROOT/src" "$JZ_ROOT/module" "$JZ_ROOT/node_modules/watr/src" -type f \( -name '*.js' -o -name '*.mjs' \) -print0 2>/dev/null | xargs -0 stat -f '%m %N' | sort -rn | head -1 | awk '{print $2}')
-if [ ! -f jz-watr-opt.wasm ] || [ "$NEWEST_INPUT" -nt jz-watr-opt.wasm ]; then
-  echo "=== Stage 0: regen watr.wasm via jz + wasm-opt ==="
-  BUILD_DIR="$BUILD_DIR" WASM_OPT="$WASM_OPT" node "$SRC_DIR/gen-watr-wasm.mjs" > /dev/null
+if [ ! -f jz-watr.wasm ] || [ "$NEWEST_INPUT" -nt jz-watr.wasm ]; then
+  echo "=== Stage 0: regen watr.wasm via jz ==="
+  BUILD_DIR="$BUILD_DIR" node "$SRC_DIR/gen-watr-wasm.mjs" > /dev/null
 fi
-if [ ! -f watr.c ] || [ jz-watr-opt.wasm -nt watr.c ]; then
-  "$WABT_DIR/bin/wasm2c" --enable-exceptions -n jzwatr -o watr.c jz-watr-opt.wasm
-  # A2a: nullify wasm2c's FORCE_READ_INT/FLOAT asm barriers. They're no-clobber
-  # asm("" :: "r"(var)) hints meant to force-realize a value into a register, but
-  # clang treats them as barriers that defeat CSE of `instance->w2c_memory.data`
-  # in hot inner loops. With them off, clang hoists `data` above the loop —
-  # 12 insts/iter → 4 insts/iter on the parser's hottest function (f5, 644M calls
-  # in the PGO trace). Net ~8% on parser-heavy workloads (raycast/maze/containers).
-  sed -i.bak -E '
-    s|^#define FORCE_READ_INT\(var\) __asm__.*$|#define FORCE_READ_INT(var)|
-    s|^#define FORCE_READ_FLOAT\(var\) __asm__.*$|#define FORCE_READ_FLOAT(var)|
-  ' watr.c
-  rm -f watr.c.bak
-  # A2b: hoist `instance->w2c_memory.data` into a function-local `__restrict__`
-  # alias and shadow load/store inlines with macros that reference it. clang's
-  # PGO+LTO fails to CSE the field-load across CFG joins; an explicit local
-  # const-restrict alias gives it the proof it needs to keep the base in a
-  # register across the entire function. f6 (206M calls): 5 reloads/iter → 1.
+if [ ! -f watr.c ] || [ jz-watr.wasm -nt watr.c ] || [ "$SRC_DIR/postprocess-watr.awk" -nt watr.c ]; then
+  "$WABT_DIR/bin/wasm2c" --enable-exceptions -n jzwatr -o watr.c jz-watr.wasm
+  # Remove wasm2c optimizer barriers, hoist the stable guard-page memory base,
+  # and lower scalar/SIMD accesses through that alias. The pass fails closed if
+  # WABT's generated-C shape changes.
   awk -f "$SRC_DIR/postprocess-watr.awk" watr.c > watr.c.tmp && mv watr.c.tmp watr.c
 fi
 
 # Stage 1: instrumented build (collect PGO profile).
 echo "=== Stage 1: instrumented build ==="
-CFLAGS1="-O3 -march=native -flto -fomit-frame-pointer -fprofile-instr-generate $EXTRA $COMMON"
+CFLAGS1="-O3 $CPU -flto -fomit-frame-pointer -fprofile-instr-generate $EXTRA $COMMON"
 $CC $CFLAGS1 -c watr.c -o watr.o
 $CC $CFLAGS1 -c harness.c -o harness.o
 $CC $CFLAGS1 -c env-stubs.c -o env-stubs.o
@@ -100,7 +88,7 @@ echo "profile size: $(ls -la watr.profdata | awk '{print $5}')"
 
 # Stage 3: PGO-optimized build.
 echo "=== Stage 3: PGO-optimized build ==="
-CFLAGS3="-O3 -march=native -flto -fomit-frame-pointer -fprofile-instr-use=watr.profdata -mllvm -inline-threshold=10000 $EXTRA $COMMON"
+CFLAGS3="-O3 $CPU -flto -fomit-frame-pointer -fprofile-instr-use=watr.profdata -mllvm -inline-threshold=10000 $EXTRA $COMMON"
 $CC $CFLAGS3 -c watr.c -o watr.o 2>&1 | tail -5
 $CC $CFLAGS3 -c harness.c -o harness.o
 $CC $CFLAGS3 -c env-stubs.c -o env-stubs.o

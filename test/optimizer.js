@@ -3996,7 +3996,7 @@ export let main = (i) => {
 }`
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const m = wat.split('(func ').find(c => /^\$main\b/.test(c)) || wat
-  is((m.match(/i32\.lt_u/g) || []).length, 4, 'three RMW guards plus one allocator guard — no read+write pairs')
+  is((m.match(/i32\.lt_u/g) || []).length, 3, 'one guard per RMW — no read+write pairs')
   const exportsJs = {}
   new Function('exports', src.replace(/export let (\w+) =/g, 'exports.$1 ='))(exportsJs)
   const wasm = run(src, { optimize: 'speed' }).main

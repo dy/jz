@@ -479,11 +479,12 @@ C and a C compiler can turn into a native executable:
 JS → JZ → WASM → wasm2c → C → clang → native
 ```
 
-The native benchmark lane uses `--host wasi -O3 --no-tail-call`, then
-`wasm2c` and `clang -O3`; it beats V8 on 19 of 21 watr examples and ties the
-other two on the reference M4 Max run. A host harness and wasm2c runtime must be
-linked, so this is currently a toolchain rather than a one-command JZ target.
-See the [native pipeline](scripts/native/README.md).
+The native benchmark lane uses `--host wasi -O3 --no-tail-call`, lowers with
+`wasm2c`, removes its C optimizer barriers, hoists the guard-page-backed memory
+base, and builds with native CPU tuning plus LTO. It does not require
+`wasm-opt`. A host harness and wasm2c runtime must be linked, so this is
+currently a toolchain rather than a one-command JZ target. See the
+[native pipeline](scripts/native/README.md).
 
 </details>
 

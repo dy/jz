@@ -4379,10 +4379,10 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   })()
   // With u8 loads, the byte map can go 16-wide in i16x8 (the alpha-blend shape: out[i] =
   // (src[i]*A + dst[i]*B + bias) >> s) — load 16, extend_low/high, the affine arithmetic
-  // in i16x8, narrow_u, store 16 — exactly clang's NEON. Sound ONLY when every
+  // in i16x8, byte-pack, store 16. Sound ONLY when every
   // intermediate provably fits u16 ([0,65535], so i16x8 mod-2^16 never wraps and shr_u ==
   // the scalar shr_s on a non-negative value) and the result fits a byte ([0,255], so
-  // narrow_u never saturates). `byteValueRange` returns [min,max] or null when any node
+  // byte selection is exact). `byteValueRange` returns [min,max] or null when any node
   // is unanalyzable, can go negative, or exceeds u16. An invariant local of unknown
   // magnitude (local.get) → null → falls back to the bit-exact 4-wide path.
   const byteValueRange = (e) => {
@@ -4401,17 +4401,36 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   }
   // The i16x8 widening byte-map emit for ONE store, factored so a multi-channel fade reuses it
   // per channel: load each u8 input once (v128.load 16), extend_low/high to two i16x8 halves,
-  // run the affine map in i16x8 on each half, narrow_u to i8x16, store 16. Each load is hoisted
+  // run the affine map in i16x8 on each half, pack to i8x16, store 16. Each load is hoisted
   // (extend_low + extend_high share one load); loads run in source order, so an offset/address
   // `local.tee` in a load is set before the store's `local.get` reads it.
-  const widen16Emit = (sAddr, valueExpr) => {
+  const packWiden16 = (low, high) => {
+    // `(u16Expr >> 8) & 255` is the HIGH byte of each u16 lane. Select it
+    // directly instead of materializing the shifts. Portable Wasm has no
+    // non-saturating add-high-narrow op, but this removes two vector shifts and
+    // gives native backends one byte-deinterleave to select. Other proven byte
+    // results select the low byte as before.
+    const highByte = low[0] === 'i16x8.shr_u' && high[0] === 'i16x8.shr_u' &&
+      isI32Const(low[2]) && constNum(low[2]) === 8 && isI32Const(high[2]) && constNum(high[2]) === 8
+    if (highByte) { low = low[1]; high = high[1] }
+    const b = highByte ? 1 : 0
+    return ['i8x16.shuffle',
+      String(b), String(b + 2), String(b + 4), String(b + 6),
+      String(b + 8), String(b + 10), String(b + 12), String(b + 14),
+      String(16 + b), String(18 + b), String(20 + b), String(22 + b),
+      String(24 + b), String(26 + b), String(28 + b), String(30 + b), low, high]
+  }
+  const widen16Plan = (sAddr, valueExpr, byteOffset = 0) => {
     const loadTemps = new Map()
     const loadSets = []
+    const at = (addr) => byteOffset
+      ? ['i32.add', cloneNode(addr), ['i32.const', byteOffset]]
+      : cloneNode(addr)
     const collectLoads = (e) => {
       if (!isArr(e)) return
       if (e[0] === 'i32.load8_u') {
         const k = JSON.stringify(e[1])
-        if (!loadTemps.has(k)) { const t = freshV128('win'); loadTemps.set(k, t); loadSets.push(['local.set', t, ['v128.load', e[1]]]) }
+        if (!loadTemps.has(k)) { const t = freshV128('win'); loadTemps.set(k, t); loadSets.push(['local.set', t, ['v128.load', at(e[1])]]) }
       } else for (let i = 1; i < e.length; i++) collectLoads(e[i])
     }
     collectLoads(valueExpr)
@@ -4426,8 +4445,18 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
       if (op === 'i32.and') return ['v128.and', liftW(e[1], half), ['i16x8.splat', e[2]]]
       return null   // byteValueRange already proved every op is one of the above
     }
-    return [...loadSets,
-      ['v128.store', sAddr, ['i8x16.narrow_i16x8_u', liftW(valueExpr, 'low'), liftW(valueExpr, 'high')]]]
+    const addr = at(sAddr)
+    const low = liftW(valueExpr, 'low'), high = liftW(valueExpr, 'high')
+    // byteValueRange proved every shifted result in [0,255], so selecting each
+    // i16 lane's low byte is exact. A saturating narrow states a stronger,
+    // unnecessary operation and blocks native backends from selecting fused
+    // shift/add+narrow instructions.
+    return { loads: loadSets, addr, low, high,
+      body: [['v128.store', addr, packWiden16(low, high)]] }
+  }
+  const widen16Emit = (sAddr, valueExpr, byteOffset = 0) => {
+    const p = widen16Plan(sAddr, valueExpr, byteOffset)
+    return [...p.loads, ...p.body]
   }
 
   let lifted, LANES
@@ -4461,14 +4490,27 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   } else {
     const wideValueExpr = (!hasLoads && byteValueExpr) ? byteValueExpr : null   // pure ramp → 16-wide pack
     const widenRange = (hasLoads && byteValueExpr) ? byteValueRange(byteValueExpr) : null
-    const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ narrow_u exact
+    const WIDEN16 = widenRange != null && widenRange[1] <= 255   // result fits a byte ⇒ byte-pack exact
     const WIDE16 = wideValueExpr != null
     LANES = (WIDE16 || WIDEN16) ? 16 : 4
     const ramp = (off) => ['i32x4.add', ['i32x4.splat', ['local.get', ivName]],
       ['v128.const', 'i32x4', String(off), String(off + 1), String(off + 2), String(off + 3)]]
 
     if (WIDEN16) {
-      lifted = widen16Emit(storeAddr, byteValueExpr)
+      // wasm2c preserves Wasm's structured back-edge, which keeps clang from
+      // applying its native multi-vector unroller. Schedule four independent
+      // vectors here: one loop trip handles a cache-line-sized 64-byte span,
+      // exposing the same memory-level parallelism as clang's scalar→NEON/AVX
+      // path. The aligned SIMD bound plus the untouched scalar loop below cover
+      // every remainder exactly, including spans shorter than 64 bytes.
+      LANES = 64
+      const plans = []
+      for (let off = 0; off < LANES; off += 16) plans.push(widen16Plan(storeAddr, byteValueExpr, off))
+      // Keep all group inputs live together. Without this phase split, watr
+      // correctly coalesces each non-overlapping temp into one local and the C
+      // backend sees four serial chains. Overlapping the load lifetimes forces
+      // independent v128 values and lets the native scheduler interleave them.
+      lifted = plans.flatMap(p => p.loads).concat(plans.flatMap(p => p.body))
     } else if (WIDE16) {
       lifted = []
       const vv = []

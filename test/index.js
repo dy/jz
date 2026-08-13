@@ -85,6 +85,7 @@ const TESTS = [
   'minimal-output',
   'bench-svg',
   'bench-c',
+  'native-lowering',
   'kernel-parity',
   'kernel-oracle',
   'headline',
@@ -134,7 +135,7 @@ const argFilters = process.argv.slice(2)
 //   (2026-07-25: no remaining recorded kernel VALUE bugs in this list — the
 //   json shaped-parser asserts cleared with the elemOrigin fix; what's left
 //   above is hang-bisection debt and leg-mismatch classes, not value bugs.)
-const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'kernel-parity', 'kernel-oracle',
+const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snapshot', 'timers', 'wasi', 'watr', 'warnings', 'perf-ratchet', 'unswitch-typed-param', 'bench-c', 'native-lowering', 'kernel-parity', 'kernel-oracle',
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',

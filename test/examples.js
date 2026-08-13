@@ -188,10 +188,10 @@ test('example: lyapunov iterated-map reduction vectorizes to f64x2 and stays bit
 // of each lift is gated in test/simd.js + the differential fuzz; here we guard the perf cause.)
 test('example: regressed kernels keep their vectorization (byte-fade / pmax / narrow)', () => {
     const watOf = (name) => jz.compile(fs.readFileSync(new URL(`../examples/${name}/${name}.js`, import.meta.url), 'utf8'), { ...OPT, wat: true });
-    // nbody + boids: the in-place u8 trail fade `(ink[i]*k)>>8` lifts 16-wide (i16x8 widen → narrow_u).
+    // nbody + boids: the in-place u8 trail fade `(ink[i]*k)>>8` lifts 16-wide (i16x8 widen → byte pack).
     for (const name of ['nbody', 'boids']) {
         const w = watOf(name);
-        ok(/i16x8\.mul/.test(w) && /i8x16\.narrow_i16x8_u/.test(w), `${name}: trail fade must lift to the 16-wide byte path (i16x8 widen + narrow_u)`);
+        ok(/i16x8\.mul/.test(w) && /i8x16\.shuffle/.test(w), `${name}: trail fade must lift to the 16-wide byte path (i16x8 widen + byte pack)`);
     }
     // buddhabrot: the density peak-find `if (d > m) m = d` lifts to f64x2.pmax (NaN-exact, relaxedSimd).
     ok(/f64x2\.pmax/.test(watOf('buddhabrot')), 'buddhabrot: density peak-find must lift to f64x2.pmax');
