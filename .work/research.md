@@ -8562,3 +8562,232 @@ a front boundary that corrupts real programs would compound an unsound
 foundation, not extend one"), unchanged by this session because the front
 itself is still not 13/13.
 `3a5cdf13...909e66e` recorded above for reference, files deleted).
+
+## §Region arena — BOTH standing rows are ONE mechanism, not two: real
+symbolication (names:true bytes, not wat:true — the prior sessions' method
+was silently broken) pins the exact crashing function and a 9-byte minimal
+repro; 3 concrete root-completeness hypotheses tested and REFUTED; a
+genuinely separate, region-unrelated `ctx.features.errorClasses` DBG_INVARIANTS
+gap found and set aside; WALL NOT CLOSED, next lead narrowed (2026-08-13)
+
+**Setup.** Fresh worktree
+`/private/tmp/claude-501/.../scratchpad/region-peel-f` off `ab2f2f40`
+(detached). `node_modules/watr` reinstalled via `npm ci` and verified
+byte-identical to the local `watr` repo at `895ca5b` (both `watr.js` and
+`package.json` diff clean) — confirmed again at session end, unchanged.
+Read `.work/research.md` §Region arena in full, including the 63a5551e/
+41024dd6/ab2f2f40 entries the brief named.
+
+**Method fix (this is the session's first real finding): the predecessors'
+"decompile via wasm-objdump" lead was never actually blocked on wasm-objdump
+— it was blocked on a wrong `compile()` call.** `index.js`'s pipeline
+appends the wasm `name` custom section (`appendFunctionNames`) ONLY on the
+bytes return path (line ~641); `opts.wat: true` returns straight from
+`watrPrint(optimized)` several lines EARLIER (line ~635) and never reaches
+that append. The prior sessions built their "named" kernel with BOTH
+`wat:true` AND `names:true` together (`compile(..., {wat:true, names:true})`)
+— `names:true` was silently a no-op, so their WAT-text function order was
+never actually backed by a real name section, and their "count `(func
+$name` occurrences in file order" symbolication of `wasm-function[N]` was
+guessing against an unrelated numbering, correctly diagnosed as unreliable
+but never traced to ITS OWN root cause. This session built the region-live
+kernel via `compile(profile.graph.code, {modules, memory, optimize,
+names: true})` — bytes, no `wat:true` — and V8's own stack traces now
+print real, compiler-assigned names directly (`closure4232`,
+`m106_emit$emit`, `m106_emit$emitDecl`, …) with zero guessing. `wasm-objdump
+-d` on the same bytes (confirmed to carry a `name` custom section via `-h`)
+independently corroborates every name V8 reports.
+
+**Both standing oracle rows are the SAME crash, not two mechanisms.**
+Reproduced both `test/kernel-oracle.js` rows (envMeta-shape line 327 and
+PENDING-FIX captured-then-read line 665) directly against the named kernel
+(`exports.default(...)`, the same ABI `compileViaKernel` uses) at O0/O2/O3,
+×3 each: **identical stack trace, identical crash address, for both**:
+```
+RuntimeError: memory access out of bounds
+    at closure4232 (wasm://wasm/…:wasm-function[3757]:0x821a6f)
+    at m106_emit$emit (wasm-function[82])
+    at m106_emit$emitDecl (wasm-function[2059])
+    at m106_emit$emitVoid → emitBlockBody → m121_index$emitFunc → closure2763 → m121_index$compile → compileSelf → compileSelf$exp
+```
+Both traps are inside the KERNEL's own emit phase (well before
+`optimizeTail`/`watOptimize` ever runs — Slice 1's round-loop reclaim is
+provably not implicated, it hasn't started yet), confirming and sharpening
+the prior session's "crashes inside the kernel's own compilation, not the
+compiled program" finding into "crashes at the exact same instruction for
+both rows." Dormant (REGION_HOOKS_ACTIVE=false) compiles both clean, ×2 —
+confirmed region-live-specific, not a pre-existing bug this session
+stumbled into.
+
+**Minimal repro found by black-box bisection (no source edits), 9
+characters shorter than 63a5551e's own `let x=n;g=()=>x` and — critically
+— actually reproduces on the CURRENT tree (that older repro no longer
+traps here, shapes have drifted, exactly as `ab2f2f40`'s entry warned):**
+```js
+export let f = () => { let arr = [() => 1]; return arr.length }
+```
+Bisection table (region-live kernel, opt0, same crash frame/address for
+every failing row):
+| variant | result |
+|---|---|
+| `let arr=[() => 1]; return 0` (arr never read) | **OK** — provably DCE'd |
+| `let arr=[() => 1]; return arr.length` | **TRAPS** |
+| `let arr=[() => 1]; return arr[0]()` | **TRAPS** |
+| `const g=()=>1; const h=g; return h()` (closure never boxed into a container) | **OK** |
+| `const g=()=>1; const call=(fn)=>fn(); return call(g)` (closure passed as an arg, not array-stored) | **OK** |
+| `let v=x>0&&1; const g=()=>v; return g()` (direct call, BOOL∪NUMBER capture) | **OK** — refutes carrier-collapse as the PENDING-FIX row's own mechanism |
+| array element is a plain OBJECT / STRING / top-level named function, `.length` read | **OK** in every case |
+| array element is a LOCAL closure (captures 0 or N vars, doesn't matter), `.length` OR `[0]()` read | **TRAPS**, always the same frame |
+
+Net: the trigger is "a locally-declared arrow closure is stored as an
+array element AND the array is later read (any read — even `.length`,
+never mind actually calling the closure)." Capture count, capture type,
+BOOL∪NUMBER-ness, and whether the closure is ever actually invoked are
+ALL irrelevant — narrower and more precise than either prior row's own
+framing ("envMeta shape" / "carrier collapse") suggested. `test/kernel-
+oracle.js`'s PENDING-FIX row's own comment ("NOT the minimal `const g =
+() => v; return g()` shape") is correct but the reason given (carrier
+collapse) is wrong — the real reason is direct-call closures never get
+boxed into a container at all.
+
+**Faulting instruction (wasm-objdump -d on the exact crash address):** a
+double-indirection gather loop —
+```
+out[i] = *(f64*)( *(i32*)(ptrArrBase + i*4) + 16 )
+```
+(local-60-based f64 output array stride 8; local-71-based i32 pointer
+array stride 4; dereferenced pointer's +16 field read as f64 — the VALUE
+field of a 24-byte HASH/MAP entry, hash@0/key@8/value@16, per
+`__durable_slot_heal`'s own documented layout) preceded immediately by
+`call $__coll_order` + `call $__alloc_hdr`. This is a Map/Hash-values-into-
+a-fresh-array gather shape, structurally identical to what `__region_copy_
+rec`'s own SET/MAP arm does for its `dirty`/`snapshots` rebuild — but
+`closure4232` is a JS-source-derived closure (an anonymous arrow, not a
+`$`-named WAT stdlib function), and its own WAT body (found at
+`kernel-broken.wat:4276233`, ~100 declared locals) opens with the exact
+`if (!ctx.closure.make) err(…)` guard literally written in `src/compile/
+emit.js`'s `'=>':` handler (line 7048) — strong, not just suggestive,
+evidence `closure4232` IS (or directly inlines) `ctx.closure.make`
+(`module/function.js`), the ONE function every arrow-closure literal
+compiles through, called for BOTH the crashing and non-crashing bisection
+rows alike — so the crash is NOT inside `.make()` uniformly, it's inside
+something ONLY the "closure escapes into a container" path additionally
+reaches (module/array.js's `fnElements` tagging and/or `src/compile/dyn-
+closure-tables.js`'s candidate-scanning machinery are the leading
+suspects, not yet confirmed against this exact repro's shape since it
+isn't module-scope and doesn't obviously hit the one `ptr.fnElements =`
+site currently found by grep — a gap in the account, named explicitly
+rather than glossed over).
+
+**Three concrete hypotheses tested by direct rebuild-and-repro (not
+guessed, not left as speculation) — ALL THREE REFUTED, evidence banked so
+the next session doesn't re-spend the ~4.5 min/build cost re-testing
+them:**
+1. *`ctx.scope`/`ctx.types` missing from `src/front.js`'s 5-element region
+   root* (`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`) —
+   both are genuine top-level `ctx.*` fields with Set/Map-shaped children
+   written during `prepare()` (`ctx.scope.chain/globals/userGlobals/consts/
+   moduleLoopCaptured/shapeStrs`, `ctx.types.typedElem/dynKeyVars`) and
+   NOT in the root — the closest structural match to the banked lead's own
+   wording. Added both as two more root elements + rebind targets, rebuilt,
+   reran the minimal repro + both rows at O0/O2/O3 ×3: **identical crash,
+   same frame, same address to the byte** (`0x821a6f` unchanged). REFUTED.
+2. *`ctx.closure` itself is the miscopied root* (its own properties
+   include genuine closure-typed values — `.mint`/`.make`/`.call` — whose
+   PTR.CLOSURE relocation depends on `$__closure_env_len`/`$__closure_env_
+   mask` side tables baked describing the KERNEL's OWN closures at kernel-
+   build time). Dropped `ctx.closure` from the root/rebind entirely
+   (left durable, untouched by region_exit), rebuilt, reran: **identical
+   crash** (address shifted by a few bytes from the smaller root tuple,
+   same frame, same relative logic). REFUTED — ctx.closure's presence or
+   absence in the root has zero effect on this crash.
+3. *`ctx.features` missing from the root* — found via a genuinely useful
+   side door: building with `debugInvariants:true` (resolveSelfhostBuild's
+   own opt-in knob) surfaces a CLEAN, explicit, non-OOB failure instead of
+   the raw trap: `[ctx invariant] pre-assemble: ctx.features.errorClasses
+   missing — every FeaturePlan key must be seeded, not an absent key`.
+   `ctx.features` (`src/ctx.js`: `features: {}`, a top-level ctx field
+   NOT in the root) gets `errorClasses` seeded via `(ctx.features.
+   errorClasses ??= new Set()).add(...)` inside `src/prepare/index.js`
+   (i.e. during `prepare()`, inside the region span) — textbook root-
+   completeness-gap shape, matching the campaign's prior 4 fixed
+   mechanisms closely. Added `ctx.features` as a 6th root element,
+   rebuilt: **the invariant failure is UNCHANGED, byte-identical message**
+   — AND (decisive control) the SAME invariant failure reproduces on a
+   **DORMANT** build (`REGION_HOOKS_ACTIVE=false`, `regionArenaLive:
+   false`) with `debugInvariants:true`. This proves the `ctx.features.
+   errorClasses` gap is REGION-UNRELATED — a real, separate, pre-existing
+   DBG_INVARIANTS coverage gap (plausibly: a program that never
+   constructs/throws an Error never reaches whatever normally seeds
+   `errorClasses`, and the invariant check doesn't tolerate that), out of
+   this campaign's scope, named here so nobody re-discovers it as a false
+   lead. Neither confirms nor refutes anything about the OOB mechanism
+   (the debug-invariants build never gets far enough to reach `closure4232`
+   — it trips the earlier, unrelated check first on every program).
+
+**Disposition — NO FIX LANDED, wall re-banked with substantially narrower
+evidence than any prior session left.** All three edits (`src/front.js`
+×2 shapes, `scripts/self.js` REGION_HOOKS_ACTIVE toggle) were worktree-
+scratch, built/tested, then reverted; `git diff --stat` in the worktree
+at session end is empty against `ab2f2f40`. kernel-oracle unchanged at
+**9/13 region-live** (not re-run this session beyond the two named rows'
+own direct repro, which is the same evidence the milestone check already
+has — no regression, no progress on the count). No gate battery run
+(nothing landed to gate).
+
+**Recommendation for next session — go deeper on the SAME mechanism, not
+wider.** The three refuted hypotheses (§1-3 above) all targeted "a whole
+`ctx.*` subtree is missing from the region root" — that WHOLE CLASS is now
+weak evidence (0 for 3), unlike the campaign's prior 4 mechanisms which
+were exactly that shape and fixed on the first or second try. Two live
+threads, either is cheaper than re-trying root-completeness variants:
+(a) **Finish the `closure4232` attribution.** It opens with `emit.js`'s
+`'=>':` handler's own `err()` guard verbatim, so it's extremely likely
+`ctx.closure.make`'s own compiled body (module/function.js:127-280) OR a
+helper it inlines — but `.make()` runs on EVERY closure literal
+(crashing and non-crashing bisection rows alike), so the actual fault
+must be in a sub-path gated on "this closure escapes as a value," not
+`.make()` uniformly. Grep `module/array.js`'s DYNAMIC (non-module-scope)
+array-literal path — `allocArray`, not the `ptr.fnElements =` static-
+data-segment branch found this session (which requires
+`ctx.func.atModuleScope`, not the repro's shape) — for an analogous
+closure-value-tagging step; that's the most likely site of the ACTUAL
+coll_order/gather codegen closure4232's WAT body shows two clusters of.
+(b) **Splice a genuine WAT-level breadcrumb** (per the campaign's own
+mandatory method — NOT another JS-source hypothesis edit) at `closure4232`'s
+own entry (module index 3757 is now a KNOWN, STABLE address across builds
+sharing this exact root shape — confirmed identical across all 4 builds
+this session) capturing the `$aux`/`$n`/`$cellMask` locals (this session's
+own disassembly names them precisely: locals decoded from the raw hex dump
+map directly onto the WAT text's declared local list in the SAME order,
+so this is mechanical, not a re-guess) into an i64 debug global right
+before the faulting `f64.load offset=16`, for the 9-character minimal
+repro — the cheapest possible instrumented run (~250s build, sub-second
+repro). That number, cross-referenced against `ctx.closure.envMeta`'s own
+JS-side contents at the SAME point (a second breadcrumb, same technique),
+will show directly whether the gather is reading a wrong/uninitialized
+slot count vs. a wrong base pointer — the two remaining candidate
+mechanisms this session did not have time to distinguish.
+
+**Also banked, not this campaign's concern:** `ctx.features.errorClasses`'s
+DBG_INVARIANTS gap (§3 above) — reproduces dormant, unrelated to region
+work, worth a throwaway one-line fix (`errorClasses: null` should
+satisfy an own-property-existence check already, so the invariant check
+itself, or FeaturePlan's PROGRAM-tier seeding order, likely has the real
+gap) but explicitly out of scope for this session's mandate.
+
+**Gates.** No source changed persists beyond this ledger entry — every
+edit was built, tested, and reverted; worktree `git diff --stat` against
+`ab2f2f40` is empty. `node_modules/watr` reconfirmed byte-identical to
+`895ca5b` (`watr.js`/`package.json` diff clean) both before and after.
+kernel-oracle: unchanged at 9/13 region-live (this session's own direct
+repro of both standing rows, ×3 each, matches the milestone check's
+existing count — no new run of the full suite since nothing landed to
+gate). "REGION FRONT COMPLETE candidate" NOT declared — unchanged from
+the prior milestone check.
+
+**SHAs.** jz worktree: `ab2f2f40` base, unchanged (nothing committed
+beyond this ledger entry). watr: `895ca5b`/5.7.14, reconfirmed identical.
+No `dist/jz.wasm` artifact from this session persists (all builds were
+scratch, in the session scratchpad, never copied into the worktree's own
+`dist/`).
