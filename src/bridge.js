@@ -8,7 +8,7 @@
  * @module bridge
  */
 
-import { ctx, emitter } from './ctx.js'
+import { ctx, emitter, registerName } from './ctx.js'
 import { typed, asF64, asI32, asI64, carrierF64, carrierF64Narrow } from './ir.js'
 import { hasAmbiguousBoolMerge } from './kind.js'
 
@@ -67,7 +67,19 @@ export const bool = (...a) => ctx.bridge.bool(...a)
 export const idx = (...a) => ctx.bridge.idx(...a)
 export const spread = (...a) => ctx.bridge.spread(...a)
 
-/** Attach a pre-built handler (e.g. from method/emitter) to ctx.core.emit. */
+/** Attach a pre-built handler (e.g. from method/emitter) to ctx.core.emit.
+ *  Plain write, same as a raw `ctx.core.emit[name] = handler` — bind() is
+ *  sugar for the DEFAULT dialect (CONTRIBUTING "Stdlib registration"), not
+ *  the structured reg()/wat() one, so it's allowed to shadow an earlier
+ *  bind()/raw entry for the same name: a later, more specific module
+ *  overriding an earlier generic default (e.g. date.js's Date-specific
+ *  `.valueOf` over string.js's generic Object.prototype fallback) is a
+ *  deliberate, load-order-dependent specialization idiom, not a bug. Only
+ *  clobbering a reg()/wat()/registerGetter name is a mistake — caught by
+ *  verifyRegistrationIntegrity (src/ctx.js) after every module's init(ctx)
+ *  (src/autoload.js includeModule), which is mechanism-agnostic: it flags
+ *  the protected name being overwritten regardless of whether a raw
+ *  assignment or a bind() call did it. */
 export const bind = (name, handler) => {
   ctx.core.emit[name] = handler
   return handler
@@ -85,7 +97,7 @@ export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
 /** WAT stdlib body (+ optional deps edge for resolveIncludes). */
 export const wat = (name, body, depNames = []) => {
-  ctx.core.stdlib[name] = body
+  registerName(ctx.core.stdlib, ctx.core.regStdlibOrder, ctx.core.regStdlibDialect, ctx.core.regStdlibModule, name, 'wat', body)
   if (depNames.length) deps({ [name]: depNames })
 }
 
@@ -103,13 +115,13 @@ export const reg = (name, depsOrOpts, maybeFn) => {
     }
     if (o.emit) {
       const h = emitter(depsList, o.emit)
-      ctx.core.emit[name] = h
+      registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, name, 'reg', h)
       return h
     }
     return
   }
   const h = emitter(depsOrOpts, maybeFn)
-  ctx.core.emit[name] = h
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, name, 'reg', h)
   return h
 }
 

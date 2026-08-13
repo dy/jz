@@ -1,6 +1,6 @@
 /** Runtime module autoload rules used by prepare(). */
 
-import { ctx, err, setFeature } from './ctx.js'
+import { ctx, err, setFeature, verifyEmitIntegrity } from './ctx.js'
 import * as mods from '../module/index.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
@@ -182,7 +182,16 @@ export function includeModule(name) {
   if (ctx.module.modules[modName]) return
   ctx.module.modules[modName] = true
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
+  // Stdlib registration two-dialect gate (CONTRIBUTING "Stdlib registration"):
+  // reg()/registerGetter() guard their OWN write (src/ctx.js registerName),
+  // but can't see a LATER raw `ctx.core.emit[name] = …` assignment inside
+  // this module's init(ctx) silently clobbering one of them — that needs
+  // checking AFTER init(ctx) runs, once its raw assignments (if any) have
+  // already landed. ctx.core.emit only — see verifyEmitIntegrity's doc
+  // comment for why ctx.core.stdlib/wat() isn't symmetric here.
+  ctx.core.currentModule = modName
   init(ctx)
+  verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule)
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])

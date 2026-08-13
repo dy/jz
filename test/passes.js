@@ -231,6 +231,64 @@ test('passes: raw stdlib assignments never shadow a reg()-registered name (stdli
   is(offenders.join(', '), '', `raw stdlib assignments shadowing reg(): ${offenders.join('; ')}`)
 })
 
+test('passes: duplicate stdlib registration throws at registration time, both dialect orders (stdlib fail-fast)', async () => {
+  // Runtime counterpart to the static gate above (CONTRIBUTING "Stdlib
+  // registration"): registerName/verifyRegistrationIntegrity (src/ctx.js,
+  // wired into reg()/wat()/registerGetter() — src/bridge.js — and
+  // includeModule() — src/autoload.js) make a duplicate name-registration
+  // fail LOUD at registration time instead of the module/*.js text scan
+  // being the only line of defense. Exercises both temporal orders: a raw
+  // assignment before reg() (caught immediately, registerName's own
+  // pre-write check) and a raw assignment after reg() (the historically
+  // silent, dangerous direction CONTRIBUTING singles out — caught by
+  // verifyRegistrationIntegrity right after the clobbering module's
+  // init(ctx) returns). Uses src/ctx.js directly (not real module/*.js
+  // sources) so this test pins the MECHANISM, independent of which real
+  // stdlib names happen to collide today.
+  const { ctx, reset, registerName, verifyEmitIntegrity } = await import('../src/ctx.js')
+  const noopBridge = { emit: () => {}, flat: () => {}, body: () => {}, bool: () => {}, idx: () => {}, spread: () => {}, emitIdentitySafe: () => {} }
+  const freshHandler = () => Object.assign(() => 1, { deps: [], argc: 0 })
+
+  // combo 1: raw assignment first, reg() second — caught immediately.
+  reset({}, {}, noopBridge)
+  ctx.core.currentModule = 'testModuleA'
+  ctx.core.emit['__testDup1'] = () => 0
+  let threw = null
+  try { registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup1', 'reg', freshHandler()) }
+  catch (e) { threw = e }
+  ok(threw, 'raw-then-reg: registerName throws')
+  ok(threw && /already exists/.test(threw.message) && /__testDup1/.test(threw.message), 'raw-then-reg: message names the colliding name')
+
+  // combo 2: reg() first, raw assignment second — caught post-hoc, after the
+  // clobbering module's init(ctx) would have returned.
+  reset({}, {}, noopBridge)
+  ctx.core.currentModule = 'testModuleB'
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup2', 'reg', freshHandler())
+  ctx.core.currentModule = 'testModuleC'
+  ctx.core.emit['__testDup2'] = () => 2   // raw clobber — drops the emitter() wrapper's .deps tag
+  threw = null
+  try { verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule) }
+  catch (e) { threw = e }
+  ok(threw, 'reg-then-raw: verifyEmitIntegrity throws')
+  ok(threw && /silently overwritten/.test(threw.message) && /__testDup2/.test(threw.message), 'reg-then-raw: message names the colliding name')
+
+  // combo 3: reg() twice for the same name — caught immediately, same as combo 1.
+  reset({}, {}, noopBridge)
+  ctx.core.currentModule = 'testModuleD'
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler())
+  threw = null
+  try { registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler()) }
+  catch (e) { threw = e }
+  ok(threw, 'reg-then-reg: registerName throws')
+  ok(threw && /already registered/.test(threw.message) && /testModuleD/.test(threw.message), 'reg-then-reg: message names the original registering module')
+
+  // Sanity: a real compile still works after directly poking ctx.core above —
+  // reset() rebuilds ctx.core.emit/regEmitOrder/etc. from scratch each call,
+  // so the synthetic '__testDup*' entries never leak into a real compile.
+  const out = compile('let x = [1, 2, 3]; console.log(x.length)')
+  ok(out && out.length > 8, 'real compile unaffected by the synthetic collisions above')
+})
+
 test('passes: HELPER_COUNTERS names exist in module/src sources (drift gate)', () => {
   // HELPER_COUNTERS (src/helper-counters.js) is a hand-maintained allowlist of hot
   // WAT stdlib helpers instrumented for --helper-counters profiling. It drifts

@@ -7313,3 +7313,221 @@ Dormant `dist/jz.wasm` (final gate rebuild): 16,678.9 kB,
 `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
 (unchanged from `475a202d` — this session's only edits to that file were
 scratch, built/tested, then discarded via `git checkout --`).
+
+## §Stdlib registration: two-dialect silent-overwrite eliminated — guard landed, unification banked with a sketch (2026-08-13)
+
+**Goal.** CONTRIBUTING.md's "Stdlib registration — two dialects, by design"
+paragraph documented ONE hard, mechanical hazard — a raw `ctx.core.emit[name]
+= fn` (or `bind(name, fn)`) assignment textually after a `reg(name, deps,
+fn)` call for the SAME name silently overwrites `emitter()`'s wrapper,
+dropping the auto-inc(deps)/`.argc` guarantee with no error — and named a
+single mitigation: `test/passes.js`'s stdlib-shadow test, a REGEX scan
+scoped to same-file/same-top-level-function textual order. Two real gaps:
+(1) it only catches raw-AFTER-reg within one file's one function — a
+cross-module collision (module B's `reg()` shadowing module A's earlier raw
+write, or vice versa) was entirely unguarded, statically or at runtime; (2)
+the reverse order (`reg()` superseding an earlier raw assignment) was
+explicitly tolerated as "just orphans dead code, delete on sight" — a
+silent, must-remember-to-clean-up state, not a hard failure. Task: make
+BOTH orders of a duplicate registration — through EITHER dialect — throw at
+registration time, naming both sources, and remove the silent-overwrite
+window entirely (not just narrow the static scan).
+
+**The two dialects** (bridge.js): raw `ctx.core.stdlib[name] = body` /
+`ctx.core.emit[name] = fn` (or `bind()`, its named sugar for the exact same
+write) — ~580 sites, the DEFAULT for dep-free/arity-irrelevant handlers,
+including a genuinely load-bearing generic→specific override CHAIN (e.g.
+`string.js`'s `bind('.valueOf', …)` Object.prototype fallback, deliberately
+shadowed by `date.js`'s raw `ctx.core.emit['.valueOf'] = emitDateGetTime`
+loaded later via `MOD_DEPS`) — vs. `reg(name, deps, fn)`/`wat(name, body)`
+(→ `emitter()`, ctx.js) — ~35+113 sites — REQUIRED whenever deps must
+auto-include (`inc(...deps)` on every call) or logical arity must be
+explicit (`.argc`, for `emitArity()`'s rest-param-wrapper case).
+
+**Root-cause fix, not the dialect unification.** Collapsing ~580 raw sites
+to `reg()` universally was explicitly out of scope unless "modest and
+mechanical" — it is neither (every site would need a deps-list judgment
+call the audit that wrote the original CONTRIBUTING paragraph already
+declined to make mechanically; see below for the banked sketch). Landed
+instead: a real registration-time collision guard, `registerName`/
+`verifyEmitIntegrity` (src/ctx.js), wired into `reg()`/`wat()` (bridge.js)
+and `registerGetter()` (ctx.js) — the three STRUCTURED entry points — plus
+`includeModule()` (src/autoload.js), which sets `ctx.core.currentModule`
+before each module's `init(ctx)` and calls `verifyEmitIntegrity` right
+after it returns.
+
+- **Pre-write check** (`registerName`): before writing `table[name]`,
+  throws if the name is already occupied — by an earlier `reg()`/`wat()`/
+  `registerGetter()` call (tracked) OR an earlier raw/`bind()` write
+  (detected via a plain `table[name] !== undefined` read — no registered
+  value is ever `undefined`). This alone covers raw-then-reg (the
+  historically undetected-until-audit direction, elevated here from
+  "orphans dead code" to a hard throw) and reg-then-reg/wat-then-wat
+  (typo-shaped duplicate registrations).
+- **Post-hoc check** (`verifyEmitIntegrity`, ctx.core.emit only): after
+  each module's `init(ctx)` returns, re-checks every name that module (or
+  an earlier one) `reg()`-registered — if `table[name]` is no longer the
+  exact `emitter()`-wrapped handler (checked via the `.deps` tag every
+  `emitter()` output already carries, not a stored reference — see below
+  for why), throws. This closes reg-then-raw, the ONE mechanically
+  dangerous direction CONTRIBUTING originally named, now caught
+  immediately instead of requiring an audit to notice (the exact shape of
+  the `module/math.js` `f16round` incident CONSISTENCY-AUDIT RESPONSE
+  task 1/3, 2026-08-09, found and deleted by hand).
+- **Deliberately NOT symmetric for `ctx.core.stdlib`/`wat()`**: a WAT body
+  is a plain string with no wrapper metadata to silently lose — a raw
+  clobber there is an outright wrong-text bug, not CONTRIBUTING's
+  invisible-guarantee-drop hazard, and (per the bisection below) tagging a
+  string isn't possible without reintroducing the exact structure that
+  broke self-host warm reuse. `wat()` still gets the pre-write check
+  (registerName is shared), just not the post-hoc one.
+- **Deliberately NOT applied to `bind()`/raw-vs-raw**: the `.valueOf`
+  override chain above is real, load-bearing, and NOT a bug — the guard
+  only protects names that went through `reg()`/`wat()`/`registerGetter()`
+  at least once; two raw/`bind()` writers for the same name silently
+  "last one wins" by design, matching the ORIGINAL CONTRIBUTING framing
+  (only reg()-involving shadowing was ever called dangerous).
+
+**A genuinely raw bracket assignment can't be trapped in general** — no
+Proxy (see below, this is why) — so the guard's coverage is exactly "any
+duplicate where at least one side went through `reg()`/`wat()`/
+`registerGetter()`", which is precisely the class CONTRIBUTING's own
+"REQUIRED whenever…" rule identifies as consequential. A pure raw-vs-raw
+duplicate (two DIFFERENT raw definitions for the same name, no `reg()`
+involved) remains statically-checked only, via the pre-existing
+`test/passes.js` regex gate — banked as a known, deliberate, honesty-first
+scope boundary, not silently dropped.
+
+**Why not a `Proxy`.** `ctx.core.emit`/`ctx.core.stdlib` are written by
+~580 literal `table[name] = fn` sites across `module/*.js` — intercepting
+an arbitrary property write needs a `Proxy` trap, and `src/ctx.js` (this
+guard's home) is compiled BY jz into `dist/jz.wasm` as part of
+self-hosting — `scripts/self.js` imports it directly, and every module's
+`init(ctx)` (including every raw-assignment site) runs as compiled WASM
+whenever `dist/jz.wasm` compiles a program (exercised by `test:wasm`, the
+existing self-host test suite). Proxy traps aren't in jz's self-hostable
+subset (no `Proxy` anywhere in `CTORS`/`TYPED_CTORS`/`COLLECTION_CTORS`,
+`src/autoload.js`) — wrapping `table` in one would either fail `npm run
+build` outright or (worse) silently misbehave inside the compiled kernel.
+Confirmed empirically: `npm run build` (native pipeline compiling
+`scripts/self.js` INTO `dist/jz.wasm`) is itself the mechanism that must
+survive every change to this file.
+
+**A second, harder self-host hazard found and fixed by bisection.** The
+first two working designs (a name→`{module,dialect,value}` dict, then a
+`Map`, both used to attribute a collision to its original registering
+module) each PASSED native `npm test` (3428/3428, unchanged) but broke
+`test/selfhost.js`'s "warm-instance reuse" test — `_clear()` the wasm
+arena, recompile within the SAME instance, byte-pin against a fresh
+instance — with a bare "memory access out of bounds" on round 1. Bisected
+against that one test (each round: patch → `npm run build` → `node
+test/selfhost.js`, ~4 min/round, ~14 rounds total) to two independent,
+narrow root causes, NEITHER previously documented:
+1. **A second large (~150-600 entry) dynamically-key-growing dict/Map,
+   alive alongside `ctx.core.emit`'s own ~600-entry one, corrupts warm
+   `_clear()` reuse** — even though `ctx.core.emit` ITSELF (proto-seeded,
+   then grown to ~600 keys by every module, every compile, unchanged code)
+   proves ONE such dict is fine. Confirmed by elimination: `Map` → fail;
+   plain dict with an object-literal value → fail; plain dict with a
+   scalar-string value → fail; array-only (`.push()`, zero second dict) →
+   pass.
+2. **String CONCATENATION (`a + b` producing a genuinely NEW string),
+   repeated ~150 times during registration, corrupts warm `_clear()` reuse
+   even with ZERO dicts involved** (arrays only). String concat runs
+   constantly in ordinary compiled PROGRAMS without issue — the trigger is
+   concatenation specifically inside the COMPILER'S OWN self-hosted
+   bookkeeping, at this call volume, surviving to the next `_clear()`.
+   Confirmed by elimination: `site.push(a + '|' + b)` → fail;
+   `site.push(a); site.push(b)` (two separate pushes of ALREADY-EXISTING
+   string references, zero concatenation) → pass.
+
+Neither is root-caused inside the self-hosted dyn-props/string runtime
+itself (a real, separate, deeper investigation — flagged here, not
+chased, per this task's own scope). The shipped `registerName`/
+`verifyEmitIntegrity` sidesteps both: THREE plain arrays per table
+(`regEmitOrder`/`regEmitDialect`/`regEmitModule`, same trio for stdlib),
+insertion-ordered, looked up via a linear `order.indexOf(name)` scan (fine
+— registration is a one-time, not-hot phase, n ≈ a few hundred at most) —
+and every `+`/template-literal string build lives ONLY inside a `throw`
+branch (dead code on any passing compile, so it never executes during the
+warm-reuse round-trip either). `ctx.core.stdlib` is also switched from
+`{}` to `Object.create(null)` (matching `ctx.core.emit`'s `derive()`
+seed) so the pre-write `table[name] !== undefined` check can't
+false-positive on an inherited `Object.prototype` name.
+
+**Field-order discipline.** `ctx.core`'s object literal (reset(), ctx.js)
+carries an existing "MUST remain last" comment: the self-hosted kernel
+apparently reads some of its fields via SRoA-flattened positional slots,
+not by name, so inserting a field BEFORE an existing one shifts every
+later field's slot and silently corrupts the kernel's reads of them. All
+5 new fields (`currentModule`, `regEmitOrder`, `regEmitDialect`,
+`regEmitModule`, `regStdlibOrder`, `regStdlibDialect`, `regStdlibModule` —
+7 total) are appended strictly after `getters`, before that comment,
+never inserted mid-literal.
+
+**Banked: dialect unification sketch** (not pursued — diff isn't modest).
+Collapsing the ~580 raw sites to `reg()` uniformly would need, per site: (a)
+a deps-list judgment call (which stdlib helpers does this handler's body
+actually `inc()`? — grep-able per-site but not mechanically derivable
+without a real dataflow pass over each handler body, since `inc()` calls
+are free-form JS inside the closure, not a declarative list today), (b) an
+arity judgment call (does `Function.length` already match the intended
+logical arity, or does this handler need explicit `.argc`?), and (c)
+re-verifying every call site that reads `ctx.core.emit[name]` directly
+(bypassing `emitArity`) still gets a `.deps`-tagged function, since some
+consumers (`typeof Math.x` folding, the `.`-emit property/method split)
+branch on `emitArity()`'s fallback behavior. A safe MECHANICAL slice of
+this — NOT the whole thing — would be: (1) write a real dataflow pass
+(reuse `refsName`/`refsAny` from `ast.js`, per CONTRIBUTING's own "don't
+hand-roll name scanners" rule) that extracts each raw handler's actual
+`inc()` call list into a real `deps` array; (2) mechanically rewrite `raw
+ctx.core.emit[name] = fn` → `reg(name, extractedDeps, fn)` for every site
+where `fn.length` already matches its call sites' argument counts (the
+"common case, hence still the default" CONTRIBUTING already names); (3)
+hand-triage the residual sites where arity genuinely diverges (rest-param
+wrappers) — this is the SAME shape CONTRIBUTING's "logical arity diverges
+from `fn.length`" bullet already describes, just applied everywhere
+instead of only where deps/arity currently matter. Rough size: ~580 sites,
+so even a highly mechanical version is not a "modest" diff — likely its
+own multi-session project, not a drive-by. If undertaken, it also
+retires the STATIC raw-vs-raw blind spot named above for free (nothing
+raw left to blind-spot).
+
+**CONTRIBUTING.md updated** — "Stdlib registration" paragraph now
+describes the runtime guard (both throw directions, the `.valueOf`-style
+override-chain carve-out, the two test/passes.js gates) instead of the
+old "one hard rule, gated by a regex scan" framing. README.md untouched
+(out of scope, per the task brief).
+
+**Gate ladder** (isolated worktree at `e836e631`, branch
+`stdlib-failfast-2026-08-13`, `node_modules` symlinked from the main tree
+— re-verified byte-identical before and after, `watr@5.7.14`):
+
+| check | result |
+|---|---|
+| new test: duplicate registration throws, both dialect orders (`test/passes.js`) | 7/7 assertions pass — raw-then-reg (immediate), reg-then-raw (post-hoc), reg-then-reg (immediate), real compile unaffected by the synthetic pokes |
+| native `npm test` | 3429 pass (3428 baseline + 1 new test) / 1 fail (pre-existing, banked `typed RMW` guard-count pin) / 6 skip — **zero regressions** |
+| `npm run build` | clean; `dist/jz.wasm` 16,968,775 B |
+| `npm run build` ×2 | SHA-256 identical both times (`dist/jz.wasm` `3aa5be04…`, `dist/jz.js` `89840a83…`) |
+| `test:wasm` (`JZ_TEST_TARGET=jz.wasm`) | 2725 pass (2724 baseline + 1) / 0 fail / 6 skip — **zero regressions** |
+| `node test/selfhost.js` | 21/21 (206 assertions) — including the "warm-instance reuse" round-trip this session's bisection targeted |
+| kernel/golden output identity | a synthetic program (typed array + Math + Map + array `.map`/`.filter`) compiled byte-IDENTICAL on the modified worktree vs. an unmodified `e836e631` checkout, `optimize:3` |
+| `node_modules/watr` | byte-identical before/after (aggregate SHA-1 of all files: `11e440cb…`) |
+
+**Files.** `src/ctx.js` (registerName/verifyEmitIntegrity + 7 new
+`ctx.core` fields + `registerGetter` routed through the guard),
+`src/bridge.js` (`reg()`/`wat()` routed through the guard; `bind()`
+unchanged, deliberately), `src/autoload.js` (`includeModule` sets
+`ctx.core.currentModule` and calls `verifyEmitIntegrity` after each
+module's `init(ctx)`), `test/passes.js` (new test, existing static gate
+untouched), `CONTRIBUTING.md` (one paragraph). `src/compile/narrow.js`,
+`src/static.js`, `module/core.js`, `README.md` untouched, per the task
+brief.
+
+**SHAs.** jz worktree base: `e836e631` (main tip at worktree creation —
+confirmed it already carries the `$_alloc$exp`/`$_clear$exp` export-
+template fix per the task brief; main has since advanced 4 more commits,
+none touching this session's files except `src/ctx.js` — a 4-line
+`ctx.types.typedLen`/`assertCtxInvariants` diff with zero overlap,
+confirmed via `git diff e836e631..HEAD -- src/ctx.js`). watr: `5.7.14`,
+reconfirmed byte-identical before and after.
