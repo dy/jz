@@ -1,6 +1,49 @@
 import { cloneRep } from '../param-reps.js'
+import { DBG_INVARIANTS } from '../ctx.js'
 
 const cloneRepMap = map => map ? new Map([...map].map(([name, rep]) => [name, cloneRep(rep)])) : null
+
+/** Publish-time snapshots (JZ_DEBUG_INVARIANTS only) — see installFunctionPlan's
+ *  tripwire below. WeakMap<plan, independent-clone-of-plan>, populated the instant
+ *  a plan goes public; never read or written outside this file. */
+const publishSnapshots = new WeakMap()
+
+/**
+ * Structural equality over the closed set of shapes a FunctionPlan field can
+ * take: Map, Set, Array, plain rep object, primitive. Deliberately NOT
+ * Object.freeze-based (audit finding P1: freeze only locks the outer record,
+ * and under the self-hosted kernel it doesn't even do that — Object.freeze is
+ * identity there) and deliberately NOT a Proxy/getter facade (op-policy.js:
+ * "jz objects have no accessors"; ctx.js: "no Proxy global at all" — neither
+ * survives self-hosted compilation). Plain recursion over Map/Set/Object is
+ * the one vocabulary guaranteed to compile identically native and self-hosted.
+ */
+function planFieldsEqual(a, b) {
+  if (a === b) return true
+  if (a == null || b == null) return false
+  if (a instanceof Map) {
+    if (!(b instanceof Map) || a.size !== b.size) return false
+    for (const [k, v] of a) { if (!b.has(k) || !planFieldsEqual(v, b.get(k))) return false }
+    return true
+  }
+  if (a instanceof Set) {
+    if (!(b instanceof Set) || a.size !== b.size) return false
+    for (const v of a) if (!b.has(v)) return false
+    return true
+  }
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!planFieldsEqual(a[i], b[i])) return false
+    return true
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a)
+    if (ka.length !== Object.keys(b).length) return false
+    for (const k of ka) { if (!(k in b) || !planFieldsEqual(a[k], b[k])) return false }
+    return true
+  }
+  return false
+}
 
 /**
  * Publish one function's durable analysis result.
@@ -34,6 +77,13 @@ export function publishFunctionPlan(ctx, func, facts) {
     throw new Error(`FunctionPlan already published for ${func?.name || '<anonymous>'}`)
   const plan = createFunctionPlan(facts)
   ctx.plans.functions.set(func, plan)
+  // LOGICAL deep-freeze (audit P1): snapshot the just-published shape via an
+  // independent re-clone (createFunctionPlan already builds fresh Map/Set/rep
+  // copies from whatever `facts`-shaped object it's given — the plan itself
+  // qualifies) so installFunctionPlan can prove later, at consumption, that
+  // nothing mutated the collections in place. Zero-cost when the flag is off:
+  // no snapshot, no WeakMap write, no behavior change.
+  if (DBG_INVARIANTS) publishSnapshots.set(plan, createFunctionPlan(plan))
   return plan
 }
 
@@ -46,6 +96,19 @@ export function functionPlanOf(ctx, func) {
 
 /** Install detached emission working state from a frozen authoritative plan. */
 export function installFunctionPlan(ctx, plan) {
+  // Consumption-side half of the LOGICAL deep-freeze tripwire (audit P1): a
+  // mismatch here means something mutated the plan's Map/Set/rep-object
+  // fields in place since publishFunctionPlan snapshotted them — the
+  // Object.freeze on the outer record (createFunctionPlan) never protected
+  // those, and doesn't protect anything at all under the self-hosted kernel.
+  // Gated the same as every other invariant in this layer: zero cost off.
+  if (DBG_INVARIANTS) {
+    const snapshot = publishSnapshots.get(plan)
+    if (snapshot) for (const k of Object.keys(plan)) {
+      if (!planFieldsEqual(plan[k], snapshot[k]))
+        throw new Error(`[ctx invariant] FunctionPlan.${k} mutated after publish — the published plan is logically frozen; emission must consume detached working copies (installFunctionPlan), never rewrite the plan itself`)
+    }
+  }
   ctx.func.locals = new Map(plan.locals)
   ctx.func.boxed = new Map(plan.boxed)
   ctx.func.cellTypes = new Set(plan.cellTypes)

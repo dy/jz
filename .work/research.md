@@ -6417,3 +6417,202 @@ not main). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
 unchanged, reconfirmed pristine 5.7.14 before and after). `dist/jz.wasm`
 not retained (region-live build SHA `9227af7d...eef1cc9` and dormant build
 `3a5cdf13...909e66e` recorded above for reference, files deleted).
+
+## §CompileSession re-audit remediation — P1/P2/P3 landed, P4 (larger) banked with a design sketch (2026-08-13)
+
+Implements the re-audit's four accepted findings on `FunctionPlan`
+(function-plan.js) / the active-function swap (active-function.js) /
+`isInactiveFunction`, in the audit's own order, on top of `7b07a810`. `.work/
+compile-session-func-survey.md`'s six-record decomposition (§CompileSession
+above) and the whole `narrow.js`/`program-facts.js` FlowState-overlay program
+(finding 4 of the ORIGINAL audit, a different numbering than this session's
+four items) stayed untouched, as scoped.
+
+**P1 — FunctionPlan LOGICAL deep-freeze LANDED.** `Object.freeze(plan)`
+(function-plan.js's `createFunctionPlan`) only ever locked the outer record —
+every Map/Set/rep-object field (`locals`, `boxed`, `cellTypes`, `localReps`,
+…) stayed mutable, and under the self-hosted kernel `Object.freeze` is
+identity, so nothing was ever actually protected there. Proxies and
+getters/accessors are both off the table by construction (`op-policy.js`:
+"jz objects have no accessors"; `session-views.js`/`ctx.js`: "no Proxy global
+at all" — neither compiles through jz's own subset, and this file IS part of
+the self-hosted kernel's module graph), so a facade-based freeze was never
+viable here. Landed the SNAPSHOT-AND-COMPARE design the finding named as the
+alternative: `publishFunctionPlan` takes an independent re-clone of the
+just-published plan (reusing `createFunctionPlan` itself as the cloner — it
+already builds fresh Map/Set/rep copies from any `facts`-shaped input, and
+the plan qualifies) into a `WeakMap<plan, snapshot>`, gated entirely behind
+`JZ_DEBUG_INVARIANTS`; `installFunctionPlan` — the one real consumption
+gateway (`functionPlanOf` has exactly one caller, which flows straight into
+`emitFunc`→`installFunctionPlan`) — structurally compares the live plan
+against its snapshot field-by-field via a small recursive `planFieldsEqual`
+(Map/Set/Array/plain-object/primitive; no Proxy, no freeze reliance, no
+generics jz's subset doesn't have) and throws naming the first diverged
+field. Zero-cost off: no snapshot taken, no compare loop, `installFunctionPlan`
+executes exactly its pre-existing lines.
+
+**P2 — typedElem/typedLen ambient leak LANDED, root cause not just the
+missing restore line.** `installFunctionPlan` (function-plan.js:58-60 pre-
+session) writes into ambient `ctx.types.typedElem`/`typedLen`; `emitClosureBody`
+(compile/index.js) restored `typedElem` on exit but never `typedLen` — a
+closure compiled with a statically-sized typed array left its own `typedLen`
+Map on `ctx.types` for good. Repro'd exactly as the finding describes before
+fixing: `compile('export let mk = (n) => { let f = () => { let buf = new
+Float64Array(3); return buf[0] + buf.length }; return f() }')` then, post-
+compile, `ctx.func.current === null` (session frame restored) while
+`ctx.types.typedLen` still held `Map(1) { 'buff2_0' => 3 }` — confirmed this
+reproduces identically on unmodified `7b07a810` and is silent (no test
+caught it) before this session. The literal fix the finding proposed — move
+`typedElem`/`typedLen` storage onto `ctx.func` — was rejected: those two
+fields are read via `ctx.types.typedElem`/`typedLen` in 73 places across 9
+files, including `src/compile/narrow.js`, which this session's scope
+explicitly forbids touching. Landed the LIFECYCLE move instead of the
+STORAGE move: `enterActiveFunction`/`restoreActiveFunction`
+(compile/active-function.js) now stash `ctx.types.typedElem`/`typedLen` onto
+the DISPLACED record's own (newly added) `typedElem`/`typedLen` fields at
+swap time and restore them on the matching restore, the identical
+identity-keyed discipline every other field on the record already gets — so
+every one of the 73 read sites (`analyze.js`, `emit.js`, `narrow.js`,
+`type.js`, `kind.js`, `session.js`, …) needed zero changes, and the three
+existing manual save/restore call sites (`analyzeFuncForEmit`,
+`installFunctionPlan`, `emitClosureBody`) collapse to explicit SEED-only
+writes (install, same as `ctx.func.locals` already works) with the RESTORE
+half now structural. `emitClosureBody`'s one redundant manual restore line
+(`ctx.types.typedElem = prevTypedElems`, immediately superseded by
+`restoreActiveFunction`) was deleted; its `prevTypedElems` local survives —
+it is ALSO the fallback-seed value for closures with neither `cb.typedElems`
+nor a module `globalTypedElem` (a real, load-bearing second use the removed
+finally-line's presence had obscured). `ctx.types` gained a `typedLen: null`
+default at `reset()` (it had none before — only ever created ad hoc on first
+write) to match `typedElem`'s contract exactly. Regression test added
+(`test/session-reentrancy.js`, "typedElem/typedLen ambient state does not
+leak past a nested-closure compile") pins the exact repro above; verified
+against unmodified `7b07a810` that it fails there and passes after the fix.
+
+**P3 — isInactiveFunction strengthened LANDED.** The old predicate checked
+only identity/body/module-scope/locals-shape/empty-stack. Added: overlays
+(`localValTypesOverlay` empty, `localTypedElemsOverlay` null), refinements
+(empty), prediction state (`p1Predicted` empty), try/finally state
+(`inTry`/`finallyStack`), emission flags (`repsFrozen`/`boxedResult`/
+`mixedAtomReturn` plus the expression-dispatch scopes `_expect`/
+`_selfAccumConcat`/`_schemaSpecSlow`), and — P2's own fix — the ambient
+`ctx.types.typedElem`/`typedLen` pair, exactly the field a leak like P2's
+used to leave dirty at this checkpoint. Signature changed `frame` →
+`ctx` (both call sites — `ctx.js`'s `assertCtxInvariants('post-compile')`
+and the session-reentrancy test — updated) since the `ctx.types` class lives
+outside the record proper. One candidate check was tried and DROPPED after
+empirical falsification: `uniq === 0`. Two of the file's own pre-existing
+tests hardcode `ctx.func.uniq === 0` for their specific minimal programs, which
+reads as a general law until you compile something else — `'export let a =
+() => { let xs = [1, 2]; return xs[0] }'` alone leaves `uniq` at 2 post-compile
+(boundary-wrapper/DCE-adjacent synthesis legitimately mints names off the
+session frame's own counter after every real function has restored it). Kept
+out; documented at the check site so a future session doesn't re-add it from
+the same false pattern-match.
+
+**P4 — closure-body FunctionPlan publish-before-emit — BANKED, not
+attempted.** Scope guard honored: P1-3 left real time/context, but P4 is a
+structural refactor with genuine byte-identity risk across every closure-
+bearing bench case, not a localized fix — attempting it inside this session's
+remaining budget would have risked the hard-won P1-3 gates for an incomplete
+result. Design sketch, call-graph-exact:
+
+  - Today `emitClosureBody` (compile/index.js) is BOTH the analysis pass and
+    the emitter for a closure body in one function: `reanalyzeBody`,
+    `inferLocals`, `boxedCaptures`, `inheritPtrAliases`, `unboxablePtrs` (+
+    their `updateRep` calls), `mintLoopPlans`, `mintClosureEnvPlans`, AND the
+    IR construction (`bodyIR`, env/rest-param locals, `defaultParamInits`,
+    final `fn` assembly) all run inside one call, entangled with `cb`'s own
+    pre-seeded facts (`cb.intConsts`/`typedElems`/`boxed`/`cellI32`/…, minted
+    earlier by `ctx.closure.make` in module/function.js at the closure
+    LITERAL's own compile time, itself mid-emission of the ENCLOSING
+    function). No `FunctionPlan` is ever published for a closure body —
+    `publishFunctionPlan`/`installFunctionPlan` are never called on the
+    `emitClosureBody` path at all.
+  - The top-level mirror already exists and is the template: `analyzeFuncForEmit`
+    (called from the `analyzeFuncs` loop, compile/index.js ~2361-2368, BEFORE
+    `emitFuncs` ~2397-2398) computes the same `facts` shape and calls
+    `publishFunctionPlan`; `emitFunc` later calls
+    `installFunctionPlan(ctx, functionPlanOf(ctx, func))` and does ONLY
+    emission. `compilePendingClosures` (compile/index.js ~2403-2409) is the
+    closure analogue of that `emitFuncs` loop but has no analyze-first
+    counterpart — because `ctx.closure.bodies` grows incrementally (closures
+    are discovered mid-emission, sometimes mid-OTHER-closure-emission), there
+    is no single up-front point to run an `analyzeFuncs`-style pass over all
+    of them before ANY emission — the plan-then-emit split has to happen PER
+    BATCH, mirroring how `mintLoopPlans`/`mintClosureEnvPlans` already run
+    "per newly discovered body," not once globally (closure-plan.js's own
+    documented precedent, ONE fact instead of the whole FunctionPlan shape —
+    P4 is exactly "do that, but for the full shape").
+  - Restructuring: split `emitClosureBody(cb)` into `analyzeClosureBodyForEmit(cb)`
+    (enters a frame, seeds `ctx.func`/`ctx.types` from `cb`'s pre-seeded
+    facts + ambient globals exactly as today's prologue does, runs the six
+    analysis calls above, collects the SAME facts shape
+    `analyzeFuncForEmit` collects, restores the frame, returns facts →
+    `publishFunctionPlan(ctx, cb, facts)` — `ctx.plans.functions` is already
+    a bare `WeakMap`, so keying on `cb` (a stable per-closure-body record)
+    instead of a `func` needs no structural change, only doc/naming) and
+    `emitClosureBodyIR(cb, plan)` (enters a frame, `installFunctionPlan`,
+    then ONLY the emission-shaped remainder — `bodyIR`, env/rest-param
+    locals, `defaultParamInits`, `fn` assembly). `compilePendingClosures`
+    becomes two passes over each newly-discovered range: analyze then emit,
+    same order as today, so closure discovery during pass 1 of a LATER batch
+    still works exactly as it does now.
+  - The one piece that does not cleanly fall into "analysis" or "emission":
+    `populateBoxedSets()` (called once per body shape, block/expression) is
+    ANALYSIS in what it decides (which locals are boxed cells, their cell
+    names) but its call-site ORDER is emission-critical by the function's own
+    comment — it must run immediately before body emission because `emitDecl`
+    reads `ctx.func.preboxed` mid-emission. Split it too: the CLASSIFICATION
+    half (which names are `boxedCaptureNames`/`boxedValueCaptureNames`/
+    `boxedParamNames`) is a pure function of already-analysis-phase state
+    (`cb.captures`/`cb.params`, `ctx.func.boxed`, `parentBoxedCaptures`) and
+    belongs in the analysis half, stored as new plan-adjacent fields (extend
+    `createFunctionPlan`'s shape, or a small closure-only sibling record
+    mirroring `ClosureEnvPlan`'s existing separateness from `FunctionPlan`
+    rather than overloading one shape for two different consumers — undecided,
+    needs the actual field census first); the WRITE half
+    (`ctx.func.preboxed.add`, `emitPreboxedLocalInits`'s actual local
+    declarations) stays in the emit half, reading the precomputed
+    classification instead of recomputing it.
+  - Named risk, the reason this stayed banked rather than attempted: any
+    analysis-half computation that currently runs INTERLEAVED with
+    `ctx.func.uniq`-consuming temp-name allocation (`freshEmitId`) would, once
+    hoisted earlier, allocate its temp names in a different ORDER relative to
+    every other `uniq` consumer in the same function — `mintClosureEnvPlans`'s
+    own doc calls this out explicitly for a narrower case ("moving it earlier
+    would reorder ctx.func.uniq's temp-name allocation... and change emitted
+    WAT text for a program that has nothing to do with this plan"). A full P4
+    landing needs the same byte-identity discipline the LoopPlan/ClosureEnvPlan
+    pre-emission mints shipped under (58-case × O0/O2/O3 sweep against a
+    clean-HEAD worktree, 0 diffs) — likely several iterations to find a split
+    point that never touches `uniq` ordering, not a single-pass mechanical
+    move.
+
+**Gates (worktree `session-remediation-2026-08-12`, base `7b07a810`,
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/session-remediation`,
+`node_modules/*` individually symlinked to the shared tree):**
+
+| check | result |
+|---|---|
+| `node test/session-reentrancy.js` (incl. 2 new tests: FunctionPlan mutation tripwire, typedElem/typedLen leak regression) | 15/15 pass (37 assertions) normal; 15/15 pass (41 assertions) under `JZ_DEBUG_INVARIANTS=1` (tripwire test fires; all others unaffected) |
+| `node test/index.js` (full suite) | 3429/3437 pass, 6 skip — ONLY the 2 standing guard-coalescing shape fails (interval walk / typed RMW), matching the documented baseline signature exactly, no new fails |
+| `JZ_DEBUG_INVARIANTS=1 node test/index.js` | 3430/3439 pass (one more test/assertion than the plain run — the two new session-reentrancy tests' tripwire-branch), 6 skip, 3 fails: the same 2 guard-coalescing rows PLUS the documented pre-existing `analyzeValTypes` declRange/`cf1_8` idempotence flake (audit-#12 item 2's own probe) — confirmed byte-for-byte reproducible on unmodified `7b07a810` in isolation (`node test/index.js perf`), not a regression |
+| `JZ_TEST_TARGET=jz.wasm node test/index.js` (test:wasm, self-hosted kernel built from this session's modified source) | 2726/2732 pass, 6 skip, **0 fail** |
+| `npm run build` ×2 | byte-identical SHA-256 both runs — `dist/jz.js` `3a63c4a1…`, `dist/interop.js` `ef42c9da…`, `dist/jz.wasm` `d0101a1b…` |
+| dormant kernel size spot-check (same build, unmodified `7b07a810` vs this session's source, both O3 self-host defaults) | `jz.wasm` 16568.1 kB → 16580.2 kB (+12.1 kB, +0.073%); `jz.js` 2040.9 kB → 2042.5 kB (+1.6 kB, +0.078%) — NOT byte-identical, and reported as such rather than claimed zero: new `JZ_DEBUG_INVARIANTS`-gated function bodies (`planFieldsEqual`, the snapshot `WeakMap` plumbing, the widened `isInactiveFunction`) are runtime-dead when the flag is off but still compile into the kernel as real (unreachable at runtime) code, since `DBG_INVARIANTS`'s `typeof process !== 'undefined'` guard is a kernel-RUNTIME check, not something jz's own self-host build can constant-fold away. Runtime/dormant BEHAVIOR is unaffected — confirmed functionally, not just assumed, by the test:wasm row above running the actual modified kernel to 0 fails |
+| shared `node_modules/watr` | untouched — worktree used individual per-package symlinks (`node_modules/watr → /Users/div/projects/jz/node_modules/watr`), not a whole-`node_modules` link; `diff -rq` between the worktree's resolved path and the shared tree's own `node_modules/watr` at session end: clean, exit 0, zero differences (37 files both sides) |
+
+**Files**: src/compile/function-plan.js (P1: snapshot/compare tripwire),
+src/compile/active-function.js (P2: structural typedElem/typedLen swap; P3:
+isInactiveFunction), src/ctx.js (P2: `ctx.types.typedLen` default;
+`isInactiveFunction(ctx)` call site), src/compile/index.js (P2:
+`emitClosureBody`'s redundant restore line removed, doc updated),
+test/session-reentrancy.js (2 new tests, `isInactiveFunction(ctx)` call-site
+update).
+
+**Explicitly out of scope, untouched**: `src/compile/narrow.js`,
+`src/static.js`, `README.md`; FlowState completion in narrow.js/program-facts.js
+overlays (the original audit's finding 4, a different item than this
+session's P4); the full `CompileSession` record (correctly still gated on
+the six-lifetime decomposition per §CompileSession above).

@@ -27,7 +27,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
-import { ctx } from '../src/ctx.js'
+import { ctx, DBG_INVARIANTS } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { installFunctionPlan } from '../src/compile/function-plan.js'
 import { withFunctionField } from '../src/compile/flow-state.js'
@@ -234,6 +234,68 @@ test('FunctionPlan is session-owned, published once, and detached from emission 
   restoreActiveFunction(ctx, displaced)
 })
 
+// Audit re-audit P1: Object.freeze(plan) (function-plan.js) only locks the
+// outer record — every Map/Set/rep-object field it owns (locals, boxed,
+// cellTypes, localReps, …) stays mutable, and under the self-hosted kernel
+// Object.freeze doesn't even do that (identity op there). The test above only
+// proves emission consumes DETACHED copies; it never mutates the PUBLISHED
+// plan's own collections directly, so it never exercised the gap. This test
+// does exactly that — a live probe reaching into plan.locals/localReps/
+// cellTypes/boxed in place — and expects installFunctionPlan's snapshot
+// tripwire (function-plan.js, JZ_DEBUG_INVARIANTS-gated) to catch it.
+test('FunctionPlan mutation trips the deep-freeze tripwire under JZ_DEBUG_INVARIANTS', () => {
+  if (onKernel()) return
+  if (!DBG_INVARIANTS) return  // the tripwire is a no-op outside the battery's dbg leg — nothing to observe without it
+  compile('export let tripwired = n => { let xs = [n, n + 1]; return xs[0] }')
+  const func = ctx.funcs.map.get('tripwired')
+  const plan = ctx.plans.functions.get(func)
+  for (const [field, mutate, undo] of [
+    ['locals', () => plan.locals.set('__evil', 'i32'), () => plan.locals.delete('__evil')],
+    ['localReps', () => plan.localReps.set('__evil', { val: 1 }), () => plan.localReps.delete('__evil')],
+    ['cellTypes', () => plan.cellTypes.add('__evil'), () => plan.cellTypes.delete('__evil')],
+    ['boxed', () => plan.boxed.set('__evil', '__evil_cell'), () => plan.boxed.delete('__evil')],
+  ]) {
+    mutate()
+    let threw = null
+    try { installFunctionPlan(ctx, plan) } catch (e) { threw = e }
+    undo()
+    ok(threw && /mutated after publish/.test(threw.message),
+      `plan.${field} mutated in place should trip installFunctionPlan's snapshot compare, got: ${threw ? threw.message : '(no throw)'}`)
+  }
+  // The seam itself — publish once, install repeatedly, never touch the
+  // plan's own collections — must never false-positive.
+  const displaced = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
+  installFunctionPlan(ctx, plan)
+  installFunctionPlan(ctx, plan)
+  restoreActiveFunction(ctx, displaced)
+})
+
+// Audit re-audit P2: installFunctionPlan()/analyzeFuncForEmit() write
+// ctx.types.typedElem/typedLen (ambient, outside the swapped ActiveFunction
+// record), and emitClosureBody() used to restore typedElem on exit but NOT
+// typedLen — a closure compiled with a statically-sized typed array left its
+// own typedLen entries on ctx.types for good, visible to the NEXT thing that
+// reads it long after the closure (and the whole compile) finished. Concrete
+// repro this pins: post-compile, ctx.func.current === null (session
+// restored) yet ctx.types.typedLen still held the closure-local Map. Fixed
+// by making the swap structural (compile/active-function.js) instead of a
+// third hand-rolled save/restore.
+test('typedElem/typedLen ambient state does not leak past a nested-closure compile (audit P2)', () => {
+  if (onKernel()) return  // white-box probe of ctx.types internals — no in-kernel host ctx to inspect
+  compile(`
+    export let mk = (n) => {
+      let zero = () => 42
+      let base = n
+      let heapFn = () => base + 1
+      let f = () => { let buf = new Float64Array(3); return buf[0] + buf.length }
+      return zero() + heapFn() + f()
+    }
+  `)
+  ok(ctx.func.current === null, 'session frame restored (the finding\'s own repro precondition)')
+  ok(ctx.types.typedElem === null, 'ctx.types.typedElem left dirty by a closure body that never restored it')
+  ok(ctx.types.typedLen === null, 'ctx.types.typedLen left dirty by a closure body that never restored it (the exact P2 leak)')
+})
+
 test('active frame restores as one record after functions, late closures, and __start', () => {
   if (onKernel()) return
   compile(`
@@ -242,7 +304,7 @@ test('active frame restores as one record after functions, late closures, and __
     let add = make(4)
     export let run = x => add(x)
   `)
-  ok(isInactiveFunction(ctx.func),
+  ok(isInactiveFunction(ctx),
     'compile restored the inactive session frame instead of leaving function/start/expression fields')
   ok(ctx.func.atModuleScope === false && ctx.func.stack.length === 0 && ctx.func.uniq === 0,
     'synthetic __start and late-closure emission restored the displaced frame by identity')

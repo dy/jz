@@ -412,6 +412,8 @@ export function reset(proto, globals, bridge) {
 
   ctx.types = {
     typedElem: null,
+    typedLen: null,  // mirrors typedElem's per-function lifecycle exactly (audit P2: its swap is
+                      // now structural, via enterActiveFunction/restoreActiveFunction — compile/active-function.js)
     dynKeyVars: null,
     dynWriteVars: null,
     anyDynKey: false,
@@ -1057,7 +1059,7 @@ export function assertCtxInvariants(phase) {
     must(ctx.func.locals.size != null, 'locals open for writes')
   }
   if (phase === 'post-compile')
-    must(isInactiveFunction(ctx.func), 'active function record restored after analysis/emission')
+    must(isInactiveFunction(ctx), 'active function record restored after analysis/emission')
 
   // FeaturePlan freeze snapshot/compare (see FEATURE_STRATA above). Uniform exact
   // equality across every stratum, no exceptions — SESSION+PROGRAM are genuinely

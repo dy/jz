@@ -1851,8 +1851,14 @@ function synthesizeBoundaryWrappers() {
  * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
  * Mutates ctx.func.* per-body state (locals, boxed, localReps) and
- * ctx.schema.vars / ctx.types.typedElem (restored on exit so capture-binding
- * leaks don't poison the next body). Returns the WAT IR for the func node.
+ * ctx.schema.vars / ctx.types.typedElem/typedLen. ctx.schema.vars is
+ * restored explicitly below (a compile-lifetime map, outside the
+ * active-function swap); ctx.types.typedElem/typedLen ride
+ * enterFunc/restoreActiveFunction's own structural stash-and-restore
+ * (compile/active-function.js, audit P2) so a capture-binding leak can't
+ * poison the next body — prevTypedElems below is still read as this body's
+ * OWN fallback-seed value (see the `else` branch further down), not for
+ * restoration. Returns the WAT IR for the func node.
  */
 function emitClosureBody(cb) {
   const prevSchemaVars = ctx.schema.vars
@@ -2183,7 +2189,11 @@ function emitClosureBody(cb) {
   return fn
   } finally {
     ctx.schema.vars = prevSchemaVars
-    ctx.types.typedElem = prevTypedElems
+    // ctx.types.typedElem/typedLen restore is now structural (see the
+    // function doc above) — restoreActiveFunction below puts both back from
+    // previousFrame's own stash; no manual write needed here, and typedLen
+    // (the audit's P2 leak: this line never existed for it) is now covered
+    // for free instead of needing its own hand-added restore.
     restoreActiveFunction(ctx, previousFrame)
   }
 }
