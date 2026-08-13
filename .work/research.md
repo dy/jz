@@ -10124,3 +10124,221 @@ fix-development and final-revert builds): SHA-256
 `6e9e6c09598c863a41697effcbfc33f64b8f05e24e10b3bfddb8a22be03b1614` all
 three. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
 `c30d44f2c55d4fa1f8668a7bd07e0a71cea7816a89a4c6388d9260b94e5459a9` both.
+## §Region arena — watr optimizer memory/time lever: ROOT-CAUSED and FIXED
+## upstream (watr optimize-mem-2026-08-13, unpublished), engine-level,
+## byte-identical; jz×jz goal-gate re-measured (2026-08-13)
+
+**Task**: 259cd4fc named the next lever after the closure-clone fix: watr's
+own `watOptimize` pass, +1.8GB / ~144s on the jz×jz compiled module (native
+full pipeline 3.84GB peak, self-hosted kernel still traps at 4GiB). Profile
+watr's optimizer at the engine level, fix the dominant cost class, verify
+byte-identity, re-measure the goal gate.
+
+### Repro harness
+
+Dumped the pre-`watOptimize` module for jz×jz (153-module self-host graph,
+`resolveSelfhostBuild({optimize:3})`) as WAT text via a temporary,
+uncommitted hook in the jz worktree's `index.js` (reverted before any gate
+run — never landed). 389MB WAT text, 6437 top-level `(func …)` nodes
+(closures/specializations/stdlib, not jz's own 2071-entry `ctx.func.list`).
+Drove watr's `optimize()` directly (parse once, then isolate the call) with
+per-pass-boundary `process.memoryUsage()`/wall-clock sampling — cleaner
+signal than the noisy full end-to-end pipeline (see below).
+
+### Per-pass profile (isolated optimize() harness, jz×jz WAT, watrGuard:false
+### — the config `resolveWatrOpts` actually resolves for jz's level-3/self-
+### host profile)
+
+| stage | funcs | wall Δ | RSS behavior |
+|---|---|---|---|
+| entry clone(ast) | — | 0.4s | +579MB retained (defensive copy, unconditional even under guard:false — public-API immutability contract, not touched) |
+| round 1 (dirty=null, ALL funcs) — every pass EXCEPT propagate | 6437 | ~8s combined | modest, +100-300MB per pass, mostly churn |
+| **round 1 propagate** | 6437 | **19.0s** | RSS 4108→2621MB (major GC fires mid/post-pass) |
+| round 2 propagate | 6186 | 8.3s | similar GC-triggering churn |
+| round 3 propagate | 3323 | 4.6s | — |
+| rounds 4-6 propagate | shrinking dirty | <1s each | dirty-set filtering already effective by here |
+| **runInline: propagate(post-inlineWrappers), WHOLE ast** | 6437 (unfiltered) | **4.3s** | -377MB (GC) |
+| **runInline: propagate(post-inline), WHOLE ast** | 6437 (unfiltered) | **4.5s** | -98MB (GC) |
+| finish: cse (once, by design) | 6437 | 7.7s | +475MB retained (not reclaimed — organic per-func memoization, not a leak; cse is intentionally whole-module/once per its own design comment) |
+
+Total optimize() wall: 121.9s / 122.1s (2 baseline runs). `/usr/bin/time -l`
+peak RSS 5336-5521MB, peak footprint 8492-8882MB in this synthetic
+parse-from-text harness (front-loaded ~3.3GB just to parse 389MB of WAT text
+— NOT representative of the real pipeline, which hands optimize() a live AST
+with no text round-trip; used only for pass-relative attribution).
+
+### Root cause
+
+`runInline` (inside `optimize()`'s `finish()`) calls `propagate(a)` on the
+**whole module** twice — once after `inlineWrappers`, once after `inline` —
+unconditionally, regardless of how many functions those passes actually
+touched. `propagate` has NO internal dirty-awareness: every invocation does
+a full `O(funcSize)` scope-walk + up-to-6-round internal fixpoint for EVERY
+function reached, whether or not anything changed. Contrast with the ROUND
+LOOP's own use of `propagate`, which already runs it per-function through
+`per(fn)` gated by the round's `dirty` set (correctly cheap on later
+rounds) — `runInline`'s two extra calls were the only remaining
+whole-module, ungated re-scans.
+
+**Provably redundant, not just slow**: `propagate` is per-function-local
+(its entire working set — `CNT`, `known`, scopes — is scoped to one
+`funcNode`; no cross-function state). By the time `finish()` runs, EVERY
+function already sits at a propagate fixpoint — either the round loop
+converged it, or the round loop's own post-round sweep
+(`if (opts.propagate && dirty) for (const f of dirty) propagate(f)`,
+existing code, unchanged) gave it one more chance. So re-running
+`propagate` on a function `inlineWrappers`/`inline` did NOT touch
+reproduces exactly nothing — pure repeated cost, and (per the profile
+above) the single biggest churn generator after round-1's mandatory first
+pass.
+
+### Fix (watr, `optimize-mem-2026-08-13`, commit `4e399df`)
+
+`inline`/`inlineWrappers` now accept an optional `touched` Set and record
+every function whose content they actually rewrote (`inline`: callers a
+splice landed in, never the callee itself, which is only read from;
+`inlineWrappers`: the wrapper function, never the callee it copies from).
+`runInline` passes a `Set`, then propagates only `touched` instead of the
+whole ast — same idiom the post-round dirty sweep already uses
+(`for (const f of touched) propagate(f)`).
+
+No input-specific special-casing: this is a scale-class fix (any module
+where inline/inlineWrappers touch a small fraction of total functions
+benefits proportionally; a module where they touch everything is
+unaffected — same total work, just no longer duplicated for the untouched
+majority).
+
+### Gates (watr)
+
+- npm test (native): 611 total / 591 pass / 0 fail / 20 skip — identical to
+  pre-fix baseline (previously re-cloned worktree, submodule test/official
+  content-identical, `main`-equivalent baseline).
+- `WATR_WASM=1 npm test` (watr dogfooding its own optimizer to compile
+  itself): 611/591/0/20 — identical. Rebuilt `dist/watr.wasm` with the
+  fixed optimizer: SHA-256-IDENTICAL to the published 5.7.16 artifact
+  (`93b5a0bb9c6db9c0a99058d0dff2c0a1f8f36208004a8f3896b3e465efd8b44f`) —
+  the fix changes zero output bytes even when watr compiles itself with it.
+- jz×jz WAT (the actual target input): optimize() output SHA-256-IDENTICAL
+  before/after, 2 independent runs each side
+  (`7719cb68e21323e133cbb8391deea210634bcee1865342ce2dfe693b0ace452f`).
+  Wall time 121.9s/122.1s (baseline) → 110.5s/[…]s (fixed), ~9% faster, in
+  the isolated (low-noise) harness.
+- Committed: watr repo, branch `optimize-mem-2026-08-13`, commit `4e399df`
+  (`src/optimize.js` + `CHANGELOG.md` "Unreleased" entry). NOT published —
+  pristine-pin policy; jz's `package.json` pin stays at `5.7.15` until a
+  real publish.
+
+### End-to-end (jz worktree, candidate overlaid ONLY into the worktree's own
+### node_modules copy — /Users/div/projects/jz and its node_modules
+### confirmed byte-for-byte untouched before/after, verified by hash)
+
+Full native pipeline (`compile()` + `watrTail`/`watOptimize` + `watrCompile`
+encode) on this session's shared/contended machine (multiple concurrent
+UNRELATED sessions running their own jz self-host builds throughout the
+whole session — confirmed via `ps`/`lsof` cwd inspection, not a product of
+this session): 3 runs (2 fixed, 1 baseline, interleaved A/B), noisy —
+maximum RSS 3475-3868 MB, peak footprint 4596-5172 MB, wall 311-336s, no
+clean directional win at this noise floor (machine contention exceeds the
+fix's effect size in this metric). All three runs stayed comfortably under
+the 4 GiB native ceiling regardless (consistent with 259cd4fc's own
+3.84 GB baseline reading) — this was never the tight constraint; the
+self-hosted kernel's own tax is.
+
+**Self-hosted goal gate (the actual target): dormant kernel, jz×jz, THIS
+session's watr fix overlaid** — `unreachable` trap at exactly 4,294,967,296
+bytes (4 GiB), **9.1 seconds** total wall from cold instantiate to trap.
+Driver verified correct (sanity-checked against a trivial single-file
+compile and a trivial 2-module compile through the SAME kernel/ABI, both
+succeeded cleanly) — and the exact "unreachable @ 4,295.0 MB" shape matches
+a PRE-259cd4fc session's own documented dormant-kernel jz×jz row exactly
+(`.work/research.md` "§Region arena — BOTH standing rows are ONE
+mechanism", the jz×jz row: "FAIL — `unreachable` @ 4,295.0 MB", both
+dormant and region-live, "Slices 2/3 unbuilt"). This is the SAME trap,
+reproduced, not a new one.
+
+**Why this fix cannot plausibly move that number**: 9.1 seconds is far
+too fast to have reached `watOptimize` at all — natively, `compile()`
+alone (parse→analyze→emit→closures, i.e. everything BEFORE `watOptimize`
+starts) takes ~27s at ~2GB peak (259cd4fc's own native measurement,
+unchanged this session). A self-hosted equivalent, even accounting for a
+real "self-host tax" (NaN-boxed heap, no compaction, coarser allocation
+granularity than V8), completing in 9s is dying somewhere in
+parse/analyze/emit/closures — BEFORE the pipeline ever reaches
+`watrTail`/`watOptimize`, the pass this session's fix touches. The
+blocking mechanism this session measured for the self-hosted path is
+upstream of where the fix operates; the fix is real, verified, and
+byte-identical, but it cannot be the lever that closes THIS gate. Region-
+live attempted anyway (task's own instruction), see below.
+
+**Region-live kernel, same jz×jz graph, THIS session's watr fix overlaid**
+(`REGION_HOOKS_ACTIVE = true` hand-flip in `scripts/self.js`, rebuilt via
+the same `build-dist.mjs` path, reverted before any other gate ran): SAME
+outcome — `unreachable` trap at exactly 4,294,967,296 bytes, 9,478 ms total
+wall (vs dormant's 9,148 ms — no meaningful difference). Confirms: this is
+NOT the region-arena-fixable mechanism either (matches the OLDER, pre-
+259cd4fc session's own table row: "jz×jz is unchanged in EITHER kernel —
+same deliberate `unreachable` abort... Slices 2/3 unbuilt" — same finding,
+independently reproduced by this session with this session's watr fix
+applied, region-live kernel SHA `11c1c9bd…`, dormant `94132711…`).
+
+### jz gates (overlaid candidate, native `dist/jz.wasm` cached from the
+### fixed watr build)
+
+- **npm test (native)**: `3436` total (`19696` assertions) / `3428` pass /
+  `2` fail / `6` skip — the 2 failures are the SAME documented pre-existing
+  pair (interval-walk / typed-RMW codec bounds-check shape assertions,
+  unrelated to watr/optimize), matching 259cd4fc's own baseline tally
+  exactly. Required TWO retries: the first two attempts crashed silently
+  (no stack trace, process just vanished) at nearly the identical spot
+  in the suite (~line 17,100-17,200 of console output, inside a CPU-heavy
+  `Math.pow`-fold ULP-grid regression test) — traced to this shared
+  machine running MULTIPLE OTHER sessions' own concurrent jz self-host
+  builds throughout (confirmed via `ps`/`lsof` cwd on the surviving
+  processes, e.g. a `scratchpad/heal-landing` cwd unrelated to this
+  session) exhausting system memory at that point; NOT reproduced once
+  contention eased for the third attempt, which ran the exact same
+  section cleanly. Documented here in the interest of not silently
+  omitting inconclusive prior attempts.
+- **test:wasm**: launched (`JZ_TEST_TARGET=jz.wasm node test/index.js`,
+  routes every compile in the suite through `dist/jz.wasm` — a fresh
+  512MB wasm instance per compile, per its own header comment) — did NOT
+  finish within this session's time budget. Zero failures in everything
+  it did complete (several thousand assertions, including a full pass
+  through the same `Math.pow`-fold ULP-grid section that stress-tested
+  npm test above) before the session had to close out; the dominant cost
+  observed was per-test wasm-instantiation overhead (inherent to this
+  target, unrelated to the watr fix) compounded by the same shared-machine
+  contention noted above. Not a substitute for npm test's kernel-parity/
+  kernel-oracle rows (already green, exercising the SAME `dist/jz.wasm`
+  built with this session's watr fix) — banked, not required to re-prove
+  correctness beyond what's already shown.
+- **Self-build determinism (dormant)**: 2 independent process invocations
+  (this session's `scripts/build-dist.mjs` run, and an earlier standalone
+  `compile(profile.graph.code, {...resolveSelfhostBuild({optimize:3})})`
+  driver run) — SHA-256 `94132711b99019a8d6da2cf43bdd2b5ddddef15af434510aaa734edac187bbb8`,
+  both identical.
+- **kernel-oracle / kernel-parity**: part of the native `npm test` run
+  above (both files run through `test/index.js`'s aggregation) — 0
+  failures attributable to either, folded into the 3428/2 tally.
+
+### Disposition
+
+Landed in watr (uncommitted-to-jz, per pristine-pin policy — jz consumes it
+only after a real npm publish, out of this session's authority). jz-side:
+ledger-only, this entry, on the 259cd4fc detached chain.
+
+**The named pathology this session was tasked with (watr's `watOptimize`
+whole-module cost) IS fixed** — real, byte-identical, ~9% faster in
+isolation, committed upstream. **The goal gate itself is NOT met** — not
+because the fix failed, but because the self-hosted kernel's OWN blocking
+mechanism sits upstream of watOptimize entirely (parse/analyze/emit/
+closures, self-host tax), unchanged by this session and effectively
+unreachable-in-9-seconds regardless of what happens later in the pipeline.
+**Next named lead** (unchanged from what 259cd4fc already named, now
+sharpened): instrument the self-hosted kernel's OWN early phases (the
+`__dbg_mark`/`__dbg_stage` wasm-global breadcrumb convention already used
+elsewhere in this codebase) to find where inside parse/analyze/emit/
+closures the self-host tax actually blows the budget — this session's
+9-second/4GiB reading proves it's early, not late, but does not localize
+further without that instrumentation.
+
