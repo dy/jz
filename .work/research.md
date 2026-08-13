@@ -7843,3 +7843,29 @@ branch `wall2-fix-2026-08-13` created at that commit, not pushed. Fixed-watr
 gate builds (worktree-local overlay, not committed, discarded): region-live
 `dist/jz.wasm` SHA-256 `a854a4c8…` (×2 identical); dormant `dist/jz.wasm`
 SHA-256 `ffb6e45a…` (×2 identical).
+
+## BigInt retirement design (2026-08-13)
+
+`.work/bigint-retirement-design.md` — design-only (no `src/` changes),
+answering the user decision made on `.work/feature-reach-census.md`'s
+evidence (BigInt, all 3 paths, 0/130 real-corpus reach): retire the boxed
+`PTR.BIGINT` carrier and every runtime-discrimination mechanism built to
+cover an unproven BigInt flow (both the legacy magnitude-heuristic/
+sentinel-export-lane machinery and the newer boxed-tag carrier from
+`.work/carrier-representation-design.md` — confirmed still coexisting,
+live, in the current tree), keeping only statically-proven raw i64
+lowering. Full inventory (~1,440-1,460 lines across `src/ir.js`, `emit.js`,
+`kind.js`, `layout.js`, `interop.js`, `module/*.js`, `test/pointers.js`,
+`test/data.js`, `test/dyn-keys.js`), the kept-i64 contract (literal/
+arithmetic/BigInt64Array stay; any flow into a kind-erasing sink becomes a
+named compile error, reusing the existing `bigintBoxed` fixpoint walk with
+its consequence flipped), test262 impact (zero — both runners already
+pre-exclude every BigInt-featured test by content detection, so no row
+currently passes via any path and no baseline floor moves), and — the
+load-bearing finding — the self-hosted kernel (`scripts/self.js`, excluded
+from the census's own corpus) genuinely uses BigInt in 21 source files and
+its standard build currently needs the boxed carrier at 11 specific sites
+(10 module-init consts, 1 helper param); deletion must be preceded by a
+dedicated kernel-source-rewrite slice (Slice 0) or self-hosting breaks.
+Six migration slices total, each gated on 130-program corpus byte-identity
+plus (Slices 0-2 specifically) self-host build/kernel-parity survival.
