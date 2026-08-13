@@ -7166,3 +7166,200 @@ untouched by this session; pre-existing dirt `README.md`,
 untouched). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
 unchanged, reconfirmed pristine 5.7.14). No `dist/jz.wasm` rebuilt this
 session (only the disposable scratch named-kernel, deleted).
+
+## §Region arena — FOURTH MECHANISM, WAT-INTRINSIC BREADCRUMB TRACE: exact
+faulting call captured with real register/memory evidence — receiver is an
+EPHEMERAL ARRAY whose off-16 dyn-props slot holds a non-zero, HASH-tag-
+decoding pointer to a degenerate (cap=0) structure, impossible from any
+legitimate hash-creation path — root WRITE not yet found, a genuinely
+narrower WALL, re-banked (2026-08-12)
+
+**Task**: pick up 2f596a84's own banked lead (the trap is a dynamic-property
+dispatch reached from `foldStaticConstAggregates`'s own top section; best
+lead = whatever backs `ctx.func.list[0]`'s funcInfo record, WAT-level
+intrinsic breadcrumbs on `__region_copy_rec`/`__region_exit`, the SW-bug
+session's own method) and root-cause it using the prescribed WAT-level
+intrinsic-breadcrumb technique (source instrumentation is heisenbug-bounded,
+per 2f596a84's own finding).
+
+**Setup**: reused the pre-existing worktree at `.../scratchpad/
+region-slice2-front`, HEAD `2f596a84` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr`, confirmed pristine
+`895ca5b`/5.7.14. Built a NAMED region-live kernel via a disposable scratch
+script (`.work/scratch-build-named.mjs`, deleted at session end) mirroring
+`build-dist.mjs`'s `dist/jz.wasm` build with `compile(..., {names:true})`,
+against `scripts/self.js`'s `REGION_HOOKS_ACTIVE` hand-flipped `true`
+(worktree-only, reverted). Reproduced the 5-condition minimal repro
+(`export let f = (n) => { let x = n; let g = () => x; return g() }`)
+deterministically 3/3, byte-identical stack, matching 2f596a84's own
+finding exactly:
+```
+__dyn_get_t_h ← __dyn_get_t ← __dyn_get_expr ← foldStaticConstAggregates
+← closure2756 (timePhase wrapper) ← compile ← compileSelf
+```
+
+**Razor-state correction #1 — funcInfo is a HASH, not an OBJECT.** 2f596a84's
+own best lead framed `ctx.func.list[0]`'s funcInfo record as a schema'd
+OBJECT ("whether its OBJECT-kind heap value... is fully/recursively
+relocated"). Static audit of `defFunc` (`src/prepare/index.js:3731`):
+```js
+const funcInfo = { name, body, exported, sig, ...(hasDefaults && { defaults }) }
+```
+— a CONDITIONAL SPREAD (`...(hasDefaults && {defaults})`, contributing zero
+keys when `hasDefaults` is false, one key when true) breaks static-shape
+unification for this literal. Verified directly: compiled a synthetic
+snippet matching this exact expression shape (`{ name, body, exported, sig,
+...(hasDefaults && { defaults }) }`) via native `compile(src, {wat:true})`
+and read the emitted WAT — the literal lowers to `$__hash_new` +
+`$__hash_set` ×4 (a dynamic dict), NOT a schema-slotted `$__alloc_hdr`+fixed
+offsets. **funcInfo is `PTR.HASH` (tag 7), always** — the OBJECT framing was
+wrong; `regionArmHash`/`__region_relocate_props` (already hardened by
+63a5551e's key-relocation fix, itself re-audited this session and found
+sound: both durable and ephemeral branches relocate KEY *and* VALUE,
+memo'd, cycle-safe) is the actually-relevant arm for funcInfo itself — and
+it is NOT where this trap lives (see below).
+
+**Method note, load-bearing for any future NaN-boxing trace session: an f64
+`WebAssembly.Global`'s `.value` getter CANONICALIZES every NaN payload to
+the single bit pattern `0x7FF8000000000000`** — the exact tag/aux/offset
+bits a NaN-boxed NAN-canonicalizing pointer needs ARE the payload, and they
+are UNRECOVERABLE through a plain f64 global read (confirmed empirically:
+first breadcrumb pass, storing `$obj`/`$props` into `f64`-typed debug
+globals, printed self-contradictory snapshots — e.g. `$obj` decoding as
+`tag=0` while `$type` [computed upstream as `__ptr_type($obj)`, MUST agree]
+read `1`). Fix: declare NaN-boxed debug globals as **`i64`**, store the raw
+`i64` local directly (no `f64.reinterpret_i64`) — `i64` globals surface as
+JS `BigInt` (no float conversion), preserving bits exactly. This is a
+generalizable correction to the SW-bug session's own toolkit for any future
+`declGlobal`-breadcrumb session — every prior breadcrumb entry in this file
+that stored a pointer-typed value in an `f64` debug global should be
+suspected of the same silent corruption if its numbers ever looked
+self-inconsistent.
+
+**With i64 globals, an atomic snapshot (all captures fired at ONE program
+point, immediately before the faulting read, all reading the SAME call's
+still-live params/locals — an earlier draft that scattered captures across
+multiple points in the function produced cross-call-contaminated,
+self-contradictory data since not every call reaches every trace point)
+recovered the exact faulting call, reproduced 3/3 with matching numbers**
+(one representative rep):
+```
+__dbgCount    1121        (this is the 1121st __dyn_get_t_h call this compile)
+__dbgObj      tag=1(ARRAY) aux=0 off=1654000
+__dbgType     1                                  (agrees with $obj's own tag — self-consistent)
+__dbgOff      1654000
+__dbgProps    tag=7(HASH) aux=0 off=1654032      (= obj_off + 32, read from $obj's OWN off-16 slot)
+__dbgPoff     1654032
+__dbgPcap     0                                   (!!! — the crash trigger)
+__dbgH        931910521
+__dbgSlot     892669632                          (= poff + (h & (pcap-1))*24, pcap=0 ⇒ h&-1=h ⇒ wild)
+__dbgHeap     1654560 (at raw-memory-dump time; grows slightly further by trap time)
+__dbgMark     1567360   (region_exit's own $mark — captured via a second breadcrumb in __region_exit)
+__dbgT        1670248   (region_exit's own $T = heap size at exit)
+__dbgDelta    102888
+__dbgHeapStart 677632
+__dbgExitCount 1        (confirms front's single mark/exit design — no loop, no cross-round contamination)
+```
+**The receiver is confirmed EPHEMERAL**: `obj_off (1654000) > mark (1567360)`
+— this ARRAY was relocated by `__region_copy_rec`'s own compaction this
+round (a durable/pre-mark array's address never changes). Its own header
+reads `len=0, cap=0` (raw memory dump, `[obj_off-8]` full i64 = 0) — a
+genuinely EMPTY array. Its off-16 slot (`[obj_off-16]`) is NOT zero — it
+decodes as a plausible `PTR.HASH` pointer to `obj_off+32`.
+
+**The mechanism, precisely**: `__dyn_get_t_h`'s ARRAY branch
+(`module/collection.js`, "ARRAY: header propsPtr at $off-16 is valid only
+when shift hasn't rewritten..." arm) reads `$off-16`, masks off bit0, and —
+finding a HASH tag — trusts it UNCONDITIONALLY as a live props table,
+without ever validating `cap > 0`. The table it's handed genuinely has
+`cap=0` (raw-memory-confirmed, not a misread — `[poff-8]`'s full i64 is
+exactly `0`, both len and cap 4-byte lanes zero). The probe-slot formula
+`$slot = $poff + (h & ($pcap - 1)) * MAP_ENTRY` assumes `$pcap` is a power
+of two ≥ 1 (the standard bitmask-modulo trick); with `$pcap = 0`,
+`$pcap - 1 = -1` (all bits set), so `h & -1 = h` unchanged — NOT bounded to
+`[0, cap)` at all. `$slot` becomes `poff + h*24` wrapped mod 2³² — verified
+by hand (`931910521 * 24 mod 2³² + 1653608 = 892669632`, exactly matching
+`$__dbgSlot`) — a wild, unmapped address, faulting on the subsequent
+`i64.load($slot)`.
+
+**Root WRITE not yet found — this is the actual wall.** `cap=0` is
+IMPOSSIBLE from every legitimate hash-creation path audited this session:
+`__hash_new` (`module/collection.js`) hard-codes `INIT_CAP=8`;
+`__hash_new_small` floors at `Math.max(hashSmallInitCap|0, 2)` — both ≥ 2,
+never 0. Audited `regionArmArray`'s `ephemeralDynProps` (the ONLY code that
+writes an ARRAY's off-16 slot during relocation, `layout-kinds.js`) against
+the observed value and it does NOT match either of its own two write
+shapes: it leaves off-16 UNTOUCHED (0, inherited from `__alloc_hdr`'s own
+unconditional `i64.store($ptr,0)` zero-init) when the old array had no
+props, or writes the SENTINEL `-1` (0xFFFFFFFFFFFFFFFF, "props migrated to
+the global `$__dyn_props` table") when it did — NEVER a direct live
+pointer. The observed off-16 value (a real, non-sentinel, non-zero
+HASH-tagged pointer) is consistent with NEITHER shape, meaning **this
+specific write did not happen during region-copy at all** — it must be
+either (a) a NORMAL (non-region) `__dyn_set` call, post-region-exit, during
+compileAst's own execution, that legitimately created a dyn-props table for
+this array (but then EVERY such creation goes through `__hash_new_small`,
+contradicting cap=0 yet again — unless it REUSED/grew an already-bad
+existing pointer rather than creating fresh), or (b) two adjacent, otherwise
+INDEPENDENT allocations whose address ranges overlap by exactly one
+16-byte header's worth (an off-by-16 in some size/offset computation, not
+yet isolated to a specific call site) — raw-memory archaeology around
+`obj_off` (see the ledger's own working notes, not reproduced here) showed
+a chain of coherently-shaped-but-degenerate headers 16-32 bytes apart,
+consistent with EITHER a real allocation-overlap bug OR simply the
+repetitive bit-vocabulary of adjacent small NaN-boxed structures — not
+disambiguated this session.
+
+**NOT further isolated — budget did not reach a landed fix.** Next lead for
+whoever picks this up: instrument `__dyn_set`'s ARRAY branch (`module/
+collection.js`, the `(if (i32.eq $type PTR.ARRAY) ...)` arm around its own
+`__hash_new_small` call) to log every (receiver off, created/reused props
+off, resulting cap) triple — confirm whether the `cap=0` table this session
+found is EVER visited by `__dyn_set` at all (my read says it should always
+see cap≥2 fresh or an existing cap it never shrinks) or whether it is
+reached ONLY via `__dyn_get_t_h`'s read path, meaning the write is
+somewhere region-copy hasn't been looked at yet — the SET/MAP or CLOSURE
+arms (both untouched by this session), or `__region_exit`'s own trailing
+`$__dyn_props`-implicit-root pass (module/core.js, the "values are per-array
+props HASH pointers... copied bit-for-bit, NOT recursed through
+__region_copy_rec" block) — a candidate this session named but did not
+instrument: if THIS pass's verbatim-value-copy convention is wrong for a
+value that itself needs recursive relocation (the exact 63a5551e-class
+mistake, one level removed — a props-HASH pointer stored as a *value* inside
+$__dyn_props's OWN table, left un-relocated), a stale/degenerate table is
+exactly what would result. Also worth checking: does the trap require
+SPECIFICALLY the closure (`g = () => x`) to exist — 2f596a84's own
+five-dodge-conditions still hold unverified against THIS session's deeper
+finding (not re-run; no reason to expect they've changed, but not
+confirmed).
+
+**Verified NOT the cause this session (ruled out, don't re-chase)**: HASH
+key-relocation (63a5551e, re-audited, sound — both loops relocate key AND
+value); funcInfo's own representation (confirmed HASH, not OBJECT — the
+`regionArmObject`/schema-table path is not on this trap's call graph at
+all, since the receiver here is ARRAY-typed, not HASH or OBJECT); the
+`__region_exit` root-walk's own ordering/memo discipline (unremarkable —
+`$__dbgExitCount=1`, single clean pass, `$mark`/`$T`/`$delta` all
+sane and mutually consistent).
+
+**Disposition — NO FIX LANDED, wall re-banked, narrower and evidence-backed
+(exact numbers, not speculation) for the first time.** Every edit this
+session (`scripts/self.js`'s `REGION_HOOKS_ACTIVE` flip, the debug-global
+breadcrumbs in `module/core.js`'s `__region_exit` and `module/
+collection.js`'s `__dyn_get_t_h`, the disposable `.work/scratch-build-
+named.mjs`/`.work/scratch-repro.mjs` scripts) was worktree-only and fully
+reverted/deleted; `git status`/`git diff --stat` in the worktree show
+NOTHING outstanding beyond this ledger entry. kernel-oracle's array-growth-
+class row stays unmoved (still the same region-only failure prior sessions
+recorded at 9/13 — not re-run, no source changed to justify
+re-verification, per this section's own established discipline).
+
+**No gate ladder run** — no fix exists to gate. No milestone change (front
+boundary is still NOT sound; Slice 3 stays not-live).
+
+**SHAs.** jz worktree: `2f596a84` (region-final-2026-08-11, HEAD, unchanged
+— no source landed this session, only this ledger entry). Main repo:
+unchanged by this session (this worktree is on the region branch, not
+main). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished, unchanged,
+reconfirmed pristine 5.7.14). No `dist/jz.wasm` rebuilt; the disposable
+named kernel was deleted at session end.
