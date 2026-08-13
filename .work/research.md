@@ -7003,3 +7003,166 @@ e6018e263bca9052b9d0b4e21c711576ae` (byte-identical to 63a5551e's own
 recorded dormant SHA). Region-live `dist/jz.wasm` (this session's rebuild,
 ×2 reproduced): SHA-256 `37746348cc6f3d91991d8d0106341ce5c24c71193b05be62
 84f8e9e0c2782ecc`.
+
+## §Region arena — FOURTH MECHANISM narrowed to an exact trap SITE
+(`foldStaticConstAggregates`'s own dynamic-property dispatch, upstream of
+ANY per-function/closure analysis) and an even narrower minimal repro —
+root cause STILL NOT FOUND, a genuine heisenbug under source instrumentation,
+WALL banked (2026-08-12)
+
+**Task**: pick up 4cb205e6's own banked FOURTH mechanism (a closure
+capturing a non-constant-foldable free variable traps region-live before
+`ctx.closure.make` is ever reached) and root-cause it, reusing the
+breadcrumb+checkpoint toolkit the SW-bug/cellOff/funcIdx-skew/HASH-key
+sessions each used to close their own layer.
+
+**Setup**: reused the pre-existing worktree at `.../scratchpad/
+region-slice2-front`, HEAD `4cb205e6` (region-final-2026-08-11), clean.
+`node_modules/watr → /Users/div/projects/watr`, confirmed pristine
+`895ca5b`/5.7.14 throughout. Built a NAMED region-live kernel (a scratch
+script mirroring `build-dist.mjs`'s `dist/jz.wasm` build exactly, but with
+`REGION_HOOKS_ACTIVE` hand-flipped `true` and `compile(..., {names:true})`
+so traps symbolicate to real function names instead of bare
+`wasm-function[N]`), then ran the repro directly against it via
+`interop.js`'s own `instantiate`/`memory.String` recipe (mirrors
+`test/kernel-target.js`) — bypassing `dist/jz.wasm` entirely, same method
+the 4cb205e6 session itself used for its own bisection.
+
+**Reproduced, deterministically, 3/3 reps, byte-identical stack every
+time**:
+```
+export let f = (n) => { let x = n; let g = () => x; return g() }
+```
+traps `memory access out of bounds`:
+```
+at __dyn_get_t_h        (wasm-function[1271])
+at __dyn_get_t           (wasm-function[1269])
+at __dyn_get_expr        (wasm-function[9])
+at m140_literals$foldStaticConstAggregates (wasm-function[3235]:0x769a08)
+at closure2756           (wasm-function[2507])   — the `timePhase(profiler,
+                                                     'foldAggregates', () =>
+                                                     foldStaticConstAggregates(ast))`
+                                                     wrapper closure itself
+at m121_index$compile    (wasm-function[970])    — compileAst
+at compileSelf           (wasm-function[3279])
+```
+
+**New finding — the trap site is NOT where the prior session's breadcrumb
+bounded it.** 4cb205e6's `ctx.closure.make` breadcrumb only proved
+"upstream of `ctx.closure.make`" and speculated the fault was in emit.js's
+`'=>'` handler preamble or `ctx.closure.mint`. It is neither. The real
+trap is inside **`src/compile/plan/literals.js`'s `foldStaticConstAggregates`**
+— called from `compile/index.js:2363` (`foldAggregates` phase), which runs
+near the START of `compileAst`, BEFORE any per-function analysis
+(`analyzeFuncForEmit`, `mintClosureEnvPlans`/`mintLoopPlans`,
+`ctx.closure.mint`) ever begins for ANY function — so "before
+`ctx.closure.make`" was true but vacuous: the crash is a whole PHASE
+earlier, not "just before" closure emission. The fault is a DYNAMIC
+property-get (`__dyn_get_expr`→`__dyn_get_t`→`__dyn_get_t_h`, the generic
+runtime dispatch for a `.field` read the compiler couldn't prove a static
+shape for) — disassembled at the exact offset (`wasm-objdump -d`, function
+3235 spans lines 3148877–3157376 of the dump): a NaN-box sentinel check
+immediately followed by the `__dyn_get_expr` call, i.e. genuinely a
+runtime-dispatched property read, not a fixed-offset field access.
+
+**Refuting the earlier PRE-exit-mint suspicion (task's own candidate (a)).**
+Grepped every call site of `mintClosureEnvPlans`/`ctx.plans.closures` (the
+ONE pre-emission WeakMap-keyed capture structure in the whole compiler):
+all three (`compile/index.js:873`, `:2089`, `:2096`) run inside
+`analyzeFuncForEmit`/`emitClosureBody`, themselves only ever reached from
+within `compileAst` — i.e. strictly POST front-exit, confirming the prior
+session's own "verified post-exit" note. `prepare/index.js`'s `defFunc`
+(the only PREPARE-phase, pre-exit construct resembling a "closure
+prescan") is irrelevant here: `if (depth > 0) return false` at its very
+top means a nested closure like `g = () => x` (depth > 0, inside `f`'s
+body) is NEVER touched by it — `g` stays a plain AST value straight
+through prepare, exactly as the "Any inline arrow surviving prep is a
+closure value" comment (prepare/index.js) already documents. No
+PREPARE-phase capture structure exists for this shape. Candidate (a), AS
+FRAMED, does not apply to this repro.
+
+**A much narrower minimal repro, found via a 14-variant differential matrix
+run against the SAME already-built kernel (no rebuild per variant — only
+the `run` half changes)**. The trap requires ALL FIVE of: exactly one
+param (`n`); exactly one intermediate LOCAL that is a bare, unmodified copy
+of that param (`let x = n` — `const x = n` traps identically, so the
+declarator keyword is not the discriminator); exactly one closure
+capturing that local and NOTHING else (`g = () => x`); that local used
+NOWHERE else in the function body; and the closure CALLED exactly once, as
+the function's sole return expression. Flipping ANY ONE of the following
+alone makes the SAME source compile CLEAN through the SAME kernel:
+- capture the param `n` directly, skip the intermediate local — OK
+- reference `x` anywhere else in `f`'s body too (`return g() + x`) — OK
+- add a second closure also capturing `x` (`let h = () => x; …g()+h()`) — OK
+- add ANY extra local, even unused, even before or after `x`
+  (`let a = 1; let x = n; …`) — OK
+- add an extra unused param (`(m, n) => …`) — OK
+- force a type-proof via arithmetic (`let x = n + 0; …`) — OK (matches
+  4cb205e6's own "arithmetic on a param… COMPILES CLEAN" finding)
+- define `g` but never call it — OK (matches 4cb205e6's own finding)
+
+This is the exact-shape wall: `ctx.func.list.length === 1`, one param, one
+closure-only local, one closure, one call. Every dodge changes some COUNT
+(locals, closures, params, or uses) by exactly one — consistent with an
+index/offset-sensitive mechanism (same class as the already-fixed funcIdx
+skew and cellOff delta-adjustment bugs), not a shape/type mechanism.
+
+**Heisenbug confirmed — source instrumentation INSIDE the faulting function
+changes the outcome.** Added `console.error` breadcrumbs at the top of
+`foldStaticConstAggregates` (before its first closure — the
+`ctx.func.list.filter(f => f.body && !f.raw)` call — ever executes),
+rebuilt the named kernel fresh, reran the identical repro: **compiled
+CLEAN, zero trap.** Reverted the breadcrumbs, rebuilt again: **trap
+reproduces again, identical stack, 3/3 reps.** This rules out further
+"instrument the hot function, rebuild, observe" iteration as a viable
+method here — any JS-source edit to `literals.js` perturbs codegen/
+inlining/allocation offsets enough to dodge the trigger window, the
+signature of a genuine stale-pointer/missing-root class bug (not a logic
+bug, which would reproduce regardless of surrounding dead code). This
+mirrors the ORIGINAL "SW bug" session's own method constraint — it also
+could not use naive source breadcrumbs and instead instrumented
+`module/core.js`'s WAT-level `__region_copy_rec`/`__region_exit`
+intrinsics directly.
+
+**NOT further isolated — root cause still unknown.** Did not attempt the
+WAT-level intrinsic breadcrumb this session (budget). Best lead for
+whoever picks this up: the trap is a dynamic-property dispatch reached
+from `foldStaticConstAggregates`'s own top section — the first candidate
+worth instrumenting (at the WAT/intrinsic level, not JS source) is
+whatever backs `ctx.func.list[0]`'s funcInfo record (`{name, body,
+exported, sig}`, minted by `defFunc` at PREPARE time, i.e. pre-exit,
+inside the 5-element root's `ctx.func.list` array) — specifically whether
+its OBJECT-kind heap value (nested one level inside the correctly-rooted
+ARRAY) is fully/recursively relocated by `__region_copy_rec`, or whether a
+dynamic-shape/`$__dyn_props` sidecar on THAT SPECIFIC record (tipped into
+dynamic mode by something closure-related — unconfirmed) is where the stale
+pointer lives. The five-dodge-conditions-of-exactly-one above make this an
+unusually tractable repro for the intrinsic-level breadcrumb method (the
+whole compile is sub-100ms) — just not reachable via JS-source
+instrumentation, which this session's own heisenbug finding rules out.
+
+**Disposition — NO FIX LANDED, wall re-banked, narrower than before.**
+Every edit this session (the scratch named-kernel build script, the
+`REGION_HOOKS_ACTIVE` flip, the `foldStaticConstAggregates` breadcrumbs)
+was worktree-only and fully reverted/removed; `git status`/`git diff
+--stat` in the worktree show NOTHING outstanding beyond this ledger entry.
+kernel-oracle's array-growth-class row stays unmoved (still the same
+region-only failure the 4cb205e6 session already recorded at 9/13 — not
+re-run this session, no source changed to justify a re-verification, per
+the same discipline every characterization-only entry in this section
+already follows).
+
+**No gate ladder run** — per established discipline ("gated on a real fix
+existing, and none does yet"), and consistent with every other
+characterization-only entry in this section. No value-verification
+possible (nothing new compiled that wasn't already known to compile).
+
+**SHAs.** jz worktree: `4cb205e6` (region-final-2026-08-11, HEAD,
+unchanged — no source landed this session, only this ledger entry). Main
+repo: `14553f2b` (moved since 4cb205e6's own session from unrelated
+concurrent work — "centralize emit frame name authority" and siblings —
+untouched by this session; pre-existing dirt `README.md`,
+`.work/todo-original.md`, `bench/bench.svg`, `assets/install.svg` also
+untouched). watr: `895ca5b` (`/Users/div/projects/watr`, unpublished,
+unchanged, reconfirmed pristine 5.7.14). No `dist/jz.wasm` rebuilt this
+session (only the disposable scratch named-kernel, deleted).
