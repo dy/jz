@@ -10604,3 +10604,223 @@ is new). watr: npm-resolved `5.7.15`, content-verified against the
 confirmed present. No `dist/jz.wasm` rebuilt in the tracked tree — every
 kernel this session built was a disposable, deleted scratch artifact.
 
+
+## §Region arena — `__region_relocate_props` durable-WRITE-path root-caused and
+## fixed (TYPED-VIEW off-16 header confusion): a real, independently-verified
+## corruption bug closed; the region-live wall persists — same pre-existing
+## address-sensitive heisenbug, now landing on a different corpus shape
+## (2026-08-13)
+
+**Task**: the named lead from 233bf8b5/2a78a6f6 — root-cause the durable
+dyn-props WRITE path behind `__region_relocate_props`'s garbage-capacity read
+(`nestedtyped` oracle row, region-live O0/O2). Worktree off `259cd4fc`.
+
+### Root cause — mechanism family (c), wrong-offset write for a layout kind
+
+`module/collection.js`'s three dyn-props entry points (`__dyn_get_t_h`,
+`__dyn_set`, `__dyn_del`) and their shared `hasPropsSidecarWat` predicate
+treat **every** `PTR.TYPED` receiver as header-carrying — reading/writing a
+props-hash pointer at `off-16` unconditionally. That's true for an OWNED
+typed array (`new Int32Array(64)`, `TypedArray.from(...)`,
+`new Int32Array(existingTypedArray)` — allocated via `__alloc_hdr_n`, which
+reserves the standard 16-byte `[propsPtr@-16][len@-8][cap@-4]` header,
+documented at core.js:1447). It is **false** for a VIEW-kind typed array
+(`aux&8` — `new T(buffer, byteOffset, length)` or `.subarray()`): its 16-byte
+block is a bare descriptor `[byteLen][dataOff][rootOff][reserved]` allocated
+via plain `__alloc(16)` (layout-kinds.js `regionArmTyped`'s own doc), with
+**no header before it at all** — `off-16` there is whatever the bump
+allocator happened to place immediately before the descriptor (typically the
+tail of the buffer/typed-array the view was constructed from).
+
+Setting a dynamic property on a VIEW (`view.tag = 'x'`) therefore stomps 8
+bytes of unrelated heap data with a props-hash pointer; reading one back can
+misinterpret whatever precedes an unrelated VIEW descriptor as a valid
+HASH pointer. **Confirmed natively, with no self-hosted kernel and no
+region-arena involved at all** — a plain, deterministic repro:
+
+```js
+let buf = new ArrayBuffer(64), full = new Int32Array(buf)
+for (let i = 0; i < 16; i++) full[i] = 2000 + i
+let view = new Int32Array(buf, 8, 2)   // VIEW: aux & 8
+view.tag = 'hello'                     // corrupts full[12..15]'s backing bytes
+// → RuntimeError: memory access out of bounds, deterministic, pre-fix
+```
+
+This is exactly the shape `__region_relocate_props`'s garbage-~2^31-capacity
+read matches: a stray write lands on an unrelated HASH object's own
+`cap`/`n` header words (or on data a later HASH's header gets allocated
+into), and the relocator reads it back as a bogus capacity later, at a
+completely different call site than the one that actually corrupted it —
+consistent with 233bf8b5's own framing ("root-cause the durable dyn-props
+WRITE path, not just the read site").
+
+### The fix
+
+`hasPropsSidecarWat(typeExpr, objExpr)` (module/collection.js) now requires
+`aux&8==0` for a `PTR.TYPED` receiver (`(type==TYPED && !(aux&8)) || SET ||
+MAP`, `ARRAY`/`OBJECT` unchanged) — the same three ephemeral direct-header
+blocks in `__dyn_get_t_h`/`__dyn_set`/`__dyn_del` that duplicate this check
+inline (rather than calling the shared predicate) get the identical guard. A
+VIEW now falls through to the global `$__dyn_props` table (keyed by offset)
+exactly like CLOSURE / a shifted ARRAY / a static-segment OBJECT already do
+— no VIEW-specific special-casing, just the existing general fallback this
+codebase already has for "no legitimate header slot". `__ptr_aux` added to
+the three functions' `deps` arrays. Engine-level, unconditional on
+`REGION_HOOKS_ACTIVE` (the bug is real in dormant/native too — the repro
+above needs neither): **module/collection.js only, no `nestedtyped`
+special-casing.**
+
+Verified fixed with the exact repro above (native, dormant): `full[]`
+untouched, `view.tag`/`'tag' in view`/a second `view.other` prop all read
+back correctly, no trap.
+
+### What this fix actually moves (corpus-row-level, not named-test-level)
+
+Kernel-parity's CORPUS (11 rows × O0/O2/O3) and kernel-oracle's AGREE list
+(13 rows × O0/O2), diffed row-by-row between a pristine `259cd4fc` region-live
+build and this fix's region-live build (both `REGION_HOOKS_ACTIVE=true`,
+otherwise identical):
+
+| row (opt level) | baseline | with fix |
+|---|---|---|
+| `dict` O2 (CORPUS) | **TRAP** unreachable | **PASS** |
+| `dict` O2 (AGREE list) | **TRAP** unreachable | **PASS** |
+| every other CORPUS/AGREE row, both lists | unchanged | unchanged (zero new corpus-row failures) |
+
+`dict` (`let d={}; d[c]=(d[c]||0)+1`) is a plain dynamic-key HASH write —
+squarely the code this fix touches. **Zero corpus-row regressions** on
+either list. This is genuine, verified progress, not a wash.
+
+### The wall does NOT close — it moves, matching the campaign's own repeatedly-
+### documented address-sensitive heisenbug class
+
+`node test/index.js kernel-oracle` (named-test granularity, not corpus-row)
+goes **7/13 (baseline) → 5/13 (with fix)**, 3/3 deterministic both ways. The
+drop is not the `dict` fix regressing anything — it's `kernel oracle: bare
+BigInt array-element return — AGREE` (`let a=[1n]; return a[0]`, O1 leg only)
+**newly trapping**, previously clean at `259cd4fc` baseline (confirmed via
+direct instance calls, not just the named-test summary, both configs).
+
+Traced with the campaign's own breadcrumb method (`declGlobal` i32 globals
+in `module/core.js`/`module/collection.js`, `names:true` scratch build via
+`compile(profile.graph.code, {..., names:true})`, no `wat:true`, reverted
+before commit): the trap is `__dyn_get_t_h ← __dyn_get_t ← __dyn_get_expr ←
+m49_compile$normalize` (the SELF-HOSTED KERNEL's own compiler code, reading
+a dynamic property off one of its own AST-adjacent objects while compiling
+the trivial `[1n]` source) — **not** `__region_copy_rec`/
+`__region_relocate_props` at all; a breadcrumb on `__region_relocate_props`
+showed its own last call (#278, right before this trap fires later in the
+same compile) reading a perfectly sane `cap=32 n=16`, ruling it out as the
+proximate cause here. The receiver at the actual trap is `type=ARRAY,
+aux=0` (`layout.js` PTR enum) — not TYPED, not touched by this session's
+`hasPropsSidecarWat` logic change at all (the TYPED branch's condition is
+false regardless of the new aux check for a non-TYPED type; the added code
+is provably inert for this receiver). The only causal link to this fix is
+**code-size delta**: `__dyn_get_t_h`/`__dyn_set`/`__dyn_del` each grew by a
+few WAT nodes, shifting the self-hosted kernel's own compiled-code layout
+enough that a *different*, pre-existing, unfixed defect (a durable ARRAY's
+`off-16` read landing on now-stale/reclaimed memory at a specific address —
+`off=2303832` at the trap, call #5841 into `__dyn_get_t_h`) now fires on a
+program it didn't fire on before.
+
+This is not speculation — it is the SAME mechanism class `scripts/self.js`'s
+own header comment and 233bf8b5's own three-root-variant table already named
+("address/layout-boundary-sensitive heisenbug... narrowing/widening the root
+shifts WHICH corpus shape trips the SAME underlying relocator defect rather
+than closing it"), independently reconfirmed here by a fix that (a) is
+proven inert on the specific receiver that now traps, and (b) still measurably
+moves which row fails. **`__dyn_get_t_h`'s durable-ARRAY off-16 read at a
+stale address is therefore the concrete next-lead pointer** — same family
+as mechanism (b) in this task's own brief (stale pointer to reclaimed
+memory), not mechanism (c) (this session's own fix closed the one instance
+of (c) that was findable). A minimal native (non-kernel) repro was not
+attempted this session — budget did not extend to one more empirical cycle;
+the breadcrumb method above is the proven, reusable starting point.
+
+### Gates
+
+- **Native `npm test`: 3436 total / 3428 pass / 2 fail / 6 skip** — byte-for-
+  byte the documented `259cd4fc` baseline (the two pre-existing
+  `test/optimizer.js` pins, "interval walk: strided companion cursor…" and
+  "typed RMW: one guard…", both independently reconfirmed present on a
+  pristine `259cd4fc` checkout this session, before this fix — genuinely
+  pre-existing, not newly attributed). **Zero regressions.**
+- **`npm run test:wasm`: 2731 total / 2725 pass / 0 fail / 6 skip** — exact
+  baseline match.
+- **`test/perf-ratchet.js`**: `nest` 22411→22587 (+176), `condref`
+  103818→104138 (+320) — both traced to this fix's own guard (`hasPropsSidecarWat`
+  gets inlined into hot loops reached via untyped-parameter indexed access,
+  e.g. `progNest`'s `a[i]`/`a[j]` on an unproven-type param; the extra
+  `aux&8` check duplicates at each inline site). Re-baselined
+  (`node test/perf-ratchet.js --update`, `test/perf-ratchet.json` diff is
+  exactly these two lines) — justified per the ratchet's own doc ("a real
+  codegen change... re-baseline"): the added cost is the minimum needed for
+  correctness (one aux extraction + mask, gated behind the TYPED branch),
+  paid only on the generic (statically-unproven-type) dyn-prop dispatch
+  path, not on any statically-typed fast path.
+- **Dormant kernel-oracle: 13/13 ×3** (541 assertions each) — unaffected,
+  unchanged from `259cd4fc`.
+- **Region-live kernel-oracle: 5/13 ×3** (181 assertions, deterministic) —
+  DOWN from baseline's 7/13 ×3 (also reconfirmed this session, deterministic).
+  NOT a gate pass. See "What this fix actually moves" and "The wall does NOT
+  close" above for the full, honest accounting: corpus-row-level zero
+  regressions + one genuine fix (`dict` O2), named-test-level one newly-
+  exposed pre-existing heisenbug instance (`bare BigInt array-element` O1).
+- **Region-live kernel-parity**: CORPUS-row level — `nestedtyped`/
+  `subviewtyped`/`dvnested` still trap at O0 (unchanged from baseline,
+  `dict`/`boolconst` no longer BOTH trap at O2 — only `boolconst` does now,
+  `dict` fixed), O3 stays 11/11 clean (unchanged).
+- **jessie/watr/jzify-entry, region-live ×3**: **ALL CLEAN, deterministic,
+  zero traps** — jessie SHA `10429e69…` ×3, watr `cff90984…` ×3,
+  jzify-entry `2286099a…` ×3 (`.work/jzify-entry.mjs` recreated from the
+  main repo's own copy per the established convention, worktree-only,
+  discarded).
+- **Self-build ×2, dormant**: SHA-256 `dd04c4f7120867c32cf9cd07802d505ddd27c8cd0f7030e8bccd996919c9aaf7`
+  both times — converges (differs from `259cd4fc`'s own dormant SHA
+  `6e9e6c095...`, expected: `module/collection.js` changed).
+- **Self-build ×2, region-live**: SHA-256
+  `497b22638e5d06fe87f2c353df2537b9b6431c17802c5afd06fe6f7f9892800f` both
+  times — converges.
+- `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
+  (unchanged from `259cd4fc` — every hand-flip this session was built,
+  gated, and reverted before the next step; `git diff scripts/self.js`
+  clean at commit time).
+
+### Disposition — WALLED, not SLICE 3 FULLY SOUND, but a genuine fix lands
+
+The task's own gate bar (region-live oracle 13/13 ×3 both configs) is **not
+met** — do not read this entry as closing the front. What IS true, precisely:
+one full mechanism family from the task's own taxonomy (c — wrong-offset
+write for a layout kind) is root-caused, fixed at the engine level with no
+special-casing, independently verified outside region-arena entirely (a
+plain native repro, no kernel, no `REGION_HOOKS_ACTIVE`), and lands with
+**zero regressions on every gate that reflects what actually ships**
+(native suite, test:wasm, dormant kernel-oracle, both self-builds
+converge). The region-live diagnostic — which never ships
+(`REGION_HOOKS_ACTIVE` stays `false` by default) — moves from 7/13 to 5/13
+named-tests not because this fix is wrong, but because it demonstrably
+perturbs code layout enough to re-expose the SAME unresolved
+address-sensitive heisenbug this campaign has chased since at least the
+`ba0b5f6d`/`2f596a84`/`db16685e`/`17e7701e` chain, on a new, smaller,
+cleanly-isolated trigger (`[1n]` at O1 specifically — the smallest repro
+this heisenbug class has had yet).
+
+**Next named lead, concrete and precise**: `__dyn_get_t_h`'s durable-ARRAY
+`off-16` read (module/collection.js, the block gated by `hasPropsSidecarWat`
++ `off < heapResetWat()`) reads a stale/reclaimed address for a receiver
+reached via `m49_compile$normalize`'s own dynamic-property access while the
+self-hosted kernel compiles `export let f = () => { let a = [1n]; return a[0]
+}` at O1 — receiver is `type=ARRAY aux=0 off=2303832`, the 5841st
+`__dyn_get_t_h` call. This is the smallest, cleanest repro this heisenbug
+class has produced across the whole campaign; a future session should start
+here with the store-side breadcrumb (which write left that address either
+never-written or reclaimed) rather than re-deriving a repro from scratch.
+
+**SHAs**. jz worktree: `259cd4fc` base, this session's only commits are
+`module/collection.js` + `test/perf-ratchet.json` (the fix + its justified
+re-baseline) plus this ledger entry. watr: unchanged, `5.7.15`
+content-verified against the exact two-line SW hunk (`node_modules/watr/src/optimize.js:3102,8493`)
+before any gate ran this session. Dormant `dist/jz.wasm` (this session,
+self-build ×2): SHA-256 `dd04c4f7120867c32cf9cd07802d505ddd27c8cd0f7030e8bccd996919c9aaf7`
+both. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`497b22638e5d06fe87f2c353df2537b9b6431c17802c5afd06fe6f7f9892800f` both.
