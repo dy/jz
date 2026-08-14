@@ -702,26 +702,25 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it �
   is(localVal(locals, 'b'), VAL.BIGINT)
 })
 
-test('array-destructure kind: destructured param element keeps whole-array kind (pre-existing; per-index kind is a separate, deeper gap)', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): this
+// test used to document a KNOWN, ACCEPTED gap — a heterogeneous array
+// literal (`[1, BigInt(v)]`, element 0 NUMBER, element 1 an unprovable
+// BigInt) passed as a call argument, whose per-index kind param
+// destructuring never resolved. That gap is exactly the "collection" flow
+// class §4 defines (an array literal carrying a BigInt element into
+// storage this program never proves uniform) — now a compile-time refusal
+// instead of a silently-unresolved kind. STRUCTURALLY IMPOSSIBLE to
+// construct the old repro anymore, same class as test/data.js's audit-#11
+// P0-1 deletion the design calls out — converted, not deleted, since the
+// shape itself (heterogeneous-array-literal call-arg) remains valuable
+// negative-space coverage.
+test('array-destructure kind: a heterogeneous BigInt-element array literal as a call-arg is now a compile-time "collection" diagnostic (was: silently-unresolved per-index kind)', () => {
   if (onKernel()) return
-  // Documents current scope: param destructuring resolves the WHOLE array's
-  // kind from call-site union (arrayElemValType, uniform-only) — there is no
-  // per-index census for params (unlike ctx.schema.arrayVars, which only
-  // covers compiler-synthesized decl-destructure temps). A heterogeneous
-  // tuple param's individual element kinds are NOT expected to resolve here.
   const src = `
     let g = ([a, b]) => b
     export let f = (v) => g([1, BigInt(v)])
   `
-  const insp = compile(src, { wat: true, inspect: true }).inspect
-  // g's one call site passes a fixed 1-arg array — a destructured single-array
-  // param is represented via the same `.rest` machinery specializeFixedRestCalls
-  // targets, so the site can legitimately route to g's `#rest1` clone instead
-  // of g itself (architecture re-audit item 10's atomic call-edge retarget:
-  // the inferred fact now correctly lands on whichever func the AST actually
-  // calls, not a stale pre-specialization name). Check whichever carries it.
-  const clone = insp.functions[`g${T}rest1`]
-  is(insp.functions.g?.params?.[0]?.val ?? clone?.params?.[0]?.val, VAL.ARRAY)
+  throws(() => compile(src, { wat: true, inspect: true }), /BigInt value at this collection/)
 })
 
 test('array-destructure behavior: typeof destructured bigint element is "bigint"', () => {

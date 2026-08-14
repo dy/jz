@@ -644,7 +644,22 @@ export function emitElementAssign(arr, idx, val) {
   // number from a boxed bigint apart.
   const arrProvenBigintElems = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY &&
     repOf(arr)?.arrayElemValType === VAL.BIGINT
-  const valueExpr = arrProvenBigintElems ? storedValueNarrow(val) : storedValue(val)
+  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): a
+  // PROVEN TYPED receiver (BigInt64Array/BigUint64Array, `lookupValType(arr)
+  // === 'typed'`, mirroring branch 5's own proven-ctor check below) is the
+  // design's own explicit exemption — "each element's kind is fixed by the
+  // array's ctor at every read... needs no boxing today and needs none
+  // after retirement either." `valueExpr` is computed here, BEFORE branch 5
+  // decides whether it even needs it (its own fast path — ctx.core.emit
+  // ['.typed:[]='] — re-emits `val` independently and never reads
+  // `valueExpr` at all) — so an unconditional `storedValue` here would
+  // refuse to compile `arr[0] = BigInt(x)` for a freshly-constructed,
+  // statically-known BigInt64Array even though nothing ambiguous is
+  // happening. `storedValueNarrow` is the same safe default
+  // arrProvenBigintElems already established: never fires for an inline
+  // expression, only for a bare name independently proven boxed elsewhere.
+  const arrProvenTyped = typeof arr === 'string' && lookupValType(arr) === 'typed'
+  const valueExpr = (arrProvenBigintElems || arrProvenTyped) ? storedValueNarrow(val) : storedValue(val)
   // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure
   // table — record this write's provenance (direct closure literal, or a call
   // to a function resolveDynFnTables can later prove is a closure factory) for

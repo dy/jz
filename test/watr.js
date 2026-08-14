@@ -10,6 +10,31 @@ const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): watr
+// (an independently-versioned npm dependency, not jz kernel source — Slice
+// 0's own ledger entry, ".work/research.md 'BigInt retirement Slice 0'")
+// has 4 of its own genuinely-unprovable BigInt sites (encode.js's
+// F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
+// unreachable from this repo to fix. This file compiles watr's REAL bundled
+// source through jz (not a self-hosted kernel — a native, in-process
+// compile, same mechanism), so it hits those same sites. `withRawCarrier`
+// is jz's own established JZ_CARRIER_BOX=0 escape hatch (src/ir.js's
+// liveCarrierBox — a live re-read, not the frozen ctx.js CARRIER_BOX
+// export), scoped to EXACTLY the synchronous jz()/jz.compile() call that
+// needs it: `jz()` is synchronous (never `async function`), so the whole
+// compile completes — and the env var is restored — before any `await` on
+// its result ever yields to another concurrently-running test (tst's
+// runner executes tests with real concurrency; a naive set/restore
+// spanning an `await` would race with unrelated tests expecting the
+// default CARRIER_BOX=1 diagnostic to fire). Every OTHER `jz(...)` call in
+// this file (small ad-hoc snippets, no watr/BigInt involved) is untouched.
+const withRawCarrier = (fn) => {
+  const prev = process.env.JZ_CARRIER_BOX
+  process.env.JZ_CARRIER_BOX = '0'
+  try { return fn() }
+  finally { if (prev === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prev }
+}
+
 const ENTRY_MODULES = {
   './src/compile.js': watrSrc('compile.js'),
   './src/parse.js': watrSrc('parse.js'),
@@ -40,7 +65,7 @@ let topLevelCompile
 
 function compiledWatr() {
   if (!topLevelCompile) {
-    const inst = jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 })
+    const inst = withRawCarrier(() => jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 }))
     topLevelCompile = inst.exports.compile
   }
   return topLevelCompile
@@ -213,7 +238,7 @@ test('watr bug: branch hints - branch hints section not found', () => {
 
 test('watr: top-level package entry compiles', () => {
   if (onWasi()) return  // wasi: host global WebAssembly
-  const compiled = jz.compile(watrJs, { jzify: true, modules: ENTRY_MODULES })
+  const compiled = withRawCarrier(() => jz.compile(watrJs, { jzify: true, modules: ENTRY_MODULES }))
   ok(compiled instanceof Uint8Array, 'top-level watr entry compiles to wasm bytes')
   ok(new WebAssembly.Module(compiled) instanceof WebAssembly.Module, 'top-level watr output is valid wasm')
 })
@@ -226,13 +251,13 @@ test('watr: top-level package entry instantiates', () => {
 })
 
 test('watr: compiled print.js prints module text', () => {
-  const inst = jz(watrSrc('print.js'), {
+  const inst = withRawCarrier(() => jz(watrSrc('print.js'), {
     jzify: true,
     modules: {
       './parse.js': watrSrc('parse.js'),
       './util.js': watrSrc('util.js'),
     },
-  })
+  }))
   is(inst.exports.default('(module)'), '(module)')
 })
 
@@ -248,7 +273,7 @@ test('Map.set: omitted value stores undefined and keeps key present', () => {
 })
 
 test('watr: compiled compile.js handles empty func module', async () => {
-  const inst = await jz(watrSrc('compile.js'), { jzify: true, modules: COMPILE_MODULES })
+  const inst = await withRawCarrier(() => jz(watrSrc('compile.js'), { jzify: true, modules: COMPILE_MODULES }))
   sameWasm('empty func module', '(module (func))', inst.exports.default)
 })
 
@@ -282,11 +307,11 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
 })
 
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
-  const inst = await jz(watrSrc('compile.js'), {
+  const inst = await withRawCarrier(() => jz(watrSrc('compile.js'), {
     jzify: true,
     memory: 4096,
     modules: COMPILE_MODULES,
-  })
+  }))
   const jzCompile = inst.exports.default
   ok(typeof jzCompile === 'function', 'watr.wasm exports default compile()')
 
@@ -313,7 +338,7 @@ let topLevelInstance
 
 function compiledWatrInstance() {
   if (!topLevelInstance) {
-    const inst = jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 })
+    const inst = withRawCarrier(() => jz(watrJs, { jzify: true, modules: ENTRY_MODULES, memoryPages: 4096 }))
     topLevelInstance = inst.exports
   }
   return topLevelInstance

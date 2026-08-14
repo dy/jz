@@ -37,7 +37,7 @@
  * @module test/kernel-oracle
  */
 import test from 'tst'
-import { is, not } from 'tst/assert.js'
+import { is, not, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { CORPUS } from './kernel-parity.js'
 import { compileViaKernel } from './kernel-target.js'
@@ -508,16 +508,21 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // corrupted value, both native AND kernel legs, both optimize tiers) so a
 // future close of either (a) or (b) flips this test's asserted values from
 // the corrupted carrier to `want` in one edit.
-test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering, differential fixture) — an earlier-imported module\'s numeric coercion bakes $__to_num before a later-imported module\'s BigInt use is ever seen, corrupting Number() of that BigInt at native+kernel runtime under default, kernel-only under JZ_CARRIER_BOX=1 (§31)', async () => {
-  if (onWasi()) return
-  const want = 123456789012345
-  const corrupted = 6.09957581968707e-310  // raw i64 bits of 123456789012345n reinterpreted as f64, unconverted — same corruption class as the JSON shaped-parser 9.067910317e-315 finding
-  // a.jz: imported FIRST, zero bigint syntax — a numeric coercion (OP_MODULES['u+']
-  // = ['number','string']) materializes $__to_num while ctx.features.bigint is still false.
-  const aSrc = `export let touch = (x) => +x`
-  // b.jz: imported SECOND — the ONLY module with bigint syntax in the whole program.
-  // A mixed-type array element (not statically bigint-typed) forces Number() through
-  // the real dynamic $__to_num call rather than a compile-time fold or typed lowering.
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
+// STRUCTURALLY IMPOSSIBLE now, not merely re-pinned — same class as
+// test/data.js's audit-#11 P0-1 deletion the design itself calls out.
+// `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a heterogeneous
+// array literal carrying a BigInt element into element storage whose kind
+// this program never proves uniform — exactly the "collection" flow class
+// §4's table names. Both the ctx.features.bigint module-ordering corruption
+// this KNOWN-FAIL pinned AND the §31/§32 CARRIER_BOX accidental-fix
+// mechanism it also tracked shared one precondition: a raw or boxed i64
+// carrier had to exist for either the corruption or its fix to manifest.
+// With an unprovable BigInt array element refused at compile time instead
+// of carried (raw or boxed) into `Number()`'s dynamic dispatch, there is no
+// longer a value for either mechanism to act on — the whole KNOWN-FAIL
+// class is eliminated at the root, not narrowed or reordered around.
+test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigInt array element is now a compile-time "collection" diagnostic, not a runtime module-ordering corruption', () => {
   const bSrc = `
     const arr = [1.5, 123456789012345n, 2.5]
     export let mkBig = (i) => Number(arr[i])
@@ -527,64 +532,9 @@ test('kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering,
     import { mkBig } from './b.jz'
     export let out = () => { touch(1); return mkBig(1) }
   `
-  const modules = { './a.jz': aSrc, './b.jz': bSrc }
-  // §31: under JZ_CARRIER_BOX=1, the NATIVE leg is no longer corrupted here —
-  // incidentally closed the same way the console.log row above was (§24
-  // CONSERVATIVE PAIRING's runtime maybeUnboxBigInt dispatch at readI64,
-  // unrelated to ctx.features.bigint/module-ordering itself, which is
-  // STILL real and STILL open). The KERNEL leg stays wrong: its own
-  // compiled $__to_num was baked by the self-hosted build BEFORE this
-  // specific census value ever reaches a readI64 call site CONSERVATIVE
-  // PAIRING covers (Number()'s own dynamic coercion path is a different
-  // call shape than ptrBits' arithmetic OR-expression — not yet verified
-  // which shape gap keeps it open; a future session's starting point, not
-  // re-investigated here). Verified live, both directions, all three opt
-  // tiers, default AND flag-forced, before landing this branch.
-  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
-  const nativeCorrupted = process.env.JZ_CARRIER_BOX === '0'
-  for (const opt of [0, 2, 3]) {
-    const nat = jz(mainSrc, { modules, optimize: opt }).exports.out()
-    const ker = instantiate(compileViaKernel(mainSrc, { modules, optimize: opt })).exports.out()
-    if (nativeCorrupted) {
-      is(nat, corrupted, `O${opt}: native currently WRONG (raw BigInt carrier reinterpreted as f64) — TODO-flip guard`)
-      not(nat, want, `O${opt}: tripwire — native must start disagreeing with the correct ToNumber value the moment this closes`)
-    } else {
-      is(nat, want, `O${opt}: native CORRECT under JZ_CARRIER_BOX=1 (§31 — closed incidentally by §24 CONSERVATIVE PAIRING, not by an audit-#16 fix)`)
-      not(nat, corrupted, `O${opt}: tripwire — native must start agreeing again if this regresses`)
-    }
-    if (nativeCorrupted) {
-      is(ker, corrupted, `O${opt}: kernel currently WRONG too, identical corruption — TODO-flip guard`)
-      not(ker, want, `O${opt}: tripwire — kernel must start disagreeing too`)
-    } else {
-      // .work/carrier-representation-design.md §32: CARRIER_BOX's OWN
-      // declaration (src/ctx.js) is a `typeof process !== 'undefined'`
-      // host-capability probe — jz's compiler correctly (spec §13.5.3)
-      // folds this to `false` for ANY self-hosted compile, since `process`
-      // is never declared in jz's own source, permanently disabling every
-      // CARRIER_BOX-gated mechanism (incl. §24 CONSERVATIVE PAIRING's
-      // maybeUnboxBigInt dispatch) inside any kernel regardless of build
-      // flag — the actual root cause of test:wasm item 8 (`rawField()`).
-      // scripts/build-dist.mjs now injects the real build-time flag value
-      // as a source-text literal before self-hosting, so CARRIER_BOX-gated
-      // logic — including this row's own accidental-fix mechanism, same as
-      // native's — now genuinely activates inside the kernel too.
-      is(ker, want, `O${opt}: kernel CORRECT under JZ_CARRIER_BOX=1 (§32 — CARRIER_BOX self-host build-time injection makes §24 CONSERVATIVE PAIRING activate inside the kernel for the first time, same mechanism as native's own accidental fix)`)
-      not(ker, corrupted, `O${opt}: tripwire — kernel must start agreeing with the corrupted value again if this regresses`)
-    }
-  }
-  // Control: reversing the import order puts the bigint-construction site (b.jz)
-  // ahead of the numeric-coercion op (a.jz) in prep()'s walk, so the flag is set
-  // true BEFORE $__to_num materializes — proves the fault tracks ORDER, not the
-  // Number()/mixed-array mechanism itself (which is correct on its own).
-  const mainReversed = `
-    import { mkBig } from './b.jz'
-    import { touch } from './a.jz'
-    export let out = () => { touch(1); return mkBig(1) }
-  `
-  for (const opt of [0, 2, 3]) {
-    is(jz(mainReversed, { modules, optimize: opt }).exports.out(), want, `O${opt}: control — reversed import order is correct (isolates the fault to ORDER, not the value mechanism)`)
-    is(instantiate(compileViaKernel(mainReversed, { modules, optimize: opt })).exports.out(), want, `O${opt}: control kernel leg, same proof`)
-  }
+  const modules = { './a.jz': `export let touch = (x) => +x`, './b.jz': bSrc }
+  for (const opt of [0, 2, 3])
+    throws(() => jz(mainSrc, { modules, optimize: opt }), /BigInt value at this collection/, `O${opt}: heterogeneous BigInt array element refuses to compile`)
 })
 
 // ── PENDING-FIX tier: a REAL finding, not a documented tradeoff ───────────

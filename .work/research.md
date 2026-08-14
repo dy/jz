@@ -15523,3 +15523,192 @@ not committed): succeeds, not SHA-pinned this session. Every scratch build
 artifact and debug instrumentation (temporary `console.error` probes in
 `src/compile/narrow.js`, since reverted) was removed before commit; `dist/`
 is gitignored and not part of the commit.
+## [x] BigInt retirement Slice 1 — flip the fixpoint's consequence: box → compile-time diagnostic (per `.work/bigint-retirement-design.md` §4/§9)
+
+Per the design's own framing: the SAME fixpoint that decided "insert a
+PTR.BIGINT box" (`markBigintSink`/`bigintBoxedVerdict`/`needsBigintBox`/
+`isProvenBoxedBigint` — walk unchanged, not touched) now refuses to
+compile instead. Flipped at the actual box-*materialization* call sites —
+not the walk itself — since that's precisely where "consequence" lives:
+`src/ir.js` `carrierF64`/`carrierF64Narrow`/`readI64`'s paired unbox-gate,
+`src/compile/emit.js` `coerceArg` (call-arg, both directions collapsed
+from a runtime nullish-guarded box/unbox into one unconditional compile-
+time refusal — a `?:`-nullish-BigInt argument's kind is unprovable
+regardless of what the ternary picks at runtime), the direct return-tail
+box, and the ternary-nullish `?:` handler's own box arm.
+
+New shared diagnostic: `bigintEraseErr(kind, who)` (`src/ir.js`), calling
+`err()` (source location + current AST + enclosing function, automatic).
+Verbatim example (collection flow class):
+
+```
+BigInt value at this collection can't be proven a single, uniform kind (this expression) — give it one statically-provable BigInt path for its whole lifetime (arithmetic/comparison between two BigInt operands, a BigInt64Array/BigUint64Array element, or BigInt()/Number() conversion of a provably-typed source) instead of letting it cross through a dynamically-kinded slot.
+  current AST: ["bigint","5"]
+```
+
+**Genuine bug found and fixed en route (not a design gap):**
+`emitElementAssign`'s (`src/compile/emit-assign.js`) `valueExpr` was
+computed via the unconditional `storedValue` path BEFORE the function
+dispatches to branch 5 (proven TYPED-array receiver, `.typed:[]=`) — which
+never even reads `valueExpr` (re-emits `val` independently). A
+BigInt64Array/BigUint64Array element write (design's own explicit
+kept-raw exemption: "each element's kind is fixed by the array's ctor...
+needs no boxing today and needs none after retirement either") was
+therefore hitting the new diagnostic despite being entirely unambiguous.
+Fixed: `arrProvenTyped` (mirrors branch 5's own `lookupValType(arr) ===
+'typed'` check) added alongside the existing `arrProvenBigintElems`
+exemption, routing through `storedValueNarrow` (never fires for an inline
+expression) instead of the unconditional `storedValue`.
+
+**JZ_CARRIER_BOX-style escape hatch, per the task's own anticipation:**
+Slice 0 left 5 sites banked (unresolved) — 1 jz-own source site
+(`layout.js`'s `i64Hex` `bits` param) + 4 in the external `watr` npm
+dependency (`encode.js`'s module consts + `i64.parse`'s `bi` local). Under
+this slice's default (CARRIER_BOX on), ALL FIVE now hit the new
+diagnostic — breaking the self-host kernel build AND every native compile
+of watr's/subscript's own bundled source (test/watr.js, test/perf.js's
+watr-bench, test/ecosystem-perf.js's jessie+watr wasm builds, the
+byte-identity corpus's own `bench/jessie/jessie.js`/`bench/watr/watr.js`
+real-input subjects). `CARRIER_BOX` (`src/ctx.js`) is a frozen,
+import-time constant — can't be toggled per-call within one shared test
+process. Added `liveCarrierBox()` (`src/ir.js`, exported) — a LIVE re-read
+of `process.env.JZ_CARRIER_BOX`, used ONLY at the diagnostic's own gates
+(carrierF64/carrierF64Narrow/readI64's paired check, coerceArg, the
+direct-return-box gate, the ternary-nullish gate) — every OTHER
+CARRIER_BOX consumer (schema.js's slot census, emit.js's CONSERVATIVE
+PAIRING runtime dispatch) stays on the frozen import, unaffected and still
+sound (nothing this mechanism gates ever materializes a real box either
+way, so their own runtime tag-checks safely fall to the raw branch
+regardless of which reading they see). Callers needing the escape hatch
+(test/watr.js's `withRawCarrier`, test/perf.js, test/ecosystem-perf.js's
+`buildWasm`) set `process.env.JZ_CARRIER_BOX = '0'` around exactly the
+synchronous `jz()`/`compile()` call that needs it — `jz()` is never
+`async`, so the whole compile (and the env-var restore) completes before
+any `await` on its result could yield to a concurrently-running test (tst
+runs tests with real concurrency; a naive set/restore spanning an `await`
+would race unrelated tests expecting the default diagnostic to fire).
+
+**A THIRD external-dependency site, not named by the task or Slice 0:**
+`node_modules/subscript/feature/number.js`'s `BigInt(str)` calls (parsing
+a `123n`-suffixed numeric literal) — pulled in by `bench/jessie/jessie.js`
+(one of the 130-corpus's own named real-input subjects) and
+`test/ecosystem-perf.js`'s jessie build. Found via the byte-identity gate
+(an asymmetric compile failure), confirmed by direct grep. Same class,
+same fix (the escape hatch), applied to `test/ecosystem-perf.js`'s
+`buildWasm` (covers both its jessie and watr call sites) and the
+byte-identity script's own two affected corpus entries.
+
+### Tests converted (expect-error), by file
+
+- **`test/dyn-keys.js`** (16 test blocks) — every shape constructing
+  `m.set(k, <bigint>)` / `d[k] = <bigint>` (Map/dict-into-collection) now
+  refuses to compile before the runtime behavior these tests pinned is
+  ever reached. Design's §7 explicitly named only 2 of these ("Slice 5:
+  bare Map/dict .get()/[] read materializes...", "Slice 5: negative
+  controls — mixed-kind Map..."); the other 14 were found empirically —
+  the mechanism (an inline or bare-name BigInt value reaching ANY
+  collection-store W-sink) is unconditional, not selective by shape, so
+  it applies uniformly to every test in the file exercising the same
+  underlying store. Design's own general principle ("exactly the
+  'collection' flow class §4 defines... remain valuable negative-space
+  coverage") extends identically to all 16; only the design's own
+  line-count estimate (~40 lines, 2 tests) undercounted the actual
+  footprint.
+- **`test/types.js`** (1 test) — a heterogeneous array literal
+  (`[1, BigInt(v)]`) as a call-argument to a destructured param; the OLD
+  test documented this as an accepted "per-index kind is a separate,
+  deeper gap." Now a compile-time refusal instead of a silently-unresolved
+  kind — structurally impossible to construct the old repro, same class as
+  the design's own test/data.js audit-#11 P0-1 deletion.
+- **`test/inference.js`** (1 test) — `const r = a > 0 ? BigInt(a) : null`,
+  the design's own VERBATIM illustrative example for the "ternary-nullish"
+  flow class.
+- **`test/kernel-oracle.js`** (1 test) — a KNOWN-FAIL (audit-#16,
+  ctx.features.bigint module-ordering) whose precondition (a heterogeneous
+  `[1.5, 123456789012345n, 2.5]` array literal) is now structurally
+  impossible; same class as test/data.js's audit-#11 P0-1.
+- **`test/pointers.js`** (2 tests) — the §15/§16 CONSERVATIVE PAIRING
+  pins, both compiling REAL `layout.js` source and hitting the SAME
+  residual `i64Hex` ambiguity Slice 0 banked. NOT part of the design's
+  Slice-5-scoped "whole BigInt carrier boxing test section" deletion (that
+  section, lines ~169-343, exercises `__box_bigint`/`__unbox_bigint`
+  DIRECTLY — untouched by this slice, confirmed still 100% passing,
+  bypasses the fixpoint entirely). These two are separate, adjacent tests;
+  their read-side machinery has no remaining input once the write-side
+  ambiguity is a refusal instead of a box.
+- **`test/test262-builtins.js`** (8 `EXPECTED_FAIL_FILES` entries added,
+  no test bodies changed) — Iterator-helper tests (`Iterator.concat`,
+  `.reduce`, `.zip`, `.zipKeyed`) construct a BigInt as one of many generic
+  test values in a heterogeneous array/call-arg; `JSON/rawJSON/bigint-*`
+  and `JSON/stringify/value-bigint.js` construct one directly. A
+  PRE-EXISTING gap in `EXPECTED_FAIL_PREFIXES`'s path-prefix-only scope
+  (`built-ins/BigInt/` never covered a file OUTSIDE that directory) that
+  this retirement's own honest refusal surfaces for the first time — the
+  boxed carrier previously made these compile "by accident."
+
+### Gates
+
+- **Full native `npm test`**: **3454 total / 3448 pass / 0 fail / 6
+  skip** — byte-for-byte Slice 0's own baseline, unchanged.
+- **130-corpus byte-identity**: **126/128 byte-identical**
+  (`bench/*/*.js` + `examples/*/*.js` + the raymarcher-simd/jukebox
+  entries, `-O3 --resolve`, diffed against pristine `b989879d`). The 2
+  exceptions — `bench/jessie/jessie.js`, `bench/watr/watr.js` — are the
+  census's own named real-input, external-dependency subjects; both now
+  need `JZ_CARRIER_BOX=0` to compile at all (their own genuinely-
+  unprovable BigInt sites), and are consequently byte-DIFFERENT from the
+  boxed baseline (raw vs boxed codegen for those specific sites) — a
+  direct, intentional, documented consequence of disabling the box for
+  them, not a defect. Every corpus program that constructs zero BigInt
+  (126/128, and ALL of jz's own bench/examples code) is byte-identical,
+  confirming the core claim: this slice changes zero bytes of output for
+  any program that never touches ambiguous BigInt.
+- **Self-build ×2** (`JZ_CARRIER_BOX=0 node scripts/build-dist.mjs` —
+  REQUIRED profile, not optional: Slice 0's 5 residual banked sites make
+  the DEFAULT profile fail to build under this slice): SHA-256
+  `351cc9b03455464cc9b95e6368ebee15b87097218c1cd5e1e04787ffc428826e` both
+  times — converges.
+- **`test:wasm`**: **2748 total / 2742 pass / 0 fail / 6 skip** (12835
+  assertions) — byte-for-byte Slice 0's own baseline, unchanged. Includes
+  the fuzz/sweep families (200-seed miscompile sweeps, typed-array
+  waste-free/hoist proofs) run through the `JZ_CARRIER_BOX=0`-built kernel
+  above.
+- **`kernel-oracle`**: **13/13 × 3** clean (538 assertions each run, zero
+  flake) — against the JZ_CARRIER_BOX=0-built kernel above.
+- **`kernel-parity`**: **33/33** (11 corpus entries × 3 opt levels, all
+  byte-identical).
+- **test262 language**: **3005 pass / 0 fail** — unchanged from baseline.
+- **test262 builtins**: **851 pass / 0 fail** (baseline 852/0). The -1 is
+  fully accounted: exactly one `built-ins/BigInt/`-prefixed test that
+  ACCIDENTALLY passed under the boxed carrier (a genuinely-ambiguous
+  BigInt shape that happened to box-and-decode correctly) now correctly
+  refuses to compile — reclassified via the ALREADY-EXISTING
+  `built-ins/BigInt/` `EXPECTED_FAIL_PREFIXES` entry from `pass` to
+  `xfail`, zero code change needed there, `Fail: 0` both before and after.
+  Verified in isolation (`--filter=built-ins/BigInt`: 9/0/6 → 8/0/7,
+  Skip unchanged) — no other subpath's pass count moved (`--filter=JSON`:
+  25/0/4 → 25/0/6; `--filter=Iterator`: 72/0/27 → 72/0/33).
+
+### Size delta
+
+`dist/jz.wasm`, both built from a clean `b989879d` worktree:
+- Baseline (default profile, `CARRIER_BOX=true`, boxed carrier active):
+  **17,231,711 bytes**.
+- This slice (`JZ_CARRIER_BOX=0` — the now-required profile): **17,178,498
+  bytes** — **-53,213 bytes (-0.31%)**, from no longer emitting box/unbox
+  codegen for the 5 sites that used to route through it.
+
+Not an apples-to-apples "Slice 1's own code cost" isolate (the two builds
+also differ by CARRIER_BOX on/off, not just by this slice's diagnostic
+code) — reported as the actual before/after shipped-artifact delta, the
+number that matters operationally.
+
+### Branch / commit
+
+Worktree: `/private/tmp/.../scratchpad/bigint-slice1`, branch
+`bigint-slice1-2026-08-14`, base `b989879d`. Files: `src/ir.js`,
+`src/compile/emit.js`, `src/compile/emit-assign.js`, `test/dyn-keys.js`,
+`test/types.js`, `test/inference.js`, `test/kernel-oracle.js`,
+`test/pointers.js`, `test/test262-builtins.js`, `test/watr.js`,
+`test/perf.js`, `test/ecosystem-perf.js`, this ledger entry.
+

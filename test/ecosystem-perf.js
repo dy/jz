@@ -36,13 +36,27 @@ const timeMin = (fn) => {
 }
 
 // Build a wasm module from a driver entry that imports the library graph.
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): both
+// callers pull in real ecosystem source (subscript's jessie parser, watr) —
+// independently-versioned npm dependencies with their own genuinely-
+// unprovable BigInt usage this repo can't fix (subscript/feature/number.js's
+// `BigInt(str)` calls for `123n`-suffixed numeric literals; watr's
+// encode.js — see test/watr.js's withRawCarrier for the full rationale).
+// `compile()` is synchronous, so the whole build — and the env-var restore
+// — completes before any other concurrently-running test can observe it.
+const withRawCarrier = (fn) => {
+  const prev = process.env.JZ_CARRIER_BOX
+  process.env.JZ_CARRIER_BOX = '0'
+  try { return fn() }
+  finally { if (prev === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prev }
+}
 const buildWasm = (driverName, driverSrc) => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-eco-'))
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'))  // bare-specifier resolution
   const entry = join(dir, driverName)
   writeFileSync(entry, driverSrc)
   const g = resolveModuleGraph(entry, { resolveNode: true })
-  return compile(g.code, { modules: g.modules, memory: 8192, optimize: 2 })
+  return withRawCarrier(() => compile(g.code, { modules: g.modules, memory: 8192, optimize: 2 }))
 }
 
 // Parse workload: a real bench-case source, representative token mix.

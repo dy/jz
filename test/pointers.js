@@ -1,6 +1,6 @@
 // NaN-boxing pointer encoding tests + multi-value threshold
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
 
@@ -331,15 +331,26 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // emitSchemaSlotRead's read side at SCHEMA granularity, so a proven-BIGINT
 // slot unboxes unconditionally instead of handing every consumer the box's
 // raw pointer bits.
-test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16)', () => {
-  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§5/§9):
+// this fixture imports the REAL layout.js, exercising `i64Hex`'s `bits`
+// param — the ONE jz-own-source site Slice 0's own rewrite could not
+// resolve (".work/research.md 'BigInt retirement Slice 0'": both rewrite
+// techniques tried either miscompiled the self-hosted kernel for unrelated
+// programs or broke this very test; reverted, banked not forced). Under
+// Slice 1's flip, this residual "call-arg" ambiguity is now a compile-time
+// refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery
+// this test verified has no remaining input to exercise (nothing ever
+// reaches a real box for it to correctly unbox). Converted to expect-error,
+// not deleted: the shape (a genuinely unprovable BigInt schema field read
+// through layout.js's real i64Hex) remains valuable coverage that Slice 0's
+// documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
+test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16) [RETIRED: layout.js i64Hex\'s residual call-arg ambiguity (Slice 0 banked site) is now a compile-time diagnostic]', () => {
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
+  // under JZ_CARRIER_BOX=0 this compiles raw (Slice 0's own verified
+  // finding), nothing left to assert about a boxed payload.
   if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
-  const { rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
-  is(rawField(), 9221120237041090560n, 'LAYOUT.NAN_PREFIX_BITS unboxes to 0x7FF8000000000000n')
-  is(undefAtom(), '0x7FF8000200000000', 'atomNanHex(2)/UNDEF_NAN reads correctly through the unboxed schema field')
-  is(nullAtom(), '0x7FF8000100000000', 'atomNanHex(1)/NULL_NAN reads correctly through the unboxed schema field')
-  is(ptrHex(), '0x7FFB000300000400', 'i64Hex(ptrBits(...)) computes correctly through the unboxed schema field')
+  throws(() => run(g.code, { modules: g.modules, optimize: 0 }), /BigInt value at this collection/)
 })
 
 // CONSERVATIVE PAIRING (.work/carrier-representation-design.md — the §15/§16
@@ -362,16 +373,17 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // arithmetic-core BigInt operand dispatch (readI64's own naive `asI64`
 // fallback, `typeof node === 'string'` never matching a `.`-node) — verified
 // live via a disposable pre-fix diff before landing the fix, not assumed.
-test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING)', () => {
-  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0.
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§5/§9):
+// same class as the §15/§16 test just above — CONSERVATIVE PAIRING's
+// read-side dispatch has no remaining input to exercise once the
+// write-side ambiguity it existed to cover is a compile-time refusal
+// instead. Converted to expect-error.
+test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING) [RETIRED: layout.js\'s residual BigInt ambiguity is now a compile-time diagnostic]', () => {
+  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
+  // under JZ_CARRIER_BOX=0 this compiles raw, nothing left to assert.
   if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
-  const { poke, rawField, undefAtom, nullAtom, ptrHex } = run(g.code, { modules: g.modules, optimize: 0 })
-  poke()
-  is(rawField(), 9221120237041090560n, 'LAYOUT.NAN_PREFIX_BITS still decodes to 0x7FF8000000000000n under pointsTo===\'ALL\'')
-  is(undefAtom(), '0x7FF8000200000000', 'atomNanHex(2)/UNDEF_NAN reads correctly through the unproven schema field')
-  is(nullAtom(), '0x7FF8000100000000', 'atomNanHex(1)/NULL_NAN reads correctly through the unproven schema field')
-  is(ptrHex(), '0x7FFB000300000400', 'i64Hex(ptrBits(...)) computes correctly through the unproven schema field')
+  throws(() => run(g.code, { modules: g.modules, optimize: 0 }), /BigInt value at this collection/)
 })
 
 // === Limits ===

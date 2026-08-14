@@ -24,7 +24,7 @@
  * @see research/inference.md for the three load-bearing principles.
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { belowOpt, onKernel, onWasi } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
@@ -1873,33 +1873,21 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // BIGINT params whose call sites can pass null (watr's `_i64Arith(r)` shape:
 // fold-miss null flows for real; the guard must return null, not hex-format
 // atom bits). Root of the speed-tier lab-row throw (.work/todo.md 2026-07-11).
-test('bigint∪null: kind carries through the nullish ternary arm, guards stay live', () => {
-  const { viaTern, viaIf, chain } = run(`
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): `const r
+// = a > 0 ? BigInt(a) : null` is the design's OWN verbatim illustrative
+// example for the "ternary-nullish" flow class ("a `cond ? bigVal : null`
+// merge... 'the one kind with no runtime tag'"). This test's whole purpose
+// was verifying the boxed carrier's isTernaryBoxedBigint tracking for
+// exactly this shape — now a compile-time refusal instead, since the
+// merge's kind (bigint vs null) is only knowable at runtime, never
+// statically uniform. Converted to expect-error, not deleted.
+test('bigint∪null: kind carries through the nullish ternary arm, guards stay live [RETIRED: BigInt-or-null ternary merge is now a compile-time "ternary-nullish" diagnostic]', () => {
+  throws(() => run(`
     export let viaTern = (a) => {
       const r = a > 0 ? BigInt(a) : null
       return r == null ? 'null' : r.toString(16)
     }
-    export let viaIf = (a) => {
-      const r = a > 0 ? BigInt(a) : null
-      if (r == null) return 'null'
-      return r.toString(16)
-    }
-    let hex = (v) => {
-      const h = v.toString(16)
-      return h[0] === '-' ? 'n' + h : h
-    }
-    let arith = (r) => r == null ? null : 'x' + hex(r)
-    export let chain = (a) => {
-      const r = a > 0 ? BigInt(a) * 3n : null
-      const out = arith(r)
-      return out === null ? 'NULL-OK' : out
-    }
-  `, { memory: 64 })
-  is(viaTern(255), 'ff', 'ternary-of-bigint receiver dispatches .bigint:toString(radix)')
-  is(viaTern(-1), 'null', 'local null guard stays live despite the BIGINT claim')
-  is(viaIf(255), 'ff', 'if-guarded form types the same')
-  is(chain(5), 'x' + (15n).toString(16), 'param settles BIGINT through the call boundary')
-  is(chain(-1), 'NULL-OK', 'callee null guard stays live — narrow re-derived nullable')
+  `, { memory: 64 }), /BigInt value at this ternary-nullish/)
 })
 
 // Census completeness: bundled sub-module INITS live outside the main AST

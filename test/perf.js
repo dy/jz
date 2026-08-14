@@ -1499,7 +1499,18 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   // memory: 4096 — pre-allocate 256MB so the bench loop's bump-allocator growth
   // never triggers memory.grow during measurement (prior `memoryPages` key was
   // a silent no-op; jz reads `memory` for the page count shorthand).
-  const { exports: { compile: jzCompile } } = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' })
+  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): watr
+  // (external npm dependency) has 4 of its own genuinely-unprovable BigInt
+  // sites, unreachable from this repo — see test/watr.js's own
+  // withRawCarrier for the full rationale; same escape hatch, scoped to
+  // this one synchronous jz() call so it can't race a concurrently-running
+  // test expecting the default CARRIER_BOX=1 diagnostic to fire.
+  const prevCarrierBox = process.env.JZ_CARRIER_BOX
+  process.env.JZ_CARRIER_BOX = '0'
+  let jzWatr
+  try { jzWatr = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' }) }
+  finally { if (prevCarrierBox === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prevCarrierBox }
+  const { exports: { compile: jzCompile } } = jzWatr
   const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
 
   const WAT_CORE = `(module
