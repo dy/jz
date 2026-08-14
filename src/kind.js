@@ -670,8 +670,8 @@ export function censusBigintSentinelKind(node) {
 // entry per distinct bodyRoot for the LIFETIME OF THE WASM INSTANCE —
 // unbounded growth across every compile a warm kernel instance services
 // (exactly the class of resource issue the factStore session-reset
-// discipline exists to prevent). Moving it into factStore means
-// resetFactStore() (called every beginSession) swaps in a fresh Map/WeakMap
+// discipline exists to prevent). Moving it into factStore means `ctx.facts`
+// (built fresh by reset() every beginSession) swaps in a fresh Map/WeakMap
 // each compile, same as bindingUses — the fold's memory-growth exposure is
 // bounded to one compile's worth of bodies, not the whole kernel session.
 export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {

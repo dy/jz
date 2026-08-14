@@ -15,7 +15,7 @@
  *
  * @module src/session
  */
-import { ctx, reset, initWarnings, assertCtxInvariants, optFlagsOf, getFactStore, resetFactStore } from './ctx.js'
+import { ctx, reset, initWarnings, assertCtxInvariants, optFlagsOf, getFactStore } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
@@ -272,10 +272,11 @@ export function targetProfileFor(host) {
  * before their own WeakMaps are swapped. There is no code path that clears one
  * sub-cache while leaving a dependent's stale entries live-reachable.
  *
- * Storage + getFactStore()/resetFactStore() live in src/ctx.js, not here —
- * see that module's comment for why (a module-cycle constraint, not a design
- * preference). This is still the documented seam: beginSession is the only
- * caller of resetFactStore(), and getFactStore() is re-exported above.
+ * Storage + getFactStore() live in src/ctx.js, not here — see that module's
+ * comment for why (a module-cycle constraint, not a design preference).
+ * `ctx.facts` (Slice B) is built by `reset()` as part of the session's own
+ * construction, same as every other subtree — beginSession no longer makes
+ * a separate reset call for it; getFactStore() is re-exported above.
  */
 
 /**
@@ -333,9 +334,9 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   // entry can alias post-_clear arena bytes (correctness), natively it is
   // retention; clearing uniformly costs nothing and removes the asymmetry.
   // Fact-store slices (programFacts/bodyFacts/bindingUses — see the factStore
-  // doc above): a fresh store IS the reset, replacing the three separate
-  // resetXCache() calls this used to make.
-  resetFactStore()
+  // doc above): a fresh store IS the reset — `ctx.facts`, built as part of
+  // `reset()`'s own construction (Slice B, .work/compile-session-design.md
+  // §3) — no separate resetFactStore() call needed here any more.
   clearDollar()
   clearStdlibParseCache()
   // watr's generated-name counters (inline/outline/…): per-compile, else warm

@@ -245,16 +245,27 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // init(ctx) returns). Uses src/ctx.js directly (not real module/*.js
   // sources) so this test pins the MECHANISM, independent of which real
   // stdlib names happen to collide today.
-  const { ctx, reset, registerName, verifyEmitIntegrity } = await import('../src/ctx.js')
+  // NOTE (CompileSession Slice B, .work/compile-session-design.md §3): `ctx`
+  // is imported through the module namespace object (`m`) and read as `m.ctx`
+  // at each use, NEVER destructured into a local binding — `reset()` now
+  // reassigns the whole `ctx` export by identity (`export let ctx`) rather
+  // than mutating it in place, so a `const { ctx } = ...` destructure would
+  // snapshot ONE session's object and silently stop tracking later resets
+  // (a write onto that stale snapshot would never be seen by ctx.js's own
+  // internal reads of the live binding, e.g. registerName's `ctx.core.
+  // currentModule`). `m.reset`/`m.registerName`/`m.verifyEmitIntegrity` are
+  // stable function references (never reassigned), safe to hold directly.
+  const m = await import('../src/ctx.js')
+  const { reset, registerName, verifyEmitIntegrity } = m
   const noopBridge = { emit: () => {}, flat: () => {}, body: () => {}, bool: () => {}, idx: () => {}, spread: () => {}, emitIdentitySafe: () => {} }
   const freshHandler = () => Object.assign(() => 1, { deps: [], argc: 0 })
 
   // combo 1: raw assignment first, reg() second — caught immediately.
   reset({}, {}, noopBridge)
-  ctx.core.currentModule = 'testModuleA'
-  ctx.core.emit['__testDup1'] = () => 0
+  m.ctx.core.currentModule = 'testModuleA'
+  m.ctx.core.emit['__testDup1'] = () => 0
   let threw = null
-  try { registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup1', 'reg', freshHandler()) }
+  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup1', 'reg', freshHandler()) }
   catch (e) { threw = e }
   ok(threw, 'raw-then-reg: registerName throws')
   ok(threw && /already exists/.test(threw.message) && /__testDup1/.test(threw.message), 'raw-then-reg: message names the colliding name')
@@ -262,22 +273,22 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // combo 2: reg() first, raw assignment second — caught post-hoc, after the
   // clobbering module's init(ctx) would have returned.
   reset({}, {}, noopBridge)
-  ctx.core.currentModule = 'testModuleB'
-  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup2', 'reg', freshHandler())
-  ctx.core.currentModule = 'testModuleC'
-  ctx.core.emit['__testDup2'] = () => 2   // raw clobber — drops the emitter() wrapper's .deps tag
+  m.ctx.core.currentModule = 'testModuleB'
+  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup2', 'reg', freshHandler())
+  m.ctx.core.currentModule = 'testModuleC'
+  m.ctx.core.emit['__testDup2'] = () => 2   // raw clobber — drops the emitter() wrapper's .deps tag
   threw = null
-  try { verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule) }
+  try { verifyEmitIntegrity(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule) }
   catch (e) { threw = e }
   ok(threw, 'reg-then-raw: verifyEmitIntegrity throws')
   ok(threw && /silently overwritten/.test(threw.message) && /__testDup2/.test(threw.message), 'reg-then-raw: message names the colliding name')
 
   // combo 3: reg() twice for the same name — caught immediately, same as combo 1.
   reset({}, {}, noopBridge)
-  ctx.core.currentModule = 'testModuleD'
-  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler())
+  m.ctx.core.currentModule = 'testModuleD'
+  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler())
   threw = null
-  try { registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler()) }
+  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler()) }
   catch (e) { threw = e }
   ok(threw, 'reg-then-reg: registerName throws')
   ok(threw && /already registered/.test(threw.message) && /testModuleD/.test(threw.message), 'reg-then-reg: message names the original registering module')

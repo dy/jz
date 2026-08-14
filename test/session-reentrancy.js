@@ -27,6 +27,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
+import * as ctxModule from '../src/ctx.js'
 import { ctx, DBG_INVARIANTS } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { installFunctionPlan } from '../src/compile/function-plan.js'
@@ -363,4 +364,30 @@ test('session-reentrancy: order-reversed — minimal then prepare-heavy, regex-f
   const warmRegexHeavy = compile(REGEX_HEAVY)
   ok(eq(warmRegexFree, compileFresh(REGEX_FREE)), 'regex-free (compiled first) differs from fresh-process compile')
   ok(eq(warmRegexHeavy, compileFresh(REGEX_HEAVY)), 'regex-heavy (compiled second) differs from fresh-process compile')
+})
+
+// CompileSession-as-value (Slice B, .work/compile-session-design.md §2.3 row
+// 1/3): `ctx` is now reassigned by identity every reset(), not mutated
+// field-by-field in place. Concrete claim under test — a caller holding a
+// `ctx` reference from BEFORE a later compile() must keep observing that
+// OLDER compile's own coherent state (never a mix of old-and-new fields, and
+// never the newer compile's state at all), while the live module binding
+// moves on to a distinct object identity.
+test('session-reentrancy: a ctx reference held across a later reset() keeps its own compile\'s coherent snapshot', () => {
+  if (onKernel()) return  // white-box probe of ctx.js's own module-binding identity
+  compile(PREPARE_HEAVY)
+  const held = ctx
+  const heldFunc = held.funcs
+  const heldFacts = held.facts
+  ok(held.funcs.names.has('reassignMe') && held.funcs.names.has('deep'),
+    'held reference reflects PREPARE_HEAVY\'s own function registry')
+  compile(MINIMAL)
+  ok(ctx !== held, 'reset() reassigns the ctx binding to a new object identity, not an in-place mutation')
+  ok(ctxModule.ctx === ctx, 'the live import binding tracks the reassignment (export let, not export const)')
+  ok(held.funcs === heldFunc && held.facts === heldFacts,
+    'the held reference\'s own subtrees are untouched by the later reset() — no in-place mutation reaches an old snapshot')
+  ok(held.funcs.names.has('reassignMe') && held.funcs.names.has('deep') && !held.funcs.names.has('f'),
+    'the held reference still reports PREPARE_HEAVY\'s registry, never MINIMAL\'s')
+  ok(ctx.funcs.names.has('f') && !ctx.funcs.names.has('reassignMe'),
+    'the current session reports MINIMAL\'s registry, independent of the held stale reference')
 })
