@@ -165,14 +165,13 @@ function isIntSafeMutatedParam(func, p) {
 // EVERY call site agrees; an argument that isn't even a bare name, a caller
 // with no body (raw/unknown), or a caller whose OTHER evidence disagrees fails
 // closed to f64 — never a miscompile, only a forgone optimization.
-function callerArgSelfConsistentI32(func, k, callSites) {
+function callerArgSelfConsistentI32(func, k, sites) {
   const savedResults = func.sig.results
   func.sig.results = ['i32']
   const touched = new Set()
   let ok = true
-  for (const cs of callSites) {
+  for (const cs of sites) {
     if (!ok) break
-    if (cs.callee !== func.name) continue
     const arg = cs.argList[k]
     const callerFunc = cs.callerFunc
     if (typeof arg !== 'string' || !callerFunc?.body) { ok = false; break }
@@ -190,7 +189,7 @@ function callerArgSelfConsistentI32(func, k, callSites) {
   return ok
 }
 
-function applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipTyped = false } = {}) {
+function applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee, { skipTyped = false } = {}) {
   for (const func of ctx.func.list) {
     if (func.raw || valueUsed.has(func.name)) continue
     const reps = paramReps.get(func.name)
@@ -225,7 +224,7 @@ function applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipType
         if (r.wasm === 'f64') {
           if (!func.body) continue
           const origType = p.type
-          if (isIntSafeMutatedParam(func, p) && callerArgSelfConsistentI32(func, k, callSites)) continue
+          if (isIntSafeMutatedParam(func, p) && callerArgSelfConsistentI32(func, k, sitesByCallee.get(func.name) ?? [])) continue
           p.type = origType
           continue
         }
@@ -1705,6 +1704,30 @@ export default function narrowSignatures(programFacts, ast) {
   // Top-level call sites have callerFunc === null and are unconditionally live.
   filterLiveCallSites(callSites, valueUsed)
 
+  // Callee-indexed view of `callSites`, built ONCE per narrowSignatures call.
+  // Several consumers below (hardParamVal, hardParamRecvArrTyped,
+  // hardParamPresentVal, bigintBoxedVerdict, the BIGINT-nullable join, the
+  // mayBeUndefined join, callerArgSelfConsistentI32 via applyI32ParamSpecialization)
+  // each used to linear-scan the FULL `callSites` array filtering on
+  // `cs.callee === funcName`, from an outer loop over every function × every
+  // param — O(functions × params × callSites), the pass's own dominant cost on
+  // a program this size (self-hosted-only: native V8 GCs the resulting churn;
+  // the self-host bump arena can't, see research.md). `callSites` is stable
+  // from here on — `filterLiveCallSites`, just above, is the ONLY place
+  // anywhere in this module that mutates it (in-place compaction), and it has
+  // already run — so one grouping pass here replaces every one of those scans
+  // with an O(1) `.get(funcName)` lookup into just that callee's own sites,
+  // turning the whole shape into O(callSites + functions × params). Built by a
+  // single forward pass that only ever appends, so each callee's bucket keeps
+  // `callSites`' original relative order — the same order-preservation
+  // `sitesByCaller` (below, in runFixpointConverged) already relies on for its
+  // own per-caller grouping.
+  const sitesByCallee = new Map()
+  for (const cs of callSites) {
+    const list = sitesByCallee.get(cs.callee)
+    if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+  }
+
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
   // For non-exported internal functions, if all call sites agree on a param's type,
@@ -1852,9 +1875,10 @@ export default function narrowSignatures(programFacts, ast) {
   // some call site can't prove. (applyPointerParamAbi is that consumer.)
   const hardParamVal = (funcName, k) => {
     let consensus
-    for (let s = 0; s < callSites.length; s++) {
-      if (callSites[s].callee !== funcName) continue
-      const state = siteState(callSites[s])
+    const sites = sitesByCallee.get(funcName)
+    if (!sites) return null
+    for (const cs of sites) {
+      const state = siteState(cs)
       if (!state) continue
       if (k >= state.argList.length) return null         // missing → undefined at runtime
       const v = inferValAtSite(state.argList[k], state)
@@ -1873,9 +1897,10 @@ export default function narrowSignatures(programFacts, ast) {
   // false) — always safe, since false only means the runtime guard stays.
   const hardParamRecvArrTyped = (funcName, k) => {
     let any = false
-    for (let s = 0; s < callSites.length; s++) {
-      if (callSites[s].callee !== funcName) continue
-      const state = siteState(callSites[s])
+    const sites = sitesByCallee.get(funcName)
+    if (!sites) return false
+    for (const cs of sites) {
+      const state = siteState(cs)
       if (!state) continue
       if (k >= state.argList.length) return false
       const v = inferValAtSite(state.argList[k], state)
@@ -2188,7 +2213,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Apply i32 specialization: for non-value-used funcs with consistent i32 call
   // sites and no defaults/rest at that position, narrow sig.params[k].type.
   // Exports too — boundary wrapper handles the f64→i32 truncation at the JS edge.
-  applyI32ParamSpecialization(paramReps, valueUsed, callSites)
+  applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee)
 
   // intConst validation: a param marked with a unanimous integer literal at every call
   // site is only safe to substitute if the body never reassigns it. Clear intConst on any
@@ -2552,8 +2577,8 @@ export default function narrowSignatures(programFacts, ast) {
   for (const [fname, reps] of paramReps) {
     for (const [k, r] of reps) {
       if (r.val !== VAL.BIGINT || r.nullable) continue
-      for (const cs of callSites) {
-        if (cs.callee !== fname || k >= cs.argList.length) continue
+      for (const cs of sitesByCallee.get(fname) ?? []) {
+        if (k >= cs.argList.length) continue
         if (mayBeNullish(cs.argList[k], bodyNameNullable(cs.callerFunc))) {
           r.nullable = true
           break
@@ -2600,8 +2625,7 @@ export default function narrowSignatures(programFacts, ast) {
     const pname = func.sig.params[k].name
     if (isDestructuredParamBody(func, pname)) return true
     if (r.val === VAL.BIGINT) return false
-    for (const cs of callSites) {
-      if (cs.callee !== fname) continue
+    for (const cs of sitesByCallee.get(fname) ?? []) {
       const state = siteState(cs)
       if (!state || k >= state.argList.length) continue
       if (inferValAtSite(state.argList[k], state) === VAL.BIGINT) return true
@@ -2668,8 +2692,8 @@ export default function narrowSignatures(programFacts, ast) {
       if (!func?.sig?.params || k >= func.sig.params.length) continue
       const pname = func.sig.params[k].name
       if (isDestructuredParamBody(func, pname)) { r.mayBeUndefined = true; r.presence = 'maybe-undef'; continue }
-      for (const cs of callSites) {
-        if (cs.callee !== fname || k >= cs.argList.length) continue
+      for (const cs of sitesByCallee.get(fname) ?? []) {
+        if (k >= cs.argList.length) continue
         const argNode = cs.argList[k]
         // Co-induction + interprocedural bounds proof (colorlog project,
         // .work/todo.md "the co-induction prover") — see
@@ -2714,9 +2738,10 @@ export default function narrowSignatures(programFacts, ast) {
   // `presentVal` here is the ENTIRE fix; no consumer-side change needed.
   const hardParamPresentVal = (funcName, k) => {
     let consensus
-    for (let s = 0; s < callSites.length; s++) {
-      if (callSites[s].callee !== funcName) continue
-      const state = siteState(callSites[s])
+    const sites = sitesByCallee.get(funcName)
+    if (!sites) return null
+    for (const cs of sites) {
+      const state = siteState(cs)
       if (!state) continue
       if (k >= state.argList.length) return null   // missing → undefined at runtime, no claim
       const v = exprPresentValIn(state.argList[k], state.callerFunc?.body)
@@ -2743,7 +2768,7 @@ export default function narrowSignatures(programFacts, ast) {
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
   // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
   // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
-  applyI32ParamSpecialization(paramReps, valueUsed, callSites, { skipTyped: true })
+  applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee, { skipTyped: true })
 
   // J: jsstring boundary opt-in — for exported funcs with a string param whose
   // every use is mappable to a wasm:js-string builtin, flip the param's wasm

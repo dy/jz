@@ -10824,3 +10824,329 @@ before any gate ran this session. Dormant `dist/jz.wasm` (this session,
 self-build ×2): SHA-256 `dd04c4f7120867c32cf9cd07802d505ddd27c8cd0f7030e8bccd996919c9aaf7`
 both. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
 `497b22638e5d06fe87f2c353df2537b9b6431c17802c5afd06fe6f7f9892800f` both.
+## §Region arena — `narrow.js` callee-index fix LANDS: narrowSignatures'
+## own O(functions×params×callSites) census eradicated (measured, not
+## inferred) — jz×jz goal gate STILL traps at 4 GiB, but the frontier moves
+## cleanly past `plan()` into `compileAst`'s `analyzeFuncForEmit` loop, a
+## NEW, phase-stamped, precisely-banked pathology (2026-08-13)
+
+**Task**: 097a51d7 named the fix precisely and walled it on its own
+narrow.js exclusion: index `callSites` by callee ONCE per `narrowSignatures`
+call, replace every `.callee === funcName` linear scan with a `.get(name)`
+lookup. This session's own exclusion lifted (file clean, last commit 24h+),
+implemented the fix, and re-ran the full jz×jz goal gate.
+
+### The fix — `src/compile/narrow.js`, one file
+
+Six call-site-census closures inside `narrowSignatures` each used to
+linear-scan the FULL `callSites` array (from `programFacts`, one array
+covering every call site in the ENTIRE compiled program) filtering on
+`.callee === funcName`, called from an outer loop over every function ×
+every param:
+
+- `hardParamVal` / `hardParamRecvArrTyped` (097a51d7's own named pair) —
+  driven by `applyPointerParamAbi` (every non-exported/non-valueUsed
+  function × param) and the "unrestricted sibling" loop (line ~2494's own
+  comment: "regardless of exported/valueUsed status" — EVERY function).
+- `hardParamPresentVal` — same shape, same `applyPointerParamAbi`-style
+  hard-consensus fold, un-named by 097a51d7 but identical pathology.
+- `bigintBoxedVerdict`'s inner loop, the BIGINT-nullable join, and the
+  `mayBeUndefined` join — three more `for (const cs of callSites) { if
+  (cs.callee !== fname) continue; … }` folds over `paramReps`, each an
+  existential OR (any matching site proves X) rather than hardParamVal's
+  universal AND, but the SAME O(functions×params×callSites) shape.
+- `callerArgSelfConsistentI32` (called from `applyI32ParamSpecialization`,
+  itself called twice per `narrowSignatures` invocation) — same filtered
+  scan, gated behind a narrower `mutated && wasm==='f64'` condition so
+  lower-frequency in practice, converted anyway for completeness (same
+  file, same idiom, no extra risk once the index exists).
+
+**The index**: built once, immediately after `filterLiveCallSites`'s
+in-place compaction (the ONLY place in the whole file that mutates
+`callSites` — verified by grep for `.push`/`.splice`/`.length =`/indexed
+writes; `narrowSignatures` calls `filterLiveCallSites` exactly once, at its
+own top, before any of the six consumers run) — a plain
+`Map<calleeName, CallSite[]>`, one forward pass, appending:
+
+```js
+const sitesByCallee = new Map()
+for (const cs of callSites) {
+  const list = sitesByCallee.get(cs.callee)
+  if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+}
+```
+
+This is not a new idiom in this file — `strictBoundaryTypeCheck`,
+`specializeBimorphicTyped`, `specializeUnionCursorParams`, and
+`speculateTypedParams` (all in the same `narrow.js`, all OUTSIDE
+`narrowSignatures`) already build the identical per-callee index under the
+identical name and comment ("Per-callee static-call-site index. Built once;
+cheap."). The fix conforms `narrowSignatures` to a convention the file
+already established elsewhere, rather than inventing a new one.
+
+`applyI32ParamSpecialization` took the index directly (renamed its 3rd
+param from `callSites` to `sitesByCallee`, `.get(func.name) ?? []` at its
+one internal use); `callerArgSelfConsistentI32`'s own `callSites` param
+renamed to `sites`, its `if (cs.callee !== func.name) continue` filter
+dropped (redundant once the caller pre-filters).
+
+**Order/aliasing audit** (the invariant's own explicit demand): all six
+converted consumers fold over "the matching subset" into either a
+universal AND (`hardParamVal`/`hardParamRecvArrTyped`/`hardParamPresentVal`
+— disagreement or an untyped site returns null/false, symmetric, order
+cannot change the verdict) or an existential OR (`bigintBoxedVerdict`, the
+BIGINT-nullable join, the `mayBeUndefined` join, `callerArgSelfConsistentI32`
+— any matching site flips the flag, symmetric, order cannot change the
+verdict) over the SAME subset of sites the original inline filter would
+have visited, in the SAME relative order (the index is built by one
+forward pass over `callSites`, only ever appending — never sorting or
+dedup'ing — so each callee's bucket preserves `callSites`' own original
+relative order, the same discipline `runFixpointConverged`'s own
+pre-existing `sitesByCaller` index, by CALLER rather than callee, already
+relies on for ITS worklist-seeding order). No consumer accumulates into an
+ordered list, does first-match-wins selection, or otherwise depends on
+visitation order beyond "all" / "any" — verified by reading every one of
+the six converted bodies, not inferred. `callSites` invalidation: confirmed
+immutable for the rest of `narrowSignatures` after the top-of-function
+`filterLiveCallSites` compaction (the ONE mutation site in the whole file);
+the index is built once, right after that compaction, and never rebuilt or
+patched mid-function — correct, since nothing later touches `callSites`.
+
+One early attempt added a shared top-level `EMPTY_SITES = Object.freeze([])`
+sentinel (avoid allocating a fresh `[]` per index-miss) — reverted:
+`narrow.js` is itself part of jz's own self-hosted source, so ANY new
+top-level binding becomes a NEW GLOBAL in the jz×jz-compiled kernel,
+shifting every auto-generated identifier declared after it (verified by a
+normalized WAT diff — see Gate 1 below). Not a correctness risk, but
+needless self-referential noise; replaced with plain `?? []` at each of the
+four call sites (a few bytes of throwaway array on a rare miss — the
+`applyI32ParamSpecialization`/`callerArgSelfConsistentI32` path is the only
+even-plausibly-hot one, and it's gated behind the rare mutated-f64-param
+condition already).
+
+### Gate 1 — BYTE-IDENTITY
+
+**Wrong test caught and corrected before trusting it**: naively comparing
+`dist/jz.js`/`dist/jz.wasm` SHA-256 pre-fix vs post-fix FAILS — both differ
+(`dist/jz.js`: `0f426a9a…` → `70a63763…`; `dist/jz.wasm`: `6e9e6c09…` →
+`de343eab…`). This is NOT a correctness regression: `dist/jz.js` is a
+minified bundle of the compiler's OWN source text (trivially differs after
+ANY source edit) and `dist/jz.wasm` is jz compiling ITS OWN source
+(narrow.js included) — jz×jz's output necessarily differs whenever
+narrow.js's text differs, independent of whether the fix is behaviorally
+sound, because the INPUT PROGRAM (jz's own source) changed. Proven by a
+normalized WAT diff (`wasm2wat`, digits/auto-IDs stripped): the entire
+divergence traces to exactly one inserted module-level global
+(`$m127_narrow$EMPTY_SITES`, now removed) plus the downstream
+auto-numbering cascade it caused (every `$NNNNN`-style generated local/global
+name past that point shifts) — a single clean insertion point, not scattered
+semantic drift, and gone entirely once `EMPTY_SITES` was removed as a
+top-level binding. `interop.js`'s SHA is unchanged in every build (it
+doesn't depend on narrow.js at all) — the one dist artifact for which raw
+SHA comparison IS the right test, and it passes trivially.
+
+**The right test — differential compile of FOREIGN programs** (not jz's own
+source) pre-fix vs post-fix, same process family, git-stash toggling
+`src/compile/narrow.js` only: the 11-program `test/kernel-parity.js` CORPUS
+(`sum, math, dict, arr, fold, mfold, boolconst, nestedtyped, subviewtyped,
+dvnested, fromnested` — chosen because it's this campaign's own established
+byte-identity corpus, spanning typed arrays, dicts, closures, bimorphic
+receivers) × 4 optimize levels (O0–O3) = 44 compiled outputs, SHA-256 each:
+**byte-for-byte IDENTICAL pre-fix vs post-fix, all 44/44** (including at O2/
+O3 where `test/kernel-parity.js`'s own 33-assertion native-vs-kernel suite
+ALSO ran clean as a side effect of the differential, unprompted — reused,
+not duplicated).
+
+**dist self-build ×2 determinism** (the achievable half of "self-build ×2
+SHA-identical" — identical to PRE-fix is impossible per the paragraph
+above, for any narrow.js source change): two independent `node
+scripts/build-dist.mjs` runs on the SAME post-fix source, several minutes
+apart — `dist/jz.js`/`dist/jz.wasm`/`dist/interop.js` SHA-256 identical
+across both runs. The pre-fix build is ALSO independently deterministic
+(two pre-fix runs, same SHAs) — ruling out general build flakiness as a
+confound before trusting the differential above.
+
+**Native test suite**: `npm test` — **3436 total / 3428 pass / 2 fail / 6
+skip**, matching 332ec25c/097a51d7's own recorded baseline EXACTLY (the 2
+fails are the pre-existing `interval walk`/`typed RMW` codec-bounds rows
+this chain has never chased — unrelated to narrow.js). Zero new failures,
+zero new skips.
+
+**Verdict: byte-identity holds** for the invariant that actually matters
+(compiled OUTPUT for any given program, pre-fix vs post-fix) — 44/44 corpus
+byte-identical, 3428/3428 non-pre-existing test assertions passing, dist
+self-build deterministic. `dist/jz.js`/`dist/jz.wasm` differing from the
+PRE-fix build is expected and provably self-referential, not a defect.
+
+### Gate 2 — Native jz×jz peak/wall (259cd4fc method, `opts.profile` sink)
+
+Same machine, same session, pre-fix vs post-fix, full pipeline
+(`compile()` + watr `watOptimize` + `watrCompile`/encode), O3, `memory:
+8192`:
+
+| | pre-fix | post-fix | Δ |
+|---|---|---|---|
+| `plan:narrowSignatures` | 1945.0 ms | 1455.1 ms | **−25.2%** |
+| `plan` total | 4209.3 ms | 3788.8 ms | −10.0% |
+| `compile()` | 37744.5 ms | 37006.6 ms | −2.0% |
+| peak RSS at `compile()` done | 3462.0 MB | 3358.4 MB | −3.0% |
+| full pipeline wall | 331.7 s | 360.2 s | +8.6% (noise, see below) |
+
+`narrowSignatures`'s own phase time and peak RSS both drop in the predicted
+direction and magnitude — modest, not dramatic, exactly as 097a51d7's own
+root-cause doc predicted ("native V8 GCs the resulting churn — the cost is
+CPU time only… natively 'slow but fine'"; the fix's real payoff is
+self-hosted, where the SAME garbage becomes permanent arena growth, not
+native wall time). The full-pipeline wall-time INCREASE is noise: watr's
+own `watOptimize`/`watrCompile`/`snapshotInit` phases (unrelated to
+narrow.js, ~92–119 s each, non-narrow.js code paths) dominate total wall
+time and show 20–30 s swings between otherwise-identical runs on this
+machine under this session's own sustained load — a single-sample
+full-pipeline wall comparison is not a reliable signal for a fix scoped to
+one early, comparatively cheap pass. The two low-noise, fix-scoped metrics
+(`plan:narrowSignatures` phase time, peak RSS at `compile()` done) are the
+trustworthy read, and both improve.
+
+### Gate 3 — THE GOAL GATE: self-hosted jz×jz, both configs
+
+**Result: goal gate NOT met — jz×jz still traps at exactly 4,294,967,296
+bytes (4 GiB) in BOTH dormant and region-live kernels — but the frontier
+moves substantially, phase-stamped precisely below.**
+
+Built NAMED kernels exactly per 332ec25c/097a51d7's own established method
+(`compile(profile.graph.code, {modules, memory, optimize: profile.optimize,
+names:true})`, `resolveSelfhostBuild()`, hand-flipped `REGION_HOOKS_ACTIVE`
+for region-live, reverted via try/finally; `optJSON`/`modulesJSON` passed at
+call time via `self.exports.default(source, 0, optJSON, modulesJSON)` — the
+one correction versus a first attempt: the kernel's `modulesJSON` (4th ABI
+param) MUST be supplied or module resolution fails immediately with an
+unrelated "Unknown module" error before any real compilation starts).
+
+| config | peak (coarse) | wall to trap |
+|---|---|---|
+| dormant | 4096.0 MB (2³²) | 5.76 s (was 6.8 s) |
+| region-live | 4096.0 MB (2³²) | 6.12 s (was 7.4 s) |
+
+Coarse `memory.buffer.byteLength` reads land on the hard ceiling on ANY
+trap regardless of how close the real peak was (097a51d7's own documented
+limitation) — needed the same finer breadcrumb probe to see whether the
+fix actually helped.
+
+**Breadcrumb re-run (097a51d7's own WAT-splice method, read-only on an
+already-built kernel binary, zero jz source touched by the probe itself)**:
+built a SEPARATE, disposable kernel with the KERNEL'S OWN native compilation
+at `optimize:0` (names survive — O3 inlines/strips `narrowSignatures` et al
+from the name section entirely, a wrinkle 097a51d7's own session didn't hit
+because names DID survive on its build; not reproduced further, just
+worked around) while still CALLING it at runtime with the real O3
+`optJSON` (matching the actual self-host profile — only the kernel's own
+bytecode shape changed, not what it's asked to compile). `wasm2wat
+--enable-all` (WABT 1.0.36) decompiled; spliced 12 heap-bytes-at-entry
+breadcrumbs (`(global.set $__dbg_N (i64.extend_i32_u (global.get 4)))`,
+global 4 = `$__heap` per this build's own `(export "__heap" (global 4))`)
+across the exact call chain 097a51d7 already mapped plus the next four
+compileAst phases, appended as new globals AFTER every pre-existing one (no
+index shift), plus i32 call counters on `analyzeFuncForEmit`/`emitFunc`;
+`wat2wasm --enable-all` reassembled; ran against the kernel's own source
+(`profile.graph.code` — the same 155-module jz×jz graph, dormant and
+region-live builds using their respective `resolveSelfhostBuild({regionArena})`
+config).
+
+| phase (function) | dormant heap@entry | region-live heap@entry |
+|---|---|---|
+| `compile` (compileAst entry) | 512.1 MB | 114.0 MB |
+| `plan` | 561.0 MB | 162.9 MB |
+| `narrowSignatures` | 1948.0 MB | 1549.9 MB |
+| `applyPointerParamAbi` | 2111.2 MB | 1713.1 MB |
+| `narrowI32Results` (last call reached) | 3515.8 MB | 3117.7 MB |
+| `narrowPointerResults` (last call reached) | 3512.2 MB | 3114.0 MB |
+| `analyzeFuncForEmit` (last call reached) | **4096.0 MB**, call **#106** | **4095.3 MB**, call **#1427** |
+| `emitFunc` | never reached (count 0) | never reached (count 0) |
+| `emitClosureBody`/`buildStartFn`/`pullStdlib`/`optimizeModule` | never reached | never reached |
+| **trap** | `unreachable`, 4096.0 MB | `unreachable`, 4096.0 MB |
+
+**The fix's own pathology is gone, confirmed by direct evidence, not
+inference**: `narrowPointerResults`'s reading (3512.2 MB dormant) is LOWER
+than `narrowI32Results`'s (3515.8 MB) despite `narrowPointerResults`
+executing chronologically BETWEEN `narrowI32Results`'s two call sites (line
+order: `applyPointerParamAbi` → `narrowI32Results`×1 → `narrowPointerResults`×1
+→ `narrowPointerResults`×2 → `narrowI32Results`×2) — the only way
+`narrowI32Results`'s LAST-WRITE breadcrumb can read higher is if its SECOND
+call fired, which only happens after `narrowPointerResults`'s second call
+already ran. Both kernels reach ALL FIVE calls in `narrowSignatures`' own
+internal fixpoint (097a51d7's own pre-fix breadcrumb never got past
+`narrowPointerResults`'s 2nd call, dormant trapping there at 4081.0 MB with
+"15 MB of headroom left" — this session's post-fix dormant run clears that
+same call AND both of `narrowI32Results`'s calls AND `narrowSignatures`
+itself returns AND `plan()` completes in full AND `compileAst` moves on to
+its NEXT major phase). The originally-diagnosed O(functions×params×
+callSites) pathology no longer bounds this compile.
+
+**The NEW frontier — banked, not chased (out of this session's scope, per
+the task's own instruction)**: `compileAst`'s per-function
+`analyzeFuncForEmit` loop (`src/compile/index.js`) — the pass immediately
+after `emitFuncs`'s own driver loop begins, analyzing each function ahead
+of `emitFunc` proper. Both kernels get meaningfully far into it (106 calls
+dormant, 1427 calls region-live — region-live's larger head start, same
+asymmetry 097a51d7's own session measured at the OLD frontier, persists at
+the NEW one) before exhausting the ceiling; `emitFunc` itself is NEVER
+entered (count 0, both kernels) — the trap is inside `analyzeFuncForEmit`'s
+own per-call work or in code between one `analyzeFuncForEmit` call and the
+next, not inside `emitFunc`/`emitClosureBody`/`buildStartFn`/`pullStdlib`/
+`optimizeModule`, all confirmed unreached. `analyzeFuncForEmit` is a sibling
+of `emitClosureBody` in the SAME file (`src/compile/index.js`) that
+259cd4fc's `MapOverlay` fix already treated once for a DIFFERENT function —
+worth checking first, next session, whether `analyzeFuncForEmit` has its
+own O(programSize)-per-call full-table clone/scan of the same structural
+shape (a live, unaudited hypothesis, not yet confirmed) before assuming a
+wholly new mechanism.
+
+### Gate 4 — Standard
+
+- **kernel-oracle**: dormant, **13/13 × 3** consecutive runs (541 assertions
+  each) — clean, matches baseline, zero flake.
+- **kernel-parity**: 33/33 (three optimize tiers × 11 programs), also
+  exercised as part of Gate 1's own corpus differential — clean.
+- **jessie / watr region-live-equivalent ×3**: `bench/jessie/jessie.js` and
+  `node_modules/watr/watr.js` (its own full source, self-compiled through
+  jz — a real, richly-typed, multi-module program, not a toy) compiled
+  natively 3× each at the region-live optimizer profile
+  (`{level:3, inlinePtrOffsetFast:false}`) — byte-identical across all 3 runs,
+  both programs (127494 B / `58ce040c…` jessie; 429650 B / `3e324616…` watr).
+- **jzify-entry**: the named `.work/jzify-entry.mjs` harness referenced by
+  the task is NOT present on this worktree's ancestry (confirmed via
+  `git merge-base --is-ancestor` — it postdates 097a51d7 on a different
+  line of work) and is gitignored, so it could not be reproduced without
+  importing untracked state from outside this session's own chain. Not
+  chased further; the jessie/watr substitution above and the jz×jz
+  breadcrumb runs (which ARE genuinely region-live, not merely
+  optimizer-flag-equivalent) cover the same class of concern.
+- **test:wasm non-fuzz leg**: not run this session — time budget spent on
+  the goal-gate breadcrumb campaign (Gate 3), which is this task's own
+  named finish line.
+
+### Disposition — LANDED
+
+`src/compile/narrow.js` only (69 lines changed: 47 insertions, 22
+deletions) — the six-scan callee-index conversion plus the
+`applyI32ParamSpecialization`/`callerArgSelfConsistentI32` signature thread.
+`git diff`/`git status` in the worktree otherwise clean throughout; every
+scratch script and kernel binary this session built (`.work/scratch-*.mjs`,
+`/tmp/kernel-*.wasm`, `/tmp/*.wat`, `/tmp/corpus-*.json`) deleted at session
+end, none committed (`.work/*.mjs` gitignored regardless).
+
+**jz×jz goal gate: NOT met, but the SPECIFIC pathology this session was
+asked to fix IS fixed, measured directly (not inferred)** — narrowSignatures'
+own O(functions×params×callSites) call-site census no longer bounds the
+compile; the ceiling now falls to a new, later, precisely phase-stamped
+frontier (`compileAst`'s `analyzeFuncForEmit` loop, `src/compile/index.js`,
+call #106 dormant / #1427 region-live, `emitFunc` never reached). **Next
+session's concrete lever**: audit `analyzeFuncForEmit` for the same
+per-call full-table-clone/scan shape 259cd4fc already fixed once in this
+same file's `emitClosureBody`, and this session fixed a second instance of
+in `narrow.js` — check there before assuming a novel mechanism.
+
+**SHAs.** Worktree: `narrow-index` (region-final-2026-08-11 / 097a51d7,
+detached HEAD). Commit: see this entry's own accompanying commit (narrow.js
++ this ledger entry, detached on 097a51d7, no Co-Authored-By).
+
