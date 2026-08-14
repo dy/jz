@@ -15712,3 +15712,105 @@ Worktree: `/private/tmp/.../scratchpad/bigint-slice1`, branch
 `test/pointers.js`, `test/test262-builtins.js`, `test/watr.js`,
 `test/perf.js`, `test/ecosystem-perf.js`, this ledger entry.
 
+## §VectorizerGenerality — consolidation LANDED on main (2026-08-14):
+## rebased `vec-consolidate-2026-08-13` over the user's SIMD/site work, gated,
+## fast-forwarded onto main
+
+`vec-consolidate-2026-08-13` (5 commits, tip `8f46b069`, base `9ac6ad72`,
+ledger'd above at 8f46b069) sat on a main tip that had since moved 53
+commits via the user's own concurrent work — region-arena campaign,
+BigInt retirement Slices 0-1, and one direct `vectorize.js` commit
+(`c407f806` "bring wasm2c output to native scalar parity"). Landed by
+rebase, not merge: worktree `/private/tmp/.../scratchpad/vec-land` off
+new main tip `243e5b6e`, branch `vec-land-2026-08-14`, cherry-picking the
+5 commits in original order.
+
+**Rebase decisions.** Diffed `c407f806` first to find the actual overlap
+surface: all 4 of its `vectorize.js` hunks (lines ~4379-4490) sit entirely
+inside `tryRampMap` — the wasm2c 4-wide `packWiden16`/`widen16Plan`
+scheduling rework. None of the 5 consolidation commits touch `tryRampMap`
+(they touch `tryReduce*`, `tryChannelReduce*`, `slpPairsIn`/
+`vectorizeStraightLineF64DotPairsIn`, `tryOuterStripRest` — a disjoint
+function set) — confirmed by grepping the merged tree's dispatch chain
+post-rebase: `tryRampMap` still sits at its original position between
+`tryStencil` and `tryChannelReduce`, untouched. Net effect: zero semantic
+overlap between the two lines of work. All 5 cherry-picks applied via
+plain `git cherry-pick` with **zero manual conflict resolution** — every
+commit's diffstat came out byte-for-byte identical to its original
+(`28afd326`: 1+/167-; `e4f61eef`: 42+/15-; `c6ca13be`: 40+/22-; `973ab64d`:
+33+/4-; `1caa3a9e`: 38+/9-), i.e. this was a textually clean rebase, not
+just a semantically clean one. No recognizer needed re-deriving for a
+"substantially rewritten" shape — the user's concurrent edit and this
+session's merges were disjoint by construction, not by luck reconciled
+after the fact. Nothing banked from the rebase step itself.
+
+**Gate 1 — 130-program census corpus byte-identity** (method: `.work/feature-reach-census.md`,
+`node cli.js <entry> --wat -O3 --resolve -o <out>.wat` per program, base =
+main tip `243e5b6e` unmodified vs branch = rebased `vec-land-2026-08-14`
+HEAD, same source input read from the base tree for both compiles so only
+the compiler code differs): **127/127 comparable programs byte-identical
+wasm.** 3/130 (`.work/jzify-entry.mjs`, `bench/jessie/jessie.js`,
+`bench/watr/watr.js`) fail to compile on **both** trees with the
+**identical** stack trace (`BigInt value at this collection can't be
+proven a single, uniform kind`, `src/ir.js:461` `bigintEraseErr` via
+`carrierF64`/`storedValue`/`emitElem`, same AST fragment
+`["()","BigInt","strf4x_1"]`) — a pre-existing main-tip regression from
+the concurrent BigInt-retirement work (Slice 0/1, `38f1259a`/`fc28a3da`),
+unrelated to `vectorize.js`, confirmed identical before comparing (not a
+new divergence introduced by this rebase). Excluded from the byte-identity
+count the same way the two prior sessions' ledger entries excluded
+external failures, not silently — 127/127 of what compiles matches.
+
+**Gate 2 — native `npm test`.** Branch: **3450 total / 3432 pass / 12 fail
+/ 6 skip.** Root-caused the delta against a fresh, untouched-main
+worktree (`scratchpad/main-verify`, `git worktree add 243e5b6e --detach`,
+same frozen `node_modules/watr`+`subscript` pattern): clean main tip scores
+**3454 total / 3436 pass / 12 fail / 6 skip.** Total/pass delta is exactly
+4, matching `28afd326`'s deliberate removal of `tryByteScan`'s 4 dedicated
+`test/simd.js` unit tests (carried over faithfully from the original
+consolidation, not a new loss). The 12 fails are **identical in both** —
+same count (`grep -c "failed to build dist/jz.wasm"` = 31 in both raw
+logs, same 4 named + "8 more" summary shape in both) and same root cause:
+`dist/jz.wasm` cannot currently be built on **any** `243e5b6e`-descended
+tree — verified directly by running `node scripts/build-dist.mjs` on the
+untouched `main-verify` worktree, which throws the exact same
+`bigintEraseErr` at the exact same line building `scripts/self.js`. This
+is the self-build ceiling already visible in Gate 1's 3 corpus fails,
+now confirmed to also block the kernel-parity/kernel-oracle native test
+rows and cascade to two more gates below — **100% pre-existing on main,
+not caused by or fixable within this vectorizer rebase.**
+
+**Gate 3 — vectorizer test suites.** `node test/index.js simd slp
+cond-vectorize optimizer`: **384/384 pass, 0 fail** (all four required
+files green; the original consolidation's one banked `optimizer.js`
+fail — 218/219 — has since been closed by unrelated main-tip work).
+
+**Gate 4 — `test:wasm` and self-build ×2 SHA-convergence: BLOCKED
+UPSTREAM, not attempted to a verdict.** Both route through
+`dist/jz.wasm`, and Gate 2's root-cause proof already shows that artifact
+cannot be built from **any** current `243e5b6e`-descended tree, branch or
+otherwise — `test:wasm` crashes the whole runner on the same
+`bigintEraseErr` before a single test executes (confirmed with a 20s-capped
+probe on `test/index.js simd` under `JZ_TEST_TARGET=jz.wasm`, identical
+trace). Banked, not landed dormant and not silently skipped: this is the
+same class of external blocker the original consolidation ledger entry
+named for its node_modules integrity finding — root-caused, confirmed
+pre-existing and tree-independent, not a defect in this session's `vectorize.js`
+work, and out of this task's authorized scope (fixing the BigInt-retirement
+self-build regression touches `src/ir.js`/`scripts/self.js`, not
+`vectorize.js`, and is presumably the subject of the in-flight
+`bigint-slice1-2026-08-14` work logged just above this entry).
+
+**Landed:** fast-forward merge, `git merge --ff-only vec-land-2026-08-14`
+from the main checkout (dirty `.work/strategy.md`/`.work/todo-original.md`
++ untracked `.work/archive/*` left untouched — none overlap the 3 files
+this rebase touches: `src/optimize/vectorize.js`, `test/simd.js`,
+`test/objects.js`). Branches `vec-consolidate-2026-08-13` and
+`vec-land-2026-08-14` plus their worktrees deleted post-land.
+
+**Verdict:** the two provable gates (corpus byte-identity, vectorizer
+test suites) are clean; the native-test delta is a deliberate, faithfully-
+carried-over test removal, not a regression; the 12 native fails and the
+two blocked gates are a single pre-existing, tree-independent main defect,
+proven independently on a clean worktree before being excluded — landed.
+
