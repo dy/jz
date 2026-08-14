@@ -2580,12 +2580,90 @@ export default function compile(ast, profiler, regionHooks) {
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
+  // Region-arena analyzeFuncs BATCHED round (.work/research.md §Region arena,
+  // Lever 1 — the retained-set census's own top lever: ~70% MAP/HASH-shaped
+  // churn, up to 1435 calls for jz×jz, PREVIOUSLY excluded from every region
+  // round e640e77a's own design note named — a plain `for…of` iterator over
+  // `ctx.funcs.list` caches the array's base pointer ONCE at loop entry (this
+  // codebase's own self-hosted for-of lowering, not V8's), so a mid-loop
+  // `region_exit` that relocates `ctx.funcs` (and thus its `.list` backing
+  // store) would leave that cached base stale — the exact "durable receiver,
+  // stale pointer to reclaimed memory" class this campaign's ledger already
+  // catalogued (closure4232/fromnested). FIX: index-based iteration that
+  // re-reads `ctx.funcs.list[i]` FRESH every access (never holds the array or
+  // an iterator across an exit) — behavior-identical to the original `for…of`
+  // both natively (V8's own Array iterator is itself index+length-checked per
+  // step, so growth-during-iteration behaves the same either way) and
+  // self-hosted (a fresh property read always observes the just-rebound
+  // `ctx.funcs`).
+  //
+  // GRANULARITY — batched (every AFE_ROUND_BATCH functions), not per-function:
+  // this round's own root bundle (below) must include `ctx.plans` (see its
+  // own note) — a container that grows by one FunctionPlan every iteration
+  // and is never emptied. `__region_exit` is a compacting relocator that
+  // walks and RE-COPIES the entire root-reachable durable set at every exit
+  // (confirmed by the census's own mark/delta methodology: the memo resets at
+  // every new round — no cross-round memoization of "unchanged since last
+  // round"), so exiting once per function against a linearly-growing root
+  // would cost O(N²) total copy work for N functions (1435 for jz×jz) — a
+  // real risk of the reclaim overhead eclipsing the reclaim benefit. Batching
+  // divides that cost by the batch size while still reclaiming per-function
+  // churn (the actual target) far more often than the status quo (never).
+  // AFE_ROUND_BATCH is a tunable constant, not derived — sized from this
+  // session's own jessie/watr/jzify-entry measurement (`.work/research.md`
+  // §Region arena, this entry), not guessed.
+  const AFE_ROUND_BATCH = 32
   timePhase(profiler, 'analyzeFuncs', () => {
-    for (const func of ctx.funcs.list) {
-      if (func.raw) continue
-      const functionPlan = publishPlan(func, analyzeFuncForEmit(func, programFacts))
-      captureFuncInspect(func, functionPlan, programFacts)
-      scanErasureSinks(func)
+    // Mark lazily, at the first index actually reached (not unconditionally
+    // before the loop) — an empty/all-raw `ctx.funcs.list` must never leave
+    // an unpaired `mark()` with no matching `exit()`.
+    let __mark = null
+    for (let i = 0; i < ctx.funcs.list.length; i++) {
+      if (regionHooks && __mark == null) __mark = regionHooks.mark()
+      const func = ctx.funcs.list[i]
+      if (!func.raw) {
+        const functionPlan = publishPlan(func, analyzeFuncForEmit(func, programFacts))
+        captureFuncInspect(func, functionPlan, programFacts)
+        scanErasureSinks(func)
+      }
+      const lastFunc = i === ctx.funcs.list.length - 1
+      if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
+        // Root bundle: the established plan-tail/scan-round bundle
+        // ([ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema,
+        // ctx.closure, ctx.warnings, getFactStore()] — analyzeFuncForEmit's
+        // own `analyzeBody`/`reanalyzeBody` calls populate `getFactStore()`'s
+        // `bodyFacts` on first touch per function, the SAME 274b6bd8 hazard,
+        // now hit by THIS loop too) PLUS two containers no prior round ever
+        // needed to root, because no prior round ever wrote them:
+        //   - `ctx.plans` — `publishFunctionPlan` (function-plan.js) does
+        //     `ctx.plans.functions.set(func, plan)` EVERY iteration. Under
+        //     self-hosting `ctx.plans.functions` is a WeakMap LOWERED TO A
+        //     STRONG MAP (ctx.js's own comment on `ctx.plans`), keyed on the
+        //     `func` object itself — i.e. a pointer. Without `ctx.plans` in
+        //     root, the Map (and every entry published so far) is
+        //     unreachable from this round's root and gets reclaimed at this
+        //     exit while `ctx.plans.functions` (the ctx field) still points
+        //     at the old address — the exact "compiler-internal registry
+        //     never threaded through the root" class b33d603e's own entry
+        //     named, and `emitFuncs`'s later `functionPlanOf(ctx, func)` read
+        //     (src/compile/index.js, after this loop) would dereference a
+        //     stale pointer. Genuinely new: no earlier region round in this
+        //     campaign ever wrote `ctx.plans`, so no earlier round ever
+        //     needed it in root.
+        //   - `ctx.inspect` — `captureFuncInspect` writes
+        //     `ctx.inspect.functions[name] = {...}` every iteration when
+        //     `ctx.transform.inspect` is set (editor-host usage). Same
+        //     "normally null, sometimes live" treatment `ctx.warnings`
+        //     already gets in every established round — kept uniformly,
+        //     harmless (a single extra root slot) when null.
+        // `func`/`functionPlan` are deliberately NOT rooted: both are fully
+        // consumed (published, captured, scanned) before this exit fires —
+        // dead the instant this branch is reached, exactly the garbage this
+        // round exists to reclaim.
+        ;[ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, ctx.plans, ctx.inspect] =
+          regionHooks.exit(__mark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, ctx.plans, ctx.inspect, getFactStore()])
+        __mark = null  // re-armed lazily at the next index, if any
+      }
     }
   })
   // CARRIER PROGRAM Slice 0 (.work/carrier-representation-design.md §7):

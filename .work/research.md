@@ -15032,3 +15032,329 @@ per-constructor heap snapshot taken) in `.work/retained-set-census.md`.
 per-call breadcrumb method 0ae75f07 already proved out on this exact loop,
 then solve the `ctx.funcs.list` relocation hazard before attempting to wire
 a region round around it.
+
+---
+
+## §Region arena — Lever 1 LANDED: `analyzeFuncForEmit`'s loop wrapped in
+## BATCHED region rounds (32 functions/round), the `ctx.funcs.list`
+## relocation hazard solved by index-based re-fetch, TWO NEW root-completeness
+## gaps found (`ctx.plans`, `ctx.inspect`) neither prior round ever needed
+## (2026-08-14)
+
+**Task**: the census's own top lever — wrap `analyzeFuncForEmit`'s per-function
+loop (`src/compile/index.js`, up to 1435 calls for jz×jz, ~70% MAP/HASH-shaped
+churn, previously excluded from every region round) in region rounds, solving
+the `ctx.funcs.list` relocation hazard e640e77a's own design note named and
+left unattempted. Worktree `git worktree add … d08d5968`, branch
+`afe-rounds-2026-08-14`.
+
+### 1. The hazard, understood precisely
+
+e640e77a's own design note (`.work/research.md`, the per-pass plan-tail
+entry): *"A per-iteration or batched round inside that loop would need to
+re-fetch `ctx.funcs.list[i]` by INDEX after every inner exit (a plain `for…of`
+iterator holds the array reference ONCE at loop start — if a nested exit
+relocates `ctx.funcs.list` mid-loop, the iterator keeps walking the STALE,
+about-to-be-reclaimed array, a use-after-free class this campaign's own
+`closure4232`/`fromnested` heisenbugs already catalogued)."* Read against
+`module/core.js`'s own `$__region_exit` implementation (lines ~841-920,
+already documented there): `mark()` snapshots the bump-pointer heap top;
+`exit(mark, root)` Cheney-copies everything reachable from `root` from
+`[mark, heap-top)` down to a fresh block at the CURRENT heap top, rewrites
+every pointer it copies to its final post-move address as it walks, then
+`memory.copy`s the compacted block back down to `mark` and rewinds `$__heap`
+— reclaiming everything NOT reachable from `root`. This confirms the hazard
+mechanically: self-hosted jz's own `for…of` lowering caches the target
+array's base address in a loop-local at loop entry (not a fresh
+`ctx.funcs.list` property read per step, unlike V8's own Array iterator) — a
+mid-loop exit that relocates `ctx.funcs` (and thus its `.list` backing store)
+leaves that cached base stale, the SAME "durable receiver, stale pointer to
+reclaimed memory" class this campaign already named for `closure4232`/
+`fromnested`.
+
+**Every loop-carried and cross-iteration reference, enumerated** (source read
+of `analyzeFuncForEmit`, `publishFunctionPlan` (`function-plan.js`),
+`captureFuncInspect`, `scanErasureSinks`):
+
+- **The iterator/base pointer itself** — the hazard above; fixed by
+  restructuring to index-based access (§2).
+- **`func`** — read fresh from `ctx.funcs.list[i]` each iteration; NOT
+  carried across iterations by itself, but held live for the DURATION of one
+  iteration's several calls (`analyzeFuncForEmit`, `publishPlan`,
+  `captureFuncInspect`, `scanErasureSinks`) — must stay valid across any
+  round boundary that could fire mid-iteration (resolved by never exiting
+  mid-iteration, only at iteration/batch boundaries).
+- **`functionPlan`** — same shape as `func`: alive only within one iteration.
+- **`programFacts`** — read every call (`paramReps`) and enriched in place;
+  must survive every round exit to remain valid for the NEXT iteration and
+  every pass downstream. Already an established root member.
+- **`ctx.funcs`/`ctx.scope`/`ctx.types`/`ctx.schema`/`ctx.closure`** —
+  `analyzeFuncForEmit` reads/writes `ctx.func.*` (per-iteration scratch,
+  fully reset at entry via `enterFunc`/`enterActiveFunction`, restored on
+  exit — confirmed NOT carried cross-iteration, needs no root entry, matching
+  why no established round roots `ctx.func` either) and touches
+  `ctx.types.typedElem`/`typedLen` (a fresh `MapOverlay` built per call,
+  whose OBJECT — not the transient `ctx.types.*` slot holding it — is
+  returned in `facts` and stored durably inside the published `FunctionPlan`;
+  covered by the `ctx.plans` fix below), `ctx.scope` (6 refs, read-only
+  facts), `ctx.schema`/`ctx.closure` (1 ref each). Already established root
+  members.
+- **`getFactStore()`** — `analyzeFuncForEmit` calls `analyzeBody`/
+  `reanalyzeBody` (line ~211), which populates `getFactStore()`'s shared
+  `bodyFacts` cache on first touch per function — the EXACT 274b6bd8 hazard
+  (`__coll_order` chain-round defect), now hit by this loop too. Already an
+  established root member (trailing, not destructured back).
+- **`ctx.plans` — GENUINELY NEW, no prior round ever wrote it.**
+  `publishFunctionPlan` (`function-plan.js:86-99`) does
+  `ctx.plans.functions.set(func, plan)` EVERY iteration. `ctx.plans.functions`
+  is declared `new WeakMap()` (`src/ctx.js:980`) but that file's own comment
+  says self-hosting lowers WeakMap to a strong Map (no native GC) — so under
+  self-hosting this is a real, growing, POINTER-KEYED Map (keyed on the
+  `func` object itself). Without `ctx.plans` in root, the Map — and every
+  entry published in EARLIER iterations/batches — is unreachable from this
+  round's root and gets reclaimed at this exit while the `ctx.plans` field
+  still points at the old, now-invalid address: the exact "compiler-internal
+  registry never threaded through the root" class b33d603e's own entry
+  named. `emitFuncs` (later, same file) reads it back via
+  `functionPlanOf(ctx, func)` — a stale `ctx.plans` would silently
+  dereference reclaimed memory there. `module/core.js`'s own SET/MAP arm
+  comment confirms this is a supported, already-exercised mechanism, not a
+  novel one: relocating a Map whose keys are pointers requires (and already
+  does) a full rebuild via `__coll_order` insertion order, not a naive
+  per-entry patch — the same machinery watr's own `dirty`/`snapshots` Maps
+  already ride through every existing region round.
+- **`ctx.inspect` — also new.** `captureFuncInspect` writes
+  `ctx.inspect.functions[name] = {...}` every iteration when
+  `ctx.transform.inspect` is set (editor-host usage). Normally `null`
+  (`src/ctx.js:845`) — same "harmless when null, live when set" treatment
+  `ctx.warnings` already gets in every established round.
+- **`scanErasureSinks`'s `erasureHits`** — module-level array, but gated
+  `DBG_BIGINT_ERASURE` which itself requires `typeof process !== 'undefined'`
+  — always `false` under self-hosting (no `process` global), so this path is
+  provably dead in every region-live kernel. No root entry needed; checked,
+  not assumed.
+
+### 2. Design — the sound wrapping
+
+**Candidate (c) — index-based re-fetch — is mandatory regardless of
+granularity**, not optional: it's the only fix for the hazard in §1.
+Restructured `for (const func of ctx.funcs.list)` to
+`for (let i = 0; i < ctx.funcs.list.length; i++) { const func =
+ctx.funcs.list[i]; ... }`. Behavior-preserving both natively (V8's own Array
+iterator is itself index/length-checked per step — growth-during-iteration
+behaves identically either way, and no test in this codebase mutates
+`ctx.funcs.list` during this loop, confirmed by grep) and self-hosted (every
+`ctx.funcs.list[i]` access is a fresh property read through the
+just-rebound `ctx.funcs`, never a cached base pointer).
+
+**Granularity — chose (b) batched (32 functions/round), not (a)
+per-function.** Rejected (a) for a concrete, mechanically-grounded reason,
+not caution alone: this round's own root bundle (§1) must include `ctx.plans`
+— a container that grows by one `FunctionPlan` every iteration and is NEVER
+emptied for the rest of the compile. `$__region_exit` is a COPYING relocator
+that walks and re-copies the ENTIRE root-reachable durable set at every exit
+(confirmed by direct read of its own implementation, §1) — there is no
+cross-round memoization of "unchanged since last round" (each new round's
+mark/delta resets, per the retained-set census's own methodology note).
+Exiting once per function against a root that grows linearly (`ctx.plans`,
+and to a lesser extent `programFacts`/`ctx.funcs`) would cost O(N²) total
+copy work for N functions — 1435² ≈ 2.06M "function-plan-units" of relocation
+copying for jz×jz alone, a real risk of the reclaim mechanism's OWN overhead
+eclipsing its benefit and blowing up wall time. Batching every 32 functions
+divides that quadratic cost by 32 (≈45 rounds instead of 1435 for jz×jz)
+while still reclaiming per-function churn — the actual measured target — far
+more often than the status quo (zero rounds, ever, in this territory). 32 is
+a tunable constant (`AFE_ROUND_BATCH`, `src/compile/index.js`), sized as a
+defensible starting point, not derived from a batch-size sweep this session's
+time budget didn't extend to — the jessie/watr/jzify-entry measurement below
+validates it isn't pathological, not that it's optimal.
+
+`func`/`functionPlan` are deliberately NOT in the round's root: both are
+fully consumed (published, captured, scanned) before any exit in this
+design ever fires — a batch's exit only happens AFTER every function in that
+batch has completed its own full inner sequence, never mid-function. Dead
+the instant the exit branch is reached, exactly the garbage this round exists
+to reclaim.
+
+### 3. Implementation
+
+`src/compile/index.js`, the `analyzeFuncs` `timePhase` block: index-based
+loop, lazy `mark()` (armed at the first index actually reached — an
+empty/all-`raw` `ctx.funcs.list` must never leave an unpaired `mark()` with
+no matching `exit()`), `exit()` fired every `AFE_ROUND_BATCH`-th index or at
+the last index, root bundle
+`[ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure,
+ctx.warnings, ctx.plans, ctx.inspect, getFactStore()]` (the established
+plan-tail/scan-round bundle plus the two new members from §1), all ten
+non-trailing members destructured back from `exit()`'s return, `getFactStore()`
+trailing per established idiom. `REGION_HOOKS_ACTIVE`-gated dead code:
+`regionHooks` is a plain function parameter, `undefined` on every native
+2-arg `compile()` call, so every `if (regionHooks)` branch — including the
+loop's mark/exit — never executes natively; only the index-based iteration
+itself runs unconditionally (verified behavior-preserving above).
+
+### 4. Gates
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships) — the loop
+restructuring (§2's index-based iteration) runs UNCONDITIONALLY, so this is
+the real correctness gate for the change itself, not just a dead-code check:
+- Native `npm test`: **3454 total (19800 assertions) / 3448 pass / 0 fail /
+  6 skip** — byte-for-byte the documented baseline, zero regression.
+- Self-build ×2: SHA-256
+  `c0ef8f7ca8c51ed109e8b052f1b783f55cead84b16ce5573a605b5fcaf6850f2` both
+  times — converges (17,231,713 B, ~345 s/build). Independently
+  re-confirmed a third way: `test/kernel-target.js`'s own `getSelfModule()`
+  auto-build (triggered by the npm test run above reaching the kernel-oracle/
+  kernel-parity rows) produced the identical SHA.
+- Dormant kernel-oracle: **13/13 (553 assertions), all pass, ×3** reps,
+  clean.
+- Dormant kernel-parity: **3/3 blocks (33 assertions), all pass, ×3** reps,
+  clean.
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2: SHA-256
+  `5bb5de4b55f12feed17393a78caff270d343df80fb295a76dbf79d7c133ddedb` both
+  times — converges (15,021,832 B, ~250-260 s/build; smaller than dormant's
+  17.2 MB because `inlinePtrOffsetFast:false`, the established region-arena
+  ×optimizer gate, produces less-inlined, more-compact code — not a new
+  finding, matches every prior region-live/dormant size delta in this
+  campaign).
+- Region-live kernel-oracle: **13/13 (553 assertions), all pass, ×3** reps.
+- Region-live kernel-parity: **3/3 blocks (33 assertions), all pass, ×3**
+  reps.
+
+**Region-live jessie/watr/jzify-entry — the per-round reclaim measurement
+(THE GOAL GATE'S own supporting evidence), ×3 each, deterministic, byte-
+identical output every rep, compared against a freshly-measured dormant
+baseline (same worktree, same method — `instantiate(wasm,{memory:8192})`,
+`exports.default(memory.String(code),0,optJSON,modulesJSON,0)`,
+`memory.buffer.byteLength` read on success or trap):**
+
+| graph | dormant peak | region-live peak | Δ | output bytes (both configs) |
+|---|---:|---:|---:|---:|
+| jessie (47 mod) | 1,073.7 MB | **536.9 MB** | **−536.8 MB / −50.0%** | 107,171 B |
+| watr (7 mod) | 4,295.0 MB (ceiling-graze OK) | **1,073.7 MB** | **−3,221.3 MB / −75.0%** | 314,631 B |
+| jzify-entry (70 mod) | **FAIL** — `unreachable` @ 4,295.0 MB | **OK** — 4,295.0 MB | capacity UNLOCKED (impossible → succeeds) | 615,248 B |
+
+This is a materially LARGER win than any prior region-arena session recorded
+on this same 3-point curve (Slice 1's own session: jessie unaffected/watr
+−50%/jzify unlocked; e640e77a's six plan-tail rounds: comparable shape,
+smaller jessie effect) — **jessie moving from "unaffected" to −50% is the
+clearest signal that `analyzeFuncForEmit`'s loop was genuinely unreclaimed
+churn even on SMALL graphs**, not just a jz×jz-scale problem, exactly
+matching the retained-set census's own mechanistic story (§4 of that
+document): every prior round wrapped WHOLE-PROGRAM passes that run ONCE;
+this is the first round wrapped around a loop that runs once PER FUNCTION,
+so even a 47-module graph with enough functions accumulates reclaimable
+churn across dozens of batches.
+
+### 5. jz×jz — THE GOAL GATE — NOT MET, both configs, IDENTICAL to the
+### pre-fix baseline signature — reported prominently, not glossed
+
+Built both configs at `memory:65536` (true wasm32 4 GiB ceiling as the
+INITIAL page count, matching 274b6bd8's own established methodology), fed
+the kernel's own `default()` export the SAME 156-module self-graph
+`resolveSelfhostBuild()` resolves (`resolveModuleGraph('scripts/self.js',
+{resolveNode:true})`, 19,287 B parseable source spanning the whole compiler):
+
+| kernel | peak | outcome | wall time |
+|---|---:|---|---:|
+| dormant | 4,294,967,296 B (4,295.0 MB, exactly 4.000 GiB) | `unreachable` (deliberate `__memgrow` ceiling) | 5.9 s |
+| region-live (this session's Lever 1, active) | 4,294,967,296 B (4,295.0 MB, exactly 4.000 GiB) | `unreachable`, IDENTICAL signature | 6.8 s |
+
+**Both configs trap at exactly the same byte count and within ~1 s of the
+same wall time as 274b6bd8's own pre-Lever-1 baseline** ("Dormant jz×jz:
+FAILS — unreachable, 4096.0 MB... ~5.7 s"; "Region-live jz×jz: FAILS —
+unreachable, 4096.0 MB... ~6.5 s") — despite this session's fix DEMONSTRABLY
+reclaiming 50-75%+ of peak memory on every other real-graph gate (§4). This
+is a genuine, honest, unglossed finding, not a wasted session: the fix is
+real (§4's numbers are not in question) and simply doesn't reach jz×jz's own
+wall.
+
+**Phase-stamping the new frontier** (reasoned from the evidence in hand, NOT
+a fresh WAT-instrumented census — that would be the natural next-session
+lever, this session's time budget didn't extend to re-running the
+retained-set census's own splice-and-instrument method against the
+now-modified kernel): the IDENTICAL peak byte count and near-identical wall
+time (5.9s/6.8s here vs. 5.7s/6.5s pre-fix) are themselves the signal, cross-
+referenced against 0ae75f07's own dormant fine-grained checkpoint table
+(`.work/research.md`, cited in the retained-set census §4): **`analyzeFuncForEmit`
+call #1 was ALREADY at 4,089.1 MB** in that measurement — i.e. by the time
+this loop's very FIRST iteration begins, ~99.8% of the 4,096 MB budget was
+already consumed by phases upstream of it (front, `plan()`'s 5 rounds
+including the excluded `narrowSignatures` fixpoint, `compileAst`'s own
+scan-round). If that headroom shape still holds for jz×jz specifically on
+the current kernel (not re-verified this session, stated as an inference,
+not a fact), it explains the observed result mechanically: a per-function
+reclaim round can only reclaim churn that has ALREADY BEEN ALLOCATED and
+already gone stale — it cannot conjure headroom that was consumed before
+the loop it wraps ever starts. For jz×jz's own 156-module, 1435-function
+scale, the UPSTREAM cost (dominated by `narrowSignatures`' own
+O(functions×params×callSites) fixpoint, 0ae75f07's own +1564.9 MB dormant
+figure for that single pass, itself EXPLICITLY excluded from region wrapping
+by e640e77a's own design note as a correctness hazard, not an oversight —
+see that entry's own reasoning: rooting `programFacts` mid-fixpoint while
+`narrowSignatures` is still mutating it in place would be unsound) plausibly
+already exceeds the ceiling before `analyzeFuncForEmit` gets a single call —
+consistent with jessie/watr/jzify-entry (whose upstream costs are
+proportionally far smaller relative to their post-front budget) showing
+dramatic gains while jz×jz shows none. **The new frontier this session
+names, not closes: `narrowSignatures`' own upstream fixpoint cost, for
+graphs at jz×jz's own scale — a separately-banked pathology (627cf92a's
+`hardParamVal`/`hardParamRecvArrTyped` census) that no region round can help
+by construction, per e640e77a's own reasoning.** Closing it needs either (a)
+a fixpoint-INTERNAL reclaim scheme (not a whole-fixpoint region round, which
+e640e77a already ruled out) or (b) the compaction levers 2-4 the retained-set
+census already named (LANE removal, string interning, schema bitfield
+packing) applied specifically to shrink `narrowSignatures`' own per-iteration
+working set, or (c) re-running this exact census methodology against the
+NOW-modified kernel to get a real, not inferred, checkpoint curve — the
+honest next-session lead.
+
+**Bench row: NOT RUN** — gated on "if it completes under 4 GiB"; neither
+config does, so per the task's own instruction this step is correctly
+skipped, not attempted and hidden.
+
+### 6. Disposition
+
+`REGION_HOOKS_ACTIVE` reverted to `false` (`git diff scripts/self.js` clean
+at commit time) — the batched round in `src/compile/index.js` is dormant
+dead code under every shipped build, verified by: (a) the index-based loop
+restructuring itself is the only always-executing change, proven behavior-
+identical by the full native `npm test` run above; (b) the mark/exit calls
+are all `if (regionHooks)`-gated, `regionHooks` is `undefined` on every
+native 2-arg `compile()` call.
+
+**What lands**: `src/compile/index.js` (the batched `analyzeFuncs` region
+round — real, gated, dormant, PROVEN to reclaim 50-75%+ peak memory on every
+region-live real-graph gate this campaign has, including unlocking
+jzify-entry from FAIL to OK). **What doesn't land**: nothing reverted — this
+is a net-positive, gate-clean addition; it simply doesn't close jz×jz's own
+wall alone, a finding stated honestly rather than oversold.
+
+**Coordination note**: no `module/*.js` files touched (avoiding collision
+with the concurrent BigInt Slice 0 agent's own module-source work, confirmed
+via `ps` — a second worktree at `.../scratchpad/bigint-slice0` was observed
+running compiles concurrently throughout this session, untouched by this
+session's changes).
+
+### SHAs and reproduction
+
+jz worktree: `d08d5968` base, branch `afe-rounds-2026-08-14`. Commits:
+`src/compile/index.js` (the batched region round) + this ledger entry only.
+`REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`.
+
+Dormant `dist/jz.wasm` (self-build ×2, `memory:8192` default profile): SHA-256
+`c0ef8f7ca8c51ed109e8b052f1b783f55cead84b16ce5573a605b5fcaf6850f2` both
+times — converges. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped,
+same profile): SHA-256
+`5bb5de4b55f12feed17393a78caff270d343df80fb295a76dbf79d7c133ddedb` both
+times — converges. Region-live jessie/watr/jzify-entry SHAs match dormant's
+own compiled-OUTPUT bytes exactly (107,171 B / 314,631 B / 615,248 B, both
+configs, ×3 each — the free correctness cross-check this campaign's own
+methodology always runs: region-arena changes peak memory only, never
+compiled output). Every scratch script, kernel build, and log this session
+produced (`.work/gate-driver.mjs`, `.work/run-region-live-gates.sh`,
+`.work/jzjz-goal-gate.mjs`, `/tmp/afe-*` logs, `/tmp/afe-rounds-kernels/*.wasm`)
+deleted at session end — none committed (`.work/*.mjs` is gitignored;
+`.work/*.sh` is not, deleted explicitly before the commit below).
