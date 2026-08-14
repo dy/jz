@@ -780,33 +780,17 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/JSON/stringify/replacer-function-result-undefined.js', 'JSON.stringify replacer argument — out of scope'],
   ['built-ins/JSON/stringify/replacer-function-tojson.js', 'JSON.stringify replacer argument — out of scope'],
   ['built-ins/JSON/stringify/value-bigint-replacer.js', 'JSON.stringify replacer argument — out of scope'],
-  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-  // EXPECTED_FAIL_PREFIXES's own 'built-ins/BigInt/' entry (below) is a
-  // PATH-prefix exclusion — it never covered a test file OUTSIDE that
-  // directory that happens to construct a `123n`/`0n` literal as one of
-  // many generic values (an Iterator-helper "works with any value type"
-  // test, or JSON's own dedicated bigint-serialization tests). Every file
-  // below constructs a BigInt inside a heterogeneous array literal, object
-  // literal, or call-arg reaching Iterator.concat/reduce/zip/zipKeyed or
-  // JSON.stringify — exactly the design's "collection"/"call-arg" flow
-  // classes, now a compile-time refusal instead of a value the boxed
-  // carrier used to paper over. None of these files test BigInt semantics
-  // themselves (their own `features:` tags are iterator-sequencing/
-  // iterator-helpers/joint-iteration, not BigInt) — they were never
-  // "BigInt tests" by the exclusion's own path-prefix logic, just
-  // incidentally holding one BigInt value among many. A pre-existing gap
-  // in EXPECTED_FAIL_PREFIXES's own path-prefix-only scope (not something
-  // this retirement introduced) that this retirement's own new, honest
-  // compile-time refusal surfaces for the first time — the boxed carrier
-  // previously made these compile "by accident."
-  ['built-ins/Iterator/concat/throws-typeerror-when-iterator-not-an-object.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/Iterator/prototype/reduce/reducer-memo-can-be-any-type.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/Iterator/zip/options-padding.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/Iterator/zip/options.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/Iterator/zipKeyed/options-padding.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/Iterator/zipKeyed/options.js', 'BigInt element in a generic Iterator-helper test value — out of scope (no BigInt type)'],
-  ['built-ins/JSON/rawJSON/bigint-raw-json-can-be-stringified.js', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
-  ['built-ins/JSON/stringify/value-bigint.js', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
+  // Main-stabilization interim flip (2026-08-14, src/ir.js's bigintStrict()
+  // doc comment): BigInt retirement Slice 1 added 8 entries here for files
+  // that construct a BigInt inside a heterogeneous array/object literal or
+  // call-arg (Iterator.concat/reduce/zip/zipKeyed, JSON.stringify) — none
+  // test BigInt semantics themselves, they just incidentally hold one BigInt
+  // value among many. Under Slice 1's default-error that flow-class refused
+  // to compile, so these files newly, correctly xfailed. With boxing
+  // restored as the default consequence (an unprovable BigInt flow boxes,
+  // not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly as
+  // they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
+  // baseline (852/0, not Slice 1's 851/0).
   // JSON.stringify — toJSON() hook
   ['built-ins/JSON/stringify/value-tojson-not-function.js', 'JSON.stringify toJSON() hook — out of scope'],
   // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges

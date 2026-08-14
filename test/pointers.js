@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import { onKernel, withBigintStrict } from './_matrix.js'
 
 function run(code, opts) {
   return jz(code, opts).exports
@@ -345,12 +346,13 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // through layout.js's real i64Hex) remains valuable coverage that Slice 0's
 // documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
 test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16) [RETIRED: layout.js i64Hex\'s residual call-arg ambiguity (Slice 0 banked site) is now a compile-time diagnostic]', () => {
+  if (onKernel()) return
   // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
   // under JZ_CARRIER_BOX=0 this compiles raw (Slice 0's own verified
   // finding), nothing left to assert about a boxed payload.
   if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
-  throws(() => run(g.code, { modules: g.modules, optimize: 0 }), /BigInt value at this collection/)
+  throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
 })
 
 // CONSERVATIVE PAIRING (.work/carrier-representation-design.md — the §15/§16
@@ -379,11 +381,12 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // write-side ambiguity it existed to cover is a compile-time refusal
 // instead. Converted to expect-error.
 test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING) [RETIRED: layout.js\'s residual BigInt ambiguity is now a compile-time diagnostic]', () => {
+  if (onKernel()) return
   // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
   // under JZ_CARRIER_BOX=0 this compiles raw, nothing left to assert.
   if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
-  throws(() => run(g.code, { modules: g.modules, optimize: 0 }), /BigInt value at this collection/)
+  throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
 })
 
 // === Limits ===

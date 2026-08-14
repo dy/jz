@@ -15814,3 +15814,165 @@ carried-over test removal, not a regression; the 12 native fails and the
 two blocked gates are a single pre-existing, tree-independent main defect,
 proven independently on a clean worktree before being excluded — landed.
 
+## [x] main-stabilization (2026-08-14): invert BigInt retirement Slice 1's default — box stays the default consequence, the diagnostic becomes opt-in (`JZ_BIGINT_STRICT=1`)
+
+Root cause of the 12 native-test fails + `scripts/build-dist.mjs` crash both
+prior ledger entries above traced but didn't fix (this repo's own
+`bigint-slice1-2026-08-14` entry, then re-confirmed independently by
+`vec-consolidate-2026-08-13`'s landing agent on a clean main worktree):
+Slice 1 (`fc28a3da`) made `bigintEraseErr` fire BY DEFAULT (`liveCarrierBox()`
+default-on) and added `JZ_CARRIER_BOX=0` as the opt-OUT escape hatch. Slice
+0 (`38f1259a`) left 5 sites banked unresolved — 1 jz-own source site
+(`layout.js`'s `i64Hex` `bits` param), 4 in the external `watr` npm
+dependency — plus Slice 1 itself found a 6th (`subscript`'s `number.js`
+`BigInt(str)` literal parser, pulled in by `jessie`). Slice 1's OWN test
+files scoped the escape hatch around their own compile calls, so Slice 1's
+own gates ran green — but `scripts/self.js`'s module graph reaches
+`layout.js`'s `i64Hex` unconditionally, and `scripts/build-dist.mjs` never
+sets the hatch, so the self-host kernel build (and therefore every
+`test:wasm`/`kernel-oracle`/`kernel-parity` row that depends on
+`dist/jz.wasm`) broke out of the box, with no env var set — a plain
+`npm test`/`npm run build` regression on main, not a Slice-1-scoped issue.
+
+**Fix — option (a) from the task's own menu, chosen over (b)** (keeping
+the error default and pushing the hatch into every kernel/build/test entry
+point instead: rejected, since a plain compile of a legitimate corpus
+program — watr/jessie as INPUT, not just as the compiler's own dependency —
+must also keep working by default, which (b) cannot guarantee short of
+hatching every call site an end user might reach): boxing (`CARRIER_BOX`,
+frozen import, `src/ctx.js` — completely unchanged by this session) stays
+the DEFAULT consequence of an unprovable BigInt flow, exactly as it was the
+moment before Slice 1 landed. The diagnostic (`bigintEraseErr`, unchanged
+wording) is now OPT-IN via a live-read `JZ_BIGINT_STRICT=1` (`bigintStrict()`,
+`src/ir.js`, replaces `liveCarrierBox()` at every one of its 8 former call
+sites 1:1). Every site restores its EXACT pre-Slice-1 box/unbox body
+(`carrierF64`/`carrierF64Narrow`/`readI64` in `src/ir.js`; `coerceArg`'s
+both call-arg directions, the return-tail box, the ternary-nullish merge in
+`src/compile/emit.js`) as the non-strict branch, with `bigintEraseErr` fired
+first when `bigintStrict()` is live — same fixpoint proof
+(`markBigintSink`/`bigintBoxedVerdict`/`needsBigintBox`/`isProvenBoxedBigint`,
+none touched), same diagnostic text, just gated the other way. Slice 1's own
+genuine bug fix (`emitElementAssign`'s `arrProvenTyped` BigInt64Array/
+BigUint64Array exemption, `src/compile/emit-assign.js`) is orthogonal to the
+box/error question and stays untouched.
+
+**A real gap found landing this, not anticipated by the task:**
+`bigintStrict()`'s natural definition (`typeof process !== 'undefined' &&
+process.env?.JZ_BIGINT_STRICT === '1'`) constant-folds to a hard `false`
+inside the self-hosted kernel — `process` is never declared in jz's own
+source, so ANY self-hosted compile permanently disables strict mode
+(matching `CARRIER_BOX`'s own well-documented fold behavior, `src/ctx.js`
+§32's comment). This is exactly the desired DEFAULT (the kernel build must
+box, never error, out of the box) but it also means the `JZ_BIGINT_STRICT=1`
+env toggle set by a NATIVE test-runner process has zero effect on a compile
+routed through `test:wasm`'s kernel target — the 20 tests converted to
+`throws(() => withBigintStrict(...), ...)` (see below) all failed under
+`test:wasm` on the first pass (19 failures — the 20th, `kernel-oracle.js`'s
+own converted test, was already whole-file kernel-excluded via
+`test/index.js`'s `KERNEL_EXCLUDE`). Fixed by guarding each with
+`if (onKernel()) return` (`test/_matrix.js`'s existing `onKernel()`),
+the established pattern this suite already uses for every other
+host-capability-dependent assertion — these tests verify a NATIVE-only,
+env-var-controlled compile-time switch that a self-hosted kernel build
+structurally cannot honor, the same class of limitation `CARRIER_BOX`
+itself already has inside any kernel.
+
+### Tests adjusted, by file
+
+- **`test/_matrix.js`**: added `withBigintStrict(fn)` — the strict-mode
+  counterpart to `test/watr.js`'s `withRawCarrier`, live-sets
+  `JZ_BIGINT_STRICT=1` around exactly the synchronous compile `fn` performs.
+- **`test/dyn-keys.js`** (16 tests), **`test/pointers.js`** (2),
+  **`test/inference.js`** (1), **`test/types.js`** (1): every Slice-1
+  `throws(() => X, /BigInt value at this .../)` assertion wrapped to
+  `throws(() => withBigintStrict(() => X), ...)` (the default no longer
+  errors, so the diagnostic must be forced to observe it) AND guarded with
+  `if (onKernel()) return` (the kernel-fold gap above) — 20 tests total,
+  matching Slice 1's own "30 tests across 6 files" tally once
+  `test/kernel-oracle.js`'s 1 (already kernel-excluded) and
+  `test/test262-builtins.js`'s 8 (not test bodies, see below) are counted
+  separately.
+- **`test/kernel-oracle.js`** (1 test): same `withBigintStrict` wrap: no
+  `onKernel()` guard needed (the whole file is already in
+  `test/index.js`'s `KERNEL_EXCLUDE`).
+- **`test/test262-builtins.js`**: removed Slice 1's 8 `EXPECTED_FAIL_FILES`
+  entries (Iterator-helper/JSON tests that incidentally hold one BigInt
+  value among many) — restored, not converted: boxing being the default
+  again, these compile exactly as they did pre-Slice-1, so they are no
+  longer expected-fail. Restores the documented pre-Slice-1 baseline
+  (852/0, not Slice 1's 851/0) — verified directly (`node
+  test/test262-builtins.js`: `Pass: 852, Fail: 0`).
+- **`test/watr.js`**: `withRawCarrier`'s doc comment corrected (no longer
+  references the deleted `liveCarrierBox` export) — the wrapper itself left
+  in place as a harmless no-op (`JZ_CARRIER_BOX` toggles nothing once
+  `CARRIER_BOX` is frozen at process start, same as always; a future
+  inference session closing the residual sites may want it re-exercised).
+  `test/perf.js`/`test/ecosystem-perf.js` untouched (same no-op wrapper,
+  lower-traffic comment reference already points at `test/watr.js`).
+
+### The 12 native `npm test` fails, enumerated and attributed
+
+All 12 trace to the single mechanism above — the self-host kernel build
+(`dist/jz.wasm`) failing to compile by default, cascading into every test
+row that depends on it (`kernel-oracle`'s per-opt-tier rows via
+`compileViaKernel`, `kernel-parity`'s rows, `test:wasm`'s own runner abort
+when invoked). None traced to an unrelated regression — confirmed by (1)
+reproducing the identical `bigintEraseErr` stack trace this session's own
+pre-fix `node scripts/build-dist.mjs` run threw (`AST: ["()","BigInt","strf43_1"]`,
+`carrierF64` → `storedValue` → `emitElem`, `scripts/self.js`'s
+`m50_encode`/subscript-derived module), matching this ledger's own prior
+`bigint-slice1-2026-08-14`/`vec-consolidate-2026-08-13` entries' independent
+root-causing on separate clean worktrees; (2) the fix restoring the EXACT
+documented pre-regression tallies at every gate (npm test 3450/3444/0/6 —
+the `-4` from `28afd326`'s deliberate `tryByteScan` test removal, not this
+fix; test:wasm 2748/2742/0/6; test262-builtins 852/0) with zero other
+counts moving.
+
+### Gates (this session, default env, no vars set unless named)
+
+- **`scripts/build-dist.mjs`**: succeeds. `dist/jz.wasm` SHA-256
+  `11fbaaaf58030778106e7897fac501d28297082bc91ba084e006fc267e8e6029`,
+  **converges** across 2 independent builds (self-build ×2).
+- **`npm test`**: **3450 total / 3444 pass / 0 fail / 6 skip** (19668
+  assertions) — matches the task's own predicted post-fix tally exactly.
+- **`npm run test:wasm`**: **2748 total / 2742 pass / 0 fail / 6 skip**
+  (12792/12811 assertions across the two confirming runs) — matches the
+  documented pre-Slice-1 baseline exactly.
+- **`kernel-oracle`**: embedded in the `npm test` run above, 0 fail across
+  all 3 opt tiers (O0/O2/O3) for every row, including the RETIRED
+  heterogeneous-array-element row's own 3 `throws()` assertions.
+- **`kernel-parity`**: **33/33** (11 corpus entries × 3 opt levels,
+  byte-identical WAT) — embedded in the same run.
+- **`test262:builtins`**: **852 pass / 0 fail** (run standalone,
+  `node test/test262-builtins.js`) — pre-Slice-1 baseline restored.
+- **Strict-mode spot-check** (`JZ_BIGINT_STRICT=1`, native, both flow
+  classes): a `Map.set('x', 5n)`/`.get('x')` collection round-trip still
+  boxes correctly under the default env (`m.get('x') === 5n`) and throws
+  `/BigInt value at this collection/` under strict; a `cond ? BigInt(a) :
+  null` ternary-nullish merge throws `/BigInt value at this ternary-nullish/`
+  under strict — both diagnostics fire with Slice 1's own unmodified
+  wording.
+
+### Files changed
+
+`src/ir.js`, `src/compile/emit.js`, `test/_matrix.js`, `test/dyn-keys.js`,
+`test/pointers.js`, `test/inference.js`, `test/types.js`,
+`test/kernel-oracle.js`, `test/test262-builtins.js`, `test/watr.js`
+(comment only), this ledger entry. `src/compile/emit-assign.js` untouched
+(Slice 1's `arrProvenTyped` fix is orthogonal, kept as-is).
+
+### Branch / commit
+
+Worktree `scratchpad/main-stabilize`, branch `stabilize-2026-08-14`, base
+`8e4d4a86`. Landed via fast-forward merge onto `main`; branch and worktree
+deleted post-land.
+
+**Verdict:** main is green out-of-the-box again — `npm test`, `npm run
+build`, `test:wasm` all pass with zero env vars set, self-build ×2
+converges, kernel-oracle/kernel-parity clean, and `JZ_BIGINT_STRICT=1`
+still produces Slice 1's own diagnostics verbatim on every converted test
+case. The design's own end state (Slices 2-5: delete boxing entirely once
+an inference session proves the residual sites raw) is unaffected by this
+session — this is the documented interim, landed to stop the bleeding, not
+a reversal of the retirement's direction.
+

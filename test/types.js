@@ -2,7 +2,7 @@
 // intCertain lattice
 import test from 'tst'
 import { is, ok, throws, almost } from 'tst/assert.js'
-import { belowOpt, onWasi, onKernel } from './_matrix.js'
+import { belowOpt, onWasi, onKernel, withBigintStrict } from './_matrix.js'
 import { parse } from 'subscript/feature/jessie'
 import jz, { compile } from '../index.js'
 import { UNDEF_NAN, NULL_NAN } from '../interop.js'
@@ -716,11 +716,12 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it â€
 // negative-space coverage.
 test('array-destructure kind: a heterogeneous BigInt-element array literal as a call-arg is now a compile-time "collection" diagnostic (was: silently-unresolved per-index kind)', () => {
   if (onKernel()) return
+  if (onKernel()) return
   const src = `
     let g = ([a, b]) => b
     export let f = (v) => g([1, BigInt(v)])
   `
-  throws(() => compile(src, { wat: true, inspect: true }), /BigInt value at this collection/)
+  throws(() => withBigintStrict(() => compile(src, { wat: true, inspect: true })), /BigInt value at this collection/)
 })
 
 test('array-destructure behavior: typeof destructured bigint element is "bigint"', () => {

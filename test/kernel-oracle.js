@@ -42,7 +42,7 @@ import jz from '../index.js'
 import { CORPUS } from './kernel-parity.js'
 import { compileViaKernel } from './kernel-target.js'
 import { instantiate } from '../interop.js'
-import { onWasi } from './_matrix.js'
+import { onWasi, withBigintStrict } from './_matrix.js'
 
 // The oracle: the exact same source, imported as a plain ES module. Valid jz
 // source IS valid JS (export syntax, no jz-only sugar in any row below), so
@@ -534,7 +534,7 @@ test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigI
   `
   const modules = { './a.jz': `export let touch = (x) => +x`, './b.jz': bSrc }
   for (const opt of [0, 2, 3])
-    throws(() => jz(mainSrc, { modules, optimize: opt }), /BigInt value at this collection/, `O${opt}: heterogeneous BigInt array element refuses to compile`)
+    throws(() => withBigintStrict(() => jz(mainSrc, { modules, optimize: opt })), /BigInt value at this collection/, `O${opt}: heterogeneous BigInt array element refuses to compile`)
 })
 
 // ── PENDING-FIX tier: a REAL finding, not a documented tradeoff ───────────

@@ -87,6 +87,24 @@ export const HOST = process.env.JZ_TEST_HOST || 'js'
  *  callable-`run`-returns-value) can't apply, so the test should `return` early. */
 export const onWasi = () => HOST === 'wasi'
 
+/** Force the BigInt retirement diagnostic (JZ_BIGINT_STRICT=1, src/ir.js
+ *  bigintStrict()) for exactly the synchronous compile `fn` performs.
+ *  Main-stabilization interim flip (2026-08-14, .work/bigint-retirement-
+ *  design.md §9): an unprovable BigInt flow boxes by DEFAULT again (the
+ *  pre-Slice-1 behavior — any input program legitimately reaching boxing,
+ *  including watr/subscript's own bundled BigInt sites, must keep compiling
+ *  out of the box); Slice 1's own compile-time refusal is opt-in, scoped
+ *  tightly around one sync call so no concurrently-running test observes
+ *  the toggle (same discipline as test/watr.js's withRawCarrier). Tests
+ *  that pin the diagnostic's own wording/flow-class naming wrap their
+ *  compile call in this. */
+export const withBigintStrict = (fn) => {
+  const prev = process.env.JZ_BIGINT_STRICT
+  process.env.JZ_BIGINT_STRICT = '1'
+  try { return fn() }
+  finally { if (prev === undefined) delete process.env.JZ_BIGINT_STRICT; else process.env.JZ_BIGINT_STRICT = prev }
+}
+
 /** True under the self-host kernel target (test:wasm, JZ_TEST_TARGET=jz.wasm), where
  *  jz.compile routes through the jz.wasm KERNEL — jz's own pipeline compiled to wasm by
  *  jz. The kernel takes a RAW parsed AST and owns reset+jzify+prepare+compile internally,

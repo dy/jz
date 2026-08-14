@@ -25,7 +25,7 @@
  */
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import { belowOpt, onKernel, onWasi } from './_matrix.js'
+import { belowOpt, onKernel, onWasi, withBigintStrict } from './_matrix.js'
 import jz from '../index.js'
 import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
@@ -1882,12 +1882,13 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // merge's kind (bigint vs null) is only knowable at runtime, never
 // statically uniform. Converted to expect-error, not deleted.
 test('bigint∪null: kind carries through the nullish ternary arm, guards stay live [RETIRED: BigInt-or-null ternary merge is now a compile-time "ternary-nullish" diagnostic]', () => {
-  throws(() => run(`
+  if (onKernel()) return
+  throws(() => withBigintStrict(() => run(`
     export let viaTern = (a) => {
       const r = a > 0 ? BigInt(a) : null
       return r == null ? 'null' : r.toString(16)
     }
-  `, { memory: 64 }), /BigInt value at this ternary-nullish/)
+  `, { memory: 64 })), /BigInt value at this ternary-nullish/)
 })
 
 // Census completeness: bundled sub-module INITS live outside the main AST

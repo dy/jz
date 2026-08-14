@@ -425,38 +425,41 @@ export const fromI64 = n => {
 // fact (reps.js) names: an 8-byte cell holding the raw i64 payload,
 // NaN-boxed the same way every other heap kind (STRING/OBJECT/…) already is.
 
-// BigInt retirement Slice 1's own escape hatch (.work/bigint-retirement-
-// design.md §9's own instruction to re-verify how a JZ_CARRIER_BOX-style
-// build-profile gate treats the sites Slice 0 banked, unresolved: 1 jz-
-// source site — layout.js's i64Hex `bits` param — plus 4 sites in the
-// external `watr` npm dependency, node_modules/watr/src/encode.js, entirely
-// outside this repo's control). Deliberately a LIVE re-read of
-// `process.env.JZ_CARRIER_BOX`, NOT the frozen `CARRIER_BOX` import above
-// (evaluated once at ctx.js's own module-load time, before any test or
-// caller could set the env var for a single compile): the diagnostic sites
-// this gates (bigintEraseErr's own call sites, readI64's box-vs-raw check)
-// are ALL new to this slice, so they own their own gating discipline rather
-// than inheriting CARRIER_BOX's frozen-at-import contract. A caller (e.g. a
-// test harness compiling watr's own bundled source, which genuinely cannot
-// prove those 4 external sites uniform) sets `process.env.JZ_CARRIER_BOX =
-// '0'` around exactly the compile() calls that need it — every OTHER
-// CARRIER_BOX consumer (schema.js's slot census, emit.js's CONSERVATIVE
-// PAIRING runtime dispatch) is unaffected: nothing this mechanism gates
-// ever materializes a real box either way, so their own runtime tag-checks
-// (maybeUnboxBigInt) safely fall to the raw branch regardless of which
-// CARRIER_BOX reading they see.
-export const liveCarrierBox = () => typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'
+// Main-stabilization interim flip (2026-08-14, .work/bigint-retirement-
+// design.md §9's own "any input program legitimately reaching boxing must
+// keep compiling by DEFAULT" requirement): Slice 1 originally made the
+// diagnostic below fire BY DEFAULT, opting back out to the legacy box via
+// `JZ_CARRIER_BOX=0`. That broke plain `npm test`/`scripts/build-dist.mjs`
+// out of the box — Slice 0 left 5 sites banked unresolved (1 jz-source
+// site, layout.js's i64Hex `bits` param; 4 in the external `watr` npm
+// dependency; a 6th found live in `subscript`'s number.js BigInt literal
+// parser, pulled in by jessie) that the self-host kernel build and any
+// native compile of watr's/subscript's bundled source hit under the
+// default profile, with no env var set. Inverted: boxing (CARRIER_BOX,
+// frozen import above — unchanged, still the pre-Slice-1 mechanism) stays
+// the default consequence for an unprovable BigInt flow; the diagnostic is
+// now the OPT-IN, live-read via `JZ_BIGINT_STRICT=1` — a caller wanting
+// Slice 1's fail-fast behavior (e.g. a future inference session verifying
+// the residual sites are gone) sets it around exactly the compile() call
+// that needs it, same scoping discipline test/watr.js's withRawCarrier
+// already established for CARRIER_BOX itself. End state (Slices 2-5, once
+// an inference pass proves every residual site raw) flips this default and
+// deletes the box arm entirely — this is the documented interim, not the
+// design's final semantics.
+export const bigintStrict = () => typeof process !== 'undefined' && process.env?.JZ_BIGINT_STRICT === '1'
 
 /** BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§9): the
  *  SAME fixpoint that used to decide "insert a box" here
  *  (markBigintSink/bigintBoxedVerdict/needsBigintBox/isProvenBoxedBigint —
- *  unchanged, still walk the identical six kind-erasing sink shapes) now
- *  throws instead, at the exact point boxBigInt used to be called. `kind`
- *  names one of the design's six flow classes (call-arg/return/
- *  closure-capture/collection/ternary-nullish/dataview — §4's table);
- *  `who` names the binding/callee/site the table asks for. `err()` (ctx.js)
- *  appends source location + the current AST node + enclosing function
- *  automatically, so the diagnostic is actionable without extra plumbing. */
+ *  unchanged, still walk the identical six kind-erasing sink shapes) names
+ *  the flow class instead of silently boxing. `kind` names one of the
+ *  design's six flow classes (call-arg/return/closure-capture/collection/
+ *  ternary-nullish/dataview — §4's table); `who` names the binding/callee/
+ *  site the table asks for. `err()` (ctx.js) appends source location + the
+ *  current AST node + enclosing function automatically, so the diagnostic
+ *  is actionable without extra plumbing. Only reached when `bigintStrict()`
+ *  is live (opt-in, see above) — the default path boxes instead, same as
+ *  pre-Slice-1. */
 export function bigintEraseErr(kind, who) {
   err(`BigInt value at this ${kind} can't be proven a single, uniform kind (${who}) — give it one statically-provable BigInt path for its whole lifetime (arithmetic/comparison between two BigInt operands, a BigInt64Array/BigUint64Array element, or BigInt()/Number() conversion of a provably-typed source) instead of letting it cross through a dynamically-kinded slot.`)
 }
@@ -673,12 +676,13 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  a name that's ALSO a boxed param never pays the extra tag check its own
  *  static proof already made unnecessary. */
 export function readI64(node, emitted) {
-  // liveCarrierBox() (not the frozen CARRIER_BOX import): must agree with
-  // carrierF64/carrierF64Narrow's own write-side gate below, or a compile
-  // that skipped boxing (live-off) would still try to unconditionally
-  // unbox raw bits as if they were a pointer — see liveCarrierBox's own
-  // doc comment above for why this pairing is load-bearing.
-  if (liveCarrierBox() && typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node)))
+  // CARRIER_BOX (frozen import, not bigintStrict()): must agree with
+  // carrierF64/carrierF64Narrow's own write-side gate below — whether a box
+  // was actually materialized tracks CARRIER_BOX (whole-process, same as
+  // every other CARRIER_BOX consumer), never the strict-mode diagnostic
+  // toggle, which only decides refuse-vs-box at the WRITE site and never
+  // reaches this read at all when it fires (the compile already aborted).
+  if (CARRIER_BOX && typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node)))
     return unboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
@@ -757,13 +761,17 @@ export function carrierF64(node, emitted, kind = 'collection') {
   // dynamically-kinded storage positions (bridge.js storedValue's whole
   // reason to exist — object/dyn-prop store, array-elem store, Set/Map,
   // closure capture, DataView-argument all route their stored value
-  // through here). Pre-Slice-1 this boxed a proven-ambiguous BigInt value
-  // before it crossed into that slot; now it refuses to compile instead
-  // (bigintEraseErr) — same needsBigintBox proof, flipped consequence.
-  // `kind` defaults to 'collection' (the overwhelming majority of this
+  // through here). Boxes a proven-ambiguous BigInt value before it crosses
+  // into that slot (CARRIER_BOX, the pre-Slice-1 default) UNLESS
+  // bigintStrict() is live, in which case it refuses to compile instead
+  // (bigintEraseErr) — same needsBigintBox proof either way. `kind`
+  // defaults to 'collection' (the overwhelming majority of this
   // chokepoint's callers); callers with a more specific flow-class name
   // (return) pass it explicitly.
-  if (liveCarrierBox() && needsBigintBox(node)) bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
+  if (CARRIER_BOX && needsBigintBox(node)) {
+    if (bigintStrict()) bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
+    return boxBigInt(asI64(emitted))
+  }
   return asF64(emitted)
 }
 
@@ -817,7 +825,10 @@ export function carrierF64(node, emitted, kind = 'collection') {
  *  reader the unconditional fallback assumes. */
 export function carrierF64Narrow(node, emitted, kind = 'collection') {
   if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
-  if (liveCarrierBox() && typeof node === 'string' && isProvenBoxedBigint(node)) bigintEraseErr(kind, node)
+  if (CARRIER_BOX && typeof node === 'string' && isProvenBoxedBigint(node)) {
+    if (bigintStrict()) bigintEraseErr(kind, node)
+    return boxBigInt(asI64(emitted))
+  }
   return asF64(emitted)
 }
 

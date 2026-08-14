@@ -17,17 +17,15 @@ const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, impo
 // F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
 // unreachable from this repo to fix. This file compiles watr's REAL bundled
 // source through jz (not a self-hosted kernel — a native, in-process
-// compile, same mechanism), so it hits those same sites. `withRawCarrier`
-// is jz's own established JZ_CARRIER_BOX=0 escape hatch (src/ir.js's
-// liveCarrierBox — a live re-read, not the frozen ctx.js CARRIER_BOX
-// export), scoped to EXACTLY the synchronous jz()/jz.compile() call that
-// needs it: `jz()` is synchronous (never `async function`), so the whole
-// compile completes — and the env var is restored — before any `await` on
-// its result ever yields to another concurrently-running test (tst's
-// runner executes tests with real concurrency; a naive set/restore
-// spanning an `await` would race with unrelated tests expecting the
-// default CARRIER_BOX=1 diagnostic to fire). Every OTHER `jz(...)` call in
-// this file (small ad-hoc snippets, no watr/BigInt involved) is untouched.
+// compile, same mechanism), so it hits those same sites. Main-stabilization
+// interim flip (2026-08-14, src/ir.js's bigintStrict() doc comment): boxing
+// (CARRIER_BOX, frozen at process start) is the default for an unprovable
+// BigInt flow again, the Slice 1 diagnostic now opt-in via
+// JZ_BIGINT_STRICT=1 — so `withRawCarrier` no longer changes what these
+// compiles do (CARRIER_BOX can't be toggled mid-process anyway; see ir.js).
+// Left in place as a harmless no-op rather than stripped, since a future
+// inference session closing the residual sites (design §5) may want the
+// opt-in strict check re-exercised here without re-deriving this rationale.
 const withRawCarrier = (fn) => {
   const prev = process.env.JZ_CARRIER_BOX
   process.env.JZ_CARRIER_BOX = '0'
