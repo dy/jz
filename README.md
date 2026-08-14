@@ -460,22 +460,16 @@ reasons a kernel remains slower or scalar.
 </details>
 
 <details>
-<summary><strong>How does JZ compare with Porffor, AssemblyScript, etc.?</strong></summary>
+<summary><strong>How does JZ compare with Porffor, AssemblyScript, scriptc etc.?</strong></summary>
 
-- **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** emits
-  lean WASM from a typed TypeScript-like language; its source is not directly
-  executable JavaScript.
+- **[Porffor](https://github.com/CanadaHonk/porffor)** pursues full spec coverage with an engine-replacement design – interpreter-class speed, tiny binaries. JZ inverts the tradeoff: near-native speed on a typed subset. Porffor compiles JS to C/native first with WASM as a secondary target; JZ emits WASM first and lowers it to native C.
+- **[scriptc](https://github.com/vercel-labs/scriptc)** also AOT-compiles typed JS/TS without an engine (TS annotations → LLVM), embedding QuickJS only as an opt-in fallback for dynamic code. It is native-first with WASI as a target; JZ is WASM-first, infers types from idiomatic untyped JS, and keeps dynamic fallbacks inside the WASM module.
+- **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
 - **Rust, C, Zig, Go, and MoonBit** offer explicit static types and mature native
   toolchains, but require a second implementation when the source of truth is JS.
 - **[Javy](https://github.com/bytecodealliance/javy)** and
   **[ComponentizeJS](https://github.com/bytecodealliance/ComponentizeJS)** accept
   broader JavaScript by shipping an interpreter or engine inside WASM.
-- **[Porffor](https://github.com/CanadaHonk/porffor)** and
-  **[scriptc](https://github.com/vercel-labs/scriptc)** target native executables
-  rather than WASM. JZ emits WASM first and can then lower it to native C.
-
-JZ keeps the source executable and testable as JavaScript, then gets speed by
-accepting a narrower, native-style semantic contract.
 
 </details>
 
@@ -494,9 +488,7 @@ programs.
 <details>
 <summary><strong>Can JZ compile to native?</strong></summary>
 
-Indirectly. JZ emits WASM, which [WABT's
-`wasm2c`](https://github.com/WebAssembly/wabt/tree/main/wasm2c) can translate to
-C and a C compiler can turn into a native executable:
+JZ emits WASM, which [`wasm2c`](https://github.com/WebAssembly/wabt/tree/main/wasm2c) or w2c2 can translate to C and a C compiler can turn into a native executable:
 
 ```txt
 JS → JZ → WASM → wasm2c → C → clang → native
