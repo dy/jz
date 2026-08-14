@@ -14926,3 +14926,168 @@ times. Every scratch artifact this session produced (the named-kernel build
 drivers, jessie/watr/jzify repro drivers, the jz×jz goal-gate driver, every
 WAT-splice intermediate and its four breadcrumb probes) was deleted at
 session end — none committed.
+
+## [x] BigInt retirement Slice 0 — self-host kernel-source rewrite (per `.work/bigint-retirement-design.md` §5/§9)
+
+Design's own site inventory (measured 2026-08-06/08-13) re-verified against
+current tip (274b6bd8) via its own repro command (erasure-diag.js +
+bigint-boxed-stats.js against `scripts/self.js`'s 149→156-module graph,
+`.work/carrier-box-baseline.md`'s command, verbatim): **still 11 real box
+sites, same shape, module ids drifted** (`m113_assemble`→`m116_assemble`,
+`bif176_4`→`bif175_4` — pure registration-order drift, not a scope change).
+
+**Finding the design's inventory missed: 4 of the 11 sites are not jz kernel
+source.** Bisected each of the 11 by targeted rename-and-rerun (temporarily
+renaming a candidate binding, re-running the probe, checking whether the
+box-site name shifted) rather than trusting stale names, since `grep` for
+the design's own cited names (`F64_SIGN`/`F64_NAN`/`F64_QUIET`) returned
+ZERO hits anywhere in `src/`/`module/`. Root cause: `m50_encode` is
+`node_modules/watr/src/encode.js` (watr 5.7.16, an independently-versioned
+npm dependency bundled into `scripts/self.js`'s module graph via
+`assemble.js`'s `import parseWat from 'watr/parse'` — NOT vendored source
+inside this repo). Confirmed by direct experiment: temporarily renaming
+`encode.js`'s module-scope `F64_SIGN`/`F64_NAN`/`F64_QUIET` and its
+`i64.parse` local `bi` (`bif175_4`) shifted the probe's reported binding
+names 1:1; reverted, zero net change. These 4 sites (3 module-init consts +
+1 function-local feeding a `BigInt64Array` store/return) are NOT editable
+from this worktree — fixing them means a change in the separate `watr`
+GitHub repo (locally at `/Users/div/projects/watr`, out of THIS task's
+worktree/branch) plus a version-pin bump, a decision outside this slice's
+authority. **Banked, not forced** (task's own instruction: bank a conflict
+rather than force ugliness) — the remaining 7 sites ARE jz's own source:
+`src/wat/assemble.js`'s 6 module-scope BigInt consts (`NAN_PREFIX`/
+`TAG_SHIFT_BIG`/`TAG_MASK_BIG`/`AUX_SHIFT_BIG`/`SSO_BIT_BIG`/
+`OFFSET_MASK_BIG`, all used only inside `stripStaticDataPrefix`'s nested
+`shift` closure) + `layout.js`'s `i64Hex` `bits` param (shared across ~15
+call sites in `layout.js`/`ir.js`/`emit.js`/`compile/index.js`/
+`emit-assign.js`/`optimize/index.js`/`module/json.js`).
+
+**Fix 1 (landed): `assemble.js`'s 6 consts.** The consts were captured by
+`shift` (a nested arrow) across a `=>` boundary — `analyze.js`'s
+`markBigintCapture` flags ANY outer-scope BigInt name a closure references,
+module-scope or not, so simply moving the `const`s inside the OUTER function
+would NOT have fixed it (closures capture function-locals exactly the same
+way). Fix: compute each `BigInt(LAYOUT.X)` freshly, inline, at its one use
+site inside `shift`'s own body — no captured name crosses the closure
+boundary at all. Verified: `paramsBoxed`/`localsBoxed` for these 6 dropped
+to 0; `test/kernel-parity.js` 33/33 and `test/kernel-oracle.js` 13/13 clean
+in ISOLATION (this file's diff alone, no other Slice-0 change present).
+
+**Fix 2 (landed): `module/json.js`'s `le(...)` call into `i64Hex`.** A local
+closure's return kind is opaque to `inferValAtSite` (it only resolves
+literals/params/typed-element reads, not nested-call returns) — wrapped in
+`BigInt(le(...))` (a provable-BIGINT no-op, `le` already returns a genuine
+BigInt). Verified safe alone: kernel-parity 33/33, kernel-oracle 13/13.
+
+**Fix 3 (attempted, REVERTED — a load-bearing finding, not a completed
+fix): `layout.js`'s `nanPrefixHex()` + `emit.js`'s `emitTypeofCmp`, both
+`i64Hex(LAYOUT.NAN_PREFIX_BITS)` with a bare property-access argument
+(opaque to `inferValAtSite` the same way — unlike the `|`-combined sibling
+forms in the same file, which already prove raw).** Three techniques tried,
+in order, each bisected in isolation to a REAL regression before being
+dropped:
+1. `i64Hex(BigInt(LAYOUT.NAN_PREFIX_BITS))` at both call sites (the
+   `module/json.js`-style wrap). **Reverted**: reproducibly miscompiled the
+   SELF-HOSTED KERNEL for UNRELATED programs — `dict`/`ternary`
+   kernel-parity diverges (`dict O2`: native 231656B vs kernel 231551B) AND
+   kernel-oracle's `ternary BOOL|NUMBER return` returns a raw garbage
+   subnormal float (`8.487983164e-314`) instead of `false` — a genuine
+   wrong-value miscompile, not a byte-shape cosmetic diff. Bisected file-by-
+   file (assemble.js/json.js proven innocent in isolation; layout.js ALONE
+   reproduces; emit.js ALONE reproduces a DIFFERENT divergence, `boolconst`)
+   — confirms BOTH sites are independently unsafe to wrap this way. A
+   comment-only edit to the same function (zero code-shape change) does NOT
+   reproduce — ruling out "any kernel-source edit at all is unsafe" as the
+   mechanism; it's specifically an added runtime `BigInt(...)` conversion at
+   this exact site.
+2. Hoist `i64Hex(LAYOUT.NAN_PREFIX_BITS)` to a MODULE-INIT-time computed
+   EXPORTED const (`NAN_PREFIX_HEX`), unwrapped — de-duplicating the two hot
+   per-call sites into one cold one, no `BigInt()` wrap at all. This alone
+   is safe for the KERNEL (kernel-parity/oracle clean) but **broke a
+   DIFFERENT, still-live mechanism**: `test/pointers.js`'s "carrier: a boxed
+   BigInt schema field read via static dot-access unboxes to its payload"
+   pin (`.work/carrier-representation-design.md` §15/§16) — a NATIVE
+   (non-self-host) test that deliberately imports the REAL `layout.js` to
+   exercise its own export shape against the still-live (Slice 0 deletes no
+   carrier code) schema-field census machinery
+   (`slotBigintBoxedBySid`/`slotBigintProvenBySid`, `pointsTo==='ALL'`
+   poisoning). Adding a new EXPORTED binding to `layout.js` changed that
+   census and threw `Cannot mix BigInt and other types` at runtime.
+3. Same hoist, made UNEXPORTED (module-private `_NAN_PREFIX_HEX`, only
+   `nanPrefixHex()` reads it, `emit.js` calls `nanPrefixHex()` instead of
+   importing a raw constant). **Also broke the same native pointers.js
+   pin** — the schema census is sensitive to a NEW reference to
+   `LAYOUT.NAN_PREFIX_BITS` appearing ANYWHERE in `layout.js`'s own body,
+   exported or not, wrapped or not, hot-path or module-init. **Reverted to
+   the untouched original** (`layout.js`/`emit.js` both byte-identical to
+   HEAD) once this was found — no version of "touch these two sites" was
+   found safe against BOTH the self-host kernel AND the native carrier
+   schema census simultaneously, and forcing one broke the other in a way
+   the OTHER technique didn't share (ruling out a shared root cause fixable
+   by a third technique within this slice's budget).
+
+**i64Hex's `bits` param stays `bigintBoxed=true` — banked, not fixed,** for
+a documented and verified reason (not merely "ran out of time"): the ONLY
+two call sites still poisoning its cross-call-site `val` meet
+(`nanPrefixHex`/`emitTypeofCmp`) sit on a mechanism (`LAYOUT.NAN_PREFIX_BITS`
+reads) that is simultaneously (a) hot/shared self-host kernel codegen
+sensitive to ANY added runtime BigInt conversion there, however the
+computation is scheduled, and (b) the exact schema field a dedicated,
+intentional native regression test exercises via `layout.js`'s real export
+shape. Both failure modes were independently reproduced and bisected, not
+assumed. This is the same class of conflict the design's own §10 "rejected
+alternatives" anticipates for genuinely-unfixable sites — banked here
+because forcing it breaks either kernel correctness or a load-bearing
+existing test, not because a cleaner rewrite wasn't attempted.
+
+### Final site count: 11 → 5
+
+7 of 11 sites were jz's own kernel source; 6 fixed (assemble.js) + 1
+independently-improved-but-not-flipped (json.js's own flow, doesn't change
+the param verdict since the OTHER poisoning site stays); 4 of 11 sites live
+in the external `watr` npm dependency (unreachable from this repo); the
+remaining 1 (`i64Hex` param) is jz's own source but empirically unsafe to
+touch further within this slice — both banked. Re-measured via the same
+probe: `paramsBoxed: 1, localsBoxed: 4` (down from `paramsBoxed: 1,
+localsBoxed: 10` at the start of this session — the 6 assemble.js consts
+account for the entire reduction).
+
+### Gates (all measured with the OLD boxed carrier present, matching the
+design's own Slice 0 gate — no carrier deletion this slice)
+
+- Native `npm test`: **3454 total / 3448 pass / 0 fail / 6 skip** —
+  byte-for-byte the stated baseline, zero regression (this is what caught
+  Fix 3's native-side breakage; kernel-parity/oracle alone would have missed
+  it).
+- `test:wasm`: **2748 total / 2742 pass / 0 fail / 6 skip** — clean.
+- Self-build ×2 (`node scripts/build-dist.mjs`, default profile, boxed
+  carrier ON): SHA-256 `04b7ad11b02d31a82e624f78706ae12cebbd7b9576b87c8b38a4a5b924be3b0d`
+  both times — converges.
+- `test/kernel-parity.js`: **33/33** clean.
+- `test/kernel-oracle.js`: **13/13 × 3** clean (541/553 assertions per run,
+  zero flake).
+- Also verified: `scripts/selfhost-build.mjs` with `JZ_CARRIER_BOX=0`
+  (boxed-carrier machinery fully DISABLED) **succeeds** — "compiled
+  17178273 bytes in 340399 ms, wrote dist/jz.wasm" — confirming this slice's
+  actual goal (kernel compiles without needing the boxed carrier) holds
+  TODAY even with the 5 banked sites still unresolved; the boxed carrier's
+  own machinery evidently isn't hard-required for these residual sites to
+  compile successfully (Slice 1's "flip to compile error" consequence, not
+  landed here, is a separate future question for exactly these 5 sites).
+- Kernel byte-size delta: `dist/jz.wasm` 17,229,791 B vs the pre-session
+  baseline 17,229,793 B (same worktree, commit 274b6bd8, before any Slice-0
+  edit) — **2 bytes smaller**, effectively zero delta.
+
+### SHAs
+
+jz worktree: `274b6bd8` base, branch `bigint-slice0-2026-08-14`. Commit:
+`src/wat/assemble.js` + `module/json.js` + this ledger entry only —
+`layout.js`/`src/compile/emit.js` end this session byte-identical to HEAD
+(every attempted edit to them reverted, per Fix 3 above). `dist/jz.wasm`
+(self-build ×2, default profile): SHA-256
+`04b7ad11b02d31a82e624f78706ae12cebbd7b9576b87c8b38a4a5b924be3b0d` both
+times. `JZ_CARRIER_BOX=0` self-host build (diagnostic only, not shipped,
+not committed): succeeds, not SHA-pinned this session. Every scratch build
+artifact and debug instrumentation (temporary `console.error` probes in
+`src/compile/narrow.js`, since reverted) was removed before commit; `dist/`
+is gitignored and not part of the commit.
