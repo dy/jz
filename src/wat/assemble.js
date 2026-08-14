@@ -53,14 +53,6 @@ import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF
 import { staticArrayPtr } from '../../module/array.js'
 import { installHelperCounters, instrumentHelperCounter } from '../helper-counters.js'
 
-// NaN-prefix top-13-bits as BigInt — used by the static-prefix-strip pass
-const NAN_PREFIX = BigInt(LAYOUT.NAN_PREFIX)
-const TAG_MASK_BIG = BigInt(LAYOUT.TAG_MASK)
-const OFFSET_MASK_BIG = BigInt(LAYOUT.OFFSET_MASK)
-const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT)
-const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT)
-const SSO_BIT_BIG = BigInt(LAYOUT.SSO_BIT)
-
 // memory[HEAP.PTR_ADDR] holds the heap pointer only for shared memory (wasm globals are
 // per-instance — see module/core.js comment). Non-shared memory uses $__heap.
 const heapUsesMem = () => assembleView().memory.shared
@@ -1429,14 +1421,20 @@ export function stripStaticDataPrefix(sec) {
         child[1][1] -= prefix
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
+        // Computed fresh, local to this arm (not captured from an outer scope):
+        // self-host kernel-source rewrite (BigInt retirement Slice 0) — a BigInt
+        // value crossing the `shift` closure boundary as a captured NAME can't
+        // be proven raw by the self-host kernel's own fixpoint; recomputing
+        // from LAYOUT (never itself BigInt) inside the closure keeps every use
+        // local-to-body, the shape the fixpoint already proves raw.
         const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n
-        if (((bits >> 48n) & 0xFFF8n) === NAN_PREFIX) {
-          const ty = Number((bits >> TAG_SHIFT_BIG) & TAG_MASK_BIG)
+        if (((bits >> 48n) & 0xFFF8n) === BigInt(LAYOUT.NAN_PREFIX)) {
+          const ty = Number((bits >> BigInt(LAYOUT.TAG_SHIFT)) & BigInt(LAYOUT.TAG_MASK))
           if (SHIFTABLE.has(ty) &&
-              !(ty === PTR.STRING && ((bits >> AUX_SHIFT_BIG) & SSO_BIT_BIG))) {
-            const off = Number(bits & OFFSET_MASK_BIG)
+              !(ty === PTR.STRING && ((bits >> BigInt(LAYOUT.AUX_SHIFT)) & BigInt(LAYOUT.SSO_BIT)))) {
+            const off = Number(bits & BigInt(LAYOUT.OFFSET_MASK))
             if (off >= prefix) {
-              const hi = bits & ~OFFSET_MASK_BIG
+              const hi = bits & ~BigInt(LAYOUT.OFFSET_MASK)
               const newBits = hi | BigInt(off - prefix)
               child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
             }

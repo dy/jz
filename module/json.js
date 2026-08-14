@@ -1279,7 +1279,10 @@ export default (ctx) => {
       const out = [`(local.set $kp (i32.add (global.get $__jpstr) (global.get $__jppos)))`]
       let i = 0
       for (; bytes.length - i >= 8; i += 8)
-        out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(le(bytes.slice(i, i + 8)))})) (then ${fail}))`)
+        // BigInt(...) wraps le()'s already-BigInt return (no-op at runtime) so
+        // the self-host kernel's own i64Hex call-site fixpoint proves this arg
+        // BIGINT — a local helper's return kind is opaque to that inference.
+        out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(BigInt(le(bytes.slice(i, i + 8))))})) (then ${fail}))`)
       if (bytes.length - i >= 4) {
         out.push(`(if (i32.ne (i32.load ${at(i)}) (i32.const ${leNum(bytes.slice(i, i + 4))})) (then ${fail}))`)
         i += 4
