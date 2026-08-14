@@ -11150,3 +11150,358 @@ in `narrow.js` — check there before assuming a novel mechanism.
 detached HEAD). Commit: see this entry's own accompanying commit (narrow.js
 + this ledger entry, detached on 097a51d7, no Co-Authored-By).
 
+## §Region arena — `analyzeFuncForEmit`'s OWN clone-shape instances FIXED
+## (typedElem/typedLen ×2 call sites + emitFunc's schema.vars), but PROVEN,
+## by direct measurement, NOT the ceiling's dominant cost — the real
+## ~2.1 GB burn is DIFFUSE across a dozen-plus whole-program passes between
+## `narrowSignatures` and `analyzeFuncForEmit`'s own first call, a NEW,
+## unfixed pathology class this session BANKS, not chases (2026-08-13)
+
+**Task**: 0ae75f07 named the next lever precisely — audit `analyzeFuncForEmit`
+(`src/compile/index.js`) for the SAME per-call full-table-clone shape
+259cd4fc already fixed once in `emitClosureBody` and 0ae75f07 fixed once in
+`narrow.js`, before assuming a novel mechanism. Also asked: explain the
+106-vs-1427 dormant/region-live call-count asymmetry the same session
+measured but didn't investigate.
+
+**Setup note**: this chain's `scripts/self.js` had the IDENTICAL missed
+`REGION_HOOKS_ACTIVE` gate main's f670c709 fixed (`optimizeTail`'s own
+`regionHooks:` line, line 124 — unconditional, unlike the two sibling
+`front()`/`emitIR()` call sites two lines below and above, both correctly
+ternary-gated). Ported the same one-line fix here FIRST, before any other
+work — every dormant/region-live kernel this chain has built up through
+0ae75f07 inherited the SAME always-live optimizeTail wiring bug main's
+session diagnosed and fixed independently. `git diff` on this hunk is the
+identical shape as f670c709's own diff.
+
+### The clones found — real, same class, but small
+
+`analyzeFuncForEmit` (line 451) had exactly TWO whole-program-table clones,
+matching 259cd4fc's own named shape precisely:
+
+- **Entry** (was line 490/493): `ctx.types.typedElem = ctx.scope.
+  globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null` (and the
+  `typedLen` sibling) — an O(programSize) clone, paid once per function, of
+  the SAME module-global tables `emitClosureBody`'s own `MapOverlay` already
+  overlays for closures.
+- **Exit, into `funcFacts`** (was line 887/888, the function's own return):
+  `typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null` — a
+  SECOND clone of the (already-cloned) merged table, stored PERMANENTLY in
+  the `funcFacts` Map (`const funcFacts = new Map()`, populated once per
+  function, consumed later by `emitFuncs`' own driver loop) — i.e. the
+  double-clone shape 259cd4fc's own `module/function.js` miss-and-refix
+  already established as this codebase's recurring variant.
+- **A third, sibling instance found in `emitFunc`** (the function
+  `analyzeFuncForEmit`'s own output feeds): `const schemaVarsPrev = new
+  Map(ctx.schema.vars)` — a full clone of the WHOLE-PROGRAM schema-vars
+  table, saved/mutated/restored around `emitFunc`'s own param-schema
+  seeding, paid once per function in `emitFuncs`' driver loop (line ~2583).
+  Same shape as `emitClosureBody`'s own already-fixed `ctx.schema.vars`
+  clone, just in the SIBLING function 259cd4fc's own "next lead" note named
+  as worth checking.
+
+**Fix**: all three converted to `makeMapOverlay` (259cd4fc's own facade,
+this same file) — `base` = the live module-global table (confirmed frozen
+by this point: `globalTypedElem`/`globalTypedLen` last written in
+infer.js/plan/scope.js and the pre-`plan()` `pendingTypedLens` sweep,
+`schema.vars`'s own writes during `emitFunc` land in the overlay's `own`
+layer, never the base), `own` starts empty and gets this function's own
+`.set` writes exactly as before. `funcFacts.typedElem`/`typedLen` now pass
+the SAME overlay object through by reference (no second clone — nothing
+else reads or writes `ctx.types.typedElem` between one function's
+`analyzeFuncForEmit` return and the next's, verified by grep: neither
+`captureFuncInspect` nor `scanErasureSinks`, the loop's other two per-
+iteration calls, touch it). `emitFunc`'s own consumption
+(`ctx.types.typedElem = funcFacts.typedElem ? new Map(...) : null`) becomes
+a direct pass-through for the same reason.
+
+**One consumer needed real handling, not just `.get`/`.has`/`.set`**:
+`analyzeFuncForEmit`'s own load-CSE gate (`ctx.types.typedElem?.size`) is
+the ONE `.size` read on this field in the whole repo (grepped whole-repo,
+confirmed — 259cd4fc's own audit of `.get`/`.has`/`.set`/`.delete`-only
+consumers was scoped to "during closure emission"; this is the first non-
+closure consumer touched, and it has the one exception). Added
+`mapOrOverlaySize(m)` (`m.own ? m.own.size + mapOrOverlaySize(m.base) : m.size`)
+next to `makeMapOverlay` — O(1) per layer (a MapOverlay's `base` is either
+a plain Map or another overlay, same shape `get`/`has` already walk), safe
+even though `own`/`base` can share keys (only ever used as a truthy/non-
+zero gate, never compared numerically — an over-count from double-counting
+a shared key can't flip zero↔non-zero).
+
+### Gates on the fix itself — clean
+
+- **Consumer audit, one level deep**: dispatched an independent Explore
+  agent to audit every function `analyzeFuncForEmit` calls directly
+  (`strengthReduceLoopDivMod`, `narrowBoundedSquare`, `unrollRecurrence`,
+  `unrollScalarChains`, `selectArmUpdatesIn`, `peelClampedStencil`,
+  `isReassigned`, `updateRep`, `cseLoads`, `seedLocalIntConsts`,
+  `reanalyzeBody`, `analyzeBody`, `mintLoopPlans`, `mintClosureEnvPlans`,
+  `cloneRepMap`, `typedElemAux`, `freshCseName`, `isBlockBody`,
+  `returnExprs`, `censusBigintSentinelKind`) for the same program-scale-
+  clone shape, independently of this session's own read-through. Zero
+  found — every one operates on function-scoped state (this function's own
+  `body`/`locals`/`localReps`), confirming the two (three, with `emitFunc`)
+  clones above were the complete set in reach, not a partial fix.
+- **Byte-identity**: 11-program × 4-optimize-level native differential
+  (`compile()` only, git-stash toggling `src/compile/index.js` — the
+  RIGHT test per 0ae75f07's own "wrong test caught" lesson; importing
+  `test/kernel-parity.js` directly runs ITS OWN native-vs-STALE-dist
+  comparison as a side effect of import, a different and at that point
+  irrelevant signal) — **44/44 SHA-256 identical**, pre-fix vs post-fix.
+- **`npm test`**: 3436 total / 3428 pass / 2 fail (the same pre-existing
+  `interval walk`/`typed RMW` rows) / 6 skip — matches the chain's own
+  baseline exactly, once `dist/jz.wasm` is rebuilt against the fix (a naive
+  pre-rebuild run shows a THIRD, expected, self-resolving fail —
+  `kernel-parity: … dict O0: diverges` — dist/jz.wasm briefly reflecting
+  pre-fix source while native reflects post-fix; gone after rebuild, exactly
+  0ae75f07's own documented artifact, not a regression).
+- **`kernel-oracle`**: 13/13 × 3 (541 assertions each), zero flake.
+- **`kernel-parity`** (dist-based): 33/33.
+- **Self-build determinism** (dormant, ×2 independent `build-dist.mjs`
+  runs): `dist/jz.wasm` SHA-256 `348e7f01511934c881994286532bcfa3826cd6ca4f0992d2c07d3f7a9ca8ff2b`
+  both times.
+- **jessie/watr region-live-profile ×3** (native compile at
+  `{level:3, inlinePtrOffsetFast:false}`, 0ae75f07's own substitute for a
+  full region-live self-host rebuild): both programs byte-identical
+  across 3 runs each.
+
+### The goal gate: NOT met — and, measured precisely for the first time,
+### NOT because of anything inside `analyzeFuncForEmit`'s own loop
+
+Re-ran the WAT-breadcrumb phase-stamp (097a51d7's own method: O0-named
+kernel, called at runtime with the REAL O3 `optJSON`) with a MUCH finer
+breadcrumb set than either prior session used — not just the half-dozen
+phase names 0ae75f07's own table covered, but every named pass between
+`narrowSignatures` and `analyzeFuncForEmit`'s own first call, PLUS a sparse
+per-call checkpoint curve (heap-bytes at calls 1, 2, 5, 10, 20 … 2000)
+inside `analyzeFuncForEmit`'s own loop — because the coarse table alone
+couldn't distinguish "the loop itself burns ~580 MB over 106 calls" (what
+0ae75f07's own numbers implied) from "the loop enters ALREADY near the
+ceiling and only adds a little."
+
+**It's the latter — measured directly, not inferred.** Dormant, this
+session's fixed kernel, `analyzeFuncForEmit`'s own checkpoint curve:
+
+| call # | heap MB | Δ since last checkpoint |
+|---|---|---|
+| 1 | 4089.1 | — |
+| 10 | 4089.5 | 0.3 (calls 2-10) |
+| 50 | 4091.5 | ~2.0 (calls 10-50) |
+| 90 | 4095.4 | ~3.9 (calls 50-90) |
+| 98 | (trap, 4096.0) | — |
+
+Call #1 is ALREADY at 4089.1 MB — 15 MB of headroom before the loop even
+starts its first iteration. The loop's OWN cost across its 98 reached calls
+is ~6-7 MB total, not hundreds. Region-live's own curve (below) confirms
+the same shape at a lower absolute offset. **This directly falsifies the
+reading 0ae75f07's own coarser table invited** ("narrowPointerResults 3512
+MB → analyzeFuncForEmit's last call 4096 MB, therefore the loop burns
+~584 MB") — that whole delta happens BEFORE call #1, in code the coarser
+table never breadcrumbed.
+
+**Fine-grained phase table** (dormant, same kernel, one entry per named
+pass in source order — `plan()`'s own post-`narrowSignatures` sequence,
+`src/compile/plan/index.js` lines 151-199, then `compileAst`'s own post-
+`plan()` scan calls, `src/compile/index.js` lines ~2505-2519):
+
+| phase (function) | heap MB at entry | Δ |
+|---|---|---|
+| `narrowSignatures` | 1948.2 | — |
+| `narrowPointerResults` (narrowSignatures' own last internal call) | 3513.1 | +1564.9 |
+| `narrowBoolResults` | 3710.7 | +197.6 |
+| `analyzeParamDistinctness` | 3870.0 | +159.3 |
+| `observeProgramSlots` (refineSlotKindCensus, `fresh:true`) | 3871.5 | +1.5 |
+| `scanInplaceStores` | 3894.2 | +22.7 |
+| `specializeBimorphicTyped` | 3901.3 | +7.1 |
+| `speculateTypedParams` | 3930.1 | +28.8 |
+| `refineDynKeys` | 3945.4 | +15.3 |
+| `refineFieldProvenance` / `inferModuleLetTypes` | 3945.4 | +0 |
+| `analyzeSchemaSlotIntCertain` (refineSlotIntCensus) | 4005.5 | +60.1 |
+| `invalidateAllBodyFacts` | 4027.5 | +22.0 |
+| `strictBoundaryTypeCheck` / `adviseProgram` | 4027.5 | +0 |
+| *(`plan()` returns)* | | |
+| `scanDynClosureTableCandidates` | 4027.5 | +0 |
+| `scanClosureTableLatticeCandidates` | 4088.9 | +61.4 |
+| `scanImperativeClosureTableLatticeCandidates` | 4089.0 | +0.1 |
+| `analyzeFuncForEmit` call #1 | 4089.1 (4095.9 at last-reached call #98) | +0.1 |
+
+None of these dozen-plus passes is individually dominant (the largest,
+`narrowBoolResults` at +198 MB, is a fifth of the total) — the growth is
+**diffuse**, spread across every whole-program pass `plan()` runs AFTER
+`narrowSignatures` returns (its own internal fixpoint) plus `compileAst`'s
+own three post-plan closure-table scans, none of which any prior session's
+breadcrumb table covered.
+
+### Region-live, same fine-grained sweep — explains the 106-vs-1427 (now
+### 98-vs-1435) asymmetry completely: identical per-pass cost, a CONSTANT
+### head start, nothing more
+
+**Setup correction caught mid-session**: `resolveSelfhostBuild`'s own
+`regionArena` parameter, passed explicitly, does NOT retroactively make a
+kernel region-live — per its own doc, an explicit override only changes the
+derived `inlinePtrOffsetFast` OPTIMIZER gate for how THIS BUILD's own wasm
+gets optimized; the actual region-hook wiring a self-hosted kernel COMPILES
+WITH is baked in from `scripts/self.js`'s own `REGION_HOOKS_ACTIVE` literal
+at the time `resolveModuleGraph` reads the source. A first attempt at the
+region-live breadcrumb run silently built TWO dormant kernels (identical
+WAT for `front`/`emitIR`/`optimizeTail`, confirmed by a raw file diff)
+because `REGION_HOOKS_ACTIVE` was never hand-flipped for that build. Caught
+by diffing the two O0-named `.wat` files directly before trusting the
+run — the only true difference was one non-mutable `f64` global's own
+initializer (`0x0p+0` vs `0x1p+0`, i.e. the compiled representation of the
+`REGION_HOOKS_ACTIVE` literal itself; jz's compiler does NOT constant-fold
+an exported top-level binding into its ternary consumers — `regionHooks:
+REGION_HOOKS_ACTIVE ? {...} : undefined` compiles to a genuine runtime
+branch on that global in BOTH configs, not two different specializations).
+Rebuilt correctly (hand-flipped `REGION_HOOKS_ACTIVE = true` in the
+source, built, reverted immediately after) before trusting any region-live
+number below.
+
+Region-live's own fine-grained table, SAME breadcrumbs, SAME source order:
+
+| phase | dormant MB | region-live MB | Δ (dormant − region-live) |
+|---|---|---|---|
+| `narrowSignatures` | 1948.2 | 1550.1 | 398.1 |
+| `narrowPointerResults` | 3513.1 | 3114.9 | 398.2 |
+| `narrowBoolResults` | 3710.7 | 3312.5 | 398.2 |
+| `analyzeParamDistinctness` | 3870.0 | 3471.8 | 398.2 |
+| … *(every remaining row, same delta ±0.1 MB)* | | | ~398 |
+| `scanImperativeClosureTableLatticeCandidates` | 4089.0 | 3690.8 | 398.2 |
+| `analyzeFuncForEmit` call #1 | 4089.1 | 3690.9 | 398.2 |
+
+**Every single per-pass Δ is identical between configs, to within noise
+(±0.1 MB)** — narrowSignatures' own fixpoint costs +1564.9 MB dormant /
++1564.8 MB region-live, `narrowBoolResults` costs +197.6 MB in BOTH, and so
+on down the whole table. This proves none of these dozen-plus passes has
+ANY region-arena interaction — no mark/exit boundary covers any of them,
+so they cost the identical, fixed amount regardless of config. The ONLY
+difference is a **constant ~398 MB head start**, inherited from `front()`'s
+own PRE-EXISTING region boundary (parse/prepare/preEval reclaim, landed
+before this chain's own narrow.js/closure work) and carried through
+UNCHANGED across the entire `plan()` + scan sequence, arriving at
+`analyzeFuncForEmit`'s first call with exactly that much more headroom.
+
+**Inside the loop itself, the checkpoint curve is the SAME shape at a lower
+offset**, not a different (steeper or shallower) one — region-live's own
+curve (calls 1→1200: 3690.9→4001.8 MB, a modestly-accelerating ~0.03-0.4
+MB/call rate, matching dormant's own calls 1→90 rate order-of-magnitude
+for the range they overlap). The 398 MB constant head start simply lets
+the SAME curve run ~14.6× further (1435 calls vs 98) before the SAME
+4096 MB ceiling stops it — not a different mechanism, not redundant
+re-analysis, not a region-arena defect. **Verdict on the task's own named
+alternative hypotheses**: NOT re-analysis-after-exits (both configs reach
+`analyzeFuncForEmit`'s loop exactly once, per the `timePhase(profiler,
+'analyzeFuncs', …)` wrapper's own single invocation — confirmed by
+`ctx.func.list` being walked once, `func.raw` skip aside); NOT the loop
+being "restarted" (the checkpoint curve is monotone, no reset visible at
+any sampled call).
+
+### Disposition: this session's own three clones LANDED (real, same-class,
+### verified safe); the DOMINANT cost is a NEW, BANKED (not fixed) finding
+
+The typedElem/typedLen/schema.vars clones are genuine instances of
+259cd4fc's own named class, correctly converted, gated clean — kept, not
+reverted, since they're a real (if modest) improvement with zero
+measured cost and zero behavior change. But they do NOT move the ceiling
+in any way visible at this measurement's precision: the loop they live in
+was already cheap (6-7 MB total dormant, pre- or post-fix — the fix's own
+saving is too small relative to the ~2.1 GB diffuse cost upstream to
+register as a call-count change worth trusting as a "did it help" signal
+on its own).
+
+**The real frontier, precisely named for the first time**: `plan()`'s own
+post-`narrowSignatures` pass sequence (`src/compile/plan/index.js` lines
+151-199 — `narrowBoolResults`, `inferModuleGlobalValTypes2`,
+`analyzeParamDistinctness`, `refineSlotKindCensus`/`observeProgramSlots`,
+`analyzeParamNeverGrown`, `scanInplaceStores`, `specializeBimorphicTyped`,
+`specializeValKindDichotomy`, `speculateTypedParams`, `refineDynKeys`,
+`refineFieldProvenance`, `refineModuleLetTypes`,
+`refineSlotIntCensus`/`analyzeSchemaSlotIntCertain`,
+`invalidateAllBodyFacts`, `strictBoundaryTypeCheck`, `adviseProgram`) PLUS
+`compileAst`'s own three post-`plan()` closure-table scans
+(`scanDynClosureTableCandidates`, `scanClosureTableLatticeCandidates`,
+`scanImperativeClosureTableLatticeCandidates`, `src/compile/index.js`
+~2505-2519) — together burn ~2.1 GB, NONE of it inside a single dominant
+clone.
+
+**Why this is a DIFFERENT class than the clone-shape bugs already fixed
+(259cd4fc, 0ae75f07, this session's own three)**: a clone-shape bug is
+"the SAME data, needlessly re-copied on every call" — convertible to an
+overlay/index with ZERO semantic loss because the copy was pure waste. This
+is NOT that. `analyzeBody`'s own caching doc (`src/compile/analyze.js`
+line 87-96, `getFactStore().bodyFacts`) is explicit: it's "a plain Map, NOT
+a WeakMap… Strong refs are bounded by program size and dropped at the next
+reset" — a DELIBERATE, already-audited design decision (a WeakMap was
+tried and reverted for a DIFFERENT self-host arena/GC-interaction bug, ledger
+2026-07-21i) to hold every function's analysis facts alive for the WHOLE
+compile, because later passes (this same list) genuinely need them. Spot-
+checked `narrowBoolResults` (the single largest delta, +198 MB): it calls
+`analyzeBody(body)` for every eligible function — a CACHE-BACKED call
+(hits reuse the shared `bodyFacts` entry, not a fresh walk) — so its own
+marginal cost isn't "redundant work," it's the FIRST-TIME population cost
+of facts multiple later passes will legitimately reuse. Natively this is
+"real, unavoidable memory, GC would keep it alive too" — self-hosted, the
+same legitimately-necessary retention has no GC-driven early release for
+any INTERMEDIATE scratch state each pass's own tree-walk allocates and
+then discards (V8 reclaims that scratch instantly; the bump arena never
+does) — a structural "self-hosting tax" 259cd4fc's own session first
+hypothesized without measurement; this session is the first to quantify it
+(~2.1 GB, precisely phase-mapped, not a guess).
+
+**Fixing this is a different, bigger lever than "convert a clone to an
+overlay"** — it would mean either (a) scattering NEW region-arena mark/
+exit boundaries around some subset of these dozen-plus `plan()`-internal
+passes (an architectural expansion of the region-arena mechanism's own
+scope, not a mechanism-preserving conversion — exactly the kind of
+same-session structural change this campaign's own `narrow.js`/`closure`
+heisenbug history argues against attempting without a dedicated session),
+or (b) auditing each pass's OWN per-pass garbage source individually (a
+much larger undertaking, one pass at a time, than this task's own
+"analyzeFuncForEmit and one level of callees" scope). BANKED, not chased,
+per the task's own "bank precisely if it's something new" instruction.
+
+**jz×jz goal gate: NOT met.** Dormant and region-live both still trap at
+exactly 4,294,967,296 bytes (4 GiB) — this session's own three clone fixes
+are real but too small (their own tables: `globalTypedElem.size=25`,
+`globalTypedLen.size=1`, `schema.vars.size≈180`, measured natively at the
+real 2069-function jz×jz program) to move a ceiling whose dominant cost is
+~2.1 GB of diffuse, legitimately-necessary, multi-pass retention entirely
+upstream of `analyzeFuncForEmit`'s own loop.
+
+**Next session's concrete lever**: this is NOT "keep auditing
+`analyzeFuncForEmit` and its callees" (done, twice over — clean). The
+named list above (`plan()`'s dozen-plus post-`narrowSignatures` passes +
+`compileAst`'s three post-`plan()` scans) is where the next region-arena
+design session needs to look — likely starting with the single largest
+individual deltas (`narrowBoolResults` +198 MB, `analyzeParamDistinctness`
++159 MB, `scanClosureTableLatticeCandidates` (inferred, the
+`scanDynClosureTableCandidates` call immediately before it) ~+61 MB,
+`analyzeSchemaSlotIntCertain` +60 MB) as the highest-leverage individual
+targets, but note NONE of them alone gets even a quarter of the way to
+closing a 2.1 GB gap — this likely needs either a REGION BOUNDARY wrapped
+around the whole `plan()`-post-narrow + scan* sequence (one mark/exit pair,
+coarser-grained than any single pass) or accepting jz×jz needs memory64,
+not further micro-fixes.
+
+### Gates (full tally)
+
+- kernel-parity 44/44 (11 programs × O0-O3, native differential,
+  git-stash-toggled `src/compile/index.js` only): byte-identical.
+- `npm test`: 3436/3428/2 fail (pre-existing)/6 skip — matches baseline.
+- `kernel-oracle`: 13/13 × 3 (541 assertions), zero flake.
+- `kernel-parity` (dist-based): 33/33.
+- Self-build ×2 (dormant): SHA-256
+  `348e7f01511934c881994286532bcfa3826cd6ca4f0992d2c07d3f7a9ca8ff2b`, both
+  identical.
+- jessie/watr region-live-profile ×3: both byte-identical across 3 runs.
+- jz×jz goal gate: NOT met, dormant and region-live both trap at 4 GiB.
+
+**SHAs.** Worktree: `region-slice2-front` (region-final-2026-08-11 /
+0ae75f07, detached HEAD). Commit: `src/compile/index.js` (the three
+MapOverlay conversions + `mapOrOverlaySize`) + `scripts/self.js` (the
+f670c709-equivalent `optimizeTail` gate port) + this ledger entry, detached
+on 0ae75f07, no Co-Authored-By. `dist/jz.wasm` rebuilt locally for the gate
+ladder above (SHA `348e7f01…`) but NOT committed (gitignored, per this
+repo's own convention — reproducible from tracked source via `npm run
+build`).
+

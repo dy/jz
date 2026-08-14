@@ -121,7 +121,11 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.func.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
-    regionHooks: { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) },
+    // FIX (f670c709, ported 2026-08-13): same missed REGION_HOOKS_ACTIVE gate
+    // as front()/emitIR() below — this call site lost its ternary in 893821ee's
+    // squashed region-front merge while the sibling front() call two lines
+    // below kept it. See f670c709 on main for the full mechanism writeup.
+    regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
 }
 

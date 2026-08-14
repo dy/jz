@@ -487,10 +487,23 @@ function analyzeFuncForEmit(func, programFacts) {
   ctx.func.i32HashLocals = new Set()
   ctx.func.leanHashDomains = new Map()
   ctx.func.hoistTempDefs = null
-  ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
+  // MapOverlay (below emitClosureBody's own doc — same jz×jz ceiling fix,
+  // same file, a new sibling instance) — this used to be `new Map(ctx.scope.
+  // globalTypedElem)`/`new Map(ctx.scope.globalTypedLen)`, an O(programSize)
+  // full clone paid PER FUNCTION (analyzeFuncForEmit runs once per function
+  // in ctx.func.list — thousands for a bundled multi-module program), the
+  // same structural class 259cd4fc already fixed once in emitClosureBody and
+  // 0ae75f07 fixed once in narrow.js. `globalTypedElem`/`globalTypedLen`
+  // are frozen module-scope tables by this point (last written during
+  // infer.js/plan/scope.js's own passes and the pendingTypedLens sweep,
+  // all upstream of plan() — confirmed by grep, no write site downstream of
+  // here) so overlaying a live reference as `base` is safe: it can never go
+  // stale mid-loop. `own` starts empty; the param-typedCtor seeding just
+  // below writes into it via `.set` exactly like the pre-overlay code did.
+  ctx.types.typedElem = ctx.scope.globalTypedElem ? makeMapOverlay(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
-  ctx.types.typedLen = ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
+  ctx.types.typedLen = ctx.scope.globalTypedLen ? makeMapOverlay(ctx.scope.globalTypedLen) : null
 
   const _reps = paramReps.get(name)
   if (_reps) {
@@ -632,7 +645,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening
   // store writes a provably-different element (idx2 ≠ idx). Recovers the fft butterfly's redundant
   // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
-  if (_o && _o.loadCSE !== false && block && ctx.types.typedElem?.size)
+  // mapOrOverlaySize (not `.size` directly): ctx.types.typedElem is now a MapOverlay
+  // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
+  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.types.typedElem))
     cseLoads(body, n => ctx.types.typedElem.has(n), freshCseName)
 
   if (block) {
@@ -884,8 +899,16 @@ function analyzeFuncForEmit(func, programFacts) {
     leanHashLocals: new Set(ctx.func.leanHashLocals || []),
     i32HashLocals: new Set(ctx.func.i32HashLocals || []),
     leanHashDomains: new Map(ctx.func.leanHashDomains || []),
-    typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
-    typedLen: ctx.types.typedLen ? new Map(ctx.types.typedLen) : null,
+    // Pass the MapOverlay through by reference — no clone. This used to be a
+    // SECOND O(programSize) clone on top of the one at this function's own
+    // entry (same commit fixed both): ctx.types.typedElem is a fresh overlay
+    // built once per analyzeFuncForEmit call (this function's own entry,
+    // above) and never touched again after this return (this loop's other
+    // per-iteration calls — captureFuncInspect/scanErasureSinks — don't read
+    // or write it; verified by grep), so handing the SAME object to funcFacts
+    // is exactly as safe as cloning it, at O(1) instead of O(programSize).
+    typedElem: ctx.types.typedElem,
+    typedLen: ctx.types.typedLen,
     localReps: cloneRepMap(ctx.func.localReps),
   }
 }
@@ -1418,14 +1441,26 @@ function emitFunc(func, funcFacts, programFacts) {
   ctx.func.leanHashLocals = new Set(funcFacts.leanHashLocals || [])
   ctx.func.i32HashLocals = new Set(funcFacts.i32HashLocals || [])
   ctx.func.leanHashDomains = new Map(funcFacts.leanHashDomains || [])
-  ctx.types.typedElem = funcFacts.typedElem ? new Map(funcFacts.typedElem) : null
-  ctx.types.typedLen = funcFacts.typedLen ? new Map(funcFacts.typedLen)
-    : ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
+  // Same MapOverlay pass-through as analyzeFuncForEmit's own return above (this
+  // used to be a THIRD O(programSize) clone of the same table, on top of the two
+  // analyzeFuncForEmit already paid pre-fix) — funcFacts.typedElem/typedLen are
+  // either null or the exact overlay analyzeFuncForEmit built for this function,
+  // never shared with any other function's facts, safe to install directly.
+  ctx.types.typedElem = funcFacts.typedElem || null
+  ctx.types.typedLen = funcFacts.typedLen || (ctx.scope.globalTypedLen ? makeMapOverlay(ctx.scope.globalTypedLen) : null)
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
   // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
-  const schemaVarsPrev = new Map(ctx.schema.vars)
+  // MapOverlay instead of a clone (same jz×jz-ceiling fix as typedElem/typedLen
+  // above and emitClosureBody's own doc): this used to be `new Map(ctx.schema.
+  // vars)` — an O(programSize) clone of the WHOLE-PROGRAM schema table, paid once
+  // per function in emitFuncs' driver loop. `own` starts empty; the `.set` calls
+  // below (unchanged) write this function's own param-schema bindings into it;
+  // restoring below is the identical "re-point the ctx field back" the overlay
+  // doc already establishes, now O(1) instead of O(programSize) either direction.
+  const schemaVarsPrev = ctx.schema.vars
+  ctx.schema.vars = makeMapOverlay(schemaVarsPrev)
   if (_reps) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
@@ -1952,6 +1987,20 @@ function makeMapOverlay(base, own) {
     return had
   }
   return overlay
+}
+
+// O(1)-per-layer "is this table (or overlay) non-empty" truthy check — the one
+// `.size` read this codebase has on a MapOverlay-eligible field (analyzeFuncForEmit's
+// load-CSE gate; grepped whole-repo, the only such site). A plain Map's own `.size`
+// answers directly; a MapOverlay has none (own/base can diverge in count from any
+// single Map), so this sums `own.size` with a recursive read of `base` (itself either
+// a plain Map or a nested overlay, the same shape `get`/`has` already walk for nested
+// closures). Overlap between `own` and `base` can only ever OVER-count a shared key —
+// harmless for every actual consumer, which only tests non-zero-ness, never compares
+// the number itself.
+function mapOrOverlaySize(m) {
+  if (!m) return 0
+  return m.own ? m.own.size + mapOrOverlaySize(m.base) : m.size
 }
 
 /**
