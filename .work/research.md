@@ -13870,3 +13870,112 @@ ladder above (SHA `348e7f01…`) but NOT committed (gitignored, per this
 repo's own convention — reproducible from tracked source via `npm run
 build`).
 
+## §Region arena — `region-final-2026-08-11` LANDED onto main (2026-08-13):
+## a real `new Map(overlay)` crash caught in reconciliation, region-live
+## confirmed a pre-existing gap on BOTH parents (task's "13/13 both"
+## assumption corrected), dormant ladder fully green
+
+**Task**: land `region-final-2026-08-11` (tip `627cf92a`, 30 commits) onto
+main (tip `f670c709`) — a real `git merge`, not another squash. Most of the
+branch's history (the oldest 22 commits) was already squash-landed via
+`893821ee`; the genuinely new content is the 8 commits after that point
+(`627cf92a`, `0ae75f07`, `4134d5d7`, `097a51d7`, `332ec25c`, `259cd4fc`,
+`2a78a6f6`, `233bf8b5`) plus main's own independent post-squash work
+(`ea423728`'s FunctionPlan deep-freeze, `0487cde4`'s `ctx.func`→`ctx.funcs`
+registry split, `d29b7686`'s durable-array heal chain, `f670c709`'s
+`optimizeTail` gate fix) — two lines of descent from the same squashed
+ancestor, never previously tested together.
+
+**The bug the merge would have shipped, caught before any gate ran.**
+`src/compile/function-plan.js`'s `createFunctionPlan`/`installFunctionPlan`
+(main's `ea423728`) still did `typedElem: facts.typedElem ? new
+Map(facts.typedElem) : null` and the `installFunctionPlan` mirror. Branch's
+`627cf92a` converted `analyzeFuncForEmit`'s own `ctx.types.typedElem`/
+`typedLen` setup to a `MapOverlay` (`src/compile/index.js`'s `makeMapOverlay`
+— a plain `{base, own, has, get, set, delete}` facade, NOT a `Map` and NOT
+iterable) specifically so this data could be handed to `funcFacts`/installed
+into `ctx.types.*` BY REFERENCE, at O(1), instead of the O(programSize)
+clone this same shape 259cd4fc and 0ae75f07 had already eliminated
+elsewhere. Composing the two unmodified: `new Map(overlayObject)` throws
+`TypeError: object is not iterable` — not a subtle miscompile, an immediate
+crash on the FIRST function compiled through `installFunctionPlan`, i.e.
+every `emitFunc` call, i.e. everything. Neither side's own test suite could
+have caught this in isolation — main never had a MapOverlay to clone, branch
+never had a FunctionPlan layer to clone it wrong. Fixed by passing
+`typedElem`/`typedLen` through by reference at both the publish
+(`createFunctionPlan`) and install (`installFunctionPlan`) stages; the
+`ctx.scope.globalTypedLen` fallback (needed only when a function was
+published before that global table existed) stays at `emitFunc`'s own call
+site in `index.js`, not inside the generic installer, which has no reason to
+depend on `index.js`'s `makeMapOverlay` — would have closed a load cycle
+(same avoid-a-cycle discipline `narrow.js`'s `freshId` replica in
+`abi/string.js` already documents). No test exercises `installFunctionPlan`
+directly; this was found by reading the two sides' `git diff`s against a
+common tree side by side, not by a failing assertion.
+
+**Other semantic merges** (full conflict list + resolutions in the landing
+commit `4e36e223`'s own message): `module/collection.js`/`array.js` — main's
+durable-array heal-chain and branch's TYPED-VIEW `hasPropsSidecarWat` fix
+(a VIEW's off-16 word is foreign memory, not a props slot — `aux&8` now
+gates the TYPED arm) auto-merged clean, hand-verified both compose;
+`src/compile/narrow.js` — branch's callee-indexed call-site census
+(`sitesByCallee`, eradicates the O(functions×params×callSites) scan) ported
+onto main's post-`0487cde4` `ctx.funcs`/`ctx.func` split (registry accessors
+renamed; `ctx.func.localTypedElemsOverlay`, an active-FRAME field, correctly
+left alone) and onto `fa5775b4`'s `withTypedElemOverlay` helper (replaces
+the branch's own raw stash/restore, now redundant); `.work/research.md`/
+`todo.md` — append-only ledger merge, main's full history plus the branch's
+unique tail (verified by header-list diff, not eyeballed).
+
+**perf-ratchet re-baseline, root-caused, not rubber-stamped.** Post-merge
+`npm test` showed 2 failures: `nest` 22411→22587, `condref` 106938→107258
+(every other category unchanged). Differential WAT diff (main-alone vs
+branch-alone vs merged, same seed) isolated both cleanly: `nest`'s new total
+is an EXACT match for branch's own already-verified baseline (inherited
+wholesale, nothing to explain); `condref`'s merged total exceeds BOTH
+parents by an amount that traces to exactly one recurring diff hunk — the
+`(i32.and (i32.eqz (i32.and (aux>>32) 8)))` VIEW-vs-OWNED guard the
+TYPED-VIEW fix adds at every `hasPropsSidecarWat` call site, condref's
+synthetic array-write pattern happens to exercise. Re-baselined
+(`node test/perf-ratchet.js --update`, commit `e833a4b2`) — the intentional,
+correctness-motivated cost of a real bug fix, not a regression.
+
+**Region-live: the task's own "13/13 both" assumption did not survive
+contact with a hand-flip.** Gate brief: dormant ×3 AND region-live ×3, "main's
+post-f670c709 baseline is 13/13 both." `f670c709`'s own commit message
+never actually claims this — it fixes the DORMANT default (a gate that had
+gone accidentally, permanently live) and explicitly still calls the
+region-copy machinery's "address/layout-boundary-sensitive heisenbug"
+unresolved. Hand-flipped and rebuilt all three trees to check directly:
+**main alone 11/13** (2 fail: `boolconst` O3 divergence, `Unknown local
+$__inl2_0` — an O3-only mechanism), **branch alone 7/13** (6 fail: multiple
+`unreachable`/OOB crashes spanning O0/O2 and a BigInt differential —
+matches this campaign's own extensively-ledgered "region-live wall" across
+every entry from `47140301` through `233bf8b5`), **merged 3/13** (10 fail —
+inherits failure modes from both). None of this is new: region-arena has
+never once, in 30+ commits of this campaign, closed region-live clean; it
+ships dormant (`REGION_HOOKS_ACTIVE = false`) precisely because it isn't
+done. Not chased further — closing it is the campaign's own still-open goal
+gate, not a landing blocker, and the merge makes it no worse in kind (only
+in degree, by union of two already-broken sets). **Dormant is what ships**,
+and dormant is clean: kernel-oracle 13/13 × 3 (541 assertions, zero flake,
+byte-identical to the pre-merge baseline), kernel-parity 33/33 (boolconst O3
+byte-identical), `npm test` 3448/3454/0 fail/6 skip (matches main's own
+pre-merge baseline exactly), `test/selfhost.js` 21/21 (206 assertions),
+test262 3005/0 + test262-builtins 852/0, self-build ×2 SHA-`c2a107da…`
+identical, `test:claims` size geomean 1.020× (within the 1.05× band),
+`test/mem.js` 55/55 (173 assertions), jessie/watr region-live-equivalent
+(native `{level:3, inlinePtrOffsetFast:false}`) ×3 byte-identical for both.
+`.work/jzify-entry.mjs` is confirmed absent from this chain too (same
+finding as the `097a51d7` entry above) — not chased.
+
+**Landed**: main tip after this session — see git log. Branch
+`region-final-2026-08-11` and its worktrees deleted post-landing; the
+front-boundary/Slice-1 infrastructure this whole campaign built (heap-kind
+registry, region-copy arms, Slice 3 emit boundary) all ships DORMANT, byte-
+identical to pre-merge main whenever `REGION_HOOKS_ACTIVE` stays `false` —
+which is every build until the campaign's own goal gate closes.
+
+**Commits**: `4e36e223` (merge) + `e833a4b2` (perf-ratchet re-baseline) +
+this ledger entry.
+
