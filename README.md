@@ -16,6 +16,8 @@
 
 **[site](https://dy.github.io/jz/)**  /  **[try it](https://dy.github.io/jz/repl/)**  /  **[examples](https://dy.github.io/jz/examples/)**  /  **[benchmarks](https://dy.github.io/jz/bench/)**
 
+<sup>Used by: [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/audiojs/)</sup>
+
 ## Usage
 
 ```sh
@@ -74,7 +76,7 @@ jz -e "1 + 2"              # eval → 3
 <summary><code>jz --help</code></summary>
 
 ```
-jz - min JS → WASM compiler
+jz. min JS → WASM compiler
 
 Usage:
   jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
@@ -164,7 +166,7 @@ See [all examples](https://dy.github.io/jz/examples/).
 │   loose equality  instanceof  WeakMap  WeakSet                         │
 └────────────────────────────────────────────────────────────────────────┘
 
-outside the model
+not supported
   eval  Function  with  Proxy  Reflect
   property descriptors  getters/setters  live prototypes
   dynamic import  DOM  Intl  Temporal  Node APIs
@@ -177,43 +179,39 @@ outside the model
 
 - **Numbers.** Numbers are `f64`. Proven integers use `i32` and wrap at ±2³¹.
   Applying `x | 0` to an f64 with |x| ≥ 2⁶³ saturates instead of ES-wrapping.
+- **BigInt.** BigInt is a signed 64-bit integer, not arbitrary precision; it
+  wraps past its range. Security cryptography is outside the scope.
 - **Math.** Basic operations are IEEE-exact. Transcendentals use JZ's own kernels
   and may differ from the host library in their last bits. `Math.sumPrecise`
   accumulates exactly and rounds once.
-- **Strings.** Strings are UTF-8 bytes. Length, indexing, slicing, search, and
-  regular-expression positions count bytes; case conversion is ASCII-only.
-- **Objects.** Literal fields have fixed slots. Computed keys use hash storage;
-  live prototype chains and property descriptors do not exist.
+- **Strings.** Strings are UTF-8 bytes, not UTF-16. Length, indexing, slicing,
+  search, and regular-expression positions count bytes. Case conversion is
+  ASCII-only; Unicode property classes, normalization, and locale tables are
+  unsupported.
+- **Objects.** Literal fields have fixed slots; computed keys use hash storage.
+  Live prototype chains, property descriptors, accessors, Proxy, and Reflect
+  do not exist: `__proto__`, delegation, and monkey-patching are unsupported,
+  `Object.create(proto)` makes a shallow copy, method dispatch is static, and
+  traps cannot attach to compile-time struct offsets. Literal shapes are
+  fixed, so `delete o[k]` works only in dictionary mode.
+- **Dynamic keys.** Runtime boolean keys use their numeric carrier, so `o[b]`
+  reads `'1'` for `true`. Static boolean keys fold correctly.
 - **Array indices.** Indices coerce to `i32`. Plain arrays are bounds checked;
   typed arrays use raw fixed-size linear-memory access, so invalid indices can
   read unrelated memory or trap.
 - **Memory.** There is no garbage collector. Call `memory.reset()` between
-  independent allocation batches. It invalidates every previous pointer.
+  independent allocation batches; it invalidates every previous pointer.
+  WeakRef and FinalizationRegistry have nothing to observe; `WeakMap` and
+  `WeakSet` use `Map` and `Set` semantics.
 - **Generators and async.** Both lower to state machines. Jobs drain at host
   boundaries; `try` across `yield` or `await` is unsupported.
-- **Dates.** Date getters use UTC.
-- **BigInt.** BigInt is signed 64-bit, not arbitrary precision.
+- **Dates.** Date getters use UTC. Intl and Temporal are absent: ICU, CLDR,
+  and timezone tables exceed the intended module size.
+- **Runtime compilation.** `eval`, the `Function` constructor, and `with` would
+  require a compiler or interpreter at runtime.
+- **Host and legacy APIs.** DOM and Node services stay in the host. JZ omits
+  the additional legacy syntax of [ECMAScript Annex B](https://tc39.es/ecma262/multipage/additional-ecmascript-features-for-web-browsers.html).
 
-The compiler accepts these differences to keep the language statically
-compilable and its emitted modules lean. Do not compile code whose correctness
-depends on full ECMAScript edge semantics.
-
-</details>
-
-<details>
-<summary><strong>What is not supported?</strong></summary>
-
-- **Proxy and Reflect.** Traps do not apply to structs with compile-time offsets.
-- **Property descriptors and accessors.** Objects store values without `writable`, `enumerable`, getter, or setter metadata.
-- **Live prototype chains.** `__proto__`, delegation, and monkey-patching are unsupported. `Object.create(proto)` makes a shallow copy; method dispatch is static.
-- **Deleting literal properties.** Literal object shapes are fixed. Dictionary-mode `delete o[k]` works.
-- **eval, the `Function` constructor, and `with`.** These would require a compiler or interpreter at runtime.
-- **Intl and Temporal.** ICU, CLDR, and timezone tables exceed the intended module size. `Date` uses UTC.
-- **UTF-16 and Unicode tables.** Strings are UTF-8 bytes. Unicode property classes, normalization, and locale case conversion are unsupported.
-- **Arbitrary-precision BigInt.** BigInt is a signed 64-bit integer and wraps past its range. Security cryptography is outside the scope.
-- **Boolean identity in dynamic keys.** Runtime boolean keys use their numeric carrier, so `o[b]` reads `'1'` for `true`. Static boolean keys fold correctly.
-- **WeakRef and FinalizationRegistry.** There is no garbage collector to observe. `WeakMap` and `WeakSet` use `Map` and `Set` semantics.
-- **Legacy browser features, DOM, and Node APIs.** [ECMAScript Annex B](https://tc39.es/ecma262/multipage/additional-ecmascript-features-for-web-browsers.html) specifies legacy compatibility features required in web browsers; JZ omits its additional syntax. DOM and Node services stay in the host.
 </details>
 
 <details>
@@ -229,14 +227,18 @@ always-correct dynamic path.
 <details>
 <summary><strong>Can I use npm packages and ES modules?</strong></summary>
 
-Packages compile when their source fits the JZ language. Code using the DOM or
-Node APIs does not; host services must cross as imports.
+Packages compile when their source fits the JZ language. Pure numeric or
+algorithmic source may include async functions and promises; code using the
+DOM or Node APIs does not; those services cross as host imports.
 
-- Relative imports (`./dep.js`) bundle at compile time.
-- Bare package specifiers (`import { x } from "pkg"`) require the CLI's `--resolve` or source supplied via
-  `{ modules }`.
+Standard `import`/`export` syntax bundles into one WASM module at compile
+time; there is no runtime module resolution.
+
+- Relative imports (`./dep.js`) bundle from the filesystem via the CLI. In a
+  browser, fetch the sources and pass them through `{ modules }`.
+- Bare package specifiers (`import { x } from "pkg"`) require the CLI's
+  `--resolve` flag or source supplied through `{ modules }`.
 - Transitive imports work; circular imports fail at compile time.
-- There is no runtime module resolution.
 
 ```js
 const { exports } = jz(
@@ -248,20 +250,30 @@ const { exports } = jz(
 </details>
 
 <details>
-<summary><strong>How do I call host functions?</strong></summary>
+<summary><strong>Can I call into the host (functions, objects)?</strong></summary>
 
 Import from a named module in the compiled source, then provide that module
-through `{ imports }`. Functions become WASM imports; numeric constants fold.
+through `{ imports }`: a JavaScript function, constant, or whole namespace.
+Functions become WASM imports; numeric constants fold. Numbers pass directly;
+strings, arrays, and objects cross through `memory.*`.
 
 ```js
+// custom function
 jz(
   'import { log } from "host"; export const f = x => { log(x); return x }',
   { imports: { host: { log: console.log } } }
 )
 
+// whole namespace
 jz(
   'import { sin, PI } from "math"; export const f = () => sin(PI / 2)',
   { imports: { math: Math } }
+)
+
+// globalThis works too
+jz(
+  'import { parseInt } from "window"; export const f = () => parseInt("42")',
+  { imports: { window: globalThis } }
 )
 ```
 </details>
@@ -285,29 +297,40 @@ Interpolated functions become host calls. Non-serializable values such as host o
 </details>
 
 <details>
-<summary><strong>How do values cross between JS and WASM?</strong></summary>
+<summary><strong>How do I pass numbers, strings, arrays, and objects between JS and WASM?</strong></summary>
 
-Numbers cross as `f64` or `i32`. Heap values use tagged pointers internally; the
-wrapped `exports` returned by `jz()` marshal arguments and decode results:
+Numbers cross as `f64` or `i32`. Heap values use tagged pointers; `null`,
+`undefined`, and booleans use atom tags. Both use the same i64 NaN-box carrier,
+represented as `BigInt` in JavaScript; i64 preserves the NaN payload in JSC and
+Safari, which canonicalize f64 NaNs at the boundary. The carrier and the
+`_alloc`/`_clear` exports form the ABI, documented in [`layout.js`](layout.js)
+and [`test/abi.js`](test/abi.js); the [`jz:i64exp`](interop.js) custom section
+marks i64 parameters and results.
+
+The wrapped `exports` returned by `jz()` or `jz/interop`'s `instantiate()`
+marshal arguments, decode results, and convert WASM throws to `Error` objects:
 
 ```js
 const { exports } = jz`
   export const greet = s => s.length
   export const dist = p => (p.x * p.x + p.y * p.y) ** 0.5
   export const point = (x, y) => ({ x, y })
+  export const rgb = c => [c, c * 0.5, c * 0.2]
   export const sum = a => { let n = 0; for (const x of a) n += x; return n }
 `
 
-exports.greet('hello')                       // 5
-exports.dist({ x: 3, y: 4 })                 // 5
-exports.point(3, 4)                          // { x: 3, y: 4 }
-exports.sum(new Float64Array([1, 2, 3]))      // 6
+exports.greet('hello')                   // 5
+exports.dist({ x: 3, y: 4 })             // 5
+exports.point(3, 4)                      // { x: 3, y: 4 }
+exports.rgb(100)                         // [100, 50, 20]
+exports.sum(new Float64Array([1, 2, 3])) // 6
 ```
 
-For raw `instance.exports` calls, `memory.String`, `.Array`, typed-array methods,
-and `.Object` allocate on the WASM heap and return a pointer; `memory.read`
-decodes a raw result. Object keys must match a compiled schema. Numeric arrays
-of at most eight elements may return as WASM multi-values.
+For raw `instance.exports` calls, `memory.String`, `.Array`, typed-array
+methods, and `.Object` allocate on the WASM heap and return a pointer;
+`memory.read(ptr)` decodes a raw result. Keys passed to `memory.Object()` must
+match a compiled schema; key order does not matter. Numeric arrays of at most
+eight elements return as WASM multi-values.
 
 </details>
 
@@ -498,9 +521,5 @@ language and built-in tests, benchmark checks, and a self-host build.
 Adoption is ejectable: remove the JZ build step and the source remains JavaScript.
 
 </details>
-
-## Used by
-
-[**color-space**](https://github.com/colorjs/color-space), [**audiojs**](https://github.com/audiojs/)
 
 [MIT](LICENSE). [ॐ](https://github.com/krishnized/license/)
