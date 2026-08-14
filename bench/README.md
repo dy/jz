@@ -293,7 +293,8 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` (built with `--no-tail-call` — see the Native-lane note above) |
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only (no SIMD support, so it self-gates out of any vectorized case); set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `porf-native` | Porffor (git-main 2026 rewrite — an AOT engine through its own C backend, no wasm target): `porf native <case>-flat.js <bin>`, then the standalone binary is measured — its shipping artifact, the native-band sibling of `shermes`. The engine-style `porf <file>` run mode measures its in-process compiler alongside the workload and ships nothing, so it has no lane |
+| `porf-native` | Porffor (git-main 2026 rewrite — an AOT engine through its own C backend, no wasm target): `porf native <case>-flat.js -o <bin>`, then the standalone binary is measured — its shipping artifact, the native-band sibling of `shermes`. The engine-style `porf <file>` run mode measures its in-process compiler alongside the workload and ships nothing, so it has no lane |
+| `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
 | `javy` | Javy (`javy build` — JS in embedded QuickJS) when installed — fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
@@ -352,7 +353,8 @@ SPIDERMONKEY_BIN=/path/to/js \
 SHERMES_BIN=/path/to/shermes \
 GRAALJS_BIN=/path/to/graaljs \
 PORF_BIN=/path/to/porf \
-node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf
+SCRIPTC_BIN=/path/to/scriptc \
+node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native,scriptc
 ```
 
 ## Reading the numbers (darwin/arm64, M-class)
@@ -653,7 +655,10 @@ JS-to-native-binary compilers can actually swallow these programs —
 `shermes` (Static Hermes, AOT via LLVM) first, `porf-native` (Porffor's 2026
 rewrite, AOT via its own C backend) second — as rows on the three lab cases,
 to show the scale of what a full JS→native toolchain does with real
-programs rather than microbenchmarks. `shermes` is not installed on the
+programs rather than microbenchmarks. *(Update 2026-08-14: scriptc now
+ships on npm and is wired as a real `scriptc` lane (static TS/JS AOT via
+LLVM, no engine), presence-gated like `shermes`; the reading above stays as
+the record this section's verdicts were measured under.)* `shermes` is not installed on the
 reference machine (no local hermes checkout; building it needs the LLVM
 toolchain from source — out of scope for a one-off row) and the target
 already gates cleanly off when the binary is absent (`available: () =>

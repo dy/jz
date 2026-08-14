@@ -55,6 +55,9 @@ const MOONBIT_LIB = join(LIB, 'bench.mbt')
 const BUN_BIN = process.env.BUN_BIN || 'bun'
 const DENO_BIN = process.env.DENO_BIN || 'deno'
 const SHERMES_BIN = process.env.SHERMES_BIN || 'shermes'
+// scriptc (vercel-labs) — TS/JS → native AOT (TypeScript-checker typing + LLVM,
+// C fallback lane; no engine unless --dynamic). npm: `npm i -g scriptc`.
+const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
@@ -63,13 +66,15 @@ const JSC_BIN = process.env.JSC_BIN || ''
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
 const PORF_GIT = '/Users/div/projects/porffor/porf'
 const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_GIT) ? PORF_GIT : 'porf')
-// Porffor's 2026 rewrite ("pre-alpha 1", git main) replaced the CLI: no `run` subcommand,
+// Porffor's 2026 rewrite (git main) replaced the CLI: no `run` subcommand,
 // no --allocator-chunks (the new allocator sizes itself). Probe the version once and pick
 // the invocation shape, so both the npm release (0.61.x) and a git checkout work.
+// The rewrite stamps itself "pre-alpha N" and, since 2026-08, "alpha N" — the
+// npm 0.61.x line prints a bare version number, so (pre-)alpha is the discriminator.
 let _porfNew = null
 const porfIsNew = () => {
   if (_porfNew === null) {
-    try { _porfNew = /pre-alpha/.test(execSync(`${PORF_BIN} --version 2>&1 || true`, { encoding: 'utf8', shell: true })) }
+    try { _porfNew = /\b(pre-)?alpha\b/.test(execSync(`${PORF_BIN} --version 2>&1 || true`, { encoding: 'utf8', shell: true })) }
     catch { _porfNew = false }
   }
   return _porfNew
@@ -363,6 +368,7 @@ const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
+const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
 const rustPath = c => join(caseBuild(c), `${c.id}-rust`)
 const goPath = c => join(caseBuild(c), `${c.id}-go`)
 const zigPath = c => join(caseBuild(c), `${c.id}-zig`)
@@ -529,17 +535,33 @@ const compileJzSelfIsolated = c => {
 
 const writeFlat = c => {
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
+// Ambient shell globals, declared so TS-checked AOT hosts (scriptc) resolve the
+// bare names: a no-initializer top-level var never overwrites an existing
+// global (JSC's preciseTime, SpiderMonkey's print survive), and hosts that
+// define none read undefined instead of erroring at the typeof probes below.
+var print, preciseTime, dateNow
+// console stays a property store (unlike the var-bound shims below): AOT hosts
+// (scriptc) ship console natively so this branch never runs there, and a var
+// binding would shadow their builtin with an untyped alias behind dynamic fences.
 if (typeof __benchGlobal.console === 'undefined' && typeof print === 'function') __benchGlobal.console = { log: print }
 // Timer: JSC's shell exposes high-res preciseTime() (seconds) but a Spectre-clamped
 // performance.now (~0.2ms) — too coarse for µs kernels; prefer preciseTime where present
 // (JSC, SpiderMonkey). Else the engine's own performance.now, else dateNow / Date.now.
-if (typeof preciseTime === 'function') __benchGlobal.performance = { now: () => preciseTime() * 1000 }
-else if (typeof __benchGlobal.performance === 'undefined') __benchGlobal.performance = { now: typeof dateNow === 'function' ? dateNow : () => Date.now() }
-// Shell engines (jsc) ship no Web encoding APIs; the compiler-class cases
-// (jz/watr) encode strings to UTF-8 bytes. Full UTF-8, not ASCII-only.
-var TextEncoder = __benchGlobal.TextEncoder, TextDecoder = __benchGlobal.TextDecoder
+// Shims install as top-level var bindings, never globalThis property stores:
+// AOT hosts (scriptc) seal globalThis against expando writes (reads are fine),
+// and in shells a top-level var IS the same global binding.
+var performance = __benchGlobal.performance
+if (typeof preciseTime === 'function') performance = { now: () => preciseTime() * 1000 }
+else if (!performance) performance = { now: typeof dateNow === 'function' ? () => dateNow() : () => Date.now() }
+`
+  // Shell engines (jsc) ship no Web encoding APIs; the compiler-class cases
+  // (jz/watr) encode strings to UTF-8 bytes. Full UTF-8, not ASCII-only.
+  // Emitted only when the program references the names: dead weight for the
+  // kernels, and the class-into-untyped-var shape sits outside scriptc's
+  // static tier — a kernel must not fail an AOT host over a shim it never calls.
+  const textCodecShim = `var TextEncoder = __benchGlobal.TextEncoder, TextDecoder = __benchGlobal.TextDecoder
 if (typeof TextEncoder === 'undefined') {
-  TextEncoder = __benchGlobal.TextEncoder = class {
+  TextEncoder = class {
     encode(s) {
       const b = []
       for (let i = 0; i < s.length; i++) {
@@ -553,7 +575,7 @@ if (typeof TextEncoder === 'undefined') {
       return new Uint8Array(b)
     }
   }
-  TextDecoder = __benchGlobal.TextDecoder = class {
+  TextDecoder = class {
     decode(u) {
       u = u instanceof Uint8Array ? u : new Uint8Array(u.buffer || u, u.byteOffset || 0, u.byteLength ?? undefined)
       let s = '', i = 0
@@ -570,9 +592,10 @@ if (typeof TextEncoder === 'undefined') {
   }
 }
 `
+  let body = ''
   let src = readFileSync(c.js, 'utf8')
   if (src.includes('../_lib/benchlib.js')) {
-    out += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
+    body += readFileSync(join(LIB, 'benchlib.js'), 'utf8').replace(/\bexport let\b/g, 'const') + '\n'
     src = src.replace(/import\s+\{[^}]+\}\s+from\s+['"]\.\.\/_lib\/benchlib\.js['"]\s*\n?/g, '')
   }
   if (/^\s*import\b/m.test(src)) {
@@ -589,11 +612,11 @@ if (typeof TextEncoder === 'undefined') {
       mainFields: ['module', 'main'], conditions: ['import'],
       logLevel: 'silent',
     })
-    writeFileSync(flatPath(c), out + r.outputFiles[0].text)
-    return
+    body += r.outputFiles[0].text
+  } else {
+    body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
-  out += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
-  writeFileSync(flatPath(c), out)
+  writeFileSync(flatPath(c), out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') + body)
 }
 // esbuild is a devDependency used only by the flat-file writer for module-graph
 // cases — loaded lazily so plain corpus runs never touch it.
@@ -848,15 +871,40 @@ const targets = {
   // and links a standalone binary (cc/clang, -flto) — the rewrite's shipping
   // artifact, native-band sibling of shermes. (The engine-style `porf <file>`
   // run mode measures its in-process compiler alongside the workload and ships
-  // nothing, so it isn't showcased.) Rewrite CLI only.
+  // nothing, so it isn't showcased.) Rewrite CLI only — the alpha (2026-08)
+  // dropped the positional output for `-o`.
   'porf-native': {
     name: 'Porffor → native (porf native)',
     available: () => has(PORF_BIN) && porfIsNew(),
     bin: porfNatPath,
     run: c => tryRun('porf-native', c, () => {
       writeFlat(c)
-      execFileSync(PORF_BIN, ['native', flatPath(c), porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+      execFileSync(PORF_BIN, ['native', flatPath(c), '-o', porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
     }, [porfNatPath(c)]),
+  },
+  // scriptc (vercel-labs) — TS/JS AOT via the TypeScript checker + LLVM, the
+  // native-band sibling of shermes/porf-native. Static by default: NO embedded
+  // engine (quickjs-ng ships only under --dynamic, which this lane deliberately
+  // never passes — the row measures the engine-less shipping artifact, and a
+  // case its static tier can't swallow records an honest fail). Constructs
+  // outside its LLVM tier fall back to its C emitter on native targets — still
+  // static, still this lane (a stderr note names the construct).
+  scriptc: {
+    name: 'scriptc → native (static)',
+    available: () => has(SCRIPTC_BIN),
+    bin: scriptcBinPath,
+    run: c => tryRun('scriptc', c, () => {
+      writeFlat(c)
+      // scriptc drives bare `clang` from PATH with no flag passthrough, so
+      // macSysrootArgs' fix rides in as env instead: SDKROOT pins the real SDK
+      // and CLANG_NO_DEFAULT_CONFIG drops Homebrew LLVM's baked config, whose
+      // stale -isysroot (a nonexistent CLT MacOSX<ver>.sdk) overrides SDKROOT.
+      // A user-set SDKROOT passes through untouched.
+      const env = macSysrootArgs.length && !process.env.SDKROOT
+        ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
+        : process.env
+      execFileSync(SCRIPTC_BIN, ['build', flatPath(c), '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
+    }, [scriptcBinPath(c)]),
   },
   graaljs: {
     name: 'GraalJS',
@@ -1054,7 +1102,8 @@ const TARGET_CMDS = {
   jsc: 'jsc <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
-  'porf-native': 'porf native <case>-flat.js <case>-porfnat  (AOT via C, cc -flto) → run binary',
+  'porf-native': 'porf native <case>-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
+  scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
   'rust-wasm': 'rustc --target wasm32-wasip1 -C opt-level=3 <case>.rs → node (V8 wasm)',
@@ -1535,7 +1584,16 @@ if (JSON_PATH) {
       watr: JSON.parse(readFileSync(join(ROOT, 'node_modules/watr/package.json'), 'utf8')).version,
       node: process.version,
       asc: has('asc') && ver('asc'),
-      porffor: has(PORF_BIN) && ver(PORF_BIN),
+      // Porffor's own --version stamps its last release commit, not the checkout's
+      // HEAD — append the actual git HEAD when PORF_BIN lives in a checkout, so
+      // the evidence names the exact compiler that produced it.
+      porffor: has(PORF_BIN) && (() => {
+        const v = ver(PORF_BIN)
+        if (!v || !PORF_BIN.includes('/')) return v
+        try { return `${v} [git ${execFileSync('git', ['-C', dirname(PORF_BIN), 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim()}]` }
+        catch { return v }
+      })(),
+      scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
       clang: has('clang') && ver('clang'),

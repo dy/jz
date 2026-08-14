@@ -77,7 +77,7 @@ button:disabled:hover { background: var(--paper); color: var(--ink); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 #honest { margin-top: 0; padding: 96px 0 56px; text-align: center; }
 #honest p { max-width: none; }   /* full-width so the centered text lands on the column centre, aligned with the button */
-/* .report (the CTA chip) is the shared component in assets/site.css — reused verbatim by the landing's sponsor call */
+/* .report (the CTA chip) is the shared component in assets/site.css, reused verbatim by the landing's sponsor call */
 .runall { margin: 0; display: flex; gap: 12px; align-items: center; font-size: 12.5px; flex-wrap: wrap; }
 #globalstat { color: var(--mid); }
 
@@ -283,6 +283,7 @@ const TARGETS = {
   go:    { label: 'Go', sub: 'native', band: 'native', hatch: true },
   shermes: { label: 'Static Hermes', band: 'native', hatch: true },
   'porf-native': { label: 'Porffor', sub: 'native', band: 'native', hatch: true },
+  scriptc: { label: 'scriptc', sub: 'native', band: 'native', hatch: true },
   numpy: { label: 'NumPy', band: 'native', hatch: true },
 }
 // One-line engine descriptions — surfaced as the per-row label tooltip so the chart
@@ -314,6 +315,7 @@ const DESC = {
   go: 'Go native binary (gc).',
   shermes: 'Static Hermes – JavaScript ahead-of-time compiled to a native binary.',
   'porf-native': 'Porffor’s `porf native` – JS AOT-compiled through its C backend into a standalone native binary (its shipping artifact).',
+  scriptc: 'scriptc (vercel-labs) – TS/JS AOT-compiled to a static native binary via the TypeScript checker + LLVM; no embedded engine (its --dynamic island is never used here).',
   numpy: 'NumPy – vectorized C kernels driven from Python.',
 }
 // Per-target source file — each row links to the exact implementation it measured, so you
@@ -323,7 +325,7 @@ const REPO = 'https://github.com/dy/jz/blob/main/bench'
 // limitation to fix, so the row links to a search of that project's issues for the error (find the
 // existing report, or file one from there). jz's own targets point back at jz.
 const REPOS = {
-  'porf-native': 'CanadaHonk/porffor', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
+  'porf-native': 'CanadaHonk/porffor', scriptc: 'vercel-labs/scriptc', as: 'AssemblyScript/assemblyscript', javy: 'bytecodealliance/javy',
   moonbit: 'moonbitlang/core', 'go-wasm': 'golang/go', go: 'golang/go', tinygo: 'tinygo-org/tinygo',
   'zig-wasm': 'ziglang/zig', zig: 'ziglang/zig', 'rust-wasm': 'rust-lang/rust', rust: 'rust-lang/rust',
   graaljs: 'oracle/graal', spidermonkey: 'mozilla/gecko-dev', shermes: 'facebook/hermes', jawsm: 'wasmerio/wasmer',
@@ -331,7 +333,7 @@ const REPOS = {
 }
 const SRC_EXT = {
   v8: '.js', deno: '.js', bun: '.js', jsc: '.js', spidermonkey: '.js', graaljs: '.js',
-  'porf-native': '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
+  'porf-native': '.js', scriptc: '.js', javy: '.js', jawsm: '.js', shermes: '.js', jz: '.js', 'jz-wasmtime': '.js', 'jz-w2c': '.js', 'jz-w2c2': '.js',
   as: '.as.ts', 'rust-wasm': '.rs', rust: '.rs', 'c-wasm': '.c', nat: '.c',
   'go-wasm': '.go', go: '.go', tinygo: '.go', 'zig-wasm': '.zig', zig: '.zig',
   moonbit: '.mbt', wat: '.wat', numpy: '.npy.py',
