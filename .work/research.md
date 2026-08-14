@@ -13979,3 +13979,194 @@ which is every build until the campaign's own goal gate closes.
 **Commits**: `4e36e223` (merge) + `e833a4b2` (perf-ratchet re-baseline) +
 this ledger entry.
 
+## §Region arena — REGION MACHINERY SOUND: `__region_relocate_props`
+idempotency root-caused and fixed — region-live kernel-oracle 3/13 → 13/13 ×3,
+dormant unaffected, both self-builds converge, jessie/watr/jzify-entry
+region-live ×3 clean (2026-08-14)
+
+**Task**: re-triage the merged tree's region-live gap (905095c8, oracle 3/13,
+down from main-alone's pre-merge 11/13 per the landing entry's own
+measurement) and attack the banked `4134d5d7` trigger (bare BigInt array
+literal `[1n]`, O1, trapping inside `__dyn_get_t_h`'s durable-ARRAY off-16
+read) at the engine level. Worktree `git worktree add ... 905095c8`, branch
+`regionlive-wall-2026-08-13`.
+
+### Re-triage (905095c8, `REGION_HOOKS_ACTIVE` hand-flipped true, fresh
+`npm run build`, `node test/index.js kernel-oracle`, 3/3 deterministic)
+
+| row | shape | mechanism |
+|---|---|---|
+| kernel-parity O0 (`fromnested`, unlabeled row 11) | `memory access out of bounds`; leaf stack `wasm-fn[1291]←[1289]←[9]` | dyn-props stale-value family |
+| kernel-parity O2 (`subviewtyped`, unlabeled row 9) | `unreachable`; named-kernel trace: `__alloc←__alloc_hdr_n←__region_copy_rec←__region_copy_rec←__region_relocate_props←(inlined __region_exit)←m123_index$compile←compileSelf` | **same family, root-caused directly** (see below) |
+| kernel-parity O3 (`boolconst`) | WAT size divergence (native 1994B vs kernel 1844B), not a crash | pre-existing, independently-catalogued O3 `fusedRewrite`/ptr-helper-inline mechanism (`scripts/self.js`'s own header history) — **closed as a side effect of this session's fix** (confirmed post-fix, not independently re-diagnosed as identical; plausible the kernel's own compile of `boolconst` was silently mis-compiling under the same stale-value corruption rather than crashing on it) |
+| kernel-oracle agree O0 (`fromnested`, "KERNEL FAIL ROW") | OOB | same family |
+| kernel-oracle agree O2 (`dynkey`) | `unreachable` | same family |
+| kernel-oracle agree O3 (`dynkey`) | `unreachable` | same family |
+| audit-#16 BigInt module-ordering differential | `unreachable` | same family |
+| ternary BOOL\|NUMBER return | OOB | same family |
+| console.log string constants (heap O2) | OOB | same family |
+| **bare BigInt array-element return** (`[1n]`, O1 — the banked `4134d5d7` trigger) | OOB | same family, **the row this session started from** |
+| fold, subnormal literal, PENDING-FIX generic-scalar-decl | — | pass (unaffected) |
+
+**Merge-widening confirmed, not composed-of-two-sound-halves**: the merge's
+3/13 (vs main-alone's pre-merge 11/13) is the SAME underlying mechanism now
+reachable on more corpus shapes — not two independently-sound states
+composing into more exposure. `4134d5d7`'s own entry already predicted this
+("code-size delta... shifts WHICH corpus shape trips the SAME underlying
+relocator defect") — re-confirmed here directly via the named-kernel trace
+below, not by inference.
+
+### Root cause
+
+`__region_relocate_props` (module/core.js) relocates a per-receiver dyn-props
+HASH's contents and memoizes `original bits → final bits` in `$memo` — but a
+receiver's dyn-props VALUE can legitimately be relocated from **two
+independent places** in one `__region_exit` call: (a) `regionArmArray`/
+`regionArmObject`'s `durableDynProps`/`ephemeralDynProps` arms
+(layout-kinds.js), reached via the normal `__region_copy_rec(root)` walk for
+any receiver actually reachable from the region root, and (b) — the actual
+gap this session closed — receivers that are DURABLE (`off < __heap_reset`)
+but **not reachable from root at all**: compiler-internal registries
+(module-scope `{}`/`Map` state the self-hosted kernel populates while
+compiling, never threaded through `[ast, ctx.funcs.list, ctx.module,
+ctx.schema, ctx.closure]`). `__dyn_set`'s global-table fallback
+(module/collection.js) mints a FRESH per-receiver props HASH for such a
+receiver's first runtime write, keyed by its own stable offset in the global
+`$__dyn_props` table — and the old `__region_exit` code copied that value
+bit-for-bit, unconditionally, precisely because nothing else ever visits
+these receivers. Once `__region_exit`'s own closing `memory.copy(mark, T,
+size)` reclaims the round's churn, that never-relocated value dangles; a
+later durable-receiver read (`__dyn_get_t_h`'s off-16/`$__dyn_props` path)
+retrieves it and dereferences reclaimed memory — matching the campaign's own
+mechanism-(b) framing exactly (stale pointer to reclaimed memory, on the
+DURABLE side).
+
+**The fix is not "walk `$__dyn_props` once more" — it's making
+`__region_relocate_props` itself idempotent.** Two failed iterations before
+landing on this, both empirically caught by the oracle (never silently
+shipped):
+
+- **v1** (route every `$__dyn_props` entry's value through
+  `__region_relocate_props` unconditionally in `__region_exit`, mirroring
+  the "durable container / ephemeral payload" idiom `regionArmArray`'s own
+  durable branch already uses): **regressed even `kernel-parity O0`'s
+  simplest row (`sum`)**, previously clean. Root cause: for a receiver
+  reachable from root, `durableDynProps`/`ephemeralDynProps` ALREADY
+  relocate-and-write-back that exact `$__dyn_props` entry's value DURING the
+  root walk (which runs before this new code, unchanged). The value my new
+  code then reads back out of the table is not the original bits but the
+  ALREADY-relocated (T-relative, not-yet-physically-landed) final address —
+  `$memo` only maps original→final, so re-presenting the final bits as fresh
+  input is a memo MISS, and `__region_relocate_props` decodes them as a live
+  pointer, reading whatever un-landed bytes currently sit there as cap/n —
+  garbage, eventually tripping `__alloc`'s wraparound guard (`unreachable`).
+- **v2** (guard: only relocate entries whose KEY is durable, `< mark`, on
+  the theory that an ephemeral (`>= mark`) key means `ephemeralDynProps`
+  already re-filed it under a new offset this round): reduced but did not
+  close the regression (`kernel-parity O0` moved from failing at row 1
+  (`sum`) to row 2 (`math`)) — the heuristic cannot distinguish "durable key,
+  never touched" from "durable key, value ALREADY updated in place by
+  `durableDynProps` this round" (a root-reachable durable receiver's KEY
+  never changes, so both cases look identical by key alone). Confirmed via a
+  fresh named (`names:true`, no `wat:true`) kernel build + direct instance
+  probe on the isolated `math` corpus source: real symbolicated stack
+  `__alloc ← __alloc_hdr_n ← __region_copy_rec ← __region_copy_rec ←
+  __region_relocate_props ← closure2951 (inlined __region_exit) ←
+  m123_index$compile ← compileSelf` — `__region_relocate_props` called
+  DIRECTLY from the (inlined) new `__region_exit` code, not reached via a
+  `__region_copy_rec` frame first, confirming the double-relocation theory
+  directly rather than by inference.
+- **v3 (landed)**: `__region_relocate_props`'s ephemeral branch now
+  self-maps its own OUTPUT in `$memo` (`$memo[out] = out`, right beside the
+  existing `$memo[bits] = out`), making the function idempotent under
+  re-application to EITHER its original input OR its own prior output,
+  regardless of caller or ordering — the general fix, not a caller-side
+  workaround. `__region_exit`'s `$__dyn_props` handling reverts to the
+  simple, unconditional per-entry relocation (no key heuristic needed): the
+  "container ephemeral → rebuild" / "container durable → walk in place"
+  structural split stays (mirrors every other kind's arm in this file), but
+  every entry's value is now routed through `__region_relocate_props`
+  unconditionally — a value already relocated by the root walk is a cheap
+  memo hit, not a double-relocation; a value whose receiver is
+  durable-but-unreached — the actual gap — gets its first and only
+  relocation right here.
+
+### Fix
+
+`module/core.js` only, two changes:
+1. `__region_relocate_props`'s ephemeral branch: one extra
+   `__map_set($memo, i64.reinterpret_f64($out), i64.reinterpret_f64($out))`
+   right after the existing `$memo[bits]=$out` — the idempotency self-map.
+2. `__region_exit`'s `$__dyn_props` implicit-root block: restructured from
+   "only touch the table when its OWN backing block needs to physically
+   move, and copy every entry's value bit-for-bit" to "always inspect the
+   table (guarded only on `$__dyn_props != 0`), and route every entry's
+   value through `__region_relocate_props` unconditionally" — plus
+   `__region_relocate_props` added to `__region_exit`'s own `deps()` array
+   (previously only pulled in by the array/object dyn-props arms, which are
+   REGION_HOOKS_ACTIVE-reachable-only anyway, so this was always latent, not
+   a new leak).
+
+Both functions are unconditionally dead code in a dormant build
+(`REGION_HOOKS_ACTIVE=false`): `__region_exit` is only ever CALLED from
+`src/front.js`'s `regionHooks`-gated call sites, so `__region_relocate_props`
+(only reachable from `__region_exit`, `__region_copy_rec`'s HASH arm, and
+itself) is never pulled into a dormant compile's stdlib graph at all — this
+session's fix is provably inert whenever the campaign's own default ships.
+
+### Gates
+
+- **Region-live kernel-oracle: 13/13 × 3** (541 assertions each,
+  deterministic) — **UP from 3/13**, closes every row in the re-triage table
+  above, including the previously-separate-looking `boolconst O3` divergence.
+- **Region-live kernel-parity: 33/33** (three optimize tiers × 11 CORPUS
+  programs) — clean.
+- **Region-live jessie/watr/jzify-entry ×3** (via the self-hosted
+  `dist/jz.wasm`'s own `default` export, matching `test/kernel-target.js`'s
+  `compileViaKernel` ABI — real region-live compiles, not a native-flag
+  proxy): jessie 108,058 B / SHA `008e9316ffcc…` ×3 identical; watr 342,589 B
+  / SHA `fc901acc49f6…` ×3 identical; jzify-entry 616,517 B / SHA
+  `87bd6e2942f0…` ×3 identical.
+- **Region-live self-build ×2**: SHA-256 `de77ee815…` both times — converges.
+- **Dormant kernel-oracle: 13/13 × 3** (541 assertions each) — unchanged.
+- **Dormant kernel-parity: 33/33** — unchanged.
+- **Dormant `npm test`: 3454 total / 3448 pass / 0 fail / 6 skip** —
+  byte-for-byte the documented pre-session baseline, zero regression.
+- **Dormant self-build ×2**: SHA-256 `db3140bfd…` both times — converges.
+  (Not diffed byte-for-byte against a separately-retained pre-fix dormant
+  SHA — per this task's own gate note, a `module/*.js` WAT-template change
+  can legitimately move dormant output; here it provably does NOT, since
+  both touched functions are unreachable when `REGION_HOOKS_ACTIVE=false`,
+  confirmed by direct call-graph inspection of `src/front.js`'s own
+  `regionHooks` wiring — dormant suites green + self-build convergence is
+  the correct substitute gate, exactly as anticipated.)
+- `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
+  (`git diff scripts/self.js` clean at commit time).
+
+### Declaration
+
+**REGION MACHINERY SOUND — per-pass boundaries unblocked.** Both configs
+hit their own gate bar (13/13 ×3, dormant and region-live) from a single,
+root-caused engine fix with no special-casing — the first time this campaign
+has closed the region-live wall rather than moving or narrowing it. Six
+prior mechanisms across this campaign closed the same way (O2 dyn-props
+sidecar triad, `__region_relocate_props`'s missing KEY-field relocation,
+`funcIdx` skew, the header-materialization class, `closure4232`'s
+ephemeral-HASH reuse, the SET/MAP not-yet-valid-pointer wall) — this is the
+seventh, and the first to reach the campaign's own stated finish line on
+both configs simultaneously.
+
+### SHAs
+
+jz worktree: `905095c8` base, this session's only source commit is
+`module/core.js` (the fix) plus this ledger entry, on branch
+`regionlive-wall-2026-08-13`. watr: unchanged (`node_modules/watr` resolved
+via the worktree's own `npm ci`, registry `5.7.16`, untouched this session).
+Dormant `dist/jz.wasm` (self-build ×2): SHA-256
+`db3140bfd1847b4c2ef710da72e5123172db0dfba4cb1707d6ec324475e8414e` both
+times. Region-live `dist/jz.wasm` (self-build ×2): SHA-256
+`de77ee81506d4d2f3bf0db7d726b4f38fe250bf11634f2f715b8dacb86f0cc30` both
+times. `REGION_HOOKS_ACTIVE` reverted to `false` before every gate that
+reflects what ships; every `.work/*.mjs` scratch probe/build script this
+session produced was deleted at session end (gitignored, never staged).
+

@@ -86,7 +86,7 @@ export default (ctx) => {
     // registers core before collection), so a plain array would eagerly bake
     // in `false` and permanently under-declare.
     __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n',
-      ...(ctx.scope.globals.has('__dyn_props') ? ['__ptr_offset', '__coll_order', '__ihash_set_local'] : [])],
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__ptr_offset', '__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
     // longer gated on __dyn_props — a bare PTR.HASH region-root value
     // (regionArmHash, layout-kinds.js) reaches this helper independently of
@@ -935,42 +935,81 @@ export default (ctx) => {
       ;; exact "container's own backing store straddling the boundary" hazard
       ;; already fixed for dirty/snapshots (research.md §Region arena), just a
       ;; DIFFERENT global that inventory sweep missed. Relocate it here,
-      ;; unconditionally, the same way: __coll_order + reinsert (a relocated
-      ;; i32-offset KEY needs a rehash — __map_hash-family hashing is bits-
-      ;; based, same reasoning as the SET/MAP branch above). Keys are plain
-      ;; numbers (immediate, never relocate) and values are per-array props
-      ;; HASH pointers (out of Slice-1 scope, never relocated by this
-      ;; mechanism — same as arrGrow's headerPropsCopyIR, which also copies
-      ;; this exact pointer kind verbatim) — copied bit-for-bit, NOT recursed
-      ;; through __region_copy_rec (which would hit its deliberate HASH trap).
+      ;; unconditionally: __coll_order + reinsert when the CONTAINER itself is
+      ;; ephemeral (a relocated i32-offset KEY needs a rehash — __map_hash-
+      ;; family hashing is bits-based, same reasoning as the SET/MAP branch
+      ;; above; the offset keys here are always immediate/plain numbers though,
+      ;; so a verbatim key copy is fine either way).
+      ;;
+      ;; VALUE relocation (root-completeness fix, .work/research.md §Region
+      ;; arena — "durable-ARRAY off-16 heisenbug", the [1n]/O1 minimal trigger):
+      ;; every entry's VALUE is a per-receiver props HASH — __dyn_set's global-
+      ;; table fallback (module/collection.js) mints one FRESH each time a
+      ;; DURABLE receiver (off < __heap_reset) gets a first runtime dyn-prop
+      ;; write, keyed by the receiver's own stable offset. That receiver is
+      ;; very often NOT itself part of the region root (a compiler-internal
+      ;; registry — module-scope {}/Map state the self-hosted kernel populates
+      ;; while compiling, never threaded through [ast, ctx.funcs.list,
+      ;; ctx.module, ctx.schema, ctx.closure]) — so __region_copy_rec's own
+      ;; per-kind arms (regionArmArray/regionArmObject's durableDynProps/
+      ;; ephemeralDynProps blocks, layout-kinds.js) never visit it and never
+      ;; relocate ITS value. The value used to be copied bit-for-bit here
+      ;; regardless (old comment: "never relocated by this mechanism... same
+      ;; as arrGrow's headerPropsCopyIR" — true for a plain GROW, which never
+      ;; reclaims anything, but NOT sound here: this function's own closing
+      ;; memory.copy(mark, T, size) below reclaims exactly the range an
+      ;; unvisited ephemeral value lives in). Fixed by routing EVERY entry's
+      ;; value through __region_relocate_props unconditionally — safe
+      ;; (idempotent) regardless of whether the root walk above already
+      ;; touched this exact receiver: __region_relocate_props now self-maps
+      ;; its own output in $memo (see that function's own comment), so a
+      ;; value durableDynProps/ephemeralDynProps already relocated this round
+      ;; is a cheap memo hit here, not a double-relocation, and a value
+      ;; whose receiver is durable-but-unreached — the actual gap — gets its
+      ;; first and only relocation right here.
       ${ctx.scope.globals.has('__dyn_props') ? `
       (local.set $dpBits (i64.reinterpret_f64 (global.get $__dyn_props)))
-      (if (i32.and
-            (f64.ne (global.get $__dyn_props) (f64.const 0))
-            (i32.ge_u (call $__ptr_offset (local.get $dpBits)) (local.get $mark)))
+      (if (f64.ne (global.get $__dyn_props) (f64.const 0))
         (then
           (local.set $dpOff (call $__ptr_offset (local.get $dpBits)))
           (local.set $dpCap (i32.load (i32.sub (local.get $dpOff) (i32.const 4))))
-          (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
-          (local.set $dpOutPhys (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dpNewOff)))
-          (local.set $dpOrd (call $__coll_order (local.get $dpOff) (local.get $dpCap) (i32.const ${MAP_ENTRY})))
-          (local.set $dpN (global.get $__coll_order_n))
-          (block $ded (loop $del
-            (br_if $ded (i32.ge_s (local.get $dpI) (local.get $dpN)))
-            (local.set $dpSlot (i32.load (i32.add (local.get $dpOrd) (i32.shl (local.get $dpI) (i32.const 2)))))
-            (drop (call $__ihash_set_local (i64.reinterpret_f64 (local.get $dpOutPhys))
-              (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 8))))
-              (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 16))))))
-            (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
-            (br $del)))
-          ;; NO old-site forwarding stub (boundary-arithmetic audit, window B —
-          ;; see regionArmArray's comment, layout-kinds.js, for the full
-          ;; mechanism). $__dyn_props is a GLOBAL, not a value threaded through
-          ;; a caller — the ONLY live reference to this table is the global
-          ;; itself, healed directly on the next line; nothing else could ever
-          ;; hold the old address to chase, stub or no stub. $dpOutPhys is only
-          ;; valid to DEREFERENCE right now (T-relative staging), never to keep.
-          (global.set $__dyn_props (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $dpNewOff) (local.get $delta))))))
+          (if (i32.ge_u (local.get $dpOff) (local.get $mark))
+            (then
+              ;; container ephemeral (created/grown this round) — rebuild fresh,
+              ;; relocating each value as it's reinserted.
+              (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+              (local.set $dpOutPhys (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dpNewOff)))
+              (local.set $dpOrd (call $__coll_order (local.get $dpOff) (local.get $dpCap) (i32.const ${MAP_ENTRY})))
+              (local.set $dpN (global.get $__coll_order_n))
+              (block $ded (loop $del
+                (br_if $ded (i32.ge_s (local.get $dpI) (local.get $dpN)))
+                (local.set $dpSlot (i32.load (i32.add (local.get $dpOrd) (i32.shl (local.get $dpI) (i32.const 2)))))
+                (drop (call $__ihash_set_local (i64.reinterpret_f64 (local.get $dpOutPhys))
+                  (i64.reinterpret_f64 (f64.load (i32.add (local.get $dpSlot) (i32.const 8))))
+                  (i64.reinterpret_f64 (call $__region_relocate_props (f64.load (i32.add (local.get $dpSlot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+                (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
+                (br $del)))
+              ;; NO old-site forwarding stub (boundary-arithmetic audit, window B —
+              ;; see regionArmArray's comment, layout-kinds.js, for the full
+              ;; mechanism). $__dyn_props is a GLOBAL, not a value threaded through
+              ;; a caller — the ONLY live reference to this table is the global
+              ;; itself, healed directly on the next line; nothing else could ever
+              ;; hold the old address to chase, stub or no stub. $dpOutPhys is only
+              ;; valid to DEREFERENCE right now (T-relative staging), never to keep.
+              (global.set $__dyn_props (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $dpNewOff) (local.get $delta)))))
+            (else
+              ;; container durable (stable address, never moves) — walk every
+              ;; occupied slot in place, relocating (only) its value.
+              (local.set $dpI (i32.const 0))
+              (block $dedD (loop $delD
+                (br_if $dedD (i32.ge_s (local.get $dpI) (local.get $dpCap)))
+                (local.set $dpSlot (i32.add (local.get $dpOff) (i32.mul (local.get $dpI) (i32.const ${MAP_ENTRY}))))
+                (if (i64.ne (i64.load (local.get $dpSlot)) (i64.const 0))
+                  (then
+                    (f64.store (i32.add (local.get $dpSlot) (i32.const 16))
+                      (call $__region_relocate_props (f64.load (i32.add (local.get $dpSlot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))
+                (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
+                (br $delD)))))))
       ` : ''}
       (local.set $size (i32.sub (global.get $__heap) (local.get $T)))
       (memory.copy (local.get $mark) (local.get $T) (local.get $size))
@@ -1104,6 +1143,20 @@ export default (ctx) => {
       (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
       (local.set $out (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
       (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+      ;; Idempotency self-map (fixes a real double-relocation hazard, .work/
+      ;; research.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
+      ;; root cause): memo only ever mapped ORIGINAL bits -> final bits, so a
+      ;; SECOND caller that re-derives $out (not $propsF) and calls this function
+      ;; AGAIN on it — e.g. a durable receiver's off-16/$__dyn_props slot that a
+      ;; DIFFERENT relocation pass already wrote the final (T-relative, not yet
+      ;; physically landed) address into — got a memo MISS, decoded $out as if
+      ;; it were a live pointer, and read whatever un-landed bytes happen to sit
+      ;; at that not-yet-valid address as its cap/n (garbage, eventually tripping
+      ;; __alloc's wraparound guard downstream). Self-mapping here makes calling
+      ;; this function on EITHER the original bits OR its own prior output a safe
+      ;; memo hit, regardless of caller or ordering — the general fix, not a
+      ;; caller-side workaround.
+      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $out)) (i64.reinterpret_f64 (local.get $out))))
       (local.set $i (i32.const 0))
       (block $qd (loop $ql
         (br_if $qd (i32.ge_s (local.get $i) (local.get $cap)))
