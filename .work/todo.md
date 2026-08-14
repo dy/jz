@@ -6,6 +6,29 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## Region arena front boundary — SET/MAP rebuild timing bug FOUND+FIXED,
+## a SECOND wall (CLOSURE cellOff corruption) found behind it — 2026-08-12
+Full account: `.work/research.md §Region arena`'s "REAL WALL FOUND+FIXED"
+entry. Landed (`layout-kinds.js`, `module/collection.js`, `module/core.js`,
+region-final-2026-08-11 branch): `__region_copy_rec`'s SET/MAP rebuild
+hashed a relocated STRING/BIGINT key through its not-yet-valid LOGICAL
+(post-move) pointer instead of the still-safe ORIGINAL one — fixed via a
+new `$__map_set_h`/`$__set_add_h` prehashed-insert pair. Closes the WHOLE
+synthetic multi-module family (5–47 chained modules, 100% clean, was
+non-monotonic 5/10 ok, 12/14/15/17 fail, 16/18 ok before). jessie/watr/
+jzify-entry/jz×jz still trap — now ~8× faster, inside `__region_relocate_
+cell` (CLOSURE boxed-cell side path): a SECOND wall, diagnosed (cellOff
+garbage, e.g. 1.2 GB > total memory) but not root-caused. Also found
+kernel-oracle's own 9/13 fail under a GENUINELY region-live build is
+PRE-EXISTING (verified byte-for-byte against unmodified 47140301) — no
+prior session's "13/13 green" claim was ever tested with the hooks
+actually hand-flipped live, the exact gap 8bed8c3f warned the next session
+about. Dormant regression: `npm test` 3428/3436 (2 known flakes),
+`JZ_TEST_TARGET=jz.wasm` 2725/2731 (0 new fail) — fix is fully inert
+dormant. `REGION_HOOKS_ACTIVE` left `false` (dormant, unchanged default).
+Next: reuse the SAME trap-frame+debug-global method on `__region_relocate_
+cell`/`regionArmClosure`, one level deeper (per-slot ring, not last-call).
+
 ## `arr[arr.length] = x` KERNEL-CODEGEN CLASS — FOUND AND FIXED (a general
 ## NATIVE miscompile, not a self-host-only divergence) — 2026-08-12
 Investigated the class bba45c0d's own "region arena" entry (`.work/
@@ -11438,3 +11461,121 @@ future session.
 loops}.js`, `src/compile/emit.js`, `module/{typedarray,array,object,
 atomics,collection}.js`, `.work/ctxfunc-survey.md`). This entry — ledger
 follow-up commit, `.work/todo.md` only.
+
+## Status (2026-08-12, REGION ARENA FRONT BOUNDARY / SLICE 2 — ATTEMPTED,
+## WALL BANKED, nothing landed). Full account: `.work/research.md §Region
+## arena`'s "FRONT BOUNDARY (Slice 2) ATTEMPTED" entry.
+
+Task: build the region design's Slice 2 (mark before parse/jzify, exit
+after prepare, root = the prepared AST) — the design's own next lever after
+Slice 1 (fixpoint-round region, DONE + measured on `main`: watr −50%,
+jzify-entry FAIL→OK, jz×jz unchanged by design, still needs Slices 2+3).
+
+**Seam**: `src/front.js`'s `frontHalf()`, optional `regionHooks` param
+mirroring `scripts/self.js`'s existing `optimizeTail` precedent for the
+round boundary — `mark()` before `parse()`, `exit(mark, root)` right after
+`prepare()`, before `preEval`.
+
+**Two real bugs found+diagnosed** (both correctly root-caused, both left
+unlanded since the deeper wall makes fixing them pointless until it closes):
+`ctx.func.list` is NOT durable across this boundary despite starting as
+`reset()`'s `[]` (this compiler's single-block ARRAY layout reallocates
+wholesale on first grow past starting capacity — no separate backing
+pointer to relocate, the WHOLE container moves); `ctx.module.imports` is
+read by `compile()`'s very first loop and was missing from every root
+tried.
+
+**The wall: compiler-internal closures cannot cross ANY region boundary
+with `__region_copy_rec` as it exists today.** `module/core.js`'s
+per-compile init (called once every `prepare()`, not once per process)
+mints `ctx.schema.register`/`find`/`idOf`/… (~15 accessor closures over
+fresh per-call `byKey`/`byProp` Maps), `ctx.module.include`, `ctx.closure.
+make`/`call` — all read deep into analyze/compile/emit, all freshly boxed
+during the exact ephemeral span Slice 2 needs to reclaim. Including them in
+root traps unconditionally (CLOSURE's region-copy arm is a deliberate,
+by-design trap — "env length isn't recoverable from a bare CLOSURE box at
+runtime," not a coverage gap); excluding them lets `__region_exit`'s
+closing `memory.copy` silently reclaim their backing memory (confirmed via
+breadcrumb-global instrumentation: `__region_exit` itself always completes
+cleanly; the OOB always fires downstream, inside `compile()`'s first touch
+of whatever ctx state wasn't rooted) — a genuine, deterministic
+use-after-free, not the CLOSURE trap firing. Reproduces on `compile('')`,
+the simplest possible input, at every opt level including O0 — not an
+optimizer interaction, a structural gap.
+
+**Disposition**: reverted clean. `git diff` against `0d089b49` (this
+branch's tip) is empty in the shared tree — `src/front.js`/`scripts/
+self.js` back to exact pre-session content, all debug instrumentation
+(temporary breadcrumb globals in module/core.js) removed. Rebuilt:
+SHA-256 `f961b9b1062d8e8cb…`, matches the already-verified `0d089b49`
+artifact exactly (independent re-derivation, not a new claim).
+`kernel-oracle` 13/13 (493 assertions) re-run on the reverted build as a
+sanity check — clean, matching the documented baseline; rest of the ladder
+inherited unmodified since no source changed. Memory watermarks unchanged
+from the existing `MEMORY-CURVE-MEASURED` record (nothing new to measure —
+Slice 2 didn't land).
+
+**Recommendation**: two real paths forward, both bigger than one session —
+(1) a real CLOSURE region-copy arm (needs a capture-count/env-length side
+table, `layout-kinds.js`'s own CLOSURE-trap comment already names this as
+future, bounded work); (2) restructure `prepare()` so per-compile module
+registration completes before the mark (a pre-scan deciding every module
+the source needs, registered upfront) instead of scattered lazily
+throughout the whole walk. Either one, once landed, closes the
+`ctx.func.list`/`ctx.module.imports` findings for free.
+
+**Commits**: none to the shared tree's compiler source (worktree discarded
+at session end). This entry + `.work/research.md`'s matching append only.
+
+## Status (2026-08-12, REGION ARENA FRONT BOUNDARY — REBASED ONTO MAIN,
+## LANDED: the narrower wall is DEAD). Full account: `.work/research.md
+## §Region arena`'s "FRONT BOUNDARY REBASED ONTO MAIN, LANDED" entry.
+
+Task: rebase `region-final-2026-08-11` onto main (`14c4f7a2`, which had
+independently landed the whole round-boundary/Slice-1 hardening chain —
+watchpoint, temporal bisection, the SW stale-pointer fix, the memory curve,
+the native `arr[arr.length]=x` fix), re-apply cf6ad0b1's own banked front-
+boundary patch (nothing survived to re-apply — re-implemented from its own
+doc), re-test the two wall-halves (captures-closure, dyn-prop-write).
+
+**Rebase**: 7 commits replayed, 3 conflicts (one real code conflict in
+`module/core.js` — a phantom edit-vs-delete on `__region_copy_rec`'s
+already-superseded hand-written body, resolved by deleting the stale tail;
+two pure divergent-append ledger conflicts, resolved by concatenation).
+Clean, zero markers left, `node --check` clean on every touched `.js`.
+
+**Front boundary re-wired**: `src/front.js`'s `frontHalf` gains an optional
+`regionHooks` param (mark before `parse()`, exit after `prepare()`, root =
+`[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`, all five
+rebound from the exit's return); `scripts/self.js`'s `front()` wires it,
+matching `optimizeTail`'s own already-proven `regionHooks` idiom exactly.
+
+**Both wall-halves DEAD, not just the dyn-prop half the task suspected**:
+cf6ad0b1's own captures-closure repro (`(a) => { let g = (x) => x + a;
+return g(1) }`) and dyn-prop-write repro (`let d={}; d['a']=1`) both compile
+clean at O0/O2/O3 on the rebased+re-wired kernel, plus 14c4f7a2's own
+`arr[arr.length]` 2-level-chain repro and the closest analog to the REAL
+bba45c0d shape (`ctx={closure:{table:[],envMeta:[]}}` sibling push+indexed-
+append) — 18/18 green. Ablated `ctx.schema` out of the root to check
+whether the mechanism is genuinely doing work (not a no-op): still 18/18
+green — the specific `ctx.schema` load-bearing-ness cf6ad0b1 reported did
+NOT reproduce post-rebase (recorded as an open, non-blocking loose end, not
+chased further — the dist/jz.wasm SHA differs between the two ablation
+builds, confirming the arm compiles differently either way, so the
+mechanism itself is live, just not narrowly pinned down to `ctx.schema`
+specifically for these repros).
+
+**Full ladder green**: kernel-oracle 13/13 (541 assertions) ×3, kernel-
+parity 33/33, the 200-seed fuzz gate (+7 sibling typed-array/loop-bound
+suites) ×3 — 0 findings every run — native suite 3428/3430 (2 pre-existing
+known-banked flakes only). Memory watermarks: small-source 1.7 MiB, jzify-
+entry holds at 1398.1 MiB (well under 4 GiB), jz×jz still blocked
+(`unreachable` ~13.9s in, matching the prior watermark session's own
+non-OOM signature — NOT a regression, Slice 3/emit-boundary is the named
+remaining prerequisite, not attempted this session).
+
+**Fix-or-bank: LANDED** (not banked) — the front boundary is live on
+`region-final-2026-08-11`, committed alongside this entry.
+
+**Commits**: `src/front.js`, `scripts/self.js` (region-hooks wiring) + this
+entry + `.work/research.md`'s matching append.

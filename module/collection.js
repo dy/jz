@@ -1340,7 +1340,7 @@ export default (ctx) => {
     __ihash_get_local: ['__map_hash'],
     __ihash_set_local: () => ['__map_hash', '__alloc_hdr_n', '__mkptr', '__zomb_scan', ...slotLogDeps()],
     __dyn_get_t: ['__dyn_get_t_h', '__str_hash', '__is_str_key', '__to_str'],
-    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen'],
+    __dyn_get_t_h: ['__ihash_get_local', '__str_eq', '__is_nullish', '__hash_get_local_h', '__str_arr_idx', '__str_byteLen', '__ptr_aux'],
     __dyn_get: ['__dyn_get_t', '__ptr_type'],
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: ['__dyn_get_t_h', '__hash_get_local_h'],
@@ -1353,10 +1353,10 @@ export default (ctx) => {
       ? ['__dyn_get_t_h', '__hash_get_local_h', '__ext_prop']
       : ['__dyn_get_t_h', '__hash_get_local_h'],
     __dyn_get_or: ['__dyn_get'],
-    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx'],
+    __dyn_set: ['__hash_new', '__hash_new_small', '__ihash_get_local', '__ihash_set_local', '__hash_set_local', '__ptr_offset', '__ptr_offset_fwd', '__is_nullish', '__str_eq', '__is_str_key', '__to_str', '__arr_set_idx_ptr', '__str_arr_idx', '__ptr_aux'],
     __dyn_move: ['__ihash_get_local', '__ihash_set_local', '__is_nullish'],
     __hash_del_local: () => ['__str_hash', '__str_eq', '__ptr_type', ...relogDeps()],
-    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx'],
+    __dyn_del: ['__hash_del_local', '__ihash_get_local', '__is_nullish', '__is_str_key', '__to_str', '__str_arr_idx', '__ptr_aux'],
     __str_arr_idx: ['__str_byteLen', '__char_at'],
     __coll_clear: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd'],
   })
@@ -2533,10 +2533,26 @@ export default (ctx) => {
   // durable-receiver policy's sidecar-check (__dyn_get_t_h, __dyn_del) must gate
   // on this SAME explicit set, not the broader "not HASH" the global-table probe
   // uses (that probe is a safe opaque off-keyed hash lookup for any type).
-  const hasPropsSidecarWat = (typeExpr) =>
+  //
+  // TYPED is NOT uniformly header-carrying: only an OWNED typed array (aux&8==0)
+  // is allocated via __alloc_hdr_n and gets a real propsPtr@-16 slot (module/
+  // typedarray.js's copyFromTyped/plain-length ctor arms, core.js's TYPED-OWNED
+  // region arm). A VIEW (aux&8, e.g. `new T(buf, off, len)` or `.subarray()`) is
+  // a bare 16-byte descriptor allocated via plain `__alloc(16)` (layout-kinds.js
+  // regionArmTyped's own doc: "[0]byteLen [4]dataOff [8]rootOff [12]reserved",
+  // no header) — off-16 of a VIEW's descriptor is whatever memory happened to
+  // precede it in the bump arena, NOT a props slot. Treating it as one (the
+  // original bug here) both misreads garbage as a props pointer AND, on write,
+  // clobbers 8 bytes of unrelated heap data with a props-hash pointer — observed
+  // natively as a deterministic `memory access out of bounds` a few stores later
+  // (.work/research.md §Region arena, __region_relocate_props durable dyn-props
+  // WRITE-path root cause). A VIEW must fall through to the global $__dyn_props
+  // table (keyed by offset) exactly like CLOSURE/shifted-ARRAY/static-OBJECT do.
+  const hasPropsSidecarWat = (typeExpr, objExpr) =>
     `(i32.or (i32.eq ${typeExpr} (i32.const ${PTR.ARRAY}))
        (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.OBJECT}))
-         (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.TYPED}))
+         (i32.or (i32.and (i32.eq ${typeExpr} (i32.const ${PTR.TYPED}))
+                           (i32.eqz (i32.and (call $__ptr_aux ${objExpr}) (i32.const 8))))
            (i32.or (i32.eq ${typeExpr} (i32.const ${PTR.SET}))
                    (i32.eq ${typeExpr} (i32.const ${PTR.MAP}))))))`
   const schemaKeyEq = (storedKey, userKey) => ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
@@ -2737,7 +2753,7 @@ export default (ctx) => {
         ;; runtime). Root≠0 guards the post-_clear stale-marker case (the
         ;; wiped table must not be probed through a null root). Receivers
         ;; without a header slot keep the unconditional bloom+probe path.
-        (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
+        (if (i32.and ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
             (local.set $props (i64.load (i32.sub (local.get $off) (i32.const 16))))
             ;; a shifted ARRAY's word holds forwarding bytes (not 0, not
@@ -2837,10 +2853,12 @@ export default (ctx) => {
             (br $haveProps)))
         ;; Other header types (TYPED/SET/MAP) carry propsPtr at off-16
         ;; directly, bypassing the global __dyn_props hash — again only when
-        ;; ephemeral.
+        ;; ephemeral. TYPED only when OWNED (aux&8==0) — a VIEW's off-16 is
+        ;; foreign memory, not a header slot (see hasPropsSidecarWat's doc).
         (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16))
                 (i32.ge_u (local.get $off) ${heapResetWat()}))
-              (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+              (i32.or (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+                                (i32.eqz (i32.and (call $__ptr_aux (local.get $obj)) (i32.const 8))))
                 (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                         (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
           (then
@@ -3150,8 +3168,15 @@ export default (ctx) => {
         (drop (call $__hash_set_local (local.get $obj) (local.get $key) (local.get $val)))
         (return (local.get $val))))
     ;; TYPED/SET/MAP header sidecar — ephemeral only (durable-receiver policy).
+    ;; TYPED only when OWNED (aux&8==0): a VIEW's off-16 is foreign memory, not
+    ;; a header slot — writing a props pointer there clobbers whatever precedes
+    ;; the VIEW's bare 16-byte descriptor in the bump arena (see
+    ;; hasPropsSidecarWat's doc, .work/research.md §Region arena). Falls
+    ;; through to the global-table path below instead, same as CLOSURE/shifted
+    ;; ARRAY/static OBJECT.
     (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16)) (i32.ge_u (local.get $off) ${heapResetWat()}))
-          (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+          (i32.or (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+                            (i32.eqz (i32.and (call $__ptr_aux (local.get $obj)) (i32.const 8))))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                     (i32.eq (local.get $type) (i32.const ${PTR.MAP})))))
       (then
@@ -3206,7 +3231,7 @@ export default (ctx) => {
     ;; DURABLE off-16 word masks it back out (i64.and -2).
     (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16))
                           (i32.lt_u (local.get $off) ${heapResetWat()}))
-                 ${hasPropsSidecarWat('(local.get $type)')})
+                 ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')})
       (then
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i32.or (i64.eqz (local.get $oldProps))
@@ -3312,7 +3337,7 @@ export default (ctx) => {
                 (local.set $props (call $__ihash_get_local (local.get $root) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $off)))))
                 (if (i32.eqz (call $__is_nullish (local.get $props)))
                   (then (local.set $hit (i32.or (local.get $hit) (call $__hash_del_local (local.get $props) (local.get $key))))))))))
-        (if (i32.and ${hasPropsSidecarWat('(local.get $type)')} (i32.ge_u (local.get $off) (i32.const 16)))
+        (if (i32.and ${hasPropsSidecarWat('(local.get $type)', '(local.get $obj)')} (i32.ge_u (local.get $off) (i32.const 16)))
           (then
             (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
             (if (i32.eq
@@ -3338,9 +3363,12 @@ export default (ctx) => {
         (local.set $oldProps (i64.and (i64.load (i32.sub (local.get $off) (i32.const 16))) (i64.const -2)))
         (if (i64.eqz (local.get $oldProps)) (then (return (local.get $hit))))
         (return (i32.or (local.get $hit) (call $__hash_del_local (local.get $oldProps) (local.get $key))))))
-    ;; Other header types (TYPED/HASH/SET/MAP) — ephemeral only.
+    ;; Other header types (TYPED/HASH/SET/MAP) — ephemeral only. TYPED only when
+    ;; OWNED (aux&8==0) — see hasPropsSidecarWat's doc; a VIEW falls through to
+    ;; the global-table fallback below instead.
     (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16)) (i32.ge_u (local.get $off) ${heapResetWat()}))
-          (i32.or (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+          (i32.or (i32.and (i32.eq (local.get $type) (i32.const ${PTR.TYPED}))
+                            (i32.eqz (i32.and (call $__ptr_aux (local.get $obj)) (i32.const 8))))
             (i32.or (i32.eq (local.get $type) (i32.const ${PTR.HASH}))
               (i32.or (i32.eq (local.get $type) (i32.const ${PTR.SET}))
                       (i32.eq (local.get $type) (i32.const ${PTR.MAP}))))))

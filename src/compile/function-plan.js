@@ -65,8 +65,19 @@ export function createFunctionPlan(facts) {
     leanHashLocals: new Set(facts.leanHashLocals || []),
     i32HashLocals: new Set(facts.i32HashLocals || []),
     leanHashDomains: new Map(facts.leanHashDomains || []),
-    typedElem: facts.typedElem ? new Map(facts.typedElem) : null,
-    typedLen: facts.typedLen ? new Map(facts.typedLen) : null,
+    // Pass-by-reference, not cloned (region-arena jz×jz-ceiling fix, .work/
+    // research.md §Region arena "analyzeFuncForEmit's OWN clone-shape
+    // instances FIXED"): facts.typedElem/typedLen are either null or a
+    // MapOverlay (src/compile/index.js's makeMapOverlay) built fresh once per
+    // analyzeFuncForEmit call for this function alone, never shared with or
+    // mutated by any other function's facts (see analyzeFuncForEmit's own
+    // "Pass the MapOverlay through by reference" comment) — cloning here
+    // would be a second, pointless O(programSize) copy on top of the one
+    // analyzeFuncForEmit's own entry already eliminated, AND would actively
+    // crash: `new Map(overlay)` throws, a MapOverlay is a plain get/set/has
+    // facade, not an iterable.
+    typedElem: facts.typedElem || null,
+    typedLen: facts.typedLen || null,
     localReps: cloneRepMap(facts.localReps),
   })
 }
@@ -118,7 +129,14 @@ export function installFunctionPlan(ctx, plan) {
   ctx.func.leanHashLocals = new Set(plan.leanHashLocals)
   ctx.func.i32HashLocals = new Set(plan.i32HashLocals)
   ctx.func.leanHashDomains = new Map(plan.leanHashDomains)
-  ctx.types.typedElem = plan.typedElem ? new Map(plan.typedElem) : null
-  ctx.types.typedLen = plan.typedLen ? new Map(plan.typedLen)
-    : ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
+  // By reference, not cloned — see createFunctionPlan's own doc on this same
+  // pair. The plan.typedLen-absent/global-fallback case (a function published
+  // before ctx.scope.globalTypedLen existed — see below) is the caller's
+  // concern, not this generic installer's: it needs `makeMapOverlay`, which
+  // lives in index.js alongside the rest of the MapOverlay machinery, and
+  // importing it back here would close a load cycle (function-plan.js has no
+  // other reason to depend on index.js — same avoid-a-cycle discipline
+  // narrow.js's freshId replica documents for abi/string.js).
+  ctx.types.typedElem = plan.typedElem || null
+  ctx.types.typedLen = plan.typedLen || null
 }

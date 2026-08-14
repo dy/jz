@@ -224,11 +224,31 @@ export default (ctx) => {
       if (repOf(name)?.mayBeUndefined) captureMayBeUndefineds.add(name)
     }
 
-    const schemaNames = ctx.schema.vars?.size ? new Set(ctx.schema.vars.keys()) : null
-    if (schemaNames?.size) {
+    // findFreeVars's `scope` param needs BOTH `.has(name)` (membership test)
+    // AND `.add(name)` (analyze-scans.js's own `let`/`const`/`for(let…)`
+    // branches call `collectParamNames(decls, scope)`, which does `scope.add`,
+    // to record body-local shadow declarations so a same-named inner `let`
+    // doesn't get misread as a free reference to the outer schema var) — a
+    // real mutable Set interface, not a plain read-only lookup. The old
+    // `new Set(ctx.schema.vars.keys())` materialized a FULL COPY of the
+    // program-wide schema table to get that interface, at O(program schema-
+    // table size) PER CLOSURE LITERAL (fires for every arrow/function
+    // expression seen while ANY body emits, not just ones that end up
+    // capturing anything — .work/research.md's MapOverlay fix targets the
+    // same shape-class one level down, at closure-body-EMISSION time; this
+    // site is the more frequent, likely-dominant sibling, at closure-CREATION
+    // time). `scopeOwn` below is the SAME two-layer split MapOverlay uses —
+    // `.add` writes ONLY into a fresh per-closure Set (bounded by this one
+    // closure's own local declarations), `.has` falls through to the real
+    // ctx.schema.vars table on miss — so shadow-tracking writes never leak
+    // into the shared program-wide map, and constructing the view is O(1).
+    if (ctx.schema.vars) {
+      const scopeOwn = new Set()
+      const schemaVars = ctx.schema.vars
+      const scope = { has: (name) => scopeOwn.has(name) || schemaVars.has(name), add: (name) => scopeOwn.add(name) }
       const refs = []
-      findFreeVars(body, new Set(params), refs, schemaNames)
-      for (const def of Object.values(defaults || {})) findFreeVars(def, new Set(params), refs, schemaNames)
+      findFreeVars(body, new Set(params), refs, scope)
+      for (const def of Object.values(defaults || {})) findFreeVars(def, new Set(params), refs, scope)
       for (const name of refs) {
         if (captureSchemaVars.has(name)) continue
         const schemaId = ctx.schema.idOf(name)

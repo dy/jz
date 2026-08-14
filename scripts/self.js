@@ -140,6 +140,8 @@ function optimizeTail(module, cfg) {
     // prior attribution's own bisection, which never varied this axis because
     // it didn't know it existed). Restores the file's own documented, never-
     // rescinded intent — same ternary shape as `front()`'s regionHooks below.
+    // (region-final-2026-08-11's 627cf92a independently ported this same
+    // one-line fix; identical resolution, main's fuller writeup kept.)
     regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
 }
@@ -198,6 +200,19 @@ function front(source, strict) {
   return frontHalf(source, { strict, jzify, regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined })
 }
 
+// Region-arena EMIT/ENCODE boundary (Slice 3, .work/research.md §Region arena):
+// wraps compileAst itself, one region round later than front's own boundary —
+// mirrors front()'s wiring verbatim (same REGION_HOOKS_ACTIVE marker, same
+// ternary shape, same literal __region_mark()/__region_exit() calls). The
+// root/rebind contract (`[module, ctx.func, ctx.transform, ctx.scope]`,
+// INCLUDING a known open defect on this exact root) lives on compile()'s own
+// doc comment (src/compile/index.js) — that function does the
+// mark/exit/rebind itself, exactly like frontHalf does for the front
+// boundary; this is only the kernel-only call site that supplies the hooks.
+function emitIR(ast) {
+  return compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined)
+}
+
 /**
  * @param {string} source - JS source
  * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
@@ -206,7 +221,7 @@ function front(source, strict) {
  */
 export default function compileSelf(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrCompile(optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize))
+  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
 }
 
 /**
@@ -235,14 +250,14 @@ export function compileWarnings(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
   const sink = { entries: [] }
   initWarnings(sink)
-  optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize)
+  optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize)
   initWarnings(null)
   return JSON.stringify(sink.entries)
 }
 
 export function compileWat(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrPrint(optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize))
+  return watrPrint(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
 }
 
 /**
@@ -267,7 +282,7 @@ export function compileProfile(source, strict, optJSON, modulesJSON, host) {
   const t0 = Date.now()
   const ast = front(source, strict)
   const t1 = Date.now()
-  const ir = compileAst(ast)
+  const ir = emitIR(ast)
   const t2 = Date.now()
   const opted = optimizeTail(ir, ctx.transform.optimize)
   const t3 = Date.now()
@@ -280,7 +295,7 @@ export function compileProfile(source, strict, optJSON, modulesJSON, host) {
 export function compileDiag(source, strict, optJSON) {
   setupSelf(strict, optJSON)
   ctx.core.diagSink = {}
-  compileAst(front(source, strict))
+  emitIR(front(source, strict))
   return JSON.stringify(ctx.core.diagSink)
 }
 

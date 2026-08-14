@@ -450,10 +450,23 @@ function analyzeFuncForEmit(func, programFacts) {
   ctx.func.i32HashLocals = new Set()
   ctx.func.leanHashDomains = new Map()
   ctx.func.hoistTempDefs = null
-  ctx.types.typedElem = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null
+  // MapOverlay (below emitClosureBody's own doc — same jz×jz ceiling fix,
+  // same file, a new sibling instance) — this used to be `new Map(ctx.scope.
+  // globalTypedElem)`/`new Map(ctx.scope.globalTypedLen)`, an O(programSize)
+  // full clone paid PER FUNCTION (analyzeFuncForEmit runs once per function
+  // in ctx.func.list — thousands for a bundled multi-module program), the
+  // same structural class 259cd4fc already fixed once in emitClosureBody and
+  // 0ae75f07 fixed once in narrow.js. `globalTypedElem`/`globalTypedLen`
+  // are frozen module-scope tables by this point (last written during
+  // infer.js/plan/scope.js's own passes and the pendingTypedLens sweep,
+  // all upstream of plan() — confirmed by grep, no write site downstream of
+  // here) so overlaying a live reference as `base` is safe: it can never go
+  // stale mid-loop. `own` starts empty; the param-typedCtor seeding just
+  // below writes into it via `.set` exactly like the pre-overlay code did.
+  ctx.types.typedElem = ctx.scope.globalTypedElem ? makeMapOverlay(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
-  ctx.types.typedLen = ctx.scope.globalTypedLen ? new Map(ctx.scope.globalTypedLen) : null
+  ctx.types.typedLen = ctx.scope.globalTypedLen ? makeMapOverlay(ctx.scope.globalTypedLen) : null
 
   const _reps = paramReps.get(name)
   if (_reps) {
@@ -595,7 +608,9 @@ function analyzeFuncForEmit(func, programFacts) {
   // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening
   // store writes a provably-different element (idx2 ≠ idx). Recovers the fft butterfly's redundant
   // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
-  if (_o && _o.loadCSE !== false && block && ctx.types.typedElem?.size)
+  // mapOrOverlaySize (not `.size` directly): ctx.types.typedElem is now a MapOverlay
+  // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
+  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.types.typedElem))
     cseLoads(body, n => ctx.types.typedElem.has(n), freshCseName)
 
   if (block) {
@@ -847,8 +862,16 @@ function analyzeFuncForEmit(func, programFacts) {
     leanHashLocals: new Set(ctx.func.leanHashLocals || []),
     i32HashLocals: new Set(ctx.func.i32HashLocals || []),
     leanHashDomains: new Map(ctx.func.leanHashDomains || []),
-    typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null,
-    typedLen: ctx.types.typedLen ? new Map(ctx.types.typedLen) : null,
+    // Pass the MapOverlay through by reference — no clone. This used to be a
+    // SECOND O(programSize) clone on top of the one at this function's own
+    // entry (same commit fixed both): ctx.types.typedElem is a fresh overlay
+    // built once per analyzeFuncForEmit call (this function's own entry,
+    // above) and never touched again after this return (this loop's other
+    // per-iteration calls — captureFuncInspect/scanErasureSinks — don't read
+    // or write it; verified by grep), so handing the SAME object to funcFacts
+    // is exactly as safe as cloning it, at O(1) instead of O(programSize).
+    typedElem: ctx.types.typedElem,
+    typedLen: ctx.types.typedLen,
     localReps: cloneRepMap(ctx.func.localReps),
   }
   return facts
@@ -1377,13 +1400,35 @@ function emitFunc(func, functionPlan, programFacts) {
   // Only this path drains charDecomp prologues (collectParamInits below) —
   // the shape-1b global-receiver decomposition may mint only here.
   ctx.func.charDecompGlobals = true
+  // FunctionPlan install (audit P1, ea423728): installFunctionPlan copies every
+  // detached working-state field from the frozen plan (function-plan.js) — the
+  // manual funcFacts.* field-by-field copy this replaced lived here inline
+  // before that refactor. typedElem/typedLen are installed by reference (a
+  // MapOverlay or null, never cloned — see function-plan.js's own doc: same
+  // jz×jz-ceiling fix as analyzeFuncForEmit's own entry/return above and
+  // emitClosureBody's own doc).
   const block = functionPlan.block
   installFunctionPlan(ctx, functionPlan)
+  // Global-table fallback for typedLen (funcFacts.typedLen was null — this
+  // function was analyzed/published before ctx.scope.globalTypedLen existed):
+  // stays here, not inside installFunctionPlan, which is a generic plan
+  // installer with no reason to know about globalTypedLen or depend on
+  // index.js's makeMapOverlay (see installFunctionPlan's own doc on the load
+  // cycle that would close).
+  if (!ctx.types.typedLen && ctx.scope.globalTypedLen) ctx.types.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
   // hits the slot map. ctx.schema.vars is saved/restored so bindings don't leak.
-  schemaVarsPrev = new Map(ctx.schema.vars)
+  // MapOverlay instead of a clone (same jz×jz-ceiling fix as typedElem/typedLen
+  // above and emitClosureBody's own doc): this used to be `new Map(ctx.schema.
+  // vars)` — an O(programSize) clone of the WHOLE-PROGRAM schema table, paid once
+  // per function in emitFuncs' driver loop. `own` starts empty; the `.set` calls
+  // below (unchanged) write this function's own param-schema bindings into it;
+  // restoring below is the identical "re-point the ctx field back" the overlay
+  // doc already establishes, now O(1) instead of O(programSize) either direction.
+  schemaVarsPrev = ctx.schema.vars
+  ctx.schema.vars = makeMapOverlay(schemaVarsPrev)
   if (_reps) {
     for (const [k, r] of _reps) {
       if (k >= sig.params.length) continue
@@ -1843,6 +1888,91 @@ function synthesizeBoundaryWrappers() {
 }
 
 
+// Two-level read-through Map facade (.work/research.md §Region arena, jz×jz
+// ceiling fix): emitClosureBody used to open every schema/typed-capturing
+// closure body with `new Map([...whole_program_table, ...cb_own_captures])`
+// — an O(programSize) full clone, paid PER CLOSURE, restored (discarded) at
+// the body's own tail. For a bundled program whose own fact table scales
+// with total module count (jz×jz: 155 modules merged into one AST/scope),
+// that made compiling N closures cost O(N × programSize) — exactly the
+// superlinear-in-program-size-not-in-closure-count shape that traps the
+// jz×jz self-host kernel-compile at the 2^32-byte ceiling deep inside
+// buildStart's emitClosures rounds (root-caused, not yet fixed, by the
+// 2a78a6f6 ledger entry this fix answers).
+//
+// MapOverlay replaces the clone with two layers: `own` (this closure's own
+// captures/writes) is checked first, falling through to `base` (the
+// enclosing table — module-global or the parent closure's own view) on
+// miss — O(1) construction, O(|own|) get/set, independent of base's size.
+// Shadow order matches the eager merge exactly: `new Map([...base, ...own])`
+// lets later (own) entries win on key collision, which is what `own` wins
+// on every read here reproduces. Writes (`.set`/`.delete`) land ONLY in
+// `own`, so `base` — which may be a caller-owned module-global map, never
+// safe to mutate in place — is never touched, the same non-leak guarantee
+// the old clone-then-discard pattern gave "for free". Restoring the PARENT's
+// view on exit is then just re-pointing ctx.schema.vars/ctx.types.typedElem
+// back at whatever it was before this call (already how the tail restore
+// worked — no change needed there), not "popping" anything structural: each
+// closure call builds its OWN fresh overlay from the CURRENT (possibly
+// itself an overlay, for a nested closure) prev value as `base`.
+//
+// Verified (grep across analyze.js, emit.js, emit-assign.js, infer.js,
+// inplace-store.js, plan/scope.js, program-facts.js, prepare/index.js,
+// type.js, kind.js, kind-traits.js, static.js): every read of
+// ctx.schema.vars / ctx.types.typedElem / ctx.types.typedLen is a bare
+// `.get`/`.has`/`.set`/`.delete` call — never a spread, `.keys()`/
+// `.entries()`/`.values()`, `for..of`, or `.size` read while a closure body
+// could be mid-emission — so a get/has/set/delete facade is a complete,
+// behavior-preserving substitute; no consumer needed converting.
+//
+// Plain factory (no `class`) on purpose: this file's own source text is
+// bundled into the self-host kernel (see emitClosureBody's doc above), and
+// jz compiles the WHOLE 155-module program including this one — `class` is
+// otherwise unused anywhere in src/, an untested self-host surface not worth
+// risking here. `delete` as a shorthand method-definition name (class OR
+// object-literal) trips the self-host front end's parser (a reserved word in
+// definition position); `.delete(name)` as a plain member-access CALL is
+// already used throughout the codebase and self-hosts fine (prepare/
+// index.js, analyze.js, …), so the delete method is attached via a plain
+// assignment (`overlay.delete = …`, the same member-access production as
+// every existing call site) after the object literal, never defined inline.
+const MAP_OVERLAY_TOMBSTONE = Symbol('MapOverlay.deleted')
+function makeMapOverlay(base, own) {
+  const b = base || null
+  const o = own || new Map()
+  const has = (k) => o.has(k) ? o.get(k) !== MAP_OVERLAY_TOMBSTONE : (b ? b.has(k) : false)
+  const overlay = {
+    base: b,
+    own: o,
+    has,
+    get(k) {
+      if (o.has(k)) { const v = o.get(k); return v === MAP_OVERLAY_TOMBSTONE ? undefined : v }
+      return b ? b.get(k) : undefined
+    },
+    set(k, v) { o.set(k, v) },
+  }
+  overlay.delete = (k) => {
+    const had = has(k)
+    if (had) o.set(k, MAP_OVERLAY_TOMBSTONE)
+    return had
+  }
+  return overlay
+}
+
+// O(1)-per-layer "is this table (or overlay) non-empty" truthy check — the one
+// `.size` read this codebase has on a MapOverlay-eligible field (analyzeFuncForEmit's
+// load-CSE gate; grepped whole-repo, the only such site). A plain Map's own `.size`
+// answers directly; a MapOverlay has none (own/base can diverge in count from any
+// single Map), so this sums `own.size` with a recursive read of `base` (itself either
+// a plain Map or a nested overlay, the same shape `get`/`has` already walk for nested
+// closures). Overlap between `own` and `base` can only ever OVER-count a shared key —
+// harmless for every actual consumer, which only tests non-zero-ness, never compares
+// the number itself.
+function mapOrOverlaySize(m) {
+  if (!m) return 0
+  return m.own ? m.own.size + mapOrOverlaySize(m.base) : m.size
+}
+
 /**
  * Phase: emit one closure body to WAT IR.
  *
@@ -1851,9 +1981,11 @@ function synthesizeBoundaryWrappers() {
  * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
  * Mutates ctx.func.* per-body state (locals, boxed, localReps) and
- * ctx.schema.vars / ctx.types.typedElem/typedLen. ctx.schema.vars is
- * restored explicitly below (a compile-lifetime map, outside the
- * active-function swap); ctx.types.typedElem/typedLen ride
+ * ctx.schema.vars / ctx.types.typedElem/typedLen. Entry: all three ride a
+ * MapOverlay (above) layered onto the parent's own value rather than a fresh
+ * full clone while this body compiles — see MapOverlay's own doc for why.
+ * Exit: ctx.schema.vars is restored explicitly below (a compile-lifetime map,
+ * outside the active-function swap); ctx.types.typedElem/typedLen instead ride
  * enterFunc/restoreActiveFunction's own structural stash-and-restore
  * (compile/active-function.js, audit P2) so a capture-binding leak can't
  * poison the next body — prevTypedElems below is still read as this body's
@@ -1894,14 +2026,14 @@ function emitClosureBody(cb) {
   if (cb.mayBeUndefineds) for (const name of cb.mayBeUndefineds) updateRep(name, { mayBeUndefined: true, presence: 'maybe-undef' })
   if (cb.valTypes) for (const [name, vt] of cb.valTypes) updateRep(name, { val: vt })
   if (cb.schemaVars) {
-    ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+    ctx.schema.vars = makeMapOverlay(prevSchemaVars, new Map(cb.schemaVars))
     for (const [name, sid] of cb.schemaVars) updateRep(name, { schemaId: sid })
   }
   const globalTE = ctx.scope.globalTypedElem
   if (cb.typedElems) {
-    ctx.types.typedElem = globalTE ? new Map([...globalTE, ...cb.typedElems]) : new Map(cb.typedElems)
+    ctx.types.typedElem = makeMapOverlay(globalTE, new Map(cb.typedElems))
   } else if (globalTE) {
-    ctx.types.typedElem = new Map(globalTE)
+    ctx.types.typedElem = makeMapOverlay(globalTE)
   } else {
     ctx.types.typedElem = prevTypedElems
   }
@@ -1909,8 +2041,8 @@ function emitClosureBody(cb) {
   // typedIdxProven bounds proof reads the merged view.
   const globalTL = ctx.scope.globalTypedLen
   ctx.types.typedLen = cb.typedLens
-    ? (globalTL ? new Map([...globalTL, ...cb.typedLens]) : new Map(cb.typedLens))
-    : (globalTL ? new Map(globalTL) : null)
+    ? makeMapOverlay(globalTL, new Map(cb.typedLens))
+    : (globalTL ? makeMapOverlay(globalTL) : null)
   // In closure bodies, boxed captures use the original name as both var and cell local
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
   // i32-narrowed cells: the owner decided the cell width (FunctionPlan.cellTypes);
@@ -2201,9 +2333,68 @@ function emitClosureBody(cb) {
 /**
  * Compile prepared AST to WASM module IR.
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
+ * @param {Object} [profiler] - host-only per-phase timing sink (timePhase)
+ * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena EMIT
+ *  boundary (.work/research.md §Region arena, Slice 3): supplied ONLY by the
+ *  self-host kernel entry (scripts/self.js), mirroring frontHalf's own
+ *  `regionHooks` contract (src/front.js) one boundary later in the pipeline —
+ *  never passed by the native host (index.js calls `compile(ast, profiler)`,
+ *  2 args, so `regionHooks` stays undefined there, zero behavior change: the
+ *  gate battery below is for the NATIVE/dormant axis, unaffected by any of
+ *  this). When present, wraps this WHOLE function body in one region round:
+ *  every allocation `compile()` makes (plan/analyze facts, per-function
+ *  locals, emit scratch, the whole `sec.*` staging structure) gets reclaimed
+ *  at exit EXCEPT what's reachable from the root `[module, ctx.func,
+ *  ctx.transform, ctx.scope]` — the returned module tree, plus the three ctx
+ *  containers the emit/encode tail (this file's own caller: scripts/self.js's
+ *  `optimizeTail` wrapper, then `watrTail`'s post-watr `stablePtrGlobalNames`/
+ *  `hoistGlobalPtrOffset` repair) still reads AFTER this function returns
+ *  (`ctx.func.list.length`/`.map` — populated by the two `.clear()`-then-
+ *  rebuild loops right below; `ctx.transform.optimize`/`.targetProfile`/
+ *  `._vectorizedFnNames`; `ctx.scope.globalValTypes` — populated by this
+ *  function's own `declGlobal` calls). Root the CONTAINERS, not individual
+ *  leaf fields (unlike front's narrower `ctx.func.list`-only root): every
+ *  sub-field a downstream reader needs travels with its container, matching
+ *  `ctx.module`/`ctx.schema`/`ctx.closure` already riding front's own root
+ *  this way. `ctx.module`/`ctx.schema` are NOT in THIS root: every read of
+ *  either happens INSIDE this function, before exit fires (schema
+ *  custom-section emission above, module import resolution at the top) —
+ *  confirmed not needed post-return. This is the design as specified (Slice 3
+ *  hazard inventory, 8bed8c3f) — see the KNOWN, UNRESOLVED hazard below
+ *  before treating region-live as gate-clean.
+ *
+ *  **KNOWN OPEN DEFECT, region-live only (dormant/native fully unaffected):**
+ *  rooting `ctx.transform` makes `__region_copy_rec` explode on some corpus
+ *  shapes — reproduced concretely on `nestedtyped` (`export let f = (x) =>
+ *  new Int32Array(new Float64Array([x]))[0]`, O0): traced with temporary
+ *  `declGlobal` breadcrumbs (module/core.js `__region_copy_rec`/
+ *  `__region_relocate_props`, worktree-only, never landed),
+ *  `__region_relocate_props` reads a ~2^31 capacity off a dyn-props object
+ *  reachable ONLY via the whole-`ctx.transform` walk (not via `ctx.func`/
+ *  `ctx.scope` alone), and `__alloc`'s own ceiling check aborts — a real
+ *  defect in the relocator's durable dyn-props path, not in this boundary's
+ *  own placement or root selection. TWO NARROWER alternatives were tried and
+ *  BOTH also fail, differently, not more soundly: dropping `ctx.transform`
+ *  entirely (`[module, ctx.func, ctx.scope]`) clears `nestedtyped` but newly
+ *  breaks `dict`/`ternary-BOOL|NUMBER` (a durable/ephemeral OBJECT with
+ *  dynamic keys); rooting only the two leaves actually read
+ *  (`ctx.transform.optimize`/`.targetProfile`) explodes the same way, worse
+ *  (O0 AND O3). This pattern — the specific failure shifting with small,
+ *  otherwise-inert changes to what's rooted — matches this campaign's own
+ *  documented "address/layout-boundary-sensitive heisenbug" class (this
+ *  file's sibling, scripts/self.js's header comment, 2026-08-06), not a
+ *  simple missing-root case any of the three tried roots cleanly dodges.
+ *  kernel-oracle region-live (this root): 7/13 (not the dormant/front-only
+ *  13/13). NOT fixed this session — banked as Slice 3's own named next lead
+ *  (a `__region_relocate_props`-focused breadcrumb trace on the durable
+ *  branch, the same rigor the front boundary's own SW-bug and closure4232
+ *  fixes used, is the concrete next step). `REGION_HOOKS_ACTIVE` stays
+ *  `false` (scripts/self.js) — this boundary ships DORMANT, gate-verified
+ *  only on that axis; it is not wired live in any shipped build.
  * @returns {Array} Complete WASM module as S-expression
  */
-export default function compile(ast, profiler) {
+export default function compile(ast, profiler, regionHooks) {
+  const __regionMark = regionHooks?.mark()
   // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
@@ -2791,5 +2982,15 @@ export default function compile(ast, profiler) {
     ...sec.tags, ...sec.table, ...sec.globals, ...sortedFuncs,
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
-  return ['module', ...sections]
+  let builtModule = ['module', ...sections]
+  // Region-arena Slice 3 (see this function's own doc comment above,
+  // INCLUDING the known open defect on this exact root): exit the emit round
+  // here, rebinding the CONTAINERS every downstream reader needs — any later
+  // read through a stale `ctx.func`/`ctx.transform`/`ctx.scope` binding (or
+  // the pre-relocation `builtModule` reference) is a use-after-free, the
+  // identical contract frontHalf's own rebind documents.
+  if (regionHooks)
+    [builtModule, ctx.func, ctx.transform, ctx.scope] =
+      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.transform, ctx.scope])
+  return builtModule
 }

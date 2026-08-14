@@ -11696,3 +11696,2177 @@ rebuilt locally to verify, not committed.
 change. The original task framing (root-cause in watr's new pass) does not
 hold under evidence; recorded here for the next reader who re-opens this
 trail expecting a watr fix.
+
+## §Region arena — Slice 3 (emit/encode boundary) DESIGNED AND WIRED, dormant
+## gate-clean; region-live real-graph memory HALVES (jessie/watr/jzify-entry,
+## byte-identical, deterministic ×3) but a genuine `__region_relocate_props`
+## defect blocks the oracle on specific shapes; jz×jz UNCHANGED — no ceiling
+## unlock (2026-08-13)
+
+**Task**: build Slice 3 per the campaign brief — design the emit/encode
+boundary, wire region hooks, measure jz-graph/jz×jz peak memory, run the
+goal-gate bench row if it compiles under 4GiB. Setup followed the brief's
+convention exactly: fresh worktree off `70cf7315` (region-final-2026-08-11),
+`node_modules/{@esbuild,esbuild,sprae,subscript,tst}` symlinked to the shared
+tree, `node_modules/watr` symlinked DIRECTLY to `/Users/div/projects/watr`
+(verified `895ca5b` at session start, `let SW = []` fix confirmed present via
+content read, never via trusting the path) — no `npm ci`, watr's own working
+tree never touched by this session. **Mid-session update, not caused by this
+session**: `/Users/div/projects/watr` advanced to `2bde3c1` ("5.7.15") partway
+through — a pure version bump (`package.json`/`package-lock.json` only,
+confirmed via `git diff 895ca5b 2bde3c1 --stat`, zero source delta), i.e. the
+prior "WALL2" entry's own top-priority next lead ("publish `895ca5b` as
+5.7.15") was executed by someone else while this session ran. Worth flagging
+for the next session: jz's own `package.json` pin (`5.7.14`/`a563a63`) can now
+move to `^5.7.15` and drop the overlay convention entirely — not done here,
+out of this task's scope, and this session's own builds are unaffected either
+way (content-identical to what 5.7.15 now publishes).
+
+### Design
+
+**Boundary point**: wrap `compileAst` itself (`src/compile/index.js`'s
+default-exported `compile()`), the third and last region round in the
+pipeline (Slice 1 = watr's per-optimize-round mark/exit inside `watrTail`;
+Slice 2 = `frontHalf`'s parse→jzify→prepare round; Slice 3 = this one). Chosen
+over "per-function" or "whole-module" alternatives because it needs no new
+seam: `compile()` already IS the natural single call the self-host pipeline
+makes between `front()` and `optimizeTail()` (`scripts/self.js`:
+`optimizeTail(compileAst(front(source, strict)), ctx.transform.optimize)`),
+and the allocation profile (this session's own `compileProfile` timing export,
+plus the archived four-point curve) already names `compileAst` — not
+`front`/`optimizeTail`/the final `watrCompile` encode — as the remaining
+un-region'd phase for a self-hosted compile: front and the optimize rounds
+are both already bounded (Slices 1-2), the terminal `watrCompile` call is a
+few-hundred-line pure encoder with no jz-side `ctx` allocation at all (traced
+directly — no candidate seam there), leaving `compileAst`'s own body (plan/
+analyze/emit/assemble, by far the largest single call in the pipeline) as the
+one phase whose ephemeral churn was still never reclaimed.
+
+**Mechanism**: identical shape to Slice 2, mirrored verbatim per the task
+brief's own instruction — `regionHooks: {mark, exit}` threaded as an optional
+3rd parameter (`compile(ast, profiler, regionHooks)`), `mark()` called as
+literally the first statement, `exit(mark, root)` called immediately before
+`return`, with the return value and the rooted `ctx` containers rebound from
+`exit`'s result. Native host (`index.js` calls `compile(ast, profiler)`, 2
+args) is untouched — `regionHooks` stays `undefined`, the whole `if
+(regionHooks)` block is dead code, zero behavior change (verified below).
+`scripts/self.js` gained one new call-site wrapper, `emitIR(ast)` (named to
+avoid colliding with the already-imported `emit` from `compile/emit.js`),
+mirroring `front()`'s own wrapper exactly — same `REGION_HOOKS_ACTIVE`
+ternary, same literal `__region_mark()`/`__region_exit()` calls (real wasm
+calls only inside a self-hosted, region-live kernel; dead/never-evaluated
+identifiers in every other context, per `front()`'s own doc). Every one of
+`compileSelf`/`compileWarnings`/`compileWat`/`compileProfile`/`compileDiag`
+now routes through `emitIR` instead of calling `compileAst` directly — one
+seam, not five independently-wired ones.
+
+**Root bundle — designed, then empirically corrected.** The Slice 3 hazard
+inventory (8bed8c3f) sketched `[module, ctx.func, ctx.transform, ctx.scope]`
+(containers, not leaf fields, matching front's own `ctx.module`/`ctx.schema`/
+`ctx.closure` precedent) from a static trace of every `ctx` read between
+`compileAst`'s return and `watrCompile`'s byte-encode. This session re-verified
+that trace against the CURRENT source (post ctx.func rename, post
+closure4232/header-materialization fixes) and found it still accurate:
+`ctx.func.list.length`/`.map.get` (self.js's `optimizeTail` wrapper),
+`ctx.transform.optimize`/`.targetProfile` (the same wrapper's `cfg` argument,
+evaluated at the call site right after `compileAst` returns), and
+`ctx.scope.globalValTypes` (`watrTail`'s post-watr `stablePtrGlobalNames`,
+called from inside `watrTail` after `watOptimize` finishes) are the complete
+set. `ctx.module`/`ctx.schema` confirmed NOT needed (every read happens
+inside `compileAst` itself, before exit fires). Implemented and gated as
+specified — see the defect below, found DOING that gating, not skipped.
+
+### Implementation
+
+Two files changed: `src/compile/index.js` (`compile()` gains the
+`regionHooks` param, mark/exit/rebind, and a doc comment carrying the full
+root rationale AND the known defect below — read before touching this
+again), `scripts/self.js` (`emitIR` wrapper, five call sites redirected).
+`REGION_HOOKS_ACTIVE` stays `false` (committed default) — this boundary
+ships DORMANT, exactly like Slice 2 did before its own front-boundary work
+closed out. No `layout-kinds.js`/`module/core.js` changes landed (see next
+section — a real defect was found there, but NOT fixed this session; the
+temporary breadcrumbs used to find it were reverted, confirmed via
+`git diff` showing zero delta on both files at session end).
+
+### The defect: `__region_relocate_props` explodes on `ctx.transform`'s durable dyn-props path
+
+Building the design as specified (whole-container root) and running
+`kernel-oracle` region-live surfaced a hard trap starting at CORPUS row 8
+(`nestedtyped`: `export let f = (x) => new Int32Array(new Float64Array([x]))
+[0]`, O0 — the exact source the "closure-capture-after-nested-emit" class was
+named for, audit re-hunt 2026-07-30, already fixed at THAT level and confirmed
+unrelated by direct testing here). Isolated with the SAME method the SW-bug
+and closure4232 fixes used (declGlobal breadcrumbs in `module/core.js`,
+`wasm2wat`-free this time since the trap's own stack was already symbolicated
+via a `names:true` build — bytes+names only, no `wat:true`, per the process
+rule): a call counter + last-kind-tag + last-props-capacity global, read back
+from the trapped instance's exports after catching the `RuntimeError`.
+
+Finding: `__region_relocate_props` (module/core.js) reads a capacity of
+`2,147,107,840` (~2^31, garbage) off some dyn-props sidecar object reached
+ONLY when `ctx.transform` rides the root — dropping it from a THREE-BUILD
+differential (whole-root / root-minus-transform / root-plus-two-leaves-only)
+made the trap disappear on THIS repro every time transform was dropped, and
+reappear (differently) every time transform (whole OR its two needed leaves)
+was included. `__alloc`'s own ceiling check aborts trying to allocate a
+fresh-capacity block for that garbage number — the `unreachable` every
+region-live oracle row above shares. Plain (non-nested) typed arrays do NOT
+trigger it — the trigger needs the SPECIFIC nested-constructor shape.
+
+**Three root variants tried, gated against full `kernel-oracle`+`kernel-parity`,
+none clean**:
+| root | kernel-oracle (13 rows) | kernel-parity | notes |
+|---|---|---|---|
+| `[module, ctx.func, ctx.transform, ctx.scope]` (as designed) | 7/13 | O0 FAIL, O2 FAIL, **O3 PASS 11/11** | `nestedtyped` traps O0/O2 only — level-sensitive |
+| `[module, ctx.func, ctx.scope]` (drop transform entirely) | worse — `nestedtyped` clears but `dict`/`ternary-BOOL｜NUMBER` (dynamic-key OBJECT programs) newly trap | not re-run standalone | different rows break, not fewer |
+| `[module, ctx.func, ctx.scope, ctx.transform.optimize, ctx.transform.targetProfile]` (leaf-only) | worse — 6/13, now ALSO fails O3 | O0 FAIL (`memory access out of bounds`, a different message), O2 FAIL | strictly worse than the whole-container attempt |
+
+None of the three is a clean fix — this matches, not coincidentally, the
+"address/layout-boundary-sensitive heisenbug" class `scripts/self.js`'s own
+2026-08-06 header comment already named for Slice 1 (a previously-passing
+build flipping to failing, or vice versa, from unrelated static-layout noise
+elsewhere in the self-hosted graph) — narrowing/widening the root shifts
+*which* corpus shape trips the SAME underlying relocator defect rather than
+closing it. **Landed the design-specified whole-container root** (table row
+1) since it is the reasoned, documented choice and the alternatives are not
+demonstrably safer, only differently broken — with this table and the defect
+above on record so a future session does not re-discover it by surprise.
+
+**Disposition**: `__region_relocate_props`'s durable branch (module/core.js,
+the `(i32.lt_u $off $mark)` arm) is the concrete next place to instrument —
+its own capacity/count reads (`$cap`/`$n` off `$off-4`/`$off-8`) are exactly
+what read garbage here; the SW-bug/closure4232 fixes both eventually found
+their root cause by extending the SAME breadcrumb method to the specific
+store site, not just the read site. This session's breadcrumbs (kept only
+long enough to get the one data point above, then reverted) never reached
+that depth — a real next-session task, not a "TODO" left for politeness.
+
+### Real-graph memory measurement (jessie/watr/jzify-entry — the 3-point curve every prior Slice 1/2 session used)
+
+All three region-live, ×3 reps each, deterministic, **byte-identical output
+to dormant every time** (proof this design, AS LANDED, is CORRECT on these
+three real, non-synthetic multi-module graphs, despite the open defect above
+not being universally dodged):
+
+| graph | dormant peak | region-live peak | ratio | output bytes (both) |
+|---|---|---|---|---|
+| jessie (47 mod, 70,435 B) | 1073.7 MB | **536.9 MB** | **÷2.00** | 106,996 |
+| watr (7 mod, ~103 KB) | 2147.5 MB | **1073.7 MB** | **÷2.00** | 315,222 |
+| jzify-entry (70 mod, 431,661 B) | 4295.0 MB (the hard ceiling) | **2147.5 MB** | **÷2.00** | 628,906 |
+
+The jzify-entry row is the headline result: dormant hits the deliberate
+`__memgrow` ceiling abort outright on this graph (was already documented as
+the "capacity UNLOCKED" case for Slice 2 alone in an earlier session); Slice 3
+on top gives it a full 2× additional margin, landing comfortably inside a
+single 2 GiB budget instead of needing the full 4 GiB address space. The
+exact ÷2 ratio on all three points (not merely "smaller") is itself
+informative: at `optJSON:{level:2}`, `compileAst`'s own ephemeral churn is
+consistently on the same order as everything ELSE the whole pipeline retains
+(front's already-reclaimed AST, the final module tree, `ctx.func`/`ctx.scope`)
+for these graph sizes — reclaiming it roughly halves the peak rather than
+shaving a small fraction off it.
+
+(`.work/jzify-entry.mjs`, a scratch entry point re-derived this session per
+the ledger's own description — "jzify-entry = `jzify/index.js`" — since it
+was missing from this worktree; NOT committed, matching every prior session's
+own "worktree-only, discarded" convention for this exact file.)
+
+### jz×jz — the acceptance-target graph — UNCHANGED, no ceiling unlock
+
+`bench/jz/jz.js` (155 modules, 5,883,905 B) via the archived
+`kernel-memory-curve.md` recipe (`instantiate(wasm,{memory:8192})`, `exports.
+default(codePtr,0,optJSON,modulesJSON,0)`, `optJSON:{level:2}`):
+
+| kernel | peak | outcome | wall time |
+|---|---|---|---|
+| dormant | 4,294,967,296 B (exactly 2³²) | `unreachable` (deliberate `__memgrow` ceiling abort) | 6.97 s |
+| region-live (Slice 1+2+3, as landed) | 4,294,967,296 B (exactly 2³²) | `unreachable`, IDENTICAL signature | 7.58 s |
+
+**No benefit measured on the actual goal graph** — this is the honest,
+load-bearing negative result of this session, not glossed over. Both legs
+reach the exact same hard ceiling in essentially the same wall time; Slice 3
+(even the maximally-aggressive whole-`ctx.transform`-rooted variant) does not
+move jz×jz's peak by a single byte. Two non-exclusive readings, neither
+confirmed further this session: (a) jz×jz's LIVE (rooted, never reclaimable)
+working set — 155 modules' worth of `ctx.func`/`ctx.scope`/`ctx.module`/
+`ctx.schema` state that must all coexist for one combined compile — may
+simply already exceed what fits before `compileAst` even finishes walking the
+graph, so ephemeral-garbage reclaim (however complete) cannot help; (b) the
+trap may fire EARLY, inside `front()`'s own bundling of the 155th module
+(Slice 2's territory) rather than deep inside `compileAst`, before Slice 3's
+own mark/exit round ever gets much chance to reclaim anything — the ~7 s
+timing (vs. jzify-entry's ~11 s to fully succeed on a graph 1/14th the size)
+is at least consistent with an early abort, not a late one, but this was not
+traced to a specific phase this session. **Next lead, concrete**: instrument
+`compileProfile`'s own per-stage timing (`front`/`compileAst`/`optimizeTail`/
+`encode` ms, already exported by `scripts/self.js`) against jz×jz specifically
+— if `front` alone consumes most of the 7 s and the trap is inside it, Slice 3
+is provably not the lever for THIS graph regardless of its own correctness,
+and the real next step is characterizing jz×jz's minimum LIVE footprint, not
+further debugging `compileAst`'s ephemeral churn.
+
+### Gates
+
+- **Dormant native `npm test`: 3436 total / 3428 pass / 2 fail / 6 skip** —
+  the two pre-existing `test/optimizer.js` guard-coalescing pins, byte-for-byte
+  the documented baseline, zero regression.
+- **Dormant `test:wasm`: 2731 total / 2725 pass / 0 fail / 6 skip** — clean,
+  matches the documented baseline.
+- **Dormant kernel-oracle: 13/13 (541 assertions)** — unchanged from the
+  pre-Slice-3 base.
+- **Dormant self-build ×2: SHA-256 `57ee1c57…` both times** — converges.
+- **Region-live kernel-oracle: 7/13** (NOT a gate pass — recorded honestly,
+  see the defect section; dormant is what ships).
+- **Region-live kernel-parity: O0/O2 FAIL, O3 PASS 11/11.**
+- **jessie/watr/jzify-entry region-live ×3: GREEN, deterministic,
+  byte-identical** (see table above) — this IS a clean gate, on real
+  multi-module graphs, independent of the oracle corpus's synthetic-shape
+  defect.
+- **jz×jz: does not compile under 4 GiB, region-live or dormant** — goal gate
+  NOT met; no bench row to report (nothing compiled).
+- Oracle 13/13 both configs (dormant native+kernel, the FRONT boundary's own
+  gate, per 70cf7315) — unaffected by this session, not re-run (no front-half
+  file touched).
+
+### Disposition
+
+**Banked, not landed live.** `REGION_HOOKS_ACTIVE` stays `false` — this
+session's own structural change (the `regionHooks` plumbing through
+`compile()` and `scripts/self.js`) is committed as a working, fully
+gate-verified DORMANT increment; region-live itself is not gate-clean and is
+NOT flipped on anywhere. Per the task's own framing ("if walled: bank with
+evidence + next named lead"): the DESIGN is validated (boundary point,
+root-bundle reasoning, the 2× real-graph memory result), the WALL is a single
+named, reproduced, partially-localized defect (`__region_relocate_props`'s
+durable dyn-props path), and the GOAL (jz×jz under 4 GiB) is not reached —
+distinctly NOT because Slice 3 is unbuilt, but because the specific graph
+shows zero measured benefit from it, a materially different and more useful
+finding than "not attempted."
+
+**Next named leads, in priority order**:
+1. Root-cause `__region_relocate_props`'s garbage-capacity read — extend this
+   session's breadcrumbs to the STORE side (which write leaves a stale/
+   wrong-address props pointer reachable from `ctx.transform`), the same way
+   the SW-bug and closure4232 fixes closed their own mechanisms.
+2. Trace jz×jz's own trap to a specific pipeline stage via `compileProfile`
+   before assuming Slice 3 is the relevant lever for that graph at all.
+3. Bump jz's `watr` pin to `^5.7.15` (now genuinely published, confirmed
+   content-identical to the `895ca5b` overlay this and prior sessions used)
+   and retire the symlink-overlay convention — a mechanical unblock, orthogonal
+   to Slice 3 itself, freeing every future session from the setup dance.
+
+**SHAs**. jz worktree: `70cf7315` base, this session's only commit is the
+`compile()`/`scripts/self.js` pair above plus this ledger entry. watr:
+`895ca5b` at session start (confirmed live via content read before any gate),
+advanced mid-session to `2bde3c1`/`5.7.15` by a concurrent process (pure
+version bump, zero source delta — see Setup above); this session's own builds
+used `895ca5b`'s content throughout, byte-identical to what `5.7.15` now
+publishes. Dormant `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`57ee1c57116dc6fc20a41bd7eafedb78b16672e9ec0ddc136cb3e98bebfd921a` (both
+builds identical). Region-live `dist/jz.wasm` (whole-root, as landed):
+SHA-256 `9ce91283709b5d7ba19710d4d7e9fc3c60899fed6dec192140ea4a030e372c0c`.
+
+## §Region arena — jz×jz ceiling ROOT-CAUSED: the trap is a genuine PATHOLOGY
+## (superlinear per-closure cost, not a hard live-working-set floor), localized
+## to `compileAst`'s closure-body emission — root mechanism named, not yet
+## fixed. Task 2 (`__region_relocate_props`) surveyed, not advanced. watr pin
+## bumped to the now-published 5.7.15 (2026-08-13)
+
+**Task**: the named lead from 233bf8b5 — find WHERE jz×jz's identical
+2³²-byte ceiling (dormant AND region-live, ~7 s) actually hits: genuine
+live-working-set floor, or an early trap/pathology. Priority 2 (budget
+permitting): root-cause the `__region_relocate_props` garbage-capacity defect
+blocking Task 2's Slice 3 oracle gate.
+
+**Setup**. Worktree off `233bf8b5`. watr: confirmed `5.7.15` is published
+with the `let SW = []` fix — `npm pack watr@5.7.15` and `diff -rq` against
+`/Users/div/projects/watr/src` (895ca5b's content) came back byte-identical
+(zero delta), so this session did the mechanical unblock the PRIOR entry's
+own next-lead #3 named: `npm i watr@5.7.15 --no-save` (real npm install, no
+symlink overlay), then bumped `package.json`'s pin `5.7.14` → `5.7.15`
+(exact pin, matching the existing no-caret convention — a bare `npm install
+--package-lock-only` initially rewrote it to `^5.7.15`, corrected back) and
+regenerated `package-lock.json` to match. Gates on the bump alone, before any
+investigation: native `npm test` 3436/3428 pass/2 fail/6 skip — byte-for-byte
+the documented baseline (the two fails are the pre-existing `test/
+optimizer.js` guard-coalescing pins) — self-build ×2 SHA-256
+`2eb9f61724d05d438c1c0e161911e8a55f40c982a8f56c6a84052e2d6b414bca` both
+times (deterministic), kernel-oracle 13/13 (541 assertions). Clean, isolated,
+zero-regression — this bump is the one change from this session that's meant
+to ship.
+
+### Method
+
+The brief named `compileProfile`'s existing per-stage timing (`front`/
+`compileAst`/`optimizeTail`/`encode`, `scripts/self.js`) and the region
+mark/exit points as the practical instrumentation seam. In practice two
+distinct hazards shaped the actual method:
+
+1. **`src/compile/index.js` is dual-purpose** — it is BOTH the real compiler
+   (imported and executed NATIVELY by `index.js`, including by the native
+   `compile()` call that BUILDS the self-hosted kernel itself) AND, separately,
+   its own source text is bundled into `scripts/self.js`'s module graph to
+   become part of the kernel wasm binary. A bare bareword call
+   (`__dbg_mark(10)`, mirroring `__region_mark`/`__region_exit`'s own
+   convention) dropped directly into `compile/index.js` breaks the NATIVE
+   build outright (`ReferenceError: __dbg_mark is not defined`) — that
+   convention is safe ONLY in `scripts/self.js` itself, which is genuinely
+   never imported/run natively. Fixed by routing through `compile()`'s
+   PRE-EXISTING `profiler` parameter (`timePhase = (profiler, name, fn) =>
+   profiler?.time ? profiler.time(name, fn) : fn()`, already dual-purpose-safe
+   by construction) instead — a `{ time: (name, fn) => { const r = fn();
+   __dbg_mark(id); return r } }` object built and passed ONLY from
+   `scripts/self.js`'s own scratch profiling entries, so every literal
+   `__dbg_mark` call site stays confined to the self-host-only file, and
+   `compile/index.js` itself needed zero edits.
+2. Two exported globals (`module/core.js`, mirroring `__region_mark`'s own
+   declaration style): `__dbg_stage`/`__dbg_mem` (i32), written by a new
+   trivial intrinsic `$__dbg_mark(n)` (`global.set` ×2, `memory.size` for the
+   page count) — wasm globals are NOT rolled back on `unreachable`, so they
+   survive a trap and are readable from the instance's exports in the `catch`
+   block. Both a name-based `dbgId()` ternary chain (mapping `compile()`'s 12
+   named `timePhase` phases to distinct codes — `foldAggregates`, `plan`,
+   `analyzeFuncs`, `structInline`, `unionInline`, `unionClones`, `emitFuncs`,
+   `emitClosures`, `buildStart`, `resolveDynFnTables`, `pullStdlib`,
+   `optimizeModule`) and a plain sequential counter (bypasses string
+   comparison entirely, as a cross-check) were used. Three scratch exports
+   added to `scripts/self.js` (`compileDbgProfile`, `compileDbgProfilePartial`
+   — stops right after `compileAst`, `compileDbgProfileSeq`), all reverted
+   before finishing (`git diff module/core.js scripts/self.js` clean at
+   session end — verified). Driver: `resolveModuleGraph(entry, {resolveNode:
+   true})` + `instantiate(wasm, {memory:8192})` + `w.exports.compileDbgProfile*
+   (...)`, catching `RuntimeError` and reading `w.exports.__dbg_stage.value`/
+   `__dbg_mem.value` regardless of outcome — the exact `jessie/watr/
+   jzify-entry` recipe every prior Slice 1/2/3 session used, extended with
+   the breadcrumb read. `.work/jzify-entry.mjs` re-derived again this session
+   (gitignored, `.work/*.mjs`, worktree-only per the established convention).
+   Six kernel builds total (~6-7 min native compile each, chain-waited in
+   foreground per the process rule) — dormant ×5 (incrementally fixing the
+   instrumentation), region-live ×1 (confirmatory).
+
+### Findings
+
+**Front finishes cleanly; the trap is entirely inside `compileAst`.** The
+coarse boundary marks (front-start/front-done/compileAst-done/optimizeTail-
+done/encode-done) on the FIRST working build already showed `__dbg_stage=2`
+("front:done / compileAst:start") at trap time, `__dbg_mem=16384` pages
+(1024 MB) — front (parse → jzify → prepare → preEval over all 155 modules)
+completes fully and cheaply; `compileAst` (plan/analyze/emit/assemble) is
+where the remaining ~3 GB gets consumed and the trap fires. This ALONE
+already answers the ledger's own open question #2 ("trace jz×jz's own trap
+to a specific pipeline stage before assuming Slice 3 is the relevant lever
+at all") — Slice 3's boundary IS the right phase, structurally.
+
+**Finer resolution: the trap is inside the closure-body compilation
+rounds, not whole-program planning or the bulk per-function pass.** The
+sequential-counter cross-check is unambiguous and reproduces IDENTICALLY in
+both configs:
+
+| kernel | timePhase calls completed before trap | wall time | mem at trap |
+|---|---|---|---|
+| dormant | 27 | 6.6-6.9 s | 4096 MB (ceiling) |
+| region-live | 27 | 8.0 s | 4096 MB (ceiling) |
+
+Both configs get through the SAME number of phase-rounds before dying —
+direct, measured confirmation of 233bf8b5's inference, not merely a repeat of
+its "identical ceiling" headline. Walking `compile()`'s own call order (7
+single-fire phases — `foldAggregates`/`plan`/`analyzeFuncs`/`structInline`/
+`unionInline`/`unionClones`/`emitFuncs` — then `compilePendingClosures()`'s
+explicit pre-`buildStart` flush, then `buildStartFn`'s OWN two internal
+`compilePendingClosures()` calls, i.e. `emitClosures` firing repeatedly as
+`buildStartFn` walks all 155 modules' own top-level init code and discovers
+closures module-by-module) places call #27 deep inside `buildStart`'s
+closure-flush loop — `plan`/`analyzeFuncs` (whole-program fact gathering)
+and `emitFuncs` (the bulk per-named-function codegen pass) are each a
+SINGLE call in this sequence and complete early; the growth is concentrated
+in the REPEATED `emitClosures` rounds triggered as `buildStartFn`
+(`src/wat/assemble.js:152`) processes `ctx.module.moduleInits` one module at
+a time.
+
+**The growth curve is clearly superlinear, not a proportional floor.**
+Same method (`compileDbgProfileSeq`, stops right after `compileAst`) run
+against the three already-established real graphs, no rebuild needed (same
+dormant kernel):
+
+| graph | modules | source bytes | timePhase calls completed | mem at compileAst completion | mem/call |
+|---|---|---|---|---|---|
+| jessie | 47 | 70,435 | 60 (all, succeeds) | 512 MB | ~8.5 MB |
+| watr | 7 | 103,774 | 61 (all, succeeds) | 1024 MB | ~16.8 MB |
+| jzify-entry | 70 | 431,661 | 61 (all, succeeds) | 2048 MB | ~33.6 MB |
+| jz×jz | 155 | 5,883,905 | 27 (TRAPPED, incomplete) | 4096 MB (ceiling) | ~151.7 MB |
+
+Three succeeding graphs land on the SAME ~60-61 total phase-rounds
+regardless of size (round count is bounded by closure-discovery convergence,
+not raw size) while `mem/call` roughly doubles each step as source size
+roughly doubles (70 KB→104 KB→432 KB, sublinear-ish, consistent with the
+Slice-3 ÷2 result on these same three graphs). jz×jz breaks that pattern
+sharply: 13.6× jzify-entry's source size, but only 4.5× its `mem/call` and
+LESS THAN HALF its total round count before dying. A graph 13× bigger dying
+after HALF as many rounds, at "only" 4.5× the per-round cost, is not what a
+flat per-closure cost or even a mildly worse-than-linear one produces — it's
+the signature of a cost that grows with the ACCUMULATED PROGRAM STATE SEEN
+SO FAR, not with the closure's own size.
+
+**Named candidate mechanism** (code-inspected, NOT yet runtime-measured —
+see Verdict below for the honest epistemic line): `emitClosureBody`
+(`src/compile/index.js:1897`) opens with
+```
+const prevSchemaVars = ctx.schema.vars
+...
+if (cb.schemaVars) {
+  ctx.schema.vars = new Map([...prevSchemaVars, ...cb.schemaVars])
+  ...
+}
+```
+(and the parallel `ctx.types.typedElem`/`typedLen` merges a few lines below)
+— restored (`ctx.schema.vars = prevSchemaVars`) at the function's tail
+(line ~2237). `ctx.schema.vars` is the whole-program schema-fact table
+(populated during `plan`/`analyzeFuncs` over the ENTIRE bundled 155-module
+AST for jz×jz); if `cb.schemaVars` is set (this closure captures ANY
+schema-typed variable), EVERY closure body pays a fresh `O(|ctx.schema.
+vars|)` Map clone for the DURATION of compiling just that one body. For a
+program whose own schema-fact table scales with total module count,
+compiling `N` closures this way costs `O(N × programSize)` — exactly the
+superlinear-in-program-size, not-superlinear-in-closure-count shape the
+measured curve shows (bounded ~60 rounds regardless of graph size, but
+COST PER ROUND scaling with the whole program). Not confirmed by directly
+measuring `ctx.schema.vars.size` at runtime this session (would need either
+a native-only console instrumentation pass or another kernel-build cycle,
+budget did not allow after the Task 1 headline finding was secured) — this
+is a strong, specific, line-cited hypothesis, not a proven root cause.
+
+### Verdict
+
+**(b) Pathology — a superlinear-cost per-closure-body compile step inside
+`compileAst`'s `buildStart`/`emitClosures` machinery, not (a) a genuine
+live-working-set floor.** The evidence against "floor": front (which DOES
+hold all 155 modules' bundled live AST + `ctx.module`/`ctx.func`/
+`ctx.scope` state simultaneously, by construction, since it produces ONE
+merged AST) finishes at a modest 1 GB; the wall isn't hit until deep inside
+per-closure codegen, and it's hit at a MUCH lower call-count than the
+program's own closure count would predict from the three smaller graphs'
+scaling — a real floor would show cost tracking closure/function COUNT
+roughly linearly across all four graphs, not degrading sharply only on the
+largest one.
+
+**Design lever** (not implemented this session — a fix candidate, gated on
+confirming the `ctx.schema.vars`/`ctx.types.typedElem` hypothesis first):
+replace the eager `new Map([...prevSchemaVars, ...cb.schemaVars])` full
+merge-copy with a cheap two-level overlay (check `cb.schemaVars` first, fall
+through to `prevSchemaVars` on miss — the same shape `ctx.func.
+localValTypesOverlay`'s own naming already gestures at elsewhere in this
+codebase) — turns an `O(programSize)`-per-closure cost into `O(|cb.
+schemaVars|)`, i.e. `O(closure's own capture count)`, independent of total
+program size. This is a conceptual fix (the allocator/region-arena
+machinery is not implicated at all — Slice 1-3's mark/exit discipline is
+irrelevant to this specific cost, which is live JS-level `Map` churn inside
+ONE synchronous call, never spanning a region boundary), not a region-arena
+lever — explains cleanly why Slice 3 (compileAst's OWN region, mark-at-
+entry/exit-at-return) measured ZERO benefit on jz×jz despite the ÷2 result
+on three real smaller graphs: the trap fires deep inside `buildStart`,
+before `compileAst`'s own single exit/reclaim EVER runs — a whole-phase
+region can only reclaim once the WHOLE phase completes, and jz×jz's phase
+never completes. No region-boundary redesign (finer interior regions, a
+mark/exit per closure round) would help either, UNTIL the underlying
+per-closure cost itself stops scaling with program size — reducing the
+LIVE peak first is the prerequisite, not a substitute, for any interior
+region checkpoint being worth adding.
+
+**Next named lead**: confirm the `ctx.schema.vars`/`typedElem` hypothesis by
+instrumenting `emitClosureBody`'s entry with a size read into `__dbg_mem`
+(same breadcrumb technique, one more kernel-build cycle) across a couple of
+closures early vs. late in `buildStart`'s walk — if `prevSchemaVars.size`
+climbs roughly linearly with modules-processed-so-far while being re-cloned
+every closure, that's the confirmed, measured smoking gun; if it stays
+small, the search continues elsewhere in `emitClosureBody`'s ~340-line body
+(the `typedElem`/`typedLen` merges are the other two candidates, same
+shape, not yet distinguished from `schemaVars` as the dominant cost).
+
+### Task 2 (`__region_relocate_props` defect) — surveyed, not advanced
+
+Budget after Task 1's headline finding did not extend to another empirical
+(kernel-build) cycle. Read `ctx.transform`'s full declared shape
+(`src/ctx.js:84-91`: user opts + derived `optimize` cfg + THREE injected
+service FUNCTIONS — `parse`, `jzify`, `resolveUrl`) and traced whether
+`DOLLAR`/`stdlibParseCache` (the two caches `scripts/self.js`'s `setupSelf`
+explicitly clears+rebuilds every compile, `clearDollar`/
+`clearStdlibParseCache`) are reachable through `ctx.transform.parse`/
+`.jzify`'s closure environments, as a candidate for the "ephemeral value
+reached only via `ctx.transform`" mechanism 233bf8b5 asked for. They are
+NOT — `DOLLAR` lives in `src/ir.js`, `stdlibParseCache` in `src/wat/
+assemble.js`, both module-scope `let` bindings independent of `parse.js`'s/
+`jzify/index.js`'s own module scope; no import chain connects them to
+`ctx.transform`'s two service functions specifically. This rules out one
+candidate mechanism but does not name the real one — genuinely banked, not
+advanced beyond 233bf8b5's own breadcrumb evidence and store-side next
+lead ("extend the mark-time breadcrumbs to the STORE side — which write
+leaves a stale/wrong-address props pointer reachable from `ctx.transform`").
+
+### Gates
+
+- Native `npm test`: 3436/3428 pass/2 fail (pre-existing, documented)/6
+  skip — clean, watr-bump-only diff from baseline.
+- Dormant self-build ×2: SHA-256
+  `2eb9f61724d05d438c1c0e161911e8a55f40c982a8f56c6a84052e2d6b414bca` both
+  times.
+- Dormant kernel-oracle: 13/13 (541 assertions).
+- Region-live/Task-2 oracle NOT re-gated this session (no functional source
+  change — investigation only, `module/core.js`/`scripts/self.js` fully
+  reverted to `233bf8b5`, confirmed via `git diff` clean before writing this
+  entry).
+- jz×jz: still does not compile under 4 GiB, either config — goal gate NOT
+  met. Root mechanism now named (see Verdict); fix not yet attempted.
+
+### Disposition
+
+**Banked with a concrete, line-cited next lead**, per the task's own
+framing. The named lead (Task 1) is answered with hard evidence: this is a
+pathology, not a floor, localized to `emitClosureBody`'s per-closure
+`ctx.schema.vars` (and likely `typedElem`/`typedLen`) full-Map-clone
+pattern, growing with total program size rather than with closure size —
+one more instrumentation cycle would convert "strong hypothesis" into
+"measured root cause," and the fix itself (an overlay instead of a clone) is
+a small, local, conceptually clean change once confirmed. Task 2 got a
+partial elimination pass, not a fix. The watr `5.7.15` pin bump is the one
+piece of this session that ships as-is — mechanical, zero-regression, gated.
+
+**SHAs**. jz worktree: `233bf8b5` base, this session's commits are the
+`package.json`/`package-lock.json` watr pin bump plus this ledger entry
+(instrumentation to `module/core.js`/`scripts/self.js` used during
+investigation, fully reverted, never committed). watr: `5.7.15`
+(`2bde3c1`), confirmed content-identical to `895ca5b` via `npm pack` +
+`diff -rq` against `/Users/div/projects/watr/src`. Dormant `dist/jz.wasm`
+(this session, self-build ×2): SHA-256
+`2eb9f61724d05d438c1c0e161911e8a55f40c982a8f56c6a84052e2d6b414bca` (both
+builds identical).
+
+## §Region arena — jz×jz closure-clone pathology FIXED (MapOverlay); the goal
+## gate still traps at the 4GiB wasm ceiling, but for a DIFFERENT, LATER
+## reason now measured and named: watr's own `watOptimize` pass, not
+## `compileAst`'s closure machinery (2026-08-13)
+
+**Task**: implement 2a78a6f6's own named design lever — replace
+`emitClosureBody`'s eager `new Map([...prevSchemaVars, ...cb.schemaVars])`
+(and the parallel `ctx.types.typedElem`/`typedLen` merges) with a two-level
+overlay, O(closure's own captures) instead of O(programSize) per closure —
+then re-run the jz×jz goal gate to see whether `compileAst` now completes
+under 4 GiB.
+
+### The fix
+
+**`MapOverlay`** (`src/compile/index.js`, defined just above
+`emitClosureBody`): a plain factory (`makeMapOverlay(base, own)`, not
+`class` — see below), two layers — `own` (this closure's own captures,
+starts as a small `new Map(cb.schemaVars)`/`new Map(cb.typedElems)`/
+`new Map(cb.typedLens)` copy, bounded by the closure's own capture count)
+checked first, falling through to `base` (the enclosing table — the
+program-wide `ctx.schema.vars`, module-global `ctx.scope.globalTypedElem`/
+`globalTypedLen`, or an enclosing closure's own overlay for nested
+closures) on miss. `get`/`has` are the read path; `set` writes only into
+`own`; `delete` (see the `class`-avoidance note) tombstones in `own` so a
+base-visible key reads as absent without ever touching `base`. Construction
+is O(1); every operation is O(1) amortized (native `Map.get/has/set` on
+whichever layer), independent of `base`'s size. Shadow order matches the
+old eager merge exactly — `own` wins on key collision, same as the second
+spread (`...cb.schemaVars`) winning in `new Map([...prev, ...cb])`. The
+three `emitClosureBody` assignment sites (`ctx.schema.vars`,
+`ctx.types.typedElem`, `ctx.types.typedLen`) now build a `makeMapOverlay(...)`
+instead of a clone; the tail restore (`ctx.schema.vars = prevSchemaVars`,
+`ctx.types.typedElem = prevTypedElems`) is unchanged — "restore" was always
+just re-pointing the ctx field back at the parent's value, which composes
+fine whether that value is a real `Map` or another `MapOverlay` (nested
+closures re-overlay on top of an overlay `base` transparently).
+
+**Consumer audit** (why a facade, not per-call-site conversion): grepped
+the WHOLE repo (not just `src/` — see the miss below) for `schema.vars`,
+`types.typedElem`, `types.typedLen`. Every read across analyze.js, emit.js,
+emit-assign.js, infer.js, inplace-store.js, plan/scope.js, program-facts.js,
+prepare/index.js, type.js, kind.js, kind-traits.js, static.js is a bare
+`.get`/`.has`/`.set`/`.delete` — never a spread, `.keys()`/`.entries()`/
+`.values()`, `for..of`, or `.size` while a closure body could be
+mid-emission. A facade is a complete, zero-consumer-edits substitute.
+
+**The one real miss, caught by testing, not by the audit**: my grep was
+scoped to `src/` and missed `module/function.js:227` — `ctx.closure.make`'s
+own capture-scan, which built `new Set(ctx.schema.vars.keys())` (a SECOND,
+separate O(programSize) full-table copy, at closure-CREATION time, firing
+for every arrow/function-expression literal seen while ANY body emits — the
+more frequent, and on measurement the DOMINANT, sibling of
+`emitClosureBody`'s own per-BODY merge) then handed it to
+`findFreeVars(body, params, refs, schemaNames)` as the `scope` param. Naive
+fix #1 (pass `ctx.schema.vars` straight through, since `findFreeVars`'s
+`scope.has(name)` read looked read-only) broke `npm test` immediately — 111
+NEW failures, `internal: out.add is not a function` — because
+`analyze-scans.js`'s `findFreeVars` has a SECOND, easy-to-miss use of
+`scope`: its own `let`/`const`/`for(let…)` branches call
+`collectParamNames(decls, scope)`, which calls `scope.add(name)`, to record
+body-local shadow declarations (so a closure's own inner `let x` doesn't
+get misread as a free reference to an outer schema var named `x`) — a real
+MUTABLE Set interface, not read-only lookup, and `ctx.schema.vars` is a
+`Map` (no `.add`). Fixed properly with the same two-layer split MapOverlay
+uses, inlined for this one call site: a fresh per-closure `scopeOwn = new
+Set()` that `.add` writes into, `.has` checking `scopeOwn` then
+`ctx.schema.vars` — O(1) construction, shadow-writes never leak into the
+shared program-wide table. **Lesson for future overlay work in this
+codebase**: audit READ shape is not enough for a "pass the live table
+through" style fix — audit for MUTATION methods on the SAME parameter too,
+at every call site, not just the immediate one.
+
+**No `class`, no `delete`-as-method-name**: `src/compile/index.js`'s own
+source text is bundled into the self-host kernel (jz compiles jz), so new
+code here must self-host. First attempt used `class MapOverlay { … delete(k)
+{…} }` — broke the self-host `selfhost-build.mjs` build outright (subscript,
+the self-hosted front end's own parser, chokes on `delete` as a
+class-method-definition name — a reserved word in definition position;
+`.delete(x)` as a plain member-access CALL, already used throughout the
+self-hosted corpus, is fine). Also `class` itself is otherwise UNUSED
+anywhere in `src/`/`module/` — an untested self-host surface not worth
+risking even after working around the `delete` issue. Rewrote as a plain
+factory function returning an object literal; `.delete` is attached via a
+post-hoc assignment (`overlay.delete = (k) => {…}`, the same
+member-access-after-dot production every existing `.delete(...)` call site
+already exercises) rather than defined inline.
+
+### The goal gate: NOT met, but the named pathology IS fixed — measured,
+### not inferred
+
+Peak-memory reads via `self.memory.buffer.byteLength` after
+`self.exports.default(...)` (the established `mem-curve.mjs` method) still
+show jz×jz trapping at exactly 4294967296 bytes (4 GiB) in BOTH dormant and
+region-live self-host kernels, both before AND after this fix — the coarse
+"did it fit" outcome is unchanged. That reading alone doesn't distinguish
+"the fix did nothing" from "the fix helped a lot but a DIFFERENT cost now
+fills the same ceiling" — `buffer.byteLength` only ever reports the last
+successfully-grown size, always landing at the hard cap on ANY trap
+regardless of how close-vs-far the real peak was. Needed a finer probe.
+
+**Native phase-by-phase measurement (compile()'s own first-class
+`opts.profile` sink — zero source perturbation, the exact instrumentation
+seam index.js already ships) is unambiguous.** Compiling jz×jz NATIVELY
+(same `src/compile/index.js`, no wasm ceiling) with `opts.profile`:
+
+| build | `emitClosures` calls before done/trap | `compile()` outcome | peak RSS at `compile()` done |
+|---|---|---|---|
+| base (2a78a6f6, pre-fix) | 27 total `timePhase` calls reached, deep in `buildStart`'s flush, TRAPPED (documented in 2a78a6f6's own entry, wasm-side) | — | — (wasm-only measurement, no native equivalent run this session) |
+| this session's fix | **3** `emitClosures` calls, ALL complete | **COMPLETES** | **~2021 MB** |
+
+`compile()` — the WHOLE plan→analyze→emit→closures→buildStart→optimizeModule
+pipeline — now finishes natively in 26.6 s at ~2 GB peak RSS, where the base
+kernel's own wasm-side measurement never got past round 27 of an
+open-ended `emitClosures` flush at 4096 MB. `emitClosures` firing only 3
+times (not dozens) is the direct, load-bearing confirmation: the named
+O(programSize)-per-closure pathology is gone.
+
+**The FULL native pipeline (`compile()` + watr's own `watOptimize` +
+`watrCompile`/encode — i.e. everything `jz.compile()` does, matching what
+the self-host kernel's own `compileSelf` does) completes too, at 201.5 s /
+3840.7 MB peak RSS — under 4 GiB natively, but only by ~450 MB, and the
+memory growth from `compile()`-done (~2 GB) to finish (~3.84 GB) happens
+almost entirely inside ONE later phase**: `watOptimize` (144.1 s,
++1.8 GB) — watr's own whole-module optimizer, NOT jz's own `optimizeModule`
+(`optMod:*`, ~2.0→2.05 GB, modest) and NOT `compileAst`/closures (already
+done by then). This is a genuinely different, later, out-of-scope
+mechanism — watr's optimizer operating on a legitimately huge (~10 MB)
+compiled module, not a per-closure pathology in jz's own emit path.
+
+**Cross-check that rules out "jz-level optimize is secretly still the
+lever"**: re-ran the wasm kernel at `optimize:{level:0}` (jz's own optimizer
+passes off) — it STILL traps at the identical 4 GiB ceiling, and takes
+LONGER (10.5 s vs 6.6 s at level 2), not shorter. Consistent with: watr's
+own tail optimize pass runs regardless of jz's optimize level (governed
+independently), so skipping jz's own passes only hands watr a BIGGER,
+less-pre-folded module to optimize — worse, not better. This is direct
+evidence the remaining ceiling is watr-side, not jz-closures-side.
+
+**Why the wasm kernel still traps despite native fitting under 4 GiB**:
+the self-hosted kernel's own runtime (jz's NaN-boxed heap model, no
+compaction, coarser allocation granularity than V8's tagged-object heap)
+almost certainly carries a real "self-hosting tax" over native V8 for the
+same algorithmic work — a ~3.84 GB native peak, sitting only ~450 MB under
+the ceiling, is exactly the kind of margin a modest per-allocation overhead
+multiplier would erase. Not measured directly this session (would need the
+same `opts.profile`-shaped per-phase breadcrumb wired through the
+self-hosted kernel's own memory reads, one more kernel-build cycle); named
+as the leading hypothesis, not proven.
+
+**Module-ladder / curve**: the coarse `memory.buffer.byteLength` metric
+turned out to be an unreliable cross-comparison instrument even at the
+established jessie/watr/jzify-entry sizes — re-running the ESTABLISHED
+4-point corpus (jessie/watr/jzify-entry/jz×jz) against the FIXED dormant
+kernel landed on jessie=1073.7 MB, watr=2147.5 MB, jzify-entry=4295 MB
+(barely fits, `ok:true`), jz×jz=4295 MB (traps) — every row a
+power-of-two-MiB tier HIGHER than 2a78a6f6's own documented table
+(512/1024/2048/—), which looked like a regression until the SAME script
+against the region-jzjz worktree's OWN pre-existing (non-this-session)
+`dist/jz.wasm` on this machine produced the IDENTICAL numbers
+(1073.7/2147.5/4295/4295) — an environment/measurement-granularity
+difference (this session's Node.js v25.9.0 wasm memory implementation,
+almost certainly), not a real regression from this fix. Byte-identity
+(below) is the real "did codegen change" gate, not this coarse peak-MB
+reading — a genuine 20/50/100/155-module ladder wasn't built (constructing
+valid module-count SUBSETS of jz×jz's own real import graph without
+producing an invalid/incomplete program is nontrivial and wasn't
+attempted); the native phase table above is the more precise substitute
+this session actually has.
+
+### Byte-identity (the strongest gate here)
+
+Native `compile(code, {modules, optimize})` for jessie/watr/jzify-entry at
+optimize 0/1/2/3 (12 rows), base worktree (2a78a6f6, unmodified) vs this
+session's fix: SHA-256 of every compiled output byte-IDENTICAL, all 12
+rows. The overlay is pure mechanism — confirmed zero output change for any
+tested program at any optimize level.
+
+### Gates
+
+- Native `npm test`: 3436/3428 pass/2 fail (pre-existing, documented)/6
+  skip — byte-for-byte the same tally as 2a78a6f6's own baseline.
+- `test:wasm`: 2731/2725 pass/0 fail/6 skip.
+- Kernel-oracle, dormant (this session's fixed kernel): 13/13 (541
+  assertions) × 3 runs, identical every time.
+- Kernel-oracle, region-live (this session's fixed kernel, all three
+  `REGION_HOOKS_ACTIVE` boundaries firing): 7/13 × 3 runs, identical every
+  time — the SAME 6 failures every run (kernel-parity byte-identical-WAT at
+  O0/O2, kernel-oracle native+kernel-agree-with-JS at O0, ×2 more, the
+  KNOWN-FAIL audit-#16 bigint-module-ordering row) — matches the task's own
+  expected 7/13 (the OPEN `ctx.transform` defect from 233bf8b5, unchanged by
+  this session, not chased). No further regression.
+- Self-build determinism: dormant ×3 total builds (two direct + one
+  flag-revert re-check), SHA-256
+  `6e9e6c09598c863a41697effcbfc33f64b8f05e24e10b3bfddb8a22be03b1614`, all
+  three identical. Region-live ×2, SHA-256
+  `c30d44f2c55d4fa1f8668a7bd07e0a71cea7816a89a4c6388d9260b94e5459a9`, both
+  identical.
+- Byte-identity vs base (jessie/watr/jzify-entry × optimize 0-3, native):
+  12/12 rows SHA-identical.
+- `node_modules/watr`: 5.7.15 confirmed intact before and after (the `let
+  SW = []` fix present), package.json/package-lock.json untouched by this
+  session.
+- jz×jz goal gate: does NOT complete under 4 GiB in either self-host
+  config — goal gate NOT met. Root mechanism this session was tasked with
+  (closure-body/closure-creation schema/typedElem full-table clones) is
+  fixed and measured-fixed (native: `emitClosures` 27+/trapped →
+  3/complete); the ceiling that remains is a DIFFERENT, later, out-of-scope
+  mechanism (watr's own `watOptimize` pass, ~144 s / +1.8 GB natively) —
+  named, not fixed.
+
+### Disposition
+
+**Landed, both fixes** (`src/compile/index.js`'s `MapOverlay` +
+`emitClosureBody`'s three call sites; `module/function.js`'s
+`ctx.closure.make` capture-scan). Both are pure mechanism — zero output
+change (byte-identity gate), zero behavior change (kernel-oracle/npm
+test/test:wasm all at documented baseline) — and both are independently
+measured-necessary (the module/function.js fix alone was required once the
+emitClosureBody-only fix left the trap byte-for-byte unchanged; discovered
+via native phase profiling, not by re-guessing).
+
+**The goal gate itself is not met**, but not for the reason 2a78a6f6 named
+— that specific, named, line-cited pathology is gone, replaced by a
+DIFFERENT, LATER, well-evidenced next lever: watr's own module-level
+optimizer, whose ~144 s / +1.8 GB native cost on jz×jz's ~10 MB compiled
+output is now the dominant remaining cost, sitting close enough to the
+4 GiB wasm ceiling (native peak 3.84 GB) that the self-host "tax" very
+plausibly tips it over (named hypothesis, not measured this session).
+**Next named lead**: wire the same `opts.profile`-shaped breadcrumb
+technique THROUGH the self-hosted kernel (mirroring 2a78a6f6's own
+`__dbg_mark`/`__dbg_stage`/`__dbg_mem` wasm-global convention, or a fresh
+equivalent) specifically around `watOptimize`'s own internal passes (`rec`/
+`substGets`/`count`/`walkN`/`walkPostN` were the hottest native symbols in
+a `--prof` capture of this run) to confirm the self-host-tax hypothesis and
+find whether watr's optimizer has its own O(programSize)-repeated-per-unit
+cost analogous to the one just fixed here, or whether it's a genuine
+"the module is just this big" floor that needs a different lever entirely
+(chunked/streaming optimization, a size-tier default for kernels this
+large, or accepting jz×jz needs memory64).
+
+**SHAs**. jz worktree: `2a78a6f6` base, this session's commits are the
+`src/compile/index.js` + `module/function.js` pair above plus this ledger
+entry. watr: `5.7.15`, confirmed intact (unmodified by this session).
+Dormant `dist/jz.wasm` (this session, self-build ×3 total across the
+fix-development and final-revert builds): SHA-256
+`6e9e6c09598c863a41697effcbfc33f64b8f05e24e10b3bfddb8a22be03b1614` all
+three. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`c30d44f2c55d4fa1f8668a7bd07e0a71cea7816a89a4c6388d9260b94e5459a9` both.
+## §Region arena — watr optimizer memory/time lever: ROOT-CAUSED and FIXED
+## upstream (watr optimize-mem-2026-08-13, unpublished), engine-level,
+## byte-identical; jz×jz goal-gate re-measured (2026-08-13)
+
+**Task**: 259cd4fc named the next lever after the closure-clone fix: watr's
+own `watOptimize` pass, +1.8GB / ~144s on the jz×jz compiled module (native
+full pipeline 3.84GB peak, self-hosted kernel still traps at 4GiB). Profile
+watr's optimizer at the engine level, fix the dominant cost class, verify
+byte-identity, re-measure the goal gate.
+
+### Repro harness
+
+Dumped the pre-`watOptimize` module for jz×jz (153-module self-host graph,
+`resolveSelfhostBuild({optimize:3})`) as WAT text via a temporary,
+uncommitted hook in the jz worktree's `index.js` (reverted before any gate
+run — never landed). 389MB WAT text, 6437 top-level `(func …)` nodes
+(closures/specializations/stdlib, not jz's own 2071-entry `ctx.func.list`).
+Drove watr's `optimize()` directly (parse once, then isolate the call) with
+per-pass-boundary `process.memoryUsage()`/wall-clock sampling — cleaner
+signal than the noisy full end-to-end pipeline (see below).
+
+### Per-pass profile (isolated optimize() harness, jz×jz WAT, watrGuard:false
+### — the config `resolveWatrOpts` actually resolves for jz's level-3/self-
+### host profile)
+
+| stage | funcs | wall Δ | RSS behavior |
+|---|---|---|---|
+| entry clone(ast) | — | 0.4s | +579MB retained (defensive copy, unconditional even under guard:false — public-API immutability contract, not touched) |
+| round 1 (dirty=null, ALL funcs) — every pass EXCEPT propagate | 6437 | ~8s combined | modest, +100-300MB per pass, mostly churn |
+| **round 1 propagate** | 6437 | **19.0s** | RSS 4108→2621MB (major GC fires mid/post-pass) |
+| round 2 propagate | 6186 | 8.3s | similar GC-triggering churn |
+| round 3 propagate | 3323 | 4.6s | — |
+| rounds 4-6 propagate | shrinking dirty | <1s each | dirty-set filtering already effective by here |
+| **runInline: propagate(post-inlineWrappers), WHOLE ast** | 6437 (unfiltered) | **4.3s** | -377MB (GC) |
+| **runInline: propagate(post-inline), WHOLE ast** | 6437 (unfiltered) | **4.5s** | -98MB (GC) |
+| finish: cse (once, by design) | 6437 | 7.7s | +475MB retained (not reclaimed — organic per-func memoization, not a leak; cse is intentionally whole-module/once per its own design comment) |
+
+Total optimize() wall: 121.9s / 122.1s (2 baseline runs). `/usr/bin/time -l`
+peak RSS 5336-5521MB, peak footprint 8492-8882MB in this synthetic
+parse-from-text harness (front-loaded ~3.3GB just to parse 389MB of WAT text
+— NOT representative of the real pipeline, which hands optimize() a live AST
+with no text round-trip; used only for pass-relative attribution).
+
+### Root cause
+
+`runInline` (inside `optimize()`'s `finish()`) calls `propagate(a)` on the
+**whole module** twice — once after `inlineWrappers`, once after `inline` —
+unconditionally, regardless of how many functions those passes actually
+touched. `propagate` has NO internal dirty-awareness: every invocation does
+a full `O(funcSize)` scope-walk + up-to-6-round internal fixpoint for EVERY
+function reached, whether or not anything changed. Contrast with the ROUND
+LOOP's own use of `propagate`, which already runs it per-function through
+`per(fn)` gated by the round's `dirty` set (correctly cheap on later
+rounds) — `runInline`'s two extra calls were the only remaining
+whole-module, ungated re-scans.
+
+**Provably redundant, not just slow**: `propagate` is per-function-local
+(its entire working set — `CNT`, `known`, scopes — is scoped to one
+`funcNode`; no cross-function state). By the time `finish()` runs, EVERY
+function already sits at a propagate fixpoint — either the round loop
+converged it, or the round loop's own post-round sweep
+(`if (opts.propagate && dirty) for (const f of dirty) propagate(f)`,
+existing code, unchanged) gave it one more chance. So re-running
+`propagate` on a function `inlineWrappers`/`inline` did NOT touch
+reproduces exactly nothing — pure repeated cost, and (per the profile
+above) the single biggest churn generator after round-1's mandatory first
+pass.
+
+### Fix (watr, `optimize-mem-2026-08-13`, commit `4e399df`)
+
+`inline`/`inlineWrappers` now accept an optional `touched` Set and record
+every function whose content they actually rewrote (`inline`: callers a
+splice landed in, never the callee itself, which is only read from;
+`inlineWrappers`: the wrapper function, never the callee it copies from).
+`runInline` passes a `Set`, then propagates only `touched` instead of the
+whole ast — same idiom the post-round dirty sweep already uses
+(`for (const f of touched) propagate(f)`).
+
+No input-specific special-casing: this is a scale-class fix (any module
+where inline/inlineWrappers touch a small fraction of total functions
+benefits proportionally; a module where they touch everything is
+unaffected — same total work, just no longer duplicated for the untouched
+majority).
+
+### Gates (watr)
+
+- npm test (native): 611 total / 591 pass / 0 fail / 20 skip — identical to
+  pre-fix baseline (previously re-cloned worktree, submodule test/official
+  content-identical, `main`-equivalent baseline).
+- `WATR_WASM=1 npm test` (watr dogfooding its own optimizer to compile
+  itself): 611/591/0/20 — identical. Rebuilt `dist/watr.wasm` with the
+  fixed optimizer: SHA-256-IDENTICAL to the published 5.7.16 artifact
+  (`93b5a0bb9c6db9c0a99058d0dff2c0a1f8f36208004a8f3896b3e465efd8b44f`) —
+  the fix changes zero output bytes even when watr compiles itself with it.
+- jz×jz WAT (the actual target input): optimize() output SHA-256-IDENTICAL
+  before/after, 2 independent runs each side
+  (`7719cb68e21323e133cbb8391deea210634bcee1865342ce2dfe693b0ace452f`).
+  Wall time 121.9s/122.1s (baseline) → 110.5s/[…]s (fixed), ~9% faster, in
+  the isolated (low-noise) harness.
+- Committed: watr repo, branch `optimize-mem-2026-08-13`, commit `4e399df`
+  (`src/optimize.js` + `CHANGELOG.md` "Unreleased" entry). NOT published —
+  pristine-pin policy; jz's `package.json` pin stays at `5.7.15` until a
+  real publish.
+
+### End-to-end (jz worktree, candidate overlaid ONLY into the worktree's own
+### node_modules copy — /Users/div/projects/jz and its node_modules
+### confirmed byte-for-byte untouched before/after, verified by hash)
+
+Full native pipeline (`compile()` + `watrTail`/`watOptimize` + `watrCompile`
+encode) on this session's shared/contended machine (multiple concurrent
+UNRELATED sessions running their own jz self-host builds throughout the
+whole session — confirmed via `ps`/`lsof` cwd inspection, not a product of
+this session): 3 runs (2 fixed, 1 baseline, interleaved A/B), noisy —
+maximum RSS 3475-3868 MB, peak footprint 4596-5172 MB, wall 311-336s, no
+clean directional win at this noise floor (machine contention exceeds the
+fix's effect size in this metric). All three runs stayed comfortably under
+the 4 GiB native ceiling regardless (consistent with 259cd4fc's own
+3.84 GB baseline reading) — this was never the tight constraint; the
+self-hosted kernel's own tax is.
+
+**Self-hosted goal gate (the actual target): dormant kernel, jz×jz, THIS
+session's watr fix overlaid** — `unreachable` trap at exactly 4,294,967,296
+bytes (4 GiB), **9.1 seconds** total wall from cold instantiate to trap.
+Driver verified correct (sanity-checked against a trivial single-file
+compile and a trivial 2-module compile through the SAME kernel/ABI, both
+succeeded cleanly) — and the exact "unreachable @ 4,295.0 MB" shape matches
+a PRE-259cd4fc session's own documented dormant-kernel jz×jz row exactly
+(`.work/research.md` "§Region arena — BOTH standing rows are ONE
+mechanism", the jz×jz row: "FAIL — `unreachable` @ 4,295.0 MB", both
+dormant and region-live, "Slices 2/3 unbuilt"). This is the SAME trap,
+reproduced, not a new one.
+
+**Why this fix cannot plausibly move that number**: 9.1 seconds is far
+too fast to have reached `watOptimize` at all — natively, `compile()`
+alone (parse→analyze→emit→closures, i.e. everything BEFORE `watOptimize`
+starts) takes ~27s at ~2GB peak (259cd4fc's own native measurement,
+unchanged this session). A self-hosted equivalent, even accounting for a
+real "self-host tax" (NaN-boxed heap, no compaction, coarser allocation
+granularity than V8), completing in 9s is dying somewhere in
+parse/analyze/emit/closures — BEFORE the pipeline ever reaches
+`watrTail`/`watOptimize`, the pass this session's fix touches. The
+blocking mechanism this session measured for the self-hosted path is
+upstream of where the fix operates; the fix is real, verified, and
+byte-identical, but it cannot be the lever that closes THIS gate. Region-
+live attempted anyway (task's own instruction), see below.
+
+**Region-live kernel, same jz×jz graph, THIS session's watr fix overlaid**
+(`REGION_HOOKS_ACTIVE = true` hand-flip in `scripts/self.js`, rebuilt via
+the same `build-dist.mjs` path, reverted before any other gate ran): SAME
+outcome — `unreachable` trap at exactly 4,294,967,296 bytes, 9,478 ms total
+wall (vs dormant's 9,148 ms — no meaningful difference). Confirms: this is
+NOT the region-arena-fixable mechanism either (matches the OLDER, pre-
+259cd4fc session's own table row: "jz×jz is unchanged in EITHER kernel —
+same deliberate `unreachable` abort... Slices 2/3 unbuilt" — same finding,
+independently reproduced by this session with this session's watr fix
+applied, region-live kernel SHA `11c1c9bd…`, dormant `94132711…`).
+
+### jz gates (overlaid candidate, native `dist/jz.wasm` cached from the
+### fixed watr build)
+
+- **npm test (native)**: `3436` total (`19696` assertions) / `3428` pass /
+  `2` fail / `6` skip — the 2 failures are the SAME documented pre-existing
+  pair (interval-walk / typed-RMW codec bounds-check shape assertions,
+  unrelated to watr/optimize), matching 259cd4fc's own baseline tally
+  exactly. Required TWO retries: the first two attempts crashed silently
+  (no stack trace, process just vanished) at nearly the identical spot
+  in the suite (~line 17,100-17,200 of console output, inside a CPU-heavy
+  `Math.pow`-fold ULP-grid regression test) — traced to this shared
+  machine running MULTIPLE OTHER sessions' own concurrent jz self-host
+  builds throughout (confirmed via `ps`/`lsof` cwd on the surviving
+  processes, e.g. a `scratchpad/heal-landing` cwd unrelated to this
+  session) exhausting system memory at that point; NOT reproduced once
+  contention eased for the third attempt, which ran the exact same
+  section cleanly. Documented here in the interest of not silently
+  omitting inconclusive prior attempts.
+- **test:wasm**: launched (`JZ_TEST_TARGET=jz.wasm node test/index.js`,
+  routes every compile in the suite through `dist/jz.wasm` — a fresh
+  512MB wasm instance per compile, per its own header comment) — did NOT
+  finish within this session's time budget. Zero failures in everything
+  it did complete (several thousand assertions, including a full pass
+  through the same `Math.pow`-fold ULP-grid section that stress-tested
+  npm test above) before the session had to close out; the dominant cost
+  observed was per-test wasm-instantiation overhead (inherent to this
+  target, unrelated to the watr fix) compounded by the same shared-machine
+  contention noted above. Not a substitute for npm test's kernel-parity/
+  kernel-oracle rows (already green, exercising the SAME `dist/jz.wasm`
+  built with this session's watr fix) — banked, not required to re-prove
+  correctness beyond what's already shown.
+- **Self-build determinism (dormant)**: 2 independent process invocations
+  (this session's `scripts/build-dist.mjs` run, and an earlier standalone
+  `compile(profile.graph.code, {...resolveSelfhostBuild({optimize:3})})`
+  driver run) — SHA-256 `94132711b99019a8d6da2cf43bdd2b5ddddef15af434510aaa734edac187bbb8`,
+  both identical.
+- **kernel-oracle / kernel-parity**: part of the native `npm test` run
+  above (both files run through `test/index.js`'s aggregation) — 0
+  failures attributable to either, folded into the 3428/2 tally.
+
+### Disposition
+
+Landed in watr (uncommitted-to-jz, per pristine-pin policy — jz consumes it
+only after a real npm publish, out of this session's authority). jz-side:
+ledger-only, this entry, on the 259cd4fc detached chain.
+
+**The named pathology this session was tasked with (watr's `watOptimize`
+whole-module cost) IS fixed** — real, byte-identical, ~9% faster in
+isolation, committed upstream. **The goal gate itself is NOT met** — not
+because the fix failed, but because the self-hosted kernel's OWN blocking
+mechanism sits upstream of watOptimize entirely (parse/analyze/emit/
+closures, self-host tax), unchanged by this session and effectively
+unreachable-in-9-seconds regardless of what happens later in the pipeline.
+**Next named lead** (unchanged from what 259cd4fc already named, now
+sharpened): instrument the self-hosted kernel's OWN early phases (the
+`__dbg_mark`/`__dbg_stage` wasm-global breadcrumb convention already used
+elsewhere in this codebase) to find where inside parse/analyze/emit/
+closures the self-host tax actually blows the budget — this session's
+9-second/4GiB reading proves it's early, not late, but does not localize
+further without that instrumentation.
+
+## §Region arena — jz×jz phase-localized: the burn is entirely inside
+## `plan()`'s `narrowSignatures` pass (src/compile/narrow.js), NOT front()
+## and NOT compileAst's emit/closures — WAT-spliced breadcrumb evidence,
+## root cause named (unindexed O(functions×params×callSites) call-site
+## re-scan), WALLED on the fix per this session's own narrow.js exclusion
+## (2026-08-13)
+
+**Task**: 332ec25c named the next lead precisely — the 9s/4GiB self-hosted
+trap (both dormant and region-live, unchanged by 259cd4fc's closure-clone
+fix or this chain's own upstream-unpublished watOptimize fix) is "far too
+fast to have reached watOptimize… dying somewhere in parse/analyze/emit/
+closures" — and named the exact next step: breadcrumb the self-hosted
+kernel's own phases with `__dbg_mark`/`__dbg_stage` wasm globals to find
+where. This session built that instrumentation and ran it.
+
+### Method — WAT-spliced breadcrumbs on the ALREADY-BUILT kernel, no jz
+### source touched
+
+Reused the existing worktree at `region-final-2026-08-11`/`332ec25c`
+(`.../scratchpad/region-slice2-front`), `npm ci`'d fresh (not the
+`node_modules/watr` symlink convention — a genuine registry install).
+**Content-verified watr 5.7.15's `src/optimize.js`**: both hunks of the
+SW-rides-regionExit fix (446343c4's own subject) present verbatim — `let SW
+= []` (line 3102, not `const`) and the regionExit call site's 5-element
+root bundle (`[ast, dirty, snapshots, opts.constF64, SW]` /
+`SW = __regionOut[4]`, lines 8492-8493) — so the published pin is the real
+fix, not a stale tarball (the exact blind spot 446343c4 itself named).
+Diffing further against `/Users/div/projects/watr`'s own working tree
+showed that repo has since moved ahead with unrelated, unpublished work
+(an "optimize if-condition constants" feature + 332ec25c's own unpublished
+watOptimize fix) — correctly NOT overlaid; jz stays pinned at the pristine
+published 5.7.15 per policy.
+
+Built two NAMED kernels (`compile(profile.graph.code, {modules, memory,
+optimize: profile.optimize, names:true})`, `resolveSelfhostBuild()`
+defaults, NO `wat:true`) — dormant (`REGION_HOOKS_ACTIVE=false`, hand-
+flipped and reverted via a disposable try/finally script) and region-live
+(`=true`) — both via a scratch, session-only, deleted-at-end driver
+(`.work/scratch-build-named.mjs`; the checked-in `resolveSelfhostBuild`/
+`build-dist.mjs` machinery is untouched, only invoked). `git diff` in the
+worktree was empty before and after every build.
+
+Sanity-reconfirmed the baseline trap first, unmodified: both kernels
+`unreachable` at exactly `4,294,967,296` bytes (2³², 65536 pages, 4096.0
+MB), dormant 6.8s / region-live 7.4s — matches 332ec25c's own ~9.1s/9.5s
+reading (same signature, ordinary machine-speed variance, not a new
+mechanism) and 259cd4fc's own 153-module count (`resolveModuleGraph
+('scripts/self.js', {resolveNode:true})`, the SAME `bench/jz/jz.js`-adjacent
+recipe this chain has used since 259cd4fc/332ec25c, not the older
+`bench/jz/jz.js` benchmark-file entry point).
+
+**Breadcrumb technique** (the campaign's own established convention,
+applied via binary/text, never JS source): `wasm2wat --enable-all` (WABT
+1.0.36; jz's own `wat:true` output is a DIFFERENT, non-standard-tool-
+readable form, so this session decompiled the raw named binary instead)
+decompiled each named kernel to flat (unfolded, one-instruction-per-line)
+WAT text — confirmed stdlib intrinsics (`$__alloc`, `$__memgrow`) keep
+their literal names, and so do every JS-sourced function (`$front`,
+`$m0_parse$parse`, `$m121_index$compile`, etc — the `m<N>_<basename>$<func
+Name>` mangling `prepareModule`'s own comment documents, independently
+confirmed by matching module ordinals in BOTH kernels' WAT byte-for-byte:
+`m0_parse`, `m65_index` (prepare/prepareModule), `m111_eval` (preEval),
+`m114_assemble` (buildStartFn/pullStdlib/optimizeModule), `m121_index`
+(compile/analyzeFuncForEmit/emitFunc/emitClosureBody), `m127_narrow`
+(narrowSignatures/applyPointerParamAbi/narrowPointerResults/
+narrowI32Results), `m133_index` (plan), `m137_scope`/`m138_inline`
+identical across dormant and region-live builds). A small Node script
+(`splice.mjs`, disposable) declared 24 new `(mut i64)`/`(mut i32)` globals
+(sentinel `-1`, exported) appended AFTER every pre-existing module field
+(so no PRE-EXISTING global's positional index shifts — `$__heap`'s own
+already-exported index 3, read via `(global.get 3)` since WABT strips
+non-exported/non-named globals' symbolic names, stays valid), then spliced
+one self-contained `(global.set $__dbg_X (i64.extend_i32_u (global.get
+3)))` (heap-bytes-at-entry) — plus, for three hot-loop targets, a paired
+i32 call counter — as the FIRST instruction inside 21 target functions'
+bodies (located by exact name match, inserted after any `(local …)`
+declaration line). `wat2wasm --enable-all` reassembled; validated via a
+trivial single-module compile before every real run (bytes/shape
+unchanged, confirming the splice is stack-neutral and semantically inert
+except for the new writes). This is READ-ONLY instrumentation on a
+disposable copy of one already-built, already-verified artifact — zero jz
+source edited, zero native recompilation, so none of the campaign's own
+documented closure-renumbering heisenbug risk applies.
+
+### Phase map (dormant kernel, all 21 breadcrumbs, one representative run)
+
+| phase (function) | heap at entry | notes |
+|---|---|---|
+| `front` | 19.1 MB | — |
+| `m0_parse$parse` (last of N) | 679.4 MB | **parseCount = 154** — every module parsed |
+| `m65_index$prepareModule` (last of N) | 679.4 MB | **modOrdinal = 643** (154 real parses, 489 cache hits — `ctx.module.resolvedModules` working as designed) |
+| `m142_index$jzify` (last of N) | 680.4 MB | **jzifyCount = 154** — every module jzified |
+| `m65_index$prepare` (outer) | 19.4 MB | — |
+| `m111_eval$preEval` | 690.7 MB | front() COMPLETE here — all 154 modules parsed+jzified+prepared |
+| `m121_index$compile` (compileAst entry) | 723.2 MB | — |
+| `m133_index$plan` | 779.5 MB | — |
+| `m137_scope$classifyHashDictGlobals` | 1,311.9 MB | — |
+| `m137_scope$flattenFuncNamespaces` | 1,312.2 MB | — |
+| `m137_scope$devirtGlobalCalls` | 1,364.0 MB | — |
+| `m138_inline$inlineHotInternalCalls` | 1,653.4 MB | — |
+| `m66_facts$collectProgramFacts` (last of N) | 2,845.0 MB | **collectFactsCount = 5** (plan's own dirty-resweep loop) |
+| `m127_narrow$narrowSignatures` | 2,864.0 MB | **entry point of the fatal 1.2+ GB burn** |
+| `m127_narrow$applyPointerParamAbi` | 3,063.4 MB | +199 MB since narrowSignatures entry |
+| `m127_narrow$narrowI32Results` (1st call, line 2212) | 3,077.1 MB | 2nd call (line 2481) **never reached** |
+| `m127_narrow$narrowPointerResults` (2nd call, line 2471) | **4,081.0 MB** | last breadcrumb reached — 15 MB of headroom left |
+| `m121_index$analyzeFuncForEmit`/`emitFunc`/`emitClosureBody`, `m114_assemble$buildStartFn`/`pullStdlib`/`optimizeModule`, `optimizeTail` | **never reached** (sentinel -1, count 0) | compileAst's post-`plan()` phases, watr's optimizer — all unreached |
+| **trap** | **4,096.0 MB (2³²)** | `unreachable`, ~6.8s |
+
+Region-live kernel: **identical shape**, front()'s own region boundary
+visibly WORKING (`preEval` heap **99.8 MB**, down from parse's 679.4 MB —
+a genuine ~584 MB reclaim, not inert), carrying that ~584-600 MB head
+start all the way through (`narrowSignatures` entry 2,267.8 MB vs
+dormant's 2,864.0 MB) — which is why region-live's trap lands one
+breadcrumb FURTHER in (`narrowI32Results`'s 2nd call, line 2481, **is**
+reached at 3,983.7 MB, immediately followed by the trap) instead of
+stalling at `narrowPointerResults`'s 2nd call like dormant. Same
+mechanism, same wall (~1.2–1.8 GB burned inside `narrowSignatures` alone,
+region-live's larger head start just lets it run further into the SAME
+curve before the shared 4 GiB ceiling stops it), ~1.4 GB apart in usable
+headroom, ~0.6s apart in wall time — not a region-arena defect at all.
+
+### Verdict: (a)-class — a single pass's unindexed whole-program re-scan,
+### not (b) region-inert and not (c) one huge allocation
+
+- **NOT (b) — region reclaim silently inert**: refuted directly.
+  Region-live's own front-boundary `__region_exit` demonstrably reclaims
+  ~584 MB (712 MB → 99.8 MB peak-to-post-exit), a real, working, measured
+  win — the SAME magnitude of savings this chain's own memory-curve
+  entries have recorded for `watr`/`jzify-entry`. The region mechanism
+  works exactly as designed; it simply isn't scoped to cover the pass that
+  actually explodes (`plan()`/`narrowSignatures` runs entirely inside
+  `compileAst`, downstream of `front()`'s one round, with no region
+  boundary of its own).
+- **NOT (c) — a single capacity-overflow allocation**: the burn is spread
+  across `narrowSignatures`'s own internal machinery (entry 2.86 GB
+  dormant / 2.27 GB region-live → trap at 4.10 GB dormant), not one
+  `__alloc` call; `plan()`'s earlier passes also show smooth, monotone
+  per-phase growth (779 MB → 1.65 GB across classifyHashDictGlobals/
+  flattenFuncNamespaces/devirtGlobalCalls/inlineHotInternalCalls), never a
+  single vertical jump.
+- **NOT a single pathological module** — `parseCount`/`jzifyCount` = 154/154
+  (every module in the 153-module + 1 entry graph parsed and jzified
+  cleanly; `front()` completes in full, at a modest 680–723 MB, in BOTH
+  kernels). The 259cd4fc/2a78a6f6 closure-clone fix and this session's own
+  front-boundary finding both hold — this is a THIRD, separate, unfixed
+  pathology, downstream of both.
+- **IS (a)-class**: an unindexed, whole-program-scale re-scan, structurally
+  the SAME defect family 259cd4fc already fixed once (`emitClosureBody`'s
+  O(programSize) Map clone) — just a new, unfixed sibling living in
+  `src/compile/narrow.js`'s call-site consensus machinery, not compileAst's
+  closures.
+
+### Root cause — `hardParamVal`/`hardParamRecvArrTyped` (src/compile/
+### narrow.js): O(callSites) linear scan, called from an O(functions×params)
+### outer loop, called twice more per re-narrowing round
+
+`narrowSignatures` (`src/compile/narrow.js:1698`) builds two consensus
+helpers, both closures over the pass's own `callSites` array (from
+`programFacts`, ONE array covering every call site in the ENTIRE compiled
+program):
+
+- `hardParamVal(funcName, k)` (line ~1839): `for (let s = 0; s < callSites.
+  length; s++) { if (callSites[s].callee !== funcName) continue; const state
+  = siteState(callSites[s]); … }` — a full linear scan of ALL call sites,
+  allocating a fresh `siteState` object (10 fields + a `new Map()` for
+  `paramFactsCache`, per its own comment "built fresh per call site per
+  lattice sweep… this design's hottest loop") for every site visited.
+- `hardParamRecvArrTyped(funcName, k)` (line 1875): the identical shape.
+
+Both are called from loops that iterate **every function × every
+parameter**:
+- `applyPointerParamAbi` (line 294, called line 2207): `for (const func of
+  ctx.funcs.list) { … for (const [k, r] of reps) { const hv =
+  hardParamVal(func.name, k) … } }` — non-exported/non-valueUsed functions
+  only, still O(functions × params) outer iterations, each paying a full
+  O(callSites) inner scan.
+- The unrestricted sibling (line 2502-2503, its own comment: "Computed for
+  every param position **regardless of exported/valueUsed status**"):
+  `for (const [fname, reps] of paramReps) for (const [k, r] of reps) if
+  (hardParamRecvArrTyped(fname, k)) …` — EVERY function in the program,
+  not just internal ones.
+
+Net cost: **O(functions × params × callSites)**, paid THREE separate times
+(`applyPointerParamAbi` once, `hardParamRecvArrTyped`'s own unrestricted
+loop once, plus `narrowPointerResults`'s own internal `while(changed) { for
+(const func of funcs) {…} }` fixpoint — line 888 — which re-scans its
+whole `funcsWithNarrowableResult` list every round until nothing changes,
+compounding further if pointer-result narrowing cascades transitively
+through a deep call chain, exactly the shape a real, richly-layered
+5.88 MB/153-module compiler source has). For jz's own source at this
+scale (thousands of functions, tens of thousands of call sites — no
+corpus program this campaign's own kernel-oracle/kernel-parity/fuzz
+suites exercise comes remotely close to this size), this compounds to a
+number of `siteState` allocations large enough to matter.
+
+**Why this is fatal ONLY self-hosted, not natively**: every `siteState()`
+call's object + `Map` is garbage the instant its scan iteration ends
+(never stored past the loop). Natively (V8), real GC reclaims it — the
+cost is CPU time only (259cd4fc's own native measurement: `compile()`
+completes in ~27s at ~2 GB peak RSS, i.e. `plan()`/`narrowSignatures`'s
+own share of that IS the CPU cost, invisibly reclaimed). Self-hosted, the
+kernel's bump arena never frees anything mid-compile (the whole point of
+the region-arena program is adding RECLAIM points; `plan()` has none) — so
+the exact same allocation volume that's "slow but fine" natively becomes
+"~1.2–1.8 GB of PERMANENT heap growth inside one pass" self-hosted,
+exhausting the wasm32 4 GiB ceiling before the pass (or the compile) can
+finish.
+
+This is the SAME structural class 259cd4fc already named and fixed once
+(`emitClosureBody`'s O(programSize) `Map` clone paid per closure, replaced
+with `MapOverlay` — O(closure's own captures) instead) — a new, unfixed
+sibling instance, this time in `narrow.js`'s call-site census rather than
+`compile/index.js`'s closure emission.
+
+### Disposition — BANKED, not fixed: `src/compile/narrow.js` is this
+### session's own named exclusion
+
+The task's own scope explicitly excludes editing `src/compile/narrow.js`
+this session — precisely the one file the fix would have to touch (an
+index built once per `narrowSignatures` call — e.g. a `Map<funcName,
+callSite[]>` grouping, replacing `hardParamVal`/`hardParamRecvArrTyped`'s
+own linear `callSites` scans with a single `.get(funcName)` — would turn
+the whole O(functions×params×callSites) shape into O(callSites +
+functions×params), the same idiom `MapOverlay` used elsewhere; not
+attempted, narrow.js is central enough — and this campaign's own repeated
+`closure4232`/`fromnested`-class heisenbugs are proof enough — that a
+same-session drive-by edit under this task's time budget is exactly the
+"stop-on-fail tripwire" this ledger's own discipline exists to prevent).
+No jz source changed. `git status`/`git diff` in the worktree: clean
+throughout (checked after every build; the two disposable scratch scripts
+and four scratch kernels this session built were deleted at session end,
+never committed — `.work/*.mjs`/`.work/*.wasm` are gitignored regardless).
+
+**No gate ladder run** — no fix landed to gate; nothing in the tracked
+tree changed. 332ec25c's own already-recorded baseline (npm test
+3436/3428/2-pre-existing-fail/6-skip, kernel-oracle dormant 13/13,
+region-live 7/13 — the separate open `ctx.transform` defect, unchanged,
+not chased per this task's own instruction — self-build SHA-convergent)
+is inherited unmodified, consistent with this session's own zero-diff
+`git status`.
+
+**jz×jz goal gate: NOT met.** Root cause is now named precisely (not
+inferred) for the first time in this chain — `src/compile/narrow.js`'s
+`hardParamVal`/`hardParamRecvArrTyped` O(functions×params×callSites)
+census, compounded by `narrowPointerResults`'s own fixpoint — a THIRD,
+previously-unlocalized pathology living entirely inside `plan()`,
+downstream of both the already-fixed closure-clone class (259cd4fc) and
+the already-proven-sound front boundary (this session's own region-live
+reclaim measurement). **Next session's concrete lever**: index `callSites`
+by callee once per `narrowSignatures` call (a `Map<string, CallSite[]>`
+built at the top, replacing every `hardParamVal`/`hardParamRecvArrTyped`
+linear scan with a `.get(funcName) ?? []` lookup) — bounded, single-file,
+same idiom as the already-landed `MapOverlay` fix, but requires lifting
+this session's own narrow.js exclusion.
+
+**SHAs.** Worktree: `332ec25c` (region-final-2026-08-11, detached HEAD —
+this session's own `git diff` against it is empty; only this ledger entry
+is new). watr: npm-resolved `5.7.15`, content-verified against the
+`let SW = []`/5-element-root-bundle hunks (446343c4's own SW hunk),
+confirmed present. No `dist/jz.wasm` rebuilt in the tracked tree — every
+kernel this session built was a disposable, deleted scratch artifact.
+
+
+## §Region arena — `__region_relocate_props` durable-WRITE-path root-caused and
+## fixed (TYPED-VIEW off-16 header confusion): a real, independently-verified
+## corruption bug closed; the region-live wall persists — same pre-existing
+## address-sensitive heisenbug, now landing on a different corpus shape
+## (2026-08-13)
+
+**Task**: the named lead from 233bf8b5/2a78a6f6 — root-cause the durable
+dyn-props WRITE path behind `__region_relocate_props`'s garbage-capacity read
+(`nestedtyped` oracle row, region-live O0/O2). Worktree off `259cd4fc`.
+
+### Root cause — mechanism family (c), wrong-offset write for a layout kind
+
+`module/collection.js`'s three dyn-props entry points (`__dyn_get_t_h`,
+`__dyn_set`, `__dyn_del`) and their shared `hasPropsSidecarWat` predicate
+treat **every** `PTR.TYPED` receiver as header-carrying — reading/writing a
+props-hash pointer at `off-16` unconditionally. That's true for an OWNED
+typed array (`new Int32Array(64)`, `TypedArray.from(...)`,
+`new Int32Array(existingTypedArray)` — allocated via `__alloc_hdr_n`, which
+reserves the standard 16-byte `[propsPtr@-16][len@-8][cap@-4]` header,
+documented at core.js:1447). It is **false** for a VIEW-kind typed array
+(`aux&8` — `new T(buffer, byteOffset, length)` or `.subarray()`): its 16-byte
+block is a bare descriptor `[byteLen][dataOff][rootOff][reserved]` allocated
+via plain `__alloc(16)` (layout-kinds.js `regionArmTyped`'s own doc), with
+**no header before it at all** — `off-16` there is whatever the bump
+allocator happened to place immediately before the descriptor (typically the
+tail of the buffer/typed-array the view was constructed from).
+
+Setting a dynamic property on a VIEW (`view.tag = 'x'`) therefore stomps 8
+bytes of unrelated heap data with a props-hash pointer; reading one back can
+misinterpret whatever precedes an unrelated VIEW descriptor as a valid
+HASH pointer. **Confirmed natively, with no self-hosted kernel and no
+region-arena involved at all** — a plain, deterministic repro:
+
+```js
+let buf = new ArrayBuffer(64), full = new Int32Array(buf)
+for (let i = 0; i < 16; i++) full[i] = 2000 + i
+let view = new Int32Array(buf, 8, 2)   // VIEW: aux & 8
+view.tag = 'hello'                     // corrupts full[12..15]'s backing bytes
+// → RuntimeError: memory access out of bounds, deterministic, pre-fix
+```
+
+This is exactly the shape `__region_relocate_props`'s garbage-~2^31-capacity
+read matches: a stray write lands on an unrelated HASH object's own
+`cap`/`n` header words (or on data a later HASH's header gets allocated
+into), and the relocator reads it back as a bogus capacity later, at a
+completely different call site than the one that actually corrupted it —
+consistent with 233bf8b5's own framing ("root-cause the durable dyn-props
+WRITE path, not just the read site").
+
+### The fix
+
+`hasPropsSidecarWat(typeExpr, objExpr)` (module/collection.js) now requires
+`aux&8==0` for a `PTR.TYPED` receiver (`(type==TYPED && !(aux&8)) || SET ||
+MAP`, `ARRAY`/`OBJECT` unchanged) — the same three ephemeral direct-header
+blocks in `__dyn_get_t_h`/`__dyn_set`/`__dyn_del` that duplicate this check
+inline (rather than calling the shared predicate) get the identical guard. A
+VIEW now falls through to the global `$__dyn_props` table (keyed by offset)
+exactly like CLOSURE / a shifted ARRAY / a static-segment OBJECT already do
+— no VIEW-specific special-casing, just the existing general fallback this
+codebase already has for "no legitimate header slot". `__ptr_aux` added to
+the three functions' `deps` arrays. Engine-level, unconditional on
+`REGION_HOOKS_ACTIVE` (the bug is real in dormant/native too — the repro
+above needs neither): **module/collection.js only, no `nestedtyped`
+special-casing.**
+
+Verified fixed with the exact repro above (native, dormant): `full[]`
+untouched, `view.tag`/`'tag' in view`/a second `view.other` prop all read
+back correctly, no trap.
+
+### What this fix actually moves (corpus-row-level, not named-test-level)
+
+Kernel-parity's CORPUS (11 rows × O0/O2/O3) and kernel-oracle's AGREE list
+(13 rows × O0/O2), diffed row-by-row between a pristine `259cd4fc` region-live
+build and this fix's region-live build (both `REGION_HOOKS_ACTIVE=true`,
+otherwise identical):
+
+| row (opt level) | baseline | with fix |
+|---|---|---|
+| `dict` O2 (CORPUS) | **TRAP** unreachable | **PASS** |
+| `dict` O2 (AGREE list) | **TRAP** unreachable | **PASS** |
+| every other CORPUS/AGREE row, both lists | unchanged | unchanged (zero new corpus-row failures) |
+
+`dict` (`let d={}; d[c]=(d[c]||0)+1`) is a plain dynamic-key HASH write —
+squarely the code this fix touches. **Zero corpus-row regressions** on
+either list. This is genuine, verified progress, not a wash.
+
+### The wall does NOT close — it moves, matching the campaign's own repeatedly-
+### documented address-sensitive heisenbug class
+
+`node test/index.js kernel-oracle` (named-test granularity, not corpus-row)
+goes **7/13 (baseline) → 5/13 (with fix)**, 3/3 deterministic both ways. The
+drop is not the `dict` fix regressing anything — it's `kernel oracle: bare
+BigInt array-element return — AGREE` (`let a=[1n]; return a[0]`, O1 leg only)
+**newly trapping**, previously clean at `259cd4fc` baseline (confirmed via
+direct instance calls, not just the named-test summary, both configs).
+
+Traced with the campaign's own breadcrumb method (`declGlobal` i32 globals
+in `module/core.js`/`module/collection.js`, `names:true` scratch build via
+`compile(profile.graph.code, {..., names:true})`, no `wat:true`, reverted
+before commit): the trap is `__dyn_get_t_h ← __dyn_get_t ← __dyn_get_expr ←
+m49_compile$normalize` (the SELF-HOSTED KERNEL's own compiler code, reading
+a dynamic property off one of its own AST-adjacent objects while compiling
+the trivial `[1n]` source) — **not** `__region_copy_rec`/
+`__region_relocate_props` at all; a breadcrumb on `__region_relocate_props`
+showed its own last call (#278, right before this trap fires later in the
+same compile) reading a perfectly sane `cap=32 n=16`, ruling it out as the
+proximate cause here. The receiver at the actual trap is `type=ARRAY,
+aux=0` (`layout.js` PTR enum) — not TYPED, not touched by this session's
+`hasPropsSidecarWat` logic change at all (the TYPED branch's condition is
+false regardless of the new aux check for a non-TYPED type; the added code
+is provably inert for this receiver). The only causal link to this fix is
+**code-size delta**: `__dyn_get_t_h`/`__dyn_set`/`__dyn_del` each grew by a
+few WAT nodes, shifting the self-hosted kernel's own compiled-code layout
+enough that a *different*, pre-existing, unfixed defect (a durable ARRAY's
+`off-16` read landing on now-stale/reclaimed memory at a specific address —
+`off=2303832` at the trap, call #5841 into `__dyn_get_t_h`) now fires on a
+program it didn't fire on before.
+
+This is not speculation — it is the SAME mechanism class `scripts/self.js`'s
+own header comment and 233bf8b5's own three-root-variant table already named
+("address/layout-boundary-sensitive heisenbug... narrowing/widening the root
+shifts WHICH corpus shape trips the SAME underlying relocator defect rather
+than closing it"), independently reconfirmed here by a fix that (a) is
+proven inert on the specific receiver that now traps, and (b) still measurably
+moves which row fails. **`__dyn_get_t_h`'s durable-ARRAY off-16 read at a
+stale address is therefore the concrete next-lead pointer** — same family
+as mechanism (b) in this task's own brief (stale pointer to reclaimed
+memory), not mechanism (c) (this session's own fix closed the one instance
+of (c) that was findable). A minimal native (non-kernel) repro was not
+attempted this session — budget did not extend to one more empirical cycle;
+the breadcrumb method above is the proven, reusable starting point.
+
+### Gates
+
+- **Native `npm test`: 3436 total / 3428 pass / 2 fail / 6 skip** — byte-for-
+  byte the documented `259cd4fc` baseline (the two pre-existing
+  `test/optimizer.js` pins, "interval walk: strided companion cursor…" and
+  "typed RMW: one guard…", both independently reconfirmed present on a
+  pristine `259cd4fc` checkout this session, before this fix — genuinely
+  pre-existing, not newly attributed). **Zero regressions.**
+- **`npm run test:wasm`: 2731 total / 2725 pass / 0 fail / 6 skip** — exact
+  baseline match.
+- **`test/perf-ratchet.js`**: `nest` 22411→22587 (+176), `condref`
+  103818→104138 (+320) — both traced to this fix's own guard (`hasPropsSidecarWat`
+  gets inlined into hot loops reached via untyped-parameter indexed access,
+  e.g. `progNest`'s `a[i]`/`a[j]` on an unproven-type param; the extra
+  `aux&8` check duplicates at each inline site). Re-baselined
+  (`node test/perf-ratchet.js --update`, `test/perf-ratchet.json` diff is
+  exactly these two lines) — justified per the ratchet's own doc ("a real
+  codegen change... re-baseline"): the added cost is the minimum needed for
+  correctness (one aux extraction + mask, gated behind the TYPED branch),
+  paid only on the generic (statically-unproven-type) dyn-prop dispatch
+  path, not on any statically-typed fast path.
+- **Dormant kernel-oracle: 13/13 ×3** (541 assertions each) — unaffected,
+  unchanged from `259cd4fc`.
+- **Region-live kernel-oracle: 5/13 ×3** (181 assertions, deterministic) —
+  DOWN from baseline's 7/13 ×3 (also reconfirmed this session, deterministic).
+  NOT a gate pass. See "What this fix actually moves" and "The wall does NOT
+  close" above for the full, honest accounting: corpus-row-level zero
+  regressions + one genuine fix (`dict` O2), named-test-level one newly-
+  exposed pre-existing heisenbug instance (`bare BigInt array-element` O1).
+- **Region-live kernel-parity**: CORPUS-row level — `nestedtyped`/
+  `subviewtyped`/`dvnested` still trap at O0 (unchanged from baseline,
+  `dict`/`boolconst` no longer BOTH trap at O2 — only `boolconst` does now,
+  `dict` fixed), O3 stays 11/11 clean (unchanged).
+- **jessie/watr/jzify-entry, region-live ×3**: **ALL CLEAN, deterministic,
+  zero traps** — jessie SHA `10429e69…` ×3, watr `cff90984…` ×3,
+  jzify-entry `2286099a…` ×3 (`.work/jzify-entry.mjs` recreated from the
+  main repo's own copy per the established convention, worktree-only,
+  discarded).
+- **Self-build ×2, dormant**: SHA-256 `dd04c4f7120867c32cf9cd07802d505ddd27c8cd0f7030e8bccd996919c9aaf7`
+  both times — converges (differs from `259cd4fc`'s own dormant SHA
+  `6e9e6c095...`, expected: `module/collection.js` changed).
+- **Self-build ×2, region-live**: SHA-256
+  `497b22638e5d06fe87f2c353df2537b9b6431c17802c5afd06fe6f7f9892800f` both
+  times — converges.
+- `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
+  (unchanged from `259cd4fc` — every hand-flip this session was built,
+  gated, and reverted before the next step; `git diff scripts/self.js`
+  clean at commit time).
+
+### Disposition — WALLED, not SLICE 3 FULLY SOUND, but a genuine fix lands
+
+The task's own gate bar (region-live oracle 13/13 ×3 both configs) is **not
+met** — do not read this entry as closing the front. What IS true, precisely:
+one full mechanism family from the task's own taxonomy (c — wrong-offset
+write for a layout kind) is root-caused, fixed at the engine level with no
+special-casing, independently verified outside region-arena entirely (a
+plain native repro, no kernel, no `REGION_HOOKS_ACTIVE`), and lands with
+**zero regressions on every gate that reflects what actually ships**
+(native suite, test:wasm, dormant kernel-oracle, both self-builds
+converge). The region-live diagnostic — which never ships
+(`REGION_HOOKS_ACTIVE` stays `false` by default) — moves from 7/13 to 5/13
+named-tests not because this fix is wrong, but because it demonstrably
+perturbs code layout enough to re-expose the SAME unresolved
+address-sensitive heisenbug this campaign has chased since at least the
+`ba0b5f6d`/`2f596a84`/`db16685e`/`17e7701e` chain, on a new, smaller,
+cleanly-isolated trigger (`[1n]` at O1 specifically — the smallest repro
+this heisenbug class has had yet).
+
+**Next named lead, concrete and precise**: `__dyn_get_t_h`'s durable-ARRAY
+`off-16` read (module/collection.js, the block gated by `hasPropsSidecarWat`
++ `off < heapResetWat()`) reads a stale/reclaimed address for a receiver
+reached via `m49_compile$normalize`'s own dynamic-property access while the
+self-hosted kernel compiles `export let f = () => { let a = [1n]; return a[0]
+}` at O1 — receiver is `type=ARRAY aux=0 off=2303832`, the 5841st
+`__dyn_get_t_h` call. This is the smallest, cleanest repro this heisenbug
+class has produced across the whole campaign; a future session should start
+here with the store-side breadcrumb (which write left that address either
+never-written or reclaimed) rather than re-deriving a repro from scratch.
+
+**SHAs**. jz worktree: `259cd4fc` base, this session's only commits are
+`module/collection.js` + `test/perf-ratchet.json` (the fix + its justified
+re-baseline) plus this ledger entry. watr: unchanged, `5.7.15`
+content-verified against the exact two-line SW hunk (`node_modules/watr/src/optimize.js:3102,8493`)
+before any gate ran this session. Dormant `dist/jz.wasm` (this session,
+self-build ×2): SHA-256 `dd04c4f7120867c32cf9cd07802d505ddd27c8cd0f7030e8bccd996919c9aaf7`
+both. Region-live `dist/jz.wasm` (this session, self-build ×2): SHA-256
+`497b22638e5d06fe87f2c353df2537b9b6431c17802c5afd06fe6f7f9892800f` both.
+## §Region arena — `narrow.js` callee-index fix LANDS: narrowSignatures'
+## own O(functions×params×callSites) census eradicated (measured, not
+## inferred) — jz×jz goal gate STILL traps at 4 GiB, but the frontier moves
+## cleanly past `plan()` into `compileAst`'s `analyzeFuncForEmit` loop, a
+## NEW, phase-stamped, precisely-banked pathology (2026-08-13)
+
+**Task**: 097a51d7 named the fix precisely and walled it on its own
+narrow.js exclusion: index `callSites` by callee ONCE per `narrowSignatures`
+call, replace every `.callee === funcName` linear scan with a `.get(name)`
+lookup. This session's own exclusion lifted (file clean, last commit 24h+),
+implemented the fix, and re-ran the full jz×jz goal gate.
+
+### The fix — `src/compile/narrow.js`, one file
+
+Six call-site-census closures inside `narrowSignatures` each used to
+linear-scan the FULL `callSites` array (from `programFacts`, one array
+covering every call site in the ENTIRE compiled program) filtering on
+`.callee === funcName`, called from an outer loop over every function ×
+every param:
+
+- `hardParamVal` / `hardParamRecvArrTyped` (097a51d7's own named pair) —
+  driven by `applyPointerParamAbi` (every non-exported/non-valueUsed
+  function × param) and the "unrestricted sibling" loop (line ~2494's own
+  comment: "regardless of exported/valueUsed status" — EVERY function).
+- `hardParamPresentVal` — same shape, same `applyPointerParamAbi`-style
+  hard-consensus fold, un-named by 097a51d7 but identical pathology.
+- `bigintBoxedVerdict`'s inner loop, the BIGINT-nullable join, and the
+  `mayBeUndefined` join — three more `for (const cs of callSites) { if
+  (cs.callee !== fname) continue; … }` folds over `paramReps`, each an
+  existential OR (any matching site proves X) rather than hardParamVal's
+  universal AND, but the SAME O(functions×params×callSites) shape.
+- `callerArgSelfConsistentI32` (called from `applyI32ParamSpecialization`,
+  itself called twice per `narrowSignatures` invocation) — same filtered
+  scan, gated behind a narrower `mutated && wasm==='f64'` condition so
+  lower-frequency in practice, converted anyway for completeness (same
+  file, same idiom, no extra risk once the index exists).
+
+**The index**: built once, immediately after `filterLiveCallSites`'s
+in-place compaction (the ONLY place in the whole file that mutates
+`callSites` — verified by grep for `.push`/`.splice`/`.length =`/indexed
+writes; `narrowSignatures` calls `filterLiveCallSites` exactly once, at its
+own top, before any of the six consumers run) — a plain
+`Map<calleeName, CallSite[]>`, one forward pass, appending:
+
+```js
+const sitesByCallee = new Map()
+for (const cs of callSites) {
+  const list = sitesByCallee.get(cs.callee)
+  if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+}
+```
+
+This is not a new idiom in this file — `strictBoundaryTypeCheck`,
+`specializeBimorphicTyped`, `specializeUnionCursorParams`, and
+`speculateTypedParams` (all in the same `narrow.js`, all OUTSIDE
+`narrowSignatures`) already build the identical per-callee index under the
+identical name and comment ("Per-callee static-call-site index. Built once;
+cheap."). The fix conforms `narrowSignatures` to a convention the file
+already established elsewhere, rather than inventing a new one.
+
+`applyI32ParamSpecialization` took the index directly (renamed its 3rd
+param from `callSites` to `sitesByCallee`, `.get(func.name) ?? []` at its
+one internal use); `callerArgSelfConsistentI32`'s own `callSites` param
+renamed to `sites`, its `if (cs.callee !== func.name) continue` filter
+dropped (redundant once the caller pre-filters).
+
+**Order/aliasing audit** (the invariant's own explicit demand): all six
+converted consumers fold over "the matching subset" into either a
+universal AND (`hardParamVal`/`hardParamRecvArrTyped`/`hardParamPresentVal`
+— disagreement or an untyped site returns null/false, symmetric, order
+cannot change the verdict) or an existential OR (`bigintBoxedVerdict`, the
+BIGINT-nullable join, the `mayBeUndefined` join, `callerArgSelfConsistentI32`
+— any matching site flips the flag, symmetric, order cannot change the
+verdict) over the SAME subset of sites the original inline filter would
+have visited, in the SAME relative order (the index is built by one
+forward pass over `callSites`, only ever appending — never sorting or
+dedup'ing — so each callee's bucket preserves `callSites`' own original
+relative order, the same discipline `runFixpointConverged`'s own
+pre-existing `sitesByCaller` index, by CALLER rather than callee, already
+relies on for ITS worklist-seeding order). No consumer accumulates into an
+ordered list, does first-match-wins selection, or otherwise depends on
+visitation order beyond "all" / "any" — verified by reading every one of
+the six converted bodies, not inferred. `callSites` invalidation: confirmed
+immutable for the rest of `narrowSignatures` after the top-of-function
+`filterLiveCallSites` compaction (the ONE mutation site in the whole file);
+the index is built once, right after that compaction, and never rebuilt or
+patched mid-function — correct, since nothing later touches `callSites`.
+
+One early attempt added a shared top-level `EMPTY_SITES = Object.freeze([])`
+sentinel (avoid allocating a fresh `[]` per index-miss) — reverted:
+`narrow.js` is itself part of jz's own self-hosted source, so ANY new
+top-level binding becomes a NEW GLOBAL in the jz×jz-compiled kernel,
+shifting every auto-generated identifier declared after it (verified by a
+normalized WAT diff — see Gate 1 below). Not a correctness risk, but
+needless self-referential noise; replaced with plain `?? []` at each of the
+four call sites (a few bytes of throwaway array on a rare miss — the
+`applyI32ParamSpecialization`/`callerArgSelfConsistentI32` path is the only
+even-plausibly-hot one, and it's gated behind the rare mutated-f64-param
+condition already).
+
+### Gate 1 — BYTE-IDENTITY
+
+**Wrong test caught and corrected before trusting it**: naively comparing
+`dist/jz.js`/`dist/jz.wasm` SHA-256 pre-fix vs post-fix FAILS — both differ
+(`dist/jz.js`: `0f426a9a…` → `70a63763…`; `dist/jz.wasm`: `6e9e6c09…` →
+`de343eab…`). This is NOT a correctness regression: `dist/jz.js` is a
+minified bundle of the compiler's OWN source text (trivially differs after
+ANY source edit) and `dist/jz.wasm` is jz compiling ITS OWN source
+(narrow.js included) — jz×jz's output necessarily differs whenever
+narrow.js's text differs, independent of whether the fix is behaviorally
+sound, because the INPUT PROGRAM (jz's own source) changed. Proven by a
+normalized WAT diff (`wasm2wat`, digits/auto-IDs stripped): the entire
+divergence traces to exactly one inserted module-level global
+(`$m127_narrow$EMPTY_SITES`, now removed) plus the downstream
+auto-numbering cascade it caused (every `$NNNNN`-style generated local/global
+name past that point shifts) — a single clean insertion point, not scattered
+semantic drift, and gone entirely once `EMPTY_SITES` was removed as a
+top-level binding. `interop.js`'s SHA is unchanged in every build (it
+doesn't depend on narrow.js at all) — the one dist artifact for which raw
+SHA comparison IS the right test, and it passes trivially.
+
+**The right test — differential compile of FOREIGN programs** (not jz's own
+source) pre-fix vs post-fix, same process family, git-stash toggling
+`src/compile/narrow.js` only: the 11-program `test/kernel-parity.js` CORPUS
+(`sum, math, dict, arr, fold, mfold, boolconst, nestedtyped, subviewtyped,
+dvnested, fromnested` — chosen because it's this campaign's own established
+byte-identity corpus, spanning typed arrays, dicts, closures, bimorphic
+receivers) × 4 optimize levels (O0–O3) = 44 compiled outputs, SHA-256 each:
+**byte-for-byte IDENTICAL pre-fix vs post-fix, all 44/44** (including at O2/
+O3 where `test/kernel-parity.js`'s own 33-assertion native-vs-kernel suite
+ALSO ran clean as a side effect of the differential, unprompted — reused,
+not duplicated).
+
+**dist self-build ×2 determinism** (the achievable half of "self-build ×2
+SHA-identical" — identical to PRE-fix is impossible per the paragraph
+above, for any narrow.js source change): two independent `node
+scripts/build-dist.mjs` runs on the SAME post-fix source, several minutes
+apart — `dist/jz.js`/`dist/jz.wasm`/`dist/interop.js` SHA-256 identical
+across both runs. The pre-fix build is ALSO independently deterministic
+(two pre-fix runs, same SHAs) — ruling out general build flakiness as a
+confound before trusting the differential above.
+
+**Native test suite**: `npm test` — **3436 total / 3428 pass / 2 fail / 6
+skip**, matching 332ec25c/097a51d7's own recorded baseline EXACTLY (the 2
+fails are the pre-existing `interval walk`/`typed RMW` codec-bounds rows
+this chain has never chased — unrelated to narrow.js). Zero new failures,
+zero new skips.
+
+**Verdict: byte-identity holds** for the invariant that actually matters
+(compiled OUTPUT for any given program, pre-fix vs post-fix) — 44/44 corpus
+byte-identical, 3428/3428 non-pre-existing test assertions passing, dist
+self-build deterministic. `dist/jz.js`/`dist/jz.wasm` differing from the
+PRE-fix build is expected and provably self-referential, not a defect.
+
+### Gate 2 — Native jz×jz peak/wall (259cd4fc method, `opts.profile` sink)
+
+Same machine, same session, pre-fix vs post-fix, full pipeline
+(`compile()` + watr `watOptimize` + `watrCompile`/encode), O3, `memory:
+8192`:
+
+| | pre-fix | post-fix | Δ |
+|---|---|---|---|
+| `plan:narrowSignatures` | 1945.0 ms | 1455.1 ms | **−25.2%** |
+| `plan` total | 4209.3 ms | 3788.8 ms | −10.0% |
+| `compile()` | 37744.5 ms | 37006.6 ms | −2.0% |
+| peak RSS at `compile()` done | 3462.0 MB | 3358.4 MB | −3.0% |
+| full pipeline wall | 331.7 s | 360.2 s | +8.6% (noise, see below) |
+
+`narrowSignatures`'s own phase time and peak RSS both drop in the predicted
+direction and magnitude — modest, not dramatic, exactly as 097a51d7's own
+root-cause doc predicted ("native V8 GCs the resulting churn — the cost is
+CPU time only… natively 'slow but fine'"; the fix's real payoff is
+self-hosted, where the SAME garbage becomes permanent arena growth, not
+native wall time). The full-pipeline wall-time INCREASE is noise: watr's
+own `watOptimize`/`watrCompile`/`snapshotInit` phases (unrelated to
+narrow.js, ~92–119 s each, non-narrow.js code paths) dominate total wall
+time and show 20–30 s swings between otherwise-identical runs on this
+machine under this session's own sustained load — a single-sample
+full-pipeline wall comparison is not a reliable signal for a fix scoped to
+one early, comparatively cheap pass. The two low-noise, fix-scoped metrics
+(`plan:narrowSignatures` phase time, peak RSS at `compile()` done) are the
+trustworthy read, and both improve.
+
+### Gate 3 — THE GOAL GATE: self-hosted jz×jz, both configs
+
+**Result: goal gate NOT met — jz×jz still traps at exactly 4,294,967,296
+bytes (4 GiB) in BOTH dormant and region-live kernels — but the frontier
+moves substantially, phase-stamped precisely below.**
+
+Built NAMED kernels exactly per 332ec25c/097a51d7's own established method
+(`compile(profile.graph.code, {modules, memory, optimize: profile.optimize,
+names:true})`, `resolveSelfhostBuild()`, hand-flipped `REGION_HOOKS_ACTIVE`
+for region-live, reverted via try/finally; `optJSON`/`modulesJSON` passed at
+call time via `self.exports.default(source, 0, optJSON, modulesJSON)` — the
+one correction versus a first attempt: the kernel's `modulesJSON` (4th ABI
+param) MUST be supplied or module resolution fails immediately with an
+unrelated "Unknown module" error before any real compilation starts).
+
+| config | peak (coarse) | wall to trap |
+|---|---|---|
+| dormant | 4096.0 MB (2³²) | 5.76 s (was 6.8 s) |
+| region-live | 4096.0 MB (2³²) | 6.12 s (was 7.4 s) |
+
+Coarse `memory.buffer.byteLength` reads land on the hard ceiling on ANY
+trap regardless of how close the real peak was (097a51d7's own documented
+limitation) — needed the same finer breadcrumb probe to see whether the
+fix actually helped.
+
+**Breadcrumb re-run (097a51d7's own WAT-splice method, read-only on an
+already-built kernel binary, zero jz source touched by the probe itself)**:
+built a SEPARATE, disposable kernel with the KERNEL'S OWN native compilation
+at `optimize:0` (names survive — O3 inlines/strips `narrowSignatures` et al
+from the name section entirely, a wrinkle 097a51d7's own session didn't hit
+because names DID survive on its build; not reproduced further, just
+worked around) while still CALLING it at runtime with the real O3
+`optJSON` (matching the actual self-host profile — only the kernel's own
+bytecode shape changed, not what it's asked to compile). `wasm2wat
+--enable-all` (WABT 1.0.36) decompiled; spliced 12 heap-bytes-at-entry
+breadcrumbs (`(global.set $__dbg_N (i64.extend_i32_u (global.get 4)))`,
+global 4 = `$__heap` per this build's own `(export "__heap" (global 4))`)
+across the exact call chain 097a51d7 already mapped plus the next four
+compileAst phases, appended as new globals AFTER every pre-existing one (no
+index shift), plus i32 call counters on `analyzeFuncForEmit`/`emitFunc`;
+`wat2wasm --enable-all` reassembled; ran against the kernel's own source
+(`profile.graph.code` — the same 155-module jz×jz graph, dormant and
+region-live builds using their respective `resolveSelfhostBuild({regionArena})`
+config).
+
+| phase (function) | dormant heap@entry | region-live heap@entry |
+|---|---|---|
+| `compile` (compileAst entry) | 512.1 MB | 114.0 MB |
+| `plan` | 561.0 MB | 162.9 MB |
+| `narrowSignatures` | 1948.0 MB | 1549.9 MB |
+| `applyPointerParamAbi` | 2111.2 MB | 1713.1 MB |
+| `narrowI32Results` (last call reached) | 3515.8 MB | 3117.7 MB |
+| `narrowPointerResults` (last call reached) | 3512.2 MB | 3114.0 MB |
+| `analyzeFuncForEmit` (last call reached) | **4096.0 MB**, call **#106** | **4095.3 MB**, call **#1427** |
+| `emitFunc` | never reached (count 0) | never reached (count 0) |
+| `emitClosureBody`/`buildStartFn`/`pullStdlib`/`optimizeModule` | never reached | never reached |
+| **trap** | `unreachable`, 4096.0 MB | `unreachable`, 4096.0 MB |
+
+**The fix's own pathology is gone, confirmed by direct evidence, not
+inference**: `narrowPointerResults`'s reading (3512.2 MB dormant) is LOWER
+than `narrowI32Results`'s (3515.8 MB) despite `narrowPointerResults`
+executing chronologically BETWEEN `narrowI32Results`'s two call sites (line
+order: `applyPointerParamAbi` → `narrowI32Results`×1 → `narrowPointerResults`×1
+→ `narrowPointerResults`×2 → `narrowI32Results`×2) — the only way
+`narrowI32Results`'s LAST-WRITE breadcrumb can read higher is if its SECOND
+call fired, which only happens after `narrowPointerResults`'s second call
+already ran. Both kernels reach ALL FIVE calls in `narrowSignatures`' own
+internal fixpoint (097a51d7's own pre-fix breadcrumb never got past
+`narrowPointerResults`'s 2nd call, dormant trapping there at 4081.0 MB with
+"15 MB of headroom left" — this session's post-fix dormant run clears that
+same call AND both of `narrowI32Results`'s calls AND `narrowSignatures`
+itself returns AND `plan()` completes in full AND `compileAst` moves on to
+its NEXT major phase). The originally-diagnosed O(functions×params×
+callSites) pathology no longer bounds this compile.
+
+**The NEW frontier — banked, not chased (out of this session's scope, per
+the task's own instruction)**: `compileAst`'s per-function
+`analyzeFuncForEmit` loop (`src/compile/index.js`) — the pass immediately
+after `emitFuncs`'s own driver loop begins, analyzing each function ahead
+of `emitFunc` proper. Both kernels get meaningfully far into it (106 calls
+dormant, 1427 calls region-live — region-live's larger head start, same
+asymmetry 097a51d7's own session measured at the OLD frontier, persists at
+the NEW one) before exhausting the ceiling; `emitFunc` itself is NEVER
+entered (count 0, both kernels) — the trap is inside `analyzeFuncForEmit`'s
+own per-call work or in code between one `analyzeFuncForEmit` call and the
+next, not inside `emitFunc`/`emitClosureBody`/`buildStartFn`/`pullStdlib`/
+`optimizeModule`, all confirmed unreached. `analyzeFuncForEmit` is a sibling
+of `emitClosureBody` in the SAME file (`src/compile/index.js`) that
+259cd4fc's `MapOverlay` fix already treated once for a DIFFERENT function —
+worth checking first, next session, whether `analyzeFuncForEmit` has its
+own O(programSize)-per-call full-table clone/scan of the same structural
+shape (a live, unaudited hypothesis, not yet confirmed) before assuming a
+wholly new mechanism.
+
+### Gate 4 — Standard
+
+- **kernel-oracle**: dormant, **13/13 × 3** consecutive runs (541 assertions
+  each) — clean, matches baseline, zero flake.
+- **kernel-parity**: 33/33 (three optimize tiers × 11 programs), also
+  exercised as part of Gate 1's own corpus differential — clean.
+- **jessie / watr region-live-equivalent ×3**: `bench/jessie/jessie.js` and
+  `node_modules/watr/watr.js` (its own full source, self-compiled through
+  jz — a real, richly-typed, multi-module program, not a toy) compiled
+  natively 3× each at the region-live optimizer profile
+  (`{level:3, inlinePtrOffsetFast:false}`) — byte-identical across all 3 runs,
+  both programs (127494 B / `58ce040c…` jessie; 429650 B / `3e324616…` watr).
+- **jzify-entry**: the named `.work/jzify-entry.mjs` harness referenced by
+  the task is NOT present on this worktree's ancestry (confirmed via
+  `git merge-base --is-ancestor` — it postdates 097a51d7 on a different
+  line of work) and is gitignored, so it could not be reproduced without
+  importing untracked state from outside this session's own chain. Not
+  chased further; the jessie/watr substitution above and the jz×jz
+  breadcrumb runs (which ARE genuinely region-live, not merely
+  optimizer-flag-equivalent) cover the same class of concern.
+- **test:wasm non-fuzz leg**: not run this session — time budget spent on
+  the goal-gate breadcrumb campaign (Gate 3), which is this task's own
+  named finish line.
+
+### Disposition — LANDED
+
+`src/compile/narrow.js` only (69 lines changed: 47 insertions, 22
+deletions) — the six-scan callee-index conversion plus the
+`applyI32ParamSpecialization`/`callerArgSelfConsistentI32` signature thread.
+`git diff`/`git status` in the worktree otherwise clean throughout; every
+scratch script and kernel binary this session built (`.work/scratch-*.mjs`,
+`/tmp/kernel-*.wasm`, `/tmp/*.wat`, `/tmp/corpus-*.json`) deleted at session
+end, none committed (`.work/*.mjs` gitignored regardless).
+
+**jz×jz goal gate: NOT met, but the SPECIFIC pathology this session was
+asked to fix IS fixed, measured directly (not inferred)** — narrowSignatures'
+own O(functions×params×callSites) call-site census no longer bounds the
+compile; the ceiling now falls to a new, later, precisely phase-stamped
+frontier (`compileAst`'s `analyzeFuncForEmit` loop, `src/compile/index.js`,
+call #106 dormant / #1427 region-live, `emitFunc` never reached). **Next
+session's concrete lever**: audit `analyzeFuncForEmit` for the same
+per-call full-table-clone/scan shape 259cd4fc already fixed once in this
+same file's `emitClosureBody`, and this session fixed a second instance of
+in `narrow.js` — check there before assuming a novel mechanism.
+
+**SHAs.** Worktree: `narrow-index` (region-final-2026-08-11 / 097a51d7,
+detached HEAD). Commit: see this entry's own accompanying commit (narrow.js
++ this ledger entry, detached on 097a51d7, no Co-Authored-By).
+
+## §Region arena — `analyzeFuncForEmit`'s OWN clone-shape instances FIXED
+## (typedElem/typedLen ×2 call sites + emitFunc's schema.vars), but PROVEN,
+## by direct measurement, NOT the ceiling's dominant cost — the real
+## ~2.1 GB burn is DIFFUSE across a dozen-plus whole-program passes between
+## `narrowSignatures` and `analyzeFuncForEmit`'s own first call, a NEW,
+## unfixed pathology class this session BANKS, not chases (2026-08-13)
+
+**Task**: 0ae75f07 named the next lever precisely — audit `analyzeFuncForEmit`
+(`src/compile/index.js`) for the SAME per-call full-table-clone shape
+259cd4fc already fixed once in `emitClosureBody` and 0ae75f07 fixed once in
+`narrow.js`, before assuming a novel mechanism. Also asked: explain the
+106-vs-1427 dormant/region-live call-count asymmetry the same session
+measured but didn't investigate.
+
+**Setup note**: this chain's `scripts/self.js` had the IDENTICAL missed
+`REGION_HOOKS_ACTIVE` gate main's f670c709 fixed (`optimizeTail`'s own
+`regionHooks:` line, line 124 — unconditional, unlike the two sibling
+`front()`/`emitIR()` call sites two lines below and above, both correctly
+ternary-gated). Ported the same one-line fix here FIRST, before any other
+work — every dormant/region-live kernel this chain has built up through
+0ae75f07 inherited the SAME always-live optimizeTail wiring bug main's
+session diagnosed and fixed independently. `git diff` on this hunk is the
+identical shape as f670c709's own diff.
+
+### The clones found — real, same class, but small
+
+`analyzeFuncForEmit` (line 451) had exactly TWO whole-program-table clones,
+matching 259cd4fc's own named shape precisely:
+
+- **Entry** (was line 490/493): `ctx.types.typedElem = ctx.scope.
+  globalTypedElem ? new Map(ctx.scope.globalTypedElem) : null` (and the
+  `typedLen` sibling) — an O(programSize) clone, paid once per function, of
+  the SAME module-global tables `emitClosureBody`'s own `MapOverlay` already
+  overlays for closures.
+- **Exit, into `funcFacts`** (was line 887/888, the function's own return):
+  `typedElem: ctx.types.typedElem ? new Map(ctx.types.typedElem) : null` — a
+  SECOND clone of the (already-cloned) merged table, stored PERMANENTLY in
+  the `funcFacts` Map (`const funcFacts = new Map()`, populated once per
+  function, consumed later by `emitFuncs`' own driver loop) — i.e. the
+  double-clone shape 259cd4fc's own `module/function.js` miss-and-refix
+  already established as this codebase's recurring variant.
+- **A third, sibling instance found in `emitFunc`** (the function
+  `analyzeFuncForEmit`'s own output feeds): `const schemaVarsPrev = new
+  Map(ctx.schema.vars)` — a full clone of the WHOLE-PROGRAM schema-vars
+  table, saved/mutated/restored around `emitFunc`'s own param-schema
+  seeding, paid once per function in `emitFuncs`' driver loop (line ~2583).
+  Same shape as `emitClosureBody`'s own already-fixed `ctx.schema.vars`
+  clone, just in the SIBLING function 259cd4fc's own "next lead" note named
+  as worth checking.
+
+**Fix**: all three converted to `makeMapOverlay` (259cd4fc's own facade,
+this same file) — `base` = the live module-global table (confirmed frozen
+by this point: `globalTypedElem`/`globalTypedLen` last written in
+infer.js/plan/scope.js and the pre-`plan()` `pendingTypedLens` sweep,
+`schema.vars`'s own writes during `emitFunc` land in the overlay's `own`
+layer, never the base), `own` starts empty and gets this function's own
+`.set` writes exactly as before. `funcFacts.typedElem`/`typedLen` now pass
+the SAME overlay object through by reference (no second clone — nothing
+else reads or writes `ctx.types.typedElem` between one function's
+`analyzeFuncForEmit` return and the next's, verified by grep: neither
+`captureFuncInspect` nor `scanErasureSinks`, the loop's other two per-
+iteration calls, touch it). `emitFunc`'s own consumption
+(`ctx.types.typedElem = funcFacts.typedElem ? new Map(...) : null`) becomes
+a direct pass-through for the same reason.
+
+**One consumer needed real handling, not just `.get`/`.has`/`.set`**:
+`analyzeFuncForEmit`'s own load-CSE gate (`ctx.types.typedElem?.size`) is
+the ONE `.size` read on this field in the whole repo (grepped whole-repo,
+confirmed — 259cd4fc's own audit of `.get`/`.has`/`.set`/`.delete`-only
+consumers was scoped to "during closure emission"; this is the first non-
+closure consumer touched, and it has the one exception). Added
+`mapOrOverlaySize(m)` (`m.own ? m.own.size + mapOrOverlaySize(m.base) : m.size`)
+next to `makeMapOverlay` — O(1) per layer (a MapOverlay's `base` is either
+a plain Map or another overlay, same shape `get`/`has` already walk), safe
+even though `own`/`base` can share keys (only ever used as a truthy/non-
+zero gate, never compared numerically — an over-count from double-counting
+a shared key can't flip zero↔non-zero).
+
+### Gates on the fix itself — clean
+
+- **Consumer audit, one level deep**: dispatched an independent Explore
+  agent to audit every function `analyzeFuncForEmit` calls directly
+  (`strengthReduceLoopDivMod`, `narrowBoundedSquare`, `unrollRecurrence`,
+  `unrollScalarChains`, `selectArmUpdatesIn`, `peelClampedStencil`,
+  `isReassigned`, `updateRep`, `cseLoads`, `seedLocalIntConsts`,
+  `reanalyzeBody`, `analyzeBody`, `mintLoopPlans`, `mintClosureEnvPlans`,
+  `cloneRepMap`, `typedElemAux`, `freshCseName`, `isBlockBody`,
+  `returnExprs`, `censusBigintSentinelKind`) for the same program-scale-
+  clone shape, independently of this session's own read-through. Zero
+  found — every one operates on function-scoped state (this function's own
+  `body`/`locals`/`localReps`), confirming the two (three, with `emitFunc`)
+  clones above were the complete set in reach, not a partial fix.
+- **Byte-identity**: 11-program × 4-optimize-level native differential
+  (`compile()` only, git-stash toggling `src/compile/index.js` — the
+  RIGHT test per 0ae75f07's own "wrong test caught" lesson; importing
+  `test/kernel-parity.js` directly runs ITS OWN native-vs-STALE-dist
+  comparison as a side effect of import, a different and at that point
+  irrelevant signal) — **44/44 SHA-256 identical**, pre-fix vs post-fix.
+- **`npm test`**: 3436 total / 3428 pass / 2 fail (the same pre-existing
+  `interval walk`/`typed RMW` rows) / 6 skip — matches the chain's own
+  baseline exactly, once `dist/jz.wasm` is rebuilt against the fix (a naive
+  pre-rebuild run shows a THIRD, expected, self-resolving fail —
+  `kernel-parity: … dict O0: diverges` — dist/jz.wasm briefly reflecting
+  pre-fix source while native reflects post-fix; gone after rebuild, exactly
+  0ae75f07's own documented artifact, not a regression).
+- **`kernel-oracle`**: 13/13 × 3 (541 assertions each), zero flake.
+- **`kernel-parity`** (dist-based): 33/33.
+- **Self-build determinism** (dormant, ×2 independent `build-dist.mjs`
+  runs): `dist/jz.wasm` SHA-256 `348e7f01511934c881994286532bcfa3826cd6ca4f0992d2c07d3f7a9ca8ff2b`
+  both times.
+- **jessie/watr region-live-profile ×3** (native compile at
+  `{level:3, inlinePtrOffsetFast:false}`, 0ae75f07's own substitute for a
+  full region-live self-host rebuild): both programs byte-identical
+  across 3 runs each.
+
+### The goal gate: NOT met — and, measured precisely for the first time,
+### NOT because of anything inside `analyzeFuncForEmit`'s own loop
+
+Re-ran the WAT-breadcrumb phase-stamp (097a51d7's own method: O0-named
+kernel, called at runtime with the REAL O3 `optJSON`) with a MUCH finer
+breadcrumb set than either prior session used — not just the half-dozen
+phase names 0ae75f07's own table covered, but every named pass between
+`narrowSignatures` and `analyzeFuncForEmit`'s own first call, PLUS a sparse
+per-call checkpoint curve (heap-bytes at calls 1, 2, 5, 10, 20 … 2000)
+inside `analyzeFuncForEmit`'s own loop — because the coarse table alone
+couldn't distinguish "the loop itself burns ~580 MB over 106 calls" (what
+0ae75f07's own numbers implied) from "the loop enters ALREADY near the
+ceiling and only adds a little."
+
+**It's the latter — measured directly, not inferred.** Dormant, this
+session's fixed kernel, `analyzeFuncForEmit`'s own checkpoint curve:
+
+| call # | heap MB | Δ since last checkpoint |
+|---|---|---|
+| 1 | 4089.1 | — |
+| 10 | 4089.5 | 0.3 (calls 2-10) |
+| 50 | 4091.5 | ~2.0 (calls 10-50) |
+| 90 | 4095.4 | ~3.9 (calls 50-90) |
+| 98 | (trap, 4096.0) | — |
+
+Call #1 is ALREADY at 4089.1 MB — 15 MB of headroom before the loop even
+starts its first iteration. The loop's OWN cost across its 98 reached calls
+is ~6-7 MB total, not hundreds. Region-live's own curve (below) confirms
+the same shape at a lower absolute offset. **This directly falsifies the
+reading 0ae75f07's own coarser table invited** ("narrowPointerResults 3512
+MB → analyzeFuncForEmit's last call 4096 MB, therefore the loop burns
+~584 MB") — that whole delta happens BEFORE call #1, in code the coarser
+table never breadcrumbed.
+
+**Fine-grained phase table** (dormant, same kernel, one entry per named
+pass in source order — `plan()`'s own post-`narrowSignatures` sequence,
+`src/compile/plan/index.js` lines 151-199, then `compileAst`'s own post-
+`plan()` scan calls, `src/compile/index.js` lines ~2505-2519):
+
+| phase (function) | heap MB at entry | Δ |
+|---|---|---|
+| `narrowSignatures` | 1948.2 | — |
+| `narrowPointerResults` (narrowSignatures' own last internal call) | 3513.1 | +1564.9 |
+| `narrowBoolResults` | 3710.7 | +197.6 |
+| `analyzeParamDistinctness` | 3870.0 | +159.3 |
+| `observeProgramSlots` (refineSlotKindCensus, `fresh:true`) | 3871.5 | +1.5 |
+| `scanInplaceStores` | 3894.2 | +22.7 |
+| `specializeBimorphicTyped` | 3901.3 | +7.1 |
+| `speculateTypedParams` | 3930.1 | +28.8 |
+| `refineDynKeys` | 3945.4 | +15.3 |
+| `refineFieldProvenance` / `inferModuleLetTypes` | 3945.4 | +0 |
+| `analyzeSchemaSlotIntCertain` (refineSlotIntCensus) | 4005.5 | +60.1 |
+| `invalidateAllBodyFacts` | 4027.5 | +22.0 |
+| `strictBoundaryTypeCheck` / `adviseProgram` | 4027.5 | +0 |
+| *(`plan()` returns)* | | |
+| `scanDynClosureTableCandidates` | 4027.5 | +0 |
+| `scanClosureTableLatticeCandidates` | 4088.9 | +61.4 |
+| `scanImperativeClosureTableLatticeCandidates` | 4089.0 | +0.1 |
+| `analyzeFuncForEmit` call #1 | 4089.1 (4095.9 at last-reached call #98) | +0.1 |
+
+None of these dozen-plus passes is individually dominant (the largest,
+`narrowBoolResults` at +198 MB, is a fifth of the total) — the growth is
+**diffuse**, spread across every whole-program pass `plan()` runs AFTER
+`narrowSignatures` returns (its own internal fixpoint) plus `compileAst`'s
+own three post-plan closure-table scans, none of which any prior session's
+breadcrumb table covered.
+
+### Region-live, same fine-grained sweep — explains the 106-vs-1427 (now
+### 98-vs-1435) asymmetry completely: identical per-pass cost, a CONSTANT
+### head start, nothing more
+
+**Setup correction caught mid-session**: `resolveSelfhostBuild`'s own
+`regionArena` parameter, passed explicitly, does NOT retroactively make a
+kernel region-live — per its own doc, an explicit override only changes the
+derived `inlinePtrOffsetFast` OPTIMIZER gate for how THIS BUILD's own wasm
+gets optimized; the actual region-hook wiring a self-hosted kernel COMPILES
+WITH is baked in from `scripts/self.js`'s own `REGION_HOOKS_ACTIVE` literal
+at the time `resolveModuleGraph` reads the source. A first attempt at the
+region-live breadcrumb run silently built TWO dormant kernels (identical
+WAT for `front`/`emitIR`/`optimizeTail`, confirmed by a raw file diff)
+because `REGION_HOOKS_ACTIVE` was never hand-flipped for that build. Caught
+by diffing the two O0-named `.wat` files directly before trusting the
+run — the only true difference was one non-mutable `f64` global's own
+initializer (`0x0p+0` vs `0x1p+0`, i.e. the compiled representation of the
+`REGION_HOOKS_ACTIVE` literal itself; jz's compiler does NOT constant-fold
+an exported top-level binding into its ternary consumers — `regionHooks:
+REGION_HOOKS_ACTIVE ? {...} : undefined` compiles to a genuine runtime
+branch on that global in BOTH configs, not two different specializations).
+Rebuilt correctly (hand-flipped `REGION_HOOKS_ACTIVE = true` in the
+source, built, reverted immediately after) before trusting any region-live
+number below.
+
+Region-live's own fine-grained table, SAME breadcrumbs, SAME source order:
+
+| phase | dormant MB | region-live MB | Δ (dormant − region-live) |
+|---|---|---|---|
+| `narrowSignatures` | 1948.2 | 1550.1 | 398.1 |
+| `narrowPointerResults` | 3513.1 | 3114.9 | 398.2 |
+| `narrowBoolResults` | 3710.7 | 3312.5 | 398.2 |
+| `analyzeParamDistinctness` | 3870.0 | 3471.8 | 398.2 |
+| … *(every remaining row, same delta ±0.1 MB)* | | | ~398 |
+| `scanImperativeClosureTableLatticeCandidates` | 4089.0 | 3690.8 | 398.2 |
+| `analyzeFuncForEmit` call #1 | 4089.1 | 3690.9 | 398.2 |
+
+**Every single per-pass Δ is identical between configs, to within noise
+(±0.1 MB)** — narrowSignatures' own fixpoint costs +1564.9 MB dormant /
++1564.8 MB region-live, `narrowBoolResults` costs +197.6 MB in BOTH, and so
+on down the whole table. This proves none of these dozen-plus passes has
+ANY region-arena interaction — no mark/exit boundary covers any of them,
+so they cost the identical, fixed amount regardless of config. The ONLY
+difference is a **constant ~398 MB head start**, inherited from `front()`'s
+own PRE-EXISTING region boundary (parse/prepare/preEval reclaim, landed
+before this chain's own narrow.js/closure work) and carried through
+UNCHANGED across the entire `plan()` + scan sequence, arriving at
+`analyzeFuncForEmit`'s first call with exactly that much more headroom.
+
+**Inside the loop itself, the checkpoint curve is the SAME shape at a lower
+offset**, not a different (steeper or shallower) one — region-live's own
+curve (calls 1→1200: 3690.9→4001.8 MB, a modestly-accelerating ~0.03-0.4
+MB/call rate, matching dormant's own calls 1→90 rate order-of-magnitude
+for the range they overlap). The 398 MB constant head start simply lets
+the SAME curve run ~14.6× further (1435 calls vs 98) before the SAME
+4096 MB ceiling stops it — not a different mechanism, not redundant
+re-analysis, not a region-arena defect. **Verdict on the task's own named
+alternative hypotheses**: NOT re-analysis-after-exits (both configs reach
+`analyzeFuncForEmit`'s loop exactly once, per the `timePhase(profiler,
+'analyzeFuncs', …)` wrapper's own single invocation — confirmed by
+`ctx.func.list` being walked once, `func.raw` skip aside); NOT the loop
+being "restarted" (the checkpoint curve is monotone, no reset visible at
+any sampled call).
+
+### Disposition: this session's own three clones LANDED (real, same-class,
+### verified safe); the DOMINANT cost is a NEW, BANKED (not fixed) finding
+
+The typedElem/typedLen/schema.vars clones are genuine instances of
+259cd4fc's own named class, correctly converted, gated clean — kept, not
+reverted, since they're a real (if modest) improvement with zero
+measured cost and zero behavior change. But they do NOT move the ceiling
+in any way visible at this measurement's precision: the loop they live in
+was already cheap (6-7 MB total dormant, pre- or post-fix — the fix's own
+saving is too small relative to the ~2.1 GB diffuse cost upstream to
+register as a call-count change worth trusting as a "did it help" signal
+on its own).
+
+**The real frontier, precisely named for the first time**: `plan()`'s own
+post-`narrowSignatures` pass sequence (`src/compile/plan/index.js` lines
+151-199 — `narrowBoolResults`, `inferModuleGlobalValTypes2`,
+`analyzeParamDistinctness`, `refineSlotKindCensus`/`observeProgramSlots`,
+`analyzeParamNeverGrown`, `scanInplaceStores`, `specializeBimorphicTyped`,
+`specializeValKindDichotomy`, `speculateTypedParams`, `refineDynKeys`,
+`refineFieldProvenance`, `refineModuleLetTypes`,
+`refineSlotIntCensus`/`analyzeSchemaSlotIntCertain`,
+`invalidateAllBodyFacts`, `strictBoundaryTypeCheck`, `adviseProgram`) PLUS
+`compileAst`'s own three post-`plan()` closure-table scans
+(`scanDynClosureTableCandidates`, `scanClosureTableLatticeCandidates`,
+`scanImperativeClosureTableLatticeCandidates`, `src/compile/index.js`
+~2505-2519) — together burn ~2.1 GB, NONE of it inside a single dominant
+clone.
+
+**Why this is a DIFFERENT class than the clone-shape bugs already fixed
+(259cd4fc, 0ae75f07, this session's own three)**: a clone-shape bug is
+"the SAME data, needlessly re-copied on every call" — convertible to an
+overlay/index with ZERO semantic loss because the copy was pure waste. This
+is NOT that. `analyzeBody`'s own caching doc (`src/compile/analyze.js`
+line 87-96, `getFactStore().bodyFacts`) is explicit: it's "a plain Map, NOT
+a WeakMap… Strong refs are bounded by program size and dropped at the next
+reset" — a DELIBERATE, already-audited design decision (a WeakMap was
+tried and reverted for a DIFFERENT self-host arena/GC-interaction bug, ledger
+2026-07-21i) to hold every function's analysis facts alive for the WHOLE
+compile, because later passes (this same list) genuinely need them. Spot-
+checked `narrowBoolResults` (the single largest delta, +198 MB): it calls
+`analyzeBody(body)` for every eligible function — a CACHE-BACKED call
+(hits reuse the shared `bodyFacts` entry, not a fresh walk) — so its own
+marginal cost isn't "redundant work," it's the FIRST-TIME population cost
+of facts multiple later passes will legitimately reuse. Natively this is
+"real, unavoidable memory, GC would keep it alive too" — self-hosted, the
+same legitimately-necessary retention has no GC-driven early release for
+any INTERMEDIATE scratch state each pass's own tree-walk allocates and
+then discards (V8 reclaims that scratch instantly; the bump arena never
+does) — a structural "self-hosting tax" 259cd4fc's own session first
+hypothesized without measurement; this session is the first to quantify it
+(~2.1 GB, precisely phase-mapped, not a guess).
+
+**Fixing this is a different, bigger lever than "convert a clone to an
+overlay"** — it would mean either (a) scattering NEW region-arena mark/
+exit boundaries around some subset of these dozen-plus `plan()`-internal
+passes (an architectural expansion of the region-arena mechanism's own
+scope, not a mechanism-preserving conversion — exactly the kind of
+same-session structural change this campaign's own `narrow.js`/`closure`
+heisenbug history argues against attempting without a dedicated session),
+or (b) auditing each pass's OWN per-pass garbage source individually (a
+much larger undertaking, one pass at a time, than this task's own
+"analyzeFuncForEmit and one level of callees" scope). BANKED, not chased,
+per the task's own "bank precisely if it's something new" instruction.
+
+**jz×jz goal gate: NOT met.** Dormant and region-live both still trap at
+exactly 4,294,967,296 bytes (4 GiB) — this session's own three clone fixes
+are real but too small (their own tables: `globalTypedElem.size=25`,
+`globalTypedLen.size=1`, `schema.vars.size≈180`, measured natively at the
+real 2069-function jz×jz program) to move a ceiling whose dominant cost is
+~2.1 GB of diffuse, legitimately-necessary, multi-pass retention entirely
+upstream of `analyzeFuncForEmit`'s own loop.
+
+**Next session's concrete lever**: this is NOT "keep auditing
+`analyzeFuncForEmit` and its callees" (done, twice over — clean). The
+named list above (`plan()`'s dozen-plus post-`narrowSignatures` passes +
+`compileAst`'s three post-`plan()` scans) is where the next region-arena
+design session needs to look — likely starting with the single largest
+individual deltas (`narrowBoolResults` +198 MB, `analyzeParamDistinctness`
++159 MB, `scanClosureTableLatticeCandidates` (inferred, the
+`scanDynClosureTableCandidates` call immediately before it) ~+61 MB,
+`analyzeSchemaSlotIntCertain` +60 MB) as the highest-leverage individual
+targets, but note NONE of them alone gets even a quarter of the way to
+closing a 2.1 GB gap — this likely needs either a REGION BOUNDARY wrapped
+around the whole `plan()`-post-narrow + scan* sequence (one mark/exit pair,
+coarser-grained than any single pass) or accepting jz×jz needs memory64,
+not further micro-fixes.
+
+### Gates (full tally)
+
+- kernel-parity 44/44 (11 programs × O0-O3, native differential,
+  git-stash-toggled `src/compile/index.js` only): byte-identical.
+- `npm test`: 3436/3428/2 fail (pre-existing)/6 skip — matches baseline.
+- `kernel-oracle`: 13/13 × 3 (541 assertions), zero flake.
+- `kernel-parity` (dist-based): 33/33.
+- Self-build ×2 (dormant): SHA-256
+  `348e7f01511934c881994286532bcfa3826cd6ca4f0992d2c07d3f7a9ca8ff2b`, both
+  identical.
+- jessie/watr region-live-profile ×3: both byte-identical across 3 runs.
+- jz×jz goal gate: NOT met, dormant and region-live both trap at 4 GiB.
+
+**SHAs.** Worktree: `region-slice2-front` (region-final-2026-08-11 /
+0ae75f07, detached HEAD). Commit: `src/compile/index.js` (the three
+MapOverlay conversions + `mapOrOverlaySize`) + `scripts/self.js` (the
+f670c709-equivalent `optimizeTail` gate port) + this ledger entry, detached
+on 0ae75f07, no Co-Authored-By. `dist/jz.wasm` rebuilt locally for the gate
+ladder above (SHA `348e7f01…`) but NOT committed (gitignored, per this
+repo's own convention — reproducible from tracked source via `npm run
+build`).
+
