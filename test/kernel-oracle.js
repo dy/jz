@@ -339,6 +339,29 @@ export let f = (x) => g(x > 0 && 1)`,
       return ctx.closure.table.length + '|' + ctx.closure.envMeta.length + '|' + s
     }`,
     calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [5] }, { fn: 'f', args: [64] }] },
+  // Chained-region-round coverage gap (task: .work/research.md §Region arena,
+  // e640e77a's entry, lead #3): NONE of the rows above exercise plan()'s
+  // narrowSignatures or any of the per-pass plan-tail/scan region boundaries
+  // that session designed — every one of them is small enough to take
+  // `canSkipWholeProgramNarrowing`'s early-return path (verified directly,
+  // scratch instrumentation on `programFacts`: every existing AGREE row that
+  // was checked returns skip=true or skip=false for reasons unrelated to
+  // genuine inter-function call-site analysis). `canSkipWholeProgramNarrowing`
+  // (src/compile/plan/scope.js) requires `programFacts.callSites.length > 0`
+  // to even attempt running narrowSignatures — a program with zero function-
+  // to-function call sites can never force it. Two NAMED functions, one
+  // calling the other at two call sites with two differently-typed second
+  // arguments, is the minimal shape that defeats the skip: it gives
+  // `callSites.length > 0`, forcing narrowSignatures (and therefore every
+  // later plan-tail/scan region round wired through `plan()`'s `round()`
+  // helper) to actually execute — closing the gap for ANY future
+  // plan()-internal region-boundary work, not just the chain-rounds session
+  // this row was added for.
+  { name: 'whole-program-narrowing-forcing (defeats canSkipWholeProgramNarrowing)',
+    src: `function add(a, b) { return a + b }
+function callAdd(x) { return add(x, 1) + add(x, 2.5) }
+export let f = (x) => callAdd(x)`,
+    calls: [{ fn: 'f', args: [3] }, { fn: 'f', args: [-2] }] },
 ]
 
 for (const opt of [0, 2, 3]) {

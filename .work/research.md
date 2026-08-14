@@ -14462,3 +14462,244 @@ times. Every `.work/*.mjs`/`.work/*.sh` scratch script this session produced
 (build drivers, the WAT-splice breadcrumb tool, the jessie repro, the
 real-graph curve runner) was deleted at session end — none committed.
 
+
+## §Region arena — `__coll_order` chain-round defect bisected to a NaN-boxed
+## pointer aliasing a Set/Map's own [count][cap] header (breadcrumb-confirmed,
+## not guessed); one genuine, verified, documented-contract-violation fixed
+## in `regionArmSetMap` (layout-kinds.js) but EMPIRICALLY PROVEN insufficient
+## to close jessie/watr — mechanism still open, banked per campaign precedent
+## (2026-08-14)
+
+**Task**: root-cause and fix the `__coll_order`/`$__dyn_props` engine defect
+e640e77a bisected — ANY region round beyond front+Slice3 traps jessie/watr at
+exactly 512.0MB, zero growth, inside `__coll_order`. Worktree `git worktree
+add … e640e77a`, branch `chainrounds-2026-08-14`.
+
+### Method — WAT-level breadcrumbs spliced into the already-built kernel
+
+`resolveSelfhostBuild({regionArena:true})`'s `regionArena` option does **not**
+flip runtime region-round behavior — it only gates the `inlinePtrOffsetFast`
+optimizer override. `scripts/self.js`'s own `REGION_HOOKS_ACTIVE` literal
+must be hand-flipped for the COMPILED kernel's own `compileSelf`/`compileWat`
+to pass real `regionHooks` objects at its own runtime. Caught this the hard
+way: a first scratch build with only the `regionArena` override "succeeded"
+compiling jessie at 1024.0MB / a byte size matching DORMANT exactly — a false
+negative that would have wasted the session had it not been cross-checked
+against the documented dormant shape before proceeding.
+
+With `REGION_HOOKS_ACTIVE` genuinely flipped, built a named (`names:true`, no
+`wat:true`) region-live kernel, `wasm2wat --enable-all` decompiled it
+untouched, spliced new exported `(mut i32)` globals plus capture instructions
+directly into the decompiled text at `__coll_order`'s own entry (right after
+its `$buf` allocation: `off`, `cap`, the header count word driving `$buf`'s
+size, a call counter, and a sticky "first-bad" latch guarded on
+`hdrcount > cap`) and exit (`$n`, the real scanned count), reassembled via
+`wat2wasm --enable-all`. Repro: a driver importing `subscript/feature/jessie`
+resolved via `resolveModuleGraph` and fed through the kernel's own `default()`
+export — real region-live self-hosted compiles, matching this campaign's own
+established convention (not a native-flag proxy).
+
+### Breadcrumb evidence
+
+Jessie (46 driver-counted modules) traps deterministically, 3/3, `memory
+access out of bounds` inside `__coll_order`, called from
+`m77_scans$scanNumericFill` (`src/compile/analyze-scans.js`) via
+`m74_analyze$analyzeBody`/`m74_analyze$analyzeValTypes`, itself called from
+`m116_assemble$buildStartFn` (`src/wat/assemble.js`) — the FINAL
+`__start`-body assembly pass, a full re-analysis of every function, running
+after all six of e640e77a's own new plan-tail/scan rounds have already
+exited.
+
+Captured at the crash (52,070th `__coll_order` call this compile; the sticky
+"first-bad" latch never fired on any of the prior 52,069 calls, ruling out
+gradual accumulation — this call is corrupt from its own first read):
+
+```
+off      = 71,983,592    (0x044A61E8 — a real, in-bounds heap address)
+cap      = 2,146,992,128 (0x7FF88000 — "kin of the cap=0 degenerate-HASH and
+                           ~2^31-capacity mechanisms" per this task's own brief)
+hdrcount = 9,841,744     (0x00962C50)
+```
+
+Decoded as ONE f64 NaN-boxed pointer (`cap`=high 32 bits, `hdrcount`=low 32
+bits): `NAN_PREFIX` `0x7FF8` matches exactly, tag = `PTR.ARRAY`, aux = 0 — a
+clean, valid, LIVE jz pointer bit-pattern, not heap noise. Re-ran after
+landing the fix below (fresh source-driven rebuild, not just the debug
+splice): the crash reproduces IDENTICALLY — same call count (52,070), same
+`__coll_order` code address, same "first-bad never fires before the crash"
+signature; only the specific bit-pattern drifted (decoded this time as tag =
+`PTR.HASH`), consistent with ordinary code-size-induced address churn, not a
+changed mechanism.
+
+**Reading**: `off` is not this Set/Map's real header — the 8 bytes at
+`[off-8, off)`, where `__coll_order` and every sibling reader expect
+`[count][cap]`, hold a genuine, valid NaN-boxed VALUE belonging to some other,
+still-live structure. A real memory-aliasing defect: two logically distinct
+objects' backing storage overlaps. The stack (`scanNumericFill`'s `for (const
+[name,s] of scanBindingUses(body))`) points at `getFactStore().bindingUses` —
+a `WeakMap` that folds to a strong `Map` under self-hosting
+(`src/autoload.js`, "WeakSet/WeakMap fold to Set/Map"), cached once per
+function body since round 1 (`narrowBoolResults`), included in every
+plan-tail/scan round's root via `getFactStore()`, and therefore unconditionally
+REBUILT by `regionArmSetMap` (layout-kinds.js — no durable short-circuit,
+"always rebuild via __coll_order+reinsert") on every one of the six new
+rounds it survives — six full rebuilds of a structure exercised at most twice
+under the previously-sound front+Slice3 baseline.
+
+### The fix that landed — real, verified, engine-level, but NOT sufficient alone
+
+`layout-kinds.js`'s `regionArmSetMap`: the rebuild loop's reinsertion COUNT
+(`$n`) was read from the table's own header COUNT WORD (`i32.load(off-8)`)
+**before** ever calling `__coll_order` — the one call site in this entire
+codebase that violates `__coll_order`'s own documented contract ("the header
+and the real gathered count are NOT guaranteed to agree… every caller MUST
+read [$__coll_order_n]", module/core.js's own header comment, verified via
+`grep` — `__sclone_rec`, `__region_exit`'s own `$__dyn_props` rebuild, and
+every `genLookup`/`genUpsertGrow` iteration site in module/collection.js all
+already read `$__coll_order_n` AFTER the call). This is not a cosmetic
+off-by-one: an inflated `$n` feeds `genUpsertStrictPrehashed`
+(`__set_add_h`/`__map_set_h` — the region-rebuild-only insert primitive with
+**no grow path at all**, module/collection.js's own comment: "`$__zomb_scan`
+falls back to slot 0 when the table is truly full of live keys, which the
+75%-load grow makes unreachable"). A wrong `$n` can defeat the "never grows"
+invariant the whole rebuild leans on; the slot-0 fallback unconditionally
+increments the header count even when it OVERWRITES (not adds) an entry —
+inflating the rebuilt table's own header for the NEXT round to inherit and
+compound, composing precisely with "any additional region round" being
+sufficient to trigger and "round N confuses round N+2" from this task's own
+framing. Fixed by reading `$n` from `$__coll_order_n` after the call,
+matching every sibling caller — no special-casing.
+
+**Empirically verified NOT sufficient**: rebuilt the named kernel from this
+source fix, re-ran the same breadcrumb-instrumented jessie repro — identical
+crash (see "Breadcrumb evidence" above). The mechanism this fix closes is
+real and independently worth having; it is not the sole source of the
+aliasing.
+
+### Not fixed this session — the precisely-bisected next lead
+
+The aliasing is real and precise (a clean NaN-boxed bit-pattern, not noise)
+but its WRITE site is not pinned. Strongest remaining lead:
+`getFactStore().bindingUses` (and/or `bodyFacts`, both consolidated on the
+same `getFactStore()` object, `src/compile/program-facts.js`) surviving SIX
+unconditional `regionArmSetMap` rebuilds (one per plan-tail/scan round)
+before `buildStartFn`'s own `analyzeValTypes` reads it — each rebuild
+recurses into every entry's VALUE via `__region_copy_rec` (layout-kinds.js
+line ~458, a `__region_copy_rec` call nested INSIDE the same
+`$__map_set_h`/`$__set_add_h` call's argument list) — an address-staging
+($outPhys/physical-now-valid vs $out/delta-adjusted-final-not-yet-valid) or a
+memo-across-recursive-relocation defect specifically in that nested value
+path, distinct from the container-level `$n`-count bug this session fixed,
+is the next thing to breadcrumb — same method (splice on the already-built
+kernel, never JS-source edits, per this task's own heisenbug-sensitivity
+note), targeting `__region_copy_rec`'s SET/MAP branch and the evaluation
+order of `$__map_set_h`/`$__set_add_h`'s arguments (the value argument's own
+`__region_copy_rec` call sits in the SAME call expression as the
+`$__map_hash` call computing `$len` from `$oldProps`/`$propsF` — worth
+confirming this ordering is genuinely safe, not merely assumed so by every
+prior session). This session's own budget did not extend to a second full
+breadcrumb cycle inside `__region_copy_rec` itself — a much larger, more
+central function than `__coll_order`, harder to splice safely — flagged for
+the next session per this task's own "bank precisely" discipline.
+
+### The new oracle row
+
+`test/kernel-oracle.js` AGREE tier gained one row,
+`'whole-program-narrowing-forcing (defeats canSkipWholeProgramNarrowing)'` —
+two named functions, one calling the other at two call sites with two
+differently-typed second arguments, giving `programFacts.callSites.length >
+0` — the one condition `canSkipWholeProgramNarrowing`
+(src/compile/plan/scope.js) checks that a trivial single-function program can
+never satisfy. Verified directly (temporary `console.error` instrumentation
+in `scope.js`, reverted before commit — confirmed `git diff` clean) that
+several EXISTING AGREE rows (`dict`, `dynkey`, `closure`, `sum`, `boolconst`)
+already return `skip:false` for OTHER reasons (`anyDyn`/`hasSchemaLiterals`/
+`ctx.closure.make`), while the simplest rows (`math`) return `skip:true` — and
+that this new row is the first to defeat the skip via genuine
+`callSites.length > 0`, exercising the exact machinery
+(`narrowSignatures` → every later plan-tail/scan region round wired through
+`plan()`'s `round()` helper) e640e77a's own finding #3 named as untested by
+the existing 13-row oracle.
+
+### Gates
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships):
+- Self-build ×2: SHA-256 `2e5254a9b4eccb3751a437572ff552cc6907396ef4ae5654c61e28287ebf93da`
+  — converges, and independently reproduced a THIRD time after the region-live
+  gate cycle below (same hash) — direct confirmation that both this session's
+  fixes (`layout-kinds.js`, `test/kernel-oracle.js`) are provably dormant-inert:
+  `regionArmSetMap`'s code lives inside `__region_copy_rec`, unreachable
+  stdlib whenever `REGION_HOOKS_ACTIVE=false` (same "provably dead code"
+  argument b33d603e's own entry established for `__region_relocate_props`),
+  and `kernel-oracle.js` is test-only, never shipped.
+- Dormant kernel-oracle: **13/13 × 3** (553 assertions each — up from 541,
+  the new row's own delta — zero flake).
+- Dormant kernel-parity: **33/33**.
+- Dormant `npm test`: **3454 total / 3448 pass / 0 fail / 6 skip** —
+  byte-for-byte the documented baseline, zero regression.
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2: SHA-256 `a9e93a33f7a8dbe0c92e981ba6daa1d2740d33f8b1e357570f639d2f424f1d9b`
+  — converges.
+- Region-live kernel-oracle: **13/13 × 3** (553 assertions each, including
+  the new forcing row) — clean, but (per e640e77a's own established finding,
+  re-confirmed) does not exercise the actual defect; small oracle programs
+  still mostly skip or resolve before the wall matters.
+- Region-live kernel-parity: **33/33** — same caveat.
+- **Region-live jessie ×3: FAILS** — `memory access out of bounds` inside
+  `__coll_order`, deterministic, identical stack every time, 512.0MB / zero
+  growth (matches e640e77a's own baseline signature exactly).
+- **Region-live watr ×3: FAILS** — same signature, 1024.0MB peak (matches
+  e640e77a's own watr baseline).
+- `jzify-entry` not independently re-run (jessie+watr's own regression
+  already disqualifies the live config, per e640e77a's own established
+  precedent for this exact situation).
+- **jz×jz goal gate**: not attempted — region-live cannot ship given the
+  jessie/watr regression persists (independent of whether it would help
+  jz×jz specifically); dormant is unaffected by design and matches every
+  prior session's own dormant-side jz×jz result (unchanged, not re-run this
+  session — nothing about dormant's own compile path moved).
+
+### Disposition — BANKED, not landed live
+
+`REGION_HOOKS_ACTIVE` stays `false`, the committed default — matches every
+prior session's own disposition when the region-live wall isn't closed.
+`regionArmSetMap`'s `$n`-source fix lands (real, independently verified
+against a documented codebase-wide invariant, zero regression on every gate
+that reflects what ships, dormant-inert by construction — reconfirmed via
+byte-identical self-build SHA before AND after this session's changes). The
+new oracle row lands (closes e640e77a's own finding #3). The `__coll_order`
+aliasing mechanism is real, precisely evidenced (a clean NaN-boxed pointer,
+not noise, sitting where a Set/Map header is expected — decisively ruling out
+"random heap garbage" and "gradual header/count drift" as explanations) —
+**NOT closed**, reported honestly, not glossed over. Six prior sessions in
+this campaign closed their own assigned mechanism this same way (bank a
+real, verified, partial fix; report the wall's exact remaining shape instead
+of forcing a declaration) — this is the seventh entry to do so on THIS
+specific wall (b33d603e was the one exception that fully closed it, for the
+front+Slice3 baseline only).
+
+**Next named lead, in priority order**: breadcrumb `__region_copy_rec`'s
+SET/MAP arm directly (not just `__coll_order`) — specifically the
+`$outPhys`/`$out` staging-vs-final distinction and the recursive
+`__region_copy_rec` call nested inside `$__map_set_h`'s own argument list —
+across a `getFactStore().bindingUses`-shaped structure relocated through all
+six chained plan-tail/scan rounds. This session's own breadcrumb
+instrumentation and repro scripts (jessie/watr drivers, the WAT-splice
+tooling) were deleted at session end per this task's own "revert
+instrumentation" discipline — none committed; the METHOD (documented above)
+is the reusable starting point, not a checked-in tool.
+
+**SHAs**. jz worktree: `e640e77a` base, branch `chainrounds-2026-08-14`.
+Commits: `layout-kinds.js` (the `regionArmSetMap` fix) + `test/kernel-oracle.js`
+(the new forcing row) + this ledger entry. `REGION_HOOKS_ACTIVE` confirmed
+`false` in the committed `scripts/self.js` (`git diff scripts/self.js` clean
+at commit time). Dormant `dist/jz.wasm` (self-build ×2, reconfirmed a third
+time post-region-live-cycle): SHA-256
+`2e5254a9b4eccb3751a437572ff552cc6907396ef4ae5654c61e28287ebf93da` all three
+times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
+`a9e93a33f7a8dbe0c92e981ba6daa1d2740d33f8b1e357570f639d2f424f1d9b` both
+times. Every `.work/*.mjs`/`.wat`/`.wasm`/`.sh`/`.log` scratch artifact this
+session produced (the named-kernel build driver, the jessie/watr repro
+drivers, every WAT-splice intermediate) was deleted at session end — none
+committed.

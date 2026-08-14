@@ -421,9 +421,34 @@ export function regionArmSetMap() {
           (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
           (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
-          ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical
-          (local.set $n (i32.load (i32.sub (local.get $off) (i32.const 8))))
+          ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical,
+          ;; PROVIDED $n is the real live count. Chained-region-round fix (.work/research.md §Region
+          ;; arena, __coll_order/$__dyn_props chain-round defect): $n used to be read from the
+          ;; table's own header count word (i32.load(off-8)) BEFORE ever calling __coll_order — the
+          ;; ONE call site in this codebase that violated __coll_order's own documented contract
+          ;; ("the header and the real gathered count are NOT guaranteed to agree... every caller
+          ;; MUST read $__coll_order_n") — every sibling caller (__sclone_rec, __region_exit's own
+          ;; $__dyn_props rebuild, every genLookup/genUpsertGrow iteration site in
+          ;; module/collection.js) reads $__coll_order_n AFTER the call instead. A header/real-count
+          ;; divergence here doesn't just under/over-count for THIS table — it feeds genUpsertStrictPrehashed
+          ;; (__set_add_h/__map_set_h), which has NO grow path at all ("inserting into a fresh
+          ;; cap-sized table never grows" — true only when $n is the genuine live count, since a
+          ;; real n < cap guarantees open-addressed probing terminates by the pigeonhole principle,
+          ;; independent of hash-bucket clustering from relocated keys' changed bits). An inflated
+          ;; $n reads past __coll_order's own gathered $ord entries (uninitialized bump-allocator
+          ;; bytes decoded as bogus "slot" pointers); a table that genuinely fills under a wrong $n
+          ;; drives __zomb_scan's documented "falls back to slot 0... which the 75%-load grow makes
+          ;; unreachable" escape hatch, which unconditionally increments the header count even
+          ;; though it overwrote (not added) an entry — inflating the REBUILT table's own header for
+          ;; the NEXT round to inherit and compound. Every ADDITIONAL region round is another
+          ;; unconditional rebuild of every reachable Set/Map (this arm has no durable short-circuit
+          ;; — see the comment above), so more rounds mean more chances for the divergence to first
+          ;; appear and then compound round over round — exactly the "any additional region round"
+          ;; trigger and the "round N confuses round N+2" composition the task named. Fixed by
+          ;; reading $n from $__coll_order_n, AFTER the call, matching every other caller in this
+          ;; codebase — no special-casing, just the documented contract finally honored here too.
           (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))
+          (local.set $n (global.get $__coll_order_n))
           (block $cd (loop $cl
             (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
