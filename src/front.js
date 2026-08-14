@@ -52,7 +52,7 @@ export const rejectReservedPrefix = (node) => {
  *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
  *  one region round: every allocation that span makes gets reclaimed at
  *  `exit` EXCEPT what's reachable from the five-element root `[ast,
- *  ctx.func.list, ctx.module, ctx.schema, ctx.closure]` — proven minimal
+ *  ctx.funcs, ctx.module, ctx.schema, ctx.closure]` — proven minimal
  *  for `sum`/`compile('')` on the pre-rebase kernel (dropping `ctx.module`
  *  or `ctx.schema` broke even the baseline case at that point). Re-verified
  *  post-rebase onto main (14c4f7a2, .work/research.md §Region arena's
@@ -60,9 +60,27 @@ export const rejectReservedPrefix = (node) => {
  *  dynamic-property-write programs — the narrower wall the pre-rebase
  *  session banked — now compile clean through this boundary at O0/O2/O3,
  *  confirmed by kernel-oracle 13/13 x3, kernel-parity 33/33, and the
- *  200-seed fuzz gate x3, all green. `preEval` runs OUTSIDE the region (it
- *  only ever touches the already-rooted `ast`/`ctx.func.list` bodies).
- *  Rebinding all five `ctx.*` fields from `exit`'s return is NOT optional:
+ *  200-seed fuzz gate x3, all green.
+ *  ROOT-COMPLETENESS FIX (ns-round-2026-08-14 dig, .work/research.md §Region
+ *  arena): the root array above literally read `ctx.func.list` until this
+ *  session — `ctx.func` (singular) is the ACTIVE-FRAME scratch record, which
+ *  has never had a `.list` field; the real function registry has been
+ *  `ctx.funcs` (plural: `.list`/`.map`/`.names`/`.exports`) since `0487cde4`
+ *  ("extract compile-lifetime function registry") split the two apart.
+ *  `0487cde4`'s own diff updated the COMMENT two lines below this one
+ *  (`ctx.func.list body` → `ctx.funcs.list body`) but missed this array
+ *  entirely — provably because the array was added a commit EARLIER
+ *  (`47140301`, before the split, when `ctx.func.list` was still correct)
+ *  and `REGION_HOOKS_ACTIVE` has stayed `false` in every shipped build ever
+ *  since, so this whole branch is dead code no native test path reaches.
+ *  `ctx.func.list` has evaluated to `undefined` — a harmless non-pointer
+ *  root slot — for every region-live run since `0487cde4` landed
+ *  (2026-08-12): the ENTIRE function registry (every function's body/sig/
+ *  defaults/exported bookkeeping, freshly populated by the `prepare()` call
+ *  immediately above) was silently absent from front's own root, the very
+ *  FIRST region round in the whole pipeline. `preEval` runs OUTSIDE the
+ *  region (it only ever touches the already-rooted `ast`/`ctx.funcs.list`
+ *  bodies). Rebinding all five `ctx.*` fields from `exit`'s return is NOT optional:
  *  `__region_copy_rec` may relocate any of them (this compiler's
  *  single-block ARRAY layout in particular reallocates wholesale on its
  *  first post-mark grow, no separate backing pointer to preserve in place)
@@ -81,8 +99,8 @@ export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrep
   let ast = time('prepare', () => prepare(parsed))
   if (afterPrepare) afterPrepare()
   if (regionHooks) {
-    ;[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure] =
-      regionHooks.exit(mark, [ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure])
+    ;[ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure] =
+      regionHooks.exit(mark, [ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure])
   }
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,

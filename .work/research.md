@@ -15976,3 +15976,333 @@ an inference session proves the residual sites raw) is unaffected by this
 session — this is the documented interim, landed to stop the bleeding, not
 a reversal of the retirement's direction.
 
+
+
+## §Region arena — ns-round second-holder dig: TWO real `ctx.func`/`ctx.funcs`
+## root-completeness bugs found and fixed via git archaeology (front.js's
+## region round rooted a dead `ctx.func.list` since the `0487cde4` split;
+## compile()'s own Slice-3 exit rooted `ctx.func` where `ctx.funcs` was
+## needed) — both independently justified, both dormant-safe, NEITHER closes
+## the ns-round region-live wall (still 0/13×3, identical signature); banked,
+## CompileSession recommended as the canonical fix for the whole defect class
+## (2026-08-14)
+
+**Task**: find the SECOND holder of a616ca43's still-open stale `PTR.MAP`
+address (the `ctx.func` root-completeness fix landed there measurably
+perturbed the crash but did not close it) — named leads: `narrow.js`'s
+`refreshCallerValTypes`/`callerCtx` machinery, `getFactStore()`'s bodyFacts
+values (SET/MAP arm value-side deep-walk), module-scope caches in
+narrow.js/analyze code paths. If a third holder appeared or the fix needed
+>2 more sites, bank the `CompileSession` recommendation instead. Worktree
+`git worktree add … a616ca43`, branch stays `ns-round-2026-08-14` (detached).
+`npm ci`.
+
+### 1. Named leads — audited, all ruled out by direct source reading (not inferred)
+
+- **`regionArmSetMap`/`regionArmObject` (layout-kinds.js) value-side deep
+  walk**: read both region arms in full. SET/MAP's arm DOES recurse
+  `__region_copy_rec` on both the key (`propsF`/`oldProps`) and, for MAP
+  entries, the value (`f64.load (slot+16)`, line ~483) — not a shallow
+  pointer copy. OBJECT's arm walks every schema-declared slot in a loop
+  (`__schema_tbl`-derived count), recursively, both durable and ephemeral
+  branches. `getFactStore()`'s `bodyFacts` values are plain object literals
+  with a FIXED field set (`{ locals, valTypes, arrElemSchemas,
+  arrElemSchemaSets, arrElemValTypes, arrElemTypedCtors, typedElems,
+  typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown,
+  numericFill }`, analyze.js:919) — schema'd OBJECT shape, walked exactly
+  like any other. **Task's own audit item 2 (verify SET/MAP relocates
+  value-side nested structures) is REFUTED as a hypothesis — the arm is
+  already sound**, confirmed by direct WAT read, not by re-deriving b33d603e's
+  prior "REGION MACHINERY SOUND" conclusion secondhand.
+- **`narrow.js`'s `callerCtx`/`createPhaseState()`/`phase.refreshValTypes`/
+  `refreshLocals`**: `const phase = createPhaseState()` (narrow.js:1744) is a
+  `narrowSignatures`-LOCAL const; its closures (`refreshValTypes`,
+  `refreshLocals`, `callerElems`, `callerTyped`) all close over `callerCtx`/
+  `elemCtx`/`callerTypedCtx`, never assigned anywhere outside
+  `narrowSignatures`' own body (grepped every call site: `phase.*` appears
+  only between lines 1744-2487, all inside `narrowSignatures`). No escape
+  found. Chronologically this also can't be the round-1 (`narrowBoolResults`)
+  address's holder: `plan/index.js`'s pipeline order is `narrowSignatures`
+  (its own region round, mark-before/exit-strictly-after) THEN plan-tail
+  round 1 (`narrowBoolResults`) — `callerCtx` is already dead and its round
+  already exited before round 1's Map is ever allocated.
+  `narrowBoolResults`/`narrowValResults`'s own `ctx.func.flatObjects`/
+  `.localReps` aliasing (lines 737-738/745-746, 2871-2872/2879-2880) is
+  try/finally-restored in every case — confirmed self-healing, matching
+  a616ca43's own prior finding.
+- **Module-scope caches in narrow.js/analyze.js/program-facts.js**: grepped
+  every top-level `const … = new (Map|WeakMap|Set|WeakSet)(` — all are frozen
+  `Set`s of string-literal op names (`PTR_ABI_KINDS`, `RECUR_INT_OPS`,
+  `NEVER_NULLISH_OPS`, etc.), zero growing per-compile caches outside
+  `getFactStore()`.
+- **`getFactStore()`'s WeakMap-lowered-to-Map siblings**
+  (`bindingUses`/`mayBeUndefinedTrace`/`ccInBounds`/`ipProven`/etc.,
+  ctx.js:353-379): each field's own comment names the `ctx.func._xBody`
+  field it REPLACED (the ctxfunc-survey.md §2/§5 retirement). Grepped for
+  every one of those old field names across src/+module/ — zero live code
+  references remain (only the historical comments in ctx.js itself and one
+  cross-reference in module/typedarray.js's own comment). Retirement
+  confirmed complete, not just assumed.
+
+None of the four named/audited candidates panned out as an aliasing holder.
+
+### 2. Git archaeology — a DIFFERENT class of bug found instead: stale
+### `ctx.func`/`ctx.funcs` container names from the `0487cde4` split
+
+Re-read every `regionHooks.exit(` call site in `src/` (9 total: front.js ×1,
+plan/index.js ×4 — round/fullRoot/earlyMark-exit/nsMark-exit, all already
+correct — compile/index.js ×3 — scan-round/AFE-loop/Slice-3). Cross-checked
+each root array's actual field names against `git log -p` for when the array
+was written vs. when `0487cde4` ("extract compile-lifetime function
+registry", 2026-08-12) split `ctx.func` (pre-split: combined registry +
+active-frame) into `ctx.funcs` (registry: `.list`/`.map`/`.names`/`.exports`)
+and `ctx.func` (active-frame only: `locals`/`uniq`/`boxed`/`current`/…, no
+`.list` field anywhere — confirmed directly: `node -e` dump of a freshly
+`reset()` `ctx.func` shows no `.list` key).
+
+**Bug 1 — `src/front.js`'s region round (the FIRST region round in the whole
+pipeline)**: root array read `ctx.func.list` (evaluates to `undefined` —
+`ctx.func` singular has no `.list` field, ever). `git log --follow -p --
+src/front.js` traced this precisely: the array was ADDED by `47140301`
+("front boundary rebased onto main + relanded"), BEFORE `0487cde4`'s split —
+at that point `ctx.func.list` WAS the correct, then-only name for the
+registry. `0487cde4`'s own diff touched `src/front.js` (2 lines) but updated
+ONLY a nearby COMMENT (`ctx.func.list body` → `ctx.funcs.list body`) — the
+actual `if (regionHooks) { … }` block, being dead code under
+`REGION_HOOKS_ACTIVE=false` (every shipped build, before and after), was
+invisible to whatever mechanical or manual sweep did the rename and was
+missed. Net effect: **the entire function registry — every function's body/
+sig/defaults/exported bookkeeping, freshly populated by the `prepare()` call
+one line above — has been silently absent from front's own root for every
+region-live run since 2026-08-12**, three sessions' worth (7346f7e7,
+a616ca43, this one) none of which happened to look at front.js's OWN root
+array against the current object shape.
+
+**Bug 2 — `src/compile/index.js`'s Slice-3 final exit** (`compile()`'s own
+outermost region round): root array `[builtModule, ctx.func, ctx.transform,
+ctx.scope]` — again `ctx.func` (singular) where the doc comment ITSELF says
+the reason for rooting anything here is so post-return readers see
+`.list.length`/`.map`, "populated by the two `.clear()`-then-rebuild loops
+right below" — those loops (`ctx.funcs.names.clear(); ctx.funcs.map.clear();
+… ctx.funcs.map.set(f.name, f)`, compile/index.js:2386-2388) write
+`ctx.funcs` (plural), not `ctx.func`. Confirmed a REAL post-return reader
+exists: `scripts/self.js`'s `optimizeTail` (the function's own documented
+caller) reads `funcCount: ctx.funcs.list.length` and
+`ctx.funcs.map.get(name.slice(1))?.exported` (self.js:119/121) AFTER
+`compile()` returns. Git-dated this one too: added by `233bf8b5` ("region-arena
+Slice 3: emit/encode boundary wired"), which is NEWER than `0487cde4` — not a
+stale pre-split leftover like Bug 1, but the identical `ctx.func`/`ctx.funcs`
+name collision landed FRESH, after the split already existed. `ctx.funcs.map`
+is itself a `PTR.MAP` — the exact tag family a616ca43's own WAT-breadcrumb
+trace pinned the mystery address to.
+
+### 3. Fix
+
+Both root-completeness gaps closed the uniform way (add the missing
+container, don't remove anything unverified):
+
+- `src/front.js`: `[ast, ctx.func.list, ctx.module, ctx.schema, ctx.closure]`
+  → `[ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure]` (both the
+  destructure and the `exit()` call argument; root the CONTAINER, matching
+  every other round's idiom, not the bare `.list` leaf).
+- `src/compile/index.js`: `[builtModule, ctx.func, ctx.transform, ctx.scope]`
+  → `[builtModule, ctx.func, ctx.funcs, ctx.transform, ctx.scope]` — added
+  `ctx.funcs` alongside the existing `ctx.func` rather than replacing it
+  (`ctx.func`'s presence here wasn't independently disproven, just
+  unexplained by the doc's own stated reason — additive, not destructive).
+
+Doc comments on both updated in place to name the fix and its provenance
+(git-dated, not asserted).
+
+### 4. Empirical result — real fixes, do NOT close the ns-round wall
+
+Hand-flipped `REGION_HOOKS_ACTIVE=true`, deleted `dist/jz.wasm`, ran
+`node test/kernel-oracle.js` fresh (auto-builds a region-live kernel via
+`getSelfModule()`, no `names:true` this round — a pass/fail tally, not a
+re-run of the WAT-breadcrumb trace, which the time budget didn't extend to
+redoing against the now-twice-patched source):
+
+**Result: still 13/13 FAIL (0/13 pass), IDENTICAL signature** —
+`KERNEL FAIL ROW: boolconst unreachable` is still the first failing row,
+`RuntimeError: unreachable`, and every row after it fails too (cascading,
+matching a616ca43's own "0/13×3, identical 13-row failure list" exactly).
+Re-ran the full oracle suite (not just boolconst) three times pre-revert —
+same signature every time. **The two fixes are real, independently
+justified, and land clean — but they are not the ns-round wall's own second
+holder.** Consistent with the task's own framing that the SPECIFIC address
+a616ca43 traced originates in `narrowBoolResults` (plan-tail round 1, chrono-
+logically AFTER both of these gaps' own rounds already exited) — these two
+bugs are genuine, coexisting defects in the SAME defect class, not THE
+defect this specific crash traces to.
+
+### 5. Decision point — STOP whack-a-mole, CompileSession recommended
+
+Per this task's own framing: after auditing every named lead (§1, all
+refuted) and finding+fixing two MORE real root-completeness gaps (§2-3) that
+still didn't close the wall (§4), this is now the THIRD dedicated session
+(7346f7e7, a616ca43, this one) attacking the identical `__coll_order`
+region-live crash without closing it via a targeted holder-fix. Continuing
+to hunt for a fourth specific site would be exactly the whack-a-mole this
+task's own decision point exists to stop.
+
+**The pattern across this whole campaign is the tell, not any one session's
+shortfall.** Every region-arena session that has found a root-completeness
+gap (b33d603e's `$__dyn_props` durable-unreached receivers; c8246307/
+274b6bd8's `getFactStore()` missing from the scan-round; 1248563f's
+`ctx.plans`/`ctx.inspect` missing from every round but the AFE loop;
+a616ca43's `ctx.func`; this session's `ctx.funcs` in front.js AND
+compile/index.js's Slice-3) found a DIFFERENT container missing from a
+DIFFERENT round's hand-enumerated root array — **seven distinct instances of
+the same defect class in one campaign**, each requiring a dedicated forensic
+session (WAT-breadcrumb tracing, or this session's git archaeology) to
+locate, because `REGION_HOOKS_ACTIVE=false` in every shipped build means NO
+committed test exercises any of these arrays' correctness — a gap can sit
+silent for sessions (front.js's: 2026-08-12 → 2026-08-14, three full
+sessions) before anyone happens to check that specific array against the
+current shape of `ctx`.
+
+This is structural, not incidental: every region round in `front.js`/
+`plan/index.js`/`compile/index.js` independently hand-enumerates the SAME
+growing list of durable containers (`ast`, `programFacts`, `ctx.funcs`,
+`ctx.func`, `ctx.scope`, `ctx.types`, `ctx.schema`, `ctx.closure`,
+`ctx.warnings`, `ctx.plans`, `ctx.inspect`, `ctx.module`, `ctx.transform`,
+`getFactStore()`) — 9 separate call sites, each one a chance to miss a
+member, transpose a singular/plural name, or simply not learn about a NEW
+container (`ctx.plans`/`ctx.inspect` didn't exist as concepts until
+1248563f's session added them) until a dedicated audit finds the gap.
+Fixing today's instance doesn't fix the shape of the bug.
+
+**The canonical fix**: the full `CompileSession` record, per
+`.work/session-survey.md` §5(d) and the coordinator's own 2026-08-09 ruling,
+gated on `ctx.func`'s six-lifetime decomposition (surveyed at
+`.work/compile-session-func-survey.md`, 2026-08-12: ProgramFunctions,
+ActiveFunction, FunctionAnalysis/FunctionPlan, EmitFrame, FlowState,
+BodyMemo — 443 direct writes, 654 reads, 65 live fields, 25 direct writer
+files). Slices (a) module-scope-state fold, (b) `linkDemand` setter, and (c)
+read-only view facades over the 7 already-disciplined subtrees are ALL
+LANDED (2026-08-09, session-survey.md's own "AS-LANDED" sections) — only (d),
+the full record, remains, explicitly gated on the func decomposition FIRST
+(coordinator's ruling: "do not attempt [the full record] by embedding or
+renaming today's `ctx.func`; that preserves the ambiguity this gate exists
+to remove").
+
+**Design sketch — what moves in**: every container this campaign's region
+rounds have EVER had to hand-enumerate becomes a field of ONE `session`
+object: `ast`, `programFacts`, the six `ctx.func`-decomposed records
+(`ProgramFunctions` — today's `ctx.funcs` — plus `ActiveFunction`,
+`FunctionPlan`, `EmitFrame`, `FlowState`, `BodyMemo`), `ctx.scope`,
+`ctx.types`, `ctx.schema`, `ctx.closure`, `ctx.warnings`, `ctx.plans`,
+`ctx.inspect`, `ctx.module`, `ctx.transform`, and the whole `_factStore`
+object `getFactStore()` already returns. Every region round in front.js/
+plan/index.js/compile/index.js collapses from a 5-to-12-element hand-
+enumerated array to exactly `[session]` (or `[session, ast]` if `ast` stays
+a sibling rather than a field, immaterial to the mechanism) — **by
+construction, no round can under-root a member that doesn't exist as a
+separate root-array entry to omit.** Retires this defect CLASS, not just the
+two instances this session found: a NEW durable container added to the
+compiler in some future session (the next `ctx.plans`-shaped addition) would
+automatically be reachable from every round's root the instant it becomes a
+`session` field, with no separate "remember to add it to all 9 call sites"
+step to forget.
+
+**Migration cost** (session-survey.md's own FeaturePlan-slice cost model,
+cost ∝ write-site count, not subtree complexity): dominated by `ctx.func`'s
+own decomposition — 443 writes / 25 files, six distinct lifetimes needing
+independent ownership pins before wrapping means anything (the coordinator's
+own F0→F5 order: ownership pins → ProgramFunctions → BodyMemo →
+ActiveFunction+EmitFrame → frozen FunctionPlan → scoped FlowState). Rough
+scale, per that survey's own estimate: "~30-40× the size of the linkDemand
+extraction" (36 sites) — i.e. a multi-session campaign in its own right, NOT
+a quick follow-on. This session adds no new estimate beyond confirming the
+motivating evidence is still accumulating (2 more root-completeness gaps
+found this session alone) and that the gated prerequisite (func
+decomposition) has not moved since 2026-08-12 — it is still the honest
+long pole, not a shortcut around it.
+
+**What this session does NOT recommend**: attempting a partial/informal
+session object as a region-arena-only patch (e.g., a `regionRoot()` helper
+that just bundles today's known containers) — that would re-create the SAME
+enumeration hazard one level of indirection removed (the helper itself would
+need updating every time a new container is added, identical failure mode,
+just centralized to one function instead of nine call sites — marginally
+better, not structurally different). The `CompileSession` record is valuable
+specifically because ctx.func's OWN decomposition makes "loop over every
+field of one object" a sound, complete root by construction, not because
+bundling into a shared array is itself the fix.
+
+### Gates
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships — both fixes are
+`if (regionHooks)`-gated dead code natively, confirmed: `regionHooks` stays
+`undefined` on every native `frontHalf(code, {...})`/`compile(ast, profiler)`
+2-3 arg call, so neither new array element is ever read outside a
+region-live build):
+- `npm test` (`node test/index.js`): **3454 total (19,800 assertions) / 3448
+  pass / 0 fail / 6 skip** — byte-for-byte the documented baseline, embeds a
+  clean dormant kernel-oracle + kernel-parity run.
+- Self-build ×2: SHA-256
+  `6d7dd34170a9ffd2606e2fc08613d06484b6240a93f392665fdc3a00c7a57547` both
+  times (16,839.3 kB) — converges.
+- Dormant kernel-oracle, standalone: **13/13 (553 assertions), ×3** reps,
+  zero flake.
+- Dormant kernel-parity, standalone: **3/3 (33 assertions), ×3** reps, zero
+  flake.
+- `REGION_HOOKS_ACTIVE` confirmed `false` in the committed `scripts/self.js`
+  (`git diff --stat scripts/self.js` clean at commit time — the hand-flip
+  used for §4's test was reverted before any gate above ran).
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Kernel-oracle: **FAILS, 0/13** (§4) — same signature as a616ca43's own
+  entry, not re-run ×3 with the final committed source (the ×3 reps in §4
+  were pre-revert, against the hand-flipped tree, same source that's now
+  committed dormant-dead — re-running region-live post-revert would just
+  re-flip the same flag back on, no new information).
+- jessie/watr/jzify-entry, jz×jz GOAL GATE: **NOT RUN** — matches every
+  prior session's precedent in this exact situation ("kernel-oracle's own
+  tiny corpus already disqualifies this design from shipping region-live
+  regardless of the real-graph numbers").
+- Self-build ×2 (region-live): not separately re-verified for the FINAL
+  committed source (low value against a kernel still proven broken by
+  kernel-oracle, matching e640e77a/7346f7e7/a616ca43's own precedent for
+  this exact disposition).
+
+**THE GOAL GATE: NOT MET** — unreachable, same as every ns-round session:
+region-live still fails kernel-oracle before any meaningful jz×jz run.
+
+### Disposition
+
+`REGION_HOOKS_ACTIVE` stays `false`, the committed default. What lands: TWO
+real, independently git-archaeology-verified, dormant-gate-clean
+root-completeness fixes (`src/front.js`, `src/compile/index.js`) — dead code
+today, provably correct fixes for a real (if currently unreachable) defect,
+matching this campaign's own "land dead-but-correct" precedent (six of eight
+prior sessions shipped this way). The four originally-named leads (§1) are
+now closed off with direct evidence, not just re-asserted as still-open —
+future sessions chasing this exact address should start past them, at
+`narrowBoolResults`' own analyzeBody call and whatever the NEXT
+`__region_copy_rec` traversal after it does, not re-tread `callerCtx`/
+`regionArmSetMap`/module-scope caches.
+
+**Recommendation, banked for the next region-arena session**: do not open a
+fourth forensic dig for a third holder. Either (a) invest in the
+`CompileSession` record's prerequisite — `ctx.func`'s six-lifetime
+decomposition, per compile-session-func-survey.md's own F0→F5 order — which
+retires this ENTIRE defect class rather than this session's two instances,
+or (b) if a quicker interim win is wanted, do ONE more targeted
+WAT-breadcrumb session (the tooling is fully described and reusable per
+a616ca43's own entry) starting from `narrowBoolResults`' own analyzeBody
+call specifically, now that this session has eliminated `callerCtx`,
+`regionArmSetMap`, and the WeakMap-retirement class as candidates with
+direct evidence rather than suspicion.
+
+### SHAs and reproduction
+
+jz worktree: `a616ca43` base, branch `ns-round-2026-08-14` (detached).
+Commits: `src/front.js` + `src/compile/index.js` (the two root-completeness
+fixes) + this ledger entry only. `REGION_HOOKS_ACTIVE` confirmed `false` in
+the committed `scripts/self.js`. Dormant `dist/jz.wasm` (self-build ×2):
+SHA-256 `6d7dd34170a9ffd2606e2fc08613d06484b6240a93f392665fdc3a00c7a57547`
+both times (16,839.3 kB). Region-live kernel builds, scratch repro scripts
+(`.work/scratch-repro.mjs`, `.work/scratch-repro2.mjs`, cached
+`.work/scratch-kernel-live.wasm`) and every `/tmp` log this session produced:
+deleted at session end, none committed.

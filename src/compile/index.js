@@ -2345,22 +2345,36 @@ function emitClosureBody(cb) {
  *  every allocation `compile()` makes (plan/analyze facts, per-function
  *  locals, emit scratch, the whole `sec.*` staging structure) gets reclaimed
  *  at exit EXCEPT what's reachable from the root `[module, ctx.func,
- *  ctx.transform, ctx.scope]` — the returned module tree, plus the three ctx
- *  containers the emit/encode tail (this file's own caller: scripts/self.js's
+ *  ctx.funcs, ctx.transform, ctx.scope]` — the returned module tree, plus the
+ *  ctx containers the emit/encode tail (this file's own caller: scripts/self.js's
  *  `optimizeTail` wrapper, then `watrTail`'s post-watr `stablePtrGlobalNames`/
  *  `hoistGlobalPtrOffset` repair) still reads AFTER this function returns
- *  (`ctx.func.list.length`/`.map` — populated by the two `.clear()`-then-
- *  rebuild loops right below; `ctx.transform.optimize`/`.targetProfile`/
+ *  (`ctx.funcs.list.length`/`.map` — populated by the two `.clear()`-then-
+ *  rebuild loops right below, read back by `scripts/self.js`'s own
+ *  `optimizeTail` at `funcCount: ctx.funcs.list.length` and
+ *  `ctx.funcs.map.get(...)`; `ctx.transform.optimize`/`.targetProfile`/
  *  `._vectorizedFnNames`; `ctx.scope.globalValTypes` — populated by this
  *  function's own `declGlobal` calls). Root the CONTAINERS, not individual
- *  leaf fields (unlike front's narrower `ctx.func.list`-only root): every
- *  sub-field a downstream reader needs travels with its container, matching
- *  `ctx.module`/`ctx.schema`/`ctx.closure` already riding front's own root
- *  this way. `ctx.module`/`ctx.schema` are NOT in THIS root: every read of
- *  either happens INSIDE this function, before exit fires (schema
- *  custom-section emission above, module import resolution at the top) —
- *  confirmed not needed post-return. This is the design as specified (Slice 3
- *  hazard inventory, 8bed8c3f).
+ *  leaf fields, matching `ctx.module`/`ctx.schema`/`ctx.closure` already
+ *  riding front's own root this way. `ctx.module`/`ctx.schema` are NOT in
+ *  THIS root: every read of either happens INSIDE this function, before exit
+ *  fires (schema custom-section emission above, module import resolution at
+ *  the top) — confirmed not needed post-return. This is the design as
+ *  specified (Slice 3 hazard inventory, 8bed8c3f).
+ *  ROOT-COMPLETENESS FIX (ns-round-2026-08-14 dig, .work/research.md §Region
+ *  arena): this root read `ctx.func` (singular, the ACTIVE-FRAME scratch
+ *  record — inert/null by the time this exit fires) where it needed
+ *  `ctx.funcs` (plural, the function REGISTRY: `.list`/`.map`/`.names`,
+ *  freshly rebuilt by this function's own opening `.clear()`-then-rebuild
+ *  loops, lines below) — the doc above ITSELF cited `.list.length`/`.map` as
+ *  the reason for rooting something here, but named the wrong container.
+ *  Added by `233bf8b5` (Slice 3), AFTER `0487cde4` had already split
+ *  `ctx.func` into `ctx.func`/`ctx.funcs` — not a stale pre-split reference
+ *  like front.js's matching bug, but the same ctx.func/ctx.funcs name
+ *  collision, landed fresh. `ctx.funcs.map` is a PTR.MAP — the exact shape
+ *  the ns-round campaign's own stale-address hunt was chasing. Kept
+ *  `ctx.func` in the root too (harmless, uniform-root idiom) rather than
+ *  removing it on unverified grounds.
  *
  *  **Formerly a known open defect, ROOT-CAUSED AND FIXED (b33d603e,
  *  .work/research.md §Region arena "REGION MACHINERY SOUND"):** rooting
@@ -3099,7 +3113,7 @@ export default function compile(ast, profiler, regionHooks) {
   // the pre-relocation `builtModule` reference) is a use-after-free, the
   // identical contract frontHalf's own rebind documents.
   if (regionHooks)
-    [builtModule, ctx.func, ctx.transform, ctx.scope] =
-      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.transform, ctx.scope])
+    [builtModule, ctx.func, ctx.funcs, ctx.transform, ctx.scope] =
+      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.transform, ctx.scope])
   return builtModule
 }
