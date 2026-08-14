@@ -27,7 +27,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX, getFactStore } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { functionPlanOf, installFunctionPlan, publishFunctionPlan } from './function-plan.js'
 import { i64Hex } from '../../layout.js'
@@ -2508,6 +2508,35 @@ export default function compile(ast, profiler, regionHooks) {
   // rounds (module/builtModule doesn't exist yet at this point in compileAst,
   // so it's not part of THIS root — only compile()'s own final Slice 3 exit
   // roots that).
+  //
+  // ROOT-COMPLETENESS FIX (.work/research.md §Region arena, __coll_order
+  // chain-round defect — the campaign's last open region-arena wall):
+  // `getFactStore()` was MISSING from this round's root, despite this
+  // comment's own stated intent ("same container-level root as plan()'s own
+  // five internal rounds") — plan/index.js's `round` helper DOES include it
+  // (trailing, not destructured back — see that file's own comment for the
+  // full rationale: bodyFacts/bindingUses/etc are durable objects whose
+  // backing store can still grow, ephemeral, post-mark, during this round's
+  // own AST walks). Without it here, any fact-store growth triggered by
+  // THIS round's three closure-table scans (scanDynClosureTableCandidates /
+  // scanClosureTableLatticeCandidates / scanImperativeClosureTableLattice-
+  // Candidates all call into analyzeBody, which touches bindingUses) is
+  // unreachable from this round's root — __region_exit's closing reclaim
+  // then frees that ephemeral backing store while the module-scope
+  // `_factStore` global still points at it, and the bump allocator later
+  // hands that exact address to an unrelated fresh allocation. A LATER
+  // reader chasing the stale reference (e.g. buildStartFn's own
+  // analyzeValTypes, itself calling scanBindingUses far downstream) then
+  // decodes whatever now legitimately lives there as a Set/Map header —
+  // the "NaN-boxed pointer aliasing a Set/Map's [count][cap] header"
+  // signature bisected via WAT-level breadcrumbs on __coll_order,
+  // __region_copy_rec's own SET/MAP arm (never sees an insane cap — the
+  // rebuild machinery itself is sound), the generic __alloc_hdr_n (never
+  // returns this address), and finally the universal __alloc primitive
+  // (DOES return it: a fresh, correctly-shaped allocation, confirming reuse
+  // of a reclaimed-but-still-referenced block, not a sizing/overlap bug in
+  // the relocator). Fixed the same way plan()'s round already does it: ride
+  // `getFactStore()` along, trailing.
   const __scanMark = regionHooks?.mark()
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
   // structurally safe candidate closure tables (never alias/escape) — the
@@ -2543,7 +2572,7 @@ export default function compile(ast, profiler, regionHooks) {
   // post-mark grow-and-relocate exactly like plan()'s own five rounds).
   if (regionHooks)
     [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings] =
-      regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings])
+      regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, getFactStore()])
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated

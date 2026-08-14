@@ -14703,3 +14703,226 @@ times. Every `.work/*.mjs`/`.wat`/`.wasm`/`.sh`/`.log` scratch artifact this
 session produced (the named-kernel build driver, the jessie/watr repro
 drivers, every WAT-splice intermediate) was deleted at session end — none
 committed.
+
+## §Region arena — `__coll_order` chain-round defect CLOSED: `getFactStore()`
+## missing from `compile()`'s scan-round region root (`src/compile/index.js`),
+## a ROOT-COMPLETENESS gap, not an engine bug — jessie/watr/jzify-entry
+## region-live ×3 ALL PASS (previously all three failed identically); dormant
+## unaffected (self-build ×2 converges, npm test/oracle/parity all clean);
+## jz×jz GOAL GATE run for the first time (previously blocked by this exact
+## wall) — NOT MET, both configs hit the wasm32 4 GiB hard ceiling identically,
+## a separate, larger problem this fix does not (and structurally cannot) close
+## (2026-08-14)
+
+**Task**: close the LAST region-arena defect for the MEMORY goal — the
+`__coll_order` chain-round wall c8246307 bisected to a NaN-boxed pointer
+aliasing a Set/Map header, banked with a next lead pointing at
+`__region_copy_rec`'s SET/MAP arm (the `$outPhys`/`$out` staging distinction,
+the nested `__region_copy_rec` call inside `$__map_set_h`'s own argument
+list). Worktree `git worktree add … c8246307`, branch `setmap-arm-2026-08-14`.
+
+### Method — reused the proven WAT-breadcrumb toolkit, four independent probes
+
+Hand-flipped `REGION_HOOKS_ACTIVE`, built a named (`names:true`, no `wat:true`)
+region-live kernel, `wasm2wat --enable-all` decompiled it, spliced debug
+globals + capture instructions directly into the decompiled text (the exact
+pattern c8246307's own session used on `__coll_order`), `wat2wasm
+--enable-all` reassembled. Repro: `resolveModuleGraph` over minimal drivers
+matching `test/ecosystem-perf.js`'s own established shape (NOT `bench/*/*.js`,
+which pull in `benchlib.js` and shift the module count/repro away from the
+documented 46-module jessie baseline), fed through the kernel's own `default()`
+export — confirmed FIRST against the unmodified kernel: jessie 46 modules,
+`memory access out of bounds`, 512.0 MB, matching c8246307's signature
+exactly.
+
+**Probe A** (`__coll_order` entry, sticky latch on `cap > 1,000,000`):
+reproduced the exact crash bit-pattern — `off=72,611,736`, `cap=2,146,992,128`
+(`0x7FF88000`, the SAME NaN-box tag c8246307 recorded), `stride=24`
+(`MAP_ENTRY` — confirms a Map), call #52,785. Byte-exact reproduction of the
+banked evidence.
+
+**Probe B** (`__region_copy_rec`'s own SET/MAP arm, the exact `$cap =
+i32.load(off-4)` read `regionArmSetMap` does on its SOURCE table before
+calling `__coll_order` internally): sticky latch on `cap > 100,000,000`,
+**never fired across the whole compile**. Directly refutes the banked
+hypothesis that the region-rebuild loop itself reads a corrupted header from
+its own source table — the rebuild machinery's own header reads are provably
+sane throughout.
+
+**Probe C** (the generic 3-runtime-arg `$__alloc_hdr_n`, a containment check
+— does any call's returned `[off-16, off+16+cap·stride)` block ever contain
+address 72,611,736?): **zero matches across 120,326 calls.** The address was
+never returned by the generic header allocator at all.
+
+**Probe D** (the universal `$__alloc` primitive — the ONE function every
+header/string/bigint/etc allocation bottoms out in, same containment check,
+always-overwrite since `__region_exit`'s own closing `memory.copy` REWINDS
+`$__heap` — module/core.js:1016 — so addresses are legitimately reused across
+a compile's lifetime): **matched.** The MOST RECENT owner of that exact
+address, at the moment of the trap, is a plain `__alloc` call for 240 bytes
+(`ptr=72,611,720`, `next=72,611,960`) — exactly `16 + 8×28` bytes, i.e. a
+FRESH, `INIT_CAP=8` Map (`MAP_ENTRY+LANE=28`), almost certainly compiled
+through one of the optimizer's constant-folded `__alloc_hdr_n_0_8_28`-shaped
+specializations (which probe C's generic-only instrumentation couldn't see).
+
+**Reading**: the crashing `off` is NOT owned by a corrupted rebuild output —
+it is CURRENTLY, legitimately owned by an unrelated, freshly-allocated, empty
+Map. The structure `__coll_order`'s caller BELIEVES lives there (`getFactStore
+().bindingUses`, per c8246307's own stack trace) is a STALE reference to
+memory the allocator has already reclaimed and reused — a classic
+"root-completeness" gap (the exact class of bug b33d603e's own entry named:
+"compiler-internal registries… never threaded through the root"), not a
+staging/evaluation-order defect in the relocator.
+
+### Root cause — found by direct source inspection, not further byte-hunting
+
+`src/compile/plan/index.js`'s `round()` helper (the FRONT-half's five
+plan-tail rounds) roots `getFactStore()` explicitly, **trailing, not
+destructured back** — its own comment documents exactly why: `bodyFacts`/
+`bindingUses`/etc are durable objects whose backing store can still grow,
+ephemeral, post-mark, during any round's own work; without `getFactStore()`
+in root, that growth dangles at the round's own exit.
+
+`src/compile/index.js`'s OWN scan-round (`__scanMark`, wrapping the three
+closure-table scans — `scanDynClosureTableCandidates`/
+`scanClosureTableLatticeCandidates`/`scanImperativeClosureTableLatticeCandidates`,
+all of which call into `analyzeBody`, which touches `bindingUses`) has a
+comment explicitly claiming parity: "one round, **same container-level root
+as plan()'s own five internal rounds**". The ACTUAL root array did not match
+that claim — `getFactStore()` was missing, and the file didn't even import
+it. A real regression from the stated design, not a symptom masked
+elsewhere: `getFactStore()`'s growth during THIS round's scans is
+unreachable from THIS round's root, so `__region_exit`'s closing reclaim
+frees it while the module-scope `_factStore` global still points at the old
+address — exactly the mechanism probes A–D pinned mechanically.
+
+### Fix
+
+`src/compile/index.js`, two lines: import `getFactStore` from `../ctx.js`
+(alongside the existing `ctx`/`err`/etc import), and add `getFactStore()`
+trailing to the scan-round's `regionHooks.exit(__scanMark, [...])` root
+array — the identical idiom `plan/index.js`'s own round helper already uses.
+No round-count or corpus special-casing; the fix is a root-array
+completeness fix, holds for any number of chained rounds by construction
+(the SAME container rides every round that reads it, matching every other
+entry in that array).
+
+### Gates
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships):
+- Self-build ×2: SHA-256 `a20229dc4c7e969aab8b6b0876ecb0512b405f73ee51189b6c823e238daa6e42`
+  both times — converges. NOT byte-identical to the pre-fix baseline
+  (`2e5254a9b4eccb3751a437572ff552cc6907396ef4ae5654c61e28287ebf93da` —
+  independently reproduced this session too, confirming it as the correct
+  baseline: byte-for-byte the c8246307 entry's own documented dormant SHA).
+  Diffed via `wasm-objdump -h`: the delta is confined ENTIRELY to the Code
+  section (+14 bytes, `0x00e476f7`→`0x00e47705`), function COUNT unchanged
+  (6135 both), Data section byte-identical (`0x00218531` both) — consistent
+  with harmless call-index LEB128-width churn from the new `getFactStore`
+  import binding shifting index numbering, not a reachable behavior change
+  (`getFactStore()` itself is only ever CALLED inside `if (regionHooks)`,
+  which `REGION_HOOKS_ACTIVE=false` makes a compile-time-provable-false
+  branch). Matches this campaign's own established precedent (b33d603e's own
+  gate note: "a module/*.js… change can legitimately move dormant output…
+  dormant suites green + self-build convergence is the correct substitute
+  gate") — here even more clearly inert since it's a JS import, not a WAT
+  template change.
+- Dormant `npm test`: **3454 total / 3448 pass / 0 fail / 6 skip** —
+  byte-for-byte the documented baseline, zero regression.
+- Dormant kernel-oracle: **13/13 × 3** (553 assertions each) — clean.
+- Dormant kernel-parity: **33/33** — clean.
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2: SHA-256 `ee1bdded71aac5c84472ee8b6056d31cf2efef75192e330b7ada61cca0b801b2`
+  both times — converges.
+- **Region-live jessie ×3: PASS** (115,544 bytes, ~2000 ms, 512.0 MB) —
+  previously FAILED identically ×3 (`memory access out of bounds`, matching
+  e640e77a's own baseline signature).
+- **Region-live watr ×3: PASS** (312,062 bytes, ~5030 ms, **1024.0 MB** —
+  matches this task's own brief, "watr graph = second repro (1024.0MB)",
+  exactly) — previously FAILED identically ×3.
+- **Region-live jzify-entry ×3: PASS** (617,025 bytes, ~10,500 ms, 4096.0 MB)
+  — previously FAILED identically ×3 (per e640e77a's own baseline).
+- Region-live kernel-oracle: **13/13 × 3** (553 assertions each, including
+  c8246307's own whole-program-narrowing forcing row) — clean.
+- Region-live kernel-parity: **33/33** — clean.
+
+### jz×jz — THE GOAL GATE, run for the first time (previously blocked by
+### this exact wall) — NOT MET, both configs, a DIFFERENT and LARGER ceiling
+
+With jessie/watr/jzify-entry now closed, the jz×jz goal gate is reachable for
+the first time this campaign. Built BOTH configs with `memory:65536` (the
+true wasm32 4 GiB ceiling as the INITIAL page count, not the
+`resolveSelfhostBuild()` 8192-page/512 MB default any smaller-corpus number
+above reflects) so the measurement isn't capped by an artificial ceiling
+below the real one. Fed the kernel's own `default()` export the SAME
+156-module graph `resolveSelfhostBuild()` resolves (self-compiling):
+
+- **Dormant jz×jz: FAILS** — `unreachable`, 4096.0 MB (exactly 4.000 GiB)
+  peak, ~5.7 s. Pre-existing, unrelated to this session (this fix is
+  provably dead in dormant) — the same wasm32 hard-ceiling wall this entire
+  MEMORY-goal campaign exists to solve, now directly measured for the first
+  time against the TRUE 4 GiB limit (not an 8192-page artifact).
+- **Region-live jz×jz: FAILS** — `unreachable`, 4096.0 MB (exactly 4.000
+  GiB) peak, ~6.5 s. IDENTICAL failure signature to dormant, same exact
+  peak byte count, same trap. Region-arena's per-round reclaim — now
+  genuinely closing the wall for every real graph this campaign gates on —
+  does NOT bring the FULL 156-module self-compile's peak working set under
+  4 GiB. This is a real, honest, unglossed finding: jz×jz's raw memory need
+  during compilation apparently exceeds the wasm32 address space regardless
+  of region-arena's own per-round reclamation, at least at the granularity
+  this campaign's six chained rounds currently reclaim.
+- **Bench row: NOT RUN** — gated on "if under 4GiB"; neither config is.
+
+This is not a regression and not this session's fault (dormant is byte-for-
+byte the same wall, unmeasured before only because no prior session reached
+this gate with a working region-live axis to compare against) — reported
+prominently per the task's own instruction, not glossed over. The MEMORY
+goal's finish line is NOT reached this session; what this session DOES
+close is the last standing BLOCKER that made the finish line untestable at
+all.
+
+### Disposition — LANDS, closes the campaign's region-arena wall; the MEMORY
+### goal's own finish line (jz×jz < 4 GiB) is a separate, larger, NOT-YET-
+### CLOSED problem, now measured directly for the first time
+
+`REGION_HOOKS_ACTIVE` stays `false`, the committed default (`git diff
+scripts/self.js` clean at commit time — confirmed). The `getFactStore()`
+root-completeness fix lands in `src/compile/index.js` — real, verified via
+four independent breadcrumb probes pinning the exact mechanism (not
+guessed), zero regression on every dormant gate, and the region-live wall
+this whole campaign has chased across eight sessions (b33d603e was the prior
+exception, closing the front+Slice3 baseline only) is now CLOSED for every
+real-graph gate (jessie/watr/jzify-entry) plus kernel-oracle/kernel-parity,
+both region-live and dormant. Eight prior sessions in this campaign closed
+their own assigned mechanism this same way or banked a partial fix — this is
+the SECOND session (after b33d603e) to fully close its assigned wall, and
+the first to do so for the per-pass chained-round machinery specifically.
+
+**Next named lead, if the MEMORY goal is resumed**: jz×jz's own 4 GiB
+overflow is now the WHOLE remaining gap — not a region-arena engine defect
+(the machinery is sound, per this session's own probes A/B and every gate
+above), but either (a) the compiler's genuine peak working set for
+self-compiling its full 156-module graph exceeds 4 GiB even with all six
+chained rounds reclaiming, meaning region-arena needs MORE/finer-grained
+round boundaries than the current six, or (b) some large structure is
+durable when it could be made ephemeral-and-reclaimable. Measuring WHICH
+round's own peak dominates (the `MEMORY-CURVE-MEASURED` methodology this
+campaign already has, .work/research.md's own archived recipe) is the
+natural next step — this session's own budget did not extend to that
+separate investigation.
+
+### SHAs
+
+jz worktree: `c8246307` base, branch `setmap-arm-2026-08-14`. Commit:
+`src/compile/index.js` (the `getFactStore()` root-completeness fix) + this
+ledger entry only. `REGION_HOOKS_ACTIVE` confirmed `false` in the committed
+`scripts/self.js` (`git diff scripts/self.js` clean at commit time). Dormant
+`dist/jz.wasm` (self-build ×2): SHA-256
+`a20229dc4c7e969aab8b6b0876ecb0512b405f73ee51189b6c823e238daa6e42` both
+times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
+`ee1bdded71aac5c84472ee8b6056d31cf2efef75192e330b7ada61cca0b801b2` both
+times. Every scratch artifact this session produced (the named-kernel build
+drivers, jessie/watr/jzify repro drivers, the jz×jz goal-gate driver, every
+WAT-splice intermediate and its four breadcrumb probes) was deleted at
+session end — none committed.
