@@ -279,6 +279,41 @@ export function targetProfileFor(host) {
  */
 
 /**
+ * CompileSession (architecture item 11 / audit-B finding 5,
+ * .work/compile-session-design.md §1 — Slice A, documentation only, no
+ * shape change). `ctx` (src/ctx.js) already IS this record: a single
+ * object whose 20 named top-level subtrees this typedef enumerates,
+ * constructed fresh by `reset()` above on every `beginSession()` call.
+ * Naming it here — instead of only in ctx.js's own header — matters
+ * because beginSession is the record's OWNING seam (this module's own
+ * header docstring: "the ONE owner of per-compile lifecycle state"); a
+ * future slice extending the record does so by adding a field to this
+ * typedef and to `reset()`'s construction, nothing else.
+ *
+ * @typedef {Object} CompileSession
+ * @property {object} core       emitter table + stdlib registry
+ * @property {object} module     module graph: imports, resolved sources, module-init blocks
+ * @property {object} scope      bindings: globals, consts, typed-elem ctors per global
+ * @property {object} funcs      compile-lifetime ProgramFunctions registry: list + indexes + exports
+ * @property {object} names      compile-lifetime synthetic-name authorities outside active emission frames
+ * @property {object} func       active function analysis/emission frame: locals, signature, uniq counter
+ * @property {object} types      per-function type analysis: typedElem map, dyn-key vars
+ * @property {object} schema     object shape inference: var→schema, schema list
+ * @property {object} closure    first-class fn infrastructure
+ * @property {object} runtime    runtime state: data segments, string pool, atom table, throws flag
+ * @property {object} memory     module memory config (pages, shared)
+ * @property {object} error      source location carried through emit for err() messages
+ * @property {object} transform  compile-time options + derived cfg + injected services
+ * @property {object} abi        per-type rep lookup bundle (src/abi/index.js makeAbi())
+ * @property {object} bridge     emit/flat/wat dispatch bound at reset()
+ * @property {object} features   frozen FeaturePlan (SESSION+PROGRAM+ANALYSIS strata)
+ * @property {object} linkDemand DEMAND stratum (emission-produced reachability facts)
+ * @property {object} plans      pre-emission frozen-fact WeakMaps: functions, closures, loops, loweringLinks
+ * @property {?object} inspect   inspection sink, populated when transform.inspect is true
+ * @property {?object} warnings  advisory sink, populated when opts.warnings is set
+ */
+
+/**
  * Reset all per-compile state and normalize options. Returns the resolved
  * optimize cfg (also installed on ctx.transform).
  * @param {object} p

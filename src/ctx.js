@@ -1,5 +1,10 @@
 /**
- * Global compilation context, reset per jz() call.
+ * CompileSession record, reset per jz() call (architecture item 11 / audit-B
+ * finding 5, .work/compile-session-design.md Slice A — formalization only,
+ * no shape change). `ctx` IS the CompileSession: 20 named subtrees below,
+ * one lifecycle phase each, writer/reader tables documented per-field. See
+ * src/session.js's `beginSession()` — "the ONE owner of per-compile
+ * lifecycle state" — for the fuller record's owning seam.
  *
  * Everything is f64. Scalars are regular numbers. Pointers are NaN-boxed f64.
  * Memory auto-enabled when arrays/objects/strings are used.
