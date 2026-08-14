@@ -16306,3 +16306,53 @@ both times (16,839.3 kB). Region-live kernel builds, scratch repro scripts
 (`.work/scratch-repro.mjs`, `.work/scratch-repro2.mjs`, cached
 `.work/scratch-kernel-live.wasm`) and every `/tmp` log this session produced:
 deleted at session end, none committed.
+
+## §CompileSession — design landed (architecture item 11 / audit-B finding 5,
+## 2026-08-14): full record design, `ctx.func`'s six-lifetime gate confirmed
+## closed, five slices A-E, ns-round branch reconciliation named as a
+## prerequisite for Slice C
+
+Design pass only (`.work/compile-session-design.md`; no `src/` changes),
+answering `.work/session-survey.md` §5(d) and the `b3cb4f8b` ledger entry's
+own recommendation ("CompileSession record... recommended as the fix for
+the whole recurring root-completeness defect class... not a fourth
+spot-fix"). Headline finding: `.work/ctxfunc-survey.md`'s gating estimate
+("~30-40× linkDemand's extraction cost") priced decomposing `ctx.func`
+itself — Slices 1-4f (2026-08-12) plus `ea423728` (2026-08-13) already did
+that; what remains (fold `getFactStore()`'s one surviving module-scope
+singleton onto the record, make `ctx` a constructed value instead of a
+mutate-in-place singleton, collapse the five region-root arrays to
+`[phase-local, session]`) is a materially smaller bill than the survey's own
+number, stated explicitly rather than inherited stale. Record: 20 of 20
+`ctx.*` subtrees move in 1:1, +1 new field (`facts`, absorbing
+`_factStore`) — 21 total, zero internal restructuring. Excluded and why:
+per-function frame/plan CONTENTS (already opaque, swap-by-identity, Slice
+4b), the module-scope perf-motivated lets (session-survey's own binding
+ruling, not reopened here), `compileTarget`, the two cross-compile-
+persistent caches (`DOLLAR`/`stdlibParseCache`), and load-time-immutable
+process constants. Payoff: the five hand-maintained root arrays (9 call
+sites across `front.js`/`plan/index.js`/`compile/index.js`) collapse to
+two-element bundles; the seven-instance root-completeness defect class
+(`b3cb4f8b`'s own count) is killed structurally, not spot-fixed, because a
+session-shaped root has no separate enumeration left to under-populate.
+Reentrancy payoff stated as bounded, not oversold: closes 3 of session-
+survey §3's 4 named blockers (singleton mutation, fact-store contention,
+`sessionPhase` sharing); leaves module-scope perf-state concurrency
+unresolved by explicit, cited prior ruling — true call-stack-concurrent
+compiles need `session` threaded as an explicit parameter through 61
+importers, named as a future item, not attempted here. Five slices: A
+(formalize, zero-diff) → B (`facts` absorption + `const ctx`→`let ctx`
+session-as-value, the actual reentrancy fix) → C (region roots collapse) →
+D (ns-round re-verification: kernel-oracle region-live 13/13 is the
+acceptance test, falsifiable) → E (`RESET_HOOKS` retirement, explicitly
+NOT attempted by A-D, reopens the module-scope-lets ruling only if true
+concurrency becomes a live goal). Names the unmerged `ns-round-2026-08-14`
+branch (`7346f7e7`/`a616ca43`/`b3cb4f8b`, not reachable from `main` per
+direct `git log` check) as a reconciliation prerequisite for Slice C, since
+its three commits already rewrite the exact array literals Slice C targets.
+Rejected: a `regionRoot()` bundling helper (same enumeration hazard one
+indirection removed, `b3cb4f8b`'s own argument), status-quo whack-a-mole
+(seven sessions of evidence), Proxy/getter facades (self-host subset:
+zero `Proxy` registrations, zero accessor-syntax parser support), and
+re-merging `ctx.funcs`/`ctx.func` under one wrapper (reopens the exact
+registry/frame naming collision the prerequisite campaign closed).
