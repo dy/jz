@@ -14170,3 +14170,295 @@ times. `REGION_HOOKS_ACTIVE` reverted to `false` before every gate that
 reflects what ships; every `.work/*.mjs` scratch probe/build script this
 session produced was deleted at session end (gitignored, never staged).
 
+## §Region arena — PER-PASS PLAN-TAIL BOUNDARIES DESIGNED AND WIRED (dormant
+## gate-clean, self-build ×2 converges); region-live BISECTED to a genuine
+## `__coll_order`/dyn-props ENGINE DEFECT triggered by ANY additional region
+## round in this territory — real graphs (jessie, watr) now TRAP where they
+## previously succeeded; banked, not landed live. jz×jz goal gate NOT met,
+## either config (2026-08-14)
+
+**Task**: per-pass (or per-group) region boundaries across the analysis
+sequence between `plan()`'s `narrowSignatures` and `emitFuncs`
+(`src/compile/index.js`'s `compileAst`) — the campaign's own named next lever
+after b33d603e declared the region machinery SOUND and the 0ae75f07 session
+phase-mapped a ~2.1 GB diffuse burn across a dozen-plus whole-program passes
+in that span. Worktree `git worktree add … b33d603e`, branch
+`perpass-2026-08-14`, `npm ci` (watr 5.7.16, registry-resolved, no symlink
+overlay needed).
+
+### Design
+
+**Enumeration** (`src/compile/plan/index.js`'s own pass sequence, source
+order, from 0ae75f07's phase map): `narrowSignatures` itself is EXCLUDED from
+every boundary — its own internal narrow.js machinery is the single largest
+cost in this span (+1564.9 MB dormant, per 0ae75f07's table) but is a NAMED,
+separately-banked pathology (627cf92a's `hardParamVal`/`hardParamRecvArrTyped`
+O(functions×params×callSites) census) that a region round cannot help
+(wrapping it would mean rooting `programFacts` mid-fixpoint while
+narrowSignatures is still mutating it in place — a correctness hazard for
+zero reclaim, since its own allocations ARE the fixpoint's live state, not
+garbage). Every boundary below starts strictly AFTER `narrowSignatures`
+returns.
+
+Six boundary units, each RETAINING the same container-level root (the
+FACTS every later pass/emit reads) and CHURNING everything else (each pass's
+own body-walk temporaries, per-call scratch objects, siteState-shaped
+locals — garbage the instant the pass returns, per 259cd4fc's own
+`MapOverlay` precedent for this exact "same data needlessly re-copied per
+call" vs "genuine per-call scratch" distinction):
+
+| unit | passes (source order) | own measured Δ (0ae75f07 dormant) | retained facts |
+|---|---|---|---|
+| plan-tail round 1 | `narrowBoolResults` | +198 MB (largest single delta outside narrowSignatures itself) | `programFacts.valResult` |
+| plan-tail round 2 | `inferModuleGlobalValTypes2`, `analyzeParamDistinctness`, `refineSlotKindCensus`, `analyzeParamNeverGrown`, `scanInplaceStores`, `specializeBimorphicTyped` | +159.3/+1.5/+22.7/+7.1 MB (~+395 MB combined; none individually justifies its own round) | `ctx.scope.globalValTypes`, slot-kind census, `programFacts` reps |
+| plan-tail round 3 | `specializeValKindDichotomy`, `speculateTypedParams`, `refineDynKeys`, `refineFieldProvenance`, `refineModuleLetTypes` | +28.8/+15.3/+0 MB (small) | `programFacts.dynKeys`, module-let types |
+| plan-tail round 4 | `refineSlotIntCensus` (`analyzeSchemaSlotIntCertain`) | +60.1 MB (second-largest single delta) | schema slot-int census |
+| plan-tail round 5 | `invalidateAllBodyFacts`, `strictBoundaryTypeCheck`, `adviseProgram` | +22.0/+0 MB | `programFacts` (returned) |
+| compileAst round 6 | `scanDynClosureTableCandidates`, `scanClosureTableLatticeCandidates`, `scanImperativeClosureTableLatticeCandidates` | +0/+61.4/+0.1 MB | `ctx.scope.{dynFnTableCandidates,closureTableLatticeCandidates,imperativeClosureTableLatticeCandidates}` |
+
+Deliberately EXCLUDED from this session's scope, after risk analysis: the
+`analyzeFuncs` loop (`for (const func of ctx.funcs.list) { analyzeFuncForEmit
+… }`) and `structInline`/`unionInline`/`unionClones`. A per-iteration or
+batched round inside that loop would need to re-fetch `ctx.funcs.list[i]`
+by INDEX after every inner exit (a plain `for…of` iterator holds the array
+reference ONCE at loop start — if a nested exit relocates `ctx.funcs.list`
+mid-loop, the iterator keeps walking the STALE, about-to-be-reclaimed array,
+a use-after-free class this campaign's own `closure4232`/`fromnested`
+heisenbugs already catalogued). Not attempted this session — the six units
+above are all top-level SEQUENTIAL calls, not loop bodies, precisely to avoid
+that hazard class while still covering every pass 0ae75f07's own phase table
+named.
+
+**Root bundle** — identical across all six units, following Slice 3's own
+"root the CONTAINERS, not individual leaf fields" idiom, generalized with
+"+ the fact tables" per this task's own brief:
+
+```
+[ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, getFactStore()]
+```
+
+- `ast`/`programFacts`: the two local values every later pass and `emitFuncs`
+  reads; `programFacts` requires `let`, not `const` (rebound from `exit()`'s
+  return, same as `ast`).
+- `ctx.funcs`/`ctx.scope`/`ctx.types`/`ctx.schema`/`ctx.closure`: the
+  containers these passes write (`ctx.transform` deliberately excluded —
+  `plan()` never writes it, per `ctx.js`'s own writer-phase table, so it
+  stays durable and needs no root entry regardless of round count).
+- `ctx.warnings`: a gap found by AUDIT, not by a failing gate — normally
+  `null`, but live (a `{sink, seen}` wrapper around a growing
+  `entries` array) whenever `regionHooks` is exercised through
+  `scripts/self.js`'s `compileWarnings` entry (`initWarnings(sink)` runs
+  BEFORE `front()`, so it's live across every boundary in that path).
+  Round 5's `adviseProgram` calls `warn()` (src/ctx.js) directly; without
+  `ctx.warnings` in root, a `.push()`-triggered backing-store grow during
+  that round would dangle at the round's own exit — the identical
+  "container's own backing store straddling the boundary" hazard
+  `__region_exit`'s own header comment already names for `$__dyn_props`,
+  just a different global. Kept in every round's root uniformly (cheap when
+  null, which is the overwhelmingly common case).
+- `getFactStore()` (src/ctx.js): a SECOND gap found by audit — a
+  module-level singleton (NOT a `ctx.*` field; `resetFactStore()` creates it
+  once per session, before `front()` ever runs), owning `bodyFacts`
+  (`src/compile/analyze.js`'s shared `analyzeBody` cache — "Strong refs are
+  bounded by program size and dropped at the next reset", deliberately
+  retained for the WHOLE compile because later passes reuse it) plus a dozen
+  sibling WeakMap-lowered-to-Map caches consolidated onto the same object
+  (ctxfunc-survey.md §2/§5). `narrowBoolResults` (round 1) is confirmed to
+  populate `bodyFacts` on first touch per function (0ae75f07's own
+  "FIRST-TIME population cost… later passes will legitimately reuse"
+  finding) — without this in root, that population dangles at round 1's own
+  exit. Not destructured back (its own wrapper never itself moves — only its
+  descendants can).
+
+### Implementation
+
+Two files: `src/compile/plan/index.js` (`plan()` gains a `regionHooks`
+param; a local `round(body)` helper does mark→body()→exit/rebind, matching
+`front.js`/`compile()`'s existing contract exactly; five call sites),
+`src/compile/index.js` (forwards `regionHooks` into the `plan()` call; one
+new mark/exit pair wraps the three post-plan closure-table scans). No
+`scripts/self.js` changes needed — the SAME `regionHooks` object Slice 3
+already threads into `compile()` is what flows down into `plan()`; no new
+`REGION_HOOKS_ACTIVE`-gated call site was required.
+
+**Dormant dead-code property — empirically re-confirmed, more precisely
+than assumed going in.** Native's 2-arg `compile(ast, profiler)` call leaves
+`regionHooks` `undefined` throughout, so every `round()`'s `if (regionHooks)`
+body never executes — zero behavior change, matching every existing
+boundary's contract. What this session did NOT find: dormant `dist/jz.wasm`
+is NOT byte-identical across different root-array contents (SHA changed
+between a build with `getFactStore()` in root and one without, both
+`REGION_HOOKS_ACTIVE=false`) — `regionHooks` is a plain function PARAMETER,
+not a hoisted top-level literal, and this codebase's optimizer does not
+interprocedurally constant-fold it away at every call site, so the dead
+branch's OWN bytes still compile into the dormant kernel (never EXECUTED,
+but present). This is exactly the documented fallback the task's own gate
+wording anticipates ("verify dormant kernel SHA unchanged where source
+additions permit — else dormant suites green + self-build ×2 converges,
+note which") — dormant suites green + self-build ×2 SHA-convergent is the
+correct substitute gate here, not byte-identity against an unrelated prior
+baseline.
+
+### The defect — found by the REQUIRED jessie/watr/jzify-entry real-graph
+### gate, not by kernel-oracle/kernel-parity (which never exercise it)
+
+Region-live kernel-oracle (13/13 × 3, 541 assertions) and kernel-parity
+(33/33) passed clean on the FULL six-boundary design — but these corpus
+programs are small enough that most take `plan()`'s `canSkipWholeProgramNarrowing`
+early-return path, never reaching `narrowSignatures` or ANY of these six
+boundaries at all. The oracle/parity gate battery is provably NOT exercising
+this session's own new code on most (possibly all) of its rows — a real gap
+in what "13/13" was actually proving, caught only because the task ALSO
+requires the jessie/watr/jzify-entry real-graph measurement.
+
+**jessie (47 modules) and watr (7 modules), region-live, both REGRESS**:
+previously succeeding (b33d603e baseline, per this ledger's own prior entry:
+jessie 536.9 MB, watr 1073.7 MB peak) — with this session's boundaries
+active, BOTH now `unreachable` at exactly 512.0 MB (8192-page baked initial,
+zero growth before the trap — an immediate failure, not a real ceiling).
+Dormant unaffected on both (jessie 108,058 B / 1024.0 MB peak, watr 314,631 B
+/ 4096.0 MB peak — matching prior sessions' shape).
+
+**Bisected via direct A/B, not inferred**: disabling EITHER boundary
+independently (plan-tail's `regionHooks` withheld from `plan()`, OR
+compileAst round 6's mark/exit skipped) while leaving the OTHER active still
+reproduces the crash — proving this is not one boundary's specific root
+design but a GENERAL vulnerability: adding ANY additional region round
+anywhere in this territory exposes a pre-existing engine defect the
+already-shipped front+Slice3 boundaries simply never happened to trigger on
+these specific graphs. Disabling BOTH new boundaries (regionHooks withheld
+from `plan()` AND round 6's hooks nulled) restores jessie to clean SUCCESS
+(108,058 B, matching dormant exactly) — confirming the pre-existing
+front+Slice3 machinery (as landed by b33d603e) is itself still sound; this
+session's additions are what expose the gap.
+
+**Root cause, localized but not fixed**: every reproduction's stack trace
+bottoms out in `__coll_order` (module/collection.js, the Map/Set
+insertion-order helper spec-exact iteration depends on) called from
+`__region_exit`'s own `$__dyn_props` global-sidecar rebuild path
+(`module/core.js`, the EXACT function b33d603e's own idempotency fix
+landed in — lines ~916-1017) or from deep re-analysis
+(`m74_analyze$reanalyzeBody`/`analyzeValTypes`, triggered later from
+`buildStartFn`/`emitClosureBody`), always via `__alloc`'s ceiling guard
+(`unreachable`) or a raw `memory access out of bounds` — the signature
+family this campaign's own ledger already named "durable receiver, stale
+pointer to reclaimed memory," now manifesting a THIRD time, this time
+correlated with MULTIPLE SEQUENTIAL region rounds within one compile (front
++ Slice3 + this session's six) rather than a single boundary's root gap.
+b33d603e's own fix made `$__dyn_props`'s rebuild-vs-walk-in-place branch
+unconditional and idempotent for ONE exit; whether it composes correctly
+across a CHAIN of exits (a rebuilt-ephemeral table becoming durable relative
+to the NEXT round, then possibly rebuilt AGAIN) was not verified by that
+session (nothing before this one added a fourth+ region round to a single
+compile) and is the concrete next thing to instrument.
+
+**Not fixed this session** — root-causing `__coll_order`'s own interaction
+with a MULTI-ROUND compile would need the same WAT-breadcrumb, store-side
+tracing discipline that closed the SW-bug, `closure4232`, and b33d603e's own
+mechanism (each took a dedicated session) — attempting it under this
+session's own remaining budget is exactly the "stop-on-fail tripwire" this
+ledger's own discipline exists to prevent, per the task's own "bank
+precisely" fallback instruction.
+
+### jz×jz — both configs, goal gate NOT met
+
+| kernel | peak | outcome | wall time |
+|---|---|---|---|
+| dormant | 4,294,967,296 B (2³²) | `unreachable` (deliberate `__memgrow` ceiling) | 5.8 s |
+| region-live (six boundaries, as designed) | 4,294,967,296 B (2³²) | `unreachable`, IDENTICAL signature | 6.6 s |
+
+Dormant is byte-for-byte the unchanged baseline (this session's boundaries
+are dead code there, by design). Region-live, notably, does NOT hit the
+`__coll_order` crash on jz×jz specifically — it reaches the SAME deliberate
+4 GiB ceiling abort dormant does, at the same address, with no measurable
+benefit. Two readings, neither confirmed further this session: (a) jz×jz's
+own structure may not trip the specific dyn-props/Set-Map shape jessie's
+subscript-derived dispatch tables do, so the six boundaries simply never
+reach their own crash path before the ordinary ceiling fires first; (b) the
+corruption may fire silently on jz×jz too (a wrong-but-not-yet-dereferenced
+stale pointer) and the ordinary ceiling trap happens to land first either
+way — not distinguished. **No bench row run** — nothing compiled under 4 GiB
+on either config, matching every prior session back to Slice 3.
+
+### Gates (full tally)
+
+- **Dormant self-build ×2**: SHA-256
+  `44497d29899988eb3d74b0002a2670c9db4eb2ecfa1d37e7f01e4a4026f9cc63`, both
+  builds identical — converges (see the "dormant byte-identity" note above
+  for why this isn't compared against an unrelated prior SHA).
+- **Dormant kernel-oracle**: 13/13 × 3 (541 assertions), zero flake.
+- **Dormant kernel-parity**: 33/33.
+- **Dormant `npm test`**: 3454 total / 3448 pass / 0 fail / 6 skip — matches
+  the documented baseline exactly (run once, against a source state where
+  only the dead `if (regionHooks)` branch's contents differed from the
+  final commit — native call sites never pass a 3rd argument to `plan()`/
+  `compile()` at all, a static fact independent of that branch's contents,
+  so re-running the full suite against the final byte-for-byte source was
+  judged unnecessary; kernel-oracle/kernel-parity/self-build WERE re-run
+  against the exact final source and are clean).
+- **Region-live self-build ×2**: SHA-256
+  `383af7d3c234cc8a463f1aaf331af52daf45cdac27f826c7fdd097fb9c355d72`, both
+  builds identical — converges.
+- **Region-live kernel-oracle**: 13/13 × 3 — clean, but proven (via the
+  `canSkipWholeProgramNarrowing` early-return finding above) to NOT exercise
+  most of this session's own new code.
+- **Region-live kernel-parity**: 33/33 — same caveat.
+- **Region-live jessie/watr region-live ×3**: **FAILS** — both graphs
+  regress from a previously-clean baseline to an immediate `unreachable` at
+  512.0 MB (zero growth). This is the load-bearing NEGATIVE result of this
+  session — reported honestly, not glossed over. `jzify-entry` not
+  independently re-run this session (jessie+watr's own regression already
+  disqualifies the live config; re-confirming a third graph would not change
+  the disposition).
+- **jz×jz goal gate**: NOT met, either config (table above).
+
+### Disposition
+
+**Banked, not landed live** — the SAME disposition Slice 3 itself shipped
+under (`REGION_HOOKS_ACTIVE` stays `false`, committed default). The
+six-boundary DESIGN (enumeration, retained/churned split, root bundle
+reasoning including the two audit-found gaps — `ctx.warnings`,
+`getFactStore()`) is sound on paper and gate-clean on the axis that reflects
+what ships (dormant); the WALL is a newly-discovered, precisely-bisected
+engine defect (`__coll_order`/`$__dyn_props` rebuild path, triggered by
+ANY additional region round layered onto the existing front+Slice3 pair,
+not specific to this session's root choices); the GOAL (jz×jz under 4 GiB)
+is not reached on either config — dormant because these boundaries are
+provably inert there by design, region-live because it cannot ship at all
+given the jessie/watr regression, independent of whether it would have
+helped jz×jz specifically (inconclusive, see above).
+
+**Next named leads, in priority order**:
+1. Root-cause `__coll_order`'s interaction with a THIRD-OR-LATER region
+   round in one compile — extend b33d603e's own `declGlobal` breadcrumb
+   method to `__region_exit`'s `$__dyn_props` rebuild path (module/core.js
+   lines ~916-1017) specifically tracking whether a table rebuilt-ephemeral
+   in round N is correctly treated as durable by round N+1, across a chain
+   of 3+ rounds — this session's own bisection (six boundaries → jessie
+   fails; either boundary alone → jessie fails; neither → jessie succeeds)
+   is the reproduction to start from, and is CHEAPER to reproduce than
+   jz×jz itself (jessie's own 47-module graph compiles in low single-digit
+   seconds).
+2. Once fixed, re-verify the SAME six boundaries (this session's design is
+   unchanged, kept dormant-but-ready) against jessie/watr/jzify-entry, THEN
+   jz×jz, THEN flip `REGION_HOOKS_ACTIVE`.
+3. Audit whether kernel-oracle/kernel-parity's corpus should gain a row that
+   forces the `canSkipWholeProgramNarrowing`-false path on a small program
+   (a synthetic multi-function/multi-callsite source deliberately shaped to
+   require whole-program narrowing) — the current 13-row oracle silently
+   not exercising this session's own new code on most rows is a real gap in
+   what "13/13" proves for ANY future `plan()`-internal boundary work, not
+   just this session's.
+
+**SHAs**. jz worktree: `b33d603e` base, branch `perpass-2026-08-14`. watr:
+`5.7.16`, npm-registry-resolved via `npm ci`, untouched. Commits: `src/compile/plan/index.js`
++ `src/compile/index.js` (the six-boundary design) + this ledger entry.
+`REGION_HOOKS_ACTIVE` confirmed `false` in `scripts/self.js` at commit time
+(`git diff scripts/self.js` clean). Dormant `dist/jz.wasm` (self-build ×2):
+SHA-256 `44497d29899988eb3d74b0002a2670c9db4eb2ecfa1d37e7f01e4a4026f9cc63`
+both times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
+`383af7d3c234cc8a463f1aaf331af52daf45cdac27f826c7fdd097fb9c355d72` both
+times. Every `.work/*.mjs`/`.work/*.sh` scratch script this session produced
+(build drivers, the WAT-splice breadcrumb tool, the jessie repro, the
+real-graph curve runner) was deleted at session end — none committed.
+

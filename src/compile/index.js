@@ -2360,37 +2360,21 @@ function emitClosureBody(cb) {
  *  either happens INSIDE this function, before exit fires (schema
  *  custom-section emission above, module import resolution at the top) —
  *  confirmed not needed post-return. This is the design as specified (Slice 3
- *  hazard inventory, 8bed8c3f) — see the KNOWN, UNRESOLVED hazard below
- *  before treating region-live as gate-clean.
+ *  hazard inventory, 8bed8c3f).
  *
- *  **KNOWN OPEN DEFECT, region-live only (dormant/native fully unaffected):**
- *  rooting `ctx.transform` makes `__region_copy_rec` explode on some corpus
- *  shapes — reproduced concretely on `nestedtyped` (`export let f = (x) =>
- *  new Int32Array(new Float64Array([x]))[0]`, O0): traced with temporary
- *  `declGlobal` breadcrumbs (module/core.js `__region_copy_rec`/
- *  `__region_relocate_props`, worktree-only, never landed),
- *  `__region_relocate_props` reads a ~2^31 capacity off a dyn-props object
- *  reachable ONLY via the whole-`ctx.transform` walk (not via `ctx.func`/
- *  `ctx.scope` alone), and `__alloc`'s own ceiling check aborts — a real
- *  defect in the relocator's durable dyn-props path, not in this boundary's
- *  own placement or root selection. TWO NARROWER alternatives were tried and
- *  BOTH also fail, differently, not more soundly: dropping `ctx.transform`
- *  entirely (`[module, ctx.func, ctx.scope]`) clears `nestedtyped` but newly
- *  breaks `dict`/`ternary-BOOL|NUMBER` (a durable/ephemeral OBJECT with
- *  dynamic keys); rooting only the two leaves actually read
- *  (`ctx.transform.optimize`/`.targetProfile`) explodes the same way, worse
- *  (O0 AND O3). This pattern — the specific failure shifting with small,
- *  otherwise-inert changes to what's rooted — matches this campaign's own
- *  documented "address/layout-boundary-sensitive heisenbug" class (this
- *  file's sibling, scripts/self.js's header comment, 2026-08-06), not a
- *  simple missing-root case any of the three tried roots cleanly dodges.
- *  kernel-oracle region-live (this root): 7/13 (not the dormant/front-only
- *  13/13). NOT fixed this session — banked as Slice 3's own named next lead
- *  (a `__region_relocate_props`-focused breadcrumb trace on the durable
- *  branch, the same rigor the front boundary's own SW-bug and closure4232
- *  fixes used, is the concrete next step). `REGION_HOOKS_ACTIVE` stays
- *  `false` (scripts/self.js) — this boundary ships DORMANT, gate-verified
- *  only on that axis; it is not wired live in any shipped build.
+ *  **Formerly a known open defect, ROOT-CAUSED AND FIXED (b33d603e,
+ *  .work/research.md §Region arena "REGION MACHINERY SOUND"):** rooting
+ *  `ctx.transform` used to make `__region_copy_rec` explode on some corpus
+ *  shapes (`nestedtyped` et al) — `__region_relocate_props` wasn't idempotent
+ *  under re-application to its own output, corrupting a durable-but-
+ *  unreached receiver's dyn-props on a second pass. Fixed generally in
+ *  `module/core.js` (not a caller-side workaround); kernel-oracle region-live
+ *  is now 13/13×3, matching dormant. `REGION_HOOKS_ACTIVE` still stays
+ *  `false` as the committed default (scripts/self.js) — this boundary and its
+ *  PLAN-TAIL children (`src/compile/plan/index.js`'s own five inner region
+ *  rounds, threaded through the SAME `regionHooks` this function receives —
+ *  see that file's own doc) ship DORMANT, gate-verified on both axes, not
+ *  wired live in any shipped build.
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler, regionHooks) {
@@ -2512,8 +2496,19 @@ export default function compile(ast, profiler, regionHooks) {
   // every reference is a static read. The scalar analog of the constInts fold above.
   timePhase(profiler, 'foldAggregates', () => foldStaticConstAggregates(ast))
 
-  const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
+  // `let`, not `const`: the post-plan-scans region round below (region-live
+  // only, dead code otherwise) rebinds this from its own `exit()` return.
+  let programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, regionHooks))
 
+  // Region-arena plan-tail round 6 (.work/research.md §Region arena, per-pass
+  // slice): the three closure-table scans below are pure AST walks producing
+  // three ctx.scope fields (+~61 MB combined, dominated by
+  // scanClosureTableLatticeCandidates's own +61 MB per 0ae75f07's phase map)
+  // — one round, same container-level root as plan()'s own five internal
+  // rounds (module/builtModule doesn't exist yet at this point in compileAst,
+  // so it's not part of THIS root — only compile()'s own final Slice 3 exit
+  // roots that).
+  const __scanMark = regionHooks?.mark()
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
   // structurally safe candidate closure tables (never alias/escape) — the
   // write-family + call-site facts gathered during emission below only fire
@@ -2542,6 +2537,13 @@ export default function compile(ast, profiler, regionHooks) {
   // see dyn-closure-tables.js's own doc for the safety notion and the
   // module-init-order reasoning behind its "early-mergeable" subset.
   ctx.scope.imperativeClosureTableLatticeCandidates = scanImperativeClosureTableLatticeCandidates(ast)
+  // ctx.warnings rides along — see plan/index.js's `round` helper doc for why
+  // (a live `ctx.warnings.sink.entries` array, only non-null under
+  // scripts/self.js's `compileWarnings` entry, needs root coverage against a
+  // post-mark grow-and-relocate exactly like plan()'s own five rounds).
+  if (regionHooks)
+    [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings] =
+      regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings])
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
