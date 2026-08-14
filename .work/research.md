@@ -14926,3 +14926,109 @@ times. Every scratch artifact this session produced (the named-kernel build
 drivers, jessie/watr/jzify repro drivers, the jz×jz goal-gate driver, every
 WAT-splice intermediate and its four breadcrumb probes) was deleted at
 session end — none committed.
+
+## §Region arena — RETAINED-SET CENSUS: jz×jz's 4 GiB wall attributed —
+## region-arena's OWN reclaim is small and sound at every completed round
+## (~23 MB), the wall is UNRECLAIMED CHURN inside `analyzeFuncForEmit`'s
+## per-function loop (region-arena explicitly does not wrap it — a named,
+## unresolved `ctx.funcs.list` relocation hazard), ~70% MAP/HASH-shaped;
+## three compaction levers named with arithmetic, none close the gap alone
+## or combined; wasm64 needs a COUPLED NaN-box redesign, not a flag
+## (2026-08-14, measurement + design only, no source changes)
+
+**Task**: attribute jz×jz's retained bytes by structure class (self-hosted
+region-arena census + native phase-by-phase cross-check) and design the
+compaction program — full writeup: **`.work/retained-set-census.md`**.
+
+**Method**: two independent WAT-level breadcrumb instruments spliced into a
+region-live (`REGION_HOOKS_ACTIVE` hand-flipped true, disposable, reverted),
+`names:true`, `memory:65536`-page O3 kernel — (1) a region-root census inside
+`$__region_copy_rec`'s own ARRAY/OBJECT/STRING/SET/MAP arms, gated by a
+mark/delta round-boundary reset (confirmed `$__region_exit` itself is fully
+inlined at O3, so the reset detects genuinely new top-level calls via the
+one thing that stays constant across recursion and changes across rounds);
+(2) an allocator-level cumulative census hooking `$__alloc_hdr`/
+`$__alloc_hdr_n`'s own entry (the only two functions building a 16B-header
+block anywhere in the runtime), bucketed by stride. Validated on jessie (46
+modules, matches documented baseline) before jz×jz (156 modules, matches the
+task's own self-graph size exactly). Both instruments read out via new
+exported i64 globals, appended strictly AFTER the last pre-existing global
+declaration (an earlier attempt inserting them mid-file corrupted every
+later bare-numeric `global.get N` reference — this decompiled text carries
+no globals name section). Cross-checked natively via a fresh
+`process.memoryUsage()` phase profile (259cd4fc's own `profiler.time`/`time`
+seam, called directly — `frontHalf`/`compileAst`/`watrTail` — bypassing
+`index.js`'s public `compile()`, which doesn't expose a custom profiler
+sink), `--expose-gc`-forced before/after each named phase, on the identical
+156-module graph.
+
+**Findings**: region-root census at the last completed round: **23.44 MB**
+(ARRAY 53%, STRING 27%, SET 14%, OBJECT 4%, MAP 2%) out of a 4080.8 MB heap
+at trap — confirms region-arena's reclaim is sound (matches every prior
+session's own "REGION MACHINERY SOUND" verdict; retention isn't the
+problem). Allocator-cumulative census (whole compile, immune to the
+round-boundary blind spot): **3400.45 MB**, ~70% (2373.44 MB) MAP/HASH-shaped
+(28B stride: `MAP_ENTRY`+`LANE`), ~25% (835.05 MB) ARRAY/OBJECT-shaped,
+residual ~680 MB (STRING/BIGINT/CLOSURE-env, not directly isolated). Native:
+`compileAst`-done at 1394 MB RSS / 871 MB heapUsed; full pipeline (incl.
+`watOptimize`+encode) at 3049 MB RSS / 1207 MB heapUsed — **self-hosted
+MAP/HASH bytes ALONE (2373 MB) exceed native's ENTIRE finished-compile heap
+(1207 MB)**. Per-phase overhead, independently sourced two ways
+(0ae75f07's own self-hosted `narrowSignatures` breadcrumb: +1564.9 MB; this
+session's fresh native measurement of the identical phase: +3.7 MB heapUsed
+/ +38.5 MB RSS): **~40–420× for the single hottest named pass**.
+
+**Mechanism** (reconciling both censuses with 0ae75f07's own dormant
+fine-grained table): `plan()`'s 6 chained rounds reclaim their own churn
+correctly, keeping retained bytes small at every completed boundary — but
+`analyzeFuncForEmit`'s own per-function loop (up to 1435 calls for jz×jz) is
+**explicitly, deliberately excluded** from region-arena's round boundaries
+(e640e77a's own design note: a `for…of` iterator over `ctx.funcs.list`
+would walk a stale, relocated array mid-loop — a real use-after-free hazard,
+not an oversight). Every allocation inside that unguarded loop (plus its
+siblings `emitFuncs`/`emitClosures`/`optimizeModule`'s own per-func passes)
+accumulates with zero chance of reclaim — exactly what the allocator-level
+census measures, and exactly where the dormant table's own 4089→4096 MB
+climb happens.
+
+**Pointer-width budget** (`layout.js`): `OFFSET_MASK` is exactly 32 bits,
+zero bits spare in the 64-bit carrier (13 prefix + 4 tag + 15 aux + 32
+offset). wasm32's 4 GiB ceiling and the NaN-box's own offset field are
+precisely co-sized — **wasm64/memory64 alone cannot extend addressable heap
+for this representation**; it needs a coupled NaN-box redesign (wider
+offset, narrower aux/tag), not a build flag.
+
+**Compaction program, top contributors with arithmetic**: (1) extend
+region-arena's round boundary to wrap `analyzeFuncForEmit` — reclaim-scope,
+not byte-compaction, the only lever whose target matches the measured
+mechanism, estimated on the order of 1-2 GB but blocked on the same
+relocation hazard e640e77a named and left unresolved, not measured this
+session; (2) drop the `LANE` probe array (4B/slot) — arithmetic:
+2373.44×0.143 + 191.96×0.20 ≈ **377 MB**; (3) string interning extended to
+runtime-built mangled names (today's `STR_INTERN_BIT` covers only the
+static literal pool) — estimated **150–340 MB** (a stated range, not
+measured this session); (4) bitfield-pack `ctx.schema`'s five separate
+per-sid `Map`s (`slotFacts`/`slotIntCertain`/`slotI32Certain`/
+`slotConstInts`/`slotIntLevels`, cited in `.work/heap-epoch-design.md`) into
+one struct-of-arrays record — real, directly on the dominant MAP/HASH
+mechanism, deliberately left unquantified (schema count for jz×jz wasn't
+measured — no fabricated number). **Verdict: none of these, alone or
+combined, arithmetically closes jz×jz under 4 GiB** — levers (2)+(3) sum to
+~527-717 MB against a gap requiring an order-of-magnitude reduction; lever
+(1) is the only one sized to plausibly matter but is an unmeasured estimate
+against a named, unresolved hazard, not a proof.
+
+**Disposition**: measurement + design only, no `src/`/`module/` changes.
+`scripts/self.js`'s `REGION_HOOKS_ACTIVE` hand-flipped true for the
+diagnostic build only, reverted before session end (`git diff
+scripts/self.js` clean at commit time). Every scratch script, kernel build,
+and decompiled/spliced `.wat`/`.wasm` intermediate deleted; worktree
+removed. Full attribution table, per-lever arithmetic, native phase table,
+and stated methodology caveats (region-round identity not independently
+named; STRING/BIGINT/BUFFER/TYPED-owned durable counting has a known
+fan-in-proportional overcount bias, documented not glossed; no native
+per-constructor heap snapshot taken) in `.work/retained-set-census.md`.
+**Next named lead**: measure lever (1)'s real savings with the same
+per-call breadcrumb method 0ae75f07 already proved out on this exact loop,
+then solve the `ctx.funcs.list` relocation hazard before attempting to wire
+a region round around it.
