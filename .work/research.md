@@ -17228,3 +17228,224 @@ lever inventory this file's own `274b6bd8`/`627cf92a`/`c8246307` entries
 already worked out (regionArena reclaim depth vs. `narrowSignatures`'
 own whole-program fixpoint cost), not a re-run of this session's own
 (now-closed) correctness wall.
+
+## §GeneralMapVectorizer — base-layer MAP-class general vectorizer landed
+## (2026-08-15): `tryGeneralMap`, dispatch-chain terminal, integer-lane
+## generalization of tryStencil's affine-offset proof
+
+Design refresh + implementation of `.work/vectorizer-generality-design.md`
+§2-3 step 3 ("promote MAP class... to an AST/affine-level proof"), scoped
+per this session's brief to the MAP transform class only (92/130 census
+reach — design's step-1 slice), on top of the already-landed §2 step-1
+consolidation (`8e4d4a86`). Worktree `/private/tmp/.../scratchpad/vec-base`,
+branch `vec-base-2026-08-15`, off main tip `71156204`.
+
+**Preconditions (the design refresh, done before any code — see the
+function's own header doc, `src/optimize/vectorize.js` right before
+`tryGeneralMap`, ~230 lines including doc):**
+1. Canonical `bl` scaffold already matched by the shared `matchBlockLoop`
+   (unchanged, zero risk to other recognizers' dispatch).
+2. No loop-carried scalar dependence: reuses tryVectorize/tryStencil's own
+   "first access of a written local must not be a read" rule verbatim.
+3. No same-array cross-iteration dependence: ported tryStencil's own
+   `elemKey` alias gate verbatim — every access to a WRITTEN base must hit
+   the SAME element as every OTHER access to that base; a mismatch (e.g.
+   `a[i]=a[i-1]+a[i]`) declines. Distinct bases assumed non-aliasing (the
+   established repo-wide MAP-class convention, not a new assumption).
+4. Bounds proven invariant: `bl`'s own boundLocal-unwritten-or-i32.const
+   requirement (unchanged scaffold check) — this is the SAME proof
+   obligation `forCounterRange`/`intExprRange` (`src/static.js`) exist for
+   at the AST level; read those two functions plus
+   `arrayReadProvenInBounds` (`src/compile/narrow.js:1483`) fully before
+   writing code (read-only reference, per the task's explicit constraint —
+   neither file touched). They operate on the PRE-lowering IR at a
+   different pipeline stage than `vectorize.js` (a WAT-level pass); their
+   algorithm shape (closed-hull composition over `+`/`-`/`*`/`<<`, tee/
+   decl-hop resolution) is what this pass's own `ivCoeff` affine solver
+   reimplements for the WAT domain, not a literal import — the two
+   representations don't share an AST shape to call across.
+5. Trip-count remainder: identical epilogue convention every recognizer in
+   this file uses — the SIMD prefix advances `incVar` by `lanes` per step
+   up to `iv + ((bound−iv) & ~(lanes−1))`; the ORIGINAL scalar loop
+   (`bl.blockNode`, untouched) runs immediately after as the tail.
+6. Element types/ops: `LANE_INFO`'s full i8/i16/i32/i64/f32/f64 table, same
+   `liftStmt`/`liftExprV`/`LANE_PURE`/`REDUCE_OPS`-adjacent lift machinery
+   every MAP-class recognizer above already shares — zero new codegen.
+
+**The address/dependence algorithm itself is a PORT, not new invention**:
+tryStencil (2055-2347) already proves exactly this shape — `ivCoeff`
+(affine-in-IV coefficient solver, handles arbitrary nested `+`/`-`/tee),
+`matchAddr` (tries BOTH `i32.add` operand orders, tee-CSE resolution via
+`addrTees`/`offTees`), `elemKey` (same-array dependence) — for f64/f32
+neighbour-load stencils. It hard-declines every other lane type
+(`if (lt !== 'f64' && lt !== 'f32') return false`) because an i32-typed
+local is ambiguously either an address/index scalar or i8/i16/i32 LANE
+data (both share WAT storage type `i32`) — tryStencil's own
+`ty === laneType` classification can't resolve that ambiguity for integer
+lanes. `tryGeneralMap` ports the identical `ivCoeff`/`matchAddr`/`elemKey`
+algorithm, generalized to every `LOAD_OPS`/`STORE_OPS` lane type, and
+resolves the i32 ambiguity the way `tryVectorize`'s own `_isAddressLocal`
+already does for its own narrower matcher: an i32 local is `'addr'`
+(kept scalar) only when EVERY write to it is proven address/offset-shaped
+(`_isAddrLocalGM`, ported onto this pass's own `matchAddr`); every other
+written local is `'lane'` data regardless of its declared WAT type
+(tryVectorize's own permissive default, not tryStencil's stricter one —
+needed because jz's overflow-safe integer-arithmetic idiom computes
+`a[i]+b[i]` into an Int32Array store via an f64-typed intermediate
+(`f64.add(convert_i32_s,convert_i32_s)`) when native i32-add-in-range
+isn't provable; `liftExprV`'s existing `liftAddSubOfConverts` dispatch
+already lifts that shape correctly with no special-casing needed here).
+One genuine new byte-lane fix: `matchOffset` needed a bare-affine
+fallback (`i*1` stride-1 has no `shl` wrapper for i8) — `matchLaneOffset`
+already has this exact fallback for its own narrower shape; ported the
+same idea for i8 lanes here.
+
+**Placement — base layer, dispatch-chain TERMINAL**: wired as the LAST
+`??` alternative in `vectorizeLaneLocal`'s chain, after `tryButterfly`,
+before the deferred scalar `tryStrengthReduceIV` fallback. Every existing
+recognizer keeps first-match-wins priority — zero risk to their corpus
+specimens by construction (dispatch order unchanged, `tryGeneralMap` only
+runs when everything above already declined this exact node).
+
+**Subsumption verdict**: op vocabulary is IDENTICAL to
+tryVectorize/tryMemCopyFill/tryRampMap/tryToneMap (same `LANE_PURE`/
+`liftStmt`/`liftExprV` — no new codegen introduced). This pass does NOT
+replace or absorb their dispatch slots (all four still run first,
+unchanged, so their existing specimens compile byte-identically — see
+gate 1). The generalization is purely in the PROOF: an affine-form solver
+(`ivCoeff`) instead of a fixed literal WAT-shape list, extending
+tryStencil's already-proven affine-offset proof from f64/f32 to every
+lane type. Concretely subsumes (in the "would ALSO accept, if reached"
+sense — never exercised, since dispatch order means it isn't): any
+MAP-class loop whose address is `base + (IDX<<K)` with IDX affine in the
+IV at coefficient 1, for any operand order and any nesting of the offset
+arithmetic — a strict superset of `matchLaneAddr`/`matchLaneOffset`'s
+literal-shape acceptance.
+
+**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s
+own convention — `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`,
+base = main tip `71156204` unmodified (`/Users/div/projects/jz`) vs
+branch = this worktree, same source read from the base tree for both):
+**126/129 comparable programs byte-identical.** 129 = the census's 127
+dir-matched `bench/*/*.js` + `examples/*/*.js` files, plus
+`examples/raymarcher/raymarcher.simd.js`, plus `.work/jzify-entry.mjs`.
+1/129 (`jzify-entry.mjs`) excluded: untracked in git (present only in the
+base checkout's working tree, absent from any commit, so absent from the
+worktree — an environment artifact of the sweep methodology, not a
+compile difference; confirmed via `git status`/`git log` showing zero
+history for the file).
+
+**2/129 NEWLY vectorize** (`examples/dithering/dithering.js`,
+`examples/waves/waves.js`) — real corpus programs, not synthetic. Both
+verified correct with a full differential run (in-process `jz()`,
+`vectorizeLaneLocal: true` vs `false`, same source):
+  - dithering: `resize(64,48)` then `frame(t,mode,shape)` swept over
+    mode 0-7 × shape 0-4 × t∈{0,0.3,1.2} (120 combinations), FNV-1a
+    checksum of the rendered `Uint32Array` compared — all 120 match.
+  - waves: `resize(48,32)`, two `drop()`s, 40 simulated frames with a
+    periodic stick-drag, same checksum compared each frame — all 40 match.
+  Wasm size delta (`-O3`, full binary, not WAT text): dithering
+  78781→78869 bytes (+88, +0.11%), waves 47465→47532 bytes (+67, +0.14%)
+  — the SIMD prologue/epilogue overhead on these two loops, consistent
+  with every other MAP-class recognizer's own prefix+scalar-tail
+  size/speed tradeoff, not a new pattern this pass introduces.
+
+**Gate 2 — new-reach proof**: 6 synthetic loops (test/simd.js, "SIMD
+general-map" suite, appended after the existing mirror-store test) that
+`--why-not-simd` confirmed decline under EVERY existing recognizer before
+this change (empirically verified via a disposable instrumented dispatch
+trace, reverted before landing — no trace code committed):
+  1. i32 lane, runtime read-side shift: `out[i] = a[i+off]`
+  2. i32 lane, flipped operand order: `out[i] = a[off+i]`
+  3. i16 lane, runtime read-side shift
+  4. i8 lane, runtime read-side shift (byte-stride, exercises the
+     shl-less `matchOffset` fallback)
+  5. i32 lane, write-side shift: `out[i+off] = a[i]`
+  6. i32 lane, two-array combine with one array shifted:
+     `out[i] = a[i+off] & b[i]`
+  Each asserts `hasV128` AND bit-exact differential correctness
+  (`vectorizeLaneLocal:true` vs `false`, same source, multiple `off`
+  values including 0). Plus 2 negative/safety tests: a genuine same-array
+  recurrence (`a[i]=a[i-1]+a[i]`) and the same recurrence at a RUNTIME
+  offset, both asserted to (a) produce identical results with the
+  vectorizer on vs off (declines cleanly, never miscompiles) and (b) emit
+  no `i32x4.add` lift of the recurrence loop itself (scoped so an
+  unrelated fill loop's own legitimate SIMD lift can't false-pass the
+  check). 8 new tests, 26 new assertions, all green.
+
+**Gate 3 — full native `npm test`**: branch **3459 total / 3453 pass / 0
+fail / 6 skip** (baseline 3451/3445/0/6 — exactly the 8 new tests, zero
+regressions elsewhere).
+
+**Gate 4 — vectorizer suites**: `node test/index.js simd slp
+cond-vectorize optimizer` — **392/392 pass** (simd.js alone 162/162,
++8 over the pre-session 154/154).
+
+**Gate 5 — self-build + test:wasm**: `node scripts/build-dist.mjs`
+(produces `dist/jz.wasm`, the full self-hosted compiler) succeeds on BOTH
+trees — base 16791.4 kB, branch 16822.8 kB (+31.4 kB, +0.19%; `dist/jz.js`
+the source bundle 2084.6→2088.5 kB, +3.9 kB, matching the new function's
+own ~230 source lines — this is the compiler's OWN size growing to hold
+the new pass, not evidence about compiled-OUTPUT size, which is Gate 1's
+per-file deltas above). The prior session's ledger (`8e4d4a86`) recorded
+this artifact as BLOCKED on main tip `243e5b6e` (a pre-existing
+BigInt-retirement regression, `bigintEraseErr`) — confirmed RESOLVED on
+current tip `71156204` (base tree builds clean), unblocking this gate for
+the first time in this lineage. `JZ_TEST_TARGET=jz.wasm node test/index.js
+simd` — **162/162 pass** against the wasm-hosted target too (same suite,
+different host). `node test/selfhost.js` (rebuilds via
+`scripts/selfhost-build.mjs` — a second, independent self-host build —
+then round-trips real programs through the IN-WASM pipeline: host passes
+source text in, `dist/jz.wasm`'s own `default(source)` runs the WHOLE
+compiler — parse→jzify→prepare→compile→watr-encode — in wasm, host only
+instantiates the resulting bytes and checks the compiled program's own
+behavior) — **21/21 pass, 206 assertions**, including a 39-round
+self-referential-schema domino (`round N: compiled wasm bytes (no
+allocator trap)` / `round N: g's own field reads back true`, N=1..39) —
+the self-hosted compiler, itself built by a compiler carrying this
+session's new pass, correctly compiles real programs with no
+allocator/trap regression and correct field round-tripping. This is the
+"self-build ×2" property in substance: two independent builds
+(`build-dist.mjs`'s and `selfhost-build.mjs`'s) both succeed, and the
+SECOND-GENERATION artifact (the wasm compiler) is then exercised
+compiling THIRD-GENERATION programs correctly.
+
+**Size claim (`test:claims`)**: NOT run against the frozen
+`bench/results.json` reference dataset — that leg gates a COMMITTED
+snapshot against named external rivals (rustc/zig/tinygo/AssemblyScript/
+JS JITs) on a fixed reference machine, and doesn't recompile from source,
+so it cannot measure this session's actual size delta (it would only
+re-verify the EXISTING, unrelated snapshot). The real, direct size
+evidence is Gate 1's per-file wasm byte deltas above (+0.11%/+0.14% on
+the only 2 files whose codegen changed at all) — corpus-wide geomean
+impact from 2/129 programs each growing a tenth of a percent is
+undetectable at the claim gate's reporting precision, and regenerating
+the committed dataset (a full rival-compiler bench run) is out of this
+session's scope.
+
+**Banked, not this session** (design §4 step 4, explicit follow-up
+seam, noted in the function's own header doc): REDUCTION/STENCIL-proper
+generalization past their current syntactic matchers (a real loop-carried
+dependence/distance-vector test), the float-domain grid-index branch
+tryStencil's own `ivCoeff` carries (2-D row-base loops like schrodinger's
+`y*w+x`), and non-constant (runtime-computed, not just runtime-invariant)
+stride coefficients — all deliberately out of "contiguous lanes,
+dependence-free elementwise" MAP scope.
+
+**Files touched**: `src/optimize/vectorize.js` (+232: `tryGeneralMap` and
+its dispatch-chain wiring), `test/simd.js` (+147: 8 new tests). Nothing
+else — `README.md`, `src/static.js`, `src/compile/narrow.js`,
+`src/compile/plan/index.js`, `bench/**`, `.work/strategy.md`,
+`.work/todo-original.md` all untouched (verified via `git diff --stat`
+against each, zero output).
+
+**Verdict: landed.** Every corpus specimen that vectorized before still
+does, byte-identical (126/129, 1 excluded as an untracked-file sweep
+artifact unrelated to compiler behavior). 2 real corpus programs newly
+vectorize, both verified bit-exact by differential run across 120 and 40
+parameter combinations respectively. 6 synthetic new-reach loops
+(confirmed declining under every prior recognizer, now vectorizing
+correctly) plus 2 negative safety tests, all bit-exact. Full native suite
++8/+8/0/0 (zero regressions). Self-build unblocked and green on both
+trees. Main tip at landing: `71156204` (branch `vec-base-2026-08-15`,
+worktree deleted post-land per process instructions).

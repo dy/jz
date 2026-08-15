@@ -7043,6 +7043,237 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 }
 
 
+// ---- General MAP base layer (.work/vectorizer-generality-design.md §2-3 step 3, MAP slice) --
+//
+// BASE LAYER: runs LAST in the dispatch chain (after every idiom recognizer above, including
+// tryButterfly) — it exists to catch dependence-free elementwise loops whose address arithmetic
+// isn't one of the specific WAT shapes tryVectorize/tryMemCopyFill/tryRampMap/tryToneMap/
+// tryStencil hand-match, not to compete with them for the specimens they already own (first-
+// match-wins dispatch order is unchanged, so every existing corpus hit is untouched).
+//
+// Address proof: a real affine-in-IV solver (`ivCoeff`), not a fixed literal WAT-shape list —
+// ported from tryStencil's own `ivCoeff`/`matchAddr` (the exact algorithm that already proves
+// "coefficient 0 or 1" for f64/f32 neighbour-load stencils), simplified to drop the toroidal
+// wrap-select and float-domain-index branches (genuinely stencil-specific, out of scope for a
+// plain map) and GENERALIZED to every LOAD_OPS/STORE_OPS lane type — tryStencil hard-declines
+// non-float lanes (`if (lt !== 'f64' && lt !== 'f32') return false`) because an i32-typed local
+// is ambiguously either address/index scalar OR i8/i16/i32 LANE data (both share WAT storage
+// type 'i32'); this pass resolves that ambiguity the same way tryVectorize's own `_isAddressLocal`
+// does (ported below as `_isAddrLocalGM`, parametrized on THIS pass's own `matchAddr`).
+//
+// Dependence proof: no loop-carried scalar (tryVectorize/tryStencil's own "first access of a
+// written local must not be a read" rule, reused verbatim), plus tryStencil's own same-array
+// alias gate — every access to a WRITTEN base must hit the SAME element (`elemKey`); a mismatch
+// (e.g. `a[i] = a[i-1] + a[i]`, a genuine recurrence) is a real cross-iteration dependency and
+// declines. Distinct bases (different arrays) are assumed non-aliasing — the same baseline
+// convention tryVectorize/tryStencil already rely on (tryStencil's own doc, "the SAME assumption
+// the plain map path already relies on").
+//
+// Bounds: reuses `bl`'s own invariant-bound requirement (boundLocal unwritten, or an i32.const);
+// trip-count remainder handled by the same epilogue convention every recognizer above uses — the
+// original scalar loop, unmodified, runs as the tail after the SIMD prefix (`bl.blockNode`).
+//
+// Subsumption: op vocabulary is IDENTICAL to every MAP-class recognizer above (same `liftStmt`/
+// `LANE_PURE`/`REDUCE_OPS`-adjacent lift machinery, same `ctx` shape) — the only axis this pass
+// generalizes is the ADDRESS proof (arbitrary nested +/-/tee, both `i32.add` operand orders,
+// runtime-invariant index shifts `a[i+off]`) and, for integer lanes, DEPENDENCE proof parity with
+// what tryStencil already gives float lanes. New-reach cases (verified in test/simd.js): integer-
+// lane (i8/i16/i32/i64) elementwise maps at a runtime-invariant index shift — `out[i] = a[i+off]`,
+// `out[i+off] = a[i]`, both `i+off` and `off+i` operand orders, multi-array independent shifts —
+// none of which any prior recognizer's literal `matchLaneAddr`/`matchLaneOffset` shape accepts
+// (confirmed empirically: `--why-not-simd` declines all of them pre-this-pass; tryStencil itself
+// declines on lane type alone before ever reaching its own affine check).
+//
+// Follow-up seam (banked, not this session): REDUCTION/STENCIL-proper generalization (design §4
+// step 4), the float-domain grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base
+// loops), and non-constant (runtime-computed) stride coefficients — all deliberately out of
+// "contiguous lanes, dependence-free elementwise" scope for this base-layer slice.
+function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
+  if (!bl) return null
+  const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl
+  if (blHasGlobalSet) return null
+  if (!boundLocal && !isI32Const(bound)) return null
+
+  // Nested loop / non-$math call inside the body breaks the "every site is one straight-line
+  // lane op" assumption a flat scan here relies on (verbatim from tryStencil).
+  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
+    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
+    || n.some(hasNestedLoopOrCall))
+  if (body.some(hasNestedLoopOrCall)) return null
+
+  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
+
+  // Affine-in-IV coefficient solver, i32 domain only (no toroidal wrap, no float-derived index —
+  // both genuinely stencil-specific; see header doc). Returns 0 (loop-invariant), 1 (stride-1
+  // affine — IV itself, or ± a loop-invariant term, nested arbitrarily deep), or null (unprovable).
+  const ivCoeff = (n) => {
+    if (isLocalGet(n)) {
+      const nm = n[1]
+      if (nm === incVar) return 1
+      return writes.has(nm) ? null : 0
+    }
+    if (isI32Const(n)) return 0
+    if (isArr(n) && n[0] === 'global.get') return 0
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
+      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'i32.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    if (isArr(n) && n[0] === 'i32.mul' && n.length === 3)
+      return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
+    return null
+  }
+
+  // Address match: `base + (IDX << K)` (or the flipped operand order), IDX affine coefficient 1,
+  // K matching the site's own element stride. Tee-CSE resolved via addrTees/offTees, exactly like
+  // tryStencil's own matchAddr (ported, not re-derived — same soundness argument).
+  let laneType = null, stride = -1
+  const offTees = new Map(), addrTees = new Map()
+  const sites = []   // { kind, base, idx, memBytes }
+  const matchOffset = (off, expectStride) => {
+    let ot = null, o = off
+    if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
+    if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
+    if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
+      if (ot) offTees.set(ot, o[1])
+      return { idx: o[1] }
+    }
+    // Byte lanes (i8, stride 1): `i*1` is a no-op the compiler never wraps in a shl — the
+    // offset is the bare affine expression itself (matchLaneOffset's own `isLocalGet(n,ind)`
+    // fallback, generalized past a bare IV to any coefficient-1 affine form).
+    if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
+    return null
+  }
+  const matchAddr = (addr, expectStride = stride) => {
+    let teeName = null, n = addr
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
+    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
+    for (const [bi, oi] of [[1, 2], [2, 1]]) {
+      if (!isInvBase(n[bi])) continue
+      const om = matchOffset(n[oi], expectStride)
+      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
+    }
+    return null
+  }
+  const scan = (n, parent, pi) => {
+    if (!isArr(n)) return true
+    const op = n[0]
+    if (LOAD_OPS[op]) {
+      let addr = n[1], memBytes = 0
+      if (typeof addr === 'string' && addr.startsWith('offset=')) { memBytes = +addr.slice(7); addr = n[2] }
+      const lt = LOAD_OPS[op]
+      if (laneType == null) { laneType = lt; stride = LANE_INFO[lt].stride }
+      else if (lt !== laneType) return false
+      const m = matchAddr(addr, stride)
+      if (!m) return false
+      sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes })
+      return true
+    }
+    if (STORE_OPS[op]) {
+      if (n.length !== 3) return false
+      const st = STORE_OPS[op]
+      if (laneType == null) { laneType = st; stride = LANE_INFO[st].stride }
+      else if (st !== laneType) return false
+      const m = matchAddr(n[1])
+      if (!m) return false
+      sites.push({ kind: 'store', base: m.base, idx: m.idx, memBytes: 0 })
+      return scan(n[2], n, 2)
+    }
+    if ((op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
+      const v = n[2]
+      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3 && isI32Const(v[2]) && stride > 0 && (1 << v[2][1]) === stride && ivCoeff(v[1]) === 1) offTees.set(n[1], v[1])
+      else matchAddr(['local.tee', n[1], v])
+    }
+    for (let i = 1; i < n.length; i++) if (!scan(n[i], n, i)) return false
+    return true
+  }
+  for (const s of body) if (!scan(s, null, -1)) return null
+  if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind === 'load')) return null
+
+  // Same-array dependence gate: every access to a WRITTEN base must touch the SAME element
+  // (idx + memarg) as every OTHER access to that same base — else SIMD reads stale/future data
+  // a scalar iteration wouldn't (verbatim from tryStencil's own alias proof).
+  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
+  for (const st of sites) {
+    if (st.kind !== 'store') continue
+    for (const s of sites) if (exprEq(normTee(s.base), normTee(st.base)) && elemKey(s) !== elemKey(st)) return null
+  }
+
+  // A scalar local whose every write is address/offset-shaped (an addrTees/offTees entry, or
+  // matches the SAME address grammar directly) is index arithmetic, not lane data — kept scalar
+  // in the lift (tryVectorize's own `_isAddressLocal` pattern, ported onto this pass's matchAddr).
+  const _isAddrLocalGM = (name) => {
+    let onlyAddr = true, found = false
+    const walk = (n) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
+        found = true
+        const m = matchAddr(['local.tee', name, n[2]])
+        if (!m && !(isArr(n[2]) && n[2][0] === 'i32.shl' && n[2].length === 3 && isI32Const(n[2][2]) && ivCoeff(n[2][1]) === 1)) onlyAddr = false
+        return
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    for (const s of body) walk(s)
+    return found && onlyAddr
+  }
+
+  // Classify every referenced local (tryVectorize's own convention, ported — NOT tryStencil's
+  // stricter ty===laneType gate): induction var exempt; a WAT-i32 local proven pure address/
+  // offset arithmetic is 'addr' (kept scalar); every OTHER written local is 'lane' data
+  // (first access must be a write — a read-before-write is a loop-carried scalar, REDUCTION's
+  // job, not this pass's); every unwritten local is 'invariant'. Declared WAT type is
+  // deliberately NOT gated here: jz's overflow-safe integer-arithmetic idiom (`a[i]+b[i]` into
+  // an Int32Array store, unprovable native-i32-add-in-range) computes the sum in an f64-typed
+  // temp (`f64.add(convert_i32_s(A), convert_i32_s(B))`) even under an i32 lane — liftExprV's
+  // own `liftAddSubOfConverts` dispatch (called from liftStmt's ordinary 'lane' local.set path,
+  // no special-casing needed here) already lifts that shape to `i32x4.add` correctly. A local
+  // whose value liftStmt/liftExprV genuinely can't lift under this lane type fails closed
+  // (`ctx.fail`, checked below) — never a silent miscompile, same safety net tryVectorize relies on.
+  const localKind = new Map()
+  for (const name of blReferenced) {
+    if (name === incVar) continue
+    const ty = fnLocals.get(name)
+    if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || _isAddrLocalGM(name))) { localKind.set(name, 'addr'); continue }
+    if (writes.has(name)) {
+      let fk = null
+      for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
+      if (fk === 'read') return null   // loop-carried scalar — not a dependence-free map
+      localKind.set(name, 'lane')
+    } else localKind.set(name, 'invariant')
+  }
+
+  const newLanedLocals = new Map(), extraLocals = []
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null, aosPixelStride: 1, pureFuncMap: null, inlineDepth: 0, constLocals: null }
+  const lifted = []
+  for (const s of body) {
+    const r = liftStmt(s, ctx)
+    if (ctx.fail) return null
+    if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+  }
+  if (!lifted.length) return null
+
+  const id = freshIdRef.next++
+  const simdBoundName = `$__simd_bound${id}`, simdBrkLabel = `$__simd_brk${id}`, simdLoopLabel = `$__simd_loop${id}`
+  const info = LANE_INFO[laneType], lanes = info.lanes, mask = -lanes
+  const boundExpr = boundLocal ? ['local.get', boundLocal] : bound
+  const boundSetup = ['local.set', simdBoundName,
+    ['i32.add', ['local.get', incVar],
+      ['i32.and', ['i32.sub', boundExpr, ['local.get', incVar]], ['i32.const', mask]]]]
+  const simdBlock = ['block', simdBrkLabel,
+    ['loop', simdLoopLabel,
+      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
+      ...lifted,
+      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
+      ['br', simdLoopLabel]]]
+  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
+  const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) ---------
 //
 // JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
@@ -7213,6 +7444,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
         ?? tryButterfly(node, fnLocals, freshIdRef)
+        ?? tryGeneralMap(node, fnLocals, freshIdRef, bl)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
       // affine loops and would otherwise mask "didn't vectorize"). Diagnostic only.

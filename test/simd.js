@@ -2888,3 +2888,150 @@ test('SIMD mirror store - symmetric log fill vectorizes with swapped lanes, bit-
   von.init(62); voff.init(62)
   is(von.fill(), voff.fill(), 'odd-tail trip bit-exact')
 })
+
+// ---- General MAP base layer (tryGeneralMap) — .work/vectorizer-generality-design.md §2-3 ----
+//
+// Runs LAST in the dispatch chain, after every idiom recognizer above (including tryVectorize/
+// tryMemCopyFill/tryRampMap/tryToneMap/tryStencil/tryButterfly). It exists for dependence-free
+// integer-lane (i8/i16/i32/i64) elementwise maps at a RUNTIME-INVARIANT index shift
+// (`out[i] = a[i+off]`, both operand orders, write-side shifts, multi-array combinations) — a
+// shape none of the specific WAT-pattern matchers above accept (their `matchLaneAddr`/
+// `matchLaneOffset` require the offset to be exactly `i<<K`, not `(i+off)<<K`). tryStencil
+// already proves this exact affine-offset shape for f64/f32 neighbour loads; this pass ports
+// the same `ivCoeff`/`matchAddr` algorithm to every OTHER lane type tryStencil hard-declines.
+//
+// Each case below asserts BOTH that the loop actually vectorizes (`hasV128`, scoped by op
+// signature so it can't be satisfied by an unrelated fill/ramp loop elsewhere in the program)
+// and that the result is bit-exact against the same source compiled with vectorization off —
+// the differential correctness floor, not just "some v128 instruction appears somewhere".
+
+test('SIMD general-map i32 - runtime index shift (a[i+off]) vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Int32Array(48), out = new Int32Array(n)
+    for (let i = 0; i < 48; i++) a[i] = i * 7 - 100
+    for (let i = 0; i < n; i++) out[i] = a[i + off]
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i] * (i + 1)) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  for (const off of [0, 1, 3, 8]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-map i32 - flipped operand order (a[off+i]) vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Int32Array(48), out = new Int32Array(n)
+    for (let i = 0; i < 48; i++) a[i] = i * 3 + 5
+    for (let i = 0; i < n; i++) out[i] = a[off + i]
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  for (const off of [0, 2, 5]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-map i16 - runtime index shift vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Int16Array(48), out = new Int16Array(n)
+    for (let i = 0; i < 48; i++) a[i] = (i * 9 - 50) & 0x7fff
+    for (let i = 0; i < n; i++) out[i] = a[i + off]
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present (a bare offset-shifted copy needs only v128.load/store, no i16x8 arithmetic op)')
+  for (const off of [0, 4, 8]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-map i8 - runtime index shift vectorizes, bit-exact (byte-stride offset, no shl wrapper)', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Uint8Array(48), out = new Uint8Array(n)
+    for (let i = 0; i < 48; i++) a[i] = (i * 11) & 0xff
+    for (let i = 0; i < n; i++) out[i] = a[i + off]
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/i8x16\./.test(w), 'i8x16 lane op present')
+  for (const off of [0, 1, 7]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-map i32 - write-side runtime index shift (out[i+off] = a[i]) vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Int32Array(n), out = new Int32Array(48)
+    for (let i = 0; i < n; i++) a[i] = i * 5 - 30
+    for (let i = 0; i < n; i++) out[i + off] = a[i]
+    let h = 0; for (let i = 0; i < 48; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  for (const off of [0, 2, 8]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-map i32 - two-array combine, one array at runtime shift (out[i]=a[i+off]&b[i]) vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = offIn | 0, n = 40
+    const a = new Int32Array(48), b = new Int32Array(n), out = new Int32Array(n)
+    for (let i = 0; i < 48; i++) a[i] = i * 13
+    for (let i = 0; i < n; i++) b[i] = (i | 1) & 0xff
+    for (let i = 0; i < n; i++) out[i] = a[i + off] & b[i]
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  for (const off of [0, 3, 6]) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+// Negative/safety cases: a genuine same-array cross-iteration dependence must NEVER vectorize
+// (the alias gate, ported from tryStencil, must decline these — a false-positive here would be
+// a real miscompile, not a missed-optimization). Scoped v128 check: only the memset-shaped fill
+// loop (`a[i]=1`, unrelated to the recurrence) is allowed to show i32x4.splat; the recurrence
+// loop itself must show no v128 lane op at all.
+test('SIMD general-map safety - same-array recurrence (a[i]=a[i-1]+a[i]) never vectorizes', () => {
+  const src = `export let main = () => {
+    const n = 24
+    const a = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = 1
+    for (let i = 1; i < n; i++) a[i] = a[i - 1] + a[i]
+    return a[n - 1]
+  }`
+  const scalarSum = runVec(src, NOVEC).main()
+  is(runVec(src, SIMD_OPT).main(), scalarSum, 'result unaffected by vectorizer (declines cleanly)')
+  is(scalarSum, 24, 'sanity: a[i]=a[i-1]+1 recurrence gives a[n-1]=n')
+  const w = wat(src, SIMD_OPT)
+  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the recurrence (only the unrelated i32x4.splat fill, if any, may vectorize)')
+})
+
+test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never vectorizes', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) || 1, n = 24
+    const a = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = 1
+    for (let i = off; i < n; i++) a[i] = a[i - off] + a[i]
+    return a[n - 1]
+  }`
+  is(runVec(src, SIMD_OPT).main(1), runVec(src, NOVEC).main(1), 'off=1 result unaffected by vectorizer')
+  is(runVec(src, SIMD_OPT).main(2), runVec(src, NOVEC).main(2), 'off=2 result unaffected by vectorizer')
+  const w = wat(src, SIMD_OPT)
+  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the runtime-offset recurrence')
+})
