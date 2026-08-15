@@ -16790,3 +16790,156 @@ and confirmed correct at `_factStore`'s own top level) to find the exact
 (container, field, value) triple that becomes the untagged NaN — the same
 "root the CONTAINER, walk ONE level deeper" refinement `e640e77a`'s and the
 `b33d603e`'s own prior sessions used to close their respective walls.
+
+## §CompileSession Slice B region-live regression -- forensic session 2 (swap-fix2):
+## corrected the take-1 ring-buffer methodology's own bug (debug log buffer
+## allocated INSIDE a round instead of durably before round 1's mark, so it was
+## itself silently reclaimed/overwritten -- explains why take-1's dump degenerated
+## into garbage past record #4676), re-ran breadcrumbs against the REAL arr row
+## with a durable buffer; SET/MAP-arm and ARRAY-arm slot relocations both verified
+## type-consistent (no number<->pointer flips) across every captured element write
+## (17192 + 4109 records, two separate instrumented builds) -- write site STILL not
+## found; ONE well-precedented, independently-justified hardening landed dormant-
+## safe (regionArmSetMap idempotency self-map, mirroring __region_relocate_props'
+## own established fix) after confirming empirically it does NOT close the arr wall
+## alone; banked, third dedicated session on the Slice-B swap regression without a
+## confirmed write site (2026-08-15)
+
+Worktree `arr-dig` off `b8f802b8` (main tip), branch `swap-fix2-2026-08-15`. Task:
+execute the b8f802b8 ledger's own recorded next step -- repeat the WAT-breadcrumb
+method against the REAL `arr` row (not `math`), instrumenting regionArmSetMap/
+__region_relocate_props' value-relocation path one level past the prior session's
+own OBJECT-arm stop point (schema 55/_factStore confirmed correct).
+
+**Reproduced the wall.** REGION_HOOKS_ACTIVE hand-flipped true, region-live kernel
+built (`names:true` bytes, `resolveSelfhostBuild()` defaults). `arr` (kernel-
+parity's CORPUS.arr) fails identically 3/3 at O0/O2/O3: `Unknown op: *, current
+AST: ["*","if1_3",[null,2]]` -- byte-for-byte the same signature the b8f802b8
+session pinned.
+
+**Methodology: source-level WAT-template instrumentation instead of raw
+wasm2wat/wat2wasm hex-splicing.** Rather than hand-editing the DECOMPILED wasm
+text (the prior session's method -- slow, address-hunting-heavy), this session
+added a `__dbg_log` stdlib helper directly to module/core.js's WAT template
+source (a 1 MB ring buffer of 32-byte records: kind/off/before/after/mark),
+exported two mutable globals (`__dbg_buf`/`__dbg_n`), and called it from inside
+regionArmArray/regionArmSetMap's own relocation loops -- then rebuilt via the
+NORMAL self-host build pipeline (no hex surgery). Faster iteration (~5 min per
+rebuild vs. per-byte-offset hunting), at the cost of a real heisenbug risk (the
+added code shifts heap layout). Confirmed the risk is real but manageable: take-1
+(debug buffer lazily $__alloc'd INSIDE `__dbg_log`, which only ever fires from
+WITHIN a round) shifted the failure to a raw `unreachable` trap inside
+`__alloc`<-`__coll_order`<-`__region_copy_rec` -- the buffer itself was ephemeral
+relative to whichever round first triggered logging, so a LATER round's own
+churn silently reclaimed/overwrote it, producing garbled records past #4676.
+Fixed by moving the buffer's $__alloc call INTO `__region_mark` itself, BEFORE
+the mark value is read off `$__heap` -- so the buffer sits below every mark ever
+taken (durable forever, matching the ARRAY arm's own "compiler-internal registry"
+idiom). Take 2 (and the subsequent ARRAY-arm build) reproduced the EXACT SAME
+`Unknown op: *` signature as the unmodified kernel -- confirms the corrected
+methodology does not perturb the bug away, unlike take 1.
+
+**Hypothesis 1 (regionArmSetMap missing the idempotency self-map
+`__region_relocate_props` already carries) -- tested directly, REFUTED.**
+Static-read finding: `__region_relocate_props`'s ephemeral branch self-maps its
+own freshly-minted `$out` in `$memo` ("Idempotency self-map... fixes... the
+[1n]/O1 durable-ARRAY off-16 heisenbug" per that function's own comment) --
+`regionArmSetMap` (layout-kinds.js) does NOT have the matching self-map, only
+the standard original-bits->$out entry. Without it, a second caller that
+re-derives `$out` (not the original bits) -- e.g. a durable receiver's off-16/
+`$__dyn_props` slot a DIFFERENT relocation pass already wrote the final address
+into -- would memo-MISS and decode `$out` (a T-relative, not-yet-physically-
+landed staging address) as if it were a live pointer, reading un-landed garbage
+as its own header. Added the matching self-map, rebuilt, reran `arr` x3: FAILS
+IDENTICALLY, same signature, same 3/3. This specific asymmetry is not (solely)
+the mechanism for this row's corruption.
+
+**Empirical breadcrumb data: SET/MAP-arm and ARRAY-arm relocations both verified
+internally consistent.** Two instrumented rebuilds (SET/MAP-arm: 4109 records,
+872 key relocations + 512 value relocations + 936 memo-hits + 1789 fresh visits;
+ARRAY-arm: 17192 records, 7717 durable-slot + 879 ephemeral-slot writes) --
+every captured `off` fingerprint cross-checks consistently against its own
+`before`/`after` bits (low-32 offset always matches the logged container
+address), and a before/after NaN-shape-flip scan (a plain number becoming a
+NaN-boxed pointer, or vice versa, across relocation -- the one gross corruption
+signature detectable without full tag-decode ground truth) found ZERO flips
+across all 17192+4109 logged element writes in either arm. This is a genuine
+negative result, not merely "didn't look": both arms' OWN captured relocation
+math is sound for the arr row. The naive "top-16-bits === 0x7ff8 is the only
+valid NaN-prefix" tag check from the take-1 dump (which showed EVERY SET/MAP
+record as "BAD-TAG") was itself wrong -- 0x7ff8's low nibble (bit 51-48) is
+PART of the per-kind TAG field (SET/MAP's own tag, not a universal "valid
+pointer" marker), so that specific check was a false-positive generator, not a
+real corruption signal; discarded in favor of the flip-detector above.
+
+**Narrows the remaining surface, does not close it.** With SET/MAP-arm and
+ARRAY-arm slot relocation both cleared by direct evidence, and the OBJECT arm's
+own top-level walk on `ctx.facts` (schema 55, 14 fields) already confirmed
+correct by the b8f802b8 session's own breadcrumb, the remaining unverified
+surface for the arr row specifically is: (a) OBJECT arm's durable/ephemeral
+dyn-props sidecar path (`durableDynProps`/`ephemeralDynProps`, layout-kinds.js
+regionArmObject) -- structurally mirrors ARRAY's own (already-clean) version
+with one extra `$__heap_start` static-segment guard, never independently
+breadcrumbed this session; (b) `__region_relocate_props`'s OWN key-side
+relocation loop (module/core.js) -- also never independently breadcrumbed this
+session (only its SIBLING arm, regionArmSetMap, was); (c) CLOSURE/TYPED/BUFFER
+arms, entirely untouched. The corrupted value itself ("if1_3", a synthesized
+label-shaped string occupying an AST node's operand slot where a nested
+expression node was expected) reads as WATR-lowering-internal data aliasing
+into the SOURCE ast's own memory -- consistent with a stale-pointer/aliasing
+class defect, but the exact write site was not isolated this session either.
+
+**Disposition.** `regionArmSetMap`'s idempotency self-map IS landed (layout-
+kinds.js, ~19 lines) as an independently-justified, dormant-safe hardening --
+the SAME fix its sibling function already carries for the SAME documented
+reasoning, verified NOT to regress anything and NOT claimed to close this
+session's own wall. REGION_HOOKS_ACTIVE=false at commit (only hand-flipped in
+this now-deleted scratch worktree, both for the debug builds and the final
+verification rebuild). No other src/ changes.
+
+Full dormant gate suite, re-verified against a clean rebuild carrying ONLY the
+landed diff: `npm test` 3451 total / 3440 pass / 0 fail / 11 skip (5 more skips
+than the `.work/research.md` baseline's own recurring "3451/3445/0/6" figure --
+isolated to 5 pre-existing `setTimeout`/`setInterval`/`clearTimeout` real-timer
+tests, environment/Node-version-sensitive, unrelated to this diff -- zero
+FAILURES either way); self-build ×2 CONVERGED byte-identical SHA-256
+(`2c827deb2fa25ae0bdbba79401c76455a28eb8a7bac906a8e41170d6a613fd75`); dormant
+kernel-oracle 13/13 ×3 (538 assertions each rep); dormant kernel-parity 33/33
+assertions ×3 (3/3 test cases, O0/O2/O3); `test:wasm` 2749 total / 2743 pass /
+0 fail / 6 skip -- exact match to the ledger's own recurring baseline. A
+pre-existing, unrelated environment hazard was hit and worked around during
+this verification, not caused by this diff: `test/bench-c.js`'s
+`strbuild.c` sanitized-build gate hung indefinitely (no timeout on the
+`execFileSync('clang', ...)` build step, only on the run step) under this
+machine's Homebrew LLVM `clang` at `/opt/homebrew/opt/llvm/bin/clang`;
+confirmed hang is toolchain-specific (reproduced standalone, killed, then
+confirmed CLEAN under Xcode's `/usr/bin/clang` instead) -- gate runs used
+`/usr/bin` prioritized in `PATH`, a pure environment workaround, no code
+implicated.
+
+Region-live kernel-oracle, re-verified against a CLEAN (non-debug-instrumented)
+region-live rebuild carrying the landed fix: still **7/13 pass, 6/13 fail, ×3,
+deterministic, identical signature** (`Unknown op: *, current AST:
+["*","if1_3",[null,2]]`) -- byte-for-byte the SAME count and signature as the
+unmodified b8f802b8 kernel. Confirms directly (not inferred) that the landed
+hardening is inert for this regression. jessie/watr/jzify-entry region-live and
+the ns-round acceptance chain were NOT attempted -- both are explicitly
+conditioned on a green region-live kernel-oracle first (this task's own
+instruction), never reached; forcing them through a known-broken region-live
+kernel would produce a meaningless result, the same reasoning `ce3070eb`'s own
+Slice-D session already applied. The jz×jz GOAL GATE (gated two levels deeper,
+behind the ns-round merge) was likewise not attempted. Third dedicated session
+on the exact Slice-B swap regression without a found-and-fixed write site
+(following b8f802b8's own session and 74286cf8's Slice-D session) -- banked per
+this campaign's own repeated, explicit precedent rather than landing an
+unconfirmed fix.
+
+Concrete next step for whoever picks this up: breadcrumb `__region_relocate_props`'s
+key-side loop and regionArmObject's durableDynProps/ephemeralDynProps blocks
+specifically (the two remaining un-instrumented arms touching object/dyn-props
+data), using THIS session's corrected methodology (debug buffer allocated
+durably inside `__region_mark`, before the mark read -- NOT lazily inside
+whatever function first calls `__dbg_log`, which is silently ephemeral and gets
+reclaimed) -- take-1's buffer-placement bug cost this session one full rebuild
+cycle and should not be re-discovered by the next one.
+
