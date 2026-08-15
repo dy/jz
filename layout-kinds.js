@@ -420,25 +420,6 @@ export function regionArmSetMap() {
           (local.set $outPhys (call $__mkptr (local.get $t) (i32.const 0) (local.get $newOff)))
           (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
           (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-          ;; Idempotency self-map (swap-fix2-2026-08-15 forensic — the SAME fix
-          ;; __region_relocate_props already carries, "the [1n]/O1 durable-ARRAY
-          ;; off-16 heisenbug" precedent): the memo above only ever records
-          ;; ORIGINAL bits -> $out. $out is a T-relative STAGING address — not
-          ;; yet physically valid to dereference until __region_exit's closing
-          ;; memory.copy lands it. Every OTHER relocating arm in this dispatch
-          ;; (ARRAY, OBJECT via __region_relocate_props, the durable-dyn-props
-          ;; sidecar paths) self-maps its own freshly-minted $out so a SECOND
-          ;; caller that re-derives $out (not the original bits) hits a safe
-          ;; memo HIT instead of decoding $out as a live pointer and reading
-          ;; whatever un-landed bytes currently sit at that not-yet-valid
-          ;; address as its own header. SET/MAP was the one region-arena arm
-          ;; that never received this hardening when Heap-kind registry Slice 2
-          ;; added it elsewhere. Landed as an independently-justified, dormant-
-          ;; safe closure of a real memo asymmetry (verified empirically NOT to
-          ;; be the sole cause of this session's kernel-oracle arr regression
-          ;; — see .work/research.md's own entry for this session — but a
-          ;; genuine gap regardless, same reasoning as its sibling fix).
-          (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $out)) (i64.reinterpret_f64 (local.get $out))))
           ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
           ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical,
           ;; PROVIDED $n is the real live count. Chained-region-round fix (.work/research.md §Region

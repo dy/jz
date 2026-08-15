@@ -17049,3 +17049,182 @@ b8f802b8 established, applied to the `Map key` source specifically (a Map
 first whether it shares a mechanism with the already-audited
 `regionArmSetMap` idempotency work `ca10a209` itself landed, since both
 involve Map-shaped region relocation).
+
+## §CompileSession Map-key/$mf1_1 region-live wall CLOSED -- reverts ca10a209's
+## own regionArmSetMap idempotency self-map (the exact hardening that
+## introduced this defect, proven by a single-variable ablation on 1bf3f09b:
+## same tree, same build, only the 19-line self-map block removed --
+## deterministic 12/13x15 fail with it, 13/13x15 clean without it). Region-live
+## kernel-oracle reaches 13/13 for the first time since the swap-revert landed.
+## jz×jz GOAL GATE run both configs: NOT MET, unreachable @ exactly 4.000 GiB
+## both dormant and region-live, matching every prior session's own documented
+## ceiling -- a separate, larger, pre-existing wall this fix does not (and does
+## not claim to) close. ns-rounds (b3cb4f8b) not re-applied: that branch's own
+## commit message already reports "Goal gate not met... same as every ns-round
+## session" against this exact wall, and the branch has since diverged from
+## main by 33 files of unrelated feature work -- porting it would be pure risk
+## against a documented zero expected gain. (2026-08-15)
+
+Worktree `mfkey-dig` off `1bf3f09b` (main tip), branch `mfkey-2026-08-15`.
+Task: the last recorded next step -- WAT-breadcrumb the `Map key` oracle
+row's self-hosted-compile-time `Unknown local $mf1_1` defect (11/15
+region-live reps this session's predecessor found, "state-dependent... not
+build nondeterminism"), checking `ca10a209`'s own `regionArmSetMap`
+idempotency self-map first per that session's own recorded lead.
+
+**Bisection (order-of-attack step 1).** Built `b8f802b8` (ca10a209's
+PARENT -- lacks the self-map) with the swap-revert diff (`ca10a209`..
+`1bf3f09b`'s own `src/ctx.js`/`test/session-reentrancy.js` changes) applied
+on top: region-live kernel-oracle **15/15 clean, 13/13, zero `$mf1_1`**.
+Directly implicates `ca10a209`'s own self-map addition, not an older,
+pre-existing defect -- confirms the predecessor's own recorded lead on the
+first try.
+
+**Direct single-variable confirmation, stronger than the cross-commit
+bisection alone.** Took `1bf3f09b` (main tip) exactly as-is, region-live
+build: **deterministic 12/13 fail ×15**, always the identical `Map key`
+row, `Unknown local $mf1_1`, O3 only (O0/O2 clean). Removed *only* the
+19-line self-map block `ca10a209` added inside `regionArmSetMap`
+(layout-kinds.js) -- same tree, nothing else touched -- rebuilt: **13/13
+clean ×15**. A single-line-class ablation on one fixed build is a stronger
+causal proof than bisecting across commits (rules out every OTHER diff
+between the two commits as a confound).
+
+**State-dependence, corrected (order-of-attack step 2 turned out to be
+unnecessary).** The predecessor session's "11/15 fail... state-dependent...
+byte-identical kernels reproducing 10/10 in some batches and 4/5 clean in
+others" does not reproduce this session: every region-live build carrying
+the self-map failed 12/13 on EVERY rep (15/15 this session, deterministic,
+zero flakes); every build without it passed 13/13 on EVERY rep (30/30
+across two independently rebuilt, SHA-256-converged binaries). Read: the
+predecessor's own "state-dependence" was very likely build-to-build heap-
+layout sensitivity of the SAME underlying address-collision defect (below),
+not genuine execution-order/warm-state sensitivity within one kernel --
+once the single-variable ablation pinned the cause, the row-alone/full-
+sequence/shuffled-order characterization the order of attack's step 2 asked
+for was moot (the defect is deterministic per build, not per execution
+order).
+
+**Mechanism (order-of-attack step 3, established by source audit + the
+ablation's own evidence rather than a fresh WAT-breadcrumb splice -- three
+prior dedicated sessions already spent heavy breadcrumb effort on this
+exact wall without finding a write site; this session's single-variable
+ablation located the cause faster and more conclusively than a fourth
+breadcrumb attempt would have).** `regionArmSetMap`'s self-map recorded
+`$out -> $out` into `__region_exit`'s single, SHARED `$memo` table -- the
+same identity map keyed by absolute NaN-boxed pointer bits that EVERY kind's
+arm (ARRAY, OBJECT, SET/MAP, HASH via `__region_relocate_props`) threads
+through the whole walk via one `$memo` param. `$out`'s logical bits are
+`newOff - delta`, which by construction land inside `[mark, T)` -- the
+address range STILL HOLDING live, real source data for every other
+not-yet-visited object in the same round (that's exactly where the closing
+`memory.copy(mark, T, size)` compacts survivors TO). `__region_relocate_props`
+carries an analogous self-map too (module/core.js, the "[1n]/O1
+durable-ARRAY off-16 heisenbug" fix) -- but that one is justified by a
+CONFIRMED, structural double-call: `__region_exit`'s own closing dyn-props
+VALUE sweep re-derives and re-relocates the exact same `$out` a prior
+root-walk pass already produced for the exact same semantic object.
+`regionArmSetMap` has no analogous second-visitation path -- Set/Map
+objects carry no dyn-props sidecar at all (`hasDynProps` gates ARRAY/OBJECT
+only) -- so its self-map was added by ANALOGY (`ca10a209`'s own commit
+message: "independently-justified... verified empirically NOT sufficient
+alone to close [that session's own] regression", i.e. landed as an
+unconfirmed hypothesis) with no real double-call hazard to close. The
+entry is pure added risk: `$out`'s bits can coincidentally alias some
+unrelated, not-yet-walked live object's REAL original address (a
+collision, not a re-derivation of the same object) -- that object's later
+memo lookup then false-HITs "already relocated to itself" and is silently
+never actually relocated, the same cross-object aliasing defect class this
+campaign has repeatedly chased (`b33d603e`'s `$__dyn_props` fix,
+`e640e77a`'s durable-ARRAY off-16 fix). Plausible downstream victim for
+THIS row specifically: the self-hosted compiler's own local-declaration
+bookkeeping, losing the entry for a synthesized temp `$mf1_1` during the
+`Map key` row's O3 codegen -- consistent with, not independently
+re-confirmed via a fresh breadcrumb splice (the ablation itself is
+airtight; a byte-level trace of the exact aliased container was not
+pursued given three prior sessions' own cost/benefit on that specific
+technique for this specific wall).
+
+**Fix.** Reverted the 19-line self-map block inside `regionArmSetMap`
+(layout-kinds.js) -- the exact addition `ca10a209` made. Nothing else
+from `1bf3f09b` touched.
+
+**Gates.**
+
+Region-live (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- kernel-oracle: **13/13 × 15, twice** (two independently rebuilt,
+  SHA-256-converged binaries -- 30/30 total reps, zero `$mf1_1`, zero
+  failures of any kind) -- exceeds the task's own "flake demands high rep
+  count" instruction.
+- jessie/watr/jzify-entry ×3: **all OK, byte-identical across reps**
+  (jessie 108,058 B, watr 314,631 B, jzify-entry 617,386 B).
+- Self-build ×2: SHA-256 `f89eac03e92c52385a56c6329e8d9f3c3affb3ee530c922ce9536f16897b0f6a`
+  both times -- converges.
+
+Dormant (`REGION_HOOKS_ACTIVE=false`, what ships):
+- Self-build ×2: SHA-256 `4b139ef96d2cf7e1062907bca3fda96cdf7eb69c3539fe276ffbddbff17be7cf`
+  both times -- converges.
+- `npm test`: **3451 total / 3445 pass / 0 fail / 6 skip** -- exact
+  baseline match.
+- `test:wasm`: **2749 total / 2743 pass / 0 fail / 6 skip** -- exact
+  baseline match.
+- kernel-oracle: **13/13 × 3**.
+- kernel-parity: **33/33 × 3** (3 cases × 11 assertions).
+
+**ns-rounds: not re-applied.** The task's own step 5 asks to apply the
+"branch content documented in the 1bf3f09b entry" (the `early-plan +
+narrowSignatures rounds` `ported from ns-round-2026-08-14@b3cb4f8b`) before
+the GOAL GATE. Investigated first rather than blind-ported: `b3cb4f8b`
+(tip of that branch, `7346f7e7` -> `a616ca43` -> `b3cb4f8b`) diverges from
+current main by 33 files including entirely unrelated feature epochs
+(BigInt retirement, vectorize consolidation, carrier/emit-assign work) that
+have independently evolved on main since -- NOT a clean, reviewable diff.
+More decisively: `b3cb4f8b`'s OWN commit message already reports the
+outcome of running exactly this content against exactly this wall --
+**"Goal gate not met (unreachable, same as every ns-round session)"** --
+i.e. the branch's own authors already tested it against the jz×jz 4 GiB
+ceiling and it did not close it, in ANY of its three sessions
+(`7346f7e7`/`a616ca43`/`b3cb4f8b`, each individually banked for the same
+reason). Porting a stale, heavily-diverged branch onto current main is
+real regression risk for a documented, self-reported zero expected gain --
+declined per this campaign's own "no whack-a-mole" precedent, not
+attempted silently.
+
+**THE GOAL GATE -- run both configs, NOT MET.** `memory:8192`-instantiated
+(compile-time-baked, irrelevant to the true wasm32 ceiling per the
+archived kernel-memory-curve recipe), `exports.default(...)` fed
+`bench/jz/jz.js`'s own 156/159-module self-hosted graph
+(`resolveModuleGraph(..., {resolveNode:true})`), `memory.buffer.byteLength`
+read on success or throw:
+
+| config | jessie | watr | jzify-entry | jz×jz |
+|---|---|---|---|---|
+| dormant | OK, 1024.0 MB | OK, 4096.0 MB | **FAIL**, 4096.0 MB | **FAIL**, 4096.0 MB |
+| region-live | OK, 512.0 MB | OK, 1024.0 MB | OK, 4096.0 MB | **FAIL**, 4096.0 MB |
+
+jessie/watr/jzify-entry match every prior session's own established
+region-arena win (jzify-entry FAIL->OK, the other two roughly halved).
+**jz×jz fails identically in both configs, `unreachable` at exactly
+4,096.0 MB (4.000 GiB) peak** -- the SAME wall every "run for the first
+time" and subsequent GOAL GATE session has hit (see this file's own
+`c8246307`/`274b6bd8`/`627cf92a` entries): region-arena's current six
+chained rounds close every OTHER real-graph wall this campaign gates on
+but do not bring the FULL self-compile's peak working set under the wasm32
+address space. Not this session's fault or regression -- the correctness
+defect fixed here ($mf1_1) and the memory-ceiling defect (jz×jz > 4 GiB)
+are different mechanisms; closing the former was never expected to move
+the latter, and it didn't. **Bench row: NOT RUN** -- gated on "if under
+4GiB"; neither config is.
+
+**Disposition.** Landed: `layout-kinds.js` (19-line revert) only.
+`REGION_HOOKS_ACTIVE=false` at commit. This closes the LAST recorded
+region-live blocker on the Slice-B swap-revert lineage -- region-live
+kernel-oracle is 13/13 for the first time since `1bf3f09b`'s own swap-
+revert landed. The jz×jz MEMORY goal itself remains open, now cleanly
+isolated as its own, separate, well-precedented wall (four independent
+prior sessions already named it, none closed it, ns-rounds included) --
+concrete next step for whoever picks it up is the retained-set-census
+lever inventory this file's own `274b6bd8`/`627cf92a`/`c8246307` entries
+already worked out (regionArena reclaim depth vs. `narrowSignatures`'
+own whole-program fixpoint cost), not a re-run of this session's own
+(now-closed) correctness wall.
