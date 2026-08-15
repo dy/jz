@@ -16617,3 +16617,176 @@ result. The ns-round branch's two round-widening commits (`7346f7e7`,
 region-live wall (`boolconst`/`unreachable`, a DIFFERENT signature from
 either hypothesis tested here) is unrelated to and unaffected by this
 session's findings.
+
+## §CompileSession Slice B region-live regression — forensic: HALF-BISECTION
+## VERDICT DEFINITIVE (the `const`→`let` identity swap alone reproduces the
+## regression 7/13×3, deterministic, exact `"if1_3"` signature; `facts`
+## absorption alone is fully clean 13/13×1) — WAT-breadcrumb evidence confirms
+## a REAL memory-safety corruption (an untagged, non-pointer NaN reaching
+## `__region_copy_rec`'s dispatch and falling through every kind arm to its
+## final `unreachable`), narrowed to `compile()`'s own region rounds
+## (`optimizeTail`'s separate watr-level rounds ruled out directly, not
+## inferred) — exact write site NOT found; banked per this campaign's own
+## repeated precedent, no fix attempted without a confirmed mechanism
+## (2026-08-15)
+
+Worktree `swap-dig` off `ce3070eb` (main tip), branch `swap-fix-2026-08-14`
+(deleted at session end, no diff ever landed there). Task: root-cause
+`74286cf8`/`ce3070eb`'s own banked finding — Slice B (`2a82680d`, the ONE
+commit bundling both `getFactStore()`'s `_factStore` absorption onto
+`ctx.facts` AND the `const ctx`→`let ctx` identity-swap conversion) regresses
+kernel-oracle region-live from 13/13 to 6-7/13, `Unknown op: ++`/`*`,
+`current AST: [...,"if1_3",...]` — an AST-corruption class neither Hypothesis
+1 (wholesale-`ctx` root) nor Hypothesis 2 (union-field root) closed.
+
+**Half-bisection (cheap, run first per the task's own instruction) —
+DEFINITIVE.** Built two isolated variants off `ce3070eb`, each reverting
+exactly one half of Slice B's bundled diff, each hand-flipping
+`REGION_HOOKS_ACTIVE` and run through `test/kernel-oracle.js` region-live:
+
+- **swap-only** (`let ctx` identity-swap KEPT; `facts` absorption REVERTED —
+  `_factStore` restored as its own module-scope singleton with
+  `resetFactStore()`, root arrays' `ctx.facts` replaced by a trailing,
+  non-destructured `getFactStore()` call, matching the exact pre-absorption
+  idiom `08b76ea9`'s own front.js doc describes): kernel-oracle region-live
+  **7/13 pass, 6/13 fail, ×3, byte-for-byte identical failure set and
+  messages every run** (`kernel parity: byte-identical WAT at O0: unreachable`,
+  O2/O3 `Unknown op: *, current AST: ["*","if1_3",[null,2]]`) — **GUILTY**.
+- **facts-only** (`facts` absorption KEPT — `ctx.facts` a real field, built
+  by `reset()`, `getFactStore()` returns it, root arrays destructure it back
+  exactly as main does today; identity-swap REVERTED — `export const ctx`,
+  `reset()` mutates all 21 fields in place including the new `ctx.facts =
+  createFactStore()` line, no final `ctx = {...}` reassignment):
+  kernel-oracle region-live **13/13, clean** — **INNOCENT**.
+
+This is the same verdict `74286cf8`'s own bisection already found informally
+("Slice A alone: clean; Slice B alone: reproduces") but now isolated to the
+EXACT sub-mechanism within Slice B's own two-part diff, with the facts-side
+mechanically proven inert rather than merely untested.
+
+**WAT-breadcrumb tracing (this campaign's own established method: `wasm2wat
+--enable-all` decompile of a `names:true` kernel, text-splice new exported
+debug globals + capture instructions at exact byte-offset-verified call
+sites, `wat2wasm --enable-all` reassemble, run — zero JS-source edits, so zero
+heisenbug risk from shifted allocation).** Two confirmed methodological
+pitfalls hit and fixed before any evidence could be trusted: (1)
+`wasm-objdump -d --section-offsets` reports SECTION-relative addresses, not
+the module-relative addresses V8's own `wasm-function[N]:0xOFFSET` stack
+traces use — cost one fully wrong function/offset attribution before
+cross-checking against the Export section's own `func[6145] "default"` entry
+exposed the mismatch; the flag must be OMITTED to match V8. (2) the
+swap-only variant's own `getFactStore()`-trailing edit (needed to keep its
+`ctx.facts`-free root arrays valid) is NOT behaviorally identical to real
+Slice B's `ctx.facts`-destructured root arrays — confirmed live: swap-only's
+own `math` row (`Math.sqrt(x*x+1)+Math.abs(x)`) traps at a genuinely
+DIFFERENT site (walking `_factStore`'s own 14-field schema, id 55, confirmed
+via a parsed dump of the kernel's `jz:schema` custom section) than real,
+unmodified Slice B's `arr` row — real Slice B's own named+region-live kernel
+(`swap-dig`, unmodified) does NOT fail on `math` at all (compiles clean) —
+so `math`'s breadcrumb trace is a bisection-artifact, not the true
+mechanism. Every subsequent breadcrumb ran against the REAL, unmodified
+`swap-dig` kernel, never the isolated variant, once this was caught.
+
+**Confirmed on the real kernel**: `arr` (`export let rev = (n) => { let a =
+[]; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i =
+a.length - 1; i >= 0; i--) s += a[i]; return s }`, kernel-parity's own
+`CORPUS.arr`) is the minimal real-kernel failing row, reproducing
+`Unknown op: *, current AST: ["*","if1_3",[null,2]]` identically at O0, O2,
+AND O3 — a JS-level thrown error (a "soft", decodable corruption), not the
+raw WASM trap the `math`-on-swap-only artifact produced.
+
+**Ruled out directly, not inferred: `optimizeTail`'s own watr-level region
+rounds (the separate `regionHooks` `scripts/self.js` passes to `watrTail`,
+walking watr's OWN internal WAT-IR tree, a completely different data
+structure from `ctx`).** Two independent lines of evidence: (a) `arr` fails
+identically at O0, where `resolveWatrOpts` returns `false` (`cfg.watr` off at
+level 0) and `watrTail`'s own early-out (`if (!cfg.watr) return false`,
+`src/optimize/watr-tail.js:34`) means `watOptimize` — and therefore
+`optimizeTail`'s own `regionHooks` — never runs at all; (b) built a THIRD
+variant (`watr-only-off`, off `ce3070eb`, unmodified except
+`optimizeTail`'s own `regionHooks: undefined` forced unconditionally, every
+OTHER `REGION_HOOKS_ACTIVE`-gated call site — `front()`/`emitIR()` —
+untouched) and reproduced `arr`'s exact failure with `optimizeTail`'s region
+rounds entirely disabled. Both independently prove the corruption originates
+in `front.js`/`compile/index.js`/`plan/index.js`'s OWN region rounds (the
+ones directly rooting `ctx`), not in watr's separate optimizer-internal
+mechanism — narrowing, by elimination, to the three sites `compile()` itself
+owns (scan-round, AFE round-batch, Slice-3 exit) plus `plan()`'s five
+plan-tail rounds and `front()`'s own boundary. The stack trace captured on
+the (artifact) `math` repro (`closure2939` → `m123_index$compile` →
+`__region_copy_rec` ×4 nested) is consistent with one of `compile()`'s own
+three round-exit call sites specifically (not `plan()`'s or `front()`'s,
+which would show `m5_plan$plan`/`frontHalf` frames instead) — not
+independently re-confirmed on the real `arr` repro before the session's time
+budget closed, so stated as consistent-with, not proven-for, the real
+failure.
+
+**Genuine memory-safety evidence (not a logic bug — a real corrupted read),
+gathered on the swap-only artifact, method valid even though that specific
+row's root cause differs from `arr`'s**: text-spliced debug globals into
+`__region_copy_rec`'s own final `unreachable` (the fallback after EVERY kind
+arm — bigint/string/array/setmap/object/hash/typed/buffer/external/closure —
+fails to match) captured the exact raw i64 bits reaching it:
+`0x7ff781107feca510` — a genuine IEEE-754 NaN (`Number.isNaN` true) whose top
+16 bits (`0x7ff7`) are ONE BIT SHORT of jz's own NaN-boxed prefix
+(`0x7ff8`, `LAYOUT.NAN_PREFIX`) — not a validly-tagged jz pointer of ANY
+kind, not the canonical negative-NaN early-return pattern
+(`0xFFF8000000000000`) either. A second debug splice at the OBJECT arm's
+durable branch (`layout-kinds.js` `regionArmObject`, `$__schema_tbl[aux]`-
+driven slot count) captured the LAST correctly-resolved object before the
+trap: `aux=55, n=14, off=0x181cd0` — cross-checked against a hand-written
+parser for the kernel's own `jz:schema` custom section (a length-prefixed
+dump of every registered schema in registration order, LEB128-encoded,
+consumed exactly to the section's own declared end — `759` schemas total)
+confirming schema #55 IS `_factStore`'s own real 14-field shape
+(`programFacts, bodyFacts, bindingUses, ...` exactly matching
+`createFactStore()`'s literal) — i.e. THIS specific object-arm walk was
+CORRECT; the corruption enters one level deeper, while relocating one of
+`_factStore`'s 14 Map/WeakMap-typed fields' own contents. Confirms the
+corruption is a genuine cross-object memory alias / out-of-bounds read
+(matching the campaign's own established "durable receiver's ephemeral
+child gets silently reclaimed" defect CLASS, e.g. `b33d603e`'s
+`$__dyn_props` fix, `e640e77a`'s durable-ARRAY off-16 fix) — not merely a
+logically-wrong-but-safe value.
+
+**Why no fix was attempted.** The breadcrumb evidence pins the CLASS of bug
+(a durable-vs-ephemeral aliasing defect inside `__region_copy_rec`'s
+recursive walk, entered via one of `compile()`'s own three round-exit sites)
+but not an exact WRITE SITE on the real `arr` failure — the `math`
+breadcrumb's own precise (aux, n, off) triple belongs to a DIFFERENT,
+bisection-artifact row, not `arr`'s real corruption, and re-running the same
+splice technique against `arr`'s own (non-trapping, JS-decodable) failure
+needs a differently-shaped breadcrumb (capturing at the SET/MAP arm's own
+entry-value relocation, one level past where `math`'s trap happened) that
+this session's time budget did not reach. Every candidate the task's own fix
+discipline named (allocate the session record outside region coverage;
+durable-heal the `ctx` cell; relocate-then-rebind at every exit) either does
+not apply given confirmed facts (`ctx` itself is NEVER a region root in any
+of the nine call sites, in ANY variant tested — wholesale-rooting it was
+Hypothesis 1, already refuted with a WORSE, NEW failure mode; every
+individual subtree INCLUDING `ctx.facts` already IS destructure-rebound at
+every region-exit, matching the "relocate-then-rebind" pattern already) or
+would be a blind guess without the exact write site this session did not
+reach. Landing an unconfirmed fix here would repeat exactly the
+"whack-a-mole" pattern `b3cb4f8b`'s own decision point named and this
+campaign has explicitly tried to stop — banked instead, per that same
+precedent (this is the fourth dedicated session on region-live regressions
+in this compile-session/region-arena territory without closing one via a
+found-and-fixed write site, following `7346f7e7`/`a616ca43`/`b3cb4f8b`'s own
+ns-round wall and `ce3070eb`'s own Slice-D session).
+
+**Disposition.** No `src/` changes — `main` is byte-for-byte unchanged at
+`ce3070eb`. `REGION_HOOKS_ACTIVE` was never touched on `main` (only
+hand-flipped inside now-deleted scratch worktrees, per every prior session's
+own precedent). ns-round acceptance and the jz×jz GOAL GATE were NOT
+attempted (gated on a green region-live kernel-oracle first, per the task's
+own instruction, never reached). Concrete next step for whoever picks this
+up: repeat this session's OWN breadcrumb method directly against `arr`
+(not `math` — confirmed not equivalent), instrumenting `__region_copy_rec`'s
+SET/MAP arm (`regionArmSetMap`, `layout-kinds.js`) and
+`__region_relocate_props`'s value-relocation path specifically (the
+NEXT arm down from the OBJECT-arm breadcrumb this session already placed
+and confirmed correct at `_factStore`'s own top level) to find the exact
+(container, field, value) triple that becomes the untagged NaN — the same
+"root the CONTAINER, walk ONE level deeper" refinement `e640e77a`'s and the
+`b33d603e`'s own prior sessions used to close their respective walls.
