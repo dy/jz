@@ -16356,3 +16356,144 @@ indirection removed, `b3cb4f8b`'s own argument), status-quo whack-a-mole
 zero `Proxy` registrations, zero accessor-syntax parser support), and
 re-merging `ctx.funcs`/`ctx.func` under one wrapper (reopens the exact
 registry/frame naming collision the prerequisite campaign closed).
+
+## §CompileSession — Slices A/B landed, Slice C banked with a region-live
+## regression traced to Slice B (2026-08-14)
+
+Executed `.work/compile-session-design.md`'s Slices A-C. **A and B landed
+clean on every one of their own specified gates; C is banked** — its
+mechanical work is done and described below, but activating it (which
+requires exercising the region-live axis for the first time in this
+sub-campaign) surfaced a real region-live regression that bisects to
+Slice B, not to Slice C's own collapse. Per this campaign's own standing
+practice (`b3cb4f8b`'s "third dedicated session... without closing it via
+a holder-fix" ruling), this is banked rather than chased inside this
+session's scope — root-causing it is Slice-D-shaped forensic work
+(WAT-breadcrumb bisection, per every prior region-arena session's own
+methodology), explicitly out of scope here.
+
+**Slice A** (`504cb990`): formalized `ctx` as the CompileSession record —
+a header-comment rename in `src/ctx.js` and a `CompileSession` typedef in
+`src/session.js` enumerating the 20 existing top-level subtrees. Comment-
+only, zero shape/call-site change. Gates: npm test 3450/3444/0/6 (exact
+baseline match), build-dist.mjs succeeds, self-build ×2 SHA-256
+`1d41f144e20f23f9e92e439c1ac9830e47887fe93c05cd1c662871a1118562a8` both
+times **and matching the pre-slice hash exactly** (byte-identical, as the
+design predicted for a comment-only slice), test:wasm 2748/2742/0/6,
+kernel-oracle 13/13×3, kernel-parity 33/33.
+
+**Slice B** (`2a82680d`): folded `getFactStore()`'s module-scope
+`_factStore` singleton onto the session as `ctx.facts` (`getFactStore()`
+now `() => ctx.facts`, zero call-site rewrite across 51 sites) and
+converted `ctx` from a mutate-in-place singleton (`const ctx`, 20 field
+writes) to a constructed value (`let ctx`, one identity-swap object
+literal per `reset()`) — the actual reentrancy fix. `test/session-
+reentrancy.js` gained a new probe proving the concrete claim: a `ctx`
+reference held across a later `reset()` keeps that compile's own coherent
+snapshot (unchanged `.funcs`/`.facts` identity) while the live import
+binding moves on to a distinct object.
+
+Landing this slice surfaced two genuine self-hosting hazards (`src/ctx.js`
+is itself compiled by jz for self-hosting, `scripts/self.js`), both fixed
+before commit, not worked around:
+- `ctx`'s pre-first-`reset()` placeholder literal must stay a REAL object,
+  never `null` — `index.js`'s uncaught-exception wrapper reads
+  `ctx.error.node` while enriching an error thrown BEFORE `beginSession()`
+  ever runs (`--host bogus` CLI validation, a fresh-process repro:
+  `node cli.js x.js --host bogus` crashed on `ctx.error` being null before
+  this fix). Confirmed reachable, not hypothetical.
+- `ctx`'s two literal-assignment sites (the placeholder above and
+  `reset()`'s own final construction) must match property SET and ORDER
+  exactly — jz's own schema inference (`module/schema.js`) tracks a
+  reassigned variable's literal shape across every assignment site; a
+  mismatch (17 vs 21 fields, pre- vs post-fix) poisoned `ctx`'s tracked
+  shape, which `src/compile/plan/scope.js`'s `materializeAutoBoxSchemas`
+  didn't handle defensively — surfaced ONLY through the self-hosted
+  kernel (`FunctionPlan missing for sum`/`f`, native fully unaffected),
+  traced via a bisection loop (native repro script → diagnostic print in
+  `materializeAutoBoxSchemas` → identified the poisoned name as `ctx`
+  itself, module 56's mangled `m56_ctx$ctx`) rather than assumed.
+
+Also found and fixed: `test/passes.js`'s stdlib-registration test
+destructured `const { ctx } = await import('../src/ctx.js')`, snapshotting
+one session's `ctx` and silently losing track of later `reset()`s once
+`ctx` became reassignable — exactly the "grep for `const ctx = `
+destructuring/aliasing patterns before landing" risk the design's own §3
+flagged for this slice. Fixed to read `ctx` through the live module
+namespace object at each use instead of a stale local binding. A repo-wide
+grep for `await import(...ctx.js...)` found this as the ONLY such site.
+
+Gates: npm test 3451/3445/0/6 (3450/3444/0/6 baseline + the 1 new
+reentrancy probe), build-dist.mjs succeeds, self-build ×2 SHA-256
+`3f8780b306f539f4487a0fbea4330cfddfbf8ac6f38cec72a6de5fea8eb597e1` both
+times (**convergent, not byte-identical to pre-slice** — a real functional
+change, as the design predicted), test:wasm 2749/2743/0/6, kernel-oracle
+13/13×3, kernel-parity 33/33.
+
+**Slice C (banked, NOT landed)**: mechanical work completed and verified
+on the DORMANT axis, then rolled back after the region-live gate (this
+task's own addition beyond the design's own deferred-to-Slice-D verdict)
+failed. The collapse itself: all five region-root bundles (`front.js`'s
+front boundary, `compile/index.js`'s scan-round/AFE-round/Slice-3 exit,
+`compile/plan/index.js`'s five-round `round()` helper) rewritten from
+hand-picked `ctx.*` field arrays to `[phase-local, ctx]`/`[phase-local,
+programFacts, ctx]`. One mechanical detail the design didn't anticipate,
+found and fixed while implementing: ES module named imports are READ-ONLY
+bindings — `import { ctx } from '../ctx.js'` lets an importer read the
+live current value but never assign it, even though `ctx.js`'s own `let
+ctx` (Slice B) makes the EXPORT reassignable; `esbuild` caught this at
+`npm run build` time (`Cannot assign to import "ctx"`), not silently.
+Fixed by adding `export function setSession(next) { ctx = next }` to
+`src/ctx.js` and routing every outside-module rebind through it. This
+also required a genuine bug fix in `src/compile/plan/scope.js`'s
+`materializeAutoBoxSchemas`: `setSession`'s `ctx = next` (a non-literal
+RHS, a bare parameter reference) is a THIRD assignment site to `ctx`,
+poisoning jz's own schema tracking for it exactly like Slice B's
+field-set-mismatch case — but this time unavoidably (a setter receiving a
+dynamic relocated value cannot be shape-matched to a static literal), so
+the fix was the conceptually-correct one instead: `materializeAutoBoxSchemas`
+now skips a poisoned name (`existing === null`) instead of crashing on an
+unguarded `.includes` call — matching `ctx.schema.idOf`'s own documented
+contract ("poisoned names resolve to NO schema regardless of store").
+
+With both fixes, Slice C's DORMANT gates were fully green: npm test
+3451/3445/0/6, build-dist.mjs succeeds, self-build ×2 SHA-256
+`1dd7f98450291efbcd1a7b81dbc4850ca4ff6e18d7f966dfa8770904c3126dfe` both
+times (convergent), test:wasm 2749/2743/0/6, kernel-oracle 13/13×3,
+kernel-parity 33/33.
+
+**The region-live gate failed**: hand-flipping `REGION_HOOKS_ACTIVE` and
+rebuilding a region-live kernel (never shipped, matching every prior
+region-arena session's own precedent) dropped kernel-oracle from 13/13 to
+6-7/13, signature `Unknown op: ++, current AST: ["++","if1_3"]` — an
+AST-corruption class, not a clean single-cause miscompile. **Bisected, not
+assumed**: reproduced the SAME failure class on Slice B alone (region-live
+flag flipped, Slice C's own source changes fully reverted first) —
+confirmed via a temporary `ac6f6d98` worktree that clean main's own
+region-live baseline is a stable 13/13×3 (matching this task's own stated
+expectation), then swapped in Slice A alone (still 13/13, zero-diff as
+expected) and Slice B alone (regression reproduces). **The regression is
+NOT in Slice C's collapse — it is a previously-unexercised interaction
+between Slice B's `ctx`-identity-swap mechanics and the region-arena
+relocator**, invisible to Slice B's own gate list (region-live was never
+one of Slice B's required gates — the design explicitly deferred the
+region-live verdict to Slice D, and this task's own gate table only
+required it "after Slice C"). Slice B stays landed regardless: it meets
+100% of its own specified gates, and `REGION_HOOKS_ACTIVE=false` ships in
+every build — the regression has zero effect on any shipped artifact or
+production path, only on the separate, already-dormant `ns-round-2026-08-
+14` forensic lane.
+
+**Disposition**: A and B on `main` (`504cb990`, `2a82680d`). C's diff
+(front.js/compile/index.js/compile/plan/index.js's `[phase-local, ctx]`
+collapse + `setSession()` + the scope.js poisoned-name fix) is fully
+written and dormant-gate-verified but NOT committed — reverted to Slice
+B's tip, not banked as a stray branch, so a future session reconstructs it
+from this entry rather than inheriting an unreviewed diff. Recommended
+next step: a dedicated forensic session (WAT-breadcrumb bisection
+tooling, this campaign's own established method) on the Slice-B-vs-
+region-live interaction specifically — likely adjacent to, but a DIFFERENT
+mechanism than, the ns-round branch's own still-open `boolconst`/
+`unreachable` wall (different failure signature: `++`/`if1_3` here vs.
+`boolconst`/`unreachable` there), so treat as a fresh investigation, not
+an assumed duplicate.
