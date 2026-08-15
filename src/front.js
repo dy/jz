@@ -51,40 +51,30 @@ export const rejectReservedPrefix = (node) => {
  *  (scripts/self.js), never by the native host pipeline (index.js never
  *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
  *  one region round: every allocation that span makes gets reclaimed at
- *  `exit` EXCEPT what's reachable from the five-element root `[ast,
- *  ctx.funcs, ctx.module, ctx.schema, ctx.closure]` — proven minimal
- *  for `sum`/`compile('')` on the pre-rebase kernel (dropping `ctx.module`
- *  or `ctx.schema` broke even the baseline case at that point). Re-verified
- *  post-rebase onto main (14c4f7a2, .work/research.md §Region arena's
- *  "front boundary rebased onto main" entry): closures-with-captures and
- *  dynamic-property-write programs — the narrower wall the pre-rebase
- *  session banked — now compile clean through this boundary at O0/O2/O3,
- *  confirmed by kernel-oracle 13/13 x3, kernel-parity 33/33, and the
- *  200-seed fuzz gate x3, all green.
- *  ROOT-COMPLETENESS FIX (ns-round-2026-08-14 dig, .work/research.md §Region
- *  arena): the root array above literally read `ctx.func.list` until this
- *  session — `ctx.func` (singular) is the ACTIVE-FRAME scratch record, which
- *  has never had a `.list` field; the real function registry has been
- *  `ctx.funcs` (plural: `.list`/`.map`/`.names`/`.exports`) since `0487cde4`
- *  ("extract compile-lifetime function registry") split the two apart.
- *  `0487cde4`'s own diff updated the COMMENT two lines below this one
- *  (`ctx.func.list body` → `ctx.funcs.list body`) but missed this array
- *  entirely — provably because the array was added a commit EARLIER
- *  (`47140301`, before the split, when `ctx.func.list` was still correct)
- *  and `REGION_HOOKS_ACTIVE` has stayed `false` in every shipped build ever
- *  since, so this whole branch is dead code no native test path reaches.
- *  `ctx.func.list` has evaluated to `undefined` — a harmless non-pointer
- *  root slot — for every region-live run since `0487cde4` landed
- *  (2026-08-12): the ENTIRE function registry (every function's body/sig/
- *  defaults/exported bookkeeping, freshly populated by the `prepare()` call
- *  immediately above) was silently absent from front's own root, the very
- *  FIRST region round in the whole pipeline. `preEval` runs OUTSIDE the
- *  region (it only ever touches the already-rooted `ast`/`ctx.funcs.list`
- *  bodies). Rebinding all five `ctx.*` fields from `exit`'s return is NOT optional:
- *  `__region_copy_rec` may relocate any of them (this compiler's
- *  single-block ARRAY layout in particular reallocates wholesale on its
- *  first post-mark grow, no separate backing pointer to preserve in place)
- *  — any later read through a stale `ctx.*` binding is a use-after-free. */
+ *  `exit` EXCEPT what's reachable from the root.
+ *  UNION-FIELD ROOT (Slice C-v2, `.work/compile-session-design.md` §2.1/§3,
+ *  revised after the region-live gate — see `.work/research.md`'s Slice D
+ *  entry): the root is the UNION of every `ctx.*` field ANY region round in
+ *  this campaign has ever needed (`funcs, module, schema, closure, scope,
+ *  types, warnings, plans, inspect, func, transform, facts` — 12 fields),
+ *  applied UNIFORMLY at all nine round-exit call sites instead of each
+ *  site's own hand-picked subset — the seven-times-repeated root-
+ *  completeness defect class (ns-round-2026-08-14's dig found THIS exact
+ *  array rooting a dead `ctx.func.list`) is closed the same way a full
+ *  `[ast, ctx]` wholesale-session root would close it, WITHOUT exposing
+ *  the nine fields no round has ever touched (`core, bridge, names,
+ *  runtime, memory, error, abi, features, linkDemand` — `ctx.core.emit`/
+ *  `ctx.core.stdlib`/`ctx.bridge` in particular carry hundreds of CLOSURE-
+ *  valued properties, the self-hosted stdlib registration machinery,
+ *  `__region_copy_rec` was never exercised against under region-live: the
+ *  wholesale-`ctx` attempt traded the JS-level `Unknown op: ++` AST-
+ *  corruption signature for a WASM-level `memory access out of
+ *  bounds`/`unreachable` trap signature — DIFFERENT, not fixed, evidence
+ *  the newly-exposed subtrees are where the regression actually lives).
+ *  `ctx` itself is NEVER a root element here — only its individual fields
+ *  are, exactly as before Slice B's identity-swap, so no `setSession()`
+ *  rebind seam is needed. Any later read through a stale `ast`/`ctx.*`
+ *  binding is a use-after-free. */
 export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
   const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))
@@ -99,8 +89,8 @@ export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrep
   let ast = time('prepare', () => prepare(parsed))
   if (afterPrepare) afterPrepare()
   if (regionHooks) {
-    ;[ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure] =
-      regionHooks.exit(mark, [ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure])
+    ;[ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(mark, [ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
   }
   // preEval: fold every statically-evaluable construct (numeric/string/bool chains,
   // pure Math.* calls, zero-arg pure calls incl. lift-iife's IIFEs) down to literals,

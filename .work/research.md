@@ -16497,3 +16497,123 @@ mechanism than, the ns-round branch's own still-open `boolconst`/
 `unreachable` wall (different failure signature: `++`/`if1_3` here vs.
 `boolconst`/`unreachable` there), so treat as a fresh investigation, not
 an assumed duplicate.
+
+## §CompileSession Slice D — forensic: the design's own hypothesis (rooting
+## `ctx` everywhere makes the Slice-B swap safe by construction) TESTED AND
+## REFUTED by direct experiment, twice; root-completeness was never the
+## mechanism. Slice C-v2 (union-field root, no wholesale `ctx` root, no
+## `setSession()`) landed as a safe, dormant-only root-completeness
+## improvement; region-live wall NOT closed (2026-08-14)
+
+Worktree `slice-d-2026-08-14` off `74286cf8`. Task: root-cause the region-live
+regression `74286cf8`'s own entry banked (Slice B alone drops kernel-oracle
+region-live from 13/13 to 6-7/13, `Unknown op: ++, current AST:
+["++","if1_3"]`), testing the design's own named hypothesis FIRST per the
+task's explicit instruction: "the fix and Slice C may be the SAME change...
+test that hypothesis FIRST."
+
+**Hypothesis 1 (wholesale `[phase-local, ctx]` root, Slice C exactly as
+designed) — REFUTED.** Reconstructed Slice C precisely per the `74286cf8`
+ledger entry: all five region-root bundles collapsed to `[ast, ctx]` /
+`[ast, programFacts, ctx]` / `[builtModule, ctx]`, `setSession(next)` added
+to `src/ctx.js` as the rebind seam (outside-module callers hold `ctx` via a
+read-only `import { ctx }` binding, so `ctx = next` isn't directly
+assignable there even though `ctx.js`'s own Slice-B `let ctx` makes the
+EXPORT reassignable), plus `materializeAutoBoxSchemas`'s poisoned-name null
+guard the original session found necessary. Dormant: fully green (npm test
+3451/3445/0/6, build-dist succeeds, self-build ×2 SHA-256 identical, kernel-
+oracle 13/13×3, kernel-parity 33/33×3 — matches the original session's own
+report). **Region-live: kernel-oracle 6/13 pass, 7/13 fail** — close to but
+not identical to the original 6-7/13 report, and with a DIFFERENT signature:
+`RuntimeError: memory access out of bounds` (kernel-parity O0/O2/O3) and
+`RuntimeError: unreachable` (the ternary-return oracle row), not the
+original session's JS-level `Unknown op: ++`. A raw WASM trap instead of a
+JS-visible AST-corruption symptom is itself evidence: wholesale-rooting
+`ctx` exposes NINE fields (`core, bridge, names, runtime, memory, error,
+abi, features, linkDemand`) to `__region_copy_rec` for the FIRST TIME EVER
+under region-live — no prior round in this whole campaign, across every
+session, ever rooted them. `ctx.core.emit`/`ctx.core.stdlib` in particular
+carry several hundred CLOSURE-valued properties (the self-hosted stdlib
+registration machinery, `derive(proto)`-built), a shape the relocator has
+never been exercised against. Read as: the wholesale root didn't fix the
+Slice-B regression, it additionally introduced a NEW failure mode on top of
+whatever the original one was.
+
+**Hypothesis 2 (narrower — root the UNION of every field any round has ever
+needed, uniformly, WITHOUT wholesale-rooting `ctx` or introducing
+`setSession()`) — ALSO REFUTED, deterministically.** To isolate whether
+root-COMPLETENESS (as opposed to wholesale-`ctx`-exposure) was the fix,
+reverted `setSession()`/wholesale-`ctx` entirely and instead widened all
+nine round-exit call sites to the UNION of every `ctx.*` field this
+campaign's five prior spot-fixes (`c8246307`/`274b6bd8`, `1248563f`,
+`a616ca43`, `08b76ea9`, and this design's own §2.1 table) ever found
+necessary — `funcs, module, schema, closure, scope, types, warnings, plans,
+inspect, func, transform, facts` (12 fields) — applied UNIFORMLY at every
+site instead of each site's own historical subset. This closes the actual
+documented root-completeness gaps (the dead `ctx.func.list`/missing
+`ctx.funcs` `08b76ea9` already fixed on `main`, PLUS `ctx.plans`/
+`ctx.inspect`/`ctx.func` missing from front.js and the plan-tail `round()`
+helper, which `main` does NOT yet have uniformly) while touching NONE of
+the nine never-rooted fields. `ctx` itself is never a root element — no
+`setSession()` needed. Dormant: fully green (npm test 3451/3445/0/6,
+test:wasm 2749/2743/0/6, self-build ×2 SHA-256
+`a78df80a141ca37ebc8756e56d150ea650d2e8555553baabfcfd01458ef885aa` both
+times, kernel-oracle 13/13×3, kernel-parity 33/33×3). **Region-live: kernel-
+oracle 7/13 pass, 6/13 fail, reproduced identically on a second run (not a
+flake)** — signature `Unknown op: *, current AST: ["*","if1_3",[null,2]]`
+on kernel-parity O0/O2/O3 and the native+kernel-agree-at-O3 oracle row —
+the SAME `"if1_3"`-node AST-corruption CLASS the original session's `++`
+finding named, just a different op string decoded from what is evidently
+the same corrupted memory location (allocation-timing noise between the two
+experiments, not a different bug). **This conclusively falsifies the
+design's central hypothesis**: closing every known root-completeness gap,
+by the widest reasonable construction that doesn't introduce new exposure,
+does NOT recover region-live. The regression is not an under-populated
+root array — it is a defect in Slice B's `const ctx` → `let ctx` identity-
+swap conversion itself (or in `ctx.facts`'s absorption, bundled in the same
+commit), independent of which fields any round declares as reachable,
+consistent with `74286cf8`'s own bisection (Slice A alone: clean; Slice B
+alone: reproduces) but now proven ALSO independent of the region-root
+array's own contents — a genuinely different, deeper mechanism than
+anything this design's five slices anticipated. Root-causing it further
+needs WAT-breadcrumb-level tracing (actual memory-offset instrumentation of
+`__region_copy_rec`/`__region_relocate_props` across a `beginSession()`
+boundary) — explicitly NOT attempted this session per the campaign's own
+"third dedicated session on this exact shape without closing it via a
+spot-fix" precedent (`b3cb4f8b`'s decision point) and this session's own
+time budget; flagged as the concrete next step, not chased further here.
+
+**Disposition.** Slice C as designed (wholesale `[phase-local, ctx]` +
+`setSession()`) is NOT landed — reverted in full (`src/ctx.js` has zero
+diff against `74286cf8`; the `setSession()` seam and the
+`materializeAutoBoxSchemas` poisoned-name guard it required both removed,
+since neither is needed once `ctx` is never itself a root element).
+**Slice C-v2 (the union-field root widening) IS landed** — a strictly
+smaller, safer diff (`src/front.js`, `src/compile/index.js`,
+`src/compile/plan/index.js` — three files, net -85 lines) that closes the
+SAME root-completeness gaps the design's §2.2 "class-kill" argument named,
+applied uniformly instead of per-site, with zero wholesale-`ctx` exposure.
+It does NOT close the region-live wall — `REGION_HOOKS_ACTIVE=false` ships
+in every build regardless, so this has zero effect on any shipped artifact,
+same as every other region-arena slice banked so far. Recommended framing
+for whoever picks this up next: the design's own §2.2 "class-kill, not
+instance-kill" argument is CORRECT for root-completeness bugs specifically
+(seven confirmed instances, all now closeable by the union-field or
+wholesale approach) but is NOT the fix for the Slice-B swap regression,
+which is a separate, unexplored mechanism — do not re-attempt a root-array
+change as the fix for it a third time without new WAT-breadcrumb evidence.
+
+**ns-round acceptance test and jz×jz GOAL GATE: NOT ATTEMPTED.** The task's
+own Slice-D acceptance test (apply the banked `ns-round-2026-08-14` upstream
+rounds and check region-live kernel-oracle 13/13×3) and the GOAL GATE it
+gates are both explicitly conditioned on THIS session's own hypothesis test
+reaching 13/13 first ("test that hypothesis FIRST... if 13/13, proceed... if
+NOT reached: the class-kill argument is falsified... grounds for a fresh
+forensic session rather than another spot-fix"). Since neither hypothesis
+reached 13/13, both are correctly gated off, not attempted — forcing them
+through with a known-broken region-live kernel would produce a meaningless
+result. The ns-round branch's two round-widening commits (`7346f7e7`,
+`a616ca43`) remain unmerged and unreconstructed this session; their own
+region-live wall (`boolconst`/`unreachable`, a DIFFERENT signature from
+either hypothesis tested here) is unrelated to and unaffected by this
+session's findings.

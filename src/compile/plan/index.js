@@ -26,7 +26,7 @@
  * @module plan
  */
 
-import { ctx, getFactStore } from '../../ctx.js'
+import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
 import narrowSignatures, {
@@ -86,49 +86,25 @@ export default function plan(ast, profiler, regionHooks) {
   // refresh), so the profile must show WHICH pass and refresh dominate.
   const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
   // One round shape shared by all five plan-tail boundaries below — mark,
-  // run `body`, exit rooting the standing containers + programFacts + ast
-  // (rebinding all eight from exit's return, the frontHalf/compile() con-
-  // tract: any later read through a stale binding is a use-after-free).
-  // `ctx.warnings` rides along too: normally `null` (harmless — a root array
-  // may hold non-pointer values, the ordinary case every existing root
-  // already tolerates), but non-null whenever `regionHooks` is exercised
-  // through scripts/self.js's `compileWarnings` entry (`initWarnings(sink)`
-  // runs before `front()`, so `ctx.warnings` is live across BOTH region
-  // boundaries in that path) — round 5 below calls `adviseProgram`, whose
-  // own advise passes call `warn()` (src/ctx.js), pushing onto
-  // `ctx.warnings.sink.entries`. That array is durable at creation
-  // (`compileWarnings` builds it before any mark) but its BACKING STORE can
-  // still reallocate wholesale on a post-mark grow (front.js's own doc: "no
-  // separate backing pointer to preserve in place") — without `ctx.warnings`
-  // in root, a grow-during-round would dangle at THIS round's exit exactly
-  // like any other missing-root case. Kept in every round's root uniformly
-  // (not just round 5's) since it's a single extra array slot, harmlessly
-  // null in the overwhelmingly common non-`compileWarnings` case.
-  //
-  // `getFactStore()` also rides along, trailing, NOT destructured back (its
-  // own wrapper object is created once by `resetFactStore()` at session
-  // start — before front() even runs, let alone any of these marks — so it
-  // never itself needs rebinding; only its DESCENDANTS can move). It owns
-  // `bodyFacts` (src/compile/analyze.js's shared analyzeBody cache — "Strong
-  // refs are bounded by program size and dropped at the next reset", i.e.
-  // deliberately retained for the WHOLE compile because later passes reuse
-  // it) plus a dozen sibling WeakMap-lowered-to-Map caches
-  // (bindingUses/mayBeUndefinedTrace/ccInBounds/ipProven/etc, all consoli-
-  // dated onto this one object per ctxfunc-survey.md §2/§5). Every one of
-  // these is a DURABLE object whose BACKING STORE can still grow (ephemeral,
-  // post-mark) on a `.set()` during any of these rounds — round 1
-  // (narrowBoolResults) is confirmed to populate `bodyFacts` on first touch
-  // per function (0ae75f07's own "FIRST-TIME population cost… later passes
-  // will legitimately reuse" finding) — so without `getFactStore()` in root,
-  // that population would dangle at round 1's own exit, corrupting every
-  // later analyzeBody() cache hit. Root the container once; every field
-  // travels with it, the same "root the CONTAINERS" idiom as ctx.scope etc.
+  // run `body`, exit rooting `ast`/`programFacts` (phase-local, not session
+  // state) + the UNION-FIELD root (Slice C-v2, `.work/compile-session-
+  // design.md` §2.1/§3, front.js's own doc has the full rationale for why
+  // this is the union of every `ctx.*` field ANY round in this campaign has
+  // ever needed — `funcs, module, schema, closure, scope, types, warnings,
+  // plans, inspect, func, transform, facts` — applied uniformly here too,
+  // not just this round's own historical subset, closing the SAME kind of
+  // cross-round inconsistency a616ca43's session found and fixed). A
+  // durable container's BACKING STORE can still grow, ephemeral, post-mark,
+  // during any of these rounds' own passes — round 1's `narrowBoolResults`
+  // populating `bodyFacts` (`ctx.facts`) on first touch per function was
+  // the confirmed case — so `ctx.facts` rides along explicitly rather than
+  // via a trailing, non-rebound `getFactStore()` call.
   const round = body => {
     const m = regionHooks?.mark()
     body()
     if (regionHooks)
-      [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings] =
-        regionHooks.exit(m, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, getFactStore()])
+      [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+        regionHooks.exit(m, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
   }
   // AST-mutating pass: run timed; on change, re-sweep program facts (timed
   // separately — the refreshes are usually the cost, not the passes).

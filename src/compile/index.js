@@ -27,7 +27,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX, getFactStore } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { functionPlanOf, installFunctionPlan, publishFunctionPlan } from './function-plan.js'
 import { i64Hex } from '../../layout.js'
@@ -2518,39 +2518,10 @@ export default function compile(ast, profiler, regionHooks) {
   // slice): the three closure-table scans below are pure AST walks producing
   // three ctx.scope fields (+~61 MB combined, dominated by
   // scanClosureTableLatticeCandidates's own +61 MB per 0ae75f07's phase map)
-  // — one round, same container-level root as plan()'s own five internal
-  // rounds (module/builtModule doesn't exist yet at this point in compileAst,
-  // so it's not part of THIS root — only compile()'s own final Slice 3 exit
-  // roots that).
-  //
-  // ROOT-COMPLETENESS FIX (.work/research.md §Region arena, __coll_order
-  // chain-round defect — the campaign's last open region-arena wall):
-  // `getFactStore()` was MISSING from this round's root, despite this
-  // comment's own stated intent ("same container-level root as plan()'s own
-  // five internal rounds") — plan/index.js's `round` helper DOES include it
-  // (trailing, not destructured back — see that file's own comment for the
-  // full rationale: bodyFacts/bindingUses/etc are durable objects whose
-  // backing store can still grow, ephemeral, post-mark, during this round's
-  // own AST walks). Without it here, any fact-store growth triggered by
-  // THIS round's three closure-table scans (scanDynClosureTableCandidates /
-  // scanClosureTableLatticeCandidates / scanImperativeClosureTableLattice-
-  // Candidates all call into analyzeBody, which touches bindingUses) is
-  // unreachable from this round's root — __region_exit's closing reclaim
-  // then frees that ephemeral backing store while the module-scope
-  // `_factStore` global still points at it, and the bump allocator later
-  // hands that exact address to an unrelated fresh allocation. A LATER
-  // reader chasing the stale reference (e.g. buildStartFn's own
-  // analyzeValTypes, itself calling scanBindingUses far downstream) then
-  // decodes whatever now legitimately lives there as a Set/Map header —
-  // the "NaN-boxed pointer aliasing a Set/Map's [count][cap] header"
-  // signature bisected via WAT-level breadcrumbs on __coll_order,
-  // __region_copy_rec's own SET/MAP arm (never sees an insane cap — the
-  // rebuild machinery itself is sound), the generic __alloc_hdr_n (never
-  // returns this address), and finally the universal __alloc primitive
-  // (DOES return it: a fresh, correctly-shaped allocation, confirming reuse
-  // of a reclaimed-but-still-referenced block, not a sizing/overlap bug in
-  // the relocator). Fixed the same way plan()'s round already does it: ride
-  // `getFactStore()` along, trailing.
+  // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/compile-
+  // session-design.md` §2.1/§3, front.js's own doc has the full rationale
+  // for why this is the union of every field any round has ever needed,
+  // applied uniformly, rather than a wholesale `[ast, ctx]` root).
   const __scanMark = regionHooks?.mark()
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
   // structurally safe candidate closure tables (never alias/escape) — the
@@ -2580,13 +2551,9 @@ export default function compile(ast, profiler, regionHooks) {
   // see dyn-closure-tables.js's own doc for the safety notion and the
   // module-init-order reasoning behind its "early-mergeable" subset.
   ctx.scope.imperativeClosureTableLatticeCandidates = scanImperativeClosureTableLatticeCandidates(ast)
-  // ctx.warnings rides along — see plan/index.js's `round` helper doc for why
-  // (a live `ctx.warnings.sink.entries` array, only non-null under
-  // scripts/self.js's `compileWarnings` entry, needs root coverage against a
-  // post-mark grow-and-relocate exactly like plan()'s own five rounds).
   if (regionHooks)
-    [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings] =
-      regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, getFactStore()])
+    [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
@@ -2642,40 +2609,17 @@ export default function compile(ast, profiler, regionHooks) {
       }
       const lastFunc = i === ctx.funcs.list.length - 1
       if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
-        // Root bundle: the established plan-tail/scan-round bundle
-        // ([ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema,
-        // ctx.closure, ctx.warnings, getFactStore()] — analyzeFuncForEmit's
-        // own `analyzeBody`/`reanalyzeBody` calls populate `getFactStore()`'s
-        // `bodyFacts` on first touch per function, the SAME 274b6bd8 hazard,
-        // now hit by THIS loop too) PLUS two containers no prior round ever
-        // needed to root, because no prior round ever wrote them:
-        //   - `ctx.plans` — `publishFunctionPlan` (function-plan.js) does
-        //     `ctx.plans.functions.set(func, plan)` EVERY iteration. Under
-        //     self-hosting `ctx.plans.functions` is a WeakMap LOWERED TO A
-        //     STRONG MAP (ctx.js's own comment on `ctx.plans`), keyed on the
-        //     `func` object itself — i.e. a pointer. Without `ctx.plans` in
-        //     root, the Map (and every entry published so far) is
-        //     unreachable from this round's root and gets reclaimed at this
-        //     exit while `ctx.plans.functions` (the ctx field) still points
-        //     at the old address — the exact "compiler-internal registry
-        //     never threaded through the root" class b33d603e's own entry
-        //     named, and `emitFuncs`'s later `functionPlanOf(ctx, func)` read
-        //     (src/compile/index.js, after this loop) would dereference a
-        //     stale pointer. Genuinely new: no earlier region round in this
-        //     campaign ever wrote `ctx.plans`, so no earlier round ever
-        //     needed it in root.
-        //   - `ctx.inspect` — `captureFuncInspect` writes
-        //     `ctx.inspect.functions[name] = {...}` every iteration when
-        //     `ctx.transform.inspect` is set (editor-host usage). Same
-        //     "normally null, sometimes live" treatment `ctx.warnings`
-        //     already gets in every established round — kept uniformly,
-        //     harmless (a single extra root slot) when null.
-        // `func`/`functionPlan` are deliberately NOT rooted: both are fully
-        // consumed (published, captured, scanned) before this exit fires —
-        // dead the instant this branch is reached, exactly the garbage this
-        // round exists to reclaim.
-        ;[ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, ctx.plans, ctx.inspect] =
-          regionHooks.exit(__mark, [ast, programFacts, ctx.funcs, ctx.scope, ctx.types, ctx.schema, ctx.closure, ctx.warnings, ctx.plans, ctx.inspect, getFactStore()])
+        // Union-field root (Slice C-v2, `.work/compile-session-design.md`
+        // §2.1/§3, front.js's own doc has the full rationale): covers every
+        // container this loop writes — `ctx.plans` (publishFunctionPlan's
+        // per-iteration `.set()`) and `ctx.inspect` (captureFuncInspect)
+        // included. `func`/`functionPlan` (the loop locals) stay
+        // deliberately unrooted: both are fully consumed (published,
+        // captured, scanned) before this exit fires, dead the instant this
+        // branch is reached — exactly the garbage this round exists to
+        // reclaim.
+        ;[ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+          regionHooks.exit(__mark, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
         __mark = null  // re-armed lazily at the next index, if any
       }
     }
@@ -3106,14 +3050,19 @@ export default function compile(ast, profiler, regionHooks) {
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
   let builtModule = ['module', ...sections]
-  // Region-arena Slice 3 (see this function's own doc comment above,
-  // INCLUDING the known open defect on this exact root): exit the emit round
-  // here, rebinding the CONTAINERS every downstream reader needs — any later
-  // read through a stale `ctx.func`/`ctx.transform`/`ctx.scope` binding (or
-  // the pre-relocation `builtModule` reference) is a use-after-free, the
-  // identical contract frontHalf's own rebind documents.
+  // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/compile-
+  // session-design.md` §2.1/§3, front.js's own doc has the full rationale):
+  // exit the emit round here, rebinding `builtModule` (phase-local, not
+  // session state) and every `ctx.*` field any round in this campaign has
+  // ever needed — closing the two root-completeness bugs this exact array
+  // previously carried (a dead `ctx.func.list` root and a missing
+  // `ctx.funcs`, .work/research.md §Region arena's ns-round dig) without
+  // exposing `ctx.core`/`ctx.bridge`/etc to the relocator for the first
+  // time. Any later read through a stale `ctx.*` or the pre-relocation
+  // `builtModule` reference is a use-after-free, the identical contract
+  // frontHalf's own rebind documents.
   if (regionHooks)
-    [builtModule, ctx.func, ctx.funcs, ctx.transform, ctx.scope] =
-      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.transform, ctx.scope])
+    [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts] =
+      regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts])
   return builtModule
 }
