@@ -76,42 +76,36 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 //   ctx.scope.globals (mut→false) and
 //   declares the __heap* globals. emit seeds ctx.closure.{paramTypes,paramTypedCtors}
 //   at direct-call sites (read by emitClosureBody); plan sets ctx.closure.{floor,width}.
-// `let`, not `const` (Slice B, .work/compile-session-design.md §3): `reset()`
-// below reassigns this whole binding by identity (one object-literal
-// assignment) rather than mutating 20 field references in place — the reentrancy fix (session-survey
-// §3): a caller holding an OLD `ctx` reference across a `reset()` call keeps a
-// coherent snapshot instead of watching it mutate underfoot. Every one of the
-// 60+ files that `import { ctx } from '../ctx.js'` holds a LIVE ES-module
-// binding (re-read on every access, standard `export let` semantics — not
-// `export const`'s snapshot-at-import-time), so no call site needs to change;
-// only property writes through this binding (`ctx.X = ...`, everywhere but
-// `reset()` itself) are unaffected either way.
+// `const`, not `let` (swap-revert, stack-test-2026-08-15 — .work/research.md
+// §CompileSession Slice B region-live regression forensic, b8f802b8's own
+// half-bisection: the `const`→`let` identity-swap conversion Slice B bundled
+// alongside facts absorption is the SOLE guilty mechanism for a 13/13→7/13
+// kernel-oracle region-live regression, deterministic, WAT-breadcrumb-
+// confirmed real memory-safety corruption inside `__region_copy_rec`'s
+// dispatch; the facts-side of the same bundled diff is mechanically proven
+// INNOCENT, 13/13 clean, by the same session). `reset()` below is back to
+// mutating each field in place (`ctx.X = {...}`, one assignment per
+// subtree) rather than reassigning this whole binding by identity — this IS
+// the reentrancy-fix mechanism Slice B introduced (session-survey §3: a
+// caller holding an OLD `ctx` reference across a `reset()` call would keep a
+// coherent snapshot instead of watching it mutate underfoot), so reentrancy
+// safety for a held-across-reset() `ctx` reference is DEFERRED, not
+// abandoned — design intent preserved, tracked as a named future slice
+// pending the write-site forensic (b8f802b8's own "concrete next step":
+// breadcrumb `regionArmSetMap`/`__region_relocate_props`'s value-relocation
+// path one level past the already-confirmed-correct OBJECT-arm walk) rather
+// than re-landed blind. `ctx.facts` (this literal's `facts: {}` field, the
+// absorbed `_factStore`) stays — proven innocent, independent of the swap.
 //
 // This initial literal is the pre-first-`reset()` default shape only — every
 // field below is a bare placeholder, fully overwritten by reset()'s own
-// construction the instant the first session begins. It exists for two
-// reasons, not one: (1) `index.js`'s uncaught-exception wrapper reads
-// `ctx.error.node` while ENRICHING an error thrown before beginSession() ever
-// ran (e.g. `--host bogus` validation, index.js setupCtx) — a genuinely
-// reachable pre-reset() read, not a hypothetical one (confirmed live: `node
-// cli.js foo.js --host bogus` on a cold process crashed on `ctx.error` being
-// null before this literal existed); (2) this file is itself compiled BY jz
-// for self-hosting (scripts/self.js), and jz's own schema inference (module/
-// schema.js) tracks the property SET assigned to a reassigned variable across
-// every assignment site — TWO literal assignments to `ctx` with DIFFERING
-// property sets (this declaration vs. reset()'s own final literal) poisons
-// that tracking and miscompiled a downstream read (confirmed live: a self-
-// build regression this slice hit and fixed). The fix for both is the same:
-// this literal's field set below matches reset()'s final literal EXACTLY
-// (same 21 names, see reset()'s own doc for the field list) — one shape, one
-// EMPTY-but-valid value per field, so no dependent reads it, but nothing that
-// races a pre-reset() error path with a null-pointer read.
-// Field ORDER matches reset()'s own final literal exactly, not just its
-// property SET — module/schema.js's shape key joins property names in
-// literal-source order, so a reordered-but-same-fields literal is still a
-// DIFFERENT tracked shape to jz's own schema inference (self-host hazard,
-// same class as the field-set mismatch above).
-export let ctx = {
+// per-field mutation the instant the first session begins. `index.js`'s
+// uncaught-exception wrapper reads `ctx.error.node` while ENRICHING an error
+// thrown before beginSession() ever ran (e.g. `--host bogus` validation,
+// index.js setupCtx) — a genuinely reachable pre-reset() read, not a
+// hypothetical one — so every field here must stay a real (if empty) value,
+// never null-shaped where a dependent read could dereference it.
+export const ctx = {
   bridge: {}, core: {}, module: {}, scope: {}, funcs: {}, names: {}, func: {},
   types: {}, schema: {}, closure: {}, runtime: {}, memory: {}, error: {},
   transform: {}, inspect: null, warnings: null, abi: {}, features: {},
@@ -427,29 +421,16 @@ export function reset(proto, globals, bridge) {
   // same reasoning as _postAnalyze just above: cleared here so a raw-reset-only
   // caller in the same warm process never inherits a PRIOR compile's `_preAssemble`.
   _preAssemble = false
-  // CompileSession-as-value (audit-B finding 5, .work/compile-session-design.md
-  // Slice B): every field below is computed into its OWN local first, NOT
-  // mutated onto the shared `ctx` binding in place — the single object
-  // literal at this function's end assigns `ctx` by identity ONCE, after
-  // RESET_HOOKS. This is the reentrancy fix session-survey §3 named: a
-  // caller holding an OLD `ctx` reference from before this reset() call
-  // keeps a coherent (if stale) snapshot instead of watching its fields
-  // mutate underfoot mid-construction, and no reader ever observes a
-  // PARTIALLY-reset session. `export let ctx` (below) makes this binding
-  // reassignable; every one of the 60+ files that `import { ctx } from
-  // '../ctx.js'` holds a live ES-module binding, re-read on every access, so
-  // no call site needs to change. (One object-LITERAL assignment at the end,
-  // not a mutate-into-a-local-then-copy: this file's own initial `ctx`
-  // literal above and this function's final one are the two ONLY literal
-  // assignments jz's self-hosted schema inference ever sees for the `ctx`
-  // binding — confirmed the field SET and ORDER must match exactly between
-  // them, see the doc above `export let ctx` — and writing this one as a
-  // single literal, field-for-field identical in shape to that one, is the
-  // clearest way to keep the two in sync by construction rather than by
-  // discipline. Verified clean by the self-host kernel-oracle/kernel-parity
-  // gates.)
-  const bridge_ = bridge
-  const core_ = {
+  // CompileSession record (swap-revert, stack-test-2026-08-15): each field
+  // below is mutated directly onto the shared `ctx` binding in place
+  // (`ctx.X = {...}`), the pre-Slice-B mechanism — see `export const ctx`'s
+  // own doc above for why (b8f802b8's half-bisection GUILTY verdict on the
+  // identity-swap; facts absorption, kept below, proven INNOCENT). No
+  // reader ever observes a mid-construction PARTIAL reset within a single
+  // synchronous reset() call (JS has no preemption inside it), matching
+  // this idiom's own multi-year track record before Slice B.
+  ctx.bridge = bridge
+  ctx.core = {
     emit: derive(proto),
     stdlib: Object.create(null),   // prototype-less: registerName's `name in table` collision
                                     // check must not false-positive on inherited Object.prototype
@@ -494,7 +475,7 @@ export function reset(proto, globals, bridge) {
   }
 
 
-  const module_ = {
+  ctx.module = {
     imports: [],
     modules: {},
     importSources: null,  // user compile's bundled source graph; reset() clears it every session
@@ -509,7 +490,7 @@ export function reset(proto, globals, bridge) {
     currentPrefix: null,
   }
 
-  const scope_ = {
+  ctx.scope = {
     chain: derive(globals),
     globals: new Map(), // name → { type, mut, init, export } records (see declGlobal)
     userGlobals: new Set(),
@@ -537,7 +518,7 @@ export function reset(proto, globals, bridge) {
   // catalog; unlike ctx.func's active analysis/emission frame it is never
   // replaced at function entry. Keep the record identity stable for the whole
   // session while prepare/variant/plan append and index functions.
-  const funcs_ = {
+  ctx.funcs = {
     list: [],
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
     map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
@@ -548,15 +529,15 @@ export function reset(proto, globals, bridge) {
 
   // Prepare/session synthetic names must not consume the active frame's temp
   // counter: prepare runs before any function entry and spans bundled modules.
-  const names_ = { prepare: 0 }
+  ctx.names = { prepare: 0 }
 
   // Complete active-function analysis/emission authority. Every real function
   // boundary replaces this record by identity through enterActiveFunction();
   // nested emitters restore the displaced record rather than copying a selected
   // field list. ProgramFunctions fields live exclusively on ctx.funcs above.
-  const func_ = createActiveFunction()
+  ctx.func = createActiveFunction()
 
-  const types_ = {
+  ctx.types = {
     typedElem: null,
     typedLen: null,  // mirrors typedElem's per-function lifecycle exactly (audit P2: its swap is
                       // now structural, via enterActiveFunction/restoreActiveFunction — compile/active-function.js)
@@ -566,7 +547,7 @@ export function reset(proto, globals, bridge) {
     literalWriteKeys: null, // Map<var, Set<key>> — literal-key prop writes per bare-var receiver (plan/index.js)
   }
 
-  const schema_ = {
+  ctx.schema = {
     list: [],
     vars: new Map(),
     poisoned: new Set(),   // names whose assignments disagree on shape (literal +
@@ -773,7 +754,7 @@ export function reset(proto, globals, bridge) {
                                 //   packed i32 ops instead of f64 cells.
   }
 
-  const closure_ = {
+  ctx.closure = {
     types: null,
     table: null,
     bodies: null,
@@ -804,7 +785,7 @@ export function reset(proto, globals, bridge) {
     width: null,          // closure call/make signature width (plan/scope sets; emit/assemble read). null ⇒ MAX_CLOSURE_ARITY.
   }
 
-  const runtime_ = {
+  ctx.runtime = {
     atom: null,
     regex: null,
     data: null,
@@ -819,19 +800,19 @@ export function reset(proto, globals, bridge) {
     typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`
   }
 
-  const memory_ = {
+  ctx.memory = {
     shared: false,
     pages: 0,
     max: 0,         // 0 = unbounded; >0 emits a maximum on the memory type (cap growth)
   }
 
-  const error_ = {
+  ctx.error = {
     src: '',
     loc: null,
     node: null,
   }
 
-  const transform_ = {
+  ctx.transform = {
     jzify: null,
     noTailCall: false,  // when true, emit `return call` instead of `return_call` (wasm2c compat)
     strict: false,      // when true, dynamic features (obj[k], for-in) error at compile time
@@ -882,10 +863,10 @@ export function reset(proto, globals, bridge) {
 
   // Inspection sink. Populated by compile() only when transform.inspect is true.
   // Shape: { abi, functions: { [name]: { exported, params, results, ptrKind?, locals, callerReps } }, schemas }.
-  const inspect_ = null
+  ctx.inspect = null
 
   // Advisory sink. Populated when compile() receives opts.warnings.
-  const warnings_ = null
+  ctx.warnings = null
 
   // Feature flags: the frozen FeaturePlan (.work/research.md §FeaturePlan freeze).
   // Every key here MUST be seeded, not an absent key: the self-hosted kernel's
@@ -912,9 +893,9 @@ export function reset(proto, globals, bridge) {
   //     analyze.js's static tracker) and was reclassified onto ctx.linkDemand
   //     (.work/research.md §FeaturePlan freeze). Kept as a named stratum for
   //     the next genuinely analyze-settled fact, not deleted.
-  const abi_ = makeAbi()
+  ctx.abi = makeAbi()
 
-  const features_ = {
+  ctx.features = {
     // SESSION
     sso: true,        // ≤4-ASCII string packing. Default on; flip off to A/B the heap-only path.
     blockingTimers: false,   // wasmtime CLI: include __timer_loop in _start
@@ -981,7 +962,7 @@ export function reset(proto, globals, bridge) {
   // not just within resolveIncludes()+, it is later than resolveIncludes()
   // itself — safe by the same "nothing has consulted it yet" construction as
   // every other DEMAND key.
-  const linkDemand_ = {
+  ctx.linkDemand = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
@@ -1016,7 +997,7 @@ export function reset(proto, globals, bridge) {
   // ctx.closure.make, src/compile/emit.js's loop/closure-plan reads,
   // src/optimize/vectorize.js's loopPlanLink read) read ctx.plans.* — no
   // import-time WeakMap binding to go stale.
-  const plans_ = {
+  ctx.plans = {
     functions: new WeakMap(),     // src/compile/function-plan.js, keyed on prepared function record
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
@@ -1030,27 +1011,12 @@ export function reset(proto, globals, bridge) {
   // beginSession(). Built here instead, as part of the SAME construction as
   // every other subtree — getFactStore() below reads `ctx.facts`, so every
   // one of its 51 call sites keeps working unchanged.
-  const facts_ = createFactStore()
+  ctx.facts = createFactStore()
 
   // Single reset choreography (see RESET_HOOKS' doc above): every subsystem that
   // keeps module-scope working state outside ctx for perf clears it HERE, driven
   // by the one seam every entry point already calls.
   for (const hook of RESET_HOOKS) hook()
-
-  // ONE identity swap — see the doc at this function's top. Every reader
-  // holds a live `import { ctx }` binding (re-read on every access), so
-  // this is the only write site that needs to change. A single object
-  // LITERAL (not a locally-mutated-then-copied object — see the doc above
-  // this function's first local): every field name below matches its local
-  // exactly (`core: core_`, …), so this is a mechanical 1:1 assembly of the
-  // 21 locals above into the record.
-  ctx = {
-    bridge: bridge_, core: core_, module: module_, scope: scope_, funcs: funcs_,
-    names: names_, func: func_, types: types_, schema: schema_, closure: closure_,
-    runtime: runtime_, memory: memory_, error: error_, transform: transform_,
-    inspect: inspect_, warnings: warnings_, abi: abi_, features: features_,
-    linkDemand: linkDemand_, plans: plans_, facts: facts_,
-  }
 }
 
 /** Debug-mode invariant checks. Encodes the writers/readers contract documented

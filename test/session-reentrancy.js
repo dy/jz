@@ -367,27 +367,30 @@ test('session-reentrancy: order-reversed — minimal then prepare-heavy, regex-f
 })
 
 // CompileSession-as-value (Slice B, .work/compile-session-design.md §2.3 row
-// 1/3): `ctx` is now reassigned by identity every reset(), not mutated
-// field-by-field in place. Concrete claim under test — a caller holding a
-// `ctx` reference from BEFORE a later compile() must keep observing that
-// OLDER compile's own coherent state (never a mix of old-and-new fields, and
-// never the newer compile's state at all), while the live module binding
-// moves on to a distinct object identity.
-test('session-reentrancy: a ctx reference held across a later reset() keeps its own compile\'s coherent snapshot', () => {
+// 1/3) reassigned `ctx` by identity every reset() instead of mutating fields
+// in place, so a caller holding a `ctx` reference from before a later
+// compile() would keep observing that older compile's own coherent
+// snapshot. SWAP-REVERTED (stack-test-2026-08-15, .work/research.md
+// b8f802b8's half-bisection: the const→let identity-swap conversion was
+// isolated as the SOLE guilty mechanism for a deterministic region-live
+// kernel-oracle regression, `facts` absorption proven innocent) — `ctx` is
+// back to `const`, mutated field-by-field in place, so a held reference is
+// NO LONGER a stable snapshot: it observes every later reset() through the
+// same object identity. This test now documents that known limitation
+// directly (a regression guard against silently reintroducing partial-
+// mutation visibility, not a reentrancy-safety claim) rather than asserting
+// the now-false identity-swap behavior. Reentrancy is a named future slice,
+// deferred pending the write-site forensic (b8f802b8's own "concrete next
+// step") rather than re-landed blind.
+test('session-reentrancy: swap-reverted — a ctx reference held across a later reset() is NOT a stable snapshot (known limitation, deferred)', () => {
   if (onKernel()) return  // white-box probe of ctx.js's own module-binding identity
   compile(PREPARE_HEAVY)
   const held = ctx
-  const heldFunc = held.funcs
-  const heldFacts = held.facts
   ok(held.funcs.names.has('reassignMe') && held.funcs.names.has('deep'),
-    'held reference reflects PREPARE_HEAVY\'s own function registry')
+    'held reference reflects PREPARE_HEAVY\'s own function registry immediately after compile')
   compile(MINIMAL)
-  ok(ctx !== held, 'reset() reassigns the ctx binding to a new object identity, not an in-place mutation')
-  ok(ctxModule.ctx === ctx, 'the live import binding tracks the reassignment (export let, not export const)')
-  ok(held.funcs === heldFunc && held.facts === heldFacts,
-    'the held reference\'s own subtrees are untouched by the later reset() — no in-place mutation reaches an old snapshot')
-  ok(held.funcs.names.has('reassignMe') && held.funcs.names.has('deep') && !held.funcs.names.has('f'),
-    'the held reference still reports PREPARE_HEAVY\'s registry, never MINIMAL\'s')
-  ok(ctx.funcs.names.has('f') && !ctx.funcs.names.has('reassignMe'),
-    'the current session reports MINIMAL\'s registry, independent of the held stale reference')
+  ok(ctx === held, 'reset() mutates the ctx binding in place (const ctx, swap-reverted) — same object identity, not a fresh one')
+  ok(ctxModule.ctx === ctx, 'the live import binding still tracks the current session')
+  ok(held.funcs.names.has('f') && !held.funcs.names.has('reassignMe'),
+    'the previously-held reference now reports MINIMAL\'s registry — mutated underfoot, not a coherent snapshot of PREPARE_HEAVY')
 })

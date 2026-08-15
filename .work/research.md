@@ -16943,3 +16943,109 @@ whatever function first calls `__dbg_log`, which is silently ephemeral and gets
 reclaimed) -- take-1's buffer-placement bug cost this session one full rebuild
 cycle and should not be re-discovered by the next one.
 
+
+## §CompileSession Slice B swap-revert LANDED (const ctx, mutate-in-place restored;
+## facts absorption KEPT) -- fixes the ORIGINAL if1_3 wall (confirmed: clean
+## `ca10a209` reproduces it 7/13x3 deterministically; swap-revert never shows
+## it, 15 reps). Region-live does NOT reach 13/13 -- a DIFFERENT, previously
+## under-tested residual defect (`Map key` row, self-hosted kernel throws
+## `Unknown local $mf1_1`, 12/13) fires in 11/15 reps this session, incl. 10/10
+## consecutive once the environment settled -- b8f802b8's own "facts-only
+## INNOCENT, 13/13" verdict was a single untriplicated run and did not catch
+## it. ns-round upstream rounds (early-plan + narrowSignatures, ported from
+## `ns-round-2026-08-14`@`b3cb4f8b`) tested on top: IDENTICAL 12/13,
+## Map-key/$mf1_1 signature -- inert w.r.t. this defect, not a new wall; does
+## not land (no gate improvement to justify the diff). GOAL GATE not
+## attempted (region-live never reaches 13/13, same gating rule every prior
+## ns-round session applied). Dormant fully green, ships as usual
+## (REGION_HOOKS_ACTIVE=false). (2026-08-15)
+
+Worktree `stack-test` off `ca10a209` (main tip), branch `stack-test-2026-08-15`.
+Task: land the swap-revert `b8f802b8`'s half-bisection recommended (const ctx
+restored, mutate-in-place `reset()`; `ctx.facts` absorption kept -- the
+"facts-only" variant b8f802b8 itself called INNOCENT), then test whether the
+banked `ns-round-2026-08-14` upstream rounds close the remaining region-live
+gap to unlock the jz×jz GOAL GATE.
+
+**Swap-revert lands** (`src/ctx.js`, `export let ctx`/identity-swap `reset()`
+→ `export const ctx`/per-field mutate-in-place `reset()`; `ctx.facts` stays,
+`getFactStore()` still `() => ctx.facts`). Dormant: npm test 3451/3445/0/6
+(exact baseline match), self-build ×2 SHA-256
+`da90eb5253df5a469417c522acf28a6bb980e923556f4b96c9381826a6f85a6` both times
+(convergent), test:wasm 2749/2743/0/6, kernel-oracle 13/13×3 (538 assertions
+each), kernel-parity 33/33. `test/session-reentrancy.js`'s Slice-B reentrancy
+probe rewritten (not deleted) to assert the CURRENT, swap-reverted behavior
+(a held `ctx` reference is mutated underfoot by a later `reset()`, same
+object identity throughout) instead of the now-false identity-swap claim --
+documents a known, deferred limitation rather than silently dropping
+coverage. Reentrancy itself: named future slice, deferred pending the
+write-site forensic (b8f802b8's own "concrete next step"), not abandoned.
+
+**Region-live investigation (the actual finding this session adds).**
+Hand-flipped `REGION_HOOKS_ACTIVE`, rebuilt, ran `test/kernel-oracle.js`
+repeatedly across three separate rebuild batches (all byte-identical
+dist/jz.wasm SHA-256 within a batch, confirmed by direct comparison -- the
+compiler itself is deterministic; only RUNTIME behavior varies):
+
+- Batch 1 (first-ever swap-revert region-live build): 4/5 clean 13/13
+  (538 assertions), 1/5 failed 12/13 (475 assertions) on `Map key`
+  (self-hosted kernel compile throws `Unknown local $mf1_1`) -- read at the
+  time as a one-off heisenbug matching this campaign's own documented
+  "allocation-timing noise" class (WAT-breadcrumb tracing precedent,
+  b8f802b8's own session).
+- ns-round test (batch 2, swap-revert + early-plan/narrowSignatures rounds
+  ported from `b3cb4f8b` onto the current union-field root idiom): 12/13×3
+  DETERMINISTIC, identical `Map key`/`$mf1_1` signature. Reverted (`git
+  checkout -- src/compile/plan/index.js`) since it showed no gate
+  improvement over swap-revert alone.
+- Batch 3 (swap-revert alone, re-verification after CHECK B's revert): 7/7
+  consecutive fails, IDENTICAL 12/13 `Map key`/`$mf1_1` signature, across two
+  separate `npm run build` invocations confirmed byte-identical by SHA-256
+  (`73be525f25ba4a9e1a6fbeb2eace2922c4368d21502f3d556beefe32300d721b`).
+- Control: stashed `src/ctx.js` back to clean `ca10a209` (Slice B intact,
+  `let ctx`), REGION_HOOKS_ACTIVE still true, rebuilt: reproduces the
+  ORIGINAL documented wall exactly -- 7/13×3, `Unknown op: *`/`current AST:
+  ["*","if1_3",[null,2]]` -- byte-for-byte matching `ca10a209`'s own commit
+  message ("region-live kernel-oracle still 7/13x3, identical signature").
+  This confirms the test methodology is sound and the swap-revert's fix of
+  the ORIGINAL if1_3 class is real: across 15 total swap-revert reps this
+  session, `if1_3`/`Unknown op: *` never once appeared.
+
+**Verdict: the swap-revert fixes the if1_3 wall b8f802b8 diagnosed, but
+region-live still does not reach 13/13x3** -- a SEPARATE, previously
+under-tested defect on the `Map key` oracle row (`export let f = (x) => {
+let m = new Map(); m.set(x > 0 && 1, 'A'); m.set(0, 'B'); return m.size }`),
+self-hosted-kernel-compile-time (not a runtime trap), signature `Unknown
+local $mf1_1`. b8f802b8's own "facts-only INNOCENT, 13/13" conclusion was a
+SINGLE untriplicated run (unlike its own swap-only/GUILTY finding, which was
+explicitly run ×3) and missed this. Aggregate this session: 11 fails / 15
+total swap-revert reps (73%), including a clean 10/10 once environment
+conditions stabilized in the final batch -- read as the true, reproducible
+rate, not the initial batch's more favorable 1/5. The ns-round upstream
+rounds are INERT with respect to this specific defect (identical signature
+and pass count with or without them) -- not a new/shifted wall as an
+initial same-session read suggested before the control experiment ran; that
+initial framing is corrected here rather than left standing.
+
+**GOAL GATE: NOT ATTEMPTED.** Region-live kernel-oracle never reaches
+13/13×3 (with or without the ns-rounds), so the jz×jz self-hosted memory
+measurement is correctly gated off per this campaign's own standing rule
+(every prior ns-round session applied the identical gate). jessie/watr/
+jzify-entry region-live checks and the region-live self-build ×2 gate were
+likewise not run -- measuring a kernel that fails its own oracle before any
+graph-compile is reachable would not be meaningful, the same reasoning
+`7346f7e7`/`a616ca43`/`b3cb4f8b` each already applied.
+
+**Disposition.** Swap-revert (`src/ctx.js`) + the reentrancy-test rewrite
+(`test/session-reentrancy.js`) land on `main` -- dormant-safe, all shipped
+gates green, `REGION_HOOKS_ACTIVE=false` at commit. ns-round rounds do NOT
+land (no diff, no gate improvement). Two items now open for a future
+forensic session, both deferred rather than spot-fixed per this campaign's
+own repeated precedent: (1) identity-swap reentrancy (session-survey §3),
+(2) the `Map key`/`$mf1_1` self-hosted-compile defect this session
+newly isolated -- concrete next step is the SAME WAT-breadcrumb methodology
+b8f802b8 established, applied to the `Map key` source specifically (a Map
+`.set()` call with a boxed-ambiguous key, `x > 0 && 1` -- worth checking
+first whether it shares a mechanism with the already-audited
+`regionArmSetMap` idempotency work `ca10a209` itself landed, since both
+involve Map-shaped region relocation).
