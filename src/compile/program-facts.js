@@ -29,6 +29,7 @@ const ESCAPE_SKIP = {
   '.': true, '?.': true,          // receiver never escapes via the read itself; slot2 is a prop NAME
   'str': true,                    // payload
   '[]': new Set([0]),             // receiver safe; a bare INDEX name still marks (keys coerce so it's over-marking, but harmless)
+  'in': new Set([1]),             // RHS receiver is queried, not exposed; the key (slot 0) remains a value read
   '=>': new Set([0]),             // params are bindings; a bare-name BODY is a returned value → marks
   'let': true, 'const': true, 'var': true,  // decl heads; initializers are '='-nodes pre-registered below
   'import': true, 'export': true, // module wiring: exported arrays are host/importer-reachable — see explicit mark below
@@ -43,7 +44,7 @@ export function observeNodeFacts(node, f) {
   // nameEscapes: bare names read in a VALUE position — the reference may alias, so
   // mutations through the alias are invisible to per-name facts. Sound direction:
   // over-marking loses a fold; the SAFE (unmarked) positions are only the receiver
-  // slots of '[]'/'.'/'?.' and binding slots.
+  // slots of '[]'/'.'/'?.', the RHS receiver of `in`, and binding slots.
   if (op === '()' && Array.isArray(args[0]) && (args[0][0] === '.' || args[0][0] === '?.') &&
       typeof args[0][1] === 'string' && ARR_RESIZE_METHODS.has(args[0][2]))
     f.arrResized.add(args[0][1])

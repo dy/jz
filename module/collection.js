@@ -23,6 +23,10 @@ import { ERR } from '../err-codes.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
+// Inline only compact closed schemas. SSO bit compares are tiny; heap-string
+// content compares cost roughly 3× and can pull __str_eq. Larger tables keep the
+// shared dispatcher instead of multiplying a long linear chain at each site.
+const IN_SCHEMA_COMPARE_BUDGET = 16
 // NaN-box bits of the SSO string 'length' — computed once; see the STRING
 // arm in __dyn_get_t_h and __length's property-fallback arm (module/core.js).
 // ssoEncode('length') never returns null (6 ASCII).
@@ -3424,6 +3428,57 @@ export default (ctx) => {
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+
+    // A precise, closed OBJECT schema answers membership without reading a
+    // field value or pulling the dynamic-property runtime. This is both more
+    // correct (a present null/undefined field still exists) and smaller/faster
+    // than __dyn_get + a nullish test. Computed writes or literal writes beyond
+    // the schema reopen the shape and retain the generic runtime path below.
+    const schema = typeof obj === 'string' && objType === VAL.OBJECT ? ctx.schema.resolve(obj) : null
+    const literalWrites = schema && ctx.types.literalWriteKeys?.get(obj)
+    let hasOutOfSchemaWrite = false
+    if (literalWrites) for (const prop of literalWrites) if (!schema.includes(prop)) {
+      hasOutOfSchemaWrite = true
+      break
+    }
+    let compareCost = 0
+    if (schema) for (const prop of schema) {
+      compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
+      if (compareCost > IN_SCHEMA_COMPARE_BUDGET) break
+    }
+    const schemaClosed = schema != null && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
+      ctx.types.nameEscapes != null && ctx.types.dynWriteVars != null &&
+      ctx.types.literalWriteKeys != null && !ctx.types.nameEscapes.has(obj) &&
+      !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite
+    if (schemaClosed) {
+      if (Array.isArray(key) && key[0] === 'str')
+        return typed(['i32.const', schema.includes(key[1]) ? 1 : 0], 'i32')
+
+      const contentCompare = schema.some(prop => !ctx.features.sso || !ssoEncode(String(prop)))
+      inc('__is_str_key', '__to_str')
+      if (contentCompare) inc('__str_eq')
+      const keyTmp = temp('in_key')
+      const keyVal = ['local.get', `$${keyTmp}`]
+      const keyBits = ['i64.reinterpret_f64', keyVal]
+      let present = ['i32.const', 0]
+      // Nested result-if chain short-circuits on the first matching field.
+      // Canonical SSO keys need only bit equality; longer/non-ASCII names use
+      // content equality so host/runtime-built strings remain correct.
+      for (let i = schema.length - 1; i >= 0; i--) {
+        const prop = String(schema[i])
+        const propBits = asI64(emit(['str', prop]))
+        const same = ctx.features.sso && ssoEncode(prop)
+          ? ['i64.eq', keyBits, propBits]
+          : ['call', '$__str_eq', keyBits, propBits]
+        present = ['if', ['result', 'i32'], same,
+          ['then', ['i32.const', 1]], ['else', present]]
+      }
+      return typed(['block', ['result', 'i32'],
+        ['local.set', `$${keyTmp}`, asF64(emit(key))],
+        ['if', ['i32.eqz', ['call', '$__is_str_key', keyBits]],
+          ['then', ['local.set', `$${keyTmp}`, ['f64.reinterpret_i64', ['call', '$__to_str', keyBits]]]]],
+        present], 'i32')
+    }
 
     if (Array.isArray(key) && key[0] === 'str') {
       const prop = key[1]

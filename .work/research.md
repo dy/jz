@@ -18249,3 +18249,87 @@ instance regression. `git diff --check` clean.
 
 **Files.** `src/ctx.js`, `scripts/self.js`, `scripts/build-profile.mjs`,
 `test/selfhost-source.js`, plus this ledger. No generated artifact is tracked.
+
+## §Dynamic `in`: compact closed-schema presence lowering (2026-08-16)
+
+**Problem, kept separate from the invariant repair above.** Generic `key in
+obj` lowers through `__dyn_get` and then tests whether the loaded value is
+non-nullish. That is a value query, not a presence query: a fixed schema slot
+holding `null` or `undefined` incorrectly reports absent. The same generic
+machinery also misses several broader runtime-object cases (including some
+heap-string schema keys, nullish sidecar values, string-form array/typed-array
+indices, and dynamic `Object.hasOwn`). Those are pre-existing compatibility
+limits, not all accepted as runtime-surface work.
+
+**Rejected prototype.** A general `__dyn_has` mirrored OBJECT schema scans,
+sidecar/global dyn-prop routing, ARRAY/TYPED index handling, and forwarding
+policy. It added about 185 WAT-source lines / 9.5 KiB to the representative
+module, duplicated storage policy already owned by `__dyn_get`/`__dyn_set`,
+and still failed the typed-view-sidecar case. It was fully restored before the
+landed design; no helper or schema-table assembly change survived.
+
+**Landed shape.** A bare receiver proven `VAL.OBJECT` may answer membership
+from its compiler-owned schema when all three whole-program coverage facts are
+available and prove the shape closed:
+
+- the receiver does not escape/alias (`nameEscapes`);
+- it has no computed-key writes (`dynWriteVars`);
+- `literalWriteKeys` contains no key outside the schema.
+
+Using an object only as the RHS of `in` is now correctly classified as a
+non-escaping receiver read; the key remains a value read. A literal key folds
+to `i32.const`. A dynamic key is evaluated exactly once, normalized through
+ToPropertyKey, then compared against schema names. Canonical SSO names use
+bare bit equality; heap/non-ASCII names use `__str_eq`. The generated path
+never reads slot values, so present-null and present-undefined are both true.
+Delete, aliasing, computed writes, and out-of-schema literal writes all retain
+the old runtime dispatch.
+
+**Size discipline.** This is deliberately an inline specialization, not a new
+runtime object model. A weighted compare budget of 16 (SSO compare = 1,
+content compare = 3) admits compact schemas and leaves larger tables on the
+shared dispatcher. This was added after measuring pathological large schemas:
+unbounded inline chains could eventually exceed the shared helper. The budget
+also respects `ctx.features.sso=false`; without the canonical-SSO invariant,
+every name is a content comparison. A 17-SSO-key closed schema and an open
+sidecar case are byte-identical to baseline at O0/O2/O3.
+
+**Representative output measurements (exact wasm bytes, same process, current
+`bb13767f` baseline):**
+
+| source | O0 baseline → new | O2 baseline → new | O3 baseline → new |
+|---|---:|---:|---:|
+| compact 3-key SSO schema | 10,294 → 6,586 | 8,752 → 5,465 | 9,165 → 5,631 |
+| compact mixed schema (`errorClasses`) | 10,452 → 7,505 | 8,951 → 6,449 | 9,364 → 6,630 |
+| 17-key SSO schema (over budget) | byte-identical | byte-identical | byte-identical |
+| computed-write/open receiver | byte-identical | byte-identical | byte-identical |
+
+The compact path therefore removes `__dyn_get` and `__dyn_props`; an SSO-only
+schema also removes `__str_eq`. Same-process 1M-iteration O3 medians on the
+six-key compiler-shaped probe improved from 5.69→1.82 ms for an SSO hit and
+8.47→5.18 ms for a miss. The long-name hit is now semantically true (baseline
+was false), so its timing is not presented as an equivalent-result speedup.
+The unpublished self-host artifact grows 17,175,053→17,187,998 bytes (+12,945,
+0.075%) because it contains the compiler implementation; published `dist/jz.js`
+grows 1,056 bytes. User modules on the admitted path shrink by 2.5–3.7 KiB,
+not grow by the rejected helper's ~9.5 KiB.
+
+**Compatibility boundary, explicit.** HASH dictionaries keep their existing
+structural `__hash_has` path. Compact, closed, bare schema objects get the new
+exact path. Larger schemas, open/polymorphic/escaped receivers, prototypes,
+ARRAY/TYPED/STRING dynamic forms, and `Object.hasOwn` retain the existing
+fallback (including its known nullish-presence gaps). Broadening those cases
+requires a separate representation decision; this change does not duplicate
+all object-storage routing to chase full JS compatibility.
+
+**Gates.** `test/dyn-keys.js`: 60/60, 247 assertions, including O0/O2/O3
+null/undefined/long-name/ToPropertyKey/evaluate-once cases plus every deopt
+belt and helper-reachability guard. Final `npm test`: 3,471 pass / 0 fail / 6
+skip (19,986 assertions). Matrix O0 and O3: 3,471 pass / 0 fail / 6 skip each.
+WASI: 3,469 pass / 1 fail / 6 skip; the sole carrier ternary failure reproduces
+unchanged on clean `bb13767f` and is unrelated. `npm run test:self`: self-host
+correctness 21/21 (206 assertions), performance pins 5/5; warm geomean 1.029×
+(cap 1.03), fresh 0.808× (cap 0.99). A final wasm-kernel probe compiled and ran
+compact mixed/8-key, over-budget 17-key, open-write, and delete cases, and
+confirmed compact helper absence plus large-schema fallback. `git diff
+--check` clean. Generated `dist/` artifacts remain untracked.

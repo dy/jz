@@ -5,7 +5,7 @@
 // never a trap and never a garbage hit.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
 import { onKernel, withBigintStrict } from './_matrix.js'
 
 const run = (body) => jz('export let f = () => {' + body + '}', { jzify: true }).exports.f()
@@ -118,6 +118,73 @@ test('dyn-keys: numeric key on an unknown-type OBJECT receiver resolves through 
   // string key `o['1']`, matching JS.
   is(jz(`const o = {}; o['1'] = 9
     export let f = () => { let n = 1; return o[n] | 0 }`).exports.f(), 9)
+})
+
+// Presence is a schema fact, not a value fact. The old `in` path called
+// __dyn_get and tested "non-nullish", conflating absent with present-null and
+// present-undefined. For a precise non-escaping fixed-shape receiver the
+// compiler already owns the complete key set: compare the dynamic key against
+// that schema directly. This removes the dynamic-property runtime rather than
+// growing it. Escaped/aliased or open shapes retain the conservative path.
+test('in: a closed schema answers dynamic membership structurally, without __dyn_get', () => {
+  const src = `export let f = (k) => {
+    let o = { nil: null, undef: undefined, errorClasses: null, '1': undefined, undefined: null }
+    return k in o
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const f = jz(src, { optimize }).exports.f
+    is(f('nil'), true, `O${optimize}: null-valued field is present`)
+    is(f('undef'), true, `O${optimize}: undefined-valued field is present`)
+    is(f('errorClasses'), true, `O${optimize}: runtime heap-string key uses content equality`)
+    is(f(1), true, `O${optimize}: ToPropertyKey numeric key reaches schema name '1'`)
+    is(f(undefined), true, `O${optimize}: ToPropertyKey undefined key reaches schema name 'undefined'`)
+    is(f('missing'), false, `O${optimize}: absent field stays absent`)
+  }
+
+  const wat = compile(src, { optimize: 3, wat: true })
+  ok(!wat.includes('(func $__dyn_get'), 'closed-schema membership does not pull the dynamic getter family')
+  ok(!wat.includes('$__dyn_props'), 'closed-schema membership does not pull sidecar/global dynamic-property storage')
+  ok(wat.includes('$__str_eq'), 'a long schema name uses content equality')
+
+  const ssoWat = compile(`export let f = (k) => {
+    let o = { nil: null, undef: undefined }
+    return k in o
+  }`, { optimize: 3, wat: true })
+  ok(!ssoWat.includes('(func $__dyn_get'), 'SSO-only schema does not pull __dyn_get')
+  ok(!ssoWat.includes('$__dyn_props'), 'SSO-only schema does not pull dynamic-property storage')
+  ok(!ssoWat.includes('$__str_eq'), 'canonical SSO names compare by bits without __str_eq')
+})
+
+test('in: the closed-schema key expression is evaluated once before ToPropertyKey', () => {
+  const src = `export let f = () => {
+    let calls = 0
+    let key = () => { calls++; return 1 }
+    let o = { '1': null }
+    let present = key() in o
+    return calls * 10 + present
+  }`
+  for (const optimize of [0, 2, 3])
+    is(jz(src, { optimize }).exports.f(), 11, `O${optimize}: one key call, then numeric ToPropertyKey`)
+})
+
+test('in: open, aliased, deleted, and large schemas retain runtime membership dispatch', () => {
+  const cases = [
+    ['alias', `let o = { fixed: undefined }; let alias = o; alias[k] = 1; return k in o`, 'added', true],
+    ['computed write', `let o = { fixed: undefined }; o[k] = 1; return k in o`, 'added', true],
+    ['out-of-schema literal write', `let o = { fixed: undefined }; o.added = 1; return k in o`, 'added', true],
+    ['computed delete', `let o = { fixed: undefined }; delete o[k]; return k in o`, 'fixed', false],
+    ['large-schema budget', `let o = {
+      a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9,
+      j: 10, k: 11, l: 12, m: 13, n: 14, o: 15, p: 16, q: 17
+    }; return k in o`, 'q', true],
+  ]
+  for (const [name, body, key, expected] of cases) {
+    const src = `export let f = (k) => { ${body} }`
+    for (const optimize of [0, 2, 3])
+      is(jz(src, { optimize }).exports.f(key), expected, `O${optimize}: ${name}`)
+    ok(compile(src, { optimize: 3, wat: true }).includes('(func $__dyn_get'),
+      `${name} bypasses the closed-schema path`)
+  }
 })
 
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
