@@ -1005,9 +1005,26 @@ VT['.'] = (args) => {
       const sid = typeof args[0] === 'string'
         ? (repOf(args[0])?.schemaId ?? ctx.schema?.vars?.get(args[0])) : null
       if (sid != null && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
-      const hz = ctx.schema?.slotWriteHazards
-      if (hz && (hz.pointsTo === 'ALL' || hz.props.has(args[1]) ||
-        (hz.numeric && /^(0|[1-9][0-9]*)$/.test(args[1])))) return null
+      // `child.literal` (shapeOfObjectLiteralAst's scalar-leaf fallback,
+      // BigInt inference session): a compile-time constant drawn straight
+      // from the object literal's own source text has no runtime slot to
+      // write through — the write-hazard census below exists to catch an
+      // ALIASED heap write this analysis can't trace, which cannot apply to
+      // a value that was never a property STORE in the first place. Skip it
+      // ONLY for that flagged case; every other `child` (JSON.parse'd,
+      // propagated through a chain, a nested object) still goes through the
+      // census exactly as before. Confirmed load-bearing, not a guess: the
+      // unconditional gate below reads `hz.pointsTo === 'ALL'` in the real
+      // 156-module self-hosted kernel (a whole-program "too many
+      // unresolvable writes to track individually" fallback state), which
+      // was silently vetoing `layout.js`'s `LAYOUT.NAN_PREFIX_BITS` — a
+      // `const`, never-written module table — right after the scalar-leaf
+      // fix above had already proven its kind.
+      if (!child.literal) {
+        const hz = ctx.schema?.slotWriteHazards
+        if (hz && (hz.pointsTo === 'ALL' || hz.props.has(args[1]) ||
+          (hz.numeric && /^(0|[1-9][0-9]*)$/.test(args[1])))) return null
+      }
       return child.val
     }
   }
@@ -1526,7 +1543,25 @@ function spreadSchema(obj) {
  *  spread, non-shape value). Only called from `recordGlobalRep` — local
  *  bindings keep relying on `shapeOf` whose narrower contract (JSON.parse /
  *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
- *  locking a static jsonShape onto it. */
+ *  locking a static jsonShape onto it.
+ *
+ *  Scalar-literal property leaf (BigInt inference session, .work/bigint-
+ *  retirement-design.md §5 residual-site rule 1): a property whose VALUE is
+ *  itself a compile-time-decidable scalar expression (`NAN_PREFIX_BITS:
+ *  0x7FF8000000000000n`, or any other literal/arithmetic form `valTypeOf`
+ *  already classifies — NUMBER/STRING/BOOL/BIGINT/…) was previously
+ *  invisible here: the recursive call above only ever returns non-null for a
+ *  NESTED `{}`/name-reference child, so a scalar leaf's `child` was always
+ *  null and the property silently dropped from `props`. `VT['.']` then had
+ *  nothing to answer a `.prop` read with, forcing every reader back to the
+ *  untyped/dynamic path — concretely, `layout.js`'s `LAYOUT.NAN_PREFIX_BITS`
+ *  (a plain module-object BigInt-literal property) was unprovable at its own
+ *  read sites, which poisoned `i64Hex`'s cross-call-site `val` consensus
+ *  (narrow.js `hardParamVal`/`bigintBoxedVerdict`) into the one residual
+ *  boxed PARAM the Slice-0 ledger banked. General fix, not layout.js-
+ *  specific: ANY module-level object literal with a literal/statically-
+ *  decidable scalar property now gets that property's kind recorded, the
+ *  same way `shapeOfJsonValue` already does for a JSON.parse'd scalar. */
 export function shapeOfObjectLiteralAst(expr) {
   if (typeof expr === 'string') return shapeOf(expr)
   if (!Array.isArray(expr) || expr[0] !== '{}') return shapeOf(expr)
@@ -1540,6 +1575,29 @@ export function shapeOfObjectLiteralAst(expr) {
     names.push(p[1])
     const child = shapeOfObjectLiteralAst(p[2])
     if (child) props[p[1]] = child
+    else {
+      // Scoped to genuine SCALARS only — OBJECT/HASH is deliberately excluded:
+      // VT['.'] dereferences a structured shape's `.props` unguarded
+      // (`sh.props[args[1]]`), so a bare `{val: VAL.OBJECT}` with no `props`
+      // map (the only way a nested `{}`/spread could reach this fallback
+      // instead of the recursive branch above) would throw on the next `.`
+      // step of a chain, not just decline to answer. ARRAY is left out too —
+      // its own `.elem` is read as `parent.elem || null` (safe either way)
+      // but a bare `{val: VAL.ARRAY}` carries no useful element fact, so
+      // there is nothing this fallback would add for it.
+      const vt = valTypeOf(p[2])
+      // `literal: true` marks this as a compile-time CONSTANT scalar, not a
+      // heap reference — VT['.']'s write-hazard gate exists to catch a
+      // property that could be mutated through an ALIAS this analysis can't
+      // trace (a schema-tracked object instance shared/written elsewhere);
+      // that concern is a category error for a scalar drawn directly from
+      // the object literal's OWN source text, which is never itself the
+      // target of a `recv.prop = x`/`recv[k] = x` write (there is no `recv`
+      // to write through — the value comes from parsing this exact literal,
+      // not from a runtime slot). See VT['.']'s own consumption of this flag.
+      if (vt === VAL.NUMBER || vt === VAL.STRING || vt === VAL.BOOL || vt === VAL.BIGINT)
+        props[p[1]] = { val: vt, literal: true }
+    }
   }
   return names.length ? { val: VAL.OBJECT, props, names } : null
 }
