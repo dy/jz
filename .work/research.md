@@ -19339,3 +19339,385 @@ arithmetic vs tagged dynamic function variants when needed; use opaque,
 session-owned plan storage; and migrate consumers before graph-completing
 FeaturePlan. Crucially, `__to_num_raw(TOP)` is rejected outright—the exact v1
 mechanism is not reused. No compiler source changed in this design slice.
+---
+
+## §Region arena — THE WAT-breadcrumb FRONTIER TRACE against the CURRENT
+## kernel (all 8 rounds + Slice 3 + batched AFE): all 8 fire, all reclaim
+## real transient churn, ALL EIGHT still show a ~292 MB per-round floor
+## climb dominated NOT by retained facts but by `$__region_exit`'s OWN
+## Cheney-copy cost (re-materializing the ENTIRE root-reachable set on
+## EVERY exit) — the AFE loop survives only 6 of the ~45 batches jz×jz
+## needs before that fixed tax alone exhausts the 4 GiB ceiling; exact trap
+## = a single 112 MiB allocation (inside `$__region_exit`'s own relocation
+## of a large pointer-keyed collection) overflowing i32 arithmetic 88 MB
+## short of 2³² — genuine cumulative exhaustion at the coarse grain, a
+## pathological single request at the fine grain, both true at once
+## (2026-08-16, measurement only, no source changes)
+
+**Task**: the definitive frontier trace this file's own `3f8d81b5` entry
+banked as its next step — per-round-exit heap readings on the REAL jz×jz
+compile (region-live), the AFE batched loop's per-batch curve (sawtooth or
+flat? retained floor slope? extrapolated ceiling batch?), and the exact
+trap allocation (size, requesting function, caller provenance) — to decide
+between (a) retained-floor exhaustion, (b) a reclaim gap, (c) a pathological
+allocation.
+
+### Method — WAT-breadcrumb, `097a51d7`'s own established technique, extended
+
+Built a disposable region-live kernel (`REGION_HOOKS_ACTIVE` hand-flipped
+`true` in a worktree copy of `scripts/self.js`, reverted before commit)
+at `optimize: 0` (bytecode unoptimized so the `names:true` wasm name
+section survives — O3 strips `narrowSignatures` et al from it, `097a51d7`'s
+own documented wrinkle) via native `compile(graph.code, {modules,
+optimize:0, names:true, memory:8192})` on `resolveModuleGraph('scripts/
+self.js')`'s own 156-module graph — i.e. the kernel's OWN bytecode is
+unoptimized, but it is later CALLED with the real O3 profile
+(`{level:3, inlinePtrOffsetFast:false}`) against whatever it's asked to
+compile, exactly matching every prior session's split between "build
+profile" and "run profile."
+
+`wasm2wat --enable-all` (WABT 1.0.36) decompiled the 11.95 MB kernel to a
+4.65M-line WAT. Confirmed names survive: `$m111_front$frontHalf`,
+`$m123_index$compile`, `$m123_index$analyzeFuncForEmit`,
+`$m131_narrow$narrowSignatures`, `$m136_index$plan` all present verbatim.
+
+**A methodological extension beyond `097a51d7`'s own single-shot
+checkpoints**: rather than hand-picking call sites inside `plan`/`compile`'s
+own compiled bodies (self.js's three textual `regionHooks: { mark: () =>
+__region_mark(), exit: (mark,root) => __region_exit(mark,root) }`
+literals — front's, `optimizeTail`'s, and `compileAst`'s — turned out to
+have been DEDUPLICATED by `plan.js`'s own `devirtGlobalCalls` pass into a
+single shared closure each, confirmed empirically: exactly ONE `call
+$__region_mark` and ONE `call $__region_exit` exist in the entire 4.65M-line
+decompile, despite three separate source call sites), the breadcrumb was
+spliced directly into the two SHARED PRIMITIVES themselves:
+
+- `$__region_mark` (0 params → f64, body is just `global.get $__heap;
+  f64.convert_i32_u`): logs `(tag=MARK, heap)` at entry.
+- `$__region_exit` (params `mark, root` → f64): logs `(tag=EXIT_PEAK, heap)`
+  at its own entry (before ANY of its own relocation work), and
+  `(tag=EXIT_FLOOR, heap)` right after its own tail `global.set $__heap`
+  (the post-Cheney-copy rewind) and before the `local.get $newRoot` return.
+
+Since jz's compile pipeline is single-threaded and strictly sequential,
+every mark/exit call anywhere in the ENTIRE compile (front, `compile()`'s
+outer Slice-3 boundary, `plan()`'s 7 internal rounds, `compile()`'s
+scan-round, every batched AFE round) funnels through these same two
+primitives IN PROGRAM ORDER — a single append-only event log, read out
+after the trap, reconstructs the full per-round table by POSITION alone, no
+call-site archaeology needed. Log lives in a reserved 64 KiB scratch region
+freed up by shifting `__heap_start`/`__heap`/`__heap_reset`'s shared init
+constant (614528 → 680064) — safe: nothing below the NEW heap-start is ever
+touched by the bump allocator, verified by direct read of `$__alloc`'s own
+bump logic before editing.
+
+**Trap identification, instrumented directly at the mechanism, not
+inferred from a coarse byte count**: spliced call/byte-count breadcrumbs
+into `$__alloc` (last requested `$bytes`, cumulative call count — every
+single heap allocation in the entire kernel routes through this one
+function, confirmed by direct read of `module/core.js`'s "own memory" path)
+and `$__memgrow` (last requested `$next`, cumulative call count, plus a
+tag distinguishing which of its own two `unreachable`s fired: the
+`need>65536 pages` ceiling check vs. the `memory.grow` failure fallback).
+Also an entry counter on `$m123_index$analyzeFuncForEmit` itself — the
+same "how many functions got analyzed" metric `097a51d7`'s own session
+used (there: call #106 dormant / #1427 region-live, under a much simpler
+pre-plan-tail, pre-AFE-batching kernel — NOT a like-for-like baseline for
+this session's numbers, cited only for method precedent).
+
+All new globals: 7 fresh `(mut i64)` globals appended after the kernel's
+pre-existing 871 globals, each exported by name (`__dbg_afe_calls`,
+`__dbg_alloc_count`, `__dbg_last_alloc_bytes`, `__dbg_memgrow_count`,
+`__dbg_last_memgrow_next`, `__dbg_trap_need_pages`, `__dbg_trap_kind`),
+readable via `WebAssembly.Global.value` after catching the trap (globals
+and memory are NOT rolled back by a wasm trap — confirmed working, matches
+every prior session's own read-after-catch method). All edits applied by
+exact original line number (18 anchor points, EVERY ONE sanity-checked
+against its expected literal text before any edit ran, aborting loudly on
+any mismatch) via a disposable Node script, bottom-to-top so earlier edits
+never shift line numbers used by later ones. `wat2wasm --enable-all`
+reassembled cleanly first try. Zero jz source touched — the worktree's only
+diff for the whole session is the temporary `REGION_HOOKS_ACTIVE` flip,
+reverted before commit.
+
+**Validated on jessie first** (cheap, completes in 2.13s): 54 logged
+events, exact expected shape (front triple, outer mark, early-plan/
+narrowSignatures/5×plan-tail triples, scan-round triple, 3 AFE-batch
+triples matching jessie's own small function count, then the outer Slice-3
+exit, then several `optimizeTail`/watr-level rounds — a FOURTH region-hook
+family, wired separately in `scripts/self.js`'s `optimizeTail` call, that
+only fires when the compile actually reaches watr — never relevant to
+jz×jz, which traps long before `emitFunc`/`optimizeTail` per every prior
+session). Debug globals sane (`alloc_count`: 24.3M, `memgrow_count`: 1.86M,
+`afe_calls`: 76, matching jessie's own function count). Instrument
+confirmed sound before spending the jz×jz run.
+
+### 1. THE FRONTIER TABLE — all 8 rounds fire, none skip, all reclaim real churn
+
+Region-live jz×jz run (156-module self-graph, real O3 profile at call
+time): **TRAPPED, `unreachable`, 20.06 s** (wall time not comparable to
+the coarse GOAL GATE's ~6–7 s — this kernel's own bytecode is unoptimized,
+per the method above; only the byte-level trajectory below is the real
+signal). `memory.buffer.byteLength` at catch: **4096.0 MB — 4,294,967,296
+bytes, exactly 2³², the same ceiling every prior session has hit.**
+
+| # | round | mark (MB) | peak (MB) | floor (MB) | churn (peak−mark) | reclaim (peak−floor) | net growth (floor−mark) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| — | front | 19.409 | 496.197 | 94.361 | +476.79 | 401.84 | **+74.95** |
+| — | (compile() outer mark — exit never reached, trapped) | 115.149 | — | — | — | — | — |
+| 1 | early-plan prefix | 164.514 | 1606.545 | 520.571 | +1442.03 | 1085.97 | **+356.06** |
+| 2 | narrowSignatures whole-call | 520.571 | 2366.593 | 696.453 | +1846.02 | 1670.14 | **+175.88** |
+| 3 | plan-tail 1 (narrowBoolResults) | 696.453 | 700.338 | 867.292 | +3.89 | **−166.95** | **+170.84** |
+| 4 | plan-tail 2 (6-pass bundle) | 867.292 | 1077.760 | 1179.864 | +210.47 | **−102.10** | **+312.57** |
+| 5 | plan-tail 3 (5-pass bundle) | 1179.864 | 1273.041 | 1478.784 | +93.18 | **−205.74** | **+298.92** |
+| 6 | plan-tail 4 (refineSlotIntCensus) | 1478.785 | 1501.084 | 1777.796 | +22.30 | **−276.71** | **+299.01** |
+| 7 | plan-tail 5 (tail bundle) | 1777.796 | 1777.797 | 2069.550 | **+0.001** | **−291.75** | **+291.75** |
+| — | compile() scan-round | 2069.550 | 2131.842 | 2361.832 | +62.29 | **−229.99** | **+292.28** |
+
+**Q1 answered directly, not inferred: all 8 named rounds (front, early-plan,
+narrowSignatures, 5× plan-tail) DO fire on jz×jz — none skip.** The
+`3f8d81b5` entry's own suspicion ("canSkipWholeProgramNarrowing skips
+some") is REFUTED for this graph: jz×jz is large/complex enough to take the
+full whole-program-narrowing path, confirmed by direct measurement (every
+round shows a real, distinct peak reading), not by re-reading the branch
+condition.
+
+**The load-bearing finding is in the "reclaim" column going NEGATIVE from
+plan-tail round 1 onward, and dramatically so by round 5**: round 5's own
+transient churn is **0.001 MB** — `invalidateAllBodyFacts` + two cheap
+boundary checks touch almost nothing new — yet its floor is **291.75 MB
+higher than its mark**. This is not possible to explain as "unreclaimed
+garbage from this round's own work" (there is essentially none); it can
+only be `$__region_exit`'s OWN mechanism: a Cheney-style copying relocator
+that, on every single exit, re-`__alloc_hdr_n`s and recursively re-copies
+the ENTIRE structure reachable from the round's root bundle (`ast,
+programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope,
+ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform,
+ctx.facts` — confirmed by direct read of `$__region_exit`'s own tail:
+`global.get $__heap; local.get $mark; i32.sub` computes the compacted
+block's size, `memory.copy`s it down to `mark`, and `global.set $__heap`
+to `mark + thatSize` — the new floor IS `mark + (size of everything the
+copy just rebuilt)`) — REGARDLESS of how little of that structure is
+actually new since the last round. The measured tax is closely stable at
+**≈292–299 MB per round** from plan-tail round 2 onward through the
+scan-round (170.84 → 312.57 → 298.92 → 299.01 → 291.75 → 292.28 MB), i.e.
+this IS approximately "the whole rooted compiler state, freshly
+re-materialized," not "this round's marginal contribution." Cross-checks
+clean against prior sessions' own numbers: narrowSignatures' own churn here
+(+1846.02 MB grown) is in the same range as `097a51d7`'s own dormant
+figure for the identical pass (+1564.9 MB) — same mechanism, same order of
+magnitude, expected variance from a different kernel build/profile.
+
+### 2. THE AFE BATCH CURVE — sawtooth in "churn," FLAT-CLIMBING in "floor,"
+### and the floor's slope alone predicts the exact trap batch
+
+| batch (32 funcs) | mark (MB) | peak (MB) | floor (MB) | churn (peak−mark) | floor − mark ("round tax") |
+|---|---:|---:|---:|---:|---:|
+| 1 (funcs 1–32) | 2361.832 | 2363.512 | 2654.109 | +1.68 | **292.28** |
+| 2 (funcs 33–64) | 2654.109 | 2656.708 | 2946.626 | +2.60 | **292.52** |
+| 3 (funcs 65–96) | 2946.626 | 2950.608 | 3239.446 | +3.98 | **292.82** |
+| 4 (funcs 97–128) | 3239.446 | 3246.450 | 3532.666 | +7.00 | **293.22** |
+| 5 (funcs 129–160) | 3532.666 | 3538.045 | 3826.044 | +5.38 | **293.38** |
+| 6 (funcs 161–192) | 3826.044 | 3829.527 | **TRAPPED mid-exit** | +3.48 (so far) | never completed |
+
+`__dbg_afe_calls` = **192 = exactly 6×32** at catch — batch 6's own 32
+`analyzeFuncForEmit` calls ALL completed (confirmed directly, not
+inferred); the trap fires strictly INSIDE batch 6's own `$__region_exit`
+call, before its `EXIT_FLOOR` breadcrumb — i.e. during the reclaim
+machinery's own relocation work, not during any function's own analysis.
+
+**Per-batch real churn is a genuine sawtooth and stays small and roughly
+flat** (1.7–7.0 MB — consistent with the census's own "region-arena's OWN
+reclaim is small and sound" verdict, `d08d5968`, which measured only the
+last completed round's own delta and correctly found it small). **But the
+"floor − mark" tax is NOT a sawtooth — it climbs by a near-constant ≈292–293
+MB EVERY SINGLE BATCH, with only a slow ≈+0.2–0.4 MB/batch drift** (the
+genuine marginal growth — each function's own `FunctionPlan` published into
+`ctx.plans.functions`, per `1248563f`'s own design note that this Map "is
+NEVER emptied for the rest of the compile"). Regressing floor against mark
+gives slope ≈1.0 with intercept ≈292 MB: **the absolute heap position climbs
+by ≈292 MB every batch almost entirely because `$__region_exit` re-pays the
+full cost of recopying the (slowly growing) ~292 MB root-reachable set,
+not because that set is itself exploding.**
+
+**Extrapolation, confirmed exactly against the observed trap, not just
+predicted**: budget from the AFE loop's own first mark (2361.832 MB) to the
+2³² ceiling (4294.967296 MB) = **1933.135 MB**. At the measured average
+tax (≈292.5 MB/batch, batches 1–5), survivable batches = 1933.135 / 292.5 ≈
+**6.61** — matches the observed trap exactly (mid-way through batch 6).
+jz×jz has ~1435–1500 functions (`d08d5968`'s own figure) → needs **~45–47
+batches** at `AFE_ROUND_BATCH=32` to finish the loop at all. **The retained
+floor alone, on its OWN measured slope, exhausts the ceiling by batch ~7 —
+roughly 1/7th of the way through the AFE loop jz×jz actually needs**, with
+zero regard for how much real per-function churn exists (which the data
+shows is NOT the bottleneck — it stays under 10 MB/batch throughout).
+
+### 3. THE EXACT TRAP — a single 112 MiB allocation, inside the reclaim
+### machinery's own relocation work, overflowing i32 arithmetic 88 MB short
+### of the true ceiling
+
+`__dbg_trap_kind` = **0** — neither of `$__memgrow`'s own two `unreachable`s
+(the `need>65536 pages` ceiling check, or the `memory.grow` failure
+fallback) fired. `__dbg_last_alloc_bytes` = **117,440,528 bytes = exactly
+112 MiB + 16 B** (112×2²⁰=117,440,512, +16 B header/alignment overhead) —
+a suspiciously round geometric-growth size, consistent with a doubling
+reallocation of a large collection's backing store, not an ordinary
+small-object allocation (every other allocation this compile makes is tens
+to low-hundreds of bytes, per `d08d5968`'s own 28 B MAP_ENTRY+LANE stride
+finding). `__dbg_last_memgrow_next` = 4,202,685,056 B (4,007.99 MB) — the
+heap pointer immediately before the fatal request, confirming the
+allocator had already grown wasm memory to its hard 65536-page/4 GiB cap
+(the geometric-growth-capped-at-max policy in `$__memgrow`'s own tail
+explains why `memory.buffer.byteLength` reads the full 4096.0 MB even
+though the LAST recorded `$__memgrow` call only strictly needed ~4,009 MB —
+that call's own geometric doubling overshot and got capped at the wasm32
+maximum in one shot).
+
+**Mechanically reconstructed, not guessed** (verified by direct
+64-bit arithmetic replay of `$__alloc`'s own instructions): `ptr` (heap
+pointer at the fatal call) had **88.01 MB of genuine headroom** left below
+2³² (4,294,967,296 − 4,202,685,056 − intervening allocations ≈ 92.28 MB
+before this specific 112 MiB request; some of that gap consumed by
+allocations between the last recorded `__memgrow` and the fatal call).
+`next = ptr + 117,440,528 + 7 & ~7` computed in unsigned i32 arithmetic
+WRAPS past `0xFFFFFFFF` to a small value (≈25.16 M), tripping `$__alloc`'s
+own explicit overflow guard (`if (next < ptr) unreachable` — checked
+BEFORE the `next > __heap_end → call $__memgrow` branch, so `$__memgrow`
+is never even invoked for this fatal request, matching `trap_kind=0`
+exactly) — **not** the "ran out of pages" ceiling check, but the
+"pointer arithmetic itself overflowed 2³²" guard, one instruction earlier
+in program order.
+
+Given the trap fires inside batch 6's `$__region_exit` (§2) and the
+`__region_copy_rec`'s own SET/MAP arm requires a full `__coll_order`
+rebuild for any relocated pointer-keyed Map (`1248563f`'s own design doc,
+citing `ctx.plans.functions`/`ctx.funcs.map` by name as exactly this
+shape), the most likely concrete identity of the fatal allocation is a
+fresh backing-array block for one of these two large pointer-keyed Maps
+(now holding up to 192 entries' worth of accumulated `FunctionPlan`/
+registry state) being doubled during ITS OWN relocation inside batch 6's
+copy — consistent with, but not independently confirmed beyond, the size/
+shape/location evidence above (no per-call-site caller tag was
+instrumented on `$__alloc` itself — see Method's honest scope note below).
+
+**Genuine exhaustion or pathological single request — both, at different
+grains, honestly**: at the COARSE grain, the whole compile legitimately
+walked the heap up to within 88 MB of 2³² over 20 rounds' worth of
+accumulated (mostly tax-driven, per §1–2) growth — real, cumulative
+exhaustion, not a fluke. At the FINE grain, the SPECIFIC instruction that
+traps is a single 112 MiB request that simply didn't fit in the 88 MB that
+remained — swap that one allocation for four 28 MB ones (or any
+sub-88-MB-chunking) and this exact trap would not fire (though the next
+comparably-sized allocation almost certainly would, given the relentless
+≈292 MB/batch climb documented in §2). Naming it a "bug" in the fatal
+allocation would be wrong — it is the ordinary, unavoidable shape of
+relocating a large pointer-keyed collection under a copying collector;
+the actual defect (per §1–2) is architectural, not local to this one call
+site.
+
+### THE VERDICT
+
+**(a) Retained-floor exhaustion — but precisely characterized, not the
+generic "facts accumulate" framing.** It is NOT that `ctx.plans`/
+`programFacts`/etc. are individually ballooning to gigabytes (their own
+genuine per-batch growth is ≈0.2–0.4 MB/batch, tiny). It is that
+`$__region_exit`'s Cheney-copy design pays a cost proportional to the
+FULL SIZE of the root-reachable set (≈292 MB for jz×jz, by plan-tail round
+2) on EVERY SINGLE EXIT — and this design was recently made MUCH more
+frequent by `1248563f`'s own AFE batching (one exit every 32 functions,
+~45–47 times for jz×jz, versus roughly a dozen total exits before that
+landed). Each exit is individually correct and its OWN reclaim is real and
+"small and sound" (matching `d08d5968`'s own verdict) — but paying the
+fixed ≈292 MB tax 20 times just to reach batch 6 (and needing ~45–47 times
+to finish the loop) is what exhausts 2³² long before real per-function
+churn would.
+
+**The lever, quantified two ways (mathematically equivalent against a
+roughly-constant per-round tax, per §2's regression):**
+
+1. **Shrink the ≈292 MB root-reachable set** (the `d08d5968` census's own
+   named compaction levers — LANE-drop, string interning, schema bitfield
+   packing — operate on exactly this same live/rooted data, since it's
+   what every round's `$__region_exit` recopies). To survive all ~45–47
+   AFE batches within the 1933 MB post-scan-round budget at the CURRENT
+   batch size, the per-round tax must fall to ≈1933/46 ≈ **42 MB — a ≈7×
+   (≈86%) reduction from the measured 292 MB.** The census's own
+   quantified levers (LANE-drop ≈377 MB, string interning 150–340 MB,
+   schema bitfield packing unquantified) were sized against the WHOLE
+   allocator-cumulative total (3400 MB), not this specific per-round-copied
+   subset — they would help this number too, but by an unmeasured
+   fraction of it; no session has yet isolated how much of the ≈292 MB
+   root snapshot is LANE/MAP-shaped specifically.
+2. **Reduce round COUNT instead of round SIZE** — raise
+   `AFE_ROUND_BATCH` (currently 32, `src/compile/index.js`) by the same
+   ≈7×, to ≈217–224, so the AFE loop needs only ~6–7 exits total instead
+   of ~45–47 — directly matching the ~6.61-batch survival budget this
+   session measured. This is architecturally a one-line constant change,
+   but is explicitly OUT OF SCOPE this session (not class-(c) — the fatal
+   allocation itself is not a bug, per §3 — and any batch-size change
+   needs the SAME full gate battery (dormant/region-live self-build ×2,
+   kernel-oracle ×15, kernel-parity, jessie/watr/jzify-entry real-graph
+   peaks) every prior region-arena session has run before landing, which
+   this measurement-only session's budget does not cover). Named
+   precisely so the next session can implement and gate it directly
+   rather than re-deriving the target batch size from scratch.
+
+Both levers are mathematically interchangeable against the ≈292 MB/batch
+constant this session measured directly; a combination (e.g. ≈2.5×
+compaction + ≈2.7× batch-size increase) reaches the needed ≈7× without
+pushing either axis alone to its extreme — the concrete next-session
+starting point.
+
+**Not (b)**: every one of the 8 named rounds, the scan-round, and all 6
+observed AFE batches fired correctly — no round silently no-ops or fails
+to cover its span. **Not purely (c)**: the fatal 112 MiB allocation (§3) is
+the ordinary, unavoidable cost of relocating one large pointer-keyed
+collection under the existing copying-collector design, not a local defect
+— fixing it in isolation (e.g. chunking one allocation) would not survive
+the next comparably-sized relocation, given the documented ≈292 MB/batch
+climb.
+
+### Honest scope notes
+
+- No per-call-site caller tag was instrumented on `$__alloc` itself (every
+  allocation in the kernel funnels through one function; distinguishing
+  "which of thousands of call sites" would need per-site tagging this
+  session's budget did not extend to) — the fatal allocation's likely
+  identity (§3) is inferred from size/shape/location evidence (batch 6's
+  `$__region_exit`, the MAP/HASH shape, the two named large pointer-keyed
+  Maps), not directly named by a caller-id breadcrumb.
+- The ≈292 MB root-reachable set was not broken down by container
+  (`ctx.funcs` vs `ctx.plans` vs `programFacts` vs `ast` vs ...) this
+  session — `d08d5968`'s own allocator-cumulative census (70% MAP/HASH,
+  25% ARRAY/OBJECT) is the best available breakdown, but it measures the
+  WHOLE compile's cumulative allocation, not this specific per-round
+  snapshot; a session isolating the per-container composition of the
+  region-root itself would sharpen lever 1's estimate directly rather than
+  by analogy.
+- Wall time (20.06 s) is NOT comparable to the coarse GOAL GATE's ~6–7 s
+  figures — this kernel's own bytecode is built at `optimize:0` for
+  name-section survival (`097a51d7`'s own documented method constraint),
+  slower than the normal O3-built dormant/region-live kernels; only the
+  byte-level trajectory in §1–3 is the real signal this session produced.
+
+### Disposition
+
+Measurement only — no `src/`/`module/` changes, no batch-size change
+landed (per the task's own explicit instruction: no fix this session
+unless one-liner class-(c), and this verdict is not class-(c)).
+`scripts/self.js`'s `REGION_HOOKS_ACTIVE` hand-flipped `true` for the
+diagnostic kernel build only, reverted to `false` before this commit
+(`git diff scripts/self.js` clean at commit time). All kernel builds,
+decompiled/spliced `.wat`/`.wasm` intermediates, and run scripts lived
+entirely outside the worktree (a sibling scratch directory) — zero
+tracked-tree pollution, nothing to delete from the worktree itself.
+
+**SHAs.** Worktree: `3f8d81b5` base (main tip at session start), branch
+`frontier-2026-08-16`. This ledger entry is the worktree's only commit.
+Disposable region-live diagnostic kernel (optimize:0, names:true, NOT
+built via the standard dist pipeline, NOT shipped, deleted at session
+end): 11,950,774 B pre-splice / 11,951,214 B post-splice. Jessie
+validation run: 126,740 B compiled output, 54 logged events, clean.
+jz×jz diagnostic run: TRAPPED at exactly 4,294,967,296 B, 45 logged events,
+`__dbg_afe_calls=192`, `__dbg_alloc_count=84,385,687`,
+`__dbg_memgrow_count=20,754,578`.
