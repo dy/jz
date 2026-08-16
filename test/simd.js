@@ -3035,3 +3035,152 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never 
   const w = wat(src, SIMD_OPT)
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the runtime-offset recurrence')
 })
+
+// ---- General REDUCTION base layer (tryGeneralReduce) — .work/vectorizer-generality-design.md ----
+//
+// Runs LAST in the dispatch chain (after tryGeneralMap), only when the shape-specific `tryReduce`
+// (tryReduceReassoc/tryReduceBitExact) above it already declined. It generalizes REDUCTION's
+// address proof past `matchLaneAddr`'s literal WAT-shape list to the SAME AST-level affine-in-IV
+// proof (`ivCoeff`/`matchAddr`) `tryGeneralMap` already applies to the MAP class — an "ordinary"
+// reduction loop whose per-element address is affine at coefficient 1 in the induction variable,
+// but not literally `base + (i<<K)`.
+//
+// Each case sums/xors/maxes over a RUNTIME-offset window (`off = (offIn|0) & 7`, masked so the
+// compiler's own range analysis proves the whole affine access range in-bounds WITHOUT a runtime
+// guard — an unmasked/unbounded runtime offset instead triggers jz's bounds-check-safety pass,
+// which rewrites the loop into a per-element NaN-canonicalized guarded form upstream of the
+// vectorizer entirely — a different, correct, and untouched safety mechanism, not this pass's
+// concern). `off + 5` (a genuinely 3-term additive index folding to a `offset=N` memarg immediate,
+// verified via a disposable instrumented dispatch trace, reverted before landing, to decline under
+// EVERY existing recognizer pre-session) is the shape `tryReduceReassoc`'s own address fold
+// (`foldAddr`, 2-term-only: `base + ((IV op INV)<<K)` with exactly one nested op) structurally
+// cannot reach — `matchLaneAddr`'s scanExpr also never unwraps the `offset=N` memarg prefix at
+// all, an orthogonal gap this pass's `scanExpr` closes the same way `tryGeneralMap`'s does.
+//
+// Each test asserts BOTH that the specific reduce-lane SIMD op fires (scoped patterns, not a bare
+// `hasV128`, so an unrelated fill-loop's own incidental vectorization can't false-pass the check)
+// and bit-exact differential correctness against the same source vectorized OFF, swept across
+// off=0..15 (masked mod 8, so this covers the full [0,7] window twice over).
+
+test('SIMD general-reduce i32 - sum over a runtime-offset window (3-term affine index, offset=N memarg) vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = i - 20
+    let s = 0
+    for (let i = 0; i < n; i++) s = (s + a[i + off + 5]) | 0
+    return s
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/i32x4\.add/.test(w), 'i32x4.add reduce lift present')
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-reduce i32 - xor over a runtime-offset window vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = (i * 2654435761) | 0
+    let x = 0
+    for (let i = 0; i < n; i++) x = (x ^ a[i + off + 5]) | 0
+    return x
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.xor/.test(w), 'v128.xor reduce lift present')
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-reduce i32 - max (ternary idiom) over a runtime-offset window vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = ((i * 37) & 63) - 32
+    let m = -2147483648
+    for (let i = 0; i < n; i++) m = a[i + off + 5] > m ? a[i + off + 5] : m
+    return m
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/i32x4\.max_s/.test(w), 'i32x4.max_s reduce lift present')
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-reduce f64 - sum over a runtime-offset window vectorizes, bit-exact (fold-order: reassociating, same ULP convention as the existing f64 sum reduce)', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Float64Array(56)
+    for (let i = 0; i < 56; i++) a[i] = i * 0.5 - 3
+    let s = 0
+    for (let i = 0; i < n; i++) s = s + a[i + off + 5]
+    return s
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.add/.test(w), 'f64x2.add reduce lift present')
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+test('SIMD general-reduce f64 - dot-style two-array combine, one array at a runtime-offset window, vectorizes, bit-exact', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Float64Array(56), b = new Float64Array(n)
+    for (let i = 0; i < 56; i++) a[i] = i * 0.25
+    for (let i = 0; i < n; i++) b[i] = i * 0.5 - 1
+    let s = 0
+    for (let i = 0; i < n; i++) s = s + a[i + off + 5] * b[i]
+    return s
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\.mul/.test(w) && /f64x2\.add/.test(w), 'f64x2.mul + f64x2.add reduce lift present')
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} bit-exact vs scalar`)
+  }
+})
+
+// Negative/safety cases: a genuinely non-associative op (subtraction accumulate — not in
+// REDUCE_OP_LOOKUP) must decline cleanly, and a SECOND independent loop-carried accumulator in
+// the same body (violating "single accumulator, no other loop-carried state") must ALSO decline —
+// both compared byte-for-byte against the SAME source compiled on unmodified main tip (a4726c5a),
+// not just "result unaffected", since a false-positive precondition here would be a real
+// mis-vectorization risk, not a missed optimization.
+
+test('SIMD general-reduce safety - non-associative op (s -= a[i+off+5]) never vectorizes as a reduce', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = (i * 2654435761) | 0
+    let s = 0
+    for (let i = 0; i < n; i++) s = (s - a[i + off + 5]) | 0
+    return s
+  }`
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
+  }
+  const w = wat(src, SIMD_OPT)
+  ok(!/i32x4\.(add|sub)/.test(w), 'no i32x4 add/sub lift anywhere (fill loop is a non-ramp multiply-hash, no incidental SIMD; the subtract-accumulate itself is non-associative under REDUCE_OP_LOOKUP, so declines)')
+})
+
+test('SIMD general-reduce safety - second independent loop-carried accumulator never vectorizes as a reduce', () => {
+  const src = `export let main = (offIn) => {
+    const off = (offIn | 0) & 7, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = (i * 2654435761) | 0
+    let s = 0, t = 0
+    for (let i = 0; i < n; i++) {
+      s = (s + a[i + off + 5]) | 0
+      t = (t ^ i) | 0
+    }
+    return (s * 1000003 + t) | 0
+  }`
+  for (let off = 0; off < 16; off++) {
+    is(runVec(src, SIMD_OPT).main(off), runVec(src, NOVEC).main(off), `off=${off} result unaffected by vectorizer (declines cleanly)`)
+  }
+  const w = wat(src, SIMD_OPT)
+  ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the two-accumulator loop (body.length===2 with two unrelated accumulators fails both the bodyLen===1 and the REDUCE_CANON bodyLen===2 shape match, so declines — the "single accumulator, no other loop-carried state" precondition holds)')
+})

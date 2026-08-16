@@ -17449,3 +17449,176 @@ correctly) plus 2 negative safety tests, all bit-exact. Full native suite
 +8/+8/0/0 (zero regressions). Self-build unblocked and green on both
 trees. Main tip at landing: `71156204` (branch `vec-base-2026-08-15`,
 worktree deleted post-land per process instructions).
+
+## §GeneralReduceVectorizer — base-layer REDUCTION-class general vectorizer
+## landed (2026-08-15): `tryGeneralReduce`, dispatch-chain terminal, address-
+## proof generalization of the consolidated `tryReduce`'s single-accumulator
+## fold
+
+Implements `.work/vectorizer-generality-design.md` §2/§3 step 3's REDUCTION
+slice — the follow-up seam `tryGeneralMap`'s own landing entry (this file,
+above) explicitly banked ("REDUCTION/STENCIL-proper generalization past
+their current syntactic matchers"). Scoped per this session's brief to a
+single-accumulator, recognized-associative-op REDUCTION recognizer (sum/
+xor/and/or/mul-style plus int/float min-max), NOT `tryReduceBitExact`'s
+multi-accumulator bit-exact tier (no single "one accumulator, one op" shape
+to generalize there — see the function's own header doc). Worktree
+`/private/tmp/.../scratchpad/vec-reduce`, branch `vec-reduce-2026-08-15`,
+off main tip `a4726c5a` (unmoved at landing — no other session's commits
+landed in between).
+
+**Preconditions** (function header doc, `src/optimize/vectorize.js`
+immediately before `tryGeneralReduce`, ~195 lines including doc): single
+scalar accumulator with ONE recognized associative-commutative op
+(`REDUCE_OP_LOOKUP`: i32/i64 add·mul·xor·and·or, f32/f64 add·mul — the SAME
+table `tryReduce` itself gates on, no new op accepted) or the int/float
+min-max canon shapes `tryReduceReassoc` already recognizes
+(`matchIntMinMaxReduce`/`REDUCE_CANON`, reused verbatim); body restricted to
+exactly ONE statement (bare op / int-minmax) or TWO (the NaN-canon float-
+minmax temp+select pair) — proves "no other loop-carried state" by
+construction (a second write would be a third body statement, declined);
+affine-in-IV loads at coefficient 1 (`ivCoeff`, ported from `tryGeneralMap`);
+`scanExpr` forbids stores/intermediates/accumulator self-reference (identical
+contract to `tryReduceReassoc`'s own); bound loop-invariant (`boundLocal` or
+`i32.const`, same convention as every recognizer in the file).
+
+**The address algorithm is a PORT, not new invention**: `ivCoeff`/
+`matchAddr`/`matchOffset` are `tryGeneralMap`'s own affine solver (itself
+ported from `tryStencil`), copied rather than refactored into a shared
+function — matching `tryGeneralMap`'s own "port, don't share" precedent, so
+neither `tryReduceReassoc`'s nor `tryGeneralMap`'s already-gated corpus
+behavior is put at risk by this session's edits. One adaptation: `matchAddr`
+takes the lane stride as an explicit parameter instead of inferring it from
+the first load site — a reduction's accumulator (and its op) already fixes
+the lane type before any load is scanned, so tryGeneralMap's own
+laneType-inference dance isn't needed here.
+
+**Subsumption verdict**: same relationship as `tryGeneralMap` to the MAP
+class — `tryGeneralReduce` does NOT replace `tryReduce`'s dispatch slot
+(unchanged, still tried first, so its existing specimens compile
+byte-identically). It is wired as the new LAST `??` alternative, immediately
+after `tryGeneralMap`, before the deferred scalar `tryStrengthReduceIV`
+fallback — fires only when EVERY existing recognizer already declined this
+exact loop. Concretely subsumes (would-also-accept sense): any REDUCTION-
+class loop whose address is `base + (IDX<<K)` with IDX affine in the IV at
+coefficient 1 (any nesting depth, any operand order, a bare-affine byte-lane
+fallback, and — the concrete gap closed — an `offset=N` memarg immediate for
+a constant sub-term watr chooses not to fold into address arithmetic) — a
+strict superset of `matchLaneAddr`'s literal-shape acceptance AND of
+`tryReduceReassoc`'s own 2-term `foldAddr` special case (exactly one nested
+`i32.add`, one operand the bare IV — `tryGeneralReduce`'s `ivCoeff` handles
+arbitrary nesting depth and `i32.sub` as well as `i32.add`).
+
+**A real interaction discovered, not this session's fault, correctly
+respected rather than fought**: an UNCONSTRAINED runtime offset in an
+affine index (e.g. `a[i - off]` with no static relationship between `off`
+and the array's length) triggers jz's own bounds-check-safety pass
+(upstream of `vectorize.js`, a distinct system this task's constraints
+correctly keep off-limits) to rewrite the loop into a per-element NaN-
+canonicalized guarded form BEFORE the vectorizer ever runs — a genuinely
+different, correct mechanism, not a `tryGeneralReduce` defect. Confirmed via
+a disposable instrumented dispatch trace (reverted before landing): an
+unconstrained-offset test case matches and lifts cleanly on a FIRST
+optimizer pass, then gets discarded and replaced by the guarded scalar
+rewrite on a LATER fixed-point pass — sound, conservative behavior, not a
+correctness gap in this session's code. All of this session's positive test
+cases mask the runtime offset (`(offIn|0) & 7`) so jz's own range analysis
+(the `intExprRange`-class static proof the design doc names) discharges the
+whole affine access range WITHOUT a runtime guard, matching how ordinary
+bounded sliding-window code is actually written.
+
+**Gate 1 — 130-corpus sweep** (same method as the MAP-class session:
+`node cli.js <entry> --wat -O3 --resolve -o <out>.wat`, base = main tip
+`a4726c5a` unmodified vs branch = this worktree): **135/135 comparable
+programs byte-identical**, **0 newly vectorizing** — every REDUCTION-shaped
+loop in the real 130-program census already matches `tryReduce`'s existing
+fold/shape coverage; the new recognizer's broader address proof finds no
+additional real-corpus specimen, an honestly-reported null result, not a
+defect (`bench/{dotprod,matmul,poly}`, `bench/nbody`, `examples/{buddhabrot,
+metaballs}` — the REDUCTION-reach rows named in the design doc — all
+confirmed still byte-identical). 1 non-corpus diff (`bench/jz/jz.js`, the
+self-host kernel subject, explicitly excluded from the census — its own
+compiled bytes necessarily change when the compiler's OWN source changes).
+2 non-corpus fails (`examples/lib/jzdemo.js`, `examples/lib/simd.js` — the
+browser demo harness, fails identically on base and branch with the SAME
+pre-existing `yield outside a generator body` error, confirmed via direct
+log diff — not a regression). Size-geomean consequence: **trivially
+unregressed** — byte-identical WAT for all 130 census programs means zero
+size delta, not merely an unregressed geomean.
+
+**Gate 2 — new-reach proof**: 5 synthetic loops (test/simd.js, "SIMD
+general-reduce" suite, appended after the general-map suite) confirmed via
+`--why-not-simd` to decline under EVERY existing recognizer on unmodified
+main tip `a4726c5a` before this change, and to vectorize + bit-exact-match
+after:
+  1. i32 sum: `s += a[i + off + 5]` (`off` masked `& 7`) → `i32x4.add`
+  2. i32 xor: `x ^= a[i + off + 5]` → `v128.xor`
+  3. i32 max (ternary idiom `a[idx] > m ? a[idx] : m`) → `i32x4.max_s`
+  4. f64 sum → `f64x2.add`
+  5. f64 dot-style two-array combine (`a[i+off+5] * b[i]`) → `f64x2.mul` +
+     `f64x2.add`
+  Each asserts the specific reduce-lane op AND bit-exact differential
+  correctness (`vectorizeLaneLocal:true` vs `false`, same source) swept
+  across `off = 0..15` (masked mod 8, covering the full window twice).
+  Plus 2 negative/safety tests, each swept the same off range and diffed
+  byte-for-byte against the SAME source compiled on unmodified main tip
+  (not just "result unaffected"): a genuinely non-associative op
+  (`s -= a[i+off+5]`, not in `REDUCE_OP_LOOKUP`) and a second independent
+  loop-carried accumulator in the same body (`s += a[...]; t ^= i`) — both
+  decline cleanly, WAT byte-identical to base. 7 new tests, 111 new
+  assertions, all green.
+
+**Gate 3 — full native `npm test`**: branch **3466 total / 3460 pass / 0
+fail / 6 skip** (baseline 3459/3453/0/6 — exactly the 7 new tests, zero
+regressions elsewhere).
+
+**Gate 4 — vectorizer suites**: `node test/index.js simd slp cond-vectorize
+optimizer` — **399/399 pass** (simd.js alone 169/169, +7 over the
+pre-session 162/162).
+
+**Gate 5 — self-build + test:wasm**: `node scripts/build-dist.mjs` — wrote
+`dist/jz.wasm` 16857.9 kB, `dist/jz.js` 2093.9 kB (base, the tip-`a4726c5a`
+committed artifact: 16791.4 kB / unchanged js size; delta +66.5 kB, +0.40%
+— the compiler's OWN size growing to hold the new ~195-line pass, the same
+"self-build size, not corpus-output size" distinction the MAP-class session
+recorded — Gate 1's byte-identical sweep is the real corpus-size evidence).
+`JZ_TEST_TARGET=jz.wasm node test/index.js simd` — **169/169 pass** against
+the wasm-hosted target too (the full default `node test/index.js` under
+`JZ_TEST_TARGET=jz.wasm` reports an UNCHANGED 2749/2743/0/6 vs baseline —
+confirmed by design, not a gap: `simd` sits in `test/index.js`'s own
+`KERNEL_EXCLUDE` set, "Optimizer-shape class (kernel runs optimize:false;
+shape asserts can't match)", excluded from the default full run and only
+included when named explicitly, exactly as done here). `node
+test/selfhost.js` (rebuilds via `scripts/selfhost-build.mjs` — the SECOND,
+independent self-host build — then round-trips real programs through the
+in-wasm pipeline) — **21/21 pass, 206 assertions**, including the 39-round
+self-referential-schema domino, all green — the self-hosted compiler,
+itself built by a compiler carrying this session's new pass, correctly
+compiles real programs with no allocator/trap regression.
+
+**Files touched**: `src/optimize/vectorize.js` (+~370: `tryGeneralReduce`
+and its dispatch-chain wiring), `test/simd.js` (+~160: 7 new tests).
+Nothing else — `README.md`, `src/static.js`, `src/compile/narrow.js`,
+`src/compile/plan/index.js`, `module/collection.js`, `layout-kinds.js`,
+`bench/**`, `.work/strategy.md`, `.work/todo-original.md` all untouched
+(verified via `git status --short` in the worktree showing only these two
+tracked files modified).
+
+**Verdict: landed.** Preconditions hold as designed (single accumulator,
+recognized associative op, affine loads at coefficient 1, no other
+loop-carried state, bounds loop-invariant). Subsumes `tryReduce`'s fixed
+shapes in the would-also-accept sense (dispatch position unchanged, zero
+risk to its existing specimens) and closes a real, verified gap (3-term
+affine indices and `offset=N` memarg-immediate addressing `tryReduceReassoc`
+own 2-term `foldAddr` and `matchLaneAddr` cannot reach). 130-corpus sweep:
+135/135 real programs byte-identical, 0 newly-vectorizing (honest null —
+the real corpus's REDUCTION loops were already fully covered by
+`tryReduce`), size-geomean trivially unregressed. 5 synthetic new-reach
+loops verified declining-then-vectorizing, bit-exact across 16 offset
+values each; 2 negative tests verified byte-identical-to-base (no
+mis-vectorization). Full native suite +7/+7/0/0. `test:wasm` 0 fail
+(2749/2743/0/6, simd sub-suite 169/169 when run explicitly per its own
+kernel-exclusion design). Self-build ×2 converges (`build-dist.mjs` +
+`selfhost-build.mjs` via `test/selfhost.js`, 21/21). Main tip at landing:
+`a4726c5a` (branch `vec-reduce-2026-08-15`, worktree deleted post-land per
+process instructions).
