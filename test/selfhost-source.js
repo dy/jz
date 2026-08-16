@@ -84,6 +84,23 @@ test('selfhost-source: self-host kernel is free of labeled-statement misparses',
 // house pattern `typeof process !== 'undefined' && process.env.X` — prep
 // folds the typeof dead, no import. (String/comment mentions are fine; this
 // scans PARSED source for a `globalThis` member-access base.)
+// REGION_HOOKS_ACTIVE is the build's single dormant/live authority. A squashed
+// merge once restored one optimize-tail `regionHooks` object unconditionally
+// while leaving this marker false; builds reported themselves dormant but ran
+// moving-region exits anyway. Keep every boundary visibly gated by the same
+// expression so marker state and actual wiring cannot diverge again.
+test('selfhost-source: every region hook boundary is gated by REGION_HOOKS_ACTIVE', () => {
+  const { code } = resolveModuleGraph(SELF, { resolveNode: true })
+  const markerFalse = 'export const REGION_HOOKS_ACTIVE = false'
+  const markerTrue = 'export const REGION_HOOKS_ACTIVE = true'
+  const guarded = 'REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined'
+  const sites = code.split(guarded).length - 1
+  ok(code.includes(markerFalse) !== code.includes(markerTrue),
+    'scripts/self.js must declare exactly one literal REGION_HOOKS_ACTIVE state')
+  ok(sites === 3,
+    `expected all 3 self-host region boundaries to use the marker gate; found ${sites} (an unconditional site makes a dormant build region-live)`)
+})
+
 test('selfhost-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {
   const g = resolveModuleGraph(SELF, { resolveNode: true })
   const sources = { 'scripts/self.js': g.code }

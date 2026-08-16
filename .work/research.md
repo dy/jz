@@ -17449,3 +17449,74 @@ correctly) plus 2 negative safety tests, all bit-exact. Full native suite
 +8/+8/0/0 (zero regressions). Self-build unblocked and green on both
 trees. Main tip at landing: `71156204` (branch `vec-base-2026-08-15`,
 worktree deleted post-land per process instructions).
+
+## §`fromnested` dormant residual RETRACTED — the historical “dormant”
+## kernel was region-live through an unguarded optimize-tail call site
+## (2026-08-15)
+
+**Question.** The 2026-08-13 Watr `895ca5b` investigation correctly proved
+that adding `SW` to Watr's region-exit root bundle fixes `fromnested`/O2, but
+its Step 3 reported a second, closure-numbering-sensitive failure in a
+“genuinely dormant” kernel. Establish a current failure before changing the
+compiler, then either root-cause that residual or reject the premise.
+
+**Current control.** Fresh worktree at `a4726c5a`, committed
+`REGION_HOOKS_ACTIVE=false`, clean self-host build. With shipped Watr 5.7.16,
+`fromnested` returns `[5, 2]` at O0/O2/O3 in **5/5 fresh kernel instances per
+tier**. Replacing only `node_modules/watr/src/optimize.js` with the pre-fix
+5.7.14 file from `a563a63` still returns `[5, 2]` **5/5 at every tier**.
+Thus stale Watr cannot reproduce the alleged residual when the current
+optimize-tail region gate is actually dormant.
+
+**Historical reproduction.** Checked out the exact ledger base `98f60fe0`
+and the exact stale Watr file from `a563a63`. The claimed signature
+reproduces deterministically: O0 and O3 return `[5, 2]`, while O2 traps
+**5/5** during the kernel's own compile. A names-enabled byte-identical-shape
+build symbolicates the stack:
+
+```
+__arr_grow_known
+  <- __arr_set_length
+  <- closure2295
+  <- m120_optimize$optimize
+  <- watrTail
+  <- compileSelf
+```
+
+The faulting instruction in `closure2295` is the lowering of
+`SW.length = 0` inside Watr's `if (opts.regionExit)` round tail. That branch
+cannot execute in a dormant build; its presence in the stack directly proves
+`opts.regionExit` was live.
+
+**The missed source fact.** At `98f60fe0`, `scripts/self.js` said
+`REGION_HOOKS_ACTIVE=false`, but `optimizeTail()` ignored it:
+
+```
+regionHooks: { mark: () => __region_mark(),
+               exit: (mark, root) => __region_exit(mark, root) },
+```
+
+Only `front()` used the marker ternary. Therefore every historical
+optimize-tail compile in that supposedly dormant artifact was region-live.
+The Step-3 assertion that the Watr branch was “provably dead” was false; its
+pad-only/`let`-only/full-diff results are exactly what the real SW
+moving-safepoint defect predicts when regions are active.
+
+**Single-variable confirmation.** On the same `98f60fe0` checkout, with the
+same stale `a563a63` Watr and no other source change, changed only that line
+to the marker ternary now present on main. Rebuilt and ran `fromnested`/O2
+through **10 fresh kernel instances: 10/10 return `[5, 2]`**. This removes
+codebase drift and Watr-version drift as explanations.
+
+**Disposition.** There is no independently reproduced dormant
+closure-numbering miscompile to fix. The historical failure was the real,
+region-only stale-`SW` pointer defect; Watr `895ca5b` fixed it, and JZ
+`f670c709` later fixed the configuration lie by restoring the missing
+`REGION_HOOKS_ACTIVE` gate. Current `scripts/self.js` carries that exact gate
+on all three region-hook call sites. Added one fast source invariant in
+`test/selfhost-source.js`: exactly one literal marker state must exist and all
+three region boundaries must use the marker ternary. This would fail on the
+historical `98f60fe0` wiring before another “dormant” artifact could be
+misclassified. No compiler/runtime source changed; the stale open item is
+closed by correction plus a configuration tripwire, not by a speculative
+codegen patch.
