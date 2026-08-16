@@ -23,15 +23,11 @@
  *   (this build process's own env var — matches build-dist.mjs's pre-existing
  *   default and is now ALSO selfhost-build.mjs's default, closing the
  *   inconsistency this item exists to fix).
- * @param {boolean} [p.debugInvariants] Bake DBG_INVARIANTS as `true` into the
- *   self-hosted src/ctx.js (same source-literal-injection mechanism as
- *   carrierBox — `typeof process` folds to a compile-time literal inside ANY
- *   self-hosted kernel, so a live JZ_DEBUG_INVARIANTS env var at BUILD time
- *   can never be observed by the running kernel unless baked in here). Default
- *   false: neither builder does this today; battery's own `dbg` leg already
- *   exercises invariants against the NATIVE compiler, so no default behavior
- *   changes. A caller building a debug-instrumented self-hosted kernel opts in
- *   explicitly.
+ * @param {boolean} [p.debugInvariants] Bake DBG_INVARIANTS as this literal into
+ *   the self-hosted src/ctx.js (same source-literal-injection mechanism as
+ *   carrierBox — a live JZ_DEBUG_INVARIANTS env var cannot be observed by the
+ *   running wasm kernel). Default false: debug-only invariant code folds out of
+ *   production kernels; callers opt in explicitly for an instrumented build.
  * @param {boolean|null} [p.regionArena] Whether scripts/self.js's watrTail
  *   regionHooks are active for THIS build, controlling the inlinePtrOffsetFast
  *   gate (see the doc block below). `true`/`false` — an EXPLICIT profile
@@ -54,7 +50,7 @@
  * @returns {{
  *   graph: object,               // resolveModuleGraph(scripts/self.js) result — g.code/g.modules
  *                                 //   already carry the injected defines below
- *   defines: {CARRIER_BOX: boolean, DBG_INVARIANTS?: boolean}, // literal defines actually applied
+ *   defines: {CARRIER_BOX: boolean, DBG_INVARIANTS: boolean}, // literal defines actually applied
  *   regionArenaLive: boolean,    // resolved regionArena flag (explicit or marker-derived)
  *   optimize: object|false,      // full compile() optimize cfg, including the region-arena
  *                                 //   optimizer override folded in
@@ -111,13 +107,44 @@ export function resolveSelfhostBuild({
     throw new Error('resolveSelfhostBuild: CARRIER_BOX declaration shape changed in src/ctx.js — update this self-host injection to match')
   graph.modules[CTX_PATH] = graph.modules[CTX_PATH].replace(carrierNeedle, `export const CARRIER_BOX = ${!!carrierBox}`)
 
-  // ── DBG_INVARIANTS injection — same fold hazard, same fix, opt-in only
-  // (see this function's own doc above for why the default is false).
-  if (debugInvariants) {
-    const dbgNeedle = 'export const DBG_INVARIANTS = typeof process !== \'undefined\' && process.env?.JZ_DEBUG_INVARIANTS === \'1\''
-    if (!graph.modules[CTX_PATH].includes(dbgNeedle))
-      throw new Error('resolveSelfhostBuild: DBG_INVARIANTS declaration shape changed in src/ctx.js — update this self-host injection to match')
-    graph.modules[CTX_PATH] = graph.modules[CTX_PATH].replace(dbgNeedle, 'export const DBG_INVARIANTS = true')
+  // ── DBG_INVARIANTS injection — same host/runtime split as CARRIER_BOX.
+  // Always inject the literal, including false: leaving the process.env probe in
+  // a production self-host graph keeps every debug-only branch and helper body
+  // reachable because the cross-module value is not folded early enough.
+  const dbgNeedle = 'export const DBG_INVARIANTS = typeof process !== \'undefined\' && process.env?.JZ_DEBUG_INVARIANTS === \'1\''
+  if (!graph.modules[CTX_PATH].includes(dbgNeedle))
+    throw new Error('resolveSelfhostBuild: DBG_INVARIANTS declaration shape changed in src/ctx.js — update this self-host injection to match')
+  const dbgDecl = `export const DBG_INVARIANTS = ${!!debugInvariants}`
+  graph.modules[CTX_PATH] = graph.modules[CTX_PATH].replace(dbgNeedle, dbgDecl)
+
+  if (!debugInvariants) {
+    // A literal declaration in ctx.js is not enough: after module lowering its
+    // imported binding is a wasm global, so consumers cannot constant-fold it
+    // and the entire diagnostic implementation survives in the production
+    // kernel. Specialize every self-host source before compilation instead.
+    const dropDebugImport = (src) => src.replace(
+      /import\s*\{([^}]*)\}\s*from\s*(['"][^'"]*\/src\/ctx\.js['"])/g,
+      (whole, names, from) => {
+        const imported = names.split(',').map(x => x.trim()).filter(Boolean)
+        if (!imported.some(x => x.split(/\s+as\s+/)[0] === 'DBG_INVARIANTS')) return whole
+        const kept = imported.filter(x => x.split(/\s+as\s+/)[0] !== 'DBG_INVARIANTS')
+        return kept.length ? `import { ${kept.join(', ')} } from ${from}` : ''
+      })
+    const specialize = (src) => dropDebugImport(src).replace(/\bDBG_INVARIANTS\b/g, 'false')
+
+    // Keep ctx.js's exported declaration syntactically intact while replacing
+    // every use in its own body. Other modules have the named import removed
+    // before their uses become literal false.
+    const marker = 'export const __JZ_DBG_LITERAL__ = false'
+    graph.modules[CTX_PATH] = specialize(graph.modules[CTX_PATH].replace(dbgDecl, marker)).replace(marker, dbgDecl)
+    graph.code = specialize(graph.code)
+    for (const path of Object.keys(graph.modules)) if (path !== CTX_PATH)
+      graph.modules[path] = specialize(graph.modules[path])
+
+    const remaining = [graph.code, ...Object.values(graph.modules)]
+      .reduce((n, src) => n + (src.match(/\bDBG_INVARIANTS\b/g)?.length || 0), 0)
+    if (remaining !== 1)
+      throw new Error(`resolveSelfhostBuild: DBG_INVARIANTS specialization left ${remaining} references (expected only ctx.js's export)`)
   }
 
   // ── REGION-ARENA × inlinePtrOffsetFast (.work/research.md §Region arena,
@@ -156,7 +183,7 @@ export function resolveSelfhostBuild({
 
   return {
     graph,
-    defines: { CARRIER_BOX: !!carrierBox, ...(debugInvariants ? { DBG_INVARIANTS: true } : null) },
+    defines: { CARRIER_BOX: !!carrierBox, DBG_INVARIANTS: !!debugInvariants },
     regionArenaLive,
     optimize: optimizeCfg,
     optimizerOverrides,

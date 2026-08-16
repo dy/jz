@@ -17891,3 +17891,158 @@ and the 1.03× target), identical on both trees (static-snapshot leg, not
 live-measuring — Gate 1 is the real evidence). Main tip at landing:
 `15c6a940` (branch `vec-alias-2026-08-15`, worktree deleted post-land per
 process instructions).
+
+## §`fromnested` dormant residual RETRACTED — the historical “dormant”
+## kernel was region-live through an unguarded optimize-tail call site
+## (2026-08-15)
+
+**Question.** The 2026-08-13 Watr `895ca5b` investigation correctly proved
+that adding `SW` to Watr's region-exit root bundle fixes `fromnested`/O2, but
+its Step 3 reported a second, closure-numbering-sensitive failure in a
+“genuinely dormant” kernel. Establish a current failure before changing the
+compiler, then either root-cause that residual or reject the premise.
+
+**Current control.** Fresh worktree at `a4726c5a`, committed
+`REGION_HOOKS_ACTIVE=false`, clean self-host build. With shipped Watr 5.7.16,
+`fromnested` returns `[5, 2]` at O0/O2/O3 in **5/5 fresh kernel instances per
+tier**. Replacing only `node_modules/watr/src/optimize.js` with the pre-fix
+5.7.14 file from `a563a63` still returns `[5, 2]` **5/5 at every tier**.
+Thus stale Watr cannot reproduce the alleged residual when the current
+optimize-tail region gate is actually dormant.
+
+**Historical reproduction.** Checked out the exact ledger base `98f60fe0`
+and the exact stale Watr file from `a563a63`. The claimed signature
+reproduces deterministically: O0 and O3 return `[5, 2]`, while O2 traps
+**5/5** during the kernel's own compile. A names-enabled byte-identical-shape
+build symbolicates the stack:
+
+```
+__arr_grow_known
+  <- __arr_set_length
+  <- closure2295
+  <- m120_optimize$optimize
+  <- watrTail
+  <- compileSelf
+```
+
+The faulting instruction in `closure2295` is the lowering of
+`SW.length = 0` inside Watr's `if (opts.regionExit)` round tail. That branch
+cannot execute in a dormant build; its presence in the stack directly proves
+`opts.regionExit` was live.
+
+**The missed source fact.** At `98f60fe0`, `scripts/self.js` said
+`REGION_HOOKS_ACTIVE=false`, but `optimizeTail()` ignored it:
+
+```
+regionHooks: { mark: () => __region_mark(),
+               exit: (mark, root) => __region_exit(mark, root) },
+```
+
+Only `front()` used the marker ternary. Therefore every historical
+optimize-tail compile in that supposedly dormant artifact was region-live.
+The Step-3 assertion that the Watr branch was “provably dead” was false; its
+pad-only/`let`-only/full-diff results are exactly what the real SW
+moving-safepoint defect predicts when regions are active.
+
+**Single-variable confirmation.** On the same `98f60fe0` checkout, with the
+same stale `a563a63` Watr and no other source change, changed only that line
+to the marker ternary now present on main. Rebuilt and ran `fromnested`/O2
+through **10 fresh kernel instances: 10/10 return `[5, 2]`**. This removes
+codebase drift and Watr-version drift as explanations.
+
+**Disposition.** There is no independently reproduced dormant
+closure-numbering miscompile to fix. The historical failure was the real,
+region-only stale-`SW` pointer defect; Watr `895ca5b` fixed it, and JZ
+`f670c709` later fixed the configuration lie by restoring the missing
+`REGION_HOOKS_ACTIVE` gate. Current `scripts/self.js` carries that exact gate
+on all three region-hook call sites. Added one fast source invariant in
+`test/selfhost-source.js`: exactly one literal marker state must exist and all
+three region boundaries must use the marker ternary. This would fail on the
+historical `98f60fe0` wiring before another “dormant” artifact could be
+misclassified. No compiler/runtime source changed; the stale open item is
+closed by correction plus a configuration tripwire, not by a speculative
+codegen patch.
+
+## §Self-host debug invariants repaired; debug-only kernel code stripped
+## (2026-08-15)
+
+**Starting failures.** `resolveSelfhostBuild({debugInvariants:true})` built a
+valid kernel, but even `export let f=()=>1` failed while compiling inside it:
+
+```
+[ctx invariant] pre-assemble: ctx.features.errorClasses missing
+```
+
+The prior region investigation had banked this as a separate dormant
+invariant gap. Once that first check was repaired, the next latent failure
+surfaced immediately:
+
+```
+[session-view] assembleView: constructed outside the compile window
+(ctx.transform.sessionPhase='post-reset', expected 'post-prepare')
+```
+
+Production self-host artifacts also retained all `DBG_INVARIANTS` branches
+and helper bodies. Merely replacing the declaration with literal `false` did
+not remove them: module lowering turns the imported binding into a wasm
+global before consumers optimize, so debug-true and debug-false builds from
+the same source were the same byte length.
+
+**`errorClasses` root cause.** The key was never absent: `reset()` explicitly
+seeds `errorClasses: null`. The invariant iterated dynamic key names and used
+`k in ctx.features`. JZ's current generic `in` lowering answers OBJECT
+membership through `__dyn_get` + “value is non-nullish”; it therefore cannot
+distinguish a present null/undefined slot from an absent property. Minimal
+confirmation: `let o={a:null}; 'a' in o` is true with a static key, but
+`k in o` is false for runtime `k='a'`. `Object.keys(o)` still enumerates `a`
+correctly because it reads schema membership, not slot value.
+
+The FeaturePlan invariant now takes `new Set(Object.keys(ctx.features))`
+once at `pre-assemble` and tests that set. This is the exact own-key question
+the invariant asks and remains debug-only. The general dynamic-`in` nullish-
+value semantic gap is separately visible and not misrepresented as fixed by
+this narrow invariant repair.
+
+**Self-host phase parity.** `scripts/self.js` had never wired the native
+pipeline's `post-prepare` and `post-compile` invariant checkpoints. Its
+`front()` now passes an `afterPrepare` hook and `emitIR()` fires the matching
+post-compile check, both gated by `DBG_INVARIANTS`. The debug kernel now uses
+the same phase window as `index.js` rather than making `session-views.js`
+reject every assemble-time read.
+
+**Production specialization.** `scripts/build-profile.mjs` now treats
+`DBG_INVARIANTS` as an artifact-profile define, not merely a replacement
+initializer. For the default false profile it removes the named import and
+replaces every use across the resolved self-host graph with literal `false`;
+ctx.js keeps the one exported declaration. A build-time assertion requires
+exactly that one reference to remain. The debug profile retains all call
+sites and bakes literal `true`. `test/selfhost-source.js` pins both graphs.
+Normal user compilation is untouched: this source specialization exists only
+inside `resolveSelfhostBuild()`'s private graph copy.
+
+**Measured result.** Same `a4726c5a` source base and O3 self-host profile:
+
+| artifact | bytes |
+|---|---:|
+| production baseline (debug implementation retained) | 17,226,555 |
+| production, debug graph specialized out | 17,126,943 |
+| debug-invariants kernel (implementation retained) | 17,228,522 |
+
+Production shrinks **99,612 bytes (0.578%)** despite adding the repaired debug
+checks. Two independent production builds converge byte-for-byte at SHA-256
+`5db5d86119f30a2e772469bce81a78d02fb0f56d151c8be5ba599f467b1b837d`.
+
+**Gates.** A real debug-invariants kernel compiled scalar, Error,
+`fromnested`, and closure programs **3/3 each** with no invariant failure.
+Native debug subset (`errors + invariants + session-reentrancy`) is **167/167,
+391 assertions**. Production: `npm test` **3461 total / 3455 pass / 0 fail /
+6 skip**; `test:wasm` **2749 / 2743 / 0 / 6**; kernel parity **3/3, 33
+assertions**; kernel oracle **13/13, 538 assertions**; self-host correctness
+**21/21, 206 assertions**. Full `npm run test:self` retains the documented
+pre-campaign warm-timing red (three rounds 1.115×/1.139×/1.137× versus the
+1.03 cap); fresh-instance remains green at 0.860× versus the 0.99 cap. This
+matches the already-recorded baseline class, not a new correctness or fresh-
+instance regression. `git diff --check` clean.
+
+**Files.** `src/ctx.js`, `scripts/self.js`, `scripts/build-profile.mjs`,
+`test/selfhost-source.js`, plus this ledger. No generated artifact is tracked.
