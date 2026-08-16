@@ -22,6 +22,7 @@ import { join } from 'node:path'
 import { parse } from '../src/parse.js'
 import jzify from '../jzify/index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
+import { resolveSelfhostBuild } from '../scripts/build-profile.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
 const SELF = join(ROOT, 'scripts/self.js')
@@ -99,6 +100,22 @@ test('selfhost-source: every region hook boundary is gated by REGION_HOOKS_ACTIV
     'scripts/self.js must declare exactly one literal REGION_HOOKS_ACTIVE state')
   ok(sites === 3,
     `expected all 3 self-host region boundaries to use the marker gate; found ${sites} (an unconditional site makes a dormant build region-live)`)
+})
+
+test('selfhost-source: build profile bakes debug invariants to a literal in both modes', () => {
+  const ctxSource = (profile) => profile.graph.modules[Object.keys(profile.graph.modules).find(p => p.endsWith('/src/ctx.js'))]
+  const prod = resolveSelfhostBuild()
+  const debug = resolveSelfhostBuild({ debugInvariants: true })
+  const prodGraph = [prod.graph.code, ...Object.values(prod.graph.modules)].join('\n')
+  const debugGraph = [debug.graph.code, ...Object.values(debug.graph.modules)].join('\n')
+  ok(prod.defines.DBG_INVARIANTS === false && ctxSource(prod).includes('export const DBG_INVARIANTS = false'),
+    'production self-host graph bakes false so debug-only branches can be stripped')
+  ok((prodGraph.match(/\bDBG_INVARIANTS\b/g) || []).length === 1,
+    'production graph specializes every use; only ctx.js\'s exported declaration remains')
+  ok(debug.defines.DBG_INVARIANTS === true && ctxSource(debug).includes('export const DBG_INVARIANTS = true'),
+    'debug self-host graph bakes true explicitly')
+  ok((debugGraph.match(/\bDBG_INVARIANTS\b/g) || []).length > 20,
+    'debug graph retains invariant call sites and helper bodies')
 })
 
 test('selfhost-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {

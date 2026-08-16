@@ -1214,8 +1214,15 @@ export function assertCtxInvariants(phase) {
   if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
   if (phase === 'pre-assemble') {
     _preAssemble = true
+    // Test own-key presence, not value presence. A seeded FeaturePlan value may
+    // legitimately be null (`errorClasses` before the first Error class is
+    // observed). The dynamic `in` emitter currently resolves OBJECT membership
+    // through __dyn_get and therefore cannot distinguish a present nullish slot
+    // from an absent property; Object.keys enumerates the schema itself and is
+    // exact for this debug-only phase check.
+    const present = new Set(Object.keys(ctx.features))
     for (const k of [...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM, ...FEATURE_STRATA.ANALYSIS]) {
-      must(k in ctx.features, `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
+      must(present.has(k), `ctx.features.${k} missing — every FeaturePlan key must be seeded, not an absent key`)
       if (_featureSnapshot && k in _featureSnapshot)
         must(snapFeatureEq(_featureSnapshot[k], snapFeatureVal(ctx.features[k])),
           `ctx.features.${k} drifted after its settling phase — frozen FeaturePlan facts must not change during emission`)

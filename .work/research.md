@@ -17520,3 +17520,87 @@ historical `98f60fe0` wiring before another “dormant” artifact could be
 misclassified. No compiler/runtime source changed; the stale open item is
 closed by correction plus a configuration tripwire, not by a speculative
 codegen patch.
+
+## §Self-host debug invariants repaired; debug-only kernel code stripped
+## (2026-08-15)
+
+**Starting failures.** `resolveSelfhostBuild({debugInvariants:true})` built a
+valid kernel, but even `export let f=()=>1` failed while compiling inside it:
+
+```
+[ctx invariant] pre-assemble: ctx.features.errorClasses missing
+```
+
+The prior region investigation had banked this as a separate dormant
+invariant gap. Once that first check was repaired, the next latent failure
+surfaced immediately:
+
+```
+[session-view] assembleView: constructed outside the compile window
+(ctx.transform.sessionPhase='post-reset', expected 'post-prepare')
+```
+
+Production self-host artifacts also retained all `DBG_INVARIANTS` branches
+and helper bodies. Merely replacing the declaration with literal `false` did
+not remove them: module lowering turns the imported binding into a wasm
+global before consumers optimize, so debug-true and debug-false builds from
+the same source were the same byte length.
+
+**`errorClasses` root cause.** The key was never absent: `reset()` explicitly
+seeds `errorClasses: null`. The invariant iterated dynamic key names and used
+`k in ctx.features`. JZ's current generic `in` lowering answers OBJECT
+membership through `__dyn_get` + “value is non-nullish”; it therefore cannot
+distinguish a present null/undefined slot from an absent property. Minimal
+confirmation: `let o={a:null}; 'a' in o` is true with a static key, but
+`k in o` is false for runtime `k='a'`. `Object.keys(o)` still enumerates `a`
+correctly because it reads schema membership, not slot value.
+
+The FeaturePlan invariant now takes `new Set(Object.keys(ctx.features))`
+once at `pre-assemble` and tests that set. This is the exact own-key question
+the invariant asks and remains debug-only. The general dynamic-`in` nullish-
+value semantic gap is separately visible and not misrepresented as fixed by
+this narrow invariant repair.
+
+**Self-host phase parity.** `scripts/self.js` had never wired the native
+pipeline's `post-prepare` and `post-compile` invariant checkpoints. Its
+`front()` now passes an `afterPrepare` hook and `emitIR()` fires the matching
+post-compile check, both gated by `DBG_INVARIANTS`. The debug kernel now uses
+the same phase window as `index.js` rather than making `session-views.js`
+reject every assemble-time read.
+
+**Production specialization.** `scripts/build-profile.mjs` now treats
+`DBG_INVARIANTS` as an artifact-profile define, not merely a replacement
+initializer. For the default false profile it removes the named import and
+replaces every use across the resolved self-host graph with literal `false`;
+ctx.js keeps the one exported declaration. A build-time assertion requires
+exactly that one reference to remain. The debug profile retains all call
+sites and bakes literal `true`. `test/selfhost-source.js` pins both graphs.
+Normal user compilation is untouched: this source specialization exists only
+inside `resolveSelfhostBuild()`'s private graph copy.
+
+**Measured result.** Same `a4726c5a` source base and O3 self-host profile:
+
+| artifact | bytes |
+|---|---:|
+| production baseline (debug implementation retained) | 17,226,555 |
+| production, debug graph specialized out | 17,126,943 |
+| debug-invariants kernel (implementation retained) | 17,228,522 |
+
+Production shrinks **99,612 bytes (0.578%)** despite adding the repaired debug
+checks. Two independent production builds converge byte-for-byte at SHA-256
+`5db5d86119f30a2e772469bce81a78d02fb0f56d151c8be5ba599f467b1b837d`.
+
+**Gates.** A real debug-invariants kernel compiled scalar, Error,
+`fromnested`, and closure programs **3/3 each** with no invariant failure.
+Native debug subset (`errors + invariants + session-reentrancy`) is **167/167,
+391 assertions**. Production: `npm test` **3461 total / 3455 pass / 0 fail /
+6 skip**; `test:wasm` **2749 / 2743 / 0 / 6**; kernel parity **3/3, 33
+assertions**; kernel oracle **13/13, 538 assertions**; self-host correctness
+**21/21, 206 assertions**. Full `npm run test:self` retains the documented
+pre-campaign warm-timing red (three rounds 1.115×/1.139×/1.137× versus the
+1.03 cap); fresh-instance remains green at 0.860× versus the 0.99 cap. This
+matches the already-recorded baseline class, not a new correctness or fresh-
+instance regression. `git diff --check` clean.
+
+**Files.** `src/ctx.js`, `scripts/self.js`, `scripts/build-profile.mjs`,
+`test/selfhost-source.js`, plus this ledger. No generated artifact is tracked.

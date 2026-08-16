@@ -13,7 +13,7 @@
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, reset, initWarnings } from '../src/ctx.js'
+import { ctx, reset, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession } from '../src/session.js'
@@ -197,7 +197,11 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
 // natively — see this file's own header comment). frontHalf's own doc has the
 // root/rebind contract.
 function front(source, strict) {
-  return frontHalf(source, { strict, jzify, regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined })
+  return frontHalf(source, {
+    strict, jzify,
+    afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants('post-prepare') : undefined,
+    regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
+  })
 }
 
 // Region-arena EMIT/ENCODE boundary (Slice 3, .work/research.md §Region arena):
@@ -210,7 +214,9 @@ function front(source, strict) {
 // mark/exit/rebind itself, exactly like frontHalf does for the front
 // boundary; this is only the kernel-only call site that supplies the hooks.
 function emitIR(ast) {
-  return compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined)
+  const module = compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined)
+  if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
+  return module
 }
 
 /**
