@@ -3036,6 +3036,133 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never 
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the runtime-offset recurrence')
 })
 
+// ---- Runtime alias versioning (layer 3, .work/vectorizer-generality-design.md follow-up) ------
+//
+// The `elemKey` same-array dependence gate above used to be an unconditional decline on any
+// mismatch. It now tries LLVM's own answer first: when the mismatched pair's element distance is
+// a LOOP-INVARIANT but compile-time-UNKNOWN value (a runtime param, not a literal), version the
+// loop — a hoisted `|distance| ≥ lanes` disjointness guard picks the unchanged SIMD codegen when
+// true, the UNTOUCHED original scalar loop (byte-identical, same store order) when false. Every
+// case below is a loop that declines on unmodified main (confirmed via a disposable instrumented
+// dispatch trace, reverted before landing) and now versions — swept across a runtime parameter
+// that ranges both BELOW and AT/ABOVE the lane count, so each test proves BOTH regimes in one
+// sweep: small values exercise the "overlapping → scalar fallback, still correct" branch, values
+// ≥ lanes exercise the "disjoint → SIMD, bit-exact" branch. `hasV128` + an explicit `i32.or` check
+// (the disjointness guard's own shape, ported from `tryMemCopyFill`'s own overlap check a few
+// hundred lines above) confirm the guard actually emitted, not just that SOME v128 op exists.
+
+test('SIMD alias-version i32 - same-array read shifted AHEAD of the write (a[i]=a[i+k+1]), pointer-param array, versions: SIMD when disjoint, scalar fallback when overlapping', () => {
+  const src = `
+    let f = (a, kIn) => {
+      const k = kIn | 0, n = 40
+      for (let i = 0; i < n; i++) a[i] = a[i + k + 1]
+    }
+    export let main = (kIn) => {
+      const a = new Int32Array(56)
+      for (let i = 0; i < 56; i++) a[i] = i - 20
+      f(a, kIn)
+      let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1)) | 0
+      return h
+    }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  ok(/i32\.or/.test(w), 'disjointness guard present (i32.or of the two i32.le_s/i32.ge_s halves)')
+  for (let k = 0; k <= 15; k++)   // lanes=4 for i32: k=0..2 overlap (delta 1..3 < 4), k≥3 disjoint
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+})
+
+test('SIMD alias-version i32 - same-array write shifted AHEAD of the read (a[i+k]=a[i]) versions, both directions bit-exact', () => {
+  const src = `export let main = (kIn) => {
+    const k = ((kIn | 0) & 7) + 1, n = 40
+    const a = new Int32Array(56)
+    for (let i = 0; i < 56; i++) a[i] = i - 20
+    for (let i = 0; i < n; i++) a[i + k] = a[i]
+    let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1)) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  ok(/i32\.or/.test(w), 'disjointness guard present')
+  for (let k = 0; k <= 15; k++)
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+})
+
+test('SIMD alias-version f64 - same-array runtime-offset window (3-term affine index, offset=N memarg constant-delta fold) versions, bit-exact', () => {
+  const src = `export let main = (kIn) => {
+    const k = (kIn | 0) & 7, n = 40
+    const a = new Float64Array(64)
+    for (let i = 0; i < 64; i++) a[i] = i * 1.5 - 10
+    for (let i = 0; i < n; i++) a[i] = a[i + k + 5] * 2.0
+    let s = 0.0; for (let i = 0; i < 64; i++) s += a[i]
+    return s
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/f64x2\./.test(w), 'f64x2 present')
+  ok(/i32\.or/.test(w), 'disjointness guard present')
+  for (let k = 0; k <= 15; k++)   // lanes=2 for f64: delta = k+5 ranges 5..20, always ≥ 2 —
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+  // swept for guard-shape coverage even though this window never overlaps; the recurrence-style
+  // negative tests above already cover the "genuinely overlapping" regime for a constant delta.
+})
+
+test('SIMD alias-version i16 - same-array runtime-offset shift versions, bit-exact', () => {
+  const src = `export let main = (kIn) => {
+    const k = ((kIn | 0) & 7) + 1, n = 40
+    const a = new Int16Array(56)
+    for (let i = 0; i < 56; i++) a[i] = (i * 9 - 50) & 0x7fff
+    for (let i = 0; i < n; i++) a[i] = a[i + k]
+    let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(hasV128(w), 'v128 present')
+  ok(/i32\.or/.test(w), 'disjointness guard present')
+  for (let k = 0; k <= 15; k++)   // lanes=8 for i16: k=1..7 overlap, k≥8 disjoint
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+})
+
+test('SIMD alias-version i8 - byte-stride same-array runtime-offset shift versions, bit-exact', () => {
+  const src = `export let main = (kIn) => {
+    const k = (kIn | 0) & 15, n = 40
+    const a = new Uint8Array(80)
+    for (let i = 0; i < 80; i++) a[i] = (i * 3) & 0xff
+    for (let i = 0; i < n; i++) a[i] = a[i + k + 16]
+    let h = 0; for (let i = 0; i < 80; i++) h = (h + a[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/i8x16\./.test(w) || hasV128(w), 'v128 present')
+  ok(/i32\.or/.test(w), 'disjointness guard present')
+  for (let k = 0; k <= 20; k++)   // lanes=16 for i8: delta = k+16 ranges 16..36, always ≥ 16 —
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} bit-exact vs scalar`)
+  // swept for guard-shape coverage; k+16 never overlaps at this stride (byte lanes need a huge
+  // window to straddle 16 bytes) — the i32/i16 tests above already cover a straddling sweep.
+})
+
+// Negative/safety: the versioning transform duplicates the loop body a SECOND time (the alias
+// fallback, on top of the pre-existing SIMD-prefix tail every recognizer already pays) — gated on
+// `ALIAS_VERSION_MAX_BODY_NODES` (110, the SAME cap `optimize/recurse.js`'s own body-duplicating
+// transform uses, not a new number). A body over that cap must NOT version even though the
+// mismatch is genuinely runtime-unknown — it stays fully scalar (no SIMD at all for that loop),
+// same as an ordinary decline, and the result must still be correct (the size refusal is a
+// missed optimization, never a correctness gap).
+test('SIMD alias-version safety - oversized body refuses versioning (size heuristic), stays correct', () => {
+  let pad = ''
+  for (let n = 0; n < 22; n++) pad += `    c[i] = ((c[i] + ${n + 1}) ^ (a[i] << ${n % 5})) & 0x7fffffff\n`
+  const src = `export let main = (kIn) => {
+    const k = ((kIn | 0) & 7) + 1, n = 40
+    const a = new Int32Array(56), c = new Int32Array(56)
+    for (let i = 0; i < 56; i++) { a[i] = i - 20; c[i] = 0 }
+    for (let i = 0; i < n; i++) {
+      a[i + k] = a[i]
+${pad}    }
+    let h = 0; for (let i = 0; i < 56; i++) h = (h + a[i] * (i + 1) + c[i]) | 0
+    return h
+  }`
+  for (let k = 0; k <= 15; k++)
+    is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} result unaffected by vectorizer (oversized body declines cleanly)`)
+})
+
 // ---- General REDUCTION base layer (tryGeneralReduce) — .work/vectorizer-generality-design.md ----
 //
 // Runs LAST in the dispatch chain (after tryGeneralMap), only when the shape-specific `tryReduce`

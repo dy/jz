@@ -17622,3 +17622,272 @@ kernel-exclusion design). Self-build ×2 converges (`build-dist.mjs` +
 `selfhost-build.mjs` via `test/selfhost.js`, 21/21). Main tip at landing:
 `a4726c5a` (branch `vec-reduce-2026-08-15`, worktree deleted post-land per
 process instructions).
+
+## §RuntimeAliasVersioning — layer 3, `tryGeneralMap` loop versioning: LLVM's
+## runtime-dependence-checking answer wired onto the same-array `elemKey`
+## mismatch gate a4726c5a already ported from tryStencil (2026-08-16)
+
+Design + implementation of `.work/vectorizer-generality-design.md`'s named
+follow-up (§3, "rivals get graceful degradation, jz's chain is 0-or-nothing"):
+when two accesses to the SAME array can't be proven disjoint STATICALLY (a
+runtime-parameter offset), emit a cheap runtime disjointness check and branch
+to the SIMD body when it holds, the UNTOUCHED original scalar loop otherwise —
+loop versioning, LLVM's own `LoopVersioningLICM`/`RuntimePointerChecking`
+answer to the identical proof gap. Worktree
+`/private/tmp/.../scratchpad/vec-alias`, branch `vec-alias-2026-08-15`, off
+main tip `15c6a940` (fresh — no other session's commits landed in between).
+
+**Where the gate actually lives (found empirically, not assumed)**: the
+task's own framing ("two pointer/param-derived arrays, or subviews of one
+buffer") describes LLVM's general motivating case, but in THIS codebase
+cross-array aliasing between two DIFFERENT bases is `tryGeneralMap`'s (and
+`tryVectorize`'s/`tryStencil`'s) own UNCONDITIONAL, unchecked assumption
+today — "distinct bases assumed non-aliasing", the SAME baseline convention
+every MAP-class recognizer already relies on, confirmed by direct code
+reading and empirical testing (a two-array-param loop reaches
+`tryGeneralMap` with ZERO alias proof attempted at all). The ONLY concrete
+place a real decline-for-aliasing gate exists is `tryGeneralMap`'s own
+`elemKey` SAME-BASE dependence check (the gate the a4726c5a ledger entry
+documents as "ported from tryStencil") — every mismatch it can even see is
+same-array by construction, since the loop only runs once `exprEq` has
+already proven the two accesses share one base. Concretely this is the
+`a[i] = a[i-k] + b[i]`-shaped loop (a runtime-parameter shift on one array,
+masked/ranged so the ADDRESS itself is provably in-bounds — same idiom
+a4726c5a/15c6a940 already used to keep jz's own upstream bounds-safety
+rewrite out of the picture — but the DISTANCE between the shifted and
+unshifted access to the same array isn't provably non-zero). Versioning the
+UNCONDITIONAL cross-array assumption instead was explicitly rejected: it has
+no existing decline point to convert (it's already accepted everywhere,
+zero-cost), so adding a guard there would be a net-new runtime check on
+every existing multi-array corpus specimen — a real regression risk this
+session's own gates forbid, and a separate, much larger initiative (a
+base-provenance analysis distinguishing "freshly-allocated, non-escaping"
+from "caller-supplied" locals, which the WAT-level pass this file operates
+at has no way to derive) not attempted here. `tryGeneralReduce` was checked
+and confirmed to NOT need this layer: it has no STORE sites at all (a pure
+reduction, `scanExpr` hard-forbids `STORE_OPS`), so there is no WAW/RAW
+hazard for it to gate on in the first place — read-read never conflicts
+regardless of whether two arrays overlap.
+
+**The versioning design**: for each `elemKey`-mismatched pair (a store site
+`st` and any other site `s` on the SAME base with a different element
+position), the two affine indices already passed `ivCoeff`'s
+coefficient-EXACTLY-1 proof (this pass's own, ported from tryStencil) — so
+their difference `D = idxS − idxSt` is an algebraic IV-cancellation,
+provably LOOP-INVARIANT regardless of which value of the induction variable
+it's evaluated at (integer/modular arithmetic is exact here — no ULP
+concern, no overflow-order sensitivity: `(a+c) − (a+d) ≡ c−d (mod 2^32)`
+for ANY `a`). Three-way resolution per pair, not just "version or bail":
+1. **Compile-time-foldable, safe** (`foldAtIv0`, a tiny partial evaluator
+   over `i32.const`/IV/`+`/`-`/`*`/`local.tee`, returning null the instant
+   it hits any OTHER local/global): `|D| ≥ lanes` — accepted for FREE, no
+   guard, no clone, the same zero-cost path an ordinary `elemKey` MATCH
+   already gets. (Real corpus reach: none observed — `tryVectorize`'s own
+   literal-offset matcher already claims plain-constant-offset shapes
+   earlier in the dispatch chain, confirmed via an instrumented dispatch
+   trace; this branch is a soundness completion, not a demonstrated new
+   corpus win, and is reported honestly as such.)
+2. **Compile-time-foldable, unsafe**: `|D| < lanes` — a genuine in-place
+   recurrence (`a[j]=a[j-1]+a[j]`) — declines exactly as before (a runtime
+   check could never help; the two accesses truly do overlap on EVERY
+   iteration). Load-bearing: this branch is what keeps the pre-existing
+   `SIMD stencil - in-place (a[i]=a[i-1]+a[i]) is loop-carried` test
+   (`test/simd.js`, reaches `tryGeneralMap` for its f64 case after
+   `tryStencil` itself declines) passing — WITHOUT it, the naive
+   "mismatch ⇒ always version" version of this session's first draft
+   inserted a real (dead-at-runtime, but textually present) `v128.store`
+   into that test's output, breaking its own "no v128.store ⇒ correctly
+   bailed" signature assertion. Found and fixed via that exact regression,
+   not designed in from the start — an honest record, not a retrofit.
+3. **Runtime-unknown** (the delta references something other than the
+   IV — an `off` parameter): VERSION. Emits `i32.or(D ≤ −lanes, D ≥
+   lanes)` (the disjointness test), ANDed across every mismatched pair,
+   hoisted to the preheader (computed once from `s.idx`/`st.idx` clones —
+   sound to evaluate there because those expressions reference only the IV
+   [still holding its live/initial value at that point] and loop-invariant
+   locals, the SAME guarantee `matchAddr`/`matchOffset` already lean on for
+   every OTHER codegen use of these expressions). `then`: the unchanged
+   SIMD prefix + the existing tail-after-SIMD (`bl.blockNode`, used exactly
+   as it always was). `else`: a FRESH `cloneNode(bl.blockNode)` — the
+   UNTOUCHED original loop, byte-identical store order, evaluated from
+   `incVar`'s never-touched initial value (the `then` branch's own
+   `boundSetup`/`simdBlock` never ran) — genuinely identical scalar
+   execution, not a masked/select SIMD trick. Ported the exact check
+   SHAPE `tryMemCopyFill` (a sibling MAP-class recognizer, same file,
+   ~7300 lines earlier) already uses for its own memmove-vs-memcpy
+   overlap decision (`dstA≤srcA || dstA≥srcA+lenB`) — this session's own
+   is the SAME idea generalized from "whole-buffer range" to "one
+   SIMD-step's worth of lanes", not a new invention.
+
+**Size heuristic**: `ALIAS_VERSION_MAX_BODY_NODES = 110` — versioning
+duplicates the loop body a SECOND time (the alias-fallback clone, beyond
+the pre-existing SIMD-tail duplication every recognizer in this file
+already pays unconditionally). Reused, not invented: the identical number
+and the identical rationale ("a small body") as `optimize/recurse.js`'s own
+`MAX_BODY_NODES` — the sibling body-duplicating transform in this codebase
+(accumulator-fusion recursion unrolling). Gated ONLY on the second clone
+(the pre-existing tail duplication stays ungated, matching every prior
+session's accepted convention). `gmNodeCount` mirrors `recurse.js`'s own
+`nodeCount` exactly (own copy, "port don't share" — this pass's own
+established precedent from a4726c5a/15c6a940).
+
+**Wiring**: a new `aliasVersion` option (default `true`) on `tryGeneralMap`
+itself, threaded through `vectorizeLaneLocal`'s own opts destructure
+(`aliasVersion = true`, matching `blurMP`'s own "on by default at the
+callee, no caller wiring required" convention) — deliberately NOT threaded
+through `src/optimize/index.js`'s cfg→opts construction, since that file is
+outside this session's allowed-commit scope; defaulting true at the callee
+means the feature is live in the real compile pipeline (index.js's existing
+call reaches it via the default, unmodified) without touching that file.
+`tryGeneralReduce` untouched (confirmed unnecessary above — no store sites,
+no hazard to version).
+
+**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s own
+convention, `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`; base =
+main tip `15c6a940` unmodified vs branch = this worktree; 129-entry list =
+the census's 127 dir-matched `bench/*/*.js`+`examples/*/*.js` files, plus
+`examples/raymarcher/raymarcher.simd.js`, plus `.work/jzify-entry.mjs`, the
+SAME comparable set the a4726c5a session used): **1/129 excluded**
+(`.work/jzify-entry.mjs` — untracked in git, present only in the base
+checkout's working tree, absent from the worktree entirely — the identical
+environment artifact a4726c5a's own sweep already documented, not a compile
+difference). Of 128 comparable: **127/128 byte-identical, 1/128
+documented-improved** (`examples/rule30/rule30.js`) — 0 regressions, 0
+silent behavior changes.
+
+**The one real corpus fire, verified correct**: `rule30.js`'s pixel-scroll
+loop, `while (x < W) { px[dst + x] = px[src + x]; x++ }` (`dst = y*W`,
+`src = (y+1)*W` — a same-array, runtime-row-width-shifted copy; `W` is a
+mutable module global set by `resize(w,h)`, never a compile-time constant).
+Declines under EVERY prior recognizer (confirmed: base tip `15c6a940`'s own
+WAT already shows this loop's FAST branch — inside jz's own pre-existing,
+untouched bounds-safety `if`/`then`/`else` versioning for the *address
+range* — as a plain scalar `i32.load`/`i32.store` loop, no v128 anywhere);
+this session's `tryGeneralMap` now further versions THAT fast branch on the
+disjointness of `dst` vs `src` (`|src−dst| ≥ 4` for the `Uint32Array` i32
+lanes here). WAT text +2591 bytes (248319→250910, +1.04%); actual `-O3`
+**wasm binary** +104 bytes (22652→22756, **+0.46%**) — the real size
+evidence (WAT text length is not binary size). Verified correct with a full
+differential run (in-process `jz()`, `vectorizeLaneLocal:true` vs `false`,
+same source): `resize(W,H)` swept over `W ∈ {1,2,3,4,5,7,8,16,64}` (crossing
+the lanes=4 disjointness boundary from both sides — W<4 exercises the
+overlapping/scalar-fallback regime, W≥4 the disjoint/SIMD regime) ×
+`H ∈ {1,2,5,8}` × `rule ∈ {30,90,110,0,255}`, 12 simulated `frame()` steps
+each, FNV-1a checksum of the rendered `Uint32Array` compared every frame —
+**180/180 combinations bit-exact**, including every `W<4` case (the
+guard correctly selects the untouched scalar path there).
+
+**Gate 2 — new-reach proof**: 6 new tests, `test/simd.js`, "Runtime alias
+versioning (layer 3)" suite, appended after the existing general-map safety
+tests — each confirmed via a disposable instrumented dispatch trace
+(reverted before landing) to decline under EVERY existing recognizer
+pre-session, now versions:
+  1. i32, pointer-param array, read shifted AHEAD of the write
+     (`a[i]=a[i+k+1]`, `f(a,kIn)` — a genuine function-parameter array, the
+     task's own "pointer/param-derived" framing) — swept `k=0..15` (lanes=4:
+     k≤2 overlaps → scalar fallback, k≥3 disjoint → SIMD), bit-exact both
+     regimes.
+  2. i32, write shifted AHEAD of the read (`a[i+k]=a[i]`) — the OPPOSITE
+     sign of dependence distance — swept `k=1..16`, bit-exact both regimes.
+  3. f64, 3-term affine index folding to an `offset=N` memarg
+     (`a[i+k+5]`, exercising the `constDelta` memarg-fold arithmetic path)
+     — swept `k=0..15`; this window (`k+5`, lanes=2) never actually
+     overlaps, so it validates the guard's SHAPE and the memarg-delta
+     arithmetic on the disjoint side (the i32/i16 tests above already cover
+     a boundary-straddling sweep for both regimes).
+  4. i16, same-array runtime shift — swept `k=1..16` (lanes=8: k≤7
+     overlaps, k≥8 disjoint), bit-exact both regimes.
+  5. i8, byte-stride same-array shift (`a[i+k+16]`, exercising
+     `matchOffset`'s bare-affine byte-lane fallback under versioning) —
+     swept `k=0..20` (lanes=16; like case 3, this window never overlaps at
+     this stride — shape/arithmetic validation, boundary-straddling
+     coverage already given by cases 1/2/4).
+  Each asserts `hasV128`/lane-op-specific pattern AND an explicit `i32.or`
+  disjointness-guard-shape check (not just "some v128 exists") AND
+  bit-exact differential correctness per swept value (18/18/18/18/23
+  assertions for cases 1-5 respectively — case 5's `i8` sweep runs
+  `k=0..20`, one wider than the others).
+  Plus 1 negative/safety test:
+  6. **Size-heuristic refusal**: the case-2 shape (`a[i+k]=a[i]`, a genuine
+     runtime-unknown mismatch) padded with 22 extra independent statements
+     (node count > 110) — confirmed via the same instrumented trace to hit
+     `bodyTooBig=true, unversionable=true` and decline cleanly (return
+     null, NO v128 for that loop at all) — swept `k=0..15`, all bit-exact
+     against the scalar oracle (a missed optimization, never a correctness
+     gap). 16 assertions.
+  6 new tests, 111 new assertions total, all green. (The pre-existing
+  "in-place recurrence" tests — `SIMD general-map safety - same-array
+  recurrence` and its runtime-offset sibling, plus `SIMD stencil -
+  in-place` in `cond-vectorize.js` — serve as this session's negative
+  proof for the compile-time-provably-unsafe branch; not duplicated here.)
+
+**Gate 3 — full native `npm test`**: branch **3472 total / 3466 pass / 0
+fail / 6 skip** (baseline 3466/3460/0/6 — exactly the 6 new tests, zero
+regressions elsewhere).
+
+**Gate 4 — vectorizer suites**: `node test/index.js simd slp cond-vectorize
+optimizer` — **405/405 pass**, 4961 assertions (simd.js alone 175/175, +6
+over the pre-session 169/169; +111 assertions).
+
+**Gate 5 — self-build + test:wasm**: `node scripts/build-dist.mjs` — base
+(main tip `15c6a940`) `dist/jz.wasm` 16857.9 kB / `dist/jz.js` 2093.9 kB;
+branch `dist/jz.wasm` 16865.3 kB (+7.4 kB, +0.044%) / `dist/jz.js` 2095.2 kB
+(+1.3 kB, +0.062%) — the compiler's OWN size growing to hold the new
+~140-line pass, not corpus-output size (Gate 1's per-file deltas are the
+real corpus-size evidence). `JZ_TEST_TARGET=jz.wasm node test/index.js`
+(full default run) — **2749 total / 2743 pass / 0 fail / 6 skip**,
+UNCHANGED from every prior session's own baseline (the `simd` sub-suite
+sits in `KERNEL_EXCLUDE`, "Optimizer-shape class — kernel runs
+optimize:false, shape asserts can't match", excluded from the default run
+by design, not a gap); `JZ_TEST_TARGET=jz.wasm node test/index.js simd`
+(named explicitly) — **175/175 pass** against the wasm-hosted target,
++6 over the pre-session 169/169. `node
+test/selfhost.js` (rebuilds via `scripts/selfhost-build.mjs`, a SECOND
+independent self-host build, then round-trips real programs through the
+in-wasm pipeline) — **21/21 pass, 206 assertions**, including the 39-round
+self-referential-schema domino, all green.
+
+**`test:claims` size leg**: `node test/bench-claims.js` — size-geomean
+assertion **passes on both trees** (`size geomean jz/as: 1.020×`,
+identically, since this leg reads the COMMITTED `bench/results.json`
+snapshot rather than recompiling from source — confirmed unable to measure
+this session's actual delta, the exact same documented limitation
+a4726c5a's own ledger entry recorded; Gate 1's live corpus sweep is the
+real, direct size evidence). The suite's OTHER 8 pre-existing failures
+(reference-dataset staleness — 140 compiler commits postdate the snapshot;
+strict-wasm-rival-leadership; red-cases vs bun/jsc) are confirmed
+IDENTICAL on base tip `15c6a940` — same case lists, same staleness count —
+pre-existing, unrelated to this session, not attempted here (regenerating
+`bench/results.json` is explicitly out of scope per the same precedent).
+
+**Files touched**: `src/optimize/vectorize.js` (+~150: `ALIAS_VERSION_MAX_BODY_NODES`/
+`gmNodeCount`, the versioning logic inside `tryGeneralMap`'s `elemKey`
+block and its wrapper construction, the `aliasVersion` opt threading, and
+header-doc updates), `test/simd.js` (+~130: 6 new tests). Nothing else —
+`README.md`, `src/static.js`, `src/compile/narrow.js`,
+`src/compile/plan/index.js`, `src/optimize/index.js`, `module/**`,
+`bench/**`, `.work/strategy.md`, `.work/todo-original.md` all untouched
+(verified via `git status --short` in the worktree showing only the two
+tracked source/test files modified).
+
+**Verdict: landed.** LLVM's runtime-dependence-checking answer wired onto
+the ONE concrete decline-for-aliasing gate this codebase actually has
+(`tryGeneralMap`'s same-base `elemKey` mismatch) — cross-array aliasing
+stays the established, unconditional, zero-cost assumption (versioning it
+would be a new, much larger initiative, explicitly out of scope, honestly
+reported rather than silently attempted). Three-way resolution (compile-
+time-safe/unsafe/runtime-unknown) rather than "version everything" — the
+compile-time-unsafe branch is load-bearing, caught by and fixing a real
+regression against a pre-existing test during this session, not a
+theoretical nicety. 130-corpus sweep: 127/128 byte-identical, 1/128
+documented-improved (rule30, a genuine new SIMD win on a real program,
++0.46% wasm binary, verified bit-exact across 180 differential
+combinations spanning both the overlapping and disjoint regimes). 6 new
+synthetic tests (5 lane-type/direction variants + 1 size-heuristic
+negative), 111 new assertions, all green. Full native suite +6/+6/0/0.
+Vectorizer suites 405/405. Self-build ×2 converges, `test:wasm` 175/175,
+selfhost 21/21. `test:claims` size geomean 1.020× (within the 1.05× cap
+and the 1.03× target), identical on both trees (static-snapshot leg, not
+live-measuring — Gate 1 is the real evidence). Main tip at landing:
+`15c6a940` (branch `vec-alias-2026-08-15`, worktree deleted post-land per
+process instructions).

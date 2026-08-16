@@ -7064,10 +7064,47 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 // Dependence proof: no loop-carried scalar (tryVectorize/tryStencil's own "first access of a
 // written local must not be a read" rule, reused verbatim), plus tryStencil's own same-array
 // alias gate — every access to a WRITTEN base must hit the SAME element (`elemKey`); a mismatch
-// (e.g. `a[i] = a[i-1] + a[i]`, a genuine recurrence) is a real cross-iteration dependency and
-// declines. Distinct bases (different arrays) are assumed non-aliasing — the same baseline
-// convention tryVectorize/tryStencil already rely on (tryStencil's own doc, "the SAME assumption
-// the plain map path already relies on").
+// (e.g. `a[i] = a[i-1] + a[i]`, a genuine recurrence) is a real cross-iteration dependency.
+// Distinct bases (different arrays) are assumed non-aliasing — the same baseline convention
+// tryVectorize/tryStencil already rely on (tryStencil's own doc, "the SAME assumption the plain
+// map path already relies on") — UNCHANGED by this session, see the runtime-versioning note below
+// for why that convention stays untouched.
+//
+// RUNTIME ALIAS VERSIONING (layer 3, .work/vectorizer-generality-design.md follow-up — LLVM's
+// loop-versioning-for-vectorization answer to the same static-proof gap): an `elemKey` mismatch
+// used to be an unconditional decline. Every mismatch this pass can reach is SAME-BASE by
+// construction (the check only runs when `exprEq` already proved the two accesses share one
+// base) — e.g. `a[i] = a[i-off] + b[i]` with `off` a runtime value masked/ranged so the address
+// itself is provably in-bounds but the DISTANCE between the two accesses to `a` isn't provably
+// non-zero. This is exactly LLVM's runtime-dependence-checking case (RuntimePointerChecking /
+// LoopVersioningLICM): the two affine accesses differ by a compile-time-UNKNOWN but
+// LOOP-INVARIANT element delta `D` (guaranteed invariant — never merely assumed — because both
+// sides already passed `ivCoeff`'s coefficient-EXACTLY-1 proof, so `D = idxA − idxB` is algebraic
+// cancellation of the IV term, true for ANY value plugged in, mod-2^32 exact regardless of
+// intermediate overflow). The vectorization-safety criterion for a self-dependence at a constant
+// distance is `|D| ≥ VF` (lanes) — within one SIMD step all lane reads happen (one `v128.load`)
+// before any lane writes (one `v128.store`), and consecutive steps advance both the read and
+// write windows by the SAME `lanes` stride, so a gap ≥ `lanes` between them means no step ever
+// reads a position a PRIOR step already overwrote, nor misses a write a later step depends on —
+// this is the textbook LLVM loop-vectorizer distance-≥-VF rule. Cross-array aliasing (different
+// bases) is deliberately OUT of this session's scope — see the header doc's own note above: it
+// is currently an UNCHECKED, unconditional assumption everywhere in this file (not merely here),
+// and versioning it would mean adding a runtime guard to every existing multi-array corpus
+// specimen (a real regression risk this session's own gates forbid) — a separate, much larger
+// initiative (base-provenance analysis: which locals are provably fresh/non-escaping vs.
+// caller-supplied) that this pass does not attempt.
+//
+// When every mismatch reduces to that shape, the loop is VERSIONED: the SIMD body (this whole
+// pass's normal codegen, unchanged) runs behind a hoisted, loop-invariant disjointness guard
+// (`i32.or(D ≤ −lanes, D ≥ lanes)`, ANDed across every mismatched pair); the ELSE branch is a
+// fresh CLONE of `bl.blockNode` — the UNTOUCHED original scalar loop, byte-identical store order,
+// used nowhere else in the wrapper (the existing SIMD-prefix tail keeps its own separate use of
+// the same node). Declines (returns null, exactly as before — zero behavior change) when: the op
+// isn't enabled (`aliasVersion` opt), the body is too large to duplicate a second time
+// (`ALIAS_VERSION_MAX_BODY_NODES` — reused, not invented, see its own doc), or a mismatch's
+// element delta isn't expressible as an integer (a non-stride-aligned `offset=N` memarg, which
+// `matchOffset`/`matchAddr`'s own grammar has never produced in practice but isn't proven
+// impossible) — the same conservative "no partial credit" posture every gate in this file uses.
 //
 // Bounds: reuses `bl`'s own invariant-bound requirement (boundLocal unwritten, or an i32.const);
 // trip-count remainder handled by the same epilogue convention every recognizer above uses — the
@@ -7082,14 +7119,33 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 // `out[i+off] = a[i]`, both `i+off` and `off+i` operand orders, multi-array independent shifts —
 // none of which any prior recognizer's literal `matchLaneAddr`/`matchLaneOffset` shape accepts
 // (confirmed empirically: `--why-not-simd` declines all of them pre-this-pass; tryStencil itself
-// declines on lane type alone before ever reaching its own affine check).
+// declines on lane type alone before ever reaching its own affine check); plus (this session)
+// same-array runtime-offset recurrences that are ACTUALLY disjoint at runtime — `a[i] = a[i-k]
+// + b[i]` for a runtime `k` — now versioned instead of unconditionally declining.
 //
 // Follow-up seam (banked, not this session): REDUCTION/STENCIL-proper generalization (design §4
 // step 4), the float-domain grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base
-// loops), and non-constant (runtime-computed) stride coefficients — all deliberately out of
-// "contiguous lanes, dependence-free elementwise" scope for this base-layer slice.
-function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
+// loops), non-constant (runtime-computed) stride coefficients, and cross-array runtime alias
+// versioning (needs a base-provenance analysis this pass doesn't have — see the versioning note
+// above) — all deliberately out of scope for this base-layer slice.
+
+// Loop-versioning body-size gate (layer 3): a genuine SAME-BASE dependence that IS runtime-
+// disjoint gets a versioned wrapper — SIMD body + a second, full clone of the scalar loop as the
+// alias fallback — instead of an unconditional decline. That second clone is real code-size cost
+// this pass didn't pay before, so it's capped exactly like `optimize/recurse.js`'s own
+// body-duplicating transform (accumulator-fusion recursion unrolling) caps ITS clone: same
+// number, same rationale ("a small body"), reused verbatim rather than inventing a new threshold.
+const ALIAS_VERSION_MAX_BODY_NODES = 110
+const gmNodeCount = (n) => {
+  if (!isArr(n)) return 1
+  let c = 1
+  for (let i = 1; i < n.length; i++) c += gmNodeCount(n[i])
+  return c
+}
+
+function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   if (!bl) return null
+  const { aliasVersion = true } = opts
   const { incVar, bound, boundLocal, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl
   if (blHasGlobalSet) return null
   if (!boundLocal && !isI32Const(bound)) return null
@@ -7195,11 +7251,72 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
 
   // Same-array dependence gate: every access to a WRITTEN base must touch the SAME element
   // (idx + memarg) as every OTHER access to that same base — else SIMD reads stale/future data
-  // a scalar iteration wouldn't (verbatim from tryStencil's own alias proof).
+  // a scalar iteration wouldn't (verbatim from tryStencil's own alias proof). A mismatch is no
+  // longer an unconditional decline — see the header doc's "RUNTIME ALIAS VERSIONING" note: each
+  // mismatched pair resolves one of three ways —
+  //   1. the element delta constant-folds (both sides built only from the IV/consts/+/-/*, no
+  //      OTHER local/global) to a COMPILE-TIME number: |delta| ≥ lanes ⇒ provably disjoint
+  //      already, accepted for free (no guard, no clone — same zero-cost path a real elemKey
+  //      MATCH gets); |delta| < lanes ⇒ provably NOT disjoint (a genuine in-place recurrence,
+  //      e.g. `a[j]=a[j-1]+a[j]`) — declines exactly as before, a runtime check could never help.
+  //   2. the delta depends on something else (an `off` param etc.) — genuinely runtime-unknown —
+  //      version it (`aliasGuards`, non-null).
+  //   3. unrepresentable (non-stride-aligned memarg) — declines exactly as before.
   const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
-  for (const st of sites) {
-    if (st.kind !== 'store') continue
-    for (const s of sites) if (exprEq(normTee(s.base), normTee(st.base)) && elemKey(s) !== elemKey(st)) return null
+  const lanesForGuard = LANE_INFO[laneType].lanes
+  // Fold an idx expression at a FIXED, arbitrary IV value (0) — sound because every idx here
+  // already passed ivCoeff's coefficient-EXACTLY-{0,1} proof, so two same-coefficient sides
+  // differ by a value independent of which IV value is substituted (see header doc). Returns
+  // null (not a compile-time number) the moment it hits any local/global OTHER than the IV.
+  const foldAtIv0 = (n) => {
+    if (isI32Const(n)) return +n[1]
+    if (isLocalGet(n)) return n[1] === incVar ? 0 : null
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return foldAtIv0(n[2])
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub' || n[0] === 'i32.mul') && n.length === 3) {
+      const a = foldAtIv0(n[1]), b = foldAtIv0(n[2])
+      if (a == null || b == null) return null
+      return n[0] === 'i32.add' ? a + b : n[0] === 'i32.sub' ? a - b : a * b
+    }
+    return null
+  }
+  let aliasGuards = null
+  {
+    const guards = [], seenPairs = new Set()
+    let sawMismatch = false, unversionable = false, bodyTooBig = null   // lazy: only sized once actually needed
+    for (let i = 0; i < sites.length; i++) {
+      const st = sites[i]
+      if (st.kind !== 'store') continue
+      for (let j = 0; j < sites.length; j++) {
+        if (i === j) continue
+        const s = sites[j]
+        if (!exprEq(normTee(s.base), normTee(st.base)) || elemKey(s) === elemKey(st)) continue
+        const pk = i < j ? `${i}|${j}` : `${j}|${i}`
+        if (seenPairs.has(pk)) continue
+        seenPairs.add(pk)
+        if ((st.memBytes - s.memBytes) % stride !== 0) { sawMismatch = true; unversionable = true; continue }
+        const constDelta = (s.memBytes - st.memBytes) / stride
+        const foldedA = foldAtIv0(s.idx), foldedB = foldAtIv0(st.idx)
+        if (foldedA != null && foldedB != null) {
+          // Fully compile-time: resolve now, never touches `aliasVersion`/size gates — a
+          // provably-disjoint constant offset costs NOTHING (no guard, no clone), matching the
+          // zero-cost path every ordinary elemKey MATCH already gets.
+          if (Math.abs(foldedA - foldedB + constDelta) >= lanesForGuard) continue
+          sawMismatch = true; unversionable = true; continue
+        }
+        sawMismatch = true
+        if (bodyTooBig == null) bodyTooBig = body.reduce((n, stmt) => n + gmNodeCount(stmt), 0) > ALIAS_VERSION_MAX_BODY_NODES
+        if (!aliasVersion || bodyTooBig) { unversionable = true; continue }
+        let delta = ['i32.sub', cloneNode(s.idx), cloneNode(st.idx)]
+        if (constDelta !== 0) delta = ['i32.add', delta, ['i32.const', String(constDelta)]]
+        guards.push(['i32.or',
+          ['i32.le_s', delta, ['i32.const', String(-lanesForGuard)]],
+          ['i32.ge_s', delta, ['i32.const', String(lanesForGuard)]]])
+      }
+    }
+    if (sawMismatch) {
+      if (unversionable) return null
+      aliasGuards = guards
+    }
   }
 
   // A scalar local whose every write is address/offset-shaped (an addrTees/offTees entry, or
@@ -7269,7 +7386,20 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl) {
       ...lifted,
       ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
       ['br', simdLoopLabel]]]
-  const wrapper = ['block', ...preamble.map(cloneNode), boundSetup, simdBlock, bl.blockNode]
+  // Runtime alias versioning (see header doc): when `aliasGuards` is non-null, the SIMD path
+  // (unchanged) runs only behind a hoisted disjointness check; the else-branch is a FRESH clone
+  // of the original loop — `bl.blockNode` itself stays reserved for the tail-after-SIMD use
+  // above, so the fallback needs its own independent copy, not a second reference to the same
+  // node. `preamble` (pure & loop-invariant, established by every recognizer in this file) stays
+  // a single shared prefix ahead of the branch — safe for the alias-fallback path too, since the
+  // untouched clone of `bl.blockNode` re-derives the same values internally regardless.
+  const simdPath = [boundSetup, simdBlock, bl.blockNode]
+  const guardedPath = aliasGuards
+    ? [['if', aliasGuards.reduce((a, g) => a == null ? g : ['i32.and', a, g], null),
+        ['then', ...simdPath],
+        ['else', cloneNode(bl.blockNode)]]]
+    : simdPath
+  const wrapper = ['block', ...preamble.map(cloneNode), ...guardedPath]
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }
@@ -7598,7 +7728,8 @@ function assertLoopPlanAgrees(node, bl) {
 //   multiAcc, relaxedFma, blurMP, whyNot, stencil, outerStrip, pureFuncMap, toneMap.
 export function vectorizeLaneLocal(fn, opts = {}) {
   const { multiAcc = false, relaxedFma = false, blurMP = true, whyNot = false,
-    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false } = opts
+    stencil = false, outerStrip = false, pureFuncMap = null, toneMap = false, slp = false, crPow = false,
+    aliasVersion = true } = opts
   if (!isArr(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -7737,7 +7868,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryOuterStripRest(node, fnLocals, freshIdRef, pureFuncMap, outerStrip, op)
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
         ?? tryButterfly(node, fnLocals, freshIdRef)
-        ?? tryGeneralMap(node, fnLocals, freshIdRef, bl)
+        ?? tryGeneralMap(node, fnLocals, freshIdRef, bl, { aliasVersion })
         ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most
