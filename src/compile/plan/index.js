@@ -99,12 +99,20 @@ export default function plan(ast, profiler, regionHooks) {
   // populating `bodyFacts` (`ctx.facts`) on first touch per function was
   // the confirmed case — so `ctx.facts` rides along explicitly rather than
   // via a trailing, non-rebound `getFactStore()` call.
-  const round = body => {
-    const m = regionHooks?.mark()
-    body()
+  // `exitRound` is factored out of `round` below so the two upstream rounds
+  // (early-plan prefix, narrowSignatures whole-call — 7346f7e7's own design,
+  // reimplemented here against the CURRENT 14-field union bundle rather than
+  // reproducing that session's own narrower 11-field `fullRoot()`) can share
+  // the identical exit shape without a third copy of this array literal.
+  const exitRound = m => {
     if (regionHooks)
       [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
         regionHooks.exit(m, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+  }
+  const round = body => {
+    const m = regionHooks?.mark()
+    body()
+    exitRound(m)
   }
   // AST-mutating pass: run timed; on change, re-sweep program facts (timed
   // separately — the refreshes are usually the cost, not the passes).
@@ -125,6 +133,27 @@ export default function plan(ast, profiler, regionHooks) {
   const sweep = (name, pass) => {
     if (t(name, pass)) _dirty = true
   }
+
+  // Region-arena EARLY-PLAN round (7346f7e7's own design — 627cf92a's phase
+  // map named this exact span "+900MB before narrowSignatures even starts":
+  // compileAst entry → plan() entry → classifyHashDictGlobals →
+  // flattenFuncNamespaces/devirtGlobalCalls/inlineHotInternalCalls →
+  // collectProgramFacts's own dirty-resweep loop → narrowSignatures entry).
+  // Every pass from here through `resolveClosureWidth` is a SEQUENTIAL
+  // top-level call, none a loop body holding a stale container reference
+  // across an exit (the `ctx.funcs.list` relocation hazard `round()`'s own
+  // doc and e640e77a's design note name doesn't apply — nothing below
+  // iterates `ctx.funcs.list` across this boundary). One round spanning the
+  // WHOLE early-plan prefix: mark here, exit right before the
+  // `canSkipWholeProgramNarrowing` branch below — after `programFacts` is
+  // declared and `resolveClosureWidth` has settled it — so BOTH the skip-path
+  // and the full-narrowing path start from an already-reclaimed state. Uses
+  // raw mark/`exitRound()` rather than the `round(body)` wrapper because
+  // `programFacts` itself is DECLARED partway through this span (`let
+  // programFacts = facts()` below) — nesting that declaration inside a
+  // `round(() => {...})` callback would scope it away from every later
+  // reader (`canSkipWholeProgramNarrowing` and the whole narrowing tail).
+  const __earlyMark = regionHooks?.mark()
 
   t('inferModuleLetTypes', () => inferModuleLetTypes(ast))
   // Pass 1 (no call-site param facts yet): literal/alias/global-to-global
@@ -190,6 +219,12 @@ export default function plan(ast, profiler, regionHooks) {
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
+  // Early-plan round's own exit — fixpoint complete for this span (nothing
+  // below is still mutating what was just rooted mid-pass; `programFacts`
+  // keeps accumulating in EITHER branch below, exactly like every other
+  // round's own "enriched in place, never re-collected past this point"
+  // contract).
+  exitRound(__earlyMark)
   if (canSkipWholeProgramNarrowing(programFacts)) {
     // Phase J (jsstring boundary opt-in) is body-local and call-site-independent;
     // run it even when the rest of narrowing is skipped so simple `export let
@@ -202,7 +237,28 @@ export default function plan(ast, profiler, regionHooks) {
     return programFacts
   }
 
-  t('narrowSignatures', () => narrowSignatures(programFacts, ast))
+  // Region-arena NARROWSIGNATURES round (7346f7e7's own design — the named
+  // next lever after e640e77a's own "narrowSignatures itself is EXCLUDED"
+  // boundary design and 0ae75f07's callee-index fix). e640e77a's exclusion
+  // rationale ("wrapping it would mean rooting `programFacts` mid-fixpoint
+  // while narrowSignatures is still mutating it in place — a correctness
+  // hazard for zero reclaim") is about boundaries INSIDE narrowSignatures'
+  // own internal fixpoint (its internal `runFixpointConverged()` sweeps) —
+  // never attempted here. This wraps the WHOLE call via the standard
+  // `round(body)` helper: mark before, exit strictly AFTER narrowSignatures
+  // returns (its own fixpoint fully converged, `programFacts.paramReps`/
+  // `.callSites` settled) — no mid-mutation rooting, by construction.
+  // narrowSignatures returns nothing — its entire effect is IN-PLACE
+  // MUTATION of `programFacts` (`.paramReps`/`.callSites`) and `ctx.funcs`
+  // (`func.sig.*`/`.valResult`/...), both already union-root members, plus
+  // `ctx.facts` (`analyzeBody` first-touch population inside its own
+  // multi-phase fixpoint — the same 274b6bd8 hazard the early-plan round
+  // above already covers) — every touched container already rides in
+  // `round()`'s own 14-field bundle, no extra audit needed beyond
+  // confirming narrowSignatures writes nothing outside it (verified:
+  // narrow.js references only `programFacts`, `ctx.funcs`/`.func`,
+  // `ctx.scope`/`.types` read-only + self-restored `ctx.types.typedElem`).
+  round(() => t('narrowSignatures', () => narrowSignatures(programFacts, ast)))
   // Boolean/bigint result kinds for funcs the call-site census can't reach —
   // value-used-only functions have no direct sites, but their results still
   // cross boxed positions (closure trampolines, boundary wrappers). Guarded:

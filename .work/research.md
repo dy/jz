@@ -18333,3 +18333,187 @@ correctness 21/21 (206 assertions), performance pins 5/5; warm geomean 1.029×
 compact mixed/8-key, over-budget 17-key, open-write, and delete cases, and
 confirmed compact helper absence plus large-schema fallback. `git diff
 --check` clean. Generated `dist/` artifacts remain untracked.
+## §Region arena — the two ns-round upstream rounds (early-plan prefix,
+## narrowSignatures whole-call) REIMPLEMENTED fresh against current
+## `round()`/`fullRoot()` idiom, LANDED dormant-safe (all gates green,
+## region-live oracle 13/13×15 twice); real-graph peaks (jessie/watr/
+## jzify-entry) and THE jz×jz GOAL GATE are BYTE-IDENTICAL to the pre-round
+## baseline — zero measured delta, goal gate still NOT MET at exactly
+## 4.000 GiB both configs (2026-08-16)
+
+**Task**: reimplement `7346f7e7`'s two upstream rounds (early-plan prefix,
+narrowSignatures whole-call — designed and audited that session, never
+landed because `ns-round-2026-08-14` diverged from main by the time
+`1bf3f09b`/this-file's-own-71156204-entry closed the region-live wall those
+rounds were originally tested against) fresh against the CURRENT tree,
+per this task's own explicit instruction NOT to port the stale branch
+(33-file divergence) but to reuse the DESIGN recorded in `7346f7e7`'s own
+ledger entry and diff (`git show 7346f7e7 -- src/compile/plan/index.js`,
+read directly from the still-present local `ns-round-2026-08-14` branch —
+used as a design REFERENCE, nothing cherry-picked or merged).
+
+### Implementation
+
+`src/compile/plan/index.js` only. `7346f7e7`'s own 11-field `fullRoot()`
+predates this campaign's later CompileSession Slice C-v2 work
+(`a616ca43`'s `ctx.func`/`ctx.plans`/`ctx.inspect` widening, then Slice
+C-v2's own union-field consolidation) — reproducing that narrower bundle
+verbatim would reintroduce exactly the root-completeness gap class
+`a616ca43`/`ce3070eb` already closed. Reused the CURRENT `round()` helper's
+own 14-field union bundle (`ast, programFacts, ctx.funcs, ctx.module,
+ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans,
+ctx.inspect, ctx.func, ctx.transform, ctx.facts`) instead, factored the
+shared exit step out as `exitRound(m)` (was inlined in `round`) so both new
+rounds and the five existing plan-tail rounds share one array literal, not
+three copies of it:
+
+- **Early-plan round**: mark at the absolute top of `plan()` (before
+  `inferModuleLetTypes`, the first pass), exit right after
+  `resolveClosureWidth` / right before the `canSkipWholeProgramNarrowing`
+  branch — covering the same "+900MB before narrowSignatures even starts"
+  span `627cf92a`'s phase map named. Raw `mark()`/`exitRound()` calls, NOT
+  the `round(body)` wrapper: `let programFacts = facts()` is declared
+  partway through this span, and nesting that declaration inside a
+  `round(() => {...})` callback would scope it away from every later reader
+  (`canSkipWholeProgramNarrowing` and the whole narrowing tail) — the same
+  constraint `7346f7e7`'s own raw-mark/exit design already worked around,
+  reproduced here for the same reason, not a new discovery.
+- **narrowSignatures round**: wraps the single `t('narrowSignatures', ...)`
+  call via the standard `round(body)` helper — a one-line change, simpler
+  than `7346f7e7`'s own bespoke mark/exit pair, since the general-purpose
+  `round()` helper (added by `e640e77a`, after `7346f7e7`'s session) didn't
+  exist yet at design time. `round()` is only callable here because
+  `programFacts` is already declared as an outer `let` by this point in the
+  pipeline (line order confirmed by direct read) — no TDZ hazard.
+
+Audit rationale (which containers narrowSignatures/the early-plan passes
+actually write, why the 14-field bundle covers all of it) is condensed
+inline in each round's own comment, citing `7346f7e7`'s own line-by-line
+narrow.js audit rather than re-deriving it from scratch.
+
+### Gates
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships — both rounds are
+`if(regionHooks)`-gated dead code natively):
+- `npm test`: **3451 total (19672 assertions) / 3445 pass / 0 fail / 6
+  skip** — exact baseline match.
+- Self-build ×2: SHA-256
+  `73293978e8b6921f0e98e8d53179cfdbb831e556698fc67e2b30421ea2433b32` both
+  times — converges.
+- `test:wasm`: **2749 total (12792 assertions) / 2743 pass / 0 fail / 6
+  skip** — exact baseline match.
+- kernel-oracle: **13/13 × 3** (538 assertions each), zero flake.
+- kernel-parity: **3/3 blocks (33 assertions)**.
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2 (two independent rebuilds): SHA-256
+  `e9baa9a9be50de0f970ac947bb4b182445e693e1ed735c19db45b064f86bf40c` both
+  times — converges.
+- kernel-oracle: **13/13 × 15, on EACH of the two independently-rebuilt
+  binaries** (30/30 total reps, zero flake) — exceeds this task's own
+  "flake-aware, ×15" bar, matching `1bf3f09b`'s own standard.
+- kernel-parity: **3/3 blocks (33 assertions)**.
+
+### Real-graph peaks — the archived kernel-memory-curve recipe
+(`instantiate(wasm,{memory:8192})`, `exports.default(code,0,{level:2},
+modules,0)`, `memory.buffer.byteLength` read on success or throw), ×3 each,
+region-live, byte-identical output every rep:
+
+| graph | dormant peak | region-live peak | vs. pre-round (71156204) baseline |
+|---|---:|---:|---|
+| jessie (47 mod, 107,171 B) | 1024.0 MB | 512.0 MB | **UNCHANGED** (was 512.0 MB) |
+| watr (7 mod, 314,631 B) | 4096.0 MB | 1024.0 MB | **UNCHANGED** (was 1024.0 MB) |
+| jzify-entry (70 mod, 606,900 B) | FAIL @ 4096.0 MB | OK, 4096.0 MB | **UNCHANGED** (was OK, 4096.0 MB) |
+
+**Zero measured delta on all three real graphs** — contrary to this task's
+own "expect FURTHER drops" framing. Read honestly, not glossed: these three
+graphs are small enough that most/all of their functions likely take
+`plan()`'s own `canSkipWholeProgramNarrowing` early-return path
+(`e640e77a`'s own finding, re-confirmed structurally here, not re-measured
+directly this session) — which SKIPS the narrowSignatures round entirely
+and gives the early-plan round too little churn to move a coarse
+page-tier-rounded peak reading. Not a regression (every gate above is
+clean, output bytes are byte-identical to the pre-round build on every
+succeeding row) — just an honest null result on this specific evidence
+axis.
+
+### THE GOAL GATE — both configs, NOT MET, unchanged from baseline
+
+| config | jz×jz (158 mod) peak | wall to trap |
+|---|---:|---:|
+| dormant | **FAIL**, unreachable @ 4096.0 MB | ~6 s (matches prior sessions) |
+| region-live | **FAIL**, unreachable @ 4096.0 MB (×3, 26.3/31.4/28.4 s) | slower than prior sessions' ~6 s single-sample reads, machine-load noise per this file's own standing caveat on single-sample wall-time — the PEAK, the metric this gate is actually decided on, is unaffected and identical either way |
+
+Exactly the same 4,294,967,296-byte (4.000 GiB) ceiling every prior GOAL
+GATE session has hit, both configs, unchanged by these two rounds. **Bench
+row: NOT RUN** — gated on "if under 4GiB," neither config is.
+
+### Phase-stamp attempt — banked, not a usable residual profile
+
+Per this task's own fallback instruction ("phase-stamp where the ceiling
+now sits, the 097a51d7 breadcrumb method"): the FULL method (a disposable
+`optimize:0`-with-names wasm kernel, `wasm2wat`/breadcrumb-splice/
+`wat2wasm` cycle, called at the real O3 profile) was **not attempted this
+session** — every prior instance of this technique was its own dedicated
+session; landing it here, after the full mandatory gate battery above, was
+judged out of budget rather than rushed into an unverified result.
+
+A CHEAPER native-side substitute was tried instead (`jz(graph.code,
+{modules, optimize:3, profile})` natively, `process.memoryUsage().rss`
+sampled on a `setInterval` alongside the `opts.profile` phase timings) —
+**this did not work and is reported as a negative result, not silently
+dropped**: Node's single-threaded event loop never runs the `setInterval`
+callback during jz's own synchronous, CPU-bound compile call, so every
+per-phase peak-RSS reading came back `0.0 MB` (interval starved, not a real
+measurement). The one number this attempt DID produce validly (via
+`opts.profile`'s own synchronous instrumentation, not the broken interval):
+native `plan:narrowSignatures` wall time ≈1885 ms, a single, noisy sample
+in the same range as this file's own previously-documented pre-/post-fix
+window (1945.0 ms / 1455.1 ms) — uninformative on its own (native has no
+4 GiB ceiling to phase-stamp against, and these two rounds are dead code
+natively regardless) and not treated as a finding.
+
+**Concrete next step, unchanged from every prior "goal gate not met"
+entry**: the real WAT-breadcrumb frontier trace (`097a51d7`'s own method)
+is still the only technique that has ever located WHERE inside
+`analyzeFuncForEmit`'s per-call work the wasm32 ceiling actually bites —
+last measured at call #106 dormant / #1427 region-live, both kernels never
+reaching `emitFunc`. With these two rounds now landed (all of `front` +
+Slice 3 + six plan-tail rounds + the batched `analyzeFuncForEmit` loop
+rounds + these two = the "8+ rounds active" this task's own brief
+anticipated), re-running that exact breadcrumb trace against the CURRENT
+frontier is the next session's own starting point — this session confirms
+the frontier hasn't moved on the coarse metric (still exactly 4.000 GiB)
+but does not re-derive the fine-grained call-count location.
+
+### Disposition
+
+Landed: `src/compile/plan/index.js` only (the two rounds), dormant-safe,
+`REGION_HOOKS_ACTIVE=false` at commit (confirmed via `git diff
+scripts/self.js` clean — the hand-flip used for the region-live gates
+above was reverted before this commit). Both rounds are real,
+independently-audited region-arena work — DRY'd against the current
+`round()`/`exitRound()` idiom rather than reproducing `7346f7e7`'s own
+now-superseded 11-field bundle — but their measured payoff on every
+available evidence axis (three real graphs, the goal gate itself) is
+**zero**, honestly reported rather than inflated. Landing them anyway
+matches this campaign's own repeated "land dead-but-correct, DRY, and
+audited" precedent (most prior sessions shipped this way) — they cost
+nothing dormant, remove a live discrepancy between this file's own
+documented design and the actual source, and stay available (dead code,
+zero risk) for whichever future session tackles the `analyzeFuncForEmit`
+frontier the retained-set census already named as the real remaining
+lever.
+
+**SHAs.** Worktree: `71156204` base (main tip at session start — main
+advanced to `bb13767f` by session end via concurrent unrelated work in
+this shared environment; this session's single commit rebases cleanly,
+`src/compile/plan/index.js` untouched by any of the 7 intervening
+commits). Branch `upstream-2026-08-15`, deleted after landing along with
+its worktree. Dormant `dist/jz.wasm` (self-build ×2): SHA-256
+`73293978e8b6921f0e98e8d53179cfdbb831e556698fc67e2b30421ea2433b32` both
+times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
+`e9baa9a9be50de0f970ac947bb4b182445e693e1ed735c19db45b064f86bf40c` both
+times. Every `.work/*.mjs` scratch script this session produced
+(`goal-gate-measure.mjs`, `phase-stamp.mjs`) deleted at session end, none
+committed.
