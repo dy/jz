@@ -25,6 +25,14 @@ const ARR_RESIZE_METHODS = new Set(['push', 'pop', 'shift', 'unshift', 'splice']
 // Per-op arg slots where a bare string is a NAME BINDING or receiver — not a value
 // read. Everything else marks nameEscapes (see below). `true` = skip all slots.
 // Missing a binding-shaped op here only over-marks (a lost fold), never unsound.
+const isObjectLiteral = (node) => Array.isArray(node) && node[0] === '{}'
+// Meet over all value definitions: true only while every observed def is a
+// direct object literal; one false source is absorbing and can never rebind.
+const recordObjectLiteralDef = (facts, name, direct) => {
+  if (!facts.objectLiteralDefs) return
+  if (!direct || !facts.objectLiteralDefs.has(name)) facts.objectLiteralDefs.set(name, direct)
+}
+
 const ESCAPE_SKIP = {
   '.': true, '?.': true,          // receiver never escapes via the read itself; slot2 is a prop NAME
   'str': true,                    // payload
@@ -51,7 +59,10 @@ export function observeNodeFacts(node, f) {
   if (op === 'let' || op === 'const' || op === 'var') {
     // Pre-register decl '=' children: their slot-0 is a BINDING, not a reassignment,
     // so the '=' marking below must not flag the declared name as escaped.
-    for (const d of args) if (Array.isArray(d) && d[0] === '=') (f._declEq ??= new WeakSet()).add(d)
+    for (const d of args) {
+      if (Array.isArray(d) && d[0] === '=') (f._declEq ??= new WeakSet()).add(d)
+      else if (typeof d === 'string') recordObjectLiteralDef(f, d, false)
+    }
   }
   if (op === 'export') {
     // An exported binding is reachable by importers and the host — writes through
@@ -75,6 +86,12 @@ export function observeNodeFacts(node, f) {
       }
     }
   }
+  // A schema says which slots a value has, not whether this binding owns a
+  // fresh object. Track names whose EVERY value definition is a plain object
+  // literal; inferred call/param/container aliases must not use per-name write
+  // facts to claim the shared object is closed.
+  if (MUTATE_OPS.has(op) && typeof args[0] === 'string')
+    recordObjectLiteralDef(f, args[0], op === '=' && isObjectLiteral(args[1]))
   if (MUTATE_OPS.has(op) && Array.isArray(args[0])) {
     if (args[0][0] === '[]') {
       let root = args[0][1]
@@ -193,6 +210,7 @@ function emptyWalkFacts() {
     propMap: new Map(), valueUsed: new Set(), callSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
+    objectLiteralDefs: new Map(),
   }
 }
 
@@ -209,6 +227,8 @@ function mergeWalkFacts(into, from) {
   for (const p of from.writtenProps) into.writtenProps.add(p)
   for (const v of from.arrResized) into.arrResized.add(v)
   for (const v of from.nameEscapes) into.nameEscapes.add(v)
+  for (const [name, direct] of from.objectLiteralDefs)
+    recordObjectLiteralDef(into, name, direct)
   for (const [obj, keys] of from.literalWriteKeys) {
     if (!into.literalWriteKeys.has(obj)) into.literalWriteKeys.set(obj, new Set())
     for (const k of keys) into.literalWriteKeys.get(obj).add(k)
@@ -231,6 +251,10 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     if (hit?.gen === pf.gen) return hit.facts
   }
   const acc = emptyWalkFacts()
+  // A concise arrow whose whole body is one bare identifier has no enclosing
+  // array node for observeNodeFacts to visit. The value is returned, hence the
+  // referenced object escapes just like `return name` in a block body.
+  if (typeof root === 'string') acc.nameEscapes.add(root)
   const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
@@ -386,6 +410,8 @@ export function collectProgramFacts(ast) {
     if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
     if (initFacts.arrResized) for (const v of initFacts.arrResized) f.arrResized.add(v)
     if (initFacts.nameEscapes) for (const v of initFacts.nameEscapes) f.nameEscapes.add(v)
+    if (initFacts.objectLiteralDefs) for (const [name, direct] of initFacts.objectLiteralDefs)
+      recordObjectLiteralDef(f, name, direct)
     if (initFacts.literalWriteKeys) for (const [obj, keys] of initFacts.literalWriteKeys) {
       if (!f.literalWriteKeys.has(obj)) f.literalWriteKeys.set(obj, new Set())
       for (const k of keys) f.literalWriteKeys.get(obj).add(k)
@@ -427,13 +453,22 @@ export function collectProgramFacts(ast) {
 
   // Emit-time consumers (the static object-literal fast path) read this off
   // ctx — a mutated prop name anywhere disqualifies sharing a static instance.
+  // Params can carry caller-owned aliases even when signature inference gives
+  // them one exact schema. No parameter definition appears as a normal body
+  // assignment, so disqualify them explicitly from direct-literal ownership.
+  for (const func of ctx.funcs.list) if (func.sig?.params)
+    for (const p of func.sig.params) recordObjectLiteralDef(f, p.name, false)
+  const literalObjectVars = new Set()
+  for (const [name, direct] of f.objectLiteralDefs)
+    if (direct) literalObjectVars.add(name)
+
   ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
-    arrResized: f.arrResized, nameEscapes: f.nameEscapes,
+    arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
   }
 }
 

@@ -3434,7 +3434,14 @@ export default (ctx) => {
     // correct (a present null/undefined field still exists) and smaller/faster
     // than __dyn_get + a nullish test. Computed writes or literal writes beyond
     // the schema reopen the shape and retain the generic runtime path below.
-    const schema = typeof obj === 'string' && objType === VAL.OBJECT ? ctx.schema.resolve(obj) : null
+    const schemaId = typeof obj === 'string' && objType === VAL.OBJECT ? ctx.schema.idOf(obj) : null
+    const schema = schemaId != null ? ctx.schema.list[schemaId] : null
+    // A schema inferred onto a call result/parameter/container read proves only
+    // layout, not fresh identity: another alias can grow the same object without
+    // touching this name's write facts. Require both an exact binding schema and
+    // the whole-program proof that every value definition is a direct literal.
+    const schemaBound = schemaId != null && ctx.schema.vars.get(obj) === schemaId &&
+      ctx.types.literalObjectVars?.has(obj)
     const literalWrites = schema && ctx.types.literalWriteKeys?.get(obj)
     let hasOutOfSchemaWrite = false
     if (literalWrites) for (const prop of literalWrites) if (!schema.includes(prop)) {
@@ -3446,7 +3453,7 @@ export default (ctx) => {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
       if (compareCost > IN_SCHEMA_COMPARE_BUDGET) break
     }
-    const schemaClosed = schema != null && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
+    const schemaClosed = schemaBound && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
       ctx.types.nameEscapes != null && ctx.types.dynWriteVars != null &&
       ctx.types.literalWriteKeys != null && !ctx.types.nameEscapes.has(obj) &&
       !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite

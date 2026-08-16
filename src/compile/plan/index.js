@@ -216,6 +216,7 @@ export default function plan(ast, profiler, regionHooks) {
   ctx.types.writtenProps = programFacts.writtenProps
   ctx.types.arrResized = programFacts.arrResized
   ctx.types.nameEscapes = programFacts.nameEscapes
+  ctx.types.literalObjectVars = programFacts.literalObjectVars
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))

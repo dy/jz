@@ -642,6 +642,7 @@ function recordModuleInitFacts(root) {
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
+    objectLiteralDefs: new Map(),
   }
   const visitFuncValue = (node) => {
     if (facts.hasFuncValue || !Array.isArray(node)) return

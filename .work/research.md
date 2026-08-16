@@ -18517,3 +18517,60 @@ times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
 times. Every `.work/*.mjs` scratch script this session produced
 (`goal-gate-measure.mjs`, `phase-stamp.mjs`) deleted at session end, none
 committed.
+
+## §Dynamic `in` self-review: schema layout is not object identity
+## (2026-08-16)
+
+**Verdict on `157f8dc1`: one real soundness hole found.** The original
+closed-schema gate required a precise schema, no receiver-name escape,
+no receiver-name computed write, and no out-of-schema literal write. That
+proves the named binding's layout and local write history, but not that the
+binding owns a fresh object. Schema inference also stamps the same schema id
+onto call results, parameters, and container reads. Such a name can alias an
+object grown through a different name while its own `dynWriteVars` and
+`literalWriteKeys` remain empty.
+
+Three minimal classes reproduced at every relevant tier:
+
+- returned alias: `alias = getSource(); source[k] = 1; k in alias` returned
+  false at O0/O2/O3 after `157f8dc1`, versus true before it;
+- parameter alias: a schema-narrowed parameter queried by `in` after the caller
+  grows the argument returned false at O0;
+- container alias: `alias = holder[0]` with a source-side write returned false
+  at O0.
+
+The reverse returned-alias direction exposed a second fact hole: a concise
+arrow `let get = () => source` has a bare-string body, so the array-only
+program-fact walker never visited an enclosing `return` node and failed to put
+`source` in `nameEscapes`. Mutating `get()`'s result then querying `source`
+incorrectly took the closed path at O0.
+
+**Correction.** Program facts now compute `literalObjectVars`: a one-Map
+meet over every binding value definition (`true` only while every definition
+is a direct object literal; one nonliteral definition is absorbing).
+Parameters are explicitly nonliteral because caller-owned aliases do not
+appear as body assignments. The emitter requires this ownership fact plus an
+exact `ctx.schema.vars`/active-schema id match before consulting the existing
+escape/write/size gates. A bare-string function body is now recorded as an
+escaping returned value, matching block-bodied `return source`.
+
+This is deliberately conservative. Direct literal receivers retain the exact
+`157f8dc1` bytes and fast path. Inferred call/parameter/container aliases fall
+back to the old runtime path; all four review repros are byte-identical to the
+pre-`157f8dc1` baseline at O0/O2/O3. No generic helper or object-storage
+routing changed.
+
+**Review coverage.** Added 24 alias assertions across O0/O2/O3 (behavior plus
+`__dyn_get` reachability), including both returned-alias directions,
+parameter flow, and container storage. A separate adversarial differential
+swept compact schemas containing nullish values, numeric/atom/string keys,
+long names, Unicode, and key-expression side effects, then alternated closed
+and aliased compiles in one warm process to check fact reset. Final `npm test`:
+3,472 pass / 0 fail / 6 skip (20,010 assertions). Focused inference, objects,
+for-in, invariants, session-reentrancy, and dyn-key O0/O3 suites are green.
+Self-host correctness is 21/21; final wasm-kernel ownership probes pass at
+O0/O2/O3 and preserve helper absence only for direct literals. Fresh-instance
+self-host performance remains green at 0.848× (cap 0.99); the known warm
+ratchet remains red at 1.111–1.139×, the same pre-existing load-sensitive
+class already recorded above. Final self-host artifact SHA-256:
+`1cbdc697d8369ee2e756578ab4ceb3a857a318a20a2f0a5de53786b61b23c323`.

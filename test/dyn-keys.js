@@ -187,6 +187,34 @@ test('in: open, aliased, deleted, and large schemas retain runtime membership di
   }
 })
 
+// A schema id proves layout, not receiver identity. In each case below the
+// queried name receives an already-aliased object through an inferred edge;
+// writes happen through the source name. Per-name write facts on the queried
+// alias are therefore empty, so the closed path must additionally require a
+// direct-literal origin proof, not merely an inferred matching schema.
+test('in: inferred-schema aliases cannot bypass source-side shape mutations', () => {
+  const cases = [
+    ['returned alias queried through result', `let source = { fixed: undefined }
+      let get = () => source
+      export let f = (k) => { let alias = get(); source[k] = 1; return k in alias }`],
+    ['returned alias mutates literal source', `let source = { fixed: undefined }
+      let get = () => source
+      export let f = (k) => { let alias = get(); alias[k] = 1; return k in source }`],
+    ['parameter alias', `let has = (k, alias) => k in alias
+      export let f = (k) => { let source = { fixed: undefined }; source[k] = 1; return has(k, source) }`],
+    ['container alias', `export let f = (k) => {
+      let source = { fixed: undefined }, holder = [source], alias = holder[0]
+      source[k] = 1
+      return k in alias
+    }`],
+  ]
+  for (const [name, src] of cases) for (const optimize of [0, 2, 3]) {
+    is(jz(src, { optimize }).exports.f('added'), true, `O${optimize}: ${name}`)
+    ok(compile(src, { optimize, wat: true }).includes('(func $__dyn_get'),
+      `O${optimize}: ${name} retains runtime dispatch`)
+  }
+})
+
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
 // consumer promoted EVERY read on a proven-Map receiver to the exact VAL.*
 // kind of every observed .set() write. Unsound two ways: (1) an ABSENT key
