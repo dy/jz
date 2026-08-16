@@ -320,6 +320,138 @@ stated as a range, not a point estimate, precisely because the actual
 duplicate ratio was not measured this session), interning saves
 **~150–340 MB**.
 
+**Lever 3 addendum (2026-08-16 session, `str-intern-2026-08-16`) — MEASURED,
+estimate revised down, not pursued.** Task: runtime string interning,
+census lever #3. Per the task's own "measure first" gate, instrumented the
+actual construction sites (not `$__alloc` generically, which is shared with
+BIGINT/CLOSURE-env — §2's own caveat) via source-level hooks gated by a
+`JZ_STR_CENSUS` env var (not a shipped feature, fully reverted at session
+end): `module/string.js`'s `allocCopyTail` (the shared fresh-allocation tail
+of all four `__str_concat*` variants — deliberately excludes the heap-top
+bump-extend fast path, which mutates an in-progress accumulator rather than
+minting a final value), `__str_slice`'s non-view heap tail, `__str_repeat`'s
+final (non-SSO-folded) tail, and `module/number.js`'s `__mkstr` (the single
+choke point every number-to-string path — itoa/ftoa/toExp/radix — routes
+through). Each hook appends `[site][len][bytes]` to a dedicated append-only
+log region at a fixed high address (`0x40000000`, ~3 GiB of headroom below
+the wasm32 ceiling) via a raw bump pointer **separate from `$__heap`** —
+routing the log through `$__alloc` itself would move `$__heap` and silently
+break the bump-extend heap-top check the concat fast path depends on,
+biasing the very measurement being taken. Built a region-live kernel
+(`REGION_HOOKS_ACTIVE` hand-flipped `true`, `resolveSelfhostBuild({regionArena:
+true, memory:65536})`) and ran it against the jessie corpus (this doc's own
+established 46-module baseline, `test/ecosystem-perf.js`'s driver shape),
+reading the log back from `exports.memory.buffer` after the run completed.
+
+*Note on method:* `optimize:3` and `optimize:2` kernel builds **both
+produced an invalid wasm module** with the four hooks linked in
+(`CompileError: local.set[0] expected type f64, found global.get of type
+i64`, a different function index each time) — not chased further (out of
+scope for a duplication census; flagged below as a real risk signal for
+whoever next touches this code path). `optimize:false` built and ran
+cleanly, so the census ran on an unoptimized-but-otherwise-identical
+region-live kernel; construction-site call counts and content are a
+property of the algorithm the kernel executes, not of how efficiently
+watr's own optimizer subsequently codegens it, so this does not compromise
+the string-content measurement itself.
+
+**Result — jessie, 46 modules, region-live, one full compile:**
+
+| site | count | bytes | distinct | distinct bytes | dup bytes | dup% |
+|---|---:|---:|---:|---:|---:|---:|
+| concat | 32,016 | 1,176,765 | 6,223 | 856,788 | 319,977 | 27.2% |
+| slice | 10,838 | 143,457 | 2,764 | 45,950 | 97,507 | 68.0% |
+| numtostr | 2,760 | 377,950 | 273 | 355,758 | 22,192 | 5.9% |
+| **total** | **45,614** | **1,698,172** | | **1,258,496** | **439,676** | **25.9%** |
+
+`concat` + `slice` account for 95% of duplicate bytes (concat alone 72.8%)
+— concentrated, meeting the task's own "≥70% in few sites" bar for a
+site-targeted (not global) design **if** a design were to proceed.
+
+**But the composition contradicts the census's own named hypothesis.** The
+top duplicated strings by bytes wasted are **not** `renameFunc` mangled
+names — they are the self-hosted kernel's own WAT-opcode vocabulary,
+repeated across thousands of emitted instructions: `"local.g"` (×3,232,
+site concat), `"i32.con"` (×1,517), `"local.get,"` (×1,003), `"i32.const,"`
+(×932), `"call,$__mkptr,i32.const,1,i32.const,0"` (×98, a comma-joined IR
+tuple — `Array.prototype.toString`-shaped serialization, not a template
+literal), `"__ptr_type"`/`"__mkptr"`/`"__alloc_hdr"`/`"__is_truthy"` (site
+slice). Mangled module-prefix names (`"m0_jessie$"` ×269, `"m43_accessor$"`
+×162, `"m41_statement$"` ×139) are real and present but a minority of the
+total — the census's named example was not wrong to exist, just not
+dominant. (A second contamination source, noted for honesty: several
+top slice/concat entries are this session's own scratch-worktree tmpdir
+path components, e.g. `"_private_tmp_claude_501__Users_div_projects_jz…"`
+— an artifact of where the jessie driver happened to be written for this
+run, not a property of a real compile. Excluding them would shrink the
+measured total slightly further, not change the verdict.)
+
+**Scaling check against the census's own 150–340 MB estimate**: jessie's
+own source is 66,654 bytes; jz×jz's self-graph is 5.88 MB — an 88.2×
+scale factor. A flat linear extrapolation of jessie's 439,676 measured
+duplicate bytes gives **≈38.8 MB** at jz×jz scale — 4–9× below the
+speculated range (and duplicate-heavy short-opcode content, if anything,
+scales *sub*-linearly per additional source byte once the small opcode
+vocabulary saturates, not super-linearly, so this is if anything an
+optimistic extrapolation, not a floor).
+
+**Verdict: STOP, per the task's own "measurement says the census estimate
+was wrong" gate — no interning machinery implemented this session.**
+Weighed against all three named candidates:
+- **(a) global intern-on-construction** — rejected. The dominant site
+  (concat) already excludes the accumulator/bump-extend path by
+  construction (correctly — an in-progress accumulator isn't a final
+  value to intern), so the real target is the ~43K/compile fresh
+  allocations measured above; scaled to jz×jz (~3.8M calls), a
+  hash+probe on every one to recover ≈39 MB against a 4080→4096 MB wall
+  is a poor trade even before implementation risk.
+- **(b) hot-mint-point-only (mangled names)** — rejected by the data
+  itself: mangled names are a minority of measured duplicate bytes, not
+  the dominant site the census named. Narrowing to just that site would
+  miss most of what little duplication exists.
+- **(c) reject outright** — the closest to correct, though not for
+  "flat profile" (it isn't flat — concat+slice are concentrated) but for
+  **magnitude**: ≈39 MB against a wall that needs an order-of-magnitude
+  reduction (§7's own verdict, unchanged by this addendum — no single
+  lever closes the gap) does not clear the bar for the region-arena
+  rooting complexity a durable runtime hash-cons table would need (a NEW
+  mutable global reachable from every `regionHooks.exit(mark, [...])`
+  root list — `src/front.js:93`, `src/compile/plan/index.js:107`
+  (off-limits to this session by task scope), `src/compile/index.js:2556/
+  2622/3066` — the exact root-completeness class of gap 274b6bd8's own
+  session found and fixed for `getFactStore()`; a table piggybacked onto
+  an already-rooted field like `ctx.facts` would sidestep touching
+  `plan/index.js`, but that is a design note for a future session, not
+  a reason to build it now against a 39 MB payoff).
+
+**An additional, concrete reason for caution, found empirically**: adding
+four small, semantically simple diagnostic hooks plus one new global to
+exactly this code surface (`module/string.js`'s concat/slice tails,
+`module/core.js`'s global declarations) was enough to trigger a genuine
+watr miscompile at **both** `optimize:2` and `optimize:3` on the region-live
+self-hosted kernel (see the method note above) — a real, reproducible signal
+that this exact territory is more fragile than it looks, independent of
+string interning specifically. Landing new permanent code here under time
+pressure, without first root-causing that miscompile, would risk exactly
+the kind of pass/fail-on-different-shape defect this campaign's own gate
+discipline (oracle 13/13, self-build ×2 convergence, kernel-parity) exists
+to catch — surfacing on some *other* graph shape than the ones tested, not
+on jessie/watr/jzify-entry. Banked as a lead, not chased: reproduce with
+`JZ_STR_CENSUS=1` region-live kernel build at `optimize:2` or `optimize:3`
+against `resolveSelfhostBuild({regionArena:true, memory:65536})`'s own
+graph — the code that triggers it (four `(call $__census_log ...)`
+insertions + one new `declGlobal`) is not committed, so this note is the
+only trace; whoever picks it up should re-derive the minimal repro from
+this description rather than assume old scratch files survive.
+
+All diagnostic-only hooks (`module/core.js`, `module/string.js`,
+`module/number.js`) and the `REGION_HOOKS_ACTIVE` build flag
+(`scripts/self.js`) were reverted before this addendum was committed —
+zero functional/shipped changes this session. `resolveModuleGraph` graph
+was jessie's 46-module `test/ecosystem-perf.js` driver shape; watr's own
+7-module corpus was not additionally run this session (jessie alone was
+sufficient to answer the measurement-first gate; time-boxed).
+
 ### Lever 4 — bitfield-pack `ctx.schema`'s per-sid census tables (post-heap-epoch-design.md's own "RepresentationPlan" note)
 
 `.work/heap-epoch-design.md` names the shape directly: `ctx.schema` stores
@@ -339,9 +471,12 @@ sized as a follow-up measurement, not guessed.
 
 ### Does any lever, alone or combined, reach jz×jz < 4 GiB?
 
-**No — stated plainly.** Levers 2+3 (the two levers with actual arithmetic)
-sum to **~527–717 MB** against a need to go from ~4080 MB down under
-4096 MB total *while still finishing the compile* (native needs 1207 MB
+**No — stated plainly.** Lever 2 (~377 MB, arithmetic) plus Lever 3 (revised
+down from its original ~150–340 MB *estimate* to **≈39 MB**, extrapolated
+from the 2026-08-16 addendum's own jessie measurement above, and not
+pursued — see that addendum for why) sum to **~377–416 MB** against a need
+to go from ~4080 MB down under 4096 MB total *while still finishing the
+compile* (native needs 1207 MB
 just to reach the encoded end-state at a ~1× baseline — self-hosted's
 overhead ratio, per §3's single hardest data point, runs 40–420× on the
 hottest phase) — closing that gap needs an order-of-magnitude reduction,
