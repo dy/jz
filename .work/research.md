@@ -19089,6 +19089,7 @@ ActiveFunction state, closure/`__start` plan-first lowering, exhaustive
 inactive-state checks, and throw-safe FlowState. The known region-live
 whole-`ctx` identity-swap issue remains a separate implementation constraint,
 not an unresolved ownership question.
+
 ## §IfConversionAndCostModel — layer 5 (final layer), if-conversion + profitability gate:
 ## GENERIC VECTORIZER PROGRAM COMPLETE (2026-08-17)
 
@@ -19309,3 +19310,32 @@ degraded vectorization") is closed for the ordinary data-parallel MAP/REDUCTION/
 that make up the majority of real programs, while every idiom fuser (`tryDivergentEscapeVectorize`,
 `tryBlurMultiPixel`, `tryButterfly`, etc.) keeps its own structurally-stronger-than-LLVM edge
 untouched, exactly as the design's endgame architecture specified.
+
+## §RepresentationPlan v2: rejected experiment metabolized, edge-normalized redesign
+## (2026-08-17)
+
+FeaturePlan graph completion remains mechanically blocked: correctly finding
+BigInt in the self-host compiler graph activates the shared magnitude heuristic
+and regresses subnormal Numbers. The exact old five-commit RepresentationPlan
+experiment was recovered from unreachable Git history (`cfef7c71` →
+`94e83fa8`) and rebuilt. Its kernel compiles `-5e-324` as `-1` while positive
+`5e-324` stays exact. A native trace found 20 compiler `typeof … === 'bigint'`
+sites carrying v1's RAW+BOXED/TOP answer, including `literalTruthiness`,
+`literalValue`, and `valTypeOf`: v1 retained the magnitude guess for TOP, so
+whole-graph discovery exposed the collision inside the compiler itself.
+
+The root is now explicit: v1 joined the caller argument's **source** carrier
+but failed to apply the call edge's boxing transform before assigning the
+callee-entry fact; then it treated uncertainty as a runtime discriminator.
+A body-only attempt to force those params boxed produced an unbox OOB because
+recursive/indirect edges were not normalized—direct evidence that this must be
+an edge-complete solver, not another local flag.
+
+`.work/representation-plan-v2-design.md` specifies the replacement: separate
+semantic kinds, BigInt representation, and backward tag demand; model every
+call/storage/closure/host edge with an explicit keep/box/unbox/variant/reject
+action; forbid RAW-BigInt-or-Number at a tag-required consumer; specialize raw
+arithmetic vs tagged dynamic function variants when needed; use opaque,
+session-owned plan storage; and migrate consumers before graph-completing
+FeaturePlan. Crucially, `__to_num_raw(TOP)` is rejected outright—the exact v1
+mechanism is not reused. No compiler source changed in this design slice.
