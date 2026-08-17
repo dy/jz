@@ -917,6 +917,76 @@ export default (ctx) => {
       (local $mark i32) (local $T i32) (local $delta i32) (local $memo i64) (local $out f64) (local $size i32)
       ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
       (local.set $mark (i32.trunc_f64_u (local.get $markF)))
+      ;; Adaptive exit-skip (.work/research.md §Region arena — THE MEMORY
+      ;; ENDGAME): the walk below is a Cheney-copy over EVERYTHING reachable
+      ;; from \`root\`, not just this round's own new allocations —
+      ;; regionArmSetMap (layout-kinds.js) has no cheap durable/off<mark
+      ;; short-circuit the way ARRAY/OBJECT/HASH/String/BigInt/Typed/Buffer
+      ;; all do (a relocated key's hash bucket must be recomputed, so an
+      ;; in-place patch isn't sound there — see that function's own
+      ;; comment): EVERY exit that reaches a pointer-keyed Map/Set rebuilds
+      ;; it FRESH, and the stale prior copy (already durable, below THIS
+      ;; round's mark) is never reclaimed — so each round's own exit adds
+      ;; roughly one more full copy's worth of dead weight, permanently,
+      ;; which is the mechanism behind the ≈292 MB/round floor climb
+      ;; measured on jz×jz (frontier trace fa9fcc1a) regardless of how
+      ;; little a given round actually churned.
+      ;;
+      ;; First cut of this fix compared churn (\`$__heap - mark\`) against
+      ;; \`mark\` itself (free, zero-extra-walk proxy for root-set size) —
+      ;; self-tuning in theory, but MEASURED to regress jessie/watr real-
+      ;; graph peaks 2x (536.9→1073.7 MB, 1073.7→2147.5 MB) and to NOT
+      ;; close the jz×jz goal gate either: a mark-relative ratio conflates
+      ;; "large churn, mostly garbage" (front/early-plan/narrowSignatures —
+      ;; SHOULD compact) with "large churn, mostly SURVIVORS" whenever the
+      ;; contemporary mark happens to be even larger — which, on a SMALL
+      ;; compile (jessie/watr), front's own high-value round easily
+      ;; satisfies (mark already nontrivial at a small absolute scale),
+      ;; wrongly skipping the one round most worth compacting and retaining
+      ;; nearly all of its raw churn instead of its tiny survivor set
+      ;; (churn/live measured 574-2495x elsewhere in this file) — the exact
+      ;; 2x the real-graph measurement caught.
+      ;;
+      ;; Fixed threshold instead, sized directly from the frontier trace's
+      ;; own measured per-round churn table (fa9fcc1a): every round worth
+      ;; skipping on jz×jz (every batched analyzeFuncForEmit round, 1.68-
+      ;; 7.00 MB; plan-tail rounds 1 and 5, 3.89 MB and 0.001 MB) sits under
+      ;; 16 MiB; every round worth compacting for real (front/early-plan/
+      ;; narrowSignatures, hundreds-to-thousands of MB; plan-tail rounds 2-4,
+      ;; 93-210 MB; the scan-round, 62.29 MB) sits at 22 MB and up — a clean
+      ;; gap, and unlike the mark-relative ratio, an ABSOLUTE cap bounds the
+      ;; worst case a skip can ever retain to the cap itself, independent of
+      ;; how large \`mark\` happens to be for a given compile — so it can't
+      ;; misfire on a small graph's own high-value round the way the ratio
+      ;; did.
+      ;;
+      ;; Result (.work/research.md §Region arena — THE MEMORY ENDGAME):
+      ;; jessie/watr real-graph peaks hold at their pre-fix baseline exactly
+      ;; (536.9 MB / 1073.7 MB, zero regression), jzify-entry HALVES
+      ;; (4295.0→2147.5 MB), and jz×jz's own AFE loop survives from 6 exits
+      ;; to ~51 of its ~53 needed (diagnostic skip/compact counters, since
+      ;; deleted) before still tripping the same i32/2³² ceiling — a huge,
+      ;; genuine reduction in the tax, not a full close. The residual gap
+      ;; lives in the exits this threshold correctly judges NOT skippable
+      ;; (their own churn is large, so compacting them for real is the
+      ;; right call) — widening the threshold further to convert more of
+      ;; THOSE into skips was tried and measured WORSE, not better (more
+      ;; retained garbage costs more heap than the recopy tax it dodges,
+      ;; once a round's true survivor set is a small fraction of its
+      ;; churn) — so closing the remaining gap needs shrinking what a real
+      ;; compaction costs (the regionArmSetMap durable short-circuit this
+      ;; comment opens with, still unbuilt) or fewer total exits
+      ;; (AFE_ROUND_BATCH), not a further threshold tune on this lever.
+      ;; Root-identity return (\`rootF\` verbatim, \`$__heap\` left
+      ;; exactly where it was) is safe unconditionally: nothing has moved,
+      ;; so every address the caller already holds stays valid — this is a
+      ;; pure early-return before the memo table (below) is even allocated,
+      ;; so it never touches the relocation machinery those six closed
+      ;; boundary-hazard mechanisms (durable/ephemeral split, off-16,
+      ;; __coll_order counting, no-stub compaction, $__dyn_props root-
+      ;; completeness, chain-round rebuild) all live inside.
+      (if (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.const 16777216))
+        (then (return (local.get $rootF))))
       ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
       (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE})))))
