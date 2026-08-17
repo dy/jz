@@ -998,6 +998,8 @@ export function reset(proto, globals, bridge) {
   ctx.plans = {
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → private canonical facts (function-plan.js only)
+    functionWorking: new WeakMap(), // handle → detached one-shot analysis frame awaiting emission
+    start: null,                  // synthetic __start identity, planned before body emission
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
     loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }

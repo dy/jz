@@ -42,11 +42,12 @@ function clonePlanData(facts) {
 /**
  * Canonical FunctionPlan data is module-owned. The public value stored in
  * ctx.plans.functions is only an opaque identity key; it contains no Map, Set,
- * array, or rep object a consumer could mutate. Canonical data lives in the
- * session-owned ctx.plans.functionData WeakMap, keeping it reachable across a
- * region relocation without exposing it on the handle. This is logical deep
- * immutability in both native JS and the self-host, where Object.freeze is an
- * identity operation and Proxy/accessor facades are unavailable.
+ * array, or rep object a consumer could mutate. Persistent user-function data
+ * lives in session-owned functionData; one-shot closure/__start plans are
+ * sealed ActiveFunction frames in functionWorking until linear transfer. Both
+ * remain reachable through ctx.plans across region relocation without exposing
+ * facts on the handle. This is logical deep immutability in native JS and the
+ * self-host, where Object.freeze is identity and Proxy/accessors are unavailable.
  */
 export function createFunctionPlan(ctx, facts) {
   const plan = {}
@@ -54,7 +55,7 @@ export function createFunctionPlan(ctx, facts) {
   return plan
 }
 
-/** Publish exactly once for a function identity. */
+/** Publish one persistent user-function plan exactly once. */
 export function publishFunctionPlan(ctx, func, facts) {
   if (ctx.plans.functions.has(func))
     throw new Error(`FunctionPlan already published for ${func?.name || '<anonymous>'}`)
@@ -63,12 +64,38 @@ export function publishFunctionPlan(ctx, func, facts) {
   return plan
 }
 
+/** Publish one sealed, linearly-consumed closure/__start frame exactly once. */
+export function publishPreparedFunctionPlan(ctx, func, workingFrame) {
+  if (ctx.plans.functions.has(func))
+    throw new Error(`FunctionPlan already published for ${func?.name || '<anonymous>'}`)
+  const plan = {}
+  ctx.plans.functionWorking.set(plan, workingFrame)
+  ctx.plans.functions.set(func, plan)
+  return plan
+}
+
 /** Read the opaque authoritative plan identity; missing publication is an error. */
 export function functionPlanOf(ctx, func) {
   const plan = ctx.plans.functions.get(func)
-  if (!plan || !ctx.plans.functionData.has(plan))
+  if (!plan || (!ctx.plans.functionData.has(plan) && !ctx.plans.functionWorking.has(plan)))
     throw new Error(`FunctionPlan missing for ${func?.name || '<anonymous>'}`)
   return plan
+}
+
+/**
+ * Activate the detached analysis frame published with a one-shot plan.
+ * Closure and __start emission consume this path; ordinary user functions use
+ * installFunctionPlan() because their analysis frames are region-batch-local.
+ */
+export function enterPreparedFunction(ctx, plan) {
+  const frame = ctx.plans.functionWorking.get(plan)
+  if (!frame) throw new Error('FunctionPlan has no prepared emission frame')
+  // Linear ownership transfer: after this point the frame is mutable emission
+  // state, no longer an immutable FunctionPlan. Retire canonical access first.
+  ctx.plans.functionWorking.delete(plan)
+  const previous = ctx.func
+  ctx.func = frame
+  return previous
 }
 
 /**

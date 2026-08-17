@@ -18965,6 +18965,71 @@ three fresh-instance repetitions, byte-identical 13,177-byte outputs and
 closure claim.
 
 This closes two named prerequisites for the final CompileSession record.
-Closure-body/synthetic-`__start` publish-before-emit and the remaining
-FlowState migration stay separate blockers; neither was folded into this
-change.
+Closure-body/synthetic-`__start` planning is closed in the next entry; the
+remaining FlowState migration stays separate.
+
+## §Closure bodies and synthetic `__start` plan before emission
+## (2026-08-17)
+
+**The mixed analyze+emit paths are split.** `emitClosureBody` formerly seeded
+capture/parameter reps, inferred locals, boxed captures, unboxed pointers,
+minted LoopPlan/ClosureEnvPlan, classified preboxed cells, and then emitted IR
+in one active frame. `buildStartFn` likewise ran `analyzeValTypes` immediately
+before each module-init emission and the root AST emission. Those were the two
+remaining real-function exceptions to the top-level `analyzeFuncForEmit` →
+FunctionPlan → `emitFunc` contract.
+
+`analyzeClosureBodyForEmit` now performs every durable closure-body decision
+and publishes an opaque FunctionPlan before body IR can emit. Pending closure
+bodies run in stable batches: all bodies known at batch entry are planned
+first, then emitted in the same order; nested bodies discovered during that
+emission form the next plan-first batch. `emitClosureBody` contains no
+`analyze*`, `inferLocals`, `boxedCaptures`, `unboxablePtrs`, pointer-inheritance,
+or plan-mint call—it only transfers a prepared plan, freezes reps, and emits.
+
+The closure/start plans use **linear ownership**, not persistent deep copies.
+Their detached ActiveFunction analysis frame is sealed inside the
+session-owned `ctx.plans.functionWorking` WeakMap; `enterPreparedFunction`
+atomically removes it from the immutable-plan store, records consumption, and
+transfers that exact complete record to emission. Ordinary user-function plans
+remain persistent canonical snapshots and still install fresh copies. This
+split matters empirically: a first persistent-copy prototype added 2,339,664
+heap bytes for a 100-closure compile; linear transfer makes the final compiler
+heap **8,600 bytes smaller than base** on that same probe while retaining the
+publish-before-emit boundary. No duplicate frame or facts object survives.
+
+Synthetic `__start` now has a stable identity in `ctx.plans.start`.
+`analyzeStartForEmit` plans the root and every module-init unit, including
+prepare-generated locals and captured module-loop cells, before `buildStartFn`
+emits any user AST. The emitter consumes the sealed complete record, then does
+only post-emission module scaffolding (schema/string/typeof/region tables).
+Closure and start plan handles remain opaque; consumed linear plans expose no
+canonical mutable data afterward.
+
+**Certification.** New white-box pins cover parent+nested closure plans and the
+explicit consumed `__start` plan; session-reentrancy is 18/18 (52 assertions)
+normal and debug, closures 110/110 (221), imports 78/78 (88), and statements
+202/202 (468). A 57-output base/branch sweep—closure, module-init, and six
+bench shapes at O0/O2/O3—is byte-identical. Full default/O0/O3 matrices each
+pass 3,482 with zero failures and 6 skips; WASI has only the unchanged
+`JZ_CARRIER_BOX ternaryBoxedNames` baseline failure (3,480 pass / 1 fail / 6
+skip). Self-host correctness is 21/21; kernel parity is 33/33 and the execution
+oracle 13/13 (538 assertions). The fresh perf pin passes at 0.809×; the known
+load-sensitive warm pin is red at 1.041/1.064/1.059×. A direct paired
+100-closure self-host A/B removes that moving V8 denominator and is
+0.964–0.991× new/base across two order-alternated median runs, so no
+change-specific regression appears.
+
+Two independent dormant builds converge at
+`b491e344879304e365da161e9f84317ebd9fae4b6fde664edcb7771ceeb90c21`;
+the explicit planning machinery costs 7,029 bytes in `dist/jz.wasm`
+(17,228,490 → 17,235,519) and 964 bytes in `dist/jz.js` (2,155,502 →
+2,156,466). A diagnostic region-live build, restored to dormant afterward,
+compiled and executed an 80-closure plus module-init graph in three fresh
+instances; outputs were byte-identical (400 bytes) and `main(7) === 173`.
+This is a relocation smoke, not a new broad region-live claim.
+
+This closes the closure-body and synthetic-start blockers for CompileSession.
+Graph-complete semantic FeaturePlan discovery remains a separate pass-design
+problem; this change does not claim that closure discovery itself has moved
+out of emission.

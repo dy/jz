@@ -288,6 +288,29 @@ test('FunctionPlan detaches nested maps, sets, arrays, reps, and typed views', (
 // typedElem/typedLen are owned by ActiveFunction itself. A closure with a
 // static typed array must restore the complete displaced record, leaving no
 // parallel authority on ctx.types and no facts on the inactive session frame.
+test('closure bodies publish opaque FunctionPlans before their IR emission', () => {
+  if (onKernel()) return
+  compile(`export let outer = n => { let x = n; let a = y => { let b = z => x + y + z; return b(2) }; return a(1) }`)
+  const bodies = ctx.closure.bodies || []
+  ok(bodies.length >= 2, 'probe produced parent and nested closure bodies')
+  ok(bodies.every(cb => {
+    const plan = ctx.plans.functions.get(cb)
+    return plan && Object.keys(plan).length === 0 &&
+      !ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan)
+  }), 'every discovered closure body published then linearly transferred its opaque plan')
+})
+
+test('synthetic __start publishes an opaque FunctionPlan before module-init emission', () => {
+  if (onKernel()) return
+  compile(`let total = 0; for (let i = 0; i < 4; i++) total += i; export let read = () => total`)
+  const start = ctx.plans.start
+  const plan = start && ctx.plans.functions.get(start)
+  ok(start?.name === '__start' && plan && Object.keys(plan).length === 0,
+    '__start has an explicit opaque plan identity')
+  ok(!ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan),
+    '__start plan was linearly transferred to emission and its canonical access retired')
+})
+
 test('typedElem/typedLen active state does not leak past a nested-closure compile', () => {
   if (onKernel()) return  // white-box probe of ctx.types internals — no in-kernel host ctx to inspect
   compile(`

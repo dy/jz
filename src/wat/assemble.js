@@ -42,6 +42,7 @@ export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
+import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan } from '../compile/function-plan.js'
 import { VAL } from '../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -142,80 +143,77 @@ function applyArenaRewind(func, fn, safeCallees) {
   return true
 }
 
-export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
-  const outerFrame = enterActiveFunction(ctx, {
+const normalizeEmittedIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
+
+// Reserve prepare-generated T-sentinel locals so emit-time temp names cannot
+// collide with for-of/destructure scratch in the synthetic start frame.
+function seedStartGeneratedLocals(body) {
+  for (const [name, type] of analyzeBody(body).locals)
+    if (name.includes(T) && !ctx.func.locals.has(name)) ctx.func.locals.set(name, type)
+}
+
+/** Publish the synthetic module-init FunctionPlan before any start IR emits. */
+function analyzeStartForEmit(ast) {
+  const start = { name: '__start', body: ast }
+  const previousFrame = enterActiveFunction(ctx, {
     sig: { name: '__start', params: [], results: [] },
     body: ast,
     moduleScope: true,
   })
   try {
-  // Reserve prepare-generated temp names (for-of `arrVar`/`idx`/`len`,
-  // destructure scratch, …) in the __start frame so emit's temp()/tempI32()
-  // skip them — the same pre-seed analyzeFuncForEmit gives every function frame.
-  // Only T-sentinel names: they're always __start locals (user module-scope
-  // bindings become globals and can't contain T). Without this, prepare's
-  // `${T}arr${n}` collides with an emit-time tempI32('arr') at the same uniq,
-  // declaring the array pointer's local i32 and corrupting it via convert_i32_s.
-  const seedGeneratedLocals = (body) => {
-    for (const [n, t] of analyzeBody(body).locals)
-      if (n.includes(T) && !ctx.func.locals.has(n)) ctx.func.locals.set(n, t)
-  }
-  analyzeValTypes(ast)
-  const normalizeIR = ir => !ir?.length ? [] : Array.isArray(ir[0]) ? ir : [ir]
-
-  // This complete frame is module-scoped: top-level statements run exactly once,
-  // so constant aggregate literals can safely live in static data.
-  // ES §14.7.4.7 per-iteration bindings: prepare already routed every
-  // closure-captured loop-body let/const into ctx.scope.moduleLoopCaptured
-  // (see prepare/index.js's loopLocalNames) instead of the single-instance
-  // global path, so — like a function-scope loop-let — it's a genuine
-  // __start local by the time seedGeneratedLocals below sweeps it in (its
-  // mintLocal spelling always contains T). The (rare) subset ALSO mutated
-  // after capture — `for (let i=0;…){fs.push(()=>i); i+=1}` — needs the
-  // SAME heap-cell (boxed) capture a function body gets via boxedCaptures,
-  // or the closure would see a value snapshotted at creation time instead
-  // of the post-mutation value JS's aliased per-iteration binding exposes.
-  // Deliberately narrower than calling boxedCaptures(ast) outright: that
-  // scans EVERY let/const in the program, and almost all module-scope names
-  // stay legitimate single-instance globals — wrongly cell-boxing one would
-  // make emitDecl skip its global.set entirely (ctx.func.boxed is checked
-  // before isGlobal). Scoping to exactly the names prepare already proved
-  // captured-and-local-worthy makes that misclassification impossible.
-  if (ctx.scope.moduleLoopCaptured.size) {
-    const mutated = new Set()
-    findMutations(ast, ctx.scope.moduleLoopCaptured, mutated)
-    if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) findMutations(mi, ctx.scope.moduleLoopCaptured, mutated)
-    for (const name of mutated) if (!ctx.func.boxed.has(name)) ctx.func.boxed.set(name, `${T}cell_${name}`)
-  }
-  const moduleInits = []
-  if (ctx.module.moduleInits) {
-    for (const mi of ctx.module.moduleInits) {
-      ctx.func.repsFrozen = false   // __start interleaves per-unit plan → emit
-      analyzeValTypes(mi)
-      seedGeneratedLocals(mi)
-      ctx.func.repsFrozen = true
-      assertCtxInvariants('pre-emit')
-      moduleInits.push(...normalizeIR(emit(mi)))
+    analyzeValTypes(ast)
+    // ES per-iteration module-loop bindings captured by closures are genuine
+    // __start locals. The mutated subset needs the same shared heap cell as a
+    // function-loop capture; ordinary module globals must never be boxed here.
+    if (ctx.scope.moduleLoopCaptured.size) {
+      const mutated = new Set()
+      findMutations(ast, ctx.scope.moduleLoopCaptured, mutated)
+      if (ctx.module.moduleInits)
+        for (const mi of ctx.module.moduleInits)
+          findMutations(mi, ctx.scope.moduleLoopCaptured, mutated)
+      for (const name of mutated)
+        if (!ctx.func.boxed.has(name)) ctx.func.boxed.set(name, `${T}cell_${name}`)
     }
+    // Build the cumulative module-init fact state in source order. BindingIds
+    // make later-unit facts disjoint from earlier locals; the byte-identity
+    // gate pins that planning all units first does not change prior emission.
+    if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
+      analyzeValTypes(mi)
+      seedStartGeneratedLocals(mi)
+    }
+    seedStartGeneratedLocals(ast)
+    publishPreparedFunctionPlan(ctx, start, ctx.func)
+    ctx.plans.start = start
+    return start
+  } finally {
+    restoreActiveFunction(ctx, previousFrame)
   }
-  ctx.func.repsFrozen = false  // (last moduleInit left it frozen) — seed/plan below before the main emission
-  seedGeneratedLocals(ast)
-  // __start has no result: emit the top-level program in void context so a stray
-  // value is dropped. `ast` is normally a `;` statement-sequence (each statement
-  // already void-dropped), but jzify unwraps a single-statement program to its
-  // bare expression — emitting that in value context leaves a value on the stack
-  // and the start function fails validation. emitVoid handles both shapes.
-  ctx.func.repsFrozen = true   // FunctionPlan freeze: __start body emission (analyzeValTypes(ast) ran above)
+}
+
+export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
+  const start = analyzeStartForEmit(ast)
+  const startPlan = functionPlanOf(ctx, start)
+  const outerFrame = enterPreparedFunction(ctx, startPlan)
+  try {
+  const moduleInits = []
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
+    ctx.func.repsFrozen = true
+    assertCtxInvariants('pre-emit')
+    moduleInits.push(...normalizeEmittedIR(emit(mi)))
+  }
+  // __start has no result: emit the top-level program in void context so a
+  // single bare expression cannot leave a value on the start stack.
+  ctx.func.repsFrozen = true
   assertCtxInvariants('pre-emit')
   const init = emitVoid(ast)
-  ctx.func.repsFrozen = false  // post-emission synthesis below (boxInit/snapshot) is not user-AST emission
+  ctx.func.repsFrozen = false
   ctx.func.atModuleScope = false
 
   // Module-scope object literals can create closure bodies while `emit(ast)`
   // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
   // that affect __start setup, so flush them before deciding which runtime
-  // tables __start must initialize. emitClosureBody now swaps the complete
-  // active record, so no selected-field snapshot is needed here.
+  // tables __start must initialize. Closure plans transfer their complete
+  // prepared records, so no selected-field snapshot is needed here.
   const beforeLateClosures = closureFuncs.length
   compilePendingClosures()
 
@@ -419,7 +417,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
 
   const wasiTimers = ctx.features.timers && ctx.transform.targetProfile.timerModel === 'blocking'
   if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || closureEnvInit.length || wasiTimers) {
-    const initIR = normalizeIR(init)
+    const initIR = normalizeEmittedIR(init)
     const startFn = ['func', '$__start']
     for (const [l, t] of ctx.func.locals) startFn.push(['local', `$${l}`, t])
     startFn.push(...strPoolInit, ...typeofInit, ...boxInit, ...schemaInit, ...closureEnvInit,
