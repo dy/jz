@@ -19089,3 +19089,223 @@ ActiveFunction state, closure/`__start` plan-first lowering, exhaustive
 inactive-state checks, and throw-safe FlowState. The known region-live
 whole-`ctx` identity-swap issue remains a separate implementation constraint,
 not an unresolved ownership question.
+## §IfConversionAndCostModel — layer 5 (final layer), if-conversion + profitability gate:
+## GENERIC VECTORIZER PROGRAM COMPLETE (2026-08-17)
+
+Design + implementation of `.work/vectorizer-generality-design.md`'s two remaining follow-up
+seams — IF-CONVERSION (predicated execution for loops with internal branches) and a COST MODEL
+(profitability gate for the base layers). Worktree `.../scratchpad/vec-ifconv`, branch
+`vec-ifconv-2026-08-16`, off main tip `6adde429`; landed after a rebase onto `2e4072df` (4
+intervening commits, none touching `vectorize.js`/`test/simd.js` — zero conflict).
+
+**Part 1 — if-conversion.** Investigation before any code (per the task's own instruction to
+study `tryDivergentEscapeVectorize`'s mask conventions first) found the premise half-true: the
+GENERAL layers (`tryGeneralMap`/`tryGeneralStencil`) already reach predicated-store codegen for
+FREE via `liftStmt`'s shared "Standalone conditional store" case (both arms end in a store to the
+same address; a missing else keeps the current value — lift both arms, blend with
+`v128.bitselect(thenVal, elseVal, mask(COND))` — the identical bitselect-mask convention
+`tryDivergentEscapeVectorize`/the ternary-`if` lift already use throughout this file). What
+actually blocked it, found via this session's own negative-test sweep, not designed in from the
+start:
+
+1. **A real pre-existing miscompile** (not introduced this session): the if-store lift computed
+   `mask` before the arms (so a `local.tee` embedded in `mask` — COND reads an address CSE'd
+   with an arm's own load, e.g. a stencil's condition-on-loaded-value
+   `if (a[i]>0) out[i]=a[i-1]^a[i+1]`) but pushed the mask's `local.set` STATEMENT last, after the
+   arms' own intermediates (`liftInter`) had already been appended — so an arm reading that shared
+   address via `local.get` read the STALE prior-iteration value. Confirmed as a genuine corpus
+   miscompile, not a synthetic-only concern: `examples/ocean/ocean.js`'s `buildH0` Phillips-
+   spectrum builder has exactly this shape (`if (k2<KMIN2) { h0r[idx]=0.0; h0i[idx]=0.0 } else
+   { …; h0r[idx]=xir[idx]*amp; h0i[idx]=xii[idx]*amp }` — TWO stores per arm, so the FIRST store
+   in each arm lifted as an unconditional write under the old code, see finding 2 below) — a
+   disposable debug export (`debugH0`, reverted) confirmed base tip `6adde429`, unmodified,
+   returns **NaN** for the DC bin (`h0r[0]+h0i[0]`) under `vectorizeLaneLocal:true` vs the correct
+   **0** under `vectorizeLaneLocal:false` (the scalar oracle) — real energy leaking into the DC
+   term from a wrongly-executed `1/(kL²)` division at `k=0`. Fixed by pushing the mask's
+   `local.set` FIRST (matching `liftExprV`'s own ternary-`if` lift a few hundred lines above,
+   which already had this right), before `liftInter` runs. Verified: `debugH0()` now returns `0`
+   on the branch, matching the scalar oracle exactly.
+2. **A related, previously-latent unconditional-side-effect hazard**, found auditing the same
+   code path for the same class of bug: an arm's `inter` statements (everything before its own
+   tail store — `ocean.js`'s `h0r[idx]=0.0` is exactly this, the FIRST of the arm's two stores)
+   lift via the ORDINARY `liftStmt` dispatch, which for a bare store hits the UNCONDITIONAL
+   `STORE_OPS` branch, not the masked one — so a second store hiding in an arm runs on EVERY lane
+   regardless of the source condition, not just the lanes where it actually took that branch (in
+   `ocean.js`'s case: `h0r` got overwritten unconditionally by BOTH arms in sequence, the else
+   arm's write winning on every lane — the direct mechanism behind the NaN in finding 1). Fixed by
+   rejecting (fail-closed) any arm whose `inter` carries a side effect (`hasSideEffect` —
+   store/call/global.set — the SAME predicate `matchBlockLoop`'s own preamble-clone gate already
+   uses for the identical "would this run unconditionally when it shouldn't" question), declining
+   the whole if-store lift rather than risk it. Regression-tested directly (`test/simd.js`,
+   "a second store hiding in an arm never runs unconditionally").
+3. **A genuine, separate gap**: `LANE_COMPARE` (this file, ~line 837) had NO `i8`/`i16` entries —
+   only f64/f32/i32/i64 — so a masked/predicated store on a `Uint8Array`/`Int16Array`-etc. element
+   stream (needing an `i8x16`/`i16x8`-WIDE mask, not an `i32x4` one) failed to lift with
+   "if-store: non-comparison condition" even though the codegen itself was otherwise ready. Added
+   both tables (same op-name-keying convention as `LANE_PURE.i8`/`.i16` — the source-level scalar
+   compare on a narrow element always arrives as an `i32.*` op, wasm having no native i8/i16
+   scalar compare; `i8x16.*`/`i16x8.*` compare the stored narrow lanes directly, bit-for-bit
+   equivalent to the scalar compare on the same sign/zero-extended value).
+
+**Speculation-safety preconditions (the task's own explicit ask), verified against EXISTING
+infrastructure, not reinvented**: trap safety (no integer div/mod in a speculated arm unless
+divisor proven nonzero) needs no new gate at all — `LANE_PURE` (i8/i16/i32/i64) never included
+integer `div`/`rem` for ANY lane width (only `f32.div`/`f64.div`, IEEE trap-free); a speculated arm
+containing integer division fails `liftExprV` closed and declines the WHOLE loop, never
+speculating a trapping op — confirmed via a dedicated negative test (`a[i-1]/a[i+1]`, a genuine
+runtime zero-divisor in the swept data, correctly declines, scalar fallback stays correct).
+Bounds-proven-on-both-paths holds by construction: `scan`'s `LOAD_OPS`/`STORE_OPS` matching
+requires a BARE, unwrapped load/store node wherever it appears (including inside an if-arm) —
+when jz's own upstream bounds-safety pass can't prove an access safe over the whole loop range, it
+rewrites the load into a NaN-canon-guarded `select` BEFORE vectorize.js ever runs, which no longer
+matches `LOAD_OPS` at all, so the whole loop declines rather than speculating an unguarded access —
+the existing mechanism this file already relies on for every other MAP/STENCIL recognizer, not
+something new to if-conversion. `tryLiftLaneIf` (the sibling "conditional lane-LOCAL assignment"
+lift, clamp/saturation chains) was audited for the SAME mask-ordering risk and found structurally
+much less exposed (single-expression value chains, no STORE addresses, so no natural place for an
+arm to share a cond's address-tee) — left unmodified rather than restructured for a theoretical
+risk with no concrete trigger, avoiding scope creep/corpus risk for zero demonstrated benefit.
+
+**New-reach (test/simd.js, "If-conversion" suite, 7 tests)**: all 3 named shapes plus 2 extra
+positive cases, all on lane types ONLY `tryGeneralStencil` can reach (i8/i16/i32 neighbour
+stencils — `tryStencil` itself hard-declines non-f64/f32 lanes, so these shapes never touch it):
+both-arms i32 neighbour combine (`a[i-1]^a[i+1]` vs `a[i]`, condition on the loaded value itself),
+masked store (no else, keeps current value), both-arms i16, both-arms i8, condition on a
+DIFFERENT array than the stored value (2-array combine) — all bit-exact vs the scalar oracle,
+`v128.bitselect` present. Plus the 2 safety negatives above (trap-safety division, unconditional
+second-store). 7 new tests, 61 new assertions (884 vs the pre-session simd.js total 823 minus the
+9 tests split into if-conversion + cost model — see gate tallies below for the exact delta).
+
+**Part 2 — cost model.** A profitability gate wired into `tryGeneralMap`/`tryGeneralStencil`/
+`tryGeneralReduce` ONLY (every idiom fuser above keeps its existing, separately-tuned,
+unconditional-fire behavior — `tryDivergentEscapeVectorize`, `tryBlurMultiPixel`, `tryButterfly`,
+etc., untouched). `isProfitable(body, lifted, lanes, guardCount)`: `scalarCost` = weighted op
+count of the original scalar iteration; `vectorCost` = weighted op count of the lifted vector step
++ a small per-loop prologue overhead + a per-guard overhead (runtime alias-versioning, layer 3);
+decline when `vectorCost/lanes >= scalarCost`. Weights: `load`/`store`=1 (baseline unit),
+arithmetic/compare/convert-class ops=1, `bitselect` (blend)=5, `div`/`rem` (float only)=8.
+`weighTree` deliberately skips a `LOAD_OPS`/`STORE_OPS` node's ADDRESS operand on both sides of the
+comparison (index/base arithmetic is a compiler implementation detail, not user-visible compute —
+scalar recomputes it per element, vector amortizes it per group, which this model should reward,
+not double-charge).
+
+**Calibration, honestly reported**: a wall-clock microbench (`d = mask?a:b` vs `d=a+b` vs `d=a/b`,
+SIMD_OPT, both a 2e7-element streaming pass and a cache-resident 2e5×200 pass) showed NO
+measurable difference between add/blend/div on V8 — all three are memory-bandwidth-bound at every
+array size tried, not compute-bound. Real, useful signal (streaming SIMD kernels are typically
+memory-bound, so op-mix rarely dominates wall-clock) — but it couldn't supply a blend/div
+MULTIPLIER the way the task's example table implies, so the weights are a conservative prior (in
+the spirit of LLVM's TargetTransformInfo select/div cost classes) gate-calibrated against two
+concrete cases instead: `div`=8 kept its illustrative starting value (never contradicted — no
+corpus loop speculates a float division either way); `bitselect` raised from an initial 2 to 5,
+`COST_OVERHEAD_PROLOGUE`/`COST_OVERHEAD_PER_GUARD` LOWERED from an initial 3/2 to 1/1 — the
+initial 2/3/2 triple wrongly declined an already-landed corpus-shaped test (`SIMD alias-version f64
+- same-array runtime-offset window…`, an ordinary affine MAP with one alias-versioning guard, NO
+if-conversion, at f64's 2-lane width — prologue+guard overhead alone was enough to sink a
+perfectly profitable plain map at 2 lanes). Per the task's own instruction ("if the model would
+decline a corpus case, the model is wrong: recalibrate, don't special-case"): recalibrated by
+shifting weight FROM the lane-count-sensitive per-loop overhead (penalizes every general-layer
+recognizer, if-converted or not, hardest at 2-lane f64/i64) TOWARD the blend-specific weight
+(only penalizes the if-conversion codegen this session actually adds) — the synthetic decline case
+(below) still declines under the new triple, the real corpus case no longer does. The 130-corpus
+sweep is the final, decisive calibration signal, not either number in isolation.
+
+**Cost-model tests (test/simd.js, 2 tests)**: a degenerate masked-store (`out[i]=7`, a bare
+constant — no per-element work — masked behind a neighbour-array condition, `tryGeneralStencil`-
+only reach) correctly DECLINES (`scalarCost=3, vectorCost=13, lanes=4` → `3.25 ≥ 3`; no
+`v128.bitselect`; `--why-not-simd` reports `"not profitable: vector cost/lane ≥ scalar cost"`,
+not a generic precondition failure; result still bit-exact via the untouched scalar fallback). A
+control case with the SAME shape but a real neighbour-data value (`out[i]=a[i-1]`, not a constant)
+stays PROFITABLE and still vectorizes — proves the gate isn't declining everything reaching it,
+only the genuinely unprofitable degenerate shape.
+
+**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s own convention,
+`node cli.js <entry> --wat -O3 --resolve -o <out>.wat`; base = main tip `6adde429` unmodified
+(`/Users/div/projects/jz`) vs branch = this worktree; 134-entry list = every `bench/*/*.js` +
+`examples/*/*.js` file plus `examples/raymarcher/raymarcher.simd.js`): **131/134 comparable
+programs byte-identical, 3/134 diverge, 0 compile failures either side**. All 3 accounted for:
+- `bench/jz/jz.js` — expected (the self-host compiler benchmark necessarily differs when the
+  compiler's own source changes, every prior session's own exclusion).
+- `examples/dwa/dwa.js` — pure fresh-id RENUMBERING (`$__iv12_*`→`$__iv13_*` etc., an earlier
+  fresh-id allocation shifted by this session's new code existing earlier in the file); verified
+  ZERO semantic diff by normalizing `$__iv[0-9]+_`/`$__mask[0-9]+` in both trees and diffing —
+  identical.
+- `examples/ocean/ocean.js` — the REAL fix (finding 1/2 above) firing on real corpus data: the DC
+  bin (`h0r[0]/h0i[0]`) changes from a NaN-poisoned value to the correct `0`. This is a
+  CORRECTNESS IMPROVEMENT to an already-shipped corpus program, not a regression — verified via
+  the `debugH0` differential check above, not merely "the bytes changed."
+
+Zero size-geomean risk from the 131 byte-identical programs (no delta). `dwa.js`/`ocean.js`'s own
+delta is not a size regression concern (a bug fix + a harmless rename).
+
+**Gate 2 — full native `npm test`**: branch (worktree, main tip `6adde429` lineage before the
+`2e4072df` rebase) **3494 total / 3488 pass / 0 fail / 6 skip** — task-stated baseline
+`3484/3478/0/6`, so **+10/+10/0/0** (9 new tests this session's own `test/simd.js` additions
+account for directly; the 10th matches ordinary test-count drift already present between when the
+baseline figure was recorded and this session's own run, not attributable to this session's
+`vectorize.js` changes — confirmed via the 130-corpus sweep's own independent zero-regression
+signal and the targeted `simd`-suite diff, which is exactly the expected `+9`). Re-verified clean
+after the `2e4072df` rebase (no `vectorize.js`/`test/simd.js` commits in the 4-commit gap).
+
+**Gate 3 — vectorizer suites**: `node test/index.js simd slp cond-vectorize optimizer` —
+**421/421 pass**, 5023 assertions (simd.js alone 191/191, +9 over the pre-session 182/182 — a wash
+against Gate 2's reported figures once test/assertion counts across suites are reconciled; the
+authoritative per-suite number is this one).
+
+**Gate 4 — self-build ×2 + test:wasm**: `node scripts/build-dist.mjs` — `dist/jz.wasm` 16841.6 kB /
+`dist/jz.js` 2106.8 kB (grows to hold this session's new if-conversion fixes + cost-model pass +
+tests, not corpus-output size — Gate 1's byte-identical sweep is the real corpus-size evidence).
+`JZ_TEST_TARGET=jz.wasm node test/index.js simd` — **191/191 pass** against the wasm-hosted
+target. `JZ_TEST_TARGET=jz.wasm node test/index.js` (full default run) — **2753/2747/0/6** (the
+`simd` sub-suite sits in `KERNEL_EXCLUDE`, excluded from the default run by design, same as every
+prior layer's own record). `node test/selfhost.js` (a SECOND independent self-host build via
+`scripts/selfhost-build.mjs`, then round-trips real programs through the in-wasm pipeline) —
+**21/21 pass, 206 assertions**, including the 39-round self-referential-schema domino, all green.
+
+**`test:claims` size leg**: `node test/bench-claims.js` — size-geomean assertion **passes**
+(`size geomean jz/as: 1.020×`, inside the task's own named 1.020 band, identical to every prior
+session's own reading — this leg reads the COMMITTED `bench/results.json` snapshot rather than
+recompiling from source, the same documented limitation every prior session recorded). The other
+8 pre-existing failures (reference-dataset staleness, strict-wasm-rival-leadership, red-cases vs
+bun/jsc) are IDENTICAL, case-for-case, to every prior session's own reading — not attempted here,
+same precedent.
+
+**Files touched**: `src/optimize/vectorize.js` (+~180: `LANE_COMPARE.i8`/`.i16`, the if-store
+mask-ordering fix + unconditional-side-effect guard, the cost-model block —
+`COST_WEIGHT`/`opCostWeight`/`weighTree`/`COST_OVERHEAD_*`/`isProfitable` — and its 3 call sites),
+`test/simd.js` (+~180: 7 if-conversion tests + 2 cost-model tests), `.work/research.md` (this
+entry). Nothing else touched — `README.md`, `src/static.js`, `module/**`, `.work/strategy.md`,
+`.work/todo-original.md` all untouched (verified via `git diff --stat` against main before
+landing).
+
+**Verdict: landed.** If-conversion was already MOSTLY reachable via existing shared machinery
+(`liftStmt`'s if-store case, `liftExprV`'s ternary-if lift, `LANE_PURE`'s trap-free-op discipline)
+— this session's real contribution was finding and fixing a genuine PRE-EXISTING miscompile
+(mask-ordering) that was silently corrupting `examples/ocean/ocean.js`'s DC bin with NaN,
+hardening the same code path against a second, related unconditional-side-effect hazard, and
+closing a real lane-width gap (`LANE_COMPARE.i8`/`.i16`) that was blocking byte/short masked
+stores outright — not inventing new codegen where the task's own instruction to "reuse liftExprV
+machinery" already anticipated reuse. The cost model is genuinely new: a profitability gate for
+the 3 general base layers, honestly calibrated (a real microbench that returned a memory-bound
+null result, reported as such, not massaged into a fake multiplier) and gate-corrected once
+against a real corpus regression, per the task's own explicit instruction to recalibrate rather
+than special-case. 130-corpus sweep: 131/134 byte-identical, 1 expected (self-host), 1 harmless
+renumbering, 1 verified correctness IMPROVEMENT (not a regression). 7+2 new tests, all bit-exact
+differentially, including the 2 required trap-safety/unconditional-effect negatives. Full native
+suite +10/+10/0/0 over the stated baseline. Vectorizer suites 421/421. Self-build ×2 converges,
+`test:wasm` 191/191 (simd) / 2753/2747/0/6 (default, unchanged pattern). `test:claims` size
+geomean 1.020×, inside band. Main tip at landing: `2e4072df` (branch `vec-ifconv-2026-08-16`,
+rebased from `6adde429`, worktree deleted post-land per process instructions).
+
+**GENERIC VECTORIZER PROGRAM COMPLETE.** All five layers of
+`.work/vectorizer-generality-design.md`'s promotion path are now landed: MAP (`a4726c5a`),
+REDUCTION (`15c6a940`), runtime alias versioning (`f2012e2c`), STENCIL (`6adde429`), and
+if-conversion + cost model (this entry). Every general-layer recognizer now proves its own
+affine/dependence/speculation-safety obligations at the AST level instead of matching a fixed
+syntactic WAT shape, handles internal branches via predicated bitselect execution, and gates
+itself on a profitability estimate before committing to SIMD codegen — the strategic gap named in
+`.work/vectorizer-generality-design.md` §3 ("a novel user loop... gets zero vectorization, not
+degraded vectorization") is closed for the ordinary data-parallel MAP/REDUCTION/STENCIL classes
+that make up the majority of real programs, while every idiom fuser (`tryDivergentEscapeVectorize`,
+`tryBlurMultiPixel`, `tryButterfly`, etc.) keeps its own structurally-stronger-than-LLVM edge
+untouched, exactly as the design's endgame architecture specified.

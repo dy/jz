@@ -3506,3 +3506,182 @@ test('SIMD general-stencil safety - true loop-carried recurrence across rows (ro
   const w = wat(src, SIMD_OPT)
   ok(!/v128\.xor/.test(w), 'no v128.xor lift of the row-recurrence (W=2 < lanes=4 is compile-time-provably unsafe, not a runtime-unknown case to version)')
 })
+
+// ---- If-conversion (layer 5, .work/vectorizer-generality-design.md's named follow-up:
+// "loops with internal branches decline in the general layers") ------------------------
+//
+// The GENERAL MAP/STENCIL layers (tryGeneralMap/tryGeneralStencil) reach this shared
+// predicated-store codegen for free via `liftStmt`'s "Standalone conditional store" case
+// (both arms end in a store to the SAME address; a missing else keeps the current value —
+// speculatively lift both arms, blend with `v128.bitselect(thenVal, elseVal, mask(COND))`),
+// the exact `tryDivergentEscapeVectorize`-style bitselect-mask convention this file already
+// uses throughout (mandelbrot's per-lane escape freeze, the ternary-map lift above). This
+// suite exercises that path through loops shaped so ONLY the general layer (not `tryStencil`,
+// f64/f32-only) can reach them — integer-lane neighbour stencils — proving the "declines in
+// the general layers" gap this session's own two fixes below close.
+//
+// Two real correctness bugs found (and fixed, this session) via this suite's own negative
+// sweep, not designed in from the start:
+//   1. Mask-ordering: the if-store lift computed `mask` (which may embed a `local.tee` — COND
+//      reads an address CSE'd with an arm's own load, e.g. a stencil's condition-on-loaded-
+//      value `if (a[i]>0) out[i]=a[i-1]^a[i+1]`) but pushed its `local.set` STATEMENT last,
+//      after the arms' own intermediates (`liftInter`) had already been appended — so an arm
+//      reading that shared address via `local.get` read the STALE prior-iteration value. Fixed
+//      by pushing the mask's `local.set` FIRST (matching `liftExprV`'s own ternary-`if` — which
+//      already got this right), before `liftInter` runs.
+//   2. Unconditional side effect: an arm's `inter` statements (everything before its own tail
+//      store) lift via the ordinary `liftStmt` dispatch, which for a BARE STORE hits the
+//      unconditional `STORE_OPS` branch, not the masked one — so a second store hiding in an
+//      arm (`if (c) { out2[i]=f(x); out[i]=g(x) }`) would run on EVERY lane regardless of `c`.
+//      Fixed by rejecting (fail-closed) any arm whose `inter` carries a side effect
+//      (`hasSideEffect` — store/call/global.set), the same predicate `matchBlockLoop`'s own
+//      preamble-clone gate uses for the identical hazard.
+//
+// Trap safety (division/mod in a speculated arm) needs no new gate: `LANE_PURE` (this file,
+// ~line 620) never included integer `div`/`rem` for ANY lane width (only `f32.div`/`f64.div`,
+// which are IEEE trap-free) — an arm containing integer division fails `liftExprV` closed
+// (`liftFail`), declining the WHOLE loop, never speculating a trapping op. Confirmed below.
+
+const ifConvStencil = (body, arr = 'Int32Array', ctor = '') => `export const main = (${ctor}) => {
+    const n = 64
+    const a = new ${arr}(n), out = new ${arr}(n)
+    for (let i = 0; i < n; i++) a[i] = (i * 13 - 30) | 0
+    for (let i = 1; i < n - 1; i++) {
+      ${body}
+    }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+
+test('SIMD if-conversion general-stencil - both-arms i32 neighbor combine, condition on loaded value', () => {
+  const src = ifConvStencil('if (a[i] > 0) { out[i] = a[i - 1] ^ a[i + 1] } else { out[i] = a[i] }')
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('SIMD if-conversion general-stencil - masked store (no else) keeps current value where COND is false', () => {
+  const src = ifConvStencil('if (a[i] > 0) { out[i] = a[i - 1] ^ a[i + 1] }')
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('SIMD if-conversion general-stencil - both-arms i16 lane', () => {
+  const src = ifConvStencil('if (a[i] > 0) { out[i] = a[i - 1] ^ a[i + 1] } else { out[i] = a[i] ^ 1 }', 'Int16Array')
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present')
+  ok(/i16x8\./.test(w), 'i16x8 lane op present')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('SIMD if-conversion general-stencil - both-arms i8 lane', () => {
+  const src = ifConvStencil('if (a[i] > 0) { out[i] = a[i - 1] } else { out[i] = a[i + 1] }', 'Int8Array')
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present')
+  ok(/i8x16\./.test(w), 'i8x16 lane op present')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('SIMD if-conversion general-stencil - condition on a DIFFERENT array than the stored value', () => {
+  const src = `export const main = () => {
+    const n = 64
+    const a = new Int32Array(n), m = new Int32Array(n), out = new Int32Array(n)
+    for (let i = 0; i < n; i++) { a[i] = (i * 13 - 30) | 0; m[i] = (i * 7) % 5 }
+    for (let i = 1; i < n - 1; i++) {
+      if (m[i] > 2) { out[i] = a[i - 1] ^ a[i + 1] } else { out[i] = a[i] }
+    }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('SIMD if-conversion safety - integer division in a speculated arm declines (trap safety), never mis-speculates', () => {
+  // `a[i+1]` can be 0 (i*13-30 crosses zero near i≈2), so `a[i-1]/a[i+1]` would trap on a
+  // genuine zero divisor if ever speculatively evaluated for a masked-off lane. LANE_PURE
+  // (i8/i16/i32/i64) never maps integer div/rem — the arm's value fails to lift, so the
+  // WHOLE loop declines to a scalar fallback (conditionally-executed division, safe by
+  // construction — scalar semantics never evaluate the untaken arm) rather than risk it.
+  const src = ifConvStencil('if (a[i] > 0) { out[i] = (a[i - 1] / a[i + 1]) | 0 } else { out[i] = a[i] }')
+  const w = wat(src, SIMD_OPT)
+  ok(!/v128\.bitselect/.test(w), 'no bitselect — division correctly declines speculation')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar (scalar div, safe)')
+})
+
+test('SIMD if-conversion safety - a second store hiding in an arm never runs unconditionally', () => {
+  // `out2[i]=...` sits BEFORE the arm's own tail store (`out[i]=...`) — if lifted as an
+  // ordinary unconditional STORE_OPS statement (the bug this session's own negative-test
+  // sweep caught), `out2` would be written on EVERY lane regardless of `a[i] > 0`, not just
+  // the lanes where the source's `if` actually took the then-branch.
+  const src = `export const main = () => {
+    const n = 64
+    const a = new Int32Array(n), out = new Int32Array(n), out2 = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = (i * 13 - 30) | 0
+    for (let i = 1; i < n - 1; i++) {
+      if (a[i] > 0) { out2[i] = a[i] * 2; out[i] = a[i - 1] ^ a[i + 1] } else { out[i] = a[i] }
+    }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h ^ out[i] ^ out2[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar (out2 only set where a[i] > 0)')
+})
+
+// ---- Cost model (Part 2, this session) — profitability gate for the GENERAL base layers only
+// (tryGeneralMap/tryGeneralStencil/tryGeneralReduce; every idiom fuser above keeps its own
+// unconditional, separately-tuned behavior — see the shared header doc right before
+// tryGeneralMap, `src/optimize/vectorize.js`, for the weight table + rationale). ------------
+
+test('SIMD cost model - degenerate masked-store (constant value, cheap condition) correctly declines', () => {
+  // `out[i] = 7` (a bare constant — no load, no real per-element work) masked behind a condition
+  // on a DIFFERENT array's neighbour element, on `Int32Array` (only `tryGeneralStencil` — the
+  // general layer this gate targets — can reach this shape at all: `a[i-1]` is a neighbour read,
+  // which `tryStencil` itself declines for non-f64/f32 lanes). The vector side still pays the
+  // full masked-store bill (mask compute + a "keep current value" v128.load + bitselect + store)
+  // for a scalar side that's almost free (one compare, one store of a literal) — vectorCost/lane
+  // ≥ scalarCost, so the cost model declines it: no bitselect, scalar fallback only, correct by
+  // construction (the untouched original loop).
+  const src = `export const main = () => {
+    const n = 64
+    const a = new Int32Array(n), out = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = (i * 13 - 30) | 0
+    for (let i = 1; i < n - 1; i++) {
+      if (a[i - 1] > 100000) { out[i] = 7 }
+    }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+  const warnings = { entries: [] }
+  const w = compile(src, { optimize: { vectorizeLaneLocal: true, watr: true, whyNotSimd: true }, warnings, wat: true })
+  ok(!/v128\.bitselect/.test(w), 'no bitselect — cost model declines (vector cost/lane ≥ scalar cost)')
+  ok(warnings.entries.some(e => e.code === 'simd-why-not' && /not profitable/.test(e.message)),
+    '--why-not-simd reports the profitability decline, not a generic precondition failure')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar (declined loop still correct)')
+})
+
+test('SIMD cost model - a real if-converted stencil (enough per-lane work) still vectorizes', () => {
+  // Same masked-store SHAPE as the decline case above, but the stored value is real neighbour
+  // data (`a[i-1]`, not a bare constant) — the scalar side now pays for that load too, tipping
+  // the ratio back to profitable. Proves the gate isn't declining EVERYTHING reaching it, only
+  // the genuinely unprofitable degenerate shape.
+  const src = `export const main = () => {
+    const n = 64
+    const a = new Int32Array(n), out = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = (i * 13 - 30) | 0
+    for (let i = 1; i < n - 1; i++) {
+      if (a[i] > 0) { out[i] = a[i - 1] }
+    }
+    let h = 0
+    for (let i = 0; i < n; i++) h = (h ^ out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.bitselect/.test(w), 'bitselect present — profitable, still vectorizes')
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})

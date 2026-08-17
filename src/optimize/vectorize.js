@@ -839,6 +839,20 @@ const LANE_COMPARE = {
   f32: { 'f32.eq': 'f32x4.eq', 'f32.ne': 'f32x4.ne', 'f32.lt': 'f32x4.lt', 'f32.gt': 'f32x4.gt', 'f32.le': 'f32x4.le', 'f32.ge': 'f32x4.ge' },
   i32: { 'i32.eq': 'i32x4.eq', 'i32.ne': 'i32x4.ne', 'i32.lt_s': 'i32x4.lt_s', 'i32.lt_u': 'i32x4.lt_u', 'i32.gt_s': 'i32x4.gt_s', 'i32.gt_u': 'i32x4.gt_u', 'i32.le_s': 'i32x4.le_s', 'i32.le_u': 'i32x4.le_u', 'i32.ge_s': 'i32x4.ge_s', 'i32.ge_u': 'i32x4.ge_u' },
   i64: { 'i64.eq': 'i64x2.eq', 'i64.ne': 'i64x2.ne', 'i64.lt_s': 'i64x2.lt_s', 'i64.gt_s': 'i64x2.gt_s', 'i64.le_s': 'i64x2.le_s', 'i64.ge_s': 'i64x2.ge_s' },
+  // i8/i16: like `LANE_PURE.i8`/`.i16` (this file, ~line 626), the SOURCE-LEVEL scalar compare
+  // on a narrow element always arrives as an `i32.*` op (wasm has no native i8/i16 scalar
+  // compare — the sign/zero-extended load already widened it to i32 before the compare runs).
+  // `i8x16.*`/`i16x8.*` compare the STORED narrow lanes directly — for a SIGNED narrow load
+  // (`i32.load8_s`/`16_s`, sign-extended) this is bit-for-bit the same per-lane boolean as the
+  // scalar `i32.*_s` compare against a value that itself came from the same sign extension (the
+  // extension is monotonic and injective, so signed narrow compare ≡ signed compare of the
+  // extended value); for an UNSIGNED load (`_u`, zero-extended) the analogous `_u`/`eq`/`ne`
+  // forms hold for the same reason. Added for if-conversion (§5, this session): masked/
+  // predicated stores on Uint8Array/Int16Array-etc. element streams need a lane-width mask,
+  // not an i32x4 one — this was the actual gap blocking byte/short if-conversion (missing
+  // entries here, not a codegen limitation), caught by this session's own i8/i16 new-reach tests.
+  i8: { 'i32.eq': 'i8x16.eq', 'i32.ne': 'i8x16.ne', 'i32.lt_s': 'i8x16.lt_s', 'i32.lt_u': 'i8x16.lt_u', 'i32.gt_s': 'i8x16.gt_s', 'i32.gt_u': 'i8x16.gt_u', 'i32.le_s': 'i8x16.le_s', 'i32.le_u': 'i8x16.le_u', 'i32.ge_s': 'i8x16.ge_s', 'i32.ge_u': 'i8x16.ge_u' },
+  i16: { 'i32.eq': 'i16x8.eq', 'i32.ne': 'i16x8.ne', 'i32.lt_s': 'i16x8.lt_s', 'i32.lt_u': 'i16x8.lt_u', 'i32.gt_s': 'i16x8.gt_s', 'i32.gt_u': 'i16x8.gt_u', 'i32.le_s': 'i16x8.le_s', 'i32.le_u': 'i16x8.le_u', 'i32.ge_s': 'i16x8.ge_s', 'i32.ge_u': 'i16x8.ge_u' },
 }
 
 // ---- Recognizer ------------------------------------------------------------
@@ -3432,6 +3446,16 @@ function liftStmt(stmt, ctx) {
     const thenA = armOf(stmt[2]), elseA = (isArr(stmt[3]) && stmt[3][0] === 'else') ? armOf(stmt[3]) : null
     if (!thenA || (isArr(stmt[3]) && !elseA)) return liftFail(ctx, 'if-store: arm is not a conditional store')
     if (elseA && (JSON.stringify(thenA.addr) !== JSON.stringify(elseA.addr) || thenA.store !== elseA.store)) return liftFail(ctx, 'if-store: arms store differently')
+    // Speculation safety: an arm's `inter` statements (everything before its own tail store)
+    // are lifted via the ORDINARY `liftStmt` dispatch below (`liftInter`) — which, for a bare
+    // store, hits the UNCONDITIONAL `STORE_OPS` branch above (line ~3319), not this masked one.
+    // A second store hiding in `inter` (`if (c) { out2[i]=f(x); out[i]=g(x) }`) would therefore
+    // execute on EVERY lane regardless of `c` — silently wrong. `hasSideEffect` (store/call/
+    // global.set) is the same predicate `matchBlockLoop`'s own preamble-clone gate already uses
+    // for the identical "would this run unconditionally when it shouldn't" question; fail closed
+    // (decline the whole if-store lift, not just the offending statement) rather than risk it.
+    if (thenA.inter.some(hasSideEffect) || (elseA && elseA.inter.some(hasSideEffect)))
+      return liftFail(ctx, 'if-store: arm has a side-effecting intermediate statement (would run unconditionally)')
     // mask from COND: a lane comparison, or (i32) a truthy test `lift(cond) != 0`.
     let cond = stmt[1]
     if (isArr(cond) && cond[0] === 'i32.ne' && isI32Const(cond[2]) && cond[2][1] === 0) cond = cond[1]
@@ -3440,16 +3464,26 @@ function liftStmt(stmt, ctx) {
     if (cmp) { const ca = liftExprV(cond[1], ctx); if (ctx.fail) return null; const cb = liftExprV(cond[2], ctx); if (ctx.fail) return null; mask = [cmp, ca, cb] }
     else if (ctx.laneType === 'i32') { const lc = liftExprV(cond, ctx); if (ctx.fail) return null; mask = ['i32x4.ne', lc, ['i32x4.splat', ['i32.const', 0]]] }
     else return liftFail(ctx, 'if-store: non-comparison condition')
-    const out = ['__seq__']
+    // Mask FIRST (matches liftExprV's own `if`-ternary convention above): `mask` may embed a
+    // `local.tee` (COND reads a shared address CSE'd with an arm's own load — e.g. a stencil's
+    // condition-on-loaded-value `if (a[i] > 0) out[i] = a[i-1] ^ a[i+1]`, where `a[i]`'s address
+    // tee lives inside COND and is READ by the arm via a plain `local.get` of that same name).
+    // Emitting the mask's `local.set` statement BEFORE the arms' intermediates run guarantees the
+    // tee has already fired by the time anything downstream reads it — matching scalar order
+    // (COND evaluates before either arm, always). Pushing it LAST (the previous shape) let an
+    // arm's OWN intermediate `local.set` (lifted via `liftInter`, which runs before this push)
+    // read the address local's STALE prior-iteration value — a real miscompile for exactly the
+    // shared-tee shape above, caught by this session's own if-conversion negative-test sweep.
+    const mtmp = `$__mask${ctx.freshIdRef.next++}`
+    ctx.extraLocals.push(['local', mtmp, 'v128'])
+    const out = ['__seq__', ['local.set', mtmp, mask]]
     const liftInter = (arm) => { for (const s of arm.inter) { const l = liftStmt(s, ctx); if (ctx.fail) return false; if (l != null) { if (Array.isArray(l) && l[0] === '__seq__') out.push(...l.slice(1)); else out.push(l) } } return true }
     if (!liftInter(thenA)) return null
     if (elseA && !liftInter(elseA)) return null
     const thenVal = liftExprV(thenA.val, ctx); if (ctx.fail) return null
     const elseVal = elseA ? liftExprV(elseA.val, ctx) : ['v128.load', thenA.addr]   // no else ⇒ keep current value
     if (ctx.fail) return null
-    const mtmp = `$__mask${ctx.freshIdRef.next++}`
-    ctx.extraLocals.push(['local', mtmp, 'v128'])
-    out.push(['local.set', mtmp, mask], ['v128.store', thenA.addr, ['v128.bitselect', thenVal, elseVal, ['local.get', mtmp]]])
+    out.push(['v128.store', thenA.addr, ['v128.bitselect', thenVal, elseVal, ['local.get', mtmp]]])
     return out
   }
 
@@ -7043,6 +7077,124 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 }
 
 
+// ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2 of this
+// session): a profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
+// tryGeneralStencil/tryGeneralReduce below) — every idiom FUSER above (tryDivergentEscapeVectorize,
+// tryBlurMultiPixel, tryButterfly, …) keeps its own separately-tuned, always-fire behavior
+// unchanged; this gate never runs for them. Today the three general recognizers vectorize
+// UNCONDITIONALLY the instant their affine/dependence proof succeeds — sound, but blind to
+// whether the SIMD prologue/epilogue/blend overhead is actually worth paying for a given body.
+//
+// Estimate, not a simulator: `scalarCost` = weighted op count of ONE original scalar iteration
+// (`body`, pre-lift); `vectorCost` = weighted op count of ONE vector step (`lifted`, the SAME
+// tree the codegen below emits, processing `lanes` elements) + a fixed prologue overhead + a
+// per-guard overhead when runtime alias-versioning (layer 3) adds a disjointness check. Decline
+// (the caller returns null, exactly like any other precondition failure in this file) when
+// `vectorCost / lanes >= scalarCost` — vectorizing would cost at least as much per element as
+// just running the scalar loop.
+//
+// Weights: `load`/`store` = 1, the baseline unit. Arithmetic/compare/convert-class ops (add,
+// sub, mul, and, or, xor, shift, eq/lt/gt/…, min, max, neg, abs, sqrt, floor/ceil/trunc/nearest,
+// convert/extend/narrow/wrap/promote/demote, splat) = 1 — same instruction-count class as a
+// load. `div`/`rem` (float only — integer div/rem are never LANE_PURE, see that table's own
+// header; a speculated arm containing one fails to lift and declines the WHOLE loop, never
+// reaching this cost check) = 8 — division has no fast SIMD form on wasm (no reciprocal-estimate
+// instruction in the MVP+SIMD feature set). `bitselect` (blend, the if-conversion codegen
+// above) = 5.
+//
+// Calibration, honestly reported (per the task's own "roughly, not invented precision"): a
+// wall-clock microbench (`node -e`, this session — `d = mask ? a : b` vs `d = a + b` vs
+// `d = a / b`, SIMD_OPT, both a 2e7-element streaming pass and a 2e5-element pass repeated 200×
+// to stay cache-resident) showed NO measurable difference between add/blend/div on this engine
+// (V8) — all three are memory-bandwidth-bound, not compute-bound, at any array size tried. That
+// is itself useful, honestly-reported signal (real streaming SIMD kernels are memory-bound, so
+// op-mix rarely changes wall-clock much) — but it means the microbench could not supply a
+// blend/div MULTIPLIER the way the task's own example table implies. The weights actually used
+// are therefore a conservative PRIOR (in the spirit of LLVM's TargetTransformInfo select/div
+// cost classes — blend ~2-5x, div severalx-to-double-digit x, target-dependent), then GATE-
+// CALIBRATED against this session's own two concrete cases: `div`=8 keeps its illustrative
+// starting value (never empirically contradicted — no corpus loop has a speculated arm with
+// float division to test against either way); `bitselect`=5 (raised from an initial 2, alongside
+// `COST_OVERHEAD_PROLOGUE`/`COST_OVERHEAD_PER_GUARD` below being LOWERED from an initial 3/2) —
+// the initial 2/3/2 triple declined a real, already-landed corpus-shaped test
+// (`SIMD alias-version f64 - same-array runtime-offset window…`, `test/simd.js` — an ordinary
+// affine MAP with one alias-versioning guard, NO if-conversion, at f64's 2-lane width, where the
+// guard/prologue overhead was punishing a perfectly profitable plain map). Per the task's own
+// instruction ("if the model would decline a corpus case, the model is wrong: recalibrate, don't
+// special-case"): recalibrated by shifting weight FROM the lane-count-sensitive per-loop overhead
+// (which penalizes every general-layer recognizer, if-converted or not, hardest at f64/i64's 2
+// lanes) TOWARD the blend-specific weight (which only penalizes the if-conversion codegen this
+// session actually adds) — the synthetic decline case below (§SIMD cost model tests) still
+// declines under the new triple, the real corpus case now doesn't. The 130-corpus sweep (this
+// session's own ledger entry) is the final, decisive calibration signal, not either number here.
+const COST_WEIGHT = { load: 1, store: 1, bitselect: 5, div: 8, div_s: 8, div_u: 8, rem_s: 8, rem_u: 8 }
+const _COST_ARITH_RE = /^(add|sub|mul|and|or|xor|shl|shr|eqz|eq|ne|lt|gt|le|ge|min|max|neg|abs|sqrt|floor|ceil|trunc|nearest|convert|extend|narrow|wrap|promote|demote|splat|clz|ctz|popcnt|copysign|reinterpret|pmin|pmax)/
+function opCostWeight(op) {
+  if (typeof op !== 'string') return 0
+  const suffix = op.includes('.') ? op.slice(op.lastIndexOf('.') + 1) : op
+  if (suffix in COST_WEIGHT) return COST_WEIGHT[suffix]
+  if (suffix.startsWith('load')) return COST_WEIGHT.load
+  if (suffix.startsWith('store')) return COST_WEIGHT.store
+  if (_COST_ARITH_RE.test(suffix)) return 1
+  return 0   // control-flow wrappers, local.get/set/tee, block/if/then/else, br(_if), i32.const/
+             // f64.const (immediates — free, embedded in the instruction stream) — no runtime cost
+             // this simple a model needs to attribute; both scalarCost and vectorCost skip them
+             // identically, so the RATIO this gate actually compares is unaffected either way.
+}
+function weighTree(nodes) {
+  let w = 0
+  const walk = (n) => {
+    if (!isArr(n)) return
+    const op = n[0]
+    w += opCostWeight(op)
+    // A LOAD_OPS/STORE_OPS node's ADDRESS operand is index/base arithmetic (`base + (idx<<K)`),
+    // not the "arith" the table's weights describe (the DATA the loop actually computes) — it's
+    // a compiler implementation detail identical in kind on both sides of this comparison (the
+    // scalar loop recomputes it once PER ELEMENT, the vector step once per GROUP — vectorization's
+    // own amortization win, which this model should reward, not double-charge by also weighing the
+    // address subtree as if it were user-visible compute). Skip it: count the memory access itself
+    // (`opCostWeight` above already did, via the `load`/`store` weight) and continue only into a
+    // STORE's VALUE operand — the actual data being written.
+    // Scalar-domain load/store (pre-lift `body`) AND their lifted v128 form (post-lift
+    // `lifted` — same address-skip reasoning applies identically to both sides of the ÷lanes
+    // comparison this model computes).
+    if (LOAD_OPS[op] || op === 'v128.load') return
+    if ((STORE_OPS[op] && n.length === 3) || (op === 'v128.store' && n.length === 3)) { if (isArr(n[2])) walk(n[2]); return }
+    for (let i = 0; i < n.length; i++) if (isArr(n[i])) walk(n[i])
+  }
+  for (const n of nodes) walk(n)
+  return w
+}
+// Fixed per-loop overhead the op-weight walk above can't see structurally (it isn't part of
+// `lifted` — it's the wrapper every one of the 3 general recognizers builds around it): the SIMD
+// bound calc (`boundSetup`) and the loop's own branch-back test, identical in shape across all
+// three. Amortized per-lane by the SAME ÷lanes division every other cost in this model goes
+// through — deliberately kept SMALL (1, not the bound calc's own ~3 raw ops): this overhead is
+// paid ONCE per loop EXECUTION, not once per vector STEP, so charging it in full against a
+// single lanes-wide group (as this model's ÷lanes necessarily does, having no visibility into
+// the loop's actual, runtime-only trip count) overstates it for the common case — a loop this
+// pass decides to vectorize at all typically runs many groups, amortizing the real prologue cost
+// to near nothing. See `COST_WEIGHT`'s own header doc for how this got tuned down from an
+// initial 3 (a real corpus-shaped alias-versioned map at f64's 2-lane width was being wrongly
+// declined by prologue+guard overhead alone).
+const COST_OVERHEAD_PROLOGUE = 1
+// Runtime alias-versioning (layer 3, f2012e2c/6adde429) adds a disjointness guard (`i32.or` of
+// `le_s`/`ge_s` pairs) evaluated once before the loop, one clause per mismatched site pair — the
+// SAME "paid once per execution, not once per step" reasoning as the prologue above applies here
+// too (kept at 1, tuned down from an initial 2 for the identical reason — see `COST_WEIGHT`'s
+// header doc). `tryGeneralReduce` never has store sites (no hazard, no guard — see its own
+// header doc), so it always calls this with `guardCount = 0`.
+const COST_OVERHEAD_PER_GUARD = 1
+// Profitability check shared by all 3 general recognizers below. `body`/`lifted` are the SAME
+// arrays each recognizer already built for its own precondition scan / codegen — this reuses
+// them, no separate walk of the source AST. Returns true (proceed) or false (the caller declines
+// exactly like any other failed precondition — `return null`, no different from an unliftable op).
+function isProfitable(body, lifted, lanes, guardCount = 0) {
+  const scalarCost = weighTree(body)
+  const vectorCost = weighTree(lifted) + COST_OVERHEAD_PROLOGUE + guardCount * COST_OVERHEAD_PER_GUARD
+  return vectorCost / lanes < scalarCost
+}
+
 // ---- General MAP base layer (.work/vectorizer-generality-design.md §2-3 step 3, MAP slice) --
 //
 // BASE LAYER: runs LAST in the dispatch chain (after every idiom recognizer above, including
@@ -7372,6 +7524,12 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
   }
   if (!lifted.length) return null
+  // Cost model (Part 2, this session — see the header doc right before tryGeneralMap): decline
+  // when the vector step costs at least as much per lane as the scalar iteration it replaces.
+  // `aliasGuards` (computed above) is non-null only for the versioned path; its own `.length` is
+  // the guard-clause count the wrapper below actually ANDs together, so it's the right count here.
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, aliasGuards ? aliasGuards.length : 0))
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   const id = freshIdRef.next++
   const simdBoundName = `$__simd_bound${id}`, simdBrkLabel = `$__simd_brk${id}`, simdLoopLabel = `$__simd_loop${id}`
@@ -7764,6 +7922,10 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
     if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
   }
   if (!lifted.length) return null
+  // Cost model (Part 2, this session — see the shared header doc before tryGeneralMap). Same
+  // check, same reused arrays; `aliasGuards.length` is the guard-clause count when versioned.
+  if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, aliasGuards ? aliasGuards.length : 0))
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim, plus
   // layer-3's versioning wrap when aliasGuards is non-null (see header doc). ----
@@ -8004,6 +8166,15 @@ function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   // flag (self-host divergence) bails rather than splicing a literal `null` operand.
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
+  // Cost model (Part 2, this session — shared header doc before tryGeneralMap). REDUCE has no
+  // store sites (`scanExpr` above forbids STORE_OPS entirely) — no alias-versioning hazard to
+  // guard, always `guardCount` 0 (matches layer 3's own "tryGeneralReduce doesn't need this
+  // layer" finding). The vector-side cost is the one accumulate step this pass's own codegen
+  // below emits per iteration-group: the reduce op itself (`reduceEntry.simd`, arith weight 1)
+  // applied to `liftedExpr`'s own already-lifted load/arith tree — a tiny synthetic wrapper node
+  // costs it without duplicating the codegen below.
+  if (!isProfitable(body, [[reduceEntry.simd, liftedExpr]], LANE_INFO[laneType].lanes, 0))
+    return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
 
   // ---- Codegen: byte-identical to tryReduceReassoc's own horizontal-fold synth — see header
   // doc. `widen`/`sawWidenF32` fixed at "off": this recognizer never produces those shapes.
