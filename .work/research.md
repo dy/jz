@@ -20120,3 +20120,39 @@ is introduced" — an accurate forward-looking restatement of exactly what
 **Verdicts.** All five: SOUND. One (`157f8dc1`) carries a documentation
 nuance, not a defect (§1 above). No genuine defect found; no fix needed; no
 source file touched by this review.
+
+## §Walk-count reduction — measurement + design, no source changes
+## (2026-08-17)
+
+Adopted from the v1 audit's pipeline finding: plan-middle traversal volume is
+the shared root of both the memory endgame (churn → region-exit → recopy tax
+→ the 4 GiB jz×jz wall, `2a40d7b2`'s "51 of ~53 exits survived, goal gate NOT
+MET") and the pipeline-optimality bar generally. Three named sites measured
+natively (jessie + jz×jz self-graph, disposable worktree instrumentation off
+the `compile()` `profiler` seam `259cd4fc`'s ledger entry named, reverted
+before commit): `analyzeBody`'s 8 back-to-back traversals (`analyze.js:929-
+971` — confirmed exactly 8, wall time 1.06-2.62% of total, real dependency
+chain is `walk`→`widenLocalTypes`→`narrowUint32` only, the rest is
+accretion); `analyzeFuncForEmit`'s locals re-derivation (`index.js:620-688`
+— measured **38.2%/48.5% of all full-body recomputes are pure repeats** of a
+body the same compile already analyzed, root cause is `sigFingerprint`/
+`assertBodyFactsFresh`'s existing staleness check being `DBG_INVARIANTS`-only
+instead of live); five plan-tail module-scope passes re-run after
+`narrowSignatures` (`plan/index.js:158-319` — two are literal duplicate
+calls of the SAME early-plan function, `inferModuleGlobalValTypes`/
+`inferModuleLetTypes`, costing 316.92 ms/49.12 ms on jz×jz; two more are
+genuine post-narrow full rebuilds, not fusable without redoing their own
+soundness argument; one, `refineFieldProvenance`, is confirmed innocent).
+Cross-referenced against `fa9fcc1a`'s own per-round churn table: the big
+rounds (front/early-plan/narrowSignatures/plan-tail 2-3/scan-round, 62-1846
+MB) are unaffected by walk-fusion — their recopy tax is `ctx.funcs`/
+`ctx.plans`, a different already-identified lever (`regionArmSetMap`'s
+missing durable short-circuit); the one bounded, honest exits-skippable
+candidate is plan-tail round 4 (`refineSlotIntCensus` alone, +22.30 MB,
+6.3 MB over the 16 MiB skip cap) — real but modest (~1 additional AFE
+batch), not a substitute for `2a40d7b2`'s own named next steps. Eight
+numbered slices proposed (A1/A2 site 1, B1/B2 site 2, C1/C2 site 3, two
+explicitly rejected/deferred with reasons), each independently gated,
+byte-identity-required. Full write-up, measurement tables, dependency
+graphs, and the RepPlan-v2 collision/sequencing map: **`.work/walk-count-
+design.md`**.
