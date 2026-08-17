@@ -18857,3 +18857,47 @@ Self-build ×2 converges, `test:wasm` 182/182 (simd) / 2749/2743/0/6
 identical to base. Main tip at landing: `6e75b8a3` (branch
 `vec-stencil-2026-08-16`, worktree deleted post-land per process
 instructions).
+
+## §Host-global carrier loss in `promoteGlobals` (2026-08-16)
+
+**The banked string-census failure was reproduced, but the watr attribution
+was wrong.** The exact original hooks were recovered from the surviving agent
+transcript—not approximated—and applied to both historical jz `4d35ec62` and
+current jz `6e75b8a3`, each paired with watr `39b7437`. Their region-live O2
+kernels fail validation in the recorded way:
+
+- historical: 10,009,452 bytes, function #2631, `local.set` f64 ← `global.get` i64;
+- current: 10,016,996 bytes, function #2630, the same type mismatch.
+
+The failure exists with watr disabled. A minimal trigger is
+`export const f=()=>[process,process,process]`: O0 validates; O2/O3 and
+`{level:2,watr:false}` do not; `{level:2,promoteGlobals:false}` validates.
+Thus function numbering and the four logger calls merely made a pre-watr jz
+bug visible.
+
+**Root cause.** Host references are deliberately emitted as raw-i64 imported
+globals so the JS engine cannot canonicalize external-reference NaN-box bits.
+The import materialization recorded that type only in `ctx.module.imports`.
+`promoteGlobals`, however, reads `ctx.scope.globalTypes`; after three reads its
+fallback declared an f64 `$_pg0` snapshot and assigned the i64 import into it.
+The fix registers the i64 representation fact alongside the host-global import,
+at the one boundary where that import is materialized. No watr source changed.
+
+**Pinned class and certification.** `test/wat-invariants.js` now checks the
+pre-watr snapshot local is i64 and the final optimized module validates. The
+minimal matrix validates at O0, pre-watr O2, O2, and O3. With the exact four
+census hooks restored, the current region-live O2 kernel builds to 11,303,250
+valid bytes and executes a compiled program (`sum(100) === 4950`). Focused
+wat-invariants (24/24, 35 assertions), imports (78/78, 88 assertions), and
+optimizer (219/219, 4,113 assertions) suites pass. After rebasing onto current
+main (`6adde429`), full `npm test` is 3,480 pass / 0 fail / 6 skip (20,055
+assertions); the O0 and O3 matrix legs match that zero-failure result. The
+WASI leg has only its pre-existing `JZ_CARRIER_BOX ternaryBoxedNames` failure
+(3,478 pass / 1 fail / 6 skip);
+the new host-carrier invariant now passes there by explicitly compiling its
+probe for the JS host. Self-host correctness is 21/21; the first loaded perf
+run showed only the known warm timing sensitivity (1.033–1.046×), while an
+immediate isolated rerun passed all 5 pins (warm 1.024×, fresh 0.826×). The
+earlier retained-set census warning has been corrected: its interning
+rejection still stands on measured payoff, but this failure is no evidence
+against watr or the string helper surface.

@@ -2773,8 +2773,14 @@ export default function compile(ast, profiler, regionHooks) {
   // now (assembly owns ctx.module.imports). Drained after buildStartFn so a
   // host global first used in a top-level statement (emitted into __start) is
   // captured; syncImports below merges them into sec.imports.
-  for (const name of ctx.core.hostGlobals)
+  for (const name of ctx.core.hostGlobals) {
     ctx.module.imports.push(['import', '"env"', `"${name}"`, ['global', `$${name}`, 'i64']])
+    // Host references cross the JS↔wasm boundary as raw i64 NaN-box carriers.
+    // Register that REPRESENTATION type alongside the import: optimizeModule's
+    // promoteGlobals consumes globalTypes, and treating this slot as the
+    // source-level f64 value would emit `(local f64) (local.set … global.get i64)`.
+    ctx.scope.globalTypes.set(name, 'i64')
+  }
 
   syncImports(sec)
 

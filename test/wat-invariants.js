@@ -32,8 +32,10 @@
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
+import parseWat from 'watr/parse'
+import { compile } from '../index.js'
 import {
-  parse, has, loopHas, count, loopCount, head, F64_OR_ROUNDTRIP, PTR_HELPER,
+  parse, walk, has, loopHas, count, loopCount, head, F64_OR_ROUNDTRIP, PTR_HELPER,
 } from '../scripts/wat-probe.mjs'
 import {
   typedIntSource, typedIntMinMaxSource, typedIVSRSource, typedByteScanSource, typedMapSource,
@@ -142,6 +144,26 @@ test('ablation: promoteGlobals snapshots a repeatedly-read global to one functio
   const gGet = (n) => n[0] === 'global.get' && n[1] === '$g'
   ok(count(parse(src, { promoteGlobals: false }), gGet) > 1, 'control: multiple global.get $g with pass OFF')
   ok(count(parse(src, 2), gGet) <= 1, 'INVARIANT: global read once, snapshotted to a local, with pass ON')
+})
+
+test('promoteGlobals preserves the raw-i64 carrier of repeated host-global reads', () => {
+  // Host globals cross the JS↔wasm boundary as i64 so the engine cannot
+  // canonicalize an external-reference NaN box. Three reads trigger the global
+  // snapshot pass; its local must preserve that representation, not use the
+  // source-level f64 value type. The old mismatch made O2/O3 modules invalid
+  // before watr ran: local.set expected f64, global.get $process produced i64.
+  const src = `export const f = () => [process, process, process]`
+  const tree = parseWat(compile(src, { host: 'js', optimize: { level: 2, watr: false }, wat: true }))
+  const localTypes = new Map()
+  let snapshot = null
+  walk(tree, n => {
+    if (n[0] === 'local' && typeof n[1] === 'string') localTypes.set(n[1], n[2])
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') &&
+        Array.isArray(n[2]) && n[2][0] === 'global.get' && n[2][1] === '$process') snapshot = n[1]
+  })
+  ok(snapshot, 'control: repeated host global is snapshotted')
+  is(localTypes.get(snapshot), 'i64', 'INVARIANT: snapshot keeps the import carrier type')
+  ok(WebAssembly.validate(compile(src, { host: 'js', optimize: 2 })), 'optimized module validates')
 })
 
 // ════════════════════════════════════════════════════════════════════════════

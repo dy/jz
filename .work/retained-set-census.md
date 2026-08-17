@@ -346,14 +346,24 @@ reading the log back from `exports.memory.buffer` after the run completed.
 *Note on method:* `optimize:3` and `optimize:2` kernel builds **both
 produced an invalid wasm module** with the four hooks linked in
 (`CompileError: local.set[0] expected type f64, found global.get of type
-i64`, a different function index each time) — not chased further (out of
-scope for a duplication census; flagged below as a real risk signal for
-whoever next touches this code path). `optimize:false` built and ran
+i64`, a different function index each time). `optimize:false` built and ran
 cleanly, so the census ran on an unoptimized-but-otherwise-identical
 region-live kernel; construction-site call counts and content are a
-property of the algorithm the kernel executes, not of how efficiently
-watr's own optimizer subsequently codegens it, so this does not compromise
-the string-content measurement itself.
+property of the algorithm the kernel executes, not of how efficiently its
+Wasm is encoded, so this does not compromise the string-content measurement.
+
+**Follow-up resolution (2026-08-16): the failure was in jz before watr, not
+a watr miscompile.** The exact hooks were recovered from the original agent
+transcript and reproduced at both historical jz `4d35ec62` and current jz
+`6e75b8a3`, paired with watr `39b7437`. The same module is already invalid
+with `optimize:{level:2,watr:false}`, while `promoteGlobals:false` validates.
+The minimal trigger is `export const f=()=>[process,process,process]`: three
+reads make `promoteGlobals` snapshot the host global, but host globals were
+registered only as raw-i64 module imports, not in the optimizer's global
+representation map. Its fallback therefore declared `$_pg0` as f64 and
+assigned `(global.get $process)` (i64) into it. Registering the i64 carrier
+when materializing the import fixes the whole class; the regression pins
+both the pre-watr local type and final Wasm validation.
 
 **Result — jessie, 46 modules, region-live, one full compile:**
 
@@ -424,25 +434,14 @@ Weighed against all three named candidates:
   `plan/index.js`, but that is a design note for a future session, not
   a reason to build it now against a 39 MB payoff).
 
-**An additional, concrete reason for caution, found empirically**: adding
-four small, semantically simple diagnostic hooks plus one new global to
-exactly this code surface (`module/string.js`'s concat/slice tails,
-`module/core.js`'s global declarations) was enough to trigger a genuine
-watr miscompile at **both** `optimize:2` and `optimize:3` on the region-live
-self-hosted kernel (see the method note above) — a real, reproducible signal
-that this exact territory is more fragile than it looks, independent of
-string interning specifically. Landing new permanent code here under time
-pressure, without first root-causing that miscompile, would risk exactly
-the kind of pass/fail-on-different-shape defect this campaign's own gate
-discipline (oracle 13/13, self-build ×2 convergence, kernel-parity) exists
-to catch — surfacing on some *other* graph shape than the ones tested, not
-on jessie/watr/jzify-entry. Banked as a lead, not chased: reproduce with
-`JZ_STR_CENSUS=1` region-live kernel build at `optimize:2` or `optimize:3`
-against `resolveSelfhostBuild({regionArena:true, memory:65536})`'s own
-graph — the code that triggers it (four `(call $__census_log ...)`
-insertions + one new `declGlobal`) is not committed, so this note is the
-only trace; whoever picks it up should re-derive the minimal repro from
-this description rather than assume old scratch files survive.
+**Retraction of the earlier caution:** the hook-expanded graph exposed a
+real compiler defect, but it did **not** show fragility in watr or in the
+string-construction helpers. The source of invalid IR was jz's generic
+`promoteGlobals` pass losing an imported global's raw-i64 representation.
+With that boundary fact registered, the exact four-hook region-live O2
+kernel validates and executes a compiled sum oracle (`sum(100) === 4950`).
+The string-interning rejection above remains unchanged—it follows from the
+measured payoff and region-rooting cost, not from this now-closed defect.
 
 All diagnostic-only hooks (`module/core.js`, `module/string.js`,
 `module/number.js`) and the `REGION_HOOKS_ACTIVE` build flag
