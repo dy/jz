@@ -844,6 +844,9 @@ export function reset(proto, globals, bridge) {
     helperCallsites: false, // profiling-only: export mutable i64 counters for selected runtime
                             // helper callsites after optimization, so hot helpers can be traced
                             // back to the compiled function that calls them.
+    compactCollections: false, // self-host artifact build profile only: omit the redundant
+                               // Set/Map/HASH i32 probe lane and probe the entry-resident hash.
+                               // Ordinary user outputs keep the faster lane layout.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
     sessionPhase: null, // W1 lifecycle contract: last completed ordered phase (assertCtxInvariants)
     cseId: 0,           // monotonic id for CSE temps (freshCseName) — per-compile, so warm-process WAT text is deterministic

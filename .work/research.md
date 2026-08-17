@@ -20302,3 +20302,222 @@ ratios: `colorlog 1.692×`, `jessie 1.886×`, etc.).
 gated, then toggled back to `false` and re-diffed clean (`git diff
 scripts/self.js` empty) before landing — matches this repo's own established
 region-live gating convention.
+
+## §Self-host collection compaction — drop the redundant probe lane from the compiler artifact (2026-08-15)
+
+**Task.** Implement retained-set-census Lever 2: every self-hosted
+SET/MAP/HASH slot currently carries both the hash in the entry's low 32 bits
+and an identical trailing i32 LANE word. The allocator census at `d08d5968`
+measured 2,488,731,296 B of MAP/HASH-shaped and 201,283,360 B of SET-shaped
+allocation traffic before the jz×jz trap. Removing 4 B per slot is therefore
+an exact same-work saving of `(2,488,731,296 * 4/28) + (201,283,360 * 4/20)`
+= **377.45 MiB** on that measured prefix.
+
+**Boundary decision — self-host artifact only, not a global runtime
+regression.** Commit `031b4660` introduced LANE specifically because the
+cache-dense probe improved the wordcount probe by a measured 7.2%. Removing
+it from every user output would trade away a product performance promise to
+save memory in one compiler artifact. This slice instead adds an internal
+self-host build profile:
+
+- The OUTER native build of `dist/jz.wasm` passes
+  `_compactCollections:true`. Its generated collection runtime allocates
+  exactly SET_ENTRY/MAP_ENTRY bytes per slot and probes the hash already
+  present at entry offset 0.
+- The compiler source INSIDE that artifact resets
+  `ctx.transform.compactCollections=false`; programs compiled BY the kernel
+  therefore retain the ordinary 4-byte fast lane. The layout choice is
+  settled while stdlib templates materialize, so neither generated layout
+  pays a runtime branch.
+- `JZ_SELFHOST_COMPACT_COLLECTIONS=0` reconstructs the old artifact profile
+  for A/B work. This is explicitly internal; no public user option or output
+  default changed.
+
+**Implementation.** `module/collection.js` now has one layout authority
+(`collectionLaneBytes`/`collectionStride`) and two generated probe walks:
+normal LANE cursor or compact entry cursor. Growth/rehash, lookup, prehashed
+lookup/upsert, RMW slot upsert, ephemeral fixed/growable hashes, backward-
+shift delete, clear/reuse, constructors, structured clone, and region rebuild
+all consume the same resolved layout. Compact inserts do not duplicate the
+hash after `seqStore`; compact delete moves only entries. `module/core.js`
+and `layout-kinds.js` resolve the same lane width for region memo maps,
+`__dyn_props`, HASH clone/copy, and SET/MAP region rebuilds. `interop.js`
+stays unchanged deliberately: its normal 28-byte HASH is still correct for
+normal outputs, while a compact consumer can safely ignore the overallocated
+trailing lane (no underallocation/corruption in either direction).
+`scripts/build-profile.mjs` is the single profile owner used by both official
+self-host builders. `test/data.js` pins both probe shapes, exact physical
+block deltas, and grow/delete/RMW behavior at O0/O3.
+
+**Exact layout measurement.** Two consecutive empty allocations (16-byte
+header, cap=8):
+
+| table | normal | compact | delta |
+|---|---:|---:|---:|
+| Map/HASH | 240 B = 16 + 8*(24+4) | 208 B = 16 + 8*24 | **-32 B / -13.3% block, -14.3% slot payload** |
+| Set | 176 B = 16 + 8*(16+4) | 144 B = 16 + 8*16 | **-32 B / -18.2% block, -20.0% slot payload** |
+
+The dormant compiler artifact itself shrank **17,194,348 -> 17,112,930 B**
+(**-81,418 B / -0.474%**) despite carrying both template generators.
+
+**Output/performance isolation.** Native default compilation before vs after
+was SHA-identical on Map+Set+HASH growth/delete, structuredClone, and
+Object/Map.groupBy at O0/O3 (6/6 artifacts). More strongly, the pre-change
+kernel vs post-change native compiler remained kernel-parity **33/33** at
+O0/O2/O3. The self-host perf pin remains red on current main for the known
+pre-existing warm-instance margin, but an immediate same-machine A/B gives
+no attributable regression:
+
+| kernel | warm geomean rounds | fresh geomean |
+|---|---|---:|
+| base `71156204` fast-lane artifact | 1.120x, 1.143x, 1.148x | 0.862x |
+| compact artifact | 1.112x, 1.145x, 1.154x | 0.857x |
+
+The sub-percent round noise straddles zero; fresh slightly improves. No cap
+or performance claim was changed.
+
+**jz×jz goal gate — remeasured, still NOT met.** Exact harness:
+`resolveModuleGraph(scripts/self.js)` (156 modules), fresh kernel instance,
+`exports.default(code,0,0,modules,0)`, read memory/heap on success or throw.
+
+| artifact | outcome | linear-memory peak | heap at trap | wall |
+|---|---|---:|---:|---:|
+| base dormant fast-lane | `unreachable` | 4,096.0 MiB | 4,294,967,288 B | 7.03 s |
+| compact dormant | `unreachable` | 4,096.0 MiB | 4,294,967,280 B | 8.00 s |
+| compact region-live | `unreachable` | 4,096.0 MiB | 4,258,060,488 B | 9.55 s |
+
+The coarse peak cannot display the structural saving: after each removed
+lane lets the unguarded compile proceed farther, later churn consumes the
+released space until the same wasm32 ceiling. Region-live's lower heap value
+is the starting point of a too-large allocation request, not a successful
+peak. Therefore the measured claim is the exact per-allocation reduction and
+377.45 MiB saved over the census's same-work prefix — **not** “jz×jz now fits.”
+This lever composes with runtime-name interning/reclaim-scope work but does
+not substitute for it.
+
+**Gates.** `REGION_HOOKS_ACTIVE` was restored to false before every dormant
+build/commit.
+
+- `npm test`: **3452 total / 3446 pass / 0 fail / 6 skip**.
+- Matrix: default, O0, O3 all **3446 pass / 6 skip**; WASI has the exact
+  current-main pre-existing BigInt ternary failure (reproduced independently
+  on unmodified `71156204` in `test/pointers.js`), outside this lane and in the
+  explicitly excluded `narrow.js`/`param-reps.js` territory.
+- `test:wasm`: **2750 total / 2744 pass / 0 fail / 6 skip** (the dedicated
+  compact-layout test intentionally no-ops on the kernel ABI leg; the compact
+  compiler runtime itself is exercised by every other kernel-hosted compile).
+- Kernel oracle, dormant compact: **13/13, 538 assertions**.
+- Kernel oracle, region-live compact: **13/13 x15**, 8,070 assertions total,
+  zero flakes.
+- Kernel parity: **33/33** against both the pre-change and compact artifacts.
+- Self-host correctness/warm reuse: **21/21, 206 assertions**.
+- Dormant self-build convergence: SHA-256
+  `92c9ffad189c864e8e7e9107bba0d20c565ec144cc5ad22a85203f91c796a468`
+  across three builds (two direct plus `test:self`).
+- Region-live compact self-build validated; kernel oracle x15 above. The
+  region artifact is diagnostic-only and was replaced by the converged
+  dormant artifact before commit.
+
+**Disposition.** Land the isolated self-host profile and exact-layout test.
+The mechanism is general (“any compiler artifact whose own collection
+working set dominates”), output-neutral for users, and independently useful
+even though the headline jz×jz ceiling remains open. Next compaction lever:
+runtime-built mangled-name interning, measured separately rather than folded
+into this commit.
+
+## §Self-host collection compaction — landed: rebased onto the region-arena
+## exit-skip fix, full gate battery re-run, jz×jz GOAL GATE still NOT MET
+## (2026-08-17)
+
+**Task.** Final-mile landing of the above lever-2 commit (census #2,
+~377 MiB), cleanly rebased from its original `2026-08-15` base onto current
+main tip `624c53c3` — which now carries the region-arena adaptive exit-skip
+fix (`bb493138`, landed `2026-08-17`) that took jz×jz's AFE loop from 6 to
+~51 of its ~53 needed exits. The two levers are independent (this one
+shrinks every collection allocation; that one skips redundant recopies) and
+were checked to compose cleanly: `f55ed89b`'s eph-hash fix (clear the full
+24-byte entry region on ephemeral-HASH reuse, not just the occupancy lane —
+`__coll_order` and every generic-HASH consumer raw-scan the entry's own hash
+word regardless of lane) stays intact verbatim in both `__alloc_hash_eph`
+and `__hash_reuse_eph`: this commit's diff only wraps the SEPARATE lane-fill
+`memory.fill` in `${lane ? … : ''}`, leaving the entry-region fill
+unconditional — the compact profile has no lane to clear, and the fix's own
+entry-clear still runs every time, in both layouts. Re-reviewed the diff and
+confirmed sound rather than re-deriving the design from scratch (per the
+task's own note, a prior review already passed it).
+
+**Full gate battery, rebased worktree (`lane-land-2026-08-16` onto
+`624c53c3`):**
+
+- `npm test`: **3499 total (20097 assertions) / 3493 pass / 0 fail / 6
+  skip**.
+- `test:wasm`: **2758 total (12866 assertions) / 2752 pass / 0 fail / 6
+  skip**.
+- Self-build ×2: dormant SHA-256
+  `d2c417a419281bd0945b6b67037e6731a7a2b6c569f5368eccdb2c16147a0d40` across
+  three independent builds — converges. Region-live SHA-256
+  `96ef615985f54a8b8f67dfc465b5b9ea52963e881d6eed45f1fc6f68b77e39a7` across
+  two independent builds — converges.
+- Kernel oracle, dormant: **13/13 (538 assertions) × 3**, clean.
+- Kernel oracle, region-live (hand-flipped `REGION_HOOKS_ACTIVE`, reverted
+  after): **13/13 (538 assertions) × 15**, zero flakes — the high bar this
+  campaign holds for any collection-layout change.
+- Kernel parity: **33/33** against both the dormant and region-live builds.
+- `test/mem.js` heal matrix (the durable/ephemeral-HASH `_clear()` heal
+  tests — the exact lane-clear interaction `f55ed89b` fixed): **55/55 (173
+  assertions)** under the normal fast-lane profile AND **55/55 (173
+  assertions)** hand-forced through the compact profile (temporary
+  `index.js`/env-var override, reverted before commit) — zero divergence,
+  the composition holds under test.
+
+**Real-graph peaks — jessie/watr/jzify-entry, region-live × 3, the archived
+kernel-memory-curve recipe** (`instantiate(wasm,{memory:8192})`,
+`exports.default(memory.String(code), 0, {level:2}, modulesJSON, 0)`,
+`memory.buffer.byteLength` on success or throw), byte-identical output every
+rep:
+
+| graph | current baseline (`bb493138`) | this commit, region-live × 3 | Δ |
+|---|---:|---:|---|
+| jessie (47 mod, 107,171 B) | 536.870912 MB | 536.870912 MB (×3 identical) | **UNCHANGED** |
+| watr (7 mod, 314,631 B) | 1,073.741824 MB | 1,073.741824 MB (×3 identical) | **UNCHANGED** |
+| jzify-entry (69 mod, 607,204 B) | 2,147.483648 MB | 2,147.483648 MB (×3 identical) | **UNCHANGED** |
+
+Holds exactly at baseline on all three — expected: the ~377 MiB saving is
+real allocation-traffic reduction, but `$__memgrow`'s power-of-2 page
+doubling means a per-slot shrink only moves the peak when it crosses a
+doubling threshold, and none of these three graphs sit close enough to one
+for this lever alone to cross it. Not a regression on anything gated.
+
+**THE jz×jz GOAL GATE — both configs, `scripts/self.js` (158 modules,
+19,589/19,588 B) — STILL NOT MET:**
+
+| config | outcome | peak | wall |
+|---|---|---:|---:|
+| dormant | **FAIL** — `unreachable` | 4,096.0 MiB = 4,294.967296 MB (4.000 GiB) | 7.2 s |
+| region-live (`REGION_HOOKS_ACTIVE=true`, hand-flipped, reverted) | **FAIL** — `unreachable` | 4,096.0 MiB = 4,294.967296 MB (4.000 GiB) | 29.25 s |
+
+Same exact 2³²-byte ceiling every prior session has hit, both configs — the
+dormant trap is byte-identical in shape and near-identical in wall time to
+every prior dormant reading (confirms zero dormant behavior change, as
+required). The region-live wall time (29.25 s) is noticeably longer than
+`bb493138`'s own region-live reading (19.7–24 s) — consistent with the AFE
+loop surviving MORE exits before trapping (this lever shrinks every
+`regionArmSetMap` rebuild `regionCopyRecBody` performs, so each of the ~51
+surviving exits does less work and the loop runs longer before hitting the
+same wall) — but "survives longer" is not "fits": the trap is the same
+address-space ceiling, not a new failure mode. **Bench row: NOT RUN** — the
+task's own gate is "if under 4GiB," and jz×jz still isn't. The ~377 MiB
+saved by this lever measurably delays the trap without moving the final
+outcome; closing jz×jz remains gated on `regionArmSetMap`'s own durable
+short-circuit or fewer total exits (`bb493138`'s own next-lead), not further
+compaction on this axis alone — though this lever and that one both still
+compose toward it.
+
+**Disposition.** Landed on `main` as-is (no source changes beyond the
+already-reviewed diff) — the isolated self-host profile is independently
+correct and beneficial (verified byte-identical normal-user-output, 13/13×15
+region-live oracle, clean composition with the eph-hash fix) regardless of
+whether it alone closes jz×jz. Commit message's "(temp pre-rebase)" dropped
+on landing. `REGION_HOOKS_ACTIVE` confirmed `false` at commit — both
+hand-flips (kernel-oracle region-live, jz×jz region-live) reverted, `git
+diff scripts/self.js` clean before commit.

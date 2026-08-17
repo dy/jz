@@ -3,7 +3,7 @@
 import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
-import { onWasi, adaptI64 } from './_matrix.js'
+import { onWasi, onKernel, adaptI64 } from './_matrix.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -695,6 +695,43 @@ test('Map: set returns same pointer (alias-safe)', () => {
     return m2.get(1)
   }`)
   is(f(), 100)  // m2 sees the set
+})
+
+test('self-host compact collections: entry hash replaces the redundant probe lane', () => {
+  // `_compactCollections` is an artifact-build option, not a user-facing output
+  // mode. The kernel target cannot forward it through the wasm ABI; that leg is
+  // covered by kernel-oracle/selfhost after building the compact artifact.
+  if (onKernel()) return
+  const src = `export let f = () => {
+    let m = new Map(), s = new Set(), o = {}
+    for (let i = 0; i < 40; i++) { m.set('k' + i, i); s.add(i); o['p' + i] = i }
+    for (let i = 0; i < 20; i++) { m.delete('k' + (i * 2)); s.delete(i * 2); delete o['p' + (i * 2)] }
+    let n = 0
+    for (let i = 0; i < 40; i++) n += (m.get('k' + i) || 0) + (s.has(i) ? 1 : 0) + (o['p' + i] || 0)
+    return n + m.size + s.size
+  }`
+  const fast = String(compile(src, { wat: true, optimize: false }))
+  const compact = String(compile(src, { wat: true, optimize: false, _compactCollections: true }))
+  const fn = (wat, name) => wat.slice(wat.indexOf(`(func $${name}`), wat.indexOf(`(func $${name}`) + 5000)
+  ok(fn(fast, '__map_get').includes('(i32.load (local.get $ls))'), 'normal output probes its cache-dense side lane')
+  ok(fn(compact, '__map_get').includes('(i32.load (local.get $slot))'), 'compact artifact probes the hash already stored in each entry')
+  ok(!fn(compact, '__map_get').includes('(i32.load (local.get $ls))'), 'compact probe has no side-lane load')
+
+  // Two consecutive empty allocations expose the exact block stride: 16-byte
+  // header + 8 initial slots. Compact removes exactly 8*4 lane bytes.
+  const allocSrc = 'export let map=()=>new Map(); export let set=()=>new Set()'
+  const blockDelta = (compactCollections, name) => {
+    const raw = jz(allocSrc, { optimize: false, _compactCollections: compactCollections }).instance.exports[name]
+    const off = x => Number(x & 0xFFFFFFFFn)
+    const a = off(raw()), b = off(raw())
+    return b - a
+  }
+  is(blockDelta(false, 'map'), 240) // 16 + 8*(24+4)
+  is(blockDelta(true, 'map'), 208)  // 16 + 8*24
+  is(blockDelta(false, 'set'), 176) // 16 + 8*(16+4)
+  is(blockDelta(true, 'set'), 144)  // 16 + 8*16
+  is(run(src, { optimize: false, _compactCollections: true }).f(), 860)
+  is(run(src, { optimize: 3, _compactCollections: true }).f(), 860)
 })
 
 // ============================================

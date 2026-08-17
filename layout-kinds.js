@@ -38,7 +38,7 @@ import { PTR, LAYOUT, ATOM, STR_INTERN_BIT, STR_HCACHE_BIT } from './layout.js'
 // checks cover drift the same way they already do for the compact table.
 const SET_ENTRY = 16   // [hash i64 @0][elem f64 @8]
 const MAP_ENTRY = 24   // [hash i64 @0][key f64 @8][value f64 @16]
-const LANE = 4          // trailing i32-per-slot fast-probe lane, appended after cap*stride
+const LANE = 4         // normal output; self-host compact profile passes lane=0
 
 /**
  * @typedef {Object} KindEntry
@@ -395,7 +395,7 @@ export function regionArmArray({ hasDynProps }) {
 /** SET/MAP's region arm — verbatim (module/core.js, pre-Slice-2). Always
  *  rebuilds via __coll_order+reinsert (a relocated KEY's bits change its
  *  hash bucket — patching in place would leave it in the wrong bucket). */
-export function regionArmSetMap() {
+export function regionArmSetMap({ lane = LANE } = {}) {
   return `(if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
@@ -411,7 +411,7 @@ export function regionArmSetMap() {
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $stride (select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP}))))
           (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
-          (local.set $newOff (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${LANE}))))
+          (local.set $newOff (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${lane}))))
           ;; Two addresses for the SAME new table: $outPhys (physical, T-relative — the
           ;; only form valid to DEREFERENCE right now, since the memmove down to mark
           ;; hasn't happened yet) drives __map_set/__set_add's OWN internal __ptr_offset
@@ -848,7 +848,7 @@ export function regionCopyRecPreamble() {
  *  enumerates; every real heap kind, CLOSURE included, now has its own arm.
  *  `hasDynProps` is the caller-resolved `ctx.scope.globals.has('__dyn_props')`
  *  flag (layout-kinds.js stays ctx-free — see regionArmArray's doc). */
-export function regionCopyRecBody({ hasDynProps }) {
+export function regionCopyRecBody({ hasDynProps, lane = LANE }) {
   return `      ${regionCopyRecLocals()}
       ${regionCopyRecPreamble()}
       ${regionArmBigint()}
@@ -861,7 +861,7 @@ export function regionCopyRecBody({ hasDynProps }) {
 
       ${regionArmHash()}
 
-      ${regionArmSetMap()}
+      ${regionArmSetMap({ lane })}
 
       ${regionArmTyped()}
 

@@ -22,13 +22,14 @@ import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followFor
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { initSchema } from './schema.js'
-import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, LANE } from './collection.js'
+import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, collectionLaneBytes } from './collection.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { eqIdentityChain, regionCopyRecBody } from '../layout-kinds.js'
 
 const NAN_BITS = nanPrefixHex()
 
 export default (ctx) => {
+  const lane = collectionLaneBytes()
   deps({
     __eq: ['__str_eq', '__ptr_type', '__is_nullish'],
     __eq_strict: ['__eq', '__is_nullish'],
@@ -989,7 +990,7 @@ export default (ctx) => {
         (then (return (local.get $rootF))))
       ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
       (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + LANE})))))
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane})))))
       (local.set $T (global.get $__heap))
       (local.set $delta (i32.sub (local.get $T) (local.get $mark)))
       (local.set $out (call $__region_copy_rec (local.get $rootF) (local.get $memo) (local.get $mark) (local.get $delta)))
@@ -1047,7 +1048,7 @@ export default (ctx) => {
             (then
               ;; container ephemeral (created/grown this round) — rebuild fresh,
               ;; relocating each value as it's reinserted.
-              (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+              (local.set $dpNewOff (call $__alloc_hdr_n (i32.const 0) (local.get $dpCap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
               (local.set $dpOutPhys (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dpNewOff)))
               (local.set $dpOrd (call $__coll_order (local.get $dpOff) (local.get $dpCap) (i32.const ${MAP_ENTRY})))
               (local.set $dpN (global.get $__coll_order_n))
@@ -1129,10 +1130,9 @@ export default (ctx) => {
     // `Object.keys(fn.defaults)` reading garbage). Fixed below: relocate the
     // key field too, no rehash needed. Slot stride is bare MAP_ENTRY (matching
     // __coll_order/genUpsertGrow's OWN per-slot indexing — module/collection.js
-    // genUpsertGrow's $entrySize, NOT entrySize+LANE, which is the ALLOCATION
-    // size only: a trailing i32-per-slot lane array sits AFTER all cap slots,
-    // not interleaved — the bulk copy below must include that trailing region
-    // too, so a relocated table's fast-probe lane data isn't left as garbage).
+    // genUpsertGrow's $entrySize, not the allocation stride: normal outputs
+    // append an i32-per-slot lane AFTER all cap slots, while the compact
+    // self-host profile omits it. The bulk copy below uses the resolved stride.
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): memo
     // hardening added. Originally safe without one (each ARRAY/OBJECT dyn-props
     // sidecar is a freshly-minted, never-shared HASH — one container per
@@ -1209,8 +1209,8 @@ export default (ctx) => {
       ;; ephemeral — relocate the container: fresh same-cap block (verbatim bulk
       ;; copy preserves bucket positions since keys' hashes are stable), then
       ;; relocate each occupied slot's VALUE in the NEW location.
-      (local.set $newOff (call $__alloc_hdr_n (local.get $n) (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
-      (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${LANE}))))
+      (local.set $newOff (call $__alloc_hdr_n (local.get $n) (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
+      (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
       (local.set $out (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
       (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
       ;; Idempotency self-map (fixes a real double-relocation hazard, .work/
@@ -1354,7 +1354,7 @@ export default (ctx) => {
       if (!ctx.scope.globals.has('__closure_env_len')) declGlobal('__closure_env_len', 'i32')
       if (!ctx.scope.globals.has('__closure_env_mask')) declGlobal('__closure_env_mask', 'i32')
       return `(func $__region_copy_rec (param $v f64) (param $memo i64) (param $mark i32) (param $delta i32) (result f64)
-${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
+${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })}`
     }
 
   }
@@ -1765,13 +1765,12 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
       (then
         (local.set $cap (call $__cap (local.get $bits)))
         (local.set $src (call $__ptr_offset (local.get $bits)))
-        ;; 28 = MAP_ENTRY + the probe hash lane (collection.js) — the wholesale
-        ;; copy must carry the lane or the clone's probes see stale zeros
-        (local.set $dst (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const 28)))
+        ;; Copy the complete table layout: entries plus the optional fast lane.
+        (local.set $dst (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.const ${MAP_ENTRY + lane})))
         (memory.copy
           (i32.sub (local.get $dst) (i32.const 16))
           (i32.sub (local.get $src) (i32.const 16))
-          (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const 28))))
+          (i32.add (i32.const 16) (i32.mul (local.get $cap) (i32.const ${MAP_ENTRY + lane}))))
         (return (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (local.get $dst)))))
     (local.get $v))`
 

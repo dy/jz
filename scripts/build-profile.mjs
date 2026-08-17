@@ -45,6 +45,11 @@
  * @param {boolean} [p.helperCounters]  compile() opts.helperCounters passthrough
  *   (selfhost-build.mjs's JZ_HELPER_COUNTERS diagnostic profiling knob; unused
  *   by build-dist.mjs, default false so its behavior is unchanged).
+ * @param {boolean} [p.compactCollections] Build the compiler artifact's own
+ *   Set/Map/HASH tables without the redundant 4-byte-per-slot probe lane.
+ *   This is an outer-build option only: the compiled compiler still emits the
+ *   normal fast-lane layout for user programs. Default true; set
+ *   JZ_SELFHOST_COMPACT_COLLECTIONS=0 for the measured legacy baseline.
  * @param {boolean|string} [p.helperCallsites] compile() opts.helperCallsites
  *   passthrough (selfhost-build.mjs's JZ_HELPER_SITES knob; default false).
  * @returns {{
@@ -57,6 +62,7 @@
  *   optimizerOverrides: object,  // just the delta from the plain {level,watrGuard,snapshotInit}
  *                                 //   shape (e.g. {inlinePtrOffsetFast:false}) — informational
  *   memory: number,
+ *   compactCollections: boolean,
  *   helperCounters: boolean, helperCallsites: boolean|string,
  * }}
  */
@@ -75,6 +81,7 @@ export function resolveSelfhostBuild({
   snapshot = true,
   watrGuard = false,
   memory = 8192,
+  compactCollections = process.env.JZ_SELFHOST_COMPACT_COLLECTIONS !== '0',
   helperCounters = false,
   helperCallsites = false,
 } = {}) {
@@ -188,6 +195,7 @@ export function resolveSelfhostBuild({
     optimize: optimizeCfg,
     optimizerOverrides,
     memory,
+    compactCollections: !!compactCollections,
     helperCounters, helperCallsites,
   }
 }

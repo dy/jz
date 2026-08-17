@@ -484,6 +484,9 @@ const setupCtx = (code, opts) => {
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
   if (opts.helperCallsites) ctx.transform.helperCallsites = opts.helperCallsites
+  // Internal self-host artifact profile: compact the compiler kernel's own
+  // collection tables without changing collection layout in user outputs.
+  if (opts._compactCollections) ctx.transform.compactCollections = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
   if (opts.randomSeed !== undefined) {
     if (opts.randomSeed !== true && !Number.isFinite(opts.randomSeed))

@@ -38,7 +38,7 @@ import { KIND_REGISTRY as COMPACT } from './layout-kinds.js'
 // values.
 const SET_ENTRY = 16   // [hash i64 @0][elem f64 @8]
 const MAP_ENTRY = 24   // [hash i64 @0][key f64 @8][value f64 @16]
-const LANE = 4         // trailing i32-per-slot fast-probe lane, appended after cap*stride
+const LANE = 4         // normal output; self-host compact profile omits it
 
 /**
  * @typedef {Object} KindProse
@@ -107,7 +107,7 @@ const PROSE = {
   },
 
   HASH: {
-    allocShape: '16B header (same __alloc_hdr_n shape as SET/MAP) + cap*24B (MAP_ENTRY) slots [hash i64 @0][key f64 @8][value f64 @16] + trailing cap*4B (LANE) probe-index array',
+    allocShape: '16B header (same __alloc_hdr_n shape as SET/MAP) + cap*24B (MAP_ENTRY) slots [hash i64 @0][key f64 @8][value f64 @16] + normally a trailing cap*4B (LANE) probe-index array; the self-host compact profile probes the entry hash directly and omits LANE',
     childPointers: 'each occupied slot (hash word ≠ 0) contributes TWO boxed children: key @8, value @16',
     forwarding: 'never relocates via plain growth in the OBJECT/ARRAY sidecar role (module/core.js\'s __region_relocate_props walks it in place if durable, rebuild-fresh + rehash if ephemeral — a DIFFERENT, narrower helper than __region_copy_rec, used only for the dyn-props-sidecar case). A bare HASH value reached via __region_copy_rec\'s general dispatch (regionArmHash, layout-kinds.js) delegates to that SAME helper directly — physically identical shape, same content-hashed-STRING-key bucket-stability argument',
     identityNote: 'pointer-bits (never used as a first-class jz value for ==/===/Set-Map keying — HASH is always an internal dyn-props sidecar or dict backing store, never returned to user code as itself)',
@@ -117,7 +117,7 @@ const PROSE = {
   },
 
   SET: {
-    allocShape: '16B header + cap*16B (SET_ENTRY) slots [hash i64 @0][elem f64 @8] + trailing cap*4B (LANE) probe array',
+    allocShape: '16B header + cap*16B (SET_ENTRY) slots [hash i64 @0][elem f64 @8] + normally a trailing cap*4B (LANE) probe array; the self-host compact profile omits LANE',
     childPointers: 'each occupied slot contributes ONE boxed child: elem @8',
     forwarding: 'relocatable — in FORWARDING_MASK, but grow-in-place forwarding is moot: SET/MAP never patch a relocated KEY\'s bits in place (would leave it in the wrong hash bucket), so __region_copy_rec ALWAYS rebuilds fresh via __coll_order insertion order + reinsert (fresh hash per current, possibly-relocated key) rather than reusing the forwarding-header convention for its own contents — the header IS still left as a normal forward stub at the old site so other referents self-heal',
     identityNote: 'pointer-bits (REF_EQ_KINDS) container identity; per-ELEMENT dedup inside the table is SameValueZero via $__same_value_zero (content for STRING elements, pointer-bits for everything else — see the BIGINT finding)',

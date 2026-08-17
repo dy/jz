@@ -15,8 +15,9 @@ const OUT = resolve(OUT_DIR, 'jz.wasm')
 // function. The resulting wasm's `default(source)` is jz, compiled by jz — no host
 // help needed (the wasm parses and encodes too).
 //
-// Graph resolution + CARRIER_BOX injection + region-arena gate: shared with
-// build-dist.mjs via resolveSelfhostBuild (architecture re-audit item 2,
+// Graph resolution + CARRIER_BOX injection + region-arena gate + compact
+// compiler-runtime collection layout: shared with build-dist.mjs via
+// resolveSelfhostBuild (architecture re-audit item 2,
 // .work/todo.md) — this entry point used to do NEITHER (JZ_CARRIER_BOX=0 was
 // silently a no-op here, and a region-live self.js built through this script
 // would carry build-dist.mjs's inlinePtrOffsetFast hazard ungated). Both
@@ -61,6 +62,7 @@ const wasm = compile(profile.graph.code, {
   modules: profile.graph.modules,
   memory: profile.memory,
   optimize: profile.optimize,
+  _compactCollections: profile.compactCollections,
   helperCounters: profile.helperCounters,
   helperCallsites: profile.helperCallsites,
 })
