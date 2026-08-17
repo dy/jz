@@ -983,7 +983,8 @@ export function reset(proto, globals, bridge) {
   // ctx.plans — session-owned plan store (architecture re-audit item 3, .work/
   // todo.md): the pre-emission frozen-fact WeakMaps (src/compile/
   // closure-plan.js's ClosureEnvPlan records, src/compile/loop-model.js's
-  // LoopPlan records, src/ir.js's WAT-side loopPlanLink records) used to be
+  // LoopPlan records, representation-plan.js's normalized carrier facts, and
+  // src/ir.js's WAT-side loopPlanLink records) used to be
   // three separate module-scope `let` bindings, each independently reassigned
   // to a fresh WeakMap by its own resetX() hook registered on RESET_HOOKS
   // (registerResetHook) — the audit-#19 P0 session-ownership fix applied three
@@ -1002,6 +1003,8 @@ export function reset(proto, globals, bridge) {
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → private canonical facts (function-plan.js only)
     functionWorking: new WeakMap(), // handle → detached one-shot analysis frame awaiting emission
+    representations: new WeakMap(), // function/start/closure identity → opaque RepresentationPlan handle
+    representationData: new WeakMap(), // handle → private boundary/body facts (representation-plan.js only)
     start: null,                  // synthetic __start identity, planned before body emission
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node

@@ -31,6 +31,12 @@ import * as ctxModule from '../src/ctx.js'
 import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { createFunctionPlan, installFunctionPlan } from '../src/compile/function-plan.js'
+import {
+  BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW,
+  REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_REJECT,
+  representationActionCount, representationBindingRep, representationBoundaryActionCount,
+  representationParamRep, representationPlanOf, representationProgramHasBigint, representationResultRep,
+} from '../src/compile/representation-plan.js'
 import { withControlFrame, withFunctionField, withFunctionFields } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
 
@@ -264,6 +270,62 @@ test('FunctionPlan is session-owned, opaque, and detached from emission state', 
   restoreActiveFunction(ctx, displaced)
 })
 
+test('RepresentationPlan v2 publishes normalized edge facts without exposing mutable state', () => {
+  if (onKernel()) return
+  compile(`
+    function raw() { return 4n + 1n }
+    function tagged(x) { return typeof x }
+    function mixed(c) { let x = c ? 5n : 2; return typeof x }
+    export function run(c) { return [raw(), tagged(1n), tagged(2), mixed(c)] }
+  `, { optimize: false })
+  const raw = ctx.funcs.map.get('raw')
+  const tagged = ctx.funcs.map.get('tagged')
+  const mixed = ctx.funcs.map.get('mixed')
+  const run = ctx.funcs.map.get('run')
+  const rawPlan = representationPlanOf(ctx, raw)
+  const taggedPlan = representationPlanOf(ctx, tagged)
+  const mixedPlan = representationPlanOf(ctx, mixed)
+  const RAW = BIGINT_REP_RAW | BIGINT_REP_CLOSED
+  const BOXED = BIGINT_REP_BOXED | BIGINT_REP_CLOSED
+
+  ok(Object.keys(rawPlan).length === 0 && Object.keys(taggedPlan).length === 0 &&
+      Object.keys(mixedPlan).length === 0,
+    'body plans are opaque identities; canonical maps and edge records stay private')
+  ok(representationResultRep(ctx, raw) === RAW,
+    'a closed internal BigInt arithmetic result remains a raw i64 carrier')
+  ok(representationParamRep(ctx, tagged, 0, false) === BOXED &&
+      representationParamRep(ctx, tagged, 0, true) === BOXED,
+    'a Number-or-BigInt parameter is already normalized to the tagged carrier')
+
+  const names = []
+  const collect = node => {
+    if (typeof node === 'string') { if (node.startsWith('x\uE000')) names.push(node); return }
+    if (Array.isArray(node)) for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  collect(mixed.body)
+  const x = names[0]
+  ok(x && representationBindingRep(ctx, mixedPlan, x, false) === RAW &&
+      representationBindingRep(ctx, mixedPlan, x, true) === BOXED,
+    'a raw-BigInt-or-Number local has a boxed normalized target, never TOP-as-discriminator')
+  ok(representationActionCount(ctx, mixedPlan, REP_EDGE_BOX) > 0 &&
+      representationActionCount(ctx, mixedPlan, REP_EDGE_REJECT) === 0,
+    'the mixed join records an explicit box edge and no unresolved fallback')
+  ok(representationBoundaryActionCount(ctx, run, REP_EDGE_HOST_BOX) === 1,
+    'an uncovered exported parameter records a host-boundary normalization edge')
+
+  // Mutating the opaque identity cannot mutate private canonical facts.
+  rawPlan.result = 0
+  ok(representationResultRep(ctx, raw) === RAW,
+    'public-handle mutation cannot alter canonical RepresentationPlan data')
+
+  compile(`export let typedOnly = () => { let a = new BigInt64Array(1); return a[0] }`, { optimize: false })
+  ok(representationProgramHasBigint(ctx),
+    'BigInt typed-array reads activate planning without a BigInt literal or BigInt() call')
+  compile(`export let numericOnly = x => x + 1`, { optimize: false })
+  ok(!representationProgramHasBigint(ctx),
+    'the complete graph census proves a numeric-only program BigInt-free')
+})
+
 test('FunctionPlan detaches nested maps, sets, arrays, reps, and typed views', () => {
   if (onKernel()) return
   const flatObjects = new Map([['o', { names: ['x'], values: [[null, 1]], written: new Set(['x']) }]])
@@ -313,7 +375,8 @@ test('closure bodies publish opaque FunctionPlans before their IR emission', () 
   ok(bodies.length >= 2, 'probe produced parent and nested closure bodies')
   ok(bodies.every(cb => {
     const plan = ctx.plans.functions.get(cb)
-    return plan && Object.keys(plan).length === 0 &&
+    const repPlan = representationPlanOf(ctx, cb)
+    return plan && Object.keys(plan).length === 0 && repPlan && Object.keys(repPlan).length === 0 &&
       !ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan)
   }), 'every discovered closure body published then linearly transferred its opaque plan')
 })
@@ -323,8 +386,10 @@ test('synthetic __start publishes an opaque FunctionPlan before module-init emis
   compile(`let total = 0; for (let i = 0; i < 4; i++) total += i; export let read = () => total`)
   const start = ctx.plans.start
   const plan = start && ctx.plans.functions.get(start)
-  ok(start?.name === '__start' && plan && Object.keys(plan).length === 0,
-    '__start has an explicit opaque plan identity')
+  const repPlan = start && representationPlanOf(ctx, start)
+  ok(start?.name === '__start' && plan && Object.keys(plan).length === 0 &&
+      repPlan && Object.keys(repPlan).length === 0,
+    '__start has explicit opaque FunctionPlan and RepresentationPlan identities')
   ok(!ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan),
     '__start plan was linearly transferred to emission and its canonical access retired')
 })

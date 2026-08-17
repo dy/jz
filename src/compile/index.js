@@ -48,6 +48,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
+import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -854,6 +855,15 @@ function analyzeFuncForEmit(func, programFacts) {
   // guarantee; ctx.closure.make reads astClosurePlan back at each closure
   // literal's own emission.
   mintClosureEnvPlans(body)
+  // RepresentationPlan v2 Slice 1: freeze semantic kinds, current carriers,
+  // normalized targets, and edge actions after every local fact settles.
+  // Emission does not consume it in this shadow slice.
+  if (representationProgramHasBigint(ctx))
+    mintRepresentationPlan(ctx, func, sig, body, ctx.func.localReps, {
+      exported: isExported(func),
+      valResult: func.valResult,
+      valResultMayBeUndefined: func.valResultMayBeUndefined,
+    })
 
   const facts = {
     block,
@@ -2003,6 +2013,14 @@ function analyzeClosureBodyForEmit(cb) {
     // loop/closure plans here under this body's final reps.
     mintLoopPlans(cb.body)
     mintClosureEnvPlans(cb.body)
+    if (representationProgramHasBigint(ctx)) {
+      const repSig = {
+        name: cb.name,
+        params: cb.params.map(name => ({ name, type: 'f64' })),
+        results: ['f64'],
+      }
+      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true })
+    }
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)
   } finally {
     ctx.schema.vars = prevSchemaVars

@@ -47,6 +47,15 @@ const ESCAPE_SKIP = {
 export function observeNodeFacts(node, f) {
   if (!Array.isArray(node)) return
   const [op, ...args] = node
+  // RepresentationPlan v2 reach bit: folded into this existing universal
+  // walk so proving a program BigInt-free costs no second AST traversal.
+  // Module-init callers use the same observer, making the fact graph-complete.
+  if (op === 'bigint' || op === 'typeof' || (op === '()' && (
+      (typeof args[0] === 'string' && (args[0] === 'BigInt' || args[0].startsWith('BigInt.') ||
+        args[0].startsWith('new.BigInt64Array') || args[0].startsWith('new.BigUint64Array'))) ||
+      (Array.isArray(args[0]) && typeof args[0][2] === 'string' &&
+        (args[0][2] === 'getBigInt64' || args[0][2] === 'getBigUint64'))
+    ))) f.hasBigint = true
   // ---- const-array stability lattice (module/array.js static base/len fold) ----
   // arrResized: names whose array may change length or relocate — any indexed write
   // (an out-of-range write grows), `.length =`, or a resizing method call.
@@ -206,7 +215,7 @@ export function invalidateProgramFactsCache(...roots) {
 function emptyWalkFacts() {
   return {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
-    hasMapSet: false,
+    hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), valueUsed: new Set(), callSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
@@ -221,6 +230,7 @@ function mergeWalkFacts(into, from) {
   for (const v of from.dynWriteVars) into.dynWriteVars.add(v)
   if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
   if (from.hasMapSet) into.hasMapSet = true
+  if (from.hasBigint) into.hasBigint = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
   if (from.hasRest) into.hasRest = true
@@ -425,6 +435,7 @@ export function collectProgramFacts(ast) {
     }
     if (doSchema && initFacts.hasSchemaLiterals) f.hasSchemaLiterals = true
     if (doSchema && initFacts.hasMapSet) f.hasMapSet = true
+    if (initFacts.hasBigint) f.hasBigint = true
   }
 
   // Slot-type observation pass: walk every `{}` literal with the right scope's
@@ -467,7 +478,8 @@ export function collectProgramFacts(ast) {
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
-    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet, writtenProps: f.writtenProps,
+    paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
+    hasBigint: f.hasBigint, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
   }

@@ -19339,6 +19339,7 @@ arithmetic vs tagged dynamic function variants when needed; use opaque,
 session-owned plan storage; and migrate consumers before graph-completing
 FeaturePlan. Crucially, `__to_num_raw(TOP)` is rejected outright—the exact v1
 mechanism is not reused. No compiler source changed in this design slice.
+
 ---
 
 ## §Region arena — THE WAT-breadcrumb FRONTIER TRACE against the CURRENT
@@ -20521,3 +20522,79 @@ whether it alone closes jz×jz. Commit message's "(temp pre-rebase)" dropped
 on landing. `REGION_HOOKS_ACTIVE` confirmed `false` at commit — both
 hand-flips (kernel-oracle region-live, jz×jz region-live) reverted, `git
 diff scripts/self.js` clean before commit.
+
+---
+
+## §RepresentationPlan v2 Slice 1 — opaque shadow plan, normalized edge equations
+## (2026-08-17)
+
+Implemented the design's first, observation-only slice. `src/compile/
+representation-plan.js` now owns separate compact facts for semantic kinds,
+current BigInt representation, normalized target representation, and backward
+`raw-ok`/`tag-required` demand. Representation bits are `NONE/RAW/BOXED/TOP`
+plus explicit coverage; semantic kinds are a packed 14-kind mask with separate
+coverage/nullish/observed bits. Every non-identity edge is recorded as one of
+`box`, `unbox`, `host-box`, or `reject`; KEEP edges are implicit. The invariant
+checker proves each non-reject action's output is admitted by its closed target.
+TOP never selects a runtime helper and never counts as a discriminator.
+
+Plans follow FunctionPlan's logical-immutability architecture: BigInt-reachable
+function, closure, and synthetic `__start` identities map to opaque empty handles
+in a session-owned WeakMap; a second session-owned WeakMap holds private canonical
+facts. A graph-complete BigInt-free program shares one closed-NONE opaque handle,
+avoiding per-function maps entirely. No Map/Set/array or rep object leaves the
+module. Closure and `__start` plans publish before emission alongside their
+already-sealed FunctionPlans.
+Reset owns both maps, so self-host WeakMap→strong-Map lowering cannot retain a
+prior compile's plans.
+
+The whole-program BigInt-reach bit was folded into `observeNodeFacts`, the
+existing graph-complete ProgramFacts walk (including module init facts), rather
+than adding a second AST pass. It recognizes literals/`BigInt`, BigInt typed-
+array constructors and DataView BigInt reads; `typeof` is included because a
+host-supplied BigInt can be observed without an in-program constructor. A
+BigInt-free graph mints tiny closed-NONE plans lazily and never runs the
+per-node solver. This gate was load-bearing: an initial second-walk/per-function version moved
+warm self-host to 1.11–1.14×. After folding the reach bit into ProgramFacts,
+sharing one NONE plan, and bypassing per-function mint calls, loaded absolute
+runs fluctuate with the already-red base pin; a direct alternating base/new
+artifact A/B is 1.007× geomean (six cases), while fresh remains below its cap.
+Semantic packing plus retaining only
+non-KEEP edges reduced production self-graph planning to 15,208 explicit
+obligations and kept native production-build peak memory within noise/better
+than the same-machine base control (about 3.55 GiB vs 3.65 GiB).
+
+Self-graph shadow census at the production profile: 6,769 body plans + 6,769
+boundary plans; 2,247 box, 18 unbox, 23 host-box, and 12,920 unresolved/reject
+edges. Rejects are deliberately loud plan facts, not codegen: 11,917 are
+unclassified expression-result edges, then 493 direct-call args, 201 closure
+args, 106 joins, 100 returns, 80 binding writes, and 23 storage writes.
+Accordingly this slice is **not consumable yet** and FeaturePlan remains
+blocked. The next slices must normalize or specialize those edges before any
+consumer drops a magnitude fallback.
+
+Byte-output gate: 129/130 real-corpus entries are SHA-256 byte-identical to
+the rebased slice base `e854a8a7`. The sole changed subject is
+`realinput/jzify-entry`, 972,983 → 973,110 bytes (+127): it compiles JZ's own `src/ctx.js`, so adding the two
+session-owned plan-map fields changes the INPUT program's reset record and
+snapshot addresses. WAT diff shows that reset/static-data relocation, not a
+user-program codegen decision; a direct compiled-jzify differential on a class-
+lowering AST is JSON-byte-identical (295 bytes both). All 129 external inputs,
+including jessie and watr, are byte-identical.
+
+Gates on the rebased slice candidate: default/O0/O3 3,500/3,494/0/6;
+wasm-target 2,759/2,753/0/6; kernel parity 33/33; kernel oracle 13/13 ×3
+dormant;
+selfhost correctness 21/21; build ×2 converges; claims size geomean remains
+1.020× (the claims suite's stale-evidence/leadership failures reproduce the
+base and are unrelated). WASI retains its one pre-existing
+`ternaryBoxedNames` failure, queued after RepPlan exactly as requested. The
+broad `JZ_DEBUG_INVARIANTS=1 test/watr.js` 28-row post-compile ActiveFunction
+failure also reproduces 28/28 on untouched `353b7f60`; focused plan invariants
+and the normal test legs are clean. Region-live validation on this slice's exact
+compiler source after rebasing over the walk-count + collection-compaction
+landings: build ×2 SHA-converges (`dist/jz.wasm`
+`b761bb25f9b8e89a819bafdd60d8daf54544c6cffcf2df28ba8ae1f2bf200ea7`),
+and kernel oracle passes 13/13 on all 15 foreground repetitions. The validation
+worktree's only uncommitted change was `REGION_HOOKS_ACTIVE=true`; production
+source remains false/dormant.

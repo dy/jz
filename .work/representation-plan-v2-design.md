@@ -1,6 +1,7 @@
 # RepresentationPlan v2 — edge-normalized BigInt provenance
 
-Status: **design, not code** (2026-08-17). Grounded in current main
+Status: **implementation in progress — Slice 1 shadow plan landed; not yet consumable**
+(2026-08-17). Grounded in current main
 `2e4072df` and an exact resurrection of the rejected five-commit experiment:
 
 - `cfef7c71` — add frozen BigInt representation provenance

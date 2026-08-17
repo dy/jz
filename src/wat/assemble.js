@@ -43,6 +43,7 @@ import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
 import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan } from '../compile/function-plan.js'
+import { mintRepresentationPlan, representationProgramHasBigint } from '../compile/representation-plan.js'
 import { VAL } from '../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -182,6 +183,8 @@ function analyzeStartForEmit(ast) {
       seedStartGeneratedLocals(mi)
     }
     seedStartGeneratedLocals(ast)
+    if (representationProgramHasBigint(ctx))
+      mintRepresentationPlan(ctx, start, ctx.func.current, ast, ctx.func.localReps)
     publishPreparedFunctionPlan(ctx, start, ctx.func)
     ctx.plans.start = start
     return start

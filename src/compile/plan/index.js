@@ -38,6 +38,7 @@ import narrowSignatures, {
 import { optimizing } from './common.js'
 import { adviseProgram } from './advise.js'
 import { scanInplaceStores } from '../inplace-store.js'
+import { solveRepresentationBoundaries } from '../representation-plan.js'
 import {
   inferModuleLetTypes, inferModuleGlobalValTypes, unboxConstTypedGlobals, inferModuleIntGlobals, refineFieldProvenance,
   flattenFuncNamespaces, devirtGlobalCalls, classifyHashDictGlobals,
@@ -235,6 +236,7 @@ export default function plan(ast, profiler, regionHooks) {
     narrowBoolResults()
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
+    solveRepresentationBoundaries(ctx, programFacts)
     return programFacts
   }
 
@@ -328,5 +330,9 @@ export default function plan(ast, profiler, regionHooks) {
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
   })
+  // RepresentationPlan v2 Slice 1: semantic call/kind facts and every
+  // specialization are settled. Publish boundary targets before any body
+  // FunctionPlan is analyzed or emitted; this slice is observation-only.
+  solveRepresentationBoundaries(ctx, programFacts)
   return programFacts
 }
