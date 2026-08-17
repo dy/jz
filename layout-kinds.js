@@ -40,6 +40,20 @@ const SET_ENTRY = 16   // [hash i64 @0][elem f64 @8]
 const MAP_ENTRY = 24   // [hash i64 @0][key f64 @8][value f64 @16]
 const LANE = 4         // normal output; self-host compact profile passes lane=0
 
+// regionArmSetMap's durable short-circuit (.work/research.md §Region arena —
+// regionArmSetMap's durable short-circuit): tags whose $__region_copy_rec arm
+// actually MOVES the heap block (and therefore changes the value's raw NaN-box
+// bits — tag+offset) when the value is ephemeral this round. module/
+// collection.js's $__map_hash dereferences PAYLOAD content for STRING/BIGINT
+// (hash stable regardless of address — KIND_REGISTRY identity:'content') and
+// never even sees NUMBER/ATOM/EXTERNAL move (KIND_REGISTRY relocate:
+// 'immediate' — value/exact-bits identity, no heap block to move); every
+// OTHER kind hashes the raw bits verbatim, so ITS hash changes iff its own
+// address changes. `(1 << tag) & KEY_MOVABLE_MASK` mirrors layout.js's own
+// FORWARDING_MASK idiom (same shl+and-membership shape, different tag set).
+const KEY_MOVABLE_MASK = (1 << PTR.ARRAY) | (1 << PTR.BUFFER) | (1 << PTR.TYPED) |
+  (1 << PTR.OBJECT) | (1 << PTR.HASH) | (1 << PTR.SET) | (1 << PTR.MAP) | (1 << PTR.CLOSURE)
+
 /**
  * @typedef {Object} KindEntry
  * @property {number|null} tag PTR.* (layout.js) or null for the two tagless kinds (NUMBER, and ATOM
@@ -64,9 +78,12 @@ const LANE = 4         // normal output; self-host compact profile passes lane=0
  *                              axis from GROWTH forwarding (FORWARDING_MASK, layout.js): 'copy' leaf
  *                              bytes (no children to rewrite); 'copy-forward' relocate-with-forward-stub,
  *                              recursing into boxed children (durable receivers walk in place instead,
- *                              memo'd at their own address); 'rebuild' always reconstruct via
- *                              __coll_order+reinsert (bucket position is a function of KEY BITS, which
- *                              change on relocation — SET/MAP); 'value-relocate' bucket-preserving
+ *                              memo'd at their own address); 'rebuild' reconstruct via __coll_order+
+ *                              reinsert (bucket position is a function of KEY BITS, which change on
+ *                              relocation — SET/MAP) UNLESS a durable short-circuit applies (table itself
+ *                              durable AND every occupied key's hash is invariant this round — see
+ *                              regionArmSetMap's own doc), in which case entries are value-patched in
+ *                              place instead, no rebuild; 'value-relocate' bucket-preserving
  *                              (KEYS are content-hashed STRINGs, invariant under relocation — only each
  *                              slot's VALUE recurses — HASH, via __region_relocate_props); 'copy-rebase'
  *                              relocate the block AND rewrite a raw (non-boxed) child edge through the
@@ -392,25 +409,100 @@ export function regionArmArray({ hasDynProps }) {
           (return (local.get $out))))`
 }
 
-/** SET/MAP's region arm — verbatim (module/core.js, pre-Slice-2). Always
- *  rebuilds via __coll_order+reinsert (a relocated KEY's bits change its
- *  hash bucket — patching in place would leave it in the wrong bucket). */
+/** SET/MAP's region arm. Bucket position is a function of the KEY's hash
+ *  (__map_hash, module/collection.js) — a relocated key's bits change its
+ *  bucket, so in general this arm rebuilds via __coll_order+reinsert
+ *  (below), exactly like the pre-Slice-2 hand-written version.
+ *
+ *  Durable short-circuit (.work/research.md §Region arena — regionArmSetMap's
+ *  durable short-circuit, the finisher named by the bb493138/e854a8a7
+ *  session pair): when the TABLE itself is durable (`off < mark` — created a
+ *  prior region round, never grown/rebuilt this one, so its own address is
+ *  fixed) AND every OCCUPIED key's hash is invariant across this round's
+ *  relocation, the bucket layout provably cannot have changed — skip the
+ *  rebuild entirely and patch entries in place, exactly the technique
+ *  `__region_relocate_props`'s own durable branch (module/core.js) already
+ *  uses for HASH: walk the full `$cap` slots, relocate each occupied KEY (a
+ *  no-op unless it's an ephemeral content-hashed STRING/BIGINT — safe
+ *  either way, its hash is unaffected either way) and, for MAP, its VALUE,
+ *  writing both back in place. No `__alloc_hdr_n`, no `__coll_order`
+ *  gather, no reinsertion, no rehash.
+ *
+ *  A key's hash is invariant this round unless it is BOTH (a) a kind whose
+ *  `$__region_copy_rec` arm can actually relocate it (`KEY_MOVABLE_MASK`
+ *  above — content-hashed STRING/BIGINT and immediate NUMBER/ATOM/EXTERNAL
+ *  are excluded, matching `$__map_hash`'s own two-arm split: it dereferences
+ *  STRING/BIGINT payloads, never their address) AND (b) itself ephemeral
+ *  (`off >= mark` — a durable key's own address never changes this round
+ *  either, by the very same argument one level up). The scan below is
+ *  READ-ONLY (no mutation) specifically so a table with even one such
+ *  unstable key can fall straight through to the unconditional rebuild with
+ *  zero partial state to unwind — a fallback after partial in-place
+ *  mutation would risk exactly the memo double-visitation hazard
+ *  `__region_relocate_props`'s own idempotency-self-map fix closed for a
+ *  DIFFERENT case (re-presenting an already-relocated, not-yet-physically-
+ *  landed T-relative staging address as fresh input): this branch never
+ *  produces one — `$out` here is always a durable, already-landed address,
+ *  never a staging one — but the scan-before-mutate structure keeps that
+ *  true by construction rather than by argument.
+ *
+ *  Once a Map/Set's keys are ALL durable (the steady state `ctx.plans`/
+ *  `ctx.funcs` — pointer-keyed by durable `FunctionPlan`/registry records —
+ *  reach after their first compaction), every later exit that reaches them
+ *  takes this path: the full-table rebuild these two large, monotonically-
+ *  growing Maps drove on EVERY exit collapses to a linear value-patch. */
 export function regionArmSetMap({ lane = LANE } = {}) {
   return `(if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
-          ;; No durable short-circuit here (unlike ARRAY): a SET/MAP's slot position is
-          ;; a function of its KEY's hash (__map_hash — pointer-bits-based for non-string
-          ;; keys), so patching a relocated key's bits in place would leave the entry in
-          ;; the WRONG bucket for its new hash — an in-place fix would need a full rehash
-          ;; anyway. Simplest correct answer: always rebuild via __coll_order + reinsert
-          ;; (below), which computes fresh hashes for whatever the (possibly just-
-          ;; relocated) keys currently are. dirty/snapshots are small relative to the
-          ;; tree, so paying this every round is cheap next to the ARRAY win.
           (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $stride (select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP}))))
           (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
+          (if (i32.lt_u (local.get $off) (local.get $mark))
+            (then
+              ;; Read-only scan: any occupied key whose kind can relocate (KEY_MOVABLE_MASK)
+              ;; AND is itself ephemeral (>= mark) makes the WHOLE table's bucket layout
+              ;; unstable — fall through to the rebuild below, no mutation has happened yet.
+              (local.set $stable (i32.const 1))
+              (local.set $i (i32.const 0))
+              (block $sd (loop $sl
+                (br_if $sd (i32.ge_s (local.get $i) (local.get $cap)))
+                (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
+                (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+                  (then
+                    (local.set $keyF (f64.load (i32.add (local.get $slot) (i32.const 8))))
+                    ;; tag bits are only meaningful on a real NaN-boxed value — a plain
+                    ;; finite NUMBER key can alias mantissa bits onto the type slot
+                    ;; ($__map_hash's own gating comment, module/collection.js).
+                    (if (i32.and (f64.ne (local.get $keyF) (local.get $keyF))
+                          (i32.ne (i32.and
+                            (i32.shl (i32.const 1) (call $__ptr_type (i64.reinterpret_f64 (local.get $keyF))))
+                            (i32.const ${KEY_MOVABLE_MASK})) (i32.const 0)))
+                      (then
+                        (local.set $keyOff (call $__ptr_offset (i64.reinterpret_f64 (local.get $keyF))))
+                        (if (i32.ge_u (local.get $keyOff) (local.get $mark))
+                          (then (local.set $stable (i32.const 0)) (br $sd)))))))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $sl)))
+              (if (local.get $stable)
+                (then
+                  (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (local.get $off)))
+                  (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+                  (local.set $i (i32.const 0))
+                  (block $vd (loop $vl
+                    (br_if $vd (i32.ge_s (local.get $i) (local.get $cap)))
+                    (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (local.get $stride))))
+                    (if (i64.ne (i64.load (local.get $slot)) (i64.const 0))
+                      (then
+                        (f64.store (i32.add (local.get $slot) (i32.const 8))
+                          (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $memo) (local.get $mark) (local.get $delta)))
+                        (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
+                          (then (f64.store (i32.add (local.get $slot) (i32.const 16))
+                            (call $__region_copy_rec (f64.load (i32.add (local.get $slot) (i32.const 16))) (local.get $memo) (local.get $mark) (local.get $delta)))))))
+                    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                    (br $vl)))
+                  (return (local.get $out))))))
           (local.set $newOff (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${lane}))))
           ;; Two addresses for the SAME new table: $outPhys (physical, T-relative — the
           ;; only form valid to DEREFERENCE right now, since the memmove down to mark
@@ -821,7 +913,8 @@ export function regionCopyRecLocals() {
   return `(local $bits i64) (local $t i32) (local $off i32) (local $aux i32) (local $hit i64) (local $out f64)
       (local $newOff i32) (local $n i32) (local $i i32) (local $slot i32) (local $len i32) (local $cap i32)
       (local $stride i32) (local $ord i32) (local $outPhys f64) (local $oldProps f64) (local $dpRoot f64) (local $newFinal i32) (local $propsF f64)
-      (local $oldRoot i32) (local $rootBox f64) (local $newRoot i32) (local $cellMask i32)`
+      (local $oldRoot i32) (local $rootBox f64) (local $newRoot i32) (local $cellMask i32)
+      (local $stable i32) (local $keyF f64) (local $keyOff i32)`
 }
 
 /** Preamble — verbatim (module/core.js, pre-Slice-2) plus ONE new immediate

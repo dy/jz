@@ -332,6 +332,131 @@ test('region-relocate[CLOSURE]: self-referential recursive closure (reassigned t
 })
 
 // ============================================================================
+// regionArmSetMap's durable short-circuit (.work/research.md §Region arena —
+// regionArmSetMap's durable short-circuit): SET/MAP had no region-relocate
+// coverage at all before this (the pre-existing __coll_order+reinsert rebuild
+// path was only ever exercised indirectly, via kernel-oracle/self-build) —
+// the baseline pair below (ephemeral rebuild, diamond identity) pins the
+// UNCHANGED path; the rest exercise the new durable value-patch fast path and
+// its read-only-scan fallback specifically.
+// ============================================================================
+
+test('region-relocate[MAP]: ephemeral Map (created after mark) crosses a region boundary via the rebuild path', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let m = new Map()
+    m.set('a', 1)
+    m.set('b', 2)
+    let out = __region_exit(mark, [m])
+    return out[0].get('a') + out[0].get('b')
+  }`).f(), 3)
+})
+
+test('region-relocate[SET]: ephemeral Set (created after mark) crosses a region boundary via the rebuild path', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let s = new Set([1, 2, 3])
+    let out = __region_exit(mark, [s])
+    return out[0].has(2) && out[0].size === 3
+  }`).f(), true)
+})
+
+test('region-relocate[MAP]: an ephemeral Map reachable from two root slots is memoized, not double-rebuilt (identity survives)', () => {
+  is(run(`export let f = () => {
+    let mark = __region_mark()
+    let m = new Map()
+    m.set(1, 2)
+    let out = __region_exit(mark, [m, m])
+    return out[0] === out[1]
+  }`).f(), true)
+})
+
+test('region-relocate[MAP]: durable Map (created before mark) with hash-stable keys takes the value-patch fast path, no rebuild needed', () => {
+  is(run(`
+    let m = new Map()
+    m.set(1, 10)
+    m.set(2, 20)
+    export let f = () => {
+      let mark = __region_mark()
+      m.set(3, 30)
+      let out = __region_exit(mark, [m])
+      return out[0].get(1) + out[0].get(2) + out[0].get(3)
+    }
+  `).f(), 60)
+})
+
+test('region-relocate[MAP]: durable Map, durable key, EPHEMERAL replacement value — the value-patch pass relocates the new value in place', () => {
+  is(run(`
+    let m = new Map()
+    m.set('k', 0)
+    export let f = () => {
+      let mark = __region_mark()
+      m.set('k', [4, 5, 6])
+      let out = __region_exit(mark, [m])
+      let v = out[0].get('k')
+      return v[0] + v[1] + v[2]
+    }
+  `).f(), 15)
+})
+
+test('region-relocate[MAP]: durable Map holding an EPHEMERAL pointer-typed key falls back to a full rebuild and stays correct', () => {
+  is(run(`
+    let m = new Map()
+    m.set('base', 100)
+    export let f = () => {
+      let mark = __region_mark()
+      let arr = [1, 2, 3]
+      m.set(arr, 'arrval')
+      let out = __region_exit(mark, [m])
+      let arrKey = null
+      for (let k of out[0].keys()) if (Array.isArray(k)) arrKey = k
+      return out[0].get('base') + (out[0].get(arrKey) === 'arrval' ? 1 : 0) + arrKey[0] + arrKey[1] + arrKey[2]
+    }
+  `).f(), 107)
+})
+
+test('region-relocate[MAP]: durable Map, durable pointer-typed key (both container and key stable) — fully-durable table survives untouched', () => {
+  is(run(`
+    let keyArr = [7, 8, 9]
+    let m = new Map()
+    m.set(keyArr, 'x')
+    export let f = () => {
+      let mark = __region_mark()
+      let out = __region_exit(mark, [m])
+      return out[0].get(keyArr)
+    }
+  `).f(), 'x')
+})
+
+test('region-relocate[SET]: durable Set (created before mark) with hash-stable members takes the value-patch fast path', () => {
+  is(run(`
+    let s = new Set([10, 20])
+    export let f = () => {
+      let mark = __region_mark()
+      s.add(30)
+      let out = __region_exit(mark, [s])
+      return out[0].has(10) && out[0].has(20) && out[0].has(30) && out[0].size === 3
+    }
+  `).f(), true)
+})
+
+test('region-relocate[SET]: durable Set holding an EPHEMERAL pointer-typed member falls back to a full rebuild and stays correct', () => {
+  is(run(`
+    let s = new Set()
+    s.add('base')
+    export let f = () => {
+      let mark = __region_mark()
+      let arr = [1, 2]
+      s.add(arr)
+      let out = __region_exit(mark, [s])
+      let arrM = null
+      for (let m of out[0]) if (Array.isArray(m)) arrM = m
+      return out[0].has('base') && arrM[0] === 1 && arrM[1] === 2 && out[0].size === 2
+    }
+  `).f(), true)
+})
+
+// ============================================================================
 // Heap-kind registry Slice 3 (.work/research.md §Heap-kind registry —
 // "$__eq/$__map_hash arms generated"): $__eq's/$__same_value_zero's content-
 // identity dispatch chains and $__map_hash's STRING/BIGINT arms are now

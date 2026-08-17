@@ -119,7 +119,7 @@ const PROSE = {
   SET: {
     allocShape: '16B header + cap*16B (SET_ENTRY) slots [hash i64 @0][elem f64 @8] + normally a trailing cap*4B (LANE) probe array; the self-host compact profile omits LANE',
     childPointers: 'each occupied slot contributes ONE boxed child: elem @8',
-    forwarding: 'relocatable — in FORWARDING_MASK, but grow-in-place forwarding is moot: SET/MAP never patch a relocated KEY\'s bits in place (would leave it in the wrong hash bucket), so __region_copy_rec ALWAYS rebuilds fresh via __coll_order insertion order + reinsert (fresh hash per current, possibly-relocated key) rather than reusing the forwarding-header convention for its own contents — the header IS still left as a normal forward stub at the old site so other referents self-heal',
+    forwarding: 'relocatable — in FORWARDING_MASK, but grow-in-place forwarding is moot: growth always rebuilds fresh at a new address (the header IS left as a normal forward stub at the old site so other referents self-heal). __region_copy_rec (regionArmSetMap, layout-kinds.js — .work/research.md §Region arena, regionArmSetMap\'s durable short-circuit) rebuilds fresh via __coll_order insertion order + reinsert ONLY when the table is ephemeral OR holds at least one occupied key whose own hash can change this round (a movable pointer-kind key — ARRAY/OBJECT/HASH/SET/MAP/TYPED/BUFFER/CLOSURE — that is itself ephemeral); a durable table whose every occupied key is hash-stable (durable, or content-hashed STRING/BIGINT, or immediate NUMBER/ATOM/EXTERNAL) is value-patched in place instead — bucket layout provably unchanged, no rehash',
     identityNote: 'pointer-bits (REF_EQ_KINDS) container identity; per-ELEMENT dedup inside the table is SameValueZero via $__same_value_zero (content for STRING elements, pointer-bits for everything else — see the BIGINT finding)',
     interopDecode: 'mem.read t===8: walks cap slots, Set() of mem.read(elem) per occupied slot',
     typeofArm: '"object"',
@@ -128,7 +128,7 @@ const PROSE = {
   MAP: {
     allocShape: 'identical physical shape to HASH (24B MAP_ENTRY stride) — MAP and HASH are the SAME backing-table code (genUpsert/genLookup parameterized by PTR.MAP vs PTR.HASH), distinguished only by tag and by which built-in surfaces it (user Map vs internal dyn-props dict)',
     childPointers: 'each occupied slot: key @8, value @16 (both boxed)',
-    forwarding: 'same as SET — relocatable tag, but __region_copy_rec always rebuilds via __coll_order + reinsert rather than patching in place',
+    forwarding: 'same as SET — relocatable tag; __region_copy_rec rebuilds via __coll_order + reinsert unless the durable short-circuit applies (table durable, every occupied key hash-stable — see SET\'s own `forwarding` entry), in which case both key and value are patched in place instead',
     identityNote: 'pointer-bits (REF_EQ_KINDS) container identity; per-KEY dedup is SameValueZero (same caveat as SET)',
     interopDecode: 'mem.read t===9: walks cap slots, Map() of mem.read(key) → mem.read(value) per occupied slot',
     typeofArm: '"object"',
