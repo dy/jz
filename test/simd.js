@@ -3311,3 +3311,198 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
   const w = wat(src, SIMD_OPT)
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the two-accumulator loop (body.length===2 with two unrelated accumulators fails both the bodyLen===1 and the REDUCE_CANON bodyLen===2 shape match, so declines — the "single accumulator, no other loop-carried state" precondition holds)')
 })
+
+// ---- General STENCIL base layer (layer 4, .work/vectorizer-generality-design.md) ---------------
+//
+// Runs after tryGeneralMap (before tryGeneralReduce), only when tryGeneralMap's own narrower
+// i32-domain-only affine proof already declined — this pass ports tryStencil's FULL `ivCoeff`
+// (including the toroidal wrap-select and float-domain grid-index branches tryGeneralMap's own
+// header doc explicitly dropped as "genuinely stencil-specific, out of scope for a plain map")
+// to every LOAD_OPS/STORE_OPS lane type, plus reuses layer 3's runtime alias-versioning for
+// tryStencil's own `elemKey` in-place hazard (previously an unconditional decline).
+//
+// Every positive case below uses `^` (XOR) rather than `+` for the neighbour combine: jz's own
+// overflow-safe integer-arithmetic idiom computes an unprovable-range i32 SUM as a chain of
+// `f64.add(convert_i32_s(...))` internally, and `liftAddSubOfConverts` only fuses a single 2-term
+// f64.add — a genuinely separate, pre-existing lift-machinery gap in the SHARED lifter (not this
+// recognizer's address proof), confirmed identical on both the base tree and this branch via
+// `--why-not-simd` ("f64.add: no lane-pure SIMD mapping for i32") — out of this session's scope.
+// XOR has no overflow concern (native i32 domain always), isolating the address-proof reach this
+// session actually adds. Each case is verified via a disposable `--why-not-simd` trace (not
+// committed) to decline under EVERY existing recognizer on unmodified main tip (`f2012e2c`)
+// before this session, and to vectorize + bit-exact-match after; `v128.xor`-count checks are
+// scoped (unrelated fill/checksum loops in the same program use `&`/`+`, never `^`) so a stray
+// incidental vectorization elsewhere can't false-pass the check.
+
+test('SIMD general-stencil i32 - 2-D 5-point row-base (out[c]=a[c-W]^a[c+W]^a[c-1]^a[c+1]^a[c]), separate arrays, vectorizes, bit-exact', () => {
+  const src = `export let main = (WIn) => {
+    const W = WIn | 0, H = 16, N = W * H
+    const a = new Int32Array(N), out = new Int32Array(N)
+    for (let i = 0; i < N; i++) a[i] = (i * 7) & 0xff
+    let y = 1
+    while (y < H - 1) {
+      let x = 1
+      while (x < W - 1) {
+        let c = y * W + x
+        out[c] = a[c - W] ^ a[c + W] ^ a[c - 1] ^ a[c + 1] ^ a[c]
+        x++
+      }
+      y++
+    }
+    let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  is((w.match(/v128\.xor/g) || []).length, 4, '2-D row-base 5-term xor chain vectorizes (4 v128.xor)')
+  for (const W of [16, 17, 8, 5, 3])
+    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+})
+
+test('SIMD general-stencil i32 - toroidal wrap boundary (xw=x>0?x-1:n-1 / xe=x<n-1?x+1:0), 1-D periodic, vectorizes, bit-exact', () => {
+  const src = `export let main = (nIn) => {
+    const n = nIn | 0
+    const a = new Int32Array(n), out = new Int32Array(n)
+    for (let i = 0; i < n; i++) a[i] = i - 10
+    let x = 0
+    while (x < n) {
+      let xw = x > 0 ? x - 1 : n - 1
+      let xe = x < n - 1 ? x + 1 : 0
+      out[x] = a[xw] ^ a[x] ^ a[xe]
+      x++
+    }
+    let h = 0; for (let i = 0; i < n; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.xor/.test(w), 'wrap-select stencil vectorizes (v128.xor present)')
+  for (const n of [32, 33, 17, 9, 5, 4, 3, 1])
+    is(runVec(src, SIMD_OPT).main(n), runVec(src, NOVEC).main(n), `n=${n} bit-exact vs scalar (incl. the peeled x=0 wrap column and sub-lanes-width n)`)
+})
+
+test('SIMD general-stencil i16 - 2-D 4-neighbour row-base, separate arrays, vectorizes, bit-exact', () => {
+  const src = `export let main = (WIn) => {
+    const W = WIn | 0, H = 16, N = W * H
+    const a = new Int16Array(N), out = new Int16Array(N)
+    for (let i = 0; i < N; i++) a[i] = (i * 3 - 50) & 0x7fff
+    let y = 1
+    while (y < H - 1) {
+      let x = 1
+      while (x < W - 1) {
+        let c = y * W + x
+        out[c] = a[c - W] ^ a[c + W] ^ a[c - 1] ^ a[c + 1]
+        x++
+      }
+      y++
+    }
+    let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.xor/.test(w), 'i16 2-D row-base stencil vectorizes')
+  for (const W of [16, 10, 9, 5, 3])
+    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+})
+
+test('SIMD general-stencil i32 - multiple input arrays (2-D row-base combine + a third, non-neighbour array), vectorizes, bit-exact', () => {
+  const src = `export let main = (WIn) => {
+    const W = WIn | 0, H = 16, N = W * H
+    const a = new Int32Array(N), b = new Int32Array(N), out = new Int32Array(N)
+    for (let i = 0; i < N; i++) { a[i] = (i * 7) & 0xff; b[i] = (i * 13) & 0xff }
+    let y = 1
+    while (y < H - 1) {
+      let x = 1
+      while (x < W - 1) {
+        let c = y * W + x
+        out[c] = a[c - W] ^ a[c + W] ^ a[c - 1] ^ a[c + 1] ^ b[c]
+        x++
+      }
+      y++
+    }
+    let h = 0; for (let i = 0; i < N; i++) h = (h + out[i]) | 0
+    return h
+  }`
+  const w = wat(src, SIMD_OPT)
+  is((w.match(/v128\.xor/g) || []).length, 4, 'multi-array (a,b→out) 2-D stencil vectorizes (4 v128.xor)')
+  for (const W of [16, 9, 5, 3])
+    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar`)
+})
+
+test('SIMD general-stencil i32 - in-place 2-D row window at a RUNTIME row width, versions: SIMD when W ≥ lanes, scalar fallback when W < lanes', () => {
+  // Reuses layer 3's (f2012e2c) runtime alias-versioning for tryStencil's own elemKey in-place
+  // hazard: a[c]=a[c-W]^a[c+W]^a[c] writes and reads the SAME array at a row-stride delta of ±W.
+  // W is a genuine function-parameter (not a compile-time literal), so the delta can't fold —
+  // it versions: the hoisted `i32.or` disjointness guard picks the unchanged SIMD path when
+  // W ≥ lanes (4, for i32), the untouched original scalar loop when W < lanes (the window
+  // genuinely overlaps within one SIMD step). Swept across BOTH regimes.
+  const src = `
+    let f = (a, WIn, H) => {
+      const W = WIn | 0
+      let y = 1
+      while (y < H - 1) {
+        let x = 1
+        while (x < W - 1) { let c = y * W + x; a[c] = a[c - W] ^ a[c + W] ^ a[c]; x++ }
+        y++
+      }
+    }
+    export let main = (WIn) => {
+      const W = WIn | 0, H = 16, N = W * H
+      const a = new Int32Array(N > 0 ? N : 1)
+      for (let i = 0; i < N; i++) a[i] = (i * 7) & 0xff
+      f(a, W, H)
+      let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
+      return h
+    }`
+  const w = wat(src, SIMD_OPT)
+  ok(/v128\.xor/.test(w), 'in-place row-window stencil versions (v128.xor present)')
+  ok(/i32\.or/.test(w), 'disjointness guard present (row-stride delta W is a runtime param, not compile-time-foldable)')
+  for (const W of [16, 9, 8, 5, 4, 3, 2, 1])   // lanes=4: W<4 overlaps → scalar fallback, W≥4 disjoint → SIMD
+    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} bit-exact vs scalar (both regimes)`)
+})
+
+// Negative/safety: a genuine cross-iteration dependence must NEVER vectorize, in EITHER of the
+// two shapes this generalization specifically has to get right — an in-place OVERLAPPING window
+// (adjacent-column, |D|=1 < lanes) inside 2-D row-base indexing (proving the row-base address
+// generalization doesn't accidentally blunt the existing hazard check), and a TRUE loop-carried
+// recurrence ACROSS rows (the row stride W ITSELF is small enough — a compile-time literal 2, for
+// i32 lanes=4 — to genuinely overlap within one SIMD step, the row-direction analogue of the
+// classic `a[i]=a[i-1]+a[i]` column recurrence). Both must decline cleanly (bit-exact vs scalar,
+// no `v128.xor` lift of the hazardous loop itself).
+
+test('SIMD general-stencil safety - in-place SAME-ROW overlapping window (a[c]=a[c-1]^a[c]) inside 2-D row-base indexing never vectorizes', () => {
+  const src = `export let main = (WIn) => {
+    const W = WIn | 0, H = 16, N = W * H
+    const a = new Int32Array(N)
+    for (let i = 0; i < N; i++) a[i] = (i * 7) & 0xff
+    let y = 1
+    while (y < H - 1) {
+      let x = 1
+      while (x < W - 1) { let c = y * W + x; a[c] = a[c - 1] ^ a[c]; x++ }
+      y++
+    }
+    let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
+    return h
+  }`
+  for (const W of [16, 8, 5])
+    is(runVec(src, SIMD_OPT).main(W), runVec(src, NOVEC).main(W), `W=${W} result unaffected by vectorizer (declines cleanly)`)
+  const w = wat(src, SIMD_OPT)
+  ok(!/v128\.xor/.test(w), 'no v128.xor lift of the same-row recurrence (a compile-time-provable |D|=1 < lanes must decline, not version — the dead-versioning regression this session\'s own foldDeltaExpr fix catches)')
+})
+
+test('SIMD general-stencil safety - true loop-carried recurrence across rows (row stride W=2 < lanes) never vectorizes', () => {
+  const src = `export let main = () => {
+    const W = 2, H = 20, N = W * H
+    const a = new Int32Array(N)
+    for (let i = 0; i < N; i++) a[i] = (i * 7) & 0xff
+    let y = 1
+    while (y < H) {
+      let x = 0
+      while (x < W) { let c = y * W + x; a[c] = a[c - W] ^ a[c]; x++ }
+      y++
+    }
+    let h = 0; for (let i = 0; i < N; i++) h = (h + a[i]) | 0
+    return h
+  }`
+  is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'result unaffected by vectorizer (declines cleanly)')
+  const w = wat(src, SIMD_OPT)
+  ok(!/v128\.xor/.test(w), 'no v128.xor lift of the row-recurrence (W=2 < lanes=4 is compile-time-provably unsafe, not a runtime-unknown case to version)')
+})

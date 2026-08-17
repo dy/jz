@@ -7404,6 +7404,396 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   return { wrapper, newLocalDecls }
 }
 
+// ---- General STENCIL base layer (layer 4, .work/vectorizer-generality-design.md §2-3
+// step 4) — tryStencil's own affine-offset proof, generalized to every LOAD_OPS/STORE_OPS
+// lane type + runtime alias versioning ---------------------------------------------------
+//
+// BASE LAYER: dispatch-chain terminal, runs immediately after `tryGeneralMap` (before
+// `tryGeneralReduce`) — after every idiom recognizer AND after `tryGeneralMap`'s own broader
+// address proof, so it only fires on loops BOTH declined: `tryStencil` itself stays first
+// (float/f32-lane neighbour-load specimens keep byte-identical priority), `tryGeneralMap`
+// second (i32-domain-only affine, no wrap, no float-domain index — see its own header doc's
+// "simplified to drop the toroidal wrap-select and float-domain-index branches (genuinely
+// stencil-specific, out of scope for a plain map)"). This pass is the fold-back: it PORTS
+// `tryStencil`'s full `ivCoeff`/`isStep`/`isWrapSelect`/`matchAddr` verbatim (including both
+// banked branches) and GENERALIZES the lane-type gate the same way `tryGeneralMap` generalized
+// the plain-map one — `tryStencil` hard-declines every lane but f64/f32
+// (`if (lt !== 'f64' && lt !== 'f32') return false`) because an i32-typed local is ambiguously
+// either address/index scalar or i8/i16/i32 LANE data; this pass resolves that ambiguity the
+// same way `tryGeneralMap`'s own `_isAddrLocalGM` does (ported below as `_isAddrLocalGS`,
+// parametrized on THIS pass's own broader `matchAddr`/`ivCoeff`).
+//
+// Placement justified by SPECIFICITY, not by an arbitrary tie-break: `tryGeneralMap`'s address
+// proof is a strict SUBSET of this pass's own (plain i32-domain affine only, no wrap-select, no
+// float-domain-index arithmetic) — every loop `tryGeneralMap` accepts, this pass would ALSO
+// accept, so running this pass FIRST would only add risk (a second, larger address grammar
+// re-deriving the same accept decision) for zero additional reach; running it LAST means it is
+// reached only by the genuinely NEW territory — a wrap-select boundary or a float-domain grid
+// index — that `tryGeneralMap`'s deliberately-narrower proof cannot see. Zero risk to
+// `tryGeneralMap`'s own already-verified corpus by construction (dispatch order unchanged).
+//
+// The float-domain grid-index branch (a4726c5a's own banked follow-up, "the float-domain
+// grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base loops like schrodinger's
+// `y*w+x`)"): FOLDS IN NATURALLY. `ivCoeff`'s `f64.add`/`f64.sub`/`i32.mul`/`f64.mul`/
+// `f64.convert_i32_s`/`i32.wrap_i64`/`i64.trunc_sat_f64_s` arms below are copied verbatim from
+// `tryStencil` — the SAME algorithm that already proves "coefficient 0 or 1" for a row base
+// computed in f64 domain (jz's own overflow-canon idiom) works identically regardless of what
+// lane type the SITE that consumes the resulting address happens to store/load — address
+// arithmetic and lane data are orthogonal axes; nothing about the float-domain proof needed to
+// change to reach integer lanes. Likewise the toroidal wrap-select (`isWrapSelect`/`needsPeel`/
+// `rightBs`) — periodic-boundary stencils (`x>0?x-1:w-1`) — ports unchanged and now reaches
+// integer-lane grids (e.g. a byte/int cellular-automaton or palette-index wraparound), not just
+// f64/f32 ones.
+//
+// NOT folded — banked again: non-constant (runtime-COMPUTED, not merely runtime-invariant)
+// stride coefficients. `ivCoeff` proves coefficient exactly 0 or 1; a genuine non-unit runtime
+// stride (`a[i*stepIn]` for a parameter `stepIn`, or any coefficient other than 1) would need
+// gather-style codegen (per-lane scalar loads assembled into a vector, or a strided SIMD load
+// instruction wasm doesn't have) instead of the one-`v128.load`-per-step contiguous-window
+// codegen this pass (and `tryStencil`/`tryGeneralMap` before it) shares — a different transform,
+// not a proof extension. Same disposition a4726c5a already recorded; still out of scope here.
+//
+// In-place / loop-carried gate: `tryStencil`'s own `elemKey` check (every access to a WRITTEN
+// base must hit the SAME element as every OTHER access to that base) is no longer an
+// unconditional decline on mismatch — reuses layer 3's (`f2012e2c`, `tryGeneralMap`) three-way
+// resolution VERBATIM (ported, not shared — matching every prior layer's own "port, don't share"
+// precedent so `tryGeneralMap`'s already-gated corpus behavior stays untouched): a compile-time
+// element delta ≥ lanes is accepted for free; < lanes declines exactly as before (a genuine
+// windowed in-place recurrence — no runtime check could ever make it safe); a delta that depends
+// on something other than the IV (a runtime parameter) gets VERSIONED — the unchanged SIMD path
+// behind a hoisted `i32.or` disjointness guard, the untouched original scalar loop as the
+// `else`. `ALIAS_VERSION_MAX_BODY_NODES`/`gmNodeCount` are REUSED directly (already module-level
+// constants as of layer 3, not per-function state — no port needed). Multiple input arrays:
+// already sound without any new work — distinct base subtrees are assumed non-aliasing (the
+// SAME baseline convention `tryStencil`/`tryGeneralMap` both already rely on), so an
+// N-array combine (`out[i] = a[i-1]+a[i]+a[i+1] + b[i]`) needs no `elemKey` reasoning at all
+// for any base that's never a store target.
+//
+// Codegen: `tryStencil`'s own proven neighbourhood-gather wrapper construction, UNCHANGED
+// (`boundSetup` = overshoot-safe absolute cap `simdCap − (lanes−1)`, not `tryGeneralMap`'s
+// iv-relative span-align — needed because stencils commonly enter at a non-zero IV and can read
+// BEHIND the IV, e.g. `a[i−1]`; `peelStmts` for the toroidal left-boundary column) — reused
+// verbatim, only wrapped in layer 3's versioning `if`/`then`/`else` when `aliasGuards` is
+// non-null, exactly as `tryGeneralMap` wraps its own simpler `simdPath`.
+function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
+  if (!enabled) return null
+  if (!bl) return null
+  const { aliasVersion = true } = opts
+  const { incVar, bound, body, preamble, hasGlobalSet: blHasGlobalSet, writes, referenced: blReferenced } = bl
+  if (blHasGlobalSet) return null
+
+  // Leaf-stencil guard (verbatim from tryStencil): no nested loop / non-$math call.
+  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
+    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
+    || n.some(hasNestedLoopOrCall))
+  if (body.some(hasNestedLoopOrCall)) return null
+
+  // Bound must be a pure loop-invariant i32 expression (verbatim from tryStencil — broader than
+  // tryGeneralMap's bare boundLocal-or-const rule: stencils commonly bound by `w-1`).
+  const boundPureInv = (n) =>
+    isI32Const(n) ? true
+    : isLocalGet(n) ? !writes.has(n[1])
+    : (isArr(n) && n[0] === 'global.get') ? true
+    : (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub' || n[0] === 'i32.mul') && n.length === 3)
+      ? boundPureInv(n[1]) && boundPureInv(n[2])
+    : false
+  if (!boundPureInv(bound)) return null
+
+  // ---- Affine-in-IV coefficient solver — verbatim port of tryStencil's own (including the
+  // toroidal wrap-select and float-domain-index branches; see header doc's fold-in note). ----
+  const derived = new Set()
+  let needsPeel = false
+  const rightBs = []
+  const unTee = (b) => (isArr(b) && b[0] === 'local.tee' && b.length === 3) ? b[2] : b
+  const isStep = (b, op) => {
+    b = unTee(b)
+    if (isArr(b) && b[0] === op && b.length === 3 && isLocalGet(b[1], incVar) && isI32Const(b[2]) && constNum(b[2]) === 1) return true
+    if (isArr(b) && b[0] === 'f64.convert_i32_s' && b.length === 2 && isStep(b[1], op)) return true
+    const f64op = op === 'i32.sub' ? 'f64.sub' : 'f64.add'
+    if (!isArr(b) || b[0] !== f64op || b.length !== 3) return false
+    const l = unTee(b[1])
+    return isArr(l) && l[0] === 'f64.convert_i32_s' && l.length === 2 && isLocalGet(l[1], incVar) && isArr(b[2]) && b[2][0] === 'f64.const' && Number(b[2][1]) === 1
+  }
+  const isZeroGuard = (g) => isArr(g) && ((g[0] === 'i32.eqz' && isLocalGet(g[1], incVar)) || (g[0] === 'i32.eq' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0))
+  const ivCompare = (g, iop, fop) => {
+    if (!isArr(g) || g.length !== 3) return null
+    if (g[0] === iop && isLocalGet(g[1], incVar)) return { B: g[2], f64: false }
+    if (g[0] === fop && isArr(g[1]) && g[1][0] === 'f64.convert_i32_s' && g[1].length === 2 && isLocalGet(g[1][1], incVar)) return { B: g[2], f64: true }
+    return null
+  }
+  const toI32B = ({ B, f64 }) => f64 ? ['i32.wrap_i64', ['i64.trunc_sat_f64_s', B]] : B
+  const isWrapSelect = (e) => {
+    if (!isArr(e) || e[0] !== 'select' || e.length !== 4) return null
+    const g = e[3]
+    if (isStep(e[1], 'i32.sub') && ivCoeff(e[2]) === 0 && isArr(g) && g[0] === 'i32.gt_s' && isLocalGet(g[1], incVar) && isI32Const(g[2]) && constNum(g[2]) === 0) return { dir: 'L' }
+    if (isStep(e[2], 'i32.sub') && ivCoeff(e[1]) === 0 && isZeroGuard(g)) return { dir: 'L' }
+    if (isStep(e[1], 'i32.add') && ivCoeff(e[2]) === 0) { const c = ivCompare(g, 'i32.lt_s', 'f64.lt'); if (c) return { dir: 'R', B: toI32B(c) } }
+    if (isStep(e[2], 'i32.add') && ivCoeff(e[1]) === 0) { const c = ivCompare(g, 'i32.eq', 'f64.eq'); if (c) return { dir: 'R', B: toI32B(c) } }
+    return null
+  }
+  const ivCoeff = (n) => {
+    if (isLocalGet(n)) {
+      const nm = n[1]
+      if (nm === incVar || derived.has(nm)) return 1
+      return writes.has(nm) ? null : 0
+    }
+    if (isI32Const(n)) return 0
+    if (isArr(n) && n[0] === 'f64.const') return 0
+    if (isArr(n) && n[0] === 'global.get') return 0
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3) {
+      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'i32.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    if (isArr(n) && (n[0] === 'i32.mul' || n[0] === 'f64.mul') && n.length === 3)
+      return ivCoeff(n[1]) === 0 && ivCoeff(n[2]) === 0 ? 0 : null
+    if (isArr(n) && (n[0] === 'f64.add' || n[0] === 'f64.sub') && n.length === 3) {
+      const a = ivCoeff(n[1]), b = ivCoeff(n[2])
+      if (a == null || b == null) return null
+      const c = n[0] === 'f64.add' ? a + b : a - b
+      return c === 0 || c === 1 ? c : null
+    }
+    if (isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'i32.wrap_i64' || n[0] === 'i64.trunc_sat_f64_s') && n.length === 2)
+      return ivCoeff(n[1])
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
+    if (isArr(n) && n[0] === 'select') {
+      const w = isWrapSelect(n)
+      if (w) { needsPeel = true; if (w.dir === 'R' && !rightBs.some(b => exprEq(b, w.B))) rightBs.push(w.B); return 1 }
+      if (n.length === 4 && isI32Const(n[2]) && isArr(n[3]) && n[3][0] === 'f64.ne' && isArr(n[3][2]) && n[3][2][0] === 'f64.const' && /inf/i.test(String(n[3][2][1])))
+        return ivCoeff(n[1])
+    }
+    return null
+  }
+  const countSets = (name) => {
+    let k = 0
+    const w = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++; for (let i = 1; i < x.length; i++) w(x[i]) }
+    for (const s of body) w(s)
+    return k
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    let added = false
+    const consider = (name, def) => {
+      if (derived.has(name) || fnLocals.get(name) !== 'i32' || countSets(name) !== 1 || ivCoeff(def) !== 1) return
+      let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
+      if (fk === 'write') { derived.add(name); added = true }
+    }
+    const walk = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string' && x.length === 3) consider(x[1], x[2]); for (let i = 1; i < x.length; i++) walk(x[i]) }
+    for (const s of body) walk(s)
+    if (!added) break
+  }
+
+  // ---- Address match: base + (IDX<<K) | bare-affine byte-lane fallback (the fallback is NEW
+  // relative to tryStencil — tryGeneralMap's own addition, needed here for the first time
+  // because tryStencil never reached i8 lanes at all). Any LOAD_OPS/STORE_OPS lane type. ----
+  let laneType = null, stride = -1
+  const offTees = new Map(), addrTees = new Map()
+  const sites = []
+  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
+  const matchOffset = (off, expectStride) => {
+    let ot = null, o = off
+    if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
+    if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
+    if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
+      if (ot) offTees.set(ot, o[1])
+      return { idx: o[1] }
+    }
+    if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
+    return null
+  }
+  const matchAddr = (addr, expectStride = stride) => {
+    let teeName = null, n = addr
+    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
+    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
+    for (const [bi, oi] of [[1, 2], [2, 1]]) {
+      if (!isInvBase(n[bi])) continue
+      const om = matchOffset(n[oi], expectStride)
+      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
+    }
+    return null
+  }
+  const scan = (n, parent, pi) => {
+    if (!isArr(n)) return true
+    const op = n[0]
+    if (LOAD_OPS[op]) {
+      let addr = n[1], memBytes = 0
+      if (typeof addr === 'string' && addr.startsWith('offset=')) { memBytes = +addr.slice(7); addr = n[2] }
+      const lt = LOAD_OPS[op]
+      if (laneType == null) { laneType = lt; stride = LANE_INFO[lt].stride }
+      else if (lt !== laneType) return false
+      const m = matchAddr(addr, LANE_INFO[lt].stride)
+      if (!m) return false
+      sites.push({ kind: 'load', base: m.base, idx: m.idx, memBytes })
+      return true
+    }
+    if (STORE_OPS[op]) {
+      if (n.length !== 3) return false
+      const st = STORE_OPS[op]
+      if (laneType == null) { laneType = st; stride = LANE_INFO[st].stride }
+      else if (st !== laneType) return false
+      const m = matchAddr(n[1])
+      if (!m) return false
+      sites.push({ kind: 'store', base: m.base, idx: m.idx, memBytes: 0 })
+      return scan(n[2], n, 2)
+    }
+    if ((op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
+      const v = n[2]
+      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3 && isI32Const(v[2]) && stride > 0 && (1 << v[2][1]) === stride && ivCoeff(v[1]) === 1) offTees.set(n[1], v[1])
+      else matchAddr(['local.tee', n[1], v])
+    }
+    for (let i = 1; i < n.length; i++) if (!scan(n[i], n, i)) return false
+    return true
+  }
+  for (const s of body) if (!scan(s, null, -1)) return null
+  if (!laneType || !sites.some(s => s.kind === 'store') || !sites.some(s => s.kind === 'load')) return null
+
+  // ---- In-place / loop-carried gate: three-way resolution — the SAME shape as
+  // tryGeneralMap's own (layer 3), with ONE adaptation this pass needs and tryGeneralMap
+  // doesn't: tryGeneralMap's `foldAtIv0` folds each side INDEPENDENTLY to a raw number,
+  // requiring every non-IV term to already be a compile-time literal — sound there because
+  // tryGeneralMap has no derived-IV concept, every address is IV-or-literal. This pass's
+  // addresses routinely route through a DERIVED local (`c = rc + x`, single-assignment,
+  // `ivCoeff===1`) whose own row-base term (`rc`) is a genuine RUNTIME value, not a literal —
+  // folding each side independently then fails even on a textbook adjacent-column hazard
+  // (`a[c] = a[c-1] ^ a[c]`), found via this session's own negative-test sweep: a compile-
+  // time-PROVABLY-unsafe delta (|D|=1) was mis-classified as "runtime-unknown" and VERSIONED
+  // instead of declined — correct at runtime (the guard is always false, so results stay
+  // bit-exact) but dead SIMD code emitted for nothing, exactly the kind of regression layer
+  // 3's own "compile-time-foldable, unsafe" branch exists to catch (see that layer's ledger
+  // entry, `f2012e2c`, "found and fixed via that exact regression"). Fix: fold the DELTA
+  // symbolically instead of each side alone — peel ONE literal additive/subtractive term off
+  // the top of each side and compare what remains via `exprEq` (the same side-effect-free
+  // structural-equality primitive `elemKey`'s own base comparison already relies on); when
+  // the remainders match structurally, the two sides differ by EXACTLY the peeled literals
+  // regardless of what the (possibly-symbolic, e.g. `rc`) remainder equals at runtime — sound
+  // because `exprEq` only accepts genuine structural identity, never a heuristic guess.
+  // Returns null (unresolvable, falls through to the runtime-unknown/version path — the same
+  // conservative "return null when unsure" tryGeneralMap's own foldAtIv0 already uses) for
+  // any pair whose remainders aren't provably identical, including a MIXED pair (one side
+  // routed through a derived local, the other through something structurally different) —
+  // never a false "safe", only ever a missed free-fold (falls to versioning/decline instead).
+  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
+  const lanesForGuard = LANE_INFO[laneType].lanes
+  const peelConst = (n) => {
+    n = normTee(n)
+    if (isArr(n) && (n[0] === 'i32.add' || n[0] === 'i32.sub') && n.length === 3 && isI32Const(n[2]))
+      return { rest: n[1], k: n[0] === 'i32.add' ? +n[2][1] : -(+n[2][1]) }
+    return { rest: n, k: 0 }
+  }
+  const foldDeltaExpr = (a, b) => {
+    const pa = peelConst(a), pb = peelConst(b)
+    return exprEq(normTee(pa.rest), normTee(pb.rest)) ? pa.k - pb.k : null
+  }
+  let aliasGuards = null
+  {
+    const guards = [], seenPairs = new Set()
+    let sawMismatch = false, unversionable = false, bodyTooBig = null
+    for (let i = 0; i < sites.length; i++) {
+      const st = sites[i]
+      if (st.kind !== 'store') continue
+      for (let j = 0; j < sites.length; j++) {
+        if (i === j) continue
+        const s = sites[j]
+        if (!exprEq(normTee(s.base), normTee(st.base)) || elemKey(s) === elemKey(st)) continue
+        const pk = i < j ? `${i}|${j}` : `${j}|${i}`
+        if (seenPairs.has(pk)) continue
+        seenPairs.add(pk)
+        if ((st.memBytes - s.memBytes) % stride !== 0) { sawMismatch = true; unversionable = true; continue }
+        const constDelta = (s.memBytes - st.memBytes) / stride
+        const foldedDelta = foldDeltaExpr(s.idx, st.idx)
+        if (foldedDelta != null) {
+          if (Math.abs(foldedDelta + constDelta) >= lanesForGuard) continue
+          sawMismatch = true; unversionable = true; continue
+        }
+        sawMismatch = true
+        if (bodyTooBig == null) bodyTooBig = body.reduce((n, stmt) => n + gmNodeCount(stmt), 0) > ALIAS_VERSION_MAX_BODY_NODES
+        if (!aliasVersion || bodyTooBig) { unversionable = true; continue }
+        let delta = ['i32.sub', cloneNode(s.idx), cloneNode(st.idx)]
+        if (constDelta !== 0) delta = ['i32.add', delta, ['i32.const', String(constDelta)]]
+        guards.push(['i32.or',
+          ['i32.le_s', delta, ['i32.const', String(-lanesForGuard)]],
+          ['i32.ge_s', delta, ['i32.const', String(lanesForGuard)]]])
+      }
+    }
+    if (sawMismatch) {
+      if (unversionable) return null
+      aliasGuards = guards
+    }
+  }
+
+  // ---- Local classification (generalized: tryGeneralMap's address/lane disambiguation,
+  // adapted to this pass's own broader matchAddr/ivCoeff — an i32-typed local is 'addr' when
+  // its every write is proven index/address arithmetic under THIS pass's own affine grammar,
+  // not merely tryGeneralMap's narrower one, so a row-base/wrap-select derived local
+  // classifies correctly too). ----
+  const _isAddrLocalGS = (name) => {
+    let onlyAddr = true, found = false
+    const walk = (n) => {
+      if (!isArr(n)) return
+      if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
+        found = true
+        if (ivCoeff(n[2]) == null && !matchAddr(['local.tee', name, n[2]])) onlyAddr = false
+        return
+      }
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    for (const s of body) walk(s)
+    return found && onlyAddr
+  }
+  const referenced = blReferenced
+  const localKind = new Map()
+  for (const name of referenced) {
+    if (name === incVar) continue
+    const ty = fnLocals.get(name)
+    if (ty === 'i32' && (addrTees.has(name) || offTees.has(name) || derived.has(name) || _isAddrLocalGS(name))) { localKind.set(name, 'addr'); continue }
+    if (writes.has(name)) {
+      let fk = null; for (const s of body) { const k = firstAccess(s, name); if (k) { fk = k; break } }
+      if (fk === 'read') return null
+      localKind.set(name, 'lane')
+    } else localKind.set(name, 'invariant')
+  }
+
+  // ---- Lift through the shared lifter (verbatim). ----
+  const newLanedLocals = new Map(), extraLocals = []
+  const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals, extraLocals, freshIdRef, fail: false, failReason: null, aosPixelStride: 1, pureFuncMap: null, inlineDepth: 0, constLocals: null }
+  const lifted = []
+  for (const s of body) {
+    const r = liftStmt(s, ctx)
+    if (ctx.fail) return null
+    if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
+  }
+  if (!lifted.length) return null
+
+  // ---- Codegen: tryStencil's own proven neighbourhood-gather wrapper, verbatim, plus
+  // layer-3's versioning wrap when aliasGuards is non-null (see header doc). ----
+  const id = freshIdRef.next++
+  const simdBoundName = `$__simd_bound${id}`, simdBrkLabel = `$__simd_brk${id}`, simdLoopLabel = `$__simd_loop${id}`
+  const info = LANE_INFO[laneType], lanes = info.lanes
+  const boundExpr = cloneNode(bound)
+  const simdCap = rightBs.reduce((acc, b) => ['select', cloneNode(b), acc, ['i32.lt_s', cloneNode(b), acc]], boundExpr)
+  const boundSetup = ['local.set', simdBoundName, ['i32.sub', simdCap, ['i32.const', lanes - 1]]]
+  const simdBlock = ['block', simdBrkLabel,
+    ['loop', simdLoopLabel,
+      ['br_if', simdBrkLabel, ['i32.eqz', ['i32.lt_s', ['local.get', incVar], ['local.get', simdBoundName]]]],
+      ...lifted,
+      ['local.set', incVar, ['i32.add', ['local.get', incVar], ['i32.const', lanes]]],
+      ['br', simdLoopLabel]]]
+  const peelStmts = needsPeel
+    ? [['if', ['i32.lt_s', ['local.get', incVar], cloneNode(bound)],
+        ['then', ...body.map(cloneNode), cloneNode(bl.loopNode[bl.incIdx])]]]
+    : []
+  const simdPath = [...peelStmts, boundSetup, simdBlock, bl.blockNode]
+  const guardedPath = aliasGuards
+    ? [['if', aliasGuards.reduce((a, g) => a == null ? g : ['i32.and', a, g], null),
+        ['then', ...simdPath],
+        ['else', cloneNode(bl.blockNode)]]]
+    : simdPath
+  const wrapper = ['block', ...preamble.map(cloneNode), ...guardedPath]
+  const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
+  return { wrapper, newLocalDecls }
+}
+
 // ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
 //
 // Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
@@ -7869,6 +8259,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         ?? tryToneMap(bl, fnLocals, freshIdRef, toneMap)
         ?? tryButterfly(node, fnLocals, freshIdRef)
         ?? tryGeneralMap(node, fnLocals, freshIdRef, bl, { aliasVersion })
+        ?? tryGeneralStencil(node, fnLocals, freshIdRef, stencil, bl, { aliasVersion })
         ?? tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc)
       // --why-not-simd: a canonical loop-shaped candidate that no SIMD pass took.
       // Reported BEFORE the scalar strength-reduce fallback (which fires on most

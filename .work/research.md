@@ -18574,3 +18574,286 @@ self-host performance remains green at 0.848× (cap 0.99); the known warm
 ratchet remains red at 1.111–1.139×, the same pre-existing load-sensitive
 class already recorded above. Final self-host artifact SHA-256:
 `1cbdc697d8369ee2e756578ab4ceb3a857a318a20a2f0a5de53786b61b23c323`.
+
+## §GeneralStencilVectorizer — layer 4, `tryGeneralStencil`: tryStencil's full
+## affine-offset proof (wrap-select + float-domain grid-index INCLUDED, not
+## dropped) generalized to every lane type, plus layer-3 alias-versioning
+## reused for tryStencil's own in-place hazard (2026-08-16)
+
+Design + implementation of `.work/vectorizer-generality-design.md`'s STENCIL
+slice — the follow-up seam both `tryGeneralMap`'s (`a4726c5a`) and
+`tryGeneralReduce`'s own landing entries banked ("REDUCTION/STENCIL-proper
+generalization... the float-domain grid-index branch tryStencil's own
+`ivCoeff` carries (2-D row-base loops), non-constant (runtime-computed)
+stride coefficients"). Worktree `.../scratchpad/vec-stencil`, branch
+`vec-stencil-2026-08-16`, off main tip `f2012e2c`; landed after four
+in-flight rebases onto concurrent main-tip moves (`4d35ec62` → `bb13767f` →
+`157f8dc1` → `6e75b8a3`), each verified clean (zero textual conflict — no
+other session touched `src/optimize/vectorize.js`/`test/simd.js`) and
+re-gated at every stop.
+
+**Characterization (what `tryStencil` handles today vs the general class,
+done before any code — the task's own item 1):** `tryStencil` (2055-2347)
+is NOT limited to "fixed-offset neighborhoods over one row" as a first
+read suggests — its own `ivCoeff` already proves 2-D row-base arithmetic
+(`i32.mul`/`f64.mul` of two invariants ⇒ coefficient 0, so `y*w+x` or a
+preamble-hoisted `rc=y*w` composed with the IV is already stride-1 affine)
+and a toroidal wrap-select boundary (`isWrapSelect`/`needsPeel`/`rightBs`,
+the `x>0?x-1:w-1` idiom) — confirmed via the EXISTING test
+`'SIMD stencil - 5-point with derived IV (c = rc + x) bit-exact'`
+(`test/simd.js`, pre-dates this session) and via `tryGeneralMap`'s own
+header doc, which explicitly documents dropping BOTH of those branches as
+"genuinely stencil-specific, out of scope for a plain map." What
+`tryStencil` genuinely lacks: (1) any lane type but f64/f32 (hard gate,
+`if (lt !== 'f64' && lt !== 'f32') return false` — an i32-typed local is
+ambiguously address/index scalar OR i8/i16/i32 lane data under its own
+`ty===laneType` classification, unresolvable without `tryGeneralMap`'s
+address-proof-based disambiguation); (2) any resolution of its own
+`elemKey` in-place hazard besides an unconditional decline — no
+versioning, unlike `tryGeneralMap`'s post-layer-3 three-way branch.
+Multiple input arrays already work today (distinct bases assumed
+non-aliasing, the same baseline convention every MAP/STENCIL recognizer in
+the file relies on) — not a gap, confirmed via a synthetic 3-array test
+below.
+
+**The generalization — `tryGeneralStencil`** (`src/optimize/vectorize.js`,
+~360 lines incl. header doc, immediately after `tryGeneralMap`): ports
+`tryStencil`'s COMPLETE `ivCoeff`/`isStep`/`isZeroGuard`/`ivCompare`/
+`toI32B`/`isWrapSelect`/derived-IV-prepass/`matchAddr` verbatim — the
+"two-level affine" the task's item 2 asks for (outer-loop-invariant row
+base + inner affine) is exactly what this algorithm already proves; no new
+affine algebra was needed, only PORTING the untouched branches
+`tryGeneralMap` had to drop for scope reasons — generalized to every
+`LOAD_OPS`/`STORE_OPS` lane type via `tryGeneralMap`'s own address-proof
+disambiguation pattern (`_isAddrLocalGS`, this pass's own copy,
+parametrized on its own broader `matchAddr`/`ivCoeff` so a row-base or
+wrap-select-derived local classifies as `'addr'` correctly — plain
+type-based classification, sufficient for `tryStencil`'s float-only world,
+is not enough once i32 lane data and i32 index arithmetic share one WAT
+type). `matchOffset` gained `tryGeneralMap`'s bare-affine byte-lane
+fallback (i8, stride 1, never reached by `tryStencil` since it never had
+integer lanes at all). Codegen is `tryStencil`'s own proven wrapper
+verbatim (overshoot-safe absolute `simdCap − (lanes−1)` bound, NOT
+`tryGeneralMap`'s iv-relative span-align — needed because stencils commonly
+read behind the IV; the toroidal left-boundary peel) — the task's own
+"keep tryStencil's proven neighborhood-gather codegen" instruction, wrapped
+in layer 3's versioning `if`/`then`/`else` when a hazard needs it.
+
+**In-place hazard: layer-3 reuse, with a soundness fix this port required
+and layer 3 itself never needed.** Ported `tryGeneralMap`'s three-way
+`elemKey`-mismatch resolution (compile-time-safe ⇒ free; compile-time-unsafe
+⇒ decline; runtime-unknown ⇒ version) verbatim at first, reusing the
+already-module-level `ALIAS_VERSION_MAX_BODY_NODES`/`gmNodeCount` (no port
+needed — already shared constants since layer 3, not per-function state).
+This session's OWN negative-test sweep caught a real bug in that first
+draft: `tryGeneralMap`'s `foldAtIv0` folds EACH side of a mismatched pair
+independently to a raw compile-time number, requiring every non-IV term to
+already be a literal — sound there (no derived-IV concept exists in that
+pass) but WRONG here, where addresses routinely route through a
+single-assignment DERIVED local (`c = rc + x`) whose own row-base term
+(`rc`) is a genuine runtime value. A textbook adjacent-column hazard
+(`a[c] = a[c-1] ^ a[c]`) was mis-classified as "runtime-unknown" and
+VERSIONED instead of declined — correct at runtime (the disjointness guard
+is always false, so results stayed bit-exact across every swept value) but
+dead SIMD code emitted for a case that should have declined for free,
+exactly the class of regression layer 3's own "compile-time-foldable,
+unsafe" branch exists to catch (that layer's own ledger entry: "found and
+fixed via that exact regression"). Fixed by replacing the two independent
+`foldAtIv0` calls with one symbolic `foldDeltaExpr(a, b)`: peel ONE literal
+additive/subtractive term off the top of each side, compare what remains
+via `exprEq` (the same structural-equality primitive `elemKey`'s own base
+comparison already relies on) — when the remainders match, the two sides
+differ by exactly the peeled literals regardless of what the (possibly
+symbolic) remainder equals at runtime; returns null (conservative, falls to
+versioning/decline) for anything it can't prove, same as before. Verified
+via the dedicated negative tests below (declines cleanly, zero `v128.xor`
+for the hazardous loop) — this fix is local to `tryGeneralStencil` only,
+`tryGeneralMap`'s own `foldAtIv0` is untouched (its own address grammar
+never produces a derived-local reference, so its simpler fold stays sound
+and unmodified — "port, don't share" preserved).
+
+**Placement — dispatch-chain, immediately after `tryGeneralMap`, before
+`tryGeneralReduce`**: justified by specificity, not an arbitrary tie-break.
+`tryGeneralMap`'s own address proof is a STRICT SUBSET of this pass's own
+(plain i32-domain affine only — no wrap-select, no float-domain-index
+arithmetic, by its own header doc's explicit design) — every loop
+`tryGeneralMap` accepts, this pass would also accept, so running this pass
+FIRST would only add a second, larger address grammar re-deriving the same
+accept decision for zero additional reach; running it LAST means it is
+reached only by genuinely new territory (a wrap-select boundary or a
+float-domain grid index) `tryGeneralMap`'s deliberately narrower proof
+cannot see. Zero risk to `tryGeneralMap`'s own corpus by construction
+(dispatch order unchanged, first-match-wins). Relative to `tryGeneralReduce`
+the order is immaterial (disjoint precondition classes — REDUCE requires a
+1-2 statement single-accumulator body with NO store sites at all; STENCIL
+requires stores) but this pass sits before it, matching the MAP→STENCIL→
+REDUCE grouping (two store-producing MAP-family passes, then the
+store-free REDUCE pass).
+
+**The banked float-domain grid-index branch (task item 3): FOLDS IN
+NATURALLLY, landed.** `ivCoeff`'s `f64.add`/`f64.sub`/`f64.mul`/
+`f64.convert_i32_s`/`i32.wrap_i64`/`i64.trunc_sat_f64_s` arms are copied
+verbatim from `tryStencil` — the SAME algorithm that already proves
+"coefficient 0 or 1" for an f64-domain-computed row base (jz's own
+overflow-canon idiom, `schrodinger`'s `y*w+x` shape) works identically
+regardless of what lane type the SITE consuming the resulting address
+happens to store/load — address arithmetic and lane data are orthogonal
+axes; nothing about the float-domain proof needed to change to reach
+integer lanes. The toroidal wrap-select ports the same way and now reaches
+integer-lane periodic grids too (verified: a 1-D toroidal int32 stencil,
+declines pre-session, vectorizes to `v128.xor` post-session, bit-exact
+across n∈{1,3,4,5,9,17,32,33}, including the peeled wrap column and
+sub-lanes-width n).
+
+**NOT folded — banked again: non-constant (runtime-computed, not merely
+runtime-invariant) stride coefficients.** `ivCoeff` proves coefficient
+exactly 0 or 1; a genuine non-unit runtime stride (`a[i*stepIn]`, or any
+coefficient other than 1) needs gather-style codegen (per-lane scalar
+loads assembled into a vector — wasm has no strided SIMD load) instead of
+the one-`v128.load`-per-step contiguous-window codegen every recognizer in
+this file (this pass included) shares. A different transform, not a proof
+extension of the existing affine solver — same disposition
+`tryGeneralMap`'s own landing entry already recorded for this exact item;
+still out of scope here, for the same reason.
+
+**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s
+own convention, `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`,
+129-entry list = the census's 128 dir-matched `bench/*/*.js` +
+`examples/*/*.js` files [confirmed 128 via direct enumeration this
+session, one more than the 127 prior sessions cited — `bench/jz/jz.js`
+itself dir-matches and is correctly INCLUDED in the sweep, then separately
+excluded from the byte-identical bucket, matching precedent] plus
+`examples/raymarcher/raymarcher.simd.js`; re-run fresh at each of this
+session's four rebase stops, final run at main tip `6e75b8a3`):
+**128/128 comparable programs byte-identical, 0 newly-vectorizing in the
+real corpus** — an honest null result, not a defect: none of the 130
+corpus programs exercise the specific new territory this layer adds
+(integer-lane wrap-select, integer-lane float-domain-index, or an in-place
+row-stride hazard at a RUNTIME stride) — every corpus STENCIL-shaped row
+(`bench/heat`, `bench/sdf`, `examples/{diffusion,ocean,schrodinger,slime,
+watercolor,waves}`) already vectorizes via `tryStencil` itself (f64/f32,
+dispatched first, unchanged, confirmed byte-identical) and never reaches
+this pass. **1 excluded** (`bench/jz/jz.js`): DIFFERS as expected — it
+compiles jz itself, so its own compiled bytes necessarily change when the
+compiler's OWN source grows a new pass (the same exclusion every prior
+session in this lineage records). Size-geomean consequence: trivially
+unregressed (byte-identical WAT for all 128 real corpus programs).
+`bench/blur`/`bench/conv2d` (the design brief's named "sensitive" rows) and
+every other stencil-shaped bench row confirmed in the byte-identical
+bucket — `tryStencil`'s own dispatch-order priority (unchanged, still first)
+is the direct proof: these specimens' fuser wins are untouched because
+this pass never even reaches them.
+
+**Gate 2 — NEW-REACH proof**: 7 synthetic loops (`test/simd.js`, "SIMD
+general-stencil" suite, appended after "SIMD general-reduce safety"), each
+confirmed via a disposable instrumented dispatch trace (reverted before
+landing) to decline under EVERY existing recognizer on unmodified main tip
+before this session's code existed, now vectorizing:
+  1. i32, 2-D 5-point row-base (`out[c]=a[c-W]^a[c+W]^a[c-1]^a[c+1]^a[c]`,
+     separate in/out arrays) — swept W∈{16,17,8,5,3}, bit-exact; asserts
+     exactly 4 `v128.xor` (the row-base generalization's own headline case).
+  2. i32, toroidal wrap boundary (`xw=x>0?x-1:n-1`/`xe=x<n-1?x+1:0`,
+     1-D periodic) — swept n∈{32,33,17,9,5,4,3,1} crossing every peel/tail
+     boundary, bit-exact; asserts `v128.xor` present (the wrap-select fold-in
+     proof).
+  3. i16, 2-D 4-neighbour row-base — lane-type breadth for the 2-D case,
+     swept W∈{16,10,9,5,3}, bit-exact.
+  4. i32, THREE input arrays (2-D row-base combine + a third,
+     non-neighbour array feeding the SAME store) — swept W∈{16,9,5,3},
+     bit-exact; asserts exactly 4 `v128.xor` (the "multiple input arrays"
+     claim, concretely exercised in 2-D scope, not merely asserted).
+  5. i32, IN-PLACE row window at a RUNTIME row width (`a[c]=a[c-W]^
+     a[c+W]^a[c]`, `W` a genuine function parameter) — reuses layer 3's
+     alias-versioning for `tryStencil`'s own hazard (the task's own item 1
+     instruction): the row-stride delta can't fold at compile time, so it
+     VERSIONS — swept W∈{16,9,8,5,4,3,2,1} (lanes=4 for i32: W≥4 disjoint
+     ⇒ SIMD, W<4 overlaps ⇒ scalar fallback), bit-exact BOTH regimes;
+     asserts both `v128.xor` and the `i32.or` disjointness guard present.
+  Each case is bit-exact against the same source vectorized OFF
+  (`vectorizeLaneLocal:false`), swept across a parameter range crossing
+  the disjoint/overlap or wrap/interior boundary where applicable.
+  Plus 2 negative/safety tests (the task's own required pair — "true
+  loop-carried recurrence across rows; in-place overlapping window"):
+  6. In-place SAME-ROW overlapping window (`a[c]=a[c-1]^a[c]`, |D|=1<lanes)
+     INSIDE 2-D row-base indexing — proves the row-base generalization
+     doesn't blunt the existing hazard check; declines cleanly, bit-exact,
+     zero `v128.xor` for the hazardous loop. This is the exact case that
+     caught the `foldAtIv0`→`foldDeltaExpr` bug above — landed only after
+     that fix made it pass.
+  7. True loop-carried recurrence ACROSS rows (row stride `W=2`, a
+     COMPILE-TIME literal smaller than lanes=4 for i32) — the row-direction
+     analogue of the classic column recurrence; declines cleanly, bit-exact,
+     zero `v128.xor`.
+  7 new tests, 61 new assertions, all green.
+
+**Gate 3 — full native `npm test`**: branch **3484 total / 3478 pass / 0
+fail / 6 skip** at main tip `6e75b8a3` (base, same tip, unmodified:
+3477/3471/0/6 — exactly the 7 new tests, zero regressions elsewhere;
+re-confirmed at every rebase stop this session, always +7/+7/0/0 against
+that stop's own base).
+
+**Gate 4 — vectorizer suites**: `node test/index.js simd slp
+cond-vectorize optimizer` — **412/412 pass**, 5003 assertions (simd.js
+alone 182/182, +7 over the pre-session 175/175).
+
+**Gate 5 — self-build + test:wasm**: `node scripts/build-dist.mjs` — base
+(main tip `6e75b8a3` lineage, `157f8dc1` build) `dist/jz.wasm` 16772.5 kB
+/ `dist/jz.js` 2095.3 kB; branch `dist/jz.wasm` 16818.5 kB (+46.0 kB,
++0.27%) / `dist/jz.js` 2103.3 kB (+8.0 kB, +0.38%) — the compiler's OWN
+size growing to hold the new ~360-line pass + 7 tests, not corpus-output
+size (Gate 1's byte-identical sweep is the real corpus-size evidence).
+`JZ_TEST_TARGET=jz.wasm node test/index.js simd` — **182/182 pass**
+against the wasm-hosted target, +7 over the pre-session 175/175.
+`JZ_TEST_TARGET=jz.wasm node test/index.js` (full default run) —
+**2749/2743/0/6**, UNCHANGED from every prior session's own baseline (the
+`simd` sub-suite sits in `KERNEL_EXCLUDE`, excluded from the default run
+by design, not a gap — same as every prior layer's own record). `node
+test/selfhost.js` (rebuilds via `scripts/selfhost-build.mjs`, a SECOND
+independent self-host build, then round-trips real programs through the
+in-wasm pipeline) — **21/21 pass, 206 assertions**, including the 39-round
+self-referential-schema domino, all green — the self-hosted compiler,
+itself built by a compiler carrying this session's new pass, correctly
+compiles real programs with no allocator/trap regression.
+
+**`test:claims` size leg**: `node test/bench-claims.js` — size-geomean
+assertion **passes** (`size geomean jz/as: 1.020×`, identical to base —
+this leg reads the COMMITTED `bench/results.json` snapshot rather than
+recompiling from source, the same documented limitation every prior
+session in this lineage recorded; confirmed the OTHER 8 pre-existing
+failures — reference-dataset staleness, strict-wasm-rival-leadership,
+red-cases vs bun/jsc — are IDENTICAL case-for-case on base and branch, not
+attempted here, same precedent).
+
+**Files touched**: `src/optimize/vectorize.js` (+~360:
+`tryGeneralStencil` and its dispatch-chain wiring), `test/simd.js` (+~190:
+7 new tests), `.work/research.md` (this entry). Nothing else —
+`README.md`, `src/static.js`, `src/compile/narrow.js`,
+`src/compile/plan/index.js`, `module/**`, `bench/**`, `.work/strategy.md`,
+`.work/todo-original.md` all untouched (verified via `git diff --stat`
+against main at every rebase stop, zero output for any of them).
+
+**Verdict: landed.** Characterized `tryStencil`'s real vs apparent scope
+first (2-D row-base and wrap-select already worked for float lanes — the
+genuine gaps were lane-type breadth and in-place-hazard versioning, not
+the affine algebra itself). Generalized by PORTING `tryStencil`'s full
+proof (unlike `tryGeneralMap`, which deliberately simplified it) to every
+lane type, reusing `tryGeneralMap`'s own address-disambiguation and
+layer-3's own alias-versioning machinery — found and fixed a real
+soundness-adjacent gap in that reuse (`foldAtIv0`→`foldDeltaExpr`) via this
+session's own negative-test sweep before landing, not after. Both named
+banked items resolved: float-domain grid-index folds in for free (proof is
+orthogonal to lane type); non-constant stride stays correctly out of scope
+(a different codegen class, not a proof gap). 130-corpus sweep: 128/128
+byte-identical, 0 regressions, 0 real-corpus new-reach (honest null — no
+corpus program exercises this layer's specific new territory), the
+design's named sensitive rows (`bench/blur`, `bench/conv2d`, every other
+stencil bench) confirmed untouched by construction (dispatch priority).
+7 synthetic new-reach cases (5 positive spanning 2-D/wrap/multi-array/
+in-place-versioning, 2 negative spanning both required hazard shapes)
+verified declining-then-vectorizing or cleanly-declining, bit-exact
+throughout. Full native suite +7/+7/0/0. Vectorizer suites 412/412.
+Self-build ×2 converges, `test:wasm` 182/182 (simd) / 2749/2743/0/6
+(default, unchanged), selfhost 21/21. `test:claims` size geomean 1.020×,
+identical to base. Main tip at landing: `6e75b8a3` (branch
+`vec-stencil-2026-08-16`, worktree deleted post-land per process
+instructions).
