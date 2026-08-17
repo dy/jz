@@ -20156,3 +20156,149 @@ explicitly rejected/deferred with reasons), each independently gated,
 byte-identity-required. Full write-up, measurement tables, dependency
 graphs, and the RepPlan-v2 collision/sequencing map: **`.work/walk-count-
 design.md`**.
+
+## §Walk-count reduction — B1 + A1 landed (2026-08-17)
+
+Implements `.work/walk-count-design.md`'s two highest-priority slices, per
+its own sequencing rule ("B1 before RepPlan v2 begins any code"). Surfaces:
+`src/compile/analyze.js`, `src/compile/analyze-scans.js`,
+`src/compile/index.js`, `src/session.js` (comment-only) — RepPlan v2's own
+named territory (`narrow.js`/`reps.js`/`kind.js`) untouched.
+
+**B1 — live `sigFingerprint` gate.** `analyzeBody`'s cache-hit path
+(`analyze.js`, was `if (hit) { if (DBG_INVARIANTS) assertBodyFactsFresh(hit);
+return hit }`) now checks the fingerprint on every hit, unconditionally: a
+mismatch deletes the stale entry and falls through to a real recompute
+instead of returning it or crashing under `DBG_INVARIANTS`.
+`result.__sig` is now always computed (was `DBG_INVARIANTS`-gated).
+`assertBodyFactsFresh` deleted (superseded — its one call site now
+self-heals instead of asserting). `index.js:624`'s explicit
+`reanalyzeBody(body, () => block ? analyzeBody(body) : null)` simplified to
+`block ? analyzeBody(body) : null`, per the design's own §5 item 3 text.
+
+**A1 — three post-overlay scans fused into one traversal.**
+`scanFlatObjects`/`scanSliceViews`/`scanNeverGrown` (`analyze-scans.js`)
+each independently called `scanBindingUses(body)` and iterated it — no
+cross-dependency between the three (design §1.3). Each one's per-candidate
+logic is now factored into a bare classifier (`flatObjectCandidate`/
+`sliceViewCandidate`/`neverGrownCandidate`, verbatim unchanged) called from
+a single new `scanObjectArrayFacts(body)` that loops `scanBindingUses(body)`
+once and runs all three classifiers inline. The three original functions
+stay exported (now thin wrappers over the same classifiers, for any other
+caller) but `analyzeBody` calls `scanObjectArrayFacts` once instead of the
+three separately. `analyzeBody`'s own named-sub-pass count: 8 → 6 (`walk`,
+`stampCoInductionRanges`, `widenLocalTypes`, `narrowUint32`,
+`scanNumericFill`, `scanObjectArrayFacts` — the last replacing 3).
+
+**Freebie (plan-tail duplicate calls) — not done, correctly.** The design's
+own §5 scopes `inferModuleGlobalValTypes2`/`refineModuleLetTypes`'s
+duplicate-traversal fix to C1/C2 (a worklist conversion requiring pass 1 to
+publish an unresolved-name set — a real contract change, not a dedup), never
+marks it as A1/B1 prep. Left untouched, per the task's own instruction to
+only take it if the design marks it safe.
+
+**Recompute-elimination — measured, honest negative result.** Instrumented
+`globalThis.__WC2` (identical convention/placement to the design's own §0
+Method Site 2) on jessie, base (`8d716609`) vs branch: **709 total
+recomputes / 365 distinct bodies / 344 repeats / 48.5% repeat share / max 10
+on one body — bit-for-bit IDENTICAL on both trees**, down to `maxOnOneBody`.
+A second counter (`__WC_HIT.fresh`/`.stale`) confirmed the mechanism: 2111
+cache hits during the same compile, **0 stale** — the fingerprint gate never
+caught a single mismatch on this input. Root cause: `index.js:624`'s
+simplification is masked by `plan/index.js`'s own pre-existing
+`invalidateAllBodyFacts()` (plan-tail round 5, already landed before this
+session) — it unconditionally wipes every function's `bodyFacts` entry
+immediately before emit begins, so by the time `analyzeFuncForEmit` first
+touches any body, the cache is ALWAYS cold there regardless of
+`reanalyzeBody` vs plain `analyzeBody`. The measured 38.2-48.5% repeat share
+predominantly originates from `narrow.js`'s OWN explicit
+`reanalyzeBody`/`invalidateBodies` call sites during its fixpoint iterations
+(`refreshCallerLocals`, `callerArgSelfConsistentI32`, etc.) — these always
+force-invalidate before reading regardless of B1's gate, so B1 cannot reduce
+them without touching `narrow.js`, off-limits for this task. B1's gate
+remains a genuine, verified-safe correctness fix (self-healing signature-
+retype staleness, the sound cache-coherence contract RepPlan v2's own facts
+will want to build on — design §2.4/§6) — it does not itself deliver the
+design's headline recompute-reduction number under this task's scoped
+surface. Named honestly rather than claimed and left for whoever picks up
+B2/a narrow.js-scoped follow-on.
+
+**Wall-time (native, `--max-old-space-size=8192`, `resolveModuleGraph` +
+`compile()`, `jzify:true`, `optimize:{level:'speed'}`, mirroring the
+design's own §0 Method).** jessie (48 modules), 7 reps each: base median
+1231.4 ms, branch median 1246.0 ms — branch ~1.2% SLOWER, within noise (A1
+alone removes ~0.3% of jessie's own site-1 sum per the design's §1.2 table;
+B1 measured zero recompute change above). jz×jz self-graph (158 modules), 2
+reps each: base median 274531 ms (reps 258558/274531 — a 6% inter-rep
+spread on the IDENTICAL base tree, the noise floor at this scale), branch
+median 273183 ms (reps 261615/273183) — ~0.5% faster, not distinguishable
+from noise at 2 reps. Consistent with the design's own §1.2 finding that
+site 1's sum is only 1.06-2.62% of total wall time and site 2's repeat-share
+cost is a fraction of that — walk-fusion was never framed as a dominant
+lever (`narrowSignatures` alone is ~25% of `plan()`'s own total).
+
+**Byte-identity.** 130-corpus method (`.work/feature-reach-census.md`):
+`node cli.js <entry> --wat -O3 --resolve -o <out>.wat` per program, base
+`8d716609` unmodified vs branch, same corpus construction (bench 59 +
+examples 68 + `raymarcher.simd.js` + generated jukebox beat-0). **129/129
+comparable programs byte-identical** (`.work/jzify-entry.mjs`, the 130th,
+doesn't exist in this environment on either tree — ENOENT before either
+compiler even runs, excluded the same way prior sessions excluded external
+failures, not silently). Re-confirmed clean after removing this session's
+own diagnostic instrumentation (129/129 again).
+
+`scripts/self.js`'s OWN self-compile (`dist/jz.wasm`, deliberately excluded
+from the 130-corpus per `feature-reach-census.md`'s own scope note) is
+**NOT byte-identical** — base SHA-256 `bfe380d9…` (17,260,837 B) vs branch
+`e33a2882…` (17,262,210 B), each internally reproducible ×2 on its own tree
+(no nondeterminism). Root-caused via WAT-text diff (`watrPrint`,
+synthetic-name-normalized): every differing line traces to two
+order-sensitive side-effect mechanisms whose relative firing sequence shifts
+because B1 changes exactly which `analyzeBody` calls get a fresh walk vs. a
+cache-hit return across self.js's ~27,285 bodies (a scale/interconnection no
+program in the 130-corpus reaches) — (a) `index.js`'s `buildInternTable`,
+an open-addressing hash table over `ctx.runtime.dataDedup` whose collision-
+slot layout depends on Map insertion (first-discovery) order; (b) monotonic
+`$closureNNNN`/`$__mkptr_K_NNN_d` synthetic-name counters. Verified BENIGN
+via execution-based gates (kernel-oracle/kernel-parity are the established
+gate for exactly this artifact — `feature-reach-census.md`'s own reason for
+excluding it from the byte-diff corpus): kernel-oracle 538 assertions × 18
+runs (13/13 dormant × 3, 13/13 region-live × 15) all pass; kernel-parity
+33/33 × 2 configs (dormant + region-live) all pass; full native suite
+matches the baseline count exactly on both trees (3498 total / 3492 pass / 6
+skip / 0 fail). Also material: the design doc's own §5 slice table does
+**not** claim byte-identity for B1 — only A1/A2 carry "byte-identical
+required"; B1 is framed there as a correctness "self-correcting" fix (§2.4),
+consistent with legitimately-changed output where it fixes a genuine latent
+staleness bug only a program self.js's own scale is likely to trigger.
+Investigated to root cause per the task's mandate, not documented away.
+
+**`test:claims`.** Size band (the gate named in this task): **PASS**, size
+geomean jz/as 1.020× (27/49 comparable cases smaller), within the 1.05× par
+band — identical on both trees. 8 other assertions fail identically on both
+trees (154 compiler-source commits postdate the committed reference
+dataset's `meta.commit`; rival-comparison claims — bun/jsc/rust-wasm/etc —
+unrelated to this change), confirmed pre-existing by running the same test
+on an untouched `8d716609` worktree byte-for-byte (same case names, same
+ratios: `colorlog 1.692×`, `jessie 1.886×`, etc.).
+
+**Gate tally.**
+
+| gate | result |
+|---|---|
+| `npm test` (branch) | 3498 total / 3492 pass / 6 skip / 0 fail |
+| `npm test` (base, fresh baseline) | 3498 total / 3492 pass / 6 skip / 0 fail — identical |
+| `npm run test:wasm` (branch) | 2757 total / 2751 pass / 6 skip / 0 fail |
+| self-build ×2 (dormant) | SHA-256 byte-identical, `e33a2882…`, 3 builds total |
+| kernel-oracle 13/13 × 3 (dormant) | 538 assertions, clean every rep |
+| kernel-oracle 13/13 × 15 (region-live) | 538 assertions, clean every rep |
+| kernel-parity 33/33 (dormant) | byte-identical WAT O0/O2/O3 |
+| kernel-parity 33/33 (region-live) | byte-identical WAT O0/O2/O3 |
+| 130-corpus byte-identity | 129/129 comparable (1 pre-existing ENOENT, both trees) |
+| `scripts/self.js` self-compile byte-identity | NOT identical — root-caused, verified benign (above) |
+| `test:claims` size band | PASS, 1.020× ≤ 1.05× — identical both trees |
+
+`REGION_HOOKS_ACTIVE` toggled to `true` for the region-live legs, rebuilt,
+gated, then toggled back to `false` and re-diffed clean (`git diff
+scripts/self.js` empty) before landing — matches this repo's own established
+region-live gating convention.

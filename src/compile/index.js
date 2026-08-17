@@ -617,11 +617,15 @@ function analyzeFuncForEmit(func, programFacts) {
   if (block) {
     seedLocalIntConsts(body)
   }
-  // Drop any earlier-cached analyzeBody.locals slice for this body —
-  // narrowSignatures called it before our pre-seed, when params still had no
-  // inferred VAL.TYPED, so the cached widths reflect the pre-narrow state.
-  // Re-walk now with reps in place.
-  const bodyFacts = reanalyzeBody(body, () => block ? analyzeBody(body) : null)
+  // A plain analyzeBody read, not a forced reanalyzeBody (walk-count design
+  // B1, .work/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
+  // have cached this body's locals slice before our pre-seed, when params
+  // still had no inferred VAL.TYPED — but analyzeBody's own live
+  // sigFingerprint gate now catches that mismatch on the read itself and
+  // recomputes, so this call no longer needs to unconditionally invalidate
+  // first. Re-walks with reps in place exactly when the cache can't be
+  // trusted, not on every emit.
+  const bodyFacts = block ? analyzeBody(body) : null
   ctx.func.locals = bodyFacts ? bodyFacts.locals : new Map()
   if (bodyFacts?.valTypes) {
     // A PARAMETER name has no `let`/`const` declaration node inside body for

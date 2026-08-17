@@ -458,72 +458,79 @@ function selfPreservingWrittenKeys(body, name, written) {
   return out
 }
 
+// Per-binding classification shared by scanFlatObjects and scanObjectArrayFacts
+// (walk-count design A1, .work/walk-count-design.md §5 item 1) — the exact
+// per-candidate logic scanFlatObjects always ran, factored out so the fused
+// scan can run it inline inside one scanBindingUses(body) loop instead of a
+// second one. Returns the `{names, values, written, selfPreserving}` entry,
+// or null when `name` doesn't dissolve.
+function flatObjectCandidate(name, s, body) {
+  if (s.decls !== 1 || !Array.isArray(s.initRhs)) return null
+  // Candidate aggregate: an object literal `{…}` (string keys) or a small array
+  // literal `[…]` (index keys "0","1",…). An array dissolves into `name#i` scalar
+  // locals exactly like an object — same `.`/`[]` flat hooks, no heap alloc — when
+  // every use is a static-index read/write. Capped at FLAT_ARRAY_MAX: a larger
+  // literal belongs in one constant data-segment region, not N spilled locals.
+  let props
+  if (s.initRhs[0] === '{}') {
+    props = staticObjectProps(s.initRhs.slice(1))
+  } else if (s.initRhs[0] === '[' || s.initRhs[0] === '[]') {
+    const elems = staticArrayElems(s.initRhs)
+    if (!elems || !elems.length || elems.length > FLAT_ARRAY_MAX) return null
+    // Holes (`[1,,3]`) and spreads (`[...x]`) aren't a fixed positional schema.
+    if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) return null
+    // Only compile-time-constant *value* elements dissolve — number/string/bool/null
+    // ("arrays hold JSON values"). A non-literal element (identifier, call, closure,
+    // arithmetic on a runtime var) can carry a function/closure whose call-indirect
+    // table index binds to the array, not a scalar local — dissolving the slot
+    // desyncs the `elem` section. Conservative: any non-constant element keeps the
+    // array heap-backed.
+    if (!elems.every(e => staticValue(e) !== NO_VALUE)) return null
+    props = { names: elems.map((_, i) => String(i)), values: elems }
+  } else return null
+  const isArr = s.initRhs[0] !== '{}'
+  if (!props || new Set(props.names).size !== props.names.length) return null
+  if (props.values.some(v => refsName(v, name, REFS_IN_EXPR))) return null
+
+  // Schema = literal keys ∪ plain literal-key member writes. For an OBJECT such a
+  // write monotonically extends the static field universe (the new field reads
+  // `undefined` until the write runs, exactly as JS does). An ARRAY has a *fixed*
+  // positional schema: `a.length = …` / `a[n] = …` (off the literal indices) resize
+  // or grow it — not a field add — so arrays never extend, and any off-schema write
+  // (including `.length`, which isn't a slot) disqualifies below.
+  // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
+  // value-type is exactly its literal initializer's) iff its key is absent here.
+  const schema = new Set(props.names)
+  const written = new Set()
+  for (const u of s.uses)
+    if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null) {
+      if (!isArr) schema.add(u.key)
+      written.add(u.key)
+    }
+
+  // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
+  // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
+  // computed/off-schema key, reassignment, compound or `delete` member write,
+  // `++`/`--`, call arg, closure capture, bare ref — leaves the object live.
+  const flat = s.uses.every(u =>
+    (u.kind === USE.MEMBER_R && !u.optional && !u.computed && schema.has(u.key)) ||
+    (u.kind === USE.MEMBER_W && !u.compound && !u.computed && schema.has(u.key)))
+  if (!flat) return null
+
+  // Materialize the parallel {names, values}: literal props first, then each
+  // extension field (value `undefined`), in first-write order.
+  const names = props.names.slice(), values = props.values.slice()
+  for (const k of schema)
+    if (!names.includes(k)) { names.push(k); values.push(undefined) }
+  const selfPreserving = written.size ? selfPreservingWrittenKeys(body, name, written) : null
+  return { names, values, written, selfPreserving }
+}
+
 export function scanFlatObjects(body) {
   const cand = new Map()                 // name → {names, values}
-
-  // A binding referenced as a value inside `node` (skips `:`/`.` property-name
-  // slots). Used only to reject a self-referential initializer — a literal
-  // whose own field values mention the binding is not a self-contained object.
   for (const [name, s] of scanBindingUses(body)) {
-    if (s.decls !== 1 || !Array.isArray(s.initRhs)) continue
-    // Candidate aggregate: an object literal `{…}` (string keys) or a small array
-    // literal `[…]` (index keys "0","1",…). An array dissolves into `name#i` scalar
-    // locals exactly like an object — same `.`/`[]` flat hooks, no heap alloc — when
-    // every use is a static-index read/write. Capped at FLAT_ARRAY_MAX: a larger
-    // literal belongs in one constant data-segment region, not N spilled locals.
-    let props
-    if (s.initRhs[0] === '{}') {
-      props = staticObjectProps(s.initRhs.slice(1))
-    } else if (s.initRhs[0] === '[' || s.initRhs[0] === '[]') {
-      const elems = staticArrayElems(s.initRhs)
-      if (!elems || !elems.length || elems.length > FLAT_ARRAY_MAX) continue
-      // Holes (`[1,,3]`) and spreads (`[...x]`) aren't a fixed positional schema.
-      if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) continue
-      // Only compile-time-constant *value* elements dissolve — number/string/bool/null
-      // ("arrays hold JSON values"). A non-literal element (identifier, call, closure,
-      // arithmetic on a runtime var) can carry a function/closure whose call-indirect
-      // table index binds to the array, not a scalar local — dissolving the slot
-      // desyncs the `elem` section. Conservative: any non-constant element keeps the
-      // array heap-backed.
-      if (!elems.every(e => staticValue(e) !== NO_VALUE)) continue
-      props = { names: elems.map((_, i) => String(i)), values: elems }
-    } else continue
-    const isArr = s.initRhs[0] !== '{}'
-    if (!props || new Set(props.names).size !== props.names.length) continue
-    if (props.values.some(v => refsName(v, name, REFS_IN_EXPR))) continue
-
-    // Schema = literal keys ∪ plain literal-key member writes. For an OBJECT such a
-    // write monotonically extends the static field universe (the new field reads
-    // `undefined` until the write runs, exactly as JS does). An ARRAY has a *fixed*
-    // positional schema: `a.length = …` / `a[n] = …` (off the literal indices) resize
-    // or grow it — not a field add — so arrays never extend, and any off-schema write
-    // (including `.length`, which isn't a slot) disqualifies below.
-    // `written` = the keys a MEMBER_W reassigns — a slot is write-once (its
-    // value-type is exactly its literal initializer's) iff its key is absent here.
-    const schema = new Set(props.names)
-    const written = new Set()
-    for (const u of s.uses)
-      if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null) {
-        if (!isArr) schema.add(u.key)
-        written.add(u.key)
-      }
-
-    // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
-    // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
-    // computed/off-schema key, reassignment, compound or `delete` member write,
-    // `++`/`--`, call arg, closure capture, bare ref — leaves the object live.
-    const flat = s.uses.every(u =>
-      (u.kind === USE.MEMBER_R && !u.optional && !u.computed && schema.has(u.key)) ||
-      (u.kind === USE.MEMBER_W && !u.compound && !u.computed && schema.has(u.key)))
-    if (!flat) continue
-
-    // Materialize the parallel {names, values}: literal props first, then each
-    // extension field (value `undefined`), in first-write order.
-    const names = props.names.slice(), values = props.values.slice()
-    for (const k of schema)
-      if (!names.includes(k)) { names.push(k); values.push(undefined) }
-    const selfPreserving = written.size ? selfPreservingWrittenKeys(body, name, written) : null
-    cand.set(name, { names, values, written, selfPreserving })
+    const entry = flatObjectCandidate(name, s, body)
+    if (entry) cand.set(name, entry)
   }
   return cand
 }
@@ -557,16 +564,20 @@ export function scanFlatObjects(body) {
 // escapes and disqualifies the binding.
 const _SLICE_VIEW_OK = new Set([USE.MEMBER_R, USE.MEMBER_W, USE.COMPARE, USE.CONCAT, USE.BOOL_TEST])
 
-export function scanSliceViews(body) {
-  const isSliceCall = (n) =>
-    Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
-    && n[1][0] === '.' && n[1][2] === 'slice'
+const _isSliceCall = (n) =>
+  Array.isArray(n) && n[0] === '()' && Array.isArray(n[1])
+  && n[1][0] === '.' && n[1][2] === 'slice'
 
+// Per-binding classification shared by scanSliceViews and scanObjectArrayFacts
+// (walk-count design A1) — factored out for the same reason as
+// flatObjectCandidate above.
+function sliceViewCandidate(s) {
+  return s.decls === 1 && _isSliceCall(s.initRhs) && s.uses.every(u => _SLICE_VIEW_OK.has(u.kind))
+}
+
+export function scanSliceViews(body) {
   const views = new Set()
-  for (const [name, s] of scanBindingUses(body)) {
-    if (s.decls !== 1 || !isSliceCall(s.initRhs)) continue
-    if (s.uses.every(u => _SLICE_VIEW_OK.has(u.kind))) views.add(name)
-  }
+  for (const [name, s] of scanBindingUses(body)) if (sliceViewCandidate(s)) views.add(name)
   return views
 }
 
@@ -619,15 +630,44 @@ export function safeReads(node, name) {
   return true
 }
 
+// Per-binding classification shared by scanNeverGrown and scanObjectArrayFacts
+// (walk-count design A1) — factored out for the same reason as
+// flatObjectCandidate above.
+function neverGrownCandidate(name, s, body) {
+  // Candidate: a single-declaration binding initialized from a fresh array literal.
+  if (s.decls !== 1 || !Array.isArray(s.initRhs)) return false
+  if (s.initRhs[0] !== '[' && !(s.initRhs[0] === '[]' && s.initRhs.length <= 2)) return false
+  return safeReads(body, name)
+}
+
 export function scanNeverGrown(body) {
   const out = new Set()
-  for (const [name, s] of scanBindingUses(body)) {
-    // Candidate: a single-declaration binding initialized from a fresh array literal.
-    if (s.decls !== 1 || !Array.isArray(s.initRhs)) continue
-    if (s.initRhs[0] !== '[' && !(s.initRhs[0] === '[]' && s.initRhs.length <= 2)) continue
-    if (safeReads(body, name)) out.add(name)
-  }
+  for (const [name, s] of scanBindingUses(body)) if (neverGrownCandidate(name, s, body)) out.add(name)
   return out
+}
+
+/**
+ * Fused single-traversal replacement for scanFlatObjects + scanSliceViews +
+ * scanNeverGrown (walk-count design A1, .work/walk-count-design.md §5 item 1
+ * / §1.3: three independent post-overlay scans over the same
+ * scanBindingUses(body) summary, no cross-dependency found between them).
+ * Each per-name classification below is the exact original function's own
+ * logic (flatObjectCandidate/sliceViewCandidate/neverGrownCandidate,
+ * unchanged) — only the outer scanBindingUses(body) loop is now shared
+ * instead of run three times. Byte-identical output to calling all three
+ * separately, computed once. analyzeBody (analyze.js) calls this instead of
+ * the three standalone scans; they stay exported for any other caller /
+ * direct test coverage.
+ */
+export function scanObjectArrayFacts(body) {
+  const flatObjects = new Map(), sliceViews = new Set(), neverGrown = new Set()
+  for (const [name, s] of scanBindingUses(body)) {
+    const entry = flatObjectCandidate(name, s, body)
+    if (entry) flatObjects.set(name, entry)
+    if (sliceViewCandidate(s)) sliceViews.add(name)
+    if (neverGrownCandidate(name, s, body)) neverGrown.add(name)
+  }
+  return { flatObjects, sliceViews, neverGrown }
 }
 
 /**

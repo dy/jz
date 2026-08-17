@@ -193,11 +193,15 @@ export function targetProfileFor(host) {
  *                                failure mode is structural, not a matter of
  *                                discipline. A signature-retyping miss that
  *                                still slips through (raw `func.sig...=`
- *                                without going through the seam) throws under
- *                                JZ_DEBUG_INVARIANTS=1 (assertBodyFactsFresh,
- *                                analyze.js, above analyzeBody) — scoped to
- *                                param/result WASM-type fields only; a
- *                                broader recompute-and-compare check
+ *                                without going through the seam) is caught
+ *                                LIVE on the next bodyFacts cache-hit read
+ *                                (sigFingerprint's fingerprint gate,
+ *                                analyze.js, analyzeBody's cache-hit path —
+ *                                walk-count design B1, promoted from a
+ *                                JZ_DEBUG_INVARIANTS-only assert-and-crash to
+ *                                an always-on self-healing recompute) —
+ *                                scoped to param/result WASM-type fields
+ *                                only; a broader recompute-and-compare check
  *                                (JZ_DEBUG_CACHE) was tried and abandoned —
  *                                see analyzeBody's own module comment for why.
  *                                Ambient-overlay staleness (ctx.func.localReps
