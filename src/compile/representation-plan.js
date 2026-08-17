@@ -186,14 +186,299 @@ const makeNoBigintBoundary = (func, sig = func?.sig) => ({
 
 const programPlanRecord = ctx => ctx.plans.representationData.get(ctx.plans)
 
+const BIGINT_TYPED_CTORS = new Set(['new.BigInt64Array', 'new.BigUint64Array'])
+const BIGINT_READ_METHODS = new Set(['getBigInt64', 'getBigUint64'])
+const VALUE_COERCERS = new Set(['Number', 'String', 'Boolean', 'parseInt', 'parseFloat'])
+const STORAGE_READ_METHODS = new Set(['get', 'pop', 'shift', 'at'])
+const STORAGE_WRITE_METHODS = new Set(['set', 'add', 'push', 'unshift'])
+
+const isBigintOrigin = node => Array.isArray(node) && (
+  node[0] === 'bigint' ||
+  (node[0] === '()' && typeof node[1] === 'string' &&
+    (node[1] === 'BigInt' || node[1].startsWith('BigInt.'))) ||
+  (node[0] === '()' && Array.isArray(node[1]) && BIGINT_READ_METHODS.has(node[1][2]))
+)
+
+/**
+ * Forward existential provenance from real BigInt origins through bindings,
+ * calls, returns, and named storage. Unknown semantic kind is not itself an
+ * origin: this is the proof v1 lacked when it treated every TOP as raw-capable.
+ */
+function solveBigintProvenance(ctx, programFacts, ast) {
+  const namesByFunc = new Map()
+  const paramsByFunc = new Map()
+  const results = new Set()
+  const resultReps = new Map()
+  const storage = new Set()
+  const bigintTyped = new Set()
+  const globals = new Set()
+  const globalReps = new Map()
+  let indirectResult = false
+
+  const namesFor = func => {
+    let names = namesByFunc.get(func)
+    if (!names) { names = new Set(); namesByFunc.set(func, names) }
+    return names
+  }
+  const paramsFor = func => {
+    let set = paramsByFunc.get(func.name)
+    if (!set) { set = new Set(); paramsByFunc.set(func.name, set) }
+    return set
+  }
+  const mark = (set, value) => {
+    if (set.has(value)) return false
+    set.add(value)
+    return true
+  }
+
+  const paramNeedsHostTag = (node, name, root = true) => {
+    if (!Array.isArray(node)) return false
+    if (!root && node[0] === '=>') return false
+    if (node[0] === 'typeof' && node[1] === name) return true
+    if (node[0] === 'u+' && node[1] === name) return true
+    if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
+    for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, false)) return true
+    return false
+  }
+
+  for (const func of ctx.funcs.list) {
+    if (func.raw || !func.sig) continue
+    const row = programFacts.paramReps.get(func.name)
+    const pset = paramsFor(func)
+    for (let k = 0; k < func.sig.params.length; k++) {
+      const rep = row?.get(k)
+      const observed = rep?.possibleKinds
+      if (typeof rep?.typedCtor === 'string' && (rep.typedCtor.includes('BigInt64') || rep.typedCtor.includes('BigUint64')))
+        bigintTyped.add(func.sig.params[k].name)
+      if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true ||
+          (observed instanceof Set && observed.size < KIND_UNIVERSE.length && observed.has(VAL.BIGINT)) ||
+          (isExported(ctx, func) && paramNeedsHostTag(func.body, func.sig.params[k].name)))
+        pset.add(k)
+    }
+    for (const k of pset) namesFor(func).add(func.sig.params[k].name)
+    if (func.valResult === VAL.BIGINT) results.add(func.name)
+  }
+
+  const defMapByFunc = new Map()
+  for (const func of ctx.funcs.list)
+    if (!func.raw && func.body) defMapByFunc.set(func, collectDefs(func.body))
+
+  const exprMay = (node, func, localNames) => {
+    if (isBigintOrigin(node)) return true
+    if (typeof node === 'string') return localNames?.has(node) || globals.has(node)
+    if (!Array.isArray(node) || nullishArm(node)) return false
+    const op = node[0]
+    if (op === '?:') return exprMay(node[2], func, localNames) || exprMay(node[3], func, localNames)
+    if (op === '&&' || op === '||' || op === '??')
+      return exprMay(node[1], func, localNames) || exprMay(node[2], func, localNames)
+    if (op === ',') return exprMay(node[node.length - 1], func, localNames)
+    if (op === '=' && typeof node[1] === 'string') return exprMay(node[2], func, localNames)
+    if (op === 'typeof' || op === '!' || op === 'u+' || op === '>>>' ||
+        op === '==' || op === '!=' || op === '===' || op === '!==' ||
+        op === '<' || op === '>' || op === '<=' || op === '>=' || op === 'in' || op === 'instanceof') return false
+    if (op === '[]' || op === '.' || op === '?.')
+      return typeof node[1] === 'string' && (storage.has(node[1]) || (op === '[]' && bigintTyped.has(node[1])))
+    if (op === '()') {
+      if (typeof node[1] === 'string') {
+        if (VALUE_COERCERS.has(node[1])) return false
+        if (node[1] === 'Atomics.load') {
+          const recv = commaList(node[2])[0]
+          return typeof recv === 'string' && bigintTyped.has(recv)
+        }
+        if (BIGINT_TYPED_CTORS.has(node[1])) return false // constructor yields a TYPED pointer, not a BigInt value
+        const callee = ctx.funcs.map.get(node[1])
+        return callee ? results.has(callee.name) : false
+      }
+      if (Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
+        const method = node[1][2]
+        if (BIGINT_READ_METHODS.has(method)) return true
+        if (STORAGE_READ_METHODS.has(method) && typeof node[1][1] === 'string')
+          return storage.has(node[1][1]) || bigintTyped.has(node[1][1])
+        return false
+      }
+      return indirectResult
+    }
+    // Arithmetic preserves a BigInt member from a BigInt operand. Object/
+    // array/string construction returns a pointer and is not a BigInt value.
+    if (op === '[' || op === '{}' || op === 'str' || op === 'bool' || op === 'new' ||
+        (typeof op === 'string' && op.startsWith('new.'))) return false
+    for (let i = 1; i < node.length; i++) if (exprMay(node[i], func, localNames)) return true
+    return false
+  }
+
+  const exprRep = (node, func, localNames) => {
+    if (!exprMay(node, func, localNames)) return NO_BIGINT
+    if (isBigintOrigin(node)) return RAW_BIGINT
+    if (typeof node === 'string') return globalReps.get(node) ?? ANY_BIGINT
+    if (!Array.isArray(node)) return ANY_BIGINT
+    if (node[0] === ',') return exprRep(node[node.length - 1], func, localNames)
+    if (node[0] === '=') return exprRep(node[2], func, localNames)
+    if (node[0] === '?:') return joinRep(exprRep(node[2], func, localNames), exprRep(node[3], func, localNames))
+    if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
+      return joinRep(exprRep(node[1], func, localNames), exprRep(node[2], func, localNames))
+    if (node[0] === '[]' && typeof node[1] === 'string')
+      return bigintTyped.has(node[1]) ? RAW_BIGINT : storage.has(node[1]) ? BOXED_BIGINT : ANY_BIGINT
+    if ((node[0] === '.' || node[0] === '?.') && typeof node[1] === 'string')
+      return storage.has(node[1]) ? BOXED_BIGINT : ANY_BIGINT
+    if (node[0] === '()') {
+      if (typeof node[1] === 'string') {
+        const callee = ctx.funcs.map.get(node[1])
+        return callee ? resultReps.get(callee.name) ?? ANY_BIGINT : RAW_BIGINT
+      }
+      if (Array.isArray(node[1]) && BIGINT_READ_METHODS.has(node[1][2])) return RAW_BIGINT
+      if (Array.isArray(node[1]) && STORAGE_READ_METHODS.has(node[1][2])) return BOXED_BIGINT
+    }
+    if (NUMERIC_VALUE_OPS.has(node[0])) return RAW_BIGINT
+    return ANY_BIGINT
+  }
+
+  const noteResult = (func, expr) => {
+    if (!func || !exprMay(expr, func, namesFor(func))) return false
+    let changed = mark(results, func.name)
+    const rep = exprRep(expr, func, namesFor(func))
+    const prev = resultReps.get(func.name)
+    const next = prev == null ? rep : joinRep(prev, rep)
+    if (prev !== next) { resultReps.set(func.name, next); changed = true }
+    return changed
+  }
+
+  const scan = (node, func, localNames) => {
+    if (!Array.isArray(node)) return false
+    let changed = false
+    const op = node[0]
+    if (op === '=>') return false
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
+            Array.isArray(decl[2]) && decl[2][0] === '()' && BIGINT_TYPED_CTORS.has(decl[2][1]))
+          if (mark(bigintTyped, decl[1])) changed = true
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
+            exprMay(decl[2], func, localNames)) {
+          if (mark(localNames, decl[1])) changed = true
+          if (!func) {
+            const rep = isBigintOrigin(decl[2]) ? RAW_BIGINT : ANY_BIGINT
+            const prev = globalReps.get(decl[1])
+            const next = prev == null ? rep : joinRep(prev, rep)
+            if (prev !== next) { globalReps.set(decl[1], next); changed = true }
+          }
+        }
+      }
+    }
+    if (op === '()' && typeof node[1] === 'string') {
+      const callee = ctx.funcs.map.get(node[1])
+      if (callee) {
+        const args = commaList(node[2]), pset = paramsFor(callee)
+        for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
+          if (exprMay(args[k], func, localNames) && mark(pset, k)) changed = true
+        for (const k of pset) if (mark(namesFor(callee), callee.sig.params[k].name)) changed = true
+        // A callee that mutates a storage-bearing param propagates that
+        // storage provenance back to the caller's bare receiver argument.
+        for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
+          if (storage.has(callee.sig.params[k].name) && typeof args[k] === 'string' && mark(storage, args[k])) changed = true
+      }
+    }
+    if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
+      const recv = node[1][1], method = node[1][2], args = commaList(node[2])
+      if (STORAGE_WRITE_METHODS.has(method)) {
+        const start = method === 'set' ? 1 : 0
+        for (let k = start; k < args.length; k++)
+          if (exprMay(args[k], func, localNames) && typeof recv === 'string' && mark(storage, recv)) changed = true
+      }
+    }
+    if (ASSIGN_OPS.has(op) && typeof node[1] === 'string' && exprMay(node[2], func, localNames)) {
+      if (mark(localNames, node[1])) changed = true
+      if (!func) {
+        const rep = isBigintOrigin(node[2]) ? RAW_BIGINT : ANY_BIGINT
+        const prev = globalReps.get(node[1])
+        const next = prev == null ? rep : joinRep(prev, rep)
+        if (prev !== next) { globalReps.set(node[1], next); changed = true }
+      }
+    }
+    if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.')) {
+      const recv = node[1][1]
+      if (exprMay(node[2], func, localNames) && typeof recv === 'string' && mark(storage, recv)) changed = true
+    }
+    if (op === 'return' && noteResult(func, node[1])) changed = true
+    for (let i = 1; i < node.length; i++) if (scan(node[i], func, localNames)) changed = true
+    return changed
+  }
+
+  const budget = ctx.funcs.list.length + 2
+  for (let round = 0; round < budget; round++) {
+    let changed = false
+    for (const func of ctx.funcs.list) {
+      if (func.raw || !func.body) continue
+      const names = namesFor(func), defs = defMapByFunc.get(func)
+      let localChanged = true
+      while (localChanged) {
+        localChanged = false
+        for (const [name, entries] of defs) {
+          for (const entry of entries) if (entry.rhs != null && exprMay(entry.rhs, func, names)) {
+            if (mark(names, name)) { localChanged = true; changed = true }
+            break
+          }
+          // Storage aliases preserve the receiver's content provenance.
+          for (const entry of entries) if (typeof entry.rhs === 'string') {
+            if (storage.has(entry.rhs) && mark(storage, name)) { localChanged = true; changed = true }
+            if (bigintTyped.has(entry.rhs) && mark(bigintTyped, name)) { localChanged = true; changed = true }
+          }
+        }
+      }
+      if (!Array.isArray(func.body) || func.body[0] !== '{}')
+        if (noteResult(func, func.body)) changed = true
+      if (scan(func.body, func, names)) changed = true
+    }
+    if (!indirectResult)
+      for (const name of programFacts.valueUsed) if (results.has(name)) { indirectResult = true; changed = true; break }
+    if (scan(ast, null, globals)) changed = true
+    if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits)
+      if (scan(init, null, globals)) changed = true
+    if (!changed) break
+  }
+
+  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay }
+}
+
+function deriveLocalProvenance(sig, body, localReps, program) {
+  const names = new Set(), params = new Set()
+  const observedParams = program?.closureParams.get(sig?.name)
+  for (let k = 0; k < (sig?.params?.length || 0); k++) {
+    const name = sig.params[k].name, rep = localReps?.get(name)
+    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true || observedParams?.has(k)) {
+      params.add(k)
+      names.add(name)
+    }
+  }
+  if (localReps) for (const [name, rep] of localReps)
+    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true) names.add(name)
+  const defs = collectDefs(body)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [name, entries] of defs)
+      if (!names.has(name) && entries.some(entry => entry.rhs != null && program.exprMay(entry.rhs, null, names))) {
+        names.add(name)
+        changed = true
+      }
+  }
+  const tails = Array.isArray(body) && body[0] === '{}' ? returnExprs(body) : [body]
+  return { names, params, result: tails.some(expr => program.exprMay(expr, null, names)) }
+}
+
 const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const generic = !!options.generic
   const uncovered = generic || isExported(ctx, func) || options.valueUsed?.has(func.name)
   const row = paramReps?.get(func.name)
-  const params = (func.sig?.params || []).map((_, k) => {
-    const rep = row?.get(k)
-    const semantic = generic ? semAll() : boundaryParamSemantic(rep, uncovered)
-    const current = generic ? BOXED_BIGINT : currentParamRep(rep, semantic, uncovered)
+  const params = (func.sig?.params || []).map((param, k) => {
+    const rep = row?.get(k) || (generic ? options.localReps?.get(param.name) : null)
+    const mayBigint = generic
+      ? options.localProvenance?.params.has(k)
+      : options.provenance?.paramsByFunc.get(func.name)?.has(k)
+    const semantic = mayBigint
+      ? (generic ? (rep ? semanticFromRep(rep) : semAll()) : boundaryParamSemantic(rep, uncovered))
+      : noBigintSemantic()
+    const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, semantic, uncovered)) : NO_BIGINT
     return {
       semantic,
       current,
@@ -201,8 +486,13 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       demand: demandFor(semantic),
     }
   })
-  const semantic = generic ? semAll() : resultSemantic(func)
-  const current = currentResultRep(func, semantic, generic)
+  const resultMayBigint = generic
+    ? options.localProvenance?.result === true
+    : options.provenance?.results.has(func.name)
+  const semantic = resultMayBigint ? (generic ? semAll() : resultSemantic(func)) : noBigintSemantic()
+  const current = resultMayBigint
+    ? (generic ? currentResultRep(func, semantic, true) : options.provenance?.resultReps.get(func.name) ?? currentResultRep(func, semantic, false))
+    : NO_BIGINT
   return {
     kind: 'boundary',
     func,
@@ -247,6 +537,10 @@ const publishBoundary = (ctx, func, data) => {
   handle = {}
   ctx.plans.representationData.set(handle, { boundary: data, body: null })
   ctx.plans.representations.set(func, handle)
+  if (func?.sig) {
+    ctx.plans.representations.set(func.sig, handle)
+    if (func.sig.params) ctx.plans.representations.set(func.sig.params, handle)
+  }
   return handle
 }
 
@@ -254,9 +548,12 @@ const publishBoundary = (ctx, func, data) => {
  * Slice 1: publish the whole-program boundary policy after call/kind facts have
  * settled. This is shadow-only; no emitter consumes target/action facts yet.
  */
-export function solveRepresentationBoundaries(ctx, programFacts) {
+export function solveRepresentationBoundaries(ctx, programFacts, ast) {
   const bigint = programFacts.hasBigint === true
-  const program = { program: true, bigint, emptyHandle: null }
+  const program = {
+    program: true, bigint, emptyHandle: null, provenance: null, rejects: 0,
+    closureParams: new Map(),
+  }
   ctx.plans.representationData.set(ctx.plans, program)
   // BigInt-free programs cannot produce either raw or boxed BigInt carriers.
   // One opaque singleton answers NONE for every identity; body analysis only
@@ -267,14 +564,18 @@ export function solveRepresentationBoundaries(ctx, programFacts) {
     ctx.plans.representationData.set(handle, { programEmpty: true, boundary: null, body: null })
     return
   }
+  program.provenance = solveBigintProvenance(ctx, programFacts, ast)
+  program.provenance.closureParams = program.closureParams
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.sig) continue
     const data = makeBoundaryData(ctx, func, programFacts.paramReps, {
       valueUsed: programFacts.valueUsed,
+      provenance: program.provenance,
     })
     if (isExported(ctx, func)) for (let k = 0; k < data.params.length; k++) {
       const p = data.params[k]
       p.hostAction = edgeAction(p.current, p.target, true)
+      if (p.hostAction === REP_EDGE_REJECT) program.rejects++
       data.edges.push(EDGE_KIND['host-param'], p.current, p.target, p.hostAction)
     }
     publishBoundary(ctx, func, data)
@@ -293,7 +594,7 @@ function ensureBoundary(ctx, identity, sig, options = {}) {
   }
   const data = programPlanRecord(ctx)?.bigint === false
     ? makeNoBigintBoundary(func, sig)
-    : makeBoundaryData(ctx, func, null, { generic: !!options.generic })
+    : makeBoundaryData(ctx, func, null, { ...options, generic: !!options.generic })
   return publishBoundary(ctx, identity, data)
 }
 
@@ -347,6 +648,9 @@ function collectDefs(body) {
 
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const defs = collectDefs(body)
+  const provenance = options.provenance
+  const taintedNames = options.localProvenance?.names || provenance?.namesByFunc.get(identity)
+  const mayCarryBigint = node => !provenance || provenance.exprMay(node, identity, taintedNames)
   const params = new Map((sig?.params || []).map((p, i) => [p.name, i]))
   const semanticNames = new Map()
   const currentNames = new Map()
@@ -365,6 +669,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
   if (localReps) for (const [name, rep] of localReps) {
     if (semanticNames.has(name) || defs.has(name)) continue
+    if (provenance && !taintedNames?.has(name) && !provenance.globals.has(name)) {
+      semanticNames.set(name, noBigintSemantic())
+      currentNames.set(name, NO_BIGINT)
+      continue
+    }
     semanticNames.set(name, semanticFromRep(rep))
     if (excludesBigint(semanticNames.get(name))) currentNames.set(name, NO_BIGINT)
     else if (rep?.val === VAL.BIGINT) currentNames.set(name, RAW_BIGINT)
@@ -374,12 +683,24 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const semanticOf = node => {
     if (typeof node === 'number') return semKind(VAL.NUMBER)
     if (node == null) return packSemantic(0, true, true)
-    if (typeof node === 'string') return semanticNames.get(node) || semanticFromRep(localReps?.get(node))
+    if (typeof node === 'string') {
+      if (semanticNames.has(node)) return semanticNames.get(node)
+      if (provenance?.globals.has(node)) {
+        const rep = provenance.globalReps.get(node) ?? ANY_BIGINT
+        return bigintRepIsClosed(rep) && bigintRepBits(rep) !== BIGINT_REP_TOP ? semKind(VAL.BIGINT) : semAll()
+      }
+      if (provenance && !taintedNames?.has(node)) return noBigintSemantic()
+      return semanticFromRep(localReps?.get(node))
+    }
     if (!Array.isArray(node)) return semAll()
     const cached = nodeSemantic.get(node)
     if (cached) return cached
     let out
-    if (nullishArm(node)) out = packSemantic(0, true, true)
+    if (!mayCarryBigint(node)) out = noBigintSemantic()
+    else if (nullishArm(node)) out = packSemantic(0, true, true)
+    else if (isBigintOrigin(node)) out = semKind(VAL.BIGINT)
+    else if (node[0] === ',') out = semanticOf(node[node.length - 1])
+    else if (node[0] === '=') out = semanticOf(node[2])
     else if (node[0] === '?:') out = joinSem(semanticOf(node[2]), semanticOf(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
       out = joinSem(semanticOf(node[1]), semanticOf(node[2]))
@@ -441,13 +762,16 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const currentOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
-    if (typeof node === 'string') return currentNames.get(node) ?? ANY_BIGINT
+    if (typeof node === 'string') return currentNames.get(node) ?? provenance?.globalReps.get(node) ?? ANY_BIGINT
     if (!Array.isArray(node)) return ANY_BIGINT
     const cached = nodeCurrent.get(node)
     if (cached != null) return cached
     let out
     if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
       out = directCallBoundary(ctx, node[1]).result.current
+    else if (isBigintOrigin(node)) out = RAW_BIGINT
+    else if (node[0] === ',') out = currentOf(node[node.length - 1])
+    else if (node[0] === '=') out = currentOf(node[2])
     else {
       const recv = memberReceiver(node)
       const cm = callMember(node)
@@ -493,6 +817,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
 
   const addEdge = (kind, source, target, _detail, host = false) => {
     const action = edgeAction(source, target, host)
+    if (action === REP_EDGE_REJECT) programPlanRecord(ctx).rejects++
     // KEEP is the default edge equation and needs no retained record. Canonical
     // storage contains only an actual normalization or unresolved obligation.
     if (action !== REP_EDGE_KEEP) edges.push(EDGE_KIND[kind], source, target, action)
@@ -503,21 +828,26 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const plannedOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
-    if (typeof node === 'string') return targetNames.get(node) ?? ANY_BIGINT
+    if (typeof node === 'string') return targetNames.get(node) ?? provenance?.globalReps.get(node) ?? ANY_BIGINT
     if (!Array.isArray(node)) return ANY_BIGINT
     const cached = nodeTarget.get(node)
     if (cached != null) return cached
-    let target
-    if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
+    let target, normalizedElsewhere = false
+    if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1])) {
       target = directCallBoundary(ctx, node[1]).result.target
-    else {
+      normalizedElsewhere = true // the callee's return edges own this transition
+    } else {
       const recv = memberReceiver(node)
       const cm = callMember(node)
-      if (recv != null) target = valTypeOf(recv) === VAL.TYPED ? RAW_BIGINT :
-        (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
-         ctx.schema.slotBigintProvenAt?.(recv, node[2]) ? RAW_BIGINT : BOXED_BIGINT)
-      else if (cm && cm[2] === 'get') target = BOXED_BIGINT
-      else target = targetRepFor(sem, currentOf(node))
+      if (recv != null) {
+        target = valTypeOf(recv) === VAL.TYPED ? RAW_BIGINT :
+          (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
+           ctx.schema.slotBigintProvenAt?.(recv, node[2]) ? RAW_BIGINT : BOXED_BIGINT)
+        normalizedElsewhere = true // storage's write edge owns the carrier
+      } else if (cm && cm[2] === 'get') {
+        target = BOXED_BIGINT
+        normalizedElsewhere = true
+      } else target = targetRepFor(sem, currentOf(node))
     }
     nodeTarget.set(node, target)
     if (!plannedSeen.has(node)) {
@@ -530,7 +860,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         addEdge('join-arm', plannedOf(node[2]), target, node)
       } else {
         const current = currentOf(node)
-        if (current !== target) addEdge('result', current, target, node)
+        if (!normalizedElsewhere && current !== target) addEdge('result', current, target, node)
       }
     }
     return target
@@ -627,15 +957,22 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
   const prior = ctx.plans.representations.get(identity)
   if (prior && ctx.plans.representationData.get(prior)?.body)
     throw new Error(`RepresentationPlan already published for ${identity?.name || '<anonymous>'}`)
-  const handle = ensureBoundary(ctx, identity, sig, options)
+  const localProvenance = options.generic && program.provenance
+    ? deriveLocalProvenance(sig, body, localReps, program.provenance)
+    : null
+  const planOptions = {
+    ...options,
+    provenance: program.provenance,
+    localProvenance,
+    localReps,
+  }
+  const handle = ensureBoundary(ctx, identity, sig, planOptions)
   const record = ctx.plans.representationData.get(handle)
-  record.body = programPlanRecord(ctx)?.bigint === false
-    ? {
-        kind: 'body', identity, boundary: record.boundary, trivial: true,
-        semanticNames: new Map(), currentNames: new Map(), targetNames: new Map(),
-        nodeFacts: new Map(), edges: [],
-      }
-    : buildBodyData(ctx, identity, sig, body, localReps, record.boundary, options)
+  if (sig && typeof sig === 'object') {
+    ctx.plans.representations.set(sig, handle)
+    if (sig.params) ctx.plans.representations.set(sig.params, handle)
+  }
+  record.body = buildBodyData(ctx, identity, sig, body, localReps, record.boundary, planOptions)
   if (DBG_INVARIANTS) assertRepresentationPlan(ctx, handle)
   return handle
 }
@@ -700,7 +1037,29 @@ export function representationBoundaryActionCount(ctx, identity, action) {
   return n
 }
 
+const activeTargetRep = (ctx, node) => {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body) return NO_BIGINT
+  if (typeof node === 'string') return body.targetNames?.get(node) ?? NO_BIGINT
+  if (Array.isArray(node)) return (body.nodeFacts?.get(node) ?? NO_BIGINT) & 7
+  return NO_BIGINT
+}
+
+/** Record direct-closure argument provenance before that closure is planned. */
+export function recordClosureCallRepresentations(ctx, bodyName, args) {
+  const program = programPlanRecord(ctx)
+  if (!program?.bigint) return
+  let row = program.closureParams.get(bodyName)
+  for (let k = 0; k < args.length; k++) {
+    if (bigintRepBits(activeTargetRep(ctx, args[k])) === BIGINT_REP_NONE) continue
+    if (!row) { row = new Set(); program.closureParams.set(bodyName, row) }
+    row.add(k)
+  }
+}
+
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true
+export const representationProgramRejectCount = ctx => programPlanRecord(ctx)?.rejects || 0
 
 /** Debug invariant: every non-reject action maps into the target's allowed set. */
 function assertRepresentationPlan(ctx, plan) {

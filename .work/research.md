@@ -20598,3 +20598,56 @@ landings: build ×2 SHA-converges (`dist/jz.wasm`
 and kernel oracle passes 13/13 on all 15 foreground repetitions. The validation
 worktree's only uncommitted change was `REGION_HOOKS_ACTIVE=true`; production
 source remains false/dormant.
+
+---
+
+## §RepresentationPlan v2 Slice 2 — origin-complete provenance, zero unresolved edges
+## (2026-08-17)
+
+The first attempt to consume Slice 1's direct-call targets was rejected before
+landing. Its flow-insensitive TOP facts boxed Number branches in
+`typeof x === 'bigint' ? x + 1n : x + 1`, treated nullable raw-only helpers as
+tagged, and changed 25 focused watr/carrier assertions. All behavior edits were
+restored to Slice 1 before proceeding. This was the design's own rule working:
+TOP cannot authorize a helper; precision must precede consumption.
+
+Slice 2 remains shadow-only and adds a forward existential provenance solver.
+It seeds only real BigInt origins (literal/`BigInt`, DataView BigInt reads,
+BigInt typed arrays, exact existing BigInt facts, and exported parameters that
+actually expose `typeof`/ToNumber), then propagates through bindings, direct
+call arguments/results, named storage and aliases, module globals, returns,
+value-used call results, and closure bodies. Semantic unknown is no longer
+synonymous with “raw BigInt possible.” Global origins carry a separate raw/
+boxed representation fact; direct-call and storage result carriers are owned
+by their producer edges rather than redundantly guessed at each read.
+BigInt-free graphs retain Slice 1's shared closed-NONE singleton and pay none of
+this work.
+
+The production self graph now converges with **zero `REP_EDGE_REJECT` facts**
+at both O0 and the production O3/snapshot profile (valid 17,422,773-byte
+module in the direct production probe), down from Slice 1's 12,920 rejects.
+The intermediate measurements were useful: a first provenance pass reduced
+12,920→8,541 but over-tainted every generic closure parameter; replacing that
+global closure-index union with per-closure local facts reduced the real watr
+graph to four edges, and global representation + producer-owned call-result
+facts closed the final four. The retained explicit self-graph obligations are
+normalization actions only; no magnitude fallback is represented by the plan.
+
+This is a pure fact-precision slice: **130/130 corpus outputs are SHA-256
+byte-identical to Slice 1**, including jessie, watr, and the self-source
+`jzify-entry` row. Build ×2 converges (`dist/jz.wasm`
+`955906ac68b314c9a14657e5ec8a694b489dd49cd7a731b442fe3343bb101bbe`,
+16,937.5 KiB). Gates: default/O0/O3 3,500/3,494/0/6; wasm-target
+2,759/2,753/0/6; kernel parity 33/33; dormant oracle 13/13×3; selfhost
+21/21; claims size geomean 1.020×. WASI retains only the same pre-existing
+`ternaryBoxedNames` row.
+
+**Status:** edge coverage is complete on the production graph, but the plan is
+not declared codegen-consumable yet. The old `bigintBoxed`, ternary transient,
+conservative-pairing, magnitude, and sentinel authorities still emit all bytes;
+Slice 3 must switch one edge family at a time with differential WAT/value gates.
+FeaturePlan therefore remains blocked at this checkpoint. Region-live on the
+rebased slice also clears the required gate: build ×2 converges
+(`dist/jz.wasm` `834ce7562add5a4dcd3f059ac6fef9f064f146e61c4f5ac6e12c100f09f73e1d`)
+and kernel oracle passes 13/13 on all 15 foreground repetitions; only the
+validation worktree had `REGION_HOOKS_ACTIVE=true`.

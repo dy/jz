@@ -236,7 +236,7 @@ export default function plan(ast, profiler, regionHooks) {
     narrowBoolResults()
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
-    solveRepresentationBoundaries(ctx, programFacts)
+    solveRepresentationBoundaries(ctx, programFacts, ast)
     return programFacts
   }
 
@@ -333,6 +333,6 @@ export default function plan(ast, profiler, regionHooks) {
   // RepresentationPlan v2 Slice 1: semantic call/kind facts and every
   // specialization are settled. Publish boundary targets before any body
   // FunctionPlan is analyzed or emitted; this slice is observation-only.
-  solveRepresentationBoundaries(ctx, programFacts)
+  solveRepresentationBoundaries(ctx, programFacts, ast)
   return programFacts
 }

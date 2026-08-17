@@ -1,6 +1,6 @@
 # RepresentationPlan v2 — edge-normalized BigInt provenance
 
-Status: **implementation in progress — Slice 1 shadow plan landed; not yet consumable**
+Status: **implementation in progress — Slices 1–2 shadow plan + complete provenance landed; not yet codegen-consumable**
 (2026-08-17). Grounded in current main
 `2e4072df` and an exact resurrection of the rejected five-commit experiment:
 

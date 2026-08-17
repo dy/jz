@@ -35,7 +35,8 @@ import {
   BIGINT_REP_BOXED, BIGINT_REP_CLOSED, BIGINT_REP_RAW,
   REP_EDGE_BOX, REP_EDGE_HOST_BOX, REP_EDGE_REJECT,
   representationActionCount, representationBindingRep, representationBoundaryActionCount,
-  representationParamRep, representationPlanOf, representationProgramHasBigint, representationResultRep,
+  representationParamRep, representationPlanOf, representationProgramHasBigint,
+  representationProgramRejectCount, representationResultRep,
 } from '../src/compile/representation-plan.js'
 import { withControlFrame, withFunctionField, withFunctionFields } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
@@ -276,12 +277,14 @@ test('RepresentationPlan v2 publishes normalized edge facts without exposing mut
     function raw() { return 4n + 1n }
     function tagged(x) { return typeof x }
     function mixed(c) { let x = c ? 5n : 2; return typeof x }
+    export function host(x) { return typeof x }
+    export function closureRun(c) { let tag = x => typeof x; return c ? tag(1n) : tag(2) }
     export function run(c) { return [raw(), tagged(1n), tagged(2), mixed(c)] }
   `, { optimize: false })
   const raw = ctx.funcs.map.get('raw')
   const tagged = ctx.funcs.map.get('tagged')
   const mixed = ctx.funcs.map.get('mixed')
-  const run = ctx.funcs.map.get('run')
+  const host = ctx.funcs.map.get('host')
   const rawPlan = representationPlanOf(ctx, raw)
   const taggedPlan = representationPlanOf(ctx, tagged)
   const mixedPlan = representationPlanOf(ctx, mixed)
@@ -310,8 +313,10 @@ test('RepresentationPlan v2 publishes normalized edge facts without exposing mut
   ok(representationActionCount(ctx, mixedPlan, REP_EDGE_BOX) > 0 &&
       representationActionCount(ctx, mixedPlan, REP_EDGE_REJECT) === 0,
     'the mixed join records an explicit box edge and no unresolved fallback')
-  ok(representationBoundaryActionCount(ctx, run, REP_EDGE_HOST_BOX) === 1,
+  ok(representationBoundaryActionCount(ctx, host, REP_EDGE_HOST_BOX) === 1,
     'an uncovered exported parameter records a host-boundary normalization edge')
+  ok(representationProgramRejectCount(ctx) === 0,
+    'closed origins propagate across calls, joins, bindings, returns, closures, and host edges without TOP fallback')
 
   // Mutating the opaque identity cannot mutate private canonical facts.
   rawPlan.result = 0
@@ -319,8 +324,10 @@ test('RepresentationPlan v2 publishes normalized edge facts without exposing mut
     'public-handle mutation cannot alter canonical RepresentationPlan data')
 
   compile(`export let typedOnly = () => { let a = new BigInt64Array(1); return a[0] }`, { optimize: false })
-  ok(representationProgramHasBigint(ctx),
-    'BigInt typed-array reads activate planning without a BigInt literal or BigInt() call')
+  ok(representationProgramHasBigint(ctx) &&
+      representationResultRep(ctx, ctx.funcs.map.get('typedOnly'), false) === RAW &&
+      representationProgramRejectCount(ctx) === 0,
+    'BigInt typed-array reads activate raw planning without a BigInt literal or BigInt() call')
   compile(`export let numericOnly = x => x + 1`, { optimize: false })
   ok(!representationProgramHasBigint(ctx),
     'the complete graph census proves a numeric-only program BigInt-free')

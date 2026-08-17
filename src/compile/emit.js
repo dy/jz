@@ -68,6 +68,7 @@ import { isBoundName, freshId } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
 import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinallyStack, withFunctionFields, withPendingLabel, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
+import { recordClosureCallRepresentations } from './representation-plan.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
@@ -4303,6 +4304,7 @@ function tryDirectClosureCall(callee, parsed) {
   // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
   // arg (.work/todo.md §deletion-sweep) needs emitIdentitySafe in place of
   // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
+  recordClosureCallRepresentations(ctx, bodyName, parsed.normal)
   const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
   while (slots.length < W) slots.push(undefExpr())
   return typed(['call', `$${bodyName}`,
