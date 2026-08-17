@@ -57,7 +57,7 @@ export default (ctx) => {
     let ctor = null
     if (Array.isArray(arr) && arr[0] === 'new' && typeof arr[1] === 'string') ctor = 'new.' + arr[1]
     else if (typeof arr === 'string')
-      ctor = ctx.func.localTypedElemsOverlay?.get(arr) ?? ctx.types.typedElem?.get(arr)
+      ctor = ctx.func.localTypedElemsOverlay?.get(arr) ?? ctx.func.typedElem?.get(arr)
         ?? ctx.func.localReps?.get(arr)?.typedCtor          // narrowed param facts (typed default-arg seed)
         ?? ctx.scope?.globalTypedElem?.get(arr)
     if (ctor === 'new.Int32Array' || ctor === 'new.Int32Array.view') return 'i32'

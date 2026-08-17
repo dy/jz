@@ -455,7 +455,7 @@ function enrichCallerValTypesFromPointerParams(callerCtx) {
 }
 
 function refreshCallerLocals(callerCtx) {
-  const prevTE = ctx.types.typedElem
+  const prevTE = ctx.func.typedElem
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     // Seed pointer-narrowed params' val-kind so analyzeBody recognises e.g.
@@ -475,13 +475,13 @@ function refreshCallerLocals(callerCtx) {
       if (p.ptrKind != null) ctx.func.localReps.set(p.name, { val: p.ptrKind })
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) { const c = ctorFromElemAux(p.ptrAux); if (c != null) te.set(p.name, c) }
     }
-    ctx.types.typedElem = te
+    ctx.func.typedElem = te
     const fresh = reanalyzeBody(func.body).locals
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
   ctx.func.localReps = null
-  ctx.types.typedElem = prevTE
+  ctx.func.typedElem = prevTE
 }
 
 function resetParamWasmFacts(paramReps) {
@@ -544,7 +544,7 @@ function narrowI32Results(funcs) {
     // __typed_idx/ToNumber unbox dispatch (491520× per dict kernel run). Mirrors
     // refreshCallerLocals + analyzeFuncForEmit. Only meaningful once Phase G has tagged params
     // ptrKind=TYPED (the I2 re-run below); harmless before (no typed params → overlay untouched).
-    const savedTE = ctx.types.typedElem
+    const savedTE = ctx.func.typedElem
     let te = null
     for (const p of func.sig.params) {
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) {
@@ -552,7 +552,7 @@ function narrowI32Results(funcs) {
         if (c != null) { if (!te) te = savedTE ? new Map(savedTE) : new Map(); te.set(p.name, c) }
       }
     }
-    if (te) ctx.types.typedElem = te
+    if (te) ctx.func.typedElem = te
     const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
     // research.md §Carrier invariant: exprType's own '&&'/'||'/'?:' conciliation
     // (src/type.js) only asks "is each branch i32-representable", the same
@@ -576,7 +576,7 @@ function narrowI32Results(funcs) {
     // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
     // needs the ctx-independent structural trace (exprPresentValIn) instead.
     const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
-    if (te) ctx.types.typedElem = savedTE
+    if (te) ctx.func.typedElem = savedTE
     const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
     ctx.func.current = savedCurrent
     return r
@@ -2355,7 +2355,7 @@ export default function narrowSignatures(programFacts, ast) {
   // F: Cross-call typed-array element ctor propagation. Runs AFTER E3 so that
   // calls to user functions returning a TYPED-narrowed pointer (with constant
   // ptrAux, e.g. mkInput → Float64Array) contribute their element type to the
-  // caller's local typedElem map. Result: callees pick up `ctx.types.typedElem`
+  // caller's local typedElem map. Result: callees pick up `ctx.func.typedElem`
   // for their own params and `arr[i]` reads emit a direct `f64.load` instead of
   // the runtime `__is_str_key + __typed_idx` dispatch — closes the largest
   // chunk of the JS→wasm gap on f64-heavy hot loops.

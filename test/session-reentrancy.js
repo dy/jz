@@ -28,9 +28,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { compile } from '../index.js'
 import * as ctxModule from '../src/ctx.js'
-import { ctx, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
-import { installFunctionPlan } from '../src/compile/function-plan.js'
+import { createFunctionPlan, installFunctionPlan } from '../src/compile/function-plan.js'
 import { withFunctionField } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
 
@@ -195,10 +195,19 @@ test('ActiveFunction swaps and restores record identity, not selected fields', (
   ok(displaced === outer && ctx.func !== outer, 'entry displaces the whole prior record')
   ok(ctx.func.p1Predicted instanceof Set && ctx.func.hoistTempDefs === null && ctx.func.uniq === 17,
     'the complete constructor owns prediction, hoist-temp, and temp-name state')
+  outer.typedElem = new Map([['outer', 'Float64Array']])
+  outer.typedLen = new Map([['outer', 4]])
+  ok(ctx.func.typedElem === null && ctx.func.typedLen === null,
+    'entered record starts with its own clean typed facts')
   ctx.func.localValTypesOverlay.set('inner-only', 1)
+  ctx.func.typedElem = new Map([['inner', 'Int32Array']])
   restoreActiveFunction(ctx, displaced)
   ok(ctx.func === outer && !ctx.func.localValTypesOverlay.has('inner-only'),
     'restore reinstates prior identity; inner overlays cannot leak')
+  ok(ctx.func.typedElem.has('outer') && ctx.func.typedLen.get('outer') === 4,
+    'typed facts return with the displaced record, not a parallel ambient store')
+  outer.typedElem = null
+  outer.typedLen = null
 })
 
 test('FlowState scopes restore the owning frame even when nested work throws', () => {
@@ -217,71 +226,69 @@ test('FlowState scopes restore the owning frame even when nested work throws', (
     'nested throw restored both scopes and preserved active-record identity')
 })
 
-test('FunctionPlan is session-owned, published once, and detached from emission state', () => {
+test('FunctionPlan is session-owned, opaque, and detached from emission state', () => {
   if (onKernel()) return
   compile('export let planned = n => { let xs = [n, n + 1]; return xs[0] }')
   const func = ctx.funcs.map.get('planned')
   const plan = ctx.plans.functions.get(func)
-  ok(plan && Object.isFrozen(plan), 'function identity resolves to a frozen published plan')
-  ok(plan.locals instanceof Map && plan.localReps instanceof Map && plan.cellTypes instanceof Set,
-    'plan owns locals, reps, and cell facts instead of an ambient last-function cache')
+  ok(plan && Object.keys(plan).length === 0,
+    'function identity resolves to an opaque plan handle with no mutable facts exposed')
   const displaced = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
-  installFunctionPlan(ctx, plan)
-  const plannedLocals = plan.locals.size
+  const first = installFunctionPlan(ctx, plan)
+  const plannedLocals = first.locals.size
   ctx.func.locals.set('emit-only', 'i32')
   ctx.func.localReps.set('emit-only', { val: 1 })
-  ok(plan.locals.size === plannedLocals && !plan.locals.has('emit-only') && !plan.localReps.has('emit-only'),
-    'emission receives deep working copies; mutable frame facts cannot rewrite the plan')
+  const second = installFunctionPlan(ctx, plan)
+  ok(second.locals.size === plannedLocals && !second.locals.has('emit-only') && !second.localReps.has('emit-only'),
+    'a later install is detached from prior emission writes')
+  ok(first.locals !== second.locals && first.localReps !== second.localReps,
+    'repeated installs never share mutable working collections')
   restoreActiveFunction(ctx, displaced)
 })
 
-// Audit re-audit P1: Object.freeze(plan) (function-plan.js) only locks the
-// outer record — every Map/Set/rep-object field it owns (locals, boxed,
-// cellTypes, localReps, …) stays mutable, and under the self-hosted kernel
-// Object.freeze doesn't even do that (identity op there). The test above only
-// proves emission consumes DETACHED copies; it never mutates the PUBLISHED
-// plan's own collections directly, so it never exercised the gap. This test
-// does exactly that — a live probe reaching into plan.locals/localReps/
-// cellTypes/boxed in place — and expects installFunctionPlan's snapshot
-// tripwire (function-plan.js, JZ_DEBUG_INVARIANTS-gated) to catch it.
-test('FunctionPlan mutation trips the deep-freeze tripwire under JZ_DEBUG_INVARIANTS', () => {
+test('FunctionPlan detaches nested maps, sets, arrays, reps, and typed views', () => {
   if (onKernel()) return
-  if (!DBG_INVARIANTS) return  // the tripwire is a no-op outside the battery's dbg leg — nothing to observe without it
-  compile('export let tripwired = n => { let xs = [n, n + 1]; return xs[0] }')
-  const func = ctx.funcs.map.get('tripwired')
-  const plan = ctx.plans.functions.get(func)
-  for (const [field, mutate, undo] of [
-    ['locals', () => plan.locals.set('__evil', 'i32'), () => plan.locals.delete('__evil')],
-    ['localReps', () => plan.localReps.set('__evil', { val: 1 }), () => plan.localReps.delete('__evil')],
-    ['cellTypes', () => plan.cellTypes.add('__evil'), () => plan.cellTypes.delete('__evil')],
-    ['boxed', () => plan.boxed.set('__evil', '__evil_cell'), () => plan.boxed.delete('__evil')],
-  ]) {
-    mutate()
-    let threw = null
-    try { installFunctionPlan(ctx, plan) } catch (e) { threw = e }
-    undo()
-    ok(threw && /mutated after publish/.test(threw.message),
-      `plan.${field} mutated in place should trip installFunctionPlan's snapshot compare, got: ${threw ? threw.message : '(no throw)'}`)
-  }
-  // The seam itself — publish once, install repeatedly, never touch the
-  // plan's own collections — must never false-positive.
-  const displaced = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
-  installFunctionPlan(ctx, plan)
-  installFunctionPlan(ctx, plan)
+  const flatObjects = new Map([['o', { names: ['x'], values: [[null, 1]], written: new Set(['x']) }]])
+  const leanHashDomains = new Map([['d', ['a', 'b']]])
+  const localReps = new Map([['x', { val: 1, range: [0, 1], dictValueValType: new Set([1]) }]])
+  const typedElem = new Map([['buf', 'Float64Array']])
+  const typedLen = new Map([['buf', 4]])
+  const plan = createFunctionPlan(ctx, {
+    locals: new Map([['x', 'f64']]), flatObjects, leanHashDomains, localReps, typedElem, typedLen,
+  })
+  ok(Object.keys(plan).length === 0, 'canonical facts are private, not shallow-frozen public fields')
+  // Publication owns an independent snapshot too; mutating the analysis result
+  // after handoff cannot alter the canonical plan.
+  flatObjects.get('o').names.push('source-evil')
+  localReps.get('x').range[0] = -7
+  typedElem.set('source-evil', 'Int32Array')
+  const displaced = enterActiveFunction(ctx)
+  const first = installFunctionPlan(ctx, plan)
+  ok(first.flatObjects.get('o').names.length === 1 && first.localReps.get('x').range[0] === 0 &&
+      !first.typedElem.has('source-evil'), 'publication detaches the analysis result before it becomes canonical')
+  first.flatObjects.get('o').names.push('evil')
+  first.flatObjects.get('o').written.add('evil')
+  first.leanHashDomains.get('d').push('evil')
+  first.localReps.get('x').range[0] = -99
+  first.localReps.get('x').dictValueValType.add(9)
+  first.typedElem.set('evil', 'Int32Array')
+  first.typedLen.set('evil', 9)
+  const second = installFunctionPlan(ctx, plan)
+  ok(second.flatObjects.get('o').names.length === 1 && !second.flatObjects.get('o').written.has('evil'),
+    'nested object/array/Set facts are detached')
+  ok(second.leanHashDomains.get('d').length === 2 && second.localReps.get('x').range[0] === 0 &&
+      !second.localReps.get('x').dictValueValType.has(9),
+    'domain and ValueRep substructure is detached')
+  ok(!second.typedElem.has('evil') && !second.typedLen.has('evil') &&
+      first.typedElem !== second.typedElem && first.typedLen !== second.typedLen,
+    'typed views fork per install without exposing canonical storage')
   restoreActiveFunction(ctx, displaced)
 })
 
-// Audit re-audit P2: installFunctionPlan()/analyzeFuncForEmit() write
-// ctx.types.typedElem/typedLen (ambient, outside the swapped ActiveFunction
-// record), and emitClosureBody() used to restore typedElem on exit but NOT
-// typedLen — a closure compiled with a statically-sized typed array left its
-// own typedLen entries on ctx.types for good, visible to the NEXT thing that
-// reads it long after the closure (and the whole compile) finished. Concrete
-// repro this pins: post-compile, ctx.func.current === null (session
-// restored) yet ctx.types.typedLen still held the closure-local Map. Fixed
-// by making the swap structural (compile/active-function.js) instead of a
-// third hand-rolled save/restore.
-test('typedElem/typedLen ambient state does not leak past a nested-closure compile (audit P2)', () => {
+// typedElem/typedLen are owned by ActiveFunction itself. A closure with a
+// static typed array must restore the complete displaced record, leaving no
+// parallel authority on ctx.types and no facts on the inactive session frame.
+test('typedElem/typedLen active state does not leak past a nested-closure compile', () => {
   if (onKernel()) return  // white-box probe of ctx.types internals — no in-kernel host ctx to inspect
   compile(`
     export let mk = (n) => {
@@ -292,9 +299,11 @@ test('typedElem/typedLen ambient state does not leak past a nested-closure compi
       return zero() + heapFn() + f()
     }
   `)
-  ok(ctx.func.current === null, 'session frame restored (the finding\'s own repro precondition)')
-  ok(ctx.types.typedElem === null, 'ctx.types.typedElem left dirty by a closure body that never restored it')
-  ok(ctx.types.typedLen === null, 'ctx.types.typedLen left dirty by a closure body that never restored it (the exact P2 leak)')
+  ok(ctx.func.current === null, 'session frame restored')
+  ok(ctx.func.typedElem === null && ctx.func.typedLen === null,
+    'inactive ActiveFunction has no closure-local typed facts')
+  ok(!('typedElem' in ctx.types) && !('typedLen' in ctx.types),
+    'ctx.types no longer duplicates function-local typed authority')
 })
 
 test('active frame restores as one record after functions, late closures, and __start', () => {

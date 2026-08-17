@@ -3,7 +3,7 @@ import { OPTF } from '../ctx.js'
  * AST → WASM IR emission.
  *
  * # Stage contract
- *   IN:  prepared AST node + ctx state (func.locals, func.localReps, types.typedElem, etc.)
+ *   IN:  prepared AST node + ctx state (func.locals/localReps/typedElem, etc.)
  *   OUT: IR node (array) with `.type` ('i32' | 'f64' | 'void'). For statements, a flat
  *        list of WASM instructions (no type tag).
  *   NO-MUTATE: emit does not rewrite the AST. Side effects go to ctx.runtime.*,
@@ -1043,7 +1043,7 @@ function freshenUnrolledScalarBindings(body, ir) {
     const type = ctx.func.locals.get(name)
     if (type !== 'i32' && type !== 'f64' && type !== 'i64' && type !== 'f32') continue
     if (ctx.func.boxed?.has(name) || ctx.func.flatObjects?.has(name) ||
-        ctx.types.typedElem?.has(name)) continue
+        ctx.func.typedElem?.has(name)) continue
     const rep = ctx.func.localReps?.get(name)
     if (rep?.val != null && rep.val !== VAL.NUMBER && rep.val !== VAL.BOOL) continue
     const fresh = `${T}us${freshId(ctx)}_${name}`
@@ -4291,7 +4291,7 @@ function tryDirectClosureCall(callee, parsed) {
     const numeric = valTypeOf(parsed.normal[i]) === VAL.NUMBER
     row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
     const arg = parsed.normal[i]
-    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.types.typedElem?.get(arg) ?? null) : null
+    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.func.typedElem?.get(arg) ?? null) : null
     if (tcRow[i] === undefined) tcRow[i] = ctor
     else if (tcRow[i] !== ctor) tcRow[i] = null
   }
@@ -4356,7 +4356,7 @@ function recordClosureTableCallSite(arrName, argNodes) {
     const arg = argNodes[i]
     const numeric = valTypeOf(arg) === VAL.NUMBER
     e.numRow[i] = e.numRow[i] === undefined ? numeric : (e.numRow[i] && numeric)
-    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.types.typedElem?.get(arg) ?? null) : null
+    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.func.typedElem?.get(arg) ?? null) : null
     e.tcRow[i] = e.tcRow[i] === undefined ? ctor : (e.tcRow[i] !== ctor ? null : e.tcRow[i])
   }
   e.minArgc = e.minArgc === undefined ? n : Math.min(e.minArgc, n)
@@ -4990,7 +4990,7 @@ const WRAP_TRUNCATING_TYPED_CTORS = new Set([
 // true iff the receiver is PROVEN a wrap-truncating (non-float, non-
 // clamped, non-BigInt) typed-array element kind.
 function wrapTruncatingTypedElemName(name) {
-  const raw = ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.types.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null
+  const raw = ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null
   if (raw == null) return false
   const stripped = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
   return WRAP_TRUNCATING_TYPED_CTORS.has(stripped)
@@ -6579,7 +6579,7 @@ export const emitter = {
         // the guard costs per LOOP ENTRY on re-entered inner nests (fft measured
         // 1.35x with calls, parity without); unresolved receivers keep $__len.
         const len64Of = (recv) => {
-          const aux = typedElemAux(ctx.types.typedElem?.get(recv))
+          const aux = typedElemAux(ctx.func.typedElem?.get(recv))
           if (aux == null) {
             inc('__len')
             return ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]

@@ -927,7 +927,7 @@ test('typed-narrow: escape via store does not break narrowed helper', () => {
 
 test('typed-narrow: receiver unbox after .map on TYPED', () => {
   // unboxablePtrs.isFreshInit accepts `arr.map(fn)` shape when arr is in
-  // ctx.types.typedElem (locally TYPED with known elem ctor).
+  // ctx.func.typedElem (locally TYPED with known elem ctor).
   const { f } = runHost(`
     let mk = () => new Float64Array([1.5, 2.5, 3.5])
     export let f = (i) => {

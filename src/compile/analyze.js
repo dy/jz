@@ -6,7 +6,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
  * # Stage contract
  *   IN:  prepared AST + ctx.funcs.list (from prepare).
  *   OUT: per-function populated `ctx.func.localReps` (val field) + `ctx.func.locals` + `ctx.func.boxed`,
- *        module-global `ctx.scope.globalValTypes`, type-analysis `ctx.types.typedElem` /
+ *        module-global `ctx.scope.globalValTypes`, type-analysis `ctx.func.typedElem` /
  *        `.dynKeyVars` / `.anyDynKey`.
  *
  * # Passes (all walk AST; none mutate AST itself — only ctx)
@@ -23,6 +23,7 @@ import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, err, setLinkDemand } from '../ctx.js'
 import { withFunctionField } from './flow-state.js'
+import { forEachFunctionPlanRep, functionPlanRepField } from './function-plan.js'
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
@@ -100,7 +101,7 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 // observation wins; a conflicting later one poisons the name (and clears the store
 // entry) so a sibling-scope decl (jz hoists `let` to function scope) can't lock in
 // the wrong value. The get/set/del closures abstract WHERE the slice lives, letting
-// analyzeBody (local Map) and analyzeValTypes (ctx.func.localReps / ctx.types.typedElem)
+// analyzeBody (local Map) and analyzeValTypes (ctx.func.localReps / ctx.func.typedElem)
 // share one definition — so the two body walks can't drift. Passed as three positional
 // closures rather than a {get,set,delete} store object: a Map satisfies that interface
 // natively (analyzeBody's slices) but the analyzeValTypes slices need custom logic
@@ -137,10 +138,10 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
   // Resolve a variable-name ternary branch to its known typed-array ctor: a
   // local typed binding (`get`), or a module global promoted typed by plan
   // (`inferModuleLetTypes` populates `globalTypedElem`, copied into
-  // `ctx.types.typedElem` per-func). Lets `let cur = flip ? bufA : bufB` keep
+  // `ctx.func.typedElem` per-func). Lets `let cur = flip ? bufA : bufB` keep
   // the fast typed-load path instead of decaying to `$__typed_idx`.
   const resolveName = (n) =>
-    get(n) ?? ctx.types.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null
+    get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null
   return (name, rhs) => {
     if (poison.has(name)) return
     const setOrInvalidate = (c) => {
@@ -166,7 +167,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
           // facts are single-def-stable by construction (validate strips written
           // params; the tracker invalidates redefs), so the copy is exact.
           const len = typedStaticLen(rhs) ?? (typeof rhs === 'string'
-            ? getLen(rhs) ?? ctx.types.typedLen?.get(rhs) ?? ctx.scope?.globalTypedLen?.get(rhs) ?? null
+            ? getLen(rhs) ?? ctx.func.typedLen?.get(rhs) ?? ctx.scope?.globalTypedLen?.get(rhs) ?? null
             : null)
           const prevLen = getLen(name)
           if (len == null || (prevLen !== undefined && prevLen !== len)) delLen(name)
@@ -1005,7 +1006,7 @@ function sigFingerprint(sig) {
  *  an immediate re-read to avoid (see reanalyzeBody below). Does NOT
  *  recompute-and-compare the full facts — JZ_DEBUG_CACHE tried that and was
  *  abandoned (.work/todo.md): it fired on ambient staleness the design
- *  accepts as benign (ctx.func.localReps / ctx.types.typedElem overlay
+ *  accepts as benign (ctx.func.localReps / ctx.func.typedElem overlay
  *  swaps, ctx.schema.slotI32Certain rounds — the bodyFacts row's own
  *  "intentionally staleable" comment above analyzeBody). A signature
  *  fingerprint mismatch is never benign: the cached locals/valTypes were
@@ -1213,7 +1214,7 @@ export function invalidateLocalsCache(body) {
  *     so a new phase boundary reaches for the existing primitive instead of
  *     re-deriving its own `for (const f of ctx.funcs.list) invalidateLocalsCache(f.body)`.
  *
- * Ambient-overlay staleness (ctx.func.localReps / ctx.types.typedElem /
+ * Ambient-overlay staleness (ctx.func.localReps / ctx.func.typedElem /
  * ctx.schema.slotI32Certain changing WITHOUT a signature retype) stays the
  * documented "intentionally staleable" surface above analyzeBody — the DBG
  * freshness assert (assertBodyFactsFresh) deliberately does not cover it;
@@ -1648,16 +1649,16 @@ export function analyzeValTypes(body) {
   function trackRegex(name, rhs) {
     if (ctx.runtime.regex && Array.isArray(rhs) && rhs[0] === '//') ctx.runtime.regex.vars.set(name, rhs)
   }
-  // ctx.types.typedElem slice (lazily created on first write, as before — readers
+  // ctx.func.typedElem slice (lazily created on first write, as before — readers
   // tolerate null). Disagreeing decls poison the name (jz hoists `let` to function
   // scope, so sibling-scope decls share a name and must not lock in a wrong width).
   const trackTyped = makeTypedTracker(
-    (n) => ctx.types.typedElem?.get(n),
-    (n, c) => (ctx.types.typedElem ??= new Map()).set(n, c),
-    (n) => ctx.types.typedElem?.delete(n),
-    (n) => ctx.types.typedLen?.get(n),
-    (n, l) => (ctx.types.typedLen ??= new Map()).set(n, l),
-    (n) => ctx.types.typedLen?.delete(n),
+    (n) => ctx.func.typedElem?.get(n),
+    (n, c) => (ctx.func.typedElem ??= new Map()).set(n, c),
+    (n) => ctx.func.typedElem?.delete(n),
+    (n) => ctx.func.typedLen?.get(n),
+    (n, l) => (ctx.func.typedLen ??= new Map()).set(n, l),
+    (n) => ctx.func.typedLen?.delete(n),
   )
   // Total write count for `name` across the whole body, recursing into nested
   // closures so a closure that reassigns the var is also counted. Capped at 2 —
@@ -1732,9 +1733,9 @@ export function analyzeValTypes(body) {
       const src = callee[1], method = callee[2]
       if (typeof src === 'string' && getVal(src) === VAL.TYPED && method === 'map') {
         setVal(name, VAL.TYPED)
-        if (ctx.types.typedElem?.has(src)) {
-          const srcCtor = ctx.types.typedElem.get(src)
-          ctx.types.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
+        if (ctx.func.typedElem?.has(src)) {
+          const srcCtor = ctx.func.typedElem.get(src)
+          ctx.func.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
         }
       }
     }
@@ -2115,7 +2116,7 @@ export function unboxablePtrs(body, locals, boxed) {
     if (kind === VAL.TYPED && expr[0] === '()' &&
         Array.isArray(expr[1]) && expr[1][0] === '.' &&
         typeof expr[1][1] === 'string' && expr[1][2] === 'map' &&
-        ctx.types.typedElem?.has(expr[1][1])) {
+        ctx.func.typedElem?.has(expr[1][1])) {
       return true
     }
     return false
@@ -2388,8 +2389,9 @@ export function cseSafeLoadBases(body, locals, localReps) {
  * element-replace — poisons S.
  *
  * Reads codegen truth: a binding is `Array<S>` iff its settled rep
- * (`ctx.plans.functions.get(func).localReps`) carries `arrayElemSchema = S` — the exact
- * map the emitter consults — so the analysis and the emitter never disagree on
+ * (the opaque FunctionPlan's local-rep projection) carries
+ * `arrayElemSchema = S` — the exact facts the emitter installs — so analysis
+ * and emission never disagree on
  * which bindings are inline-carried.
  *
  * Conservative corners (sound, give up the optimization): closures and module
@@ -2468,22 +2470,19 @@ export function analyzeStructInline(programFacts) {
   // whose full-body walk was pure waste).
   const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
   for (const func of ctx.funcs.list) {
-    const facts = ctx.plans.functions.get(func)
+    const functionPlan = ctx.plans.functions.get(func)
     const body = func?.body
-    // A reps-less frame (zero locals/params — a composing `main`) still gets
-    // the walk: its call compositions can forward inline-carried returns.
-    const reps = facts?.localReps ?? new Map()
     if (func?.raw || body == null || typeof body !== 'object') continue
 
     // `Array<S>` bindings of this function (codegen truth) and their schemas.
+    // FunctionPlan stays opaque: iterate names and read detached scalar fields.
     const arrName = new Map()       // name → sid
-    for (const [name, r] of reps) {
-      const sid = r?.arrayElemSchema
-      if (sid == null) continue
-      if ((propsOf(sid).length || 0) < 1) continue   // K=0 — not inlinable
+    forEachFunctionPlanRep(ctx, functionPlan, name => {
+      const sid = functionPlanRepField(ctx, functionPlan, name, 'arrayElemSchema')
+      if (sid == null || (propsOf(sid).length || 0) < 1) return // K=0 — not inlinable
       cand.add(sid)
       arrName.set(name, sid)
-    }
+    })
     // A frame with no tracked arrays of its own still gets the walk when the
     // program has Array<S>-returning functions: it can FORWARD inline-carried
     // returns through call compositions (`use(mk())` in a helper-free main,
@@ -2656,12 +2655,13 @@ export function analyzeStructInline(programFacts) {
         const rhs = node[2], idx = node[1][2]
         const entry = Array.isArray(rhs) && rhs[0] === '{}'
           ? ctx.schema.inplaceStores?.get(inplaceKey(node[1][1], rhs)) : null
-        const ok = typeof idx === 'string' && reps.get(idx)?.intCertain === true &&
-          entry != null && entry.alias != null && entry.idx === idx &&
+        const idxIntCertain = typeof idx === 'string' &&
+          functionPlanRepField(ctx, functionPlan, idx, 'intCertain') === true
+        const ok = idxIntCertain && entry != null && entry.alias != null && entry.idx === idx &&
           objLiteralSchemaId(rhs) === sid
         if (!ok) {
           if (DBG) console.error('[inlarr-store-reject]', func.name, node[1][1], 'sid', sid,
-            'idxIntCertain', typeof idx === 'string' && reps.get(idx)?.intCertain === true,
+            'idxIntCertain', idxIntCertain,
             'entry', entry, 'litSid', Array.isArray(rhs) ? objLiteralSchemaId(rhs) : null)
           black.add(sid)
           if (idx != null) visitChild(idx)
@@ -2856,20 +2856,19 @@ export function analyzeUnionInline(programFacts) {
   }
 
   for (const func of ctx.funcs.list) {
-    const facts = ctx.plans.functions.get(func)
+    const functionPlan = ctx.plans.functions.get(func)
     const body = func?.body
     if (func?.raw || body == null || typeof body !== 'object') continue
-    const reps = facts?.localReps ?? new Map()
 
     // Union-array bindings of this frame (rep channel — the landed census).
     const uArr = new Map()                   // name → key
-    for (const [name, r] of reps) {
-      const set = r?.arrayElemSchemaSet
-      if (!set || set.length < 2) continue
+    forEachFunctionPlanRep(ctx, functionPlan, name => {
+      const set = functionPlanRepField(ctx, functionPlan, name, 'arrayElemSchemaSet')
+      if (!set || set.length < 2) return
       const key = keyOf(set)
       if (!cand.has(key)) cand.set(key, set)
       uArr.set(name, key)
-    }
+    })
     // Candidate cursor-PARAMS (stage 3): a param whose settled schemaIdSet
     // keys a union. Schema membership alone is NOT carrier provenance — the
     // body must survive the same cursor grammar as a local cursor (direct

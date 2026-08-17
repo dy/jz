@@ -258,7 +258,7 @@ export default function plan(ast, profiler, regionHooks) {
   // `round()`'s own 14-field bundle, no extra audit needed beyond
   // confirming narrowSignatures writes nothing outside it (verified:
   // narrow.js references only `programFacts`, `ctx.funcs`/`.func`,
-  // `ctx.scope`/`.types` read-only + self-restored `ctx.types.typedElem`).
+  // `ctx.scope`/`.types` read-only + self-restored `ctx.func.typedElem`).
   round(() => t('narrowSignatures', () => narrowSignatures(programFacts, ast)))
   // Boolean/bigint result kinds for funcs the call-site census can't reach —
   // value-used-only functions have no direct sites, but their results still

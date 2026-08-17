@@ -913,7 +913,7 @@ VT['[]'] = (args) => {
   // the vectorizer). Only identity observations diverge; those folds consult
   // typedReadMaybeOob below and keep the runtime compare.
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
-    return typedCtorElemValType(ctx.types.typedElem?.get(args[0])) || VAL.NUMBER
+    return typedCtorElemValType(ctx.func.typedElem?.get(args[0])) || VAL.NUMBER
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
   if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING

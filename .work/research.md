@@ -18901,3 +18901,70 @@ immediate isolated rerun passed all 5 pins (warm 1.024×, fresh 0.826×). The
 earlier retained-set census warning has been corrected: its interning
 rejection still stands on measured payoff, but this failure is no evidence
 against watr or the string helper surface.
+
+## §FunctionPlan immutability + active typed-state ownership completed
+## (2026-08-16)
+
+The earlier `ea423728` remediation detected mutation but did not prevent it:
+`ctx.plans.functions.get(func)` still returned the authoritative object with
+public mutable Maps/Sets/rep objects, and the snapshot comparison existed only
+under `JZ_DEBUG_INVARIANTS`. Likewise, ActiveFunction carried typedElem/
+typedLen only as displaced ambient snapshots while every real reader and
+writer still addressed `ctx.types`. Both were lifecycle tripwires, not single
+ownership.
+
+**FunctionPlan now enforces logical deep immutability without relying on
+`Object.freeze`, Proxy, or accessors.** `ctx.plans.functions` stores an opaque
+empty handle. Canonical data is detached at publication and held in the
+session-owned `ctx.plans.functionData` WeakMap, reachable through the existing
+`ctx.plans` region root but read only by `function-plan.js`. The deep copier
+covers the plan's closed vocabulary recursively (Map, Set, Array, plain object,
+ValueRep substructure). MapOverlay typed facts fork only their function-local
+`own` layer while retaining the phase-frozen program base, preserving the
+retired O(programSize)-per-function clone fix. Every install creates a fresh
+mutable working copy; the two whole-program layout analyses use pure scalar/
+detached rep projections instead of receiving the canonical rep map. The old
+publishSnapshots/planFieldsEqual debug mirror and public shallow-frozen record
+are deleted, not retained as a second authority.
+
+**typedElem/typedLen now live on ActiveFunction in fact as well as name.** All
+source/test readers and writers moved from `ctx.types.typedElem/typedLen` to
+`ctx.func.typedElem/typedLen`; the two fields were deleted from `ctx.types`.
+`enterActiveFunction` and `restoreActiveFunction` again do exactly one thing:
+swap one complete record identity. Their former field-by-field ambient stash
+and restore lines are gone. `isInactiveFunction` now checks every constructor
+field except the deliberately monotone `uniq` counter, so a newly-added state
+class cannot silently escape the post-compile restoration invariant. The
+MapOverlay implementation moved to the
+cycle-free `src/compile/map-overlay.js` leaf so FunctionPlan can fork typed
+views without importing the compile driver. `ctx.types` is now compile-lifetime
+program facts only; function-local representation state has one authority.
+
+**Evidence.** The new regressions prove opaque handles, nested detachment
+(Map/Set/Array/plain-object/ValueRep), independent typed-view forks, and typed
+facts traveling with record identity; session-reentrancy passes 16/16 (48
+assertions) both normally and with `JZ_DEBUG_INVARIANTS=1`. Focused types
+178/178 (303), closures 110/110 (221), inference 136/136 (295), and optimizer
+219/219 (4,113) pass. Five representation-diverse kernels are byte-identical
+to base at O0/O2/O3 (15/15); an alternating native compile probe measured
+1.0002× geomean new/base (noise parity) with identical output bytes. A direct
+order-alternated base/new self-host artifact A/B over the six perf-pin cases is
+0.9984× warm and 0.9993× fresh (new/base). Full `npm test`, O0, and O3 each pass 3,480 with zero failures and 6 skips; WASI has
+only the unchanged `JZ_CARRIER_BOX ternaryBoxedNames` baseline failure (3,478
+pass / 1 fail / 6 skip). Self-host correctness is 21/21. The V8-referenced
+fresh-instance pin passes; the load-sensitive warm pin was red on both clean
+base and branch in these runs. The direct paired artifact A/B above removes
+that moving V8 denominator and shows no change-specific regression. Two independent
+dormant builds converge at
+`bbe7571c51af5d459d2877d67c3e24f3b21c4e4996d0fe776b11cadfc46a7ede`;
+`dist/jz.wasm` shrinks 17,230,931 → 17,228,490 bytes and `dist/jz.js` shrinks
+2,155,685 → 2,155,502 bytes. A diagnostic region-live build (flag restored to
+false afterward) compiled and executed an 80-function typed+closure graph
+three fresh-instance repetitions, byte-identical 13,177-byte outputs and
+`main(7) === 91`; this is a relocation smoke test, not a broader region-live
+closure claim.
+
+This closes two named prerequisites for the final CompileSession record.
+Closure-body/synthetic-`__start` publish-before-emit and the remaining
+FlowState migration stay separate blockers; neither was folded into this
+change.

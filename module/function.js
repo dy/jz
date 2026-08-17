@@ -215,7 +215,7 @@ export default (ctx) => {
       if (vt != null) captureValTypes.set(name, vt)
       const schemaId = ctx.schema.idOf(name)
       if (schemaId != null) captureSchemaVars.set(name, schemaId)
-      const elemType = ctx.types.typedElem?.get(name)
+      const elemType = ctx.func.typedElem?.get(name)
       if (elemType != null) captureTypedElems.set(name, elemType)
       const bodyName = ctx.func.directClosures?.get(name)
       if (bodyName && !isReassigned(body, name)) captureDirectClosures.set(name, bodyName)

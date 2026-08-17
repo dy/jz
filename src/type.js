@@ -85,7 +85,7 @@ export function constIntExpr(e) {
 /** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
  *  checked `.typed:[]` forms and the identity folds share. Proof classes:
  *  1. the canonical-loop structural pair (inBoundsArrIdx);
- *  2. a literal index against the binding's STATIC length (ctx.types.typedLen /
+ *  2. a literal index against the binding's STATIC length (ctx.func.typedLen /
  *     ctx.scope.globalTypedLen — `new T(<n>)`, tracker-invalidated on redef);
  *  3. the masked form `x & m` / `m & x` (ToInt32 & clears the sign for m ≥ 0, so the
  *     result is in [0, m]) with m < that static length;
@@ -115,7 +115,7 @@ export function typedIdxProven(recv, idx) {
   }
   if (intervalProvenIdx(ctx).has(idxKey(recv, idx))) return true
   if (typeof idx === 'string' && inBoundsArrIdx(ctx).has(recv + '\x00' + idx)) return true
-  const len = ctx.types.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
+  const len = ctx.func.typedLen?.get(recv) ?? ctx.scope?.globalTypedLen?.get(recv)
     ?? ctx.func.localReps?.get(recv)?.arrayLen
   if (len == null) return false
   const k = intLiteralValue(idx)
@@ -448,7 +448,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   //     abs-compare fails and the checked arm takes over; a genuine number converts
   //     exactly via ceil/floor + trunc_sat (never traps, saturation is conjunct-dead).
   const bKind = intLiteralValue(bound) != null ? 'i32'
-    : (() => { const r = lengthRecv(bound); return r != null && ctx.types.typedElem?.has(r) && stable(r) })() ? 'i32'
+    : (() => { const r = lengthRecv(bound); return r != null && ctx.func.typedElem?.has(r) && stable(r) })() ? 'i32'
     : typeof bound === 'string' && stable(bound) ? (exprType(bound, locals) === 'i32' ? 'i32' : 'f64')
     // an invariant pure EXPRESSION bound (`x < w - 1` — the stencil interior) re-
     // evaluates safely in the guard; machine-f64 rides the runtime-conjunct path
@@ -496,7 +496,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   const scan = (n) => {
     if (!Array.isArray(n)) return
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
-        && ctx.types.typedElem?.has(n[1]) && stable(n[1])) {
+        && ctx.func.typedElem?.has(n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
       if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
         if (typeof n[2] === 'string' && inds?.has(n[2])) {
@@ -591,7 +591,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const scan = (n) => {
       if (!Array.isArray(n) || n[0] === '=>') return
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
-          && ctx.types.typedElem?.has(n[1]) && stable2(n[1])) {
+          && ctx.func.typedElem?.has(n[1]) && stable2(n[1])) {
         const key = idxKey(n[1], n[2])
         if (!seen.has(key) && !typedIdxProven(n[1], n[2])) {
           const rng = intervalIdxRanges(ctx).get(key)
@@ -656,7 +656,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     // the full encode/decode kernel, then always execute the checked twin).
     L.cands = L.cands.filter(c => {
       if (!Array.isArray(c.range) || c.range.hiName != null) return true
-      const len = ctx.types.typedLen?.get(c.recv) ?? ctx.scope?.globalTypedLen?.get(c.recv)
+      const len = ctx.func.typedLen?.get(c.recv) ?? ctx.scope?.globalTypedLen?.get(c.recv)
       return len == null || c.range[1] < len
     })
     if (!L.cands.length) return false
@@ -751,7 +751,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       if (!Array.isArray(n)) return
       if (n === w.node) { seenWrite = true }
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === name
-          && ctx.types.typedElem?.has(n[1])
+          && ctx.func.typedElem?.has(n[1])
           && !isReassigned(body, n[1]) && !redeclaresName(body, n[1]))
         cands.push({ recv: n[1], idx: n[2], post: seenWrite })
       for (let k = 1; k < n.length; k++) scanC(n[k])
@@ -970,7 +970,7 @@ export function scanBoundedArrIdx(node, set, litSet) {
       collectBoundedArrIdx(body, recv, idx, set)
     // LITERAL-bound loop `for (let i = C≥0; i < B; i++)`: every `X[i]` read is in
     // [C, B) — provable against a receiver whose STATIC length ≥ B (typedIdxProven
-    // consults litSet's recorded bound vs ctx.types.typedLen). Collected for every
+    // consults litSet's recorded bound vs ctx.func.typedLen). Collected for every
     // receiver name in the body; per-receiver reassignment guarded like the
     // .length form. Two loops sharing (recv, i) names keep the MAX bound —
     // conservative for the proof.
@@ -1111,7 +1111,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '[]' && e.length === 3 && typeof x === 'string') {
       visit(e)   // record the access's own proof attempt
       const written = ctx.func.localReps?.get(x)?.arrayElemRange
-      const r = written ?? NARROW_ELEM_RANGE[ctx.types.typedElem?.get(x)]
+      const r = written ?? NARROW_ELEM_RANGE[ctx.func.typedElem?.get(x)]
       return r ?? null
     }
     // `X.length` of a typed receiver with a known static length — the length-
@@ -1715,7 +1715,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const indexCaps = new Map()
         const collectIndexCaps = (x) => {
           if (!Array.isArray(x) || x[0] === '=>') return
-          if (x[0] === '[]' && typeof x[1] === 'string' && ctx.types.typedElem?.has(x[1])) {
+          if (x[0] === '[]' && typeof x[1] === 'string' && ctx.func.typedElem?.has(x[1])) {
             const L = lens(x[1])
             if (L != null) {
               const names = new Set(); collectNames(x[2], names)
@@ -1934,7 +1934,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       for (let k = 1; k < n.length; k++) visit(n[k])
-      for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.types?.typedElem?.has?.(k2))) env.set(k2, null)
+      for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.func?.typedElem?.has?.(k2))) env.set(k2, null)
       return
     }
     for (let k = 1; k < n.length; k++) visit(n[k])
@@ -1993,7 +1993,7 @@ export function intervalProvenIdx(ctx) {
   const hit = cache.get(body)
   if (hit) return hit
   const out = new Set(), ranges = new Map()
-  const lens = (name) => ctx.types.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
+  const lens = (name) => ctx.func.typedLen?.get(name) ?? ctx.scope?.globalTypedLen?.get(name)
     ?? ctx.func.localReps?.get(name)?.arrayLen ?? null
   scanIntervalIdx(body, out, lens, ranges)
   cache.set(body, out)
@@ -2110,7 +2110,7 @@ function stampClonedIdxProof(node, out) {
 export function containsKnownTypedArrayIndex(body) {
   if (!Array.isArray(body)) return false
   if (body[0] === '=>') return false
-  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.types.typedElem?.has(body[1])) return true
+  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.func.typedElem?.has(body[1])) return true
   for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
   return false
 }
@@ -2155,7 +2155,7 @@ export function isTerminator(body) {
 // (`DX[i]` with `let DX = new Int32Array(...)` at module scope) resolves its element type
 // instead of defaulting to f64. Guard against local shadows / dynamic rewrites (cf. kind.js).
 const typedElemCtorOf = (name, locals) =>
-  ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.types.typedElem?.get(name)
+  ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.func.typedElem?.get(name)
     ?? (!locals?.has?.(name) && !ctx.types?.dynWriteVars?.has?.(name)
       ? ctx.scope?.globalTypedElem?.get(name) : undefined)
 
@@ -2239,7 +2239,7 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   // ToInt32-coercing uses (& | ^ << >> >>>, i32.store) are bit-exact, and value uses that need the
   // unsigned magnitude (compare, f64 convert) go through the elem-aux's unsigned path. Floats
   // (Float32/Float64, aux 6/7) genuinely yield f64. typedElems: in-progress reads come from
-  // localTypedElemsOverlay during analyzeBody; post-analyze passes read ctx.types.typedElem.
+  // localTypedElemsOverlay during analyzeBody; post-analyze passes read ctx.func.typedElem.
   if (op === '[]') {
     if (typeof args[0] === 'string') {
       // Resolve the element ctor across local overlay → per-func map → module-global registry

@@ -30,6 +30,7 @@ import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { functionPlanOf, installFunctionPlan, publishFunctionPlan } from './function-plan.js'
+import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
@@ -463,10 +464,10 @@ function analyzeFuncForEmit(func, programFacts) {
   // here) so overlaying a live reference as `base` is safe: it can never go
   // stale mid-loop. `own` starts empty; the param-typedCtor seeding just
   // below writes into it via `.set` exactly like the pre-overlay code did.
-  ctx.types.typedElem = ctx.scope.globalTypedElem ? makeMapOverlay(ctx.scope.globalTypedElem) : null
+  ctx.func.typedElem = ctx.scope.globalTypedElem ? makeMapOverlay(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
-  ctx.types.typedLen = ctx.scope.globalTypedLen ? makeMapOverlay(ctx.scope.globalTypedLen) : null
+  ctx.func.typedLen = ctx.scope.globalTypedLen ? makeMapOverlay(ctx.scope.globalTypedLen) : null
 
   const _reps = paramReps.get(name)
   if (_reps) {
@@ -495,15 +496,15 @@ function analyzeFuncForEmit(func, programFacts) {
       // walks a schema this HASH was never shaped as — a silent miss, not a trap).
       const reassigned = isReassigned(body, pname)
       if (r.typedCtor && !reassigned) {
-        if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
-        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
+        if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
+        if (!ctx.func.typedElem.has(pname)) ctx.func.typedElem.set(pname, r.typedCtor)
         updateRep(pname, { val: VAL.TYPED })
         // Unanimous static length from the call sites (validateTypedLenParams:
         // module-local callee, never-written param, settled ctor) — the body's
         // reads gain the static-length proof family, `.length` folds literal.
         if (r.typedLen != null) {
-          if (!ctx.types.typedLen) ctx.types.typedLen = new Map()
-          if (!ctx.types.typedLen.has(pname)) ctx.types.typedLen.set(pname, r.typedLen)
+          if (!ctx.func.typedLen) ctx.func.typedLen = new Map()
+          if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
         }
       }
       if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
@@ -608,10 +609,10 @@ function analyzeFuncForEmit(func, programFacts) {
   // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening
   // store writes a provably-different element (idx2 ≠ idx). Recovers the fft butterfly's redundant
   // `re[a]` load. Before analyze so the introduced temp is typed/narrowed like any local.
-  // mapOrOverlaySize (not `.size` directly): ctx.types.typedElem is now a MapOverlay
+  // mapOrOverlaySize (not `.size` directly): ctx.func.typedElem is now a MapOverlay
   // when globalTypedElem exists (the clone-elimination fix above) — see its own doc.
-  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.types.typedElem))
-    cseLoads(body, n => ctx.types.typedElem.has(n), freshCseName)
+  if (_o && _o.loadCSE !== false && block && mapOrOverlaySize(ctx.func.typedElem))
+    cseLoads(body, n => ctx.func.typedElem.has(n), freshCseName)
 
   if (block) {
     seedLocalIntConsts(body)
@@ -699,7 +700,7 @@ function analyzeFuncForEmit(func, programFacts) {
       for (const [n, kind] of unbox) {
         const fields = { ptrKind: kind }
         if (kind === VAL.TYPED) {
-          const aux = typedElemAux(ctx.types.typedElem?.get(n))
+          const aux = typedElemAux(ctx.func.typedElem?.get(n))
           if (aux == null) continue
           fields.ptrAux = aux
         }
@@ -862,16 +863,11 @@ function analyzeFuncForEmit(func, programFacts) {
     leanHashLocals: new Set(ctx.func.leanHashLocals || []),
     i32HashLocals: new Set(ctx.func.i32HashLocals || []),
     leanHashDomains: new Map(ctx.func.leanHashDomains || []),
-    // Pass the MapOverlay through by reference — no clone. This used to be a
-    // SECOND O(programSize) clone on top of the one at this function's own
-    // entry (same commit fixed both): ctx.types.typedElem is a fresh overlay
-    // built once per analyzeFuncForEmit call (this function's own entry,
-    // above) and never touched again after this return (this loop's other
-    // per-iteration calls — captureFuncInspect/scanErasureSinks — don't read
-    // or write it; verified by grep), so handing the SAME object to funcFacts
-    // is exactly as safe as cloning it, at O(1) instead of O(programSize).
-    typedElem: ctx.types.typedElem,
-    typedLen: ctx.types.typedLen,
+    // Publication forks only the overlay's function-local `own` map and keeps
+    // the stable program-wide base by reference. This handoff therefore stays
+    // O(function facts), never the retired O(programSize)-per-function clone.
+    typedElem: ctx.func.typedElem,
+    typedLen: ctx.func.typedLen,
     localReps: cloneRepMap(ctx.func.localReps),
   }
   return facts
@@ -1400,22 +1396,27 @@ function emitFunc(func, functionPlan, programFacts) {
   // Only this path drains charDecomp prologues (collectParamInits below) —
   // the shape-1b global-receiver decomposition may mint only here.
   ctx.func.charDecompGlobals = true
-  // FunctionPlan install (audit P1, ea423728): installFunctionPlan copies every
-  // detached working-state field from the frozen plan (function-plan.js) — the
-  // manual funcFacts.* field-by-field copy this replaced lived here inline
-  // before that refactor. typedElem/typedLen are installed by reference (a
-  // MapOverlay or null, never cloned — see function-plan.js's own doc: same
-  // jz×jz-ceiling fix as analyzeFuncForEmit's own entry/return above and
-  // emitClosureBody's own doc).
-  const block = functionPlan.block
-  installFunctionPlan(ctx, functionPlan)
-  // Global-table fallback for typedLen (funcFacts.typedLen was null — this
-  // function was analyzed/published before ctx.scope.globalTypedLen existed):
-  // stays here, not inside installFunctionPlan, which is a generic plan
-  // installer with no reason to know about globalTypedLen or depend on
-  // index.js's makeMapOverlay (see installFunctionPlan's own doc on the load
-  // cycle that would close).
-  if (!ctx.types.typedLen && ctx.scope.globalTypedLen) ctx.types.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
+  // FunctionPlan is an opaque identity; install returns one detached mutable
+  // working copy and seeds the complete active record from it. Canonical plan
+  // collections never leave function-plan.js.
+  const installedPlan = installFunctionPlan(ctx, functionPlan)
+  const block = installedPlan.block
+  // Derive WAT-node metadata before call-site seeding mutates the active rep
+  // map. This preserves the published analysis snapshot's exact semantics.
+  const plannedCseLoadBases = installedPlan.cseLoadBases.size
+    ? new Set([...installedPlan.cseLoadBases].map(n => `$${n}`)) : null
+  const plannedDistinctParams = installedPlan.distinctParams?.size
+    ? new Set([...installedPlan.distinctParams].map(n => `$${n}`)) : null
+  let plannedStableHeaderNames = null
+  if (installedPlan.localReps?.size) {
+    const names = new Set()
+    for (const [nm, r] of installedPlan.localReps)
+      if (r && (r.val === VAL.TYPED || r.neverGrown === true)) names.add(`$${nm}`)
+    if (names.size) plannedStableHeaderNames = names
+  }
+  // Global-table fallback for a plan published before global typed lengths
+  // settled. The active record owns the resulting overlay.
+  if (!ctx.func.typedLen && ctx.scope.globalTypedLen) ctx.func.typedLen = makeMapOverlay(ctx.scope.globalTypedLen)
 
   // D: Apply call-site param facts (only if body analysis didn't already set them).
   // Schema bindings additionally write into ctx.schema.vars so prop-access dispatch
@@ -1451,12 +1452,12 @@ function emitFunc(func, functionPlan, programFacts) {
       // the cloneRepMap above, but re-applied here for the same reason r.val is.
       if (r.bigintBoxed && !ctx.func.localReps?.get(pname)?.bigintBoxed) updateRep(pname, { bigintBoxed: true })
       if (r.typedCtor && !reassigned) {
-        if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
-        if (!ctx.types.typedElem.has(pname)) ctx.types.typedElem.set(pname, r.typedCtor)
+        if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
+        if (!ctx.func.typedElem.has(pname)) ctx.func.typedElem.set(pname, r.typedCtor)
         if (!ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: VAL.TYPED })
         if (r.typedLen != null) {
-          if (!ctx.types.typedLen) ctx.types.typedLen = new Map()
-          if (!ctx.types.typedLen.has(pname)) ctx.types.typedLen.set(pname, r.typedLen)
+          if (!ctx.func.typedLen) ctx.func.typedLen = new Map()
+          if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
         }
       }
       if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
@@ -1467,30 +1468,11 @@ function emitFunc(func, functionPlan, programFacts) {
   }
 
   const fn = ['func', `$${name}`]
-  // Stamp the emit-side CSE soundness whitelist onto the func node (expando —
-  // watr print/compile ignore non-index props). `cseScalarLoad` reads it; absent
-  // it the pass is a no-op. `$`-prefixed to match WAT local names directly.
-  if (functionPlan.cseLoadBases?.size)
-    fn.cseLoadBases = new Set([...functionPlan.cseLoadBases].map(n => `$${n}`))
-  // Param-distinctness fact (alias analysis): typed-array params proven mutually-distinct buffers
-  // at every call site. `$`-prefixed to match WAT param names; read by hoistInvariantLoop to hoist
-  // a load from one such param across a store to another (they can't alias).
-  if (functionPlan.distinctParams?.size)
-    fn.distinctParams = new Set([...functionPlan.distinctParams].map(n => `$${n}`))
-  // Stable-header pointer facts: bindings whose length-HEADER word (at base-8) is
-  // provably immutable for the binding's entire lifetime — VAL.TYPED (a typed array
-  // is a fixed-size allocation, no grow op exists — see module/typedarray.js typedBase)
-  // or ARRAY neverGrown (reps.js — no push/splice/relocating op reaches it). `$`-prefixed
-  // to match WAT local/param names; read by hoistInvariantLoop to admit the checked-access
-  // guard's length DECODE (`i32.shr_u(i32.load(i32.sub(ptr, 8)), shift)`) as loop-invariant
-  // — it needs no alias-analysis against the loop's stores (unlike the cell/distinctParam
-  // loads above) because nothing can ever write that word once the receiver is allocated.
-  if (functionPlan.localReps?.size) {
-    const stableHeaderNames = new Set()
-    for (const [nm, r] of functionPlan.localReps)
-      if (r && (r.val === VAL.TYPED || r.neverGrown === true)) stableHeaderNames.add(`$${nm}`)
-    if (stableHeaderNames.size) fn.stableHeaderNames = stableHeaderNames
-  }
+  // Stamp the emit-side CSE, alias, and stable-header facts captured from the
+  // detached install snapshot above. Watr ignores these non-index expandos.
+  if (plannedCseLoadBases) fn.cseLoadBases = plannedCseLoadBases
+  if (plannedDistinctParams) fn.distinctParams = plannedDistinctParams
+  if (plannedStableHeaderNames) fn.stableHeaderNames = plannedStableHeaderNames
   // Inline `(export ...)` attribute only for the syntactic inline-export
   // form (`export function foo`, snapshot in `func.exported` at defFunc
   // time). Re-exports (`function foo; export { foo }`) and aliases (`export
@@ -1888,90 +1870,8 @@ function synthesizeBoundaryWrappers() {
 }
 
 
-// Two-level read-through Map facade (.work/research.md §Region arena, jz×jz
-// ceiling fix): emitClosureBody used to open every schema/typed-capturing
-// closure body with `new Map([...whole_program_table, ...cb_own_captures])`
-// — an O(programSize) full clone, paid PER CLOSURE, restored (discarded) at
-// the body's own tail. For a bundled program whose own fact table scales
-// with total module count (jz×jz: 155 modules merged into one AST/scope),
-// that made compiling N closures cost O(N × programSize) — exactly the
-// superlinear-in-program-size-not-in-closure-count shape that traps the
-// jz×jz self-host kernel-compile at the 2^32-byte ceiling deep inside
-// buildStart's emitClosures rounds (root-caused, not yet fixed, by the
-// 2a78a6f6 ledger entry this fix answers).
-//
-// MapOverlay replaces the clone with two layers: `own` (this closure's own
-// captures/writes) is checked first, falling through to `base` (the
-// enclosing table — module-global or the parent closure's own view) on
-// miss — O(1) construction, O(|own|) get/set, independent of base's size.
-// Shadow order matches the eager merge exactly: `new Map([...base, ...own])`
-// lets later (own) entries win on key collision, which is what `own` wins
-// on every read here reproduces. Writes (`.set`/`.delete`) land ONLY in
-// `own`, so `base` — which may be a caller-owned module-global map, never
-// safe to mutate in place — is never touched, the same non-leak guarantee
-// the old clone-then-discard pattern gave "for free". Restoring the PARENT's
-// view on exit is then just re-pointing ctx.schema.vars/ctx.types.typedElem
-// back at whatever it was before this call (already how the tail restore
-// worked — no change needed there), not "popping" anything structural: each
-// closure call builds its OWN fresh overlay from the CURRENT (possibly
-// itself an overlay, for a nested closure) prev value as `base`.
-//
-// Verified (grep across analyze.js, emit.js, emit-assign.js, infer.js,
-// inplace-store.js, plan/scope.js, program-facts.js, prepare/index.js,
-// type.js, kind.js, kind-traits.js, static.js): every read of
-// ctx.schema.vars / ctx.types.typedElem / ctx.types.typedLen is a bare
-// `.get`/`.has`/`.set`/`.delete` call — never a spread, `.keys()`/
-// `.entries()`/`.values()`, `for..of`, or `.size` read while a closure body
-// could be mid-emission — so a get/has/set/delete facade is a complete,
-// behavior-preserving substitute; no consumer needed converting.
-//
-// Plain factory (no `class`) on purpose: this file's own source text is
-// bundled into the self-host kernel (see emitClosureBody's doc above), and
-// jz compiles the WHOLE 155-module program including this one — `class` is
-// otherwise unused anywhere in src/, an untested self-host surface not worth
-// risking here. `delete` as a shorthand method-definition name (class OR
-// object-literal) trips the self-host front end's parser (a reserved word in
-// definition position); `.delete(name)` as a plain member-access CALL is
-// already used throughout the codebase and self-hosts fine (prepare/
-// index.js, analyze.js, …), so the delete method is attached via a plain
-// assignment (`overlay.delete = …`, the same member-access production as
-// every existing call site) after the object literal, never defined inline.
-const MAP_OVERLAY_TOMBSTONE = Symbol('MapOverlay.deleted')
-function makeMapOverlay(base, own) {
-  const b = base || null
-  const o = own || new Map()
-  const has = (k) => o.has(k) ? o.get(k) !== MAP_OVERLAY_TOMBSTONE : (b ? b.has(k) : false)
-  const overlay = {
-    base: b,
-    own: o,
-    has,
-    get(k) {
-      if (o.has(k)) { const v = o.get(k); return v === MAP_OVERLAY_TOMBSTONE ? undefined : v }
-      return b ? b.get(k) : undefined
-    },
-    set(k, v) { o.set(k, v) },
-  }
-  overlay.delete = (k) => {
-    const had = has(k)
-    if (had) o.set(k, MAP_OVERLAY_TOMBSTONE)
-    return had
-  }
-  return overlay
-}
-
-// O(1)-per-layer "is this table (or overlay) non-empty" truthy check — the one
-// `.size` read this codebase has on a MapOverlay-eligible field (analyzeFuncForEmit's
-// load-CSE gate; grepped whole-repo, the only such site). A plain Map's own `.size`
-// answers directly; a MapOverlay has none (own/base can diverge in count from any
-// single Map), so this sums `own.size` with a recursive read of `base` (itself either
-// a plain Map or a nested overlay, the same shape `get`/`has` already walk for nested
-// closures). Overlap between `own` and `base` can only ever OVER-count a shared key —
-// harmless for every actual consumer, which only tests non-zero-ness, never compares
-// the number itself.
-function mapOrOverlaySize(m) {
-  if (!m) return 0
-  return m.own ? m.own.size + mapOrOverlaySize(m.base) : m.size
-}
+// MapOverlay implementation lives in map-overlay.js so FunctionPlan can
+// fork detached typed views without importing this compile driver.
 
 /**
  * Phase: emit one closure body to WAT IR.
@@ -1981,20 +1881,16 @@ function mapOrOverlaySize(m) {
  * builds one body fn given the body record (cb) created by ctx.closure.make.
  *
  * Mutates ctx.func.* per-body state (locals, boxed, localReps) and
- * ctx.schema.vars / ctx.types.typedElem/typedLen. Entry: all three ride a
- * MapOverlay (above) layered onto the parent's own value rather than a fresh
- * full clone while this body compiles — see MapOverlay's own doc for why.
- * Exit: ctx.schema.vars is restored explicitly below (a compile-lifetime map,
- * outside the active-function swap); ctx.types.typedElem/typedLen instead ride
- * enterFunc/restoreActiveFunction's own structural stash-and-restore
- * (compile/active-function.js, audit P2) so a capture-binding leak can't
- * poison the next body — prevTypedElems below is still read as this body's
- * OWN fallback-seed value (see the `else` branch further down), not for
- * restoration. Returns the WAT IR for the func node.
+ * ctx.schema.vars / ctx.func.typedElem/typedLen. Entry: all three ride a
+ * MapOverlay layered onto the parent's own value rather than a full clone.
+ * Exit restores ctx.schema.vars explicitly; typedElem/typedLen return with the
+ * displaced ActiveFunction record itself. `prevTypedElems` remains the
+ * closure's fallback seed when no local or module-global typed facts exist.
+ * Returns the WAT IR for the func node.
  */
 function emitClosureBody(cb) {
   const prevSchemaVars = ctx.schema.vars
-  const prevTypedElems = ctx.types.typedElem
+  const prevTypedElems = ctx.func.typedElem
   // Bare `;`-sequence bodies (no enclosing `{}`) reach us when callers built a
   // statement list directly — normalize before the frame captures body identity.
   if (Array.isArray(cb.body) && cb.body[0] === ';') cb.body = ['{}', cb.body]
@@ -2031,16 +1927,16 @@ function emitClosureBody(cb) {
   }
   const globalTE = ctx.scope.globalTypedElem
   if (cb.typedElems) {
-    ctx.types.typedElem = makeMapOverlay(globalTE, new Map(cb.typedElems))
+    ctx.func.typedElem = makeMapOverlay(globalTE, new Map(cb.typedElems))
   } else if (globalTE) {
-    ctx.types.typedElem = makeMapOverlay(globalTE)
+    ctx.func.typedElem = makeMapOverlay(globalTE)
   } else {
-    ctx.types.typedElem = prevTypedElems
+    ctx.func.typedElem = prevTypedElems
   }
   // Static typed lengths ride the same channel (module globals + per-body): the
   // typedIdxProven bounds proof reads the merged view.
   const globalTL = ctx.scope.globalTypedLen
-  ctx.types.typedLen = cb.typedLens
+  ctx.func.typedLen = cb.typedLens
     ? makeMapOverlay(globalTL, new Map(cb.typedLens))
     : (globalTL ? makeMapOverlay(globalTL) : null)
   // In closure bodies, boxed captures use the original name as both var and cell local
@@ -2081,7 +1977,7 @@ function emitClosureBody(cb) {
     const ctor = tcRow[i]
     if (ctor && !ctx.func.localReps?.get(cb.params[i])?.val) {
       updateRep(cb.params[i], { val: VAL.TYPED })
-      ;(ctx.types.typedElem ||= new Map()).set(cb.params[i], ctor)
+      ;(ctx.func.typedElem ||= new Map()).set(cb.params[i], ctor)
     }
   }
   // Body-usage numeric trust for closure params — the same proof the export path
@@ -2142,7 +2038,7 @@ function emitClosureBody(cb) {
       if (cb.params.includes(name) || cb.captures.includes(name)) continue
       const fields = { ptrKind: kind }
       if (kind === VAL.TYPED) {
-        const aux = typedElemAux(ctx.types.typedElem?.get(name))
+        const aux = typedElemAux(ctx.func.typedElem?.get(name))
         if (aux == null) continue
         fields.ptrAux = aux
       }
@@ -2321,11 +2217,8 @@ function emitClosureBody(cb) {
   return fn
   } finally {
     ctx.schema.vars = prevSchemaVars
-    // ctx.types.typedElem/typedLen restore is now structural (see the
-    // function doc above) — restoreActiveFunction below puts both back from
-    // previousFrame's own stash; no manual write needed here, and typedLen
-    // (the audit's P2 leak: this line never existed for it) is now covered
-    // for free instead of needing its own hand-added restore.
+    // typedElem/typedLen are members of previousFrame, so restoring the one
+    // record restores the complete function-local authority.
     restoreActiveFunction(ctx, previousFrame)
   }
 }
@@ -2603,8 +2496,9 @@ export default function compile(ast, profiler, regionHooks) {
       if (regionHooks && __mark == null) __mark = regionHooks.mark()
       const func = ctx.funcs.list[i]
       if (!func.raw) {
-        const functionPlan = publishPlan(func, analyzeFuncForEmit(func, programFacts))
-        captureFuncInspect(func, functionPlan, programFacts)
+        const facts = analyzeFuncForEmit(func, programFacts)
+        publishPlan(func, facts)
+        captureFuncInspect(func, facts, programFacts)
         scanErasureSinks(func)
       }
       const lastFunc = i === ctx.funcs.list.length - 1
@@ -2649,8 +2543,9 @@ export default function compile(ast, profiler, regionHooks) {
     // per clone rather than sharing the original's f64-sig facts.
     timePhase(profiler, 'unionClones', () => {
       for (const clone of specializeUnionCursorParams(programFacts)) {
-        const functionPlan = publishPlan(clone, analyzeFuncForEmit(clone, programFacts))
-        captureFuncInspect(clone, functionPlan, programFacts)
+        const facts = analyzeFuncForEmit(clone, programFacts)
+        publishPlan(clone, facts)
+        captureFuncInspect(clone, facts, programFacts)
       }
     })
   }

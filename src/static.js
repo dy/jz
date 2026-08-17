@@ -17,7 +17,7 @@ const TYPED_ELEM_BYTE_WIDTH = [1, 1, 2, 2, 4, 4, 4, 8]
 // own typed-dispatch sites read for a receiver NAME: a per-function narrowing
 // overlay first, then the whole-function map, then the module-global map.
 const typedCtorRawOf = (name) =>
-  ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.types?.typedElem?.get(name) ?? ctx.scope?.globalTypedElem?.get(name) ?? null
+  ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.func?.typedElem?.get(name) ?? ctx.scope?.globalTypedElem?.get(name) ?? null
 
 /** Extract integer value from AST literal node. Returns null if not a 32-bit integer. */
 export function intLiteralValue(expr) {

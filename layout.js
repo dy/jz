@@ -119,7 +119,7 @@ export function typedElemAux(ctor) {
 }
 
 /** Reverse of typedElemAux: pick a canonical ctor string for a 4-bit elem aux. Used
- *  to round-trip TYPED-narrowed call results through ctx.types.typedElem so the
+ *  to round-trip TYPED-narrowed call results through ctx.func.typedElem so the
  *  unboxed local's rep picks up the same aux. aux=7 is shared with BigInt typed
  *  arrays — Float64Array is canonical (read-side compares aux only). */
 export function ctorFromElemAux(aux) {

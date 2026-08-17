@@ -201,7 +201,7 @@ export function targetProfileFor(host) {
  *                                (JZ_DEBUG_CACHE) was tried and abandoned —
  *                                see analyzeBody's own module comment for why.
  *                                Ambient-overlay staleness (ctx.func.localReps
- *                                / ctx.types.typedElem / ctx.schema.slotI32Certain
+ *                                / ctx.func.typedElem / ctx.schema.slotI32Certain
  *                                changing without a signature retype) stays
  *                                the documented "intentionally staleable"
  *                                surface — unchanged, still out of scope.

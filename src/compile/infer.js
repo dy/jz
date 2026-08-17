@@ -290,7 +290,7 @@ registerEvidence('notString', notStringEvidence)
 //     evidence merged across all registered fact-returners.
 //   • Body-wide ctx-mutating passes (`analyzeValTypes`, `analyzeIntCertain`)
 //     walk the AST and write directly to `ctx.func.localReps` — they also
-//     populate `ctx.types.typedElem`, `ctx.schema.vars`, regex tracking, etc.
+//     populate `ctx.func.typedElem`, `ctx.schema.vars`, regex tracking, etc.
 //     and stay in analyze.js where their helpers live.
 //
 // Callers in compile.js used to repeat the merge boilerplate at every emit

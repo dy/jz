@@ -635,7 +635,7 @@ export default (ctx) => {
   // TYPED view (incl. DataView): BUFFER at descriptor[8] (root parent data offset).
   registerGetter('.buffer', (obj) => {
     if (typeof obj === 'string') {
-      const ctor = ctx.types.typedElem?.get(obj)
+      const ctor = ctx.func.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') return asF64(emit(obj))
       if (ctor?.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
@@ -655,7 +655,7 @@ export default (ctx) => {
   // View TYPED (incl. DataView): descriptor[0], via the __byte_length fallback.
   registerGetter('.byteLength', (obj) => {
     if (typeof obj === 'string') {
-      const ctor = ctx.types.typedElem?.get(obj)
+      const ctor = ctx.func.typedElem?.get(obj)
       if (ctor === 'new.ArrayBuffer') {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]]], 'f64')
       }
@@ -679,7 +679,7 @@ export default (ctx) => {
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
   registerGetter('.byteOffset', (obj) => {
     if (typeof obj === 'string') {
-      const ctor = ctx.types.typedElem?.get(obj)
+      const ctor = ctx.func.typedElem?.get(obj)
       if (ctor?.endsWith('.view')) {
         const t = tempI32('bo')
         return typed(['block', ['result', 'f64'],
@@ -1251,7 +1251,7 @@ export default (ctx) => {
     const ctor = (Array.isArray(receiver) && receiver[0] === '[]' && receiver.length === 3 && typeof receiver[1] === 'string'
         ? ctx.func.localReps?.get(receiver[1])?.arrayElemTypedCtor
         : null)
-      || (typeof receiver === 'string' && ctx.types.typedElem?.get(receiver))
+      || (typeof receiver === 'string' && ctx.func.typedElem?.get(receiver))
       // Direct fresh-ctor receiver: `new Int32Array([…]).map(f)` — the ctor call
       // node IS the receiver, no binding to look up. Without this the chain fell
       // to the plain-array emitters, which read f64 slots — silently wrong for
@@ -1598,7 +1598,7 @@ export default (ctx) => {
     // until an all-writers length lattice proves otherwise, never substitute
     // its declaration length into a guard.
     if (ctx.scope?.globals?.get(arr)?.mut && !ctx.func.locals?.has(arr)) return null
-    return ctx.types.typedLen?.get(arr) ?? ctx.scope?.globalTypedLen?.get(arr) ?? null
+    return ctx.func.typedLen?.get(arr) ?? ctx.scope?.globalTypedLen?.get(arr) ?? null
   }
   const leanLen = (arr, et, isView) => {
     const staticLen = staticTypedLen(arr)

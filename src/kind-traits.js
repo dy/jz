@@ -123,7 +123,7 @@ export function calleeValType(callee, _args, ctx) {
     const arr = Array.isArray(a1) && a1[0] === ',' ? a1[1] : a1
     const ctor = Array.isArray(arr) && arr[0] === 'new' ? 'new.' + arr[1]
       : typeof arr === 'string'
-        ? (ctx.func?.localTypedElemsOverlay?.get(arr) ?? ctx.types?.typedElem?.get(arr)
+        ? (ctx.func?.localTypedElemsOverlay?.get(arr) ?? ctx.func?.typedElem?.get(arr)
           ?? ctx.func?.localReps?.get(arr)?.typedCtor ?? ctx.scope?.globalTypedElem?.get(arr))
         : null
     return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER

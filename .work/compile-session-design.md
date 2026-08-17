@@ -7,8 +7,9 @@ and its landed slices a/b/c), `.work/ctxfunc-survey.md` (the six-lifetime
 survey.md` is the survey with that exact content, cross-confirmed against
 every citation of it in `.work/research.md` §Region-arena's decision-point
 entry, which names it by this same path), the `ea423728` audit-B remediation
-ledger entry (FunctionPlan deep-freeze, typedElem/typedLen structural swap,
-`isInactiveFunction` widened), the `b3cb4f8b` ledger entry (seven-instance
+ledger entry and its 2026-08-16 completion (opaque FunctionPlan storage;
+typedElem/typedLen moved onto ActiveFunction; `isInactiveFunction` widened),
+the `b3cb4f8b` ledger entry (seven-instance
 root-completeness defect class, CompileSession recommended as the fix), and a
 direct read of `src/ctx.js`, `src/session.js`, `src/compile/active-function.js`,
 `src/compile/function-plan.js`, and all five current region-root bundles
@@ -29,8 +30,8 @@ gate demanded:
 | lifetime (ctxfunc-survey §0/§2) | landed as | file |
 |---|---|---|
 | ProgramFunctions (registry) | `ctx.funcs` — Slice 3 | `src/ctx.js` |
-| ActiveFunction (frame identity + control flow) | `ctx.func`, one record, swap-by-identity | `src/compile/active-function.js` (Slice 4b) |
-| FunctionAnalysis/FunctionPlan (frozen facts) | `ctx.plans.functions` WeakMap, deep-freeze-tripwired | `src/compile/function-plan.js` (Slice 4c, `ea423728` P1) |
+| ActiveFunction (frame identity + control flow) | `ctx.func`, one record, swap-by-identity; owns typedElem/typedLen | `src/compile/active-function.js` (Slice 4b + 2026-08-16 completion) |
+| FunctionAnalysis/FunctionPlan (immutable facts) | opaque handles in `ctx.plans.functions`; canonical data in session-owned `functionData`, detached on install | `src/compile/function-plan.js` (Slice 4c + 2026-08-16 completion) |
 | EmitFrame (id/local minting) | `freshEmitId`/`declareLocal` on the ActiveFunction record | `src/compile/active-function.js` (Slice 4f) |
 | FlowState (scoped push/pop) | `src/compile/flow-state.js` primitives over ActiveFunction fields | Slice 4d |
 | BodyMemo (identity-keyed caches) | `getFactStore()`'s WeakMaps | Slice 1 (AdHocMemo retirement) |

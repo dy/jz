@@ -6,18 +6,10 @@
  * selected field list. Flow scopes inside one function still mutate fields on
  * the active record deliberately.
  *
- * typedElem/typedLen are the two exceptions to "lives on the record": they
- * are read throughout analyze.js/emit.js/narrow.js as the ambient
- * ctx.types.typedElem/typedLen pair (per ctx.js's own phase table, "function"
- * lifecycle — reset per function like everything else here), not as
- * ctx.func.* fields, so relocating their STORAGE would mean rewriting every
- * one of those call sites, narrow.js included. What moves here instead is
- * their LIFECYCLE: enterActiveFunction/restoreActiveFunction below stash and
- * restore ctx.types.typedElem/typedLen on the displaced record's own
- * typedElem/typedLen fields, the same swap-by-identity discipline every other
- * field on this record already gets — closing the audit's P1 finding (a
- * manual save/restore at each call site, one of which — emitClosureBody —
- * forgot typedLen) without touching a single read site.
+ * typedElem/typedLen live here too: they are function-local representation
+ * facts, not program-wide type state. A boundary therefore swaps them by the
+ * same record identity as locals, reps, refinements, and emission flags; no
+ * parallel ambient save/restore authority exists.
  */
 export function createActiveFunction({
   sig = null,
@@ -36,8 +28,8 @@ export function createActiveFunction({
     locals: new Map(),
     localReps: null,
     localProps: null,
-    typedElem: null,   // stashed ctx.types.typedElem snapshot while DISPLACED (see enterActiveFunction) — stale/unused while this record is the active ctx.func
-    typedLen: null,    // same, for ctx.types.typedLen
+    typedElem: null,
+    typedLen: null,
     boxed: new Map(),
     cellTypes: new Set(),
     flatObjects: new Map(),
@@ -85,30 +77,16 @@ export function createActiveFunction({
   }
 }
 
-/** Install a complete active record and return the displaced record.
- *  Structurally carries ctx.types.typedElem/typedLen along with the swap
- *  (see createActiveFunction's own doc) — the displaced record keeps its
- *  ambient snapshot on itself so the matching restoreActiveFunction() puts it
- *  back automatically, the same identity-keyed discipline as every other
- *  field here. The entered record starts with a clean ambient slate; callers
- *  that need to seed it (analyzeFuncForEmit, installFunctionPlan,
- *  emitClosureBody) write ctx.types.typedElem/typedLen explicitly right
- *  after, same as they already populate ctx.func.locals/boxed/etc. */
+/** Install a complete active record and return the displaced record. */
 export function enterActiveFunction(ctx, options) {
   const previous = ctx.func
-  previous.typedElem = ctx.types.typedElem
-  previous.typedLen = ctx.types.typedLen
   ctx.func = createActiveFunction(options)
-  ctx.types.typedElem = null
-  ctx.types.typedLen = null
   return previous
 }
 
 /** Restore a record previously returned by enterActiveFunction(). */
 export function restoreActiveFunction(ctx, previous) {
   ctx.func = previous
-  ctx.types.typedElem = previous.typedElem
-  ctx.types.typedLen = previous.typedLen
 }
 
 /** Mint an id from the current EmitFrame name authority. */
@@ -131,11 +109,10 @@ export function declareLocal(ctx, name, type) {
  *  scoped fields), refinements, prediction state (p1Predicted), try/finally
  *  state (inTry/finallyStack), emission flags (repsFrozen/boxedResult/
  *  mixedAtomReturn plus the expression-dispatch scopes _expect/
- *  _selfAccumConcat/_schemaSpecSlow), and — P2's fix directly above — the
- *  ambient ctx.types.typedElem/typedLen pair, exactly the field a forgotten
- *  restore (emitClosureBody's old typedLen gap) used to leave dirty right
- *  here. Takes the whole ctx (not just ctx.func) because that last class
- *  lives outside the record proper.
+ *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen facts now
+ *  owned directly by the record. The predicate now covers every constructor
+ *  field except `uniq`, so adding state to ActiveFunction requires deciding
+ *  and pinning its inactive value here rather than silently widening the gap.
  *
  *  `uniq` is deliberately NOT checked against 0: it's a shared synthetic-name
  *  counter, and some post-analysis passes (boundary-wrapper synthesis) mint
@@ -145,14 +122,23 @@ export function declareLocal(ctx, name, type) {
  *  all). Confirmed empirically: `xs[0]` alone leaves it at 2. */
 export function isInactiveFunction(ctx) {
   const frame = ctx.func
-  return frame.current === null && frame.body === null && frame.atModuleScope === false &&
-    frame.locals instanceof Map && Array.isArray(frame.stack) && frame.stack.length === 0 &&
-    frame.localValTypesOverlay instanceof Map && frame.localValTypesOverlay.size === 0 &&
-    frame.localTypedElemsOverlay === null &&
-    frame.refinements instanceof Map && frame.refinements.size === 0 &&
-    frame.p1Predicted instanceof Set && frame.p1Predicted.size === 0 &&
-    frame.inTry === false && frame.finallyStack === null &&
-    frame.repsFrozen === false && frame.boxedResult === false && frame.mixedAtomReturn === false &&
-    frame._expect === null && frame._selfAccumConcat === null && frame._schemaSpecSlow === false &&
-    ctx.types.typedElem === null && ctx.types.typedLen === null
+  const emptyMap = value => value instanceof Map && value.size === 0
+  const emptySet = value => value instanceof Set && value.size === 0
+  return frame.current === null && frame.body === null && frame.exported === false &&
+    frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
+    frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
+    emptyMap(frame.boxed) && emptySet(frame.cellTypes) && emptyMap(frame.flatObjects) &&
+    emptySet(frame.sliceViews) && emptySet(frame.leanHashLocals) && emptySet(frame.i32HashLocals) &&
+    emptyMap(frame.leanHashDomains) && emptySet(frame.preboxed) &&
+    Array.isArray(frame.stack) && frame.stack.length === 0 && frame.inTry === false &&
+    frame.finallyStack === null && frame.pendingLabel === null && emptyMap(frame.refinements) &&
+    frame.flowValBlocked === null && frame.repsFrozen === false && emptySet(frame.p1Predicted) &&
+    emptyMap(frame.localValTypesOverlay) && frame.localTypedElemsOverlay === null &&
+    emptyMap(frame.closureAux) && frame.directClosures === null && emptySet(frame.zeroInitSeen) &&
+    emptySet(frame.maybeNullish) && emptySet(frame.ternaryBoxedNames) &&
+    frame.boxedResult === false && frame.valResult === null && frame.mixedAtomReturn === false &&
+    frame.charDecomp === null && frame.charDecompGlobals === false && frame.concatBufs === null &&
+    frame.probeHoist === null && frame.lenHoist === null && frame.hoistTempDefs === null &&
+    frame._expect === null && frame._arrayLiteralNeverEscapes === false &&
+    frame._schemaSpecSlow === false && frame._selfAccumConcat === null
 }

@@ -840,7 +840,7 @@ export default (ctx) => {
       if (vtArr === VAL.TYPED && Array.isArray(arr) && (arr[0] === '.' || arr[0] === '?.') &&
           typeof arr[1] === 'string' && typeof arr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
         const fc = ctx.schema.slotTypedCtorAt(arr[1], arr[2])
-        if (fc) (ctx.types.typedElem ||= new Map()).set(h, fc)
+        if (fc) (ctx.func.typedElem ||= new Map()).set(h, fc)
       }
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)

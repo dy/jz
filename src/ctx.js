@@ -46,8 +46,8 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // | core      | compile  | reset, modules, inc(), emit*    | emit, compile, modules    |
 // | module    | compile  | prepare, index.js               | prepare, compile, emit    |
 // | scope     | compile  | analyze, compile, plan, modules, assemble | compile, emit   |
-// | func      | function | active-function authority, compile scopes | emit, modules       |
-// | types     | function | analyze, plan                   | emit, modules             |
+// | func      | function | active-function authority, analyze/compile scopes | emit, modules |
+// | types     | compile  | prepare, plan                   | analyze, emit, modules    |
 // | schema    | compile  | prepare, analyze, compile       | prepare, analyze, emit    |
 // | closure   | init     | modules (fn plugin), plan, emit | emit, compile             |
 // | runtime   | compile  | emit, modules                   | emit, compile             |
@@ -538,9 +538,6 @@ export function reset(proto, globals, bridge) {
   ctx.func = createActiveFunction()
 
   ctx.types = {
-    typedElem: null,
-    typedLen: null,  // mirrors typedElem's per-function lifecycle exactly (audit P2: its swap is
-                      // now structural, via enterActiveFunction/restoreActiveFunction — compile/active-function.js)
     dynKeyVars: null,
     dynWriteVars: null,
     anyDynKey: false,
@@ -999,7 +996,8 @@ export function reset(proto, globals, bridge) {
   // src/optimize/vectorize.js's loopPlanLink read) read ctx.plans.* — no
   // import-time WeakMap binding to go stale.
   ctx.plans = {
-    functions: new WeakMap(),     // src/compile/function-plan.js, keyed on prepared function record
+    functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
+    functionData: new WeakMap(),  // handle → private canonical facts (function-plan.js only)
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node
     loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }

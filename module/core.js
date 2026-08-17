@@ -2297,7 +2297,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
       // Literal-size fold: `new T(<int literal>)` bindings never resize (JS
       // TypedArrays have no growth op), so a binding whose EVERY def in this
       // fact's scope agreed on a literal ctor size carries an exact, static
-      // `.length` — no header load needed at all. ctx.types.typedLen (per-
+      // `.length` — no header load needed at all. ctx.func.typedLen (per-
       // function, analyze.js's makeTypedTracker) / ctx.scope.globalTypedLen
       // (whole-program, infer.js's recordGlobalRep) is the SAME fact
       // typedIdxProven (type.js) already trusts for bounds-check elision — a
@@ -2312,7 +2312,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
       // the runtime load too, until/unless a cross-function fact propagates
       // it into one of these two maps.
       if (typeof obj === 'string') {
-        const litLen = ctx.types.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)
+        const litLen = ctx.func.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj)
         if (litLen != null) return typed(['f64.const', litLen], 'f64')
       }
       // Fast path: typed-narrowed local (ptrKind=TYPED with known ptrAux) — bypass
@@ -2494,9 +2494,9 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props') })}`
     // guarantee the overlay exists for all emission.
     const srcType = typeof arr === 'string' ? repOf(arr)?.val : null
     if (srcType) ctx.func.localValTypesOverlay.set(t, srcType)
-    if (typeof arr === 'string' && ctx.types.typedElem?.has(arr)) {
-      if (!ctx.types.typedElem) ctx.types.typedElem = new Map()
-      ctx.types.typedElem.set(t, ctx.types.typedElem.get(arr))
+    if (typeof arr === 'string' && ctx.func.typedElem?.has(arr)) {
+      if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
+      ctx.func.typedElem.set(t, ctx.func.typedElem.get(arr))
     }
     return asF64(ctx.core.emit['[]'](t, idx))
   })
