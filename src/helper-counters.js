@@ -1,3 +1,14 @@
+/**
+ * Opt-in runtime helper-call profiling: splices an exported i64 counter bump
+ * into each listed stdlib helper's prologue (or per call site, labeled by
+ * caller) so a host harness can read exact invocation counts per compiled
+ * program. Diagnostic-only — never active in a normal compile; the bench and
+ * dispatch-census harnesses opt in to answer "which fallback paths fire and
+ * from where". INVARIANT: counters are exported wasm globals, so adding one
+ * never perturbs function indices or code layout beyond the bump itself.
+ *
+ * @module helper-counters
+ */
 import { ctx, declGlobal, inc } from './ctx.js'
 import { findBodyStart } from './ir.js'
 

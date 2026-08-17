@@ -29,9 +29,14 @@ src/
   # shared leaves — cycle-free, imported across stages:
   ast.js static.js kind.js type.js param-reps.js
   ctx.js bridge.js reps.js ir.js autoload.js resolve.js
+  layout-kinds.js  region-arena relocation arms per heap kind (executable registry; prose twin layout-kinds-doc.js)
 module/         stdlib
 layout.js       NaN-box bit layout + PTR.TYPED elem-aux codec (compiler-free, shared with module/)
+interop.js      host↔wasm value marshalling: NaN-box decode/encode at the JS boundary (exports, imports, memory views)
 transform.js    jzify as standalone source→source (`jz/transform`; parse → jzify → codegen)
+err-codes.js    compile/runtime error-code registry (host decode of trapped error classes)
+wasi.js         WASI shim for the standalone/CLI targets
+cli.js          command-line driver (`jz` binary): flags → compile opts, file IO, --why-not-simd
 ```
 
 **Folder policy:** one folder per pipeline *stage*, not per arbitrary concern. `jzify/` lives at repo root (pre-compiler transform, like `layout.js` / `cli.js`). Shared cycle-free leaves stay at `src/` root so `module/` imports stay short.

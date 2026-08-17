@@ -1,3 +1,12 @@
+/**
+ * Stdlib module manifest — the single import/re-export point autoload.js walks
+ * to register every stdlib plugin. Order matters only for readability; each
+ * module self-registers its handlers via the two registration dialects
+ * (CONTRIBUTING.md "Stdlib registration"). Adding a stdlib module = add its
+ * import + name here, nothing else.
+ *
+ * @module module/index
+ */
 import math from './math.js'
 import core from './core.js'
 import array from './array.js'

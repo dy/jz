@@ -45,7 +45,7 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // |-----------|----------|---------------------------------|---------------------------|
 // | core      | compile  | reset, modules, inc(), emit*    | emit, compile, modules    |
 // | module    | compile  | prepare, index.js               | prepare, compile, emit    |
-// | scope     | compile  | analyze, compile, plan, modules, assemble | compile, emit   |
+// | scope     | compile  | prepare, analyze, compile, plan, modules, assemble | compile, emit |
 // | func      | function | active-function authority, analyze/compile scopes | emit, modules |
 // | types     | compile  | prepare, plan                   | analyze, emit, modules    |
 // | schema    | compile  | prepare, analyze, compile       | prepare, analyze, emit    |
