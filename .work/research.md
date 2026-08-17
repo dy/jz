@@ -19033,3 +19033,59 @@ This closes the closure-body and synthetic-start blockers for CompileSession.
 Graph-complete semantic FeaturePlan discovery remains a separate pass-design
 problem; this change does not claim that closure discovery itself has moved
 out of emission.
+
+## §FlowState completion: every lexical ActiveFunction scope is throw-safe
+## (2026-08-17)
+
+Slice 4d had moved the first seven manual field scopes, but its own ledger left
+the whole-program program-facts walkers as a follow-on. A fresh census also
+found manual scopes in narrowing (`current`, typed facts, flat-object/reps
+pairs), array/assignment emission flags, finalizer recursion, and loop/label
+control-stack pushes. Several restored only on the success path.
+
+`flow-state.js` now owns two missing primitives: `withFunctionFields` for an
+atomic multi-field transaction on one captured ActiveFunction identity, and
+`withControlFrame` for push/pop against one captured control stack. Named
+scopes cover current-function identity, typed facts, pending labels, and the
+array-literal escape flag. Three program-facts traversals now run each function
+under nested value-overlay scopes; exceptions cannot leave the last visited
+function's facts ambient. Narrowing's current/typed/flat/reps contexts use the
+same scopes. Finalizer recursion, loop/label frames, nested array literals, and
+the two-field self-concat assignment context are likewise structurally
+restored.
+
+One attempted mechanical conversion exposed an important ownership
+distinction under debug invariants: `refreshCallerLocals`'s `localReps` is
+scratch OWNED by that phase, not a shadow of an outer value. Restoring its
+predecessor resurrected a stale two-entry rep map on the inactive session
+frame. The final code scopes only typedElem there and clears localReps in
+`finally`; completion means deleting scratch, not restoring stale authority.
+The old save/restore census is now empty except real ActiveFunction boundary
+swaps and two read-only fallback seeds. A dead `ctx.func.locals` install in
+`narrowReturnArrayElems` was deleted—the code restored it before any consumer
+could read it.
+
+**Certification.** The new throw probe covers a two-field transaction plus a
+nested control frame; session-reentrancy is 19/19 (54 assertions) normally and
+under debug invariants. Focused statements 202/202 (468), inference 136/136
+(295), types 178/178 (303), and for-in 14/14 (31) pass. Twenty-four diverse
+control/array/closure outputs are byte-identical to base at O0/O2/O3. Full
+default/O0/O3 matrices each pass 3,483 with zero failures and 6 skips; WASI
+has only the unchanged `JZ_CARRIER_BOX ternaryBoxedNames` baseline failure
+(3,481 pass / 1 fail / 6 skip). Self-host correctness is 21/21, kernel parity
+33/33, and oracle 13/13 (538 assertions). A direct order-alternated six-case
+self-host A/B is 0.9996× new/base. The V8-referenced fresh pin passes at
+0.819×; the known loaded warm pin remains red at 1.040/1.062/1.060×.
+
+Two builds converge at
+`d9aed5ed4e8a0cfb186e0a7ba17c25644c1d75b8e2be5cca08ba2705e1c13988`.
+The completed scope machinery adds 653 bytes to `dist/jz.wasm`
+(17,235,519 → 17,236,172) while deleting 1,169 bytes from `dist/jz.js`
+(2,156,466 → 2,155,297).
+
+All named ownership prerequisites for constructing the final CompileSession
+record are now closed: immutable persistent/linear FunctionPlans, complete
+ActiveFunction state, closure/`__start` plan-first lowering, exhaustive
+inactive-state checks, and throw-safe FlowState. The known region-live
+whole-`ctx` identity-swap issue remains a separate implementation constraint,
+not an unresolved ownership question.

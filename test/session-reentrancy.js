@@ -31,7 +31,7 @@ import * as ctxModule from '../src/ctx.js'
 import { ctx } from '../src/ctx.js'
 import { enterActiveFunction, isInactiveFunction, restoreActiveFunction } from '../src/compile/active-function.js'
 import { createFunctionPlan, installFunctionPlan } from '../src/compile/function-plan.js'
-import { withFunctionField } from '../src/compile/flow-state.js'
+import { withControlFrame, withFunctionField, withFunctionFields } from '../src/compile/flow-state.js'
 import { onKernel } from './_matrix.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -224,6 +224,24 @@ test('FlowState scopes restore the owning frame even when nested work throws', (
   } catch { threw = true }
   ok(threw && ctx.func === frame && ctx.func._expect === outer,
     'nested throw restored both scopes and preserved active-record identity')
+})
+
+test('FlowState multi-field and control-stack scopes restore on throw', () => {
+  if (onKernel()) return
+  compile('export let f = x => x')
+  const frame = ctx.func
+  let threw = false
+  try {
+    withFunctionFields({ _selfAccumConcat: 'x', _arrayLiteralNeverEscapes: true }, () =>
+      withControlFrame({ brk: '$probe', loop: '$probeLoop' }, control => {
+        ok(ctx.func === frame && ctx.func.stack.at(-1) === control,
+          'transaction and control scope mutate the same active record')
+        throw new Error('probe')
+      }))
+  } catch { threw = true }
+  ok(threw && ctx.func === frame && frame.stack.length === 0 &&
+      frame._selfAccumConcat === null && frame._arrayLiteralNeverEscapes === false,
+    'throw restored every field and popped the owning control stack')
 })
 
 test('FunctionPlan is session-owned, opaque, and detached from emission state', () => {

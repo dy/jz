@@ -11,6 +11,7 @@ import { staticObjectProps, objLiteralSchemaId } from '../static.js'
 import { intLevelChecker, typedElemCtor } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { analyzeBody } from './analyze.js'
+import { withValueOverlay } from './flow-state.js'
 import { safeReads } from './analyze-scans.js'
 
 // MUTATE_OPS (ast.js) is the property-write op set: any write op whose first
@@ -1021,22 +1022,23 @@ export function observeProgramSlots(ast, opts) {
     }
     for (let i = 1; i < node.length; i++) visit(node[i], intRefs, paramVts)
   }
-  const prevOverlay = ctx.func.localValTypesOverlay
-  if (ast) { ctx.func.localValTypesOverlay = null; teOverlay = null; maskMax = collectMaskMax(ast); visit(ast) }
+  withValueOverlay(null, () => {
+  if (ast) { teOverlay = null; maskMax = collectMaskMax(ast); visit(ast) }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
-    ctx.func.localValTypesOverlay = facts.valTypes
-    teOverlay = facts.typedElems
-    maskMax = collectMaskMax(func.body)
-    // Parameter-kind channel (design §"Parameter-kind channel"): only proven
-    // post-narrowing (opts.paramReps, the late {fresh:true} call) — mirrors
-    // collectSlotWriteHazards' identical curParamVts construction above.
-    const reps = paramReps?.get(func.name)
-    const paramVts = reps
-      ? new Map((func.sig?.params || []).map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
-      : null
-    visit(func.body, null, paramVts)
+    withValueOverlay(facts.valTypes, () => {
+      teOverlay = facts.typedElems
+      maskMax = collectMaskMax(func.body)
+      // Parameter-kind channel (design §"Parameter-kind channel"): only proven
+      // post-narrowing (opts.paramReps, the late {fresh:true} call) — mirrors
+      // collectSlotWriteHazards' identical curParamVts construction above.
+      const reps = paramReps?.get(func.name)
+      const paramVts = reps
+        ? new Map((func.sig?.params || []).map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+        : null
+      visit(func.body, null, paramVts)
+    })
   }
   teOverlay = null
   // hasMapSet joins hasSchemaLiterals as the moduleInit-walk trigger (design
@@ -1045,7 +1047,6 @@ export function observeProgramSlots(ast, opts) {
   // trip hasSchemaLiterals on its own — see hasMapSet's own doc comment
   // (observeNodeFacts, above) for the matching pre-scan.
   if ((ctx.module.initFacts?.hasSchemaLiterals || ctx.module.initFacts?.hasMapSet) && ctx.module.moduleInits) {
-    ctx.func.localValTypesOverlay = null
     for (const mi of ctx.module.moduleInits) {
       const hit = pf.moduleInitSlot.get(mi)
       if (hit?.gen === pf.gen) {
@@ -1127,7 +1128,7 @@ export function observeProgramSlots(ast, opts) {
       if (mi != null && typeof mi === 'object') pf.moduleInitSlot.set(mi, { gen: pf.gen, obs, dictObs, mapObs })
     }
   }
-  ctx.func.localValTypesOverlay = prevOverlay
+  })
   // Publish the dict-value-type census onto globalReps — kind.js's
   // dictValueKindOf projects the exact-or-null answer from this Set
   // (size===1 → the kind, else null); censusKindsOf (opt-in, product-lattice
@@ -1425,37 +1426,33 @@ export function collectSlotWriteHazards(ast, opts) {
   // resolution must see local kinds — `ps[i] = {…}` with ps a local ARRAY and
   // i an int counter is an ELEMENT write, not a slot hazard; without the
   // overlay both fall to unknown and the scan poisons the world.
-  const prevOverlay = ctx.func.localValTypesOverlay
-  if (ast) { ctx.func.localValTypesOverlay = null; curSids = null; visit(ast) }
+  withValueOverlay(null, () => {
+  if (ast) { curSids = null; visit(ast) }
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
-    ctx.func.localValTypesOverlay = analyzeBody(func.body).valTypes
-    curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
-    // Late mode: narrowed param reps type this body's params (the early pass
-    // can't — `re[j] = tr` on a TYPED param must classify as an element write).
-    if (late) {
-      const reps = opts.paramReps.get(func.name)
-      const params = func.sig?.params || []
-      curParamVts = reps
-        ? new Map(params.map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
-        : null
-      // keyedWrite's numeric-key exemption (§21's lever 2): a param proven both
-      // wasm i32 AND VAL.NUMBER is genuinely integer-valued — `r.wasm === 'i32'`
-      // alone also covers VAL.BOOL params (narrow.js's argWasmType/exprType wasm
-      // rep is shared between int-narrowed numbers and booleans), so the val
-      // check is required to exclude those; a bare param used as `arr[idx] = v`
-      // (never reassigned, so intCertainMap's own reassignment-only fixpoint
-      // never sees it) is otherwise unresolvable at this scan — see §17.
-      curParamIntCertain = reps
-        ? new Set(params.filter((p, k) => p.type === 'i32' && reps.get(k)?.val === VAL.NUMBER).map(p => p.name))
-        : null
-    }
-    visit(func.body)
-    curSids = curParamVts = curParamIntCertain = null
+    withValueOverlay(analyzeBody(func.body).valTypes, () => {
+      curSids = late ? collectBodyElemSids(func, opts.paramReps) : null
+      // Late mode: narrowed param reps type this body's params (the early pass
+      // can't — `re[j] = tr` on a TYPED param must classify as an element write).
+      if (late) {
+        const reps = opts.paramReps.get(func.name)
+        const params = func.sig?.params || []
+        curParamVts = reps
+          ? new Map(params.map((p, k) => [p.name, reps.get(k)?.val]).filter(([, v]) => v != null))
+          : null
+        // keyedWrite's numeric-key exemption (§21's lever 2): a param proven both
+        // wasm i32 AND VAL.NUMBER is genuinely integer-valued — `r.wasm === 'i32'`
+        // alone also covers VAL.BOOL params, so the val check is required.
+        curParamIntCertain = reps
+          ? new Set(params.filter((p, k) => p.type === 'i32' && reps.get(k)?.val === VAL.NUMBER).map(p => p.name))
+          : null
+      }
+      try { visit(func.body) }
+      finally { curSids = curParamVts = curParamIntCertain = null }
+    })
   }
-  ctx.func.localValTypesOverlay = null
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
-  ctx.func.localValTypesOverlay = prevOverlay
+  })
   pf.hazard = { gen: pf.gen, late, hz }
   return (ctx.schema.slotWriteHazards = hz)
 }
@@ -1524,11 +1521,10 @@ const _NG_SAFE_METHODS = new Set([
 export function analyzeParamNeverGrown(paramReps) {
   if (!ctx.funcs.list.length) return
   const poisoned = new Set(), edges = new Map()
-  const prevOverlay = ctx.func.localValTypesOverlay
+  withValueOverlay(null, () => {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
-    ctx.func.localValTypesOverlay = facts.valTypes
     // Receiver kinds the body facts miss: narrowed param kinds (post-
     // narrowSignatures paramReps) and `{}`-literal decl locals — the
     // dictionary idiom's `const counts = {}` carries no valTypes entry, but
@@ -1589,12 +1585,11 @@ export function analyzeParamNeverGrown(paramReps) {
       }
       for (let i = 1; i < n.length; i++) scan(n[i])
     }
-    scan(func.body)
-    ctx.func.localValTypesOverlay = null
+    withValueOverlay(facts.valTypes, () => scan(func.body))
     if (dirty) poisoned.add(func.name)
     else edges.set(func.name, out)
   }
-  ctx.func.localValTypesOverlay = prevOverlay
+  })
   // Poison propagation: a caller of a poisoned/unknown callee is poisoned.
   let changed = true
   while (changed) {

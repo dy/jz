@@ -21,6 +21,7 @@ import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } fro
 import { ssoEncode } from './string.js'
 import { ERR } from '../err-codes.js'
 import { sameValueZeroIdentityChain, mapHashStringArm, mapHashBigintArm } from '../layout-kinds.js'
+import { withControlFrame } from '../src/compile/flow-state.js'
 
 const SSO_BIT_I64 = ssoBitI64Hex()
 // Inline only compact closed schemas. SSO bit compares are tiny; heap-string
@@ -3684,7 +3685,7 @@ export default (ctx) => {
     const brk = `$brk${id}`, loop = `$loop${id}`, cont = `$cont${id}`
     const va = asF64(emit(src))
     const needsCont = hasOwnContinue(body)
-    ctx.func.stack.push({ brk, loop: needsCont ? cont : loop })
+    const control = { brk, loop: needsCont ? cont : loop }
     let bodyFlat
     // NOTE: `flat(body)` (the bridge-dispatched emitVoid) miscompiles in this
     // self-host call context — it returns [] for a void-postfix body
@@ -3693,8 +3694,7 @@ export default (ctx) => {
     // same emit+flatten logic inlined here compiles correctly. emitFlatVoid
     // mirrors emitVoid/emitBlockBody (minus early-return refinement narrowing,
     // which a loop body does not need).
-    try { bodyFlat = emitFlatVoid(body) }
-    finally { ctx.func.stack.pop() }
+    bodyFlat = withControlFrame(control, () => emitFlatVoid(body))
     const bodyBlock = needsCont ? [['block', cont, ...bodyFlat]] : bodyFlat
     inc('__ptr_type', '__len', '__coll_order')
     return [

@@ -9,7 +9,7 @@ every citation of it in `.work/research.md` §Region-arena's decision-point
 entry, which names it by this same path), the `ea423728` audit-B remediation
 ledger entry and its 2026-08-16/17 completion (opaque FunctionPlan storage;
 typedElem/typedLen moved onto ActiveFunction; closure bodies and synthetic
-`__start` plan-first; `isInactiveFunction` widened),
+`__start` plan-first; FlowState completed; `isInactiveFunction` widened),
 the `b3cb4f8b` ledger entry (seven-instance
 root-completeness defect class, CompileSession recommended as the fix), and a
 direct read of `src/ctx.js`, `src/session.js`, `src/compile/active-function.js`,
@@ -34,7 +34,7 @@ gate demanded:
 | ActiveFunction (frame identity + control flow) | `ctx.func`, one record, swap-by-identity; owns typedElem/typedLen | `src/compile/active-function.js` (Slice 4b + 2026-08-16 completion) |
 | FunctionAnalysis/FunctionPlan (immutable facts) | opaque handles; persistent funcs use `functionData`, closure/`__start` use sealed one-shot frames in `functionWorking` | `src/compile/function-plan.js` (Slice 4c + 2026-08-16/17 completion) |
 | EmitFrame (id/local minting) | `freshEmitId`/`declareLocal` on the ActiveFunction record | `src/compile/active-function.js` (Slice 4f) |
-| FlowState (scoped push/pop) | `src/compile/flow-state.js` primitives over ActiveFunction fields | Slice 4d |
+| FlowState (scoped push/pop) | throw-safe single/multi-field transactions and control-stack scopes over ActiveFunction | Slice 4d + 2026-08-17 completion |
 | BodyMemo (identity-keyed caches) | `getFactStore()`'s WeakMaps | Slice 1 (AdHocMemo retirement) |
 
 The consequence for THIS design: **the expensive part ctxfunc-survey feared —

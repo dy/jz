@@ -19,6 +19,7 @@ import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { ERR } from '../err-codes.js'
+import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -762,11 +763,7 @@ export default (ctx) => {
       ? storedValueNarrow : storedValue
     const emitElem = (e) => {
       if (!Array.isArray(e) || e[0] !== '[') return elemStoredValue(e)
-      const prev = ctx.func._arrayLiteralNeverEscapes
-      ctx.func._arrayLiteralNeverEscapes = false
-      const r = elemStoredValue(e)
-      ctx.func._arrayLiteralNeverEscapes = prev
-      return r
+      return withArrayLiteralEscape(false, () => elemStoredValue(e))
     }
 
     if (!hasSpread) {

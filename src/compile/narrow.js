@@ -8,7 +8,7 @@
  */
 
 import { ctx, warn, err, DBG_INVARIANTS } from '../ctx.js'
-import { withTypedElemOverlay } from './flow-state.js'
+import { withCurrentFunction, withFunctionFields, withTypedElemOverlay, withTypedElems } from './flow-state.js'
 import { warningsView } from '../session-views.js'
 import {
   isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam,
@@ -138,10 +138,8 @@ function buildCallerElems(sliceKey) {
 function isIntSafeMutatedParam(func, p) {
   const saved = p.type
   p.type = 'i32'
-  const savedCurrent = ctx.func.current
-  ctx.func.current = func.sig
-  const level = intLevelMap(func.body, undefined, null).get(p.name) ?? 0
-  ctx.func.current = savedCurrent
+  const level = withCurrentFunction(func.sig,
+    () => intLevelMap(func.body, undefined, null).get(p.name) ?? 0)
   if (level < 1) { p.type = saved; return false }
   return true
 }
@@ -177,10 +175,8 @@ function callerArgSelfConsistentI32(func, k, sites) {
     const callerFunc = cs.callerFunc
     if (typeof arg !== 'string' || !callerFunc?.body) { ok = false; break }
     touched.add(callerFunc.body)
-    const savedCurrent = ctx.func.current
-    ctx.func.current = callerFunc.sig
-    const locals = reanalyzeBody(callerFunc.body).locals
-    ctx.func.current = savedCurrent
+    const locals = withCurrentFunction(callerFunc.sig,
+      () => reanalyzeBody(callerFunc.body).locals)
     if (locals.get(arg) !== 'i32') ok = false
   }
   func.sig.results = savedResults
@@ -455,7 +451,9 @@ function enrichCallerValTypesFromPointerParams(callerCtx) {
 }
 
 function refreshCallerLocals(callerCtx) {
-  const prevTE = ctx.func.typedElem
+  withTypedElems(ctx.func.typedElem, () => {
+  ctx.func.localReps = null
+  try {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     // Seed pointer-narrowed params' val-kind so analyzeBody recognises e.g.
@@ -480,8 +478,12 @@ function refreshCallerLocals(callerCtx) {
     for (const p of func.sig.params) if (!fresh.has(p.name)) fresh.set(p.name, p.type)
     callerCtx.get(func).callerLocals = fresh
   }
-  ctx.func.localReps = null
-  ctx.func.typedElem = prevTE
+  } finally {
+    // This pass owns a transient scratch map rather than shadowing an outer
+    // value: completion clears it instead of restoring a stale predecessor.
+    ctx.func.localReps = null
+  }
+  })
 }
 
 function resetParamWasmFacts(paramReps) {
@@ -525,9 +527,7 @@ function narrowI32Results(funcs) {
   )
   const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
   // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
-  const evalTails = (func, body, exprs) => {
-    const savedCurrent = ctx.func.current
-    ctx.func.current = func.sig
+  const evalTails = (func, body, exprs) => withCurrentFunction(func.sig, () => {
     // valTypes: analyzeBody's VAL-kind facts, threaded into exprType's bitwise-ops
     // BigInt gate (src/type.js) — see that gate's comment. Without it a proven-
     // BIGINT local's `~n`/`n & mask` return tail silently narrowed the WASM
@@ -552,7 +552,7 @@ function narrowI32Results(funcs) {
         if (c != null) { if (!te) te = savedTE ? new Map(savedTE) : new Map(); te.set(p.name, c) }
       }
     }
-    if (te) ctx.func.typedElem = te
+    const classify = () => {
     const allV128 = exprs.every(e => exprType(e, locals, valTypes) === 'v128')
     // research.md §Carrier invariant: exprType's own '&&'/'||'/'?:' conciliation
     // (src/type.js) only asks "is each branch i32-representable", the same
@@ -576,11 +576,10 @@ function narrowI32Results(funcs) {
     // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
     // needs the ctx-independent structural trace (exprPresentValIn) instead.
     const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
-    if (te) ctx.func.typedElem = savedTE
-    const r = { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
-    ctx.func.current = savedCurrent
-    return r
-  }
+    return { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
+    }
+    return te ? withTypedElems(te, classify) : classify()
+  })
   let changed = true
   while (changed) {
     changed = false
@@ -731,20 +730,16 @@ function narrowValResults(funcs) {
       // decode even though the value itself is correct. bodyFacts.flatObjects
       // is body-local and pure — safe to install for the duration of this
       // func's own valTypeOfWithCalls calls, then restore.
-      const prevFlat = ctx.func.flatObjects
-      const prevReps = ctx.func.localReps
-      if (bodyFacts) {
-        ctx.func.flatObjects = bodyFacts.flatObjects
-        ctx.func.localReps = installArrElemReps(bodyFacts.arrElemValTypes, prevReps)
+      const evaluate = () => {
+        const vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
+        return [vt0, vt0 && exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)]
       }
-      let vt0, allSame
-      try {
-        vt0 = valTypeOfWithCalls(exprs[0], localValTypes)
-        allSame = vt0 && exprs.every(e => valTypeOfWithCalls(e, localValTypes) === vt0)
-      } finally {
-        ctx.func.flatObjects = prevFlat
-        ctx.func.localReps = prevReps
-      }
+      const [vt0, allSame] = bodyFacts
+        ? withFunctionFields({
+          flatObjects: bodyFacts.flatObjects,
+          localReps: installArrElemReps(bodyFacts.arrElemValTypes, ctx.func.localReps),
+        }, evaluate)
+        : evaluate()
       if (!vt0) continue
       if (allSame) {
         func.valResult = vt0
@@ -1022,12 +1017,8 @@ function narrowReturnArrayElems(field, paramReps, valueUsed) {
       if (isBlock && !alwaysReturns(func.body)) continue
       const exprs = returnExprs(func.body)
       if (!exprs.length) continue
-      const savedLocals = ctx.func.locals
       const facts = analyzeBody(func.body)
-      ctx.func.locals = new Map(facts.locals)
-      for (const p of func.sig.params) if (!ctx.func.locals.has(p.name)) ctx.func.locals.set(p.name, p.type)
       const localElems = facts[sliceKey]
-      ctx.func.locals = savedLocals
       const paramElemMap = paramFactsOf(paramReps, func, field) || new Map()
       // Set-valued slices ride as canonical 'a,b,…' keys so the exact-agreement
       // lattice below works unchanged; size-1 sets are the singular fact (skip).
@@ -2865,20 +2856,16 @@ export function narrowBoolResults() {
     // is no later chance to correct an unproven result). Same for a `return
     // arr[i]` tail on a proven-BIGINT array element — installArrElemReps'
     // array sibling of the same install (see its own doc comment above).
-    const prevFlat = ctx.func.flatObjects
-    const prevReps = ctx.func.localReps
-    if (bodyFacts) {
-      ctx.func.flatObjects = bodyFacts.flatObjects
-      ctx.func.localReps = installArrElemReps(bodyFacts.arrElemValTypes, prevReps)
+    const evaluate = () => {
+      const isBool = exprs.every(e => vt(e) === VAL.BOOL)
+      return [isBool, !isBool && exprs.every(e => vt(e) === VAL.BIGINT)]
     }
-    let isBool, isBigint
-    try {
-      isBool = exprs.every(e => vt(e) === VAL.BOOL)
-      isBigint = !isBool && exprs.every(e => vt(e) === VAL.BIGINT)
-    } finally {
-      ctx.func.flatObjects = prevFlat
-      ctx.func.localReps = prevReps
-    }
+    const [isBool, isBigint] = bodyFacts
+      ? withFunctionFields({
+        flatObjects: bodyFacts.flatObjects,
+        localReps: installArrElemReps(bodyFacts.arrElemValTypes, ctx.func.localReps),
+      }, evaluate)
+      : evaluate()
     if (isBool) func.valResult = VAL.BOOL
     else if (isBigint) func.valResult = VAL.BIGINT
   }

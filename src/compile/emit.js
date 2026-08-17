@@ -66,7 +66,7 @@ import {
 } from '../ir.js'
 import { isBoundName, freshId } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
-import { withExpectedValue, withFinallyStack, withSchemaSpeculation, withTryState } from './flow-state.js'
+import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinallyStack, withFunctionFields, withPendingLabel, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 
 const stringOps = (node) => {
@@ -1301,11 +1301,8 @@ function emitFinalizers(minDepth = 0) {
   if (stack.length === 0) return []
   const saved = stack.slice()
   const out = []
-  for (let i = saved.length - 1; i >= 0 && saved[i].depth >= minDepth; i--) {
-    ctx.func.finallyStack = saved.slice(0, i)
-    out.push(...emitVoid(saved[i].cleanup))
-  }
-  ctx.func.finallyStack = saved
+  for (let i = saved.length - 1; i >= 0 && saved[i].depth >= minDepth; i--)
+    out.push(...withFinallyStack(saved.slice(0, i), () => emitVoid(saved[i].cleanup)))
   return out
 }
 
@@ -2189,9 +2186,9 @@ export function emitDecl(...inits) {
     // unrelated self-host miscompile. A flag only module/array.js's array-
     // literal emitter consults carries none of that risk — it changes
     // nothing about what `emit(init)` calls or how many temps it mints.
-    const prevNeverD = ctx.func._arrayLiteralNeverEscapes
-    if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '[' && ctx.schema.arrayVars?.has(name))
-      ctx.func._arrayLiteralNeverEscapes = true
+    const neverEscapes = !viewInit && typeof name === 'string' && Array.isArray(init) &&
+      init[0] === '[' && ctx.schema.arrayVars?.has(name)
+      ? true : ctx.func._arrayLiteralNeverEscapes
     // isTernaryBoxedBigint (ir.js): a decl initialized directly from a
     // ternary-nullish BIGINT merge (`let r = cond ? BigInt(x) : null`).
     // MUST replicate the '?:' handler's own (narrower) box condition below
@@ -2220,8 +2217,7 @@ export function emitDecl(...inits) {
     if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
-    const val = viewInit || emit(init)
-    ctx.func._arrayLiteralNeverEscapes = prevNeverD
+    const val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -5369,8 +5365,6 @@ export const emitter = {
     // old buffer is dead — the one context where a string concat may bump-EXTEND it in place. The
     // `+` handler reads this flag for its immediate concat; nested operands clear it (not the target).
     const selfAccum = Array.isArray(val) && val[0] === '+' && val[1] === name
-    const prevSA = ctx.func._selfAccumConcat
-    ctx.func._selfAccumConcat = selfAccum ? name : null
     // Compiler-synthesized decl-destructure array-literal temp (prepare/index.js
     // prepDecl, ctx.schema.arrayVars — kind.js's own doc comment on that map:
     // "tmp is a compiler-synthesized, single-write, non-escaping carrier that
@@ -5382,11 +5376,12 @@ export const emitter = {
     // destructure source like `let [a, b] = [1, BigInt(v)]` fails even though
     // no reader here is ever dynamic). See carrierF64Narrow's own doc comment
     // (ir.js) for the established pattern this mirrors.
-    const prevNever = ctx.func._arrayLiteralNeverEscapes
-    if (Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)) ctx.func._arrayLiteralNeverEscapes = true
-    const ev = emit(val)
-    ctx.func._arrayLiteralNeverEscapes = prevNever
-    ctx.func._selfAccumConcat = prevSA
+    const neverEscapes = Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)
+      ? true : ctx.func._arrayLiteralNeverEscapes
+    const ev = withFunctionFields({
+      _selfAccumConcat: selfAccum ? name : null,
+      _arrayLiteralNeverEscapes: neverEscapes,
+    }, () => emit(val))
     return writeVar(name, ev, void_)
   },
 
@@ -6912,8 +6907,8 @@ export const emitter = {
     // can target the loop label directly, saving a redundant `block`.
     const needsCont = step && (hasOwnContinue(body) || labeledContinue)
     const cont = needsCont ? `$cont${id}` : loop
-    ctx.func.stack.push({ brk, loop: cont, bodyNode: bodyNode0 })
-    const frame = ctx.func.stack[ctx.func.stack.length - 1]
+    const control = { brk, loop: cont, bodyNode: bodyNode0 }
+    return withControlFrame(control, frame => {
     if (myLabel != null) frame.contLabel = myLabel   // so `continue <myLabel>` targets this loop's step/test
     // Per-iteration fresh cells for boxed locals declared in the body — allocated
     // at body entry so a closure declared before its binding captures the right
@@ -7000,8 +6995,8 @@ export const emitter = {
     const plan = ctx.plans.loops.get(bodyNode0)
     if (plan) ctx.plans.loweringLinks.set(loopBlockNode, { plan, lowering: { ivName: counterName, guardName } })
     result.push(loopBlockNode)
-    ctx.func.stack.pop()
     return result.length === 1 ? result[0] : result
+    })
   },
 
   'switch': (discriminant, ...cases) => {
@@ -7029,13 +7024,10 @@ export const emitter = {
   'while': (cond, body) => emitter['for'](null, cond, null, body),
   'label': (name, body) => {
     const brk = `$label${freshId(ctx)}`
-    ctx.func.stack.push({ label: name, brk })
-    // Hand the label to the immediately-enclosed loop so `continue name` can target it.
-    ctx.func.pendingLabel = name
-    const result = ['block', brk, ...emitVoid(body)]
-    ctx.func.pendingLabel = null   // clear if the body wasn't a loop (nothing consumed it)
-    ctx.func.stack.pop()
-    return result
+    return withControlFrame({ label: name, brk }, () =>
+      // Hand the label to the immediately-enclosed loop. A loop consumes the
+      // value; the field scope clears it on every exit when no loop does.
+      withPendingLabel(name, () => ['block', brk, ...emitVoid(body)]))
   },
   'break': (label) => {
     const idx = label == null
