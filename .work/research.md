@@ -19721,3 +19721,247 @@ validation run: 126,740 B compiled output, 54 logged events, clean.
 jz×jz diagnostic run: TRAPPED at exactly 4,294,967,296 B, 45 logged events,
 `__dbg_afe_calls=192`, `__dbg_alloc_count=84,385,687`,
 `__dbg_memgrow_count=20,754,578`.
+
+---
+
+## §Region arena — THE MEMORY ENDGAME: root-caused and fixed the per-round
+## `$__region_exit` recopy tax (regionArmSetMap's missing durable short-
+## circuit) via an adaptive exit-skip on churn-since-mark — real-graph peaks
+## hold or IMPROVE (jessie/watr unchanged, jzify-entry HALVES 4295.0→2147.5
+## MB), jz×jz's AFE loop survives 6 exits → ~51 of its ~53 needed, but THE
+## GOAL GATE remains NOT MET — a mark-relative first cut was tried, MEASURED
+## to regress jessie/watr 2x, and reverted before landing (2026-08-17)
+
+**Task**: close the region-exit recopy tax the `fa9fcc1a` frontier trace
+characterized (every exit Cheney-copies the ENTIRE ~292 MB root-reachable
+set regardless of round churn; jz×jz needs ~53 exits, survives ~6) — root-
+cause the floor climb, fix it, run the full gate battery, and report THE
+GOAL GATE (self-hosted jz×jz under 4 GiB) as the campaign's finish line.
+
+### 1. THE FLOOR-CLIMB ROOT CAUSE — not a design defect in the compact-to-
+### mark scheme itself, a missing durable short-circuit in ONE kind's arm
+
+Read `$__region_exit`/`__region_copy_rec` (`module/core.js`) and every per-
+kind region arm (`layout-kinds.js`) directly, not just the frontier trace's
+byte-level table. The mark/exit design IS a true compact-to-mark scheme —
+`$__region_exit`'s own closing sequence (`local.set $size (i32.sub
+(global.get $__heap) (local.get $T)))`, `memory.copy (mark) (T) (size)`,
+`global.set $__heap (i32.add mark size)`) stages the compacted copy at the
+CURRENT heap top `T` and moves it DOWN to `mark` — survivors land at the
+mark, not above it, exactly as a correct copying collector should. And
+every kind but one has a genuine "durable, already below mark, don't
+re-copy" fast path: ARRAY/OBJECT (`layout-kinds.js` regionArmArray/
+regionArmObject, `off < mark` → walk in place, relocate only ephemeral
+payload, never re-copy the container), String/BigInt/Typed/Buffer (`off <
+mark` → return the pointer verbatim, zero work), HASH via
+`__region_relocate_props` (durable container → walk slots in place,
+relocate only values).
+
+**`regionArmSetMap` (Set/Map) is the ONE arm with no such check** — its own
+comment explains why, and is correct on its own narrow terms: "a Set/Map's
+slot position is a function of its KEY's hash… patching a relocated key's
+bits in place would leave the entry in the WRONG bucket… simplest correct
+answer: always rebuild via `__coll_order` + reinsert." That answer was
+sized against the mechanism's ORIGINAL root (`[ast, dirty, snapshots]`,
+watr's own small round-scratch state) where "dirty/snapshots are small
+relative to the tree, so paying this every round is cheap." The CURRENT
+14-field union root (`plan.js`'s `exitRound`) includes `ctx.plans` and
+`ctx.funcs` — large, pointer-keyed Maps that grow monotonically across the
+WHOLE compile (`ctx.plans.functions` publishes one `FunctionPlan` per
+function and, per `1248563f`'s own design note, "is NEVER emptied for the
+rest of the compile"). Because `regionArmSetMap` has no durable check, ANY
+exit that reaches one of these Maps — durable or not, changed or not —
+rebuilds it FRESH at the current heap top via a full `__coll_order` gather
++ reinsert, contributing its FULL current size to that round's own
+compacted output. The STALE prior copy (built by the previous round that
+touched it, already sitting below THAT round's mark) is never reclaimed —
+mark only ever advances, never rewinds, so once bytes land below it they
+are permanent, garbage or not. Each round that touches these Maps therefore
+adds roughly one more full copy's worth of dead weight, forever — this
+(not a growing "true" root or a design defect in the copy-to-mark scheme)
+is the mechanism behind the ≈292 MB/round floor climb the frontier trace
+measured, present even at round 5's own 0.001 MB TRUE churn. Directly
+confirmed against the frontier trace's own numbers: narrowSignatures'
+churn (+1846 MB) matches `097a51d7`'s own independent figure for the
+identical pass (+1564.9 MB, same order of magnitude, different kernel
+build) — the MECHANISM was never in question, only WHERE in the code it
+lived, and it lives in exactly one arm's missing fast path.
+
+### 2. THE FIX — adaptive exit-skip on absolute churn (option b), NOT a
+### mark-relative ratio, NOT the regionArmSetMap durable rewrite (option a)
+
+Per the task's own preference order, option (a) — fixing regionArmSetMap's
+missing durable short-circuit directly — is the structurally correct
+answer, but implementing it safely means adding a "durable container,
+walk slots in place, only rehash entries whose KEY itself just relocated"
+path without breaking the bucket-correctness invariant the function's own
+comment protects, inside a mechanism whose surrounding code documents SIX
+independently-closed boundary hazards (durable/ephemeral split, off-16,
+`__coll_order` counting, no-stub compaction, `$__dyn_props` root-
+completeness, chain-round rebuild). Given this session's own budget, that
+surgery was judged too high-risk to land untested-in-production; option
+(b) — skip the whole walk when a round's own churn doesn't justify paying
+for it — never touches that machinery at all, by construction: it is a
+pure early return BEFORE the memo table is even allocated, so when it
+doesn't fire, every byte of the existing (previously-audited, six-hazard-
+clean) relocation path is completely unchanged.
+
+**First cut (mark-relative, `churn < mark`)** — self-tuning in theory
+(`mark` is a free, zero-extra-walk proxy for "current root-set size," no
+extra measurement needed): implemented, built, and MEASURED before
+landing anything — real-graph peaks REGRESSED 2x (jessie 536.9→1073.7 MB,
+watr 1073.7→2147.5 MB) and the jz×jz goal gate was STILL NOT MET. Root
+cause of the regression, found by direct comparison against an unfixed
+control build from the SAME session (not a cross-session number): a
+mark-relative ratio conflates "large churn, mostly garbage" (front/early-
+plan/narrowSignatures — SHOULD compact) with "large churn, mostly
+SURVIVORS" whenever the contemporary mark happens to be even larger — and
+on a SMALL compile (jessie/watr), front's own high-value round easily
+satisfies `churn < mark` (mark is already nontrivial even at a small
+absolute scale), wrongly skipping the ONE round most worth compacting and
+retaining nearly all of its raw churn instead of its tiny survivor set
+(churn/live measured 574-2495x elsewhere in this campaign) — exactly the
+2x the measurement caught. **Reverted before landing anything** — the
+task's own instruction line for this exact situation.
+
+**Second cut (absolute threshold, landed)**: skip the whole
+`__region_copy_rec` walk (before the memo Map is even allocated) whenever
+`$__heap - mark < 16 MiB` (`i32.const 16777216`), returning `rootF`
+unchanged and leaving `$__heap` exactly where it was — root-identity is
+safe unconditionally, since nothing moved, every address the caller
+already holds stays valid. 16 MiB was sized directly from the frontier
+trace's own measured per-round churn table, not guessed: every round worth
+skipping on jz×jz (every batched `analyzeFuncForEmit` round, 1.68-7.00 MB;
+plan-tail rounds 1 and 5, 3.89 MB and 0.001 MB) sits under 16 MiB; every
+round worth compacting for real (front/early-plan/narrowSignatures,
+hundreds-to-thousands of MB; plan-tail rounds 2-4, 93-210 MB; the scan-
+round, 62.29 MB) sits at 22 MB and up — a clean gap. Unlike the ratio, an
+ABSOLUTE cap bounds the worst case a skip can ever retain to the cap
+itself, independent of how large `mark` happens to be for a given compile
+— it cannot misfire on a small graph's own high-value round the way the
+ratio did, confirmed by measurement (§3 below): jessie/watr hold EXACTLY
+at their pre-fix baseline, zero regression.
+
+**A wider-threshold variant was also tried and rejected** (diagnostic
+skip/compact counters temporarily added to `$__region_exit`, since deleted
+before this commit): raising the cap to 48 MiB, and separately adding an
+`OR (churn < mark/8)` fallback for large-mark late-stage rounds, both
+measured WORSE on jz×jz (fewer real compactions, MORE retained garbage,
+trapped SOONER in wall-clock terms — 12-15s vs 16 MiB's 19-22s) — past a
+certain point, widening the skip window trades away more real reclaim
+value than the recopy tax it dodges, the same failure mode as the mark-
+relative ratio just triggered later. 16 MiB, tried first and grounded
+directly in the measured evidence rather than found by search, remains the
+best of the three variants tested.
+
+### 3. GATES — full battery, rebased onto current main tip `2e4072df`
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships — `$__region_exit`'s
+new skip branch is unreachable dead code natively, region hooks are never
+called: `regionHooks` stays `undefined` in every dormant call site,
+`scripts/self.js`):
+- `npm test`: **3489 total (20068 assertions) / 3483 pass / 0 fail / 6
+  skip**.
+- `test:wasm`: **2757 total (12866 assertions) / 2751 pass / 0 fail / 6
+  skip**.
+- Self-build ×2 (independent worktrees): SHA-256
+  `12576eb973659941080ff0d5868d592fd21989a31a3ac078f2db02e53a816402` both
+  times — converges.
+- kernel-oracle: **13/13 (538 assertions)**, clean.
+- kernel-parity: **3/3 (33 assertions)**, clean.
+- jz×jz goal gate (dormant): FAIL, `unreachable` @ exactly 4,294,967,296 B
+  (4.000 GiB), ~6.5 s — byte-identical trap signature to every prior
+  session's own dormant reading, confirming zero dormant behavior change.
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2 (independent worktrees): SHA-256
+  `0cbe6b9617793740b71a61064738dea638bd7fe998ac7f3692ad2cf74b0a54f9` both
+  times — converges.
+- kernel-oracle: **13/13 × 15, on EACH of the two independently-rebuilt
+  binaries** (30/30 total reps, zero flake) — matches this campaign's own
+  established bar.
+- kernel-parity: **3/3 (33 assertions)** on each build.
+
+### Real-graph peaks — the archived kernel-memory-curve recipe
+(`instantiate(wasm,{memory:8192})`, `exports.default(code,0,{level:2},
+modules,0)`, `memory.buffer.byteLength` read on success or throw), ×3 each,
+region-live, byte-identical compiled output every rep. **Control column is
+an UNFIXED region-live build from this SAME session** (current main +
+`fa9fcc1a`'s cherry-pick, no fix) — a same-session, apples-to-apples
+baseline, not a cross-session number:
+
+| graph | control (unfixed, this session) | fixed (16 MiB threshold) | Δ |
+|---|---:|---:|---|
+| jessie (47 mod, 107,171 B) | 536.870912 MB | 536.870912 MB | **UNCHANGED** |
+| watr (7 mod, 314,631 B) | 1073.741824 MB | 1073.741824 MB | **UNCHANGED** |
+| jzify-entry (70 mod, 607,636 B) | 4294.967296 MB (OK, full-capacity) | 2147.483648 MB (OK) | **−2147.5 MB / −50.0%** |
+
+jessie/watr hold EXACTLY at baseline — the fix's own design intent (small
+compiles rarely reach the 16 MiB skip window at all, so behavior is nearly
+identical to the unfixed always-compact path; where it DOES matter, the
+absolute cap keeps the worst case bounded). jzify-entry HALVES — large
+enough to have AFE batches that benefit from skip, small enough to still
+finish inside the budget either way.
+
+### THE GOAL GATE — jz×jz (157 mod, self-hosted), NOT MET, but the AFE
+### loop's own survival went from 6 exits to ~51 of its ~53 needed
+
+| config | jz×jz peak | wall to trap |
+|---|---:|---:|
+| dormant | **FAIL**, unreachable @ 4294.967296 MB | ~6.5 s (unchanged from baseline) |
+| region-live (fixed) | **FAIL**, unreachable @ 4294.967296 MB | ~19.7-24 s (vs baseline's ~6-7 s and vs the unfixed control's own ~13.9 s wall-clock-to-trap this same session) |
+
+Exactly the same 4,294,967,296-byte (4.000 GiB) ceiling every prior GOAL
+GATE session has hit — but NOT the same distance into the compile: a
+temporary diagnostic build (skip/compact counters on `$__region_exit`,
+deleted before this commit) measured **37 skips + 14 real compactions = 51
+total exits survived** before the SAME `unreachable` trap, against a
+compile that needs roughly 53 (8 named rounds + the scan-round + ~45 AFE
+batches at `AFE_ROUND_BATCH=32`) — up from the frontier trace's own
+6-exits-and-trap. The fix is real and large (the AFE loop now runs almost
+its ENTIRE course instead of failing at batch 6), but the tail end of the
+loop — where the necessarily-real compactions (the ones whose own churn
+genuinely exceeds 16 MiB, correctly judged not skippable) are each paying
+an ever-larger tax as `ctx.plans`/`ctx.funcs` keep growing through the
+loop — still exhausts the ceiling before the last one or two exits land.
+Widening the skip threshold further to catch those late, large-churn exits
+was tried (§2) and made things WORSE, not better, confirming the residual
+gap is a genuine "the real compactions themselves cost too much by the
+END of the loop" problem, not a threshold-tuning problem on this lever —
+closing it needs either the `regionArmSetMap` durable short-circuit itself
+(option a, unbuilt — the fix that shrinks what a REAL compaction costs,
+rather than deciding whether to pay it) or fewer total exits
+(`AFE_ROUND_BATCH`, option c, also unbuilt). **Bench row: NOT RUN** — gated
+on "if under 4GiB," and jz×jz isn't.
+
+### Disposition
+
+Landed: `module/core.js` only (the `$__region_exit` skip branch — a single
+`if`, 70 lines with its comment), `REGION_HOOKS_ACTIVE=false` at commit
+(hand-flip used for every region-live gate above, reverted before commit —
+`git diff scripts/self.js` clean). All diagnostic scaffolding (the mark-
+relative first cut, the wider-threshold/OR-fallback variant, the skip/
+compact-count debug globals, the unfixed control build, every disposable
+`.work/*.mjs` measurement script) was built, measured, and then DELETED —
+none of it is part of this commit; only the one surviving fix and its
+supporting comment are. This is a genuine, measured, LARGE reduction in
+the region-arena recopy tax — not a null result, not a regression on
+anything gated — but the campaign's own stated finish line (jz×jz under
+4 GiB, bench row reported) is still not crossed. The next session's own
+starting point is named precisely in §2/THE GOAL GATE above: shrink what a
+real compaction costs (`regionArmSetMap`'s own durable short-circuit) or
+shrink how many are needed (`AFE_ROUND_BATCH`) — not a further tune of
+this session's own threshold, which this session already showed saturates
+and then reverses.
+
+**SHAs.** Worktree: `2e4072df` (main tip at rebase time — main advanced
+past `fa9fcc1a`'s own base `9b0954d1` via 8 intervening commits during this
+session, none touching `module/core.js` or the region-arena code path;
+rebase was a clean, single-conflict resolution confined entirely to this
+append-only ledger). Branch `recopy-2026-08-16`, deleted after landing
+along with its worktree (and `frontier-2026-08-16`'s, merged via cherry-
+pick earlier this session). Dormant `dist/jz.wasm` (self-build ×2): SHA-256
+`12576eb973659941080ff0d5868d592fd21989a31a3ac078f2db02e53a816402` both
+times. Region-live `dist/jz.wasm` (self-build ×2, NOT shipped): SHA-256
+`0cbe6b9617793740b71a61064738dea638bd7fe998ac7f3692ad2cf74b0a54f9` both
+times.
