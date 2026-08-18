@@ -22050,3 +22050,30 @@ or similarly wide dynamic literals. Next: isolated call-#729 tag snapshot
 on the production kernel (proven checkpoint technique) to confirm
 fatal-call composition, plus key-count/receiver-kind logging at grow time
 to name the creator construct.
+
+## §Fatal-call composition final; creator = wide dyn-classified records (2026-08-18)
+
+Production kernel, isolated call-#729 diff: **hash_set_local 64,112 events
+/ 3,117,470,988 B = 100.00%** of the fatal call's large allocations;
+map_set 1 event (region-memo attribution confirmed independently:
+region_exit_real counter = 23, matching the ~22-23 Maps exactly — memo
+CLEARED). Exact size-at-grow histogram (splice bug fixed): size=6 →
+547,034 events (50.4%), size=12 → 535,682 (49.3%), size=24 → 3,136,
+size≥31 → 180. Near-1:1 pairing of the 6/12 tiers = the modal object
+grows TWICE (8→16→32): **~32,000 distinct records of 13-24 dynamic
+properties created during m86's emission alone** (~2-3 per AST node).
+Literal/spread greps of the emit path found no matching construct —
+consistent with a record built by sequential property assignments, or a
+fixed-key literal that the OUTER compile classified onto the dyn-hash
+(HASH) path instead of a static schema.
+
+**Key insight for attribution**: HASH-vs-schema is a COMPILE-TIME fact of
+the native compiler — no wasm forensics needed. Query the native compile
+of the self-graph for HASH-classified object-creation sites (allocation
+sites routed to __dyn_set/__hash_new_small), filter for ~13-24-key
+shapes in emit-path files — the creator falls out with a source location.
+Fix directions after naming: (1) fix the classification (fixed-key record
+belongs on the schema path — eradicates the tax and the shape-class);
+(2) pre-size cap=32 for the modal shape (cheap interim, collapses the
+double-grow); (3) restructure creation. Preference: (1), per
+optimize-the-engine.
