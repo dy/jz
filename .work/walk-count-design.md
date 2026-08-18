@@ -513,6 +513,30 @@ output directly (v1's own postmortem names `kind.js`'s `literalTruthiness`/
   compactions, more retained garbage, trapped sooner). Shrinking round 4's
   own churn (this campaign's C-track, indirectly) is the sound direction;
   moving the threshold to fit the churn is the already-falsified one.
+- **C1/C2 as specified (§5 items 5-6) — VOIDED on implementation attempt
+  (2026-08-18).** The "pass 1 publishes its unresolved-name set, pass 2
+  revisits only those declaration sites" contract assumes the recorded
+  sites still mean what they meant when pass 1 saw them. The window between
+  the calls (`plan/index.js:161` → `:277`, `:157` → `:309`) breaks that
+  assumption two independent ways, both verified against the code, not
+  hypothesized: (a) `flattenFuncNamespaces` (`:179`, AFTER pass 1) rewrites
+  `f.prop` reads to bare `f$prop` globals IN PLACE inside RHS positions —
+  a site pass 1 recorded as field-provenance/poison evidence (`cur =
+  f.prop`) is, by pass-2 time, an alias edge to a global (`cur = f$prop`);
+  a site list replays the stale shape, a full walk sees the current one.
+  (b) The inline/specialize family (`inlineHotInternalCalls`,
+  `inlineLocalLambdas`, `specializeBimorphicTyped`,
+  `specializeValKindDichotomy`, `speculateTypedParams` — all in the same
+  window) clones writer sites into new bodies whose param-alias resolution
+  under `programFacts.paramReps` differs per specialized clone — evidence
+  that exists ONLY in the clones, invisible to any pre-clone site list.
+  Making the worklist sound would require every in-window AST mutator to
+  publish a site-delta log — coupling ~10 passes to an evidence contract
+  for a lever worth 366 ms of a 7 s `plan()` and 17.2 MB of churn §4
+  already ruled out as a memory lever. Not worth it at that price; the
+  full re-walk at `:277`/`:309` is the correct, sound shape until the
+  mutation window itself shrinks. Any future attempt must start from the
+  delta-log design, not the return-contract one.
 
 ## 8. Unmeasured — stated, not guessed
 
