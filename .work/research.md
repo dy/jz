@@ -22077,3 +22077,37 @@ belongs on the schema path — eradicates the tax and the shape-class);
 (2) pre-size cap=32 for the modal shape (cheap interim, collapses the
 double-grow); (3) restructure creation. Preference: (1), per
 optimize-the-engine.
+
+## §Creator NAMED: clonePlanValue (function-plan.js:4-14) (2026-08-18)
+
+Native classification query + kernel call-site enumeration (__hash_reuse_eph
+has only 15 static call sites at O3): the wide-record creator is
+**clonePlanValue** — the generic plan-data deep clone. Its object branch
+(`out={}; for key of Object.keys(value)) out[key]=clone(...)`) is a
+computed-key write loop → correctly classified Dictionary/HASH mode (NOT a
+classification bug — the utility is genuinely generic). It clones ValueReps
+(REP_FIELDS vocabulary = 30 fields; well-analyzed locals populate ~13-24 —
+matching the size-at-grow histogram) once per localReps entry per
+FunctionPlan clone (createFunctionPlan → clonePlanData → cloneRepMap).
+m86's compiled body contains ZERO __hash_new_small calls — the churn is
+the compiler's own bookkeeping, not math.js's code (the earlier "math.js's
+24 reg() closures" framing was epicenter-adjacent, not causal).
+
+**Attribution caveat (mine)**: the tag instrumentation is last-writer-wins
+with no clearing; with ~1M small hash grows interleaved, unrelated large
+allocations — including clonePlanValue's OWN [...value] spread arrays,
+per-entry pair arrays, and cloned-Map tables — inherit stale tag 7. The
+≥16 KB byte composition under tag 7 is therefore epicenter-correct but
+internally contaminated; the small-grow histogram (1.08M events at sizes
+6/12) is clean. The fix targets the whole site regardless.
+
+**Fix (in flight, main session)**: restructure clonePlanValue —
+(a) object branch: `{...value}` spread-clone (one right-sized allocation,
+kernel copies the source shape) then overwrite only object-valued fields
+with recursive clones — writes to EXISTING keys never grow the table;
+(b) Map branch: drop `new Map([...value].map(...))` (2N intermediate
+arrays) for a direct `for (const [k,v] of value) m.set(k, clone(v))` loop;
+(c) Set/Array branches analogous. Then re-fingerprint with tag-clearing
+instrumentation + goal gate. Frequency lever (why plans clone so often in
+the fixpoint) is a separate, complementary question — read-only narrow.js
+review queued after.
