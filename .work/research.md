@@ -21908,3 +21908,21 @@ O(V×M) cost everywhere): memoize per-body assigned-name facts — one
 O(|body|) collection per queried subtree, set-membership per query —
 collapsing O(V×M) to O(V+M); same treatment for closure return-site walks.
 Implementation in flight (main session, inline).
+
+## §isReassigned memo landed — real but insufficient; wall is allocation volume (2026-08-18)
+
+`70bf6cdb` (emission-scoped assigned-name memo, equivalence pinned by
+invariants test + 360K-query differential, suite 3518/3512/0/6). Native
+verification: m86_math$default emitFunc 251.8 ms → **6.37 ms (40×)**
+unprofiled (the 269 ms profiler-attached figure is V8 sampler deopt
+overhead, not real). But V8 heapDelta for the call is byte-identical
+pre/post — the fix cut redundant RE-WALKING, not the VOLUME of intermediate
+structure built. Region-live goal gate: still traps at 4,294.967296 MB,
+now +3,344.8 MB inside the same call (was +3,368.5) from a 950.2 MB floor;
+emitfuncCalls 729; post-emitFuncs territory still unreached. The wall is
+an ~3.3 GB allocation-churn volume V8 GCs transparently and the arena
+retains. Suspect #2 on record: crkWalkSites/closureReturnSites
+(flow-types.js) — pure-functional concat-chains, O(sites×depth) allocated
+bytes per single call. Sampling-heap-profile forensic scoped to the call
+in flight; fix follows the named allocator, with the structural fallback
+(region hooks inside emitFuncs) if churn proves spread thin.
