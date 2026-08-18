@@ -21971,3 +21971,25 @@ histogram (log2 buckets) scoped to the fatal window — a runaway loop
 fingerprints as one dominant size class; (2) call-count counters on the
 major emit-path kernel functions during the fatal call vs a healthy call —
 the exploding counter names the loop.
+
+## §Runaway-loop refuted; broken-amortization mechanism CONFIRMED (2026-08-18)
+
+$__alloc log2 size-class histogram + 13 emit-path call counters, fatal call
+(#729, index drift confirmed) vs healthy neighbor (#728): fatal call =
+3,298,170,180 bytes / 177,612 allocations, **98.98% of bytes in 65,911
+allocations of 16-128 KB** (buckets 14/15/16 with same-order counts
+16K/33K/17K — NOT a halving series). Healthy neighbor: 957 allocs / 45 KB,
+max class 1 KB. None of the 13 counters explodes (all 60-270×, proportional
+to one big function's work; crkWalkSites 42→11,304 included — elevated,
+not runaway). Node-count proxy ~12-17K nodes vs 66K large allocs — it is
+allocation SIZE per operation, not iteration count, that diverges.
+
+**Mechanism confirmed**: a structure reachable from m86's emission grows by
+near-constant small increments and is FULLY RE-COPIED per increment while
+16-128 KB large — classic append-without-amortization, O(n²) copy churn,
+~66K re-copies in one call. Natively the same op is O(1)-amortized (V8
+profile 5 MB), so this is a KERNEL RUNTIME growth-policy defect — the fix
+benefits every jz program using the op, not just self-compile. NOT string
+$__str_concat (refuted, <1 KB). Not yet localized to the call site — next:
+tag-global instrumentation on candidate growth helpers (arr push/grow,
+upsert family, byte-buffer builders) + large-alloc ring buffer in $__alloc.
