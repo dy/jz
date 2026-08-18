@@ -1036,7 +1036,7 @@ export default (ctx) => {
     ctx.core.stdlib['__region_exit'] = () => `(func $__region_exit (param $markF f64) (param $rootF f64) (result f64)
       (local $mark i32) (local $T i32) (local $delta i32) (local $memo i64) (local $out f64) (local $size i32)
       (local $churn i32) (local $survivorMargin i32) (local $memoCap i32)
-      (local $memSize64 i64) (local $wantBase64 i64) (local $scratchBase64 i64) (local $memoReserve64 i64) (local $neededCeil64 i64)
+      (local $scratchBase64 i64) (local $memoReserve64 i64) (local $neededCeil64 i64)
       ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
       (local.set $mark (i32.trunc_f64_u (local.get $markF)))
       ;; Adaptive exit-skip (.work/research.md §Region arena — THE MEMORY
@@ -1145,15 +1145,34 @@ export default (ctx) => {
       (local.set $survivorMargin
         (select (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456)
           (i32.lt_u (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456))))
-      ;; i64 throughout: memory.size()*65536 and the final ceiling both reach
-      ;; into the low billions near the wasm32 4 GiB ceiling, well past what
-      ;; i32 arithmetic can hold without wrapping (the exact overflow class
-      ;; the frontier trace's own trap analysis, fa9fcc1a, found one
-      ;; instruction away from this same ceiling elsewhere in this file).
-      (local.set $memSize64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
-      (local.set $wantBase64 (i64.add (i64.extend_i32_u (global.get $__heap)) (i64.extend_i32_u (local.get $survivorMargin))))
-      (local.set $scratchBase64
-        (select (local.get $memSize64) (local.get $wantBase64) (i64.gt_u (local.get $memSize64) (local.get $wantBase64))))
+      ;; i64 throughout: the final ceiling reaches into the low billions near
+      ;; the wasm32 4 GiB ceiling, well past what i32 arithmetic can hold
+      ;; without wrapping (the exact overflow class the frontier trace's own
+      ;; trap analysis, fa9fcc1a, found one instruction away from this same
+      ;; ceiling elsewhere in this file).
+      ;;
+      ;; scratchBase = heap + survivorMargin DIRECTLY — NOT max'd against
+      ;; memory.size(). A first cut of this fix used max(memSize, wantBase),
+      ;; reasoning "never place scratch below the current commit ceiling" —
+      ;; wrong, and measured wrong (region-live real-graph peaks REGRESSED
+      ;; 2-4x on jessie/watr/jzify-entry, the exact class of mistake THE
+      ;; MEMORY ENDGAME's own mark-relative-ratio attempt made): whenever
+      ;; \$__memgrow's own prior geometric over-provisioning already left
+      ;; slack between \$__heap and memory.size() (the common case — that
+      ;; slack is the WHOLE POINT of its "request >=2x" growth policy),
+      ;; forcing scratchBase up to memSize anyway made \`neededCeil\` exceed
+      ;; the CURRENT ceiling by construction (memSize + any positive
+      ;; memoReserve is always > memSize), so __memgrow's own "need >
+      ;; memory.size() -> grow by >=2x" policy fired on EVERY real-compaction
+      ;; round regardless of how tiny memoReserve actually was — doubling the
+      ;; entire wasm memory just to make room for a few hundred scratch
+      ;; bytes. Placing scratch directly at heap+survivorMargin instead lets
+      ;; __memgrow's own existing "need > memory.size()" check do its actual
+      ;; job: a no-op whenever existing slack already covers it (the common
+      ;; case for small compiles, matching this lever's own established
+      ;; "small compiles rarely even reach here" discipline), a genuine
+      ;; (correctly-sized) grow only when it doesn't.
+      (local.set $scratchBase64 (i64.add (i64.extend_i32_u (global.get $__heap)) (i64.extend_i32_u (local.get $survivorMargin))))
       ;; memoReserve sized from the PRIOR call's own final cap (\`$__memo_cap_hint\`,
       ;; updated at the end of this function below), 2x headroom for this
       ;; round's own growth beyond that hint — under-sizing is never a
