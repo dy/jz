@@ -68,7 +68,10 @@ import { isBoundName, freshId } from '../ir.js'
 import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements } from './flow-types.js'
 import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinallyStack, withFunctionFields, withPendingLabel, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
-import { recordClosureCallRepresentations } from './representation-plan.js'
+import {
+  REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
+  recordClosureCallRepresentations, representationCallArgAction,
+} from './representation-plan.js'
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
@@ -1454,7 +1457,7 @@ const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?
  *  already be argIR(node)'s result (or ptrKind-appropriate) — this function
  *  itself never emits, only coerces, so it cannot re-decide emit vs
  *  emitIdentitySafe after the fact (see argIR's comment). */
-function coerceArg(ir, param, node) {
+function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   if (param?.ptrKind != null) {
     // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
     // headers relocate on growth), so the offset extracts inline instead of
@@ -1495,8 +1498,14 @@ function coerceArg(ir, param, node) {
     // instead.
     const alreadyBoxed = typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))
     const who = typeof node === 'string' ? node : 'this argument'
-    if (alreadyBoxed && !param?.bigintBoxed) {
-      if (bigintStrict()) bigintEraseErr('call-arg', who)
+    const legacyUnbox = alreadyBoxed && !param?.bigintBoxed
+    const legacyBox = !alreadyBoxed && param?.bigintBoxed
+    // KEEP emits no transform, so retain the legacy no-op/identity decision
+    // until producer edges are migrated. Only an explicit BOX/UNBOX action
+    // replaces legacy code in this direct-edge slice.
+    const legacyEdge = repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX
+    if (repAction === REP_EDGE_UNBOX || (legacyEdge && legacyUnbox)) {
+      if (bigintStrict() && legacyUnbox) bigintEraseErr('call-arg', who)
       // Callee's OWN param settled "receives BIGINT consistently, stays raw
       // at the boundary" (bigintBoxedVerdict, narrow.js) — a verdict computed
       // from EVERY call site's argument STATIC KIND alone, with no idea one
@@ -1523,8 +1532,8 @@ function coerceArg(ir, param, node) {
           ['then', tGet],
           ['else', fromI64(unboxBigInt(tGet))]]], 'f64')
     }
-    if (!alreadyBoxed && param?.bigintBoxed) {
-      if (bigintStrict()) bigintEraseErr('call-arg', who)
+    if (repAction === REP_EDGE_BOX || (legacyEdge && legacyBox)) {
+      if (bigintStrict() && legacyBox) bigintEraseErr('call-arg', who)
       // The mirror direction (Slice 2's original wiring): callee's param
       // can't be trusted uniformly, box a genuinely-raw argument before the
       // call. `alreadyBoxed` being false also covers the box-of-a-box guard
@@ -1570,7 +1579,8 @@ function padArgs(args, params) {
 /** Emit a node list as call arguments for the given param list: per-param
  *  coercion then arity padding. Used at every direct-call site. */
 function emitCallArgs(argNodes, params) {
-  return padArgs(argNodes.map((a, k) => coerceArg(argIR(a), params[k], a)), params)
+  return padArgs(argNodes.map((a, k) =>
+    coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, params, k))), params)
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
@@ -1792,7 +1802,8 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
   const seq = [], slots = []
   for (let k = 0; k < params.length; k++) {
     if (k < argNodes.length) {
-      const ir = coerceArg(argIR(argNodes[k]), params[k], argNodes[k])
+      const ir = coerceArg(argIR(argNodes[k]), params[k], argNodes[k],
+        representationCallArgAction(ctx, argNodes[k], params, k))
       // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
       // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
       const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'

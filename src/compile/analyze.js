@@ -1272,7 +1272,7 @@ export function invalidateAllBodyFacts() {
 // rep carried the map's value kind, non-nullable) and every autoDepsOf call
 // returned the miss sentinel unconditionally — the byte-parity root.
 const NEVER_NULLISH_OPS = new Set([
-  'str', '//', '{}', '[', '=>', 'new', 'bool',
+  'str', 'bigint', '//', '{}', '[', '=>', 'new', 'bool',
   '+', '-', '*', '/', '%', '**', '|', '&', '^', '~', '<<', '>>', '>>>',
   '==', '!=', '===', '!==', '<', '>', '<=', '>=', '!', 'u-', 'u+',
   'typeof', 'in', 'instanceof', '++', '--',

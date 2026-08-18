@@ -20651,3 +20651,70 @@ rebased slice also clears the required gate: build ×2 converges
 (`dist/jz.wasm` `834ce7562add5a4dcd3f059ac6fef9f064f146e61c4f5ac6e12c100f09f73e1d`)
 and kernel oracle passes 13/13 on all 15 foreground repetitions; only the
 validation worktree had `REGION_HOOKS_ACTIVE=true`.
+
+---
+
+## §RepresentationPlan v2 Slice 3a — covered direct-call entry normalization
+## (2026-08-17)
+
+This is the first codegen consumer, deliberately narrower than the design's
+whole direct-call/result slice. Covered direct calls may consume explicit
+`BOX`/`UNBOX` actions for stable parameters; exported/value-used/generic
+boundaries and body-reassigned parameters stay on the legacy path until their
+host/closure/binding-write producers migrate. `KEEP` also retains the legacy
+identity decision for now: producer edges are not all consumers yet, so a
+planned boxed source does not by itself prove that today's emitted source was
+already boxed. Literal `bigint` joins are now correctly non-nullish, preventing
+a raw-only helper from acquiring a spurious tagged ABI.
+
+The concrete class fixed is any stable internal parameter receiving a
+closed `BigInt|null` edge. Before this slice,
+`maybe(c ? 4n : null)` returned the box pointer bits
+`9221823924482868225n` on the BigInt arm; native JS returns `5n`. The frozen
+plan now boxes the raw arm at the call and the callee reads the boxed target
+representation. O0/O2/O3 and the wasm-hosted compiler all return `5n` for the
+BigInt arm and `0n` for the null arm; raw-only `raw(4n)` remains `5n`, and a
+shared `typeof` parameter preserves both `bigint` and `number`.
+
+WAT evidence is intentionally small: the focused O0 differential is 64 lines,
+mostly dependency-order movement. The only semantic instruction delta is the
+callee's `i64.load(call $__ptr_offset(...))` before its BigInt add, pairing the
+box already emitted on the nullable call edge. The raw helper is instruction-
+identical. The 130-program corpus remains **130/130 SHA-256 byte-identical** to
+Slice 2, so no unrelated user-program shape drift accompanied the targeted
+fix.
+
+Two broader attempts were rejected rather than papered over. Applying target
+representations to reassigned parameters made watr's `uleb`/`i64.parse` family
+dereference raw body-assignment values and caused three memory-OOB failures.
+Suppressing legacy handling for planned `KEEP` edges built a valid kernel but
+trapped during `__start`; objdump plus the 383 MB self WAT mapped function 217
+exactly to the already-banked `m61_layout$i64Hex` residual. Stable-param and
+covered-boundary facts are therefore precomputed in the private boundary plan,
+and only explicit transforms replace legacy emission in this slice. No named
+function exception was added. The BigInt-retirement history was also rechecked:
+`8b7277ab` leaves boxing as `main`'s default and Slices 2–5 never landed, so this
+slice preserves that product contract rather than deleting or reviving a
+retired feature.
+
+Gates on the final candidate: default **3,501/3,495/0/6**; O0 and O3 each
+**3,501/3,495/0/6**; wasm-target **2,760/2,754/0/6**; focused carrier/watr/
+inference/session matrix **415/415**; selfhost correctness **21/21**; kernel
+parity **33/33**; dormant kernel oracle **13/13 ×3**; build ×2 converges
+(`dist/jz.wasm`
+`37470a8b2e8914f8869c390b2c762d01d334f4395a43aab2bea5b6d9024de23c`,
+16,942.4 KiB). WASI retains exactly its one pre-existing
+`ternaryBoxedNames` failure. `test:claims` retains the independently stale
+memory/leadership evidence failures. The warm self-host perf pin is also red on
+the untouched Slice-2 control (control rounds 1.112/1.129/1.142×; candidate
+1.111/1.136/1.133×), while fresh remains green (0.864× control, 0.847×
+candidate); this slice does not move that baseline defect.
+
+**Status:** direct stable parameter entry edges are consumable, but results,
+reassigned bindings, closures, host boundaries, storage, and semantic consumer
+families are not. RepresentationPlan v2 as a whole is therefore **not yet
+consumable**, and FeaturePlan remains blocked. Region-live validation on this
+exact slice also converges across two builds (`dist/jz.wasm`
+`ef9cdc2bb8319f3909e8a5d7e6f36593b8823accdff7ee83a9f43e7954c9fdac`,
+14,760.8 KiB) and passes kernel oracle **13/13 ×15**; the validation-only
+`REGION_HOOKS_ACTIVE=true` flip was not retained.

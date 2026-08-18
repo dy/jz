@@ -24,6 +24,7 @@ import { ERR } from '../err-codes.js'
 
 import { ctx, err, inc, PTR, LAYOUT, CARRIER_BOX } from './ctx.js'
 import { declareLocal, freshEmitId } from './compile/active-function.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, representationActiveParamRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
@@ -682,7 +683,9 @@ export function readI64(node, emitted) {
   // every other CARRIER_BOX consumer), never the strict-mode diagnostic
   // toggle, which only decides refuse-vs-box at the WRITE site and never
   // reaches this read at all when it fires (the compile already aborted).
-  if (CARRIER_BOX && typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node)))
+  if (CARRIER_BOX && typeof node === 'string' &&
+      (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node) ||
+       representationActiveParamRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)))
     return unboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)

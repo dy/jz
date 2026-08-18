@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, commaList, returnExprs } from '../ast.js'
+import { ASSIGN_OPS, commaList, isReassigned, returnExprs } from '../ast.js'
 import { censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../kind.js'
 import { DBG_INVARIANTS } from '../ctx.js'
 import { KIND_UNIVERSE, VAL } from '../reps.js'
@@ -484,6 +484,7 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       current,
       target: targetRepFor(semantic, current),
       demand: demandFor(semantic),
+      stable: !isReassigned(func.body, param.name),
     }
   })
   const resultMayBigint = generic
@@ -496,6 +497,7 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   return {
     kind: 'boundary',
     func,
+    covered: !uncovered,
     params,
     result: {
       semantic,
@@ -1037,13 +1039,40 @@ export function representationBoundaryActionCount(ctx, identity, action) {
   return n
 }
 
-const activeTargetRep = (ctx, node) => {
+const activeRep = (ctx, node, target) => {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const body = handle && ctx.plans.representationData.get(handle)?.body
   if (!body) return NO_BIGINT
-  if (typeof node === 'string') return body.targetNames?.get(node) ?? NO_BIGINT
-  if (Array.isArray(node)) return (body.nodeFacts?.get(node) ?? NO_BIGINT) & 7
+  if (typeof node === 'string')
+    return (target ? body.targetNames : body.currentNames)?.get(node) ?? NO_BIGINT
+  if (Array.isArray(node)) {
+    const packed = body.nodeFacts?.get(node) ?? NO_BIGINT
+    return target ? packed & 7 : (packed >> 3) & 7
+  }
   return NO_BIGINT
+}
+
+/** Target representation for a stable active-function parameter. */
+export function representationActiveParamRep(ctx, name) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const record = handle && ctx.plans.representationData.get(handle)
+  const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
+  return k >= 0 && record.boundary.params[k]?.stable === true ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** Current source→callee target action for one direct-call argument. */
+export function representationCallArgAction(ctx, node, params, index) {
+  if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
+  const targetHandle = ctx.plans.representations.get(params)
+  const targetRecord = targetHandle && ctx.plans.representationData.get(targetHandle)
+  if (targetRecord?.boundary?.covered !== true) return REP_EDGE_REJECT
+  const targetBoundary = targetRecord.boundary
+  // Slice 3a normalizes entry edges only. A body-reassigned param has an
+  // additional binding-write producer that this slice deliberately leaves on
+  // the legacy path; switching its entry alone would split the local's ABI.
+  if (targetBoundary.params[index]?.stable !== true) return REP_EDGE_REJECT
+  const target = targetBoundary.params[index]?.target ?? ANY_BIGINT
+  return edgeAction(activeRep(ctx, node, false), target)
 }
 
 /** Record direct-closure argument provenance before that closure is planned. */
@@ -1052,7 +1081,7 @@ export function recordClosureCallRepresentations(ctx, bodyName, args) {
   if (!program?.bigint) return
   let row = program.closureParams.get(bodyName)
   for (let k = 0; k < args.length; k++) {
-    if (bigintRepBits(activeTargetRep(ctx, args[k])) === BIGINT_REP_NONE) continue
+    if (bigintRepBits(activeRep(ctx, args[k], true)) === BIGINT_REP_NONE) continue
     if (!row) { row = new Set(); program.closureParams.set(bodyName, row) }
     row.add(k)
   }

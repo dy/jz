@@ -33,6 +33,26 @@ test('bigint: a returned bigint crosses to JS as a real, lossless BigInt', () =>
   is(run('export let f = () => 9007199254740993n').f(), 9007199254740993n)  // lossless past 2^53
 })
 
+test('RepresentationPlan: direct call edges preserve raw-only helpers and normalize tagged params', () => {
+  const src = `
+    function raw(x) { return x + 1n }
+    function tag(x) { return typeof x }
+    function maybe(x) { if (x == null) return 0n; return x + 1n }
+    export let rawCall = () => raw(4n)
+    export let bigintTag = () => tag(4n)
+    export let numberTag = () => tag(4)
+    export let nullable = c => maybe(c ? 4n : null)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.rawCall(), 5n, `O${optimize || 0}: raw-only edge stays raw`)
+    is(e.bigintTag(), 'bigint', `O${optimize || 0}: BigInt entering a tagged param is boxed once`)
+    is(e.numberTag(), 'number', `O${optimize || 0}: Number entering the same param is unchanged`)
+    is(e.nullable(1), 5n, `O${optimize || 0}: nullable BigInt edge unboxes in the callee`)
+    is(e.nullable(0), 0n, `O${optimize || 0}: nullish sentinel is not unboxed as a pointer`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —
