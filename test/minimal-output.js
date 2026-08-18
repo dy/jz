@@ -9,7 +9,7 @@ import { compile } from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
-// boilerplate (a `_start` export, fd imports) and the self-host kernel owns its own
+// boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
 // pipeline, so the bare-minimal expectations below don't apply there.
 const skip = onWasi() || onKernel()
 

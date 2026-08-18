@@ -100,8 +100,8 @@ test('unparenthesized unary base of ** rejected (PARSE-2, ES2016 §13.6)', () =>
 
 // ── subscript-10.5.0 parser-core shapes ─────────────────────────────────────
 // The rewritten tokenizer core (dispatch/register descriptor machinery) exposed
-// six latent jz miscompiles when the kernel self-hosted it. Each pin below is
-// the ddmin-reduced shape; the kernel build (test/selfhost.js) is the
+// six latent jz miscompiles when the kernel self-compiled it. Each pin below is
+// the ddmin-reduced shape; the kernel build (test/self-compile.js) is the
 // integration-level pin for the same set.
 
 test('i32 param narrow excludes body-mutated params', () => {
@@ -209,7 +209,7 @@ test('for-in/of heads: assignment/sequence sources re-associate', () => {
     is(jz('export let main = () => { let s, k = 0, r = 0; for (s in (k = 5, {m:1,n:2})) r++; return r * 10 + k }').exports.main(), 25)
 })
 
-// ── jzify pre-prepare '[]'-tag ambiguity (self-host typed-elem-compare hunt) ──
+// ── jzify pre-prepare '[]'-tag ambiguity (self-compile typed-elem-compare hunt) ──
 // A `'[]'`-tagged node means two different things before prepare() splits them
 // into `'['` (array literal) / `'[]'` (element access): a destructure pattern
 // (`[a,b] = …` → `['[]', commaSeqOrSingleElem]`, length ≤ 2) and an element
@@ -232,7 +232,7 @@ test('element-assignment target is never mistaken for a destructuring pattern', 
     // Native jzify happened to reconstruct byte-identical IR for the simple
     // receiver-name + literal-index shape either way (the wrong pattern-walk and
     // the right generic-transform fallback are both no-ops here) — masking the
-    // misclassification natively. The self-hosted kernel exercises the (wrong)
+    // misclassification natively. The self-compiled kernel exercises the (wrong)
     // pattern-walk's own compiled path and throws "expected emitted IR value …
     // got empty value" (src/ir.js asF64) for ANY bracket-assignment with this
     // shape — typed array, plain array, or plain-object dynamic key alike.
@@ -256,7 +256,7 @@ test('element-assignment target is never mistaken for a destructuring pattern', 
 // computed that rebox as `pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr),
 // rt)` — emit(expr) called separately, once inline per ternary arm, only one ever executing.
 // Behaviorally identical in JS (same AST subtree, one call happens either way) — but the
-// SELF-HOSTED kernel, at every self-host build level (0/1/2) and every runtime optimize
+// SELF-COMPILED kernel, at every self-compile build level (0/1/2) and every runtime optimize
 // level, drops the rebox on the taken arm's result. compile/index.js's sibling call site
 // (`const ir = emit(body); … ptrKind != null ? asPtrOffset(ir, …) : asParamType(ir, …)`)
 // already materializes the call to a local first and was never affected — mirroring that
@@ -271,9 +271,9 @@ test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function co
     // and is fixed the same way through THIS handler — but `export let f = (x, c) => { if
     // (c) return; return (x*1000)|0 }` still traps ("memory access out of bounds") through
     // the kernel at runtime level 2, on the untouched pre-fix kernel too (confirmed via a
-    // clean A/B) — a separate, deeper, PRE-EXISTING self-host bug in the level-2 inliner's
+    // clean A/B) — a separate, deeper, PRE-EXISTING self-compile bug in the level-2 inliner's
     // interaction with the boundary i64-carrier wrapper for a 2nd exported param, not this
-    // session's fix or regression. Left OPEN — tracked in .work/todo.md (self-host groundtruth archive).
+    // session's fix or regression. Left OPEN — tracked in .work/todo.md (self-compile groundtruth archive).
     // charter repro: minimally reduced from bench/mat4 + bench/_lib/benchlib.js's `medianUs`/
     // `printResult` pair — a same-named PARAMETER elsewhere in the program (`printResult`'s
     // `medianUs` param, used in a template literal) marks the top-level `medianUs` function

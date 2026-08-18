@@ -164,13 +164,13 @@ test('P0-2: subnormal NUMBER literals keep typeof "number" and their exact value
   // OWN AST node misread as bigint via the magnitude heuristic, corrupting its export-boundary
   // kind — see kind.js valTypeOf, emit.js emitNeg). 1e-320 used to export `2024n`.
   // NEGATIVE subnormal literals used to be kernel-curated: the unary-minus FOLD of a subnormal
-  // literal runs inside the compiler, and self-hosted the compiler's own `-x` on carrier-band
+  // literal runs inside the compiler, and self-compiled the compiler's own `-x` on carrier-band
   // bits took the boxed BigInt path (-5e-324 folded to -1) — the compiler's OWN internal
   // ToNumber coercion (module/number.js `__to_num`) hit the exact same unconditional
   // subnormal-as-BigInt-carrier heuristic the compiled OUTPUT program did (audit-#11 P0-1).
   // Closed by gating that heuristic on `ctx.features.bigint`: the compiler's own source is
   // itself bigint-free (bignum.js's rational limbs are plain numbers, never a real BigInt —
-  // see its own doc comment), so the gate is OFF for the compiler's self-hosted compilation
+  // see its own doc comment), so the gate is OFF for the compiler's self-compiled compilation
   // too, same as any other bigint-free program. No more onKernel() split needed.
   const cases = [5e-324, -5e-324, 1e-320, MIN_NORMAL, MIN_NORMAL - Number.MIN_VALUE, MIN_NORMAL + Number.MIN_VALUE]
   for (const v of cases) {
@@ -813,10 +813,10 @@ test('Map: set returns same pointer (alias-safe)', () => {
   is(f(), 100)  // m2 sees the set
 })
 
-test('self-host compact collections: entry hash replaces the redundant probe lane', () => {
+test('self-compile compact collections: entry hash replaces the redundant probe lane', () => {
   // `_compactCollections` is an artifact-build option, not a user-facing output
   // mode. The kernel target cannot forward it through the wasm ABI; that leg is
-  // covered by kernel-oracle/selfhost after building the compact artifact.
+  // covered by kernel-oracle/self-compile after building the compact artifact.
   if (onKernel()) return
   const src = `export let f = () => {
     let m = new Map(), s = new Set(), o = {}
@@ -1485,7 +1485,7 @@ test('closed-union tagged records: exact values, trailing-else variant, open-arr
 // --- dict-use walkers terminate + stay JS-exact (leanDictUse/i32DictUse/dictDomain) ---
 // These three analyzeBody gates (lean-hash, i32-histogram, domain-cap) were
 // nested self-recursive closures with heavy capture — the exact shape the
-// SELF-HOSTED kernel miscompiled into infinite recursion (bool-identity leg
+// SELF-COMPILED kernel miscompiled into infinite recursion (bool-identity leg
 // red, bisected to 83d6add5). Rewritten as module-scope iterative worklists.
 // The kernel-leg bool-identity test is the recursion pin (native never hung);
 // this differential pins that the iterative verdicts keep values JS-exact.

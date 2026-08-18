@@ -38,7 +38,7 @@ import { PTR, LAYOUT, ATOM, STR_INTERN_BIT, STR_HCACHE_BIT } from './layout.js'
 // checks cover drift the same way they already do for the compact table.
 const SET_ENTRY = 16   // [hash i64 @0][elem f64 @8]
 const MAP_ENTRY = 24   // [hash i64 @0][key f64 @8][value f64 @16]
-const LANE = 4         // normal output; self-host compact profile passes lane=0
+const LANE = 4         // normal output; self-compile compact profile passes lane=0
 
 // regionArmSetMap's durable short-circuit (.work/research.md §Region arena —
 // regionArmSetMap's durable short-circuit): tags whose $__region_copy_rec arm

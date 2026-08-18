@@ -398,7 +398,7 @@ export function withRefinements(refs, body, fn) {
  * need this even EARLIER, to let the ENCLOSING function's own valResult see
  * through the call. That extension is pure AST-in/VAL-out exactly like this
  * function, and was prototyped, but a same-body call through a typeof-guarded
- * closure round-tripped correctly native while diverging under self-hosted
+ * closure round-tripped correctly native while diverging under self-compiled
  * compilation (JZ_TEST_TARGET=jz.wasm) — reproduced identically across two
  * independent implementations of this same function, so the divergence isn't
  * this algorithm's own shape. Left OUT rather than shipped uncertain; see

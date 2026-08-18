@@ -1,11 +1,11 @@
-// Self-host stdlib-inclusion invariant.
+// Self-compile stdlib-inclusion invariant.
 //
 // resolveIncludes() (src/ctx.js) pulls a stdlib helper's transitively-needed helpers two ways:
 //   1. explicit edges — a helper listed in another's manual `deps()` array, or a direct
-//      `inc('__foo')` from an emitter (both plain, self-host-robust), and
+//      `inc('__foo')` from an emitter (both plain, self-compile-robust), and
 //   2. an AUTO-dep scan that *realizes* each included template (calls its factory / reads its
 //      string) and greps the body for `$__foo` references.
-// (2) is only a host-side safety net: under self-host (jz.wasm) it DIVERGES — the realize/scan
+// (2) is only a host-side safety net: under self-compile (jz.wasm) it DIVERGES — the realize/scan
 // silently yields nothing for some templates — so a helper reachable ONLY through (2) is dropped
 // from the kernel module. That is the `str.slice`/typed-`.fill` "Unknown func $__clamp_idx" bug:
 // __clamp_idx was body-called by six range helpers yet had ZERO explicit edge, so it rode in on
@@ -55,7 +55,7 @@ function emitterIncluded() {
 
 const realize = (v) => typeof v === 'string' ? v : typeof v === 'function' ? (() => { try { return v() } catch { return null } })() : null
 
-test('self-host: no stdlib helper is reachable only via the (self-host-unreliable) auto-dep scan', () => {
+test('self-compile: no stdlib helper is reachable only via the (self-compile-unreliable) auto-dep scan', () => {
   if (onKernel()) return  // inspects host-side ctx internals + scans source; the in-process leg owns it
   const incd = emitterIncluded()
   // PER-TEMPLATE edges, not a program-wide union: `__set_add`'s body called
@@ -64,7 +64,7 @@ test('self-host: no stdlib helper is reachable only via the (self-host-unreliabl
   // ("Unknown func $__durable_slot_log"). A body-called helper must be in the
   // TRANSITIVE closure of the CALLING template's own explicit deps (or inc'd
   // globally) — that is what actually keeps it alive when the auto-scan
-  // silently yields nothing under self-host.
+  // silently yields nothing under self-compile.
   const callerBodyRefs = new Map()  // template name → Set of helpers its body calls
   const edges = new Map()           // template name → its OWN explicit deps
   let depTargets = 0
@@ -102,6 +102,6 @@ test('self-host: no stdlib helper is reachable only via the (self-host-unreliabl
   }
   ok(vulnerable.length === 0,
     `template body calls a helper its OWN explicit deps can't reach — add the deps() edge or inc(): ${[...new Set(vulnerable)].join(', ')} ` +
-    `(these compile in-process but vanish from the self-host kernel, e.g. "Unknown func $__clamp_idx" / "$__durable_slot_log")`)
+    `(these compile in-process but vanish from the self-compile kernel, e.g. "Unknown func $__clamp_idx" / "$__durable_slot_log")`)
   ok(callerBodyRefs.size > 20 && depTargets > 20, `realized surface: ${callerBodyRefs.size} templates, ${depTargets} dep edges`)
 })

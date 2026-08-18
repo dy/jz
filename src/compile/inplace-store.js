@@ -41,7 +41,7 @@ import { VAL } from '../reps.js'
 
 // Content key for a store site: `inplaceKey` (src/static.js) — shared with
 // analyzeStructInline and the emit arms; hosted there to keep the import
-// graph acyclic (the self-host resolver rejects cycles).
+// graph acyclic (the self-compile resolver rejects cycles).
 
 // env-gated debug — dist/jz.js runs in browsers where `process` doesn't exist
 const DBG = typeof process !== 'undefined' && process.env.JZ_DBG_INPLACE

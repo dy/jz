@@ -30,7 +30,7 @@ export const PASS_NAMES = [
   'splitCharScan',            // charCodeAt scan loops: split at min(N, s.length) → i32 char carrier (plan-level)
   // Pre-analyze loop-shape transforms — applied in compile/index.js (NOT this pass pipeline), but
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1
-  // (the self-host fast path) actually skip them, instead of `undefined !== false` running them
+  // (the self-compile fast path) actually skip them, instead of `undefined !== false` running them
   // unconditionally at every level. ALL_ON keeps them on at level 2+ where they belong.
   // REPRESENTATION passes (optimize false/0/1 is the representation-free
   // REFERENCE tier — plain layouts, an independent oracle for three-way
@@ -52,7 +52,7 @@ export const PASS_NAMES = [
                               // line. Its own late pass (inlinePtrOffsetFastPass, optimize/index.js),
                               // run AFTER unswitchTypedParamLoop/vectorizeLaneLocal so their raw-call
                               // pattern match still gets first pick. Trades bytes/site for
-                              // __ptr_offset, self-host's dominant helper call by invocation count;
+                              // __ptr_offset, self-compile's dominant helper call by invocation count;
                               // opt-in like boolConvertToSelect (off at 'size'/level 2,
                               // on at 'speed'/level 3).
   'hoistAddrBase',

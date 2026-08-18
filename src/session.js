@@ -2,7 +2,7 @@
  * CompileSession begin — the ONE owner of per-compile lifecycle state: ctx
  * reset, every explicit-lifecycle cache clear, watr name-uid
  * reset, error-source binding, warnings sink, and options normalization
- * (resolveOptimize → optFlags). Host (index.js setupCtx) and self-host kernel
+ * (resolveOptimize → optFlags). Host (index.js setupCtx) and self-compile kernel
  * (scripts/self.js setupSelf) both call THIS for the shared core, so the two
  * setups cannot drift again (they had: the kernel cleared DOLLAR/stdlib caches
  * natively left to GC, native reset name-uids the kernel initially missed —
@@ -227,7 +227,7 @@ export function targetProfileFor(host) {
  *                                folds to a strong `Map` in code jz self-
  *                                hosts (no GC → weakness unobservable, src/
  *                                prepare/index.js's `new` handler), and
- *                                kind.js is on the self-hosted compiler
+ *                                kind.js is on the self-compiled compiler
  *                                surface — without the reset, a warm kernel
  *                                instance would accumulate one entry per
  *                                bodyRoot for its whole lifetime, not just
@@ -239,15 +239,15 @@ export function targetProfileFor(host) {
  *                                setFuncBody's fresh-reference guarantee
  *                                makes wholesale-only invalidation sound;
  *                                session ownership matters for the same
- *                                self-hosted-WeakMap-folds-to-strong-Map
- *                                reason (kind.js on the self-hosted compiler
+ *                                self-compiled-WeakMap-folds-to-strong-Map
+ *                                reason (kind.js on the self-compiled compiler
  *                                surface — see the doc at
  *                                nameMapGetShapedInBody, kind.js).
  *   presentValTrace               kind.js's namePresentValInBody structural
  *                                trace. Same DEPS as
  *                                mayBeUndefinedTrace/mapGetShapedTrace —
  *                                body-identity-keyed wholesale-only reset,
- *                                same self-hosted-fold ownership argument
+ *                                same self-compiled-fold ownership argument
  *                                (see the doc at namePresentValInBody,
  *                                kind.js).
  *

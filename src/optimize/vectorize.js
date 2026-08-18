@@ -48,7 +48,7 @@ import { nodeEqual as exprEq, cloneNode } from '../ast.js'
 
 
 
-const isArr = n => Array.isArray(n)   // wrap, not alias: jz self-host rejects a builtin used as a first-class value
+const isArr = n => Array.isArray(n)   // wrap, not alias: jz self-compile rejects a builtin used as a first-class value
 
 // Structural node equality — must be non-finite- AND bigint-safe: plain
 // JSON.stringify maps Infinity/-Infinity/NaN→null and -0→0, so it would equate a
@@ -425,7 +425,7 @@ const slpMem = (n) => {
 //   • exprEq(x, y) with NEITHER a tee            — identical side-effect-free addresses
 // REJECTS `(local.tee $X eA), (local.tee $X eB)` (y redefines $X to a different address
 // → the high lane would write the wrong place) and `(get $X), (tee $X e)` — the watr.js
-// self-host miscompile came from accepting those by name alone.
+// self-compile miscompile came from accepting those by name alone.
 const slpSameBase = (x, y) => {
   if (!isArr(x) || !isArr(y)) return false
   if (x[0] === 'local.tee' && y[0] === 'local.get' && typeof x[1] === 'string' && x[1] === y[1]) return true
@@ -514,7 +514,7 @@ const slpUnitAt = (stmts, i, getCounts) => {
   if (!m) return null
   // Flat tee'd: `(local.set $t V) ; (f64.store … (local.get $t))`. Resolving the value
   // to V and dropping the set is sound ONLY if $t is used nowhere else — otherwise a
-  // later `(local.get $t)` reads a value we deleted (the watr.js self-host miscompile).
+  // later `(local.get $t)` reads a value we deleted (the watr.js self-compile miscompile).
   if (isArr(m.val) && m.val[0] === 'local.get' && typeof m.val[1] === 'string'
       && i > 0 && isArr(stmts[i - 1]) && stmts[i - 1][0] === 'local.set' && stmts[i - 1][1] === m.val[1]
       && getCounts.get(m.val[1]) === 1)
@@ -1302,7 +1302,7 @@ function buildBodyModel(body, ind) {
 
 // JZ_DEBUG_INVARIANTS-gated proof that BodyModel's generalized tables agree with the private
 // predicates/queries they generalize, on every block this compiler ever matches (battery + bench
-// corpus + selfhost — see .work/todo.md's LOOPPLAN BODYMODEL SLICE 1 entry for the measured
+// corpus + self-compile — see .work/todo.md's LOOPPLAN BODYMODEL SLICE 1 entry for the measured
 // counts). Throws on the first divergence found — a widening or narrowing in the generalization
 // is a correctness question to answer BEFORE any recognizer can depend on the shared table, not
 // a warning to log past. No-op unless JZ_DEBUG_INVARIANTS=1 (DBG_INVARIANTS), zero production cost.
@@ -2646,7 +2646,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
 
   const liftedExpr = liftExprV(exprNode, ctx)
-  // liftExprV's contract is "null ⟺ ctx.fail"; under self-host (jz.wasm) it can diverge and
+  // liftExprV's contract is "null ⟺ ctx.fail"; under self-compile (jz.wasm) it can diverge and
   // return null WITHOUT the flag, which would otherwise splice a literal `null` operand into the
   // emitted `(<reduce>.add acc null)` — invalid wasm ("not enough arguments on the stack"). Treat
   // a null lift as a bail (the loop stays scalar — correct, just unvectorized on that leg).
@@ -2947,7 +2947,7 @@ function _isPixelIndexLocal(body, name, ind) {
 
 // Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
 // string — NOT a `{laneName}` object — because a schema-object read back through the Map in a
-// DIFFERENT function returns undefined under self-host. Takes `newLanedLocals` directly
+// DIFFERENT function returns undefined under self-compile. Takes `newLanedLocals` directly
 // (not ctx) so callers don't need to pass the full ctx object to a helper at call-depth 2.
 function getOrAllocLanedLocal(name, newLanedLocals) {
   let laneName = newLanedLocals.get(name)
@@ -6676,10 +6676,10 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
 
   const newLanedLocals = new Map()       // origName → laneName (bare string; see getOrAllocLanedLocal)
   // SAME field set + ORDER as the ctx in tryVectorize / tryReduce / tryRampMap. The
-  // self-host kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
+  // self-compile kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
   // liftExprV — so every ctx reaching it MUST have the identical shape, or the inferred layout is
   // wrong for some and field reads corrupt (a narrower ctx shape here previously broke the ENTIRE
-  // self-host vectorizer this way). tryToneMap itself only reads fail/failReason/extraLocals, but
+  // self-compile vectorizer this way). tryToneMap itself only reads fail/failReason/extraLocals, but
   // the unused fields must still be present, in order.
   const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals: null, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
@@ -6687,7 +6687,7 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   const freshMask = () => { const mt = `$__mask${freshIdRef.next++}`; ctx.extraLocals.push(['local', mt, 'v128']); return mt }
 
   // The ctx-using lifters are NESTED function declarations that CAPTURE the state above (like
-  // scanForLoadsStores) — taking `ctx` as a param instead would make jz's self-host inference
+  // scanForLoadsStores) — taking `ctx` as a param instead would make jz's self-compile inference
   // mistype the recursive lifter's `ctx` (the recursive call site can't agree on i32, so it
   // stays boxed f64 and its callers emit a bad i64.reinterpret_f64). Capturing sidesteps that.
 
@@ -8150,7 +8150,7 @@ function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   const ctx = { laneType, incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals, newLanedLocals: new Map(), extraLocals: [], freshIdRef, fail: false, failReason: null }
   const liftedExpr = liftExprV(exprNode, ctx)
   // Same fail-open contract as tryReduceReassoc (see its own doc): a null lift without the
-  // flag (self-host divergence) bails rather than splicing a literal `null` operand.
+  // flag (self-compile divergence) bails rather than splicing a literal `null` operand.
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
   // Cost model (Part 2 — shared header doc before tryGeneralMap). REDUCE has no

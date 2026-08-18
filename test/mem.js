@@ -155,7 +155,7 @@ test('mem.Object: key order independence', async () => {
 })
 
 test('mem.Object: ambiguous schemas throws', async () => {
-  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
   // { memory: 1 } forces owned memory: the two object literals fold to scalars (their
   // only reads are `a.x`/`b.y`), so nothing lands on the heap and the module is otherwise
   // memoryless — but this test marshals host objects in via the registered schemas, which
@@ -212,7 +212,7 @@ test('mem.Array: null elements preserved', async () => {
 // === Shared memory: no data collision ===
 
 test('shared memory: no static string collision', async () => {
-  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = new WebAssembly.Memory({ initial: 1 })
   const a = jz('export let f = () => "hello"', { memory })
   // Raw instance export returns the i64 box (string is a NaN-box → i64 carrier);
@@ -367,7 +367,7 @@ test('jz({ memory }): auto-wraps raw WebAssembly.Memory', () => {
 })
 
 test('jz({ memory: pages }): creates owned memory with initial page count', () => {
-  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
   const inst = jz('export let f = () => [1, 2]', { memory: 2 })
   ok(inst.memory instanceof WebAssembly.Memory, 'has memory')
   is(inst.memory.buffer.byteLength, 2 * 65536)
@@ -376,7 +376,7 @@ test('jz({ memory: pages }): creates owned memory with initial page count', () =
 })
 
 test('compile({ memory: pages }): emits owned memory with initial page count', () => {
-  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
   const wasm = compile('export let f = () => [1, 2]', { memory: 3 })
   const mod = new WebAssembly.Module(wasm)
   ok(!WebAssembly.Module.imports(mod).some(i => i.module === 'env' && i.name === 'memory'), 'does not import memory')
@@ -391,7 +391,7 @@ test('shared memory: inst.memory is the same object passed in', () => {
 })
 
 test('shared memory: schemas accumulate across compilations', () => {
-  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 1, y: 2}; return o }', { memory })
   is(memory.schemas.length, 1, 'one schema after first compile')
@@ -407,7 +407,7 @@ test('shared memory: schemas accumulate across compilations', () => {
 })
 
 test('shared memory: cross-instance object passing', () => {
-  if (onWasi() || onKernel()) return  // wasi/kernel: shared-memory host orchestration not on the single-source self-host
+  if (onWasi() || onKernel()) return  // wasi/kernel: shared-memory host orchestration not on the single-source self-compile
   const memory = jz.memory()
   const a = jz('export let make = () => { let o = {x: 10, y: 20}; return o }', { memory })
   const b = jz('export let read = (o) => o.x + o.y', { memory })
@@ -422,7 +422,7 @@ test('shared memory: duplicate schemas not re-added', () => {
 })
 
 test('one-off: inst.memory works without shared memory', () => {
-  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {memory: pages} option doesn't reach the single-source self-compile
   // { memory: 1 } requests owned (non-shared) memory. A ≤8-element array return now
   // comes back as a multi-value tuple with no heap at all, so without the explicit
   // request this module would be memoryless — and there'd be no `inst.memory` to test.
@@ -470,7 +470,7 @@ test('memory.reset(): own memory grows without reset', () => {
 })
 
 test('memory.reset(): shared memory rewinds heap pointer to 1024', () => {
-  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host shared {memory} option doesn't reach the single-source self-compile
   const memory = jz.memory()
   const { exports } = jz('export let f = (n) => { let xs = []; for (let i = 0; i < n; i++) xs.push(i); return xs.length }', { memory })
   exports.f(100)
@@ -523,7 +523,7 @@ test('_clear() rewinds to the post-init heap mark, preserving module-init state'
   // fresh scratch buffer per call. If _clear rewound below `table` (the old bug — it
   // reset to the static-data end, into the module's own init allocations), the next
   // probe's scratch would overwrite `table` and the sum would be wrong. This is the
-  // self-host arena-reuse corruption reduced to one module.
+  // self-compile arena-reuse corruption reduced to one module.
   const { exports } = jz(`
     let table = new Float64Array(5)
     for (let i = 0; i < 5; i++) table[i] = (i + 1) * 10

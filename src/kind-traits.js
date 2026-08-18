@@ -171,7 +171,7 @@ export function methodValType(method, obj, objType, ctx) {
   }
   // `.add`/`.set` return their receiver (Set/Map, chainable) — but only when the
   // receiver is *proven* that collection. An unknown receiver is NOT assumed
-  // Set/Map: a plain object, user class, or the self-host value-tracker `store`
+  // Set/Map: a plain object, user class, or the self-compile value-tracker `store`
   // carries an own `add`/`set` closure whose result is whatever it returns;
   // claiming SET/MAP would box that f64 result as a tagged pointer (corrupt read
   // on use). A genuine Map/Set value is proven VAL.MAP/SET and still chains; an

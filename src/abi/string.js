@@ -62,7 +62,7 @@ import { declareLocal, freshEmitId } from '../compile/active-function.js'
 
 /** Pre-shifted SSO discriminator — layout.js is cycle-free; the thunk exists for
  *  load-order laziness ONLY. Deliberately NOT memoized: a module-level memo of a
- *  runtime-BUILT string dangles across the self-host kernel's `_clear()` arena
+ *  runtime-BUILT string dangles across the self-compile kernel's `_clear()` arena
  *  rewind (warm compile #2 interpolated the stale pointer's garbage bytes into
  *  `(i64.const …)` → watr "Bad int") — the same dangling-cache class as DOLLAR /
  *  stdlibParseCache (see scripts/self.js setupSelf). Recomputing is a few ops at
@@ -106,7 +106,7 @@ function emitDecompCharRead(dec, iI32, ctx, oobNan, inBounds = false) {
   // heap load to memory[0 + idx], and an in-bounds SSO idx is at most 6. Speed
   // tier in a compact graph uses a select that unswitchStringRepLoop can fold
   // out of the loop. Other tiers/large graphs keep the predictable branch —
-  // evaluating both arms without the unswitch regresses the self-host parser.
+  // evaluating both arms without the unswitch regresses the self-compile parser.
   const canUnswitch = ctx.transform.optimize?.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64
   const ccByte = canUnswitch
     ? ['select', ssoByteExpr, heapByteExpr, ['local.get', `$${dec.sso}`]]
@@ -143,7 +143,7 @@ export function emitCharDecompPrologue(dec) {
   // Receiver expression: a param's local slot (shape-1 classic) or a stable
   // module global (dec.recvGlobal — the parser-state shape: `cur.charCodeAt(idx)`
   // against a global assigned only outside the scanning function). Built fresh
-  // (IR nodes must not be structurally shared; also the self-host kernel
+  // (IR nodes must not be structurally shared; also the self-compile kernel
   // compiles this file — stick to constructs jz itself supports).
   const ptr = ['i64.reinterpret_f64', dec.recvGlobal ? ['global.get', dec.recvGlobal] : ['local.get', `$${dec.param}`]]
   const ssoTest = ['i64.ne',
@@ -441,7 +441,7 @@ export const sso = {
 
     /** Concat with ToString coercion on both sides. Both args: f64 slot
      *  carriers. Returns f64 (the new STRING ptr's slot carrier).
-     *  Named `cat`, not `concat`: under self-host this op is invoked as a
+     *  Named `cat`, not `concat`: under self-compile this op is invoked as a
      *  method on the statically-untyped `ctx.abi.string.ops` receiver, and the
      *  name `concat` collides with `Array.prototype.concat` — the method-call
      *  dispatcher's string/array runtime guess (emit.js) would hijack it into a

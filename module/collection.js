@@ -5,7 +5,7 @@
  * Map: type=9, same but entries: [hash|seq:8, key:8, val:8] (24B each).
  * HASH: type=7, same layout as Map but uses content-based string hash + equality.
  * Normal outputs additionally carry an i32 HASH LANE (cap × 4 B) AFTER the
- * entry region — the only thing hot probes walk. The self-host artifact can
+ * entry region — the only thing hot probes walk. The self-compile artifact can
  * omit this redundant lane and probe the hash already stored in each entry;
  * entry offsets and iteration are identical in both layouts.
  *
@@ -105,7 +105,7 @@ export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(glob
 // durable block reverts to self-contained, non-forwarding, and correct (its own
 // element/entry cells were never touched by the relocation; only the header words
 // were). This keeps followForwardingWat/__ptr_offset_fwd (the hot chase, ~25% of
-// self-host compile ticks) completely UNTOUCHED — the check only runs on the already-
+// self-compile compile ticks) completely UNTOUCHED — the check only runs on the already-
 // cold relocation path, and the heal sweep only runs inside `_clear()`, bounded by
 // however many durable relocations happened that round (0 in the overwhelmingly
 // common case).
@@ -127,7 +127,7 @@ export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(glob
 // begin with (a separate, pre-existing, documented gap — see core.js's shared-memory
 // `__clear` comment). Testing `ctx.scope.globals.has('__heap_reset')` directly (not just
 // deferring to heapResetWat()'s own `(i32.const 0)` fallback, which would still emit an
-// always-false-but-present call) matters for self-host inclusion: array.js's/
+// always-false-but-present call) matters for self-compile inclusion: array.js's/
 // collection.js's deps() edges declare '__durable_fwd_log' unconditionally at every grow/
 // shift site, so core.js must ALSO unconditionally register the function whenever those
 // sites exist — but core.js only defines __durable_fwd_log/__durable_fwd_heal in the
@@ -403,7 +403,7 @@ const sameValueZeroEqG = keyEq('(call $__same_value_zero (i64.load (i32.add (loc
 const bitEq = '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))'
 
 // Normal outputs keep the cache-dense HASH LANE introduced for wordcount
-// (+7.2% measured). The self-host artifact's compact profile drops only that
+// (+7.2% measured). The self-compile artifact's compact profile drops only that
 // redundant copy: probes walk the entry-resident low hash word instead. This is
 // resolved while templates are materialized, so neither layout pays a runtime
 // branch and ordinary user output remains byte-identical.
@@ -1329,7 +1329,7 @@ function genUpsertStrictPrehashed(name, entrySize, eqExpr, expectedType, hasVal 
 
 export default (ctx) => {
   // Fixed for this one compilation while stdlib templates materialize. The
-  // self-host artifact sets 0; ordinary compilations retain the 4-byte lane.
+  // self-compile artifact sets 0; ordinary compilations retain the 4-byte lane.
   const lane = collectionLaneBytes()
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
@@ -1346,7 +1346,7 @@ export default (ctx) => {
   // genDelete's backward-shift calls durableSlotRelogIR/durableSlotCancelIR
   // unconditionally in its template (gated only at runtime by
   // $__durable_slot_n) — same explicit-edge reasoning as slotLogDeps:
-  // self-host's auto-scan would otherwise drop these helpers and every
+  // self-compile's auto-scan would otherwise drop these helpers and every
   // kernel-compiled `.delete()` would trap.
   const relogDeps = () => needsDurableFwdLog() ? ['__durable_slot_relog', '__durable_slot_cancel'] : []
   deps({
@@ -1354,15 +1354,15 @@ export default (ctx) => {
     __map_hash: ['__hash', '__str_hash'],
     // '__durable_fwd_log' on __set_add/__map_set/__hash_set/__hash_set_local: an
     // EXPLICIT edge, not left to the auto-dep scan — genUpsert/genUpsertGrow's
-    // `forward` branch always contains a durableFwdLogIR() call, but self-host's
+    // `forward` branch always contains a durableFwdLogIR() call, but self-compile's
     // realize/regex-scan auto-deps path silently drops a helper reachable only that
     // way (the "Unknown func $__clamp_idx" shape documented in
-    // test/selfhost-includes.js) — that test would fail (and the kernel would trap)
+    // test/self-compile-includes.js) — that test would fail (and the kernel would trap)
     // without these edges.
     // slotLogDeps: hasVal=false skips the VALUE slot-log, but the ENTRY-insert
     // log (durableEntryLogIR) still calls $__durable_slot_log — without the
     // explicit edge the kernel leg drops the helper (auto-scan divergence, the
-    // selfhost-includes class) and every `new Set(...)` fails to compile there.
+    // self-compile-includes class) and every `new Set(...)` fails to compile there.
     __set_add: () => [...(ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan', '__ext_set'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__alloc_hdr_n', '__zomb_scan']), ...(needsDurableFwdLog() ? ['__durable_fwd_log'] : []), ...slotLogDeps()],
     // Region-arena rebuild fix — caller (layout-kinds.js regionArmSetMap)
     // folds the hash, mirrors __hash_set_local_h's own prehashed dep shape.
@@ -1387,7 +1387,7 @@ export default (ctx) => {
     __map_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
     __map_from: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__len', '__typed_idx', '__map_set', '__mkptr', '__alloc_hdr_n', '__coll_order'],
     // own edge: __map_new's body calls $__alloc_hdr_n — auto-scan-only
-    // reachability vanishes under self-host (test/selfhost-includes.js)
+    // reachability vanishes under self-compile (test/self-compile-includes.js)
     __map_new: ['__alloc_hdr_n'],
     __hash_set: () => [
       ...(ctx.linkDemand.external ? ['__str_hash', '__str_eq', '__ptr_type', '__ext_set', '__dyn_set'] : ['__str_hash', '__str_eq', '__ptr_type', '__dyn_set']),
@@ -1628,7 +1628,7 @@ export default (ctx) => {
   // bits directly against the OTHER side's boxed atom (e.g. `x.has(k) === true` bit-
   // compares against TRUE_NAN). A raw 0.0/1.0 number can never equal a NaN payload, so
   // every unproven `.has()/.delete() === true` silently read false regardless of the
-  // real answer (self-host's own `ctx.func.ternaryBoxedNames?.has(name) === true` hit
+  // real answer (self-compile's own `ctx.func.ternaryBoxedNames?.has(name) === true` hit
   // this exact gap — .work/carrier-representation-design.md §33/§34). The FAST (real
   // Map/Set) branch below is the only one that produced the bare number; the call_indirect
   // branch (a genuine custom `.has` closure) already returns a properly boxed value via
@@ -1694,7 +1694,7 @@ export default (ctx) => {
   // `.size` on an unproven receiver: in JS only Set/Map expose an entry count —
   // on everything else `size` is an ordinary own property (or undefined). The
   // old bare-__len form read the length HEADER of whatever arrived, silently
-  // returning 0 for `{size: 4}` — which broke the self-host kernel reading
+  // returning 0 for `{size: 4}` — which broke the self-compile kernel reading
   // `ctx.runtime.internTable.size` (the last L2 byte-parity divergence).
   // NaN-check guards real numbers whose bit pattern could false-match the tag
   // compare; the dyn dispatcher covers OBJECT schema slots, HASH keys,
@@ -2350,7 +2350,7 @@ export default (ctx) => {
   // builds from ssoEncode's {offset, aux} — the two MUST compute the identical
   // constant-for-constant mix or literal-prehashed probes silently miss. Heap strings
   // (>6 bytes or non-ASCII) are unaffected: they keep byte-FNV-1a below.
-  // ~95M calls in watr self-host; SSO is the overwhelming majority post-invariant
+  // ~95M calls in watr self-compile; SSO is the overwhelming majority post-invariant
   // (ec6a229: any ≤6-byte ASCII string IS SSO).
   ctx.core.stdlib['__str_hash'] = `(func $__str_hash (param $s i64) (result i32)
     (local $h i32) (local $len i32) (local $lenA i32) (local $i i32) (local $t i32) (local $off i32) (local $aux i32) (local $w i32) (local $hi i32) (local $cs i32)
@@ -2437,7 +2437,7 @@ export default (ctx) => {
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (i32.const ${smallCap}) (i32.const ${MAP_ENTRY + lane}))))`
   // Fresh, non-escaping dictionaries in the normal layout key hot-probe
-  // occupancy off the compact hash lane; the self-host compact profile uses
+  // occupancy off the compact hash lane; the self-compile compact profile uses
   // the entry hash directly. __coll_order (core.js) and generic-HASH consumers
   // (Object.keys/values/entries, for-in, spread, JSON, Map/Set algebra) always
   // raw-scan the 24-byte entry region's own hash word (PTR.HASH tags both
@@ -2565,7 +2565,7 @@ export default (ctx) => {
   ctx.core.stdlib['__ihash_set_local'] = () => genUpsertGrow('__ihash_set_local', MAP_ENTRY, '$__map_hash', '(i64.eq (i64.load (i32.add (local.get $slot) (i32.const 8))) (local.get $key))', PTR.HASH, true)
 
   // Inline __ptr_offset (forwarding-aware) and __hash_get_local body — dyn_get is the
-  // single hottest stdlib symbol in watr self-host (~95M calls). props returned by
+  // single hottest stdlib symbol in watr self-compile (~95M calls). props returned by
   // __ihash_get_local is always HASH (or NULL_NAN, filtered by __is_nullish), so the
   // inlined probe skips a redundant type check + bit unboxing per call.
   //
@@ -2592,12 +2592,12 @@ export default (ctx) => {
   // freshly heap-allocated by __jp_str) still resolve correctly.
   // If-expression, NOT i32.or: `or` evaluates both arms, calling __str_eq even
   // when the bit-eq already decided — that bare call per schema-key step was
-  // the hottest __str_eq producer in the self-host (the kernel includes __jp
+  // the hottest __str_eq producer in the self-compile (the kernel includes __jp
   // for optJSON, so the fallback arm is always compiled in).
   // The __str_eq fallback (JSON-parsed heap keys) is prefixed by an inline
   // one-SSO⇒ne test when SSO is on: any SSO operand with unequal bits cannot
   // content-match (≤6-ASCII⇒SSO invariant, module/string.js), so the call —
-  // the hottest __str_eq producer in the self-host — is skipped for every
+  // the hottest __str_eq producer in the self-compile — is skipped for every
   // SSO-keyed miss step; only heap-vs-heap candidates still pay it.
   // Types allocated via __alloc_hdr/__alloc_hdr_n (see core.js) reserve a 16-byte
   // header with a propsPtr slot at off-16: ARRAY, OBJECT, TYPED, SET, MAP. HASH is
@@ -3570,7 +3570,7 @@ export default (ctx) => {
       const schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
       if (schemaIdx >= 0) return typed(['i32.const', 1], 'i32')
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
-      // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-host
+      // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-compile
       // kernel schema.slotOf can under-resolve even an in-schema key. Don't fold to
       // a static 0 — fall through to the runtime probe below, which reads the
       // actual property via __dyn_get (OBJECT is in `hasDynProps`) and reports
@@ -3684,7 +3684,7 @@ export default (ctx) => {
     // Unknown receiver: resolve the kind once at runtime (loop-invariant).
     // ES: for-of / spread over null/undefined is a TypeError ("x is not
     // iterable") — throw, per spec. The silent zero-iteration this replaces
-    // masked two real self-host miscompiles (a folded undefined-guard and a
+    // masked two real self-compile miscompiles (a folded undefined-guard and a
     // never-armed matchAll swallowed their wrong undefineds into empty loops)
     // before they were caught. Known-vt receivers skip the check entirely.
     ctx.runtime.throws = true
@@ -3706,7 +3706,7 @@ export default (ctx) => {
   // nullish is a TypeError (__iter_arr above, which throws per spec). A
   // nullish value passes through unchanged here; the constructors' existing
   // non-ARRAY ptr-type guard then leaves the seed length at 0. This is also
-  // self-host-load-bearing: prepare's own `new Set(skip)` with an undefined
+  // self-compile-load-bearing: prepare's own `new Set(skip)` with an undefined
   // skip ran fine natively (host JS semantics) but threw the __iter_arr
   // TypeError when the compiler itself runs in-kernel — the census-row class.
   ctx.core.emit['__iter_arr_ctor'] = (src) => {
@@ -3728,7 +3728,7 @@ export default (ctx) => {
 
   // === for...in on dynamic objects (HASH iteration) ===
 
-  // Flatten a statement/block to void IR — a self-host-robust inline of
+  // Flatten a statement/block to void IR — a self-compile-robust inline of
   // emitVoid+emitBlockBody (see the call site in for-in for why the bridge
   // emitVoid can't be used here). Recurses into `{}` blocks; emits each leaf
   // statement in void position and drops any leftover value.
@@ -3762,7 +3762,7 @@ export default (ctx) => {
     const control = { brk, loop: needsCont ? cont : loop }
     let bodyFlat
     // NOTE: `flat(body)` (the bridge-dispatched emitVoid) miscompiles in this
-    // self-host call context — it returns [] for a void-postfix body
+    // self-compile call context — it returns [] for a void-postfix body
     // (`for (k in o) n++`, lowered to `(++n)-1`), silently dropping the loop
     // body so the kernel-compiled for-in iterates but does nothing. The exact
     // same emit+flatten logic inlined here compiles correctly. emitFlatVoid

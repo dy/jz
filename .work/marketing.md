@@ -165,7 +165,7 @@ invisibility (audio) + sharing surface (OG/floatbeat/capture)**.
 
 ## 3. Positioning
 
-- **Ownable claim (lead with this, not speed):** *Valid jz IS valid JS — the same file passes your existing tests and compiles to GC-free WASM.* No rival can say it (AssemblyScript = TS dialect that can't run in a JS engine; Rust→wasm = a second language; Porffor can't self-host).
+- **Ownable claim (lead with this, not speed):** *Valid jz IS valid JS — the same file passes your existing tests and compiles to GC-free WASM.* No rival can say it (AssemblyScript = TS dialect that can't run in a JS engine; Rust→wasm = a second language; Porffor can't self-compile).
 - **Why not lead with speed:** the "compile-to-wasm-for-speed" claim is worn out (AssemblyScript, Rust→wasm own it) and the audience is skeptical. Lead with **no-rewrite / no-lock-in relief**; let speed *confirm*.
 - **Category:** AOT compiler for the *numeric core* of JavaScript.
 - **Awareness/sophistication (Schwartz):** solution-aware, high-sophistication, high-wear-out → relief first, proof-before-claims, never open on the speed number.
@@ -236,7 +236,7 @@ honest boundaries; the mechanism line ("valid jz is valid JS") does the differen
   can't be live) should use a conservative non-drifting claim ("over 2×").
 
 **Keep claiming loudly (all honest, underused):** "valid jz is valid JS" · "the compiler compiles
-itself" (self-host, CI-gated) · "we publish our losses" (the bench naming where jz trails earns more
+itself" (self-compile, CI-gated) · "we publish our losses" (the bench naming where jz trails earns more
 trust than any win).
 
 ---

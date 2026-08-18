@@ -1,9 +1,9 @@
 /**
  * Unsigned arbitrary-precision integer arithmetic on 15-bit limbs (plain JS
  * number arrays, least-significant limb first, no leading-zero limbs —
- * `[]` is the canonical zero). Self-host-safe by construction: every op is
+ * `[]` is the canonical zero). Self-compile-safe by construction: every op is
  * plain array/number manipulation (no `BigInt`, no computed members, no
- * builtins-as-values), so it compiles under jz's own self-host subset —
+ * builtins-as-values), so it compiles under jz's own self-compile subset —
  * unlike native `BigInt`, whose jz-compiled carrier is a wrapping 64-bit i64
  * (see ctx.js, WIDE_BIGINT removed), a limb array has NO width ceiling:
  * growing the array is the only "carry", and every element stays a plain
@@ -17,7 +17,7 @@
  * caller), no bitwise and/or/xor, no modexp.
  *
  * LIMB BASE IS 2^15 (32768), NOT 2^32 — deliberately narrower than the
- * "u32-limb" shorthand suggests, forced by a real jz self-host constraint
+ * "u32-limb" shorthand suggests, forced by a real jz self-compile constraint
  * discovered compiling THIS module: emit.js's `mulFitsI32` fast-path
  * (compile/emit.js, the `*` operator) treats a multiply as i32-safe whenever
  * EITHER operand's value is provably <= FITS_I32_MAX (2^22) — a heuristic
@@ -29,7 +29,7 @@
  * fires on every partial product — but two <2^16 values can multiply past
  * 2^31, and the resulting `i32.mul` silently wraps (verified: compiling
  * `midLo * 65536` for midLo=32768 produced -2147483648 instead of
- * 2147483648 when this module was self-hosted, while identical native JS
+ * 2147483648 when this module was self-compiled, while identical native JS
  * gave the correct value — a compiler-narrowing bug, not an algorithm bug).
  * 15-bit limbs sidestep it structurally: the worst-case product of two
  * limbs is 32767*32767 = 1073676289 < 2^31-1, so `i32.mul` (whether or not
@@ -131,7 +131,7 @@ export function mulSmall(a, k) {
 
 /** Divide by a small (< 2^16) value. Returns [quotientLimbs, remainder].
  *  Two call sites reach this in-kernel (toDecimalString's per-digit /10 loop,
- *  and — formerly — truncateLimbs' single-limb mask): under O3 self-host,
+ *  and — formerly — truncateLimbs' single-limb mask): under O3 self-compile,
  *  those two call sites observably cross-contaminated `k` (traced live: a
  *  truncateLimbs call logged `mod=16` immediately before calling this, yet
  *  `k` read back as `10` — toDecimalString's OWN divisor — inside the call).
@@ -281,7 +281,7 @@ export function fromRadixDigits(text, radix) {
     // Fused multiply-by-radix + add-digit, NOT `addSmall(mulSmall(acc,radix),d)`:
     // mulSmall's OTHER call site (pre-eval.js ratToF64's `mulSmall(rem,10)`, a
     // LITERAL `k`) observably cross-contaminated THIS call site's variable `radix`
-    // under O3 self-host (traced live: fromRadixDigits computing `0xffffffffffffffffn`
+    // under O3 self-compile (traced live: fromRadixDigits computing `0xffffffffffffffffn`
     // silently ran with k=10 instead of 16 partway through — the same call-site-
     // sharing class as divModSmall's, see its doc). A dedicated inline loop with no
     // shared call site sidesteps it regardless of the exact root cause.

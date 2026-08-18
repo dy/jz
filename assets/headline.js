@@ -10,7 +10,7 @@
 //   *mem          geomean of target.memKb / jz.memKb (peak process RSS per run)
 // Parity-DIFF runs (a target that produced the WRONG answer) are excluded — speed on a
 // wrong result isn't a fair comparison (matters for Porffor, which miscompiles several).
-// The LAB set — jz-internal probe cases: the self-host compiler rows (jz/watr/
+// The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
 // jessie compiling code) and the JS-only intrinsic probes (color* — pow/cbrt/
 // exp2/atan2 gap trackers with no cross-language ports). They answer jz-internal
 // questions, not the cross-language comparison, so every aggregate excludes them.
@@ -24,7 +24,7 @@ export function headlineStats(results) {
   const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
-  // A target row counts only when it actually ran (a self-host row can carry a
+  // A target row counts only when it actually ran (a self-compile row can carry a
   // valid v8 but a failed jz — `medianUs` undefined — which would poison the math).
   const ran = x => x && x.status !== 'fail' && isFinite(x.medianUs)
   const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t[tgt]) && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }

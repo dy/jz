@@ -656,7 +656,7 @@ test('host decode: a genuine unmarked trap still surfaces as RuntimeError', () =
   // docstring lists this class of opt ("host-side opts that shape compilation")
   // as not marshaled across the wasm compile-ABI (audit-#8 P1-1 differential:
   // confirmed the growth silently SUCCEEDS in-kernel instead of trapping — the
-  // ceiling never reached the self-hosted compile at all). Orthogonal to the
+  // ceiling never reached the self-compiled compile at all). Orthogonal to the
   // marker-consume fix this test pins; native (the leg that actually respects
   // maxMemory) stays the witness.
   if (onKernel()) return

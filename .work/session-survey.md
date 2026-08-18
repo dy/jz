@@ -260,7 +260,7 @@ storage itself moves):
    `presentValTrace` — `ctx.js:242-248`) are keyed on AST-node IDENTITY, so
    they're SAFE across sequential compiles of different programs (different
    node objects ⇒ no collision) even without a reset — the reset exists for
-   memory hygiene under self-host's WeakMap→Map folding (session.js:207-209
+   memory hygiene under self-compile's WeakMap→Map folding (session.js:207-209
    documents this exactly: "without the reset, a warm kernel instance would
    accumulate one entry per bodyRoot for its whole lifetime"). Not a
    reentrancy hazard for correctness, only for memory growth.
@@ -283,16 +283,16 @@ already being that seam) is the highest-value, lowest-risk reentrancy fix and
 is ORTHOGONAL to "phase views" — it's prerequisite plumbing, not the views
 work itself.
 
-## 4. The self-host constraint
+## 4. The self-compile constraint
 
-`src/ctx.js` is itself compiled through jz: `scripts/self.js` (the self-host
+`src/ctx.js` is itself compiled through jz: `scripts/self.js` (the self-compile
 kernel entry, `default export = compileSelf`) imports `{ ctx, reset,
 initWarnings }` from `../src/ctx.js` (self.js:16), and
-`scripts/selfhost-build.mjs` resolves `scripts/self.js`'s WHOLE module graph
+`scripts/self-compile-build.mjs` resolves `scripts/self.js`'s WHOLE module graph
 (`resolveModuleGraph`, which necessarily pulls in ctx.js transitively via
 `index.js`/`prepare/index.js`/etc.) and feeds it to `compile()`, producing
 `dist/jz.wasm` — "the resulting wasm's `default(source)` is jz, compiled by
-jz" (selfhost-build.mjs:15). So **every object-literal shape, closure, and
+jz" (self-compile-build.mjs:15). So **every object-literal shape, closure, and
 control-flow construct in ctx.js's own source is itself jz source code**,
 subject to the same subset restrictions as any user program.
 
@@ -301,9 +301,9 @@ Verified subset restrictions relevant to a session-shape redesign:
   `module/*.js` (the stdlib registration surface) returns zero hits — jz
   never registers a `Proxy` global at all. A CompileSession implemented as a
   `Proxy`-wrapped view (e.g. to lazily project a subtree) could not itself
-  be expressed in the self-hosted kernel's own source, even setting aside
+  be expressed in the self-compiled kernel's own source, even setting aside
   whether a HOST-side Proxy view would be acceptable (native-only code
-  outside ctx.js's self-hosted portion could use one — but ctx.js's own
+  outside ctx.js's self-compiled portion could use one — but ctx.js's own
   internals could not).
 - **No object-literal/class accessor (`get`/`set`) syntax in the parser**:
   grep for `AccessorProperty`/getter-keyword handling in `src/parse.js` and
@@ -313,21 +313,21 @@ Verified subset restrictions relevant to a session-shape redesign:
   on lazy getters for phase-scoped facades is not just "risky," it is
   **unparseable** in the subset ctx.js itself must compile through.
 - **`registerGetter`'s own doc (ctx.js:150-162) is the direct precedent**,
-  not a coincidence of naming: it exists because "the self-host kernel can't
+  not a coincidence of naming: it exists because "the self-compile kernel can't
   reliably read a dynamic property off a **closure returned via a dynamic-key
   lookup**" — a JS-source-level property-getter DISPATCH TABLE (for the
   compiled OUTPUT program's own `.prop` getters, e.g. `re.source`,
   `m.size`) had to move from a closure-attached boolean flag to a plain
   `Set` membership test, because "a closure tag silently read `undefined`
   and every getter fell through to `__dyn_get`." This is evidence about
-  dynamic-key closure-property reads inside the self-hosted kernel being
+  dynamic-key closure-property reads inside the self-compiled kernel being
   unreliable in general — the same failure mode would apply to any
   session-view design that tries to attach per-view accessor functions
   keyed dynamically, not just to the specific getter-dispatch table it was
   fixed for.
 - **`derive()`'s own doc (ctx.js:104-111)** is a second, independent
   dict-shape-sensitivity precedent: `{ ...parent }` inherits
-  `Object.prototype` under V8 (native jz.js) but NOT under the self-hosted
+  `Object.prototype` under V8 (native jz.js) but NOT under the self-compiled
   kernel's own prototype-less objects — "a name-keyed lookup like
   `chain['valueOf']` returns the inherited method instead of undefined,"
   a **kernel/native SEMANTIC DIVERGENCE**, not just a perf concern.
@@ -346,10 +346,10 @@ mutable subtree objects) is subset-safe. A `Proxy`-based lazy view, a
 getter-accessor-based view, or any view whose OWN construction relies on
 dynamic-key closure dispatch is not just stylistically wrong but **would not
 compile** if that view constructor itself lives in ctx.js/session.js (the
-self-hosted portion) rather than purely in host-only orchestration code
-(index.js, which the kernel doesn't need to self-host since it's the driver,
+self-compiled portion) rather than purely in host-only orchestration code
+(index.js, which the kernel doesn't need to self-compile since it's the driver,
 not the compiler-under-compilation — though `scripts/self.js` IS effectively
-a from-scratch reimplementation of the driver that DOES get self-hosted, so
+a from-scratch reimplementation of the driver that DOES get self-compiled, so
 any driver-shaped session logic that self.js also needs will hit the same
 wall).
 
@@ -486,10 +486,10 @@ Deviation from the ruling's literal "ONE beginSession()/reset() path" —
 flagged here rather than silently generalized, per this task's own
 standing instruction not to ship a kernel-affecting change quietly.
 
-**FINDING (self-host leg, the substantive one):** removing
+**FINDING (self-compile leg, the substantive one):** removing
 `prepare()`'s own direct `resetPrepState()` call and relying solely on the
 `RESET_HOOKS` drain (byte-identical, full-battery-clean, invariants-clean
-on the NATIVE leg) crashed the self-hosted kernel — `dist/jz.wasm` built
+on the NATIVE leg) crashed the self-compiled kernel — `dist/jz.wasm` built
 from that tree traps with "memory access out of bounds" on kernel-parity's
 and kernel-oracle's very FIRST compile call, not a warm/second-compile
 issue. Bisected via a throwaway worktree, file-by-file: `module/regex.js`'s
@@ -498,7 +498,7 @@ way, called only indirectly, never by direct name elsewhere) do NOT crash
 the kernel, alone or together. Re-adding `prepare()`'s own direct
 `resetPrepState()` call ALONGSIDE the registration (both paths, redundant)
 made the crash disappear completely, confirmed on a full rebuild. Root
-cause not chased further — this reads as a self-hosted-compiler edge case
+cause not chased further — this reads as a self-compiled-compiler edge case
 around a large (14-assignment, ~78-read-site), heavily-closed-over
 module-scope function becoming reachable ONLY through indirect
 (array-stored, `for`-of-invoked) calls with no remaining direct call site
@@ -533,7 +533,7 @@ pin). `JZ_DEBUG_INVARIANTS` battery **3414/3423** (same 2 + 1 known
 audit-#12 idempotence-probe flake, unchanged). kernel-parity/kernel-oracle
 **13/13** (469 assertions) against a freshly rebuilt, verified-fresh-mtime
 `dist/jz.wasm`. `npm run build` ×2 — SHA-256 identical across both runs
-(`dist/jz.js`, `dist/interop.js`, `dist/jz.wasm`). `test/selfhost.js`
+(`dist/jz.js`, `dist/interop.js`, `dist/jz.wasm`). `test/self-compile.js`
 under `JZ_DEBUG_INVARIANTS=1` — **21/21** (206 assertions, incl. 39 rounds
 of same-instance warm reuse).
 
@@ -580,7 +580,7 @@ returns zero hits.
 tree) — byte-identity **0 diffs** (171/171), full battery **3413/3421**
 (same 2 pre-existing fails), `JZ_DEBUG_INVARIANTS` battery **3414/3423**
 (same 2 + 1 known flake), kernel-parity/kernel-oracle **13/13** (469
-assertions), `npm run build` ×2 SHA-256 identical, `test/selfhost.js`
+assertions), `npm run build` ×2 SHA-256 identical, `test/self-compile.js`
 under invariants **21/21**. Targeted smoke (features, feature-gating,
 simd, objects, strings, external, wasi, array-methods, abi — the
 linkDemand-adjacent files) run standalone pre-commit: 706/706 pass.
@@ -680,9 +680,9 @@ count, typed-RMW guard-count pin). `JZ_DEBUG_INVARIANTS` battery
 flake as slice a/b). kernel-parity **3/3** (33 assertions) + kernel-oracle
 **13/13** (469 assertions) against a freshly rebuilt, verified-fresh-mtime
 `dist/jz.wasm`. `npm run build` ×2 — SHA-256 identical (`dist/jz.js`,
-`dist/interop.js`, `dist/jz.wasm`). `test/selfhost.js` under
+`dist/interop.js`, `dist/jz.wasm`). `test/self-compile.js` under
 `JZ_DEBUG_INVARIANTS=1` — **21/21** (206 assertions) — confirms
-session-views.js itself compiles cleanly through the self-hosted kernel
+session-views.js itself compiles cleanly through the self-compiled kernel
 (it's reachable from scripts/self.js via vectorize.js/narrow.js/plan
 files/wat/assemble.js). `test/session-reentrancy.js` — **3/3** (8
 assertions), unaffected (this slice touches read paths only, no session

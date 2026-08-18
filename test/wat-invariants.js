@@ -28,7 +28,7 @@
  *      narrowing gap is RATCHETED — it cannot grow, and the baseline only shrinks.
  *
  * KERNEL_EXCLUDE'd (test/index.js): compiles at optimize:2 and inspects emitted
- * WAT; the self-host kernel runs optimize:false, so structural shape won't match.
+ * WAT; the self-compile kernel runs optimize:false, so structural shape won't match.
  */
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'

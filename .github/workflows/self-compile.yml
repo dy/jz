@@ -1,5 +1,5 @@
-name: selfhost
-# Self-host gate: builds dist/jz.wasm from scripts/self.js using the host jz
+name: self-compile
+# Self-compile gate: builds dist/jz.wasm from scripts/self.js using the host jz
 # compiler, then instantiates that wasm and round-trips real programs through
 # `self.default(source)`. The wasm runs the whole pipeline in-wasm — parse
 # (jessie) → jzify → prepare → compile → watr-encode — so it is jz, compiled by jz.
@@ -21,7 +21,7 @@ on:
       - 'LICENSE'
       - 'CONTRIBUTING.md'
 jobs:
-  selfhost:
+  self-compile:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:
@@ -30,15 +30,15 @@ jobs:
         with:
           node-version: 24
       - run: npm install
-      # Build the self-host kernel once (dist/jz.wasm = jz compiled by jz).
+      # Build the self-compile kernel once (dist/jz.wasm = jz compiled by jz).
       - name: build dist/jz.wasm
         run: npm run build
       # Quick gate: round-trip sample programs through self.default(source).
-      - name: self-host round-trip
+      - name: self-compile round-trip
         run: npm run test:self
       # Full gate: run the ENTIRE host test suite with the compiler being the
-      # self-host kernel (JZ_TEST_TARGET=jz.wasm) — every program is compiled by
-      # dist/jz.wasm, so any divergence from the native run is a self-host bug.
+      # self-compile kernel (JZ_TEST_TARGET=jz.wasm) — every program is compiled by
+      # dist/jz.wasm, so any divergence from the native run is a self-compile bug.
       # This is the real "does jz.wasm compile and pass everything" signal.
       # JZ_FUZZ_GATE shrinks the fuzz seed counts: every fuzz program compiles
       # through the wasm kernel here, and the full 200×4 gate alone exceeds the

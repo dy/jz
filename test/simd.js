@@ -255,13 +255,13 @@ test('SIMD AoS - power-of-2 strides (complex stride-2, RGBA stride-4) vectorize,
   ok(hasV128(wat(rgba, SIMD_OPT)), 'RGBA stride-4 lifts to v128')
 })
 
-// Self-host parity: jz.wasm miscompiled deep property reads of an ARG-passed object (the lift
+// Self-compile parity: jz.wasm miscompiled deep property reads of an ARG-passed object (the lift
 // chain's `ctx` — NaN-box schema corrupted across arg boundaries at call-depth 2-3), so
 // getOrAllocLanedLocal read back a wrong slot and EVERY map lift silently scalarized in the
-// self-hosted compiler. Fixed by threading ctx via a module-global (_liftCtx in vectorize.js).
+// self-compiled compiler. Fixed by threading ctx via a module-global (_liftCtx in vectorize.js).
 // NO onKernel guard — this (and the un-guarded shape checks throughout) runs on the kernel leg,
-// pinning that the self-host kernel vectorizes IDENTICALLY to in-process.
-test('self-host parity: the lane vectorizer runs in the jz.wasm kernel', () => {
+// pinning that the self-compile kernel vectorizes IDENTICALLY to in-process.
+test('self-compile parity: the lane vectorizer runs in the jz.wasm kernel', () => {
   // Export name is `go`, NOT `run`: under the wasi host `run`/`_start` are WASI
   // command-mode entries, wrapped as `() -> ()` (the f64 return is dropped), so a
   // `.run()` value assertion reads undefined there. `go` runs identically across

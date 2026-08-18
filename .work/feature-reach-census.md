@@ -4,7 +4,7 @@ Measurement only. Zero compiler-source changes (the one temporary trace patch us
 identify vectorizer recognizers lived in a disposable worktree, never committed — see
 §Method/vectorizer below). No removal recommendations — data only.
 
-Scope: every program under `bench/` and `examples/` (excluding `test/**`, the self-host
+Scope: every program under `bench/` and `examples/` (excluding `test/**`, the self-compile
 kernel build `bench/jz/jz.js` = `scripts/self.js` subject, and `test262`), plus the three
 named real-input compile subjects (jessie, watr-graph, jzify-entry). 130 programs total,
 all compiled successfully at `-O3` (`optimize:'speed'`, matching `bench/bench.mjs`'s own
@@ -15,7 +15,7 @@ of the default level-2 pass set: nothing gated ON at level 2 is gated OFF at lev
 
 | group | count | source |
 |---|---|---|
-| `bench/*/*.js` | 59 | every `bench/<name>/<name>.js` (dir-name-matches-file pattern), **excluding** `bench/jz/jz.js` (self-host kernel subject) |
+| `bench/*/*.js` | 59 | every `bench/<name>/<name>.js` (dir-name-matches-file pattern), **excluding** `bench/jz/jz.js` (self-compile kernel subject) |
 | `examples/*/*.js` | 68 | every `examples/<name>/<name>.js` demo entry |
 | `examples/raymarcher/raymarcher.simd.js` | 1 | explicit hand-SIMD variant, distinct entry from `raymarcher.js` |
 | `examples/jukebox` (beat 0) | 1 | `floatbeats.js` exports `moduleSrc(body)`, not a directly-compilable file — generated one concrete beat source (`FLOATBEATS[0]`) and compiled that |
@@ -29,8 +29,8 @@ WAT / 6-module graph). `jzify-entry` has no bench counterpart so it's its own `r
 row (24 MB WAT, 71 modules). All three use `resolveModuleGraph` exactly as
 `.work/research.md`'s own kernel-memory-curve entry names them (`§CompileSession`-adjacent
 record, 2026-08-12): "jessie = `bench/jessie/jessie.js`, watr = `bench/watr/watr.js`,
-jzify-entry = `.work/jzify-entry.mjs`" — `bench/jz/jz.js` (jz×jz self-host) is the fourth
-point in that same record and is the excluded self-host kernel subject here.
+jzify-entry = `.work/jzify-entry.mjs`" — `bench/jz/jz.js` (jz×jz self-compile) is the fourth
+point in that same record and is the excluded self-compile kernel subject here.
 
 Every corpus file compiled cleanly (130/130 `-O3 --resolve` builds succeeded, 0 failures).
 
@@ -305,7 +305,7 @@ method table.
 
 ## Verdict
 
-| engine | reach | reached ONLY by tests/self-host? |
+| engine | reach | reached ONLY by tests/self-compile? |
 |---|---|---|
 | NaN-boxed universal carrier | 130/130 (foundational — see caveat) | no |
 | HASH / `__dyn_get`/`__dyn_set` fallback | 5/130 (`bench/fftplan`, `bench/jessie`, `bench/provenance`, `bench/watr`, `realinput/jzify_entry`) | no |
@@ -322,9 +322,9 @@ method table.
 | Carrier-box (BOOL∪NUMBER) / boxed-Boolean | 87/130 | no |
 | Vectorizer — 19 recognizers total (16 chain + 3 pre-pass) | 17/19 recognizers reached by ≥1 program; 6 of those 17 are single-specimen; 2 (`tryByteScan`, `vectorizeStraightLineF64DotPairsIn`) reached by 0/130 | no |
 
-"reached ONLY by tests/self-host: yes/no" is **no** across every engine that is reached at
+"reached ONLY by tests/self-compile: yes/no" is **no** across every engine that is reached at
 all — every engine this census found live in the corpus is exercised by at least one
-non-test, non-self-host program. BigInt/regex/async/generators aren't "test/self-host
+non-test, non-self-compile program. BigInt/regex/async/generators aren't "test/self-compile
 only" either — they're reached by **nothing** in this corpus, test or otherwise (this
 census didn't touch `test/**`, so it makes no claim about whether `test/**` alone
 exercises them — only that the excluded-from-here corpus doesn't).

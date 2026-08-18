@@ -3,7 +3,7 @@
  *
  * `NaN` parses to the self-describing `['nan']` marker rather than subscript's
  * default `[, NaN]` value-literal. A raw number-NaN (0x7FF8…) is ambiguous with
- * jz's NaN-boxed value space: as the literal flows through the self-host kernel's
+ * jz's NaN-boxed value space: as the literal flows through the self-compile kernel's
  * parse/marshalling path it decodes back as a boxed value (object), so `() => NaN`
  * would miscompile to `f64.const 0`. The string-tagged marker can't be mistaken
  * for a number, survives intact, and emit() lowers it to the canonical quiet NaN
@@ -19,7 +19,7 @@ import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 // Strip a leading `#!` shebang line before subscript sees it. subscript registers the
 // shebang via `parse.comment['#!']='\n'` (feature/shebang.js) on a literal-seeded object,
 // then enumerates it — a cross-module dynamic-extension of a fixed-schema object that the
-// self-host kernel doesn't surface (the added key is stored but unenumerated). An explicit
+// self-compile kernel doesn't surface (the added key is stored but unenumerated). An explicit
 // strip is the conventional parser responsibility anyway (Node, V8 do the same), is
 // host/kernel-identical, and is independent of object-model internals.
 const parse = (src) => {
@@ -34,7 +34,7 @@ token('NaN', 200, a => !a && ['nan'])
 
 // `true`/`false` parse to the self-describing `['bool', 1|0]` marker rather than
 // subscript's `[, true]`/`[, false]` value-literal. The raw JS boolean degrades to
-// the bare number 1/0 as the literal flows through the self-host kernel's
+// the bare number 1/0 as the literal flows through the self-compile kernel's
 // parse/marshalling path, so `valTypeOf` reads VAL.NUMBER and the value loses its
 // VAL.BOOL kind — `typeof true` returns "number", `JSON.stringify(true)` yields "1".
 // The marker (op `'bool'`) is type-tagged by op, not by its degradable payload, so
@@ -45,7 +45,7 @@ token('false', 200, a => !a && ['bool', 0])
 
 // BigInt literals parse to `[, BigInt(str)]` (subscript/feature/number.js) — a
 // REAL host BigInt payload, reliably distinguishable from a number literal via
-// `typeof` — but only NATIVELY. Once this parser is itself self-host-compiled
+// `typeof` — but only NATIVELY. Once this parser is itself self-compile-compiled
 // (front.js's kernel graph) and runs INSIDE the kernel to parse a NEW source
 // string, `BigInt(str)` returns jz's own i64-bits-as-f64 CARRIER value, which
 // for small magnitudes is bit-identical to a genuine subnormal float — the
@@ -66,11 +66,11 @@ token('false', 200, a => !a && ['bool', 0])
 // form, see compile/emit.js `op === 'bigint'` / `bigintUnsignedBound`).
 // Radix-prefixed literals (0x/0b/0o, enabled by justin.js's `parse.number`)
 // are converted via bignum.js's limb arithmetic — plain number-array math, no
-// BigInt anywhere in the conversion, so it self-hosts identically.
+// BigInt anywhere in the conversion, so it self-compiles identically.
 // Original digit-lookup handlers (number.js), captured ONCE into a flat array
 // indexed by charCode-48 — NOT via a per-iteration closure over `lookup[c]`
 // (a `for (let c=…)` loop whose body installs a closure capturing that
-// iteration's own binding is exactly the shape self-host closure-in-loop bugs
+// iteration's own binding is exactly the shape self-compile closure-in-loop bugs
 // hit; looking the original handler up by INDEX at call time, from ONE shared
 // wrapper function installed at every slot, has no per-iteration binding to
 // get wrong). digit '0'..'9' -> index 0..9.

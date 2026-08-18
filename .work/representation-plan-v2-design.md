@@ -25,7 +25,7 @@ expression's likely bits.
 
 ## 1. Exact postmortem of v1
 
-The old branch reproduced the FeaturePlan import-order fix, but its self-hosted
+The old branch reproduced the FeaturePlan import-order fix, but its self-compiled
 kernel compiled:
 
 ```js
@@ -285,7 +285,7 @@ Before deleting magnitude fallbacks:
 - raw internal BigInt arithmetic and large/negative values,
 - storage/param/result hops, recursive SCCs, closure/call_indirect, exports,
 - fuzz 2000 × O0/O1/O2/O3,
-- direct self-host base/new performance and retained-memory A/B.
+- direct self-compile base/new performance and retained-memory A/B.
 
 No FeaturePlan claim until all those pass and the semantic `bigint` flag is
 deleted or reduced to size-only demand.

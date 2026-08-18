@@ -747,9 +747,9 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
   is(run(0), 42)
 })
 
-test('builtin as first-class value: Array.isArray callback (self-host kernel shape)', () => {
+test('builtin as first-class value: Array.isArray callback (self-compile kernel shape)', () => {
   // watr's optimizer passes the bare builtin to .filter (`kids.filter(Array.isArray)`),
-  // so the self-host kernel must compile it — builtinFunctionValue mints a
+  // so the self-compile kernel must compile it — builtinFunctionValue mints a
   // uniform-ABI table entry for it (FIRST_CLASS_BUILTIN_BODY, emit.js).
   const { run } = runHost(`
     export let run = (z) => {
@@ -1061,7 +1061,7 @@ test('devirt: param-held closure is never devirtualized (unknown candidates)', (
 // A capture whose parent binding can hold null (`let x = null` later assigned a
 // number) must keep its nullable mark inside the closure body — the body's own
 // write facts (val NUMBER) would otherwise fold `x == null` to constant false
-// and skip the guard. Found via the self-host kernel: _offsetLocalStride's
+// and skip the guard. Found via the self-compile kernel: _offsetLocalStride's
 // `stride == null` first-write guard never fired in a recursive walker, killing
 // every offset-tee memory.copy recognition in jz.wasm.
 
@@ -1126,7 +1126,7 @@ test('IIFE lift: a mutated capture bails to the closure path, stays correct', ()
 // In V8, `{}` inherits Object.prototype, so `'valueOf' in CONSTANTS` was true and
 // `CONSTANTS['valueOf']` returned the inherited method — `let valueOf = 5` resolved to a
 // boxed function (emitted 0) and `valueOf = …` errored "Assignment to non-variable".
-// jz.js-ONLY: the self-host kernel's jz objects are prototype-less, so the kernel compiled
+// jz.js-ONLY: the self-compile kernel's jz objects are prototype-less, so the kernel compiled
 // these correctly all along (the bug only bit the compiler running in V8). Fixed by making
 // the dictionaries prototype-less (Object.create(null)).
 test('identifiers named like Object methods resolve as plain variables (proto-less dicts)', () => {
@@ -1614,7 +1614,7 @@ test('closures: mutually-recursive const arrows inside a CLOSURE-compiled functi
   // The mutual pair must live inside a nested closure (not a top-level function):
   // the closure-compile path used to populate ctx.func.preboxed AFTER emitting the
   // body, so each boxed decl re-allocated its cell — the earlier arrow's env kept
-  // the entry cell (null) and calls through it silently no-opped. Under self-host
+  // the entry cell (null) and calls through it silently no-opped. Under self-compile
   // this hollowed EVERY generator/async machine (jzify's flattenList/flattenStmt
   // pair). Fixed by mirroring the top-level order (populateBoxedSets before
   // emitBlockBody); pinned here at the exact trigger shape.

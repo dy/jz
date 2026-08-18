@@ -188,7 +188,7 @@ const isBoundaryWrapped = (func) => {
 // equals any source literal returns the CANONICAL static pointer — string
 // equality then short-circuits on bit-eq instead of walking bytes (a compiler
 // or parser compares each token against tag literals many times; ~25% of
-// self-host compile time was __str_eq/__eq/__str_hash volume). Built before
+// self-compile compile time was __str_eq/__eq/__str_hash volume). Built before
 // pullStdlib (the slice thunks emit the probe only when `__internBase` exists);
 // stripStaticDataPrefix shifts the stored ptr slots like every other static
 // reference. Misses cost one FNV + one probe per slice; the table is read-only.
@@ -1508,7 +1508,7 @@ function emitFunc(func, functionPlan, programFacts) {
     // externref so no `ref.is_null` branch is needed.
     if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
-    // emit(defVal) ONCE, before branching on t — same self-host miscompile class as
+    // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
     // emit.js's 'return' handler. See .work/todo.md (groundtruth archive).
     const emittedDefVal = emit(defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
@@ -1864,7 +1864,7 @@ function synthesizeBoundaryWrappers() {
     // Record the i64 carrier map for interop.js (jz:i64exp). A pure-numeric export
     // (no i64 params, f64 result) records nothing — zero footprint off the box path.
     // `s` (own literal shape, not folded into `r` — jz:extparam/i64exp's own "each
-    // shape a direct literal" discipline, self-host schema inference needs it) marks
+    // shape a direct literal" discipline, self-compile schema inference needs it) marks
     // the census-BIGINT sentinel lane (§6/§12 Slice 5) with a layout.js
     // BIGINT_SENTINEL_KIND value — see censusBigintSentinelKind's doc (kind.js) for
     // which AST shape produces which kind, and layout.js for the kind→bits→value
@@ -2210,7 +2210,7 @@ function emitClosureBody(cb, functionPlan) {
  * @param {Object} [profiler] - host-only per-phase timing sink (timePhase)
  * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena EMIT
  *  boundary (.work/research.md §Region arena, Slice 3): supplied ONLY by the
- *  self-host kernel entry (scripts/self.js), mirroring frontHalf's own
+ *  self-compile kernel entry (scripts/self.js), mirroring frontHalf's own
  *  `regionHooks` contract (src/front.js) one boundary later in the pipeline —
  *  never passed by the native host (index.js calls `compile(ast, profiler)`,
  *  2 args, so `regionHooks` stays undefined there, zero behavior change: the
@@ -2430,14 +2430,14 @@ export default function compile(ast, profiler, regionHooks) {
   // re-reading `ctx.funcs.list[i]` FRESH every access rather than holding
   // the array or an iterator across a region exit: a plain `for…of` iterator
   // over `ctx.funcs.list` caches the array's base pointer ONCE at loop entry
-  // (this codebase's own self-hosted for-of lowering, not V8's), so a
+  // (this codebase's own self-compiled for-of lowering, not V8's), so a
   // mid-loop `region_exit` that relocates `ctx.funcs` (and thus its `.list`
   // backing store) would leave that cached base stale — the "durable
   // receiver, stale pointer to reclaimed memory" class (see the
   // closure4232/fromnested test cases). The index-based form is
   // behavior-identical to the original `for…of` both natively (V8's own
   // Array iterator is itself index+length-checked per step, so growth-
-  // during-iteration behaves the same either way) and self-hosted (a fresh
+  // during-iteration behaves the same either way) and self-compiled (a fresh
   // property read always observes the just-rebound `ctx.funcs`).
   //
   // GRANULARITY — batched (every AFE_ROUND_BATCH functions), not per-function:
@@ -2814,7 +2814,7 @@ export default function compile(ast, profiler, regionHooks) {
       if (!b) return
       p.push(i)
       // String-key the index: object property keys are conceptually strings (JSON renders
-      // `{"0":…}` either way), and the self-host kernel's objects don't enumerate a numeric
+      // `{"0":…}` either way), and the self-compile kernel's objects don't enumerate a numeric
       // key — `d[0]=…` stores but Object.keys(d) misses it, so the `d` map would read empty
       // and the default never reach the jz:extparam section. Same coercion as the optimize
       // LEVEL_PRESETS lookup. (Native is unaffected: numeric keys auto-stringify.)
@@ -2822,7 +2822,7 @@ export default function compile(ast, profiler, regionHooks) {
     })
     if (!p.length) continue
     // Build each export entry as a direct literal — no `entry.d = d` after the fact and no
-    // `{...entry, name}` spread. The self-host kernel's fixed-schema objects don't enumerate
+    // `{...entry, name}` spread. The self-compile kernel's fixed-schema objects don't enumerate
     // a key added to a non-empty literal (JSON.stringify/spread would silently drop a post-hoc
     // `d`), and spreading a 3-key literal mis-resolves the merged schema there. Constructing
     // the final shape directly sidesteps both.
@@ -2847,7 +2847,7 @@ export default function compile(ast, profiler, regionHooks) {
   // whose lanes interop/the adapter decode element-wise. Pure-numeric single-result exports
   // emit no entry. A plain bigint result is i64 but unmarked (the BigInt is the value).
   // Written under every JS-visible alias, like jz:extparam. Each shape is built as a direct
-  // literal (no spread) — the self-host kernel's fixed schemas don't enumerate post-hoc keys.
+  // literal (no spread) — the self-compile kernel's fixed schemas don't enumerate post-hoc keys.
   const i64Exports = []
   for (const f of ctx.funcs.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue
@@ -2902,7 +2902,7 @@ export default function compile(ast, profiler, regionHooks) {
 
   // Reorder non-import funcs by call count: hot callees get low LEB128 indices.
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
-  // On watr self-host this saves ~6 KB (hot specialized helpers migrate to idx < 128).
+  // On watr self-compile this saves ~6 KB (hot specialized helpers migrate to idx < 128).
   // callCount was computed inline by treeshake's walk (same set of nodes).
   const byCalls = (a, b) => (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
   const startFn = sec.start.find(n => n[0] === 'func')

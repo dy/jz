@@ -13,7 +13,7 @@
  * Baselines at bake time: V8 Math.pow misses 3/5152 (0.058%, all in the mined
  * tail); jz runtime $math.pow missed 424 (8.2%); jz const-exponent fold missed
  * 194/827 (23.5%). The gate demands ZERO on both jz paths — correctly rounded
- * is unique, so this also pins fold==runtime path consistency (self-host
+ * is unique, so this also pins fold==runtime path consistency (self-compile
  * byte-parity depends on it).
  */
 import test from 'tst'

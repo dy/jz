@@ -122,24 +122,24 @@ const CASE_NAMES = {
   colorpq: 'sRGB → JzAzBz (PQ)',
   watr: 'watr WAT compiler',
   jessie: 'jessie parser',
-  jz: 'jz JS compiler (self-host)',
+  jz: 'jz JS compiler (self-compile)',
 }
 
 // Cases whose source pulls in a real multi-file library: the whole relative-
 // import graph resolves to canonical absolute-path keys (same as the CLI).
 // `jz` additionally resolves bare node_modules specifiers (watr) — its
 // workload IS the compiler (scripts/self.js), so the jz row runs the full
-// self-host: jz.wasm compiling JavaScript.
+// self-compile: jz.wasm compiling JavaScript.
 const GRAPH_CASES = new Set(['jessie', 'jz'])
 // The LAB set (imported — one definition in assets/headline.js): self-referential
 // 'compiler' cases (jz/watr/jessie compiling code) plus the JS-only intrinsic
 // probes (color*). Excluded from every aggregate — the headline geomean SVG here,
 // the page/hero stats, the README aggregate table — because they answer
-// jz-internal questions (self-host throughput, open intrinsic gaps), not the
+// jz-internal questions (self-compile throughput, open intrinsic gaps), not the
 // cross-language kernel comparison. Still measured, still on the bench page under
 // the `lab` chip.
 const HIDDEN_FROM_GEOMEAN = LAB
-// Only the self-host graph bundles stay out of bench/web/ — their wasm is multi-MB
+// Only the self-compile graph bundles stay out of bench/web/ — their wasm is multi-MB
 // (jz.wasm embeds the whole compiler). The color* lab kernels stay playable in-page.
 const NO_WEB = new Set(['watr', 'jessie', 'jz'])
 const graphSources = (c) => {
@@ -147,7 +147,7 @@ const graphSources = (c) => {
   return { code: g.code, modules: g.modules }
 }
 // Non-jz cases get the 1-page wasm default — plenty for a bench kernel's own
-// data. The `jz` CASE (self-host: jz compiling itself) is its own path
+// data. The `jz` CASE (self-compile: jz compiling itself) is its own path
 // entirely — see compileJzSelfIsolated / bench/_lib/compile-jz-self.mjs below,
 // which sets its own (much larger) memory and never calls this.
 const caseMemory = () => ({})
@@ -200,7 +200,7 @@ const wasmtimeHasEH = (() => {
 //            this case; that is a real compilation strategy, scoped here as a
 //            design note, NOT implemented (bench/README documents the scope).
 //   jz     — UNSAFE, stays gated, for two independent reasons: (1) the
-//            self-hosted compiler's OWN source has genuine try/catch used as
+//            self-compiled compiler's OWN source has genuine try/catch used as
 //            live fallback logic in its hot path (src/kind.js's
 //            `try { JSON.parse(src) } catch { return null }`, plus
 //            src/compile/{narrow,emit,flow-types,analyze}.js and
@@ -215,7 +215,7 @@ const wasmtimeHasEH = (() => {
 //            reach codegen for this case today — it needs `--resolve` for
 //            self.js's bare `watr`/`watr/print` imports, and even then hits an
 //            unrelated `--host wasi` incompatibility (a `WebAssembly.*`
-//            reference inside the self-host graph needs an env import `js`
+//            reference inside the self-compile graph needs an env import `js`
 //            host provides). That gap is the same one Part 3 of this task
 //            documents for the `jz`×`jz` row; revisit both together.
 const EH_ABORT_VARIANT = new Set(['watr'])
@@ -495,7 +495,7 @@ const compileJzSize = c => {
   writeFileSync(jzSizeWasmPath(c), compileJzAt(c, { level: 'size' }))
 }
 
-// Part 3 (jz×jz self-host row): the `jz` CASE under the `jz` TARGET is the one
+// Part 3 (jz×jz self-compile row): the `jz` CASE under the `jz` TARGET is the one
 // self-referential cell — jz compiling bench/jz/jz.js, which pulls in the
 // WHOLE compiler (scripts/self.js) as source, then RUNS the result, which
 // itself compiles 3 more programs 45 times over (bench/jz/jz.js's own memory
@@ -528,9 +528,9 @@ const compileJzSelfIsolated = c => {
   const r = spawnSync('node', ['--max-old-space-size=8192', join(LIB, 'compile-jz-self.mjs'), jzHostWasmPath(c), jzSizeWasmPath(c)],
     { cwd: BENCH_DIR, encoding: 'utf8', timeout: JZ_SELF_HOST_TIMEOUT_MS })
   if (r.error?.code === 'ETIMEDOUT' || (r.signal && !r.status))
-    throw new Error(`jz×jz self-host compile did not finish within ${JZ_SELF_HOST_TIMEOUT_MS / 1000}s (killed via ${r.signal || 'timeout'}) — expected until the region-arena allocator lands (today's bump allocator never frees; this compile's working set grows unbounded). See bench/README's self-host lab-row note.`)
+    throw new Error(`jz×jz self-compile compile did not finish within ${JZ_SELF_HOST_TIMEOUT_MS / 1000}s (killed via ${r.signal || 'timeout'}) — expected until the region-arena allocator lands (today's bump allocator never frees; this compile's working set grows unbounded). See bench/README's self-compile lab-row note.`)
   if (r.status !== 0)
-    throw new Error(`jz×jz self-host compile failed: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`)
+    throw new Error(`jz×jz self-compile compile failed: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`)
 }
 
 const writeFlat = c => {
@@ -917,7 +917,7 @@ const targets = {
     available: () => has('node'),
     // Size column = the -Os build (jz's smallest); timing = the speed build.
     bin: jzSizeWasmPath,
-    // jz×jz (the self-host cell) preps via its own isolated child process —
+    // jz×jz (the self-compile cell) preps via its own isolated child process —
     // see compileJzSelfIsolated above. Every other case's build is cheap
     // enough to run in bench.mjs's own process, same as always.
     run: c => tryRun('jz', c,
@@ -1188,7 +1188,7 @@ for (const arg of process.argv.slice(2)) {
   else if (arg.startsWith('--verify-anchors=')) VERIFY_ANCHORS = Math.max(1, +arg.slice(17) || 3)
   else if (arg === '--allow-unanchored') ALLOW_UNANCHORED = true
   // Bare args are CASES first (the documented `bench.mjs mat4` form): `jz` is
-  // both a case (the self-host compiler workload) and a target — the case
+  // both a case (the self-compile compiler workload) and a target — the case
   // wins; select the target via --targets=jz.
   else if (caseById[arg]) selectedCases = [arg]
   else if (targetIds.includes(arg)) selectedTargets = [arg]
@@ -1235,7 +1235,7 @@ if (MERGE && !PREV && !MERGE_ALLOW_SHRINK) {
 // --emit-web: compile just the page's playable cases to bench/web/*.wasm and
 // stop — no measurement, no native/JS-engine toolchains. The cheap step
 // pages.yml runs to (re)build the live in-page runner's artifacts at deploy.
-// Self-host graph rows (jz/watr/jessie, NO_WEB) are never emitted — that's the
+// Self-compile graph rows (jz/watr/jessie, NO_WEB) are never emitted — that's the
 // multi-MB jz.wasm we keep out of the deploy entirely.
 if (EMIT_WEB) {
   const { built } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))
@@ -1501,7 +1501,7 @@ if (VERIFY_ANCHORS) {
 // Regenerate bench/bench.svg from freshly measured geomeans — only when every
 // non-hidden case ran (a filtered run can't clobber the committed artifact with
 // partial data). The SVG geomean excludes the self-referential cases anyway, so
-// the slow self-host rows need not run to refresh it. ratio = geomean(engine / jz)
+// the slow self-compile rows need not run to refresh it. ratio = geomean(engine / jz)
 // over correct-result cases both ran.
 const svgCases = allCases.map(c => c.id).filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
 if (svgCases.every(cid => selectedCases.includes(cid))) {
@@ -1528,7 +1528,7 @@ if (svgCases.every(cid => selectedCases.includes(cid))) {
 // wires console/perf with zero custom imports. The compile is timed (median of
 // 3) — the same number the page measures live in the visitor's tab. Returns
 // { built:[ids], compileMs:{id} }; callers pass the playable set, so the hidden
-// self-host rows' multi-MB wasm is never written.
+// self-compile rows' multi-MB wasm is never written.
 function emitWebWasm(caseIds) {
   const webDir = join(BENCH_DIR, 'web')
   mkdirSync(webDir, { recursive: true })
@@ -1614,7 +1614,7 @@ if (JSON_PATH) {
     ...(anchorsResult && { anchors: anchorsResult }),
   }
 
-  // Per-case wasm for the in-page runner (playable cases only — the self-host
+  // Per-case wasm for the in-page runner (playable cases only — the self-compile
   // graph rows (NO_WEB) never ship their multi-MB artifacts).
   // compileMs lands back on each case as the page's live compile-time reference.
   const { built, compileMs } = emitWebWasm(selectedCases.filter(cid => !NO_WEB.has(cid)))

@@ -1,14 +1,14 @@
-// Self-host source guard — keep scripts/self.js's whole module graph inside the
+// Self-compile source guard — keep scripts/self.js's whole module graph inside the
 // jz-compilable subset, checked in the FAST suite (`npm test`).
 //
-// dist/jz.wasm is jz compiling its OWN source, so every file the self-host entry
+// dist/jz.wasm is jz compiling its OWN source, so every file the self-compile entry
 // pulls in must parse under jz's jessie parser, not just under Node. The trap that
 // motivated this guard: a `return f(x)` (or any call-expression statement) directly
 // followed by a bare `{ block }` with no separating `;`. Node's ASI makes the block
 // dead code after the return, so it runs fine and the curated suite stays green —
 // but jessie has no ASI here and folds `f(x) ⏎ { … }` into `f: (x) => { … }`, a
 // labeled statement that prepare rejects with "labeled statements not supported".
-// That surfaces ONLY in the self-host build (`npm run build` / the selfhost CI job),
+// That surfaces ONLY in the self-compile build (`npm run build` / the self-compile CI job),
 // which agents don't run in the inner loop — so a perf change can land it green.
 // This test makes the same break show up in `npm test`.
 //
@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import { parse } from '../src/parse.js'
 import jzify from '../jzify/index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
-import { resolveSelfhostBuild } from '../scripts/build-profile.mjs'
+import { resolveSelfCompileBuild } from '../scripts/build-profile.mjs'
 
 const ROOT = join(import.meta.dirname, '..')
 const SELF = join(ROOT, 'scripts/self.js')
@@ -55,11 +55,11 @@ const survivingLabels = (src) => {
   return labeledStatements(lowered)
 }
 
-test('selfhost-source: self-host kernel is free of labeled-statement misparses', () => {
+test('self-compile-source: self-compile kernel is free of labeled-statement misparses', () => {
   const g = resolveModuleGraph(SELF, { resolveNode: true })
   // g.code is the entry (scripts/self.js); g.modules is every resolved dependency.
   // Scan only jz-owned files — the subscript parser under node_modules is an external
-  // dependency, already self-host-clean, and not the surface agents edit.
+  // dependency, already self-compile-clean, and not the surface agents edit.
   const sources = { 'scripts/self.js': g.code }
   for (const [path, src] of Object.entries(g.modules))
     if (!path.includes('node_modules')) sources[path.replace(ROOT + '/', '')] = src
@@ -74,14 +74,14 @@ test('selfhost-source: self-host kernel is free of labeled-statement misparses',
 
   ok(offenders.length === 0,
     offenders.length
-      ? `self-host source would break the self-host build (dist/jz.wasm) — ${offenders.length} labeled-statement misparse(s):\n  ${offenders.join('\n  ')}`
-      : `clean across ${Object.keys(sources).length} self-host kernel files`)
+      ? `self-compile source would break the self-compile build (dist/jz.wasm) — ${offenders.length} labeled-statement misparse(s):\n  ${offenders.join('\n  ')}`
+      : `clean across ${Object.keys(sources).length} self-compile kernel files`)
 })
 
 // A bare `globalThis` READ in compiler source compiles to an env.globalThis
-// import in the self-host build — the module then fails to INSTANTIATE
+// import in the self-compile build — the module then fails to INSTANTIATE
 // (LinkError) in import-free hosts, and the failure is silent in the fast
-// suite (the bench self-host row just vanishes). Debug hooks must use the
+// suite (the bench self-compile row just vanishes). Debug hooks must use the
 // house pattern `typeof process !== 'undefined' && process.env.X` — prep
 // folds the typeof dead, no import. (String/comment mentions are fine; this
 // scans PARSED source for a `globalThis` member-access base.)
@@ -90,7 +90,7 @@ test('selfhost-source: self-host kernel is free of labeled-statement misparses',
 // while leaving this marker false; builds reported themselves dormant but ran
 // moving-region exits anyway. Keep every boundary visibly gated by the same
 // expression so marker state and actual wiring cannot diverge again.
-test('selfhost-source: every region hook boundary is gated by REGION_HOOKS_ACTIVE', () => {
+test('self-compile-source: every region hook boundary is gated by REGION_HOOKS_ACTIVE', () => {
   const { code } = resolveModuleGraph(SELF, { resolveNode: true })
   const markerFalse = 'export const REGION_HOOKS_ACTIVE = false'
   const markerTrue = 'export const REGION_HOOKS_ACTIVE = true'
@@ -99,26 +99,26 @@ test('selfhost-source: every region hook boundary is gated by REGION_HOOKS_ACTIV
   ok(code.includes(markerFalse) !== code.includes(markerTrue),
     'scripts/self.js must declare exactly one literal REGION_HOOKS_ACTIVE state')
   ok(sites === 3,
-    `expected all 3 self-host region boundaries to use the marker gate; found ${sites} (an unconditional site makes a dormant build region-live)`)
+    `expected all 3 self-compile region boundaries to use the marker gate; found ${sites} (an unconditional site makes a dormant build region-live)`)
 })
 
-test('selfhost-source: build profile bakes debug invariants to a literal in both modes', () => {
+test('self-compile-source: build profile bakes debug invariants to a literal in both modes', () => {
   const ctxSource = (profile) => profile.graph.modules[Object.keys(profile.graph.modules).find(p => p.endsWith('/src/ctx.js'))]
-  const prod = resolveSelfhostBuild()
-  const debug = resolveSelfhostBuild({ debugInvariants: true })
+  const prod = resolveSelfCompileBuild()
+  const debug = resolveSelfCompileBuild({ debugInvariants: true })
   const prodGraph = [prod.graph.code, ...Object.values(prod.graph.modules)].join('\n')
   const debugGraph = [debug.graph.code, ...Object.values(debug.graph.modules)].join('\n')
   ok(prod.defines.DBG_INVARIANTS === false && ctxSource(prod).includes('export const DBG_INVARIANTS = false'),
-    'production self-host graph bakes false so debug-only branches can be stripped')
+    'production self-compile graph bakes false so debug-only branches can be stripped')
   ok((prodGraph.match(/\bDBG_INVARIANTS\b/g) || []).length === 1,
     'production graph specializes every use; only ctx.js\'s exported declaration remains')
   ok(debug.defines.DBG_INVARIANTS === true && ctxSource(debug).includes('export const DBG_INVARIANTS = true'),
-    'debug self-host graph bakes true explicitly')
+    'debug self-compile graph bakes true explicitly')
   ok((debugGraph.match(/\bDBG_INVARIANTS\b/g) || []).length > 20,
     'debug graph retains invariant call sites and helper bodies')
 })
 
-test('selfhost-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {
+test('self-compile-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {
   const g = resolveModuleGraph(SELF, { resolveNode: true })
   const sources = { 'scripts/self.js': g.code }
   for (const [path, src] of Object.entries(g.modules))
@@ -138,6 +138,6 @@ test('selfhost-source: no bare globalThis reads (env.globalThis import would bre
   }
   ok(offenders.length === 0,
     offenders.length
-      ? `bare globalThis read(s) in self-host source — each becomes an env.globalThis import:\n  ${offenders.join('\n  ')}\n  use \`typeof process !== 'undefined' && process.env.X\` instead`
-      : `clean across ${Object.keys(sources).length} self-host kernel files`)
+      ? `bare globalThis read(s) in self-compile source — each becomes an env.globalThis import:\n  ${offenders.join('\n  ')}\n  use \`typeof process !== 'undefined' && process.env.X\` instead`
+      : `clean across ${Object.keys(sources).length} self-compile kernel files`)
 })

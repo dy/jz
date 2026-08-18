@@ -123,7 +123,7 @@ test('extractRefinements: post-typeof-string early-return narrows notString', ()
       return xs.length
     }
   `, { wat: true })
-  if (!onKernel()) is(count(wat, /\$__length\b/g), 0, 'flow-narrowing should drop __length')  // self-host kernel codegen differs; in-process leg owns the shape check
+  if (!onKernel()) is(count(wat, /\$__length\b/g), 0, 'flow-narrowing should drop __length')  // self-compile kernel codegen differs; in-process leg owns the shape check
 })
 
 // ──────────────────────────────────────────── soundness boundary: non-exclusive use ≠ type
@@ -1464,7 +1464,7 @@ test('extractRefinements: instanceof Map → __map_has dispatch (not default __s
     }
   `, { wat: true, jzify: true, optimize: { watr: false } })
   const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
-  if (!onKernel()) ok(/\$__map_has\b/.test(probe), 'expected __map_has dispatch under instanceof Map refinement')  // self-host kernel codegen differs; in-process leg owns the shape check
+  if (!onKernel()) ok(/\$__map_has\b/.test(probe), 'expected __map_has dispatch under instanceof Map refinement')  // self-compile kernel codegen differs; in-process leg owns the shape check
   if (!onKernel()) ok(!/\$__set_has\b/.test(probe), 'should not fall back to default __set_has')
 })
 
@@ -1477,7 +1477,7 @@ test('extractRefinements: instanceof Set → __set_has dispatch (no Map path)', 
   `, { wat: true, jzify: true, optimize: { watr: false } })
   const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
   ok(/\$__set_has\b/.test(probe), 'expected __set_has under instanceof Set refinement')
-  if (!onKernel()) ok(!/\$__map_has\b/.test(probe), 'should not also pull __map_has path')  // self-host dispatch differs; in-process leg owns the shape check
+  if (!onKernel()) ok(!/\$__map_has\b/.test(probe), 'should not also pull __map_has path')  // self-compile dispatch differs; in-process leg owns the shape check
 })
 
 test('extractRefinements: instanceof Float64Array → __typed_idx dispatch', () => {
@@ -2254,9 +2254,9 @@ test('convergence caps: 150-deep self-referential schema domino compiles (domain
 // `parse` a local closure declared earlier in the SAME enclosing function)
 // through this exact derivation, so the ENCLOSING function's own valResult
 // sees through the call too. It round-tripped correctly native but diverged
-// self-hosted (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was
+// self-compiled (JZ_TEST_TARGET=jz.wasm) specifically when a typeof guard was
 // involved — reproduced identically across two independent implementations,
-// so left OUT rather than shipped uncertain (self-hosting correctness is
+// so left OUT rather than shipped uncertain (self-compiling correctness is
 // load-bearing here — see narrow.js's narrowValResults doc for the trail).
 // `return parse(v)` as a function's OWN tail therefore still fails open
 // (unproven, same as any not-yet-provable callee) — pinned below.
@@ -2268,7 +2268,7 @@ test('closure return-kind: direct-dispatched closure call skips __to_num at the 
   // param) with an unconditional fallthrough of the same kind. Consumed at an
   // ARITHMETIC call site (not the enclosing function's own return tail — see
   // the module note above) — the case ctx.closure.valResult actually covers,
-  // verified both native and self-hosted (JZ_TEST_TARGET=jz.wasm) before landing.
+  // verified both native and self-compiled (JZ_TEST_TARGET=jz.wasm) before landing.
   const src = `
     export let f = (v) => {
       let parse = (x) => {
@@ -2343,7 +2343,7 @@ const soleKind = s => s === undefined ? undefined : (s.size === 1 ? [...s][0] : 
 // `ctx.*` fact directly (`ctx.scope.globalReps`, `ctx.types.nameEscapes`,
 // `ctx.scope.globalValTypes`) — pure white-box introspection of the NATIVE
 // compiler's internal state. Under JZ_TEST_TARGET=jz.wasm, compilation
-// delegates into the self-hosted wasm kernel; the host `ctx` singleton is
+// delegates into the self-compiled wasm kernel; the host `ctx` singleton is
 // structurally never populated (same documented class as test/invariants.js's
 // own onKernel() guard, and the 2026-08-03 "NEW FINDINGS" ledger entry that
 // first named these 18-ish files as leg-harness debt, not miscompiles — this

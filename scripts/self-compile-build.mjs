@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-/** Build and validate the jz self-host compiler (dist/jz.wasm). */
+/** Build and validate the jz self-compile compiler (dist/jz.wasm). */
 import { writeFileSync, mkdirSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { compile } from '../index.js'
-import { resolveSelfhostBuild } from './build-profile.mjs'
+import { resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT_DIR = resolve(ROOT, 'dist')
@@ -17,7 +17,7 @@ const OUT = resolve(OUT_DIR, 'jz.wasm')
 //
 // Graph resolution + CARRIER_BOX injection + region-arena gate + compact
 // compiler-runtime collection layout: shared with build-dist.mjs via
-// resolveSelfhostBuild (architecture re-audit item 2,
+// resolveSelfCompileBuild (architecture re-audit item 2,
 // .work/todo.md) — this entry point used to do NEITHER (JZ_CARRIER_BOX=0 was
 // silently a no-op here, and a region-live self.js built through this script
 // would carry build-dist.mjs's inlinePtrOffsetFast hazard ungated). Both
@@ -27,11 +27,11 @@ const t0 = Date.now()
 // an infinite loop on its own code; root cause was `sourceInline` dropping a statement-
 // position callee's side-effecting return expression — the parser's `seek = n => idx = n`
 // stopped advancing `idx`, looping comment-skip forever. Fixed in src/compile/plan/inline.js.)
-// -O3 is now the measured self-host profile: internal lifted helpers can dissolve
+// -O3 is now the measured self-compile profile: internal lifted helpers can dissolve
 // through inlineOnce and speed-tier loop shaping keeps the warm compiler clear of
 // V8 (0.952× vs O2's load-sensitive ~0.99–1.02× on the pinned corpus). Dist size
 // is irrelevant for this unpublished compiler artifact. Override for diagnosis.
-const SELF_OPT = process.env.JZ_SELFHOST_OPT ?? '3'
+const SELF_OPT = process.env.JZ_SELF_COMPILE_OPT ?? '3'
 const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
 const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
 const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)
@@ -45,19 +45,19 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // kernel bytes, irrelevant for the compiler artifact). No special config needed.
 // Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
 // watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
-// time and ships as pure data; __start is deleted. JZ_SELFHOST_SNAPSHOT=0 opts out.
+// time and ships as pure data; __start is deleted. JZ_SELF_COMPILE_SNAPSHOT=0 opts out.
 // watrGuard:false — skip watr's size-revert guard (two full encodes of the
 // 6.6MB kernel ≈ 12s of the build, measured by CPU profile: instrSize/
 // localidx/codeItemSize self-time). The kernel is a controlled artifact
 // whose size test/perf pins track; the guard's never-inflate policing is
 // redundant here. No-op until watr >5.2.3 lands the option.
-const profile = resolveSelfhostBuild({
+const profile = resolveSelfCompileBuild({
   optimize: selfOptLevel,
-  snapshot: !/^(0|false|no)$/i.test(process.env.JZ_SELFHOST_SNAPSHOT || '1'),
+  snapshot: !/^(0|false|no)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '1'),
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
-console.log('resolved self-host graph…', Object.keys(profile.graph.modules).length, 'modules')
+console.log('resolved self-compile graph…', Object.keys(profile.graph.modules).length, 'modules')
 const wasm = compile(profile.graph.code, {
   modules: profile.graph.modules,
   memory: profile.memory,

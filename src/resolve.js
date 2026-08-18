@@ -22,7 +22,7 @@ import { execFileSync } from 'child_process'
 // `(?:import|export)\s+[^'"]*?['"]…` matched any post-keyword string because
 // `[^'"]` spans newlines, so `export const X = [⏎ 'lit'` was read as `export …
 // 'lit'` — bundling then rewrote the bare string literal `'lit'` to a module path.
-// (Self-host fallout: `PASS_NAMES = ['watr', …]` had `'watr'` rewritten to
+// (Self-compile fallout: `PASS_NAMES = ['watr', …]` had `'watr'` rewritten to
 // `…/node_modules/watr/watr.js`, corrupting every `'watr'` constant — and so the
 // kernel's whole optimize config, since `cfg.watr` then read that path.)
 const importRe = /^\s*(?:import\b[^'"]*?\bfrom\s*|import\s+|export\b[^'"]*?\bfrom\s*)['"]([^'"]+)['"]/gm

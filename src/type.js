@@ -568,7 +568,7 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   // access (potentially post-increment, wider extent) wins the seen-set
   if (condRest != null) { forcePre = true; scan(condRest); forcePre = false }
   // typeof-process guard, not globalThis.process — a bare `globalThis` read
-  // compiles to an env.globalThis import in the self-host build; typeof folds dead
+  // compiles to an env.globalThis import in the self-compile build; typeof folds dead
   if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
   return cands.length
     ? { iv, ivKind: exprType(iv, locals) === 'i32' ? 'i32' : 'f64', startC, bump, bound, bKind, incl, stepBy, cands }
@@ -1967,7 +1967,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       if (B && !activeFacts.has(name)) { activeFacts.set(name, [0, B[1] - 1]); popped.push(name) }
     }
     const facts = n._rangeFacts
-    n._rangeFacts = null   // re-entry brake (the self-host subset has no delete)
+    n._rangeFacts = null   // re-entry brake (the self-compile subset has no delete)
     visit(n)
     n._rangeFacts = facts
     for (const name of popped) activeFacts.delete(name)

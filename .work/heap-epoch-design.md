@@ -259,7 +259,7 @@ separate, later, audited item made it the source of a real decision.
 
 - **No wall-clock, no `Date.now`.** The epoch is a plain integer counter
   (`epoch.get(sid)+1`, same shape as `pf.gen++`, `program-facts.js:170`) —
-  never derived from host time. The self-hosted kernel compiles itself
+  never derived from host time. The self-compiled kernel compiles itself
   without a live WASI clock during bootstrap (`module/timer.js`'s
   `wasi_snapshot_preview1` syscalls are unavailable at that point); an
   epoch that depended on wall time could not exist inside the kernel's own

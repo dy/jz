@@ -1,5 +1,5 @@
 /**
- * Native-vs-kernel WAT byte identity. The self-host kernel runs the SAME
+ * Native-vs-kernel WAT byte identity. The self-compile kernel runs the SAME
  * pipeline as index.js — since both consume the one final-optimizer tail
  * (src/optimize/watr-tail.js), identical source at the same tier must print
  * identical WAT. A byte diff here means the pipelines drifted again (the
@@ -28,7 +28,7 @@ export const CORPUS = {
   // fold ordering (0.1+0.2-0.3 bit pattern) and pure-Math folding at O0.
   fold: `export let f = () => 0.1 + 0.2 - 0.3`,
   mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
-  // Self-host miscompile #4 (audit re-hunt, 2026-07-30): a helper whose return
+  // Self-compile miscompile #4 (audit re-hunt, 2026-07-30): a helper whose return
   // tails mix a NUMBER with a bare `false` literal, tested via `=== false` /
   // `!== false` at the call site — module/typedarray.js's `isConst` is this
   // shape (SIMD-pattern-detection: `typeof node === 'number' ? node : …
@@ -36,7 +36,7 @@ export const CORPUS = {
   // Compiling THIS SOURCE (not running it) is what exposed the bug: native
   // jz never runs typedarray.js's own JS through jz's compiler, only the
   // kernel build does (dist/jz.wasm = jz compiling its own source) — so a
-  // codegen defect in this exact shape stayed invisible until self-hosted.
+  // codegen defect in this exact shape stayed invisible until self-compiled.
   // Root cause: the boolean literal's cheap i32 0/1 representation (by
   // design — branch/arithmetic position) only gets boxed into a real f64
   // TRUE/FALSE atom at a handful of explicit escape sites; a NUMBER-mixed
@@ -52,12 +52,12 @@ export const CORPUS = {
   // ctx.func.mixedAtomReturn: a function with >= 2 syntactic return
   // statements that isn't proven uniformly BOOL now boxes any individually-
   // BOOL return tail to its TRUE_NAN/FALSE_NAN atom) — `isConst` was reverted
-  // back to overloading `false` as ITS OWN generality test: the self-hosted
+  // back to overloading `false` as ITS OWN generality test: the self-compiled
   // kernel now compiles this exact mixed-return shape, in the compiler's own
   // source, soundly.
   boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
 export let f = (s) => g(s) === false`,
-  // Self-host miscompile #5 (audit re-hunt, 2026-07-30): composing two
+  // Self-compile miscompile #5 (audit re-hunt, 2026-07-30): composing two
   // typed-array constructors — `new Int32Array(new Float64Array([x]))` —
   // nests two instances of the SAME `new.${name}` closure template (module/
   // typedarray.js's `for (const [name, elemType] of Object.entries(...))`
@@ -66,7 +66,7 @@ export let f = (s) => g(s) === false`,
   // `copyFromTyped(src)`, which itself closes over `elemType`/`aux`/`stride`/
   // `name` from the SAME loop — a nested emit() call between a closure's
   // capture and its later re-read is the ledger's "closure-capture-after-
-  // nested-emit" self-host class (.work/todo.md 2026-07-23, TYPED-INDEX
+  // nested-emit" self-compile class (.work/todo.md 2026-07-23, TYPED-INDEX
   // KERNEL MISCOMPILE): once compiled by the kernel, the outer closure's
   // read of elemType AFTER the nested call observed the INNER (Float64Array,
   // elemType=7) iteration's value instead of its own (Int32Array, elemType=4)
@@ -119,13 +119,13 @@ export let f = (s) => g(s) === false`,
 // compiled output depended on the COMPILER HOST, a determinism violation.
 // Fix: pre-eval.js's Rational layer now runs on bignum.js's u32-limb
 // arithmetic (plain JS number arrays — no width ceiling, no native BigInt),
-// so it folds bit-identically whether this code runs natively or self-hosted
+// so it folds bit-identically whether this code runs natively or self-compiled
 // in-kernel; HOST_PROFILE.wideBigint's only two readers (this gate and
 // emitNeg's literal fallback) are both gone, and the flag was removed from
 // ctx.js. mfold (integer Math fold) was already byte-identical (graduated
 // 2026-07-25 the same day: that divergence was measured against a STALE
 // dist whose build had crashed — pre-eval.js used computed Math members,
-// outside the self-host subset; explicit dispatch tables fixed the build).
+// outside the self-compile subset; explicit dispatch tables fixed the build).
 //
 // dict|2 + dict|3 briefly reopened, then re-closed, while landing audit-#10
 // (2026-08-04, kind-specific nullish-receiver TypeError checks). An early
@@ -133,7 +133,7 @@ export let f = (s) => g(s) === false`,
 // fired for dict's s.length and, as a side effect, minted dict's first-ever
 // Error schema -- which activated a previously-dead schema-checking arm in
 // the shared stdlib helper $__dyn_get_t_h (module/collection.js), whose own
-// WAT folds one truthiness check differently native vs self-hosted
+// WAT folds one truthiness check differently native vs self-compiled
 // (confirmed PRE-EXISTING, not introduced by this task: reproduced
 // identically at clean HEAD 1d083ba9 via a disposable worktree, forcing an
 // unrelated dead-code Error schema into the same dict source). Landed fix:

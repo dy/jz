@@ -62,7 +62,7 @@ if (!fast) legs.push((async () => {
   if (b.code !== 0) return [b, { name: 'kernel', code: -1 }, { name: 'self', code: -1 }]
   return [b, ...await Promise.all([
     run('kernel', ['test/index.js'], { JZ_TEST_TARGET: 'jz.wasm' }),
-    run('self', ['test/selfhost.js']),
+    run('self', ['test/self-compile.js']),
   ])]
 })())
 

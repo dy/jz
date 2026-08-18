@@ -15,18 +15,18 @@ bits, at a point where the static kind can't prove it" — for flows a
 real program *might* take. The census answers the empirical question that
 design could only estimate: across 130 real programs (bench + examples +
 three named real-input graphs), that existential case has zero incidence.
-The boxing/tag-dispatch cost is paid on every build — self-host warm-perf
+The boxing/tag-dispatch cost is paid on every build — self-compile warm-perf
 headroom is "already thin, ~1-3%" today (carrier-doc §7, `test/
-selfhost-perf.js` `WARM_CAP` 1.03×) — for a hazard the corpus never
+self-compile-perf.js` `WARM_CAP` 1.03×) — for a hazard the corpus never
 exercises. This is not "undo the carrier program": audit #12's own mandate
 (carrier-doc line 6-8) reads "Raw i64 may remain unboxed **only while
 statically proven**" — this design deletes the ELSE branch of that sentence
 (the machinery built to cover the *unproven* case) and turns "unproven"
 into a compile-time error instead of a runtime hazard-cover. The one place
 the unproven case is real (not hypothetical) is the compiler's own
-self-hosted source — §5 below measures it precisely and sequences around
+self-compiled source — §5 below measures it precisely and sequences around
 it; it is not covered by the census's 130/130 claim, which explicitly
-excludes the self-host kernel subject (feature-reach-census.md line 8).
+excludes the self-compile kernel subject (feature-reach-census.md line 8).
 
 ---
 
@@ -98,7 +98,7 @@ carrier program; still gated by `ctx.features.bigint`, `src/ctx.js:878`,
 
 **(B) New `PTR.BIGINT` boxed-tag carrier** (`CARRIER_BOX`, default ON since
 carrier-doc §34 — confirmed live: `scripts/build-profile.mjs:22`'s doc
-states the self-host builder's own default is
+states the self-compile builder's own default is
 `process.env.JZ_CARRIER_BOX !== '0'`, matching `src/ctx.js:1070`):
 - `layout.js` `PTR.BIGINT = 5` (`:33`), `ptrBoxPrefixBigInt` (`:199`).
 - `src/ir.js` `boxBigInt`/`unboxBigInt`/`maybeUnboxBigInt`/
@@ -169,7 +169,7 @@ states the self-host builder's own default is
 | 17 | `test/data.js` | audit-#11 P0-1 divergence-class test | ~20 lines (see §7 — deleted, not converted) |
 | 18 | `test/dyn-keys.js` | Slice-5 BigInt-materialization + mixed-Map negative-control tests | ~40 lines (converted to expect-error, see §7) |
 
-**Table A total: ~1,380 lines of source + tests**, before the self-host
+**Table A total: ~1,380 lines of source + tests**, before the self-compile
 kernel-source rewrite (§5) or Table B's partial edits.
 
 ### Table B — partial edits (BigInt arm deletes; the file's other-kind machinery stays)
@@ -244,9 +244,9 @@ not created or worsened by deleting the boxed carrier.
 
 ---
 
-## 5. Self-hosting interaction — the load-bearing risk, confirmed live
+## 5. Self-compiling interaction — the load-bearing risk, confirmed live
 
-**The self-hosted compiler source itself uses real BigInt syntax.** 21
+**The self-compiled compiler source itself uses real BigInt syntax.** 21
 genuine files (of 25 raw `grep -lE '[0-9]n\b|BigInt\('` matches; 4 false
 positives per the historical 84-site scrub — `bignum.js`, `compile/
 index.js`, `prepare/index.js`, `snapshot.js` — confirmed still false
@@ -259,9 +259,9 @@ own `i64Hex`/`ptrBits` helper family, `src/wat/assemble.js`, `src/kind.js`,
 graph, so this is not incidental — it is `jz` compiling BigInt-using code
 about itself.
 
-**Today's standard self-host build already relies on the boxed carrier to
+**Today's standard self-compile build already relies on the boxed carrier to
 succeed.** A live probe (carrier-doc §1, re-verified this session against
-the same mechanism) against the current 149-module self-host graph found
+the same mechanism) against the current 149-module self-compile graph found
 57 real BIGINT-value erasure flows; the fixpoint resolves 46 of them fully
 raw, but **11 sites settle `bigintBoxed=true`**: 10 one-time module-init
 `const` bindings (`m113_assemble`'s `NAN_PREFIX`/`TAG_SHIFT_BIG`/
@@ -269,8 +269,8 @@ raw, but **11 sites settle `bigintBoxed=true`**: 10 one-time module-init
 `F64_SIGN`/`F64_NAN`/`F64_QUIET`, plus one `bif176_4`) and 1 param
 (`m61_layout$i64Hex`'s `bits` — called from ~9 sites, no single call site
 provably uniform). **This is not hypothetical:** `scripts/build-
-profile.mjs`'s `resolveSelfhostBuild` (the shared config resolver used by
-both `build-dist.mjs` and `selfhost-build.mjs`) defaults `carrierBox` to
+profile.mjs`'s `resolveSelfCompileBuild` (the shared config resolver used by
+both `build-dist.mjs` and `self-compile-build.mjs`) defaults `carrierBox` to
 `process.env.JZ_CARRIER_BOX !== '0'` — i.e. **ON** for the standard
 `dist/jz.wasm` build — so these 11 sites go through the real boxed carrier
 in the artifact that actually ships today.
@@ -281,12 +281,12 @@ sites are addressed does not merely regress a benchmark — it makes
 becomes exactly the "call-arg"/"collection" flow-class error §4 defines).
 This falls entirely outside the census's 130/130 byte-identity guarantee:
 `feature-reach-census.md`'s own scope line explicitly excludes "the
-self-host kernel build `bench/jz/jz.js` = `scripts/self.js` subject" (line
-8) — self-hosting is the one place in this repository that legitimately,
+self-compile kernel build `bench/jz/jz.js` = `scripts/self.js` subject" (line
+8) — self-compiling is the one place in this repository that legitimately,
 currently, exercises BigInt, and it is not covered by "0/130 reach."
 
 **Required precondition, its own migration slice, before any deletion
-slice lands:** rewrite the 11 sites in the self-hosted source so the
+slice lands:** rewrite the 11 sites in the self-compiled source so the
 fixpoint resolves them raw without the boxed carrier's help. Two concrete
 paths, both already named as plausible by carrier-doc's own measurement
 (line 74, "plausible `src/snapshot.js` init-snapshot candidates — the
@@ -305,16 +305,16 @@ build already snapshots module-init state ahead of `_start`"):
   site) — a source-level decision for whoever executes this slice, out of
   this design's authority to pre-select.
 
-**Gate for that slice, before it's considered done:** self-host build
-succeeds (`scripts/selfhost-build.mjs`/`scripts/build-dist.mjs`), `dist/
+**Gate for that slice, before it's considered done:** self-compile build
+succeeds (`scripts/self-compile-build.mjs`/`scripts/build-dist.mjs`), `dist/
 jz.wasm` SHA-256 converges across repeat builds, and kernel-parity/
 kernel-oracle batteries stay green — measured with the OLD boxed carrier
 still present (so the rewrite's own correctness is isolated from the
 retirement), THEN re-measured with the boxed carrier's deletion slice
 applied on top. If the rewrite cannot get all 11 sites to a raw-provable
 state, this retirement cannot proceed to the deletion slices without
-either accepting a hand-maintained self-host-only exception (rejected,
-§10) or leaving self-hosting broken (rejected, blocks the project's own
+either accepting a hand-maintained self-compile-only exception (rejected,
+§10) or leaving self-compiling broken (rejected, blocks the project's own
 build).
 
 ---
@@ -417,7 +417,7 @@ not narrowed. The file's OTHER BigInt pins (return-boundary roundtrip,
 **stay unchanged** — pure raw-i64 arithmetic/export, unaffected by this
 retirement.
 
-**test/selfhost-perf.js**: no direct BigInt hits; the `WARM_CAP` (1.03×)
+**test/self-compile-perf.js**: no direct BigInt hits; the `WARM_CAP` (1.03×)
 gate must be **re-measured**, not assumed, at the deletion slice — removing
 box/unbox/tag-dispatch codegen should only ever reduce warm cost, but
 §5's kernel-source rewrite (landing first) touches the same 11 sites and
@@ -433,7 +433,7 @@ zero.
 | Table A clean deletions (source) | ~1,160 | §3 Table A items 1-15, summed |
 | Table A clean deletions (tests) | ~220 | §3 Table A items 16-18 |
 | Table B partial edits (net delta) | ~60-80 | §3 Table B, arm-sized deltas, not whole functions |
-| Self-host kernel-source rewrite (§5) | net ~0, possibly slightly negative (new snapshot-fold code) | not a deletion — a precondition; sized separately, not part of this payoff |
+| Self-compile kernel-source rewrite (§5) | net ~0, possibly slightly negative (new snapshot-fold code) | not a deletion — a precondition; sized separately, not part of this payoff |
 | **Total source + test** | **~1,440-1,460 lines** | sum of the above, excluding §5 |
 
 **Schema-fact slots freed**: 3 (`ValueRep.bigintBoxed`; `SlotFact.
@@ -462,7 +462,7 @@ documents). **For the 130-program census corpus specifically, none of
 these arms currently emit any bytes at all** (0/130 BigInt reach) — so the
 `.wasm` size delta for every real corpus program is **exactly zero
 bytes**, before and after. The delta is real only for a BigInt-constructing
-program (which no corpus program is) and for the self-hosted kernel itself
+program (which no corpus program is) and for the self-compiled kernel itself
 (§5) — where the delta is a handful of arms at the ~11 rewritten call
 sites, not a broad shrink.
 
@@ -475,26 +475,26 @@ Per this repo's own convention (`.work/lattice-design.md §5`,
 independently, each states its own warm/byte-identity gate. **The 130-
 program census corpus (bench + examples + jessie/watr/jzify-entry) must
 stay byte-identical at every slice — it never constructs a BigInt, so no
-slice below should ever change one byte of its output.** The self-hosted
+slice below should ever change one byte of its output.** The self-compiled
 kernel (`scripts/self.js`) is the sole exception requiring its own gate,
 called out per-slice.
 
-**Slice 0 — self-host kernel-source rewrite (§5), lands FIRST, before
+**Slice 0 — self-compile kernel-source rewrite (§5), lands FIRST, before
 anything below.** Rewrite the 11 `bigintBoxed=true` sites
 (`m113_assemble`/`m50_encode`'s module-init consts via snapshot-fold;
 `m61_layout$i64Hex`'s param via specialization or documented duplication)
 so the fixpoint resolves all 57 real erasure flows fully raw. **Gate**:
-self-host build succeeds, `dist/jz.wasm` SHA-256 converges across repeat
+self-compile build succeeds, `dist/jz.wasm` SHA-256 converges across repeat
 builds, kernel-parity/kernel-oracle green — all measured with the OLD
 boxed carrier still present (isolates the rewrite's own correctness).
-Byte-identity: the 130-corpus is untouched by a self-host-only source
+Byte-identity: the 130-corpus is untouched by a self-compile-only source
 change — confirm anyway, zero-risk check.
 
 **Slice 1 — flip consequence, not mechanism: `bigintBoxed=true` verdicts
 become compile errors instead of box insertions.** Repurpose
 `markBigintSink`/`bigintBoxedVerdict` (their WALK stays identical) to
 throw the named diagnostics from §4's table instead of setting
-`bigintBoxed=true`/inserting `boxBigInt`. **Gate**: self-host kernel
+`bigintBoxed=true`/inserting `boxBigInt`. **Gate**: self-compile kernel
 (post-Slice-0) compiles clean with zero diagnostics fired (proves Slice 0
 was complete); 130-corpus byte-identical (proves the walk itself changes
 nothing for a program that was always raw); every native test in
@@ -506,7 +506,7 @@ items 3, 7-14 — `boxBigInt`/`unboxBigInt`/`isProvenBoxedBigint`/etc.,
 `slotBigintBoxedAt`/`slotBigintProvenAt`, the sentinel-lane/legacy-
 magnitude apparatus, `ctx.features.bigint`). Nothing calls any of it after
 Slice 1 (verified by grep: zero remaining call sites, not just zero
-*exercised* call sites). **Gate**: self-host build succeeds unchanged
+*exercised* call sites). **Gate**: self-compile build succeeds unchanged
 (Slice 0 already made it not need this machinery); 130-corpus byte-
 identical; full native + test262 batteries green with the counts in §7
 unchanged.
@@ -553,7 +553,7 @@ safe).
   documented wrongness (test/data.js's now-deleted audit-#11 P0-1 class).
   A partial retirement keeps the correctness hazard AND most of the cost.
 
-- **Keep `bigintBoxed`/`PTR.BIGINT` alive, scoped ONLY to the self-hosted
+- **Keep `bigintBoxed`/`PTR.BIGINT` alive, scoped ONLY to the self-compiled
   kernel's own compile, via a hidden always-on internal flag.** Rejected:
   this is a hand-maintained exception that only the compiler's maintainers
   would remember exists, contradicts "one raw-i64 contract, one diagnostic
@@ -581,10 +581,10 @@ safe).
   error) — the distinction is "tests a deleted primitive directly" (delete)
   vs. "tests a source shape whose outcome changes" (convert).
 
-- **Sequence the self-host rewrite (Slice 0) AFTER the deletion slices,
-  accepting a temporarily-broken self-host build.** Rejected: this
+- **Sequence the self-compile rewrite (Slice 0) AFTER the deletion slices,
+  accepting a temporarily-broken self-compile build.** Rejected: this
   repository's own convention (every carrier-program slice in `.work/
-  carrier-representation-design.md §7` gates on self-host build success at
-  every step) treats a broken self-host build as a stop-ship condition,
+  carrier-representation-design.md §7` gates on self-compile build success at
+  every step) treats a broken self-compile build as a stop-ship condition,
   not a temporary state to tolerate mid-migration — Slice 0 must land
   first, verified independently, exactly as sequenced in §9.

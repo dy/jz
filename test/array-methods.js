@@ -531,7 +531,7 @@ test('Regression: array literal spread copies external typed array values', () =
 // ELEMENTS per-char (via __str_idx), but cached the source LENGTH with __len — array length,
 // which is 0 for a string — so `[...str]` silently produced an empty array. Length now uses
 // __str_len for a known string and a runtime STRING?__str_len:__len dispatch for an unknown
-// source (a fn param, the compiler's own `[...key]`). This also closed the json self-host
+// source (a fn param, the compiler's own `[...key]`). This also closed the json self-compile
 // byte-DIFF: the kernel's shape parser used `[...key]` to emit per-key char checks, so it
 // dropped every key name (kernel built smaller, still correct via positional parsing) while
 // jz.js (V8 spread) kept them — now both match.
@@ -549,7 +549,7 @@ test('array spread of a string yields its characters (length, indexing, map)', (
 })
 
 test('Regression: imported function returning array with props keeps numeric indexing', () => {
-  if (onKernel()) return  // kernel: host {modules} import resolution doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {modules} import resolution doesn't reach the single-source self-compile
   const { exports } = jz(`
     import { make } from './m.js'
     export let test = () => {
@@ -1198,7 +1198,7 @@ test('every: typed-array field of heap-returned object', () => {
 // Float64Array(n)` on the stftBatch state object, then `state.prev.set(phase)`
 // each frame — WASM output silently diverged from JS).
 // The emit-side fix for this shape (see the todo-batch session) miscompiles the
-// SELF-HOST kernel (tokenizer loses `let` — bisected to that emit.js hunk alone;
+// SELF-COMPILE kernel (tokenizer loses `let` — bisected to that emit.js hunk alone;
 // preserved in the session scratchpad as keep-emit.js). Needs the in-kernel
 // discipline pass before re-landing. Flip `test.todo` → `test` when fixed.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {

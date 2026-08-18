@@ -217,9 +217,9 @@ const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
 // knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
 // arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
 // '__durable_arr_snap' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's
-// body always contains a durableArrSnapIR() call, but self-host's realize/regex-scan
+// body always contains a durableArrSnapIR() call, but self-compile's realize/regex-scan
 // auto-deps path silently drops a helper reachable only that way (the exact
-// "Unknown func $__clamp_idx" shape documented in test/selfhost-includes.js) — that
+// "Unknown func $__clamp_idx" shape documented in test/self-compile-includes.js) — that
 // test would fail (and the kernel would trap) without this line.
 const arrayGrowDeps = (knownArray = false) => () => [
   ...(knownArray ? ['__ptr_offset_fwd'] : ['__ptr_type', '__ptr_offset']),
@@ -306,16 +306,16 @@ export default (ctx) => {
     // and on all five below — see arrayGrowDeps's comment: each now calls
     // durableArrSnapIR directly in its OWN body (the whole-array element+header
     // heal, replacing the old header-only durableLenLogIR call at these same
-    // sites), which self-host's auto-dep scan cannot be relied on to discover
+    // sites), which self-compile's auto-dep scan cannot be relied on to discover
     // just because a callee (__arr_grow*) already depends on the name transitively.
-    __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
+    __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
-    __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-host auto-scan can't be relied on — see test/selfhost-includes.js)
+    __arr_flat: ['__ptr_offset', '__len', '__ptr_type', '__alloc_hdr', '__mkptr'],  // body-calls __alloc_hdr; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __typed_idx: () => ctx.linkDemand.typedarray || ctx.linkDemand.external
       ? ['__len', '__ptr_offset_fwd']
       : ['__len', '__ptr_offset', '__ptr_offset_fwd'],
@@ -630,7 +630,7 @@ export default (ctx) => {
   ctx.core.stdlib['__arr_grow'] = () => arrGrow('__arr_grow', true)
   ctx.core.stdlib['__arr_grow_known'] = () => arrGrow('__arr_grow_known', false)
 
-  // Hot for arr[i] = val (~18M calls in watr self-host). Compute base via __ptr_offset
+  // Hot for arr[i] = val (~18M calls in watr self-compile). Compute base via __ptr_offset
   // once and read len from the inline header (i32.load base-8) — avoids __len's separate
   // forwarding follow. On the rare grow path the base is recomputed after relocation.
   // durableArrSnapIR fires ONCE right after `base` resolves, before ANY write this call
@@ -1684,7 +1684,7 @@ export default (ctx) => {
   // left-to-right (spilled to temps in source order) but INSERT last-to-first
   // through the single-value helper so the block lands in argument order; the
   // receiver is evaluated ONCE. (The old emitter silently DROPPED every argument
-  // past the first — in the self-host kernel that broke assemble.js's own
+  // past the first — in the self-compile kernel that broke assemble.js's own
   // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
   // divergence.)
   ctx.core.emit['.unshift'] = (arr, ...rawVals) => {

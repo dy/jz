@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Self-host compile-throughput benchmark: jz.wasm vs jz.js compiling the bench corpus.
+// Self-compile compile-throughput benchmark: jz.wasm vs jz.js compiling the bench corpus.
 //
-// The apples-to-apples question behind self-hosting: when the SAME compiler source
+// The apples-to-apples question behind self-compiling: when the SAME compiler source
 // (scripts/self.js — parse → jzify → prepare → compile → watr-encode) runs as wasm
 // (dist/jz.wasm, jz compiled by jz) vs as plain JS in V8, which compiles real programs
 // faster? Both rows run in the same node/V8; the only variable is wasm vs JS-source.
@@ -11,14 +11,14 @@
 // (matches bench.mjs's benchSource()). Output bytes are checksummed and the wasm/JS
 // results compared, so the timing run doubles as a determinism + parity gate.
 //
-// Methodology note: the self-host kernel bump-allocates per compile and its cross-
+// Methodology note: the self-compile kernel bump-allocates per compile and its cross-
 // compile caches assume an immortal arena (see DESIGN / _clear), so we cannot reset and
 // reuse one instance across the corpus. We instantiate a FRESH wasm instance per program
 // (instantiation excluded from the timed region) and take the min of N warm runs — the
 // steady-state per-compile cost, the fair comparison to the JS compiler's warmed path.
 //
-// Run: node scripts/bench-selfhost.mjs            (level 0, the default)
-//      JZ_LEVEL=2 node scripts/bench-selfhost.mjs (once the level-2 self-host path is sound)
+// Run: node scripts/bench-self-compile.mjs            (level 0, the default)
+//      JZ_LEVEL=2 node scripts/bench-self-compile.mjs (once the level-2 self-compile path is sound)
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
@@ -73,12 +73,12 @@ const sourceFor = (name) => {
 
 const ensureWasm = () => {
   if (existsSync(WASM) && !PROFILE_HELPERS) return
-  console.log(PROFILE_HELPERS ? 'building instrumented self-host…' : 'dist/jz.wasm missing — building self-host…')
+  console.log(PROFILE_HELPERS ? 'building instrumented self-compile…' : 'dist/jz.wasm missing — building self-compile…')
   const env = PROFILE_HELPERS
     ? { ...process.env, JZ_HELPER_COUNTERS: '1', ...(COUNT_SITES ? { JZ_HELPER_SITES: HELPER_SITE_FILTER } : {}) }
     : process.env
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'selfhost-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
-  if (r.status !== 0) throw new Error(`selfhost build failed (exit ${r.status})`)
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts', 'self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', env, timeout: 600_000 })
+  if (r.status !== 0) throw new Error(`self-compile build failed (exit ${r.status})`)
 }
 
 const fnv = (bytes) => { let h = 0x811c9dc5 | 0; for (let i = 0; i < bytes.length; i++) h = Math.imul(h ^ bytes[i], 0x01000193); return h >>> 0 }
@@ -109,7 +109,7 @@ const timeMinWasm = (src) => {
 // N timed runs. String marshaling (fresh source pointer per run) stays outside the
 // timed region, same as timeMinWasm — the only difference is instantiation is
 // hoisted out of the loop too, removing the ~4% first-touch-page-fault tax fresh-
-// instance timing pays inside the timed region (see .work/selfhost-perf-groundtruth.md (git history)).
+// instance timing pays inside the timed region (see .work/self-compile-perf-groundtruth.md (git history)).
 // Returns null if the case traps mid-run (caller records it as skipped rather than
 // reporting a bogus/partial time).
 const timeMinWasmWarm = (src) => {
@@ -169,7 +169,7 @@ ensureWasm()
 const wasmBytes = readFileSync(WASM)
 
 const profileLabel = COUNT_SITES ? `helper counters + callsites(${HELPER_SITE_FILTER}) ON` : COUNT_HELPERS ? 'helper counters ON' : ''
-console.log(`self-host compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${profileLabel ? ` (${profileLabel}; timings are instrumented)` : ''}${WARM_INSTANCE ? ' [JZ_BENCH_WARM: one instance per case, _clear() between runs]' : ''}\n`)
+console.log(`self-compile compile throughput — corpus × ${CASES.length}, optimize level ${LEVEL}${profileLabel ? ` (${profileLabel}; timings are instrumented)` : ''}${WARM_INSTANCE ? ' [JZ_BENCH_WARM: one instance per case, _clear() between runs]' : ''}\n`)
 console.log('case          js(ms)  wasm(ms)  ratio   parity')
 console.log('─'.repeat(52))
 

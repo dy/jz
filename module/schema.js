@@ -143,7 +143,7 @@ export function initSchema(ctx) {
    *    4. Structural search finds the property at inconsistent offsets across schemas
    *  Case 4 is a real ambiguity — the caller must route to runtime dispatch.
    *
-   *  Named `slotOf`, not `find`: under self-host the compiler calls this as
+   *  Named `slotOf`, not `find`: under self-compile the compiler calls this as
    *  `ctx.schema.find(...)` on the statically-untyped `ctx.schema` receiver, and
    *  `find` collides with `Array.prototype.find` — the method-call dispatcher
    *  hijacks it into a bogus array `find` (predicate scan), returning null. Every
@@ -209,7 +209,7 @@ export function initSchema(ctx) {
    *  structural fallback which *requires* one). Returns `{sid, slot}` when
    *  `prop` names a field on exactly ONE registered schema anywhere in the
    *  program — the subscript dispatch-descriptor pattern (`d.op`/`d.l`/`d.word`)
-   *  and jz's own emit-table/IR-node reads under self-host both flow through a
+   *  and jz's own emit-table/IR-node reads under self-compile both flow through a
    *  parameter or array element the static analysis never pins to VAL.OBJECT,
    *  even though every value that ever reaches the read is, in practice, that
    *  one schema. Unlike `slotOf`, the caller MUST runtime-guard the read (a

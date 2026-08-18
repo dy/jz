@@ -1,7 +1,7 @@
 // === AST op tags — integer-tagged-union representation ===
 // internOps (prepare->compile boundary) converts array node[0] from op STRING to its
 // integer tag; the compile half then dispatches via integer-keyed (eventually array)
-// tables, removing the per-node string-hash lookup in the self-host kernel.
+// tables, removing the per-node string-hash lookup in the self-compile kernel.
 // OP: string -> int (1-based; 0 reserved => a missing tag is falsy). OPS: int -> string.
 export const OP = {
   "!": 1,
@@ -102,7 +102,7 @@ export const OP_COUNT = 92
 // Normalize an op tag to its string form for op-Set membership / switch checks,
 // so `SET.has(opStr(node[0]))` and `switch (opStr(op))` work whether node[0] is
 // still a string (intern off / non-interned op like ':') or an integer (intern
-// on). Self-host-safe: the typeof guard avoids indexing the OPS array by a string
+// on). Self-compile-safe: the typeof guard avoids indexing the OPS array by a string
 // (jz arrays trap on non-integer indices), and it never grows a Set.
 export const opStr = (op) => typeof op === "number" ? OPS[op] : op
 

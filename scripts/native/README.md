@@ -1,7 +1,7 @@
 # jz → native binary
 
 Compile a jz JavaScript source to a standalone native executable. The pipeline
-self-hosts watr's WAT compiler at the time of writing and serves as the
+self-compiles watr's WAT compiler at the time of writing and serves as the
 reference target for "how fast can a jz-produced wasm get if you really care."
 
 ```

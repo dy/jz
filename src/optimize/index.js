@@ -214,7 +214,7 @@ export function resolveOptimize(opt) {
   if (opt === false || opt === 0) return { ...ALL_OFF }
   if (opt === true || opt == null) return { ...LEVEL_PRESETS[2] }
   // String() the level key: LEVEL_PRESETS has integer-literal keys (0..3), and the
-  // self-host kernel's computed member access `obj[numVar]` misreads a numeric VARIABLE
+  // self-compile kernel's computed member access `obj[numVar]` misreads a numeric VARIABLE
   // index against an object (returns undefined — literal `obj[2]` is fine), so a bare
   // `LEVEL_PRESETS[opt]`/`[baseLevel]` would drop the level-2 default to ALL_ON and
   // (worse, via the partial result) leave `watr` unset — disabling watOptimize.
@@ -610,11 +610,11 @@ const SAFE_OFFSET_CALLS = new Set(['$__ptr_offset', '$__ptr_type', '$__ptr_aux',
 // operand width (i64.eq, f64.lt, i32.ge_s, …). `eq`/`ne` are sign-agnostic; the ordered
 // compares carry `_s`/`_u` for the integer types and none for f64. Used by resultType to
 // type a hoisted subtree by its root op. A Set membership test, NOT a regex
-// (`/^(eq|ne|lt|gt|le|ge)(_[su])?$/`): the regex mis-anchored under self-host −O2 — `nearest`
+// (`/^(eq|ne|lt|gt|le|ge)(_[su])?$/`): the regex mis-anchored under self-compile −O2 — `nearest`
 // (the f64.nearest mantissa, from Math.round) starts with `ne`, and the embedded −O2 build
 // matched it as a comparison → the LICM hoist local got typed i32, so `local.set $__li
 // (f64.nearest …)` emitted invalid wasm (f64 into i32) only in the kernel. Explicit string
-// membership is both self-host-robust and cheaper in this LICM-hot path.
+// membership is both self-compile-robust and cheaper in this LICM-hot path.
 const CMP_MANTISSA = new Set([
   'eqz', 'eq', 'ne', 'lt', 'gt', 'le', 'ge',
   'lt_s', 'lt_u', 'gt_s', 'gt_u', 'le_s', 'le_u', 'ge_s', 'ge_u',
@@ -2982,12 +2982,12 @@ function inferTypeFromContext(fn, gName, bodyStart) {
  *
  * Mutates `funcs` in place; writes new global decls via `addGlobal(name, constLiteral)`.
  */
-// `String(number)` keeps only ~9 significant digits in the self-host kernel (jz's number
+// `String(number)` keeps only ~9 significant digits in the self-compile kernel (jz's number
 // formatter — see README "differences"). The old pool keyed constants by `n:${c[1]}` (a toString)
 // and emitted them via that same string, so in the kernel a constant both LOST precision
 // (0.041666666666666664 → 0x1.5555558325751p-5) and could MERGE with a distinct value sharing its
 // 9-digit prefix. Key by the exact 64 bits instead (a Float64Array/Uint32Array union — the
-// numHashLiteral pattern, which self-hosts; the sign bit distinguishes -0/+0 for free) and emit
+// numHashLiteral pattern, which self-compiles; the sign bit distinguishes -0/+0 for free) and emit
 // the original NUMBER, which `declGlobal` lowers to a binary `f64.const` (exact, no string).
 const _FCB = new Float64Array(1), _FCBu = new Uint32Array(_FCB.buffer)
 const f64BitsKey = (n) => { _FCB[0] = n; return `n:${_FCBu[0]}:${_FCBu[1]}` }
@@ -2997,7 +2997,7 @@ export function hoistConstantPool(funcs, addGlobal) {
   // Single walk: count occurrences AND record each f64.const site for direct rewrite.
   // Avoids a second full-AST traversal in the rewrite phase.
   const counts = new Map()
-  // NOTE: not `valueOf` — a local named like an Object method self-host-miscompiles (the
+  // NOTE: not `valueOf` — a local named like an Object method self-compile-miscompiles (the
   // kernel's dynamic dispatch confuses it). key → exact original c[1] (number, or source string).
   const exactVal = new Map()
   const sites = []  // { parent, idx, key }
@@ -3074,7 +3074,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   }
   // 4 is the measured break-even: a specialized helper (trampoline / inline i64.const
   // template) costs ~12 B to define and saves ~2–4 B per site, so 4 sites amortize it.
-  // Lower (3) net-inflates the watr self-host; 5 leaves 4-use combos on the table. The
+  // Lower (3) net-inflates the watr self-compile; 5 leaves 4-use combos on the table. The
   // threshold (20) is already optimal — its combos cluster far
   // above 20 (the ~2 k-site $__strBase relativization) with nothing in the 5–19 band.
   const MIN_USES = 4
@@ -3417,7 +3417,7 @@ export function foldStrDispatchF64(fn) {
  * Uint8Array / BigInt64Array (aux 4 / 1 / 23) all fall to the verbatim path. The global-
  * Float64Array path already lowers reads to f64.load, proving f64.load == the __to_num
  * read for f64 elements (bit-exact, incl. NaN). All helpers are nested function decls
- * (no ctx param) per the self-host discipline.
+ * (no ctx param) per the self-compile discipline.
  */
 export function unswitchTypedParamLoop(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
@@ -3896,7 +3896,7 @@ function foldV128Memargs(node) {
 /** Speed-tier: inline `$__ptr_offset`'s own loop-free body (mask+tag test, then
  *  followForwardingWat's bounds/sentinel check) at each surviving call site —
  *  the cold relocation-chase call ($__ptr_offset_fwd, the only loop) stays
- *  out-of-line. Trades bytes/site for the self-host kernel's dominant helper
+ *  out-of-line. Trades bytes/site for the self-compile kernel's dominant helper
  *  call by call count — every NaN-box deref is an out-of-line call, kept a
  *  real function by the forwarding branch.
  *
@@ -4790,7 +4790,7 @@ export function devirtSchemaReads(fn) {
   // ≥2 reads on the receiver: amortize into an entry-hoisted local. A single
   // read inlines the select at its site instead — an eager entry compute would
   // tax every call of a function whose lone read sits on a cold path (the
-  // self-host kernel's shape; measured 0.9% compile-time regression).
+  // self-compile kernel's shape; measured 0.9% compile-time regression).
   const sidRead = (stable) => {
     const objectKnown = recvAllObject.get(stable.name) === true
     if ((recvReads.get(stable.name) || 0) < 2) return sidExprFor(stable.bits, objectKnown)

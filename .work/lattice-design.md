@@ -1725,7 +1725,7 @@ silent un-hazarded miscompile opens per OQ2's own text) collides with "do
 not touch `kind.js`," the reconciliation: `hz.all` stays a REAL, PLAIN
 boolean field on the `hz` object (not deleted, not a getter/accessor — jz's
 own language subset has no getter/setter support, and this exact object
-literal is compiled through itself at self-host build time; a `get all()`
+literal is compiled through itself at self-compile build time; a `get all()`
 accessor was tried first and correctly REJECTED by jz's own compiler with
 "object getter/setter not supported," caught by the build gate before it
 could land), set at the SAME single site (`markPointsToAll`) that
@@ -1783,7 +1783,7 @@ vacuous pass.
   `a26a8f4cd955562e007e797d95ad6928aad09cbdfa453b95af76efb502b0b872`,
   `dist/interop.js` sha256
   `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`.
-  Self-hosting build (compiling jz's own source through itself, which the
+  Self-compiling build (compiling jz's own source through itself, which the
   getter-shim attempt broke) verified working with the final plain-field
   form.
 - Fuzz: `node test/fuzz.js --count=2000 --opt=0,3` (seeds 1..2000) and
@@ -1799,12 +1799,12 @@ vacuous pass.
   collapse," an unrelated, pre-existing, already-tracked wall per its own
   name and `research.md` citation — nothing to do with schema slot
   hazards) fails with a hard crash ("memory access out of bounds") on the
-  baseline's self-hosted kernel and with its normal documented-wrong
+  baseline's self-compiled kernel and with its normal documented-wrong
   tripwire assertions (no crash) on this tree's kernel — investigated
   directly (not assumed): reproduced on a FRESH, isolated baseline rebuild
   specifically to rule out environmental/concurrent-load corruption as the
   cause, and the crash reproduced identically — this is a genuine,
-  reproducible property of the PRE-slice-6 baseline's self-hosted kernel
+  reproducible property of the PRE-slice-6 baseline's self-compiled kernel
   build for this one already-broken, unrelated test, not an artifact of
   this session's concurrent execution and not a regression this slice
   introduced (this tree's kernel does NOT crash on it). Banked here in

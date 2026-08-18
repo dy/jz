@@ -496,7 +496,7 @@ export function inferSchemaId(expr, lookupMap) {
  *  See the fixpoint call-site context doc above for cx's field shape. */
 export function inferArrElemSchema(expr, cx) {
   // Hoist cx fields once per call: cx arrives through the fixpoint runner's
-  // INDIRECT dispatch (inferFn is a parameter), so the self-hosted kernel
+  // INDIRECT dispatch (inferFn is a parameter), so the self-compiled kernel
   // can't schema-prove it — every cx.field read is a generic dyn-get in the
   // hottest narrowSignatures loop. One read per field per call keeps the
   // named-context API without paying per-use.

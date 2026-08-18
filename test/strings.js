@@ -1036,7 +1036,7 @@ test('SSO invariant: String.fromCharCode multi-arg', () => {
 })
 test('SSO invariant: template literal short results (the $-name builder shape)', () => {
   // The kernel builds wasm identifiers via \`$\${name}\` — a leaked short heap
-  // string here broke the self-host ("Unknown global $add5").
+  // string here broke the self-compile ("Unknown global $add5").
   is(run('export let f = (s) => `$${s}` === "$a5" ? 1 : 0').f('a5'), 1)
   is(run('export let f = (s) => `x${s}y${s}` === "xa5ya5" ? 1 : 0').f('a5'), 1)
   is(run('export let f = (n) => `f${n}` === "f12" ? 1 : 0').f(12), 1)
@@ -1051,7 +1051,7 @@ test('SSO invariant: long/non-ASCII strings still content-compare (heap fallback
 // The compiler's hottest comparison (`node[0] === 'if'` AST-tag dispatch). When one
 // operand is statically a string, emit skips the generic __eq NaN-box dispatch and
 // inlines `i64.eq ? equal : (__is_str_key(u) ? __str_eq : ne)`. Behaviorally identical
-// to __eq (jz's ==/=== never coerce); the win is on the self-host kernel's own 5579 sites.
+// to __eq (jz's ==/=== never coerce); the win is on the self-compile kernel's own 5579 sites.
 test('str-eq spec: heap concat === SSO literal is true (the soundness case)', () => {
   // `"i"+"f"` allocates a HEAP "if" with different bits than the inline SSO literal —
   // a pure i64.eq would wrongly say not-equal; the __str_eq fallback content-compares.
@@ -1230,7 +1230,7 @@ test('static array fold: mutation before the fold site ends the fact', () => {
 })
 
 test('startsWith/endsWith position argument rejects loudly (was silently dropped)', () => {
-  // Compiled as position 0 before — silent wrong results (the self-host
+  // Compiled as position 0 before — silent wrong results (the self-compile
   // resolver classified nothing). Reject until an offset is threaded.
   throws(() => jz(`export let f = (s) => s.startsWith('cd', 2)`), /position argument not supported/)
   throws(() => jz(`export let f = (s) => s.endsWith('cd', 4)`), /position argument not supported/)

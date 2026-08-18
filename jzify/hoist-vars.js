@@ -16,7 +16,7 @@ import { JZ_BLOCK_OPS } from '../src/ast.js'
 // binding targets) instead of falling through to the plain-assignment path.
 // Native jzify happens to reconstruct byte-identical IR either way for this
 // shape (both the pattern-walk and the generic-transform fallback are no-ops
-// on a receiver-name + literal-index pair) — masking it there; the self-hosted
+// on a receiver-name + literal-index pair) — masking it there; the self-compiled
 // kernel exercises the (wrong) pattern-walk's own compiled path and diverges.
 export const isDestructurePat = p =>
   Array.isArray(p) && ((p[0] === '[]' && p.length !== 3) || p[0] === '{}' || (p[0] === '=' && isDestructurePat(p[1])))

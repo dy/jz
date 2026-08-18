@@ -207,7 +207,7 @@ campaign uses, and explicitly out of scope here. Stating this precisely
 rather than folding it into "reentrancy: fixed" matters because audit-B's
 stated goal was concurrent/nested compiles specifically — this design
 delivers airtight **sequential** reuse (the actual production shape:
-self-host's warm-instance recompiles, a bundler's watch-mode rebuilds) and
+self-compile's warm-instance recompiles, a bundler's watch-mode rebuilds) and
 removes 3 of 4 named concurrent blockers, not all 4.
 
 ## 3. MIGRATION SLICES
@@ -215,7 +215,7 @@ removes 3 of 4 named concurrent blockers, not all 4.
 Ordered lowest-risk first, same gate discipline as every landed slice in
 this campaign (bench-corpus byte-identity, full battery, kernel-parity/
 kernel-oracle ×N, `npm run build` ×2 SHA-match, `test/session-reentrancy.js`,
-self-host correctness). Each slice lands green independently; no slice
+self-compile correctness). Each slice lands green independently; no slice
 depends on a later one.
 
 **Slice A — formalize `CompileSession`, zero call-site change.**
@@ -254,8 +254,8 @@ reentrancy.js` extended with a NEW case — hold a session reference across a
 process, same shape as the existing probe) and assert the held reference's
 contents are unchanged (proves old-session isolation, the concrete
 reentrancy claim from §2.3 row 1/3). Risk: LOW-MODERATE — the `const`→`let`
-conversion is the one place a self-host subset check matters (verify no
-self-hosted code path relies on `ctx`'s specific object identity persisting
+conversion is the one place a self-compile subset check matters (verify no
+self-compiled code path relies on `ctx`'s specific object identity persisting
 across a `reset()` it doesn't expect, e.g. a captured closure over the old
 `ctx` reference taken before an in-process `reset()` — grep for `const ctx =`
 destructuring/aliasing patterns before landing, not assumed clean).
@@ -392,7 +392,7 @@ task's own decision point exists to stop" — this design is that stop.
 computes/wraps `ctx`'s subtrees on read). Rejected on the SAME grounds
 session-survey §4 already established for phase views and never
 re-litigated here: `src/ctx.js` is itself compiled through jz
-(`scripts/self.js` → `dist/jz.wasm`), and the self-hosted subset has **zero**
+(`scripts/self.js` → `dist/jz.wasm`), and the self-compiled subset has **zero**
 `Proxy` registrations anywhere in the stdlib and **zero** parser support for
 `get`/`set` accessor syntax (`AccessorProperty` returns zero hits in
 `src/parse.js`/`src/front.js`). A `CompileSession` implemented as anything

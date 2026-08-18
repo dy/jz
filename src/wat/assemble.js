@@ -34,7 +34,7 @@ const parseTemplate = (str) => {
   if (tmpl === undefined) stdlibParseCache.set(str, tmpl = parseWat(str))
   return cloneTemplate(tmpl)
 }
-// Self-host-only: see clearDollar (src/ir.js) — same dangling-arena-pointer hazard,
+// Self-compile-only: see clearDollar (src/ir.js) — same dangling-arena-pointer hazard,
 // and the same fix: swap in a fresh Map, don't just `.clear()` the old one (its
 // backing table is itself an arena allocation `_clear` invalidates). Must run every
 // compile in a warm-instance loop (see scripts/self.js setupSelf).
@@ -815,7 +815,7 @@ export function pullStdlib(sec) {
       // No-op when the alloc trio was already present.
       resolveIncludes()
       // Record the post-init heap top into `__heap_reset` so `__clear` rewinds to
-      // just above this module's init-time heap state (e.g. the self-host compiler's
+      // just above this module's init-time heap state (e.g. the self-compile compiler's
       // GLOBALS/atom tables), not into it. Done here — where `__heap` is known to
       // survive — as the last `__start` action before any non-returning timer loop.
       // No `__start` ⇒ no init allocations ⇒ `__heap_reset`'s data-end seed is right.
@@ -865,7 +865,7 @@ export function pullStdlib(sec) {
           if (typeof src !== 'string') continue
           for (const m of src.matchAll(/\(global\.set \$([A-Za-z0-9_.$]+)/g)) runtimeWritten.add(m[1])
         }
-        // Self-host divergence diagnostics (see resolveIncludes' twin block).
+        // Self-compile divergence diagnostics (see resolveIncludes' twin block).
         if (ctx.core.diagSink) ctx.core.diagSink.sweep = {
           includes: [...ctx.core.includes].sort().join(' '),
           runtimeWritten: [...runtimeWritten].sort().join(' '),
@@ -944,7 +944,7 @@ export function pullStdlib(sec) {
       // __dyn_props reset: __clear rewinds the bump arena, but __dyn_props /
       // __dyn_get_cache_off / __dyn_get_cache_props (module/collection.js) cache
       // pointers/offsets INTO that arena across calls — a warm compile-clear-
-      // compile loop (self-host kernel: one instance, `_clear()` between compiles)
+      // compile loop (self-compile kernel: one instance, `_clear()` between compiles)
       // needs them reset too, or a later compile can read a dangling pointer or,
       // worse, alias a stale cached OFFSET onto a freshly-reused arena address
       // (an ABA hazard, not just a dangling one). Only patched in when __dyn_set
@@ -990,11 +990,11 @@ export function pullStdlib(sec) {
         // __durable_fwd_heal is called ONLY from this injected `__clear` text — it has
         // no OTHER call site for reachableStdlib (line ~582, already run) to have found
         // it through, so (unlike __durable_fwd_log itself, whose deps() edges at every
-        // grow/shift call site make it self-host-robust — see test/selfhost-includes.js)
+        // grow/shift call site make it self-compile-robust — see test/self-compile-includes.js)
         // it needs an explicit include here, mirroring the `__alloc`/`__alloc_hdr`/
         // `__clear` late-add just above. `inc()`, not a raw `ctx.core.includes.add()`:
-        // the former is what test/selfhost-includes.js's source-scan recognizes as an
-        // explicit (self-host-safe) edge. No further resolveIncludes() needed:
+        // the former is what test/self-compile-includes.js's source-scan recognizes as an
+        // explicit (self-compile-safe) edge. No further resolveIncludes() needed:
         // __durable_fwd_heal's body calls nothing else (raw i32 loads/stores + global
         // get/set only).
         inc('__durable_fwd_heal')
@@ -1083,12 +1083,12 @@ export function syncImports(sec) {
 // Remove every `<T>f<digits>_<digits>` run from a token (suffix may sit
 // MID-token: `$s<T>f1_0$ccsso` — the charCodeAt decomposition composes past
 // the rename). Manual scan, no regex: this runs per compile inside the
-// self-hosted kernel, where regex execution is interpreter-grade.
+// self-compiled kernel, where regex execution is interpreter-grade.
 const isDigit = (c) => c >= 48 && c <= 57
 function stripRenameRuns(s) {
   let i = s.indexOf(T)
   if (i < 0) return s
-  // ENCODING-AGNOSTIC index math: the self-hosted kernel's strings are UTF-8
+  // ENCODING-AGNOSTIC index math: the self-compiled kernel's strings are UTF-8
   // bytes (T = '' spans 3 there, 1 natively) — advance by T.length and
   // derive every position from indexOf/scan results, never hardcoded +1.
   // The scanned run body ('f' digits '_' digits) is pure ASCII — identical
@@ -1149,7 +1149,7 @@ export function optimizeModule(sec, profiler) {
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
     specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
-  // both disabled across the bench + examples corpora AND the self-host kernel at
+  // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
   // (globalTypes backfill gone: declGlobal sets the type at declaration.)
   // Build global name→type map from ctx.scope.globalTypes (keys without $) for promoteGlobals
@@ -1302,7 +1302,7 @@ export function optimizeModule(sec, profiler) {
  * EXACT liveness. If `__dec_to_f64` is dead, truncate the table from the data tail (it is
  * the last append — see pullStdlib). DATA only: the dead function + global are left for
  * watr, which already removes them. Keeps correctly-rounded decimal parsing wherever it is
- * genuinely live (parseFloat, the self-host compiler's `Number()` on source literals).
+ * genuinely live (parseFloat, the self-compile compiler's `Number()` on source literals).
  */
 export function stripDeadLazyTables(sec) {
   const spans = ctx.runtime.lazySpans
@@ -1361,7 +1361,7 @@ export function stripStaticDataPrefix(sec) {
   const dv = new DataView(buf.buffer)
   if (ctx.runtime.staticPtrSlots) {
     // u32-half reads/writes — DataView's BigInt accessors are unfaithful in the
-    // self-host kernel; the offset lives entirely in the LE low word and the
+    // self-compile kernel; the offset lives entirely in the LE low word and the
     // tag/aux fields entirely in the high word, so plain number math suffices.
     for (const slotOff of ctx.runtime.staticPtrSlots) {
       if (slotOff < prefix) continue
@@ -1423,9 +1423,9 @@ export function stripStaticDataPrefix(sec) {
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
         // Computed fresh, local to this arm (not captured from an outer scope):
-        // self-host kernel-source rewrite (BigInt retirement Slice 0) — a BigInt
+        // self-compile kernel-source rewrite (BigInt retirement Slice 0) — a BigInt
         // value crossing the `shift` closure boundary as a captured NAME can't
-        // be proven raw by the self-host kernel's own fixpoint; recomputing
+        // be proven raw by the self-compile kernel's own fixpoint; recomputing
         // from LAYOUT (never itself BigInt) inside the closure keeps every use
         // local-to-body, the shape the fixpoint already proves raw.
         const bits = BigInt(child[1].slice(4)) | 0x7FF0000000000000n

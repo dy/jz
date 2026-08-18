@@ -361,8 +361,8 @@ bucket at a glance):
   and `compile/closure-plan.js`/`loop-model.js`'s `WeakMap`-keyed-on-AST-
   identity idiom are all the SAME shape this bucket already wants — the
   slice is "stop hand-rolling it a 7th time," not "design something new."
-  Self-host subset-safe by the same precedent (session-survey.md §4:
-  `WeakMap` is used elsewhere in ctx.js's own self-hosted portion already).
+  Self-compile subset-safe by the same precedent (session-survey.md §4:
+  `WeakMap` is used elsewhere in ctx.js's own self-compiled portion already).
 - **Byte-identical by construction**: `if (cache.has(body)) return
   cache.get(body); ...compute...; cache.set(body, result); return result`
   is semantically identical to today's `_xBody === body` check for every
@@ -561,7 +561,7 @@ The compile-lifetime registry is now the explicit `ctx.funcs` record:
 analysis/emission frame remains `ctx.func`; it contains none of those fields and
 no compatibility mirror. `reset()` creates both records independently, and
 `assertCtxInvariants()` pins the registry's full shape. All production readers
-and writers, self-host entry readers, and reset-level test harnesses now use the
+and writers, self-compile entry readers, and reset-level test harnesses now use the
 new authority directly.
 
 This is the coordinator-ruling #1 registry/frame split's first half. It deletes
@@ -631,7 +631,7 @@ Certification:
 - kernel parity: 3/3, 33 assertions
 - build twice: byte-identical; `dist/jz.wasm` SHA-256
   `63ef4ce18f359c37f0184df63f593f9938a037b9ab67e4fe97f97961f4efe9de`
-- self-host correctness/warm reuse: 21/21, 206 assertions
+- self-compile correctness/warm reuse: 21/21, 206 assertions
 
 ## AS-LANDED — Slice 4c: authoritative frozen FunctionPlan (2026-08-12)
 
@@ -661,7 +661,7 @@ Certification:
 - kernel parity: 3/3, 33 assertions
 - build twice: byte-identical; `dist/jz.wasm` SHA-256
   `57f14eb5aa04201fc6e49ab541381afcd7ad86eaefcccbe0394b1d77ff13fdbc`
-- self-host correctness/warm reuse: 21/21, 206 assertions
+- self-compile correctness/warm reuse: 21/21, 206 assertions
 
 ## AS-LANDED — Slice 4d: first scoped FlowState APIs (2026-08-12)
 
@@ -691,7 +691,7 @@ Certification:
 - kernel oracle 13/13; kernel parity 3/3
 - build twice byte-identical; `dist/jz.wasm` SHA-256
   `e9eef17ecb8b2b17a8d50ed4035a324e8455f939f1163600c06b7e34fb8b44bf`
-- self-host correctness/warm reuse: 21/21, 206 assertions
+- self-compile correctness/warm reuse: 21/21, 206 assertions
 
 ## AS-LANDED — Slice 4e: split prepare naming from EmitFrame naming (2026-08-12)
 
@@ -713,7 +713,7 @@ Certification:
 - kernel oracle 13/13; kernel parity 3/3
 - build twice byte-identical; `dist/jz.wasm` SHA-256
   `305f473c5ee4b693c26d8e03373592986bbc31b452bb5943e9077fc365895ad2`
-- self-host correctness/warm reuse: 21/21, 206 assertions
+- self-compile correctness/warm reuse: 21/21, 206 assertions
 
 ## AS-LANDED — Slice 4f: EmitFrame id/local authority (2026-08-12)
 
@@ -728,4 +728,4 @@ This is the first hiding seam, not a claim that all raw local declarations are
 migrated: the public compatibility name remains because scores of emitters use
 it, while counter representation and local registration now each have one
 owner. `npm test` reaches only the two standing optimizer-shape failures (3427
-pass, 6 skip); kernel parity 3/3 and self-host correctness 21/21 pass.
+pass, 6 skip); kernel parity 3/3 and self-compile correctness 21/21 pass.

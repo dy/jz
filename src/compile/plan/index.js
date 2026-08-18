@@ -54,7 +54,7 @@ import {
 /**
  * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena
  *  PLAN-TAIL boundaries (.work/research.md §Region arena, per-pass slice):
- *  supplied ONLY by the self-host kernel, forwarded from compile()'s own
+ *  supplied ONLY by the self-compile kernel, forwarded from compile()'s own
  *  `regionHooks` (Slice 3) — never passed by the native host (plan() is
  *  called with 2 args everywhere else, so this stays undefined and every
  *  `regionHooks?.mark()` / `if (regionHooks)` below is dead code there).

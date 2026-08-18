@@ -11,11 +11,11 @@
  *   assets/sprae.js — minified bundle of sprae (a WEB asset, not compiler dist):
  *                  the landing binds its live bench figures with sprae `:text`
  *                  directives. Resolved from the npm package or a sibling dy/sprae.
- *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-host). Its
+ *   dist/jz.wasm — the jz compiler compiled to wasm by jz (full self-compile). Its
  *                  default export is `compileSelf(source) → wasm bytes`: the whole
  *                  pipeline (parse → jzify → prepare → compile → watr-encode) runs
  *                  in wasm, no host help. Built from scripts/self.js — same artifact
- *                  the selfhost gate builds (scripts/selfhost-build.mjs).
+ *                  the self-compile gate builds (scripts/self-compile-build.mjs).
  *
  * Run: npm run build
  */
@@ -25,7 +25,7 @@ import { stripWatTemplates } from './wat-strip.mjs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compile } from '../index.js'
-import { resolveSelfhostBuild } from './build-profile.mjs'
+import { resolveSelfCompileBuild } from './build-profile.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = resolve(ROOT, 'dist')
@@ -115,17 +115,17 @@ if (spraeEntry) {
   console.warn('⚠ sprae not found — `npm i sprae` or clone dy/sprae as a sibling; assets/sprae.js NOT built (landing metric bindings will fail)')
 }
 
-// ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-host) ───
+// ── dist/jz.wasm — the jz compiler, compiled to wasm by jz (full self-compile) ───
 // Config resolution (CARRIER_BOX injection, region-arena × inlinePtrOffsetFast
 // gate, compiler-runtime collection compaction) lives in
-// scripts/build-profile.mjs's resolveSelfhostBuild — shared
-// with scripts/selfhost-build.mjs (architecture re-audit item 2, .work/todo.md)
-// so the two self-host build entry points cannot drift on either mechanism.
-// Match selfhost-build.mjs's measured release profile: this artifact is a
+// scripts/build-profile.mjs's resolveSelfCompileBuild — shared
+// with scripts/self-compile-build.mjs (architecture re-audit item 2, .work/todo.md)
+// so the two self-compile build entry points cannot drift on either mechanism.
+// Match self-compile-build.mjs's measured release profile: this artifact is a
 // compiler executable, not a size-distributed web asset. O3 keeps its warm
 // compile geomean decisively below the same pipeline on V8.
 const wasmOut = resolve(OUT, 'jz.wasm')
-const profile = resolveSelfhostBuild()
+const profile = resolveSelfCompileBuild()
 const wasm = compile(profile.graph.code, {
   modules: profile.graph.modules,
   memory: profile.memory,

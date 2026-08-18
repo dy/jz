@@ -27,7 +27,7 @@
  * `-0`-aware decimal otherwise.
  *
  * Host-only by construction (needs WebAssembly instantiation of the probe):
- * the self-host kernel never passes the flag; a typeof guard declines cleanly.
+ * the self-compile kernel never passes the flag; a typeof guard declines cleanly.
  */
 import { i64Hex } from '../layout.js'
 

@@ -392,7 +392,7 @@ const DEC_TO_F64_WAT = `(func $__dec_to_f64
 
 // Hex → byte-string via char-array + one join. NOT `s += chr` in a loop: that
 // allocates Σ1..n ≈ n²/2 bytes of dead strings (54 MB for the 10.4 KB EL table),
-// and setup runs PER COMPILE inside the self-host kernel — a warm no-_clear
+// and setup runs PER COMPILE inside the self-compile kernel — a warm no-_clear
 // instance exhausted its heap after ~70 compiles. join is linear: ~n boxes of
 // array + 1-char strings plus the result.
 const hexToBytes = (hex) => {
@@ -405,7 +405,7 @@ export default (ctx) => {
   deps({
     __mkstr: ['__alloc'],
     // own edge: __static_str's body calls $__mkstr — without it the helper
-    // rides the self-host-unreliable auto-scan (test/selfhost-includes.js)
+    // rides the self-compile-unreliable auto-scan (test/self-compile-includes.js)
     __static_str: ['__mkstr'],
     __ftoa: ['__itoa', '__pow10', '__mkstr', '__static_str', '__ftoa_shortest'],
     __ftoa_shortest: ['__mkstr', '__static_str', '__alloc', '__itoa', '__ryu_mulshift', '__ryu_pow5', '__ryu_pow5div'],
@@ -626,7 +626,7 @@ export default (ctx) => {
     (local.get $rv)` : `(call $__mkstr (local.get $buf) (local.get $pos))`})`
 
   // __mkstr(buf: i32, len: i32) → f64 — copy scratch buffer to heap string.
-  // Hot (~60M calls in watr self-host via __ftoa). bulk memory.copy is ~10× faster than
+  // Hot (~60M calls in watr self-compile via __ftoa). bulk memory.copy is ~10× faster than
   // a hand-rolled byte loop (wasm2c lowers it to memcpy under PGO+LTO).
   ctx.core.stdlib['__mkstr'] = `(func $__mkstr (param $buf i32) (param $len i32) (result f64)
     (local $off i32) (local $i i32) (local $packed i64) (local $b i32)
@@ -1255,8 +1255,8 @@ export default (ctx) => {
   // === Number constants ===
 
   // Each folds to inline (f64.const …), no stdlib dep. Written out (not a table
-  // loop) to stay within the self-host subset. `NaN` uses the `nan` token (not raw
-  // NaN) so it survives self-host IR marshalling — see emitNum.
+  // loop) to stay within the self-compile subset. `NaN` uses the `nan` token (not raw
+  // NaN) so it survives self-compile IR marshalling — see emitNum.
   ctx.core.emit['Number.MAX_SAFE_INTEGER'] = () => typed(['f64.const', 9007199254740991], 'f64')
   ctx.core.emit['Number.MIN_SAFE_INTEGER'] = () => typed(['f64.const', -9007199254740991], 'f64')
   ctx.core.emit['Number.EPSILON'] = () => typed(['f64.const', 2.220446049250313e-16], 'f64')
@@ -1544,7 +1544,7 @@ export default (ctx) => {
     (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     ${ctx.features.bigint ? `;; ToNumber(BigInt) must yield the bigint's mathematical value, not the raw
-    ;; carrier bits — unlike every other non-number kind, the self-host BigInt
+    ;; carrier bits — unlike every other non-number kind, the self-compile BigInt
     ;; carrier is i64 bits reinterpreted as f64 directly (never NaN-boxed), so it
     ;; passes the "not NaN" test below just like a genuine number. Detect it with
     ;; the same magnitude heuristic \`typeof x === 'bigint'\` uses elsewhere
@@ -1963,7 +1963,7 @@ export default (ctx) => {
   // The naive `val & ((1 << bits) - 1)` mask is wrong at bits=64: i64.shl shifts mod 64,
   // so `1 << 64` is `1 << 0 = 1`, making the mask `0` and asUintN(64,·) collapse to 0 —
   // which also zeroed every bigint *literal* (emit reinterprets `Nn` via
-  // BigInt.asUintN(64,·).toString() through this very handler in the self-host).
+  // BigInt.asUintN(64,·).toString() through this very handler in the self-compile).
   ctx.core.emit['BigInt.asUintN'] = (bits, val) => {
     const vbits = asI32(emit(bits)), vval = readI64(val, emit(val))
     const shift = typed(['i64.sub', ['i64.const', 64], ['i64.extend_i32_s', vbits]], 'i64')

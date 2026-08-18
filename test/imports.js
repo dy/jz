@@ -452,7 +452,7 @@ test('host global behind a dead guard arm never imports', () => {
   // Guard chains with a leading dynamic operand: `x || typeof g === 'undefined' || g.member`.
   // resolveTypeof folds the middle arm to `true`; prep's dead-arm fold must then drop the
   // g.member read even though the literal sits nested one level deep (left-associativity) —
-  // so typeof-guarded debug hooks compile with a clean import section and self-host builds
+  // so typeof-guarded debug hooks compile with a clean import section and self-compile builds
   // (whose runner provides no env.globalThis / env.process) still instantiate.
   const wasm = compile(
     'let f = (c) => { if (!c || typeof globalThis === "undefined" || !globalThis.__DBG) return 0; return 1 }; export let g = () => f(1)')

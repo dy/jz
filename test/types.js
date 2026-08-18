@@ -830,11 +830,11 @@ test('typed-narrow: ?: with mixed elemType does NOT narrow (still correct)', () 
   is(f(1, 1), 20)
 })
 
-test('typed-narrow: bimorphic typed-array param specializes, compiles + runs (self-host regression)', () => {
+test('typed-narrow: bimorphic typed-array param specializes, compiles + runs (self-compile regression)', () => {
   // `sum` is called with BOTH Float64Array and Int32Array, so specializeBimorphicTyped clones
   // it once per concrete element ctor. The clone sig was built with a redundant `...func.sig`
   // spread (`{ ...func.sig, params, results }`) — and spreading an object then overriding its
-  // keys in the same literal corrupts the result's object schema in the self-host kernel, so a
+  // keys in the same literal corrupts the result's object schema in the self-compile kernel, so a
   // later `sig.params` read faults out of bounds (memory access out of bounds) at -O0. This pins
   // that bimorphic-typed specialization compiles AND runs through the jz.wasm kernel (test:wasm),
   // not just the JS host (the poly bench was the original repro).
@@ -1564,7 +1564,7 @@ test('mayBeUndefined valResult: an ordinary settled return never sets valResultM
 // === untyped-receiver number methods (the kernel-L2 data-corruption root) ===
 // `x.toString(16)` / `x.toFixed(d)` where x's static kind is erased (polymorphic
 // slot, mixed-element array) used to fall through every dispatch strategy to a
-// dynamic property lookup → `undefined`. Inside the self-host kernel that turned
+// dynamic property lookup → `undefined`. Inside the self-compile kernel that turned
 // encodeDataString's `'\\' + b.toString(16).padStart(2,'0')` into `\00` for every
 // escaped byte, zeroing the emitted data segment of cell+capture+static-array
 // programs. The runtime-string-fork number arm + tryRuntimeNumberMethod now

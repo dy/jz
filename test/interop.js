@@ -108,7 +108,7 @@ test('interop: instantiate accepts ArrayBuffer', () => {
 })
 
 test('interop: imports option still routes through subpath', () => {
-  if (onKernel()) return  // kernel: host {imports} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {imports} option doesn't reach the single-source self-compile
   const wasm = compile(`import { dbl } from "h"; export let f = (x) => dbl(x) + 1`,
     { imports: { h: { dbl: { params: 1 } } } })
   const { exports } = interop.instantiate(wasm, { imports: { h: { dbl: x => x * 2 } } })

@@ -151,7 +151,7 @@ test('recursionUnroll: non-zero acc init fuses as += (shared-acc reset bug)', ()
   // inlined frame SHARES the accumulator with the caller — the callee's own
   // `s = 1` init (non-zero, survives zeroinit) cloned verbatim RESET the
   // caller's running total at every unrolled level: cnt of a 3-child tree
-  // returned 3 instead of 8 at O3. The O3-built self-host kernel carried the
+  // returned 3 instead of 8 at O3. The O3-built self-compile kernel carried the
   // miscompiled count() and mis-fired watr's select fold (dict parity rows).
   // The init must clone as `acc += init`; zero-init accumulators stay exact.
   const src = `
@@ -1223,7 +1223,7 @@ test('known array numeric index skips generic array tag dispatch', () => {
   // monomorphic; neither goes through the generic tag-dispatch helper. The
   // inline load is the current (faster) form: no call, hoistable base/len.
   if (!onKernel()) ok(/f64\.load/.test(mainBody) || /\((?:return_)?call \$__arr_idx_known\b/.test(mainBody),
-    'known ARRAY numeric index should use the monomorphic inline load (or __arr_idx_known helper)')  // self-host kernel codegen differs; in-process leg owns the shape check
+    'known ARRAY numeric index should use the monomorphic inline load (or __arr_idx_known helper)')  // self-compile kernel codegen differs; in-process leg owns the shape check
   if (!onKernel()) ok(!/\((?:return_)?call \$__arr_idx\b(?!_known)/.test(mainBody), 'known ARRAY numeric index should skip generic tag-dispatch helper')
   const { main } = run(`
     export const main = (a) => {
@@ -1904,7 +1904,7 @@ test('resolveOptimize: levels, booleans, object overrides', () => {
 
   // Pre-analyze loop transforms (compile/index.js) must be OFF at level 0/1 and ON at 2+. They were
   // absent from PASS_NAMES, so ALL_OFF lacked the keys and `undefined !== false` ran them at EVERY
-  // level — including the self-host L0 fast path the "fastest compile, no opt" contract turns off.
+  // level — including the self-compile L0 fast path the "fastest compile, no opt" contract turns off.
   for (const n of ['loopIVDivMod', 'loopSquare', 'unrollRecurrence', 'clampPeel']) {
     is(resolveOptimize(0)[n], false, `${n} off at level 0`)
     is(resolveOptimize(1)[n], false, `${n} off at level 1`)
@@ -3028,13 +3028,13 @@ test('loop-SR: grid kernel (both i%w and (i/w)|0) is bit-exact ON vs OFF across 
 })
 
 test('loop-SR: fires (counter local emitted at speed, absent when disabled)', () => {
-  // Codegen-SHAPE assertion only. Under the self-host kernel the loop-IV-div/mod strength
+  // Codegen-SHAPE assertion only. Under the self-compile kernel the loop-IV-div/mod strength
   // reduction doesn't fire (the kernel's prepared AST drives `tryReduce`'s pattern match
   // to a different lowering — every helper it uses round-trips correctly, so the output is
   // bit-exact, just not strength-reduced). Correctness is what matters and is covered by the
   // sibling `loop-SR: grid kernel … bit-exact ON vs OFF` test (which passes on the kernel —
   // ON and OFF agree because neither path strength-reduces). Skip the shape check there; it's
-  // not a miscompile, and is tracked as a self-host inference divergence to close separately.
+  // not a miscompile, and is tracked as a self-compile inference divergence to close separately.
   if (onKernel()) return
   const src = `export let f=(w,h)=>{ let n=w*h,i=0,a=0; while(i<n){ let x=i%w; let y=(i/w)|0; a=(a+x+y)|0; i++ } return a|0 }`
   ok(/lsrx/.test(jz.compile(src, { wat: true, optimize: 'speed' })), 'counter present')
@@ -3484,7 +3484,7 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
   // `setS = v => s = v` is an expression-bodied arrow whose BODY is the effect
   // (the assignment). Called as a statement (`setS(7);`), the result is unused —
   // but inlineHotInternalCalls used to splice only the prefix and DROP the value
-  // expression, losing the `s = v` write. (This is what froze the self-host parser:
+  // expression, losing the `s = v` write. (This is what froze the self-compile parser:
   // its `seek = n => idx = n` stopped advancing `idx`, so comment-skip looped
   // forever.) The effect must survive inlining.
   const setter = run(`

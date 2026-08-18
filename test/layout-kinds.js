@@ -231,8 +231,8 @@ test('region-forwarding (BIGINT closed, informational): structuredClone passes a
 // layout-kinds.js), the region program's own front-boundary forcing case
 // (.work/research.md §Region arena). __region_mark/__region_exit are
 // ordinary ctx.core.emit-dispatched intrinsics (module/core.js) — reachable
-// from plain jz source natively, no self-host kernel needed to exercise the
-// arm itself (the self-hosted kernel gate ladder — kernel-oracle/kernel-
+// from plain jz source natively, no self-compile kernel needed to exercise the
+// arm itself (the self-compiled kernel gate ladder — kernel-oracle/kernel-
 // parity/fuzz/test:wasm — is what proves it under REAL region rounds; these
 // are the fast, direct regression pins for the mechanism).
 // ============================================================================

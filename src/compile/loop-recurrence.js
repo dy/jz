@@ -21,7 +21,7 @@ import { loopLitVal, litN, unitIncVar, normalizeLoop, freshLoopId, loopHazards }
 import { rewriteBlocks, closureMutatedVars } from './loop-model.js'
 import { cloneIR } from '../ir.js'
 
-const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-host kernel rejects a builtin used as a first-class value
+const isArr = (n) => Array.isArray(n)   // wrap (not alias): the self-compile kernel rejects a builtin used as a first-class value
 const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[2], 1)   // (iv - 1)
 
 // Ops whose presence makes duplicating the body in place unsound (control that escapes the cell,

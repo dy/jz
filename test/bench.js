@@ -354,7 +354,7 @@ const WASM_TODO = {
   // radixsort: within the hard 5% frontier band. Distinct typed-parameter
   // forwarding and tiny strided-control specialization repeat at 2.34–2.40ms
   // vs rust-wasm 2.29–2.30ms. A larger histogram theorem bought ~4% but was
-  // rejected because its compiler cost destabilized the stricter self-host gate.
+  // rejected because its compiler cost destabilized the stricter self-compile gate.
   // strbuild: WON (876c9fd2 + f9d6b62b). Two fused-concat leaf classes killed the row cost:
   // literal ASCII parts store inline (-15.5%), then i32-proven parts render digits at the
   // cursor — __ilen sizes the alloc, __itoa_s writes; no __i32_to_str temp string, no
@@ -535,7 +535,7 @@ for (const tid of ['v8', 'as']) {
   const verdicts = { strict: [], band: [], red: [] }
   for (const id of speedCases) {
     const jz = runs[id]?.jz; if (!jz) continue
-    const br = bestRival(id); if (br == null) continue   // no comparable wasm rival ran (e.g. self-host rows)
+    const br = bestRival(id); if (br == null) continue   // no comparable wasm rival ran (e.g. self-compile rows)
     const ratio = jz.medianUs / br.us
     verdicts[ratio < 1.0 ? 'strict' : ratio <= WASM_BAND_TOL ? 'band' : 'red'].push(`${id} ${ratio.toFixed(2)}×${ratio >= 1.0 ? ` (${br.who})` : ''}`)
     test(`bench: fastest-wasm ${id} (jz ≤ every wasm rival)`, () => {

@@ -51,7 +51,7 @@ wired at `src/compile/index.js:2334` (runs per-function during
 `analyzeFuncs`, `JZ_DBG_BIGINT_ERASURE`-gated) — the exact §4.2 diagnostic
 round-3 specified as "Implementation order step 1: build the erasure-graph
 walk as a DIAGNOSTIC first ... run over corpus + kernel graph." It had never
-been run against the real 149-module self-host graph. Sanity-checked first
+been run against the real 149-module self-compile graph. Sanity-checked first
 against 6 synthetic W-sink repros (dict/Map store, return, ternary-nullish,
 closure capture — all fire correctly; pure arithmetic `x + 1n` correctly
 fires zero) then run for real:
@@ -62,7 +62,7 @@ JZ_DBG_BIGINT_ERASURE=1 JZ_DBG_BIGINT_STATS=1 node -e '
           {optimize:false})'
 ```
 
-Result: **57 erasure hits across the whole self-hosted kernel** (149
+Result: **57 erasure hits across the whole self-compiled kernel** (149
 modules — `call-arg` 37, `closure-capture` 6, `return` 5, `ternary-nullish`
 5, `dataview` 3, `collection` 1). These are the *raw inventory* (flows a
 BIGINT-kinded expression makes into a kind-erasing site — proof not
@@ -89,7 +89,7 @@ CONCLUSION: the fixpoint resolves all but one of those flows to provably
 uniform, so `objectSchemaGuardHex`/`nanPrefixMaskHex`/`atomNanHex`/
 `ssoBitI64Hex`/`sliceBitI64Hex`/`hcacheBitI64Hex`/`ptrNanHex`/`ptrBoxPrefixBigInt`/
 `ptrBits` itself stay 100% raw despite having erasure hits recorded; only
-`i64Hex`'s own param boxes. **The self-hosting wall's actual footprint,
+`i64Hex`'s own param boxes. **The self-compiling wall's actual footprint,
 measured against the current 149-module tree, is 11 sites, of which 10
 are one-time constants and 1 is a single non-hot-path helper's entry
 param** — not "somewhere in the kernel," a named, small, mostly-cold set.
@@ -149,7 +149,7 @@ class, not a hypothetical.** `.work/todo.md`'s tail entry (2026-08-05/06,
 index.js`'s single-pass `prep()` scan for `ctx.features.bigint` (set at
 `:1159`) is order-dependent across the resolved module graph — fixing an
 unrelated ordering bug flipped the flag from `false` to `true` for the
-compiler's OWN self-hosted build (because `layout.js`'s `i64Hex` uses real
+compiler's OWN self-compiled build (because `layout.js`'s `i64Hex` uses real
 BigInt syntax, previously masked from the scan by iteration order), which
 then flipped the `ctx.features.bigint`-gated magnitude heuristic (site 3/4
 above) kernel-wide and traded one narrow bug (a JSON property-key parse)
@@ -169,7 +169,7 @@ BigInt-carrier side, independently of this doc.
   provably-raw arithmetic-only ones, paying real heap allocation in hot
   loops that never needed it.
 - **Round 2 (boundary boxing + runtime tag-check fallback)**: UNSOUND, not
-  just imperfect. The self-hosting wall: `layout.js`'s `ptrBits`
+  just imperfect. The self-compiling wall: `layout.js`'s `ptrBits`
   (`:70-74`) and `src/wat/assemble.js` build genuinely NaN-box-SHAPED bit
   patterns as raw BIGINT DATA (their own job is to construct pointer
   encodings) — a runtime tag-check reading those bits at a kind-erased
@@ -187,7 +187,7 @@ BigInt-carrier side, independently of this doc.
   "ROUND 2 WALL" entries).
 - **The 84-site BigInt-scrub analysis** (commit-era 4bcb8bc0, `.work/
   archive-todo-2026-07.md`/`archive-todo-2026-08.md`): an ALTERNATIVE
-  approach — make the compiler's own self-hosted source BigInt-free, so
+  approach — make the compiler's own self-compiled source BigInt-free, so
   `ctx.features.bigint` can never be order-dependently confused by the
   compiler's own plumbing. Found 21 files with real BigInt syntax
   reachable from `scripts/self.js`, 17 genuine (4 false positives:
@@ -244,7 +244,7 @@ passing:
    `mayBeUndefined`, not the other way around; the fixpoint's soundness
    at whole-program scale is no longer a bet, it's observed behavior
    across dozens of landed correctness slices.
-2. **The self-hosting wall is now measured, not hypothesized.** Round 3's
+2. **The self-compiling wall is now measured, not hypothesized.** Round 3's
    confidence that "layout.js/assemble.js stay 100% raw" was asserted
    without running the diagnostic it specified. This session ran it
    (§1): 57 raw flow sites in the CURRENT, bigger (149-module) kernel,
@@ -275,7 +275,7 @@ today (the NaN-box carrier IS the full 64 bits; a plain numeric i64/f64
 local has none to spare). Realizing it means either doubling every such
 storage location's width (a strictly larger, permanent cost than
 selective boxing pays even in the worst case) or a shadow side-table
-keyed by binding identity (which reintroduces the self-hosting wall in a
+keyed by binding identity (which reintroduces the self-compiling wall in a
 new shape: the side-table itself becomes data the compiler's own source
 manipulates, the same category of problem round 2 hit with `ptrBits`'
 output, just relocated). Neither survives contact with "the compiler
@@ -289,13 +289,13 @@ runtime concept — `mkPtrIR`/`__ptr_type`/`__ptr_offset` all already exist
 and already dispatch this way for six other kinds. It only pays at
 points the solver cannot prove raw is safe.
 
-**Self-hosting-wall answer, verified against today's kernel (§1), not
+**Self-compiling-wall answer, verified against today's kernel (§1), not
 assumed**: the fixpoint proves 46 of 57 real-program erasure flows fully
 raw already; the residual 11 sites (10 one-time module-init constants,
 plausibly snapshot-foldable per `src/snapshot.js`'s existing init-time
 pre-eval mechanism the build already uses, and 1 cold helper's entry
 param) are the ENTIRE boxing footprint measured against the current
-149-module self-hosted compiler. Round 2's wall was: a runtime tag check
+149-module self-compiled compiler. Round 2's wall was: a runtime tag check
 at a CONSUMPTION site, reading bits `layout.js`/`assemble.js` construct
 as genuine box-shaped data, cannot distinguish "real pointer" from
 "BigInt bits that alias a pointer's shape." Round 3 structurally cannot
@@ -403,7 +403,7 @@ be the FeaturePlan design's next audit target, not this one's).
 ## 7. Migration slices — each independently green, each with a warm checkpoint
 
 The historical killer (round 1) was warm cost from boxing values the
-solver never needed to box. `test/selfhost-perf.js`'s `WARM_CAP` is
+solver never needed to box. `test/self-compile-perf.js`'s `WARM_CAP` is
 `1.03×` today (re-baselined UP from `0.99×` on 2026-08-01 — `:80-100` —
 to absorb ~90 commits of unrelated correctness machinery; documented
 current margin ~1.00–1.02×, i.e. **already thin, ~1-3% headroom** before
@@ -436,7 +436,7 @@ string-coercion fallback) to box `iff bigintBoxed` — the fact ALREADY
 computed, consumed for the first time. **This is the slice round 1's
 failure mode could reappear at, if the fact is wrong rather than the
 consumption**. Gate, explicit and non-negotiable per the mandate's own
-instruction: `perf-ratchet` 10/10 at +0 delta AND a fresh `warm self-host
+instruction: `perf-ratchet` 10/10 at +0 delta AND a fresh `warm self-compile
 geomean ≤ 1.03×` measurement taken SPECIFICALLY after this slice (not
 deferred to the end) — §1's measured 11-site footprint predicts near-zero
 marginal cost; this slice is where that prediction gets falsified or
@@ -467,7 +467,7 @@ design's own charter; named for sequencing only.
 sites once Slice 3's arms are ALL verified; flip the 2 KNOWN-FAIL rows
 and the 2 documented-gap rows to green pins. Full discipline matching
 every prior landed slice in this codebase: native + kernel (O0/O2/O3) +
-wasi + selfhost + fuzz (2000×4) + fresh build ×2 byte-identity + warm/
+wasi + self-compile + fuzz (2000×4) + fresh build ×2 byte-identity + warm/
 fresh perf gates, foreground chunks per the project's own battery
 convention.
 
@@ -478,14 +478,14 @@ convention.
   is NOT this design's cost — it measured always-boxing, the wrong
   shape. Not a valid estimate for round 3.
 - Round 3's actual footprint, measured THIS session against the CURRENT,
-  bigger (149-module) self-hosted kernel: 57 raw BigInt flow sites total;
+  bigger (149-module) self-compiled kernel: 57 raw BigInt flow sites total;
   the solver's own already-landed, already-tested fixpoint (its own
   33/33 kernel-parity + 451/451 kernel-oracle battery already exercises
   it as pure observation) proves 46 of them fully raw, leaving **11 real
   box sites — 10 one-time module-init constants (snapshot-foldable) and
   1 cold helper's entry param. Zero hot-loop box sites measured.**
 - Current warm margin is thin (~1.00–1.02× against a 1.03× cap, per
-  `selfhost-perf.js`'s own documented history of ~90 commits of
+  `self-compile-perf.js`'s own documented history of ~90 commits of
   correctness-machinery cost already eating most of the original
   0.99×-era headroom) — Slice 2 is where this gets tested for real, not
   assumed safe because the count is small.
@@ -648,7 +648,7 @@ this design's own §5 kill-list reserves for Slice 5 deletion, and
   failures unrelated to this work (test/optimizer.js bounds-check-guard
   counts — reproduced identically on a clean HEAD worktree before this
   session's changes), 6 skip — same as baseline.
-- selfhost.js: 21/21.
+- self-compile.js: 21/21.
 - fuzz: 2000 programs × opt {0,1,2,3}, 0 divergence.
 - fresh `npm run build` × 2: `dist/jz.wasm` SHA-256 byte-identical across
   both builds.
@@ -744,7 +744,7 @@ call sites total (the design's own "~10" estimate, undercounted the
 compound-assignment family). `toStrI64`'s `coerceRest` tail (src/ir.js)
 gained the same `readI64` swap for its final generic `$__to_str` call.
 `toNumF64` (src/ir.js) was NOT touched: its own VAL.BIGINT arm is the
-documented "self-host contract" pass-through (compiler-source BigInt used
+documented "self-compile contract" pass-through (compiler-source BigInt used
 as an opaque bit container, never treated as a numeric value needing
 ToNumber) — a different, narrower concern than the carrier-box read side,
 confirmed via grep that no arithmetic-core call site routes a proven-BIGINT
@@ -755,7 +755,7 @@ operand through it (all go through `bigIntOperand`/`bigIntUnary` instead).
 Slice 2's own param/ternary double-box bugs):
 1. **Auto-dep-scan false positive.** A WAT *comment* (not code) referencing
    `$__same_value_zero` inside `$__map_hash`'s new arm was picked up by
-   `test/selfhost-includes.js`'s text-based caller→callee reachability
+   `test/self-compile-includes.js`'s text-based caller→callee reachability
    check (which cannot distinguish a comment from a real `call`) — fixed by
    dropping the `$` prefix in prose, matching the codebase's own established
    convention for referencing a helper by name in a comment without
@@ -790,7 +790,7 @@ Slice 2's own param/ternary double-box bugs):
   own documented baseline — re-verified unrelated to this slice via a
   disposable `git worktree` at pre-Slice-3 HEAD), 6 skip.
 - kernel-parity: 33/33 byte-identical (O0/O2/O3 × 11 examples) — required a
-  `npm run build` re-snapshot of `dist/jz.wasm` first (the self-hosted
+  `npm run build` re-snapshot of `dist/jz.wasm` first (the self-compiled
   kernel's own stdlib templates now include the same registry arms; a stale
   snapshot diverges from the freshly-compiled "native" side by construction,
   not a real bug — the same "kernel-parity WILL break until re-snapshotted"
@@ -799,7 +799,7 @@ Slice 2's own param/ternary double-box bugs):
   registry arms).
 - kernel-oracle: 11/11 suites, 451/451 assertions (unchanged from Slice 2's
   own baseline — expected, default build is representation-unchanged).
-- selfhost.js: 21/21.
+- self-compile.js: 21/21.
 - perf-ratchet: 10/10 at +0 delta AFTER a justified re-baseline
   (`node test/perf-ratchet.js --update`): `buf`/`nest`/`slice`/`ring`
   moved +100/+220/+672/+400 loop-body ops (≤1% each) because `$__map_hash`'s
@@ -878,7 +878,7 @@ boxing. This fix is orthogonal to the default-flip decision (harmless when
 CARRIER_BOX is off, correct when explicitly on) and is KEPT in this commit.
 
 **Bug 2 — FOUND, NOT FIXED, the actual wall.** `test/watr.js`'s own
-self-hosted-through-jz battery (`jz(watrJs, {modules: ENTRY_MODULES, …})` —
+self-compiled-through-jz battery (`jz(watrJs, {modules: ENTRY_MODULES, …})` —
 compiling the `watr` npm package's OWN source, including its real i64
 LEB128 encoder `encode.js`, then using THAT compiled-by-jz assembler to
 compile hand-written WAT test cases and diff byte-for-byte against watr
@@ -917,7 +917,7 @@ enforce.
 `CARRIER_BOX` reverted to OFF by default (`JZ_CARRIER_BOX=1` stays as the
 opt-in probe flag, unchanged shape from Slice 2/3). Verified clean after
 the revert: full battery 3397/3405 (same 2 pre-existing failures, 6 skip),
-kernel-parity 33/33, kernel-oracle 451/451, selfhost 21/21, fresh build ×2
+kernel-parity 33/33, kernel-oracle 451/451, self-compile 21/21, fresh build ×2
 byte-identical
 (`1fc27b44d6de974be7901d9a4af01959319c065bac9e3bf2a739e4f5ff635c30`),
 `test/watr.js` 35/35 with the flag back at its default. Bug 1's fix stays
@@ -931,7 +931,7 @@ correctness fix, found and closed via this attempt.
 
 **What Slice 4 needs before a second attempt**: a dedicated root-cause
 session on Slice 2's def-side wiring specifically, using `test/watr.js`'s
-own self-hosted-through-jz battery (not a hand-built repro — confirmed NOT
+own self-compiled-through-jz battery (not a hand-built repro — confirmed NOT
 equivalent) as the reproduction harness, with `JZ_CARRIER_BOX=1` forced and
 the failure narrowed via bisection of `encode.js`'s actual functions
 (`i64`/`uleb`/hex-literal parsing) rather than a mimicked shape. Slice 5
@@ -941,7 +941,7 @@ attempted this session.
 **Local commit:** 3daa4410.
 
 ## §12. Slice 4 — ATTEMPT 2: def-side bug root-caused and fixed, flag-forced
-verification complete, flip re-attempted, hit a SECOND (self-host) wall,
+verification complete, flip re-attempted, hit a SECOND (self-compile) wall,
 banked (2026-08-07)
 
 Dedicated session on exactly what §11 asked for: root-cause `test/watr.js`'s
@@ -1043,7 +1043,7 @@ ALREADY-boxed param) — `hex`'s `v.toString(16)` read the pointer raw.
 boxed-but-callee-expects-raw), nullish-guarded — a nullable-BIGINT argument
 may genuinely be the sentinel at runtime, never a box, in either direction.
 
-**A fourth bug, found only by attempting the fresh self-host build (below):
+**A fourth bug, found only by attempting the fresh self-compile build (below):
 `coerceArg`'s own new box/unbox blocks fed an UNTAGGED `['local.get', $t]`
 into `asI64`/`unboxBigInt`** — both dispatch on a node's `.type` to choose
 the coercion shape, defaulting an untagged node to "assume i32, needs
@@ -1094,7 +1094,7 @@ named and this attempt actually ran:**
 
 **The flip, re-attempted.** `CARRIER_BOX`'s default flipped to ON. Full
 battery unflagged: 3386/3405, identical to the flag-forced run — confirms
-the flip behaves exactly as forced. `npm run build` (the fresh self-host
+the flip behaves exactly as forced. `npm run build` (the fresh self-compile
 rebuild `dist/jz.wasm`, gate #4 in the original brief): compiled and
 WASM-validated cleanly (after the fourth bug above was found and fixed) —
 but the resulting KERNEL then **crashes** ("memory access out of bounds") or
@@ -1110,8 +1110,8 @@ obj field bigint       all levels via NATIVE: 4611686018427387906n (correct)
 ```
 
 The SAME programs compile and run correctly at every optimize level through
-the NATIVE (in-process, non-self-hosted) compiler — verified directly,
-confirming a pure self-host FIDELITY gap (the kernel's own optimizer passes
+the NATIVE (in-process, non-self-compiled) compiler — verified directly,
+confirming a pure self-compile FIDELITY gap (the kernel's own optimizer passes
 mishandling some new code shape from this section's fix, not a logic error
 in the fix itself), the same CLASS of wall (not the same instance) as
 `emit.js`'s own extensively-documented decl-init WALL history.
@@ -1131,10 +1131,10 @@ stayed flipped). The durable gains are the def-side/read-side fixes
 themselves — real correctness fixes behind the flag, verified end-to-end
 for the first time since Slice 2 landed.
 
-**What a third attempt needs**: a dedicated self-host-fidelity investigation
+**What a third attempt needs**: a dedicated self-compile-fidelity investigation
 — bisect which of this session's new code shapes (the narrow-admission
 carrier twins, `ctx.func.ternaryBoxedNames`, `coerceArg`'s runtime box/unbox
-blocks, `ctx.func._arrayLiteralNeverEscapes`) the self-hosted kernel's OWN
+blocks, `ctx.func._arrayLiteralNeverEscapes`) the self-compiled kernel's OWN
 compiled optimizer passes (O2/O3 specifically — O0/O1 are clean) mishandle,
 most likely via the same disposable-worktree-plus-minimal-repro discipline
 this session used for the def-side bug, but targeting `compileViaKernel`
@@ -1143,7 +1143,7 @@ heuristics) stays blocked on Slice 4 landing — not attempted.
 
 **Local commits:** 4b775e98, ed37a4e6, 5cea45e1, cfe25e05, 30535365.
 
-## §13. Slice 4 — ATTEMPT 3: wall re-localized, NOT a self-host gap — a native
+## §13. Slice 4 — ATTEMPT 3: wall re-localized, NOT a self-compile gap — a native
 compiler bug §12's own repros were too small to expose, banked (2026-08-07)
 
 Protocol per §12's own handoff: flag-forced rebuild (`JZ_CARRIER_BOX=1 npm run
@@ -1189,11 +1189,11 @@ a property of the KERNEL BUILD (whether `CARRIER_BOX` was baked in when
 `dist/jz.wasm` was compiled), independent of what the kernel is later asked
 to compile.
 
-**Root-caused past the self-host boundary entirely — this is a NATIVE
-compiler bug, not a self-host fidelity gap.** §12's own "native clean at
+**Root-caused past the self-compile boundary entirely — this is a NATIVE
+compiler bug, not a self-compile fidelity gap.** §12's own "native clean at
 every level" claim is true only for its own hand-sized repros. Compiling
 `node_modules/watr/src/optimize.js` itself — an ~8500-line real-world
-BigInt-heavy file jz already depends on and already self-hosts (it's part of
+BigInt-heavy file jz already depends on and already self-compiles (it's part of
 `scripts/self.js`'s own module graph, `resolveModuleGraph(..., {resolveNode:
 true})`, exactly what `scripts/build-dist.mjs` runs) — through the plain
 in-process NATIVE compiler (`compile()`, no kernel, no `compileViaKernel`, no
@@ -1210,8 +1210,8 @@ SYMPTOM of the NATIVE compiler (running under host JS, `CARRIER_BOX=1`)
 mis-compiling `watr/optimize.js`'s own BigInt-canonicalization helpers
 (`_i64Canon`/`_i64Hex16`/`f64FromI64`) when it builds the kernel — every
 subsequent kernel compile that needs THIS fold then inherits the corruption,
-regardless of what target program triggers it. §11/§12's whole "self-host
-fidelity gap" framing was the wrong altitude: no self-hosting is required to
+regardless of what target program triggers it. §11/§12's whole "self-compile
+fidelity gap" framing was the wrong altitude: no self-compiling is required to
 see this bug, only a BigInt-heavy source file large enough to hit the shape
 (watr/optimize.js; none of §7-§12's own repros were).
 
@@ -1280,7 +1280,7 @@ without reaching that minimal form. Slice 5 stays blocked on Slice 4 landing.
 restored to its plain-build state, gitignored, not committed either way).
 
 ## §14. Slice 4 — ATTEMPT 4: root cause named, fixed, flag-forced battery
-green, flip probe hit NO wall — same fix also clears §12's own self-host
+green, flip probe hit NO wall — same fix also clears §12's own self-compile
 kernel-fidelity gap; landing the flip + Slice 5 itself banked (2026-08-07)
 
 **Discriminated: neither of §13's two named candidates, a third mechanism
@@ -1350,7 +1350,7 @@ emit.js (the fix site) and ir.js (`isTernaryBoxedBigint`'s own doc comment,
 which repeated the same wrong claim).
 
 **Faithful minimal pin** (test/pointers.js, "BigInt carrier boxing"
-section — no dependency on watr/optimize.js, no self-host): a `hex16`/
+section — no dependency on watr/optimize.js, no self-compile): a `hex16`/
 `canon` pair shaped exactly like `_i64Hex16`/`_i64Canon`, called from a
 small loop (to clear jz's own hot-path inline-candidacy gates) at
 `optimize: { level: 3 }`. Verified against the reverted condition (a
@@ -1390,24 +1390,24 @@ real assertion on).
 **The flip, re-attempted — no wall this time.** `CARRIER_BOX` hardcoded
 `true` (temporary, reverted before commit). Default (unflagged) battery:
 3406/3387/13, byte-identical to the flag-forced run — confirms the flip
-behaves exactly as forced, as in §12. `npm run build` (fresh self-host
+behaves exactly as forced, as in §12. `npm run build` (fresh self-compile
 rebuild, gate §12's SECOND wall lived in): compiled, WASM-validated,
 completed cleanly. Directly re-probed §12's own three named failing shapes
 (array-literal-bigint, obj-field-bigint, a ternary-bigint local) through
 `compileViaKernel` at O0-O3 each: **all twelve correct, zero crashes, zero
-wrong values** — the exact self-host kernel-fidelity gap §12 hit on ITS OWN
+wrong values** — the exact self-compile kernel-fidelity gap §12 hit on ITS OWN
 flip attempt (`CRASH`/`memory access out of bounds` at O2/O3 on these same
 shapes) does not reproduce. `npm run build` × 2 with the flip: byte-
 identical (`5057747ba1539558225ebb61dd2b14725e0e39d9918776d388d1a9c004c8bcd7`).
 Plausible unifying explanation (not proven further this session): §12's own
 "what a third attempt needs" note named `ctx.func.ternaryBoxedNames` itself
 as one of the suspect NEW code shapes for the kernel's own optimizer passes
-to mishandle when self-hosting — this session's bug lives exactly there,
-and it is exercised by jz's OWN inliner, which the self-hosted kernel runs
+to mishandle when self-compiling — this session's bug lives exactly there,
+and it is exercised by jz's OWN inliner, which the self-compiled kernel runs
 on ITS OWN BigInt-heavy source (including, transitively, on its own copies
 of BigInt-canonicalization helpers) every time it compiles anything — so
 one over-broad registration site plausibly explains both the native-compiler
-wall (§13/§14) and the self-host kernel-fidelity wall (§12) as the same
+wall (§13/§14) and the self-compile kernel-fidelity wall (§12) as the same
 single defect observed from two different vantage points. `npm run test:wasm`
 (chained: kernel compiling further programs) hit an unrelated crash — a
 `RangeError` in `interop.js` `mem.read`/`readArgBits` decoding a BIGINT
@@ -1423,10 +1423,10 @@ rebuilt plain (no flag), gitignored, not committed either way
 Landing the default flip is a bigger decision than this session's bounded
 probe covers: Slice 5 (§7 of this doc) is its OWN named follow-on with its
 OWN full-discipline requirement — "native + kernel (O0/O2/O3) + wasi +
-selfhost + fuzz (2000×4) + fresh build ×2 byte-identity + warm/fresh perf
+self-compile + fuzz (2000×4) + fresh build ×2 byte-identity + warm/fresh perf
 gates" plus the actual DELETION of §5's 10 magnitude/sentinel kill-list
 sites and flipping specific KNOWN-FAIL test rows to green pins — none of
-which this session ran (no wasi gate, no selfhost test suite, no perf
+which this session ran (no wasi gate, no self-compile test suite, no perf
 gates, no kill-list deletion). A probe finding no wall is real, useful
 evidence the next attempt should lead with rather than re-deriving from
 scratch — but is not itself the rigor Slice 5's own charter demands before
@@ -1485,7 +1485,7 @@ lesson §13 already banked once for `watr/optimize.js`):**
 
 `export let f = () => LAYOUT.NAN_PREFIX_BITS` (no `i64Hex`/`atomNanHex` call
 at all) already returns the wrong value under `JZ_CARRIER_BOX=1` via the
-NATIVE compiler — no self-hosting needed. Trace:
+NATIVE compiler — no self-compiling needed. Trace:
 
 1. `LAYOUT` (`layout.js`) is `export const LAYOUT = { …, NAN_PREFIX_BITS:
    0x7FF8000000000000n, … }` — a module-scope object literal with one
@@ -1560,7 +1560,7 @@ its own soundness check (a wrong unbox on an UNBOXED raw field would be a
 NEW bug, not a fix). Given this call site is on the hot path for EVERY
 object field read in the entire compiler, a rushed change carries real
 blast-radius risk this session's remaining time cannot safely absorb-and-
-verify (kernel-parity/kernel-oracle/fuzz/selfhost all touch it). Banked,
+verify (kernel-parity/kernel-oracle/fuzz/self-compile all touch it). Banked,
 matching §11/§12/§13's own repeated choice under the identical circumstance.
 
 **PINNED**: `test/fixtures/carrier-layout-repro.js` (new, imports the REAL
@@ -1618,7 +1618,7 @@ every schema read), verify each of the 4+ call shapes (`emitPropAccess`'s
 bare-name/chain-receiver branches, `emitSchemaSlotGuarded`, `structInline`/
 `cellI32`) independently against hand-built repros BEFORE the kernel-scale
 probe, then re-run this section's own pins plus the full flagged-battery/
-kernel-parity/kernel-oracle/fuzz/selfhost discipline §11-§14 already
+kernel-parity/kernel-oracle/fuzz/self-compile discipline §11-§14 already
 established as this program's own gate list — only THEN reconsider the
 default flip, starting from §14's own "flip probe clean" bank plus this
 section's now-closed gap, not from scratch.
@@ -1846,7 +1846,7 @@ per-literal) exists to make sound — confirmed working, not just argued.
   program, because `ctx.schema.slotWriteHazards.all = true` — a single
   program-wide BLANKET hazard (`collectSlotWriteHazards`'s `hz.all`,
   triggered by some unresolvable computed-key write somewhere in the
-  compiler's own ~370K-line self-hosted source, pre-existing and
+  compiler's own ~370K-line self-compiled source, pre-existing and
   unrelated to this session) poisons `slotTypes` for literally every
   schema, so `slotBigintProvenBySid` (which REQUIRES the uniform-type
   proof) can never fire ANYWHERE when compiling the whole compiler as a
@@ -1915,7 +1915,7 @@ per-literal) exists to make sound — confirmed working, not just argued.
   kernel from the disposable baseline worktree (0de59be4, before this
   session's changes)** — same crash, same stack, same threshold. This is
   a real, pre-existing bug in string-argument marshaling for `console.log`
-  specifically under a SELF-HOSTED (kernel-compiled) `CARRIER_BOX=1`
+  specifically under a SELF-COMPILED (kernel-compiled) `CARRIER_BOX=1`
   build — `module/console.js`'s call site (`asI64Bits = (e) =>
   ['i64.reinterpret_f64', asF64(emit(e))]`) never routes through
   `storedValue`/`carrierF64`/any BIGINT-boxing logic at all, and native
@@ -1936,15 +1936,15 @@ OWN named gap exactly (proven-uniform-BIGINT schema-slot reads now unbox
 soundly, paired at schema granularity with a schema-wide write-side fact)
 and banks two NEWLY-DISCOVERED-BUT-PRE-EXISTING, precisely root-caused,
 separate gaps (`collectSlotWriteHazards`' whole-program `hz.all` blanket
-poison defeating the uniform-type proof for the self-hosted compiler's own
-huge source; a self-hosted-only `console.log` string-marshaling crash) —
+poison defeating the uniform-type proof for the self-compiled compiler's own
+huge source; a self-compiled-only `console.log` string-marshaling crash) —
 NEITHER of which this session introduced or is positioned to safely fix
 within scope. A future flip-readiness session should start from: (1) this
 entry's `hz.all` diagnosis (harden `collectSlotWriteHazards` for the
 specific unresolvable-computed-key-write pattern it's tripping on inside
-the compiler's own source), (2) the `console.log`/self-hosted string-
+the compiler's own source), (2) the `console.log`/self-compiled string-
 marshal crash (a `t===5` OOB unrelated to BigInt semantics — likely a
-tag/offset computation bug exposed only when self-hosting under
+tag/offset computation bug exposed only when self-compiling under
 CARRIER_BOX, worth its own targeted session), and (3) the pre-existing
 Slice 5/6/7 Map/dict-census export-boundary family in `test/dyn-keys.js`
 (11 already-failing rows under `JZ_CARRIER_BOX=1`, fully independent of
@@ -1966,7 +1966,7 @@ design.md` (this entry) — filed separately, plain messages, no push.
 gap as Task 1, not independent — both banked, no flip (2026-08-07)
 
 Session mandate: close §16's two banked, pre-existing gaps (finding 1 —
-`hz.all` blanket poison defeating `slotBigintProven` for the self-hosted
+`hz.all` blanket poison defeating `slotBigintProven` for the self-compiled
 compiler's own source; finding 2 — the carrier-kernel `console.log`
 crash) if safely scoped, bank precisely otherwise, no default flip
 regardless. Both walled on their STATED gates. Both are banked with a
@@ -2020,7 +2020,7 @@ line source. Two DISTINCT causes were found, ONE fixed, ONE banked:
    fixable this session.** ~150-300+ sites, overwhelmingly one shape:
    `arr[idx] = v` inside the compiler's OWN internal census helpers
    (`observeSlot`/`poisonSlot`/`poisonCtor` in `src/compile/program-
-   facts.js` itself, self-hosted — i.e. compiling the compiler's OWN
+   facts.js` itself, self-compiled — i.e. compiling the compiler's OWN
    census machinery AS a target program), where `arr` is `let arr =
    someMap.get(key); if (!arr) { arr = []; someMap.set(key, arr) }`.
    Traced to ground, not assumed:
@@ -2156,7 +2156,7 @@ WAT diff): compiled the minimized repro via `compileViaKernel` +
   corrupted decode — a host-side `console.log` spy shows the kernel
   called `print` with the string `"NaN"`, not `"short"`.
 Native compiles and runs both cleanly (`start()` → `1`, no crash) —
-confirms this is self-host-only, not a general regression.
+confirms this is self-compile-only, not a general regression.
 
 **Verdict: this is Task 1's finding at one more remove, not a second,
 independent bug.** Closing Task 1's banked `keyedWrite` class (the same
@@ -2311,7 +2311,7 @@ buckets.set(key, arr) }; arr[idx] = v }`) flips from `keyedWrite` (hz.all) to
 the §17 precedent's own instrumentation, re-added and stripped again before
 this commit) — THE WALL, found here, not anticipated by §17's own diagnosis:
 zero effect on the real `scripts/self.js` compile.** Two independent full
-self-host builds (a disposable `git worktree` at HEAD e16e5981 with only the
+self-compile builds (a disposable `git worktree` at HEAD e16e5981 with only the
 counters added, vs. the working tree with the full fix), run twice
 (comparing byte-for-byte identical counter output both times): `{"keyedWrite
 .early":319,"keyedExempt.early":54,"objectAssign":18,"keyedExempt.late":80,
@@ -2439,7 +2439,7 @@ all, confirmed by direct read): `const sid = ctx.schema.register(parsed.
 names); for (...) observeSlot(sid, i, valTypeOf(value))`. `ctx.schema =
 { list: [], vars: new Map(), poisoned: new Set(), ..., slotTypes: new
 Map(), ... }` (`src/ctx.js:380-431`, inside `reset()`) is exactly such a
-literal — when `reset()` is compiled as part of the self-hosted
+literal — when `reset()` is compiled as part of the self-compiled
 `scripts/self.js` graph, this walk visits it like any other `{}` node,
 registers its own schema id (call it S2, keyed by its ~14-name property
 list), and **correctly observes S2's `slotTypes` slot as `VAL.MAP`** — `new
@@ -2519,10 +2519,10 @@ that receiver resolves to anything:
 ```
 
 **2496 chained-receiver reads of a `ctx.schema.*`-shaped census field
-across the whole self-hosted source, 0 resolved via `shapeOf` —
+across the whole self-compiled source, 0 resolved via `shapeOf` —
 `shapeHit: 0/2496`.** The sampled hits include the EXACT target site:
 `program-facts.js:624`'s `const slotTypes = ctx.schema.slotTypes` itself
-(`m56_ctx$ctx` is the self-host module-mangled name for the `ctx` import),
+(`m56_ctx$ctx` is the self-compile module-mangled name for the `ctx` import),
 confirming the static-analysis prediction directly on the real compile,
 not just in isolation. (`ctx.func`/`ctx.module` etc. show up in `seen`
 too, at other property-census-field-named reads elsewhere in the source —
@@ -3085,8 +3085,8 @@ re-diagnose this as "the lever doesn't work" from a confounded probe.
 
 **On the REAL `scripts/self.js` corpus: ZERO effect, confirmed twice
 (temporary `JZ_DEBUG_HZALL` counters, same discipline as §17/§18, stripped
-before commit).** `JZ_SELFHOST_OPT=0`: `keyedWrite.all` early=320 late=320,
-`paramSaved=0`. Full production `scripts/build-dist.mjs`/`selfhost-
+before commit).** `JZ_SELF_COMPILE_OPT=0`: `keyedWrite.all` early=320 late=320,
+`paramSaved=0`. Full production `scripts/build-dist.mjs`/`self-compile-
 build.mjs` profile (O3, the actual `dist/jz.wasm` build): early=320
 late=325, `paramSaved=0` — **no collapse, §17's own 319-ish baseline
 essentially unchanged** (the +1 early / +5 late drift versus §17's "319"
@@ -3107,7 +3107,7 @@ scope by design, a separate, still-open gap in `repOf`'s cursor alignment
 per §17's own note). The PARAM cases are the direct, confirmed signature
 of the exact same dynamic §17/§18 already diagnosed for the Map-receiver
 side of this idiom: `observeSlot`/`poisonSlot`/`poisonCtor`/`walkPost`-
-shaped helpers are called from HUNDREDS of sites across the self-hosted
+shaped helpers are called from HUNDREDS of sites across the self-compiled
 compiler's own source (§17's own count), so the cross-call `val`/`wasm`
 lattice's monotone meet (`mergeParamFact`: any two disagreeing sites →
 sticky `null`, forever) collapses to TOP the moment ONE call site passes
@@ -3153,7 +3153,7 @@ for the structural reason above.
   expected; unaffected.
 - `JZ_CARRIER_BOX=1 kernel-parity` (against a freshly, fully rebuilt
   CARRIER-BUILT `dist/jz.wasm`, i.e. `JZ_CARRIER_BOX=1 node scripts/
-  selfhost-build.mjs`): `dict` STILL diverges O0/O2/O3, byte-for-byte the
+  self-compile-build.mjs`): `dict` STILL diverges O0/O2/O3, byte-for-byte the
   SAME divergence shape as §17 (same sizes: 227398B/229709B/246043B) —
   expected, unchanged, confirms the lever's zero self.js effect rather
   than contradicting it.
@@ -3185,7 +3185,7 @@ for the structural reason above.
   consistent with the self.js finding that it's a narrow, if real,
   precondition). `npm run build` ×2: `dist/jz.js`, `dist/interop.js`,
   `dist/jz.wasm` SHA-256 identical both runs (reproducible).
-- **The self-hosted `dist/jz.wasm` build's own bytes DO differ** from the
+- **The self-compiled `dist/jz.wasm` build's own bytes DO differ** from the
   pre-session baseline (confirmed, expected, explained — not a functional
   regression): `scripts/self.js` includes `program-facts.js` itself as
   part of the compiler's own source, so ANY text edit to it — even one
@@ -3295,14 +3295,14 @@ lattice design), not a magic fix for a DIFFERENT, still-open circularity.
 
 **Diagnostic (Gate 1, `JZ_DEBUG_HZALL`, matching §17/§18/§20's own
 instrumentation exactly — temporary, module-scope counters, NOT
-`globalThis` this time: `program-facts.js` is bundled into the self-hosted
+`globalThis` this time: `program-facts.js` is bundled into the self-compiled
 compiler's own source, and jz's language subset does not support a bare
 `globalThis` reference — the first attempt at this instrumentation broke
-`scripts/selfhost-build.mjs` outright ("globalThis is not in scope"),
-caught by running the self-host build as part of gating the instrumentation
+`scripts/self-compile-build.mjs` outright ("globalThis is not in scope"),
+caught by running the self-compile build as part of gating the instrumentation
 itself, not assumed safe; fixed by using a plain module-scope object
 instead — stripped after use, this correction is not carried forward),
-real self.js compile (`JZ_SELFHOST_OPT=0 node scripts/selfhost-build.mjs`):
+real self.js compile (`JZ_SELF_COMPILE_OPT=0 node scripts/self-compile-build.mjs`):
 **NO COLLAPSE.** `{"keyedWrite.early":497,"keyedWrite.late":498,
 "censusExempt.early":0,"censusExempt.late":0}` — zero census exemptions
 fired anywhere in the real compile, at either generation. (The raw
@@ -3390,8 +3390,8 @@ the rest of this consumer, applied preemptively rather than after a second
 failed measurement.
 
 **Gates run:** isolated repro sanity (above) — mechanism verified live.
-`JZ_DEBUG_HZALL` real self.js compile (`JZ_SELFHOST_OPT=0 node
-scripts/selfhost-build.mjs`) — the task's own first gate, per §18/§20's own
+`JZ_DEBUG_HZALL` real self.js compile (`JZ_SELF_COMPILE_OPT=0 node
+scripts/self-compile-build.mjs`) — the task's own first gate, per §18/§20's own
 "Gate 1 is the FIRST gate in the ordered list, and it is the one this
 session's fix fails; running the later, far more expensive gates... would
 itself be the force-it-anyway this discipline exists to prevent" — 0
@@ -3416,7 +3416,7 @@ separately, plain messages, no push.
 ## §24. CONSERVATIVE PAIRING implemented — mechanism verified sound and
 correct for its own target class (arithmetic-core BigInt-operand reads),
 2/3 §15 WAT differentials CLOSED — but a NEW, deeper, scale-dependent wall
-found in the full self-hosted kernel build (a module-scope BigInt-constant
+found in the full self-compiled kernel build (a module-scope BigInt-constant
 construction gap, root-caused but not fixed) that keeps dict/test:wasm red
 — banked, no flip (2026-08-09, `.work/context-sensitivity-survey.md`'s
 COORDINATOR RULING: "the remaining sound direction is CONSERVATIVE
@@ -3497,7 +3497,7 @@ touching the real kernel:**
    `test/pointers.js` (`JZ_CARRIER_BOX=1`-gated, true no-op under
    default — 35/35 both modes, 62/70 assertions default/flagged,
    matching §15/§16's own established pattern).
-3. Confirmed the mechanism reaches the REAL self-hosted compile: a
+3. Confirmed the mechanism reaches the REAL self-compiled compile: a
    temporary probe (`JZ_DBG_CENSUS`, stripped before commit) against the
    real `scripts/self.js` graph confirms `LAYOUT.NAN_PREFIX_BITS`'s own
    read site fires `isSchemaSlotBigintPossible` with `boxed=true,
@@ -3535,7 +3535,7 @@ kernel-build gate does not.**
   original "read the box's own pointer bits" pattern §15 named). This is
   a NEW manifestation, traced (not merely observed) to `UNDEF_NAN`'s own
   construction: `src/ir.js`'s `export const UNDEF_NAN = atomNanHex(2)` is
-  a MODULE-SCOPE CONST — when self-hosted, its initializer compiles to a
+  a MODULE-SCOPE CONST — when self-compiled, its initializer compiles to a
   real, non-inlined `call $atomNanHex (i32.const 2)` inside the KERNEL's
   own `$__start` (confirmed by direct WAT inspection: `global.set
   $m78_ir$UNDEF_NAN (call $m61_layout$atomNanHex (i32.const 2))`, module
@@ -3554,7 +3554,7 @@ kernel-build gate does not.**
   snapshotInit:true}` build settings `build-dist.mjs` itself uses):
   `atomNanHex(1)`/`(2)` decode CORRECTLY there, every optimize level,
   with and without snapshotting. The gap is specific to the SCALE/
-  complexity of the real ~370K-line self-hosted source, not a flaw in
+  complexity of the real ~370K-line self-compiled source, not a flaw in
   this session's own mechanism (item 3 above already confirms the
   generated dispatch code is structurally sound) — the same
   "materially larger, separately-scoped, not reproducible in a minimal
@@ -3634,7 +3634,7 @@ object's members (`ARRAY`/`CLOSURE`/`DATE`/`HASH`/`MAP`/`OBJECT`/`SET`/
 `STRING`); the remaining 24 are compiler-INTERNAL IR/AST-representation
 fields on various mangled local bindings (`.local`/`.pre`/`.sign`/`.id`/
 `.name`/`.length`/`.get`/`.is`/`.ovr`/`.boundConst`) — consistent with a
-self-hosted compiler whose own generic IR/plan objects sometimes carry a
+self-compiled compiler whose own generic IR/plan objects sometimes carry a
 BigInt LITERAL VALUE copied straight from the target program being
 compiled (the expected, unsurprising shape for this class, not
 independently investigated further).
@@ -3649,7 +3649,7 @@ confirmed (not just size) — the new code path is unconditionally
 `CARRIER_BOX`-gated at its own first predicate check
 (`isSchemaSlotBigintPossible`'s `CARRIER_BOX &&` short-circuit), so the
 default kernel's own compiled bytes cannot differ, and don't.
-Self-host-perf (`scripts/bench-selfhost.mjs`, relative same-session): NOT
+Self-compile-perf (`scripts/bench-self-compile.mjs`, relative same-session): NOT
 separately measured — the flip-readiness gate already fails upstream of
 performance (dict + test:wasm, both still red), and running an expensive
 timing benchmark for a change that cannot flip regardless would be
@@ -3698,7 +3698,7 @@ A later session tested the coordinator's hypothesis that AUDIT-#17's
 module-scope nested-object-literal store-loop miscompile (`.work/todo.md`,
 `8b8bddca`) and THIS §24 entry's `UNDEF_NAN` module-scope BigInt-const-
 initializer gap were ONE mechanism (both "module-scope decl-init,
-kernel/self-host-only, not reproducible in an isolated repro"). **Decisive
+kernel/self-compile-only, not reproducible in an isolated repro"). **Decisive
 split, not a unification**: AUDIT-#17 reproduces on a freshly rebuilt,
 byte-size-verified **DEFAULT** (`JZ_CARRIER_BOX` unset) `dist/jz.wasm` —
 16467.3 kB, the exact size this doc's own §17/§22 entries record as the
@@ -3781,7 +3781,7 @@ structural argument (CARRIER_BOX-gated code is physically absent from the
 default build AUDIT-#17's bug class lives in), not a re-derivation of it.
 No pins flip. §24/§25's own "what a fix session needs" (root-cause
 `UNDEF_NAN`'s module-scope BigInt-const-initializer corruption at real
-self-hosted-kernel scale — comparing `snapshotInit:false` vs `true` on the
+self-compiled-kernel scale — comparing `snapshotInit:false` vs `true` on the
 REAL `scripts/self.js` graph) stays exactly where §24 left it; this entry
 adds no new lead toward it.
 
@@ -3837,7 +3837,7 @@ fresh carrier kernel and the shared tree's existing default kernel
 **1887 data segments** (segment 0 = the `snapshotInit`-baked heap image at
 memory offset 0; segments 1–1886 = one per compile-time static slot,
 `appendStaticSlots`' normal per-literal emission — present, and IDENTICALLY
-laid out, in every self-hosted build, not a CARRIER_BOX artifact). Diffing
+laid out, in every self-compiled build, not a CARRIER_BOX artifact). Diffing
 the full (offset, byteLength) list between the two kernels: **1886 of 1887
 segments are byte-for-byte identical** (same memory offset, same length,
 in both builds). The ONE difference is segment 0's own total length
@@ -4001,7 +4001,7 @@ deletes `$__start` after baking, per `src/snapshot.js`'s own doc comment
 wrong value but not the CALL SEQUENCE producing it). Isolated `$__start`'s
 73846-line body (lines 7979603-8053448 of the dump) and grepped WITHIN
 that isolated slice only — the raw whole-file grep §26a/§27's own method
-implicitly relied on is unsafe at this scale: the self-hosted compiler's
+implicitly relied on is unsafe at this scale: the self-compiled compiler's
 OWN WAT-template strings (module/core.js's stdlib bodies, compiled as
 DATA since the compiler carries its own codegen templates as string
 literals) contain "global.set", "UNDEF_NAN", "layout" etc. as literal
@@ -4577,7 +4577,7 @@ summary).
 | 10 | `§14 point 4 FIXED: the 9-op census-BigInt sub-case…` | (c)→FIXED | same as #7 |
 | 11 | `single-call-site unary "-" param-hop: present-key BigInt census value (module-level Map)…` | (c)→FIXED | same as #1 |
 | 12 | `kernel oracle: KNOWN-FAIL (audit-#16, ctx.features.bigint module-ordering…)` | (b) banked | pre-existing, wrong at BOTH native and kernel — a separate FeaturePlan module-inclusion-order bug, zero overlap with `CARRIER_BOX` |
-| 13 | `kernel oracle: KNOWN-FAIL (JZ_CARRIER_BOX=1 only … console.log heap-string)` | (b) banked | `CARRIER_BOX`-only self-hosted-kernel miscompile, §16→§17, unrelated mechanism |
+| 13 | `kernel oracle: KNOWN-FAIL (JZ_CARRIER_BOX=1 only … console.log heap-string)` | (b) banked | `CARRIER_BOX`-only self-compiled-kernel miscompile, §16→§17, unrelated mechanism |
 
 Every row in the 13-row tail is class (c) at the START of this session
 (none pre-classified) — 11 resolved to a single ROOT MECHANISM (rows
@@ -4696,7 +4696,7 @@ ordering) is wrong at BOTH native AND kernel — never a `CARRIER_BOX`
 question, a separate FeaturePlan-ordering bug with its own name and no
 lever this session's fix touches. Row 13 (§16→§17, `console.log`
 heap-string kernel miscompile) is `CARRIER_BOX`-only but lives inside the
-SELF-HOSTED KERNEL's own generated code, not the native compiler — the
+SELF-COMPILED KERNEL's own generated code, not the native compiler — the
 same class of "kernel-target-only, invisible to any native-scale
 gate" wall §26-§29 spent multiple sessions root-causing for the
 `atomNanHex`/`i64Hex` case; this row needs the identical
@@ -4784,7 +4784,7 @@ gitignored).
 ## §31. Final 2-3 gaps attacked: 2 of 3 KNOWN-FAIL pins were STALE (bugs
 already closed, incidentally, by §24/§29/§30 — corrected, not fixed here),
 the third (test:wasm item 8) root-caused MORE PRECISELY than §16-§30's own
-framing — a write-side box/no-box divergence under self-host, not a
+framing — a write-side box/no-box divergence under self-compile, not a
 read-side hz.all/unproven gap — banked (2026-08-10)
 
 **Method note.** `scripts/trace-inject.mjs`'s own splicing mechanics
@@ -4828,9 +4828,9 @@ never cross-checked against it. The underlying audit-#16 bug itself
 `prep()` ordering) is UNCHANGED and still real — only its NATIVE-leg
 symptom disappeared as an unrelated fix's side effect; the KERNEL leg,
 whose own `$__to_num`/CONSERVATIVE-PAIRING dispatch is baked from a
-SEPARATE self-hosted build, did not get the same benefit (root cause not
+SEPARATE self-compiled build, did not get the same benefit (root cause not
 pinned down further this session — plausibly the SAME class as gap-2's
-write-side self-host divergence, not confirmed).
+write-side self-compile divergence, not confirmed).
 
 **Fix landed**: `test/kernel-oracle.js`'s audit-#16 test now branches its
 native-leg assertion on `process.env.JZ_CARRIER_BOX` (mirrors §30's own
@@ -4870,7 +4870,7 @@ unaffected by `pointsTo==='ALL'`) but read-side UNPROVEN, routing through
 `maybeUnboxBigInt` instead of a naive unconditional reinterpret. `ptrBits`'s
 own body (`layout.js`) — `LAYOUT.NAN_PREFIX_BITS | ((type&15)<<47) | …` —
 IS exactly this shape (an arithmetic-core BigInt-operand OR-expression).
-Once §24's dispatch got baked into the self-hosted kernel build, the
+Once §24's dispatch got baked into the self-compiled kernel build, the
 RUNNING kernel's own compiled `ptrBits` started correctly unboxing the
 LAYOUT box AT RUNTIME (checking the ACTUAL tag bits of whatever value it's
 handed) instead of trusting a static proof that `pointsTo==='ALL'`
@@ -4900,7 +4900,7 @@ recorded but never explained. This session explains it.
 
 **§16/§17's own framing (repeated verbatim through §29/§30) says this is a
 READ-SIDE gap**: `slotBigintProvenAt('LAYOUT','NAN_PREFIX_BITS')` never
-proves TRUE under the self-hosted build's `pointsTo==='ALL'` blanket, so
+proves TRUE under the self-compiled build's `pointsTo==='ALL'` blanket, so
 `emitSchemaSlotRead` "hands back the box's raw pointer bits." **Traced via
 WAT diff (native vs. kernel, the isolated `carrier-conservative-pairing-
 repro.js` fixture, `compileViaKernel({wat:true})`) — this framing is
@@ -4927,7 +4927,7 @@ OWN write-side boxing decision (`slotBigintBoxedBySid`, module/object.js's
 `{}`-literal construction, §16 write-site #1 — fail-open, "unaffected by
 `pointsTo==='ALL'`" per §16's own claim) evaluates to a DIFFERENT boolean
 when its OWN logic is executed AS COMPILED BY THE KERNEL vs. natively, for
-byte-identical source. This is a SELF-HOSTED MISCOMPILE of the compiler's
+byte-identical source. This is a SELF-COMPILED MISCOMPILE of the compiler's
 own `anyDynKey`/dyn-shadow census (the fixture's `corrupt(obj,key,val)`
 unresolvable dynamic write is what makes `anyDynKey` true program-wide,
 which is what makes LAYOUT's write-side decision "box" — natively correct,
@@ -4961,7 +4961,7 @@ write-side divergence exposes it.
 **NOT fixed — two open, DISTINCT threads, correctly separated for the
 first time**: (1) WHY the kernel's own compiled `anyDynKey`/
 `slotBigintBoxedAt` census evaluates false when native's evaluates true,
-for byte-identical source — a genuine self-host miscompile in the
+for byte-identical source — a genuine self-compile miscompile in the
 compiler's OWN dyn-shadow detection, requiring INSIDE-THE-KERNEL
 instrumentation (trace-inject.mjs-grade — this is the piece that
 genuinely needs it, unlike gaps 1/3 above) to pin down. **A concrete,
@@ -4972,7 +4972,7 @@ to `false` via a `let real = false` captured and mutated by a nested
 `visit` closure, then read back in the outer loop (`if (real) break`) and
 finally consulted at the function's tail (`if (!real) ctx.types.anyDynKey
 = false`) — a captured-then-mutated-then-read BOOLEAN local is exactly the
-shape class this SAME file already pins as a live, PENDING-FIX self-host
+shape class this SAME file already pins as a live, PENDING-FIX self-compile
 gap elsewhere (`test/kernel-oracle.js`'s "captured-then-read" row) —
 though that pinned repro requires an AMBIGUOUS BOOL∪NUMBER merge value,
 which `real` never is (checked — every assignment to `real` is a bare
@@ -4981,7 +4981,7 @@ bug, only worth checking first. (2) whether
 interop.js's generic "r"-marker decode should be hardened against the
 raw/box bit-collision at `0x7FF8000000000000` regardless of (1) — a
 narrower, more contained, JS-host-side-only fix that was DELIBERATELY NOT
-attempted here: it would paper over a real compiler self-host bug rather
+attempted here: it would paper over a real compiler self-compile bug rather
 than fix it (this project's own "optimize the tool, never the input" /
 fix-root-cause discipline), and risks masking future instances of the
 SAME collision at other export sites. (1) is the real lever; (2) is a
@@ -4997,7 +4997,7 @@ band-aid, named only so a future session doesn't reach for it first.
    CONSERVATIVE PAIRING landing after §17; this session found and pinned
    it. KNOWN-FAIL → AGREE.
 3. **test:wasm item 8 (`rawField()`): STILL OPEN, root-caused more
-   precisely** — write-side self-host divergence, not the read-side
+   precisely** — write-side self-compile divergence, not the read-side
    `pointsTo==='ALL'` gap every prior session assumed. Banked with the
    corrected mechanism and the two now-separated next levers.
 
@@ -5067,19 +5067,19 @@ attempts used, with zero coverage gap a literal source-default edit would
 have added.
 
 **Verdict: NOT READY.** Gap 2 (test:wasm item 8, `rawField()` → `NaN`) is
-a live, reproducible, CONFIRMED self-hosted correctness bug under
+a live, reproducible, CONFIRMED self-compiled correctness bug under
 `JZ_CARRIER_BOX=1` — exactly the class of release-blocking gap `src/
 ctx.js`'s own standing comment on `CARRIER_BOX` names as the bar ("a
 carrier-built KERNEL corrupts generated f64 constants... do not build
 dist/jz.wasm with it set until [the] finding is closed"). This session's
 gap-2 work sharpened WHICH finding blocks the flip (a write-side
-`anyDynKey`/`slotBigintBoxedAt` self-host divergence, not the read-side
+`anyDynKey`/`slotBigintBoxedAt` self-compile divergence, not the read-side
 `pointsTo==='ALL'` story §16-§30 assumed) but did not close it. The 2-row
 main-battery delta reaching parity is real progress — it means every
 OTHER previously-known flag-forced-only symptom is now closed or
 correctly re-classified — but the flip bar is `CARRIER_BOX` producing a
-CORRECT self-hosted kernel, not merely a battery-parity kernel; gap 2 is
-exactly the kind of self-host-only, main-battery-invisible bug that
+CORRECT self-compiled kernel, not merely a battery-parity kernel; gap 2 is
+exactly the kind of self-compile-only, main-battery-invisible bug that
 `JZ_TEST_TARGET=jz.wasm`/`kernel-oracle`/`test:wasm` exist to catch
 precisely because the main battery cannot. **No default flip — matches
 both this session's own finding and the coordinator's standing ruling.**
@@ -5091,7 +5091,7 @@ INSIDE the running carrier kernel (trace-inject.mjs-grade instrumentation,
 now genuinely warranted — this is the one gap this session's lighter WAT-
 diff technique could not fully resolve) why `refineDynKeys`'s `real`
 local — or whatever other site turns out to own the divergence — settles
-differently for `ctx.types.anyDynKey` between a native and a self-hosted
+differently for `ctx.types.anyDynKey` between a native and a self-compiled
 compile of the identical `carrier-conservative-pairing-repro.js` fixture.
 Once found, the fix likely closes gap 2, and by extension hardens whatever
 OTHER export lane shares the same raw/box bit-collision at
@@ -5116,7 +5116,7 @@ design's own standing rule (gap 2 keeps it in force).
 
 ## §32. Item 8 (`rawField()`) ROOT-CAUSED AND FIXED — the named lead
 (`refineDynKeys`) was WRONG; the real cause was never a census-divergence
-bug at all. FIXING it unmasks a second, previously-invisible self-host
+bug at all. FIXING it unmasks a second, previously-invisible self-compile
 gap (`ternaryBoxedNames`/`.bigint:toString`) — test:wasm still short of
 100% green, flip STILL blocked, but on a materially different, more
 precise blocker (2026-08-10)
@@ -5134,7 +5134,7 @@ genuinely current kernel.
 Per this session's mandate, instrumented the actual write-side decision
 chain with data-gated `console.error` probes (gated on `prop ===
 'NAN_PREFIX_BITS'`/`name === 'r'` — NOT `process.env`-gated, since an
-env-gated probe would itself fold to dead code under self-hosting, the
+env-gated probe would itself fold to dead code under self-compiling, the
 same trap this session's finding is about) at three points: `CARRIER_BOX`'s
 own top-level declaration (`src/ctx.js`), `isSchemaSlotBigintPossible`
 (`src/ir.js`), and `ctx.schema.slotBigintBoxedBySid` (`module/schema.js`).
@@ -5160,27 +5160,27 @@ as ordinary NATIVE JavaScript (`node index.js`, `node scripts/build-
 dist.mjs`'s own process). But `CARRIER_BOX` is also a plain top-level
 `const`, imported and consumed as a VALUE throughout the compiler's own
 source (`module/schema.js`, `module/object.js`, `src/ir.js`) — and THAT
-source is exactly what gets self-hosted (compiled BY jz, via `build-
+source is exactly what gets self-compiled (compiled BY jz, via `build-
 dist.mjs`'s `compile(g.code, {modules: g.modules, ...})` call on
 `scripts/self.js`'s resolved graph). `src/prepare/index.js`'s own `typeof`
 handler (`staticTypeofString`/`isUnresolvableBareIdent`, spec §13.5.3,
 comment: "Unresolvable bare refs fold to 'undefined'... the only place a
 stray identifier doesn't ReferenceError") CORRECTLY, UNCONDITIONALLY folds
 `typeof process` to the literal string `'undefined'` for ANY jz compile —
-native or self-hosted — because `process` is never declared anywhere in
+native or self-compiled — because `process` is never declared anywhere in
 jz's own source or its `GLOBALS` table. That makes `CARRIER_BOX`'s own
 initializer fold to `false` the instant IT ITSELF is compiled (not run)
-by jz — permanently, structurally, for EVERY self-hosted kernel ever
-built, regardless of which flag state built it. **This is not a self-host
+by jz — permanently, structurally, for EVERY self-compiled kernel ever
+built, regardless of which flag state built it. **This is not a self-compile
 MISCOMPILE — the compiler produces textbook-correct code for what the
 source literally says.** `CARRIER_BOX`'s own declaration is simply an
 idiom that was never designed to survive being compiled rather than run;
-the self-hosted kernel structurally cannot observe a live env var (wasm
+the self-compiled kernel structurally cannot observe a live env var (wasm
 has no `process`, no `env`).
 
 **Fix — bake the build's actual flag value in as a source-text literal
-before self-hosting (`scripts/build-dist.mjs`), the standard technique for
-a build-time constant that must survive into a self-hosted artifact
+before self-compiling (`scripts/build-dist.mjs`), the standard technique for
+a build-time constant that must survive into a self-compiled artifact
 (webpack `DefinePlugin` / rustc `cfg!` precedent):**
 ```js
 const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: true })
@@ -5192,11 +5192,11 @@ const g = resolveModuleGraph(resolve(ROOT, 'scripts/self.js'), { resolveNode: tr
 ```
 (guarded by two `throw`s if the module isn't found or the declaration's
 shape ever changes, so a future refactor fails loudly instead of silently
-reverting to the old bug). Scoped to `build-dist.mjs`'s own self-hosting
+reverting to the old bug). Scoped to `build-dist.mjs`'s own self-compiling
 step only — every native code path (`node index.js`, every `test/*.js`)
 still imports and reads `src/ctx.js`'s real declaration, completely
-untouched. `scripts/selfhost-build.mjs` (the OTHER self-hosting script,
-"the selfhost gate" per its own header, never `CARRIER_BOX`-tested by any
+untouched. `scripts/self-compile-build.mjs` (the OTHER self-compiling script,
+"the self-compile gate" per its own header, never `CARRIER_BOX`-tested by any
 existing gate) was deliberately NOT touched — out of scope, noted for a
 future session if that path is ever exercised under the flag.
 
@@ -5209,11 +5209,11 @@ pointers`: **35/35 (70 assertions)** — `rawField()` now correctly returns
 `9221120237041090560n`. `CARRIER_BOX`'s own top-level probe (re-instrumented
 briefly to confirm) now reads `1`/true inside the running kernel, exactly
 once, at `$__start` time — the flag genuinely activates inside a
-self-hosted kernel for the first time in this design's entire history.
+self-compiled kernel for the first time in this design's entire history.
 
 **Bonus, unplanned: incidentally fixes audit-#16's kernel leg too.**
 §31's own gap-3 writeup already speculated this ("plausibly the SAME class
-as gap-2's write-side self-host divergence, not confirmed") — now
+as gap-2's write-side self-compile divergence, not confirmed") — now
 confirmed. Audit-#16's native-leg accidental fix (§24 CONSERVATIVE
 PAIRING's `maybeUnboxBigInt` dispatch, itself `CARRIER_BOX`-gated via
 `isSchemaSlotBigintPossible`) was ALSO silently inert inside every prior
@@ -5256,7 +5256,7 @@ native `.bigint:toString`'s operand read is
 kernel's own compiled `isTernaryBoxedBigint('r')` (`src/ir.js`, gated on
 `ctx.func.ternaryBoxedNames`, a per-function transient Set populated by
 `emitDecl`, `src/compile/emit.js`) evaluates FALSE where native's
-evaluates TRUE, for byte-identical source — a genuine self-host
+evaluates TRUE, for byte-identical source — a genuine self-compile
 divergence, this time NOT explained by `CARRIER_BOX` itself (confirmed
 correctly `true` throughout this fixed kernel — this is a DIFFERENT,
 downstream mechanism). **Comment in `src/ir.js` at `isTernaryBoxedBigint`'s
@@ -5264,7 +5264,7 @@ own declaration names this EXACT repro as "the ORIGINAL incident this
 predicate exists for"** — the fix that's supposed to handle this shape
 already exists and is `CARRIER_BOX`-gated correctly; something ELSE in its
 own write/read pairing (the `emitDecl` `?:`-shape gate at emit.js ~2203,
-or `ternaryBoxedNames` Set membership itself) diverges under self-hosting.
+or `ternaryBoxedNames` Set membership itself) diverges under self-compiling.
 
 **Not root-caused further this session.** Placed the same class of direct,
 data-gated `console.error` probes at the write site (`ctx.func.ternary
@@ -5350,18 +5350,18 @@ session.** The specific, named mandate for this session — root-cause and
 fix item 8's write-side census miscompile — is COMPLETE: the named lead
 (`refineDynKeys`) is REFUTED, the true root cause (`CARRIER_BOX`'s
 `typeof process` host-detection idiom, structurally incompatible with
-self-hosting) is fixed at the root, verified via direct runtime probes
+self-compiling) is fixed at the root, verified via direct runtime probes
 (not inference), and the fix is a proven no-op for the default build
 (byte-identical, isolated, 3 independent confirmations) and for the
 flag-forced native-only battery (unchanged, as expected). **But `src/
 ctx.js`'s own standing bar for the flip — CARRIER_BOX producing a
-CORRECT self-hosted kernel, not merely a battery-parity one — is still
+CORRECT self-compiled kernel, not merely a battery-parity one — is still
 unmet**: fixing item 8 unmasked a SECOND, structurally different,
-previously-invisible self-host gap (`ternaryBoxedNames`/`.bigint:toString`
+previously-invisible self-compile gap (`ternaryBoxedNames`/`.bigint:toString`
 dispatch) that `test:wasm`'s full run exists precisely to catch. This is
 not a regression this session introduced — it's a PRE-EXISTING bug that
 was NEVER ONCE exercised in this design's entire history, because
-`CARRIER_BOX` was silently inert inside every self-hosted kernel ever
+`CARRIER_BOX` was silently inert inside every self-compiled kernel ever
 built before this fix. **No default flip.** `CARRIER_BOX` stays
 `JZ_CARRIER_BOX==='1'`-gated, OFF by default, unchanged shape from
 §14-§31.
@@ -5373,7 +5373,7 @@ plain `console.error` probe (verified this session NOT to reach the
 naively-instrumented call sites at all) — splice debug traces directly
 into the kernel-compiled `emitDecl`/`isTernaryBoxedBigint` WASM bodies to
 see where the write/read pairing actually breaks. Once found: given this
-design has now found the SAME "silently-inert-under-self-hosting" root
+design has now found the SAME "silently-inert-under-self-compiling" root
 shape TWICE (`CARRIER_BOX` itself, this session; plausibly others still
 hiding) — worth an explicit audit for every OTHER module-level constant in
 `src/`/`module/` gated on `typeof process`/`process.env` and consumed as a
@@ -5404,14 +5404,14 @@ rebuild, given the concurrent contamination; never built
 rule (still in force — the new gap keeps it in force).
 
 ## §33. The `ternaryBoxedNames`/`.bigint:toString` gap, traced to a precise,
-narrow location — `Set.prototype.has()` on a self-hosted-compiled Set
+narrow location — `Set.prototype.has()` on a self-compiled-compiled Set
 returns a stale/wrong answer at ONE specific call site despite the Set's
 content being independently proven correct — but NOT confidently fixed;
 banked per this session's own wall-and-stop mandate, flip still blocked
 (2026-08-10)
 
 Picked up exactly where §32 left off: root-cause the `ternaryBoxedNames`/
-`isTernaryBoxedBigint` self-host divergence §32 named but couldn't crack
+`isTernaryBoxedBigint` self-compile divergence §32 named but couldn't crack
 (its own naive `console.error` probes, gated on `name === 'r'`, never
 fired). Two isolated worktrees this session, both off `c3c184fc` (HEAD at
 session start, §32's own commit + one intervening unrelated landing):
@@ -5445,9 +5445,9 @@ dereferences) — `isTernaryBoxedBigint('r')` evaluates `true` in native,
 §32's `name === 'r'` probes were gated on the WRONG value, not
 unreachable.** `src/prepare/index.js`'s `mintLocal` (`${name}${T}f
 ${owner}_${serial}`, `T` = U+E000, `src/ast.js`) renames every source
-identifier — INCLUDING inside the self-hosted COMPILER's own source, since
+identifier — INCLUDING inside the self-compiled COMPILER's own source, since
 `mintLocal` is jz's ordinary hygiene pass and the compiler's own code is
-just another target program under self-hosting — before `compile/emit.js`
+just another target program under self-compiling — before `compile/emit.js`
 ever sees it. `name` at `emitDecl`'s own `ternaryBoxedNames.add(name)` call
 site is never the literal string `'r'`; it is an 8-code-unit mangled name
 (`r` + the PUA marker + `f1_1`, confirmed live via `charCodeAt` dumps) that
@@ -5459,7 +5459,7 @@ byte-decoding quirk surfaced alongside this: `charCodeAt` on the PUA marker
 sometimes returned its raw 3-byte UTF-8 encoding as three separate "code
 units" instead of one U+E000 code point, inconsistently across otherwise-
 identical rebuilds — never chased further, flagged here only so a future
-`charCodeAt`-based probe on a self-hosted PUA-marked name isn't misread.)
+`charCodeAt`-based probe on a self-compiled PUA-marked name isn't misread.)
 
 **The precise divergence, isolated via a sequence-numbered `enterFunc`
 probe (`ctx.__dbgEnterFuncSeq`, incremented once per `enterFunc` call,
@@ -5556,7 +5556,7 @@ build still carrying the extra `dbgNoOptChain` function and its
 `console.error` calls; removing that scaffolding (with or without the `?.`
 change) changes the compiled kernel's own memory/allocation layout enough
 to flip the bug's own reproducibility — strong, direct evidence this is a
-genuine **self-host memory-layout-sensitive miscompile** (the same broad
+genuine **self-compile memory-layout-sensitive miscompile** (the same broad
 class as `?.`, hash tables, or anything else touched here, all consistent
 with "some compiled artifact aliases/overwrites a few bytes it shouldn't,
 and whether THIS repro's own Set lands on the corrupted bytes depends on
@@ -5646,7 +5646,7 @@ layout* to begin with (see mechanism below), so a layout-only change had
 nothing to perturb.
 
 **Method: §33's own mandate — instrument the compiled KERNEL directly,
-never re-run the self-host build off edited source.** Generated the
+never re-run the self-compile build off edited source.** Generated the
 kernel's own WAT TEXT via the IDENTICAL pipeline/config `build-dist.mjs`
 uses for the binary (`resolveModuleGraph('scripts/self.js')`, the same
 CARRIER_BOX source-literal injection, `optimize:{level:3,watrGuard:false,
@@ -5672,8 +5672,8 @@ findings: the Set's content was ALWAYS correct (iteration + `__str_hash`
 itself was never wrong — only the glue converting its raw i32 answer into
 something comparable against a boxed `true` literal was.
 
-**Confirmed with a plain NATIVE (non-self-hosted) repro before touching
-the kernel again** — the bug needs no self-hosting at all, it is a general
+**Confirmed with a plain NATIVE (non-self-compiled) repro before touching
+the kernel again** — the bug needs no self-compiling at all, it is a general
 jz codegen gap that happens to be exercised by the compiler's own source:
 ```js
 function enterFunc() { return {} }
@@ -5827,10 +5827,10 @@ export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CAR
 ```
 Read as: default TRUE; `typeof process === 'undefined'` (a non-Node host)
 also defaults TRUE (never a live opt-out channel there); `JZ_CARRIER_BOX=0`
-is now the only way to get FALSE. `scripts/build-dist.mjs`'s self-host
+is now the only way to get FALSE. `scripts/build-dist.mjs`'s self-compile
 build-time literal injection (§32's own `99360578`) follows the identical
 formula — its needle/replacement both updated to the new source text and
-`process.env.JZ_CARRIER_BOX !== '0'` respectively, so a self-hosted kernel
+`process.env.JZ_CARRIER_BOX !== '0'` respectively, so a self-compiled kernel
 built under `JZ_CARRIER_BOX=0` genuinely gets the opt-out (pre-flip, this
 same jz-can't-see-`process` mechanism froze every kernel at OFF regardless
 of the build's own flag — post-flip it would freeze every kernel at ON,
@@ -5897,7 +5897,7 @@ own predictions exactly (no surprise red):**
 | `test:wasm` FULL (`JZ_TEST_TARGET=jz.wasm`) | 2720 total (12869 assertions), 2714 pass, **0 fail**, 6 skip | 0 fail beyond skip | exact match |
 | `kernel-parity` (standalone) | 33/33 assertions | unchanged | yes |
 | `kernel-oracle` (standalone) | 13/13 (493 assertions) — audit-#16 row now AGREE (was the one default-only KNOWN-FAIL pre-flip) | 13/13 | exact match |
-| selfhost | 21/21 (206 assertions) | 21/21 | exact match |
+| self-compile | 21/21 (206 assertions) | 21/21 | exact match |
 | fuzz (default, 2000×{0,1,2,3}) | 30173 inputs compared, 9827 skipped (i32 contract exceeded), 0 non-numeric, **0 divergence** | 0 divergence | yes |
 | statements / layout-kinds (pins) | inside the green default battery (not among the 2 fails) | green | yes |
 | SIZE (`bench-size.mjs`) | geomean jz/AS = **1.0193** (n=49 AS-ported cases) | ≤1.05 | pass, ~unchanged from §34-era ~1.02× |
@@ -6003,7 +6003,7 @@ supposed to reach them in the first place.
 
 **Live regression that proved it, not a hypothetical**: `test/watr.js`'s
 `watr bug: memory64 limits - BigInt limits encoded as zero` row (a
-regression pin for a PREVIOUSLY-FIXED jz self-hosting artifact — confirmed
+regression pin for a PREVIOUSLY-FIXED jz self-compiling artifact — confirmed
 GREEN on the pre-slice-4 tree, both directly re-run and via a scratch
 `git worktree` at HEAD) FAILED under the slice-4 edit: jz-compiled
 `watr/src/compile.js`'s `limits()` (`is64 ? v => {... return BigInt(str)}`)

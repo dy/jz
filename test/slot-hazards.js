@@ -227,7 +227,7 @@ test('slot-hazards: miss-capable reads keep their undefined guards (no sentinel 
   // emit's strictSentinel fold trusts kind + non-nullable; the value-kind
   // inference types `.get()` results / element reads from container kinds, so
   // mayBeNullish must flag them (fail-closed) or the guard folds away — the
-  // self-host kernel's own `autoCache.get(name) !== undefined` cache probe
+  // self-compile kernel's own `autoCache.get(name) !== undefined` cache probe
   // folded TRUE and every call returned the miss sentinel (the byte-parity
   // root). The dedupe-cache idiom pins it end to end.
   const src = `
@@ -317,7 +317,7 @@ export let main = () => (use(mk()) * 10 + use(other())) | 0`
 // resolve ANOTHER function's same-named binding — a for-of binding, a param, a
 // non-literal decl — through the literal's layout: a RAW fixed-slot load at a
 // foreign offset, no guard, no dyn fallback, at EVERY optimize level (the
-// self-host kernel's rest-spec read `site.callee` off the wrong slot when an
+// self-compile kernel's rest-spec read `site.callee` off the wrong slot when an
 // unrelated pass added a differently-ordered literal). prepare's binding
 // census now bars such names from the vars channel (per-function ValueReps
 // keep devirtualizing); reads fall to the guarded/dyn path.

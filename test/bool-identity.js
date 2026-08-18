@@ -1,4 +1,4 @@
-// Boolean identity across untyped carriers — the self-host mother bug
+// Boolean identity across untyped carriers — the self-compile mother bug
 // (kernel resolveOptimize: `1 === true` took the level-2 branch; fromEntries
 // presets read back 0/1 so `cfg.pass !== false` ran passes the host skipped).
 //

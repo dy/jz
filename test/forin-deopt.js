@@ -73,11 +73,11 @@ test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size bu
   diff(heavy)   // VALUE is correct on every target (this is the correctness half)
   if (belowOpt(1)) return
   // The size-budget SHAPE (keys × forInBodyCost > BUDGET ⇒ stay pooled) is
-  // asserted on the native compiler only. Under the self-hosted kernel leg the
+  // asserted on the native compiler only. Under the self-compiled kernel leg the
   // budget flips after schema-state accumulation across the one no-GC instance
   // — `ctx.schema.resolve(o)` under-resolves the 8-key shape once the kernel's
   // schema list has grown, so keys.length drops and the gate unrolls. Benign
-  // (values above are exact either way); it's the self-host-row kernel-
+  // (values above are exact either way); it's the self-compile-row kernel-
   // statefulness class (.work/todo.md), not a codegen regression — so pin the
   // heuristic where it's stable and let the native leg own it.
   if (onKernel()) return

@@ -71,7 +71,7 @@ import { ctx } from '../ctx.js'
 // This plan store lives at `ctx.plans.closures` (.work/todo.md), a fresh
 // WeakMap every reset()/beginSession() (src/ctx.js's reset(), the
 // ctx.features/ctx.linkDemand subtree idiom). Session ownership matters
-// because under self-hosting WeakMap lowers to a strong Map (no native GC) —
+// because under self-compiling WeakMap lowers to a strong Map (no native GC) —
 // a module-global map would let plans from a PRIOR compile() session survive
 // into the next one, and arena-reset offset reuse can then pointer-collide a
 // fresh AST node with a stale key, producing a stale-plan HIT where every

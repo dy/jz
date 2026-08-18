@@ -54,8 +54,8 @@ const OFFSET_MASK = BigInt(LAYOUT.OFFSET_MASK)
 
 /** Format an i64 BigInt as a zero-padded `0x…` hex literal for WAT/IR templates. */
 // Formatted via 32-bit halves with an explicit logical shift, NOT
-// bits.toString(16): under self-host, BigInts are raw SIGNED i64 bits
-// (kind-erased — see ir.js's SELF-HOST CONTRACT), so toString(16) of a
+// bits.toString(16): under self-compile, BigInts are raw SIGNED i64 bits
+// (kind-erased — see ir.js's SELF-COMPILE CONTRACT), so toString(16) of a
 // bit-63-set value renders a signed "-8000…" fragment and the emitted
 // `(i64.const 0x00-8000…)` kills the kernel's watr parse ("Bad int") — the
 // nanPrefixMaskHex regression that silently broke every durable-log helper
@@ -232,7 +232,7 @@ export const BIGINT_SENTINEL_KIND = {
  *  (BigInt64, two's-complement). All derived from EXISTING layout constants
  *  (ATOM_HI, LAYOUT.NAN_PREFIX_BITS) rather than a runtime f64→i64
  *  reinterpret, so this table needs no Float64Array/DataView trick and
- *  stays plain-BigInt self-host-safe like the rest of this module.
+ *  stays plain-BigInt self-compile-safe like the rest of this module.
  *  UNARY_NOT's literal is f64 -1.0's bit pattern (0xBFF0000000000000,
  *  verified via a direct Float64Array reinterpret — not hand-derived)
  *  reduced mod 2^64 into BigInt's signed range. JOINT_BINARY shares
@@ -273,12 +273,12 @@ export const oobNanIR = () => ['f64.const', oobNanLiteral()]
  *  first hop is a real forward. Keeping every inline copy loop-free is what
  *  lets the engine inline the hot heap helpers (__ptr_offset, __len,
  *  __arr_idx_known, __typed_idx…) — a body containing a loop is excluded from
- *  V8's wasm inliner, and these helpers sit on ~25% of self-host compile time.
+ *  V8's wasm inliner, and these helpers sit on ~25% of self-compile compile time.
  *  Callers must list '__ptr_offset_fwd' in their deps()/wat() dependency set. */
 // Upper bound is `off <= memory.size() * 65536` (total bytes currently backed) — read from
 // $__heap_end64 (module/core.js, kept in sync by __memgrow on every grow), NOT recomputed
 // as `i64.shl(i64.extend_i32_u(memory.size), 16)` inline: this check is on the hottest
-// pointer-dereference path (~25% of self-host compile time, per the doc comment above), so
+// pointer-dereference path (~25% of self-compile compile time, per the doc comment above), so
 // a per-call recompute would cost 3 extra instructions at every inlined site instead of one
 // global read. The i32 form `memory.size() << 16` (what a naive version — and $__heap_end
 // itself — uses) overflows to exactly 0 at the wasm32 ceiling (memory.size()==65536 pages,

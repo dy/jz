@@ -439,10 +439,10 @@ export function staticValue(node) {
   const [op, ...args] = node
   if (op == null) return args.length ? args[0] : undefined
   if (op === 'str') return args[0]
-  // parse.js tags a literal bool as `['bool', 1|0]` (self-host kernel boundary
+  // parse.js tags a literal bool as `['bool', 1|0]` (self-compile kernel boundary
   // marker — the same convention as bigint literals' `['bigint', decimalStr]`,
   // see kind.js), where native subscript's own literal shape `[, true]` would
-  // also work (caught by op==null above) but degrades once self-hosted.
+  // also work (caught by op==null above) but degrades once self-compiled.
   // Recover the boolean from its 0/1 carrier so const-folded keys/conditions
   // resolve on the kernel leg (e.g. `{ [true ? 3 : 4]: 5 }`).
   if (op === 'bool') { const c = staticValue(args[0]); return c === NO_VALUE ? NO_VALUE : !!c }
@@ -540,7 +540,7 @@ export function objLiteralSchemaId(expr) {
  *  the ','-wrapper around literal props is normalized away between plan and
  *  emit, so flatten before serializing. Shared by scanInplaceStores (plan),
  *  analyzeStructInline (eligibility), and the emit arms; lives here so the
- *  three importers stay acyclic (the self-host resolver rejects cycles). */
+ *  three importers stay acyclic (the self-compile resolver rejects cycles). */
 export const inplaceKey = (arrName, lit) => {
   const props = lit.slice(1)
   const flat = props.length === 1 && Array.isArray(props[0]) && props[0][0] === ',' ? props[0].slice(1) : props

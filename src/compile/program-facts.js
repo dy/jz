@@ -188,7 +188,7 @@ export function observeNodeFacts(node, f) {
 /** Drop all cached program-fact walks (called at compile entry — normally
  *  implicit via beginSession's fresh factStore; exposed for any caller that
  *  needs to force a mid-session drop). Natively the gen bump alone is enough
- *  (stale entries just go unreachable on a real GC heap). In the self-host
+ *  (stale entries just go unreachable on a real GC heap). In the self-compile
  *  kernel these WeakMaps' own backing storage is itself an arena allocation
  *  that `_clear` rewinds between compiles in a warm-instance loop — a
  *  post-`_clear` alloc can overwrite the WeakMap's internal bytes, so we also

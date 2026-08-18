@@ -329,7 +329,7 @@ test('Regression: numeric runtime key write on fixed-shape object preserves sche
   // array-style `f64.store(ptrOffset(o) + i*8)` — corrupting schema slots at small i and
   // trapping (memory access out of bounds) at large i. It now routes to __dyn_set (the
   // per-OBJECT propsPtr sidecar), mirroring `o.prop = v`. This is the exact fault that
-  // broke the self-host when the dispatch table gained integer keys; runs under test:wasm.
+  // broke the self-compile when the dispatch table gained integer keys; runs under test:wasm.
   const { slot, loop, big, compound } = run(`
     export let slot = (i) => { let o = { x: 1 }; o[i] = 99; return o.x }
     export let loop = () => { let o = { x: 1, y: 2 }; for (let i = 0; i < 3; i++) o[i] = 9; return o.x * 10 + o.y }
@@ -346,7 +346,7 @@ test('Regression: numeric runtime key write on fixed-shape object preserves sche
 // Root A′: `o[i]=v` (numeric/dynamic key) on an UNTYPED empty-object binding
 // (`let o = {}` — null-typed, OBJECT only at runtime). It took the polymorphic
 // store path whose fallback raw-stored at ptrOffset(o)+i*8 → schema-slot corruption
-// at small i, an OOB memory trap at large i (the self-host `blur` crash). It now
+// at small i, an OOB memory trap at large i (the self-compile `blur` crash). It now
 // routes an OBJECT/HASH receiver to __dyn_set (propsPtr sidecar, string key). The
 // numeric-keyed READ stays array/typed by design (returns undefined — see test/perf
 // "skips __is_str_key dispatch"), but the WRITE must never trap or corrupt. Runs
@@ -1117,7 +1117,7 @@ test('computed property names: effectful coercion runs and key stores under coer
 // A pure-constant ≥2-prop literal takes the static-data fast path — ONE shared
 // instance returned from every evaluation. That used to leak writes between
 // "instances" (`mk().n++` visible through the next `mk()`), at every opt level;
-// inside the self-host kernel the same bug pooled propagate's use-count records
+// inside the self-compile kernel the same bug pooled propagate's use-count records
 // ({gets,sets,tees}) across ALL locals, deleting live stores at kernel-L2.
 // writtenProps (program-facts) now disqualifies literals whose prop names are
 // ever written; read-only literals keep the static path.
@@ -1164,7 +1164,7 @@ test('static literal: read-only literals keep the shared static instance', () =>
 // or different-shape literal, even in dead code — unbinds and poisons the name:
 // fixed-slot reads against one literal's layout would misread the other
 // sources' objects (the `.x` = foreign slot-0 class of bug, found via the
-// self-host kernel where a dead-branch literal poisoned tryReduce's
+// self-compile kernel where a dead-branch literal poisoned tryReduce's
 // table entries and killed all reduce vectorization in jz.wasm).
 
 test('schema poison: dead-code literal must not fix slots for a table-sourced var', () => {
@@ -1255,7 +1255,7 @@ test('schema binding intact: single-shape literal still resolves props', () => {
 // clone (module/core.js __obj_clone) keys off the box's schemaId, so it copies
 // static-segment sources too, and preserves the source type (OBJECT/HASH). These
 // run on both the host and the jz.wasm kernel legs (test:wasm) — the bug was a
-// self-host miscompile in jz's own narrow.js before this fix.
+// self-compile miscompile in jz's own narrow.js before this fix.
 
 test('spread copy: mutating the copy of an unknown source never touches the source', () => {
   const r = run(`
@@ -1514,7 +1514,7 @@ test('memory.Object() property reads alias nested container writes', () => {
 
 // === monomorphic schema-slot devirtualization (dyn-prop chain lever) =======
 // A dot-read whose receiver's static type is fully unknown (vt == null — an
-// exported function's own parameter, or the subscript/self-host dispatch-
+// exported function's own parameter, or the subscript/self-compile dispatch-
 // descriptor pattern of a hot inner function reading `.op`/`.l`/`.word` off a
 // parameter the analysis never pins to VAL.OBJECT) devirtualizes to a runtime
 // tag+schemaId guard + direct payload-slot load when `prop` names a field on
@@ -1692,7 +1692,7 @@ test('objects: freeze/isFrozen consistency', () => {
 // Builtin-name properties on plain objects (2026-07-11): `.size`/`.length` are
 // ORDINARY own keys on OBJECT/HASH — only Set/Map expose an entry count, only
 // string/array/typed a length. The old bare getters read the length HEADER of
-// whatever arrived (`{size:4}` → 0, `{length:7}` → undefined); in the self-host
+// whatever arrived (`{size:4}` → 0, `{length:7}` → undefined); in the self-compile
 // kernel that broke `ctx.runtime.internTable.size` — the intern-table slot
 // skipped stripStaticDataPrefix's shift, the final L2 byte-parity divergence.
 test('objects: size/length are ordinary props on objects, counts on collections', () => {

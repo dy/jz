@@ -75,7 +75,7 @@ const importsMayReturnExternal = (imports) =>
 
 // WHATWG URL resolution for compile-time import.meta lowering. Injected into
 // ctx.transform (like parse/jzify) so prepare never references the `URL` global
-// directly — keeps the self-host kernel free of host-only built-ins.
+// directly — keeps the self-compile kernel free of host-only built-ins.
 const resolveUrl = (spec, base) => new URL(spec, base).href
 
 // Serialize a JS value to a jz source literal (numbers/booleans/strings/null/
@@ -430,7 +430,7 @@ const HAS_TEST_ENV = Object.keys(TEST_ENV_DEFAULTS).length > 0
 
 // Shared front-half: reset ctx, wire opts → ctx.transform/memory/module/features,
 // and inject parse/resolveUrl. Called by `jzCompileInner` (the only entry point
-// today). The self-host entry (scripts/self.js) drives reset itself rather than
+// today). The self-compile entry (scripts/self.js) drives reset itself rather than
 // going through this path, since it needs only a minimal, interop-free setup.
 const setupCtx = (code, opts) => {
   if (HAS_TEST_ENV) {
@@ -438,7 +438,7 @@ const setupCtx = (code, opts) => {
     for (const k of Object.keys(TEST_ENV_DEFAULTS)) if (merged[k] == null) merged[k] = TEST_ENV_DEFAULTS[k]
     opts = merged
   }
-  // Session lifecycle — shared verbatim with the self-host kernel's setupSelf
+  // Session lifecycle — shared verbatim with the self-compile kernel's setupSelf
   // (src/session.js): ctx reset, every cache clear, name-uids, warnings,
   // strict/host/optimize normalization, post-reset invariants.
   if (opts.host && opts.host !== 'js' && opts.host !== 'wasi' && opts.host !== 'native') {
@@ -484,7 +484,7 @@ const setupCtx = (code, opts) => {
   if (opts.inspect) ctx.transform.inspect = true
   if (opts.helperCounters) ctx.transform.helperCounters = true
   if (opts.helperCallsites) ctx.transform.helperCallsites = opts.helperCallsites
-  // Internal self-host artifact profile: compact the compiler kernel's own
+  // Internal self-compile artifact profile: compact the compiler kernel's own
   // collection tables without changing collection layout in user outputs.
   if (opts._compactCollections) ctx.transform.compactCollections = true
   if (opts.importMetaUrl) ctx.transform.importMetaUrl = String(opts.importMetaUrl)
@@ -512,10 +512,10 @@ const setupCtx = (code, opts) => {
 // temps of its own). String-literal nodes are `[null, …]` and skipped, so
 // `"……"` data is fine; only walked when the char is present in source.
 // (moved to src/front.js — the canonical front half owns the guard so the
-// self-host kernel enforces it identically)
+// self-compile kernel enforces it identically)
 
 // resolveWatrOpts + the post-watr proof repair moved to src/optimize/watr-tail.js
-// (ONE final-optimizer tail shared verbatim with the self-host kernel — the two
+// (ONE final-optimizer tail shared verbatim with the self-compile kernel — the two
 // pipelines previously drifted); re-exported above for scripts/audit-fixpoint.mjs.
 
 const jzCompileInner = (code, opts = {}) => {
@@ -527,7 +527,7 @@ const jzCompileInner = (code, opts = {}) => {
 
   // The canonical front half (src/front.js): parse → reserved-prefix guard →
   // liftIIFEs → jzify → prepare → preEval — ONE function shared verbatim with
-  // every self-host kernel entry, so the two pipelines cannot drift (they did:
+  // every self-compile kernel entry, so the two pipelines cannot drift (they did:
   // the kernel skipped preEval — audit P0 2026-07-25).
   let ast = frontHalf(code, {
     strict: opts.strict, jzify, time,

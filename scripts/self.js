@@ -1,13 +1,13 @@
 /**
  * self.js — the jz compiler packaged as a single `source → wasm bytes` function,
- * the exact form compiled to wasm for self-hosting. `npm run build` compiles THIS
+ * the exact form compiled to wasm for self-compiling. `npm run build` compiles THIS
  * to dist/jz.wasm; the resulting module's `default(source)` is jz, compiled by jz.
  *
  * It bundles the whole pipeline — parse (jessie) → jzify → prepare → compile →
  * watr-encode — so the wasm takes a source string and returns wasm bytes with no
  * host help. index.js's host-facing `compile()` wraps the same pipeline with
- * imports/memory/profiling/interop, none of which the self-host wasm needs (or can
- * run); this is why the self-host entry is its own minimal, interop-free module and
+ * imports/memory/profiling/interop, none of which the self-compile wasm needs (or can
+ * run); this is why the self-compile entry is its own minimal, interop-free module and
  * lives in the build layer rather than in the sealed compiler source.
  */
 import { parse } from '../src/parse.js'
@@ -41,7 +41,7 @@ import jzify from '../jzify/index.js'
 // calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
 // never as bare identifiers evaluated by a native JS engine.
 // REGION_HOOKS_ACTIVE gates whether the region-arena reclaim
-// (__region_mark/__region_exit) runs during self-host compilation. It stays
+// (__region_mark/__region_exit) runs during self-compile compilation. It stays
 // false: with the hooks live, kernel-oracle compiles of the
 // dvnested-mechanism source trap at both O2 and O3, and neither failure is
 // understood well enough to ship a fix.
@@ -72,13 +72,13 @@ import jzify from '../jzify/index.js'
 // investigation.
 //
 // REGION_HOOKS_ACTIVE is read as a literal string match by
-// scripts/build-profile.mjs's resolveSelfhostBuild — not evaluated, a plain
+// scripts/build-profile.mjs's resolveSelfCompileBuild — not evaluated, a plain
 // text search for this declaration — so it must stay exactly this shape
 // (`export const REGION_HOOKS_ACTIVE = <bool>`), not an expression or an
 // import. TOGGLE THIS *and* the regionHooks line inside optimizeTail
-// TOGETHER — both must agree, or resolveSelfhostBuild's derived flag
+// TOGETHER — both must agree, or resolveSelfCompileBuild's derived flag
 // disagrees with what optimizeTail actually wires. A caller of
-// resolveSelfhostBuild may override the derivation explicitly via its own
+// resolveSelfCompileBuild may override the derivation explicitly via its own
 // `regionArena` profile field (see that helper's doc); this marker is only
 // the default-derivation source when a caller doesn't override.
 export const REGION_HOOKS_ACTIVE = false
@@ -111,7 +111,7 @@ function optimizeTail(module, cfg) {
 // stdlibParseCache are plain Maps whose keys AND values are built fresh each
 // compile. Natively that's inert extra retention across repeated compile() calls
 // (real GC heap). In-kernel the arena is a bump allocator that `_clear` rewinds
-// between compiles (warm-instance reuse, see bench-selfhost.mjs JZ_BENCH_WARM) —
+// between compiles (warm-instance reuse, see bench-self-compile.mjs JZ_BENCH_WARM) —
 // a post-`_clear` allocation can overwrite a dangling entry's bytes, so any entry
 // surviving a `_clear` is a correctness bug (wrong bytes read back), not just
 // waste. Must run every compile (not just after the first `_clear`) since it's
@@ -185,11 +185,11 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host) 
 }
 
 /**
- * WAT-text variant of the self-host pipeline: source → WAT string (watr/print of the
+ * WAT-text variant of the self-compile pipeline: source → WAT string (watr/print of the
  * same `compileAst(prepare(ast))` tree compileSelf encodes to bytes). Lets the
  * `JZ_TEST_TARGET=jz.wasm` leg satisfy white-box `compile(src,{wat:true}).match(...)`
- * codegen-shape assertions — the self-host produces the same WAT IR as native, so the
- * shape checks validate self-host codegen instead of failing as a feature gap. No
+ * codegen-shape assertions — the self-compile produces the same WAT IR as native, so the
+ * shape checks validate self-compile codegen instead of failing as a feature gap. No
  * watr-level WAT optimization runs (matches optimize:false), mirroring native
  * `compile({wat:true, optimize:false})`.
  * @param {string} source - JS source
@@ -203,7 +203,7 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host) 
  * (plan/advise.js, plan/scope.js, narrow.js) all fire inside compileAst, gated on
  * `ctx.warnings`, so the kernel computes the exact same advisories native does — it
  * just surfaces them through this entry instead of the host's `opts.warnings` sink.
- * Lets the self-host leg satisfy the `warningsFor()` tests faithfully.
+ * Lets the self-compile leg satisfy the `warningsFor()` tests faithfully.
  * @returns {string} JSON array of `{ code, message, ... }` entries
  */
 export function compileWarnings(source, strict, optJSON, modulesJSON, host) {
@@ -221,7 +221,7 @@ export function compileWat(source, strict, optJSON, modulesJSON, host) {
 }
 
 /**
- * Self-host divergence diagnostics: run the same pipeline with the internal
+ * Self-compile divergence diagnostics: run the same pipeline with the internal
  * diagnostic sink armed (resolveIncludes + assemble's global-snapshot sweep
  * record what they resolved) and return the records as JSON. Running this
  * HOST-side and KERNEL-side on the same input and diffing the two JSON

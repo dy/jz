@@ -46,7 +46,7 @@ export default (ctx) => {
     // array.js's arrayGrowDeps comment): __set_len's body calls durableLenLogIR
     // (TYPED/HASH/SET/MAP branch — in-place, non-relocating length-write heal)
     // and durableArrSnapIR (ARRAY branch — pop()'s len-1 write, header+data heal)
-    // directly — self-host's auto-dep scan can't be relied on to discover a name
+    // directly — self-compile's auto-dep scan can't be relied on to discover a name
     // reachable only through template interpolation, not a literal deps-table entry.
     __set_len: () => ['__ptr_offset_fwd', ...(ctx.scope.globals.has('__heap_reset') ? ['__durable_fwd_log', '__durable_arr_snap'] : [])],
     // Property-fallback arm (`.length` as an ordinary own key on OBJECT/HASH
@@ -114,10 +114,10 @@ export default (ctx) => {
       // ($__map_set_h/$__set_add_h, module/collection.js) instead of the
       // growing, self-hashing $__map_set/$__set_add — an explicit edge
       // (matching every other helper reachable ONLY from a spliced WAT
-      // template body, not a real call site auto-scan can see): self-host's
-      // own realize/regex-scan misses template-only calls (test/selfhost-
+      // template body, not a real call site auto-scan can see): self-compile's
+      // own realize/regex-scan misses template-only calls (test/self-compile-
       // includes.js's own "Unknown func" class), so without this a region-
-      // live self-hosted kernel traps the instant it rebuilds its first
+      // live self-compiled kernel traps the instant it rebuilds its first
       // relocated Set/Map.
       '__map_hash', '__map_set_h', '__set_add_h',
       // ARRAY/OBJECT dyn-props migration (see the definitions below): a relocated
@@ -300,7 +300,7 @@ export default (ctx) => {
       (then (f64.const nan:${UNDEF_NAN}))
       (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
-    // Hot (~37M calls in watr self-host). Type/aux/offset extracted once from $ptr.
+    // Hot (~37M calls in watr self-compile). Type/aux/offset extracted once from $ptr.
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
     (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -514,7 +514,7 @@ export default (ctx) => {
     // module-init state) loses that state on `_clear`. Pre-existing; unlike the owned
     // path below it has no `__heap_reset` analogue because the rewind target would need
     // a reserved low-memory cell (the [0,HEAP.START) region is already spoken for —
-    // clock at 0, heap ptr at HEAP.PTR_ADDR). Owned memory (the self-host + default
+    // clock at 0, heap ptr at HEAP.PTR_ADDR). Owned memory (the self-compile + default
     // case) is the one fixed below; revisit shared if a thread-pooled reset hits it.
     ctx.core.stdlib['__clear'] = `(func $__clear
       (${ctx.memory.atomic ? 'i32.atomic.store' : 'i32.store'} (i32.const ${HEAP.PTR_ADDR}) (i32.const ${HEAP.START})))`
@@ -523,18 +523,18 @@ export default (ctx) => {
     // (alloc:false, no `_alloc` export) shares the pointer.
     declGlobal('__heap', 'i32', HEAP.START, { export: '__heap' })
     // `__clear` rewinds to the *post-module-init* high-water mark, not the static
-    // data end: a module whose top-level code heap-allocates (e.g. the self-host
+    // data end: a module whose top-level code heap-allocates (e.g. the self-compile
     // compiler building its GLOBALS/atom tables in `__start`) leaves live state
     // above the data segment that a reset must preserve. `__heap_reset` is seeded
     // to the data end (assemble.js heapBase patch) and overwritten by `__start`'s
     // tail with the heap top after init runs (buildStartFn) — so for a module with
-    // no init allocations it equals the data end, and for self-host it spares the
+    // no init allocations it equals the data end, and for self-compile it spares the
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
     // See the shared-memory __alloc above for why the unsigned-wraparound guard
     // (`next < ptr`) is needed here too: once memory.size() organically reaches the
-    // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-host
+    // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-compile
     // kernel on a large graph), __memgrow's own ceiling check goes permanently dead
     // and this addition becomes the last line of defense.
     ctx.core.stdlib['__alloc'] = `(func $__alloc (param $bytes i32) (result i32)
@@ -1019,7 +1019,7 @@ export default (ctx) => {
       ;; DURABLE receiver (off < __heap_reset) gets a first runtime dyn-prop
       ;; write, keyed by the receiver's own stable offset. That receiver is
       ;; very often NOT itself part of the region root (a compiler-internal
-      ;; registry — module-scope {}/Map state the self-hosted kernel populates
+      ;; registry — module-scope {}/Map state the self-compiled kernel populates
       ;; while compiling, never threaded through [ast, ctx.funcs.list,
       ;; ctx.module, ctx.schema, ctx.closure]) — so __region_copy_rec's own
       ;; per-kind arms (regionArmArray/regionArmObject's durableDynProps/
@@ -1119,7 +1119,7 @@ export default (ctx) => {
     // correct ONLY for the compiler-internal dyn-props sidecar's own keys
     // (always short single-word identifiers that happen to fit inline SSO in
     // every real instance seen), silently WRONG for any general PTR.HASH
-    // value regionArmHash exposes this function to (a plain user/self-hosted-
+    // value regionArmHash exposes this function to (a plain user/self-compiled-
     // compiler `{}` used as a dynamic dict, e.g. module/prepare's per-function
     // `defaults` map keyed by parameter names) whose keys can exceed SSO
     // width: the stale, unrelocated key pointer keeps pointing at the OLD,
@@ -1132,7 +1132,7 @@ export default (ctx) => {
     // __coll_order/genUpsertGrow's OWN per-slot indexing — module/collection.js
     // genUpsertGrow's $entrySize, not the allocation stride: normal outputs
     // append an i32-per-slot lane AFTER all cap slots, while the compact
-    // self-host profile omits it. The bulk copy below uses the resolved stride.
+    // self-compile profile omits it. The bulk copy below uses the resolved stride.
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): memo
     // hardening added. Originally safe without one (each ARRAY/OBJECT dyn-props
     // sidecar is a freshly-minted, never-shared HASH — one container per
@@ -1562,7 +1562,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     (if (f64.ne (local.get $v) (local.get $v)) (then (return (i32.const 0))))
     (i32.trunc_sat_f64_u (f64.nearest (f64.min (f64.max (local.get $v) (f64.const 0)) (f64.const 255)))))`
 
-  // Hot (~85M calls in watr self-host). Type/offset extraction inlined; forwarding
+  // Hot (~85M calls in watr self-compile). Type/offset extraction inlined; forwarding
   // loop only entered for ARRAY. ARRAY fast path dominates (nodes?.length, out.length …).
   ctx.core.stdlib['__len'] = `(func $__len (param $ptr i64) (result i32)
     (local $bits i64) (local $t i32) (local $off i32) (local $aux i32)
@@ -1638,7 +1638,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       (then (i32.load (i32.sub (local.get $off) (i32.const 4))))
       (else (i32.const 0))))`
 
-  // Set len in memory (for push/pop). Hot (~42M calls in watr self-host).
+  // Set len in memory (for push/pop). Hot (~42M calls in watr self-compile).
   // Type/offset extraction inlined; forwarding loop only entered for ARRAY.
   ctx.core.stdlib['__set_len'] = `(func $__set_len (param $ptr i64) (param $len i32)
     (local $bits i64) (local $t i32) (local $off i32)
@@ -1964,7 +1964,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
    *  path). `guard` (from ctx.schema.guardedSlotOf) proves `prop` names a field
    *  on exactly one registered schema program-wide: the subscript dispatch-
    *  descriptor pattern (`d.op`/`d.l`/`d.word`) and jz's own emit-table/IR-node
-   *  reads under self-host are both a hot dot-read whose receiver is ALWAYS
+   *  reads under self-compile are both a hot dot-read whose receiver is ALWAYS
    *  that one schema in practice, even though it flows through a parameter or
    *  array element the static analysis never pins to VAL.OBJECT.
    *
@@ -2529,7 +2529,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // original `obj` name for schema/valType lookup). The previous hand-rolled copy
   // diverged: it lacked emitPropAccess's `VAL.OBJECT off-schema → __dyn_get_expr`
   // branch and fell to `__hash_get`, which mis-reads fixed-shape OBJECT memory
-  // (a self-host miscompile — `o?.x` returned undefined under the kernel).
+  // (a self-compile miscompile — `o?.x` returned undefined under the kernel).
   ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = rep ? rep.val : valTypeOf(obj)
@@ -2736,14 +2736,14 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // unboxBigInt the same way __mkptr/__ptr_type/__ptr_offset above expose
   // their own ir.js primitives — callable ONLY when a test's jz source
   // literally names them, so ordinary program compiles (including the
-  // self-hosted kernel, which never references these names) never reach this
+  // self-compiled kernel, which never references these names) never reach this
   // code and stay byte-identical. `v` is a real jz value (any kind whose raw
   // f64 bits are the payload to box); `p` is a previously-boxed pointer.
   ctx.core.emit['__box_bigint'] = (v) => (inc('__alloc', '__mkptr'), boxBigInt(asI64(emit(v))))
   ctx.core.emit['__unbox_bigint'] = (p) => (inc('__ptr_offset'), typed(['f64.reinterpret_i64', unboxBigInt(asF64(emit(p)))], 'f64'))
 
   // Region-arena Slice 1 intrinsics (see the stdlib definitions above for the
-  // full design) — callable ONLY from scripts/self.js (the self-host kernel
+  // full design) — callable ONLY from scripts/self.js (the self-compile kernel
   // entry, never executed as native JS, only ever compiled), which threads them
   // into watr's optional per-round hooks via src/optimize/watr-tail.js's
   // `regionHooks`. `__region_mark` takes no args; `__region_exit` takes

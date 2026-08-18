@@ -1,11 +1,11 @@
-// Self-hosted compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
+// Self-compiled compile target for `JZ_TEST_TARGET=jz.wasm node test/index.js`.
 //
 // Routes every jz.compile (and thus jz() / the named `compile`) through dist/jz.wasm
 // — jz's whole pipeline (parse → jzify → prepare → compile → watr-encode) compiled to
 // wasm BY jz. The wasm takes a source string and returns wasm bytes; the host only
 // marshals the string in and reads the bytes out. Running the whole suite this way is
 // the test matrix with the compiler being jz-compiled-by-jz: any divergence from the
-// native run is a self-host bug. Subsumes the sample-based selfhost gate.
+// native run is a self-compile bug. Subsumes the sample-based self-compile gate.
 //
 // The wasm owns the entire source→bytes pipeline, so host-side opts that shape
 // compilation (imports, modules, optimize level, inspect, --wat) do NOT reach it —
@@ -51,7 +51,7 @@ const DEFAULT_OPT = (() => {
 // Cache the compiled Module (one expensive WebAssembly.Module compile), then hand a
 // FRESH Instance to every compile. The wasm's in-wasm reset() leaves a little module
 // state behind across compiles on a reused instance (regex capture slots re-declare →
-// "Duplicate local"); a real self-host run compiles one program per instance, so a
+// "Duplicate local"); a real self-compile run compiles one program per instance, so a
 // fresh instance per compile both models that and keeps the test:wasm signal free of
 // cross-compile contamination. `instantiate` accepts a Module, so this is just a new
 // Instance (fresh memory) — no recompile.
@@ -100,16 +100,16 @@ export const compileViaKernel = (code, opts = {}) => {
   // `--wat` IS supported on this leg via the wasm's `compileWat` export: same
   // source→compileAst(prepare(ast)) pipeline, but watr/print of the WAT IR instead of
   // byte encoding. White-box `compile(src,{wat:true}).match(...)` codegen-shape tests
-  // then validate self-host codegen (it emits the same WAT IR as native).
+  // then validate self-compile codegen (it emits the same WAT IR as native).
   if (opts.wat) {
-    // Forward an optimize config so the self-host runs the same COMPILE-level passes
+    // Forward an optimize config so the self-compile runs the same COMPILE-level passes
     // (SIMD lift, int-array promotion, narrowing, unroll, SROA) native does and emits the
     // same shapes. An UNSPECIFIED optimize mirrors the native default — level 2
     // (resolveOptimize(undefined), as TEST_ENV_DEFAULTS / JZ_TEST_OPTIMIZE applies it) —
     // not optimize:false, else every level-2 shape test compares native-level-2 codegen
     // against kernel-level-0 and diverges. The config (watr included) is forwarded
     // verbatim: self.js's compileWat now runs the full index.js optimization tail
-    // (watOptimize + the optimizeFunc 'post' pass), so the self-host emits the same
+    // (watOptimize + the optimizeFunc 'post' pass), so the self-compile emits the same
     // WAT IR native does. Explicit optimize:false / 0 stays off.
     const wat = self.memory.read(self.exports.compileWat(self.memory.String(code), opts.strict ? 1 : 0, optJSONFor(self, opts), modulesJSONFor(self, opts), hostFor(self, opts)))
     reclaim()

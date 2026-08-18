@@ -170,7 +170,7 @@ export function rewriteBlocks(body, tryStmt) {
 // this WeakMap uses that identical anchor.
 // COMPILE-SESSION-OWNED (folded into ctx.plans — .work/todo.md; see
 // src/compile/closure-plan.js's sibling doc comment for the full
-// stale-plan-HIT hazard under self-hosting). Lives at `ctx.plans.loops`,
+// stale-plan-HIT hazard under self-compiling). Lives at `ctx.plans.loops`,
 // a fresh WeakMap every reset() (src/ctx.js).
 
 // Walks `body` (a function's, or a closure's OWN body — never descends into a

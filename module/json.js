@@ -73,7 +73,7 @@ const literalHasBigInt = (v) =>
 
 // Fold a literal AST node directly to its compact JSON string (no replacer /
 // no space). Unlike the value-level `literalValue` + `JSON.stringify` path, this
-// renders the self-host kernel boolean marker `['bool', 1|0]` as true/false:
+// renders the self-compile kernel boolean marker `['bool', 1|0]` as true/false:
 // the value path can't, because jz carries a boolean as a 0/1 *number*, so the
 // kernel's compile-time `JSON.stringify` of the folded value emits "1"/"0", not
 // "true"/"false" (native folds via real JS booleans and is unaffected). Scalars
@@ -154,7 +154,7 @@ export default (ctx) => {
       ...(ctx.scope.globals.has('__dyn_props') ? ['__ihash_get_local', '__is_nullish'] : [])],
     // Chain edges ($__jput_num → $__jput_str → $__jput): each body CALLS the
     // next stage; without the explicit edge they ride the auto-dep scan, which
-    // silently yields nothing under self-host (test/selfhost-includes.js).
+    // silently yields nothing under self-compile (test/self-compile-includes.js).
     __jput_num: ['__ftoa', '__jput_str'],
     __jput_str: ['__char_at', '__str_byteLen', '__jput'],
     __jp: ['__jp_val', '__jp_str', '__jp_num', '__jp_arr', '__jp_obj', '__sso_char', '__ptr_aux', '__ptr_type', '__ptr_offset', '__str_byteLen'],
@@ -1171,7 +1171,7 @@ export default (ctx) => {
   // word[0]; AND-check word[1..] against the bytes after the parse position.
   // Past-end reads land in the 0xFF sentinel pad, which matches nothing.
   const litMatch = (word) => {
-    // Index with charCodeAt rather than `[...word]` spread: jz (self-host) does not
+    // Index with charCodeAt rather than `[...word]` spread: jz (self-compile) does not
     // spread a string into a char array, so the spread form yields an empty test set
     // and the literal match folds to a constant-false `(if 0 …)` — breaking
     // JSON.parse of true/false/null once jz compiles its own parser. The first char
@@ -1262,10 +1262,10 @@ export default (ctx) => {
       // never round-trips through Number()). The ≤4-byte chunks fit a plain i32
       // (all bytes are ASCII, so bit 31 of a 4-byte pack is always 0 — no sign
       // trouble) and MUST stay plain-Number arithmetic, not BigInt: `Number(bigint)`
-      // here would route through the self-hosted kernel's own ToNumber(BigInt),
+      // here would route through the self-compiled kernel's own ToNumber(BigInt),
       // whose bigint-vs-genuine-carrier disambiguation is a whole-program
       // ctx.features.bigint flag baked once at first module-inclusion — under
-      // self-hosting (this very file compiled BY the kernel) module-inclusion
+      // self-compiling (this very file compiled BY the kernel) module-inclusion
       // ordering can bake the flag before it sees this file's own 8-byte-chunk
       // BigInt use, leaving ToNumber(BigInt) on its unguarded arm, which returns
       // the raw i64 carrier bits reinterpreted as f64 instead of converting —
@@ -1280,7 +1280,7 @@ export default (ctx) => {
       let i = 0
       for (; bytes.length - i >= 8; i += 8)
         // BigInt(...) wraps le()'s already-BigInt return (no-op at runtime) so
-        // the self-host kernel's own i64Hex call-site fixpoint proves this arg
+        // the self-compile kernel's own i64Hex call-site fixpoint proves this arg
         // BIGINT — a local helper's return kind is opaque to that inference.
         out.push(`(if (i64.ne (i64.load ${at(i)}) (i64.const ${i64Hex(BigInt(le(bytes.slice(i, i + 8))))})) (then ${fail}))`)
       if (bytes.length - i >= 4) {
@@ -1297,7 +1297,7 @@ export default (ctx) => {
       return out.join('\n    ')
     }
     // Forward-declared with `let` (assigned below) so `parse` captures a boxed
-    // cell, not a not-yet-initialized `const` binding — the self-host kernel
+    // cell, not a not-yet-initialized `const` binding — the self-compile kernel
     // miscompiles the latter capture in this deeply-nested mutually-recursive
     // context (parse ends up calling a garbage `parseObject`, emitting a corrupt
     // node into the shaped parser).
@@ -1537,7 +1537,7 @@ ${localDecls}
   // Returns folded IR, or `undefined` when any argument is non-constant.
   function foldStringify(x, replacer, space) {
     // No replacer / no space: try the bool-aware AST string fold first so a
-    // literal boolean renders as true/false on the self-host leg (see foldJsonStr).
+    // literal boolean renders as true/false on the self-compile leg (see foldJsonStr).
     if (replacer == null && space == null) {
       const s = foldJsonStr(x)
       if (s !== NOT_LIT) return asF64(emit(['str', s]))

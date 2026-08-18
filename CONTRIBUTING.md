@@ -77,7 +77,7 @@ Discipline (non-negotiable — these run in the default `speed` build that ships
   are ulp-divergent → gate at `optimize≥2`; per-lane maps/reductions reorder nothing and are exact.
 - **Ratchet +0.** `npm run test:ratchet` must stay byte-identical — recognize only the intended shape;
   don't widen the default corpus path.
-- **Run `npm run test:self`.** The dev suite runs on V8, but the self-host build compiles JZ *with JZ*.
+- **Run `npm run test:self`.** The dev suite runs on V8, but the self-compile build compiles JZ *with JZ*.
   A recognizer can be bit-exact on V8 yet make `dist/jz.wasm` fail validation
   (`i64.reinterpret_f64 expected f64, found i32`) — **the V8 suite will not catch this.**
   - *Cause & fix:* a top-level **self-recursive** helper taking the `ctx` object as a param — JZ's

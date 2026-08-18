@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Part 3 (jz×jz self-host row) isolation shim. bench.mjs's `jz` target
+// Part 3 (jz×jz self-compile row) isolation shim. bench.mjs's `jz` target
 // normally calls compileJzHost/compileJzSize IN-PROCESS (compiling any other
 // case's tiny source is cheap). The `jz` CASE is the one self-referential
 // exception: its source (bench/jz/jz.js) pulls in scripts/self.js — the

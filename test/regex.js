@@ -98,7 +98,7 @@ test('regex: groups', () => {
 test('regex: named capture groups', () => {
   const ast = parseRegex('(?<word>\\w+)')
   // The capture name rides the group node itself (4th element) — the AST structure
-  // survives the parse→compile handoff under self-host, whereas module-level parse
+  // survives the parse→compile handoff under self-compile, whereas module-level parse
   // state (the groupNames array) does not. ast.groupNames stays populated too.
   is(ast, ['()', ['+', ['\\w']], 1, 'word'])
   is(ast.groups, 1)
@@ -700,7 +700,7 @@ test('regex: replace with a function replacer (single + /g)', () => {
 
 test('regex: replace callback receives capture groups + offset + string (ES 22.1.3.19)', () => {
   const run = src => jz(src).exports.f
-  // Was: only the match was passed — groups read `undefined` (the self-host
+  // Was: only the match was passed — groups read `undefined` (the self-compile
   // kernel's decodeIdent errs on any regex literal with \uXXXX because of it).
   is(run('export let f = (s) => s.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + "|" + p + "|" + o + "|" + str)')('xQ0041y'),
     'xQ0041y'.replace(/Q([0-9a-fA-F]{4})/g, (m, p, o, str) => m + '|' + p + '|' + o + '|' + str))
@@ -754,7 +754,7 @@ test('regex: matchAll on an UNTYPED receiver (the generic-twin dispatch)', () =>
   // A receiver the static types can't pin (dyn-table read, typeof-continue
   // narrowing) must still scan: with only the `.string:` emitter registered,
   // the untyped path fell to the dyn-prop probe, yielded undefined, and
-  // for-of swallowed it SILENTLY — the self-host kernel's global-snapshot
+  // for-of swallowed it SILENTLY — the self-compile kernel's global-snapshot
   // sweep scanned zero templates (byte-parity divergence root #2).
   const src = `
 const table = { a: '(global.set $__heap_end) call $__memgrow', b: () => '(global.set $__heap)' }
@@ -792,7 +792,7 @@ test('regex: sticky /y anchors at lastIndex, no forward scan', () => {
 
 test('regex: \p property escapes reject (both contexts)', () => {
   // audit-#11 item 7 sub-4 (test:wasm classification): a compile-time error's
-  // MESSAGE TEXT does not survive the self-hosted kernel's wasm-ABI round
+  // MESSAGE TEXT does not survive the self-compiled kernel's wasm-ABI round
   // trip — only the error CLASS does (same "internal errors are still codes"
   // boundary the Error-object model documents elsewhere for RUNTIME errors;
   // this is the compile-time-error analog, since the kernel's own compile()

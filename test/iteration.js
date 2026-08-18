@@ -1,6 +1,6 @@
 // Iteration protocol edges — for-of over nullish THROWS (ES: "x is not
 // iterable"), it does not silently iterate zero times. The silent form masked
-// two real self-host miscompiles (a strictSentinel-folded undefined guard and
+// two real self-compile miscompiles (a strictSentinel-folded undefined guard and
 // a never-armed matchAll both fed undefined into for-of and vanished) before
 // they were caught. Known-vt receivers pay nothing — the guard lives only in
 // __iter_arr's unknown-receiver arm (module/collection.js).
@@ -34,7 +34,7 @@ test('Set/Map constructors: nullish iterable is an EMPTY collection, for-of stil
   // ES: the CONSTRUCTOR skips iteration for undefined/null (new Set(undefined)
   // is empty — GetIterator never runs), while for-of/spread over nullish is a
   // TypeError. The ctor path used to route through the for-of normalizer and
-  // threw — natively masked (host JS semantics), self-hosted it broke the
+  // threw — natively masked (host JS semantics), self-compiled it broke the
   // compiler's own `new Set(maybeUndefined)` (the census-row class).
   const { f } = run(`export let f = (use) => {
     const base = use ? new Set(['x']) : undefined

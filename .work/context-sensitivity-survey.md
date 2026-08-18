@@ -4,10 +4,10 @@ Read-only survey. Method: temporary probes in `src/compile/narrow.js` and
 `src/compile/program-facts.js` (same `typeof process !== 'undefined' &&
 process.env?.X` module-scope-flag / `console.error` discipline as
 `JZ_DEBUG_HZALL`/`JZ_DBG_SPEC`, §17-§23 of `carrier-representation-design.md`
-— proven self-host-safe since `DBG_INVARIANTS`/`DBG2` already use the exact
+— proven self-compile-safe since `DBG_INVARIANTS`/`DBG2` already use the exact
 same pattern in files that are themselves compiled as part of `scripts/
 self.js`), run against the real `scripts/self.js` compile
-(`JZ_SELFHOST_OPT=0 JZ_DBG_CTXSENS=1 node scripts/selfhost-build.mjs`, ~78s,
+(`JZ_SELF_COMPILE_OPT=0 JZ_DBG_CTXSENS=1 node scripts/self-compile-build.mjs`, ~78s,
 `dist/jz.wasm` byte output unaffected — the probes only add `console.error`
 calls behind a flag), fully reverted before commit (`git diff` confirmed
 empty for `src/` at the end of this session — see the closing note).
@@ -76,7 +76,7 @@ overwhelmingly a landslide (examples below) — exactly the shape
 `specializeBimorphicTyped` already exploits for the typedCtor case (§3).
 
 Top disagreeing rows by call-site count (both fields; function is the
-self-hosted mangled name, `mNN_basename$func`):
+self-compiled mangled name, `mNN_basename$func`):
 
 ```
 val:  m78_ir$typed#0        n=1012 resolved=934  {array:932, number:2}
@@ -110,7 +110,7 @@ honestly, not backfilled).
 **Exact fraction-of-call-sites-agreeing, cross-referenced by exact param
 index (not just function), for every one that has data:**
 
-| Function (self-host mangled) | role | param | sites | resolved | agreement | class |
+| Function (self-compile mangled) | role | param | sites | resolved | agreement | class |
 |---|---|---|---:|---:|---|---|
 | `m127_reps$mergeParamFact` | obj | `rep`#0 | 6 | 0 | — | allUnresolved |
 | `m127_reps$mergeParamFact` | key | `key`#1 | 6 | 3 | 3/3 = 100% string | partialUnresolved-agree |
@@ -174,7 +174,7 @@ structural example of why STATIC call-site counting cannot see the DYNAMIC
 diversity flowing through a single recursive edge (relevant to §2/§4
 below). `mergeParamFact`/`joinKinds`/`setFeature` ARE genuine jz-own-source
 (`src/param-reps.js`, `src/ctx.js`) — and are themselves the compiler
-narrowing/hazard-censusing ITSELF (self-hosted self-reference), also
+narrowing/hazard-censusing ITSELF (self-compiled self-reference), also
 correctly excluded (their `key`/`field` params are by-design polymorphic
 string dispatchers, not narrowing gaps).
 
@@ -435,7 +435,7 @@ general fixpoint rewrite would not exploit any better).
   (`node_modules/watr/src/util.js:155,171`), not `src/`. `mergeParamFact`/
   `joinKinds`/`setFeature` (this session's own verified jz-own examples)
   are the compiler's lattice-merge machinery examining ITSELF
-  (self-hosted self-reference) — their flagged params are intentional
+  (self-compiled self-reference) — their flagged params are intentional
   polymorphic dispatchers (a field-name/feature-key string), not
   precision gaps of any kind.
 - **FINDING**: the `callSites` array (`program-facts.js:274,373`) already
@@ -463,7 +463,7 @@ Both temporary probes (`src/compile/narrow.js`'s `JZ_DBG_CTXSENS`
 diagnostics + `_ctxSensDump`/`_ctxSensRecord`/`_ctxSensSiteId` helpers, and
 `src/compile/program-facts.js`'s `JZ_DBG_CTXSENS` flag + `CTXSENS_KW`
 logging + `curFunc`/`curFuncName` tracking) are reverted to `HEAD` before
-commit. `dist/jz.wasm` was rebuilt by the diagnostic runs (`JZ_SELFHOST_
+commit. `dist/jz.wasm` was rebuilt by the diagnostic runs (`JZ_SELF_COMPILE_
 OPT=0`, three times) — rebuilt once more from the reverted, plain source
 before concluding, so the repo is left in a normal, buildable state, not a
 stale-artifact one.

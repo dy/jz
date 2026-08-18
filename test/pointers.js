@@ -338,7 +338,7 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // this fixture imports the REAL layout.js, exercising `i64Hex`'s `bits`
 // param — the ONE jz-own-source site Slice 0's own rewrite could not
 // resolve (".work/research.md 'BigInt retirement Slice 0'": both rewrite
-// techniques tried either miscompiled the self-hosted kernel for unrelated
+// techniques tried either miscompiled the self-compiled kernel for unrelated
 // programs or broke this very test; reverted, banked not forced). Under
 // Slice 1's flip, this residual "call-arg" ambiguity is now a compile-time
 // refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery
@@ -363,7 +363,7 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // whose write-side census uniformly, provably resolves BIGINT unboxes
 // unconditionally) but left the UNPROVEN half open whenever `pointsTo==='ALL'`
 // (§17-§21's own audited, load-bearing blanket, REFUTED as narrowable)
-// poisons `slotTypes` program-wide — the exact shape the real self-hosted
+// poisons `slotTypes` program-wide — the exact shape the real self-compiled
 // `scripts/self.js` compile hits (§16/§17's own diagnosis: LAYOUT's own
 // schema never proves BIGINT there, only observes+boxes it). This fixture
 // reproduces that precondition in isolation: `corrupt`'s `obj[key] = val`
@@ -436,7 +436,7 @@ test('nan-box: JS roundtrip preserves bits', () => {
 
 test('typed read indexed by typed read keeps the receiver element kind', () => {
   // t[p[i]] — the nested index emit must not clobber the OUTER array's load
-  // op (self-host regression: deferred load closure re-read the elem kind
+  // op (self-compile regression: deferred load closure re-read the elem kind
   // AFTER the inner Uint32Array emit and loaded the f64 array as u32).
   const { exports } = jz(`
     export let one = () => { const t = new Float64Array(4); t[3] = 7; const p = new Uint32Array(4); p[0] = 3; return t[p[0]] }

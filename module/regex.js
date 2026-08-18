@@ -267,7 +267,7 @@ const parseGroup = () => {
   if (groupName) groupNames[groupId] = groupName
   // Carry the capture name IN the group node (4th element) as well as the module-level
   // groupNames array. The AST structure survives the parse→compile handoff intact (it
-  // drives codegen), whereas the self-host kernel drops mutations to the module-level
+  // drives codegen), whereas the self-compile kernel drops mutations to the module-level
   // groupNames array — so `.groups` was never built. compileRegexToStdlib reads names
   // back via collectGroupNames(ast), which works in both legs.
   return groupId ? (groupName ? [type, inner, groupId, groupName] : [type, inner, groupId]) : [type, inner]
@@ -1335,7 +1335,7 @@ export default (ctx) => {
   // `.string:` key, an untyped receiver (`let src = tbl[k]` narrowed by a
   // typeof-continue guard the static types can't follow) fell through to the
   // dyn-prop probe, yielded `undefined`, and for-of swallowed it SILENTLY —
-  // the self-host global-snapshot sweep scanned nothing (byte-parity root #2,
+  // the self-compile global-snapshot sweep scanned nothing (byte-parity root #2,
   // pinned in test/regex.js).
   ctx.core.emit['.matchAll'] = (str, search) => {
     const id = resolveRegex(search)
@@ -1396,7 +1396,7 @@ export default (ctx) => {
     if (id == null) {
       // Fall back to string split, forwarding the optional limit (0x7fffffff = no limit).
       // __str_split is 3-param (str, sep, limit); a 2-arg call here trips a wasm arity
-      // error in any program with a known-string `.split` (e.g. the watr self-host).
+      // error in any program with a known-string `.split` (e.g. the watr self-compile).
       inc('__str_split')
       const limitIR = limit == null ? ['i32.const', 0x7fffffff] : ['i32.trunc_sat_f64_u', asF64(emit(limit))]
       return typed(['call', '$__str_split', asI64(emit(str)), asI64(emit(sep)), limitIR], 'f64')

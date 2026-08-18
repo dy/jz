@@ -1,6 +1,6 @@
-# Retained-set census — jz×jz self-hosted MEMORY residual (2026-08-14)
+# Retained-set census — jz×jz self-compiled MEMORY residual (2026-08-14)
 
-**Task**: attribute the retained bytes behind jz×jz's self-hosted 4 GiB trap
+**Task**: attribute the retained bytes behind jz×jz's self-compiled 4 GiB trap
 (274b6bd8's own goal-gate finding: both dormant and region-live configs trap
 at exactly 4096.0 MB, identically — the region-arena program is complete and
 sound, but doesn't close this wall) and design the compaction program.
@@ -27,11 +27,11 @@ full arithmetic and §8 for the honest "what would actually close it."
 
 ## 1. Method
 
-**Self-hosted (two complementary WAT-level instruments, both diagnostic-only,
+**Self-compiled (two complementary WAT-level instruments, both diagnostic-only,
 reverted)**: `scripts/self.js`'s `REGION_HOOKS_ACTIVE` hand-flipped `true`
 (the established region-arena precedent, e.g. e640e77a/c8246307/274b6bd8's
 own sessions), built a `names:true`, `memory:65536`-page (true 4 GiB
-ceiling), `optimize:3` region-live kernel via `resolveSelfhostBuild`.
+ceiling), `optimize:3` region-live kernel via `resolveSelfCompileBuild`.
 `wasm2wat --enable-all` decompiled it; a Node script (`splice-census.mjs`,
 disposable, not committed) located `$__region_copy_rec` and `$__alloc_hdr`/
 `$__alloc_hdr_n`'s bodies **by structural pattern match on the actual
@@ -92,7 +92,7 @@ reading, on the identical 156-module jz×jz graph.
 
 ---
 
-## 2. Self-hosted census — jz×jz, both instruments
+## 2. Self-compiled census — jz×jz, both instruments
 
 Traps `unreachable` at 8.7 s (both instruments compiled into the same
 kernel — one run). `$__heap` at trap: **4,279,008,760 bytes = 4080.8 MB**
@@ -168,9 +168,9 @@ consistent, not independently reconciled this session). Full pipeline
 
 **Per-pass corroboration, citing prior work directly** (0ae75f07's own
 fine-grained dormant breadcrumb table, `.work/research.md`, already
-documents the self-hosted-side number for the single hottest sub-phase):
+documents the self-compiled-side number for the single hottest sub-phase):
 `narrowSignatures`' own internal fixpoint (`narrowPointerResults`) costs
-**+1564.9 MB self-hosted** (0ae75f07's table). This session's fresh native
+**+1564.9 MB self-compiled** (0ae75f07's table). This session's fresh native
 measurement of the *same* phase (`plan:narrowSignatures` row, native
 profile above): **+3.7 MB heapUsed / +38.5 MB RSS**. That is a
 **~40–420× per-phase overhead ratio** (RSS-based / heapUsed-based) for the
@@ -252,19 +252,19 @@ undertaking than flipping a memory64 flag.**
 
 ## 6. Attribution table (the deliverable the task named)
 
-| class | self-hosted bytes (cumulative, jz×jz) | native bytes (heapUsed, full compile) | overhead ratio | dominant cause |
+| class | self-compiled bytes (cumulative, jz×jz) | native bytes (heapUsed, full compile) | overhead ratio | dominant cause |
 |---|---:|---:|---:|---|
 | MAP/HASH (`programFacts`/`ctx.scope`/`ctx.schema`-shaped + per-func symbol tables) | 2,373.44 MB | *(no native per-class snapshot taken this session — see §9)*; native's ENTIRE heap for the finished compile is 1,207.3 MB | **≥1.97×** against native's whole heap, likely far higher isolated per-class | 28B stride (24B entry incl. a redundant precomputed 8B hash word + 4B `LANE` probe array) vs V8's compressed-pointer hash table; capacity-not-count-sized (grow-then-half-empty); zero structural sharing across the many per-function/per-schema Maps created and discarded |
 | ARRAY+OBJECT (AST nodes, schema-slotted instances) | 835.05 MB | (same caveat) | — | 8B NaN-boxed slots (every value, even a small int, costs a full f64) vs V8's compressed 4B pointers/inline SMIs; 16B fixed header per object regardless of size |
 | STRING (+BIGINT+CLOSURE-env residual) | ≈680.35 MB (upper bound, not kind-isolated) | (same caveat) | — | per-string 4–8B header, zero interning beyond the STATIC literal pool (`STR_INTERN_BIT`) — explicitly does NOT cover runtime-built mangled names (`layout.js`'s own doc: "every prepareModule renameFunc mangled name" is exactly the un-interned case) |
-| whole compile (single hottest phase, independently sourced) | narrowSignatures: +1564.9 MB (0ae75f07) | narrowSignatures: +3.7 MB heapUsed / +38.5 MB RSS (this session) | **~40–420×** | O(functions×params×callSites) fixpoint census, unboxed/compact natively, NaN-boxed+headered self-hosted |
+| whole compile (single hottest phase, independently sourced) | narrowSignatures: +1564.9 MB (0ae75f07) | narrowSignatures: +3.7 MB heapUsed / +38.5 MB RSS (this session) | **~40–420×** | O(functions×params×callSites) fixpoint census, unboxed/compact natively, NaN-boxed+headered self-compiled |
 
 **Honest gap**: a true per-class native breakdown (V8 heap snapshot,
 grouping by constructor — `Map`, `Array`, string) was not taken this
 session (time-boxed; §1's phase profile was the higher-priority, more
 directly actionable measurement, and the qualitative attribution — jz's own
 `ctx.scope`/`ctx.schema`/`programFacts` ARE literally JS `Map`s, matching
-the self-hosted MAP bucket 1:1 by construction, not by inference — is
+the self-compiled MAP bucket 1:1 by construction, not by inference — is
 already solid without it). The ratios in the "MAP/HASH" row are therefore a
 *lower bound* (2373 MB against native's *entire* graph, not an isolated
 Map-only native figure, which would be smaller and the ratio proportionally
@@ -286,7 +286,7 @@ estimate given `emitFuncs`/`emitClosures`/`optMod:optimizeFuncs`'s own
 native RSS deltas — 260+248+24+135 = 667 MB of the native pipeline's own
 growth happens in exactly these per-func passes, ~54% of native's
 compileAst-to-optimizeModule growth of 1394→1392+... MB range) — reclaiming
-it at the self-hosted 3.4× overhead ratio observed elsewhere in this census
+it at the self-compiled 3.4× overhead ratio observed elsewhere in this census
 would remove on the order of **1–2 GB** from the peak. This is an estimate,
 not a guarantee (the design note's own risk analysis is why no prior
 session attempted it) — but it is the only lever in this census whose
@@ -338,7 +338,7 @@ the wasm32 ceiling) via a raw bump pointer **separate from `$__heap`** —
 routing the log through `$__alloc` itself would move `$__heap` and silently
 break the bump-extend heap-top check the concat fast path depends on,
 biasing the very measurement being taken. Built a region-live kernel
-(`REGION_HOOKS_ACTIVE` hand-flipped `true`, `resolveSelfhostBuild({regionArena:
+(`REGION_HOOKS_ACTIVE` hand-flipped `true`, `resolveSelfCompileBuild({regionArena:
 true, memory:65536})`) and ran it against the jessie corpus (this doc's own
 established 46-module baseline, `test/ecosystem-perf.js`'s driver shape),
 reading the log back from `exports.memory.buffer` after the run completed.
@@ -380,7 +380,7 @@ site-targeted (not global) design **if** a design were to proceed.
 
 **But the composition contradicts the census's own named hypothesis.** The
 top duplicated strings by bytes wasted are **not** `renameFunc` mangled
-names — they are the self-hosted kernel's own WAT-opcode vocabulary,
+names — they are the self-compiled kernel's own WAT-opcode vocabulary,
 repeated across thousands of emitted instructions: `"local.g"` (×3,232,
 site concat), `"i32.con"` (×1,517), `"local.get,"` (×1,003), `"i32.const,"`
 (×932), `"call,$__mkptr,i32.const,1,i32.const,0"` (×98, a comma-joined IR
@@ -476,7 +476,7 @@ from the 2026-08-16 addendum's own jessie measurement above, and not
 pursued — see that addendum for why) sum to **~377–416 MB** against a need
 to go from ~4080 MB down under 4096 MB total *while still finishing the
 compile* (native needs 1207 MB
-just to reach the encoded end-state at a ~1× baseline — self-hosted's
+just to reach the encoded end-state at a ~1× baseline — self-compiled's
 overhead ratio, per §3's single hardest data point, runs 40–420× on the
 hottest phase) — closing that gap needs an order-of-magnitude reduction,
 not a 13–18% one. **Lever 1** (reclaim-scope extension) is the only
@@ -550,7 +550,7 @@ The evidence points at a program, not a single fix:
 Worktree at `274b6bd8` (main tip, confirmed fresh at session start).
 `scripts/self.js`: `REGION_HOOKS_ACTIVE` hand-flipped `true` for the build
 only, reverted before session end (`git diff scripts/self.js` clean at
-commit time). Build: `resolveSelfhostBuild({optimize:3, snapshot:true,
+commit time). Build: `resolveSelfCompileBuild({optimize:3, snapshot:true,
 regionArena:true, memory:65536})` + `compile(graph.code, {modules, memory,
 optimize, names:true})`. Decompile: `wasm2wat --enable-all`. Splice: a
 disposable Node script locating `$__region_copy_rec`/`$__alloc_hdr`/
@@ -560,7 +560,7 @@ inserting stack-neutral i64-global breadcrumbs, verified by `wat2wasm
 §1). Run: `instantiate()` (`interop.js`) + `exports.default(memory.String
 (code), 0, 0, memory.String(JSON.stringify(modules)), 0)` — the exact
 calling convention `test/kernel-target.js` already uses for every
-self-hosted-kernel test leg. Native profile: `frontHalf`/`compileAst`/
+self-compiled-kernel test leg. Native profile: `frontHalf`/`compileAst`/
 `watrTail` called directly (bypassing `index.js`'s public `compile()`, which
 doesn't expose a custom profiler sink) with a `time`/`{time}` object that
 wraps each named sub-phase in `--expose-gc`-forced `process.memoryUsage()`

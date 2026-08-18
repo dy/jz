@@ -879,7 +879,7 @@ export const specializeFixedRestCalls = (programFacts) => {
     // re-cloned. Build the specialized sig fresh. `params`/`results` are
     // sig's only fields and both are replaced here, so a `{ ...func.sig, … }`
     // spread would be pure redundancy — and a full-override spread of a live
-    // sig object also trips the self-host codegen, so the explicit form is
+    // sig object also trips the self-compile codegen, so the explicit form is
     // both simpler and the one that round-trips through jz.wasm.
     materializeVariant({
       origin: func, key: cloneName, name: cloneName,

@@ -106,7 +106,7 @@ const MINIMAL = `export let f = () => 1`
 
 // Closure/loop-plan pair (audit-#19 P0 probe): compile/closure-plan.js's
 // closure plans, compile/loop-model.js's loop plans, and ir.js's
-// loopPlanLink used to be module-global WeakMaps — under self-hosting
+// loopPlanLink used to be module-global WeakMaps — under self-compiling
 // WeakMap lowers to a strong Map (no native GC), so entries from a PRIOR
 // compile() survive into the next one, and the kernel's arena-reset offset
 // reuse can pointer-collide a fresh AST node with a stale key, producing a

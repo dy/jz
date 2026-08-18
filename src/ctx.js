@@ -107,7 +107,7 @@ export const ctx = {
  *  alike) is the single choreography that drains the list, at the end of its
  *  own work — see session.js's docstring, "the ONE owner of per-compile
  *  lifecycle state." Plain array + for-of, no Proxy/getter machinery
- *  (self-host subset). index.js's `compileTarget` test-injection override is
+ *  (self-compile subset). index.js's `compileTarget` test-injection override is
  *  deliberately NOT registered here: it is a process-wide switch that must
  *  survive the raw `reset()` calls test/types.js makes directly (unlike the
  *  other three, which are genuine per-compile working state) — see
@@ -171,9 +171,9 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *
  *  A genuinely raw bracket assignment can't be trapped at the moment it
  *  runs: intercepting an arbitrary property write needs a Proxy, and this
- *  file is compiled BY jz into dist/jz.wasm as part of self-hosting
+ *  file is compiled BY jz into dist/jz.wasm as part of self-compiling
  *  (scripts/self.js imports it directly) — Proxy traps aren't in the
- *  self-hostable subset, so wrapping `table` in one would break the
+ *  self-compilable subset, so wrapping `table` in one would break the
  *  self-build. A raw write BEFORE this call is still caught (the plain
  *  `table[name]` read below sees it — no registered value is ever
  *  `undefined`); `verifyEmitIntegrity` (called after every module's
@@ -186,13 +186,13 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *  ordered names, two parallel attribution arrays) — never a name-keyed
  *  dict/Map, and never string-CONCATENATED on the hot (non-throwing) path.
  *  A name-keyed dict/Map here, as a SECOND such structure alongside
- *  `ctx.core.emit`'s own large dict, corrupts self-hosted warm-instance
+ *  `ctx.core.emit`'s own large dict, corrupts self-compiled warm-instance
  *  reuse (a `_clear()`-then-recompile round-trip within one wasm instance)
  *  with a bare "memory access out of bounds", even though one large dynamic
  *  dict alone is fine every compile; string-concatenating `${module}|
  *  ${dialect}` at this call volume (~150-600 registrations) corrupts the
  *  same warm-instance reuse even with zero dicts involved. Root cause lives
- *  in the self-hosted dyn-props/string runtime (see .work/research.md); this
+ *  in the self-compiled dyn-props/string runtime (see .work/research.md); this
  *  function sidesteps both hazards by only ever `.push()`-ing already-
  *  existing string references (`dialect`, `ctx.core.currentModule`) into
  *  plain arrays. Every `+`/template literal below lives ONLY inside a
@@ -244,7 +244,7 @@ export const verifyEmitIntegrity = (table, order, siteDialect, siteModule) => {
  *  path fires it. (Untagged `ctx.core.emit` handlers are methods: a bare read of
  *  `m.values` must NOT invoke them — that would materialize a view — they fire only
  *  from the method-call path.) Getter-ness lives in `ctx.core.getters` (a plain Set),
- *  NOT as a flag on the emitter closure: the self-host kernel can't reliably read a
+ *  NOT as a flag on the emitter closure: the self-compile kernel can't reliably read a
  *  dynamic property off a closure returned via a dynamic-key lookup, so a closure tag
  *  silently read `undefined` and every getter fell through to `__dyn_get`. A Set
  *  key-lookup is kernel-safe. Dispatch (module/core.js) checks `ctx.core.getters.has(key)`. */
@@ -298,7 +298,7 @@ export function resolveIncludes() {
       for (const dep of autoDepsOf(name)) add(dep)
     }
   }
-  // Self-host divergence diagnostics (scripts/self.js compileDiag): snapshot
+  // Self-compile divergence diagnostics (scripts/self.js compileDiag): snapshot
   // what THIS side resolved, so a host-vs-kernel JSON diff names the first
   // differing fact instead of leaving byte-drift archaeology. Near-zero cost
   // when the sink is absent (one truthiness test per call).
@@ -322,7 +322,7 @@ export function resolveIncludes() {
  * analyze.js is itself imported by wat/assemble.js, which session.js imports
  * (clearStdlibParseCache) — routing the accessor through session.js would
  * close analyze.js -> session.js -> wat/assemble.js -> analyze.js (jz's own
- * self-host module resolver rejects import cycles outright, so this isn't
+ * self-compile module resolver rejects import cycles outright, so this isn't
  * just a style question — it breaks `npm run build`). ctx.js is the one leaf
  * every one of those already depends on with nothing importing back, so
  * ownership of WHERE the store lives sits here.
@@ -419,7 +419,7 @@ export function reset(proto, globals, bridge) {
                             // the ctx.module.imports write.
     getters: new Set(), // keys of emit entries that are property getters — the
                         // kernel-safe authority for getter dispatch (a closure-attached
-                        // flag was unreadable in the self-host kernel after a dynamic-key
+                        // flag was unreadable in the self-compile kernel after a dynamic-key
                         // lookup, so every getter silently fell through to __dyn_get).
                         // Populated by registerGetter(); checked by module/core.js dispatch.
     currentModule: null,   // module name currently running its init(ctx) (set by
@@ -430,7 +430,7 @@ export function reset(proto, globals, bridge) {
                             // this compile, in registration order — registerName's
                             // collision ledger (see registerName's doc comment: plain
                             // arrays, deliberately NOT a name-keyed dict/Map, and never
-                            // string-concatenated on the hot path — both broke self-host
+                            // string-concatenated on the hot path — both broke self-compile
                             // warm-instance reuse; see registerName's own doc for why).
     regEmitDialect: [],     // parallel to regEmitOrder: dialect string ('reg'/'registerGetter').
     regEmitModule: [],      // parallel to regEmitOrder: registering module's name.
@@ -438,7 +438,7 @@ export function reset(proto, globals, bridge) {
     regStdlibDialect: [],
     regStdlibModule: [],
                         // MUST remain last: adding fields before stdlib/stdlibDeps/… shifts
-                        // their slot indices and breaks the self-host compiled kernel's reads.
+                        // their slot indices and breaks the self-compile compiled kernel's reads.
   }
 
 
@@ -446,7 +446,7 @@ export function reset(proto, globals, bridge) {
     imports: [],
     modules: {},
     importSources: null,  // user compile's bundled source graph; reset() clears it every session
-    importAsts: null,   // self-host: pre-parsed [specifier, ast] pairs (the kernel can't parse).
+    importAsts: null,   // self-compile: pre-parsed [specifier, ast] pairs (the kernel can't parse).
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,
     hostImportValTypes: new Map(),
@@ -811,7 +811,7 @@ export function reset(proto, globals, bridge) {
     helperCallsites: false, // profiling-only: export mutable i64 counters for selected runtime
                             // helper callsites after optimization, so hot helpers can be traced
                             // back to the compiled function that calls them.
-    compactCollections: false, // self-host artifact build profile only: omit the redundant
+    compactCollections: false, // self-compile artifact build profile only: omit the redundant
                                // Set/Map/HASH i32 probe lane and probe the entry-resident hash.
                                // Ordinary user outputs keep the faster lane layout.
     loopXformId: 0,     // monotonic id for the per-function loop transforms' generated locals
@@ -837,7 +837,7 @@ export function reset(proto, globals, bridge) {
   ctx.warnings = null
 
   // Feature flags: the frozen FeaturePlan (.work/research.md §FeaturePlan freeze).
-  // Every key here MUST be seeded, not an absent key: the self-hosted kernel's
+  // Every key here MUST be seeded, not an absent key: the self-compiled kernel's
   // absent-dyn-key read misfires truthy, so a missing key silently turns a gate ON
   // (the original bigint bug — pure-number programs exported subnormals as bigint
   // carriers, -5e-324 → -1, data.js pins). Three strata, each with its own writer
@@ -871,7 +871,7 @@ export function reset(proto, globals, bridge) {
     // PROGRAM
     bigint: false,    // BigInt construction anywhere (tagged literal / BigInt() call — prep()'s
                       // scan). Gates ir.js toNumF64's carrier check. MUST be seeded, not an
-                      // absent key: the self-hosted kernel's absent-dyn-key read misfired
+                      // absent key: the self-compiled kernel's absent-dyn-key read misfired
                       // truthy, turning the carrier gate ON for pure-number programs and
                       // exporting subnormals as bigint carriers (-5e-324 → -1, data.js pins).
     error: false,     // A jz Error/TypeError/…/EvalError value ever gets constructed
@@ -906,7 +906,7 @@ export function reset(proto, globals, bridge) {
   // deps-graph lambdas, e.g. module/collection.js's `ifExt`) and assemble —
   // never at emit time, so a DEMAND flag flipping mid-emission is safe by
   // construction: nothing has consulted it yet. Every key MUST be seeded
-  // (the same absent-key hazard as ctx.features — the self-hosted kernel's
+  // (the same absent-key hazard as ctx.features — the self-compiled kernel's
   // absent-dyn-key read misfires truthy). `external` is the one flag actually
   // wired into an emission decision beyond template gating (it also gates the
   // `host: 'wasi'` legalization check in index.js); the typed-kind ones
@@ -953,7 +953,7 @@ export function reset(proto, globals, bridge) {
   // must be rebuilt directly by reset() every session, as ONE ctx subtree —
   // the SAME idiom ctx.features/ctx.linkDemand already use just above (a
   // plain object assigned fresh every reset(), no hook-array indirection).
-  // Self-hosting lowers WeakMap to a strong Map (no native GC), so a
+  // Self-compiling lowers WeakMap to a strong Map (no native GC), so a
   // module-global map here would let entries from a PRIOR compile() survive
   // into the next one; owning the maps on ctx and rebuilding them in reset()
   // closes that leak without each module keeping private reset plumbing.
@@ -1010,7 +1010,7 @@ export function reset(proto, globals, bridge) {
  *                        doc above ctx.abi) — fired once per compile, right
  *                        after the per-function analyze passes settle and
  *                        before any function emits. Unordered w.r.t. PHASE_ORDER
- *                        (like pre-emit): asserted host- and self-host-uniformly
+ *                        (like pre-emit): asserted host- and self-compile-uniformly
  *                        from inside compile/index.js's compile(), independent
  *                        of whether the caller ever reaches 'post-prepare'.
  *   - `pre-assemble`   : asserts every SESSION+PROGRAM+ANALYSIS key is present
@@ -1024,9 +1024,9 @@ export function reset(proto, globals, bridge) {
 // Hot per-node pass flags flattened to ONE i32 bitmask (ctx.transform.optFlags,
 // set beside `optimize` at compile setup). Emit-path sites test a fixed-schema
 // integer slot instead of a property read on the ~84-key resolved cfg — on the
-// self-host kernel the cfg is a spread-built dictionary, so each per-node
+// self-compile kernel the cfg is a spread-built dictionary, so each per-node
 // `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
-// that asymmetry alone moved the warm self-host ratio. Lives here (not
+// that asymmetry alone moved the warm self-compile ratio. Lives here (not
 // optimize/index.js) so ir.js/module consumers stay cycle-free.
 /** CompilerHostProfile (stage-4 seed): capabilities of the ENGINE RUNNING THE
  *  COMPILER, probed once at load. Consumers branch on named capabilities, not
@@ -1061,7 +1061,7 @@ export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CAR
 // ORDERED contract — each named phase must follow its predecessor within one
 // compile session ('pre-emit', 'post-analyze', 'pre-assemble' are unordered:
 // 'pre-emit' is a per-function interleave; 'post-analyze'/'pre-assemble' fire
-// from inside compile/index.js's compile() itself — host- and self-host-
+// from inside compile/index.js's compile() itself — host- and self-compile-
 // uniform — independent of whether the caller wired the optional
 // 'post-prepare'/'post-compile' hooks around it (self.js does not today)).
 // A skipped or repeated ORDERED phase is a pipeline-wiring bug caught here

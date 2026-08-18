@@ -22,7 +22,7 @@
 
 import { ASSIGN_OPS } from '../ast.js'
 
-const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-host a builtin as a first-class value
+const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
 
 const stableIdx = (e) => {

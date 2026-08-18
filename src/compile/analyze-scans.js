@@ -153,7 +153,7 @@ export const USE = {
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
 }
-// Self-host-only: see resetProgramFactsCache (program-facts.js) — a fresh
+// Self-compile-only: see resetProgramFactsCache (program-facts.js) — a fresh
 // factStore (src/session.js) swaps in a fresh WeakMap each session so a
 // warm-instance compile-clear-compile loop never reads a dangling arena
 // pointer out of the old backing storage. This cache lives at

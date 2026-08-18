@@ -32,7 +32,7 @@ import { ERR } from '../err-codes.js'
 const SSO_BIT_I64 = ssoBitI64Hex()
 const SLICE_BIT_I64 = sliceBitI64Hex()
 const HCACHE_BIT_I64 = hcacheBitI64Hex()
-// (SSO_BIT | SLICE_BIT) << AUX_SHIFT as i64 hex — BigInt-free (self-host runs this)
+// (SSO_BIT | SLICE_BIT) << AUX_SHIFT as i64 hex — BigInt-free (self-compile runs this)
 const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + '00000000'
 
 // === SSO codec — single source of truth for the inline-string bit layout ===
@@ -45,7 +45,7 @@ export const MAX_SSO = 6
 const SSO_LEN_SHIFT = 10  // length occupies aux bits 10-12 (= payload bits 42-44)
 const SSO_CHAR_MASK = '0x3ffffffffff'  // payload bits 0-41: the 6 × 7-bit char lanes
 // JS: ASCII string → { aux, offset }, or null when ineligible (too long / non-ASCII).
-// BigInt-free (i32 ops only) so the self-hosted compiler — which runs this to encode
+// BigInt-free (i32 ops only) so the self-compiled compiler — which runs this to encode
 // every string literal — stays on jz's numeric core. offset = payload bits 0-31, aux =
 // bits 32-46; char i at bit i*7 (chars 0-3 fit the offset, char 4 straddles, char 5 → aux).
 // Exported: collection.js's strHashLiteral reuses this to build the exact lo/hi pair
@@ -165,10 +165,10 @@ export default (ctx) => {
     __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
-    // factory (v()) to discover body calls, but that realization DIVERGES under self-host
+    // factory (v()) to discover body calls, but that realization DIVERGES under self-compile
     // (jz.wasm) — so a body-called helper not also listed here is dropped from the kernel
     // ("Unknown func $__clamp_idx" on `str.slice`). FN templates must declare body deps
-    // manually; pinned by test/selfhost-includes.js.
+    // manually; pinned by test/self-compile-includes.js.
     __str_slice: ['__str_byteLen', '__alloc', '__clamp_idx', '__mkptr'],
     __str_slice_view: ['__str_byteLen', '__mkptr', '__str_slice', '__clamp_idx'],
     __str_indexof: ['__str_byteLen'],
@@ -193,9 +193,9 @@ export default (ctx) => {
     __str_cmp: ['__char_at', '__str_byteLen'],
     __str_range_eq: ['__char_at', '__str_byteLen'],
     __str_substring_eq: ['__str_byteLen', '__str_range_eq'],
-    __str_slice_eq: ['__str_byteLen', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-host auto-scan unreliable — test/selfhost-includes.js)
+    __str_slice_eq: ['__str_byteLen', '__str_range_eq', '__clamp_idx'],  // body-calls __clamp_idx; declare it (self-compile auto-scan unreliable — test/self-compile-includes.js)
     __str_pad: ['__str_byteLen', '__str_copy', '__alloc'],
-    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-host auto-scan diverges)
+    __str_join: ['__str_concat', '__to_str', '__str_byteLen', '__len', '__ptr_offset', '__mkptr'],  // FN template: __mkptr body-called, must be manual (self-compile auto-scan diverges)
     __str_encode: ['__str_byteLen', '__str_copy'],
     __encodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__sso_norm'],
     __decodeURIComponent: ['__to_str', '__str_byteLen', '__char_at', '__alloc', '__mkptr', '__uri_hex', '__sso_norm'],
@@ -225,7 +225,7 @@ export default (ctx) => {
   // (`__str_slice`, `__str_split`, `__str_case`, …) call `$__mkptr`/`$__alloc` only
   // through nested template thunks (sliceSsoPackWat/internProbeWat); resolveIncludes'
   // auto-derivation realizes those thunks to recover the dep, but that re-realization
-  // is not reliable under self-host (the jz.wasm kernel re-runs the thunk late, with
+  // is not reliable under self-compile (the jz.wasm kernel re-runs the thunk late, with
   // intern/heap state the native run never reaches), so a runtime string op would
   // emit `call $__mkptr` with no definition. Declaring the deps explicitly here makes
   // inclusion independent of thunk re-realization. Reachability pruning still drops
@@ -308,7 +308,7 @@ export default (ctx) => {
       (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK})))
       (local.get $i))))`)
 
-  // Hot (~37M calls in watr self-host, ~40k/scan in tokenizer bench). Caller
+  // Hot (~37M calls in watr self-compile, ~40k/scan in tokenizer bench). Caller
   // guarantees $ptr is a STRING; SSO bit picks inline-byte-extract vs heap memory
   // load. Returns 0 for OOB — internal tokenizer callers (number/json/regex
   // parsers) rely on this sentinel to terminate `while (c > 32)`-shape loops
@@ -393,7 +393,7 @@ export default (ctx) => {
           ;; so __char1byte routes those to a heap 1-byte string.
           (else (call $__char1byte (i32.load8_u (i32.add (local.get $off) (local.get $i)))))))))`)
 
-  // Hot: ~53M calls in watr self-host. Bit-eq covers identity. SSO/SSO with !bit-eq
+  // Hot: ~53M calls in watr self-compile. Bit-eq covers identity. SSO/SSO with !bit-eq
   // guarantees content differs (high 32 bits encode type+len; both equal → low 32 differs
   // ⇒ bytes differ). Heap/heap uses raw load8_u — no per-byte function calls.
   // Mixed SSO×heap is rare; falls back to __char_at.
@@ -449,7 +449,7 @@ export default (ctx) => {
     ;; Sole caller is __str_eq, which already returned for bit-equal pointers, both-SSO
     ;; (bit-ne ⇒ content-ne), both-canonical-interned (bit-ne ⇒ content-ne) and both-plain-
     ;; heap length mismatch. Re-testing them here is dead work on every cold call — skip to
-    ;; the byte walk. (__str_eq/__str_eq_cold are ~14% of self-host runtime; this trims the
+    ;; the byte walk. (__str_eq/__str_eq_cold are ~14% of self-compile runtime; this trims the
     ;; per-call fixed cost.) The heap/mixed paths below still decide every case correctly
     ;; on their own, so this stays correct even if a future caller skips the prelude.
     (local.set $ta (i32.wrap_i64 (i64.and (i64.shr_u (local.get $a) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
@@ -1768,7 +1768,7 @@ export default (ctx) => {
   const stringSearchMethod = (name) => (str, sfx, pos) => {
     // The position argument was silently DROPPED (compiled as position 0) —
     // silent wrong beats loud missing, so reject until the helper threads an
-    // offset (self-host hit this: powResolvePool's startsWith(s, i-10)
+    // offset (self-compile hit this: powResolvePool's startsWith(s, i-10)
     // classified nothing). Slice first, or use indexOf.
     if (pos !== undefined) err(`${name === '__str_startswith' ? 'startsWith' : 'endsWith'} position argument not supported — slice the receiver first`)
     const guard = regexpSearchGuard(sfx); if (guard) return guard

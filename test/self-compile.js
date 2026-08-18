@@ -1,8 +1,8 @@
 /**
- * Self-host gate: build dist/jz.wasm, instantiate it, and verify its
+ * Self-compile gate: build dist/jz.wasm, instantiate it, and verify its
  * `default(source)` round-trips real programs through the in-wasm pipeline.
  *
- * Contract (matches scripts/selfhost-build.mjs + scripts/self.js):
+ * Contract (matches scripts/self-compile-build.mjs + scripts/self.js):
  *   host:   self   = instantiate(dist/jz.wasm)
  *   wasm:   bytes  = self.default(source)   // parse → jzify → prepare → compile → watr
  *   host:   result = instantiate(bytes).exports.main()
@@ -10,7 +10,7 @@
  * The whole compiler runs in wasm — the host only passes the source string in and
  * reads the wasm bytes out. dist/jz.wasm is jz, compiled by jz.
  *
- * Run: node test/selfhost.js   |   CI: npm run test:self
+ * Run: node test/self-compile.js   |   CI: npm run test:self
  */
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
@@ -22,7 +22,7 @@ import { instantiate } from '../interop.js'
 import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const BUILD = join(ROOT, 'scripts/selfhost-build.mjs')
+const BUILD = join(ROOT, 'scripts/self-compile-build.mjs')
 const SELF = join(ROOT, 'dist/jz.wasm')
 
 const ensureSelf = () => {
@@ -30,7 +30,7 @@ const ensureSelf = () => {
   const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 600_000 })
   if (r.status !== 0) {
     console.log(r.stdout); console.log(r.stderr)
-    throw new Error(`selfhost build exit ${r.status}`)
+    throw new Error(`self-compile build exit ${r.status}`)
   }
 }
 
@@ -51,21 +51,21 @@ const compileViaSelf = (src) => {
   const out = s.exports.default(s.memory.String(src))
   const bin = s.memory.read(out)
   const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  if (bytes.length <= 8) throw new Error('self-host returned empty wasm: ' + bytes.length + ' bytes')
+  if (bytes.length <= 8) throw new Error('self-compile returned empty wasm: ' + bytes.length + ' bytes')
   return bytes
 }
 
-test('selfhost: build dist/jz.wasm', () => {
+test('self-compile: build dist/jz.wasm', () => {
   const r = spawnSync(process.execPath, [BUILD], {
     cwd: ROOT, encoding: 'utf8', timeout: 600_000,
   })
   if (r.status !== 0) { console.log(r.stdout); console.log(r.stderr) }
   ok(r.status === 0, `build exit ${r.status}`)
-  ok(r.stdout.includes('jz.wasm'), 'self-host artifact reported')
-  ok(readFileSync(SELF).byteLength > 100_000, 'self-host wasm has substance')
+  ok(r.stdout.includes('jz.wasm'), 'self-compile artifact reported')
+  ok(readFileSync(SELF).byteLength > 100_000, 'self-compile wasm has substance')
 })
 
-// Sample programs the self-host compiler must lower correctly. Each tuple is
+// Sample programs the self-compile compiler must lower correctly. Each tuple is
 // [label, source, expected-main()-result]. Picked to cover the major
 // emit paths (arith, calls, loops, strings, arrays, objects, closures).
 const SAMPLES = [
@@ -77,7 +77,7 @@ const SAMPLES = [
   ['closure',     'let mk = n => (x => x + n); let add5 = mk(5); export let main = () => add5(7)', 12],
   ['recursion',   'let fib = n => n < 2 ? n : fib(n-1) + fib(n-2); export let main = () => fib(10)', 55],
   // Math intrinsics whose emitters build WAT strings at compile time — guards the
-  // class of self-host bug where the builder uses a construct the kernel lacks
+  // class of self-compile bug where the builder uses a construct the kernel lacks
   // (Math.expm1's Horner fold once used Array.reduceRight, absent from jz's runtime,
   // so the kernel interpolated `undefined` into the WAT). Tolerance-checked in-program
   // (returns 1/0) so the exact-equality assert below stays uniform.
@@ -87,7 +87,7 @@ const SAMPLES = [
   // OPCODE-dict miscompile (2026-07): watr's packData (data-segment zero-run trim/merge/
   // split, watr/src/optimize.js) corrupted jz's internStrings-encoded static data
   // (src/compile/index.js buildInternTable: an 8-byte [hash u32][len u32] header + a
-  // sparse open-addressing intern-probe table, both zero-run-dense) — ONLY at self-host
+  // sparse open-addressing intern-probe table, both zero-run-dense) — ONLY at self-compile
   // scale (native jz building dist/jz.wasm from the full self.js graph; a wrapped or
   // reduced graph doesn't reproduce it). Surfaced as watr's OWN embedded instr() throwing
   // "Unknown instruction f64.nearest" when the kernel compiled a program whose Math.exp/
@@ -98,11 +98,11 @@ const SAMPLES = [
   // optimize's object-config form on the exact self.js entry: {level:1, watr:true} and
   // {level:2, watr:false} both compile the kernel correctly; watr + internStrings
   // TOGETHER are required, and disabling watr's packData pass alone (its ~20 other
-  // passes + internStrings stay on) fixes it. Fixed in scripts/selfhost-build.mjs
+  // passes + internStrings stay on) fixes it. Fixed in scripts/self-compile-build.mjs
   // (optimize: {level, watr:{packData:false}}) — jz's own build orchestration choosing a
   // watr config safe for self-compile, not a source workaround (watr is de-forked; jz
   // doesn't patch it). math-exp/math-expm1 above already cover this path; sin/cos/pow
-  // add coverage for Math functions no other selfhost.js sample reaches.
+  // add coverage for Math functions no other self-compile.js sample reaches.
   ['math-sin',    'export let main = () => (Math.abs(Math.sin(1.2) - 0.9320390859672263) < 1e-6) | 0', 1],
   ['math-cos',    'export let main = () => (Math.abs(Math.cos(1.2) - 0.3623577544766736) < 1e-6) | 0', 1],
   ['math-pow',    'export let main = () => (Math.abs(Math.pow(2.5, 3.7) - 29.67413253642086) < 1e-6) | 0', 1],
@@ -117,9 +117,9 @@ const SAMPLES = [
 ]
 
 for (const [label, src, expected] of SAMPLES) {
-  test(`selfhost: ${label}`, () => {
+  test(`self-compile: ${label}`, () => {
     const bin = compileViaSelf(src)
-    ok(bin.byteLength > 10, 'self-host produced wasm bytes')
+    ok(bin.byteLength > 10, 'self-compile produced wasm bytes')
     const inst = instantiate(bin, { memory: 256 })
     is(inst.exports.main(), expected, `main() === ${expected}`)
   })
@@ -127,19 +127,19 @@ for (const [label, src, expected] of SAMPLES) {
 
 // The SAMPLES above round-trip at optimize:false (compileViaSelf passes no optJSON),
 // so they never reach watr's single-call inliner. This pins the LEVEL-2 inliner path:
-// inlineOnce grew large enough that the self-host kernel mis-compiled its `pinned` Set
+// inlineOnce grew large enough that the self-compile kernel mis-compiled its `pinned` Set
 // local (pointer zeroed → __set_add trapped "memory access out of bounds" on every L2
 // compile of a program with an inlinable helper). The fix extracts inlBuildPinned to a
 // small scope; a future re-inline would re-break this. forEach's `x=>s+=x` is the single-
 // call helper inlineOnce lifts, so this routes straight through the once-trapping path.
-test('selfhost: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
+test('self-compile: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
   getSelf()  // ensure dist/jz.wasm built
-  const s = instantiate(readFileSync(SELF), { memory: 8192 })  // fresh instance, as a real self-host run does
+  const s = instantiate(readFileSync(SELF), { memory: 8192 })  // fresh instance, as a real self-compile run does
   const src = 'export let main = () => { let s = 0; [1,2,3,4].forEach(x => s += x); return s }'
   const out = s.exports.default(s.memory.String(src), 0, s.memory.String(JSON.stringify({ level: 2 })))
   const bin = s.memory.read(out)
   const bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  ok(bytes.length > 8, 'level-2 self-host produced wasm bytes (no __set_add trap)')
+  ok(bytes.length > 8, 'level-2 self-compile produced wasm bytes (no __set_add trap)')
   is(instantiate(bytes, { memory: 256 }).exports.main(), 10, 'main() === 10 (1+2+3+4)')
 })
 
@@ -149,7 +149,7 @@ test('selfhost: level-2 inliner is sound (inlineOnce pinned-Set)', () => {
 // kernel's L2 output diverged from jz.js (fft/synth twiddle coefficients). Fixed by keying on the
 // exact 64 bits and emitting the number itself. A 17-digit literal used twice (so it pools) whose
 // reciprocal is a clean integer makes any precision loss numerically visible.
-test('selfhost: level-2 f64-constant pool keeps full precision', () => {
+test('self-compile: level-2 f64-constant pool keeps full precision', () => {
   getSelf()
   const s = instantiate(readFileSync(SELF), { memory: 8192 })
   // 0.041666666666666664 === 1/24 exactly; pooled (two uses) → its reciprocal must stay 24.
@@ -169,7 +169,7 @@ test('selfhost: level-2 f64-constant pool keeps full precision', () => {
 // so this was KERNEL-ONLY and only the full local fuzz (seed=192) surfaced it. Fixed by detecting
 // comparison mantissas with an explicit Set. Needs the LICM shape: Math.round(p0) loop-invariant in
 // the INNER of two nested loops, p0 reassigned in the OUTER → the round's f64.nearest is hoisted.
-test('selfhost: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
+test('self-compile: level-2 LICM types a hoisted f64.nearest local f64 (Math.round in nested loops)', () => {
   getSelf()
   const s = instantiate(readFileSync(SELF), { memory: 8192 })
   const src = 'let f = (p0) => { let r = 0; let i = 0; while (i < 4) { let j = 0; while (j < 3) { r = r + Math.round(p0); j = j + 1; } p0 = p0 + 0.4; i = i + 1; } return r }; export let main = () => f(2.6)'
@@ -181,7 +181,7 @@ test('selfhost: level-2 LICM types a hoisted f64.nearest local f64 (Math.round i
   is(instantiate(bytes, { memory: 256 }).exports.main(), jz(src, { optimize: 2 }).exports.main(), 'kernel L2 === jz.js L2')
 })
 
-// Pins the f64x2 lane vectorizer under self-host — it broke ENTIRELY two ways this regression hit:
+// Pins the f64x2 lane vectorizer under self-compile — it broke ENTIRELY two ways this regression hit:
 //  (1) tryToneMap built its `ctx` with a different field set than the other lifters; the kernel
 //      infers one struct layout per shared callee (liftFail), so the mismatched shape corrupted
 //      field reads and liftExprV returned null across the board (re-broke 11657cf), and
@@ -189,7 +189,7 @@ test('selfhost: level-2 LICM types a hoisted f64.nearest local f64 (Math.round i
 //      injected `$math.log_v` body was never appended → "Unknown func $math.log_v" at instantiate.
 // A tone-map kernel lifts Math.log → f64x2.log_v, exercising both. Compile it SIMD ('speed') and
 // scalar (optimize:false) through the kernel; both must instantiate and yield the same checksum.
-test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
+test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib)', () => {
   getSelf()
   const TONE = `
     let dens = new Uint32Array(64), px = new Uint32Array(64)
@@ -206,7 +206,7 @@ test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib
   // {level:'speed'} (object form, as the kernel-target always passes) → the f64x2 tone-map vectorizer
   const out = s.exports.default(s.memory.String(TONE), 0, s.memory.String(JSON.stringify({ level: 'speed' })))
   const bin = s.memory.read(out), bytes = bin instanceof Uint8Array ? bin : new Uint8Array(bin)
-  ok(bytes.length > 8, 'self-host produced wasm bytes (no ctx-shape malformed lift)')
+  ok(bytes.length > 8, 'self-compile produced wasm bytes (no ctx-shape malformed lift)')
   // instantiate would throw "Unknown func $math.log_v" if appendLateStdlib were missing; the
   // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
   is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
@@ -226,7 +226,7 @@ test('selfhost: f64x2 lane vectorizer is sound (tone-map ctx-shape + late stdlib
 // per top-level parse() instead of once ever). compile-clear-compile-clear-compile:
 // three rounds catch a fix that only survives ONE `_clear` (e.g. a reset that clears
 // state but not a downstream 1-slot cache pointing at it).
-test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
+test('self-compile: warm-instance reuse — compile, _clear(), compile again, byte-parity vs fresh', () => {
   // charCodeAt-on-param is load-bearing: it pulls the abi/string.js param
   // decomposition, whose module-level ssoBitI64 memo used to dangle across
   // _clear (warm round 2 emitted `(i64.const <garbage bytes>)` → watr
@@ -256,7 +256,7 @@ test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-p
 // Warm-instance reuse WITHOUT any `_clear()` — the bump arena grows monotonically
 // across every compile, exactly the condition under which narrow.js's pointer-ABI
 // fixes (applyPointerParamAbi's missing ptrAux, passthroughPtrParam's recursive
-// delegation — both in this same test/selfhost.js file's neighbor tests natively,
+// delegation — both in this same test/self-compile.js file's neighbor tests natively,
 // see test/objects.js's "devirt schema-slot" tests for the host-level pin) used to
 // leave a Map/Object receiver whose real schema the static analysis can't see
 // (bindAssignSchema poisons the binding on disagreeing assignments) routing
@@ -292,7 +292,7 @@ test('selfhost: warm-instance reuse — compile, _clear(), compile again, byte-p
 // 4 GiB ceiling itself (~100+ rounds, where an honest `unreachable` OOM trap is
 // the correct outcome, not a bug). Keep at or above 40 rather than shrinking it
 // back down to "looks clean in a quick run".
-test('selfhost: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
+test('self-compile: warm-instance reuse with NO _clear — repeated Map+prop-access compiles stay clean', () => {
   getSelf()
   const warm = instantiate(readFileSync(SELF), { memory: 8192 })
   const PROGRAMS = [

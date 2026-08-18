@@ -3,7 +3,7 @@
  *
  *   parse → reject-reserved-prefix → liftIIFEs → jzify → prepare → preEval
  *
- * Host (index.js jzCompileInner) and self-host kernel (scripts/self.js — ALL
+ * Host (index.js jzCompileInner) and self-compile kernel (scripts/self.js — ALL
  * entries: compileSelf, compileWat, compileWarnings, compileDiag) MUST consume
  * THIS function, not a re-implementation, so the two pipelines cannot drift —
  * a kernel entry that skips a step here (e.g. preEval) folds constants
@@ -47,7 +47,7 @@ export const rejectReservedPrefix = (node) => {
  *  `regionHooks` (region-arena FRONT boundary, .work/research.md §Region
  *  arena): optional `{ mark, exit }` pair, the same optimizeTail-shaped
  *  contract the round boundary (scripts/self.js's own `regionHooks` on
- *  `watrTail`) already uses — supplied ONLY by the self-host kernel entry
+ *  `watrTail`) already uses — supplied ONLY by the self-compile kernel entry
  *  (scripts/self.js), never by the native host pipeline (index.js never
  *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
  *  one region round: every allocation that span makes gets reclaimed at
@@ -62,7 +62,7 @@ export const rejectReservedPrefix = (node) => {
  *  reference. The remaining `ctx.*` fields (`core, bridge, names, runtime,
  *  memory, error, abi, features, linkDemand`) must stay OUT of the root:
  *  `ctx.core.emit`/`ctx.core.stdlib`/`ctx.bridge` carry hundreds of
- *  CLOSURE-valued properties (the self-hosted stdlib registration
+ *  CLOSURE-valued properties (the self-compiled stdlib registration
  *  machinery) that the region-arena relocation walk is not proven safe
  *  against. `ctx` itself is NEVER a root element here — only its individual
  *  fields are, so no `setSession()` rebind seam is needed. Any later read

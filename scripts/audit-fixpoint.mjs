@@ -19,7 +19,7 @@
 // resolved for this tier (`resolveWatrOpts`, index.js) — not watr's bare defaults.
 // watr's bare defaults lean size (outline/tailmerge/rettail ON: fold repeated
 // code into out-of-line calls), which the 'speed' tier deliberately disables
-// (measured 1.433→1.316 self-host slowdown with them on — see resolveWatrOpts'
+// (measured 1.433→1.316 self-compile slowdown with them on — see resolveWatrOpts'
 // `watrProfile` comment). Comparing against bare defaults made every kernel with
 // duplicated NaN-box tag-classification code (any exported fn boundary-boxing a
 // param) look like a miss, when it was watr running a DIFFERENT rewrite system

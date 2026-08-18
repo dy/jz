@@ -1255,7 +1255,7 @@ test('codegen: pure scalar function — minimal binary', () => {
 })
 
 test('compile profile reports phase timings', () => {
-  if (onKernel()) return  // kernel: host {profile} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {profile} option doesn't reach the single-source self-compile
   const profile = {}
   const wasm = compile('export let add = (a, b) => a + b', { profile })
   ok(wasm.byteLength > 0, 'compile still returns wasm bytes')
@@ -1265,7 +1265,7 @@ test('compile profile reports phase timings', () => {
 })
 
 test('compile profile.names emits wasm function name section', () => {
-  if (onKernel()) return  // kernel: host {profile:{names}} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {profile:{names}} option doesn't reach the single-source self-compile
   const src = 'let helper = (x) => x <= 0 ? 1 : helper(x - 1) + 1; export let add = (a, b) => helper(a) + b'
   const plain = compile(src)
   is(WebAssembly.Module.customSections(new WebAssembly.Module(plain), 'name').length, 0)
@@ -1280,7 +1280,7 @@ test('compile profile.names emits wasm function name section', () => {
 })
 
 test('helper counters are opt-in and resettable', async () => {
-  if (onKernel()) return  // kernel: host-only profiling option is not in the self-host ABI
+  if (onKernel()) return  // kernel: host-only profiling option is not in the self-compile ABI
   const src = `
     export const main = () => {
       const xs = []
@@ -1304,7 +1304,7 @@ test('helper counters are opt-in and resettable', async () => {
 })
 
 test('helper callsite counters attribute dynamic helper calls', async () => {
-  if (onKernel()) return  // kernel: host-only profiling option is not in the self-host ABI
+  if (onKernel()) return  // kernel: host-only profiling option is not in the self-compile ABI
   const src = `
     export const main = () => {
       const xs = []
@@ -1417,7 +1417,7 @@ test('codegen: shapeStrs invalidates when SRC is reassigned', () => {
 })
 
 test('perf: JSON.parse + walk — WASM faster than JS', () => {
-  if (onKernel()) return  // kernel: self-host wasm is unoptimized (no watOptimize); the perf bar assumes level-2 output
+  if (onKernel()) return  // kernel: self-compile wasm is unoptimized (no watOptimize); the perf bar assumes level-2 output
   const SRC = '{"items":[{"id":1,"kind":2,"value":10},{"id":2,"kind":3,"value":20},{"id":3,"kind":5,"value":30}],"meta":{"scale":7,"bias":11}}'
   const src = `
     let SRC = '${SRC}'
@@ -1467,7 +1467,7 @@ test('perf: JSON.parse + walk — WASM faster than JS', () => {
   pinFaster(wasmTime, jsTime, 1.2)
 })
 test('perf: watr WAT compiler — WASM competitive with JS', async () => {
-  if (onWasi() || onKernel()) return  // wasi: host global WebAssembly; kernel: unoptimized self-host wasm misses the perf bar
+  if (onWasi() || onKernel()) return  // wasi: host global WebAssembly; kernel: unoptimized self-compile wasm misses the perf bar
 
   // Bench-shape: jzify-bundled watr.compile vs. native ESM watr.compile, on the
   // same WAT corpus the bench harness uses. On the live bench, jz watr is
@@ -1718,7 +1718,7 @@ const golden = (name, src, expected) => test(`golden size: ${name}`, () => {
 // 9857→18335: full-range Eisel-Lemire table (exp10 ∈ [-342..308], 10.4 KB vs
 // the 2 KB trim). The trimmed table flushed |exp10| > 308 literals to 0 via the
 // overflowing 10^e fallback and double-rounded the subnormal boundary — the
-// self-hosted watr.wasm failed official float_literals/const on real parses.
+// self-compiled watr.wasm failed official float_literals/const on real parses.
 // Correctness owns the trade; size-recovery follow-up recorded in todo (derive
 // the reciprocal half at init via 256÷128 long division instead of shipping it).
 golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, z: x + 1 }; return p.x + p.y + p.z }', 18335)
@@ -1745,7 +1745,7 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // the global __dyn_props table first, then the sidecar for untouched init-time
 // keys) so a receiver's dyn-prop lifetime matches its storage lifetime across
 // `_clear()` instead of dangling a round-arena sidecar off a surviving durable
-// header. Correctness fix (test/selfhost.js 'warm-instance reuse'); pure size
+// header. Correctness fix (test/self-compile.js 'warm-instance reuse'); pure size
 // cost here since this program's receivers are all ephemeral.
 // 9710→10652: warm-reuse durable-heal machinery (__durable_slot_log/__durable_fwd_log/
 // __is_eph_bits + the zombie-aware __hash_get_local_h split) rides along with __dyn_set —

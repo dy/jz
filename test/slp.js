@@ -2,7 +2,7 @@
 // stores within one iteration into a single v128 store — the lane class the loop
 // vectorizer (which packs ACROSS iterations) can't reach. Sound ONLY when the module
 // creates no aliasing typed-array view; the bail cases below are the soundness pins
-// (a missed view = packing aliased memory = miscompile, the watr self-host class).
+// (a missed view = packing aliased memory = miscompile, the watr self-compile class).
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
@@ -123,7 +123,7 @@ test('slp: bails on a within-iteration read-after-write (forward shift)', () => 
   if (!onWasi()) is(jz(src, { optimize: speed }).exports.run(), js, 'jz speed == JS ground truth')  // WASI doesn't surface the return value
 })
 
-test('slp: bails on a buffer-backed view (the watr self-host class)', () => {
+test('slp: bails on a buffer-backed view (the watr self-compile class)', () => {
   // Two Float64Arrays over one ArrayBuffer alias; SLP must not pack across them.
   const src = `
     let buf = new ArrayBuffer(512)

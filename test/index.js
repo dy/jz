@@ -75,8 +75,8 @@ const TESTS = [
   'perf-ratchet',
   'parser-bugs',
   'transform',
-  'selfhost-source',
-  'selfhost-includes',
+  'self-compile-source',
+  'self-compile-includes',
   'jsstring',
   'booleans',
   'warnings',
@@ -100,22 +100,22 @@ const argFilters = process.argv.slice(2)
 // on host options (imports/host globals, external js objects, CLI argv, host
 // timers, multi-module graphs) or a different target (WASI command entry) that
 // the jz.wasm kernel — which takes a single raw AST and owns compile internally —
-// never receives. They cannot run on the self-host leg by construction (not value
+// never receives. They cannot run on the self-compile leg by construction (not value
 // miscompiles), and some throw uncaught (calling the real globalThis.fetch, or
 // `Unknown module './src/compile.js'`) which would abort the run. Skip them under
-// JZ_TEST_TARGET=jz.wasm so test:wasm is a clean signal of genuine self-host
+// JZ_TEST_TARGET=jz.wasm so test:wasm is a clean signal of genuine self-compile
 // correctness. Mixed files keep their per-test `onKernel()` guards instead.
 //   - watr: compiles the watr WAT library, which is a multi-file module graph
 //     (`import … from './src/compile.js'` etc.); the kernel takes one parsed AST
 //     and has no host module resolver, so every case reports "Unknown module".
 //   - warnings: every case asserts on the compile-time advisory channel
 //     (`opts.warnings` Map / `inspect`), which the kernel — returning only IR —
-//     never populates. Wholly metadata, not value behaviour; nothing to self-host.
+//     never populates. Wholly metadata, not value behaviour; nothing to self-compile.
 //   - perf-ratchet: a codegen-shape ratchet that compiles at optimize:2 and counts
 //     loop-body ops vs a committed baseline. The kernel runs optimize:false (ignores
 //     the level), so its op counts don't match the baseline — and it's not a value
 //     test anyway. Excluded; the in-process leg owns it.
-//   - selfhost-source: a host-side scan of the self-host kernel's own source for
+//   - self-compile-source: a host-side scan of the self-compile kernel's own source for
 //     labeled-statement misparses. Reads src via parse/jzify directly, never the
 //     compiler-under-test, so the kernel leg would only re-run it identically.
 //
@@ -139,7 +139,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // never-grown: value-correct in-kernel; ONE structural assert (raw-base WAT
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
-  'selfhost-source', 'selfhost-includes', 'abi', 'examples',
+  'self-compile-source', 'self-compile-includes', 'abi', 'examples',
   'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
   // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows
@@ -147,7 +147,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // int) — full kernel leg with these five in is baseline-clean.
   // 'inference' cleared 2026-07-28: the census row was never order-dependent —
   // `new Set(undefined)` threw the __iter_arr for-of TypeError when the
-  // compiler ran self-hosted (prepare's own `new Set(skip)`); the Set
+  // compiler ran self-compiled (prepare's own `new Set(skip)`); the Set
   // constructor is now spec-correct (nullish iterable → empty set,
   // __iter_arr_ctor) and the whole exclusions burn-down is COMPLETE.
   'simd', 'optimizer', 'slot-hazards',
@@ -183,7 +183,7 @@ if (argFilters.length && selected.length !== argFilters.length) {
   throw new Error(`Unknown test file(s): ${missing.join(', ')}`)
 }
 
-// JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-hosted jz.wasm
+// JZ_TEST_TARGET=jz.wasm — run the whole suite against the self-compiled jz.wasm
 // kernel instead of the in-process compiler. Set the target BEFORE importing any
 // test file (they import jz from ../index.js — the same module singleton).
 if (process.env.JZ_TEST_TARGET === 'jz.wasm') {

@@ -135,7 +135,7 @@ const rawIndexedStore = (obj, idx, val, arrVT) => ['block', ['result', 'f64'],
 /** Numeric element store for a receiver that may be OBJECT/HASH at runtime: those
  *  keep dynamic indexed props in the propsPtr HASH sidecar at off-16 (paired with
  *  __dyn_get); a raw store at ptrOffset(o)+i*8 lands in the schema-slot region —
- *  silent corruption at small i, an OOB trap at large i (the self-host `blur`
+ *  silent corruption at small i, an OOB trap at large i (the self-compile `blur`
  *  crash). The propsPtr hash is STRING-keyed (object keys are strings: `o[3]` ≡
  *  `o["3"]`), so the index is rendered to its string form — the same string the
  *  __dyn_get read produces, content-compared by the hash. ARRAY/TYPED fall to the
@@ -273,7 +273,7 @@ function tryHashRmwFusion(arr, idx, val) {
   // reproduced live via the JSON.parse+o[k] pin, root-caused, fixed) — but the
   // corpus-wide size sweep showed ZERO benefit anywhere (wordcount's Ryu-free state
   // predates this work, from the unrelated cross-call array-elem lattice fix) and a
-  // real regression on the self-hosted watr case (+767B) from paying for the near-
+  // real regression on the self-compiled watr case (+767B) from paying for the near-
   // duplicate core with no module ever shedding __to_str because of it. NOT landed;
   // this one line survives because it's independently sound on its own (zero new
   // functions, zero duplication cost, strictly more precise reachability — it can
@@ -755,7 +755,7 @@ export function emitElementAssign(arr, idx, val) {
   //     slots only — silent slot corruption at small i, an out-of-bounds memory trap at
   //     large i. Route to __dyn_set (the per-OBJECT propsPtr hash sidecar), mirroring
   //     emitPropertyAssign's OBJECT dot-write path; __dyn_get reads it back. This closes
-  //     the `o.prop=v` vs `o[expr]=v` asymmetry that faulted the self-host.
+  //     the `o.prop=v` vs `o[expr]=v` asymmetry that faulted the self-compile.
   //     A known-HASH receiver (dictionary-mode `{}`) is the same class: a raw
   //     indexed store would scribble into probe-table slots — ToPropertyKey says
   //     o[97] addresses the '97' string slot. __dyn_set stringifies and probes.
@@ -946,7 +946,7 @@ export function emitPropertyAssign(obj, prop, val) {
   // shapeOf, core.js). Without this the write fell to __dyn_set (per-OBJECT
   // propsPtr) while `a.b.c` reads the schema slot — different memory, so the
   // value was lost (read returned the stale slot). This is what corrupted the
-  // self-host `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
+  // self-compile `ctx.func.X = …` writes (e.g. finallyStack), dropping try/finally.
   if (typeof obj !== 'string') {
     const sh = shapeOf(obj)
     if (sh?.val === VAL.OBJECT && sh.names) {
@@ -987,7 +987,7 @@ export function emitPropertyAssign(obj, prop, val) {
     // object — so capture the value and return it. This only diverges in value
     // position: postfix `o.p++` lowers to `(o.p = o.p+1) - 1`, `a = (o.p = v)`,
     // `f(o.p = v)`. Returning the pointer there computes `object - 1` → garbage
-    // (the self-host regex `c.labelId++` bug). Void position discards the tail.
+    // (the self-compile regex `c.labelId++` bug). Void position discards the tail.
     const keyBits = asI64(emit(['str', prop]))
     return withTemp(storedValue(val), t => {
       const tget = ['local.get', `$${t}`]

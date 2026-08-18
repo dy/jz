@@ -265,7 +265,7 @@ test('Number: String() does not trap for large values below 1e21', () => {
   is(run(`export let f = () => String(999999900000000000000)`).f(), String(999999900000000000000))
 })
 
-// ---- platform-NaN const folding (the linux-x64 selfhost OOB) ----------------
+// ---- platform-NaN const folding (the linux-x64 self-compile OOB) ----------------
 // x64 wasm arithmetic produces SIGN-SET qNaNs where arm64 produces canonical
 // ones. A folded NaN (Math.sqrt(-1) on the narrowed path) must normalize to
 // the canonical atom before it rides a kind-erased const-node slot — and the

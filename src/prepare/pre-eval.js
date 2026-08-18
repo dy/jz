@@ -70,7 +70,7 @@
  *   - String folding is ASCII-only (jz strings are UTF-8 internally; a
  *     non-ASCII `.length`/`.slice` could disagree with host JS's UTF-16
  *     view — see README divergences) and mixed string+number `+` is
- *     deliberately NOT folded (self-host's __ftoa is a 9-significant-digit
+ *     deliberately NOT folded (self-compile's __ftoa is a 9-significant-digit
  *     dtoa, host `String(number)` is shortest-round-trip — folding could
  *     bake a MORE precise string than the unfolded kernel would produce).
  *   - `Math.pow`/`**` folds via the exact 3-way split emit.js's own
@@ -100,7 +100,7 @@ import * as bn from '../bignum.js'
 // the top of a foldable subtree).
 //
 // Host-independent by construction: n/d must NEVER be carried as native BigInt
-// gated on HOST_PROFILE.wideBigint — jz's own self-host BigInt carrier is a
+// gated on HOST_PROFILE.wideBigint — jz's own self-compile BigInt carrier is a
 // WRAPPING i64 (see ctx.js), so any n/d past 64 bits (routine here: a tiny
 // subnormal's f64ToRational alone needs a ~1075-bit denominator) would silently
 // corrupt in-kernel, forcing native and kernel onto genuinely different fold
@@ -109,7 +109,7 @@ import * as bn from '../bignum.js'
 // arrays have no width ceiling (growing the array IS the carry) and every
 // element is a plain safe-integer f64 — jz's own unambiguous number
 // representation — so this module folds bit-identically whether it runs
-// natively or self-hosted in-kernel.
+// natively or self-compiled in-kernel.
 // ---------------------------------------------------------------------------
 const _f64buf = new ArrayBuffer(8)
 const _f64f = new Float64Array(_f64buf)
@@ -290,8 +290,8 @@ function toBoolean(r) {
  *  historically — not the full ES algorithm. Every EvalResult already carries an
  *  explicit, compile-time-known type tag, so recursing on tags is both a correctness
  *  fix (an explicit, spec-shaped algorithm instead of relying on a host operator) and
- *  a self-host fix (never asks `==` to classify two runtime-dynamic operands itself).
- *  Number()/plain `===` on same-tagged operands below stay reliable self-hosted —
+ *  a self-compile fix (never asks `==` to classify two runtime-dynamic operands itself).
+ *  Number()/plain `===` on same-tagged operands below stay reliable self-compiled —
  *  same-type equality (NUMBER f64.eq/ REF_EQ/STRING content-eq) is the well-tested
  *  path emitLooseEq/emitStrictEq already special-case; only the CROSS-tag coercion
  *  and nullish-equivalence rules needed spelling out explicitly. */
@@ -418,7 +418,7 @@ function foldBinary(op, a, b, rationalOn) {
 // Math.* / string-method call evaluation
 // ---------------------------------------------------------------------------
 // Value map, not a Set + `Math[k]` — computed Math members are outside the
-// self-host subset (see HOST_EXACT_UNARY below).
+// self-compile subset (see HOST_EXACT_UNARY below).
 const MATH_CONST = {
   PI: Math.PI, E: Math.E, LN2: Math.LN2, LN10: Math.LN10,
   LOG2E: Math.LOG2E, LOG10E: Math.LOG10E, SQRT2: Math.SQRT2, SQRT1_2: Math.SQRT1_2,
@@ -456,9 +456,9 @@ function mathCalleeName(callee) {
 // round/sign/fround: jz's WAT is deliberately engineered to reproduce these exact host
 // JS semantics (see module/math.js). All bit-exact vs the compiled kernel by construction.
 // Explicit per-name dispatch (not `Math[name](x)`): a computed member call on
-// the Math namespace is outside the self-host subset — pre-eval joined the
+// the Math namespace is outside the self-compile subset — pre-eval joined the
 // kernel graph with the front-half unification (src/front.js), so every shape
-// here must self-host-compile. Same convention as recurse.js's wrapped isArr.
+// here must self-compile-compile. Same convention as recurse.js's wrapped isArr.
 const HOST_EXACT_UNARY = {
   sqrt: (x) => Math.sqrt(x), abs: (x) => Math.abs(x), floor: (x) => Math.floor(x),
   ceil: (x) => Math.ceil(x), trunc: (x) => Math.trunc(x), round: (x) => Math.round(x),
@@ -501,12 +501,12 @@ function evalStringMethod(name, s, args) {
     // Explicit arity dispatch, not `s.slice(args[0]?.v, args[1]?.v)`: an omitted
     // arg and an EXPLICITLY-passed `undefined` are the same value in host JS (so
     // the two-arg form with optional-chained `undefined`s was spec-correct
-    // natively), but self-hosted this code compiles the CALL SITE itself — a
+    // natively), but self-compiled this code compiles the CALL SITE itself — a
     // 2-arg `.slice(x, undefined)` call is a different compiled shape than the
     // 1-arg `.slice(x)` it's meant to mean, and jz's own `.slice` (module/
     // string.js) didn't treat an explicit-undefined `end` as "default to
     // length" the same way arity-omission does. Same class as the earlier
-    // computed-Math-member self-host-subset fixes — match the call shape the
+    // computed-Math-member self-compile-subset fixes — match the call shape the
     // caller actually intends, never synthesize an explicit undefined arg.
     const r = args.length === 0 ? s.slice()
       : args.length === 1 ? s.slice(args[0].v)
@@ -906,7 +906,7 @@ function foldFunctionBody(body, state) {
 export function preEval(ast) {
   // Rational carry runs on bignum.js's host-independent u32-limb arithmetic —
   // no width ceiling, no native-BigInt dependency, so it's unconditionally
-  // available: native and the self-host kernel fold identically
+  // available: native and the self-compile kernel fold identically
   // (test/kernel-parity.js fold|0/2/3).
   const rationalOn = ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map(ctx.funcs.list.map(f => [f.name, f]))

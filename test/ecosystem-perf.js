@@ -3,7 +3,7 @@
  *
  * Goal (stated 2026-07-02): jz-compiled ecosystem libraries must BEAT their JS
  * originals on V8 — jessie.wasm parses faster than jessie.js, watr.wasm
- * assembles faster than watr.js. Same proof discipline as selfhost-perf.js:
+ * assembles faster than watr.js. Same proof discipline as self-compile-perf.js:
  * parity/correctness pins are ALWAYS on (the wasm build must work and agree
  * with JS); the ratio caps become HARD once parity is earned — until then they
  * activate under JZ_ECO_PIN=1 and every run PRINTS the current ratios so the

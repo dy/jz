@@ -424,7 +424,7 @@ test('spread: rest gets only remaining props', () => {
 // unknown at analysis time must be HASH-typed (src/kind.js VT['{}'] → VAL.HASH),
 // so its result reads go through the hash path — NOT a schema-slot f64.load that
 // could match an UNRELATED ambient schema and OOB/mis-read. This was the
-// self-host crash class behind `{ ...func.sig, params, results }`. Pins the type
+// self-compile crash class behind `{ ...func.sig, params, results }`. Pins the type
 // + the read shape; runs under test:wasm.
 test('spread: multi-prop unknown-schema spread is HASH — no ambient-schema slot misdispatch', () => {
   // `ambient` registers a schema [extra, other]; if the spread result were
@@ -460,7 +460,7 @@ test.todo('spread: rest-param spread through export-only unknown callee', () => 
 test('unshift: multi-arg inserts in argument order, returns new length', () => {
   // ES: a.unshift(1,2,3) -> [1,2,3,...existing], returns the new length. The
   // old emitter silently DROPPED every argument past the first — in the
-  // self-host kernel that broke assemble.js's own
+  // self-compile kernel that broke assemble.js's own
   // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
   // divergence (.work/todo.md, INSTRUMENTED-KERNEL SESSION).
   const r = run(`

@@ -241,7 +241,7 @@ test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
 })
 
 test('alloc:false omits allocator helper exports', () => {
-  if (onKernel()) return  // kernel: host {alloc:false} option doesn't reach the single-source self-host
+  if (onKernel()) return  // kernel: host {alloc:false} option doesn't reach the single-source self-compile
   // A genuinely-allocating array (dynamic push) — a const `[1,2,3]` whose only use is
   // `.length` now folds to the constant 3, leaving nothing on the heap, so it no longer
   // exercises the allocator this test is about.
@@ -264,7 +264,7 @@ test('alloc:false omits allocator helper exports', () => {
 // FORWARDING_MASK dispatch that __ptr_offset repeats is skippable). The defensive
 // __arr_grow (untyped call sites) still needs the generic helper — receiver isn't proven.
 test('__arr_grow_known: proven-ARRAY grow skips the generic __ptr_offset call', () => {
-  if (onKernel()) return  // self-host kernel codegen shape differs; in-process leg owns this
+  if (onKernel()) return  // self-compile kernel codegen shape differs; in-process leg owns this
   const w = wat(`export let f = (a) => { a.push(1); return a.length }`)
   const body = w.match(/\(func \$__arr_grow_known\b[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'expected __arr_grow_known to be emitted')

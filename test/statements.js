@@ -1614,7 +1614,7 @@ test('statements: member BigInt ++ is stable across repeated compiles (no schema
 })
 
 // for-of / spread over null/undefined throws (ES: "x is not iterable") — the
-// silent zero-iteration masked two real self-host miscompiles before it was
+// silent zero-iteration masked two real self-compile miscompiles before it was
 // flipped to a throw (see __iter_arr).
 test('statements: for-of over nullish throws', () => {
   is(run(`export let f = (x) => { let n = 0; try { for (let v of x) n++ } catch (e) { n = -1 } return n }`).f(null), -1)

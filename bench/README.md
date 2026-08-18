@@ -127,7 +127,7 @@ node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors
 | [`colorpq`](colorpq/colorpq.js) | sRGB → JzAzBz — 3×3 → ST 2084 PQ (≈12 signed-pow) → 3×3; lab probe for signed pow with non-constant exponent |
 | [`watr`](watr/watr.js) | watr's WAT-to-wasm compiler on a small WAT corpus; compares jz-compiled compiler code with raw V8 |
 | [`jessie`](jessie/jessie.js) | the subscript/jessie JS parser over a realistic source corpus; branch-, allocation- and recursion-heavy front-end work |
-| [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-host row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
+| [`jz`](jz/jz.js) | the JZ compiler itself (scripts/self.js pipeline) compiling three small programs at L2 — the self-compile row runs jz.wasm compiling JavaScript; output bytes are checksummed so the parity gate doubles as a determinism proof |
 | [`slices`](slices/slices.js) | block processing over runtime sub-views of one arena (`a[off+i]`, off from a schedule) — the audio-bus / font-table access class; guards base hoisting |
 | [`trace`](trace/trace.js) | square-tracing contour following over a bitmap — bitmap→vector stage one; data-dependent state machine, unpredictable branches, 2-D indexing |
 | [`bezfit`](bezfit/bezfit.js) | least-squares cubic Bézier fitting (Schneider) with one Newton reparameterization — font autotracing's core; small hot loops, ÷ and √ only |
@@ -144,7 +144,7 @@ ports; their transcendental checksums legitimately diverge per libm) — answer
 jz-internal questions, not the cross-language kernel comparison. They sit out
 every aggregate (the geomean SVG, the page strip and geomeans, the aggregate
 table below) but stay visible on the bench page under the `lab` chip and
-runnable via `--cases=…`; the self-host rows stay gated in `test/bench.js`.
+runnable via `--cases=…`; the self-compile rows stay gated in `test/bench.js`.
 
 Native rows for `json` are fixed-source references, not semantic equivalents
 of JavaScript `JSON.parse`: C/Rust/Zig hand-parse the known schema from a
@@ -667,7 +667,7 @@ has(SHERMES_BIN)`), so it is a documented skip, not a measured row, here.
 
 | case | porf-native verdict |
 | --- | --- |
-| `jz` | **fails to compile** — Porffor's own codegen (`compiler/codegen.js`'s `generate`) overflows the JS call stack (`RangeError: Maximum call stack size exceeded`) walking the self-hosted compiler's full source graph. A Porffor-side limit, not a jz defect. |
+| `jz` | **fails to compile** — Porffor's own codegen (`compiler/codegen.js`'s `generate`) overflows the JS call stack (`RangeError: Maximum call stack size exceeded`) walking the self-compiled compiler's full source graph. A Porffor-side limit, not a jz defect. |
 | `watr` | **compiles, wrong output at runtime** — `cc -flto -O3` succeeds (~330 s, ~1 GB peak RSS — legitimately slow, not hung) but the resulting binary throws `Uncaught Error: Unknown type $bin` from watr's own type-index resolution (`node_modules/watr/src/compile.js`'s `err(\`Unknown type ${idx}\`)`) on a source every other engine (V8/Deno/Bun/JSC/jz-wasm) compiles correctly. A Porffor codegen correctness bug on this input shape, not a jz/watr defect. |
 | `jessie` | **compiles, crashes at runtime** — builds in ~5 s but the binary segfaults (`SIGSEGV`, exit 139) running the parser workload. Another Porffor-side crash, not a jz/jessie defect. |
 
@@ -704,9 +704,9 @@ corpus" and "structurally cannot be taken" are different guarantees):
 | --- | --- |
 | `watr` | **wired.** Its jz-w2c-reachable graph (`watr-compile.js` → `node_modules/watr/src/{compile,encode,const,parse,util}.js`) has zero `try`/`catch`/`finally` anywhere. `--no-eh-abort` drops the tag cleanly; `jz-w2c` now runs it — `766 µs`, checksum `3419154861`, matches the reference (parity `ok`). |
 | `jessie` | **not valid — stays gated.** subscript's switch-statement PARSE feature (`node_modules/subscript/feature/switch.js`, reachable from `parse`) wraps its body in a bare `try { … } finally { inSwitch-- }` — zero `catch` clauses, invisible to a source grep for `catch`, but jz's `finally` codegen still needs an internal try_table/catch(-rethrow) for the cleanup path, so the safety net correctly refuses to prune it. A genuine fix needs an EH-to-branch lowering (Emscripten-style setjmp/longjmp, or a result-code ABI threaded through every call inside a `try`) — a real compilation strategy, scoped here as a design note, not implemented. |
-| `jz` | **not valid — stays gated**, for two independent reasons: (1) the self-hosted compiler's own source has genuine `try`/`catch` used as live fallback logic in hot compiler internals (`src/kind.js`'s `try { JSON.parse(src) } catch { return null }`, plus `src/compile/{narrow,emit,flow-types,analyze}.js`, `src/prepare/pre-eval.js`) — real, input-shape-dependent code, not just corpus-empirical zero; (2) independently, `jz-w2c`'s plain-CLI shell-out can't even reach codegen for this case today (needs `--resolve` for `self.js`'s bare `watr`/`watr/print` imports, and even then hits an unrelated `--host wasi` incompatibility — a `WebAssembly.*` reference inside the self-host graph needs the `js`-host's env import). Same design-note scope as `jessie`. |
+| `jz` | **not valid — stays gated**, for two independent reasons: (1) the self-compiled compiler's own source has genuine `try`/`catch` used as live fallback logic in hot compiler internals (`src/kind.js`'s `try { JSON.parse(src) } catch { return null }`, plus `src/compile/{narrow,emit,flow-types,analyze}.js`, `src/prepare/pre-eval.js`) — real, input-shape-dependent code, not just corpus-empirical zero; (2) independently, `jz-w2c`'s plain-CLI shell-out can't even reach codegen for this case today (needs `--resolve` for `self.js`'s bare `watr`/`watr/print` imports, and even then hits an unrelated `--host wasi` incompatibility — a `WebAssembly.*` reference inside the self-compile graph needs the `js`-host's env import). Same design-note scope as `jessie`. |
 
-### jz×jz — the self-host-squared row (blocked on the region-arena build)
+### jz×jz — the self-compile-squared row (blocked on the region-arena build)
 
 The `jz` CASE under the `jz` TARGET is the last uncovered cell in the lab
 grid: jz compiling itself (`bench/jz/jz.js` → `scripts/self.js`, the whole
@@ -737,7 +737,7 @@ Aggregate geomean (JZ / target):
 | AssemblyScript | **0.48×** | **1.02×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
-self-host lab rows (`watr`, `jessie`) and the deliberate deopt probes above
+self-compile lab rows (`watr`, `jessie`) and the deliberate deopt probes above
 (`dispatch`, `shapes`, `wordcount`, `immutable`, `strbuild` — the dynamic-JS
 work list). AS is beaten on speed across the shared cases except the tracked
 gather/probe gaps (`dict`, `noise`, `levenshtein`) and the deopt probes
@@ -773,5 +773,5 @@ Case-by-case summary:
   residual is the wasm-v128-vs-AVX2 ceiling, not a missing pass. A known gap we
   publish rather than hide.
 * **watr: near parity.** JZ is 1.07× slower than V8 on a 144 kB compiler
-  bundle. It is one of two self-host rows (with jessie) where V8's
+  bundle. It is one of two self-compile rows (with jessie) where V8's
   profile-guided JIT tiers beat JZ's AOT wasm.

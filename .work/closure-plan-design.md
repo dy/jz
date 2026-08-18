@@ -47,7 +47,7 @@ the counts match what `bench-size.mjs`/`build-dist.mjs` actually ship):
 - **self.js**: `scripts/build-dist.mjs`'s own options
   (`resolveModuleGraph(scripts/self.js, {resolveNode:true})`,
   `{modules: g.modules, memory: 8192, optimize: {level:3, watrGuard:false,
-  snapshotInit:true}}`, `build-dist.mjs:120,156-160`) — the actual self-host
+  snapshotInit:true}}`, `build-dist.mjs:120,156-160`) — the actual self-compile
   compile, minus the `CARRIER_BOX` build-time literal injection (irrelevant
   to closure counting).
 
@@ -605,7 +605,7 @@ non-escaping count implies; `provenance`'s shape (multiple READ-ONLY
 captures feeding a pure computation, no mutation) is the one that
 generalizes.
 
-**self.js**: 161 lift-eligible closures span the whole self-hosted
+**self.js**: 161 lift-eligible closures span the whole self-compiled
 compiler; no per-source-file breakdown was captured this session (the
 `__CEP_SURVEY` counters are corpus-aggregate, not attributed back to
 `scripts/self.js`'s module graph — recovering per-file attribution is
@@ -809,7 +809,7 @@ larger raw escaping-count §1.5 itself warned against over-reading.
 - `node scripts/build-dist.mjs` ×2: byte-identical dist output across two
   consecutive runs, at every slice (dist/jz.wasm hashes differ SLICE-TO-
   SLICE, as expected — dist/jz.wasm compiles `scripts/self.js`, whose own
-  source now includes the new `closure-plan.js` file, so the self-hosted
+  source now includes the new `closure-plan.js` file, so the self-compiled
   compiler's OWN size changes; this is not the byte-identity gate's
   target — the bench-corpus check above, same fixed input source compiled
   by different compiler versions, is).
@@ -831,10 +831,10 @@ emitter.
 
 Confirmed-fixed hazard: `astClosurePlan` (this module) was a module-scope
 `const … = new WeakMap()`, same shape as `astLoopPlan` (loop-model.js) and
-`loopPlanLink` (ir.js). Under self-hosting, WeakMap lowers to a strong Map
+`loopPlanLink` (ir.js). Under self-compiling, WeakMap lowers to a strong Map
 (the kernel has no native GC) — entries from a PRIOR `compile()` session
 therefore survive into the next one for the lifetime of the wasm instance.
-Combined with the self-hosted kernel's bump-allocator arena (`scripts/self.js`
+Combined with the self-compiled kernel's bump-allocator arena (`scripts/self.js`
 setupSelf's own doc: "the arena is a bump allocator that `_clear` rewinds
 between compiles… a post-`_clear` allocation can overwrite a dangling entry's
 bytes"), a fresh AST node minted after reset can be allocated at the SAME
@@ -850,14 +850,14 @@ optimize/vectorize.js's why-not-simd flags: a module-scope **`let`** (not
 `const`), reassigned to a fresh WeakMap by a small `resetX` closure,
 registered once via `ctx.js`'s `registerResetHook` (session survey audit-#13
 slice a's `RESET_HOOKS`, drained by every `reset()`/`beginSession()` call —
-both native `index.js` setupCtx and the self-host kernel's `setupSelf` run
+both native `index.js` setupCtx and the self-compile kernel's `setupSelf` run
 the identical `src/session.js` `beginSession`, so the fix covers both legs
 uniformly). ES-module live bindings mean every existing named import
 (`module/function.js`'s `astClosurePlan`, `src/compile/emit.js`'s
 `astLoopPlan`/`loopPlanLink`, `optimize/vectorize.js`'s `loopPlanLink`) keeps
 working with ZERO call-site changes — the reassignment inside the defining
 module is visible to every importer automatically. WeakMap stays the TYPE
-(native-GC benefit when NOT self-hosted); only OWNERSHIP+LIFECYCLE changed —
+(native-GC benefit when NOT self-compiled); only OWNERSHIP+LIFECYCLE changed —
 bounded to one compile's worth of nodes, which is what makes the strong-Map
 kernel lowering sound.
 
@@ -873,9 +873,9 @@ fresh-process compile of each — a stale plan leaking from A into B's
 same-shaped nodes would read the WRONG hull/boundConst/storage and
 miscompile, not merely no-op, so this is a real regression guard even though
 (like the suite's existing two pairs) it is `onKernel()`-skipped: the actual
-arena-offset-collision vehicle is self-hosted warm-instance reuse
+arena-offset-collision vehicle is self-compiled warm-instance reuse
 (`JZ_BENCH_WARM`), a benchmark-only path with its own unrelated known gaps
-(bench-selfhost.mjs's documented WAT-reparse flake) — the in-process JS-host
+(bench-self-compile.mjs's documented WAT-reparse flake) — the in-process JS-host
 probe validates the fix does not regress ordinary warm reentrancy, matching
 the standing suite's own stated scope.
 
@@ -975,7 +975,7 @@ original survey in §0 of this document used and discarded the same way):
 
 | corpus | mint-covered / total closures | % | miss: primitive-body key | miss: other/unreached |
 |---|---|---|---|---|
-| self.js (build-dist.mjs's own `resolveSelfhostBuild()` options) | 4003 / 4417 | 90.6% | 27 | 387 |
+| self.js (build-dist.mjs's own `resolveSelfCompileBuild()` options) | 4003 / 4417 | 90.6% | 27 | 387 |
 | bench (57/58 cases — `watr` excluded from THIS particular measurement pass only, a script gap in the module-loading shim, not a coverage gap; `jessie`/`jz` excluded per precedent) | 11 / 19 | 57.9% | 0 | 8 |
 
 **self.js**: up from the AS-LANDED slice-2 census's 3872/4404 (88.0%) — a

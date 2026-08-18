@@ -172,10 +172,10 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
 // CARRIER (raw i64 bits reinterpreted as f64, never converted) was landing in
 // an `(i32.const …)` WAT position. Root: module/json.js's `expectText` SWAR
 // key-match codegen packed each ≤4-byte text chunk through
-// `Number(BigInt(...))`, routed through the self-hosted kernel's own
+// `Number(BigInt(...))`, routed through the self-compiled kernel's own
 // ToNumber(BigInt) — gated on a whole-program `ctx.features.bigint` flag
 // baked once at first module-inclusion (src/prepare/index.js), which
-// self-hosting's module-inclusion ORDER can bake false before it ever sees
+// self-compiling's module-inclusion ORDER can bake false before it ever sees
 // this same file's later BigInt use, leaving ToNumber(BigInt) on its
 // unguarded/raw-carrier arm. Fixed by never constructing a BigInt for the
 // ≤4-byte chunks in the first place (`leNum`, plain i32 bitwise pack — safe
@@ -184,7 +184,7 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
 // (a hex-STRING formatter, never routed through Number()/ToNumber). This
 // sidesteps the ctx.features.bigint ordering hazard for this call site
 // rather than fixing it generally — the general fix (scrub the ~17-file
-// self-hosted-reachable BigInt surface, or redesign the carrier
+// self-compiled-reachable BigInt surface, or redesign the carrier
 // disambiguation off one whole-program boolean) is a separate, larger,
 // out-of-scope architectural task; see .work/todo.md "JSON SHAPED-PARSER
 // 'Bad int 9.067910317e-315'" for the full hunt and that larger scope.

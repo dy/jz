@@ -16,7 +16,7 @@ const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, impo
 // has 4 of its own genuinely-unprovable BigInt sites (encode.js's
 // F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
 // unreachable from this repo to fix. This file compiles watr's REAL bundled
-// source through jz (not a self-hosted kernel — a native, in-process
+// source through jz (not a self-compiled kernel — a native, in-process
 // compile, same mechanism), so it hits those same sites. Main-stabilization
 // interim flip (2026-08-14, src/ir.js's bigintStrict() doc comment): boxing
 // (CARRIER_BOX, frozen at process start) is the default for an unprovable

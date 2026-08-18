@@ -47,7 +47,7 @@ function clonePlanData(facts) {
  * sealed ActiveFunction frames in functionWorking until linear transfer. Both
  * remain reachable through ctx.plans across region relocation without exposing
  * facts on the handle. This is logical deep immutability in native JS and the
- * self-host, where Object.freeze is identity and Proxy/accessors are unavailable.
+ * self-compile, where Object.freeze is identity and Proxy/accessors are unavailable.
  */
 export function createFunctionPlan(ctx, facts) {
   const plan = {}

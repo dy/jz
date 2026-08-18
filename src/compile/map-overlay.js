@@ -1,9 +1,9 @@
 // O(1) mutable view over a stable base map. Reads consult the function-local
 // `own` layer first; writes and deletes never mutate `base`.
 //
-// Plain objects rather than a class keep this module inside jz's self-hosted
+// Plain objects rather than a class keep this module inside jz's self-compiled
 // subset. The delete method is attached after construction because `delete` in
-// object-method position is rejected by the self-host parser.
+// object-method position is rejected by the self-compile parser.
 const TOMBSTONE = Symbol('MapOverlay.deleted')
 
 export function makeMapOverlay(base, own) {

@@ -40,7 +40,7 @@ What this implies for HOW we optimize:
 - `npm test` — core suite (in-process compiler). Run it before reporting any change.
 - `npm run test:matrix` — the full opt0/opt2/opt3/wasi matrix CI runs (legs are
   serial locally; CI parallelizes them).
-- `npm run test:self` — self-host gate: builds `dist/jz.wasm` and round-trips real
+- `npm run test:self` — self-compile gate: builds `dist/jz.wasm` and round-trips real
   programs through the wasm-hosted compiler. Codegen changes can break the bootstrap.
 - `npm run test:262` / `test:262:builtins` — conformance subset.
 
@@ -79,7 +79,7 @@ smoke test and `test:self` for the bundle. Edit source, not output.
   branch); URL unchanged (https://dy.github.io/jz/).
 - **npm** — `prepare` builds `dist/` before pack, so the published tarball ships
   `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
-  self-host artifact — never served, never published.
+  self-compile artifact — never served, never published.
 
 `bench/results.json` (+ the geomean `bench/bench.svg`) *is* committed — measured
 data the `bench` workflow refreshes. `bench/web/*.wasm` is **not**: like `dist/`

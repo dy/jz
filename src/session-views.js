@@ -12,7 +12,7 @@
  * `derive()` (Object.create(null) + assign) — never a Proxy (jz registers no
  * Proxy global at all, in any module/*.js) and never a getter/accessor (the
  * parser has no path recognizing accessor syntax). This file sits in the
- * self-hosted kernel's own module graph — two adopters below
+ * self-compiled kernel's own module graph — two adopters below
  * (optimize/vectorize.js, src/wat/assemble.js) are reachable from
  * scripts/self.js — so it is compiled THROUGH jz, not merely run by it.
  *

@@ -247,7 +247,7 @@ const FIRST_CLASS_UNARY_MATH = {
 // Array.isArray: NaN-boxed AND tag==ARRAY → 1/0 — the same f64.convert_i32 form
 // an arrow returning a comparison produces, so callback semantics match
 // `xs.filter(x => Array.isArray(x))` exactly (watr's optimizer passes the bare
-// builtin to .filter; the self-host kernel must compile it).
+// builtin to .filter; the self-compile kernel must compile it).
 const FIRST_CLASS_BUILTIN_BODY = {
   'Array.isArray': () =>
     `(if (result f64) (i32.and (f64.ne (local.get $__a0) (local.get $__a0)) ` +
@@ -643,7 +643,7 @@ const COLLECTION_METHODS = new Set(['get', 'set', 'has', 'add', 'delete'])
 // name collision). `String.prototype.{charCodeAt,charAt}` each take at most one
 // argument (the index), so a call supplying ≥2 args on a not-proven-string receiver
 // cannot be the string built-in — it is a user method that happens to share the
-// name (e.g. the self-host abi's `ctx.abi.string.ops.charCodeAt(sF64,iI32,ctx,oobNan)`).
+// name (e.g. the self-compile abi's `ctx.abi.string.ops.charCodeAt(sF64,iI32,ctx,oobNan)`).
 // It must fall through to dynamic dispatch, mirroring COLLECTION_METHODS' arity guard.
 const STR_INDEX_METHODS = new Set(['charCodeAt', 'charAt'])
 
@@ -1525,7 +1525,7 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
       // `typed(['local.get', ...], 'f64')`, NOT a bare array: asI64/asF64
       // (ir.js) dispatch on `.type` to decide the coercion shape, defaulting
       // an UNTAGGED node to "i32, needs f64.convert_i32_s" — found live as a
-      // self-host build failure (WebAssembly.Module() validation: "f64.
+      // self-compile build failure (WebAssembly.Module() validation: "f64.
       // convert_i32_s[0] expected type i32, found local.get of type f64") —
       // `$t` is a genuine f64 local (temp() mints one), the untagged
       // local.get read of it defaulted straight into that wrong i32 path.
@@ -2140,7 +2140,7 @@ export function emitDecl(...inits) {
     // not just an ambiguous BOOL∪NUMBER merge — src/ir.js carrierF64:
     // `valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)`),
     // so EVERY plain `let ok = a > b` in self.js's own source got reboxed,
-    // reshaping the self-hosted kernel binary pervasively enough to shift
+    // reshaping the self-compiled kernel binary pervasively enough to shift
     // watr's inliner decisions for unrelated programs (confirmed via WAT
     // diff: kernel `count$exp` for the dict corpus carried extra inliner
     // boilerplate locals, no changed VALUE computation — a real but
@@ -2152,16 +2152,16 @@ export function emitDecl(...inits) {
     // been byte-identical for every non-ambiguous decl. It WAS: kernel-
     // parity's byte-identity corpus (33/33, dict included) stayed perfectly
     // byte-identical with this substitution live.
-    // BUT a SECOND, DIFFERENT self-host miscompile surfaced that the parity
+    // BUT a SECOND, DIFFERENT self-compile miscompile surfaced that the parity
     // corpus's 11 programs don't exercise: test/kernel-oracle.js's 'closure'
     // AGREE row (`let total = 0; const add = (x) => { total += x; … }`, a
     // captured-and-MUTATED outer binding — jz's `ctx.func.boxed` heap-cell
-    // path) — the resulting self-hosted kernel throws
+    // path) — the resulting self-compiled kernel throws
     // `WebAssembly.Module(): ... local.set[0] expected type f64, found
     // local.get of type i32` compiling THIS target program, i.e. produces
     // genuinely INVALID WASM, not just a size/shape difference. Isolated
     // with a 3-way worktree A/B (native diff of scripts/self.js compiled
-    // with vs without ONLY this substitution, `wat:true`, no self-hosting
+    // with vs without ONLY this substitution, `wat:true`, no self-compiling
     // needed to reproduce the divergence): the compiled locals inside
     // `src/prepare/index.js`'s `resolveCallee` (an unrelated PREPARE-phase
     // function, calls no boxed-closure logic itself) shift by exactly one
@@ -2170,11 +2170,11 @@ export function emitDecl(...inits) {
     // GLOBAL `temp()` counter while compiling THE COMPILER'S OWN source
     // (self.js), which is otherwise harmless UNLESS it happens to collide
     // with a latent watr inliner/local-coalescing sensitivity — exactly the
-    // outline-hunt self-host-miscompile CLASS this ledger has hit and
+    // outline-hunt self-compile-miscompile CLASS this ledger has hit and
     // resolved before (export-loss MECHANISM C, above), but a NEW, not yet
     // root-caused instance, confirmed genuinely caused by this substitution
     // via a clean A/B (Parts 1+3 of the same session, which also edit
-    // compiler source, build and self-host CLEANLY — isolates the cause to
+    // compiler source, build and self-compile CLEANLY — isolates the cause to
     // this exact line, not "any edit to emit.js is unsafe"). Root-causing
     // this precisely (which exact resolveCallee-adjacent decl reacts, and
     // why the renumbering trips watr's optimizer) is a multi-session-class
@@ -2183,7 +2183,7 @@ export function emitDecl(...inits) {
     // `emit(init)`; test/kernel-oracle.js's 'captured-then-read' row stays
     // PENDING-FIX. NEXT: start from `resolveCallee`'s compiled-WAT local
     // shift (native `compile(selfSrc, {wat:true, optimize:false})`, diffed
-    // with vs without ONLY the argIR substitution — no self-host build
+    // with vs without ONLY the argIR substitution — no self-compile build
     // needed to see the shift) and trace which of its callees'
     // (`isDeclared`/`resolveScope`/`hasFunc`/`includeForCallableValue`)
     // compiled locals actually get inlined into it and why the shift isn't
@@ -2195,8 +2195,8 @@ export function emitDecl(...inits) {
     // transient CONTEXT FLAG, not a change to the `emit(init)` call itself —
     // this decl-init site is the documented WALL just above (repeated hunts,
     // still banked): swapping this call to storedValue/argIR reshapes the
-    // self-hosted kernel's own compiled locals enough to trip a DIFFERENT,
-    // unrelated self-host miscompile. A flag only module/array.js's array-
+    // self-compiled kernel's own compiled locals enough to trip a DIFFERENT,
+    // unrelated self-compile miscompile. A flag only module/array.js's array-
     // literal emitter consults carries none of that risk — it changes
     // nothing about what `emit(init)` calls or how many temps it mints.
     const neverEscapes = !viewInit && typeof name === 'string' && Array.isArray(init) &&
@@ -3084,7 +3084,7 @@ function emitLooseEq(a, b, negate, strict) {
   }
   // String-equality specialization — the hot `node[0] === 'literal'` AST-tag dispatch,
   // the compiler's single most-emitted comparison (5579 of its 6487 __eq sites). When one
-  // side is statically a STRING, skip the generic __eq NaN-box dispatch (the #1 self-host
+  // side is statically a STRING, skip the generic __eq NaN-box dispatch (the #1 self-compile
   // hot helper). jz's ==/=== never coerce (number-vs-string is false in __eq), so this is
   // sound for both. Two shapes by what the OTHER side is known to be:
   //   both STRING        → __str_eq directly (no number/NaN/tag test needed at all).
@@ -3321,7 +3321,7 @@ const cmpOp = (i32op, f64op, fn) => (a, b) => {
     // carrier (strings included) is a NaN, so both-non-NaN ⇒ genuine numbers ⇒
     // plain f64 compare. Only NaN-ish operands (boxed values, real NaN) pay
     // the is_str_key calls; the kernel's own hot compares are overwhelmingly
-    // numbers, and the call-based form alone cost ~4% warm self-host.
+    // numbers, and the call-based form alone cost ~4% warm self-compile.
     const bothNum = ['i32.and',
       ['f64.eq', ['local.get', `$${ta}`], ['local.get', `$${ta}`]],
       ['f64.eq', ['local.get', `$${tb}`], ['local.get', `$${tb}`]]]
@@ -3759,7 +3759,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
       // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
       // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param
       // hook), but a devirtualized direct call pushes exactly sig arity — extras
-      // would be stack leftovers (asi.js's parse.enter broke the self-host here).
+      // would be stack leftovers (asi.js's parse.enter broke the self-compile here).
       if (emittedArgs.length > func.sig.params.length) emittedArgs.length = func.sig.params.length
       return attachSigMeta(typed(['call', `$${fname}`, ...emittedArgs], func.sig.results[0]), func.sig)
     }
@@ -3957,7 +3957,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // shadows them (ES prototype semantics). Skip the builtin so the dynamic
   // property-call dispatch below reads the actual slot/sidecar closure. This
   // is the type-based generalization of the collection/strIndex arity guards
-  // above: it is what lets self-host user methods whose names collide with
+  // above: it is what lets self-compile user methods whose names collide with
   // builtins — `ctx.schema.slotOf(o,p)`, `node.map(...)`, `s.get(k)` — dispatch
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
@@ -4570,7 +4570,7 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
 // and stay permissive otherwise: kernel carriers read NUMBER as a kind-DEFAULT
 // (not a proof), so rejecting proven-BIGINT × default-NUMBER breaks sound kernels.
 // A ZERO literal is exempt from the proof: `0n`'s i64 carrier is bit-identical
-// to the number 0.0, so under self-host `[, 0n]` degrades to `[, 0]` and typeof
+// to the number 0.0, so under self-compile `[, 0n]` degrades to `[, 0]` and typeof
 // cannot tell them apart — treating literal 0 as proven-number falsely rejects
 // `0n | 5n` in-kernel. Cost: a literal-0 mix (`0 | 5n`) is accepted (permissive,
 // per the policy above) instead of throwing.
@@ -4630,11 +4630,11 @@ function bigintMixReject(op, a, b) {
 //              own doc comment — "kernel carriers read NUMBER as a kind-
 //              DEFAULT" — the SAME reason it only ever rejects a LITERAL
 //              mismatch, never a general NUMBER-claimed expression). Confirmed
-//              live, not assumed: layout.js's `i64Hex` (part of the self-host
-//              graph) and a self-hosted-build-only inlined-local shape both
+//              live, not assumed: layout.js's `i64Hex` (part of the self-compile
+//              graph) and a self-compiled-build-only inlined-local shape both
 //              mix a `valTypeOf===NUMBER`-optimistic-default operand with a
 //              real BigInt LITERAL/expression on purpose — treating that
-//              NUMBER claim as throw-worthy broke the self-hosted kernel
+//              NUMBER claim as throw-worthy broke the self-compiled kernel
 //              build outright (caught by the gate, not assumed safe).
 //   'census' — censusMaybeUndefinedKind(node) === VAL.BIGINT: the container
 //              proves its value is BIGINT whenever present, but PRESENCE
@@ -4663,9 +4663,9 @@ function bigIntDomain(node) {
   // do NOT read as subnormal, so applying it to an arbitrary internally-
   // computed value produces FALSE positives (a real large bigint misread as
   // "not bigint", wrongly throwing a TypeError on otherwise-correct code).
-  // Confirmed live, not assumed — TWO separate self-host regressions, both
+  // Confirmed live, not assumed — TWO separate self-compile regressions, both
   // caught by the gate, neither a hypothetical:
-  //  (1) watr's own self-hosted i64 LEB128 encoder (node_modules/watr/src/
+  //  (1) watr's own self-compiled i64 LEB128 encoder (node_modules/watr/src/
   //      encode.js `i64()` — `n` REASSIGNED across a conditional diamond via
   //      `BigInt(n)`/`i64.parse(n)`, later `n & 0x7Fn`, where `n` can
   //      genuinely be any 64-bit magnitude) — closed by the never-reassigned
@@ -5270,10 +5270,10 @@ export const emitter = {
     if (expr == null) return [...finalizers, typed(['return', undefExpr()], 'void')]
     const rt = ctx.func.current?.results[0] || 'f64'
     const pk = ctx.func.current?.ptrKind
-    // Emit ONCE, before branching on pk — self-host miscompile: the equivalent inline
+    // Emit ONCE, before branching on pk — self-compile miscompile: the equivalent inline
     // form `pk != null ? asPtrOffset(emit(expr), pk) : asParamType(emit(expr), rt)`
     // (emit(expr) repeated once per ternary arm, only one ever executing) is behaviorally
-    // identical in JS but the self-hosted kernel drops the f64.convert_i32_s/u rebox on
+    // identical in JS but the self-compiled kernel drops the f64.convert_i32_s/u rebox on
     // the taken arm's result — an i32-typed return tail comes back bare (unconverted) in
     // a non-narrowed (f64-result) function, so the wasm validator sees "expected f64, got
     // i32" at every return site shaped like `return (expr)|0` inside a function whose
@@ -5283,7 +5283,7 @@ export const emitter = {
     // asParamType(ir, …)`) already used this materialize-then-branch shape and was never
     // affected — mirroring it here is both the fix and the more idiomatic form (DRY: one
     // emit call instead of a copy per arm). Root cause not fully localized beyond "the
-    // self-hosted kernel, at every optimize level 0-2, treats a value produced by a call
+    // self-compiled kernel, at every optimize level 0-2, treats a value produced by a call
     // repeated textually across both arms of a ternary differently from one materialized
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
     // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
@@ -6535,7 +6535,7 @@ export const emitter = {
     // a*(B-1)+b overflows i32 near the edge, and a wrapped guard that passes is heap
     // corruption. `_tbVersioned` brakes the arms' re-entry into this same intercept —
     // keyed by ctx.func identity so a REUSED AST (same source compiled twice, the
-    // self-host warm path) versions afresh in the next compile instead of silently
+    // self-compile warm path) versions afresh in the next compile instead of silently
     // skipping.
     if (!labeledContinue && body._tbVersioned !== ctx.func
         && (!ctx.transform.optimize || ctx.transform.optimize.versionTypedBounds !== false)) {
@@ -7341,7 +7341,7 @@ export function emit(node, expect) {
     // first-class-value reference — wrap as a closure. The flavor test is
     // STRUCTURAL membership in the first-class tables, NOT `handler.length`:
     // function arity reads are unsupported in jz output semantics, so when the
-    // compiler itself runs self-hosted, `.length` is undefined and an
+    // compiler itself runs self-compiled, `.length` is undefined and an
     // arity-based test routed every first-class builtin into the niladic
     // handler() — an empty-IR internal error (`({sqrt} = Math)` in-kernel).
     // `handler.length` remains only as the fallback that preserves the
@@ -7377,14 +7377,14 @@ export function emit(node, expect) {
 
   // Self-describing bigint literal, tagged at parse time (parse.js's digit-lookup
   // override, audit P0-2) off the source `n` suffix — a purely structural signal,
-  // sound whether this code runs natively or self-hosted in-kernel. args[0] is
+  // sound whether this code runs natively or self-compiled in-kernel. args[0] is
   // the unsigned-64 decimal (BigInt.asUintN(64,·) semantics, computed via
   // bignum.js's limb arithmetic at parse time — no host BigInt, no ambiguity),
   // passed straight to i64.const — no in-kernel re-parse needed.
   if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', args[0]]], 'f64')
 
   // Self-describing NaN literal — same reason bigints are self-describing: a raw NaN
-  // number is NaN-boxing-ambiguous and degrades to 0 across the self-host kernel's
+  // number is NaN-boxing-ambiguous and degrades to 0 across the self-compile kernel's
   // value/marshalling boundary. The `NaN` global resolves to this (prepare) instead
   // of a `[, NaN]` literal; watr emits the canonical quiet NaN. (Infinity is a normal
   // f64 and survives, so it stays a plain literal.)
@@ -7392,7 +7392,7 @@ export function emit(node, expect) {
 
   // Self-describing boolean literal, tagged at parse time (parse.js's `true`/
   // `false` token overrides) — same collapse class as bigint above: a raw
-  // `true`/`false` degrades to the plain number 1/0 across the self-host
+  // `true`/`false` degrades to the plain number 1/0 across the self-compile
   // kernel's marshalling boundary, losing VAL.BOOL. args[0] is 1/0 (prepare
   // may wrap it as a `[, 1]` literal node) — emit it as that working rep; the
   // BOOL boxing happens at the boundary via valTypeOf('bool')=VAL.BOOL.
@@ -7413,7 +7413,7 @@ export function emit(node, expect) {
   }
 
   // `let`/`const` dispatch directly to the imported emitDecl rather than through the
-  // ctx.core.emit table reference: under self-host the table reference is a closure value,
+  // ctx.core.emit table reference: under self-compile the table reference is a closure value,
   // and a runtime spread of >8 args into a closure call silently drops arguments — so a
   // `let` with >8 expression-init declarators (e.g. an SROA prologue loading 16 typed-array
   // slots) lost everything past the 8th. A direct call to the module-local binding compiles

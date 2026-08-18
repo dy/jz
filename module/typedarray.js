@@ -246,9 +246,9 @@ export default (ctx) => {
     __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
-    // auto-scan — which diverges under self-host (jz.wasm), dropping it ("Unknown func
+    // auto-scan — which diverges under self-compile (jz.wasm), dropping it ("Unknown func
     // $__clamp_idx" on typed .fill/.subarray in the kernel). Declare it manually here so the
-    // reliable dep path includes it. Pinned by test/selfhost-includes.js.
+    // reliable dep path includes it. Pinned by test/self-compile-includes.js.
     __typed_fill: ['__len', '__typed_set_idx', '__clamp_idx'],
     __typed_reverse: ['__len', '__typed_get_idx', '__typed_set_idx'],
     __typed_copyWithin: ['__len', '__typed_get_idx', '__typed_set_idx', '__clamp_idx'],
@@ -426,7 +426,7 @@ export default (ctx) => {
         // BEFORE the nested emit(lenExpr2)/emit(offsetExpr) calls below, which can
         // recurse into a SIBLING `new.${name2}` closure instance (composing typed-
         // array/subview constructors, e.g. `new Int32Array(buf, 0, new
-        // Float64Array(3).length)`): self-host closure-capture-after-nested-emit
+        // Float64Array(3).length)`): self-compile closure-capture-after-nested-emit
         // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS) —
         // a captured `stride`/`name` re-read after a nested emit can
         // observe the OTHER iteration's values once this file is kernel-compiled.
@@ -485,7 +485,7 @@ export default (ctx) => {
         const src = temp('ts')
         // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
         // new.${name} closure instance (composing typed-array ctors, e.g.
-        // `new Int32Array(new Float64Array(...))`) — self-host closure-capture-
+        // `new Int32Array(new Float64Array(...))`) — self-compile closure-capture-
         // after-nested-emit class (.work/todo.md §TYPED-INDEX KERNEL
         // MISCOMPILE): a free variable this closure captures (elemType/aux/
         // stride/name, from the `for (const [name, elemType] of ...)` loop
@@ -516,7 +516,7 @@ export default (ctx) => {
         const numBytes = ['i32.shl', ['local.get', `$${len}`], ['i32.const', shift]]
         const numAlloc = allocPtr({ type: PTR.TYPED, aux, len: numBytes, stride: 1, tag: 'ta' })
         // Build the elemType-closing branches BEFORE emit(lenExpr) — same
-        // self-host closure-capture-after-nested-emit hazard as the srcType===
+        // self-compile closure-capture-after-nested-emit hazard as the srcType===
         // VAL.TYPED branch above (a nested `new.${name}` instance inside
         // lenExpr can corrupt this closure's own captured elemType/aux/name
         // once compiled by the kernel); both calls already ran unconditionally
@@ -918,7 +918,7 @@ export default (ctx) => {
       // Snapshot this closure's OWN captures into locals BEFORE any nested emit
       // call below (emit(off)/emit(val)/emit(leNode)) can recurse into a SIBLING
       // DataView closure from the SAME Object.entries(DV_SET) loop (e.g.
-      // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-host closure-capture-after-
+      // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-compile closure-capture-after-
       // nested-emit class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO
       // FAILS): a captured storeOp/valType/size re-read after a
       // nested emit() can observe the OTHER iteration's values once this file is
@@ -1000,7 +1000,7 @@ export default (ctx) => {
       // Snapshot this closure's OWN captures into locals BEFORE any nested emit
       // call below (emit(off)/emit(leNode)) can recurse into a SIBLING DataView
       // closure from the SAME Object.entries(DV_GET) loop (e.g.
-      // `dv.getFloat64(dv.getInt32(0), dv.getUint8(4))`) — self-host closure-
+      // `dv.getFloat64(dv.getInt32(0), dv.getUint8(4))`) — self-compile closure-
       // capture-after-nested-emit class (.work/todo.md §TYPED-INDEX /
       // §KERNEL LEG ZERO FAILS): a captured loadOp/resultType/size/
       // signed re-read after a nested emit() can observe the OTHER iteration's
@@ -1159,7 +1159,7 @@ export default (ctx) => {
         // (TYPED_ELEM_CODE) loop (e.g. `Float64Array.from([Int32Array.from([1])[0]])`),
         // and re-reading `stride`/`store`/`elemType` for a LATER element after that
         // nested emit would risk observing the OTHER iteration's values once this
-        // file is kernel-compiled — self-host closure-capture-after-nested-emit
+        // file is kernel-compiled — self-compile closure-capture-after-nested-emit
         // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
         // loop below reads these locals, never the free variables.
         const strideS = stride, storeS = store, elemTypeS = elemType
@@ -1737,7 +1737,7 @@ export default (ctx) => {
     // idxKey builds a string (JSON.stringify for expression indices) — price
     // it only when an RMW map is actually populated; the maps are empty on
     // every non-fused read, and the per-read concat+hash was a measurable
-    // slice of the self-host warm ratio (the optFlags cost class).
+    // slice of the self-compile warm ratio (the optFlags cost class).
     const key = ctx.types.rmwReads?.size || ctx.types.rmwBounds?.size ? idxKey(arr, i) : null
     const rmwRead = key != null ? ctx.types.rmwReads?.get(key) : undefined
     if (rmwRead && et <= 5) {
@@ -1763,7 +1763,7 @@ export default (ctx) => {
           ['i32.shl', ['local.get', `$${ti}`], ['i32.const', SHIFT[et]]]]
         // Build the load IR BEFORE the index emission below: `idx(i)` recurses
         // into the emitter (the index may itself be a typed read), and under
-        // self-host the deferred `loadOf` closure re-reading `r` after that
+        // self-compile the deferred `loadOf` closure re-reading `r` after that
         // nested emit picked up the INNER array's element kind — `t[p[0]]` on a
         // Float64Array loaded with the Uint32Array's opcode (i32.load+convert,
         // value garbage). Eager construction pins the receiver's own kind.
@@ -2191,9 +2191,9 @@ export default (ctx) => {
         if (wat) {
           ctx.core.stdlib[funcName] = wat
           // __alloc_hdr_n: body-calls it directly (canonical 16-byte header
-          // alloc, replacing a prior hand-rolled 8-byte one — self-host
+          // alloc, replacing a prior hand-rolled 8-byte one — self-compile
           // auto-scan can't be relied on for a dynamically-named factory
-          // function; see test/selfhost-includes.js).
+          // function; see test/self-compile-includes.js).
           inc(funcName, '__typed_data', '__len', '__alloc_hdr_n')
           return typed(['call', `$${funcName}`, asI64(emit(arr))], 'f64')
         }

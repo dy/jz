@@ -13,7 +13,7 @@ guessed.
 
 Per the brief's own pointer (`259cd4fc`'s ledger entry, §Method): the
 `compile()` `profiler` parameter is the load-bearing seam — already
-dual-purpose-safe (native AND self-host), already wired through `plan()`'s
+dual-purpose-safe (native AND self-compile), already wired through `plan()`'s
 own `t(name, fn)` helper (`src/compile/plan/index.js:87`) into every named
 pass. Three disposable instruments, built in a worktree
 (`git worktree add … a981e6e0`, node_modules symlinked from main), all
@@ -48,16 +48,16 @@ two graphs: **jessie** (47→48 modules incl. patched benchlib) and **jz×jz**
 (156→160 modules, jz compiling its own compiler — `bench/jz/jz.js` →
 `scripts/self.js`, same self-graph every `.work/research.md` §Region arena
 session uses). This is a **native single compile** of the self-graph (no
-wasm kernel build, no self-hosted execution) — cheap enough to run
+wasm kernel build, no self-compiled execution) — cheap enough to run
 foreground: jessie 1.9 s, jz×jz 272.0 s (`--max-old-space-size=8192`).
 
 All native `heapUsed`/`hrtime` numbers below are **V8 host-process**
-measurements — a different unit from the self-hosted **wasm linear-memory**
+measurements — a different unit from the self-compiled **wasm linear-memory**
 churn tables `fa9fcc1a`/`d08d5968` measured (those read `$__heap`/
 `memory.buffer.byteLength` inside the wasm instance jz's OWN compiler runs
 as). The two are never added together below; where both exist for the same
 pass they are compared as *shares*, the convention `097a51d7`'s own session
-already established for exactly this native/self-host split.
+already established for exactly this native/self-compile split.
 
 ## 1. Site 1 — `analyzeBody`'s 8 traversals (`src/compile/analyze.js:929-971`)
 
@@ -221,13 +221,13 @@ this same compile already fully analyzed** — the concrete number behind the
 brief's "2-3×" estimate, and in the tail, considerably worse than 3×.
 
 **Amplification note**: these are native (V8) counts. `d08d5968`'s own
-session measured a **40-420× native-vs-self-hosted overhead** for the single
+session measured a **40-420× native-vs-self-compiled overhead** for the single
 hottest named pass on this identical class of workload (native `narrowSignatures`
-+3.7 MB heapUsed / +38.5 MB RSS vs self-hosted breadcrumb +1564.9 MB). A
++3.7 MB heapUsed / +38.5 MB RSS vs self-compiled breadcrumb +1564.9 MB). A
 repeat-share that costs ~0.4% of native wall time is not evidence the same
-repeat-share is cheap inside the self-hosted kernel the memory campaign
+repeat-share is cheap inside the self-compiled kernel the memory campaign
 actually cares about — cited as directional context, not asserted as a
-self-hosted number (unmeasured this session).
+self-compiled number (unmeasured this session).
 
 ### 2.4 Root-cause fix contract — freshness, not a third cache
 
@@ -342,7 +342,7 @@ Read against each pass's own comment:
 
 ## 4. Cross-reference against the frontier trace — exits-skippable arithmetic
 
-`fa9fcc1a`'s own per-round wasm-arena churn table (**cited**, self-hosted
+`fa9fcc1a`'s own per-round wasm-arena churn table (**cited**, self-compiled
 kernel, jz×jz, pre-`2a40d7b2` fix) gives the round-by-round churn the 16 MiB
 skip threshold (`2a40d7b2`, landed) tests against:
 
@@ -526,6 +526,6 @@ output directly (v1's own postmortem names `kind.js`'s `literalTruthiness`/
   `index.js:624`'s need for an explicit `reanalyzeBody` call in practice
   (a full test-suite/self-build convergence check, deferred to the slice's
   own gate — not asserted here).
-- Self-hosted (wasm-arena) byte churn for any of the site-1/site-3 fusions
+- Self-compiled (wasm-arena) byte churn for any of the site-1/site-3 fusions
   themselves, post-fix — this design proposes the fusions; the next
   session's own gate battery measures them.

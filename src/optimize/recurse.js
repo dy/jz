@@ -18,7 +18,7 @@
  * @module optimize/recurse
  */
 
-const isArr = (x) => Array.isArray(x)   // wrapped: jz self-host rejects a builtin used as a value
+const isArr = (x) => Array.isArray(x)   // wrapped: jz self-compile rejects a builtin used as a value
 
 const UNROLL_DEPTH = 2
 const MAX_BODY_NODES = 110
@@ -26,7 +26,7 @@ const ADD_OPS = new Set(['i32.add', 'i64.add', 'f64.add', 'f32.add'])
 // Replay per-frame zero-init for the callee's NON-accumulator locals (the acc is
 // shared with the caller and must NOT be reset). watr's zeroinit removes the
 // redundant ones (locals written before read) downstream. A function (not an
-// object) keeps it on jz's self-host subset and returns a fresh node each call.
+// object) keeps it on jz's self-compile subset and returns a fresh node each call.
 const ZERO = (t) => t === 'i32' ? ['i32.const', 0] : t === 'i64' ? ['i64.const', 0]
   : t === 'f64' ? ['f64.const', 0] : t === 'f32' ? ['f32.const', 0] : null
 

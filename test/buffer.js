@@ -739,13 +739,13 @@ test('channelData scatter — correct values across construction forms', () => {
 // Property-getter dispatch (`.byteOffset` / `.buffer` / `.byteLength` / `.size`) must
 // resolve STATICALLY, not fall through to a runtime `__dyn_get` (which returns
 // undefined for these). The getter-ness was tagged on the emitter CLOSURE
-// (`fn.getter = true`); the self-host kernel can't reliably read a dyn-prop off a
+// (`fn.getter = true`); the self-compile kernel can't reliably read a dyn-prop off a
 // closure returned via a dynamic-key lookup, so it silently scalarized to __dyn_get —
 // `a.byteOffset`/`a.buffer.byteLength` read `undefined` in jz.wasm. Dispatch now
 // authorizes via a plain Set (`ctx.core.getters`), kernel-safe. NO onKernel guard —
 // this runs on the JZ_TEST_TARGET=jz.wasm leg and pins the parity (it was the root of
-// the fft/synth/json self-host parity divergence in checksumF64's typed-array view).
-test('typed-array property getters resolve statically (self-host parity)', () => {
+// the fft/synth/json self-compile parity divergence in checksumF64's typed-array view).
+test('typed-array property getters resolve statically (self-compile parity)', () => {
   const { byteOffset, bufLen, viewWord, size } = jz(`
     export let byteOffset = () => { let a = new Float64Array(4); return a.byteOffset }
     export let bufLen = () => { let a = new Float64Array(4); return a.buffer.byteLength }

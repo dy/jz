@@ -19,7 +19,7 @@
  *   DIVERGENT  — a documented, intentional-or-known departure from naive JS
  *                semantics (rational constant-folding trades bit-exactness
  *                for precision by design; the kernel's i64-carrier/subnormal
- *                collision is README's own documented self-host limit). These
+ *                collision is README's own documented self-compile limit). These
  *                get an explicit pinned expectation and a reasoned comment,
  *                never a silent skip — a silent skip is indistinguishable
  *                from "nobody checked".
@@ -69,7 +69,7 @@ const AGREE = [
   { name: 'dict', src: CORPUS.dict, calls: [{ fn: 'count', args: ['banana'] }, { fn: 'count', args: [''] }] },
   { name: 'arr', src: CORPUS.arr, calls: [{ fn: 'rev', args: [0] }, { fn: 'rev', args: [7] }] },
   { name: 'mfold', src: CORPUS.mfold, calls: [{ fn: 'g', args: [] }] },
-  // Self-host miscompile #4/#5 (kernel-parity.js's audit-#5 shapes): nested
+  // Self-compile miscompile #4/#5 (kernel-parity.js's audit-#5 shapes): nested
   // same-family typed-array construction and TypedArray.from with a nested
   // literal element. Both were fixed at the closure-capture-before-nested-emit
   // root — this is the execution-level check that the fix is semantically
@@ -165,7 +165,7 @@ export let f = (s) => g(s) === false`,
   // all, let alone an ambiguous merge). The generic SCALAR `let`/`const`
   // declaration init site (module-level, not flat/SRoA) has the SAME gap
   // but is NOT fixed here — every implementation shape tried miscompiled
-  // the self-hosted kernel's own compiled emitDecl at that exact call site
+  // the self-compiled kernel's own compiled emitDecl at that exact call site
   // (verified live with a fresh dist rebuild); banked, see emit.js's
   // emitDecl comment and the 'captured-then-read' PENDING-FIX row below.
   // Also required two ROOT-CAUSE type-inference fixes (not container-store
@@ -281,7 +281,7 @@ export let f = (x) => g(x > 0 && 1)`,
   // PENDING-FIX row below, banked and out of scope here. Re-attempted
   // audit-#8 P0-4 Part 2 (2026-08-03): a NARROWER, hasAmbiguousBoolMerge-
   // gated fix (emit.js emitDecl's `argIR(init)`) proved byte-identical on
-  // the kernel-parity corpus but surfaced a DIFFERENT, genuine self-host
+  // the kernel-parity corpus but surfaced a DIFFERENT, genuine self-compile
   // miscompile (invalid WASM for a captured-and-mutated closure decl,
   // unrelated to this row's own shape) — reverted; see emit.js's emitDecl
   // comment for the full finding. This row and 'captured-then-read' below
@@ -295,7 +295,7 @@ export let f = (x) => g(x > 0 && 1)`,
   // arr[arr.length] = x growth on a receiver Step 7 of emit-assign.js's
   // emitElementAssign can't STATICALLY prove ARRAY (a property-chain
   // expression, not a named local of known VAL) — found chasing bba45c0d's
-  // "self-hosted kernel's own array-write codegen for arr[arr.length]=x
+  // "self-compiled kernel's own array-write codegen for arr[arr.length]=x
   // takes a different path than .push()'s" note (region CLOSURE arm entry,
   // .work/research.md). The instance there (ctx.closure.envMeta[tableIdx] =
   // {…}) got a one-line .push() swap and the CLASS went uninvestigated;
@@ -312,7 +312,7 @@ export let f = (x) => g(x > 0 && 1)`,
   // (`o.inner.arr[...]`, or ANY receiver Step 7 can't type) always did —
   // the growth silently no-oped, `.length` stayed 0 forever. Was value-
   // identical between native and kernel (both wrong the same way — this is
-  // a plain NATIVE miscompile, not a self-host-only divergence; the AGREE
+  // a plain NATIVE miscompile, not a self-compile-only divergence; the AGREE
   // tier is still the right home since native/kernel/oracle all disagreed
   // pre-fix and all three agree post-fix).
   { name: 'array-growth-class: arr[arr.length]=x through a 2-level property chain',
@@ -417,7 +417,7 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
     'fold: rationalConst:false recovers naive-JS parity (proves the divergence above is a chosen tradeoff, not an uncontrolled bug)')
 })
 
-// Was a documented self-host limit (README.md, "One known divergence class"):
+// Was a documented self-compile limit (README.md, "One known divergence class"):
 // inside dist/jz.wasm, BigInt values ride raw i64 bits in an f64 slot, and
 // small-magnitude bit patterns collide with subnormal Numbers (`1n` and
 // `5e-324` are the same 64 bits) — module/number.js's `__to_num` treated ANY
@@ -426,7 +426,7 @@ test('kernel oracle: fold — documented divergence (rational constant-fold vs n
 // doc comment: earlier revisions carried rational n/d as native BigInt and
 // hit exactly this native-vs-kernel divergence, so it was rewritten onto
 // plain safe-integer limb arrays specifically to avoid it) — so `ctx.features.
-// bigint` is false for the compiler's own self-hosted compilation, and the
+// bigint` is false for the compiler's own self-compiled compilation, and the
 // kernel's internal coercions of a subnormal literal like this one hit the
 // exact same unconditional-heuristic bug the compiled OUTPUT program did
 // (audit-#11 P0-1: `+Number.MIN_VALUE`/`+5e-324` misdecoded as bigint 1).
@@ -485,12 +485,12 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // prescan run to completion before ANY module's stdlib template can
 // materialize (both for the top-level program and per-module, before each
 // `prepareModule`'s own `prep(ast)`) closes THIS bug precisely — but flips
-// `ctx.features.bigint` true for the self-hosted KERNEL BUILD too, because
+// `ctx.features.bigint` true for the self-compiled KERNEL BUILD too, because
 // layout.js's `i64Hex`/`packPtrBits` family (imported unconditionally by
 // src/ir.js, used for EVERY NaN-boxed pointer encoding) contains real BigInt
 // literals (confirmed still present: layout.js `NAN_PREFIX_BITS`, `i64Hex`,
 // `TAG_SHIFT`/`AUX_SHIFT`/`OFFSET_MASK` BigInt views, 2026-08-09 grep) — so
-// the compiler's OWN self-hosted source is NOT bigint-free, contrary to the
+// the compiler's OWN self-compiled source is NOT bigint-free, contrary to the
 // invariant the subnormal-literal AGREE test above depends on. Graph-
 // completing the prescan correctly detects that pre-existing BigInt usage
 // and flips the kernel's `$__to_num` to the guarded arm program-wide, which
@@ -498,7 +498,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // `-5e-324`, misread as a BigInt-carrier collision again) — trading the
 // narrow bug pinned here for the broader one P0-1 already closed. VERDICT:
 // structural, not small — true fix is either (a) scrub all real-BigInt
-// syntax from the self-hosted-bundle-reachable source (layout.js rewritten
+// syntax from the self-compiled-bundle-reachable source (layout.js rewritten
 // to hi/lo-split plain-Number i64 arithmetic, mirroring bignum.js's own
 // deliberate BigInt-avoidance rewrite) to restore the "compiler source is
 // bigint-free" invariant, or (b) redesign the carrier disambiguation off a
@@ -607,18 +607,18 @@ export let f = (s) => g(s) === false`
 // GENERIC SCALAR DECL (a WALL, banked — see emit.js emitDecl's comment on
 // the `const val = viewInit || emit(init)` line): every implementation of
 // "box an ambiguous-merge scalar `let`/`const` init" tried miscompiled the
-// self-hosted kernel's own compiled emitDecl at that exact call site,
+// self-compiled kernel's own compiled emitDecl at that exact call site,
 // verified with a fresh dist rebuild and reproducing with a plain, non-
 // ambiguous `let v = x + 1` local (zero merge shapes anywhere in the
-// program) — a self-host-only bug in how the kernel compiles ITS OWN
+// program) — a self-compile-only bug in how the kernel compiles ITS OWN
 // emitDecl, not a logic error in the fix, and out of this design's
 // carrier-boxing scope to chase further this session. RE-ATTEMPTED audit-#8
 // P0-4 Part 2 (2026-08-03) with a NARROWER, hasAmbiguousBoolMerge-gated fix
 // (`argIR(init)`, byte-identical to today for every non-ambiguous decl,
 // confirmed via kernel-parity's full byte-identity corpus) — still hits a
-// DIFFERENT self-host miscompile (invalid WASM for a captured-and-mutated
+// DIFFERENT self-compile miscompile (invalid WASM for a captured-and-mutated
 // closure decl, 'closure' AGREE row above, isolated via a clean A/B against
-// this session's other two parts, which self-host cleanly). See emit.js's
+// this session's other two parts, which self-compile cleanly). See emit.js's
 // emitDecl comment for the full finding and the next concrete lead
 // (resolveCallee's compiled-local shift). Still banked.
 //
@@ -626,7 +626,7 @@ export let f = (s) => g(s) === false`
 // the bug) plus a not() tripwire against the true JS value, so a future
 // fix flips these loudly.
 const PENDING_FIX = [
-  // Generic scalar decl (the emitDecl self-host wall above): `v`'s own
+  // Generic scalar decl (the emitDecl self-compile wall above): `v`'s own
   // declaration never gets boxed, so a later capture-then-read still
   // observes the raw carrier. NOT the minimal `const g = () => v; return
   // g()` shape — direct-closure devirtualization eligibility differs
@@ -660,12 +660,12 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
 // carrier-representation-design.md §16 finding 2 → §17 → §31) ─────────────
 //
 // FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL
-// (JZ_CARRIER_BOX=1, self-hosted — dist/jz.wasm compiled from scripts/
+// (JZ_CARRIER_BOX=1, self-compiled — dist/jz.wasm compiled from scripts/
 // self.js by the NATIVE compiler under the same flag) used to miscompile
 // ANY heap string literal used as a console.log argument — traced by §17 to
 // mkPtrIR/packPtrBits (src/ir.js) constant-folding a NaN-boxed pointer via
 // layout.js's `ptrBits`, whose `LAYOUT.NAN_PREFIX_BITS` read starves for
-// `slotBigintProvenBySid` under the self-hosted build's whole-program
+// `slotBigintProvenBySid` under the self-compiled build's whole-program
 // `pointsTo==='ALL'` blanket (§17 finding 1, kernel-parity's `dict` row —
 // STILL open, §18/§21/§22/§23 all walled on closing it safely). This row
 // closed anyway, NOT via that lever: §24's CONSERVATIVE PAIRING (commit
@@ -677,10 +677,10 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
 // `maybeUnboxBigInt`'s runtime `$__ptr_type` tag check instead of a naive
 // unconditional reinterpret. `ptrBits`'s own `LAYOUT.NAN_PREFIX_BITS | (…)`
 // IS exactly this shape (an arithmetic-core BigInt-operand OR-expression) —
-// so once §24 baked THAT dispatch into the self-hosted kernel build, the
+// so once §24 baked THAT dispatch into the self-compiled kernel build, the
 // running kernel's own compiled `ptrBits` started correctly unboxing the
 // LAYOUT box AT RUNTIME, immune to whether `slotBigintProvenAt` was ever
-// statically proven for the self-hosted build. §29/§30 both re-ran this
+// statically proven for the self-compiled build. §29/§30 both re-ran this
 // row and recorded "unchanged" — true at the PASS/FAIL BLOCK level (the
 // block still read 1 failure both times) but stale at the ASSERTION level:
 // the failure had silently flipped from "throws, as expected" to "runs
@@ -689,7 +689,7 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
 // ('bare-fired', ≥7 chars) and SSO string ('short', ≤6 chars) BOTH print
 // their correct, undecorated value on the kernel leg, at every optimize
 // level (0/1/2/3), deterministically, across repeated fresh-process runs —
-// not a fluke of one run. Native was never affected (self-host-only bug).
+// not a fluke of one run. Native was never affected (self-compile-only bug).
 test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/carrier-representation-design.md §16→§17→§31)', async () => {
   if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string

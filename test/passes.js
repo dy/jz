@@ -125,7 +125,7 @@ test('passes: emission tier never writes durable analysis state (slice-4 exit gr
   // ZERO updateRep / schema.vars.set calls — discovery lives in plan passes,
   // emission products in transient channels (localValTypesOverlay, closureAux).
   // A static source check beats a runtime tripwire here: it needs no subset
-  // support in the self-host kernel (a Proxy-based guard broke the kernel
+  // support in the self-compile kernel (a Proxy-based guard broke the kernel
   // build — 'Proxy' is not jz) and covers paths no test executes.
   const files = []
   const walkDir = (dir) => {

@@ -1,5 +1,5 @@
 /**
- * Self-host PERFORMANCE gate — the hard pin on the V8-parity milestone.
+ * Self-compile PERFORMANCE gate — the hard pin on the V8-parity milestone.
  *
  * The achievement (2026-07-01, commits ec6a229..42dc91c): dist/jz.wasm — the jz
  * compiler compiled to wasm by jz — compiles the bench corpus faster than the
@@ -19,7 +19,7 @@
  * A warm-mode TRAP on the pinned corpus is a hard failure too — warm-instance
  * reuse (one instance, _clear between compiles) is part of the milestone.
  *
- * Run: node test/selfhost-perf.js   |   CI: .github/workflows/selfhost.yml
+ * Run: node test/self-compile-perf.js   |   CI: .github/workflows/self-compile.yml
  */
 import test from 'tst'
 import { ok } from 'tst/assert.js'
@@ -115,8 +115,8 @@ const sourceFor = (name) => {
 
 const ensureSelf = () => {
   if (existsSync(SELF)) return
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/selfhost-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
-  if (r.status !== 0) throw new Error(`selfhost build exit ${r.status}`)
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
+  if (r.status !== 0) throw new Error(`self-compile build exit ${r.status}`)
 }
 
 const timed = (fn) => { const t = performance.now(); fn(); return performance.now() - t }
@@ -138,7 +138,7 @@ const pairedRatio = (jsFn, prepareWasm) => {
 
 const geo = (xs) => Math.exp(xs.reduce((a, b) => a + Math.log(b), 0) / xs.length)
 
-test('perf-pin: warm-instance self-host compile < V8 JS', () => {
+test('perf-pin: warm-instance self-compile compile < V8 JS', () => {
   ensureSelf()
   const wasmBytes = readFileSync(SELF)
   const measure = () => {
@@ -171,7 +171,7 @@ test('perf-pin: warm-instance self-host compile < V8 JS', () => {
   }
   const best = rounds.reduce((a, b) => (b.g < a.g ? b : a))
   okTiming(best.g <= WARM_CAP,
-    `warm self-host geomean > strict-win cap ${WARM_CAP}× on ALL ${rounds.length} rounds ` +
+    `warm self-compile geomean > strict-win cap ${WARM_CAP}× on ALL ${rounds.length} rounds ` +
     `(${rounds.map(r => r.g.toFixed(3) + '×').join(', ')}; best per-case: ` +
     `${CASES.map((c, i) => `${c} ${best.ratios[i].toFixed(2)}`).join(', ')}). ` +
     `Find the regressing change; do NOT loosen this cap without a justified re-baseline.`)
@@ -179,7 +179,7 @@ test('perf-pin: warm-instance self-host compile < V8 JS', () => {
     CASES.map((c, i) => `${c} ${best.ratios[i].toFixed(2)}`).join(' '))
 })
 
-test('perf-pin: fresh-instance self-host compile < V8 JS', () => {
+test('perf-pin: fresh-instance self-compile compile < V8 JS', () => {
   ensureSelf()
   const wasmBytes = readFileSync(SELF)
   const ratios = []
@@ -195,7 +195,7 @@ test('perf-pin: fresh-instance self-host compile < V8 JS', () => {
   }
   const g = geo(ratios)
   okTiming(g <= FRESH_CAP,
-    `fresh self-host geomean ${g.toFixed(3)}× > cap ${FRESH_CAP}× ` +
+    `fresh self-compile geomean ${g.toFixed(3)}× > cap ${FRESH_CAP}× ` +
     `(per-case: ${CASES.map((c, i) => `${c} ${ratios[i].toFixed(2)}`).join(', ')}). ` +
     `Find the regressing change; do NOT loosen this cap without a justified re-baseline.`)
   console.log(`  fresh geomean ${g.toFixed(3)}× (cap ${FRESH_CAP}×): ${CASES.map((c, i) => `${c} ${ratios[i].toFixed(2)}`).join(' ')}`)

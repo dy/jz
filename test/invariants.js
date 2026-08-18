@@ -27,7 +27,7 @@ const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
 // ============================================================================
 
 test('invariant: module-scope const name tracked in ctx.scope.consts', () => {
-  if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-host leg
+  if (onKernel()) return  // kernel: compile runs inside the wasm; the host's ctx.scope is never populated, so this white-box internal-state probe can't apply on the self-compile leg
   reset(emitter, GLOBALS, { emit, flat, body, bool, idx, spread, emitIdentitySafe })
   compile('const X = 10; export let f = () => X')
   ok(ctx.scope.consts?.has('X'), 'const X should be tracked in ctx.scope.consts')
@@ -238,8 +238,8 @@ test('layout: NaN-box carrier i64 hex only via layout.js helpers', () => {
     : 'no hand-rolled layout hex')
 })
 
-test('layout: i64Hex is self-host-safe across the full 64-bit range', async () => {
-  // Under self-host, BigInts are raw SIGNED i64 bits (kind-erased), so any
+test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
+  // Under self-compile, BigInts are raw SIGNED i64 bits (kind-erased), so any
   // formatting that routes through bits.toString(16) renders a bit-63-set
   // value as a signed "-8000…" fragment — the emitted `(i64.const 0x00-…)`
   // is unparseable and killed every durable-log helper the kernel compiled

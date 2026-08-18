@@ -606,7 +606,7 @@ export const analyzeParamDistinctness = (programFacts) => {
     return true
   }
   // Only unresolved forwarding wrappers enter the fixpoint, avoiding an
-  // unconditional second full-program scan in ordinary kernels/self-host.
+  // unconditional second full-program scan in ordinary kernels/self-compile.
   let unresolved = pending
   let changed = true
   while (changed && unresolved.length) {

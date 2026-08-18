@@ -217,7 +217,7 @@ test('guard: string ops on non-ASCII source are left unfolded (documented UTF-8/
   is(run('export let f = () => "héllo".length').f(), run('export let f = (s) => s.length').f('héllo'))
 })
 
-test('guard: mixed number+string concat is not compile-time folded (self-host __ftoa fidelity)', () => {
+test('guard: mixed number+string concat is not compile-time folded (self-compile __ftoa fidelity)', () => {
   is(run('export let f = () => 1.5 + "x"').f(), '1.5x')   // still correct at runtime
 })
 

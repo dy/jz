@@ -1,6 +1,6 @@
 /**
  * The final-optimizer tail, shared VERBATIM by the host pipeline (index.js)
- * and the self-host kernel (scripts/self.js): watr option construction +
+ * and the self-compile kernel (scripts/self.js): watr option construction +
  * the single post-watr proof repair. One module so the two pipelines cannot
  * drift — the kernel previously duplicated a subset of the option logic and
  * omitted ifset tiering, inlineWrappers, watr LICM, the size-guard policy,
@@ -81,7 +81,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
     watrOpts.ifset = cfg.boolConvertToSelect === true || cfg.watrIfset === true
   // jz's promise is runtime speed, but watr's OWN profile default leans size — outline/
   // tailmerge/rettail fold repeated sequences into out-of-line calls (measured 1.433→1.316
-  // on the self-host kernel with them off, watr ≥5.2.0). Every speed-tier preset carries
+  // on the self-compile kernel with them off, watr ≥5.2.0). Every speed-tier preset carries
   // watrProfile:'speed' (src/optimize/index.js LEVEL_PRESETS); the 'size' preset keeps
   // watr's size-leaning default. An explicit user profile always wins.
   if (watrOpts.profile === undefined && cfg.watrProfile) watrOpts.profile = cfg.watrProfile
@@ -98,7 +98,7 @@ export function resolveWatrOpts(cfg, { funcCount = 0, boundaryPins = [] } = {}) 
   watrOpts.pin = watrOpts.pin ? [...watrOpts.pin, ...SIMD_PINNED] : SIMD_PINNED
   // Partial unrolling overlaps branch latency in compact codecs, but duplicates
   // too many cold compiler/parser loops in large module graphs and loses the
-  // warm self-host I-cache race. Users may still opt in explicitly.
+  // warm self-compile I-cache race. Users may still opt in explicitly.
   if (watrOpts.unroll2 == null && funcCount > 64) watrOpts.unroll2 = false
   // Keep only JS-boundary vectorized functions intact: their `$name$exp`
   // wrapper must not swallow the body/markers structural host tests inspect.
@@ -315,7 +315,7 @@ export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time =
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
   // Region-arena Slice 1 (.work/research.md §Region arena): per-round mark/exit around
-  // watOptimize's fixpoint round loop, ON for kernel/self-host compiles only. The
+  // watOptimize's fixpoint round loop, ON for kernel/self-compile compiles only. The
   // ONLY caller that ever passes `regionHooks` is scripts/self.js's optimizeTail —
   // that file is NEVER imported/run as native JS (it's fed to jz's compiler purely
   // as source text, to become dist/jz.wasm), so its literal `__region_mark()`/

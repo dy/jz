@@ -88,7 +88,7 @@ export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 
 // Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
 // compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
-// semantics bought nothing, and in the self-hosted kernel the WeakMap's
+// semantics bought nothing, and in the self-compiled kernel the WeakMap's
 // INVARIANT: this store must hold STRONG refs — a weak/arena-backed store
 // rewound by a warm-instance `_clear` mid-lifecycle makes cache behavior
 // timing-dependent. Strong refs are bounded by program size and dropped at
@@ -105,7 +105,7 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 // share one definition — so the two body walks can't drift. Passed as three positional
 // closures rather than a {get,set,delete} store object: a Map satisfies that interface
 // natively (analyzeBody's slices) but the analyzeValTypes slices need custom logic
-// (updateRep), so the param would be polymorphic (Map | object) — which the self-host
+// (updateRep), so the param would be polymorphic (Map | object) — which the self-compile
 // kernel cannot statically type, mis-dispatching `store.set` on the object form to the
 // Map builtin. Direct closure calls sidestep method dispatch entirely.
 //
@@ -245,7 +245,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
  * rewrite drop) both predated setFuncBody (before this seam existed) and were never re-examined once it landed here; both are now fully
  * subsumed by setFuncBody's own invalidation of the node it
  * assigns — read-tested clean (full suite + JZ_DEBUG_INVARIANTS leg +
- * selfhost.js + kernel-parity, all green) — so they were deleted rather than
+ * self-compile.js + kernel-parity, all green) — so they were deleted rather than
  * kept as ceremony. Every mutation of a function's AST now goes through
  * reanalyzeBody / setFuncBody / invalidateBodies / invalidateAllBodyFacts,
  * which fuse the mutation with its invalidation so there's no second call
@@ -1266,7 +1266,7 @@ export function invalidateAllBodyFacts() {
 // wrong non-nullable verdict FOLDS AWAY a real miss guard. The old shape
 // list (nullish literals + ternary arms only) was sound while opaque sources
 // carried no value kind (no kind ⇒ no fold); the Map/element value-kind
-// inference broke that assumption: the self-host kernel's own
+// inference broke that assumption: the self-compile kernel's own
 // `autoCache.get(name) !== undefined` cache probe folded to TRUE (the get's
 // rep carried the map's value kind, non-nullable) and every autoDepsOf call
 // returned the miss sentinel unconditionally — the byte-parity root.
@@ -1322,7 +1322,7 @@ const mayBeUndefinedRhs = (rhs) =>
  *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
  *  other position disqualifies. ITERATIVE (explicit worklist) by necessity:
  *  the original nested self-recursive closure (`verify` capturing `name` +
- *  `body`) MISCOMPILED under the self-hosted kernel into non-termination —
+ *  `body`) MISCOMPILED under the self-compiled kernel into non-termination —
  *  the `h[dk]=v` dict idiom sent the dist kernel leg red (bisected to
  *  83d6add5's analyze.js additions; a depth cap and a `seen` identity-guard
  *  both failed, so the divergence is in the kernel's closure-call ABI, below
@@ -1380,7 +1380,7 @@ const I32_DICT_BITWISE = new Set(['&', '|', '^', '<<', '>>', '>>>'])
  *  immediately bitwise-coerced and every WRITE a discarded statement (so the
  *  slot may keep only ToInt32 bits). ITERATIVE for the same reason as
  *  dictWalkLean — the original nested self-recursive `walk` (four captured
- *  params + mutated outer state) is the exact shape the self-hosted kernel
+ *  params + mutated outer state) is the exact shape the self-compiled kernel
  *  miscompiled into non-termination (bisected culprit of the 83d6add5
  *  kernel-leg red). Module-scope, worklist of (node,parent,pos,grand). */
 function dictWalkI32(body, name) {
@@ -2474,7 +2474,7 @@ export function analyzeStructInline(programFacts) {
   // program-wide returns an `Array<S>` (its result could flow into an
   // un-sanctioned call position here). With zero such functions, no `mk()`
   // call can carry an inline array, so the walk is a guaranteed no-op — skip
-  // it (compile-time: the self-host compiler has hundreds of array-free frames
+  // it (compile-time: the self-compile compiler has hundreds of array-free frames
   // whose full-body walk was pure waste).
   const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
   for (const func of ctx.funcs.list) {

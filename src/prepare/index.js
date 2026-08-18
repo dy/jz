@@ -307,7 +307,7 @@ const hostReturnValType = spec => {
   // Return type is the canonical string name ('number'/'string'/'bigint'/'f64').
   // (Earlier this also accepted the constructor identity `ret === String` etc.,
   // but that references host-only globals with no first-class value in jz — it
-  // broke self-hosting and was never used. String names are the portable form.)
+  // broke self-compiling and was never used. String names are the portable form.)
   const ret = spec.returns ?? spec.return ?? spec.result
   if (ret === 'number' || ret === 'f64') return VAL.NUMBER
   if (ret === 'string') return VAL.STRING
@@ -590,7 +590,7 @@ function staticStringExpr(node) {
     const a = staticStringExpr(args[0])
     const b = staticStringExpr(args[1])
     // Accumulate from a fresh empty string (`'' + a + b`) rather than concatenating two
-    // source-derived substrings directly. Under self-host the latter can yield a string
+    // source-derived substrings directly. Under self-compile the latter can yield a string
     // backed by transient parse-time storage that's invalid by the time emit['//'] reads
     // it for regex compilation (OOB); forcing a fresh allocation, as the template-literal
     // path already does, keeps it stable. Identical value in both legs.
@@ -627,7 +627,7 @@ function resolveImportMeta(spec) {
   const base = importMetaUrl()
   // URL resolution is a host capability (WHATWG URL parsing), injected via
   // ctx.transform.resolveUrl rather than referencing the `URL` global — the same
-  // inversion as ctx.transform.parse. Keeps the self-host kernel (which bundles
+  // inversion as ctx.transform.parse. Keeps the self-compile kernel (which bundles
   // its module graph and never resolves import.meta at runtime) free of `URL`.
   if (!ctx.transform.resolveUrl) err('import.meta resolution requires ctx.transform.resolveUrl (injected by the jz pipeline)')
   try { return ctx.transform.resolveUrl(spec, base) }
@@ -713,7 +713,7 @@ export default function prepare(node) {
   // This direct call must stay even though reset()'s RESET_HOOKS (ctx.js) also
   // clears this working set before every prepare() call (beginSession, raw-reset
   // test harnesses — every caller runs reset() first). The two are NOT redundant:
-  // omitting the direct call crashes the SELF-HOSTED kernel ("memory access out
+  // omitting the direct call crashes the SELF-COMPILED kernel ("memory access out
   // of bounds" on the very first compile) even though native + full battery +
   // JZ_DEBUG_INVARIANTS pass byte-identically without it. module/regex.js's and
   // optimize/vectorize.js's equivalent hooks, registered the same way, do NOT
@@ -2283,7 +2283,7 @@ function foldJsonReviver(callee, args) {
     return r("", walk(JSON.parse(s)))
   })`)
   // Fresh structural copy per site — prep mutates/renames in place.
-  // (cloneNode, not structuredClone: the self-host kernel compiles this file
+  // (cloneNode, not structuredClone: the self-compile kernel compiles this file
   // and structuredClone is not a jz builtin.)
   const iife = cloneNode(jsonReviveTemplate)
   const arrow = Array.isArray(iife) && iife[0] === '()' && iife.length === 2 ? iife[1] : iife
@@ -3052,9 +3052,9 @@ const handlers = {
     // Fold `-<numeric literal>` to a literal. A bigint literal is a distinct
     // `['bigint', decimalStr]` node (parse.js) — `isLit` (op===null)
     // already excludes it structurally, so no bigint-vs-number ambiguity
-    // reaches here at all (native or self-hosted alike); bigint negation flows
+    // reaches here at all (native or self-compiled alike); bigint negation flows
     // through the `u-` runtime path below to emit's i64.sub(0,·).
-    // `-0` is NOT folded: the self-host kernel evaluates the constant `-na[1]` with
+    // `-0` is NOT folded: the self-compile kernel evaluates the constant `-na[1]` with
     // i32 negation (i32 has no signed zero), collapsing -0→+0 — observable via sort's
     // -0<+0 tiebreak, Object.is, and 1/x. Leaving it as a runtime `u-` emits f64.neg,
     // which preserves the sign in both engines; V8 re-folds it, so no native cost.
@@ -3773,7 +3773,7 @@ function collectReturns(node, out) {
 
 const isLit = n => Array.isArray(n) && n[0] == null
 
-/** Self-host: pre-parsed module AST for a specifier, or undefined. Linear scan over
+/** Self-compile: pre-parsed module AST for a specifier, or undefined. Linear scan over
  *  [specifier, ast] pairs — array indexing + string `===` are the ABI-safe primitives
  *  the kernel can read off a host-marshalled argument (dynamic-key object reads aren't). */
 function moduleAstFor(specifier) {
@@ -3784,7 +3784,7 @@ function moduleAstFor(specifier) {
 }
 
 /** True when `mod` is bundled in-process — as source (host parses it) or as a
- *  pre-parsed AST (self-host kernel). Either path routes through prepareModule. */
+ *  pre-parsed AST (self-compile kernel). Either path routes through prepareModule. */
 const isBundledModule = mod => !!ctx.module.importSources?.[mod] || moduleAstFor(mod) !== undefined
 
 /** Compile-time bundling: parse + prepare an imported module, collect exports. */
@@ -3801,7 +3801,7 @@ function prepareModule(specifier, source) {
   // Name mangling prefix. Long specifiers (the bundler keys modules by
   // ABSOLUTE path — 40-60 byte '_Users_…' / '_home_runner_…' prefixes on every
   // symbol) compact to 'm<N>_<basename>': symbol strings shrink ~4×, which is
-  // a direct hot-path win in the SELF-HOST — watr resolves every `call $name`
+  // a direct hot-path win in the SELF-COMPILE — watr resolves every `call $name`
   // and `local.get $name` through name-keyed maps, paying hash+compare per
   // byte, and shared 35-byte path prefixes defeated the hash-probe early-outs.
   // Deterministic per compile (registration order); short relative specifiers
@@ -3829,7 +3829,7 @@ function prepareModule(specifier, source) {
   // Parse + prepare imported source (may trigger recursive imports). The parser
   // is injected via ctx.transform.parse (the host pipeline sets it) rather than
   // imported, so prepare carries no hard dependency on a concrete parser — the
-  // same inversion as ctx.transform.jzify. The self-host kernel can't parse, so it
+  // same inversion as ctx.transform.jzify. The self-compile kernel can't parse, so it
   // pre-parses the whole graph on the host and passes the ASTs via importAsts;
   // we consult those first and only parse `source` when no AST was supplied.
   let ast = moduleAstFor(specifier)
