@@ -21725,3 +21725,36 @@ session. **Next session starts there: root-cause the ~195 MB flat
 compaction tax (memo-retention hypothesis) in `$__region_exit`/
 `$__region_copy_rec`, then size the fix — nothing else on record touches a
 626 MB gap.**
+
+## §Negative-reclaim root cause — memo chain-waste CONFIRMED at 93.9% of all real-compaction growth (2026-08-18)
+
+Follow-on to the frontier re-trace above, same worktree/method (one added WAT
+probe: memo final cap + $__dyn_props fired-flag logged before the tail
+`memory.copy`; rerun byte-identical trap point, zero perturbation —
+artifacts `rounds2.json`/`trace-result2.json` in `.work/frontier2/`).
+
+**Mechanism, proven not hypothesized.** `$__region_exit` snapshots `$T`
+right after the memo Map's cap-8 initial header, then sweeps EVERYTHING in
+`[T, heap)` into `memory.copy(mark, T, size)` — the implicit assumption
+that the memo stays small is structurally false: the memo needs one entry
+per distinct pointer visited (diamond/cycle correctness), so it grows
+through its doubling chain 8→…→2²² INSIDE the copied window, and
+`genUpsert`'s grow path forward-marks the old table without ever freeing —
+EVERY generation becomes permanent "survivor" garbage, accreting per round.
+Measured: memo cap flat at 2²² (≈96 MB final table; ≈192 MB with the full
+chain) for every real compaction from early-plan on; `$__dyn_props` rebuild
+NEVER fires (refuted as a channel). Per-class split across the 19 captured
+real compactions: **3,733.0 MB total growth = 3,504.0 MB memo chain-waste
+(93.9%) + 229 MB genuine survivors**; AFE real batches average 195.7 MB of
+which 192.0 MB memo (98.1%), genuine survivors ~3.7 MB — matching the
+census's own churn/live ratios. ~86% of the 4,090.8 MB heap at trap is
+never-reachable memo scratch.
+
+**Fix shapes, ranked (design pending, nothing landed)**: (1) memo
+allocation lane outside `[mark, heap)` accounting, abandoned wholesale
+after exit — eliminates ~192 MB/round, projected heap at batch 53 ≈587 MB →
+plausibly closes THE GOAL GATE outright; (2) pre-size memo from prior
+round's final cap — halves the tax, insufficient alone (needs ≤33 MB/batch);
+(3) eliminate the memo for single-reference pointers / move forwarding
+fully into from-space headers — conceptually strongest, touches
+previously-hardened correctness invariants, needs equal rigor.

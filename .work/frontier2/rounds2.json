@@ -1,0 +1,550 @@
+[
+  {
+    "mark": "20429248",
+    "depth": 0,
+    "peak": "515102232",
+    "memoCapSlots": "1048576",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "90899696",
+    "sm_entered": "64",
+    "sm_patched": "64",
+    "sm_rebuilt": "225"
+  },
+  {
+    "mark": "166622648",
+    "depth": 1,
+    "peak": "1649881000",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "497259536",
+    "sm_entered": "341",
+    "sm_patched": "341",
+    "sm_rebuilt": "189380"
+  },
+  {
+    "mark": "497259608",
+    "depth": 1,
+    "peak": "2321740376",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "713050000",
+    "sm_entered": "158339",
+    "sm_patched": "158339",
+    "sm_rebuilt": "226963"
+  },
+  {
+    "mark": "713050056",
+    "depth": 1,
+    "peak": "717446352",
+    "skipped": true,
+    "floor": "717446352"
+  },
+  {
+    "mark": "717446424",
+    "depth": 1,
+    "peak": "924427664",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "948025472",
+    "sm_entered": "352945",
+    "sm_patched": "352945",
+    "sm_rebuilt": "293814"
+  },
+  {
+    "mark": "948025544",
+    "depth": 1,
+    "peak": "1041349968",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "1149393600",
+    "sm_entered": "614402",
+    "sm_patched": "614402",
+    "sm_rebuilt": "293829"
+  },
+  {
+    "mark": "1149393672",
+    "depth": 1,
+    "peak": "1172543240",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "1350850080",
+    "sm_entered": "875874",
+    "sm_patched": "875874",
+    "sm_rebuilt": "293829"
+  },
+  {
+    "mark": "1350850136",
+    "depth": 1,
+    "peak": "1350851416",
+    "skipped": true,
+    "floor": "1350851416"
+  },
+  {
+    "mark": "1373317040",
+    "depth": 1,
+    "peak": "1434755744",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "1575141152",
+    "sm_entered": "1110791",
+    "sm_patched": "1110791",
+    "sm_rebuilt": "293991"
+  },
+  {
+    "mark": "1575141232",
+    "depth": 1,
+    "peak": "1577090176",
+    "skipped": true,
+    "floor": "1577090176"
+  },
+  {
+    "mark": "1577090224",
+    "depth": 1,
+    "peak": "1580044064",
+    "skipped": true,
+    "floor": "1580044064"
+  },
+  {
+    "mark": "1580044112",
+    "depth": 1,
+    "peak": "1584501688",
+    "skipped": true,
+    "floor": "1584501688"
+  },
+  {
+    "mark": "1584501736",
+    "depth": 1,
+    "peak": "1592201864",
+    "skipped": true,
+    "floor": "1592201864"
+  },
+  {
+    "mark": "1592201912",
+    "depth": 1,
+    "peak": "1598163304",
+    "skipped": true,
+    "floor": "1598163304"
+  },
+  {
+    "mark": "1598163352",
+    "depth": 1,
+    "peak": "1602021256",
+    "skipped": true,
+    "floor": "1602021256"
+  },
+  {
+    "mark": "1602021304",
+    "depth": 1,
+    "peak": "1605116912",
+    "skipped": true,
+    "floor": "1605116912"
+  },
+  {
+    "mark": "1605116960",
+    "depth": 1,
+    "peak": "1608398824",
+    "skipped": true,
+    "floor": "1608398824"
+  },
+  {
+    "mark": "1608398872",
+    "depth": 1,
+    "peak": "1613544456",
+    "skipped": true,
+    "floor": "1613544456"
+  },
+  {
+    "mark": "1613544504",
+    "depth": 1,
+    "peak": "1620435032",
+    "skipped": true,
+    "floor": "1620435032"
+  },
+  {
+    "mark": "1620435080",
+    "depth": 1,
+    "peak": "1624638704",
+    "skipped": true,
+    "floor": "1624638704"
+  },
+  {
+    "mark": "1624638752",
+    "depth": 1,
+    "peak": "1643042568",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "1829325968",
+    "sm_entered": "1355334",
+    "sm_patched": "1355327",
+    "sm_rebuilt": "294872"
+  },
+  {
+    "mark": "1829326016",
+    "depth": 1,
+    "peak": "1835148472",
+    "skipped": true,
+    "floor": "1835148472"
+  },
+  {
+    "mark": "1835148520",
+    "depth": 1,
+    "peak": "1839520112",
+    "skipped": true,
+    "floor": "1839520112"
+  },
+  {
+    "mark": "1839520160",
+    "depth": 1,
+    "peak": "1849158504",
+    "skipped": true,
+    "floor": "1849158504"
+  },
+  {
+    "mark": "1849158552",
+    "depth": 1,
+    "peak": "1874165336",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "2054383960",
+    "sm_entered": "1603326",
+    "sm_patched": "1603312",
+    "sm_rebuilt": "295768"
+  },
+  {
+    "mark": "2054384008",
+    "depth": 1,
+    "peak": "2072659648",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "2259228264",
+    "sm_entered": "1852207",
+    "sm_patched": "1852185",
+    "sm_rebuilt": "296642"
+  },
+  {
+    "mark": "2259228312",
+    "depth": 1,
+    "peak": "2262683184",
+    "skipped": true,
+    "floor": "2262683184"
+  },
+  {
+    "mark": "2262683232",
+    "depth": 1,
+    "peak": "2267369112",
+    "skipped": true,
+    "floor": "2267369112"
+  },
+  {
+    "mark": "2267369160",
+    "depth": 1,
+    "peak": "2270875464",
+    "skipped": true,
+    "floor": "2270875464"
+  },
+  {
+    "mark": "2270875512",
+    "depth": 1,
+    "peak": "2274419104",
+    "skipped": true,
+    "floor": "2274419104"
+  },
+  {
+    "mark": "2274419152",
+    "depth": 1,
+    "peak": "2279481392",
+    "skipped": true,
+    "floor": "2279481392"
+  },
+  {
+    "mark": "2279481440",
+    "depth": 1,
+    "peak": "2305299344",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "2484079784",
+    "sm_entered": "2106248",
+    "sm_patched": "2106217",
+    "sm_rebuilt": "297494"
+  },
+  {
+    "mark": "2484079832",
+    "depth": 1,
+    "peak": "2489458064",
+    "skipped": true,
+    "floor": "2489458064"
+  },
+  {
+    "mark": "2489458112",
+    "depth": 1,
+    "peak": "2491864584",
+    "skipped": true,
+    "floor": "2491864584"
+  },
+  {
+    "mark": "2491864632",
+    "depth": 1,
+    "peak": "2538327312",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "2696980576",
+    "sm_entered": "2362823",
+    "sm_patched": "2362785",
+    "sm_rebuilt": "298339"
+  },
+  {
+    "mark": "2696980624",
+    "depth": 1,
+    "peak": "2706690512",
+    "skipped": true,
+    "floor": "2706690512"
+  },
+  {
+    "mark": "2706690560",
+    "depth": 1,
+    "peak": "2745944904",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "2911872104",
+    "sm_entered": "2621086",
+    "sm_patched": "2621041",
+    "sm_rebuilt": "299214"
+  },
+  {
+    "mark": "2911872152",
+    "depth": 1,
+    "peak": "2920658888",
+    "skipped": true,
+    "floor": "2920658888"
+  },
+  {
+    "mark": "2920658936",
+    "depth": 1,
+    "peak": "2932700552",
+    "skipped": true,
+    "floor": "2932700552"
+  },
+  {
+    "mark": "2932700600",
+    "depth": 1,
+    "peak": "2941313992",
+    "skipped": true,
+    "floor": "2941313992"
+  },
+  {
+    "mark": "2941314040",
+    "depth": 1,
+    "peak": "2949336440",
+    "skipped": true,
+    "floor": "2949336440"
+  },
+  {
+    "mark": "2949336488",
+    "depth": 1,
+    "peak": "2960046296",
+    "skipped": true,
+    "floor": "2960046296"
+  },
+  {
+    "mark": "2960046344",
+    "depth": 1,
+    "peak": "2969722080",
+    "skipped": true,
+    "floor": "2969722080"
+  },
+  {
+    "mark": "2969722128",
+    "depth": 1,
+    "peak": "2978215232",
+    "skipped": true,
+    "floor": "2978215232"
+  },
+  {
+    "mark": "2978215280",
+    "depth": 1,
+    "peak": "2982414968",
+    "skipped": true,
+    "floor": "2982414968"
+  },
+  {
+    "mark": "2982415016",
+    "depth": 1,
+    "peak": "2990310856",
+    "skipped": true,
+    "floor": "2990310856"
+  },
+  {
+    "mark": "2990310904",
+    "depth": 1,
+    "peak": "2996854856",
+    "skipped": true,
+    "floor": "2996854856"
+  },
+  {
+    "mark": "2996854904",
+    "depth": 1,
+    "peak": "3005104096",
+    "skipped": true,
+    "floor": "3005104096"
+  },
+  {
+    "mark": "3005104144",
+    "depth": 1,
+    "peak": "3012865232",
+    "skipped": true,
+    "floor": "3012865232"
+  },
+  {
+    "mark": "3012865280",
+    "depth": 1,
+    "peak": "3016553792",
+    "skipped": true,
+    "floor": "3016553792"
+  },
+  {
+    "mark": "3016553840",
+    "depth": 1,
+    "peak": "3021095056",
+    "skipped": true,
+    "floor": "3021095056"
+  },
+  {
+    "mark": "3021095104",
+    "depth": 1,
+    "peak": "3026699080",
+    "skipped": true,
+    "floor": "3026699080"
+  },
+  {
+    "mark": "3026699128",
+    "depth": 1,
+    "peak": "3031707984",
+    "skipped": true,
+    "floor": "3031707984"
+  },
+  {
+    "mark": "3031708032",
+    "depth": 1,
+    "peak": "3051952432",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "3236870808",
+    "sm_entered": "2894013",
+    "sm_patched": "2893960",
+    "sm_rebuilt": "300106"
+  },
+  {
+    "mark": "3236870856",
+    "depth": 1,
+    "peak": "3273755408",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "3443033704",
+    "sm_entered": "3167822",
+    "sm_patched": "3167763",
+    "sm_rebuilt": "300998"
+  },
+  {
+    "mark": "3443033752",
+    "depth": 1,
+    "peak": "3463306616",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "3648236272",
+    "sm_entered": "3442517",
+    "sm_patched": "3442450",
+    "sm_rebuilt": "301879"
+  },
+  {
+    "mark": "3648236320",
+    "depth": 1,
+    "peak": "3657332304",
+    "skipped": true,
+    "floor": "3657332304"
+  },
+  {
+    "mark": "3657332352",
+    "depth": 1,
+    "peak": "3676898624",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "3862652864",
+    "sm_entered": "3718949",
+    "sm_patched": "3718876",
+    "sm_rebuilt": "302768"
+  },
+  {
+    "mark": "3862652912",
+    "depth": 1,
+    "peak": "3882863624",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "4067979384",
+    "sm_entered": "3996264",
+    "sm_patched": "3996183",
+    "sm_rebuilt": "303666"
+  },
+  {
+    "mark": "4067979432",
+    "depth": 1,
+    "peak": "4089066424",
+    "memoCapSlots": "4194304",
+    "dpCapSlots": "256",
+    "dpFired": "0",
+    "skipped": false,
+    "floor": "4273357320",
+    "sm_entered": "4274469",
+    "sm_patched": "4274380",
+    "sm_rebuilt": "304540"
+  },
+  {
+    "mark": "4273357368",
+    "depth": 1,
+    "peak": "4278568984",
+    "skipped": true,
+    "floor": "4278568984"
+  },
+  {
+    "mark": "4278569032",
+    "depth": 1,
+    "peak": "4289547168",
+    "skipped": true,
+    "floor": "4289547168"
+  }
+]
