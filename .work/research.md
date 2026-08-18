@@ -22217,3 +22217,24 @@ covered closure-path counters only). Decisive next probe: enumerate `call
 $__map_from` sites in the WAT (names the enclosing kernel functions → the
 exact JS construct), per-site counters + log (n, live-size-via-coll_order)
 distribution at clone time; native counter on the named construct.
+
+## §__map_from refuted; moving to exhaustive site-ID attribution (2026-08-18)
+
+Round-5 probe: 158 static __map_from sites / 74 functions enumerated;
+whole-run headerN ≡ liveN bucket-for-bucket (mismatches 0, wasted slots 0 —
+the 5e77f814 desync does not manifest); fatal call has only **54**
+__map_from calls, all header=live=0/1, newcap ≤16; whole-run newcap tops
+at 512-1023 slots ×17 ever. __map_from is structurally incapable of the
+64,691 × ~49 KB mass — round-4's attribution was a size-class coincidence.
+Eliminated so far: str_concat both variants, hash_set_local growth,
+obj_clone (0 events), map_from, all 10 tagged growth helpers, cache-miss
+divergence, runaway loops. The ~3.2 GB / 64,691-event mass in the fatal
+call remains unattributed.
+
+**Method correction (mine)**: five hypothesis-probe rounds each killed a
+candidate; the remaining space is best swept exhaustively — splice a
+site-ID global.set before EVERY static `call $__alloc`/`__alloc_hdr`/
+`__alloc_hdr_n` in the production WAT (mechanical, scriptable, few hundred
+sites), histogram ≥16 KB allocations by site-ID during the fatal window,
+map the top sites to enclosing functions. One round, no candidates,
+definitive.
