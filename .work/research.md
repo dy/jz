@@ -21881,3 +21881,30 @@ pipeline completes this same graph (V8 GC absorbs whatever churn this is)
 too), (b) structural (region hooks threaded into the emitFuncs loop,
 AFE-batch style). Measure first: next step is instrumenting INSIDE
 emitFunc on this one function to name the sub-pass.
+
+## §emitFunc blowup mechanism — isReassigned/closure-return-site O(V×M) rescans (2026-08-18)
+
+Native isolation (per-function timing across all 2,220 + node:inspector CPU
+profile bracketing exactly call #726): `m86_math$default` costs 251.8 ms vs
+0.42 ms average — **594× outlier**, super-linear signature. Two hot paths,
+both full-subtree recursive walks re-invoked against the SAME enclosing
+body: (1) `isReassigned` (src/ast.js:114) — O(|body|) unmemoized, called
+from ~12 emit.js sites, several as `isReassigned(ctx.func.body, name)`,
+once per relevant declaration while emitting that same body; (2)
+`closureBodyReturnKind → closureReturnSites → crkWalkSites`
+(src/compile/flow-types.js:467) — one full walk per nested closure.
+math.js's self-compiled `export default (ctx) => {…}` packs 24 `reg()`
+closure registrations into one 175,694-char body → O(decls × bodysize);
+native V8 GCs the churn (+13.7 MB), the wasm arena retains every byte (no
+mid-function reclaim) → 3.2 GB. Same shape confirmed in
+`m98_typedarray$default` (205K chars, 11.5 ms, 0 reg() closures — smaller
+magnitude, same mechanism, sits later in the list). Whole shape-class:
+every `export default (ctx)=>{…}` stdlib module (string/collection/array/
+number/typedarray/…).
+
+**Fix decision: algorithmic** (matches the optimize-the-engine rule; the
+structural region-hooks-in-emitFuncs mitigation caps damage but leaves the
+O(V×M) cost everywhere): memoize per-body assigned-name facts — one
+O(|body|) collection per queried subtree, set-membership per query —
+collapsing O(V×M) to O(V+M); same treatment for closure return-site walks.
+Implementation in flight (main session, inline).
