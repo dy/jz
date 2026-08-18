@@ -21059,3 +21059,66 @@ the rebased candidate converges across two builds (`dist/jz.wasm`
 records a deterministic 12/13 failure on the heterogeneous-BigInt-array O0 row;
 this slice's normalized local write closes that row on all 15 repetitions. Only
 the validation worktree had `REGION_HOOKS_ACTIVE=true`.
+
+---
+
+## §RepresentationPlan v2 Slice 3c — covered reassigned params + tagged `typeof`
+## (2026-08-18)
+
+Covered direct parameters now join Slice 3b's materialized lifetime when every
+body def is a normalizable plain write. Their call edge targets the complete
+body binding representation—not merely the pre-body boundary fact—and every
+reassignment takes the same action. Uncovered exports, value-used functions,
+generic closures, compound mutations, and any unresolved BOXED→BOXED producer
+remain legacy. The scalar projection also requires `boundary.covered`; host
+parameters cannot accidentally claim the internal tagged ABI before the host
+adapter slice.
+
+This enables the first semantic consumer family at plan-proven sites. Bare
+`typeof` no longer trusts legacy function-wide `valTypeOf(...)=BIGINT` for a
+materialized tagged binding; it calls the normal dynamic helper. A comparison
+such as `typeof value === 'bigint'` uses only `is NaN-box && PTR.BIGINT`, with
+no raw-carrier magnitude arm. Other/unmaterialized sites retain the old path.
+Bindings with a closed BOOL member are excluded because RepresentationPlan
+normalizes only the BigInt member; claiming the BOOL carrier materialized would
+pre-empt the separate pending BOOL-atom project.
+
+The fixed class is a covered parameter reassigned between Number and BigInt.
+Before this slice, all of `kind(2,0)`, `kind(2,1)`, and `kind(5n,0)` returned
+`"bigint"`: the legacy analysis folded the entire function from the one BigInt
+write. Likewise the comparison folded to constant true even on the Number
+call. Native JS returns `number/bigint/bigint` and `false/true/true`; the new
+native, WASI, and wasm-host O0/O2/O3 assertions agree exactly. Host-supplied
+BigInt through an uncovered exported parameter remains deliberately outside
+this slice.
+
+Focused O0 WAT makes the mechanism explicit. The old bodies returned one
+preinterned `"bigint"` pointer and `i32.const 1`; the new bodies box the raw
+BigInt assignment/entry, route bare `typeof` through `$__typeof`, and lower the
+comparison to `f64.ne` plus `$__ptr_type == 5`. There is no subnormal-magnitude
+condition in that covered comparison. Full watr WAT is byte-identical to the
+Slice-3b parent, and the 130-program corpus is **130/130 byte-identical**.
+A supporting precision repair keeps non-BigInt expressions' exact `valTypeOf`
+kind instead of replacing every such expression with the whole
+universe-minus-BigInt; this makes obvious Number∪BigInt lifetimes closed while
+preserving explicit uncertainty elsewhere.
+
+Gates: default/O0/O3 each **3,512/3,506/0/6**; WASI
+**3,511/3,505/0/6**; wasm-target **2,771/2,765/0/6**; focused carrier/watr/
+inference/session **417/417**; selfhost correctness **21/21**; kernel parity
+**33/33**; dormant kernel oracle **13/13 ×3**; build ×2 converges
+(`dist/jz.wasm`
+`d44684d8445a9ad3934955e8b30cc5eeb2cb79947115e5ebc116e070452d7a9b`,
+16,959.9 KiB). Direct alternating candidate/control self-host A/B is
+**1.002×, 1.002×, 1.002×** geomean, well inside 1.03. Claims size remains
+**1.020×**; the independent stale-evidence failures remain.
+
+**Status:** covered reassigned-parameter producers and `typeof` consumers over
+materialized tagged bindings are consumable. The raw magnitude fallback is
+still live for every unmaterialized site; results/returns, joins, storage,
+closures, host boundaries, and the remaining semantic consumers are not yet
+consumable. FeaturePlan remains blocked. Region-live build ×2 converges
+(`dist/jz.wasm`
+`0751749ceaf6c8f9b61c5c1e867d11a0fc8a1c92c747bd55efecc9fd7410a4c6`,
+14,777.3 KiB), kernel parity passes **33/33**, and kernel oracle passes
+**13/13 ×15**; only the disposable validation worktree enabled region hooks.

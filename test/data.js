@@ -76,6 +76,34 @@ test('RepresentationPlan: plain local writes normalize a Number-or-BigInt bindin
   }
 })
 
+test('RepresentationPlan: covered reassigned params use tagged typeof without magnitude guesses', () => {
+  const src = `
+    function kind(value, replace) {
+      if (replace) value = 4n
+      return typeof value
+    }
+    function isBigInt(value, replace) {
+      if (replace) value = 4n
+      return typeof value === 'bigint'
+    }
+    export let numberKind = () => kind(2, 0)
+    export let assignedKind = () => kind(2, 1)
+    export let literalKind = () => kind(5n, 0)
+    export let numberCheck = () => isBigInt(2, 0)
+    export let assignedCheck = () => isBigInt(2, 1)
+    export let literalCheck = () => isBigInt(5n, 0)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.numberKind(), 'number', `O${optimize || 0}: Number is not inferred BigInt from another write`)
+    is(e.assignedKind(), 'bigint', `O${optimize || 0}: reassigned BigInt is tagged`)
+    is(e.literalKind(), 'bigint', `O${optimize || 0}: direct BigInt entry is tagged`)
+    is(e.numberCheck(), false, `O${optimize || 0}: comparison rejects Number`)
+    is(e.assignedCheck(), true, `O${optimize || 0}: comparison accepts assigned BigInt`)
+    is(e.literalCheck(), true, `O${optimize || 0}: comparison accepts entry BigInt`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —

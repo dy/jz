@@ -10,7 +10,7 @@ import { OPTF } from '../src/ctx.js'
  * @module core
  */
 
-import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR, boxBigInt, unboxBigInt } from '../src/ir.js'
+import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR, boxBigInt, unboxBigInt, isPlanTaggedBigint } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
@@ -2648,7 +2648,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // initialized in __start (see compile.js). Comparison patterns (typeof x === 'string') are optimized
   // in prepare.js (resolveTypeof) and emitted as direct type checks via emitTypeofCmp, bypassing this path.
   ctx.core.emit['typeof'] = (a) => {
-    if (valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
+    if (!isPlanTaggedBigint(a) && valTypeOf(a) === VAL.BIGINT) return emit(['str', 'bigint'])
     // VAL.BOOL covers boolean literals, comparisons, `!` and bindings inferred
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])

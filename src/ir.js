@@ -676,6 +676,9 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  last — after the two proven, static, zero-runtime-cost predicates — so
  *  a name that's ALSO a boxed param never pays the extra tag check its own
  *  static proof already made unnecessary. */
+export const isPlanTaggedBigint = node => CARRIER_BOX && typeof node === 'string' &&
+  representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
+
 export function readI64(node, emitted) {
   // CARRIER_BOX (frozen import, not bigintStrict()): must agree with
   // carrierF64/carrierF64Narrow's own write-side gate below — whether a box
@@ -684,8 +687,7 @@ export function readI64(node, emitted) {
   // toggle, which only decides refuse-vs-box at the WRITE site and never
   // reaches this read at all when it fires (the compile already aborted).
   if (CARRIER_BOX && typeof node === 'string' &&
-      (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node) ||
-       representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)))
+      (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node) || isPlanTaggedBigint(node)))
     return unboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)

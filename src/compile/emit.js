@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, readI64, bigintEraseErr, bigintStrict,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -478,6 +478,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   // checks below (and the general typeof dispatch, module/core.js $__typeof)
   // read the correct per-branch representation instead of a raw collapsed bit.
   const ambiguous = hasAmbiguousBoolMerge(typeofExpr)
+  const planTaggedBigint = isPlanTaggedBigint(typeofExpr)
   const va = asF64(ambiguous ? emitIdentitySafe(typeofExpr) : emit(typeofExpr))
   const eq = cmpOp === 'eq'
   // Trailing eqz-wrapper for atomic checks: `check` if eq, `!check` if ne.
@@ -496,7 +497,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   // Never trusted for an ambiguous merge: its collapsed NUMBER kind is exactly
   // the unsound fact this whole design routes around.
   const staticFold = (target) => {
-    if (ambiguous) return null
+    if (ambiguous || planTaggedBigint) return null
     const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
     if (vt) return typed(['i32.const', (vt === target) === eq ? 1 : 0], 'i32')
     return null
@@ -504,7 +505,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
 
   if (code === TYPEOF.number) {
     // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
-    if (resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
+    if (!planTaggedBigint && resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
     // v===v alone is WRONG for the one payload that legitimately means "the number
     // NaN": the canonical box prefix (tag=ATOM aux=0) that $__typeof (module/core.js)
     // also carves out, plus any sign-bit-set NaN (pointers are always emitted
@@ -544,6 +545,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (code === TYPEOF.function) return isPtrKind(PTR.CLOSURE)
   if (code === TYPEOF.bigint) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
+    if (planTaggedBigint) return isPtrKind(PTR.BIGINT)
     // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
     // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
     // Slice 3, .work/carrier-representation-design.md §7 — the registry's

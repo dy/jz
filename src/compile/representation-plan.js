@@ -706,7 +706,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const cached = nodeSemantic.get(node)
     if (cached) return cached
     let out
-    if (!mayCarryBigint(node)) out = noBigintSemantic()
+    if (!mayCarryBigint(node)) {
+      const vt = valTypeOf(node)
+      out = nullishArm(node) ? packSemantic(0, true, true)
+        : vt ? semKind(vt) : noBigintSemantic()
+    }
     else if (nullishArm(node)) out = packSemantic(0, true, true)
     else if (isBigintOrigin(node)) out = semKind(VAL.BIGINT)
     else if (node[0] === ',') out = semanticOf(node[node.length - 1])
@@ -930,12 +934,19 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const expr of returnExprs(body)) plannedOf(expr)
   }
 
-  // A non-parameter local whose complete def set uses plain writes can have
-  // every incoming edge normalized at emitDecl / the '=' handler. Keep this
+  // A local—or a parameter on a covered direct boundary—whose complete def
+  // set uses plain writes can have every incoming edge normalized at
+  // emitDecl / the '=' handler. Keep this
   // readiness private: readers get only a scalar projection, never the Set.
   const materializedNames = new Set()
   for (const [name, list] of defs) {
-    if (params.has(name) || ctx.scope.globals?.has(name)) continue
+    if (ctx.scope.globals?.has(name)) continue
+    if (params.has(name) && boundary.covered !== true) continue
+    // RepresentationPlan only normalizes the BigInt member. A BOOL member in
+    // an otherwise dynamic scalar still needs the separate BOOL-atom producer;
+    // do not claim the whole binding materialized before that project lands.
+    const nameSemantic = semanticNames.get(name) ?? semAll()
+    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def.rhs == null) return true
@@ -1095,9 +1106,10 @@ export function representationActiveMaterializedRep(ctx, name) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
-  if (k >= 0)
-    return record.boundary.covered === true && record.boundary.params[k]?.stable === true
-      ? activeRep(ctx, name, true) : NO_BIGINT
+  if (k >= 0) {
+    const ready = record.boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
+    return record.boundary.covered === true && ready ? activeRep(ctx, name, true) : NO_BIGINT
+  }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
 }
 
@@ -1124,11 +1136,16 @@ export function representationCallArgAction(ctx, node, params, index) {
   const targetRecord = targetHandle && ctx.plans.representationData.get(targetHandle)
   if (targetRecord?.boundary?.covered !== true) return REP_EDGE_REJECT
   const targetBoundary = targetRecord.boundary
-  // Slice 3a normalizes entry edges only. A body-reassigned param has an
-  // additional binding-write producer that this slice deliberately leaves on
-  // the legacy path; switching its entry alone would split the local's ABI.
-  if (targetBoundary.params[index]?.stable !== true) return REP_EDGE_REJECT
-  const target = targetBoundary.params[index]?.target ?? ANY_BIGINT
+  // A reassigned parameter is ready only when Slice 3b can normalize its
+  // complete plain-write def set; otherwise switching entry alone would split
+  // the local's ABI.
+  const targetName = targetBoundary.func?.sig?.params?.[index]?.name
+  const bodyReady = targetName != null && targetRecord.body?.materializedNames?.has(targetName)
+  const ready = targetBoundary.params[index]?.stable === true || bodyReady
+  if (!ready) return REP_EDGE_REJECT
+  const target = bodyReady
+    ? targetRecord.body.targetNames?.get(targetName) ?? ANY_BIGINT
+    : targetBoundary.params[index]?.target ?? ANY_BIGINT
   return edgeAction(activeEmittedRep(ctx, node), target)
 }
 
