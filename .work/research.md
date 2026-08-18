@@ -22021,3 +22021,32 @@ the JS construct mass-creating ≥3-prop dyn-shaped objects. Fix directions
 ranked AFTER that evidence: (a) production already-fixed → find real
 production killer; (b) raise/adapt initial cap; (c) static-shape the
 compile-time-known literals off the dyn-hash path entirely.
+
+## §Production-profile fingerprint — map_set share explained, hash_set_local confirmed live (2026-08-18)
+
+O3 names:true kernel builds and splices cleanly (standing "O3 strips names"
+assumption FALSE — name section survives; symbols reshaped but present).
+Production goal gate: same trap, same call #729, same 4096.00 MB ceiling,
+alloc_tag=7 (hash_set_local) at trap. Whole-run cumulative ≥16 KB shares:
+map_set 58.91% (845 events, 4.56 GB), hash_set_local 40.47% (64,198
+events, 3.13 GB).
+
+**map_set's signature decoded**: flat ~22-23 events per doubling tier from
+64 KB to 4M+ entries = ~22-23 separate Maps each doubling 8→2²². That IS
+the region-exit dedup memo — one fresh memo per real-compaction exit
+(~19-23 such exits per run), each growing to cap 2²² (the §memo-retention
+entry's own measured constant). Those allocations are ALREADY diverted to
+the scratch lane (memo-lane fix) and reclaimed wholesale — they inflate
+the cumulative view but cannot kill the fatal call (region exits never run
+mid-emitFunc). NOT a new bug; NOT ctx.closure.valResult (which stays
+hundreds of entries).
+
+**The live killer stays hash_set_local**, with the sharper production
+fact: cap 2→8 cut events only 2.6% (65,910→64,198) — the mass-created
+dyn-shaped objects carry ≥6 properties (cap=8 grows at size≥6), which
+rules out the documented "AST nodes carry 3-5 props" profile and points at
+spread-clone/options-bag shapes ({...opts, x} per node in hot emit paths)
+or similarly wide dynamic literals. Next: isolated call-#729 tag snapshot
+on the production kernel (proven checkpoint technique) to confirm
+fatal-call composition, plus key-count/receiver-kind logging at grow time
+to name the creator construct.
