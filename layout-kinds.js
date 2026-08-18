@@ -503,6 +503,28 @@ export function regionArmSetMap({ lane = LANE } = {}) {
                     (local.set $i (i32.add (local.get $i) (i32.const 1)))
                     (br $vl)))
                   (return (local.get $out))))))
+          ;; $i reset (audit fplan-2026-08-17, .work/research.md §CompileSession
+          ;; forensic — "FunctionPlan missing for m6_parse$parse"): the
+          ;; stability scan above (when entered — table durable) shares this
+          ;; same $i local and, on finding an unstable key, branches out of the
+          ;; scan EARLY, leaving $i frozen at that break's raw slot index (0..
+          ;; cap-1, table layout order — NOT 0, NOT $cap). Falling through here
+          ;; means either the table was durable+unstable (scan broke early, $i
+          ;; mid-table) or fully durable+stable (scan ran to completion, $i ==
+          ;; $cap) — never reset for the CODE BELOW, which reuses $i as its OWN
+          ;; loop index into $ord (the insertion-ORDER array __coll_order
+          ;; gathers). A non-zero inherited $i skips $ord[0..$i-1] — the
+          ;; OLDEST-published survivors, unrelated to the raw slot the scan
+          ;; happened to break on — silently dropping them from the rebuilt
+          ;; table (confirmed empirically: a durable table with enough churn
+          ;; to cross __region_exit's own adaptive skip threshold, several
+          ;; durable entries, and one ephemeral pointer-typed entry whose raw
+          ;; slot lands past index 0 rebuilds EMPTY — $i ends up >= $n, so the
+          ;; loop below never executes at all). Reset unconditionally — correct
+          ;; whether the scan ran to completion, broke early, or never ran (the
+          ;; table was ephemeral to begin with, off >= $mark, and $i was never
+          ;; touched by this arm at all).
+          (local.set $i (i32.const 0))
           (local.set $newOff (call $__alloc_hdr_n (i32.const 0) (local.get $cap) (i32.add (local.get $stride) (i32.const ${lane}))))
           ;; Two addresses for the SAME new table: $outPhys (physical, T-relative — the
           ;; only form valid to DEREFERENCE right now, since the memmove down to mark

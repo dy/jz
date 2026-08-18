@@ -456,6 +456,81 @@ test('region-relocate[SET]: durable Set holding an EPHEMERAL pointer-typed membe
   `).f(), true)
 })
 
+// fplan-2026-08-17 (.work/research.md §CompileSession forensic — "FunctionPlan
+// missing for m6_parse$parse"): the stability scan and the rebuild path below
+// it share the SAME $i local. On finding an unstable key the scan branches out
+// of its loop EARLY, leaving $i frozen at that break's raw SLOT index (0..cap-1,
+// table layout order) rather than 0 or $cap. The rebuild loop right below reuses
+// that same $i as its OWN starting index into $ord (the insertion-ORDER gather
+// __coll_order produces) — silently skipping the first $i insertion-order
+// entries, which are the OLDEST published keys, not related to the raw slot
+// the scan happened to break on. The two prior tests above (a single durable
+// key + one ephemeral key) never catch this, for a reason found only by
+// instrumenting the arm directly with unreachable traps: __region_exit has its
+// own "adaptive exit-skip" (module/core.js, THE MEMORY ENDGAME) — under 16 MiB
+// of churn since mark, it returns the root UNCHANGED without ever calling
+// __region_copy_rec at all, so a tiny snippet never reaches this arm's code in
+// the first place (trivially "correct" because nothing moved). A big-enough
+// durable table alone isn't sufficient either: at the default optimize level
+// watr inlines+specializes a small, statically-shaped __region_mark/
+// __region_exit call pair down to bespoke code that doesn't route through this
+// generic arm at all (confirmed by dumping the WAT — region_mark/region_exit
+// call counts are 0 at the default level, real calls only appear under
+// optimize:false). Both defeated in combination below: a >16 MiB pad array
+// forces a real walk, optimize:false keeps the call sites unspecialized, and
+// 40 durable + 5 ephemeral pointer-typed entries (see the sizing note) makes a
+// non-zero scan-break index near-certain. Verified directly against the
+// pre-fix arm (temporarily reverted, unreachable traps at the scan's break and
+// at the rebuild's own entry): the SAME construction reproducibly rebuilds the
+// table to size 0 (every entry lost, not just a handful) without this fix.
+// Sizing note: the table must stay DURABLE (its own address must not move)
+// across mark, or the "if (off < mark)" gate never even reaches the scan — so
+// the ephemeral inserts below must not cross the 75%-load grow threshold. 40
+// durable entries settle the table at cap=64 (load 0.625); up to 7 more
+// entries can be added before the next grow (to 48, i.e. cap 128) fires, so 5
+// ephemeral pointer-typed entries stay safely inside that margin. With 40 of
+// 64 slots ALREADY durable-occupied before any ephemeral insert, slot 0 has
+// ~62% odds of already holding a durable entry — so the scan's first found
+// unstable key (which is what freezes $i) lands past index 0 with high
+// probability, reliably exercising the regression.
+test('region-relocate[MAP]: durable Map (40 durable keys, stays at cap 64) plus 5 late EPHEMERAL pointer-typed keys, churn past the exit-skip threshold — every durable key survives the rebuild (stale-$i regression)', () => {
+  is(run(`
+    let m = new Map()
+    for (let i = 0; i < 40; i++) m.set('k' + i, i)
+    export let f = () => {
+      let mark = __region_mark()
+      let pad = new Float64Array(3000000)  // >16 MiB churn — defeats __region_exit's adaptive skip
+      pad[0] = 1
+      for (let i = 0; i < 5; i++) m.set([i], 'e' + i)
+      let out = __region_exit(mark, [m])
+      let sum = 0
+      for (let i = 0; i < 40; i++) { let v = out[0].get('k' + i); if (v !== undefined) sum += v }
+      let eCount = 0
+      for (let k of out[0].keys()) if (Array.isArray(k)) eCount++
+      return out[0].size === 45 && sum === 780 && eCount === 5
+    }
+  `, { optimize: false }).f(), true)  // optimize:false — defeats watr's small-call-site inlining/specialization
+})
+
+test('region-relocate[SET]: durable Set (40 durable members, stays at cap 64) plus 5 late EPHEMERAL pointer-typed members, churn past the exit-skip threshold — every durable member survives the rebuild (stale-$i regression)', () => {
+  is(run(`
+    let s = new Set()
+    for (let i = 0; i < 40; i++) s.add('k' + i)
+    export let f = () => {
+      let mark = __region_mark()
+      let pad = new Float64Array(3000000)
+      pad[0] = 1
+      for (let i = 0; i < 5; i++) s.add([i])
+      let out = __region_exit(mark, [s])
+      let n = 0
+      for (let i = 0; i < 40; i++) if (out[0].has('k' + i)) n++
+      let eCount = 0
+      for (let v of out[0]) if (Array.isArray(v)) eCount++
+      return out[0].size === 45 && n === 40 && eCount === 5
+    }
+  `, { optimize: false }).f(), true)
+})
+
 // ============================================================================
 // Heap-kind registry Slice 3 (.work/research.md §Heap-kind registry —
 // "$__eq/$__map_hash arms generated"): $__eq's/$__same_value_zero's content-
