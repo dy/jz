@@ -21946,3 +21946,28 @@ the reclaim point never arrives mid-call. Next: kernel-side counter on
 $__str_concat (bytes allocated during call #726) to confirm the quadratic
 signature, then fix at the right seam (parts+join in the emit accumulation
 path, or rope/builder support in the kernel string layer).
+
+## §String-concat REFUTED — divergent-execution hypothesis now primary (2026-08-18)
+
+Kernel-side byte counters on both $__str_concat variants (bump-extend fast
+path + allocCopyTail fallback; raw variants reachability-pruned from this
+kernel): during the entire fatal m86 call, **under 1 KB** of concat byte
+movement (+49 cheap calls/+259 B, +1 fallback call) against +3,344.8 MB
+heap growth. Whole-run concat re-copy total: 266 KB. Hypothesis refuted at
+noise level, not just non-dominant.
+
+**Reframe.** Two facts now contradict every "same work, amplified cost"
+story: (a) the isReassigned fix cut native cost 40× (251.8→6.37 ms) yet
+kernel growth barely moved (+3,368.5→+3,344.8 MB) — the kernel's cost was
+never the rescans; (b) 3.3 GB is not a workload-shaped number — it is
+simply the distance to the 4 GiB ceiling, and the call never returns.
+Combined with ~17 s spent inside a call that takes 6.37 ms natively
+(~2,600× time, not ~300× constant-factor), the primary hypothesis is now
+**divergent execution: a loop that terminates natively but runs away in
+the self-compiled kernel for this function's shape, allocating per
+iteration until OOM** — i.e. possibly a latent self-compile correctness
+bug, not a memory-model gap at all. Next probe: (1) $__alloc size-class
+histogram (log2 buckets) scoped to the fatal window — a runaway loop
+fingerprints as one dominant size class; (2) call-count counters on the
+major emit-path kernel functions during the fatal call vs a healthy call —
+the exploding counter names the loop.
