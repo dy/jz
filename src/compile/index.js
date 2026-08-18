@@ -48,7 +48,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
-import { mintRepresentationPlan, representationProgramHasBigint } from './representation-plan.js'
+import { mintRepresentationPlan, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -81,7 +81,7 @@ import {
   boolBoxIR,
   I32_MIN, I32_MAX, dollar,
   carrierF64,
-  unboxBigInt,
+  unboxBigInt, applyBigintRepresentationAction,
   freshId,
 } from '../ir.js'
 import plan from './plan/index.js'
@@ -1633,7 +1633,8 @@ function emitFunc(func, functionPlan, programFacts) {
     // result already narrows to i32 and needs no boxing here (the boundary
     // wrapper's own resultBool arm handles that crossing).
     const ambiguous = sig.ptrKind == null && sig.results[0] === 'f64' && hasAmbiguousBoolMerge(body)
-    const ir = ambiguous ? emitIdentitySafe(body) : emit(body)
+    let ir = ambiguous ? emitIdentitySafe(body) : emit(body)
+    ir = applyBigintRepresentationAction(ir, body, representationReturnAction(ctx, body))
     // dyn-closure-tables.js: an expression-bodied function whose return value
     // is unconditionally a closure literal (e.g. `mk = (n) => (x) => x + n`) —
     // a direct-return closure factory, no defaulted-param indirection needed.

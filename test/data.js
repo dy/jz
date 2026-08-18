@@ -104,6 +104,26 @@ test('RepresentationPlan: covered reassigned params use tagged typeof without ma
   }
 })
 
+test('RepresentationPlan: covered return edges materialize dynamic call results', () => {
+  const src = `
+    function choose(flag) {
+      if (flag) return 4n
+      return 2
+    }
+    export let numberKind = () => typeof choose(0)
+    export let bigintKind = () => typeof choose(1)
+    export let numberCheck = () => typeof choose(0) === 'bigint'
+    export let bigintCheck = () => typeof choose(1) === 'bigint'
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.numberKind(), 'number', `O${optimize || 0}: Number result stays a Number`)
+    is(e.bigintKind(), 'bigint', `O${optimize || 0}: BigInt result crosses tagged`)
+    is(e.numberCheck(), false, `O${optimize || 0}: comparison rejects Number result`)
+    is(e.bigintCheck(), true, `O${optimize || 0}: comparison accepts BigInt result`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —

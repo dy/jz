@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -70,7 +70,7 @@ import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinall
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
   REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
-  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction,
+  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationReturnAction,
 } from './representation-plan.js'
 
 const stringOps = (node) => {
@@ -1459,13 +1459,6 @@ const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?
  *  already be argIR(node)'s result (or ptrKind-appropriate) — this function
  *  itself never emits, only coerces, so it cannot re-decide emit vs
  *  emitIdentitySafe after the fact (see argIR's comment). */
-const applyRepresentationAction = (ir, node, action) => {
-  if (!CARRIER_BOX || valTypeOf(node) !== VAL.BIGINT) return ir
-  if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
-  if (action === REP_EDGE_UNBOX) return fromI64(unboxBigInt(asF64(ir)))
-  return ir
-}
-
 function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   if (param?.ptrKind != null) {
     // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
@@ -2239,7 +2232,7 @@ export function emitDecl(...inits) {
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
-    val = applyRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
+    val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -5327,7 +5320,9 @@ export const emitter = {
     // preserved (still exactly one of emit/emitIdentitySafe runs).
     const boxes = pk == null && rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)
     const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
-    const emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
+    const repAction = representationReturnAction(ctx, expr)
+    let emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
+    emitted = applyBigintRepresentationAction(emitted, expr, repAction)
     // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
     // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
     // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an
@@ -5352,7 +5347,8 @@ export const emitter = {
     // the dynamic/tagged result ABI a box is correct for.
     const ir = pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted, 'return'))
-      : (CARRIER_BOX && !ctx.func.exported && rt === 'f64' && typeof expr === 'string' && isProvenBoxedBigint(expr))
+      : (CARRIER_BOX && repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX &&
+         !ctx.func.exported && rt === 'f64' && typeof expr === 'string' && isProvenBoxedBigint(expr))
         ? (bigintStrict() ? bigintEraseErr('return', expr) : boxBigInt(asI64(emitted)))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
@@ -5405,7 +5401,7 @@ export const emitter = {
       _selfAccumConcat: selfAccum ? name : null,
       _arrayLiteralNeverEscapes: neverEscapes,
     }, () => emit(val))
-    ev = applyRepresentationAction(ev, val, representationBindingWriteAction(ctx, name, val))
+    ev = applyBigintRepresentationAction(ev, val, representationBindingWriteAction(ctx, name, val))
     return writeVar(name, ev, void_)
   },
 

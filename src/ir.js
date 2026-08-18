@@ -24,7 +24,7 @@ import { ERR } from '../err-codes.js'
 
 import { ctx, err, inc, PTR, LAYOUT, CARRIER_BOX } from './ctx.js'
 import { declareLocal, freshEmitId } from './compile/active-function.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, representationActiveMaterializedRep } from './compile/representation-plan.js'
+import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
@@ -493,6 +493,14 @@ export function unboxBigInt(f64expr) {
   return typed(['i64.load', ptrOffsetIR(f64expr, VAL.BIGINT)], 'i64')
 }
 
+/** Apply one frozen RepresentationPlan edge action to a definite BigInt. */
+export function applyBigintRepresentationAction(ir, node, action) {
+  if (!CARRIER_BOX || valTypeOf(node) !== VAL.BIGINT) return ir
+  if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
+  if (action === REP_EDGE_UNBOX) return fromI64(unboxBigInt(asF64(ir)))
+  return ir
+}
+
 /** Runtime twin of unboxBigInt for a value with no STATIC boxed-or-raw proof
  *  either way (CONSERVATIVE PAIRING — coordinator ruling, .work/context-
  *  sensitivity-survey.md 2026-08-09, closing the §15/§16 chain): tag-checks
@@ -676,7 +684,7 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  last — after the two proven, static, zero-runtime-cost predicates — so
  *  a name that's ALSO a boxed param never pays the extra tag check its own
  *  static proof already made unnecessary. */
-export const isPlanTaggedBigint = node => CARRIER_BOX && typeof node === 'string' &&
+export const isPlanTaggedBigint = node => CARRIER_BOX &&
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
 
 export function readI64(node, emitted) {
@@ -686,8 +694,9 @@ export function readI64(node, emitted) {
   // every other CARRIER_BOX consumer), never the strict-mode diagnostic
   // toggle, which only decides refuse-vs-box at the WRITE site and never
   // reaches this read at all when it fires (the compile already aborted).
-  if (CARRIER_BOX && typeof node === 'string' &&
-      (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node) || isPlanTaggedBigint(node)))
+  if (CARRIER_BOX &&
+      ((typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))) ||
+       isPlanTaggedBigint(node)))
     return unboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)

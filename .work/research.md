@@ -21122,3 +21122,61 @@ consumable. FeaturePlan remains blocked. Region-live build ×2 converges
 `0751749ceaf6c8f9b61c5c1e867d11a0fc8a1c92c747bd55efecc9fd7410a4c6`,
 14,777.3 KiB), kernel parity passes **33/33**, and kernel oracle passes
 **13/13 ×15**; only the disposable validation worktree enabled region hooks.
+
+---
+
+## §RepresentationPlan v2 Slice 3d — covered return/result normalization
+## (2026-08-18)
+
+Covered single-result f64 functions may now materialize one complete result ABI
+when every explicit return edge is independently normalizable. The body plan
+owns a result semantic fact and target derived from its actual return
+expressions; a legacy boundary fact is trusted only when it is the stronger,
+definite-BigInt proof. Exported/value-used/generic functions, multi-results,
+closed BOOL-bearing results, unresolved upstream producers, and expression
+joins that still need their own normalization remain legacy.
+
+Both return forms consume the same frozen action: statement returns in
+`emit.js` and expression-bodied functions in `compile/index.js`. Direct call
+results project the callee body's materialized target, allowing the already-
+gated `typeof` family and raw BigInt readers to consume the result without
+re-deriving it. The BOX/UNBOX IR helper moved to `ir.js` so both emission paths
+share one implementation.
+
+The fixed class is an internal function with separate Number and BigInt return
+statements. Before this slice, `choose(0)` and `choose(1)` both reported
+`"number"`, and `typeof choose(1)==='bigint'` was false. Native JS says
+`number/bigint` and `false/true`; native, WASI, and wasm-host O0/O2/O3 now
+agree. Focused O0 WAT boxes only the `return 4n` edge; the Number return stays
+plain f64, bare `typeof` calls `$__typeof`, and the comparison uses the tag-5
+check. The full watr graph remains WAT-byte-identical, and the 130-program
+corpus remains **130/130 byte-identical**.
+
+Three over-broad formulations were rejected during gating. Treating a node's
+planned target as already emitted made `maybe(x)` unbox its raw arithmetic
+result and return pointer garbage; result readiness now starts from the actual
+current/materialized producer. Trusting the old function-wide result label
+boxed watr `i64.parse`'s raw BigInt64Array result and broke int-literal,
+call-indirect, and SIMD rows; body return semantics remove that delta while an
+exact legacy BigInt proof still protects guarded nullable arithmetic. Finally,
+using current rather than planned producer facts for binding readiness boxed a
+postfix-`n++` temporary that an exported raw-i64 result expected; binding
+readiness stays conservatively deferred and is not conflated with result
+readiness. No function-name exception was introduced.
+
+Gates: default/O0/O3 each **3,513/3,507/0/6**; WASI
+**3,512/3,506/0/6**; wasm-target **2,772/2,766/0/6**; focused carrier/watr/
+inference/session **418/418**; selfhost correctness **21/21**; kernel parity
+**33/33**; dormant kernel oracle **13/13 ×3**; build ×2 converges
+(`dist/jz.wasm`
+`b664aa75c2271dd12ab92fca5f123a22eb7890cb29c2c980a4819d524a5e6b07`,
+16,966.8 KiB). Direct alternating candidate/control self-host A/B is
+**0.998×, 0.998×, 0.997×** geomean. Claims size remains **1.020×**; only the
+pre-existing stale-evidence failures remain.
+
+**Status:** covered return/result edges are consumable. Join, storage, closure,
+host, and remaining semantic-consumer families are not; FeaturePlan remains
+blocked. Region-live build ×2 converges (`dist/jz.wasm`
+`1c1b31f1ec7039af093da273b6d0be3c9daaa2e202f3c792959a4823570e6226`,
+14,783.5 KiB), kernel parity passes **33/33**, and kernel oracle passes
+**13/13 ×15**; the production source keeps region hooks dormant.
