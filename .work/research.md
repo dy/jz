@@ -21821,3 +21821,38 @@ blocked. Final-rebase region-live build ×2 converges (`dist/jz.wasm`
 `2bc980f8bfa6f559696c25a5197d3a41f9224f1324c9d540ab1cdbe055bfe2d5`,
 14,810.0 KiB), kernel parity passes **33/33**, and kernel oracle passes
 **13/13 ×15**; production remains region-dormant.
+
+## §Memo-lane fix LANDED — AFE loop closed, wall moves to final assembly (2026-08-18)
+
+Fix for the memo-retention root cause above, landed on main as `198ae328`
+(scratch-lane redirect) + `7b87a874` (reservation sizing bugfix). Design:
+`$__region_memo_get`/`$__region_memo_set` wrappers replace all 31 raw
+map-op call sites touching `$memo` (layout-kinds.js + module/core.js),
+redirecting the shared `$__heap` bump cursor to a dedicated
+`$__scratch_heap` lane for the duration of each memo operation — the memo's
+doubling-chain garbage never enters `[T, heap)`, so the compacted span
+excludes it by construction. Lane reserved once per real-compaction exit
+(past the 16 MiB skip gate), sized `heap + min(churn/2, 256 MiB)` + a
+prior-round final-cap hint, i64 arithmetic with a graceful pre-fix-behavior
+fallback at the 4 GiB ceiling. Header-epoch alternative ruled out on
+evidence (16-byte header fully packed, no spare bits without a layout
+migration). Mid-session bug found+fixed: `scratchBase =
+max(memory.size(), …)` forced a spurious `$__memgrow` doubling every round
+(2-4× peak regression on jessie/watr/jzify) — corrected to `heap+margin`,
+re-measured clean.
+
+**Gates** (on the fix tree; main-landing suite re-run green 3518/3512/0/6):
+dormant suite 3517/3511/0/6, self-build ×2 SHA `15e4b772…` converges;
+region-live self-build ×2 SHA `4764fa87…` converges, kernel-oracle 13/13
+×15 ×2 builds (30/30, zero flakes), kernel-parity 3/3, jessie/watr/jzify
+peaks 536.870912/1073.741824/2147.483648 MB — byte-exact to baseline.
+
+**GOAL GATE — jz×jz: NOT MET, but the AFE wall is CLOSED.** Instrumented
+verification: memo tax fully gone (per-round net growth now equals the
+root-cause phase's genuine-survivor figures exactly). The AFE loop
+completes **70/70 batches** (prior sessions: died at 6-54), floor
+**~738 MB** — a campaign first. The 4 GiB `unreachable` now fires ~30.7s
+in, INSIDE the previously-never-reached post-`compile()` territory (final
+assembly / watr-encode). That stage's 738 MB → 4 GiB climb is unmeasured;
+forensic in flight. The multi-MB wasm output makes SOME large allocation
+legitimate there — the question is what makes it ~3.5 GB.
