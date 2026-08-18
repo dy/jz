@@ -21475,3 +21475,204 @@ Final-rebase region-live build ×2 converges (`dist/jz.wasm`
 `ed95ab073a68ed7d98dbc60616b5f97845e29ecabcde9202dc72d3decb141d5b`,
 14,800.6 KiB), kernel parity passes **33/33**, and kernel oracle passes
 **13/13 ×15**; region hooks remain validation-only.
+
+## §CompileSession forensic — "FunctionPlan missing for m6_parse$parse" ROOT-
+## CAUSED AND FIXED: regionArmSetMap's own durable stability scan (9ef3f64c)
+## shares its $i local with the pre-existing rebuild loop below it; an early
+## scan break leaves $i mid-table, and the rebuild silently starts its
+## reinsertion past that many of the OLDEST published survivors. The residual
+## "~7-entry" shape from 9ef3f64c's own report is the SAME mechanism, not a
+## distinct __zomb_scan defect — closes with the same one-line fix. THE
+## MEMORY WALL claim from 9ef3f64c was itself a measurement artifact of this
+## bug (silently smaller working set dodged the real ceiling); with
+## correctness restored, jz×jz hits the SAME 4 GiB wall this campaign has
+## chased since fa9fcc1a — not a regression, a corrected false positive
+## (2026-08-17/18)
+
+Worktree `fplan-dig` off `9ef3f64c` (main tip), branch `fplan-2026-08-17`.
+Task: the three-point WAT-breadcrumb trace 9ef3f64c's own entry named as the
+next step for its own surfaced-but-unrooted defect.
+
+### 1. Repro — the correct entry is `scripts/self.js`, not `bench/jz/jz.js`
+
+9ef3f64c's own table cites "`bench/jz/jz.js`'s own 156/159-module... graph" —
+literally resolving `resolveModuleGraph('bench/jz/jz.js', {resolveNode:true})`
+pulls in `scripts/self.js` transitively PLUS `bench/jz/jz.js`'s own benchmark-
+harness code on top (161 modules here), which changed the AFE loop's exact
+publish order/timing enough to mask the defect behind the OLD `unreachable`
+OOM signature instead of reaching it. `resolveModuleGraph('scripts/self.js',
+{resolveNode:true})` (exactly `test/selfhost-source.js`'s own `SELF` entry —
+"the jz self-graph" in the literal sense: the kernel compiling its own
+compiler) reproduces deterministically: `FunctionPlan missing for
+m5_parse$parse`, ×2 identical. Module numbering (`m5_` here vs 9ef3f64c's
+`m6_`) is dependency-graph-order noise, not a different bug — both name
+`node_modules/subscript/parse.js` (the jessie parser's own foundation
+module: `parse, err, loc, next, skip, seek, expr`, exactly 7 exports).
+
+### 2. The three-point trace verdict — real entry LOSS at relocation, not a
+### publish-time or lookup-time identity split
+
+Temporary diagnostics in `function-plan.js`/`compile/index.js` (stripped
+before commit, never landed): `functionPlanOf`'s failure path reported
+`mapSize=456 expected=2213 sameNameKeys=0` — the map holds 20% of its real
+entries and NOT ONE stray key shares `m5_parse$parse`'s name under a
+different identity, ruling out hypothesis (b) (identity mismatch/copy) at
+the first probe. A fail-fast check at every AFE batch-exit (`ctx.plans.
+functions.size !== <running published count>`) pinpointed the FIRST
+divergence to `i=383` (the 12th 32-function batch): `size=348
+published=384`, `diffs=[m5_parse$parse:1->0, m5_parse$err:1->0,
+m5_parse$loc:1->0, m5_parse$next:1->0, m5_parse$skip:1->0,
+m5_parse$seek:1->0, m5_parse$expr:1->0]` — exactly `node_modules/subscript/
+parse.js`'s 7 exports, all published in an early batch (rounds 1-11 show
+ZERO divergence beforehand), all vanishing in ONE exit. Publish-side and
+lookup-side bits both check out sound; the loss is the RELOCATION step
+itself silently dropping the oldest surviving entries of a durable table.
+
+### 3. Mechanism — `regionArmSetMap`'s stability scan and its OWN rebuild
+### fallback share an un-reset `$i`
+
+`layout-kinds.js regionArmSetMap`'s durable branch (9ef3f64c's own addition):
+a read-only scan (`$i` 0→$cap) sets `$stable=0` and `br`s out EARLY the
+instant it finds an occupied slot holding a movable, ephemeral key — leaving
+`$i` frozen at that break's RAW SLOT index (table layout order), not 0 and
+not `$cap`. When `$stable` is false (or the table was never durable to begin
+with — off ≥ mark skips the whole branch), control falls through to the
+PRE-EXISTING `__coll_order`+reinsert rebuild a few lines below, which reuses
+this SAME `$i` as its OWN loop index into `$ord` (`__coll_order`'s
+insertion-ORDER gather) — instead of starting fresh at 0, it starts at
+whatever raw slot the scan broke on, silently skipping `$ord[0..$i-1]`: the
+OLDEST-inserted survivors, entirely unrelated to the raw slot the scan
+happened to stop at. `ctx.plans.functions` (durable, pointer-keyed by
+`func`, growing to ~1435 entries across jz×jz) hits this on every later AFE
+round once at least one newly-published key is still ephemeral relative to
+that round's own mark while the table itself has already gone durable.
+
+**Ablation, run BEFORE the fix was found, that both misdirected and then
+confirmed this** (forcing `$stable=0` unconditionally, i.e. running the
+scan but never taking its own fast path): loss on the jz×jz repro dropped
+from 36 to 7 entries but did NOT disappear — proving the loss lives in code
+the scan's OWN OUTCOME doesn't gate (the scan always runs for a durable
+table regardless of the forced override; only the DECISION to use its
+result changes). This directly falsifies treating the "~7-entry residual"
+named in 9ef3f64c's own report as a SEPARATE defect from the fast path
+itself — it is the identical `$i`-sharing bug, just reached via a different
+population of durable-table-with-unstable-key rounds.
+
+**Isolated, deterministic minimal repro** (`test/layout-kinds.js`, landed):
+two prerequisites had to be found and defeated, neither previously
+documented for this file's own testing style — (a) `__region_exit`'s own
+"adaptive exit-skip" (module/core.js, THE MEMORY ENDGAME lever) returns the
+root UNRELOCATED, without ever calling `__region_copy_rec`, whenever churn
+since mark is under 16 MiB — every existing hand-written snippet in this
+test file is far under that, so this arm's code never ran for them; (b) at
+the default optimize level watr inlines+specializes a small, statically-
+shaped `__region_mark`/`__region_exit` call pair down to bespoke code that
+never reaches the generic arm at all (confirmed directly: dumped WAT shows
+`region_mark`/`region_exit` CALL COUNTS of 0 at the default level, present
+only under `optimize:false`). A construction defeating both (a >16 MiB pad
+array plus `optimize:false`) with 40 durable + 5 late ephemeral pointer-
+typed entries (sized to stay under the table's own 75%-load grow threshold,
+so it stays genuinely durable) reproducibly rebuilds to **size 0 — every
+entry lost, not merely some** — against the reverted arm; the fixed arm
+returns the construction fully correct (45/45, sum 780, 5 ephemeral
+survivors) every time. This is the SAME mechanism as the jz×jz-scale loss
+(a raw-slot-index break past 0, reused as a stale $ord start), isolated to
+a single-exit, fully controlled unit test.
+
+### 4. Fix
+
+One line: `(local.set $i (i32.const 0))` unconditionally before the rebuild
+path in `regionArmSetMap` (`layout-kinds.js`) — correct whether the scan ran
+to completion (`$i == $cap`, harmless to reset), broke early (`$i` mid-
+table, the bug), or never ran at all (table ephemeral, `$i` untouched at its
+WASM-default 0 already). No `module/core.js`/`module/collection.js` change;
+the rebuild's own `__coll_order`+reinsert logic is otherwise untouched.
+
+Two new regression tests, `region-relocate[MAP]`/`[SET]`: durable Map/Set
+(40 durable keys, 5 late ephemeral pointer-typed keys) — the exact minimal
+repro from §3. Verified BOTH directions directly, not assumed: reverted arm
+→ both fail (`should be equal`, table rebuilds to size 0); fixed arm → both
+pass. `npm test` (post-fix, this session): **3512 total (20133 assertions) /
+3506 pass / 0 fail / 6 skip** (baseline 3509/3503/0/6 + this session's 2 new
+tests + 1 gained from a concurrent session's own landing).
+
+### 5. GATES
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships):
+- `npm test`: **3512 / 3506 pass / 0 fail / 6 skip** (20133 assertions).
+- Self-build ×2: SHA-256
+  `09b7d6fd7accc60b56d98074b5b26a1a19e37a6e27b75e6d16462ddb90225337` both
+  times — converges.
+- kernel-oracle: **13/13** (538 assertions). kernel-parity: **3/3** (33
+  assertions).
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, hand-flipped in
+the worktree only, never committed):
+- Self-build ×2 (independent rebuilds): SHA-256
+  `84c47c69abd16e9d1c9e21a4c5a9847e6dd03fccb483b592058e2cbd6306bb06` both
+  times — converges.
+- kernel-oracle: **13/13 × 15, on EACH of the two independently-rebuilt
+  binaries — 30/30 total reps, zero flakes.** This closes the SAME row
+  9ef3f64c's own session left `RETIRED`/12-of-13 (`array-elem bigint...`
+  region-live-only) — confirmed by name in the passing output on both
+  builds, not inferred; the retired row and this session's own defect share
+  the identical `$i`-reset mechanism (both are `ctx`-internal or program-
+  data pointer-keyed Set/Map state surviving a durable-table-plus-unstable-
+  key round), so no separate forensic session is needed for it.
+- kernel-parity: **3/3** (33 assertions), clean on both builds.
+- jessie/watr/jzify-entry (archived kernel-memory-curve recipe, ×1 each,
+  this session's own build): **all OK**, peaks **536.9 MB / 1073.7 MB /
+  2147.5 MB** — byte-identical to `e854a8a7`/9ef3f64c's own established
+  baseline. Unchanged, as expected (none of these three graphs run long
+  enough to reach the durable-table-with-unstable-key state this defect
+  needs).
+
+### 6. THE GOAL GATE — jz×jz (self-hosted, via `scripts/self.js`): NOT MET,
+### and 9ef3f64c's own "the memory wall is gone" finding is REVISED
+
+| config | outcome | peak | wall |
+|---|---|---:|---:|
+| region-live, this session's fix | **FAIL**, `unreachable` @ 4,294.967296 MB | 4,294.967296 MB | ~43.3 s |
+
+**Headline, stated plainly.** 9ef3f64c's own session reported region-live
+jz×jz no longer hitting `unreachable` at all — replaced by `FunctionPlan
+missing`, read as "the memory wall itself is gone." This session's own
+diagnostic evidence (§3: the SAME table silently discarding 80% of its
+entries by the end of the AFE loop, confirmed via a live entry-count check
+across the FULL 2213-function loop before the diagnostics were stripped)
+makes the more likely explanation the opposite of that reading: silently
+dropping the majority of `ctx.plans.functions`'s entries (and any other
+durable pointer-keyed Set/Map this same bug reached) made the self-hosted
+compiler's OWN live working set for jz×jz artificially smaller than correct
+execution requires — letting that session's build dodge the OOM ceiling it
+should have hit, not genuinely closing it. With this defect fixed (data
+integrity restored and directly verified — zero entry loss across the
+entire AFE loop before the diagnostics were removed), jz×jz reasserts the
+SAME `unreachable @ 4,294.967296 MB` signature every dormant run and every
+prior GOAL GATE session in this campaign has hit since `fa9fcc1a` — this is
+not a regression introduced here, it is this fix correctly removing a false
+positive. The real memory-ceiling wall (region-arena's six chained rounds
+still not bringing jz×jz's full self-compile under 4 GiB) remains exactly
+where every prior GOAL GATE session left it, now cleanly isolated with no
+correctness confound riding along. **Bench row: NOT RUN** — gated on "if
+under 4GiB," and it is not.
+
+### Disposition
+
+Landed on `main`: `layout-kinds.js` (the `$i`-reset fix) and
+`test/layout-kinds.js` (2 new regression tests) — commit `d58ef517`. This
+ledger entry lands separately. `REGION_HOOKS_ACTIVE` confirmed `false` in
+`scripts/self.js` at every commit (`git diff scripts/self.js` clean before
+each commit; only hand-flipped transiently in this worktree for the
+region-live gate runs above, never committed). No `module/core.js`,
+`module/collection.js`, `src/compile/function-plan.js`, or
+`src/compile/index.js` changes — the forensic diagnostics added to the
+latter two during this session were fully stripped before landing, verified
+via `git diff` showing zero delta on both files at commit time. Branch
+`fplan-2026-08-17` and worktree `fplan-dig` deleted after landing.
+
+Concrete next step for whoever picks up the still-open jz×jz memory-ceiling
+wall: this session changes nothing about that lever inventory — it remains
+`274b6bd8`/`627cf92a`/`c8246307`'s own regionArena-reclaim-depth-vs-
+`narrowSignatures`-fixpoint-cost tradeoff, now with one fewer confound
+(this correctness defect) sitting in front of it.
