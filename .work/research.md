@@ -20718,3 +20718,24 @@ exact slice also converges across two builds (`dist/jz.wasm`
 `ef9cdc2bb8319f3909e8a5d7e6f36593b8823accdff7ee83a9f43e7954c9fdac`,
 14,760.8 KiB) and passes kernel oracle **13/13 ×15**; the validation-only
 `REGION_HOOKS_ACTIVE=true` flip was not retained.
+
+---
+
+## §WASI `ternaryBoxedNames` triage — reserved command export, not carrier code
+## (2026-08-17)
+
+The sole WASI matrix failure was not an `emit.js` ternary defect. Under
+`host:'wasi'`, an export named `run` is the standard reserved command entry and
+has a void ABI; interop therefore correctly discards its result. Direct controls
+showed `undefined` for `run` returning a Number, String, or BigInt at O0/O2/O3,
+while the same ternary fixture exported as ordinary `f` returned the expected
+String `"5"` at every level. This matches `test/_matrix.js`'s existing WASI
+contract and explains why only this assertion failed: its local helper was also
+named `run`, obscuring the source program's reserved export name.
+
+The fixture now exports/calls `f` rather than skipping WASI, so its original
+non-nullish two-BigInt-arm carrier assertion remains live on that host. No
+compiler, ternary, RepresentationPlan, or runtime carrier code changed. Focused
+native/WASI/wasm-host pointer suites pass **35/35**; full default passes
+**3,501/3,495/0/6**, wasm-target **2,760/2,754/0/6**, and WASI is now green at
+**3,500/3,494/0/6**. The former known WASI failure is closed.

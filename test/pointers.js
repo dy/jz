@@ -301,16 +301,18 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
   // bounds`), not just a wrong value, so running this compiled+called
   // unconditionally (regardless of which flag state the test process itself
   // was started under) still catches a crash-class regression either way.
+  // A WASI export named `run` is the reserved void command entry; use a
+  // normal export so this carrier assertion remains meaningful on that leg.
   const src = `
     const hex16 = (v) => v.toString(16)
     const canon = (mag, neg) => hex16(neg ? -BigInt(mag) : BigInt(mag))
-    export let run = () => {
+    export let f = () => {
       let s = ''
       for (let i = 0; i < 4; i++) s = canon(2 + i, i % 2 === 0)
       return s
     }
   `
-  is(run(src, { optimize: { level: 3 } }).run(), '5')
+  is(run(src, { optimize: { level: 3 } }).f(), '5')
 })
 
 // audit-#14 finding (.work/carrier-representation-design.md §15), FIXED §16:
