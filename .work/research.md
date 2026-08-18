@@ -22163,3 +22163,31 @@ build ×2 converges (`dist/jz.wasm`
 `0a34c4334922e562c81b4307df9b49e16683b5cc399e48307f03bc76761ce386`,
 14,838.4 KiB), kernel parity passes **33/33**, and kernel oracle passes
 **13/13 ×15**; production keeps region hooks off.
+
+## §clonePlanValue fix verified; wall persists as CLONE VOLUME — cache-miss divergence hypothesis (2026-08-18)
+
+Goal gate on b3b00361 (clean clear-at-exit tagging): hash_set_local
+pathology ELIMINATED (1 event / 24 KB, was 64,112 / 3.1 GB). Fatal call
+(same function, now index #731) delta 3,019.5 MB (was ~3,300 — real
+~300 MB reduction, insufficient). New dominant: **64,691 UNTAGGED large
+allocations, 3,049.7 MB, avg ~49 KB ≈ 2000-entry Map tables** — clone
+volume, not growth waste; near-certainly $__obj_clone/__sclone_rec (10th
+tag pending). Post-emitFuncs stages still virgin; trap at the same
+ceiling, wall 34.4 s.
+
+**The contradiction that names the next target**: natively this same call
+allocates 5-14 MB TOTAL — the 64K×49KB clone volume does not happen
+natively. Kernel-only volume + the earlier fatal-call counter showing
+crkWalkSites at 269× healthy = a FREQUENCY divergence, not an allocator
+shape. Hypothesis: a pointer-keyed cache/memo on the closure-analysis
+path (closureBodyReturnKind family, whose per-invocation cost includes
+`new Map(refined)` copies of a thousands-of-entries capturedKinds env)
+misses in the kernel after the AFE loop's 70 rounds of region relocation
+— native never relocates, so it hits. Same defect family as the
+FunctionPlan pointer-keyed publish/lookup bug (fplan forensic, d58ef517
+era). Next: (1) 10th tag proves the untagged mass; (2) kernel-vs-native
+invocation counts for closureBodyReturnKind/crkWalkSites on m86's
+emission; (3) find the cache on that path, instrument hit/miss kernel vs
+native — a miss-storm confirms; fix = relocation-stable keying or overlay
+refinement (makeMapOverlay delta instead of full Map copy — O(facts) not
+O(env), worth doing regardless).
