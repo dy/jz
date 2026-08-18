@@ -9,8 +9,9 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { typed, asF64, asI32, asI64, carrierF64, carrierF64Narrow } from './ir.js'
-import { hasAmbiguousBoolMerge } from './kind.js'
+import { typed, asF64, asI32, asI64, applyBigintRepresentationAction, carrierF64, carrierF64Narrow } from './ir.js'
+import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
+import { VAL } from './reps.js'
 
 export { emitter } from './ctx.js'
 
@@ -39,6 +40,15 @@ export const emitIdentitySafe = (...a) => ctx.bridge.emitIdentitySafe(...a)
 // A). Formerly local to src/compile/emit-assign.js:42 (the same pattern
 // module/*.js already bridges emit/emitIdentitySafe through).
 export const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+
+/** Plan-driven BigInt twin for tagged ABI slots; BOOL handling stays exactly
+ * on storedValue's established path when no BigInt transform is selected. */
+export const storedValuePlanned = (node, action) => {
+  if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
+  const emitted = emit(node)
+  if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
+  return asF64(applyBigintRepresentationAction(emitted, node, action))
+}
 
 // Narrow-admission twin of storedValue — same single-emission/BOOL-identity
 // discipline, but routes the non-ambiguous fallback through carrierF64Narrow

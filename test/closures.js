@@ -346,6 +346,31 @@ test('method: dispatch under host:wasi', () => {
 // Closure ABI: MAX_CLOSURE_ARITY boundary, static arity errors, argc-aware rest
 // ============================================================================
 
+test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed BigInt distinctly', () => {
+  const src = `
+    const left = value => typeof value
+    const right = value => typeof value
+    const table = [left, right]
+    const isLeft = value => typeof value === 'bigint'
+    const isRight = value => typeof value === 'bigint'
+    const checks = [isLeft, isRight]
+    export let kind = (index, value) => table[index](value)
+    export let literalKind = index => table[index](5n)
+    export let boolKind = index => table[index](true)
+    export let literalCheck = index => checks[index](5n)
+    export let numberCheck = index => checks[index](2)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = runHost(src, { optimize })
+    is(e.kind(0, 2), 'number', `O${optimize || 0}: Number slot`)
+    is(e.kind(0, Number.MIN_VALUE), 'number', `O${optimize || 0}: subnormal Number stays Number`)
+    is(e.literalKind(1), 'bigint', `O${optimize || 0}: raw literal is boxed at call_indirect`)
+    is(e.boolKind(0), 'boolean', `O${optimize || 0}: BOOL atom path is preserved`)
+    is(e.literalCheck(1), true, `O${optimize || 0}: tag-only closure consumer accepts BigInt`)
+    is(e.numberCheck(0), false, `O${optimize || 0}: tag-only closure consumer rejects Number`)
+  }
+})
+
 test('arity err: closure with 9 fixed params', () => {
   throws(
     `export let f = () => {

@@ -11,9 +11,10 @@
  */
 
 import { typed, asF64, asI32, mkPtrIR, temp, tempI32, MAX_CLOSURE_ARITY, UNDEF_NAN } from '../src/ir.js'
-import { emit, storedValue } from '../src/bridge.js'
+import { emit, storedValue, storedValuePlanned } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
 import { findFreeVars } from '../src/compile/analyze.js'
+import { REP_EDGE_REJECT, representationClosureArgAction } from '../src/compile/representation-plan.js'
 // Round-6 prereq (a), closure return-kind pre-pass: closureBodyReturnKind is
 // the shared AST-only derivation (src/compile/flow-types.js — see its doc).
 // This module is its EMISSION-time caller: ctx.closure.make runs when the
@@ -393,7 +394,11 @@ export default (ctx) => {
     if (n > MAX_CLOSURE_ARITY) err(`Closure call with ${n} args exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
     const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
     const slots = []
-    for (let i = 0; i < n; i++) slots.push(args[i]?.type ? asF64(args[i]) : storedValue(args[i]))
+    for (let i = 0; i < n; i++) {
+      if (args[i]?.type) { slots.push(asF64(args[i])); continue }
+      const action = representationClosureArgAction(ctx, args[i])
+      slots.push(action === REP_EDGE_REJECT ? storedValue(args[i]) : storedValuePlanned(args[i], action))
+    }
     for (let i = n; i < W; i++) slots.push(UNDEF_LIT())
 
     return typed(['block', ['result', 'f64'],

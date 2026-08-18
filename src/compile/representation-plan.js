@@ -467,7 +467,8 @@ function deriveLocalProvenance(sig, body, localReps, program) {
 
 const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const generic = !!options.generic
-  const uncovered = generic || isExported(ctx, func) || options.valueUsed?.has(func.name)
+  const valueAbi = options.valueUsed?.has(func.name) === true
+  const uncovered = generic || isExported(ctx, func) || valueAbi
   const row = paramReps?.get(func.name)
   const params = (func.sig?.params || []).map((param, k) => {
     const rep = row?.get(k) || (generic ? options.localReps?.get(param.name) : null)
@@ -990,6 +991,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         !(semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0))
       hostBoxParams.add(k)
   }
+  const closureBoxParams = new Set()
+  const closureAbiIdentity = options.generic
+  if (closureAbiIdentity) for (const [name, k] of params) {
+    const sem = semanticNames.get(name) ?? semAll()
+    const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
+    if (ready && targetNames.get(name) === BOXED_BIGINT &&
+        !(semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0))
+      closureBoxParams.add(k)
+  }
 
   const materializedJoins = new WeakSet()
   const directResultNodes = new WeakSet(resultExprs.filter(Array.isArray))
@@ -1077,7 +1087,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,
     semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null,
-    materializedNames: null, hostBoxParams: null, materializedJoins: null, materializedResult: false,
+    materializedNames: null, hostBoxParams: null, closureBoxParams: null,
+    materializedJoins: null, materializedResult: false,
     resultSemantic: bodyResultSemantic, resultTarget: bodyResultTarget, edges,
   } : {
     kind: 'body', identity, boundary, trivial: false,
@@ -1087,6 +1098,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     nodeFacts,
     materializedNames,
     hostBoxParams,
+    closureBoxParams,
     materializedJoins,
     materializedResult,
     resultSemantic: bodyResultSemantic,
@@ -1215,11 +1227,17 @@ export function representationActiveMaterializedRep(ctx, name) {
   const record = handle && ctx.plans.representationData.get(handle)
   const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
   if (k >= 0) {
-    const hostReady = record.body?.hostBoxParams?.has(k)
+    const boundaryReady = record.body?.hostBoxParams?.has(k) || record.body?.closureBoxParams?.has(k)
     const ready = record.boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
-    return (record.boundary.covered === true && ready) || hostReady ? activeRep(ctx, name, true) : NO_BIGINT
+    return (record.boundary.covered === true && ready) || boundaryReady ? activeRep(ctx, name, true) : NO_BIGINT
   }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** Frozen action for one generic closure/call_indirect argument slot. */
+export function representationClosureArgAction(ctx, source) {
+  if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
+  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
 }
 
 /** True when JS interop must box an actual BigInt at this export slot. */
@@ -1273,9 +1291,10 @@ export function representationCallArgAction(ctx, node, params, index) {
   const targetName = targetBoundary.func?.sig?.params?.[index]?.name
   const bodyReady = targetName != null && targetRecord.body?.materializedNames?.has(targetName)
   const hostReady = targetRecord.body?.hostBoxParams?.has(index) === true
+  const closureReady = targetRecord.body?.closureBoxParams?.has(index) === true
   const ready = targetBoundary.params[index]?.stable === true || bodyReady
-  if ((!ready || targetBoundary.covered !== true) && !hostReady) return REP_EDGE_REJECT
-  const target = bodyReady || hostReady
+  if ((!ready || targetBoundary.covered !== true) && !hostReady && !closureReady) return REP_EDGE_REJECT
+  const target = bodyReady || hostReady || closureReady
     ? targetRecord.body.targetNames?.get(targetName) ?? ANY_BIGINT
     : targetBoundary.params[index]?.target ?? ANY_BIGINT
   return edgeAction(activeEmittedRep(ctx, node), target)

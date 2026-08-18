@@ -22111,3 +22111,55 @@ arrays) for a direct `for (const [k,v] of value) m.set(k, clone(v))` loop;
 instrumentation + goal gate. Frequency lever (why plans clone so often in
 the fixpoint) is a separate, complementary question — read-only narrow.js
 review queued after.
+---
+
+## §RepresentationPlan v2 Slice 4b — covered generic closure argument slots
+## (2026-08-18)
+
+Generic closure/call-indirect arguments now consume a frozen RAW→BOXED action
+at the uniform tagged slot. `storedValuePlanned` shares the established
+single-emission bridge: explicit BigInt actions replace only the BigInt arm;
+BOOL atoms and ambiguous BOOL merges retain their existing carrier path, and a
+REJECT action falls back to the legacy producer. Pre-emitted spread arrays stay
+on their storage-owned path.
+
+The body plan records closure-tagged parameters only for actual generic closure
+bodies with observed BigInt provenance. Direct/value-used top-level functions
+are deliberately not globally relabelled: their direct/raw and trampoline
+entries still need representation variants before one body target can describe
+both. This keeps plan claims narrower than runtime reach.
+
+The gated class is a genuine table-indexed closure call. Number and subnormal
+Number slots remain Numbers; a raw `5n` literal is boxed before call_indirect;
+BOOL remains `boolean`; and a `typeof x==='bigint'` closure body accepts the
+boxed literal and rejects Number at O0/O2/O3, native/WASI/wasm-host. Focused
+WAT removes the finite/nonzero/subnormal magnitude arm from plan-covered
+closure consumers. The full watr graph is byte-identical to the parent.
+
+Two broader compositions were rejected. Propagating every indirect BigInt
+position to every value-used function marked 124 self-compiler params tagged
+and made the wasm-hosted compiler emit five invalid modules (`Unknown local
+$<subnormal>`); target identity needs closure-table provenance, not a global
+position union. Propagating closure demand straight to an exported host param
+fixed ingress but exposed the still-legacy direct-closure result ABI: a guarded
+BigInt result returned its box pointer as raw i64. Host→closure composition is
+therefore deferred to the closure-result slice rather than patched by name.
+
+Final rebased gates: default/O0/O3 each **3,520/3,514/0/6**; WASI
+**3,519/3,513/0/6**; wasm-target **2,778/2,772/0/6**; focused closure/
+inference **247/247** and full focused matrix **549/549**; self-compile
+correctness **21/21**; kernel parity **33/33**; dormant kernel oracle
+**13/13 ×3**; build ×2 converges (`dist/jz.wasm`
+`68ec573e9d4e5d78ee425f67679a64cf68fa09a83759093dfb34e325d6a474d3`,
+17,025.3 KiB). Full watr and the 130-program corpus are byte-identical to the
+fresh parent. Direct alternating candidate/control self-compile A/B is
+**0.999×, 0.995×, 0.996×** geomean; claims size remains **1.020×** with only
+the independently stale evidence failures.
+
+**Status:** covered call_indirect argument edges are consumable; generic closure
+results, direct/value-used representation variants, captured storage, and
+host→closure composition are not. FeaturePlan remains blocked. Region-live
+build ×2 converges (`dist/jz.wasm`
+`0a34c4334922e562c81b4307df9b49e16683b5cc399e48307f03bc76761ce386`,
+14,838.4 KiB), kernel parity passes **33/33**, and kernel oracle passes
+**13/13 ×15**; production keeps region hooks off.
