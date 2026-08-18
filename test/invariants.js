@@ -304,3 +304,57 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
   // window discipline: after end, the fresh walk is back (no lingering memo)
   is(isReassigned(root, 'a'), true)
 })
+
+// ============================================================================
+// FunctionPlan clone — deep independence and dispatch fidelity
+// ============================================================================
+// clonePlanValue is the leaf of every FunctionPlan clone (once per localReps
+// entry per publish — the compiler's hottest record-copy path when compiling
+// itself). Its 2026-08-18 restructure (spread-clone + in-place overwrite,
+// direct Map/Set loops) must preserve the original semantics exactly: deep
+// clone of the closed plan vocabulary (Map/Set/Array/plain records/MapOverlay),
+// insertion order kept, no aliasing between plan and source.
+test('invariant: FunctionPlan clone is deep, order-preserving, dispatch-faithful', async () => {
+  const { createFunctionPlan } = await import('../src/compile/function-plan.js')
+  const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
+  const wideRep = { val: 3, ptrKind: null, ptrAux: undefined, schemaId: 7, intConst: 42, intCertain: true, notString: false, arrayElemSchema: { id: 1, elems: [1, 2] }, range: [0, 100], typedCtor: 'Float64Array', wasm: 'f64', nullable: false, bigintBoxed: false, mayBeUndefined: true, dictValueValType: new Set(['a']), inner: new Map([['k', { deep: [{ x: 1 }] }]]) }
+  const facts = {
+    block: false,
+    locals: new Map([['w', wideRep], ['n', 5], ['nil', null]]),
+    boxed: new Map(), cellTypes: new Set(['w']),
+    flatObjects: new Map([['f', { slots: ['a', 'b'] }]]),
+    sliceViews: new Set(), cseLoadBases: new Set([['base', 0]]),
+    distinctParams: null, leanHashLocals: new Set(), i32HashLocals: new Set(),
+    leanHashDomains: new Map(),
+    typedElem: makeMapOverlay(new Map([['t', 'Float64Array']]), new Map()),
+    typedLen: null,
+    localReps: new Map([['w', wideRep]]),
+  }
+  const { ctx } = await import('../src/ctx.js')
+  const plan = createFunctionPlan(ctx, facts)
+  const data = ctx.plans.functionData.get(plan)
+  // structure equal where it matters
+  is(data.locals.get('w').schemaId, 7)
+  is(data.locals.get('n'), 5)
+  is(data.locals.get('nil'), null)
+  is([...data.locals.keys()].join(','), 'w,n,nil', 'Map insertion order preserved')
+  is(Object.keys(data.locals.get('w')).join(','), Object.keys(wideRep).join(','), 'record key order preserved')
+  ok(data.cellTypes.has('w'))
+  ok(isMapOverlay(data.typedElem), 'MapOverlay stays an overlay, not flattened')
+  is(data.typedLen, null)
+  // deep independence: mutate every layer of the clone, source must not move
+  data.locals.get('w').schemaId = 999
+  data.locals.get('w').arrayElemSchema.elems.push(3)
+  data.locals.get('w').inner.get('k').deep[0].x = 999
+  data.locals.get('w').dictValueValType.add('poison')
+  data.flatObjects.get('f').slots.push('c')
+  is(wideRep.schemaId, 7)
+  is(wideRep.arrayElemSchema.elems.length, 2)
+  is(wideRep.inner.get('k').deep[0].x, 1)
+  is(wideRep.dictValueValType.size, 1)
+  is(facts.flatObjects.get('f').slots.length, 2)
+  // and the reverse: mutate the source, clone must not move
+  wideRep.range[0] = -1
+  is(data.locals.get('w').range[0], 0)
+  ctx.plans.functionData.delete(plan)
+})

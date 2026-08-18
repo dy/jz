@@ -1,22 +1,45 @@
 import { cloneMapView } from './map-overlay.js'
 
-/** Deep-copy the closed collection vocabulary used by FunctionPlan fields. */
+/** Deep-copy the closed collection vocabulary used by FunctionPlan fields.
+ *
+ *  Allocation shape matters here more than anywhere else in plan-land: this
+ *  is the leaf of every FunctionPlan clone, so it runs once per localReps
+ *  entry per publish — the compiler's hottest record-copy path when compiling
+ *  itself. The object branch spread-clones (`{...value}` → one right-sized
+ *  allocation preserving the source's shape) and then overwrites only
+ *  object-valued fields in place — writes to EXISTING keys never grow the
+ *  backing table. The pre-2026-08-18 form (`out={}` + per-key computed
+ *  writes, and `new Map([...value].map(...))` with its 2N intermediate
+ *  arrays) built every cloned ValueRep by incremental dictionary growth —
+ *  measured as the m86 goal-gate wall (.work/research.md §Creator NAMED). */
 function clonePlanValue(value) {
   if (value == null || typeof value !== 'object') return value
   if (value.mapOverlay === true) return cloneMapView(value)
-  if (value instanceof Map)
-    return new Map([...value].map(([key, item]) => [key, clonePlanValue(item)]))
-  if (value instanceof Set)
-    return new Set([...value].map(clonePlanValue))
+  if (value instanceof Map) {
+    const out = new Map()
+    for (const [key, item] of value) out.set(key, clonePlanValue(item))
+    return out
+  }
+  if (value instanceof Set) {
+    const out = new Set()
+    for (const item of value) out.add(clonePlanValue(item))
+    return out
+  }
   if (Array.isArray(value)) return value.map(clonePlanValue)
-  const out = {}
-  for (const key of Object.keys(value)) out[key] = clonePlanValue(value[key])
+  const out = { ...value }
+  for (const key in out) {
+    const item = out[key]
+    if (item != null && typeof item === 'object') out[key] = clonePlanValue(item)
+  }
   return out
 }
 
-const cloneRepMap = map => map
-  ? new Map([...map].map(([name, rep]) => [name, clonePlanValue(rep)]))
-  : null
+const cloneRepMap = map => {
+  if (!map) return null
+  const out = new Map()
+  for (const [name, rep] of map) out.set(name, clonePlanValue(rep))
+  return out
+}
 
 function clonePlanData(facts) {
   return {

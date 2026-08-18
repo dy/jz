@@ -329,7 +329,12 @@ const pruneUnusedThrowRuntime = (sec) => {
 // `ctx.func.localReps` (ValueRep records) — cloneRep's REP_SET_FIELDS list
 // (param-reps.js) covers its `dictValueValType`/`mapValueValType` Sets
 // alongside paramReps' `possibleKinds`.
-const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, cloneRep(v)])) : null
+const cloneRepMap = map => {
+  if (!map) return null
+  const out = new Map()
+  for (const [k, v] of map) out.set(k, cloneRep(v))
+  return out
+}
 
 /** Serialize a ValueRep entry into a plain object for inspect output.
  *  Omits undefined fields so consumers can JSON-stringify without noise.
