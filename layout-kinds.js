@@ -165,12 +165,12 @@ export function regionArmBigint() {
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
           (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $newOff (call $__alloc (i32.const 8)))
           (i64.store (local.get $newOff) (i64.load (local.get $off)))
           (local.set $out (call $__mkptr (i32.const ${PTR.BIGINT}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (return (local.get $out))))`
 }
 
@@ -221,7 +221,7 @@ export function regionArmString() {
           ;; STRING never forwards (module/string.js invariant) — raw offset is always canonical
           (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
           (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 4))))
           (if (i32.and (local.get $aux) (i32.const ${STR_HCACHE_BIT}))
@@ -234,7 +234,7 @@ export function regionArmString() {
               (i32.store (i32.sub (local.get $newOff) (i32.const 4)) (local.get $len))))
           (memory.copy (local.get $newOff) (local.get $off) (local.get $len))
           (local.set $out (call $__mkptr (i32.const ${PTR.STRING}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (return (local.get $out))))`
 }
 
@@ -314,7 +314,7 @@ export function regionArmArray({ hasDynProps }) {
   return `(if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (if (i32.lt_u (local.get $off) (local.get $mark))
@@ -329,7 +329,7 @@ export function regionArmArray({ hasDynProps }) {
               ;; recognizes "durable receiver, ephemeral payload" as the hazard needing a
               ;; write, except here the payload survives via relocation instead of dying).
               (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $off)))
-              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
               (block $dd (loop $dl
                 (br_if $dd (i32.ge_s (local.get $i) (local.get $len)))
                 (local.set $slot (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
@@ -347,7 +347,7 @@ export function regionArmArray({ hasDynProps }) {
           (local.set $newOff (call $__alloc_hdr (local.get $len) (local.get $len)))
           (local.set $out (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
           ;; memo BEFORE recursing into elements — cycles / diamond sharing terminate on revisit
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (block $ad (loop $al
             (br_if $ad (i32.ge_s (local.get $i) (local.get $len)))
             (local.set $slot (i32.add (local.get $newOff) (i32.shl (local.get $i) (i32.const 3))))
@@ -455,7 +455,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
   return `(if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.SET})) (i32.eq (local.get $t) (i32.const ${PTR.MAP})))
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $stride (select (i32.const ${MAP_ENTRY}) (i32.const ${SET_ENTRY}) (i32.eq (local.get $t) (i32.const ${PTR.MAP}))))
           (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -488,7 +488,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
               (if (local.get $stable)
                 (then
                   (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (local.get $off)))
-                  (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+                  (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
                   (local.set $i (i32.const 0))
                   (block $vd (loop $vl
                     (br_if $vd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -533,7 +533,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
           ;; dereferenced until after region_exit's closing memory.copy lands it for real.
           (local.set $outPhys (call $__mkptr (local.get $t) (i32.const 0) (local.get $newOff)))
           (local.set $out (call $__mkptr (local.get $t) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
           ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical,
           ;; PROVIDED $n is the real live count. Chained-region-round fix (.work/research.md §Region
@@ -682,7 +682,7 @@ export function regionArmObject({ hasDynProps }) {
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
           (local.set $aux (call $__ptr_aux (local.get $bits)))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $n (i32.const 0))
           (if (i32.ne (global.get $__schema_tbl) (i32.const 0))
@@ -695,7 +695,7 @@ export function regionArmObject({ hasDynProps }) {
               ;; ARRAY's durable branch (a durable object can still hold an ephemeral
               ;; slot value, e.g. a freshly-built child written into it this round).
               (local.set $out (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $aux) (local.get $off)))
-              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
               (block $od (loop $ol
                 (br_if $od (i32.ge_s (local.get $i) (local.get $n)))
                 (local.set $slot (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
@@ -711,7 +711,7 @@ export function regionArmObject({ hasDynProps }) {
           (local.set $newOff (call $__alloc_hdr (i32.const 0) (i32.add (local.get $n) (i32.eqz (local.get $n)))))
           (local.set $out (call $__mkptr (i32.const ${PTR.OBJECT}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
           ;; memo BEFORE recursing into slots — cycles / diamond sharing terminate on revisit
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (block $pd (loop $pl
             (br_if $pd (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.add (local.get $newOff) (i32.shl (local.get $i) (i32.const 3))))
@@ -776,9 +776,9 @@ export function regionArmTyped() {
                   ;; and recursing into __region_copy_rec on a bogus synthesized BUFFER
                   ;; box, corrupting state exactly like the HASH-durable case this audit
                   ;; found and fixed natively.
-                  (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+                  (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
                   (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (local.get $v))))
-                  (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $v))))
+                  (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $v))))
                   (local.set $oldRoot (i32.load (i32.add (local.get $off) (i32.const 8))))
                   (local.set $rootBox (call $__region_copy_rec
                     (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (local.get $oldRoot))
@@ -788,7 +788,7 @@ export function regionArmTyped() {
                     (i32.add (local.get $newRoot) (i32.sub (i32.load (i32.add (local.get $off) (i32.const 4))) (local.get $oldRoot))))
                   (i32.store (i32.add (local.get $off) (i32.const 8)) (local.get $newRoot))
                   (return (local.get $v))))
-              (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+              (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
               (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
               (local.set $oldRoot (i32.load (i32.add (local.get $off) (i32.const 8))))
               (local.set $rootBox (call $__region_copy_rec
@@ -802,18 +802,18 @@ export function regionArmTyped() {
               (i32.store (i32.add (local.get $newOff) (i32.const 8)) (local.get $newRoot))
               (i32.store (i32.add (local.get $newOff) (i32.const 12)) (i32.load (i32.add (local.get $off) (i32.const 12))))
               (local.set $out (call $__mkptr (i32.const ${PTR.TYPED}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
-              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
               (return (local.get $out)))
             (else
               ;; OWNED: leaf raw bytes, header byteLen at -8, no boxed children.
               (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
-              (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+              (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
               (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
               (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
               (local.set $newOff (call $__alloc_hdr_n (local.get $len) (local.get $len) (i32.const 1)))
               (memory.copy (local.get $newOff) (local.get $off) (local.get $len))
               (local.set $out (call $__mkptr (i32.const ${PTR.TYPED}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
-              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
               (return (local.get $out))))))`
 }
 
@@ -829,13 +829,13 @@ export function regionArmBuffer() {
         (then
           (local.set $off (call $__ptr_offset (local.get $bits)))
           (if (i32.lt_u (local.get $off) (local.get $mark)) (then (return (local.get $v))))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           (local.set $len (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (local.set $newOff (call $__alloc_hdr_n (local.get $len) (local.get $len) (i32.const 1)))
           (memory.copy (local.get $newOff) (local.get $off) (local.get $len))
           (local.set $out (call $__mkptr (i32.const ${PTR.BUFFER}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (return (local.get $out))))`
 }
 
@@ -878,7 +878,7 @@ export function regionArmClosure() {
           (local.set $aux (call $__ptr_aux (local.get $bits)))
           ;; zero-capture: no heap block, offset is the literal 0 sentinel — see doc above.
           (if (i32.eqz (local.get $off)) (then (return (local.get $v))))
-          (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+          (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
           (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
           ;; Side table absent is impossible once ANY real (non-zero-offset)
           ;; CLOSURE value reaches here — a program with zero closures never
@@ -899,7 +899,7 @@ export function regionArmClosure() {
               ;; itself, walk slots in place, mirroring ARRAY/OBJECT's own
               ;; durable branches.
               (local.set $out (call $__mkptr (i32.const ${PTR.CLOSURE}) (local.get $aux) (local.get $off)))
-              (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+              (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
               (block $cld (loop $cll
                 (br_if $cld (i32.ge_s (local.get $i) (local.get $n)))
                 (local.set $slot (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))
@@ -914,7 +914,7 @@ export function regionArmClosure() {
           (local.set $newOff (call $__alloc (i32.shl (local.get $n) (i32.const 3))))
           (local.set $out (call $__mkptr (i32.const ${PTR.CLOSURE}) (local.get $aux) (i32.sub (local.get $newOff) (local.get $delta))))
           ;; memo BEFORE recursing into slots — cycles / diamond sharing terminate on revisit
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           (block $ced (loop $cel
             (br_if $ced (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.add (local.get $newOff) (i32.shl (local.get $i) (i32.const 3))))

@@ -86,26 +86,47 @@ export default (ctx) => {
     // …)` hasn't run yet at THIS deps() call's own eval time (module/index.js
     // registers core before collection), so a plain array would eagerly bake
     // in `false` and permanently under-declare.
-    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n',
-      ...(ctx.scope.globals.has('__dyn_props') ? ['__ptr_offset', '__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
+    // '__memgrow'/'__ptr_offset' unconditional now — memo-lane fix
+    // (.work/research.md §Region arena — negative-reclaim root cause
+    // 476c88cd): __region_exit makes one direct __memgrow call of its own
+    // (reserving the memo's scratch lane) and one direct __ptr_offset call
+    // (reading the memo's own final cap to seed the NEXT call's reservation
+    // hint) on EVERY real-compaction exit, not just when __dyn_props exists
+    // — __ptr_offset used to be pulled in only via the dyn_props-gated
+    // branch below, which would have silently under-declared it for a build
+    // with no __dyn_props global anywhere.
+    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__ptr_offset',
+      ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
     // longer gated on __dyn_props — a bare PTR.HASH region-root value
     // (regionArmHash, layout-kinds.js) reaches this helper independently of
     // whether the array/object dynamic-property sidecar machinery exists at
     // all (module/collection.js's dict/JSON.parse machinery can mint a HASH
-    // with no __dyn_props global anywhere in the build). __map_get/__map_set/
-    // __is_nullish added for this function's OWN memo hardening (see its
-    // definition below).
-    __region_relocate_props: ['__ptr_offset', '__alloc_hdr_n', '__mkptr', '__region_copy_rec', '__map_get', '__map_set', '__is_nullish'],
+    // with no __dyn_props global anywhere in the build). __region_memo_get/
+    // __region_memo_set/__is_nullish added for this function's OWN memo
+    // hardening (see its definition below) — memo-lane fix (.work/research.md
+    // §Region arena — negative-reclaim root cause 476c88cd): every memo touch
+    // now goes through the scratch-redirecting wrappers, not raw __map_get/
+    // __map_set, so the memo's own doubling-chain growth never lands in
+    // [T, heap) and never gets swept into the compacted survivor span.
+    __region_relocate_props: ['__ptr_offset', '__alloc_hdr_n', '__mkptr', '__region_copy_rec', '__region_memo_get', '__region_memo_set', '__is_nullish'],
     // CLOSURE's env arm (layout-kinds.js regionArmClosure) — a boxed/mutable
     // capture's env slot holds a raw i32 pointer to an independently-heap-
     // allocated cell (module/function.js's `ctx.func.boxed`), not a NaN-boxed
     // f64, so it needs its OWN relocation helper (memoized by a synthetic
     // key so a cell shared by two closures relocates to ONE address, not
     // two) rather than routing through __region_copy_rec's f64 dispatch.
-    __region_relocate_cell: ['__map_get', '__map_set', '__is_nullish', '__region_copy_rec', '__alloc'],
+    __region_relocate_cell: ['__region_memo_get', '__region_memo_set', '__is_nullish', '__region_copy_rec', '__alloc'],
+    // Memo-lane wrappers (.work/research.md §Region arena — negative-reclaim
+    // root cause 476c88cd / memo-lane fix): every OTHER touch of $memo
+    // throughout __region_copy_rec's own arms (layout-kinds.js) and
+    // __region_relocate_props/__region_relocate_cell above routes through
+    // these two instead of raw __map_get/__map_set — see their own
+    // definitions below for why.
+    __region_memo_get: ['__map_get'],
+    __region_memo_set: ['__map_set'],
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
-      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order',
+      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__region_memo_get', '__region_memo_set', '__set_add', '__coll_order',
       '__len', '__region_relocate_props', '__region_relocate_cell',
       // SET/MAP rebuild fix (.work/research.md §Region arena, front-boundary
       // hunt): regionArmSetMap (layout-kinds.js) now hashes a relocated
@@ -532,6 +553,28 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
+    // Region-arena memo-lane (.work/research.md §Region arena — negative-
+    // reclaim root cause 476c88cd): __region_exit's own compaction memo (a
+    // throwaway, per-call dedup table — never part of `root`, never returned)
+    // used to grow inside the SAME [T, heap) span the round's real survivors
+    // are copied down from — and because __map_set's own grow path
+    // (genUpsert, module/collection.js) doubles-and-forward-marks without
+    // ever reclaiming the OLD generation, a memo that reached cap C had swept
+    // the ENTIRE doubling chain 8+16+...+C into the compacted output every
+    // single round (measured: 93.9% of all real-compaction growth, 98% on
+    // the AFE loop's own batches). $__scratch_base/$__scratch_heap give the
+    // memo its own disjoint bump lane (reset fresh each __region_exit call,
+    // reserved via one explicit __memgrow call so it never physically
+    // overlaps [T, heap)) — see __region_memo_get/__region_memo_set below.
+    // $__memo_cap_hint carries the PRIOR call's own final memo cap forward,
+    // sizing the NEXT reservation from measured evidence instead of growing
+    // it from scratch every call (three unused globals cost nothing on any
+    // build that never reaches region-arena code at all — same "declared
+    // unconditionally, seeded harmlessly to 0" convention $__schema_tbl/
+    // $__closure_env_len already use just below).
+    declGlobal('__scratch_base', 'i32', 0)
+    declGlobal('__scratch_heap', 'i32', 0)
+    declGlobal('__memo_cap_hint', 'i32', 64)
     // See the shared-memory __alloc above for why the unsigned-wraparound guard
     // (`next < ptr`) is needed here too: once memory.size() organically reaches the
     // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-compile
@@ -908,6 +951,82 @@ export default (ctx) => {
     // approaches churn and the ranges truly overlap) needs no second fixup pass:
     // every pointer already points where its target WILL be once the move lands.
 
+    // __region_memo_get/__region_memo_set — the ONLY two places $memo's
+    // backing bytes are ever touched, throughout every arm in layout-kinds.js
+    // and __region_relocate_props/__region_relocate_cell below (mechanical
+    // rename from raw __map_get/__map_set — .work/research.md §Region arena,
+    // memo-lane fix). Pure passthrough wrappers: $memo's own content,
+    // hashing, probing and growth semantics (genUpsert, module/collection.js)
+    // are completely untouched — the ONLY thing these change is WHERE a grow
+    // lands, by temporarily redirecting the shared $__heap bump cursor to
+    // $__scratch_heap (a disjoint lane __region_exit reserves once per call,
+    // below) for the duration of one get/set call, then restoring it.
+    //
+    // Invariant preserved: identical VALUE semantics to a plain __map_get/
+    // __map_set call — same lookups, same inserts, same grows, on the same
+    // logical Map — only the PHYSICAL address of the backing array differs.
+    // Every consumer of $memo (every arm's own memo-hit check, every
+    // durable-diamond self-map) reads that address back through the SAME
+    // $memo bits via __ptr_offset's own forwarding-chase, which resolves
+    // correctly regardless of which lane the current generation lives in.
+    //
+    // $__scratch_base == 0 means "no reservation is active this call" (either
+    // __region_exit hasn't reached the memo-creating branch yet, or its own
+    // reservation attempt found no safe room and left scratch disabled) —
+    // passthrough to the real heap exactly like before this fix, so this
+    // mechanism can only ever be as-correct-as-today in the worst case, never
+    // worse.
+    //
+    // Why the discarded bytes are provably dead at copy time: $memo is a
+    // local SSA value threaded through __region_copy_rec's own recursion —
+    // never part of $out (the relocated root, this function's only return
+    // value) and never written into any parent slot the walk heals (every
+    // arm writes the RELOCATED CHILD's value into its parent, never $memo
+    // itself). Nothing reachable after __region_exit returns can hold a
+    // reference into the memo's storage — true before this fix too (that is
+    // WHY $T was captured right after the memo's own tiny initial alloc: the
+    // code already assumed the memo was safe to leave behind. The bug was
+    // only that GROWTH escaped that boundary — see __region_exit below).
+    // Giving the memo a lane that is NEVER inside [T, heap) turns "provably
+    // unreachable" into "structurally excluded from the compacted span",
+    // by construction rather than by the two ranges just happening to differ.
+    //
+    // Nested/reentrant exits: __region_mark/__region_exit pairs NEST (an
+    // outer boundary's own mark can stay open on the call stack while many
+    // inner mark/exit pairs run inside it — confirmed directly, the frontier
+    // trace this fix is keyed to), but __region_exit itself is never
+    // RE-ENTERED while a prior __region_exit call is still on the stack: each
+    // call is invoked once, synchronously, by the compiler's own round-loop
+    // driver (never from inside __region_copy_rec's own recursion), and runs
+    // to completion before the next round's pair begins. $__scratch_base/
+    // $__scratch_heap are reset to a FRESH reservation at the top of every
+    // __region_exit call (below), so one call's lane is never read by a
+    // later one — safe under the same strict sequential-rounds property the
+    // mark/exit design has always relied on.
+    ctx.core.stdlib['__region_memo_get'] = `(func $__region_memo_get (param $memo i64) (param $key i64) (result i64)
+      (local $savedHeap i32) (local $result i64)
+      (if (result i64) (i32.eqz (global.get $__scratch_base))
+        (then (call $__map_get (local.get $memo) (local.get $key)))
+        (else
+          (local.set $savedHeap (global.get $__heap))
+          (global.set $__heap (global.get $__scratch_heap))
+          (local.set $result (call $__map_get (local.get $memo) (local.get $key)))
+          (global.set $__scratch_heap (global.get $__heap))
+          (global.set $__heap (local.get $savedHeap))
+          (local.get $result))))`
+
+    ctx.core.stdlib['__region_memo_set'] = `(func $__region_memo_set (param $memo i64) (param $key i64) (param $val i64) (result i64)
+      (local $savedHeap i32) (local $result i64)
+      (if (result i64) (i32.eqz (global.get $__scratch_base))
+        (then (call $__map_set (local.get $memo) (local.get $key) (local.get $val)))
+        (else
+          (local.set $savedHeap (global.get $__heap))
+          (global.set $__heap (global.get $__scratch_heap))
+          (local.set $result (call $__map_set (local.get $memo) (local.get $key) (local.get $val)))
+          (global.set $__scratch_heap (global.get $__heap))
+          (global.set $__heap (local.get $savedHeap))
+          (local.get $result))))`
+
     ctx.core.stdlib['__region_mark'] = `(func $__region_mark (result f64)
       (f64.convert_i32_u (global.get $__heap)))`
 
@@ -916,6 +1035,8 @@ export default (ctx) => {
     // read at PULL time.
     ctx.core.stdlib['__region_exit'] = () => `(func $__region_exit (param $markF f64) (param $rootF f64) (result f64)
       (local $mark i32) (local $T i32) (local $delta i32) (local $memo i64) (local $out f64) (local $size i32)
+      (local $churn i32) (local $survivorMargin i32) (local $memoCap i32)
+      (local $memSize64 i64) (local $wantBase64 i64) (local $scratchBase64 i64) (local $memoReserve64 i64) (local $neededCeil64 i64)
       ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
       (local.set $mark (i32.trunc_f64_u (local.get $markF)))
       ;; Adaptive exit-skip (.work/research.md §Region arena — THE MEMORY
@@ -988,6 +1109,73 @@ export default (ctx) => {
       ;; completeness, chain-round rebuild) all live inside.
       (if (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.const 16777216))
         (then (return (local.get $rootF))))
+      ;; Explicit reset, not reliance on the global's own 0 init value: a
+      ;; PRIOR call's successful reservation must never leak into this one
+      ;; if THIS call's own ceiling guard below declines to reserve — that
+      ;; stale address could by now sit inside the real heap's own grown
+      ;; span (call N's reservation, call N+1 skip-returns before reaching
+      ;; here at all so leaves it untouched, call N+2 reaches here but its
+      ;; own ceiling guard fails — without this line $__scratch_base would
+      ;; still read call N's address, no longer safely disjoint from
+      ;; anything).
+      (global.set $__scratch_base (i32.const 0))
+      ;; Memo scratch-lane reservation (.work/research.md §Region arena —
+      ;; negative-reclaim root cause 476c88cd / memo-lane fix): reserve a
+      ;; disjoint address range for the memo BEFORE creating it, so every
+      ;; __region_memo_get/__region_memo_set call below (transitively, via
+      ;; __region_copy_rec's own recursion) redirects there instead of
+      ;; growing inside [T, heap). Only runs past the 16 MiB skip-check
+      ;; above — small/skipped rounds pay nothing extra, matching this
+      ;; lever's own established discipline (fa9fcc1a's absolute-cap fix).
+      ;;
+      ;; scratchBase must sit far enough above the CURRENT heap position
+      ;; that this round's own genuine survivor growth (everything
+      ;; __region_copy_rec legitimately relocates) can never reach it before
+      ;; this call returns — survivorMargin bounds that by churn itself
+      ;; (half of \`heap - mark\`, capped at 256 MiB): every round measured in
+      ;; this campaign's own real-graph corpus put TRUE survivor growth (net
+      ;; growth minus memo waste) at 0-123 MB even on jz×jz's largest
+      ;; (early-plan) round — half of churn is already a wide multiple of
+      ;; that, and capping it keeps a huge-churn round (narrowSignatures,
+      ;; ~1.7 GB) from demanding an equally huge, pointless reservation.
+      ;; scratchBase is also never placed BELOW the current memory.size()
+      ;; ceiling — starting fresh, unused address space needs no margin at
+      ;; all, it simply doesn't exist yet until __memgrow commits it below.
+      (local.set $churn (i32.sub (global.get $__heap) (local.get $mark)))
+      (local.set $survivorMargin
+        (select (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456)
+          (i32.lt_u (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456))))
+      ;; i64 throughout: memory.size()*65536 and the final ceiling both reach
+      ;; into the low billions near the wasm32 4 GiB ceiling, well past what
+      ;; i32 arithmetic can hold without wrapping (the exact overflow class
+      ;; the frontier trace's own trap analysis, fa9fcc1a, found one
+      ;; instruction away from this same ceiling elsewhere in this file).
+      (local.set $memSize64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16)))
+      (local.set $wantBase64 (i64.add (i64.extend_i32_u (global.get $__heap)) (i64.extend_i32_u (local.get $survivorMargin))))
+      (local.set $scratchBase64
+        (select (local.get $memSize64) (local.get $wantBase64) (i64.gt_u (local.get $memSize64) (local.get $wantBase64))))
+      ;; memoReserve sized from the PRIOR call's own final cap (\`$__memo_cap_hint\`,
+      ;; updated at the end of this function below), 2x headroom for this
+      ;; round's own growth beyond that hint — under-sizing is never a
+      ;; correctness risk (see __region_memo_get/__region_memo_set: a memo
+      ;; that outgrows this reservation simply keeps growing via __memgrow's
+      ;; own normal extension, still safely inside the scratch lane, just
+      ;; with one extra real grow call), only a missed-optimization one.
+      (local.set $memoReserve64 (i64.mul (i64.extend_i32_u (i32.mul (global.get $__memo_cap_hint) (i32.const 2))) (i64.const ${MAP_ENTRY + lane})))
+      (local.set $neededCeil64 (i64.add (local.get $scratchBase64) (local.get $memoReserve64)))
+      ;; Ceiling guard: if reserving would need memory at or past the true
+      ;; wasm32 4 GiB limit, don't even try — __memgrow itself traps
+      ;; (unreachable) rather than failing gracefully past that point, and a
+      ;; compile already this close to the ceiling gets zero benefit from a
+      ;; scratch lane anyway. $__scratch_base stays 0 (its own init value) —
+      ;; __region_memo_get/__region_memo_set fall straight through to the
+      ;; unmodified, pre-fix behavior for this ONE call, never worse than
+      ;; before this fix landed.
+      (if (i64.lt_u (local.get $neededCeil64) (i64.const 4294967296))
+        (then
+          (call $__memgrow (i32.wrap_i64 (local.get $neededCeil64)))
+          (global.set $__scratch_base (i32.wrap_i64 (local.get $scratchBase64)))
+          (global.set $__scratch_heap (i32.wrap_i64 (local.get $scratchBase64)))))
       ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
       (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane})))))
@@ -1082,6 +1270,18 @@ export default (ctx) => {
                 (local.set $dpI (i32.add (local.get $dpI) (i32.const 1)))
                 (br $delD)))))))
       ` : ''}
+      ;; Carry this call's own final memo cap forward as the sizing hint for
+      ;; the NEXT __region_exit call's own reservation (memo-lane fix, see
+      ;; above) — the same header-cap read __ptr_offset's own forwarding-
+      ;; chase already proves correct (this reads the CURRENT, live
+      ;; generation regardless of how many times $memo grew, exactly the
+      ;; way every other consumer of a NaN-boxed pointer already resolves
+      ;; through the SAME chase). Deactivate the scratch lane for the next
+      ;; call to start clean (belt-and-suspenders alongside the explicit
+      ;; reset at this function's own top, above).
+      (local.set $memoCap (i32.load (i32.sub (call $__ptr_offset (local.get $memo)) (i32.const 4))))
+      (global.set $__memo_cap_hint (local.get $memoCap))
+      (global.set $__scratch_base (i32.const 0))
       (local.set $size (i32.sub (global.get $__heap) (local.get $T)))
       (memory.copy (local.get $mark) (local.get $T) (local.get $size))
       (global.set $__heap (i32.add (local.get $mark) (local.get $size)))
@@ -1159,7 +1359,7 @@ export default (ctx) => {
       ;; dyn-props sidecar, always 1:1 per-owner); an ARRAY/OBJECT/HASH dyn-props
       ;; sidecar reached from a durable container this function ITSELF also walks
       ;; recursively (nested dicts) needs the same short-circuit.
-      (local.set $hit (call $__map_get (local.get $memo) (local.get $bits)))
+      (local.set $hit (call $__region_memo_get (local.get $memo) (local.get $bits)))
       (if (i32.eqz (call $__is_nullish (local.get $hit))) (then (return (f64.reinterpret_i64 (local.get $hit)))))
       (local.set $off (call $__ptr_offset (local.get $bits)))
       (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))
@@ -1191,7 +1391,7 @@ export default (ctx) => {
           ;; (single reference, or no ephemeral child) reads back correct;
           ;; two-or-more references to the SAME durable dict corrupts the
           ;; ephemeral child deterministically at every opt level (0-3).
-          (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $propsF))))
+          (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $propsF))))
           (block $pd (loop $pl
             (br_if $pd (i32.ge_s (local.get $i) (local.get $cap)))
             (local.set $slot (i32.add (local.get $off) (i32.mul (local.get $i) (i32.const ${MAP_ENTRY}))))
@@ -1212,7 +1412,7 @@ export default (ctx) => {
       (local.set $newOff (call $__alloc_hdr_n (local.get $n) (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
       (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
       (local.set $out (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
-      (drop (call $__map_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
+      (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
       ;; Idempotency self-map (fixes a real double-relocation hazard, .work/
       ;; research.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
       ;; root cause): memo only ever mapped ORIGINAL bits -> final bits, so a
@@ -1226,7 +1426,7 @@ export default (ctx) => {
       ;; this function on EITHER the original bits OR its own prior output a safe
       ;; memo hit, regardless of caller or ordering — the general fix, not a
       ;; caller-side workaround.
-      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $out)) (i64.reinterpret_f64 (local.get $out))))
+      (drop (call $__region_memo_set (local.get $memo) (i64.reinterpret_f64 (local.get $out)) (i64.reinterpret_f64 (local.get $out))))
       (local.set $i (i32.const 0))
       (block $qd (loop $ql
         (br_if $qd (i32.ge_s (local.get $i) (local.get $cap)))
@@ -1280,12 +1480,12 @@ export default (ctx) => {
     ctx.core.stdlib['__region_relocate_cell'] = `(func $__region_relocate_cell (param $cellOff i32) (param $memo i64) (param $mark i32) (param $delta i32) (result i32)
       (local $key f64) (local $hit i64) (local $newOff i32) (local $logOff i32)
       (local.set $key (f64.convert_i32_s (local.get $cellOff)))
-      (local.set $hit (call $__map_get (local.get $memo) (i64.reinterpret_f64 (local.get $key))))
+      (local.set $hit (call $__region_memo_get (local.get $memo) (i64.reinterpret_f64 (local.get $key))))
       (if (i32.eqz (call $__is_nullish (local.get $hit)))
         (then (return (i32.trunc_f64_s (f64.reinterpret_i64 (local.get $hit))))))
       (if (i32.lt_u (local.get $cellOff) (local.get $mark))
         (then
-          (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $key))))
+          (drop (call $__region_memo_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (local.get $key))))
           (f64.store (local.get $cellOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
           (return (local.get $cellOff))))
       ;; Ephemeral — $newOff is a PHYSICAL staging address (current heap top,
@@ -1314,7 +1514,7 @@ export default (ctx) => {
       ;; runs THIS round, before the bulk copy lands.
       (local.set $newOff (call $__alloc (i32.const 8)))
       (local.set $logOff (i32.sub (local.get $newOff) (local.get $delta)))
-      (drop (call $__map_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $logOff)))))
+      (drop (call $__region_memo_set (local.get $memo) (i64.reinterpret_f64 (local.get $key)) (i64.reinterpret_f64 (f64.convert_i32_s (local.get $logOff)))))
       (f64.store (local.get $newOff) (call $__region_copy_rec (f64.load (local.get $cellOff)) (local.get $memo) (local.get $mark) (local.get $delta)))
       (local.get $logOff))`
 
