@@ -15,7 +15,7 @@ import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind, exprPresentValIn, exprMapGetShapedIn } from './kind.js'
 import { propValType, CMP_OPS } from './kind-traits.js'
-import { NO_VALUE, staticValue, intLiteralValue, intExprRange } from './static.js'
+import { NO_VALUE, staticValue, intLiteralValue, intExprRange, constIntExpr } from './static.js'
 import { typedElemAux } from '../layout.js'
 
 /** Byte-backed constructors whose `new X()` yields a PTR.TYPED / PTR.BUFFER value:
@@ -64,23 +64,10 @@ export function typedStaticLen(rhs) {
   return null
 }
 
-/** Fold an int-const expression: literals, module int consts (`const N = 3`), and
- *  +,-,*,<< over them — `new Int8Array(CIN*H*W)` sizes are static facts. */
-export function constIntExpr(e) {
-  const n = intLiteralValue(e)
-  if (n != null) return n
-  if (typeof e === 'string') {
-    const ci = ctx.func?.localReps?.get?.(e)?.intConst ?? ctx.scope?.constInts?.get?.(e)
-    return ci != null && isI32(ci) ? ci : null
-  }
-  if (!Array.isArray(e) || e.length !== 3) return null
-  const [op, x, y] = e
-  if (op !== '+' && op !== '-' && op !== '*' && op !== '<<') return null
-  const A = constIntExpr(x), B = constIntExpr(y)
-  if (A == null || B == null) return null
-  const r = op === '+' ? A + B : op === '-' ? A - B : op === '*' ? A * B : A * 2 ** B
-  return Number.isSafeInteger(r) && isI32(r) ? r : null
-}
+// constIntExpr relocated to static.js (audit: two diverging implementations —
+// this one skipped unary minus and bypassed static.js's repOf-through-
+// intLiteralValue chain). Consumers here (typedStaticLen above, typedIdxProven
+// below) import the shared static.js version — see its doc comment there.
 
 /** `recv[idx]` provably within [0, recv.length) for a typed receiver — the gate the
  *  checked `.typed:[]` forms and the identity folds share. Proof classes:

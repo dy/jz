@@ -35,14 +35,14 @@ import {
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly } from '../autoload.js'
-import { nonNegIntLiteral, intLiteralValue, intExprRange, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
+import { nonNegIntLiteral, intLiteralValue, intExprRange, constIntExpr, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
   smallConstForTripCount, isTerminator, scanBoundedLoops, inBoundsCharCodeAt,
-  exprType, constIntExpr, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
+  exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey, SLOT_OPS,
 } from '../type.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind, nullishArm } from '../kind.js'

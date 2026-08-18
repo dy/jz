@@ -21180,3 +21180,131 @@ blocked. Region-live build ×2 converges (`dist/jz.wasm`
 `1c1b31f1ec7039af093da273b6d0be3c9daaa2e202f3c792959a4823570e6226`,
 14,783.5 KiB), kernel parity passes **33/33**, and kernel oracle passes
 **13/13 ×15**; the production source keeps region hooks dormant.
+
+## §constIntExpr unification — audit's #1 "shippable today" item (2026-08-18)
+
+Two diverging `constIntExpr` implementations, both live on main: `static.js:45`
+(resolves names through `repOf` → `ctx.func.localReps`, recursively folds
+`u-`) and `type.js:69` (skipped `u-` entirely, `isI32`-clamped every
+intermediate/final value). Consumers split: `emit.js` + `module/typedarray.js`
+imported the `type.js` (weak) one; `flow-types.js`, `analyze.js`,
+`analyze-scans.js`, `plan/common.js`, `plan/inline.js`, `plan/loops.js`,
+`plan/literals.js` already imported the `static.js` (strong) one — the same
+compile-time constant could fold differently depending which call site asked.
+
+**Shape: delegation, not a shared parameterized core.** `type.js`'s own
+`constIntExpr` definition is deleted outright (not wrapped, not re-exported as
+a proxy) — every importer now sources the one definition directly from
+`static.js`: `type.js`'s two internal consumers (`typedStaticLen`,
+`typedIdxProven`) via `static.js`'s existing import line (it already imported
+4 other names from there), and the two external weak consumers (`emit.js`,
+`module/typedarray.js`) via a new direct `../static.js`/`../src/static.js`
+import, dropping `constIntExpr` off their `type.js` import instead. No
+proxy re-export needed or added — matches the file's own pre-existing style
+(every other cross-file name here is a direct import, never a re-export
+chain). Import graph: `type.js` already imported `static.js` one-way
+(`NO_VALUE, staticValue, intLiteralValue, intExprRange`); `static.js` imports
+nothing from `type.js` — confirmed via grep before touching anything, so
+adding `constIntExpr` to that existing line creates no new cycle and needed
+no leaf-module extraction (`node --check` + a live `import()` of `type.js`
+both confirm clean load).
+
+**narrow.js's fork is untouched, and is not the same fork.** Its
+`literalOrCallerParamInt` (~line 1311) is doc-commented as mirroring
+`constIntExpr`/`intLiteralValue` "shape-for-shape, swapping their `repOf(name)`
+arm for this caller-safe pair" — the fork exists because narrow.js's
+whole-program pass evaluates a *different* function's (caller's or callee's)
+params than whichever function is currently installed in `ctx.func`, where
+`repOf`/`ctx.func.localReps` would silently read the wrong function's facts.
+That's a cross-function safety concern, structurally distinct from the
+folding-strength gap this task closes, and it's already isolated (never calls
+either `constIntExpr`, hand-rolls its own literal/string/op walk) — nothing to
+collide with. `src/compile/narrow.js` was not opened for edits, only read for
+this rationale.
+
+**Per-consumer audit of the two weak sites — does upgrading them change
+output?**
+- `emit.js`'s `addLiteralFitsI32`/`subLiteralFitsI32` (i32-overflow soundness
+  gates for unchecked `X±k` emission) and its loop-counter start/end/delta
+  folding: switching to the strong version can only (a) resolve MORE cases —
+  `u-`-wrapped composites that previously returned `null` — or (b) return an
+  unclamped-but-arithmetically-correct `k` where the old version returned
+  `null` past i32 range. Traced (b) through both soundness gates by hand: an
+  out-of-i32-range `k` still correctly fails their own `<= 0x7fffffff` /
+  `>= -0x80000000` checks, so the soundness verdict is identical either way,
+  just reached via a different (still-correct) branch — not a load-bearing
+  weak site, plain delegation is correct.
+- `module/typedarray.js`'s bound/offset folding (~line 1660-1729, same
+  arithmetic-composition pattern, no soundness-critical asymmetry found):
+  same reasoning applies, no fork needed.
+- `type.js`'s own remaining consumers, `typedStaticLen` (return `n>=0 ? n :
+  null` already rejects negative folds regardless of whether `u-` newly
+  resolves) and `typedIdxProven`'s const-hull check (bounded by the already-
+  small `hull.max`, so an unclamped `constIntExpr` can't spuriously prove
+  in-bounds): unaffected.
+
+Neither weak consumer relies on non-folding at a phase where refinements are
+stale (the actual invariant narrow.js's fork protects) — confirmed by reading
+both sites in full before editing, not just their `constIntExpr` call lines.
+Plain delegation, no named mode, no parameterization.
+
+**Pre-existing note, left alone (out of this task's scope):** `static.js`'s
+own `constIntExpr`, already live as the "strong" implementation before this
+change, has a latent clamp bypass for a STRING node whose `repOf`/
+`ctx.scope.constInts` `intConst` is out-of-i32-range: `intLiteralValue`
+(tried first) correctly returns `null` (its own end clamp), but
+`constIntExpr`'s separate string fallback re-does the identical lookup
+*without* the clamp and returns the raw value. Not introduced by this
+change (it predates it, on every consumer static.js already fed), not
+exercised anywhere in the corpus (129/129 byte-identical below), and fixing
+`static.js`'s own logic is a different task than unifying the duplicate —
+flagged here for a future audit pass, not touched.
+
+**Gates — landed on main tip `24652b86` (three RepPlan slices + one
+region-arena ledger entry landed underneath this branch mid-flight; each
+rebase re-verified the diff untouched — every intervening commit only ever
+touched `emit.js`, and only in the unrelated bigint-boundary/representation-
+plan region, never the import block or `constIntExpr` call sites this touches):**
+- `npm test`: 3510 total (20131 assertions), 3504 pass, **0 fail**, 6 skip
+  (skip count unchanged across every rebase — pre-existing, environment-gated)
+- `npm run test:wasm`: 2759 total (12866 assertions), 2753 pass, **0 fail**,
+  6 skip — exact match to this repo's own most recent pre-existing baseline
+  tally (`2,759/2,753/0/6`, RepresentationPlan v2 Slice 2 entry above)
+- 130-corpus sweep (method: `.work/feature-reach-census.md`'s own convention —
+  `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`, base = live main
+  tree vs branch = this worktree): **128/128 `bench/*/*.js` + `examples/*/*.js`
+  + `raymarcher.simd.js` byte-identical**, re-confirmed fresh at every rebase
+  (initial tip, `430d7f44`, `9ef3f64c`, final `24652b86` — 0 diffs at any of
+  the four). `examples/jukebox` beat-0 (`FLOATBEATS[0]` rendered through
+  `moduleSrc`) separately compiled both sides: byte-identical, 129/129
+  comparable programs total. `jzify-entry.mjs` excluded per this repo's own
+  precedented convention (`.gitignore`d scratch file, absent from any
+  worktree's working tree by construction, not a compile difference)
+- self-build ×2: SHA-256 **converges** — `dist/jz.js`
+  `9e7746d9b5cef3c0ba7d89e5c7d7abed043a5d9f85907976be631736417d2bdd`,
+  `dist/jz.wasm`
+  `84f05ec1693a693b2270835e11927224a2ab4d80042a2270c079f008f11b4e80`,
+  `dist/interop.js`
+  `ef42c9da1ab79349a5ab69d55558082de4b3d228850b87a9a188b6722ef730e1`,
+  `assets/sprae.js`
+  `4c726c20f5a29f6a5532213f1b63d28ed995bf980e190b31a81d5445fb94d379`
+  — all four byte-identical across both build passes
+- `node test/kernel-parity.js`: 3/3 groups, **33/33** assertions,
+  byte-identical WAT at O0/O2/O3
+- `node test/kernel-oracle.js` **×3**: 13/13 groups, 538 assertions, every
+  run
+- `test:claims`: the scoped gate — size geomean jz/as **1.020×**, within the
+  1.05× par band (27/49 cases smaller) — **PASS**. The suite's other
+  assertions (strict wasm/JIT-rival leadership, reference-evidence
+  freshness) fail, but pre-existing and unrelated: `bench/results.json` is
+  pinned at commit `4e346183`, 332+ compiler-source commits stale — an
+  execution-speed competitive-benchmark dataset, nothing to do with
+  compile-time integer constant folding, and regenerating it (a full
+  bun/jsc/tinygo/rust-wasm/zig-wasm/c-wasm/AssemblyScript re-run) is well
+  outside this task's mandate
+
+**Files touched**: `src/type.js` (deleted the duplicate `constIntExpr`,
+added it to the existing `static.js` import line), `src/compile/emit.js`
+(moved `constIntExpr` from the `type.js` import to the `static.js` import),
+`module/typedarray.js` (split its `type.js` import, added a `constIntExpr`
+import from `static.js`). `src/compile/narrow.js` read-only, untouched.
