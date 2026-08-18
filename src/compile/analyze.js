@@ -86,14 +86,13 @@ import {
 
 export { findFreeVars, findMutations, boxedCaptures } from './analyze-scans.js'
 
-// Stage 2 slice 3a: a plain Map, NOT a WeakMap. Lifecycle is explicit — one
-// compile's bodies, cleared by resetBodyFactsCache at compile start — so weak
-// semantics bought nothing, and in the self-hosted kernel the WeakMap's
-// GC/arena interaction was the leading theory for the flaky JSON-walk
-// knife-edge (ledger 2026-07-21i): the arena-backed weak store rewound by a
-// warm-instance `_clear` mid-lifecycle made cache behavior timing-dependent.
-// Strong refs are bounded by program size and dropped at the next reset.
-// Session-owned (audit P1 stage 5) — getFactStore().bodyFacts, NOT a private
+// A plain Map, NOT a WeakMap. Lifecycle is explicit — one compile's bodies,
+// cleared by resetBodyFactsCache at compile start — so weak semantics buy
+// nothing, and in the self-hosted kernel a WeakMap's GC/arena interaction
+// makes cache behavior timing-dependent: the arena-backed weak store gets
+// rewound by a warm-instance `_clear` mid-lifecycle, which a plain Map
+// cannot experience. Strong refs are bounded by program size and dropped at
+// the next reset. Lives at getFactStore().bodyFacts, NOT a private
 // module-level Map; see src/session.js's factStore DEPS table.
 export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 
@@ -236,19 +235,11 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
  * divergence), so it can't tell a real missing-invalidation from a harmless
  * one. See .work/todo.md.
  *
- * Ownership (audit P1 next-slice, closed out audit-#11): callers no longer
- * call invalidateLocalsCache directly — it stays exported only because the
- * seam primitives below (reanalyzeBody / setFuncBody / invalidateBodies /
- * invalidateAllBodyFacts) are themselves implemented on top of it. The two
- * bespoke plan/literals.js call sites this comment used to name (scalarize-
- * FunctionTypedArrays' post-loop flush, scalarizeFunctionObjectLiterals' pre-
- * rewrite drop) both predated setFuncBody (32e4aa1d, before this seam
- * existed) and were never re-examined once it landed here; audit-#11 found
- * both now fully subsumed by setFuncBody's own invalidation of the node it
- * assigns — read-tested clean (full suite + JZ_DEBUG_INVARIANTS leg +
- * selfhost.js + kernel-parity, all green) — so they were deleted rather than
- * kept as ceremony. Every mutation of a function's AST now goes through
- * reanalyzeBody / setFuncBody / invalidateBodies / invalidateAllBodyFacts,
+ * Ownership: callers no longer call invalidateLocalsCache directly — it
+ * stays exported only because the seam primitives below (reanalyzeBody /
+ * setFuncBody / invalidateBodies / invalidateAllBodyFacts) are themselves
+ * implemented on top of it. Every mutation of a function's AST now goes
+ * through reanalyzeBody / setFuncBody / invalidateBodies / invalidateAllBodyFacts,
  * which fuse the mutation with its invalidation so there's no second call
  * left to forget. A narrower, targeted safety net catches what fusion can't:
  * a signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
@@ -1061,7 +1052,7 @@ function sigFingerprint(sig) {
  * exempt: a hoisted product `o = y*w` types f64 but is proven integer.
  * Monotonic (i32 → f64 only), bounded by locals count.
  *
- * Pass D (fixed 2026-08-02, .work/todo.md KNOWN GAP #1 sibling): Pass A/B's
+ * Pass D (.work/todo.md KNOWN GAP #1 sibling): Pass A/B's
  * `keepI32`/exprType checks are magnitude-blind BY DESIGN (a value merely
  * STORED i32 is safe regardless of magnitude ONLY WHEN every read re-applies
  * the same ToInt32 the write did — widen.js's own load-bearing perf
@@ -1159,8 +1150,8 @@ function widenLocalTypes(body, locals) {
   // escape gap. Passes A-C above all keep i32 storage via MAGNITUDE-BLIND
   // exprType checks (a value merely STORED i32 is safe regardless of
   // magnitude ONLY WHEN every read re-applies the same ToInt32 conversion
-  // the write did — the P0-2 ledger's own load-bearing perf tradeoff, kept
-  // exactly as-is here) — so an intCertain-but-unbounded (level 1) local
+  // the write did — a load-bearing perf tradeoff, kept exactly as-is here)
+  // — so an intCertain-but-unbounded (level 1) local
   // that grows past i32 range via a compound-assign/assign NEVER widens
   // through them, by design. That premise breaks the instant such a local
   // is ALSO read bare with no governing comparison anywhere (the loop-
@@ -1187,14 +1178,13 @@ export function invalidateLocalsCache(body) {
 }
 
 /**
- * Solver-owned bodyFacts mutation seam (audit P1 next-slice — see the DEPS
- * table in session.js). The 14 pre-slice call sites across narrow.js/
- * index.js/plan/literals.js/plan/index.js each independently paired a raw
- * invalidateLocalsCache(body) with a later read or write and TRUSTED the
- * author to keep the pairing intact — a dropped half is the "forgotten
- * invalidation ⇒ silent stale-types miscompile" class the DEPS table names.
- * These three functions collapse every such pairing into ONE call so there
- * is no second half left to forget:
+ * Solver-owned bodyFacts mutation seam (see the DEPS table in session.js).
+ * Call sites across narrow.js/index.js/plan/literals.js/plan/index.js each
+ * independently pair a raw invalidateLocalsCache(body) with a later read or
+ * write and TRUST the author to keep the pairing intact — a dropped half is
+ * the "forgotten invalidation ⇒ silent stale-types miscompile" class the
+ * DEPS table names. These three functions collapse every such pairing into
+ * ONE call so there is no second half left to forget:
  *
  *   reanalyzeBody(body, read?)  — the "mutate ambient state, then read THIS
  *     body's facts under the new state" pattern (hypothesis-probing param/
@@ -1322,14 +1312,13 @@ const mayBeUndefinedRhs = (rhs) =>
 /** True iff `name` appears in `body` ONLY as the receiver of an indexed read
  *  `name[k]` (the lean-dict idiom) — a bare reference, a `.`-target, or any
  *  other position disqualifies. ITERATIVE (explicit worklist) by necessity:
- *  the original nested self-recursive closure (`verify` capturing `name` +
- *  `body`) MISCOMPILED under the self-hosted kernel into non-termination —
- *  the `h[dk]=v` dict idiom sent the dist kernel leg red (bisected to
- *  83d6add5's analyze.js additions; a depth cap and a `seen` identity-guard
- *  both failed, so the divergence is in the kernel's closure-call ABI, below
- *  JS control flow — a worklist sidesteps the fragile construct entirely).
- *  The kernel two-level-capture-recursion miscompile is ledgered for its own
- *  dissection. Module-scope so no capture, no recursion. */
+ *  a nested self-recursive closure (`verify` capturing `name` + `body`)
+ *  miscompiles under the self-hosted kernel into non-termination — the
+ *  `h[dk]=v` dict idiom sends the dist kernel leg red; a depth cap and a
+ *  `seen` identity-guard both fail to fix it, because the divergence is in
+ *  the kernel's closure-call ABI, below JS control flow — a worklist
+ *  sidesteps the fragile construct entirely. Module-scope so no capture, no
+ *  recursion. */
 function dictWalkLean(body, name) {
   const stack = [body]
   let plainRead = false
@@ -1380,10 +1369,9 @@ const I32_DICT_BITWISE = new Set(['&', '|', '^', '<<', '>>', '>>>'])
 /** Count/histogram dict test: `name` used only as `name[k]`, every READ
  *  immediately bitwise-coerced and every WRITE a discarded statement (so the
  *  slot may keep only ToInt32 bits). ITERATIVE for the same reason as
- *  dictWalkLean — the original nested self-recursive `walk` (four captured
- *  params + mutated outer state) is the exact shape the self-hosted kernel
- *  miscompiled into non-termination (bisected culprit of the 83d6add5
- *  kernel-leg red). Module-scope, worklist of (node,parent,pos,grand). */
+ *  dictWalkLean — a nested self-recursive `walk` (four captured params +
+ *  mutated outer state) is the exact shape the self-hosted kernel miscompiles
+ *  into non-termination. Module-scope, worklist of (node,parent,pos,grand). */
 function dictWalkI32(body, name) {
   let reads = 0, writes = 0
   const stack = [[body, null, -1, null]]
@@ -1411,9 +1399,9 @@ function dictWalkI32(body, name) {
 /** Preallocation-hint domain for a computed-key dict `name`: the single array
  *  `dom` such that every `name[k] = …` uses a key `k = dom[i]` (a missed/wrong
  *  alias only costs a resize, never semantics). ITERATIVE for the same reason
- *  as dictWalkLean/dictWalkI32 — the original TWO nested self-recursive
- *  closures (`collect`, `scan`, both capturing outer state) are the kernel-
- *  fragile shape (83d6add5 leg red). Module-scope, two worklist passes. */
+ *  as dictWalkLean/dictWalkI32 — TWO nested self-recursive closures
+ *  (`collect`, `scan`, both capturing outer state) are the kernel-fragile
+ *  shape. Module-scope, two worklist passes. */
 function dictDomainOf(body, name) {
   // Pass 1: single-def `let/const x = value` map (clashing names dropped).
   const defs = new Map(), clashes = new Set()
@@ -1490,7 +1478,7 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // unresolved write — identical lattice to observeProgramSlots' global-half
 // dictValueTypes census.
 //
-// Observes THROUGH nested `=>` bodies (audit-#8 P0-2): a write captured in a
+// Observes THROUGH nested `=>` bodies: a write captured in a
 // callback — `[0].forEach(() => m.set('y', 'oops'))` — is a write to the SAME
 // lexical `name` binding as any top-level write, so leaving it unobserved
 // (the old blanket `if (op === '=>') return`) let a stale census kind survive
@@ -1546,7 +1534,7 @@ function dictValueTypeOf(body, name) {
 // the late whole-program {fresh:true} pass's concerns, program-facts.js).
 // Caller gates on decl vt === VAL.MAP (receiver already proven), so `name`
 // need not be re-checked here. Observes THROUGH nested `=>` bodies with the
-// SAME shadow-bail as dictValueTypeOf above (audit-#8 P0-2) — see that
+// SAME shadow-bail as dictValueTypeOf above — see that
 // function's doc comment for the soundness argument. Same product-lattice
 // Slice 7 union-join swap as dictValueTypeOf above — see its doc comment.
 function mapValueTypeOf(body, name) {
@@ -1760,7 +1748,7 @@ export function analyzeValTypes(body) {
         const merged = ctx.schema.resolve?.(a[1])
         const emptyLit = Array.isArray(a[2]) && a[2][0] === '{}' && a[2].length === 1
         const dict = emptyLit && ctx.types.dynWriteVars?.has(a[1]) && !merged?.length
-        // audit-#11 gap-1: bind a real (0-prop) schema for a truly EMPTY `{}`
+        // Bind a real (0-prop) schema for a truly EMPTY `{}`
         // decl — prepare/index.js's own decl-schema tracking (the props.length
         // guard right next to the non-empty-literal case this mirrors) only
         // ever bound a NON-empty literal's schema; module/core.js's
@@ -1778,8 +1766,8 @@ export function analyzeValTypes(body) {
         // flip a shared codegen branch in module/collection.js's
         // $__dyn_get_t_h — reopening the exact PRE-EXISTING, host-dependent
         // watr-fold divergence test/kernel-parity.js's "dict|2 + dict|3" note
-        // already documents (confirmed live: binding unconditionally, even
-        // via prepare, reproduced it; skipping the dict arm here does not).
+        // already documents: binding unconditionally, even via prepare,
+        // reproduces it; skipping the dict arm here does not.
         // `merged == null` (not just "no schema yet"): if prepare's own
         // assignment-schema tracking already bound (or poisoned) this name
         // from a LATER reassignment (`o = {x:1}`), that fact was decided with
@@ -1813,7 +1801,7 @@ export function analyzeValTypes(body) {
         setVal(a[1], vt)
         const declMayBeNullish = mayBeNullish(a[2])
         if (declMayBeNullish) updateRep(a[1], { nullable: true })
-        // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
+        // presence: 'maybe-undef' mirrors mayBeUndefined's
         // own boolean exactly (same condition, same site). 'present' is a
         // SEPARATE, narrower positive proof — non-nullish init (declMayBeNullish
         // already computed above for `nullable`) AND never reassigned anywhere
@@ -1832,8 +1820,8 @@ export function analyzeValTypes(body) {
         // delayline q16 chain: raw = lfo & 0x1ffff → tri → dq stays i32).
         //
         // This is the SAME predicate analyzeBody's own processDecl stamps
-        // EARLY, during its (possibly cache-skipped) body walk — audit-#12
-        // item 2. DBG_INVARIANTS asserts the redundancy claim that justifies
+        // EARLY, during its (possibly cache-skipped) body walk.
+        // DBG_INVARIANTS asserts the redundancy claim that justifies
         // leaving that early stamp as-is rather than threading ranges through
         // an explicit BodyFacts slice: whenever processDecl already stamped a
         // range for this name (cache miss ran it, ctx.func.localReps wasn't
@@ -1947,7 +1935,7 @@ export function analyzeValTypes(body) {
       }
       setVal(args[0], poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
-      // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
+      // presence: 'maybe-undef' mirrors mayBeUndefined's
       // boolean here too. No 'present' arm at a REASSIGN site — this write
       // itself makes writeCount(body, args[0], 0) ≥ 1 for the whole body, so
       // the decl site's never-reassigned precondition for 'present' is

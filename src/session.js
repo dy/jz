@@ -1,6 +1,6 @@
 /**
- * CompileSession begin — the ONE owner of per-compile lifecycle state (audit
- * P1, stage 4): ctx reset, every explicit-lifecycle cache clear, watr name-uid
+ * CompileSession begin — the ONE owner of per-compile lifecycle state: ctx
+ * reset, every explicit-lifecycle cache clear, watr name-uid
  * reset, error-source binding, warnings sink, and options normalization
  * (resolveOptimize → optFlags). Host (index.js setupCtx) and self-host kernel
  * (scripts/self.js setupSelf) both call THIS for the shared core, so the two
@@ -24,8 +24,8 @@ import { resetNameUids } from 'watr/optimize'
 export { getFactStore }
 
 /**
- * Session-only reset hooks (session survey audit-#13 slice a) — a NARROWER
- * sibling of ctx.js's RESET_HOOKS (registerResetHook), for state that must
+ * Session-only reset hooks — a NARROWER sibling of ctx.js's RESET_HOOKS
+ * (registerResetHook), for state that must
  * survive a raw `reset()` call (ctx.js's own seam, used directly by
  * test/types.js-style harnesses) but SHOULD clear when a real session begins.
  * index.js's `compileTarget` test-injection override is the one caller: it is
@@ -41,7 +41,7 @@ const SESSION_RESET_HOOKS = []
 export function registerSessionResetHook(fn) { SESSION_RESET_HOOKS.push(fn) }
 
 /**
- * TargetProfile (audit P1): the output target's compile-policy, named and frozen
+ * TargetProfile: the output target's compile-policy, named and frozen
  * per target, replacing scattered `ctx.transform.host === 'wasi'` string checks
  * (23 read sites across compile/emit/module before this — one string comparison,
  * 23 places that could drift). Fields are named for the POLICY they gate, not the
@@ -83,8 +83,8 @@ export function registerSessionResetHook(fn) { SESSION_RESET_HOOKS.push(fn) }
  *   functions the in-module scan can't see.
  * @property {boolean} noTailCall     emit ordinary `call` in tail position instead
  *   of `return_call` (src/ir.js tcoTailRewrite) — off for js/wasi (every JS engine
- *   and wasmtime/wasmer/deno already ship the tail-call proposal); on for 'native'
- *   (audit-#11): wasm2c has codegen bugs lowering `return_call` combined with
+ *   and wasmtime/wasmer/deno already ship the tail-call proposal); on for 'native':
+ *   wasm2c has codegen bugs lowering `return_call` combined with
  *   multi-value results (scripts/native/README.md's pipeline — wasm2c → clang —
  *   is the only consumer that hits this). `opts.noTailCall` (index.js) stays a
  *   separate, ADDITIVE explicit override on top of this — a caller targeting a
@@ -128,7 +128,7 @@ export function targetProfileFor(host) {
 }
 
 /**
- * Fact-store slices (audit P1, stage 5): program-facts.js / analyze.js /
+ * Fact-store slices: program-facts.js / analyze.js /
  * analyze-scans.js used to keep their walk/body/binding-use memos in private
  * module-level Maps/WeakMaps, each cleared by its own resetXCache() export
  * called individually from beginSession. Session-owned now — ONE object,
@@ -138,7 +138,7 @@ export function targetProfileFor(host) {
  * internally those now read/write the slice below via getFactStore() instead
  * of a private module-level store.
  *
- * DEPS (what invalidates each slice — declared per the audit's ask; full
+ * DEPS (what invalidates each slice; full
  * dependency-tracking machinery, e.g. auto-derived invalidation from a
  * declared read-set, is a later increment):
  *
@@ -165,8 +165,8 @@ export function targetProfileFor(host) {
  *   bodyFacts                    analyzeBody's per-function-body memo (locals,
  *                                valTypes, arrElemSchemas, …). Invalidated by:
  *                                (a) a fresh session (wholesale); (b) the
- *                                solver-owned mutation seam (audit P1
- *                                next-slice, src/compile/analyze.js, past
+ *                                solver-owned mutation seam (src/compile/
+ *                                analyze.js, past
  *                                invalidateLocalsCache) — reanalyzeBody(body,
  *                                read?) fuses "mutate ambient state, read
  *                                this body fresh" into one call;
@@ -177,15 +177,13 @@ export function targetProfileFor(host) {
  *                                phase-boundary bulk flush. The raw
  *                                invalidateLocalsCache(body) primitive still
  *                                exists (the four seam functions are built on
- *                                it) but has NO direct pass-author call site
- *                                left as of audit-#11 — the 2 bespoke
- *                                plan/literals.js survivors this note used to
- *                                cite both predated setFuncBody and turned
- *                                out fully subsumed by it once re-examined
- *                                (setFuncBody already invalidates the node it
- *                                assigns on every path either function takes);
- *                                deleted, not converted, after a clean full-
- *                                suite + JZ_DEBUG_INVARIANTS + selfhost.js run.
+ *                                it) but has NO direct pass-author call site:
+ *                                every caller goes through one of the four
+ *                                seam functions above, since setFuncBody
+ *                                already invalidates the node it assigns on
+ *                                every path either function takes, making a
+ *                                standalone invalidate-then-read pairing
+ *                                unnecessary.
  *                                A NEW pass reaches
  *                                for one of the four seam functions instead
  *                                of re-deriving its own invalidate-then-read
@@ -236,7 +234,7 @@ export function targetProfileFor(host) {
  *                                one compile's worth (see the doc at
  *                                nameMayBeUndefinedInBody, kind.js).
  *   mapGetShapedTrace            kind.js's nameMapGetShapedInBody structural
- *                                trace (audit-#12 item 1). Same DEPS as
+ *                                trace. Same DEPS as
  *                                mayBeUndefinedTrace — body-identity-keyed,
  *                                setFuncBody's fresh-reference guarantee
  *                                makes wholesale-only invalidation sound;
@@ -246,27 +244,27 @@ export function targetProfileFor(host) {
  *                                surface — see the doc at
  *                                nameMapGetShapedInBody, kind.js).
  *   presentValTrace               kind.js's namePresentValInBody structural
- *                                trace (audit-#12 item 1). Same DEPS as
+ *                                trace. Same DEPS as
  *                                mayBeUndefinedTrace/mapGetShapedTrace —
  *                                body-identity-keyed wholesale-only reset,
  *                                same self-hosted-fold ownership argument
  *                                (see the doc at namePresentValInBody,
  *                                kind.js).
  *
- * DESIGN NOTE (audit-#12 item 1, deeper ask — NOT attempted this pass):
+ * DESIGN NOTE (deeper refactor, not attempted here):
  * mayBeUndefinedTrace/mapGetShapedTrace/presentValTrace are three near-
  * identical hand-rolled recursive body walkers (same let/const/=-write scan,
  * same seen-set cycle guard, same WeakMap-of-Map memo shape), each solving a
- * narrower version of "what does this body ever assign to this name." The
- * audit's suggestion is to fold them into the BindingId solver proper (a
+ * narrower version of "what does this body ever assign to this name." A
+ * cleaner design would fold them into the BindingId solver proper (a
  * single indexed def-site table keyed by BindingId, with each of the three
  * predicates reading off it) rather than three parallel tree walks. That is
  * a real architectural consolidation — three call sites' worth of subtly
  * different poison/OR semantics (nameMayBeUndefinedInBody's monotonic
  * boolean-OR vs namePresentValInBody's poison-on-conflict vs
  * nameMapGetShapedInBody's boolean-OR again) to reconcile against one
- * solver's output shape — and is left as a follow-on, not this bundle's
- * scope (session-ownership hygiene only).
+ * solver's output shape — left as a follow-on, out of scope for
+ * session-ownership hygiene alone.
  *
  * ASSERT (a slice reset clears its dependents): programFacts's three
  * sub-caches share ONE `gen` counter and are always recreated together —
@@ -284,9 +282,8 @@ export function targetProfileFor(host) {
  */
 
 /**
- * CompileSession (architecture item 11 / audit-B finding 5,
- * .work/compile-session-design.md §1 — Slice A, documentation only, no
- * shape change). `ctx` (src/ctx.js) already IS this record: a single
+ * CompileSession (see .work/compile-session-design.md §1 — documentation
+ * only, no shape change). `ctx` (src/ctx.js) already IS this record: a single
  * object whose 20 named top-level subtrees this typedef enumerates,
  * constructed fresh by `reset()` above on every `beginSession()` call.
  * Naming it here — instead of only in ctx.js's own header — matters

@@ -741,9 +741,10 @@ export default (ctx) => {
     // that would ever unbox it (see carrierF64Narrow's own doc comment,
     // src/ir.js, and emit-assign.js's `arrProvenBigintElems` — the parallel
     // fix for a later `arr[i] = bigint` write into a proven-bigint-element
-    // array; this is the SAME reasoning at construction time). Found live:
-    // `let a = [4611686018427387903n]; return a[0]` boxed the literal on
-    // construction, corrupted by the very next bare read (no write at all).
+    // array; this is the SAME reasoning at construction time). Skipping this
+    // narrow would box the literal at construction and corrupt on the very
+    // next bare read even with no write involved, e.g.
+    // `let a = [4611686018427387903n]; return a[0]`.
     // ctx.func._arrayLiteralNeverEscapes (emit.js '=' handler / emitDecl): a
     // compiler-synthesized decl-destructure temp — narrow unconditionally
     // regardless of per-element uniformity, since NO element of THIS array is
@@ -944,11 +945,11 @@ export default (ctx) => {
           ['then', dynLoad(objExpr, ['local.get', `$${keyTmp}`])],
           // Non-string key: an ATOM box (null/undefined/false/true — hi-word
           // 0x7FF80001..5, aux 1..5 under the zero ATOM tag) takes ToPropertyKey:
-          // stringify → dyn read. The old two-way arm trunc_sat'd the box to
-          // index 0, so `prec[undefined]` READ SLOT 0 of whatever the receiver
-          // was — the wrong-hit that made subscript's isStmt(prec[hole]) truthy
-          // in the kernel (the literal-key shorthand method "Unclosed {" family,
-          // ledger 2026-07-22). EVERYTHING ELSE — real numbers AND canonical
+          // stringify → dyn read. A two-way arm that instead trunc_sat's the box
+          // straight to index 0 makes `prec[undefined]` READ SLOT 0 of whatever
+          // the receiver is — the wrong-hit that made subscript's
+          // isStmt(prec[hole]) truthy in the kernel, breaking the literal-key
+          // shorthand method "Unclosed {" family. EVERYTHING ELSE — real numbers AND canonical
           // arithmetic NaN (hi 0x7FF80000, aux 0) — keeps the documented
           // i32-truncating index contract (`a[NaN]` → a[0], a[1.5] → a[1];
           // pinned in test/array-methods.js "array index contract").
@@ -1191,8 +1192,8 @@ export default (ctx) => {
     // notString refinements (from `if (typeof x === 'string') return ...`) overlay via lookup.
     const notString = typeof arr === 'string' && lookupNotString(arr)
     // Cross-call-site CLASS proof (reps.js recvArrTyped, narrow.js
-    // hardParamRecvArrTyped — the named follow-up to the numeric-key unknown-
-    // receiver soundness fix, 2026-07-31): every live call site passes ARRAY
+    // hardParamRecvArrTyped — extends the numeric-key unknown-receiver
+    // soundness proof below): every live call site passes ARRAY
     // OR TYPED at this position — never necessarily the SAME one (that's `vt`,
     // already handled above), but always one of the two `$__typed_idx` already
     // dispatches on internally. OBJECT/HASH/STRING/etc are EXCLUDED by the
@@ -1245,10 +1246,10 @@ export default (ctx) => {
     // OBJECT/HASH receiver with a numeric-looking key (`o={}; o['1']=9;
     // o[n]` for a proven-NUMBER local `n`) must ToPropertyKey-probe dyn-props
     // exactly like the runtime-dispatched arm above, or the read silently
-    // returns undefined for a value that IS present under the stringified key
-    // (audit #5 finding: routing every proven-number key straight to
-    // __typed_idx read raw __len bounds — 0 for a non-array box — instead of
-    // the dyn-props sidecar). ARRAY/TYPED still take the lean typed-array
+    // returns undefined for a value that IS present under the stringified key:
+    // routing every proven-number key straight to __typed_idx reads raw __len
+    // bounds — 0 for a non-array box — instead of the dyn-props sidecar.
+    // ARRAY/TYPED still take the lean typed-array
     // read with NO runtime dispatch beyond this one pointer-kind tag test —
     // no __is_str_key/__to_str call, since the key is already proven
     // non-string. `keyTmp` holds the key's f64 form ONCE so both the
@@ -1602,11 +1603,10 @@ export default (ctx) => {
 
   // .splice(start) | .splice(start, deleteCount) → remove range, return removed as new array.
   // No-insert-args overload — a SEPARATE inline-IR emitter from the __arr_splice stdlib
-  // function below (which only handles the WITH-inserts overload). Found in the course of
-  // this fix to have had NO durable header-length log at all (a narrower, separate gap
-  // from the per-element one the heal-length session's own fix didn't reach, since it's a
-  // different code path): durableArrSnapNode below closes both at once (header len/cap AND
-  // element data, one call).
+  // function below (which only handles the WITH-inserts overload), so it needs its own
+  // durable header-length log rather than inheriting one from that path:
+  // durableArrSnapNode below closes both at once (header len/cap AND element data,
+  // one call).
   ctx.core.emit['.splice'] = (arr, start, deleteCount) => {
     if (needsDurableFwdLog()) inc('__durable_arr_snap')  // explicit edge — see durableArrSnapIR's comment
     const recv = hoistArrayValue(arr)
@@ -2417,7 +2417,7 @@ export default (ctx) => {
   // fixed together: (1) asI32Sat, not asI32 — an Infinity/huge index must saturate to
   // INT32_MAX so it reads as "positive and past the end" below, not asI32's wrap-to -1
   // (silently treated as a valid negative index, resolving to the LAST element instead
-  // of undefined — confirmed live, `[1,2,3].at(Infinity)` returned 3). (2) the upper-bound
+  // of undefined — e.g. `[1,2,3].at(Infinity)` would return 3). (2) the upper-bound
   // check itself was MISSING entirely (no `t>=len` guard at all) — even a plain in-range
   // finite OOB index like `.at(10)` on a 3-element array read raw adjacent heap memory
   // instead of returning undefined; with saturation alone (no bound check) `.at(Infinity)`
@@ -2467,8 +2467,8 @@ export default (ctx) => {
     const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
     // ToIntegerOrInfinity position args (23.1.3.28 step 3/5) — asI32Sat, not asI32: an
     // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), not asI32's
-    // ToInt32-WRAP fallback — confirmed live, `[1,2,3,4,5].slice(NaN, Infinity)` dropped
-    // the last element (Infinity wrapped to -1, read downstream as "one before the end").
+    // ToInt32-WRAP fallback — with asI32's wrap, `[1,2,3,4,5].slice(NaN, Infinity)` would
+    // drop the last element (Infinity wraps to -1, read downstream as "one before the end").
     const rawStart = start == null ? ['i32.const', 0] : asI32Sat(emit(start))
     const rawEnd = end == null ? ['local.get', `$${len}`] : asI32Sat(emit(end))
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })

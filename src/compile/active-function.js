@@ -102,24 +102,22 @@ export function declareLocal(ctx, name, type) {
 
 /** Debug/test predicate for the post-compile inactive session record.
  *
- *  Audit P3: the old check asserted only identity/body/module-scope/locals-
- *  shape/empty-stack — narrower than the state classes a "record fully
- *  restored" claim implies. Strengthened to assert each class by name:
- *  overlays (localValTypesOverlay/localTypedElemsOverlay — flow-state.js's
- *  scoped fields), refinements, prediction state (p1Predicted), try/finally
- *  state (inTry/finallyStack), emission flags (repsFrozen/boxedResult/
+ *  Asserts every constructor field except `uniq` by name: overlays
+ *  (localValTypesOverlay/localTypedElemsOverlay — flow-state.js's scoped
+ *  fields), refinements, prediction state (p1Predicted), try/finally state
+ *  (inTry/finallyStack), emission flags (repsFrozen/boxedResult/
  *  mixedAtomReturn plus the expression-dispatch scopes _expect/
- *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen facts now
- *  owned directly by the record. The predicate now covers every constructor
- *  field except `uniq`, so adding state to ActiveFunction requires deciding
- *  and pinning its inactive value here rather than silently widening the gap.
+ *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen facts owned
+ *  directly by the record. Adding state to ActiveFunction requires deciding
+ *  and pinning its inactive value here rather than silently widening the gap
+ *  between this predicate and a true "record fully restored" claim.
  *
  *  `uniq` is deliberately NOT checked against 0: it's a shared synthetic-name
  *  counter, and some post-analysis passes (boundary-wrapper synthesis) mint
  *  names off the session frame's own counter after every real function has
  *  restored it — a real, intentional session-frame write, not a leak (unlike
  *  the fields checked below, which have no legitimate post-compile use at
- *  all). Confirmed empirically: `xs[0]` alone leaves it at 2. */
+ *  all). */
 export function isInactiveFunction(ctx) {
   const frame = ctx.func
   const emptyMap = value => value instanceof Map && value.size === 0

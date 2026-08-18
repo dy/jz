@@ -1,6 +1,5 @@
 /**
- * Phase-view facades (session survey audit-#13 Stage 4, slice (c) —
- * COORDINATOR RULING 2026-08-09, .work/session-survey.md). Plain, read-only
+ * Phase-view facades (see .work/session-survey.md). Plain, read-only
  * destructured views over the subtrees ctx.js's own header table (lines
  * 34-48) and the survey's §2 already document as phase-disciplined:
  * `features`, `abi`, `bridge`, `memory`, `linkDemand` (upgraded to

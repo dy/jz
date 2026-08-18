@@ -434,14 +434,13 @@ export function inferValType(expr, callerValTypes) {
 // Every `infer*(expr, cx)` below that participates in narrow.js's
 // runArrElemFixpoint (inferArrElemSchema/Set/ValType, inferTypedCtor, and
 // narrow.js's own local inferTypedLen) takes ONE named context object rather
-// than a positional tail. History: that tail used to be positional
-// (`inferFn(arg, elems, paramFacts, callerSids, callerSchemaIds)`), and
-// overloading position 4 for inferArrElemSchema's new schemaId channel
-// silently broke inferTypedCtor's own position-4 `callerSids` wiring —
-// regressing test/provenance-inference.js's paramViaField (commit da040a5a).
-// A shared positional dispatch signature has per-consumer contracts that look
-// interchangeable but aren't; named fields make each consumer's dependency
-// explicit and immune to a neighbor's field getting added.
+// than a positional tail: a shared positional dispatch signature
+// (`inferFn(arg, elems, paramFacts, callerSids, callerSchemaIds)`) has
+// per-consumer contracts that look interchangeable but aren't — overloading
+// one position for a new channel in one consumer can silently break a
+// neighbor's use of that same position (see test/provenance-inference.js's
+// paramViaField for the regression shape). Named fields make each consumer's
+// dependency explicit and immune to a neighbor's field getting added.
 //
 // cx fields (each inferFn reads only the ones it needs):
 //   - callerElems:     this field's caller body-local map (per-caller census —
@@ -500,7 +499,7 @@ export function inferArrElemSchema(expr, cx) {
   // INDIRECT dispatch (inferFn is a parameter), so the self-hosted kernel
   // can't schema-prove it — every cx.field read is a generic dyn-get in the
   // hottest narrowSignatures loop. One read per field per call keeps the
-  // named-context API without paying per-use (warm-cap regression da39feec).
+  // named-context API without paying per-use.
   const callerElems = cx.callerElems, paramFacts = cx.paramFacts
   if (typeof expr === 'string') {
     if (callerElems?.has(expr)) {

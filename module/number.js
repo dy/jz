@@ -20,8 +20,8 @@ import { ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
 // `__to_num` (Number coercion) and `__parseFloat` both scan a StrDecimalLiteral
-// significand + ExponentPart, and that scan was verbatim-identical between them
-// — a "fix the same bug twice" hazard (commit 652ba5f patched both copies).
+// significand + ExponentPart; keeping that scan as two verbatim-duplicated
+// copies is a "fix the same bug twice" hazard.
 // These named fragments are the common core, spliced into both bodies; the
 // produced WASM is unchanged, the source now has one place to fix.
 // Required locals (every consumer declares them):
@@ -1294,7 +1294,7 @@ export default (ctx) => {
   // NaN-boxed pointer/atom never does — its prefix bits are fixed at sign=0). The (b)
   // BigInt-vs-Number ambiguity (no tag distinguishes them at all when dynamically
   // merged) is a pre-existing representation limitation shared with typeof's own
-  // dynamic path (confirmed: typeof of a runtime-merged number∪bigint value already
+  // dynamic path (typeof of a runtime-merged number∪bigint value already
   // misreports "number") — out of scope here, not introduced by this fix.
   const isNumNaNBits = (bitsLocal) => ['i32.or',
     ['i64.eq', ['local.get', bitsLocal], ['i64.const', NAN_BITS]],
@@ -1307,8 +1307,8 @@ export default (ctx) => {
   // A non-census proven-NUMBER arg (loop counters, arithmetic results, schema
   // slots) can never carry ANY boxed pointer/atom, so its bare self-compare
   // stays exact and pays nothing extra — only census reads fall through to the
-  // tag-discriminating dynamic path below (already sound for kind-unknown args
-  // since 90e10c3d; reused as-is, no new coercion logic needed here).
+  // tag-discriminating dynamic path below (already sound for kind-unknown args;
+  // reused as-is, no new coercion logic needed here).
   const emitIsNaN = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)
@@ -1332,9 +1332,8 @@ export default (ctx) => {
   // `false` for another (boxed pointers/UNDEF_NAN) — a distinction these
   // three methods never need to make, because their spec answer for BOTH
   // classes is the same `false`. A census-sourced UNDEF_NAN therefore already
-  // fails the leading `f64.eq` term structurally, with no extra check —
-  // confirmed live (test/math.js): Map/dict-absent reads are `false` for all
-  // three pre- and post- this slice's fix, unchanged.
+  // fails the leading `f64.eq` term structurally, with no extra check — a
+  // Map/dict-absent read is `false` for all three (see test/math.js).
   const emitIsFinite = (x) => {
     const vt = valTypeOf(x)
     if (vt != null && vt !== VAL.NUMBER) return nonNumberFalse(x)

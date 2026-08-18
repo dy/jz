@@ -99,17 +99,17 @@ import * as bn from '../bignum.js'
 // point the chain stops (crosses into a non-arithmetic consumer, or reaches
 // the top of a foldable subtree).
 //
-// Host-independent by construction (audit P0-2 fold-fork): earlier revisions
-// carried n/d as native BigInt, gated on HOST_PROFILE.wideBigint — jz's own
-// self-host BigInt carrier is a WRAPPING i64 (see ctx.js), so any n/d past
-// 64 bits (routine here: a tiny subnormal's f64ToRational alone needs a
-// ~1075-bit denominator) silently corrupted in-kernel, forcing native and
-// kernel onto genuinely different fold algorithms — a compiler-output-
-// depends-on-compiler-host determinism violation (test/kernel-parity.js
-// fold|0/2/3, PARITY_TODO). bignum.js's limb arrays have no width ceiling
-// (growing the array IS the carry) and every element is a plain safe-integer
-// f64 — jz's own unambiguous number representation — so this module now
-// folds bit-identically whether it runs natively or self-hosted in-kernel.
+// Host-independent by construction: n/d must NEVER be carried as native BigInt
+// gated on HOST_PROFILE.wideBigint — jz's own self-host BigInt carrier is a
+// WRAPPING i64 (see ctx.js), so any n/d past 64 bits (routine here: a tiny
+// subnormal's f64ToRational alone needs a ~1075-bit denominator) would silently
+// corrupt in-kernel, forcing native and kernel onto genuinely different fold
+// algorithms — a compiler-output-depends-on-compiler-host determinism
+// violation (test/kernel-parity.js fold|0/2/3, PARITY_TODO). bignum.js's limb
+// arrays have no width ceiling (growing the array IS the carry) and every
+// element is a plain safe-integer f64 — jz's own unambiguous number
+// representation — so this module folds bit-identically whether it runs
+// natively or self-hosted in-kernel.
 // ---------------------------------------------------------------------------
 const _f64buf = new ArrayBuffer(8)
 const _f64f = new Float64Array(_f64buf)
@@ -170,8 +170,9 @@ function ratSub(a, b) {
 }
 const ratMul = (a, b) => ratMake(a.negative !== b.negative, bn.mul(a.n, b.n), bn.mul(a.d, b.d))
 const ratDiv = (a, b) => bn.isZero(b.n) ? null : ratMake(a.negative !== b.negative, bn.mul(a.n, b.d), bn.mul(a.d, b.n))
-// audit-#11 P0-1: ratToF64's digit budget used to be a flat 60 total fractional
-// digits, counted from the decimal point. Two independent ways that undercounts:
+// ratToF64's digit budget MUST be counted from the first significant digit, not
+// a flat count of fractional digits from the decimal point. A flat count
+// undercounts in two independent ways:
 //  (1) A rational whose magnitude is tiny (a compile-time-folded division
 //      landing near/in the subnormal range, e.g. `1/1e300`, `1e-300/1e20`)
 //      spends most of its decimal expansion on LEADING ZEROS before any
@@ -237,7 +238,7 @@ function isLiteralNode(node) {
 }
 /** Read an already-literal AST node into an EvalResult (no evaluation, just recognition).
  *  A `[null, n]` node's payload is UNCONDITIONALLY a genuine number — bigint literals are
- *  the distinct `['bigint', decimalStr]` node (parse.js, audit P0-2), never this shape, so
+ *  the distinct `['bigint', decimalStr]` node (parse.js), never this shape, so
  *  every literal number (subnormal included) folds with no magnitude heuristic here. */
 function literalOf(node) {
   if (!Array.isArray(node)) return null
@@ -422,7 +423,7 @@ const MATH_CONST = {
   PI: Math.PI, E: Math.E, LN2: Math.LN2, LN10: Math.LN10,
   LOG2E: Math.LOG2E, LOG10E: Math.LOG10E, SQRT2: Math.SQRT2, SQRT1_2: Math.SQRT1_2,
 }
-// audit-#11 P0-1: `Number.X` mirrors Math.X above — prepare's '.' handler (src/
+// `Number.X` mirrors Math.X above — prepare's '.' handler (src/
 // prepare/index.js `'.'(obj, prop)`) resolves it to the bare `'Number.X'` STRING
 // (module/number.js's `ctx.core.emit['Number.MIN_VALUE']` etc. — the niladic-
 // getter table for the whole family), which otherwise reaches emit as an opaque
@@ -491,8 +492,7 @@ function evalStringMethod(name, s, args) {
   // node and an unfoldable call both evalConst to `null`, and the OLD `a == null` clause
   // let them through as if omitted — `args[i].v` then crashed on the two-arg branch, and
   // charAt's `args[0]?.v ?? 0` silently folded to 0 without crashing, either way ignoring
-  // the argument's real runtime value. Real, narrow compiler defect — audit-#11 item 7
-  // sub-3's "internal compiler crash on an IIFE used as a .slice() argument" xfail row.
+  // the argument's real runtime value.
   const isNumOrAbsent = (a) => a === undefined || (a !== null && a.t === 'num')
   if (name === 'toUpperCase' && args.length === 0) return strResult(s.toUpperCase())
   if (name === 'toLowerCase' && args.length === 0) return strResult(s.toLowerCase())
@@ -680,17 +680,17 @@ function collectParamNamesShallow(paramsNode) {
 
 function foldNode(node, env, state) {
   if (typeof node === 'string') {
-    // audit-#11 P0-1: a bare-string node is a plain identifier COPY-through in
-    // the common case, but it is ALSO the exact shape prepare's '.' handler
-    // collapses a namespace constant reference to (`'math.PI'`, `'Number.
-    // MIN_VALUE'`, …, see MATH_CONST/NUMBER_CONST above) — a Math/Number
-    // constant used directly as an expression (`() => Number.MIN_VALUE`,
-    // `return Math.PI`) never passes through the op!=null `evalConst(node,…)`
-    // call below (there is no wrapping op node), so without this the whole-
-    // program's ONE fold-to-literal chokepoint silently skipped it, leaving an
-    // opaque unresolvable-kind name to reach the export-return boundary, which
-    // decoded its raw f64 bits as an ambiguous carrier (confirmed live: bare
-    // `Number.MIN_VALUE`/`Math.PI` exports both returned garbage BigInts).
+    // A bare-string node is a plain identifier COPY-through in the common case,
+    // but it is ALSO the exact shape prepare's '.' handler collapses a namespace
+    // constant reference to (`'math.PI'`, `'Number.MIN_VALUE'`, …, see
+    // MATH_CONST/NUMBER_CONST above) — a Math/Number constant used directly as
+    // an expression (`() => Number.MIN_VALUE`, `return Math.PI`) never passes
+    // through the op!=null `evalConst(node,…)` call below (there is no wrapping
+    // op node), so this branch must exist or the whole-program's ONE
+    // fold-to-literal chokepoint silently skips it, leaving an opaque
+    // unresolvable-kind name to reach the export-return boundary, where it
+    // decodes its raw f64 bits as an ambiguous carrier (a bare
+    // `Number.MIN_VALUE`/`Math.PI` export would return a garbage BigInt).
     // Delegating the whole branch to evalConst (which already does the env
     // lookup, see below) picks up both tables uniformly, no new special case.
     const c = evalConst(node, env, state)
@@ -698,7 +698,7 @@ function foldNode(node, env, state) {
   }
   if (!Array.isArray(node)) return node
   const op = node[0]
-  // 'bigint': the tagged literal (parse.js, audit P0-2) — opaque here like str/bool;
+  // 'bigint': the tagged literal (parse.js) — opaque here like str/bool;
   // its payload is a decimal STRING, not a name to look up (the generic child-recursion
   // fallback below would otherwise call foldNode on args[0] as if it were an identifier).
   if (op == null || op === 'str' || op === 'bool' || op === 'bigint') return node
@@ -904,10 +904,10 @@ function foldFunctionBody(body, state) {
  *  the same funcInfo objects compile() reads). Single top-to-bottom pass; see module doc for
  *  why that's already a full fixpoint. */
 export function preEval(ast) {
-  // Rational carry runs on bignum.js's host-independent u32-limb arithmetic
-  // (audit P0-2 fold-fork) — no width ceiling, no native-BigInt dependency,
-  // so it's unconditionally available: native and the self-host kernel now
-  // fold identically (test/kernel-parity.js fold|0/2/3 graduated).
+  // Rational carry runs on bignum.js's host-independent u32-limb arithmetic —
+  // no width ceiling, no native-BigInt dependency, so it's unconditionally
+  // available: native and the self-host kernel fold identically
+  // (test/kernel-parity.js fold|0/2/3).
   const rationalOn = ctx.transform.optimize?.rationalConst !== false
   const funcByName = new Map(ctx.funcs.list.map(f => [f.name, f]))
   const state = { rationalOn, funcByName, evaluating: new Set() }

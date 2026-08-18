@@ -1,12 +1,8 @@
 /**
- * Boxed-bigint erasure diagnostic — CARRIER PROGRAM Slice 0 (.work/carrier-
- * representation-design.md §7), promoted from round-3/4's original probe
- * (.work/archive/.work/carrier-representation-design.md §2/§4.2) to a maintained, documented
- * tool: the program's baseline erasure-inventory instrument, re-run against
- * the current kernel graph each time the box-site footprint needs re-
- * verifying (Slice 2's own gate report, future Slice 3/5 work). Still
- * JZ_DBG_BIGINT_ERASURE=1-gated, still zero cost off-flag — promotion is a
- * documentation/maintenance-status change, not a default-on change.
+ * Boxed-bigint erasure diagnostic (.work/carrier-representation-design.md
+ * §7) — the program's baseline erasure-inventory instrument, re-run against
+ * the current kernel graph each time the box-site footprint needs
+ * re-verifying. JZ_DBG_BIGINT_ERASURE=1-gated, zero cost off-flag.
  *
  * Empirical, read-only: walks each function's body (during analyzeFuncs, right
  * after analyzeFuncForEmit settles its reps — ctx.func is that function) and
@@ -24,13 +20,8 @@
  *   closure-capture — a bigint-kinded outer name referenced inside a `=>` body
  *                 (analyze.js's hard closure boundary at op === '=>').
  *
- * Re-verified live 2026-08-06 against the current (post-round-4) 149-module
- * self-hosted kernel graph: 57 hits (call-arg 37, closure-capture 6, return 5,
- * ternary-nullish 5, dataview 3, collection 1), fixpoint verdict 11 real box
- * sites (1 param + 10 module-init-constant locals) — same counts the design
- * doc's §1 recorded; committed as the program's tracked baseline in
- * .work/research.md §Carrier box-site baseline (this file's own re-run command is there,
- * verbatim, so the count is reproducible, not just asserted).
+ * The reproducible re-run command and the current tracked box-site baseline
+ * live in .work/research.md §Carrier box-site baseline.
  *
  * This module is the seed the real solver fact (analyze.js intra-body sink
  * walk, §3.2) grew from — same sink taxonomy. `assertErasureConsistency`
@@ -171,7 +162,7 @@ export function scanErasureSinks(func) {
   walk(func.body)
 }
 
-/** Erasure-graph soundness cross-check (Slice 0, §7's "real erasure-graph
+/** Erasure-graph soundness cross-check (design doc §7's "real erasure-graph
  *  ASSERT" — see this module's own header for exactly what it does and does
  *  not prove). Call once, after both `bigintBoxedStats` (narrowSignatures'
  *  param fixpoint + analyzeFuncs' per-function local marks) and
@@ -187,16 +178,15 @@ export function scanErasureSinks(func) {
  *  mean the two independently-implemented mechanisms (analyze.js's live
  *  markBigintSink vs. this file's own AST walk) have gone fully dark
  *  relative to each other — the class of bug worth stopping the compile
- *  for. A per-function attribution was tried and DROPPED live during this
- *  slice's own re-verification (2026-08-06): module-init/const-folded
- *  top-level bindings (the 10 measured box sites' own shape — NAN_PREFIX
- *  etc.) settle bigintBoxed=true via analyze.js's top-level walk
- *  (ctx.func.current null → '(top)'), attributed to the module/function AST
- *  actually holding the const's RHS by scanErasureSinks (e.g. `nanPrefixMaskHex`'s
- *  own `call-arg` hit) — a real, benign attribution split between the two
- *  walks, not a solver bug. Per-function matching flagged it as a false
- *  positive; the whole-program form stays true and still catches genuine
- *  solver/diagnostic divergence. */
+ *  for. Per-function attribution is NOT safe here: module-init/const-folded
+ *  top-level bindings (e.g. a `NAN_PREFIX`-shaped constant) settle
+ *  bigintBoxed=true via analyze.js's top-level walk (ctx.func.current null
+ *  → '(top)'), but scanErasureSinks attributes that same value's hit to
+ *  the module/function AST actually holding the const's RHS (e.g.
+ *  `nanPrefixMaskHex`'s own `call-arg` hit) — a real, benign attribution
+ *  split between the two walks, not a solver bug, that per-function
+ *  matching would misreport as a false positive. The whole-program form
+ *  stays true and still catches genuine solver/diagnostic divergence. */
 export function assertErasureConsistency() {
   if (!DBG_INVARIANTS) return
   if (!DBG_BIGINT_STATS || !DBG_BIGINT_ERASURE) return

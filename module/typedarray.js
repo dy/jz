@@ -63,21 +63,14 @@ const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
 /** Check if AST node is a constant number; `false` means "not a constant".
  *  This function's other returns are plain JS numbers (`typeof node ===
  *  'number'`) — a mixed NUMBER|BOOL return join, checked via `!== false` at
- *  the call sites below. This used to be unsound to compile (the boolean
- *  literal's cheap i32 0/1 representation only got boxed into a real f64 atom
- *  at a handful of explicit escape sites — closures, a provably-uniform-BOOL
- *  return — and a NUMBER-mixed return wasn't one of them, so `false` here
- *  silently crossed as the plain float 0, indistinguishable from a genuine
- *  constant `0` at `!== false`); worked around with a `null` sentinel instead
- *  (audit #5 item 4, ledger "KERNEL LEG ZERO FAILS" boolconst row). Reverted
- *  back to `false` once the general fix landed (audit #5 item 2:
- *  src/compile/emit.js 'return' + src/compile/index.js emitFunc's
- *  ctx.func.mixedAtomReturn box a statically-BOOL return tail in any
- *  >=2-return, non-uniform-BOOL function) — this is the fix's own generality
- *  test: the compiler's self-hosted build now compiles ITS OWN `return
- *  false` mixed with `return node`/`return node[1]` soundly, so the `null`-
- *  sentinel workaround is no longer load-bearing. Verified: dist/jz.wasm
- *  self-host rebuild + full battery/kernel-leg/watr green with this reverted. */
+ *  the call sites below. This is sound only because a statically-BOOL return
+ *  tail in any >=2-return, non-uniform-BOOL function gets boxed into a real
+ *  f64 atom at every escape site — src/compile/emit.js's 'return' handler and
+ *  src/compile/index.js emitFunc's ctx.func.mixedAtomReturn cover this
+ *  generally, not just the historical special cases (closures, a
+ *  provably-uniform-BOOL return). Without that general boxing, `false` here
+ *  would silently cross as the plain float 0, indistinguishable from a
+ *  genuine constant `0` at `!== false`. */
 const isConst = node => {
   if (typeof node === 'number') return node
   if (Array.isArray(node) && node[0] == null && typeof node[1] === 'number') return node[1]
@@ -282,8 +275,8 @@ export default (ctx) => {
   // Unknown receiver for a buffer-family accessor: only BUFFER/TYPED own
   // `.buffer`/`.byteLength`/`.byteOffset` in JS — on everything else the name
   // is an ordinary own property (or undefined). Same dispatch shape as
-  // collection.js's `.size` (the dot-name hijack class, .work/todo.md
-  // 2026-07-11): a PROVEN BUFFER/TYPED receiver keeps the direct helper call;
+  // collection.js's `.size` (the dot-name hijack class, see .work/todo.md):
+  // a PROVEN BUFFER/TYPED receiver keeps the direct helper call;
   // otherwise tag-dispatch at runtime — the NaN-check guards real numbers
   // whose bit pattern could false-match the tag compare, and the prehashed
   // dyn dispatcher covers OBJECT schema slots, HASH keys, sidecars, and
@@ -434,8 +427,8 @@ export default (ctx) => {
         // recurse into a SIBLING `new.${name2}` closure instance (composing typed-
         // array/subview constructors, e.g. `new Int32Array(buf, 0, new
         // Float64Array(3).length)`): self-host closure-capture-after-nested-emit
-        // class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30 KERNEL LEG ZERO
-        // FAILS) — a captured `stride`/`name` re-read after a nested emit can
+        // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS) —
+        // a captured `stride`/`name` re-read after a nested emit can
         // observe the OTHER iteration's values once this file is kernel-compiled.
         // Eager construction pins this closure's own kind (byte-neutral natively).
         const strideConst = ['i32.const', stride]
@@ -493,7 +486,7 @@ export default (ctx) => {
         // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
         // new.${name} closure instance (composing typed-array ctors, e.g.
         // `new Int32Array(new Float64Array(...))`) — self-host closure-capture-
-        // after-nested-emit class (.work/todo.md 2026-07-23, TYPED-INDEX KERNEL
+        // after-nested-emit class (.work/todo.md §TYPED-INDEX KERNEL
         // MISCOMPILE): a free variable this closure captures (elemType/aux/
         // stride/name, from the `for (const [name, elemType] of ...)` loop
         // above) read AFTER a nested emit() call can observe the OTHER
@@ -926,8 +919,8 @@ export default (ctx) => {
       // call below (emit(off)/emit(val)/emit(leNode)) can recurse into a SIBLING
       // DataView closure from the SAME Object.entries(DV_SET) loop (e.g.
       // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-host closure-capture-after-
-      // nested-emit class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30
-      // KERNEL LEG ZERO FAILS): a captured storeOp/valType/size re-read after a
+      // nested-emit class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO
+      // FAILS): a captured storeOp/valType/size re-read after a
       // nested emit() can observe the OTHER iteration's values once this file is
       // kernel-compiled. The rest of this closure reads the locals, never the
       // free variables, so it is immune regardless of what off/val/leNode nest.
@@ -1008,8 +1001,8 @@ export default (ctx) => {
       // call below (emit(off)/emit(leNode)) can recurse into a SIBLING DataView
       // closure from the SAME Object.entries(DV_GET) loop (e.g.
       // `dv.getFloat64(dv.getInt32(0), dv.getUint8(4))`) — self-host closure-
-      // capture-after-nested-emit class (.work/todo.md 2026-07-23 TYPED-INDEX /
-      // 2026-07-30 KERNEL LEG ZERO FAILS): a captured loadOp/resultType/size/
+      // capture-after-nested-emit class (.work/todo.md §TYPED-INDEX /
+      // §KERNEL LEG ZERO FAILS): a captured loadOp/resultType/size/
       // signed re-read after a nested emit() can observe the OTHER iteration's
       // values once this file is kernel-compiled. toF64/beLoad below close over
       // these locals, never the free variables, so they are immune regardless of
@@ -1167,8 +1160,8 @@ export default (ctx) => {
         // and re-reading `stride`/`store`/`elemType` for a LATER element after that
         // nested emit would risk observing the OTHER iteration's values once this
         // file is kernel-compiled — self-host closure-capture-after-nested-emit
-        // class (.work/todo.md 2026-07-23 TYPED-INDEX / 2026-07-30 KERNEL LEG ZERO
-        // FAILS). The loop below reads these locals, never the free variables.
+        // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
+        // loop below reads these locals, never the free variables.
         const strideS = stride, storeS = store, elemTypeS = elemType
         for (let k = 0; k < elems.length; k++) {
           const addr = k === 0 ? ['local.get', `$${out.local}`]
@@ -1858,8 +1851,8 @@ export default (ctx) => {
   // only for Float64Array/BigInt64Array/BigUint64Array (also 8-byte-wide, so the wrong
   // opcode happens to read the right BYTES). Every narrower kind (int8/16/32, u32, f32,
   // clamped, f16) read the wrong OFFSET *and* the wrong width even for a perfectly
-  // in-range index: `new Int32Array([10,20,30]).at(1)` read raw bytes at offset 8 (byte
-  // 1*8, should be 1*4) via f64.load — garbage, confirmed live. Fix: reuse the exact
+  // in-range index: `new Int32Array([10,20,30]).at(1)` would read raw bytes at offset 8
+  // (byte 1*8, should be 1*4) via f64.load — garbage. Fix: reuse the exact
   // relative-index/bounds resolution `.array:at` already proved (asI32Sat + negative-
   // index add + OOB→undefined), but do the LOAD through the same resolveElem/elemLoadIR/
   // SHIFT machinery `.typed:[]` (bracket read) uses — the one unified, width-correct

@@ -901,11 +901,12 @@ export function observeProgramSlots(ast, opts) {
     return null
   }
   // Census continues INTO a nested closure for the dict-`[]=` / Map-`.set()`
-  // write shapes ONLY (audit-#8 P0-2: `[0].forEach(() => m.set('y','oops'))`
-  // was invisible to both census halves — this is the global-half twin of
-  // analyze.js's dictValueTypeOf/mapValueTypeOf local-half fix; see that
-  // file's doc comment for the full soundness argument). Schema-slot
-  // (`{}`/`.prop=`) census reach is UNCHANGED — out of scope for this bug,
+  // write shapes ONLY — a write inside a closure body (e.g.
+  // `[0].forEach(() => m.set('y','oops'))`) is otherwise invisible to the
+  // census, unsoundly missing a real write. This is the global-half twin of
+  // analyze.js's dictValueTypeOf/mapValueTypeOf local-half census; see that
+  // file's doc comment for the full soundness argument. Schema-slot
+  // (`{}`/`.prop=`) census reach stays scoped to the current function —
   // `visit` below still stops at `=>` for those. `collectAllBoundNames`
   // (ast.js) is position-insensitive: ANY name it returns for this arrow's
   // whole subtree is treated as shadowed everywhere in it, which only ever
@@ -1266,12 +1267,10 @@ const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.
 /** Program-wide slot-write hazard scan → `{ pointsTo, props, numeric,
  *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
  *  readers' belt checks. `pointsTo` (product-lattice design .work/
- *  lattice-design.md §1.3/§5 Slice 6b, OQ2 verdict; the former standalone
- *  `hz.all: boolean`/`hz.sids: Set` pair Slice 6b collapsed into this one
- *  field, and audit-#17 item 7 later removed the last `hz.all` compat
- *  boolean entirely) is: `Set<SchemaId>` for every narrowed write, or the
- *  literal string `'ALL'` — an ABSTRACT top sentinel (never a materialized
- *  snapshot of every sid known so far — new sids can mint mid-scan,
+ *  lattice-design.md §1.3/§5) is one field replacing what used to be a
+ *  separate `hz.all: boolean`/`hz.sids: Set` pair: `Set<SchemaId>` for every
+ *  narrowed write, or the literal string `'ALL'` — an ABSTRACT top sentinel
+ *  (never a materialized snapshot of every sid known so far — new sids can mint mid-scan,
  *  ctx.schema.register calls at lines below and inside this very function;
  *  OQ4 verified no register call's argument path reads pointsTo/hz, so this
  *  stays sound). `hz.props`/`hz.numeric` stay their OWN cross-cutting predicates,
@@ -1807,9 +1806,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // disjoint from a BIGINT write by construction (writeVT/isIntExpr never
   // classify a bigint expression as int-level 2). packedI32/inlineCellI32
   // (module/core.js, abi/index.js) trust i32Certain to raw-i32-load a slot —
-  // if that were ever true for a slot this session's own BIGINT census also
-  // marked, the packed path would corrupt a boxed pointer as a truncated
-  // int32. Assert-only; a real hit is a jz bug, not a value to silently trust
+  // if that were ever true for a slot the BIGINT census also marked, the
+  // packed path would corrupt a boxed pointer as a truncated int32.
+  // Assert-only; a real hit is a jz bug, not a value to silently trust
   // either census over.
   if (DBG_INVARIANTS) {
     for (const [sid, arr] of ctx.schema.slotI32Certain) {

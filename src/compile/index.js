@@ -272,8 +272,8 @@ const ensureThrowRuntime = (sec) => {
 // immediately before its (now-trap) throw, so interop.js's decodeThrown can read
 // it out of the trapped instance and resolve the code via err-codes.js — turning
 // an otherwise-opaque `RuntimeError: unreachable` into the real ECMAScript error
-// class the site models. Stripping this global (the old behavior) made host
-// decode of ordinary runtime errors unreachable by construction (audit #7 P1).
+// class the site models. Stripping this global would make host decode of
+// ordinary runtime errors unreachable by construction, so it must stay.
 // `noEhAbort` (opts.noEhAbort → --no-eh-abort, index.js): opt-in generalization
 // of the trap-lowering above for consumers with NO wasm-exceptions support at
 // all (wasm2c, w2c2 — see bench/README's native-lane / lab-row notes). Without
@@ -296,11 +296,11 @@ const pruneUnusedThrowRuntime = (sec) => {
   // Note this also fires for a bare `try { … } finally { … }` with NO catch
   // clause at all: jz's own `finally` codegen still needs an internal
   // try_table/catch(-rethrow) to run the cleanup on the exceptional path, so
-  // it is exactly as unsafe to trap-lower as a real user catch (confirmed
-  // live: subscript's switch-parsing feature — reachable from the `jessie`
-  // bench case even though it has zero `catch` clauses anywhere — uses
-  // try/finally for its `inSwitch` depth counter, and this scan correctly
-  // refuses to prune it).
+  // it is exactly as unsafe to trap-lower as a real user catch. For example,
+  // subscript's switch-parsing feature — reachable from the `jessie` bench
+  // case even though it has zero `catch` clauses anywhere — uses try/finally
+  // for its `inSwitch` depth counter, and this scan correctly refuses to
+  // prune it.
   const hasCatch = (n) => Array.isArray(n) &&
     (n[0] === 'try_table' || n[0] === 'catch' || n[0] === 'catch_all' || n.some(hasCatch))
   for (const arr of [sec.funcs, sec.stdlib, sec.start])
@@ -323,13 +323,12 @@ const pruneUnusedThrowRuntime = (sec) => {
 
 // === Module compilation ===
 
-// Routes through cloneRep (param-reps.js) — THE authoritative deep clone
-// (audit-#16 P1-3): a bare `{ ...v }` shallow-copies Set-valued lattice
-// fields, so a later join on the copy would silently mutate the source
-// map's rep (audit-#17 item 8, the confirmed cross-map sibling). `map` here
-// is `ctx.func.localReps` (ValueRep records) — cloneRep's REP_SET_FIELDS
-// list (param-reps.js, re-audit item 9(c)) covers its `dictValueValType`/
-// `mapValueValType` Sets alongside paramReps' `possibleKinds`.
+// Routes through cloneRep (param-reps.js) — the authoritative deep clone: a
+// bare `{ ...v }` shallow-copies Set-valued lattice fields, so a later join
+// on the copy would silently mutate the source map's rep. `map` here is
+// `ctx.func.localReps` (ValueRep records) — cloneRep's REP_SET_FIELDS list
+// (param-reps.js) covers its `dictValueValType`/`mapValueValType` Sets
+// alongside paramReps' `possibleKinds`.
 const cloneRepMap = map => map ? new Map([...map].map(([k, v]) => [k, cloneRep(v)])) : null
 
 /** Serialize a ValueRep entry into a plain object for inspect output.
@@ -452,19 +451,17 @@ function analyzeFuncForEmit(func, programFacts) {
   ctx.func.i32HashLocals = new Set()
   ctx.func.leanHashDomains = new Map()
   ctx.func.hoistTempDefs = null
-  // MapOverlay (below emitClosureBody's own doc — same jz×jz ceiling fix,
-  // same file, a new sibling instance) — this used to be `new Map(ctx.scope.
-  // globalTypedElem)`/`new Map(ctx.scope.globalTypedLen)`, an O(programSize)
-  // full clone paid PER FUNCTION (analyzeFuncForEmit runs once per function
-  // in ctx.func.list — thousands for a bundled multi-module program), the
-  // same structural class 259cd4fc already fixed once in emitClosureBody and
-  // 0ae75f07 fixed once in narrow.js. `globalTypedElem`/`globalTypedLen`
-  // are frozen module-scope tables by this point (last written during
-  // infer.js/plan/scope.js's own passes and the pendingTypedLens sweep,
-  // all upstream of plan() — confirmed by grep, no write site downstream of
-  // here) so overlaying a live reference as `base` is safe: it can never go
-  // stale mid-loop. `own` starts empty; the param-typedCtor seeding just
-  // below writes into it via `.set` exactly like the pre-overlay code did.
+  // MapOverlay (see emitClosureBody's own doc for the same fix applied to a
+  // sibling site) avoids an O(programSize) full clone of `new Map(ctx.scope.
+  // globalTypedElem)`/`new Map(ctx.scope.globalTypedLen)` paid PER FUNCTION
+  // (analyzeFuncForEmit runs once per function in ctx.func.list — thousands
+  // for a bundled multi-module program). `globalTypedElem`/`globalTypedLen`
+  // must be frozen module-scope tables by this point (last written during
+  // infer.js/plan/scope.js's own passes and the pendingTypedLens sweep, all
+  // upstream of plan(), with no write site downstream of here) so overlaying
+  // a live reference as `base` is safe: it can never go stale mid-loop. `own`
+  // starts empty; the param-typedCtor seeding just below writes into it via
+  // `.set` exactly like the pre-overlay code did.
   ctx.func.typedElem = ctx.scope.globalTypedElem ? makeMapOverlay(ctx.scope.globalTypedElem) : null
   // typedLen mirrors typedElem's per-function lifecycle EXACTLY — a stale entry from a
   // sibling function's same-named local would prove a wrong bound (names are per-function).
@@ -555,10 +552,10 @@ function analyzeFuncForEmit(func, programFacts) {
       // makes unnecessary. A body write the fixpoint couldn't see keeps the
       // flag one step more conservative than strictly needed; per the
       // design's own fail-closed direction that's the safe side to be wrong on.
-      // presence (re-audit item 9(b)): mirrors mayBeUndefined's own stamp
-      // here — 'maybe-undef', the only state this paramReps-sourced fact can
-      // prove (a param's positive-presence proof, if any, is a body-local
-      // decl question the caller-side join below has no view into).
+      // `presence` mirrors mayBeUndefined's own stamp here — 'maybe-undef',
+      // the only state this paramReps-sourced fact can prove (a param's
+      // positive-presence proof, if any, is a body-local decl question the
+      // caller-side join below has no view into).
       if (r.mayBeUndefined) updateRep(pname, { mayBeUndefined: true, presence: 'maybe-undef' })
     }
   }
@@ -787,28 +784,26 @@ function analyzeFuncForEmit(func, programFacts) {
     // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
     // undefined isn't a reference, so no i64 is needed and wrapping every void export
     // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-    // `censusSafe` (audit #10 fallout, found while reverting Slice 4's VT wiring —
-    // .work/todo.md §deletion-sweep §14, extended by §14 point 4):
-    // `valTypeOf(e)`/`func.valResult` for a bare census-BIGINT node, a `-`/`~` unary
-    // wrapping one, OR (§14 point 4's own find) a BINARY arithmetic/bitwise node
-    // whose operands `valTypeOfWithLocals` can't locally resolve is each op's OWN
-    // "unproven → optimistic NUMBER default" (kind.js — numericUnaryVT's for the
-    // unary family, the arithmetic/bitwise family's OWN deliberate "unknown →
-    // NUMBER" default for `-`/`*`/`/`/`%`/bitwise, load-bearing elsewhere for the
-    // closure-table call-site bootstrap, not removable) whenever the operand's
-    // exact kind isn't proven. Critically, THIS optimistic default can settle
-    // `func.valResult` to a DEFINITE `VAL.NUMBER` (not `null`) for exactly this
-    // shape — confirmed live: `let x = m.get(a); let y = m.get(b); return x - y`
-    // (both present-key BIGINT census) set `func.valResult === VAL.NUMBER`
-    // outright, which used to short-circuit `_resultNumeric = true` on the FIRST
-    // disjunct below, never reaching `censusBigintSentinelKind` at all — skipping
-    // the i64 boundary wrap entirely for a value that's genuinely a present-key
-    // BigInt at runtime (returned the raw i64 sum's bits misread as a subnormal
-    // float, `1e-323` instead of `2n`). `censusSafe` now gates BOTH disjuncts (not
-    // just the `valResult == null` one) — `censusBigintSentinelKind` sources its
-    // answer from the census helpers DIRECTLY (dictValueKindOf/mapValueKindOf via
-    // censusMaybeUndefinedKind), never through VT/valTypeOf/valResult, so this
-    // check stays correct regardless of which optimistic default fired.
+    // `censusSafe` (.work/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
+    // not just the `valResult == null` one, because `valTypeOf(e)`/`func.valResult`
+    // for a bare census-BIGINT node, a `-`/`~` unary wrapping one, or a BINARY
+    // arithmetic/bitwise node whose operands `valTypeOfWithLocals` can't locally
+    // resolve, falls back to each op's own "unproven → optimistic NUMBER default"
+    // (kind.js — numericUnaryVT for the unary family, the arithmetic/bitwise
+    // family's own deliberate "unknown → NUMBER" default for `-`/`*`/`/`/`%`/
+    // bitwise, load-bearing elsewhere for the closure-table call-site bootstrap,
+    // not removable) whenever the operand's exact kind isn't proven. That
+    // optimistic default can settle `func.valResult` to a DEFINITE `VAL.NUMBER`
+    // (not `null`) for a shape like `let x = m.get(a); let y = m.get(b); return
+    // x - y` (both present-key BIGINT census) — without `censusSafe`, that would
+    // short-circuit `_resultNumeric = true` on the FIRST disjunct below, never
+    // reaching `censusBigintSentinelKind` at all, skipping the i64 boundary wrap
+    // for a value that's genuinely a present-key BigInt at runtime (the raw i64
+    // sum's bits misread as a subnormal float, `1e-323` instead of `2n`).
+    // `censusBigintSentinelKind` sources its answer from the census helpers
+    // DIRECTLY (dictValueKindOf/mapValueKindOf via censusMaybeUndefinedKind),
+    // never through VT/valTypeOf/valResult, so this check stays correct
+    // regardless of which optimistic default fired.
     const censusSafe = rex.length === 0 || rex.every(e => censusBigintSentinelKind(e) === 0)
     func._resultNumeric = censusSafe && (func.valResult === VAL.NUMBER ||
       (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
@@ -843,7 +838,7 @@ function analyzeFuncForEmit(func, programFacts) {
     func._resultBigintSentinel = s0 > 0 && rex.every(e => censusBigintSentinelKind(e) === s0) ? s0 : 0
   }
 
-  // LoopPlan pre-emission mint (audit-#16, .work/research.md §BodyModel /
+  // LoopPlan pre-emission mint (.work/research.md §BodyModel /
   // LoweredLoopPlan): last, so it sees this function's FINAL AST (every loop-
   // AST-rewrite pass above has already run) and maximally-settled `repOf`
   // facts (every updateRep call above has already landed) — the same two
@@ -1362,8 +1357,7 @@ function emitFunc(func, functionPlan, programFacts) {
   // 'return'): a func with >= 2 syntactic return statements whose overall
   // valResult ISN'T proven uniformly BOOL may still have individual return
   // tails that ARE statically BOOL (a mixed BOOL|NUMBER — or BOOL|anything —
-  // return join, audit #5 item 2 / ledger "KERNEL LEG ZERO FAILS" boolconst
-  // row). Those callers see this func's result as "dynamic/unknown", and the
+  // return join). Those callers see this func's result as "dynamic/unknown", and the
   // rest of the compiler already assumes an unknown f64 value carries a
   // boolean as its TRUE_NAN/FALSE_NAN atom (emitStrictEq's BOOL-vs-unknown
   // identity compare, '+'​'s numSide atom ladder, __to_num's atom arms) — so
@@ -2239,32 +2233,21 @@ function emitClosureBody(cb, functionPlan) {
  *  riding front's own root this way. `ctx.module`/`ctx.schema` are NOT in
  *  THIS root: every read of either happens INSIDE this function, before exit
  *  fires (schema custom-section emission above, module import resolution at
- *  the top) — confirmed not needed post-return. This is the design as
- *  specified (Slice 3 hazard inventory, 8bed8c3f).
- *  ROOT-COMPLETENESS FIX (ns-round-2026-08-14 dig, .work/research.md §Region
- *  arena): this root read `ctx.func` (singular, the ACTIVE-FRAME scratch
- *  record — inert/null by the time this exit fires) where it needed
- *  `ctx.funcs` (plural, the function REGISTRY: `.list`/`.map`/`.names`,
- *  freshly rebuilt by this function's own opening `.clear()`-then-rebuild
- *  loops, lines below) — the doc above ITSELF cited `.list.length`/`.map` as
- *  the reason for rooting something here, but named the wrong container.
- *  Added by `233bf8b5` (Slice 3), AFTER `0487cde4` had already split
- *  `ctx.func` into `ctx.func`/`ctx.funcs` — not a stale pre-split reference
- *  like front.js's matching bug, but the same ctx.func/ctx.funcs name
- *  collision, landed fresh. `ctx.funcs.map` is a PTR.MAP — the exact shape
- *  the ns-round campaign's own stale-address hunt was chasing. Kept
- *  `ctx.func` in the root too (harmless, uniform-root idiom) rather than
- *  removing it on unverified grounds.
+ *  the top) — not needed post-return.
+ *  The root must name `ctx.funcs` (plural, the function REGISTRY: `.list`/
+ *  `.map`/`.names`, freshly rebuilt by this function's own opening
+ *  `.clear()`-then-rebuild loops below), not `ctx.func` (singular, the
+ *  ACTIVE-FRAME scratch record — inert/null by the time this exit fires):
+ *  only the registry survives to be read by `optimizeTail`/`watrTail` after
+ *  `compile()` returns. `ctx.func` is kept in the root too (harmless,
+ *  uniform-root idiom) alongside it.
  *
- *  **Formerly a known open defect, ROOT-CAUSED AND FIXED (b33d603e,
- *  .work/research.md §Region arena "REGION MACHINERY SOUND"):** rooting
- *  `ctx.transform` used to make `__region_copy_rec` explode on some corpus
- *  shapes (`nestedtyped` et al) — `__region_relocate_props` wasn't idempotent
- *  under re-application to its own output, corrupting a durable-but-
- *  unreached receiver's dyn-props on a second pass. Fixed generally in
- *  `module/core.js` (not a caller-side workaround); kernel-oracle region-live
- *  is now 13/13×3, matching dormant. `REGION_HOOKS_ACTIVE` still stays
- *  `false` as the committed default (scripts/self.js) — this boundary and its
+ *  Rooting `ctx.transform` requires `__region_relocate_props` to be
+ *  idempotent under re-application to its own output — otherwise
+ *  `__region_copy_rec` corrupts a durable-but-unreached receiver's dyn-props
+ *  on a second pass (see `module/core.js`, .work/research.md §Region arena
+ *  "REGION MACHINERY SOUND"). `REGION_HOOKS_ACTIVE` still stays `false` as
+ *  the committed default (scripts/self.js) — this boundary and its
  *  PLAN-TAIL children (`src/compile/plan/index.js`'s own five inner region
  *  rounds, threaded through the SAME `regionHooks` this function receives —
  *  see that file's own doc) ship DORMANT, gate-verified on both axes, not
@@ -2397,7 +2380,7 @@ export default function compile(ast, profiler, regionHooks) {
   // Region-arena plan-tail round 6 (.work/research.md §Region arena, per-pass
   // slice): the three closure-table scans below are pure AST walks producing
   // three ctx.scope fields (+~61 MB combined, dominated by
-  // scanClosureTableLatticeCandidates's own +61 MB per 0ae75f07's phase map)
+  // scanClosureTableLatticeCandidates's own +61 MB)
   // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale
   // for why this is the union of every field any round has ever needed,
@@ -2443,20 +2426,19 @@ export default function compile(ast, profiler, regionHooks) {
   const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
   // Region-arena analyzeFuncs BATCHED round (.work/research.md §Region arena,
   // Lever 1 — the retained-set census's own top lever: ~70% MAP/HASH-shaped
-  // churn, up to 1435 calls for jz×jz, PREVIOUSLY excluded from every region
-  // round e640e77a's own design note named — a plain `for…of` iterator over
-  // `ctx.funcs.list` caches the array's base pointer ONCE at loop entry (this
-  // codebase's own self-hosted for-of lowering, not V8's), so a mid-loop
-  // `region_exit` that relocates `ctx.funcs` (and thus its `.list` backing
-  // store) would leave that cached base stale — the exact "durable receiver,
-  // stale pointer to reclaimed memory" class this campaign's ledger already
-  // catalogued (closure4232/fromnested). FIX: index-based iteration that
-  // re-reads `ctx.funcs.list[i]` FRESH every access (never holds the array or
-  // an iterator across an exit) — behavior-identical to the original `for…of`
-  // both natively (V8's own Array iterator is itself index+length-checked per
-  // step, so growth-during-iteration behaves the same either way) and
-  // self-hosted (a fresh property read always observes the just-rebound
-  // `ctx.funcs`).
+  // churn, up to 1435 calls for jz×jz). Iteration below is index-based,
+  // re-reading `ctx.funcs.list[i]` FRESH every access rather than holding
+  // the array or an iterator across a region exit: a plain `for…of` iterator
+  // over `ctx.funcs.list` caches the array's base pointer ONCE at loop entry
+  // (this codebase's own self-hosted for-of lowering, not V8's), so a
+  // mid-loop `region_exit` that relocates `ctx.funcs` (and thus its `.list`
+  // backing store) would leave that cached base stale — the "durable
+  // receiver, stale pointer to reclaimed memory" class (see the
+  // closure4232/fromnested test cases). The index-based form is
+  // behavior-identical to the original `for…of` both natively (V8's own
+  // Array iterator is itself index+length-checked per step, so growth-
+  // during-iteration behaves the same either way) and self-hosted (a fresh
+  // property read always observes the just-rebound `ctx.funcs`).
   //
   // GRANULARITY — batched (every AFE_ROUND_BATCH functions), not per-function:
   // this round's own root bundle (below) must include `ctx.plans` (see its
@@ -2470,9 +2452,8 @@ export default function compile(ast, profiler, regionHooks) {
   // real risk of the reclaim overhead eclipsing the reclaim benefit. Batching
   // divides that cost by the batch size while still reclaiming per-function
   // churn (the actual target) far more often than the status quo (never).
-  // AFE_ROUND_BATCH is a tunable constant, not derived — sized from this
-  // session's own jessie/watr/jzify-entry measurement (`.work/research.md`
-  // §Region arena, this entry), not guessed.
+  // AFE_ROUND_BATCH is a tunable constant, sized from jessie/watr/jzify-entry
+  // measurement (`.work/research.md` §Region arena, this entry), not guessed.
   const AFE_ROUND_BATCH = 32
   timePhase(profiler, 'analyzeFuncs', () => {
     // Mark lazily, at the first index actually reached (not unconditionally
@@ -2778,9 +2759,9 @@ export default function compile(ast, profiler, regionHooks) {
     sec.customs.push(['@custom', '"jz:schema"', bytes])
   }
 
-  // Custom section: Error-class sid → class-name map (audit-#9 P0-2 brand
-  // redesign). Class identity now lives entirely in the schema id (module/
-  // schema.js's ctx.schema.errorSid — one distinct id per class, minted with
+  // Custom section: Error-class sid → class-name map. Class identity lives
+  // entirely in the schema id (module/schema.js's ctx.schema.errorSid — one
+  // distinct id per class, minted with
   // the class name as an internal dedupe salt that never becomes a property),
   // not in any decodable slot — so interop.js's decodeThrown, which runs on
   // already-compiled bytes with no access to this compile's ctx.schema state,
@@ -2856,10 +2837,10 @@ export default function compile(ast, profiler, regionHooks) {
   // `{name, p:[i64 param indices], r:1? | s:BIGINT_SENTINEL_KIND value? | m:N?}`: `p` lists
   // params interop must pass as BigInt (f64ToI64); `r` marks a single result to reinterpret
   // (i64ToF64) before mem.read; `s` marks a census-BIGINT sentinel result (§6/§12 Slice 5,
-  // presentKindUnboxed) — one of layout.js's BIGINT_SENTINEL_KIND values (audit-#11 ABI
-  // formalization: named there, not a bare magic int here, since this field's value crosses
-  // the wasm custom section into interop.js's decodeBigintSentinel, a SEPARATE package/
-  // process reading the SAME table). interop decodes the sentinel's fixed bit pattern
+  // presentKindUnboxed) — one of layout.js's BIGINT_SENTINEL_KIND values, named there rather
+  // than a bare magic int here, since this field's value crosses the wasm custom section
+  // into interop.js's decodeBigintSentinel, a SEPARATE package/process reading the SAME
+  // table. interop decodes the sentinel's fixed bit pattern
   // (BIGINT_SENTINEL_BITS[s]) to its real JS value (BIGINT_SENTINEL_VALUE[s]) and anything
   // else as a raw BigInt, WITHOUT `r`'s generic NaN-box/number decode (which would misread a
   // small BigInt's raw bits as a subnormal float); `m` marks an N-lane multi-value result
@@ -2878,9 +2859,9 @@ export default function compile(ast, profiler, regionHooks) {
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
-  // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (audit
-  // P1 TargetProfile stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper
-  // afterward, keyed off this same customs entry shape (no wasiCommandExports skip needed).
+  // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile
+  // stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper afterward, keyed
+  // off this same customs entry shape (no wasiCommandExports skip needed).
   for (const [name, val] of Object.entries(ctx.funcs.exports)) {
     if (val === true) {
       if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
@@ -2947,14 +2928,13 @@ export default function compile(ast, profiler, regionHooks) {
   // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale):
   // exit the emit round here, rebinding `builtModule` (phase-local, not
-  // session state) and every `ctx.*` field any round in this campaign has
-  // ever needed — closing the two root-completeness bugs this exact array
-  // previously carried (a dead `ctx.func.list` root and a missing
-  // `ctx.funcs`, .work/research.md §Region arena's ns-round dig) without
-  // exposing `ctx.core`/`ctx.bridge`/etc to the relocator for the first
-  // time. Any later read through a stale `ctx.*` or the pre-relocation
-  // `builtModule` reference is a use-after-free, the identical contract
-  // frontHalf's own rebind documents.
+  // durable ctx state) and every `ctx.*` field any round needs, including
+  // both `ctx.func` AND `ctx.funcs` (see .work/research.md §Region arena for
+  // the root-completeness requirement), without exposing `ctx.core`/
+  // `ctx.bridge`/etc to the relocator, which don't need it. Any later read
+  // through a stale `ctx.*` or the pre-relocation `builtModule` reference is
+  // a use-after-free, the identical contract frontHalf's own rebind
+  // documents.
   if (regionHooks)
     [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts] =
       regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts])

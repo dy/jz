@@ -51,8 +51,9 @@ token('false', 200, a => !a && ['bool', 0])
 // for small magnitudes is bit-identical to a genuine subnormal float — the
 // very AST node built in-kernel has already lost the distinction the moment
 // it's constructed, and no LATER `typeof` check (kind.js, prepare, pre-eval,
-// emit) can recover it (audit P0-2, .work/todo.md: kernel-compiled
-// `() => 5e-324` exports `1n`). The only reliable signal is STRUCTURAL: did
+// emit) can recover it (kernel-compiled `() => 5e-324` would export `1n` if
+// this relied on a runtime `typeof` check — see .work/todo.md). The only
+// reliable signal is STRUCTURAL: did
 // the SOURCE TEXT end in `n`? That's a character-code comparison, never a
 // value-type inspection — sound natively AND in-kernel alike.
 //

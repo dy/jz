@@ -40,79 +40,47 @@ import jzify from '../jzify/index.js'
 // become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
 // calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
 // never as bare identifiers evaluated by a native JS engine.
-// DORMANT (2026-08-06, re-audited same day): a kernel-oracle regression
-// surfaced with regions live (kernel traps compiling the dvnested-mechanism
-// source at O2/O3). Root-caused in THREE confirmed layers, all fixed in
-// module/core.js's __region_copy_rec/__region_exit (a relocated ARRAY's
-// off-16 dyn-props sidecar was silently dropped — src/compile/index.js's
-// `fn.cseLoadBases = new Set(...)` is exactly the "watr internal array gets
-// a dynamic property" case the original scope comment wrongly called
-// unreachable; `$__dyn_props`'s own backing table is a global outside
-// [ast,dirty,snapshots] and needs the SAME implicit-root treatment
-// dirty/snapshots already got; the props-hash's own VALUES need recursive
-// relocation, not a verbatim pointer copy). Those three fixes landed and
-// fully closed the O2 failure AS OF that session — see the 2026-08-06
-// follow-up session below, which found O2 is NOT durably closed.
+// REGION_HOOKS_ACTIVE gates whether the region-arena reclaim
+// (__region_mark/__region_exit) runs during self-host compilation. It stays
+// false: with the hooks live, kernel-oracle compiles of the
+// dvnested-mechanism source trap at both O2 and O3, and neither failure is
+// understood well enough to ship a fix.
 //
-// 2026-08-06 follow-up session (`_eqFast` candidate confirm-or-refute):
-// REFUTED cleanly — a `optimize.dbgEqFastOff`-shaped ablation (temp, not
-// landed) that disabled JUST node._eqFast's stamp + both its inline arms,
-// leaving the rest of fusedRewrite on, left the O3 trap fully reproducing.
-// Real O3 mechanism (bisected the same way, one fusedRewrite sub-rewrite at
-// a time): fusedRewrite's ptr-helper inline (`$__ptr_type`/`$__ptr_aux`
-// call→expression substitution) is JOINTLY necessary — disabling EITHER
-// one alone (leaving the other on) already clears the O3 trap; `$__is_null`
-// alone does not. Confirmed via a native `--wat` dump that at O3 both
-// `$__ptr_type` and `$__ptr_aux` end up with ZERO remaining func defs AND
-// zero call sites (every site got inlined) — plausible mechanism: full
-// disappearance interacting with watr's OWN per-round `treeshake` pass
-// (MODULE_SCOPE, runs every round with regions live) in a way region_exit
-// doesn't see, since __region_dbg_stage/rounds instrumentation (temp, not
-// landed) confirmed AGAIN this session that __region_exit reaches its own
-// final instruction cleanly (rounds=2, stage=4) every time — the trap is
-// downstream, same finding as the prior session, just re-verified. NOT a
-// dyn-props-sidecar hazard (no property gets stamped by ptr_type/ptr_aux's
-// inline — the class named in the design's own inventory does not fit this
-// specific mechanism). One fix attempt (pruning `watr`'s `snapshots` Map of
-// keys for treeshaken-away funcs, since it never drops a stale key today —
-// a real, separately-confirmed leak, independently worth fixing someday but
-// NOT reverted-and-kept this session) made kernel-parity O2 fail NEWLY (a
-// previously-passing row), so it was reverted — the mental model is
-// incomplete, not ready to ship a fix.
+// O3: narrowed to fusedRewrite's ptr-helper inlining (`$__ptr_type`/
+// `$__ptr_aux` call→expression substitution) — disabling either one alone
+// clears the trap, so the two are jointly necessary to reproduce it, but no
+// safe patch has been verified. `__region_exit` itself reaches its own last
+// instruction cleanly every time; the corruption happens downstream of that,
+// past what the region-arena's own instrumentation observes. It is not a
+// dyn-props-sidecar hazard — no property gets stamped by either helper's
+// inline.
 //
-// SEPARATE, NEWLY DISCOVERED regression this session: kernel-oracle's
-// dvnested-mechanism row now ALSO traps at O2 on a fresh rebuild — the PRIOR
-// session's "O2 fully green, 4 reps, zero flakes" claim no longer holds.
-// Four unrelated "carrier program" commits (00c9abc4/7eeeea36/705a35d9/
-// 286626fa, all flag-gated JZ_CARRIER_BOX/JZ_DEBUG_INVARIANTS default OFF,
-// claimed byte-identical) landed in the ~90 minutes between that session's
-// O2-green verdict and this session's first rebuild. O2's failure is NOT
-// deterministic across otherwise-identical rebuilds — adding 5 debug globals
-// (pure static-layout noise, unrelated code) to module/core.js made an
-// O2 baseline that had JUST failed (identical source, identical debug-flag
-// values) pass again, 3/3 repeat. That points at an address/layout-boundary-
-// sensitive heisenbug, not a clean single-cause mechanism — CONSISTENT with
-// a coverage gap similar to fixes 1-3 above, just not yet caught because it
-// only bites at specific allocation offsets. NOT bisected further; time
-// did not allow it this session.
+// O2: a separate, non-deterministic regression. Reproduction depends on
+// unrelated static-layout changes elsewhere in module/core.js — e.g. adding
+// or removing debug globals can flip a failing build to passing and back —
+// which points at an address/layout-boundary-sensitive bug rather than a
+// single clean cause. Not bisected past module/core.js.
 //
-// Per the stop-on-fail tripwire the hooks stay OFF: O3's real mechanism is
-// narrowed but not fixed (2 sub-rewrites confirmed jointly necessary, no
-// verified patch), and O2 is a live, unresolved, non-deterministic
-// regression the original task framing didn't know about. Re-wire by
-// restoring the regionHooks line below (AND flipping REGION_HOOKS_ACTIVE, next);
-// the warm checkpoint then gates SHIP.
+// A related but distinct hazard — a relocated ARRAY's off-16 dyn-props
+// sidecar being copied by value instead of recursively relocated — was
+// found and fixed in module/core.js's __region_copy_rec/__region_exit; that
+// class of fix is necessary but was not sufficient to close the O2
+// regression above. Turning this flag on requires root-causing both the O3
+// ptr-helper interaction and the O2 heisenbug first, then flipping this flag
+// AND the regionHooks line inside optimizeTail together (see the marker
+// comment below). See .work/research.md §Region arena for the full
+// investigation.
 //
-// Explicit region-hooks-active marker (architecture re-audit item 2,
-// .work/todo.md) — read as a literal string match by scripts/build-profile.mjs's
-// resolveSelfhostBuild, replacing build-dist.mjs's old regex-over-source
-// detection (`/^\s*regionHooks:\s*\{/m`). A single-purpose toggle instead of a
-// structural guess: TOGGLE THIS *and* the regionHooks line inside optimizeTail
-// TOGETHER — both must agree, or resolveSelfhostBuild's derived flag disagrees
-// with what optimizeTail actually wires. A caller of resolveSelfhostBuild may
-// also override the derivation explicitly via its own `regionArena` profile
-// field (see that helper's doc) — this marker is only the DEFAULT-derivation
-// source when a caller doesn't override.
+// REGION_HOOKS_ACTIVE is read as a literal string match by
+// scripts/build-profile.mjs's resolveSelfhostBuild — not evaluated, a plain
+// text search for this declaration — so it must stay exactly this shape
+// (`export const REGION_HOOKS_ACTIVE = <bool>`), not an expression or an
+// import. TOGGLE THIS *and* the regionHooks line inside optimizeTail
+// TOGETHER — both must agree, or resolveSelfhostBuild's derived flag
+// disagrees with what optimizeTail actually wires. A caller of
+// resolveSelfhostBuild may override the derivation explicitly via its own
+// `regionArena` profile field (see that helper's doc); this marker is only
+// the default-derivation source when a caller doesn't override.
 export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
@@ -121,27 +89,13 @@ function optimizeTail(module, cfg) {
       ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
       : [],
     targetProfile: ctx.transform.targetProfile,
-    // FIX (2026-08-13, boolconst O3 miscompile root-cause): this line lost its
-    // REGION_HOOKS_ACTIVE gate in 893821ee's squashed region-front merge — that
-    // commit's own diff shows it flipping the PRE-EXISTING, deliberately-
-    // commented-out `// regionHooks: {...}` (landed DORMANT by e6a251aa pending
-    // the kernel-oracle O2/O3 root-cause this file's OWN header comment above
-    // still documents as unresolved: "an address/layout-boundary-sensitive
-    // heisenbug... NOT bisected further") back to live, while ADDING a properly
-    // `REGION_HOOKS_ACTIVE`-gated regionHooks to `front()` two lines below —
-    // same commit, two call sites, only one got the ternary. Net effect: every
-    // self-hosted kernel built since 893821ee (2026-08-13) has run with the
-    // optimize-tail region-arena reclaim UNCONDITIONALLY live, contradicting
-    // this file's own "hooks stay OFF" decision and REGION_HOOKS_ACTIVE=false.
-    // Confirmed proximate cause of the watr-5.7.16 x heal-chain "boolconst O3"
-    // interaction (.work/research.md — this session's entry): dormant (this
-    // fix) + watr 5.7.16 + heal-chain array.js growth compiles clean; region-
-    // live + either axis alone was already clean before this fix (matching the
-    // prior attribution's own bisection, which never varied this axis because
-    // it didn't know it existed). Restores the file's own documented, never-
-    // rescinded intent — same ternary shape as `front()`'s regionHooks below.
-    // (region-final-2026-08-11's 627cf92a independently ported this same
-    // one-line fix; identical resolution, main's fuller writeup kept.)
+    // This call site must stay gated on REGION_HOOKS_ACTIVE — same ternary
+    // shape as front()'s regionHooks below. If the two call sites' gates
+    // ever diverge (one ternary, one unconditional), the optimize-tail
+    // region-arena reclaim runs even while REGION_HOOKS_ACTIVE is false,
+    // which is a confirmed miscompile source: it interacts with watr's
+    // heal-chain array growth to produce a spurious "boolconst" trap at O3.
+    // Keep both call sites' ternaries in lockstep.
     regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
 }
@@ -187,9 +141,9 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
 
 // The canonical front half (src/front.js) — the SAME function index.js's
 // jzCompileInner runs: parse -> reserved-prefix guard -> liftIIFEs -> jzify ->
-// prepare -> preEval. The kernel previously composed prepare(lower(...)) per
-// entry WITHOUT preEval, so statically-foldable programs compiled to different
-// bits than native (audit P0 2026-07-25: 0.1+0.2-0.3 fold, Math.sqrt(9) at O0).
+// prepare -> preEval. preEval must run: without it, statically-foldable
+// programs (e.g. the `0.1+0.2-0.3` constant fold, `Math.sqrt(9)` at O0)
+// compile to different bits than native.
 // Region-arena FRONT boundary (.work/research.md §Region arena): mirrors
 // optimizeTail's own regionHooks line above verbatim — same REGION_HOOKS_ACTIVE
 // marker, same ternary shape, same literal __region_mark()/__region_exit()

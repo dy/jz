@@ -88,14 +88,13 @@ const PIPE = 124, STAR = 42, PLUS = 43, QUEST = 63, DOT = 46,
 
 let src, idx, groupNum, groupNames
 
-// Reset choreography (session survey audit-#13 slice a): parseRegex() already
-// resets this state at its own entry (below) — required intra-compile, since one
-// program can contain many regex literals — but that left it invisible to
-// reset()/beginSession()'s single choreography (a second, independent reset
-// point per the survey). Registering a defensive session-boundary reset costs
-// nothing and means a stale parse left mid-pattern by a thrown SyntaxError in a
-// PRIOR compile can never be read by code that inspects this state before the
-// next parseRegex() call runs.
+// Reset choreography: parseRegex() already resets this state at its own entry
+// (below) — required intra-compile, since one program can contain many regex
+// literals — but that leaves it invisible to reset()/beginSession()'s single
+// choreography (a second, independent reset point). Registering a defensive
+// session-boundary reset costs nothing and means a stale parse left mid-pattern
+// by a thrown SyntaxError in a PRIOR compile can never be read by code that
+// inspects this state before the next parseRegex() call runs.
 const resetRegexParseState = () => { src = undefined; idx = 0; groupNum = 0; groupNames = [] }
 registerResetHook(resetRegexParseState)
 

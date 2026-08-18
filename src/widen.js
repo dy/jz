@@ -11,68 +11,51 @@
  * isLit/maskBound, type reads AST via staticValue/intExprRange), but they MUST share
  * this rule, or a future edit to one silently drifts the other out of the safe subset.
  *
- * `+`/`-`'s TWO-TIER EXCEPTION (2026-08-02, P0-2 sibling fix): exprType's `+`/`-` case
- * takes a `strict` parameter (default false) that `*`/`%` don't need. Magnitude-blind
- * ("both operands i32 ⇒ i32", no bound on the SUM) is the DEFAULT and is itself sound
- * for the overwhelming majority of exprType's callers — local/param STORAGE-type
- * decisions, where a value merely typed i32 is safe regardless of magnitude because
- * every READ of that storage re-applies the same ToInt32 the WRITE did (ir.js
- * writeVar/asParamType now route i32 targets through `toI32`, not `asI32`, so this
- * is enforced, not just claimed — see ir.js's own docstring on that swap). Only the
- * few callers deciding whether a value may escape BARE (no further ToInt32 sink —
- * narrowI32Results' return-tail classification, tryI32Arith's own admission) pass
- * `strict=true`, which layers the SAME magnitude-bound check `*` always applies.
- * Mirroring `*`'s always-strict rule onto `+`/`-` UNCONDITIONALLY (the naive fix)
- * costs 8/10 perf-ratchet benchmarks (`s=s+f(...)`, `arr[i]+1` — the hottest, most
- * common shapes this compiler exists to make fast); `*`'s equivalent loss never
- * showed up because multiplicative accumulation is comparatively rare. See
- * emit.js `tryI32Arith` and .work/todo.md's own P0-2 sibling entry for the full
- * bisection that found this.
+ * `+`/`-`'s TWO-TIER EXCEPTION: exprType's `+`/`-` case takes a `strict` parameter
+ * (default false) that `*`/`%` don't need. Magnitude-blind ("both operands i32 ⇒
+ * i32", no bound on the SUM) is the DEFAULT and is itself sound for the overwhelming
+ * majority of exprType's callers — local/param STORAGE-type decisions, where a value
+ * merely typed i32 is safe regardless of magnitude because every READ of that storage
+ * re-applies the same ToInt32 the WRITE did (ir.js writeVar/asParamType route i32
+ * targets through `toI32`, not `asI32`, so this is enforced, not just assumed — see
+ * ir.js's own docstring on that distinction). Only the few callers deciding whether a
+ * value may escape BARE (no further ToInt32 sink — narrowI32Results' return-tail
+ * classification, tryI32Arith's own admission) pass `strict=true`, which layers the
+ * SAME magnitude-bound check `*` always applies. Mirroring `*`'s always-strict rule
+ * onto `+`/`-` unconditionally is NOT an option: it costs perf-ratchet benchmarks on
+ * the hottest, most common accumulation shapes this compiler exists to make fast
+ * (`s=s+f(...)`, `arr[i]+1`); `*`'s equivalent loss doesn't apply because
+ * multiplicative accumulation is comparatively rare. See emit.js `tryI32Arith`.
  *
- * `*` RULE (fixed 2026-08-02, P0-2 ledger — was the FITS_I32_MAX=2^22 "one operand
- * small, other side left fully unbounded" heuristic below): JS `*` is an f64 multiply;
- * `i32.mul` reproduces it faithfully as a PLAIN NUMBER only when the EXACT product
- * provably fits signed i32 (±(2^31−1)) — not merely "f64-exact" (≤2^53). `i32.mul`
- * always truncates mod 2^32 first; a product that's small enough to represent exactly
- * in f64 (|product| ≤ 2^53) can still overflow i32 (2^31) and wrap to the wrong value
- * the instant a consumer widens the i32 result straight to f64 (no further ToInt32
- * sink to absorb the wrap — verified live: `4194304 * (x|0)` returned bare, and
- * `(x|0) * (y&63)` returned bare, both wrapped to the wrong NUMBER at HEAD). The old
- * FITS_I32_MAX=2^22 constant tested the WRONG bound (f64-exactness of one side against
- * the other's full i32 range, product ≤ 2^53) for this use — see emit.js `mulFitsI32`
- * (now `opBound(a) * opBound(b) ≤ 2^31−1`, a magnitude bound on BOTH operands) and
- * type.js's mirrored `*` case (now `intExprRange` on both operands, same product
- * ceiling). No shared constant remains for this rule — each side derives its own
- * operand bound (IR `maskBound` / AST `intExprRange`) and checks their PRODUCT.
- * `mulBoundedFaithful` (typed-array-element magnitude products) and
- * `mulRangeFitsI32` (AST range-hull products) were already sound — both always
- * required a bound on BOTH sides; only this single-sided heuristic was the bug.
+ * `*` RULE: JS `*` is an f64 multiply; `i32.mul` reproduces it faithfully as a PLAIN
+ * NUMBER only when the EXACT product provably fits signed i32 (±(2^31−1)) — not
+ * merely "f64-exact" (≤2^53). `i32.mul` always truncates mod 2^32 first, so a product
+ * small enough to represent exactly in f64 can still overflow i32 and wrap to the
+ * wrong value the instant a consumer widens the i32 result straight to f64 (no
+ * further ToInt32 sink to absorb the wrap). The bound must be checked on BOTH
+ * operands' magnitude, not one side's f64-exactness against the other's full i32
+ * range: emit.js `mulFitsI32` (`opBound(a) * opBound(b) ≤ 2^31−1`) and type.js's
+ * mirrored `*` case (`intExprRange` on both operands, same product ceiling) each
+ * derive their own operand bound (IR `maskBound` / AST `intExprRange`) and check
+ * their PRODUCT — no shared constant. `mulBoundedFaithful` (typed-array-element
+ * magnitude products) and `mulRangeFitsI32` (AST range-hull products) apply the same
+ * both-sides-bounded rule.
  *
- * SIBLING FIXED (2026-08-02, same day as the `*` fix above, .work/todo.md):
  * `+`/`-`'s OWN bare fast path (emit.js `isI32Num(va)&&isI32Num(vb)` → native
- * `i32.add`/`i32.sub`, UNCONDITIONALLY) and `compoundAssign`'s `*=`/`+=`/`-=`
- * fast path had NO magnitude gate at all — not even this module's old, unsound
- * one. Two full-range i32 operands CAN sum past ±2^31 (confirmed live before
- * the fix: `(a|0)+(b|0)` for a=b=2^31−1 returned -2, not the true 4294967294).
- * FIX: `addFitsI32 = opBound(a)+opBound(b) ≤ 2^31−1` (emit.js, reuses `opBound`
- * verbatim — triangle inequality covers both `+` and `-` with one predicate)
- * gates the primary fast path; `compoundAssign` gated identically, dispatched
- * on `arithOp`. See the two-tier exprType exception above for why the type.js
- * mirror needed a `strict` parameter instead of `*`'s unconditional rule, and
- * ir.js's `asI32`→`toI32` note for the companion fix that made it ratchet-
- * neutral. FORMER KNOWN GAP, CLOSED 2026-08-02 (separate root cause, one
- * ticket later): a compound assign on a local back-propagated to i32 storage
- * via an array-index feeder still wrapped when read bare elsewhere — the
- * STORAGE-TYPE decision, not this predicate, was the actual cause, split
- * across TWO one-way commitments (both magnitude-blind by the SAME design
- * this docstring documents above, both missing a later-escape check):
- * `collectI32SafeIndexVars`'s own back-propagation, and widenLocalTypes'
- * separate `intCertainMap`-based `keepI32` exemption (a plain `let id = 4`
- * declaration typed i32 from its literal, never reconsidered). Root fix:
- * `collectBareEscapes` (src/compile/analyze-scans.js) — a var keeps i32
- * storage only if every later value-position read is index-positioned,
- * ToInt32-rooted, a tracked edge's own affine RHS, statically in-range, or
- * governed by SOME comparison anywhere (the SAME "sound for n≤2^31"
- * tolerance loop counters already had) — both commitments now consult it.
- * See .work/todo.md's KNOWN GAP #1 entry for the full repro/fix trace.
+ * `i32.add`/`i32.sub`, UNCONDITIONALLY) and `compoundAssign`'s `*=`/`+=`/`-=` fast
+ * path need the SAME magnitude gate as `*`: two full-range i32 operands CAN sum past
+ * ±2^31, so `addFitsI32 = opBound(a)+opBound(b) ≤ 2^31−1` (emit.js, reuses `opBound`
+ * — triangle inequality covers both `+` and `-` with one predicate) gates the
+ * primary fast path; `compoundAssign` is gated identically, dispatched on `arithOp`.
+ * See the two-tier exprType exception above for why the type.js mirror needs a
+ * `strict` parameter instead of `*`'s unconditional rule.
+ *
+ * A var keeps i32 STORAGE-TYPE only if every later value-position read is
+ * index-positioned, ToInt32-rooted, a tracked edge's own affine RHS, statically
+ * in-range, or governed by SOME comparison anywhere (the SAME "sound for n≤2^31"
+ * tolerance loop counters already have) — otherwise a bare escape downstream can
+ * observe the wrapped i32 instead of the true magnitude-blind sum. This governs
+ * `collectI32SafeIndexVars`'s back-propagation and widenLocalTypes'
+ * `intCertainMap`-based `keepI32` exemption alike; both consult
+ * `collectBareEscapes` (src/compile/analyze-scans.js) to decide.
  */

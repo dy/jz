@@ -65,7 +65,7 @@ const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
 // 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
-// distinct sid per class, audit-#9 P0-2 brand redesign). Deliberately NARROWER than
+// distinct sid per class). Deliberately NARROWER than
 // layout.js's full TYPED_CTORS (14 names): excluded here —
 //   - BigInt64Array / BigUint64Array: layout.js's encodeTypedElemAux collapses BOTH to
 //     the identical aux (base code 7 | TYPED_ELEM_BIGINT_FLAG) — no bit distinguishes
@@ -85,7 +85,7 @@ const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED
 
 // Module-level prepare state. Six independent stacks/scalars that together form
 // the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,
-// registered below as a ctx.js reset-hook (session survey audit-#13 slice a) —
+// registered below as a ctx.js reset-hook —
 // every reset()/beginSession() call clears it, so a throw inside a PRIOR prepare()
 // can never leak into the next compile either. Kept at module scope (rather than
 // ctx.prepare.*) because 78 read sites would mean a single indirection on every
@@ -710,20 +710,18 @@ function validateCoalesceMixing(n) {
 const freshPrepareId = () => ctx.names.prepare++
 
 export default function prepare(node) {
-  // FINDING (session survey audit-#13 slice a, self-host leg): reset()'s
-  // RESET_HOOKS (ctx.js) already clears this working set before prepare() runs
-  // (every caller — beginSession, raw-reset test harnesses — calls reset() first,
-  // verified by inspection of every call site), so this direct call is logically
-  // redundant. Kept anyway: removing it byte-identically passed native + full
-  // battery + JZ_DEBUG_INVARIANTS, but crashed the SELF-HOSTED kernel ("memory
-  // access out of bounds" on the very first compile, bisected to exactly this
-  // removal — module/regex.js's and optimize/vectorize.js's equivalent hooks,
-  // registered the same way, do NOT crash). Root cause not chased further (out
-  // of this campaign's scope — a compiler-internal question about a closure
-  // reachable only indirectly through RESET_HOOKS, not a session-choreography
-  // question); resetPrepState() stays idempotent and cheap, so keeping BOTH the
-  // direct call and the registration is the safe, correct choice, not a
-  // half-migration — see .work/session-survey.md AS-LANDED for the full account.
+  // This direct call must stay even though reset()'s RESET_HOOKS (ctx.js) also
+  // clears this working set before every prepare() call (beginSession, raw-reset
+  // test harnesses — every caller runs reset() first). The two are NOT redundant:
+  // omitting the direct call crashes the SELF-HOSTED kernel ("memory access out
+  // of bounds" on the very first compile) even though native + full battery +
+  // JZ_DEBUG_INVARIANTS pass byte-identically without it. module/regex.js's and
+  // optimize/vectorize.js's equivalent hooks, registered the same way, do NOT
+  // have this requirement — the dependency is specific to this working set, via
+  // some closure reachable only indirectly through RESET_HOOKS; the exact
+  // mechanism is not otherwise documented. resetPrepState() is idempotent and
+  // cheap, so keeping BOTH the direct call and the registration is correct, not
+  // a half-migration — see .work/session-survey.md for the full account.
   resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
   // modules (e.g. object → collection) without importing autoload.js — that
@@ -1160,13 +1158,13 @@ function prep(node) {
   if (Array.isArray(node)) includeForOp(node[0])
   // Whole-program "does a BigInt value ever get constructed" flag — the ONLY two
   // ways a bigint value is synthesized are a bigint literal (parse.js tags it
-  // `['bigint', decimalStr]`, audit P0-2) or an explicit `BigInt(x)` call; catching
+  // `['bigint', decimalStr]`) or an explicit `BigInt(x)` call; catching
   // both here, in prep()'s universal per-node entry (this single early pass runs
   // before ANY function emission), makes the flag order-independent for every
   // later emit-time reader. Consumed by ir.js's toNumF64 (inlineToNum fast path) to
   // scope the runtime "is this a boxed BigInt carrier" magnitude check to programs
   // that can actually produce one — everywhere else stays the original cheap
-  // NaN-only check (see .work/todo.md, ring/fgather perf-ratchet regression).
+  // NaN-only check (see .work/todo.md).
   if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
     setFeature('bigint', true)
   // Whole-program "does a jz Error object ever get constructed" flag — mirrors the
@@ -1182,16 +1180,15 @@ function prep(node) {
   // program that never actually calls the real ctx.core.emit['Error'].
   //
   // `new X(args)` with any args (the common shape) parses as `['new', ['()', X,
-  // args]]` — the class name sits one level DEEPER than this check originally
-  // looked (`node[1]` was the inner '()' array, never a bare string), so the
-  // scan silently missed it. jzify's default-mode transform happens to flatten
-  // `new X(args)` to a bare `['()', X, args]` call BEFORE prepare ever runs
-  // (module/core.js's Error emitters work identically with or without `new`),
-  // which is why this only ever manifested in STRICT mode (jzify skipped, raw
-  // parser shape survives to prepare) — found via .work/todo.md §deletion-sweep Slice
-  // B's own strict-mode instanceof/toStrI64 acceptance testing, not a Slice B
-  // regression. `ctorCallee` unwraps the same nested shape the 'new' handler
-  // below already unwraps for the identical reason.
+  // args]]` — the class name sits one level DEEPER than a bare `node[1]` string
+  // check would reach, so `ctorCallee` must unwrap this nested shape (same
+  // unwrap the 'new' handler below already does, for the identical reason).
+  // jzify's default-mode transform flattens `new X(args)` to a bare `['()', X,
+  // args]` call before prepare ever runs (module/core.js's Error emitters work
+  // identically with or without `new`), so a scan that only checked the bare
+  // shape would still be correct in default mode — but STRICT mode skips jzify
+  // and the raw nested parser shape survives to prepare, where it needs this
+  // explicit unwrap (.work/todo.md §deletion-sweep).
   const ctorCallee = Array.isArray(node) && node[0] === 'new' && Array.isArray(node[1]) && node[1][0] === '()' ? node[1][1]
     : Array.isArray(node) && (node[0] === 'new' || node[0] === '()') ? node[1] : null
   if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee)) {
@@ -1202,8 +1199,8 @@ function prep(node) {
     ;(ctx.features.errorClasses ??= new Set()).add(ctorCallee)
   }
   // Whole-program "will a nullish-receiver check ever construct a TypeError"
-  // flag (audit-#10 kind-specific table: member access / calls on a genuinely
-  // undefined-or-null receiver — src/ir.js throwTypeErrorIR, called from
+  // flag (member access / calls on a genuinely undefined-or-null receiver —
+  // src/ir.js throwTypeErrorIR, called from
   // module/core.js emitLengthAccess and src/compile/emit.js's dynamic
   // method-call/closure-call strategies). Those emit sites construct a REAL
   // TypeError object with no `new TypeError(...)` anywhere in the user's own
@@ -2156,11 +2153,10 @@ function prepDecl(op, ...inits) {
         // `let e = new X(...)`/`X(...)` (one of the 7 built-in Error classes) —
         // bind e's schemaId to that class's minted sid the same way an object
         // LITERAL declaration binds one above. Without this, a bound Error
-        // variable's schema was invisible to every consumer that resolves a
+        // variable's schema is invisible to every consumer that resolves a
         // NAME's schema rather than re-inspecting its init expression —
         // instanceof's tier-2 fold and module/object.js's spread/Object.assign
-        // source-schema check both only ever saw the literal-call-shaped case
-        // (audit-#9 P0-2).
+        // source-schema check both only ever see the literal-call-shaped case.
         bindDeclSchema(declName, ctx.schema.errorSid(normed[1]))
       } else censusUnknownInitDecl(declName)
       // Module-scope variable → WASM global (mark as user-declared). Skipped
@@ -3031,7 +3027,7 @@ const handlers = {
     if (b === undefined) {
       const na = prep(a)
       // `isLit` (op===null) already excludes a bigint literal — it's the
-      // distinct `['bigint', decimalStr]` node (parse.js, audit P0-2), never
+      // distinct `['bigint', decimalStr]` node (parse.js), never
       // this shape — so no subnormal-magnitude guard is needed here anymore:
       // a literal reaching this branch is unambiguously a genuine NUMBER.
       // The surviving `u+` (bigint operand) lets emit raise the BigInt
@@ -3054,7 +3050,7 @@ const handlers = {
   },
   '-'(a, b) {
     // Fold `-<numeric literal>` to a literal. A bigint literal is a distinct
-    // `['bigint', decimalStr]` node (parse.js, audit P0-2) — `isLit` (op===null)
+    // `['bigint', decimalStr]` node (parse.js) — `isLit` (op===null)
     // already excludes it structurally, so no bigint-vs-number ambiguity
     // reaches here at all (native or self-hosted alike); bigint negation flows
     // through the `u-` runtime path below to emit's i64.sub(0,·).
@@ -3622,10 +3618,11 @@ const handlers = {
   // source (which skips jzify) reaches this handler directly on every raw `instanceof`
   // node. Default-mode source reaches it too, for every RHS this file's INSTANCEOF_ALLOW
   // supports: jzify/transform.js's own 'instanceof' handler passes those through as
-  // `['instanceof', val, name]` instead of answering them itself (audit-#8 P0-1,
-  // 2026-08-03 — jzify used to guess via a broad shape probe BEFORE this sound handler
-  // ever saw the node, so default mode answered `new TypeError(x) instanceof RangeError`
-  // wrongly). jzify keeps its OWN Promise/Iterator shape-probes (this file rejects both
+  // `['instanceof', val, name]` instead of answering them itself — a broad shape probe
+  // in jzify cannot distinguish sibling classes (e.g. it would answer
+  // `new TypeError(x) instanceof RangeError` wrongly), so this sound handler must be
+  // the one to decide any RHS in INSTANCEOF_ALLOW. jzify keeps its OWN
+  // Promise/Iterator shape-probes (this file rejects both
   // RHS names — jz-level semantics, not core ones) and its permissive `typeof===object`
   // fallback for every RHS outside INSTANCEOF_ALLOW (Object/RegExp/user-class names —
   // default mode stays permissive there, unlike strict's loud reject below).

@@ -57,8 +57,7 @@ export const CALLEE_VAL = {
   // synthesizeBoundaryWrappers' resultDynamic fallback (compile/index.js) then
   // forced the whole export result onto the i64/BigInt boundary lane for a
   // value that's provably plain f64 — real, uncontested cost for every ordinary
-  // caller, not just a missed optimization (found alongside, not part of,
-  // audit-#11 P0-1's __to_num subnormal fix — see .work/todo.md).
+  // caller, not just a missed optimization.
   Number: VAL.NUMBER,
   // Same ToNumber-shaped, always-Number gap: Number.parseInt/parseFloat (and
   // their bare global aliases) and Date.UTC/Date.parse (timestamp or NaN,

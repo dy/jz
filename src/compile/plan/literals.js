@@ -539,15 +539,13 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     if (p.changed) { setFuncBody(func, p.body); changed = true }
     const l = scalarizeTypedArrayLiterals(func.body)
     if (l.changed) { setFuncBody(func, l.node); changed = true }
-    // (audit-#11: the raw invalidateLocalsCache(func.body) that used to sit
-    // here was vestigial — predates setFuncBody (32e4aa1d, pre-4b149108) and
-    // was never converted when the seam landed. Every actual body mutation
-    // above already goes through setFuncBody, which invalidates the node it
-    // assigns; this extra call re-invalidated an already-invalidated entry
-    // when THIS func changed, and — worse, since `changed` is the whole-loop
-    // accumulator, not per-iteration — dropped a perfectly VALID cache entry
-    // for any LATER func in the same loop that itself made no change, once
-    // any earlier func had. Pure waste, no correctness role; removed.)
+    // Body-mutation cache invalidation is owned by setFuncBody: every actual
+    // body mutation above already goes through it, and it invalidates
+    // whatever node it assigns. A manual invalidateLocalsCache(func.body)
+    // call here would be redundant when THIS func changed, and — since
+    // `changed` is the whole-loop accumulator, not per-iteration — would
+    // incorrectly drop a still-valid cache entry for any LATER func in the
+    // same loop that itself made no change, once any earlier func had.
   }
   return changed
 }
@@ -1160,7 +1158,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
     // promoted array (`s = a.slice(0); Array.isArray(s)`) is not tracked here,
     // so promotion survives and isArray answers false at O2+. Fixing it needs
     // derived-name flow, not a blanket disqualifier (a blanket one regressed
-    // the __to_num elision pin) — a focused optimizer-session item.
+    // the __to_num elision pin) — left as a known gap rather than attempted here.
     if (callee === 'Array.isArray') {
       const raw = node[2]
       const list = raw == null ? [] : (Array.isArray(raw) && raw[0] === ',') ? raw.slice(1) : [raw]
@@ -1357,15 +1355,13 @@ export const scalarizeFunctionObjectLiterals = () => {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
-      // (audit-#11: this used to invalidateLocalsCache(func.body) right here,
-      // between the read and the rewrite — a pre-setFuncBody holdover from
-      // when a plain `func.body = r.node` assignment had no invalidation of
-      // its own. scalarizeObjectLiterals never mutates its input in place
-      // (always returns a fresh node when r.changed) and never reads
-      // analyzeBody itself, so nothing between this read and setFuncBody
-      // below could observe or need a dropped entry; setFuncBody already
-      // invalidates the node it assigns. Removed — see compile/analyze.js's
-      // analyzeBody doc for the full seam-ownership note.)
+      // No manual invalidateLocalsCache call here: scalarizeObjectLiterals
+      // never mutates its input in place (always returns a fresh node when
+      // r.changed) and never reads analyzeBody's cache itself, so nothing
+      // between this read and setFuncBody below could observe or need a
+      // dropped entry — setFuncBody already invalidates whatever node it
+      // assigns. See compile/analyze.js's analyzeBody doc for the full
+      // seam-ownership note.
       const escapes = new Map(analyzeBody(func.body).escapes)
       const r = scalarizeObjectLiterals(func.body, escapes)
       if (!r.changed) break

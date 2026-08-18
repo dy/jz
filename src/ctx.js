@@ -1,7 +1,6 @@
 /**
- * CompileSession record, reset per jz() call (architecture item 11 / audit-B
- * finding 5, .work/compile-session-design.md Slice A — formalization only,
- * no shape change). `ctx` IS the CompileSession: 20 named subtrees below,
+ * CompileSession record, reset per jz() call (see .work/compile-session-design.md
+ * for the fuller design). `ctx` IS the CompileSession: 20 named subtrees below,
  * one lifecycle phase each, writer/reader tables documented per-field. See
  * src/session.js's `beginSession()` — "the ONE owner of per-compile
  * lifecycle state" — for the fuller record's owning seam.
@@ -76,26 +75,13 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 //   ctx.scope.globals (mut→false) and
 //   declares the __heap* globals. emit seeds ctx.closure.{paramTypes,paramTypedCtors}
 //   at direct-call sites (read by emitClosureBody); plan sets ctx.closure.{floor,width}.
-// `const`, not `let` (swap-revert, stack-test-2026-08-15 — .work/research.md
-// §CompileSession Slice B region-live regression forensic, b8f802b8's own
-// half-bisection: the `const`→`let` identity-swap conversion Slice B bundled
-// alongside facts absorption is the SOLE guilty mechanism for a 13/13→7/13
-// kernel-oracle region-live regression, deterministic, WAT-breadcrumb-
-// confirmed real memory-safety corruption inside `__region_copy_rec`'s
-// dispatch; the facts-side of the same bundled diff is mechanically proven
-// INNOCENT, 13/13 clean, by the same session). `reset()` below is back to
-// mutating each field in place (`ctx.X = {...}`, one assignment per
-// subtree) rather than reassigning this whole binding by identity — this IS
-// the reentrancy-fix mechanism Slice B introduced (session-survey §3: a
-// caller holding an OLD `ctx` reference across a `reset()` call would keep a
-// coherent snapshot instead of watching it mutate underfoot), so reentrancy
-// safety for a held-across-reset() `ctx` reference is DEFERRED, not
-// abandoned — design intent preserved, tracked as a named future slice
-// pending the write-site forensic (b8f802b8's own "concrete next step":
-// breadcrumb `regionArmSetMap`/`__region_relocate_props`'s value-relocation
-// path one level past the already-confirmed-correct OBJECT-arm walk) rather
-// than re-landed blind. `ctx.facts` (this literal's `facts: {}` field, the
-// absorbed `_factStore`) stays — proven innocent, independent of the swap.
+// `ctx` is bound with `const`: its object identity must never be reassigned.
+// `reset()` below mutates each subtree field in place (`ctx.X = {...}`)
+// instead of replacing the whole binding, because swapping identity corrupts
+// the region arena's relocation walk (`__region_relocate_props`'s
+// value-relocation path — see .work/research.md §CompileSession Slice B). A
+// reference to a ctx subtree held across a `reset()` call is therefore not
+// safe to keep using afterward — reset() replaces fields, not the container.
 //
 // This initial literal is the pre-first-`reset()` default shape only — every
 // field below is a bare placeholder, fully overwritten by reset()'s own
@@ -112,21 +98,16 @@ export const ctx = {
   linkDemand: {}, plans: {}, facts: {},
 }
 
-/** Reset-hook registry (session survey audit-#13 slice a — single reset
- *  choreography, not relocation): prepare/index.js's 14-let working set,
- *  module/regex.js's 4-var literal parser, and optimize/vectorize.js's
- *  why-not-simd arm/disarm flags all live at MODULE scope outside ctx for
- *  performance (documented, deliberate at each site) — but before this, each
- *  had its OWN independent reset point (prepare's own resetPrepState() call
- *  at its entry, regex's inline reset at parseRegex()'s entry, vectorize's
- *  disarm at its own call tail with no exception safety), invisible to
- *  reset()/beginSession() — the seam session.js's own docstring already
- *  names "the ONE owner of per-compile lifecycle state." A subsystem
- *  registers its own reset callback here once at module load; reset() (used
- *  by every entry point — beginSession AND raw-reset test harnesses alike,
- *  see reset()'s own DBG_INVARIANTS bridge-hook comment) drains the list at
- *  the end. Plain array + for-of, no Proxy/getter machinery (self-host
- *  subset, survey §4) — index.js's `compileTarget` test-injection override is
+/** Reset-hook registry: a subsystem that keeps MODULE-scope working state
+ *  outside ctx for performance (prepare/index.js's working set,
+ *  module/regex.js's literal parser, optimize/vectorize.js's why-not-simd
+ *  arm/disarm flags) registers its own reset callback here once at module
+ *  load, instead of wiring an independent reset point of its own. reset()
+ *  (used by every entry point — beginSession AND raw-reset test harnesses
+ *  alike) is the single choreography that drains the list, at the end of its
+ *  own work — see session.js's docstring, "the ONE owner of per-compile
+ *  lifecycle state." Plain array + for-of, no Proxy/getter machinery
+ *  (self-host subset). index.js's `compileTarget` test-injection override is
  *  deliberately NOT registered here: it is a process-wide switch that must
  *  survive the raw `reset()` calls test/types.js makes directly (unlike the
  *  other three, which are genuine per-compile working state) — see
@@ -201,32 +182,22 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *  CONTRIBUTING documents as dangerous (it silently drops emitter()'s
  *  auto-inc/argc wrapper).
  *
- *  `order`/`siteDialect`/`siteModule` are plain ARRAYS (insertion-ordered
- *  names, two parallel attribution arrays) — deliberately not a name-keyed
- *  dict/Map, and deliberately never string-CONCATENATED on the hot
- *  (non-throwing) path. Both were live self-host warm-reuse hazards, found
- *  by bisecting this exact function against `test/selfhost.js`'s
- *  "warm-instance reuse" test (a `_clear()`-then-recompile round-trip
- *  within one wasm instance, byte-pinned against a fresh instance): a
- *  name-keyed dict/Map accumulating stdlib-registration scale (~150-600
- *  entries) as a SECOND such structure alongside `ctx.core.emit`'s own
- *  large dict corrupted it with a bare "memory access out of bounds" even
- *  though `ctx.core.emit` itself proves ONE large dynamic dict is fine
- *  every compile; separately, building `${module}|${dialect}` via string
- *  concatenation ~150 times during registration corrupted it even with
- *  ZERO dicts involved (arrays only) — string concat is used constantly
- *  elsewhere in normal compiles without issue, so the trigger is concat
- *  specifically inside the compiler's OWN self-hosted bookkeeping, at this
- *  call volume, surviving to the NEXT `_clear()`. Root-causing either
- *  inside the self-hosted dyn-props/string runtime is a separate, deeper
- *  investigation (ledger note, .work/research.md); this function sidesteps
- *  both entirely — plain `.push()` of already-existing string references
- *  (`dialect`, `ctx.core.currentModule` — never a newly concatenated one)
- *  into plain arrays, the exact shape bisected safe. Every `+`/template
- *  literal below lives ONLY inside a `throw` branch (dead code on any
- *  passing compile — registerName/verifyEmitIntegrity only throw when the
- *  stdlib source itself has a genuine duplicate registration bug), so it
- *  never executes during warm reuse either. */
+ *  `order`/`siteDialect`/`siteModule` MUST stay plain ARRAYS (insertion-
+ *  ordered names, two parallel attribution arrays) — never a name-keyed
+ *  dict/Map, and never string-CONCATENATED on the hot (non-throwing) path.
+ *  A name-keyed dict/Map here, as a SECOND such structure alongside
+ *  `ctx.core.emit`'s own large dict, corrupts self-hosted warm-instance
+ *  reuse (a `_clear()`-then-recompile round-trip within one wasm instance)
+ *  with a bare "memory access out of bounds", even though one large dynamic
+ *  dict alone is fine every compile; string-concatenating `${module}|
+ *  ${dialect}` at this call volume (~150-600 registrations) corrupts the
+ *  same warm-instance reuse even with zero dicts involved. Root cause lives
+ *  in the self-hosted dyn-props/string runtime (see .work/research.md); this
+ *  function sidesteps both hazards by only ever `.push()`-ing already-
+ *  existing string references (`dialect`, `ctx.core.currentModule`) into
+ *  plain arrays. Every `+`/template literal below lives ONLY inside a
+ *  `throw` branch (dead code on any passing compile), so it never executes
+ *  during warm reuse either. */
 export const registerName = (table, order, siteDialect, siteModule, name, dialect, value) => {
   if (table[name] !== undefined) {
     const i = order.indexOf(name)
@@ -344,8 +315,8 @@ export function resolveIncludes() {
 }
 
 /**
- * Fact-store storage (audit P1 stage 5) — see src/session.js's DEPS table for
- * the full per-slice contract (what each slice caches, what invalidates it).
+ * Fact-store storage — see src/session.js's DEPS table for the full
+ * per-slice contract (what each slice caches, what invalidates it).
  * Storage lives HERE rather than in session.js to avoid a module cycle:
  * program-facts.js / analyze.js / analyze-scans.js each read their slice, and
  * analyze.js is itself imported by wat/assemble.js, which session.js imports
@@ -373,16 +344,15 @@ function createFactStore() {
     mayBeUndefinedTrace: new WeakMap(),
     mapGetShapedTrace: new WeakMap(),
     presentValTrace: new WeakMap(),
-    // ctx.func AdHocMemo retirement (ctxfunc-survey.md §2/§5, coordinator
-    // ruling #2): 6 hand-rolled single-slot `_xBody === body ? cached :
+    // The 6 fields below are single-slot `_xBody === body ? cached :
     // recompute` caches, each keyed on the CURRENT function body's identity
     // and — like mayBeUndefinedTrace et al. above — persisting ACROSS
     // enterFunc by design (self-invalidating purely by body identity, not
     // reset per-function). Same WeakMap-on-identity idiom, same session-
-    // ownership reasoning (kernel WeakMap→strong-Map lowering means a bare
-    // module-global would leak entries across compiles; resetFactStore()
-    // swaps in a fresh WeakMap every beginSession). See each consuming site
-    // for the field it replaces.
+    // ownership reasoning: kernel WeakMap→strong-Map lowering means a bare
+    // module-global would leak entries across compiles, so resetFactStore()
+    // must swap in a fresh WeakMap every beginSession. See each consuming
+    // site for the field it replaces.
     ccInBounds: new WeakMap(),        // src/type.js inBoundsCharCodeAt (was ctx.func._ccBody/ccInBounds)
     aiInBounds: new WeakMap(),        // src/type.js inBoundsArrIdx (was ctx.func._aiBody/aiInBounds)
     aiLitBounds: new WeakMap(),       // src/type.js inBoundsArrIdx/litBoundArrIdx (was ctx.func.aiLitBounds)
@@ -403,9 +373,9 @@ export function getFactStore() { return ctx.facts }
 export function reset(proto, globals, bridge) {
   // Every session entry (index.js setupCtx, scripts/self.js kernel entries,
   // raw-reset test harnesses) must bind the FULL bridge hook set — a missing
-  // hook surfaces as an empty-IR internal error deep inside a compile (the
-  // emitIdentitySafe/self.js incident: native fine, kernel leg crashed).
-  // Fail loudly at session start instead, under the invariants leg.
+  // hook surfaces as an empty-IR internal error deep inside a compile,
+  // hard to localize back to the missing binding. Fail loudly at session
+  // start instead, under the invariants leg.
   if (DBG_INVARIANTS) for (const h of ['emit', 'flat', 'body', 'bool', 'idx', 'spread', 'emitIdentitySafe'])
     if (typeof bridge?.[h] !== 'function') throw new Error(`reset: bridge hook '${h}' missing — every beginSession/reset caller must bind the full hook set (see bridge.js)`)
   // FeaturePlan freeze tripwire state (see setFeature/assertCtxInvariants below): cleared
@@ -421,14 +391,11 @@ export function reset(proto, globals, bridge) {
   // same reasoning as _postAnalyze just above: cleared here so a raw-reset-only
   // caller in the same warm process never inherits a PRIOR compile's `_preAssemble`.
   _preAssemble = false
-  // CompileSession record (swap-revert, stack-test-2026-08-15): each field
-  // below is mutated directly onto the shared `ctx` binding in place
-  // (`ctx.X = {...}`), the pre-Slice-B mechanism — see `export const ctx`'s
-  // own doc above for why (b8f802b8's half-bisection GUILTY verdict on the
-  // identity-swap; facts absorption, kept below, proven INNOCENT). No
+  // CompileSession record: each field below is mutated directly onto the
+  // shared `ctx` binding in place (`ctx.X = {...}`) — see `export const
+  // ctx`'s own doc above for why identity must never be reassigned. No
   // reader ever observes a mid-construction PARTIAL reset within a single
-  // synchronous reset() call (JS has no preemption inside it), matching
-  // this idiom's own multi-year track record before Slice B.
+  // synchronous reset() call (JS has no preemption inside it).
   ctx.bridge = bridge
   ctx.core = {
     emit: derive(proto),
@@ -464,7 +431,7 @@ export function reset(proto, globals, bridge) {
                             // collision ledger (see registerName's doc comment: plain
                             // arrays, deliberately NOT a name-keyed dict/Map, and never
                             // string-concatenated on the hot path — both broke self-host
-                            // warm-instance reuse; see registerName for the bisection).
+                            // warm-instance reuse; see registerName's own doc for why).
     regEmitDialect: [],     // parallel to regEmitOrder: dialect string ('reg'/'registerGetter').
     regEmitModule: [],      // parallel to regEmitOrder: registering module's name.
     regStdlibOrder: [],     // same trio, for ctx.core.stdlib names registered via wat().
@@ -827,7 +794,7 @@ export function reset(proto, globals, bridge) {
                         // instantiation time. 'wasi': error at compile time if any `__ext_*` import
                         // would be emitted, since wasmtime/wasmer hosts have no JS runtime to satisfy
                         // them and silent fallback would corrupt output.
-    targetProfile: null, // TargetProfile (audit P1): the named, frozen output-target policy object
+    targetProfile: null, // TargetProfile: the named, frozen output-target policy object
                         // derived from `host` — set right after `host` in session.js beginSession
                         // (targetProfileFor). Consumers gate on ITS named fields (envImports,
                         // jsStringInterop, wasiShims, commandEntry, timerModel,
@@ -856,9 +823,9 @@ export function reset(proto, globals, bridge) {
                         // (.work/research.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
                         // space from loopXformId: identifies a loop RECORD, never names anything
                         // emitted. Per-compile (reset here) for the same determinism reason.
-    closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId (architecture
-                        // re-audit item 4, .work/todo.md) — a SEPARATE space from the others
-                        // above: identifies a closure PLAN RECORD, never names anything emitted.
+    closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId — a SEPARATE
+                        // space from the others above: identifies a closure PLAN RECORD, never
+                        // names anything emitted.
                         // Per-compile (reset here) for the same determinism reason.
   }
 
@@ -921,15 +888,14 @@ export function reset(proto, globals, bridge) {
                       // OR-chain (src/compile/emit.js) and toStrI64's Error-schema arm
                       // (src/ir.js) iterate only classes that can ever exist at runtime —
                       // a never-constructed class's `instanceof` folds to compile-time
-                      // `false` and never mints/bakes a schema id for it (audit-#9 P0-2
-                      // per-class-sid brand redesign).
+                      // `false` and never mints/bakes a schema id for it.
     timers: false,          // Set by prepare.js when timer module is included
 
     // ANALYSIS — currently no members, see the stratum doc above ctx.abi.
   }
 
   // linkDemand: the DEMAND stratum of the frozen FeaturePlan (.work/research.md
-  // §FeaturePlan freeze, audit-#14 item 3 refinement) — reachability facts
+  // §FeaturePlan freeze) — reachability facts
   // EMISSION discovers ("this program's output will need EXTERNAL dispatch /
   // a typed-array kind / Set / Map / closures / f16 / clamped stores"), as
   // opposed to ctx.features' facts, which are all settled before/at analyze.
@@ -980,25 +946,20 @@ export function reset(proto, globals, bridge) {
                       // above this object.
   }
 
-  // ctx.plans — session-owned plan store (architecture re-audit item 3, .work/
-  // todo.md): the pre-emission frozen-fact WeakMaps (src/compile/
-  // closure-plan.js's ClosureEnvPlan records, src/compile/loop-model.js's
-  // LoopPlan records, representation-plan.js's normalized carrier facts, and
-  // src/ir.js's WAT-side loopPlanLink records) used to be
-  // three separate module-scope `let` bindings, each independently reassigned
-  // to a fresh WeakMap by its own resetX() hook registered on RESET_HOOKS
-  // (registerResetHook) — the audit-#19 P0 session-ownership fix applied three
-  // times over, once per original map, because self-hosting lowers WeakMap to a strong
-  // Map (no native GC), so a module-global map would let entries from a PRIOR
-  // compile() survive into the next one. Folded into ONE ctx subtree here,
-  // rebuilt directly by reset() every session — the SAME idiom ctx.features/
-  // ctx.linkDemand already use just above (a plain object assigned fresh every
-  // reset(), no hook-array indirection) — for state whose owning modules have
-  // no reason to keep their own private reset plumbing once reset() can just
-  // hand them a fresh subtree directly. Consumers (module/function.js's
-  // ctx.closure.make, src/compile/emit.js's loop/closure-plan reads,
-  // src/optimize/vectorize.js's loopPlanLink read) read ctx.plans.* — no
-  // import-time WeakMap binding to go stale.
+  // ctx.plans — session-owned plan store: the pre-emission frozen-fact
+  // WeakMaps (src/compile/closure-plan.js's ClosureEnvPlan records,
+  // src/compile/loop-model.js's LoopPlan records, representation-plan.js's
+  // normalized carrier facts, and src/ir.js's WAT-side loopPlanLink records)
+  // must be rebuilt directly by reset() every session, as ONE ctx subtree —
+  // the SAME idiom ctx.features/ctx.linkDemand already use just above (a
+  // plain object assigned fresh every reset(), no hook-array indirection).
+  // Self-hosting lowers WeakMap to a strong Map (no native GC), so a
+  // module-global map here would let entries from a PRIOR compile() survive
+  // into the next one; owning the maps on ctx and rebuilding them in reset()
+  // closes that leak without each module keeping private reset plumbing.
+  // Consumers (module/function.js's ctx.closure.make, src/compile/emit.js's
+  // loop/closure-plan reads, src/optimize/vectorize.js's loopPlanLink read)
+  // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → private canonical facts (function-plan.js only)
@@ -1011,13 +972,10 @@ export function reset(proto, globals, bridge) {
     loweringLinks: new WeakMap(), // src/ir.js, keyed on the WAT loop-block node — { plan, lowering }
   }
 
-  // Fact-store slices (audit P1 stage 5, folded onto the session record by
-  // Slice B — see createFactStore's own doc above): used to be a SECOND
-  // module-scope singleton (`_factStore`, sibling to `ctx` in lifecycle but
-  // not a field of it) swapped by a separate resetFactStore() call from
-  // beginSession(). Built here instead, as part of the SAME construction as
-  // every other subtree — getFactStore() below reads `ctx.facts`, so every
-  // one of its 51 call sites keeps working unchanged.
+  // Fact-store slices (see createFactStore's own doc above) are built here,
+  // as part of the SAME construction as every other ctx subtree — not as a
+  // second module-scope singleton swapped independently. getFactStore()
+  // below reads `ctx.facts`, so every call site of it stays subtree-owned.
   ctx.facts = createFactStore()
 
   // Single reset choreography (see RESET_HOOKS' doc above): every subsystem that
@@ -1040,12 +998,12 @@ export function reset(proto, globals, bridge) {
  *                        post-analyze/pre-assemble drift check below.
  *   - `pre-emit`       : func.current set; locals Map present — the per-
  *                        function-frame boundary right where `repsFrozen`
- *                        flips true (audit-#11: documented since 4b149108,
- *                        wired at every body-emission entry that sets it —
- *                        compile/index.js emitFunc's block/multi/expression
- *                        paths and emitClosureBody's block/expression paths,
- *                        wat/assemble.js buildStartFn's per-moduleInit and
- *                        main __start body). Unordered w.r.t. PHASE_ORDER —
+ *                        flips true, wired at every body-emission entry that
+ *                        sets it (compile/index.js emitFunc's block/multi/
+ *                        expression paths and emitClosureBody's block/
+ *                        expression paths, wat/assemble.js buildStartFn's
+ *                        per-moduleInit and main __start body). Unordered
+ *                        w.r.t. PHASE_ORDER —
  *                        fires once per function frame, not once per compile.
  *   - `post-analyze`   : extends the post-prepare snapshot with ctx.features'
  *                        ANALYSIS stratum (currently empty — see the stratum
@@ -1070,14 +1028,6 @@ export function reset(proto, globals, bridge) {
 // `cfg?.flag` read was a HASH probe; the same read is slot-cheap on V8, and
 // that asymmetry alone moved the warm self-host ratio. Lives here (not
 // optimize/index.js) so ir.js/module consumers stay cycle-free.
-// WIDE_BIGINT / HOST_PROFILE.wideBigint (audit P0-2, removed): used to gate pre-eval's
-// rational carry and emitNeg's literal-negation path on whether the ENGINE RUNNING THE
-// COMPILER had arbitrary-precision BigInt — false under self-host, where the kernel's
-// BigInt is a wrapping i64 carrier. Both consumers are now host-independent (bignum.js
-// u32-limb arithmetic for the rational carry; a structurally-tagged bigint-literal AST
-// node, not a magnitude probe, for emitNeg — see parse.js), so the capability gate has
-// no reader left; removed rather than kept as an unread flag.
-
 /** CompilerHostProfile (stage-4 seed): capabilities of the ENGINE RUNNING THE
  *  COMPILER, probed once at load. Consumers branch on named capabilities, not
  *  scattered environment probes — new host-capability gates land HERE. (The
@@ -1101,14 +1051,10 @@ export const optFlagsOf = (cfg) => {
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-// Carrier program (.work/carrier-representation-design.md). FLIPPED ON BY
-// DEFAULT (§34: FLIP-READY verdict, every §15-§34 blocker closed — carrier
-// test:wasm fully green, kernel-parity/kernel-oracle agree with native under
-// the flag, fuzz zero-divergence, default-battery delta scoped to the one
-// pre-pinned audit-#16 row). The BigInt tagged-pointer box (PTR.BIGINT) is
-// now the standard representation; `JZ_CARRIER_BOX=0` is the escape-hatch
-// opt-OUT back to the legacy raw-i64-in-f64-slot carrier, kept for A/B and
-// as a rollback lever, not because the boxed path is in doubt.
+// Carrier program (.work/carrier-representation-design.md): the BigInt
+// tagged-pointer box (PTR.BIGINT) is the standard representation, on by
+// default. `JZ_CARRIER_BOX=0` is the escape-hatch opt-OUT back to the legacy
+// raw-i64-in-f64-slot carrier, kept for A/B and as a rollback lever.
 export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'
 
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
@@ -1161,8 +1107,8 @@ export function setFeature(key, value) {
 
 let _preAssemble = false // true once 'pre-assemble' has fired for the current compile
 
-/** Emission-time write tripwire for ctx.linkDemand (session survey audit-#13
- *  slice b), mirroring setFeature() exactly — the DEMAND stratum's own freeze
+/** Emission-time write tripwire for ctx.linkDemand, mirroring setFeature()
+ *  exactly — the DEMAND stratum's own freeze
  *  point is 'pre-assemble', not 'post-analyze' (see ctx.linkDemand's own doc
  *  above reset(): every writer — emit, emit-assign, analyze's typed tracker,
  *  the module/* emit handlers — completes before assertCtxInvariants('pre-

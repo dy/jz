@@ -156,14 +156,14 @@ export const USE = {
 // Self-host-only: see resetProgramFactsCache (program-facts.js) — a fresh
 // factStore (src/session.js) swaps in a fresh WeakMap each session so a
 // warm-instance compile-clear-compile loop never reads a dangling arena
-// pointer out of the old backing storage. Session-owned (audit P1 stage 5) —
-// getFactStore().bindingUses, NOT a private module-level WeakMap.
+// pointer out of the old backing storage. This cache lives at
+// getFactStore().bindingUses, NOT a private module-level WeakMap, for that
+// reason.
 //
 // No surgical invalidation (session.js DEPS table) — by design, not gap: this
 // cache is body-keyed with no widen/narrow-in-place hazard like bodyFacts',
 // because nothing ever mutates a body's binding-use SHAPE without also
-// changing the body's own AST identity first. That identity change is now
-// structural (audit P1 next-slice) — every pass that restructures a
+// changing the body's own AST identity first. Every pass that restructures a
 // function's AST does so through analyze.js's setFuncBody, which assigns a
 // NEW func.body reference — so a caller reading scanBindingUses(func.body)
 // after a rewrite is, by construction, keying off a fresh node this WeakMap
@@ -845,8 +845,8 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
  * widening; the assignment fixpoint that follows still widens any local with an
  * f64-typed RHS (`i = i / 3`), overriding membership here.
  *
- * THIRD requirement, layered on top of both sources above (fixed 2026-08-02,
- * .work/todo.md KNOWN GAP #1): membership alone is NOT sufficient — a var is
+ * THIRD requirement, layered on top of both sources above (.work/todo.md
+ * KNOWN GAP #1): membership alone is NOT sufficient — a var is
  * excluded from the returned set if `collectBareEscapes` finds it in an
  * unresolved bare-escape position anywhere in `body`. Both sources' proofs
  * are true only AT THE POINT of the index/edge use; the var's WASM storage is
@@ -880,16 +880,14 @@ const ESCAPE_EDGE_OPS = new Set(['=', '+=', '-=', '*='])
 // exactly `x = x ^ y` (JS ToInt32-coerces both operands identically either
 // way), the SAME root-op exemption ESCAPE_SAFE_ROOT_OPS already grants the
 // expanded binary form (`x ^ y` walks both operands in 'idx' mode, never
-// blaming either). Before this fix these ops fell through to the generic
-// value-mode walker (they're not affine, not `[]`, not a math-fn call, not
-// in ESCAPE_EDGE_OPS), which walks BOTH node[1] (the target, a bare string)
-// AND node[2] in 'value' mode — misreading the compound-assign's implicit
-// self-read of the target as a bare escape and blaming it (`x ^= x << 7` in
-// a sieve/PRNG-style bitwise kernel: `x` never compared, so blamed on every
-// such statement, disqualifying an otherwise textbook ESCAPE_SAFE_ROOT_OPS
-// var from i32 storage — the reference-refresh top-priority regression at
-// 2f0720a5, root-caused to 28b2530b, bench/bitwise.js: 0 v128 ops, was 12+
-// before). Target skipped here
+// blaming either). Without this exemption these ops fall through to the
+// generic value-mode walker (they're not affine, not `[]`, not a math-fn
+// call, not in ESCAPE_EDGE_OPS), which walks BOTH node[1] (the target, a
+// bare string) AND node[2] in 'value' mode — misreading the compound-
+// assign's implicit self-read of the target as a bare escape and blaming it
+// (`x ^= x << 7` in a sieve/PRNG-style bitwise kernel: `x` never compared,
+// so blamed on every such statement, disqualifying an otherwise textbook
+// ESCAPE_SAFE_ROOT_OPS var from i32 storage). Target skipped here
 // for the identical reason ESCAPE_EDGE_OPS skips its target: a compound
 // assign's self-read never independently reveals unsoundness (any true
 // divergence needs a DIFFERENT, unguarded bare read elsewhere in the body,
@@ -963,7 +961,7 @@ function collectComparedNames(body, crossClosure) {
  * the instant it's read bare (`return id` after `id *= 100000`) even though
  * some OTHER, earlier use of the same var (feeding an array index) was
  * perfectly sound at that point of use. See collectI32SafeIndexVars' own doc
- * and .work/todo.md's KNOWN GAP #1 entry (2026-08-02) for the full diagnosis.
+ * and .work/todo.md's KNOWN GAP #1 entry for the full diagnosis.
  *
  * Occurrences exempt from the proof requirement (mirrors the three-source
  * contract in collectI32SafeIndexVars' doc):
@@ -1002,21 +1000,20 @@ export function collectBareEscapes(body, locals, crossClosure) {
   const escaped = new Set()
   const compared = collectComparedNames(body, crossClosure)
   const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value'
-    // audit-#12 delayline residual: `escapeInRangeI32` (rule a, doc above) was
-    // already wired for a COMPOUND value-mode node (the generic array-node
-    // fallthrough below) — but a BARE NAME leaf returns HERE, before ever
-    // reaching that check, so a name whose own closed hull IS provable
+    // A BARE NAME leaf must apply the SAME `escapeInRangeI32` proof (rule a,
+    // doc above) the generic array-node fallthrough below applies to a
+    // COMPOUND value-mode node — checking it HERE, not only at the compound
+    // level, is what lets a name whose own closed hull IS provable
     // (`repOf(name)?.range`, stamped by processDecl's early declRange pass for
-    // any never-reassigned decl — see analyze.js) still got blamed whenever
-    // its only escaping use sat under an operator `intExprRange` doesn't model
-    // (division: `(dq/65536)|0` walks `dq` in 'value' mode directly, since
-    // `/` isn't ESCAPE_SAFE_ROOT_OPS/AFFINE_INDEX_OPS and intExprRange has no
-    // '/' case to hull the OUTER node — the ONLY chance to prove `dq` itself
-    // safe is checking the LEAF's own range, which this line now does). Same
-    // proof, same soundness contract as the compound-node check just reached
-    // one level too late — a reassigned accumulator (`id` after `id *=
-    // 100000`) gets no processDecl range stamp either way, so this is a
-    // strict widening, not a new tolerance.
+    // any never-reassigned decl — see analyze.js) clear an escaping use that
+    // sits under an operator `intExprRange` doesn't model (division:
+    // `(dq/65536)|0` walks `dq` in 'value' mode directly, since `/` isn't
+    // ESCAPE_SAFE_ROOT_OPS/AFFINE_INDEX_OPS and intExprRange has no '/' case
+    // to hull the OUTER node — the ONLY chance to prove `dq` itself safe is
+    // checking the LEAF's own range, which this line does). Same proof, same
+    // soundness contract as the compound-node check, applied one level
+    // earlier: a reassigned accumulator (`id` after `id *= 100000`) gets no
+    // processDecl range stamp either way, so this adds no new tolerance.
     if (typeof node === 'string') { if (mode === 'value' && !compared.has(node) && !escapeInRangeI32(node)) escaped.add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]

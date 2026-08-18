@@ -132,7 +132,7 @@ export default (ctx) => {
     const fnName = `${T}closure${ctx.closure.table.length}`
 
     // ClosureEnvPlan (src/compile/closure-plan.js's mintClosureEnvPlans,
-    // architecture re-audit item 4, .work/todo.md) — the frozen pre-emission
+    // see .work/todo.md) — the frozen pre-emission
     // capture classification (free vars, constant folds, boxed cells), keyed
     // on THIS closure's own body node, or — a destructured-param closure
     // only, see that module's own doc — on `rawParams` (untouched by the

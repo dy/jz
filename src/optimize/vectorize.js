@@ -847,10 +847,10 @@ const LANE_COMPARE = {
   // scalar `i32.*_s` compare against a value that itself came from the same sign extension (the
   // extension is monotonic and injective, so signed narrow compare ≡ signed compare of the
   // extended value); for an UNSIGNED load (`_u`, zero-extended) the analogous `_u`/`eq`/`ne`
-  // forms hold for the same reason. Added for if-conversion (§5, this session): masked/
-  // predicated stores on Uint8Array/Int16Array-etc. element streams need a lane-width mask,
-  // not an i32x4 one — this was the actual gap blocking byte/short if-conversion (missing
-  // entries here, not a codegen limitation), caught by this session's own i8/i16 new-reach tests.
+  // forms hold for the same reason. Masked/predicated stores on Uint8Array/Int16Array-etc.
+  // element streams need a lane-width mask, not an i32x4 one, so byte/short if-conversion
+  // depends on these entries existing — their absence is a missing-entry gap, not a
+  // codegen limitation.
   i8: { 'i32.eq': 'i8x16.eq', 'i32.ne': 'i8x16.ne', 'i32.lt_s': 'i8x16.lt_s', 'i32.lt_u': 'i8x16.lt_u', 'i32.gt_s': 'i8x16.gt_s', 'i32.gt_u': 'i8x16.gt_u', 'i32.le_s': 'i8x16.le_s', 'i32.le_u': 'i8x16.le_u', 'i32.ge_s': 'i8x16.ge_s', 'i32.ge_u': 'i8x16.ge_u' },
   i16: { 'i32.eq': 'i16x8.eq', 'i32.ne': 'i16x8.ne', 'i32.lt_s': 'i16x8.lt_s', 'i32.lt_u': 'i16x8.lt_u', 'i32.gt_s': 'i16x8.gt_s', 'i32.gt_u': 'i16x8.gt_u', 'i32.le_s': 'i16x8.le_s', 'i32.le_u': 'i16x8.le_u', 'i32.ge_s': 'i16x8.ge_s', 'i32.ge_u': 'i16x8.ge_u' },
 }
@@ -1213,10 +1213,10 @@ function classifyAddrLocal(writes, name, ind) {
 // provably-consistent, keyed by name. Phase 1 is ONE walk collecting every local.set/local.tee
 // write node, BUCKETED BY NAME — the evidence phase 2 (classifyAddrLocal, above) classifies
 // against; phase 2 is then table-local (reads its name's own write list, never re-walks
-// `body`), replacing the earlier "gather names in one walk, then re-walk body once per
-// candidate name inside classifyAddrLocal" shape (quadratic in loop-body size × candidate-local
-// count — audit-#14 item 6). Both phases are pure functions of (body, ind) — order-independent,
-// per design §3's "collect every tee-definition first, resolve second" argument.
+// `body`). Re-walking `body` once per candidate name inside classifyAddrLocal would be
+// quadratic in loop-body size × candidate-local count; bucketing by name up front keeps this
+// linear. Both phases are pure functions of (body, ind) — order-independent, per design §3's
+// "collect every tee-definition first, resolve second" argument.
 function buildAddrTable(body, ind) {
   const writesByName = new Map()
   const gather = (n) => {
@@ -1238,14 +1238,12 @@ function buildAddrTable(body, ind) {
 }
 
 // Projects addrTable's offset-kind subset to the plain `Map<name, strideLog2>` shape
-// matchLaneAddr's `offsetTees` parameter expects — the SOLE construction of this table now
-// (audit-#14 item 6): the earlier standalone `deriveOffsetTees` derivation was proven
-// byte-identical to this projection on the full corpus (slice 1's shadow-assert, the licensing
-// proof for this unification) and has been retired; `bodyFacts` derives `bl.offsetTees` FROM
-// `bl.addrTable` via this function instead of computing it twice. tryRampMap's own private
-// `addrLocals` (recordAddrTees — an in-place-map CSE'd full-address tee, genuinely
-// recognizer-private per the design's terminal verdict) still combines with this at each
-// matchLaneAddr call; only the offsetTees half is BodyModel-sourced.
+// matchLaneAddr's `offsetTees` parameter expects — this projection is the SOLE construction of
+// that table: `bodyFacts` derives `bl.offsetTees` FROM `bl.addrTable` via this function instead
+// of computing it twice, so the two can never diverge. tryRampMap's own private `addrLocals`
+// (recordAddrTees — an in-place-map CSE'd full-address tee, genuinely recognizer-private per
+// the design's terminal verdict) still combines with this at each matchLaneAddr call; only the
+// offsetTees half is BodyModel-sourced.
 function offsetTeesFromAddrTable(addrTable) {
   const m = new Map()
   for (const [name, e] of addrTable) if (e.kind === 'offset') m.set(name, e.strideLog2)
@@ -1278,18 +1276,17 @@ function buildSiteAccess(body, ind, offsetTees) {
 
 // Partition of every access base in siteAccess into equivalence classes (design §4, v1 scope: the
 // static base-identity fact only — no dependence-edge graph, see §4/§7).
-// SOUNDNESS (audit-#14 item 5): two classes may be DISTINCT only under an existing proof
-// (distinctParams, separate fresh allocations, neverGrown anchors — none threaded yet: the
-// slice-4 HIR provenance link landed as a link + shadow-assert only, no consumer, so it does
-// NOT supply a distinctness proof either); absent proof, different bases are UNKNOWN aliasing and
-// must conservatively share one class — `let b = a` gives two names for one base, so a per-base
-// partition would manufacture a distinctness proof out of a rename. Same-base positivity
-// ("provably the same base") doesn't need a partition: compare base identity directly. Until a
-// real proof channel is threaded, the sound answer is the single universal class — a CONSTANT.
-// audit-#15 item 6: the per-site base-key collection that used to feed this (a structural
-// `JSON.stringify` serialization per load/store site, in buildSiteAccess) was pure dead
-// production cost once this became a constant — dropped here; REINTRODUCE it alongside the
-// points-to consumer that would actually partition on it, not before.
+// SOUNDNESS: two classes may be DISTINCT only under an existing proof (distinctParams, separate
+// fresh allocations, neverGrown anchors — none of these are threaded through here yet, and the
+// HIR provenance link is a shadow-assert with no consumer, so it does not supply a distinctness
+// proof either); absent proof, different bases are UNKNOWN aliasing and must conservatively
+// share one class — `let b = a` gives two names for one base, so a per-base partition would
+// manufacture a distinctness proof out of a rename. Same-base positivity ("provably the same
+// base") doesn't need a partition: compare base identity directly. Until a real proof channel is
+// threaded, the sound answer is the single universal class — a CONSTANT. A per-site base-key
+// collection (a structural serialization per load/store site) is only worth building in
+// buildSiteAccess once a points-to consumer actually partitions on it — building it against a
+// constant class would be pure dead production cost.
 const ALIAS_CLASS_UNIVERSAL = { get: () => 0 }
 function buildAliasClass() {
   return ALIAS_CLASS_UNIVERSAL
@@ -1311,12 +1308,10 @@ function buildBodyModel(body, ind) {
 // a warning to log past. No-op unless JZ_DEBUG_INVARIANTS=1 (DBG_INVARIANTS), zero production cost.
 function assertBodyModelSound(body, ind, bm) {
   const { addrTable, offsetTees, siteAccess } = bm
-  // (a) addrTable's offset-kind subset ≡ deriveOffsetTees's own output was asserted here through
-  // slice 3 — RETIRED (audit-#14 item 6): `offsetTees` is now DERIVED from `addrTable` (see
-  // `offsetTeesFromAddrTable`, `buildBodyModel`), so the two can no longer diverge — the check
-  // would compare addrTable to itself. The slice-1 shadow-assert already proved the two
-  // constructions identical on the full corpus BEFORE this unification; that proof is what
-  // licensed retiring the standalone derivation, not a claim that no check is needed at all.
+  // (a) No check here: `offsetTees` is DERIVED from `addrTable` (see `offsetTeesFromAddrTable`,
+  // `buildBodyModel`), so the two can never diverge — comparing them would just compare
+  // addrTable to itself. A check is only meaningful while two independent constructions coexist;
+  // once one is defined in terms of the other, asserting their agreement is vacuous.
 
   // (b) fullAddr/idxTee classification vs the private predicates they generalize — addrTable is
   // allowed to be a STRICTER subset (see classifyAddrLocal's doc) but never a WIDER one: every
@@ -1524,12 +1519,12 @@ function matchLoopBrEnd(loopNode) {
 // here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet instead of
 // re-walking.
 //
-// Also computes BodyModel (.work/research.md §BodyModel; slices 1-3 landed — consumed by
-// tryReduceBitExact/tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread
-// in below (audit-#14 item 6: `offsetTees` is ONE construction now — `buildBodyModel` derives it
-// FROM `addrTable`, so it rides in with `...bm` instead of its own separate `deriveOffsetTees`
-// call). JZ_DEBUG_INVARIANTS shadow-asserts the generalization against the private predicates it
-// will eventually let recognizers retire.
+// Also computes BodyModel (.work/research.md §BodyModel; consumed by tryReduceBitExact/
+// tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread in below. `offsetTees`
+// is ONE construction — `buildBodyModel` derives it FROM `addrTable`, so it rides in with
+// `...bm` instead of its own separate `deriveOffsetTees` call. JZ_DEBUG_INVARIANTS
+// shadow-asserts the generalization against the private predicates it will eventually let
+// recognizers retire.
 function bodyFacts(body, ind) {
   const writes = new Set()
   for (const s of body) collectWrites(s, writes)
@@ -2819,9 +2814,9 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
 
   // Address tees: locals that equal `ind << K`. f64 loads must be stride-8 (K=3) so one
   // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact
-  // (bl.siteAccess, see buildSiteAccess) — computed once at the dispatch (shadow-assert-proven
-  // against the plain matchLaneAddr query this used to make live, .work/research.md §BodyModel
-  // slice 1), was a private per-site matchLaneAddr(e[1], incVar, new Map(), bl.offsetTees) call.
+  // (bl.siteAccess, see buildSiteAccess) — computed once at the dispatch instead of a private
+  // per-site matchLaneAddr(e[1], incVar, new Map(), bl.offsetTees) call — shadow-assert-proven
+  // equivalent to that plain query (.work/research.md §BodyModel).
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
   // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
@@ -3217,8 +3212,8 @@ let _relaxF32 = false
 // from it (lift ctx objects don't carry the optimize config; module flag is the pattern).
 let _crPow = false
 
-// Reset choreography (session survey audit-#13 slice a): the arm/disarm pair
-// around each vectorizeLaneLocal call (below) is a manual per-call-site contract,
+// Reset choreography: the arm/disarm pair around each vectorizeLaneLocal call (below)
+// is a manual per-call-site contract,
 // not exception-safe — a thrown error mid-walk skips the disarm lines and leaves
 // these flags armed for the rest of the warm process. Registering a session-
 // boundary reset means that leak can never survive past the NEXT compile's
@@ -3473,7 +3468,7 @@ function liftStmt(stmt, ctx) {
     // (COND evaluates before either arm, always). Pushing it LAST (the previous shape) let an
     // arm's OWN intermediate `local.set` (lifted via `liftInter`, which runs before this push)
     // read the address local's STALE prior-iteration value — a real miscompile for exactly the
-    // shared-tee shape above, caught by this session's own if-conversion negative-test sweep.
+    // shared-tee shape above.
     const mtmp = `$__mask${ctx.freshIdRef.next++}`
     ctx.extraLocals.push(['local', mtmp, 'v128'])
     const out = ['__seq__', ['local.set', mtmp, mask]]
@@ -6683,9 +6678,9 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // SAME field set + ORDER as the ctx in tryVectorize / tryReduce / tryRampMap. The
   // self-host kernel infers ONE struct layout per shared callee, and `liftFail` is shared with
   // liftExprV — so every ctx reaching it MUST have the identical shape, or the inferred layout is
-  // wrong for some and field reads corrupt (this is the exact regression 11657cf fixed; the
-  // tone-map's old 3-field ctx re-broke the ENTIRE self-host vectorizer). tryToneMap itself only
-  // reads fail/failReason/extraLocals, but the unused fields must still be present, in order.
+  // wrong for some and field reads corrupt (a narrower ctx shape here previously broke the ENTIRE
+  // self-host vectorizer this way). tryToneMap itself only reads fail/failReason/extraLocals, but
+  // the unused fields must still be present, in order.
   const ctx = { laneType: 'f64', incVar, rampVar: null, rampTemp: null, widenLoads: false, localKind, fnLocals: null, newLanedLocals, extraLocals: [], freshIdRef, fail: false, failReason: null }
   const toneSetBefore = new Set()         // lane locals already assigned (conditional-merge gate)
   const laned = (name) => { let ln = newLanedLocals.get(name); if (!ln) { ln = `${name}__v`; newLanedLocals.set(name, ln) } return ln }
@@ -7077,8 +7072,8 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 }
 
 
-// ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2 of this
-// session): a profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
+// ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2): a
+// profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
 // tryGeneralStencil/tryGeneralReduce below) — every idiom FUSER above (tryDivergentEscapeVectorize,
 // tryBlurMultiPixel, tryButterfly, …) keeps its own separately-tuned, always-fire behavior
 // unchanged; this gate never runs for them. Today the three general recognizers vectorize
@@ -7102,31 +7097,27 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
 // instruction in the MVP+SIMD feature set). `bitselect` (blend, the if-conversion codegen
 // above) = 5.
 //
-// Calibration, honestly reported (per the task's own "roughly, not invented precision"): a
-// wall-clock microbench (`node -e`, this session — `d = mask ? a : b` vs `d = a + b` vs
-// `d = a / b`, SIMD_OPT, both a 2e7-element streaming pass and a 2e5-element pass repeated 200×
-// to stay cache-resident) showed NO measurable difference between add/blend/div on this engine
-// (V8) — all three are memory-bandwidth-bound, not compute-bound, at any array size tried. That
-// is itself useful, honestly-reported signal (real streaming SIMD kernels are memory-bound, so
-// op-mix rarely changes wall-clock much) — but it means the microbench could not supply a
-// blend/div MULTIPLIER the way the task's own example table implies. The weights actually used
-// are therefore a conservative PRIOR (in the spirit of LLVM's TargetTransformInfo select/div
-// cost classes — blend ~2-5x, div severalx-to-double-digit x, target-dependent), then GATE-
-// CALIBRATED against this session's own two concrete cases: `div`=8 keeps its illustrative
-// starting value (never empirically contradicted — no corpus loop has a speculated arm with
-// float division to test against either way); `bitselect`=5 (raised from an initial 2, alongside
-// `COST_OVERHEAD_PROLOGUE`/`COST_OVERHEAD_PER_GUARD` below being LOWERED from an initial 3/2) —
-// the initial 2/3/2 triple declined a real, already-landed corpus-shaped test
-// (`SIMD alias-version f64 - same-array runtime-offset window…`, `test/simd.js` — an ordinary
-// affine MAP with one alias-versioning guard, NO if-conversion, at f64's 2-lane width, where the
-// guard/prologue overhead was punishing a perfectly profitable plain map). Per the task's own
-// instruction ("if the model would decline a corpus case, the model is wrong: recalibrate, don't
-// special-case"): recalibrated by shifting weight FROM the lane-count-sensitive per-loop overhead
-// (which penalizes every general-layer recognizer, if-converted or not, hardest at f64/i64's 2
-// lanes) TOWARD the blend-specific weight (which only penalizes the if-conversion codegen this
-// session actually adds) — the synthetic decline case below (§SIMD cost model tests) still
-// declines under the new triple, the real corpus case now doesn't. The 130-corpus sweep (this
-// session's own ledger entry) is the final, decisive calibration signal, not either number here.
+// Calibration: these weights are an ESTIMATE, not a measured multiplier. A wall-clock microbench
+// (`d = mask ? a : b` vs `d = a + b` vs `d = a / b`, SIMD_OPT, both a 2e7-element streaming pass
+// and a 2e5-element pass repeated 200× to stay cache-resident) showed NO measurable difference
+// between add/blend/div on V8 — all three are memory-bandwidth-bound, not compute-bound, at any
+// array size tried. That is itself useful signal (real streaming SIMD kernels are memory-bound,
+// so op-mix rarely changes wall-clock much), but it means no microbench can supply a blend/div
+// MULTIPLIER directly. The weights actually used are a conservative PRIOR instead (in the spirit
+// of LLVM's TargetTransformInfo select/div cost classes — blend ~2-5x, div severalx-to-double-digit
+// x, target-dependent), gate-calibrated against corpus behavior: `div`=8 is the illustrative
+// starting value (never empirically contradicted — no corpus loop has a speculated arm with float
+// division to test against either way); `bitselect`=5 and `COST_OVERHEAD_PROLOGUE`/
+// `COST_OVERHEAD_PER_GUARD` = 1/1 are chosen so the model does not decline a real, corpus-shaped
+// case (`test/simd.js`'s alias-versioned f64 same-array runtime-offset map — an ordinary affine
+// MAP with one alias-versioning guard, NO if-conversion, at f64's 2-lane width, where guard/
+// prologue overhead alone would otherwise punish a perfectly profitable plain map) while still
+// declining the synthetic decline case below (§SIMD cost model tests). Governing rule: if the
+// model would decline a real corpus case, the model is wrong — recalibrate the weights, never
+// special-case the site. Weight is shifted FROM the lane-count-sensitive per-loop overhead (which
+// penalizes every general-layer recognizer, if-converted or not, hardest at f64/i64's 2 lanes)
+// TOWARD the blend-specific weight (which only penalizes if-conversion codegen). A full corpus
+// sweep against the test suite is the decisive calibration signal — not either number in isolation.
 const COST_WEIGHT = { load: 1, store: 1, bitselect: 5, div: 8, div_s: 8, div_u: 8, rem_s: 8, rem_u: 8 }
 const _COST_ARITH_RE = /^(add|sub|mul|and|or|xor|shl|shr|eqz|eq|ne|lt|gt|le|ge|min|max|neg|abs|sqrt|floor|ceil|trunc|nearest|convert|extend|narrow|wrap|promote|demote|splat|clz|ctz|popcnt|copysign|reinterpret|pmin|pmax)/
 function opCostWeight(op) {
@@ -7178,7 +7169,7 @@ function weighTree(nodes) {
 // initial 3 (a real corpus-shaped alias-versioned map at f64's 2-lane width was being wrongly
 // declined by prologue+guard overhead alone).
 const COST_OVERHEAD_PROLOGUE = 1
-// Runtime alias-versioning (layer 3, f2012e2c/6adde429) adds a disjointness guard (`i32.or` of
+// Runtime alias-versioning (layer 3) adds a disjointness guard (`i32.or` of
 // `le_s`/`ge_s` pairs) evaluated once before the loop, one clause per mismatched site pair — the
 // SAME "paid once per execution, not once per step" reasoning as the prologue above applies here
 // too (kept at 1, tuned down from an initial 2 for the identical reason — see `COST_WEIGHT`'s
@@ -7219,8 +7210,8 @@ function isProfitable(body, lifted, lanes, guardCount = 0) {
 // (e.g. `a[i] = a[i-1] + a[i]`, a genuine recurrence) is a real cross-iteration dependency.
 // Distinct bases (different arrays) are assumed non-aliasing — the same baseline convention
 // tryVectorize/tryStencil already rely on (tryStencil's own doc, "the SAME assumption the plain
-// map path already relies on") — UNCHANGED by this session, see the runtime-versioning note below
-// for why that convention stays untouched.
+// map path already relies on") — see the runtime-versioning note below for why that convention
+// stays untouched here.
 //
 // RUNTIME ALIAS VERSIONING (layer 3, .work/vectorizer-generality-design.md follow-up — LLVM's
 // loop-versioning-for-vectorization answer to the same static-proof gap): an `elemKey` mismatch
@@ -7239,10 +7230,10 @@ function isProfitable(body, lifted, lanes, guardCount = 0) {
 // write windows by the SAME `lanes` stride, so a gap ≥ `lanes` between them means no step ever
 // reads a position a PRIOR step already overwrote, nor misses a write a later step depends on —
 // this is the textbook LLVM loop-vectorizer distance-≥-VF rule. Cross-array aliasing (different
-// bases) is deliberately OUT of this session's scope — see the header doc's own note above: it
-// is currently an UNCHECKED, unconditional assumption everywhere in this file (not merely here),
+// bases) is deliberately OUT of scope here — see the header doc's own note above: it is
+// currently an UNCHECKED, unconditional assumption everywhere in this file (not merely here),
 // and versioning it would mean adding a runtime guard to every existing multi-array corpus
-// specimen (a real regression risk this session's own gates forbid) — a separate, much larger
+// specimen (a regression risk against every existing corpus hit) — a separate, much larger
 // initiative (base-provenance analysis: which locals are provably fresh/non-escaping vs.
 // caller-supplied) that this pass does not attempt.
 //
@@ -7270,16 +7261,16 @@ function isProfitable(body, lifted, lanes, guardCount = 0) {
 // lane (i8/i16/i32/i64) elementwise maps at a runtime-invariant index shift — `out[i] = a[i+off]`,
 // `out[i+off] = a[i]`, both `i+off` and `off+i` operand orders, multi-array independent shifts —
 // none of which any prior recognizer's literal `matchLaneAddr`/`matchLaneOffset` shape accepts
-// (confirmed empirically: `--why-not-simd` declines all of them pre-this-pass; tryStencil itself
-// declines on lane type alone before ever reaching its own affine check); plus (this session)
-// same-array runtime-offset recurrences that are ACTUALLY disjoint at runtime — `a[i] = a[i-k]
+// (confirmed empirically: `--why-not-simd` declines all of them without this pass; tryStencil itself
+// declines on lane type alone before ever reaching its own affine check); plus same-array
+// runtime-offset recurrences that are ACTUALLY disjoint at runtime — `a[i] = a[i-k]
 // + b[i]` for a runtime `k` — now versioned instead of unconditionally declining.
 //
-// Follow-up seam (banked, not this session): REDUCTION/STENCIL-proper generalization (design §4
+// Out of scope for this base-layer slice: REDUCTION/STENCIL-proper generalization (design §4
 // step 4), the float-domain grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base
 // loops), non-constant (runtime-computed) stride coefficients, and cross-array runtime alias
 // versioning (needs a base-provenance analysis this pass doesn't have — see the versioning note
-// above) — all deliberately out of scope for this base-layer slice.
+// above).
 
 // Loop-versioning body-size gate (layer 3): a genuine SAME-BASE dependence that IS runtime-
 // disjoint gets a versioned wrapper — SIMD body + a second, full clone of the scalar loop as the
@@ -7524,7 +7515,7 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
     if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
   }
   if (!lifted.length) return null
-  // Cost model (Part 2, this session — see the header doc right before tryGeneralMap): decline
+  // Cost model (Part 2 — see the header doc right before tryGeneralMap): decline
   // when the vector step costs at least as much per lane as the scalar iteration it replaces.
   // `aliasGuards` (computed above) is non-null only for the versioned path; its own `.length` is
   // the guard-clause count the wrapper below actually ANDs together, so it's the right count here.
@@ -7590,9 +7581,8 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
 // index — that `tryGeneralMap`'s deliberately-narrower proof cannot see. Zero risk to
 // `tryGeneralMap`'s own already-verified corpus by construction (dispatch order unchanged).
 //
-// The float-domain grid-index branch (a4726c5a's own banked follow-up, "the float-domain
-// grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base loops like schrodinger's
-// `y*w+x`)"): FOLDS IN NATURALLY. `ivCoeff`'s `f64.add`/`f64.sub`/`i32.mul`/`f64.mul`/
+// The float-domain grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base loops
+// like schrodinger's `y*w+x`) FOLDS IN NATURALLY. `ivCoeff`'s `f64.add`/`f64.sub`/`i32.mul`/`f64.mul`/
 // `f64.convert_i32_s`/`i32.wrap_i64`/`i64.trunc_sat_f64_s` arms below are copied verbatim from
 // `tryStencil` — the SAME algorithm that already proves "coefficient 0 or 1" for a row base
 // computed in f64 domain (jz's own overflow-canon idiom) works identically regardless of what
@@ -7609,11 +7599,11 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
 // gather-style codegen (per-lane scalar loads assembled into a vector, or a strided SIMD load
 // instruction wasm doesn't have) instead of the one-`v128.load`-per-step contiguous-window
 // codegen this pass (and `tryStencil`/`tryGeneralMap` before it) shares — a different transform,
-// not a proof extension. Same disposition a4726c5a already recorded; still out of scope here.
+// not a proof extension; still out of scope here.
 //
 // In-place / loop-carried gate: `tryStencil`'s own `elemKey` check (every access to a WRITTEN
 // base must hit the SAME element as every OTHER access to that base) is no longer an
-// unconditional decline on mismatch — reuses layer 3's (`f2012e2c`, `tryGeneralMap`) three-way
+// unconditional decline on mismatch — reuses layer 3's (`tryGeneralMap`) three-way
 // resolution VERBATIM (ported, not shared — matching every prior layer's own "port, don't share"
 // precedent so `tryGeneralMap`'s already-gated corpus behavior stays untouched): a compile-time
 // element delta ≥ lanes is accepted for free; < lanes declines exactly as before (a genuine
@@ -7814,13 +7804,11 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
   // addresses routinely route through a DERIVED local (`c = rc + x`, single-assignment,
   // `ivCoeff===1`) whose own row-base term (`rc`) is a genuine RUNTIME value, not a literal —
   // folding each side independently then fails even on a textbook adjacent-column hazard
-  // (`a[c] = a[c-1] ^ a[c]`), found via this session's own negative-test sweep: a compile-
-  // time-PROVABLY-unsafe delta (|D|=1) was mis-classified as "runtime-unknown" and VERSIONED
-  // instead of declined — correct at runtime (the guard is always false, so results stay
-  // bit-exact) but dead SIMD code emitted for nothing, exactly the kind of regression layer
-  // 3's own "compile-time-foldable, unsafe" branch exists to catch (see that layer's ledger
-  // entry, `f2012e2c`, "found and fixed via that exact regression"). Fix: fold the DELTA
-  // symbolically instead of each side alone — peel ONE literal additive/subtractive term off
+  // (`a[c] = a[c-1] ^ a[c]`): a compile-time-PROVABLY-unsafe delta (|D|=1) would be mis-classified
+  // as "runtime-unknown" and VERSIONED instead of declined — correct at runtime (the guard is
+  // always false, so results stay bit-exact) but dead SIMD code emitted for nothing, exactly the
+  // kind of regression layer 3's own "compile-time-foldable, unsafe" branch exists to catch.
+  // Fix: fold the DELTA symbolically instead of each side alone — peel ONE literal additive/subtractive term off
   // the top of each side and compare what remains via `exprEq` (the same side-effect-free
   // structural-equality primitive `elemKey`'s own base comparison already relies on); when
   // the remainders match structurally, the two sides differ by EXACTLY the peeled literals
@@ -7922,7 +7910,7 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
     if (r != null) { if (Array.isArray(r) && r[0] === '__seq__') lifted.push(...r.slice(1)); else lifted.push(r) }
   }
   if (!lifted.length) return null
-  // Cost model (Part 2, this session — see the shared header doc before tryGeneralMap). Same
+  // Cost model (Part 2 — see the shared header doc before tryGeneralMap). Same
   // check, same reused arrays; `aliasGuards.length` is the guard-clause count when versioned.
   if (!isProfitable(body, lifted, LANE_INFO[laneType].lanes, aliasGuards ? aliasGuards.length : 0))
     return liftFail(ctx, 'not profitable: vector cost/lane ≥ scalar cost')
@@ -7961,8 +7949,7 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
 // Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
 // literal post-lowering WAT-pattern list — to an AST-level affine-in-IV proof, the SAME lever
 // `tryGeneralMap` already applied to the MAP class (design §2/§3 step 3, REDUCTION slice —
-// .work/vectorizer-generality-design.md, banked as this session's explicit follow-up seam in
-// tryGeneralMap's own landing ledger entry). `ivCoeff`/`matchAddr` below are a PORT of
+// .work/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
 // `tryGeneralMap`'s own (itself ported from `tryStencil`) — not a literal import, matching
 // `tryGeneralMap`'s own "port, don't share" precedent so `tryReduceReassoc`'s already-gated
 // corpus behavior stays byte-for-byte untouched. One difference from `tryGeneralMap`'s copy:
@@ -8166,7 +8153,7 @@ function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   // flag (self-host divergence) bails rather than splicing a literal `null` operand.
   if (ctx.fail || liftedExpr == null) return null
   if (ctx.newLanedLocals.size > 0 || ctx.extraLocals.length > 0) return null
-  // Cost model (Part 2, this session — shared header doc before tryGeneralMap). REDUCE has no
+  // Cost model (Part 2 — shared header doc before tryGeneralMap). REDUCE has no
   // store sites (`scanExpr` above forbids STORE_OPS entirely) — no alias-versioning hazard to
   // guard, always `guardCount` 0 (matches layer 3's own "tryGeneralReduce doesn't need this
   // layer" finding). The vector-side cost is the one accumulate step this pass's own codegen
@@ -8384,10 +8371,10 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // cross-check); a null `bl` has nothing to compare. Runs BEFORE the consultation below
       // so it still checks the fresh WAT derivation, unmodified by the override.
       if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl)
-      // FIRST REAL CONSUMPTION (.work/research.md §BodyModel; architecture re-audit item 7):
-      // the shadow-assert above has now run across the full battery with zero divergences —
-      // wherever the link resolves an IV name, it is PROVEN to equal `bl.incVar`'s WAT-derived
-      // one. Roles invert: the plan becomes the primary source for the name every bl-based
+      // FIRST REAL CONSUMPTION (.work/research.md §BodyModel): the shadow-assert above runs
+      // across the full battery with zero divergences, so wherever the link resolves an IV
+      // name, it is PROVEN to equal `bl.incVar`'s WAT-derived one. Roles invert: the plan
+      // becomes the primary source for the name every bl-based
       // recognizer below reads (tryMemCopyFill/tryVectorize/tryReduce/
       // tryStencil/tryToneMap/tryStrengthReduceIV — all share
       // this one `bl`), and `matchInc1`'s WAT walk above becomes the fail-open FALLBACK (link

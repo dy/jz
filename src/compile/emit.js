@@ -134,8 +134,9 @@ const canonNum = (node) => {
   // NaN by bits and so misread x86's 0xFFF8 as truthy. ONLY an un-canon'd NaN-minting
   // arithmetic op can carry such a value — literals, i32-conversions, opaque locals/calls
   // (canonical by the canon-at-source invariant) and already-canon'd shapes don't — so
-  // skipping everything else keeps the size win. (The broken middle ground was
-  // `02873d0`'s `isNumericIR` skip, which dropped canon for f64.div too → x86 miscompile.)
+  // skipping everything else keeps the size win. (Skipping canon via an `isNumericIR`
+  // check instead of the NAN_MINTING op-set is unsound: it drops canon for f64.div
+  // too, which miscompiles on x86.)
   const arith = Array.isArray(node) &&
     (NAN_MINTING.has(node[0]) || (node[0] === 'call' && node[1] === '$__rem'))
   if (!arith) return node
@@ -289,20 +290,20 @@ function builtinFunctionValue(name) {
 const emitNeg = (a) => {
   // BigInt operands (literal or otherwise) always carry VAL.BIGINT statically —
   // a bigint LITERAL is the self-describing `['bigint', decimalStr]` node
-  // (kind.js VT.bigint), never a raw `[null, number]` node (audit P0-2: the
-  // parser tags bigint literals structurally, off the source `n` suffix, so
-  // there's no longer a bit-pattern to conflate with a genuine subnormal
-  // NUMBER literal here — see parse.js). No magnitude heuristic needed for
-  // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
-  // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
+  // (kind.js VT.bigint), never a raw `[null, number]` node: the parser tags
+  // bigint literals structurally, off the source `n` suffix, so there's no
+  // bit-pattern to conflate with a genuine subnormal NUMBER literal here (see
+  // parse.js). No magnitude heuristic needed for literals; the runtime
+  // magnitude heuristic (emit.js TYPEOF.bigint) remains for genuinely
+  // dynamic/unknown-kind values, a separate, real carrier limit.
   // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/todo.md
-  // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
-  // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
-  // promotion (kind.js) — a SEPARATE mechanism from the census helpers
+  // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim
+  // can reach `valTypeOf` via VT['[]']/['.']/['()']'s own exact-kind promotion
+  // (kind.js) — but that's a separate mechanism from the census helpers
   // (dictValueKindOf/mapValueKindOf) themselves, which this OR-arm consults
-  // DIRECTLY (censusMaybeUndefinedKind, unchanged since Slice 1/79082fb2). Keeps
-  // this activation gate reachable for a dynamic dict/Map-read operand
-  // independent of whether that promotion stays wired.
+  // directly (censusMaybeUndefinedKind). Keeps this activation gate reachable
+  // for a dynamic dict/Map-read operand independent of whether that promotion
+  // stays wired.
   if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
     return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'])
   const v = emit(a)
@@ -344,8 +345,8 @@ const foldConst = (va, vb, fn, guard) =>
 // NOT the same thing — `i32.mul` truncates mod 2^32 regardless of how small the
 // exact product would stay in f64, so an unguarded operand can carry the true
 // product past ±2^31 and the wrap corrupts any consumer that widens the i32
-// result straight to f64 (P0-2 ledger: `4194304 * (x|0)` returned bare, or
-// `(x|0) * (y&63)` returned bare — both wrap to a wrong NUMBER at HEAD).
+// result straight to f64 — e.g. `4194304 * (x|0)` or `(x|0) * (y&63)` both
+// wrap to a wrong NUMBER under the old rule.
 // BOTH operands need a real magnitude bound — a literal's own |value|, or a
 // masked/narrowed expression's `maskBound` (ir.js; already used for the masked-
 // scale case) — and it's the PRODUCT of those bounds, not either alone, that
@@ -396,8 +397,8 @@ const subRangeFitsI32 = (aAst, bAst) => {
   return !!ra && !!rb && ra[0] - rb[1] >= -0x80000000 && ra[1] - rb[0] <= 0x7fffffff
 }
 
-// Loop-guard hull channel (audit-#12 sort lever, sibling to c8700daa's
-// forCounterRange): `while (name < bound)` / `for (…; name < bound; …)` proves
+// Loop-guard hull channel, sibling to forCounterRange (static.js):
+// `while (name < bound)` / `for (…; name < bound; …)` proves
 // an upper bound for `name` for the DURATION the guard has just passed and
 // `name` hasn't been written since — unlike forCounterRange's whole-body
 // induction hull (sound only for a monotone counter with a known init/step),
@@ -547,25 +548,22 @@ export function emitTypeofCmp(a, b, cmpOp) {
     const fold = staticFold(VAL.BIGINT); if (fold) return fold
     if (planTaggedBigint) return isPtrKind(PTR.BIGINT)
     // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
-    // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
-    // Slice 3, .work/carrier-representation-design.md §7 — the registry's
-    // 'typeof' finding, layout-kinds.js). Landed ALONGSIDE, not replacing,
-    // the magnitude fallback: round-3's own "verify every R-recovery arm
-    // independently before deleting the heuristic" discipline — Slice 5
-    // retires the magnitude half once every arm here is confirmed sound.
+    // bits reinterpreted as f64) OR a real PTR.BIGINT box (see the registry's
+    // 'typeof' handling in .work/carrier-representation-design.md §7,
+    // layout-kinds.js). The box check lands ALONGSIDE the magnitude fallback,
+    // not replacing it — the magnitude arm retires only once every
+    // R-recovery arm here is independently confirmed sound without it.
     const n = ['local.tee', `$${t}`, va]
     const magCond = ['i32.and',
       ['f64.eq', n, ['local.get', `$${t}`]],
       ['i32.and',
         ['f64.ne', ['local.get', `$${t}`], ['f64.const', 0]],
         ['f64.lt', ['f64.abs', ['local.get', `$${t}`]], ['f64.const', 2.2250738585072014e-308]]]]
-    // Gated on ctx.features.bigint (matches the $__is_truthy/$__to_num
-    // precedent this session's own gating fix applies): no program lacking
-    // any bigint syntax can ever construct a PTR.BIGINT box, so ptrTypeEq's
-    // $__ptr_type call is unreachable dead weight there — including it
-    // unconditionally would pull memory into a program whose ONLY typeof
-    // comparison is `typeof x === 'bigint'` (found live, same regression
-    // class as $__is_truthy's).
+    // Gated on ctx.features.bigint, matching the $__is_truthy/$__to_num
+    // precedent: no program lacking any bigint syntax can ever construct a
+    // PTR.BIGINT box, so ptrTypeEq's $__ptr_type call is unreachable dead
+    // weight there — including it unconditionally would pull memory into a
+    // program whose ONLY typeof comparison is `typeof x === 'bigint'`.
     if (!ctx.features.bigint) return wrap(magCond)
     const isPtr = ['f64.ne', ['local.get', `$${t}`], ['local.get', `$${t}`]]
     const isBigintTag = ptrTypeEq(['local.get', `$${t}`], PTR.BIGINT)
@@ -1058,16 +1056,16 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
-  // HIR provenance link upkeep (.work/research.md §BodyModel slice 4 — found via its own
-  // shadow-assert, vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
+  // HIR provenance link upkeep (.work/research.md §BodyModel slice 4 — enforced by
+  // vectorize.js's assertLoopPlanAgrees shadow-assert): this rename mutates local names IN
   // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission minted a
   // LoopPlan for — the block's IDENTITY survives (same array), so loopPlanLink still resolves
   // it, but its `lowering.ivName`/`lowering.guardName` (captured pre-rename) would go STALE if a
   // renamed name was the loop's own induction/guard variable — exactly the small-const-unrolled-
   // outer-loop-with-nested-loop shape (`splitScratch`'s only use case). Keep the fact accurate
   // rather than evict it: a `block` descendant with a link gets its `lowering` name fields
-  // carried through the SAME rename map — `plan` (the frozen HIR-side facts) is NEVER touched
-  // (audit-#15 item 5: a rename is backend metadata, not a fact HIR proved). Metadata-only —
+  // carried through the SAME rename map — `plan` (the frozen HIR-side facts) is NEVER touched,
+  // since a rename is backend metadata, not a fact HIR proved. Metadata-only —
   // never touches `ir`'s own content, so this cannot affect emitted bytes.
   const rewrite = n => {
     if (!Array.isArray(n)) return
@@ -1431,15 +1429,15 @@ const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySa
 // from "this node's VALUE happens to bit-collide with one of those two
 // reserved constants" — a plain, never-null BIGINT expression whose result
 // is occasionally, by construction, IDENTICAL to a reserved atom's own bit
-// pattern (found live: `layout.js` atomNanHex's own `LAYOUT.NAN_PREFIX_BITS
+// pattern (e.g. `layout.js` atomNanHex's own `LAYOUT.NAN_PREFIX_BITS
 // | (BigInt(atomId) << AUX_SHIFT)` — never nullable, but for atomId 1/2 its
-// VALUE is bit-for-bit NULL_NAN/UNDEF_NAN). The false-positive skipped
-// `boxBigInt` for that pure-BIGINT argument and passed it raw into `i64Hex`
-// — whose OWN `bits` param the whole-program `bigintBoxed` solver proved
-// "always arrives boxed" and unboxes with ZERO runtime tag check
-// (unboxBigInt, ir.js) — so `i64Hex` treated the raw sentinel's low 32 bits
-// (0 for both NULL_NAN and UNDEF_NAN — their id lives at bit 32+) as a heap
-// address and `i64.load`'d address 0, reading the formatter's own static
+// VALUE is bit-for-bit NULL_NAN/UNDEF_NAN). A bit-pattern-only guard would
+// skip `boxBigInt` for that pure-BIGINT argument and pass it raw into
+// `i64Hex` — whose OWN `bits` param the whole-program `bigintBoxed` solver
+// proves "always arrives boxed" and unboxes with ZERO runtime tag check
+// (unboxBigInt, ir.js) — so `i64Hex` would treat the raw sentinel's low 32
+// bits (0 for both NULL_NAN and UNDEF_NAN — their id lives at bit 32+) as a
+// heap address and `i64.load` address 0, reading the formatter's own static
 // string table's opening bytes. Restricting the runtime nullish-guarded
 // passthrough to the ONE shape that can genuinely BE null (a `?:` node with
 // a nullish arm, mirroring the ternaryBoxedNames gate a few hundred lines
@@ -1514,18 +1512,18 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
       // of those uniformly-BIGINT-typed arguments is secretly a durable box.
       // Unbox before crossing — the callee's body (readI64-covered arithmetic,
       // OR a boundary re-export) assumes raw i64-as-f64 bits, and hands them
-      // straight through unmodified otherwise. Found live: `chain(5)` →
+      // straight through unmodified otherwise. E.g. `chain(5)` →
       // `arith(r)` (`r` ternary-boxed, coerceArg correctly passes it through
       // unboxed already — see below) → `hex(r)` (`hex`'s param0 settled
       // "stays raw", `r` is `arith`'s own ALREADY-boxed param) — hex's
-      // `v.toString(16)` read the pointer's own bits raw.
-      // `typed(['local.get', ...], 'f64')`, NOT a bare array: asI64/asF64
-      // (ir.js) dispatch on `.type` to decide the coercion shape, defaulting
-      // an UNTAGGED node to "i32, needs f64.convert_i32_s" — found live as a
-      // self-host build failure (WebAssembly.Module() validation: "f64.
-      // convert_i32_s[0] expected type i32, found local.get of type f64") —
-      // `$t` is a genuine f64 local (temp() mints one), the untagged
-      // local.get read of it defaulted straight into that wrong i32 path.
+      // `v.toString(16)` would read the pointer's own bits raw without this.
+      // Must build the result as `typed(['local.get', ...], 'f64')`, NOT a
+      // bare array: asI64/asF64 (ir.js) dispatch on `.type` to decide the
+      // coercion shape, defaulting an UNTAGGED node to "i32, needs
+      // f64.convert_i32_s" — `$t` is a genuine f64 local (temp() mints one),
+      // so an untagged local.get read of it would default straight into that
+      // wrong i32 path and fail self-host wasm validation
+      // ("f64.convert_i32_s[0] expected type i32, found local.get of type f64").
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
@@ -2046,160 +2044,32 @@ export function emitDecl(...inits) {
 
     const isObjLit = Array.isArray(init) && init[0] === '{}'
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
-    // STILL NOT storedValue/argIR here (WALL, banked — carrier-invariant-
-    // design.md; re-banked 2026-08-01 after a dedicated hunt partially
-    // dissolved, then RE-CLOSED this exact wall). One real bug found and
-    // FIXED this session, one found and left standing:
+    // This decl-init site deliberately calls plain `emit(init)` below, not
+    // `storedValue(init)`/`argIR(init)`. `storedValue`/`argIR` box a
+    // BOOL-typed init into an f64 NaN-boxed carrier atom for escape safety;
+    // that's the right call for an escaping value, but this site's `val` also
+    // feeds the local-storage coercion ladder a few lines down, which for a
+    // provably non-escaping i32-storage BOOL local expects a raw i32 0/1, not
+    // a boxed atom (the ladder already handles that case correctly via
+    // unboxBoolIR when it does see a boxed BOOL). Separately, boxing a BOOL
+    // here reshapes the self-hosted kernel's own compiled locals (extra
+    // temps, shifted local numbering) enough to trip self-host miscompiles
+    // unrelated to this site's own logic — for a captured-and-mutated
+    // closure binding it has produced genuinely invalid WASM, not just a
+    // size/shape difference (test/kernel-oracle.js's 'captured-then-read'
+    // row stays PENDING-FIX for exactly this reason). See
+    // .work/research.md §Carrier invariant's "DECL-INIT WALL" entries for
+    // the full mechanism. Do not swap this call without re-verifying
+    // kernel-parity and kernel-oracle in full afterward.
     //
-    // FIXED (ir.js boxPtrIR/asF64): the "ROOT-CAUSED" ledger entry's own
-    // diagnosis was real — a ptrKind-tagged i32 pointer reboxing via
-    // carrierF64→asF64→boxPtrIR rebuilt its result through `typed()`,
-    // which sets ONLY `.type`; the source's `.ptrKind`/`.ptrAux` never
-    // propagated to the boxed node. Bits stayed correct, but emitDecl's
-    // own P1 plan/emit-parity assert below (inheritPtrAliases,
-    // analyze.js) reads those tags off `val` and found them gone: "P1
-    // predictor drift: predicted object, emit sees undefined" —
-    // deterministic, reproduced in a plain NATIVE build with
-    // JZ_DEBUG_INVARIANTS=1 (no wasm target needed; the assert had simply
-    // never been armed during a real build before this hunt). That part
-    // is fixed: boxPtrIR now carries the source's ptrKind/ptrAux forward
-    // under NEW names (`.srcPtrKind`/`.srcPtrAux`, not `.ptrKind`/
-    // `.ptrAux` themselves — the ledger's proposed "copy the tags
-    // forward" was tried verbatim first and CRASHES: `.ptrKind`/
-    // `.ptrAux` are a live DISPATCH convention read by asF64 itself plus
-    // truthyIR/writeVar/the matchF64Bits family, all of which treat
-    // `.ptrKind != null` as "this node's OWN storage is an unboxed i32
-    // offset" with no `.type` re-check — stamping it onto boxPtrIR's
-    // f64-typed result made a later asF64 pass over an already-boxed
-    // value re-enter boxPtrIR and emit `i64.extend_i32_u` on an f64
-    // operand, failing wasm validation). Verified with a fresh forced-
-    // invariants native build: zero P1 fires, with or without the decl
-    // patch below applied.
-    //
-    // EXPORT-LOSS MECHANISM ROOT-CAUSED AND FIXED 2026-08-03 (dedicated hunt,
-    // research.md §Carrier invariant "DECL-INIT WALL" entries): the "total
-    // export loss for EVERY compiled program" symptom above is NOT an
-    // unlocalized native self-compile miscompile — it is this file's OWN
-    // local-storage coercion ladder a few lines down (`localType === 'v128'
-    // ? val : localType === 'f64' ? asF64(val) : val.type === 'i32' ? val :
-    // toI32(val)`, now fixed, see the unboxBoolIR branch inserted there).
-    // MECHANISM: for a BOOL-typed init, plain `emit(init)` ALWAYS returns an
-    // i32 0/1 (never f64) — the ladder's `val.type === 'i32'` arm always
-    // caught it, `toI32` never ran on a BOOL. `storedValue(init)` instead
-    // routes a BOOL-typed init through carrierF64→boolBoxIR, producing an
-    // F64-TYPED NaN-boxed TRUE/FALSE carrier ATOM (an escape-safe box, not a
-    // number). Landing on the SAME ladder with `localType==='i32'` (the
-    // local's native WASM storage, chosen independently for a provably-
-    // non-escaping BOOL local), `val.type` is now 'f64', so the ladder fell
-    // to `toI32(val)` — ECMAScript ToInt32, where NaN → 0. TRUE_NAN and
-    // FALSE_NAN are BOTH NaN bit patterns, so toI32 collapsed EVERY boxed
-    // boolean to i32 0 — a category error (numeric truncation applied to an
-    // opaque bit-pattern atom that needed unboxBoolIR's shift+mask instead).
-    // PROOF: native-WAT-diffed self.js compiled with the storedValue patch
-    // vs without (scripts/self.js's own `prepare/index.js` defFunc — `const
-    // exported = !!ctx.funcs.exports[name] && ctx.module.moduleStack.length
-    // === 0`, a BOOL const later read back into the `funcInfo` object
-    // literal) showed EXACTLY this: the good build compiles `exported` as a
-    // plain `f64.gt`/`i32.eqz` i32 result; the patched build wraps the same
-    // comparison in `__mkptr_0_d_` (carrierF64 boxing) then immediately
-    // `select(i32.wrap_i64(i64.trunc_sat_f64_s(...)), 0, ...)` — toI32 on the
-    // just-built atom. Every function `defFunc` promotes gets `exported`
-    // silently pinned to 0 (false) this way, so NO function the resulting
-    // kernel ever compiles gets a wasm export clause — confirmed by kernel
-    // WAT dumps of a trivial `export let f = (x) => x + 1`: body correct at
-    // every optimize level, `(export "f")` missing at O0/O1, and at O2/O3
-    // the (correctly, from the optimizer's own perspective) unreferenced
-    // unexported function gets DCE'd entirely, `(module)` with zero exports
-    // and zero funcs. FIX (landed, this file): the ladder now checks
-    // `valTypeOf(init) === VAL.BOOL` before falling to `toI32` and takes
-    // ir.js's existing (previously unused) `unboxBoolIR` — bit-extraction,
-    // not numeric truncation. NO-OP at HEAD (kernel-parity 33/33 byte-
-    // identical, kernel-oracle 451/451): `emit(init)` never produces an f64-
-    // typed BOOL, so the new branch is dead code today — it only activates
-    // the moment a decl-init call site starts passing a boxed BOOL atom in.
-    // PROVEN with the substitution itself: `val = viewInit ||
-    // storedValue(init)` PLUS this ladder fix compiles a fresh dist/jz.wasm
-    // whose exports are correct at every optimize level (verified live,
-    // trivial-program + WAT diff, not assumed).
-    //
-    // WALL STAYS CLOSED ANYWAY: turning storedValue on here also, separately,
-    // surfaces a DIFFERENT divergence unrelated to this mechanism —
-    // test/kernel-parity.js's 'dict' corpus entry (`d[c] = (d[c] || 0) + 1`)
-    // diverges from native at O2/O3 only (kernel ~3% larger WAT; O0
-    // byte-identical) — no BOOL-atom coercion involved, a separate
-    // MECHANISM A site (research.md §Carrier invariant's 16 hand-reimplemented
-    // `carrierF64(node, emit(node))` sites, or one of the 13 PENDING-FIX
-    // oracle rows the design doc already gates production changes behind)
-    // getting exercised for the first time with storedValue live at every
-    // decl. NOT chased further this session (separate root, separate hunt).
-    //
-    // ATTEMPTED AGAIN, STILL BANKED 2026-08-03 (audit-#8 P0-4 Part 2 —
-    // dedicated worktree hunt). The dict-O2/O3 divergence ABOVE was in fact
-    // named and DISSOLVED: it is `storedValue`'s carrier WIDTH, not the
-    // decl-init site itself — `storedValue(init)` boxes EVERY VAL.BOOL-typed
-    // init (its non-ambiguous branch is `carrierF64`, which boxes any BOOL,
-    // not just an ambiguous BOOL∪NUMBER merge — src/ir.js carrierF64:
-    // `valTypeOf(node) === VAL.BOOL ? boolBoxIR(emitted) : asF64(emitted)`),
-    // so EVERY plain `let ok = a > b` in self.js's own source got reboxed,
-    // reshaping the self-hosted kernel binary pervasively enough to shift
-    // watr's inliner decisions for unrelated programs (confirmed via WAT
-    // diff: kernel `count$exp` for the dict corpus carried extra inliner
-    // boilerplate locals, no changed VALUE computation — a real but
-    // avoidable "different compiler, same semantics" artifact). This file's
-    // own `argIR` (line ~1195) is EXACTLY the narrower half needed —
-    // `hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)`,
-    // whose non-ambiguous branch is the bare `emit(node)` this line already
-    // calls — so swapping to `val = viewInit || argIR(init)` should have
-    // been byte-identical for every non-ambiguous decl. It WAS: kernel-
-    // parity's byte-identity corpus (33/33, dict included) stayed perfectly
-    // byte-identical with this substitution live.
-    // BUT a SECOND, DIFFERENT self-host miscompile surfaced that the parity
-    // corpus's 11 programs don't exercise: test/kernel-oracle.js's 'closure'
-    // AGREE row (`let total = 0; const add = (x) => { total += x; … }`, a
-    // captured-and-MUTATED outer binding — jz's `ctx.func.boxed` heap-cell
-    // path) — the resulting self-hosted kernel throws
-    // `WebAssembly.Module(): ... local.set[0] expected type f64, found
-    // local.get of type i32` compiling THIS target program, i.e. produces
-    // genuinely INVALID WASM, not just a size/shape difference. Isolated
-    // with a 3-way worktree A/B (native diff of scripts/self.js compiled
-    // with vs without ONLY this substitution, `wat:true`, no self-hosting
-    // needed to reproduce the divergence): the compiled locals inside
-    // `src/prepare/index.js`'s `resolveCallee` (an unrelated PREPARE-phase
-    // function, calls no boxed-closure logic itself) shift by exactly one
-    // synthetic temp name and everything downstream renumbers — consistent
-    // with `argIR`'s call-site TEXT change in emitDecl.js shifting the
-    // GLOBAL `temp()` counter while compiling THE COMPILER'S OWN source
-    // (self.js), which is otherwise harmless UNLESS it happens to collide
-    // with a latent watr inliner/local-coalescing sensitivity — exactly the
-    // outline-hunt self-host-miscompile CLASS this ledger has hit and
-    // resolved before (export-loss MECHANISM C, above), but a NEW, not yet
-    // root-caused instance, confirmed genuinely caused by this substitution
-    // via a clean A/B (Parts 1+3 of the same session, which also edit
-    // compiler source, build and self-host CLEANLY — isolates the cause to
-    // this exact line, not "any edit to emit.js is unsafe"). Root-causing
-    // this precisely (which exact resolveCallee-adjacent decl reacts, and
-    // why the renumbering trips watr's optimizer) is a multi-session-class
-    // hunt on its own precedent (see the export-loss entry above, itself a
-    // dedicated hunt) — NOT closed this session. REVERTED: this line stays
-    // `emit(init)`; test/kernel-oracle.js's 'captured-then-read' row stays
-    // PENDING-FIX. NEXT: start from `resolveCallee`'s compiled-WAT local
-    // shift (native `compile(selfSrc, {wat:true, optimize:false})`, diffed
-    // with vs without ONLY the argIR substitution — no self-host build
-    // needed to see the shift) and trace which of its callees'
-    // (`isDeclared`/`resolveScope`/`hasFunc`/`includeForCallableValue`)
-    // compiled locals actually get inlined into it and why the shift isn't
-    // pure renaming.
     // ctx.func._arrayLiteralNeverEscapes (module/array.js's array-literal
     // emitter reads it): a compiler-synthesized decl-destructure array-
     // literal temp (prepare/index.js prepDecl, ctx.schema.arrayVars — see
     // that map's own doc comment there and carrierF64Narrow's, ir.js). A
     // transient CONTEXT FLAG, not a change to the `emit(init)` call itself —
-    // this decl-init site is the documented WALL just above (repeated hunts,
-    // still banked): swapping this call to storedValue/argIR reshapes the
-    // self-hosted kernel's own compiled locals enough to trip a DIFFERENT,
-    // unrelated self-host miscompile. A flag only module/array.js's array-
-    // literal emitter consults carries none of that risk — it changes
-    // nothing about what `emit(init)` calls or how many temps it mints.
+    // per the WALL above, a flag only module/array.js's array-literal
+    // emitter consults carries none of that risk, since it changes nothing
+    // about what `emit(init)` calls or how many temps it mints.
     const neverEscapes = !viewInit && typeof name === 'string' && Array.isArray(init) &&
       init[0] === '[' && ctx.schema.arrayVars?.has(name)
       ? true : ctx.func._arrayLiteralNeverEscapes
@@ -2212,18 +2082,15 @@ export function emitDecl(...inits) {
     // (VT['?:'] line "if (ta && ta === tb) return ta" — BOTH arms BIGINT,
     // NEITHER nullish, e.g. `neg ? -BigInt(mag) : BigInt(mag)`, ALSO types
     // BIGINT there, but the '?:' handler leaves that shape raw, no box).
-    // Using the broad test here previously registered the decl'd name as
-    // ternary-boxed even when nothing was ever boxed — readI64 (ir.js) then
-    // unboxed a genuinely-raw asF64-merged value as if it were a real
-    // PTR.BIGINT pointer, `i64.load`-ing garbage at a bit-derived offset.
-    // Found live: jz compiling watr/src/optimize.js's own `_i64Canon`
-    // (`neg ? -BigInt(mag) : BigInt(mag)` inlined as `_i64Hex16`'s argument)
-    // under JZ_CARRIER_BOX=1 at O3 — `fold()` returned 5.826595490514274e+252
-    // instead of 2.000000000000001 (.work/carrier-representation-design.md
-    // §13/§14). See isTernaryBoxedBigint's own doc comment (ir.js) for the
-    // full "why the local's own storage isn't raw here" reasoning and the
-    // earlier live incident (`.bigint:toString` on a genuinely ternary-boxed
-    // local misread the pointer's bits raw). ctx.func.ternaryBoxedNames
+    // Using the broad test here would register the decl'd name as
+    // ternary-boxed even when nothing was ever boxed — readI64 (ir.js) would
+    // then unbox a genuinely-raw asF64-merged value as if it were a real
+    // PTR.BIGINT pointer, `i64.load`-ing garbage at a bit-derived offset (as
+    // it did for the raw case above: `neg ? -BigInt(mag) : BigInt(mag)`
+    // types BIGINT under the broad test but the '?:' handler leaves it raw,
+    // no box). See isTernaryBoxedBigint's own doc comment (ir.js,
+    // .work/carrier-representation-design.md §13/§14) for the full "why the
+    // local's own storage isn't raw here" reasoning. ctx.func.ternaryBoxedNames
     // (compile/index.js enterFunc), NOT updateRep — this is the emission
     // tier, which passes.js's own exit grep asserts never writes durable
     // analysis state; a per-function transient Set is the established
@@ -2378,12 +2245,12 @@ export function emitDecl(...inits) {
       // NaN atom (boolBoxIR) — the ONLY way a BOOL-typed init ever emits as f64 (plain
       // emit() of a BOOL always yields i32 0/1, taking the val.type==='i32' branch
       // above). toI32 is ECMAScript ToInt32: NaN → 0. Both TRUE_NAN and FALSE_NAN are
-      // NaN bit patterns, so toI32(val) collapses BOTH atoms to i32 0, permanently
+      // NaN bit patterns, so toI32(val) would collapse BOTH atoms to i32 0, permanently
       // erasing the boolean — a category error (bit-pattern unboxing needs unboxBoolIR's
-      // shift+mask, not numeric truncation). This was latent (never exercised) as long
-      // as no decl-init call site fed a BOOL local through storedValue; named + fixed
-      // here so the decl-init WALL's storedValue substitution stops corrupting BOOL
-      // locals narrowed to i32 storage (research.md §Carrier invariant, MECHANISM C).
+      // shift+mask, not numeric truncation). The `valTypeOf(init) === VAL.BOOL` check
+      // above guards exactly that path, so the decl-init WALL's storedValue
+      // substitution (see above) cannot corrupt BOOL locals narrowed to i32 storage
+      // (research.md §Carrier invariant, MECHANISM C).
       coerced = localType === 'v128' ? val : localType === 'f64' ? asF64(val)
         : val.type === 'i32' ? val
         : valTypeOf(init) === VAL.BOOL ? unboxBoolIR(val)
@@ -2798,18 +2665,19 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
 // .work/todo.md §deletion-sweep) — REACHABLE but not yet
-// LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
-// was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
-// for a dict/Map read stays null and this function's callers never reach a
-// state where the difference matters — YET. Kept correct anyway (not
-// reverted to the old early-return) because the composition bug it fixes is
-// real independent of VT: a bare name must fall through to the bottom `if
-// (censusMaybeUndefined(n))` check — NOT early-return on `.nullable` alone
-// (a materially DIFFERENT REP field, seeded by nullish-literal producers,
-// that says nothing about a census-copied `mayBeUndefined` binding) — so a
-// decl-hop identity compare (`let x = m.get(missing); x === undefined`)
-// stays sound the moment §14's opt-in presentVal model makes `x`'s claim
-// live again, with no re-audit of this call site required.
+// LOAD-BEARING here: VT['[]']/VT['.']/VT['()']'s exact-kind wiring for a
+// dict/Map read is currently disabled (.work/todo.md §deletion-sweep §14 is
+// the re-enablement path), so `valTypeOf` for a dict/Map read stays null and
+// this function's callers never reach a state where the difference matters —
+// YET. Kept correct anyway (not reverted to the old early-return) because
+// the composition bug it fixes is real independent of VT: a bare name must
+// fall through to the bottom `if (censusMaybeUndefined(n))` check — NOT
+// early-return on `.nullable` alone (a materially DIFFERENT REP field,
+// seeded by nullish-literal producers, that says nothing about a
+// census-copied `mayBeUndefined` binding) — so a decl-hop identity compare
+// (`let x = m.get(missing); x === undefined`) stays sound the moment §14's
+// opt-in presentVal model makes `x`'s claim live, with no changes needed at
+// this call site.
 const nullableOperand = (n) => {
   if (typeof n === 'string' && (repOf(n)?.nullable || repOfGlobal(n)?.nullable)) return true
   if (Array.isArray(n) && n[0] === '[]' && n.length === 3
@@ -3024,7 +2892,7 @@ function emitLooseEq(a, b, negate, strict) {
   // `<`/`>`/`<=`/`>=`), which stays correct unguarded: JS ToNumber(undefined)
   // = NaN and "compared to NaN" is always false, exactly what a raw f64
   // relational op already returns for ANY NaN-boxed operand, real or
-  // masquerading — no fix needed there, confirmed by direct repro. Equality
+  // masquerading — no fix needed there. Equality
   // has no such coincidence: `undefined === undefined` is TRUE in JS. A
   // genuinely CERTAIN real number on the OTHER side still makes f64.eq safe
   // regardless of nullability here (a real number can never equal a nullish/
@@ -3033,34 +2901,33 @@ function emitLooseEq(a, b, negate, strict) {
   // counts as "safe" below; a nullable claim degrades exactly as if that side
   // had no VAL.NUMBER proof at all, falling through to the fully-dynamic
   // `__eq`/`__eq_strict` fallback (below) or the coercion helper as
-  // appropriate. Found live via `d[rk] === u` (u a genuinely-undefined local)
-  // and `d[rk] == otherDict[missingKey]` (both operands independently
-  // nullable) both wrongly reading false — JS true — pre-fix.
+  // appropriate. E.g. `d[rk] === u` (u a genuinely-undefined local) or
+  // `d[rk] == otherDict[missingKey]` (both operands independently nullable)
+  // would otherwise wrongly read false where JS says true.
   const aSafe = vta === VAL.NUMBER && !nullableOperand(a)
   const bSafe = vtb === VAL.NUMBER && !nullableOperand(b)
   if (aSafe && needsToNumberCoercion(b, vtb)) return looseNumberEq(numA(), b, vb, negate)
   if (bSafe && needsToNumberCoercion(a, vta)) return looseNumberEq(numB(), a, va, negate)
   if (aSafe || bSafe) return typed([`f64.${eqOp}`, numA(), numB()], 'i32')
   // Both sides proven VAL.NUMBER but NEITHER individually "safe" above (both
-  // nullable — the maybeUndefined gap this function's own Slice-5 fix closed
-  // generically by falling all the way to the fully-dynamic __eq below). A
-  // NUMBER-typed slot's only two possible runtime shapes are "a real number"
-  // or a nullish sentinel (UNDEF_NAN from an unproven OOB/absent-key read,
-  // rarely NULL_NAN from a nullish-literal producer) — never a string/
-  // object/bigint — so it needs none of __eq's string-content/pointer-kind
-  // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_byteLen into
-  // a module with no string at all, e.g. a pure Uint8Array match loop:
-  // `src[j+len] === src[ip+len]` — bisected live to this exact gap,
-  // .work/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
-  // when BOTH sides are nullish (IEEE-754: f64.eq is false for any NaN
-  // operand, even a bit-identical one) — NOT a blind i64 bit-eq (a genuine
-  // NaN payload, e.g. a literal `NaN` stored through the same slot, can
-  // collide bit-for-bit with itself and would wrongly read equal — caught
-  // live by a differential probe against real Float64Array NaN storage
-  // before landing). isUndef/isNull/isNullish (ir.js) test the EXACT
-  // reserved sentinel bit patterns, not "any matching NaN" — loose folds
-  // null/undefined together (`null == undefined` is JS-true); strict needs
-  // the same exact atom on both sides (`null === undefined` is JS-false).
+  // nullable) are still handled directly below, not by falling through to
+  // the fully-dynamic __eq: a NUMBER-typed slot's only two possible runtime
+  // shapes are "a real number" or a nullish sentinel (UNDEF_NAN from an
+  // unproven OOB/absent-key read, rarely NULL_NAN from a nullish-literal
+  // producer) — never a string/object/bigint — so it needs none of __eq's
+  // string-content/pointer-kind dispatch (what pulls
+  // __str_eq/__is_str_key/__char_at/__str_byteLen into a module with no
+  // string at all, e.g. a pure Uint8Array match loop:
+  // `src[j+len] === src[ip+len]`; see .work/todo.md "lz/glyfparse __eq
+  // bloat"). f64.eq alone is unsound only when BOTH sides are nullish
+  // (IEEE-754: f64.eq is false for any NaN operand, even a bit-identical
+  // one) — NOT a blind i64 bit-eq: a genuine NaN payload (e.g. a literal
+  // `NaN` stored through the same slot) can collide bit-for-bit with itself
+  // against a real Float64Array NaN and would wrongly read equal.
+  // isUndef/isNull/isNullish (ir.js) test the EXACT reserved sentinel bit
+  // patterns, not "any matching NaN" — loose folds null/undefined together
+  // (`null == undefined` is JS-true); strict needs the same exact atom on
+  // both sides (`null === undefined` is JS-false).
   if (vta === VAL.NUMBER && vtb === VAL.NUMBER) {
     const fa = temp('numeq'), fb = temp('numeq')
     const faG = ['local.get', `$${fa}`], fbG = ['local.get', `$${fb}`]
@@ -3856,13 +3723,13 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
     // is undefined) instead of feeding number bits to `__ptr_type` → OOB.
     // Every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
     const numEmitter = ctx.core.emit[`.number:${method}`]
-    // audit-#10: only a genuinely mayBeUndefined receiver pays for the
-    // nullish-receiver guard below — `censusMaybeUndefined` (kind.js), the
-    // SAME narrow, load-bearing predicate module/core.js's emitLengthAccess
-    // uses (see its own comment for why "vt is unknown" alone is far too
-    // broad — a real, measured SIZE-geomean regression across the size-
-    // sweep corpus, caught before landing). A plain kind-unresolved-but-
-    // never-null receiver takes the unchanged, unguarded generic arm.
+    // Only a genuinely mayBeUndefined receiver pays for the nullish-receiver
+    // guard below — gated on `censusMaybeUndefined` (kind.js), the SAME
+    // narrow, load-bearing predicate module/core.js's emitLengthAccess uses
+    // (see its own comment for why "vt is unknown" alone is far too broad: it
+    // measurably regresses SIZE-geomean across the size-sweep corpus). A
+    // plain kind-unresolved-but-never-null receiver takes the unchanged,
+    // unguarded generic arm.
     const mayBeUndef = censusMaybeUndefined(obj)
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
@@ -3876,11 +3743,11 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
             ['then', callMethod(t, strEmitter)],
             // Not STRING either: a real (non-nullish) pointer falls to the generic
             // (array-shaped) emitter, unchanged. A genuinely nullish receiver here
-            // (audit-#10: e.g. `m.get('missing').slice()`, a STRING-census absent
-            // read — no proven vt, so it reached this fork at all) used to feed the
-            // nullish sentinel's bit pattern to the ARRAY-shaped emitter as if it
-            // were a real pointer — an OOB heap read (`RuntimeError: memory access
-            // out of bounds`). Real JS throws TypeError for a method call on
+            // (e.g. `m.get('missing').slice()`, a STRING-census absent read with no
+            // proven vt, so it reached this fork at all) must be checked: unguarded,
+            // its nullish sentinel bit pattern would feed the ARRAY-shaped emitter as
+            // if it were a real pointer — an OOB heap read (`RuntimeError: memory
+            // access out of bounds`). Real JS throws TypeError for a method call on
             // null/undefined; the check is cheap and lands only on this already-
             // dynamic fork, and only when the receiver is provably mayBeUndefined.
             ['else', mayBeUndef ? typed(['if', ['result', 'f64'],
@@ -3900,22 +3767,23 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
   if (vt || !numEmitter || parsed.hasSpread || !ctx.closure.call) return
   const t = `${T}rn${freshId(ctx)}`
   ctx.func.locals.set(t, 'f64')
-  // audit-#10: only a genuinely mayBeUndefined receiver pays for the nullish
-  // guard — same `censusMaybeUndefined` predicate as every other check in
-  // this design (see tryRuntimeStringFork's comment for the measured SIZE
-  // cost of gating on "vt unknown" alone instead).
+  // Only a genuinely mayBeUndefined receiver pays for the nullish guard —
+  // same `censusMaybeUndefined` predicate as every other check in this
+  // design (see tryRuntimeStringFork's comment for the SIZE cost of gating
+  // on "vt unknown" alone instead).
   const mayBeUndef = censusMaybeUndefined(obj)
   return block64(
     ['local.set', `$${t}`, asF64(emit(obj))],
     ['if', ['result', 'f64'],
       ['f64.eq', ['local.get', `$${t}`], ['local.get', `$${t}`]],
       ['then', asF64(callMethod(t, numEmitter))],
-      // audit-#10: a genuinely nullish receiver here (e.g. `m.get('missing').toFixed(2)`,
-      // a NUMBER-census absent read — no proven vt, so this fork engaged at all) has no
-      // sidecar override to find; real JS throws TypeError on the PROPERTY READ itself
-      // (`x.toFixed` on null/undefined), before any call happens. A real (non-nullish)
-      // pointer without an override still reads `undefined` (own-property-not-found is
-      // out of this fix's scope — the pre-existing, unchanged behavior).
+      // A genuinely nullish receiver here (e.g. `m.get('missing').toFixed(2)`, a
+      // NUMBER-census absent read with no proven vt, so this fork engaged at all)
+      // has no sidecar override to find; real JS throws TypeError on the PROPERTY
+      // READ itself (`x.toFixed` on null/undefined), before any call happens. A
+      // real (non-nullish) pointer without an override still reads `undefined`
+      // (own-property-not-found is out of scope here — pre-existing, unchanged
+      // behavior).
       ['else', sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
         (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
         (o) => mayBeUndef ? typed(['if', ['result', 'f64'],
@@ -4067,22 +3935,22 @@ function externalMethodFallback({ obj, method, parsed }) {
     err(`\`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` — '${method}' is not implemented for a ${vt} receiver, and jz-native values have no host fallthrough (the call could only yield undefined). Check the method name; if it's a real JS API, it's a missing jz builtin.`)
   if (ctx.transform.strict)
     err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type falls through to host \`__ext_call\`. Annotate the receiver type or pass { strict: false }.`)
-  // audit-#11 P0-3: RequireObjectCoercible (ES 13.3 — the nullish-receiver
-  // check) must run BEFORE the target-capability branch below chooses
-  // host `__ext_call` dispatch vs the wasi no-op stub — a member-access
-  // semantic, not a dispatch-strategy detail. The audit-#10 nullish check
-  // originally lived AFTER the `!envImports` early return a few lines down:
-  // under host:'wasi' (envImports always false) that return fired first on
-  // EVERY call reaching this TOTAL fallback, so the check below it was dead
-  // code — a genuinely nullish receiver (e.g. `m.get('missing').toFixed(2)`
-  // with no closures anywhere else in the program, so strategy 8b never
-  // engaged) silently read `undefined` instead of throwing, while the
-  // identical js-host build (envImports=true) reached the same check and
-  // threw correctly. `censusMaybeUndefined` is the same narrow, load-bearing
-  // gate every other site in this design uses (see tryRuntimeStringFork's
-  // comment for the measured SIZE cost of gating on "vt unknown" alone
-  // instead) — a receiver that is provably never nullish takes the ORIGINAL,
-  // byte-identical path below, unaffected by this fix.
+  // RequireObjectCoercible (ES 13.3 — the nullish-receiver check) must run
+  // BEFORE the target-capability branch below chooses host `__ext_call`
+  // dispatch vs the wasi no-op stub — a member-access semantic, not a
+  // dispatch-strategy detail. Placing this check AFTER the `!envImports`
+  // early return a few lines down is unsound: under host:'wasi'
+  // (envImports always false) that return fires first on EVERY call
+  // reaching this TOTAL fallback, making the check below it dead code — a
+  // genuinely nullish receiver (e.g. `m.get('missing').toFixed(2)` with no
+  // closures anywhere else in the program, so strategy 8b never engaged)
+  // would silently read `undefined` instead of throwing, while the
+  // identical js-host build (envImports=true) reaches the check and throws
+  // correctly. `censusMaybeUndefined` is the same narrow, load-bearing gate
+  // every other site in this design uses (see tryRuntimeStringFork's
+  // comment for the SIZE cost of gating on "vt unknown" alone instead) — a
+  // receiver that is provably never nullish takes the ORIGINAL,
+  // byte-identical path below.
   const mayBeUndef = censusMaybeUndefined(obj)
   const dispatch = (recv) => {
     // Under wasi there is no host `__ext_call` — the call lowers to a
@@ -4412,7 +4280,7 @@ function emitGenericClosureCall(callee, parsed) {
   if (arrName && (ctx.scope.closureTableLatticeCandidates?.has(arrName) ||
       ctx.scope.imperativeClosureTableLatticeCandidates?.has(arrName)))
     recordClosureTableCallSite(arrName, parsed.normal)
-  // audit-#10: `callee` is a genuinely dynamic expression here — every
+  // `callee` is a genuinely dynamic expression here — every
   // statically-resolved shape (known top-level function, direct non-escaping
   // closure, method call) was already sifted off by the '()' dispatcher above
   // this function, so its kind is unproven and it may be nullish at runtime
@@ -4423,29 +4291,29 @@ function emitGenericClosureCall(callee, parsed) {
   // TypeError.
   //
   // A BARE-NAME callee (`typeof callee === 'string'`, e.g. `f(x)`) is emitted
-  // TWICE instead of hoisted through a shared temp — found live, not assumed
-  // safe: an intermediate `local.set $ct = (select const1 const2 cond); ...
-  // call_indirect(local.get $ct, ...)` hides the "closure value is a select
-  // of ≤2 known constants" shape from watr's own post-optimizer devirt pass
-  // (perf(wat) "devirt — call_indirect with known closure constants → guarded
-  // direct calls", commit 4c49c2ec) — that pass pattern-matches the select
-  // directly feeding the call_indirect operand's `local.set`, one level of
-  // indirection it does not trace through. `readVar` (ir.js) is pure for a
-  // bare name (`local.get`/`global.get`, no side effect, no shared node
-  // object between the two emissions — each `emit(callee)` call returns a
-  // fresh IR node), so evaluating it twice is exactly as safe as the
-  // single-eval case and costs nothing extra once optimized (V8/watr CSE the
-  // repeated load). A COMPOUND callee (`m.get(k)()`, `arr[i]()`) may carry a
-  // real side effect (the `.get` call itself) — hoisted through a temp,
-  // exactly as before; this shape was never the ternary-select-of-constants
-  // pattern the devirt pass targets, so hoisting it costs nothing there.
-  // audit-#10: only a genuinely mayBeUndefined callee pays for the guard —
-  // same `censusMaybeUndefined` predicate as every other check in this
-  // design (tryRuntimeStringFork's comment has the measured SIZE cost of
-  // gating on "unresolved kind" alone instead). A callee that is unresolved
-  // only because it's a PLAIN closure-holding parameter/local (never
-  // touched by census/dict machinery — e.g. `const pass = (g, x) => g(x)`)
-  // is unaffected, byte-for-byte, from before this task.
+  // TWICE instead of hoisted through a shared temp: an intermediate
+  // `local.set $ct = (select const1 const2 cond); ... call_indirect(local.get
+  // $ct, ...)` would hide the "closure value is a select of ≤2 known
+  // constants" shape from watr's own post-optimizer devirt pass ("devirt —
+  // call_indirect with known closure constants → guarded direct calls"),
+  // which pattern-matches the select directly feeding the call_indirect
+  // operand's `local.set`, one level of indirection it does not trace
+  // through. `readVar` (ir.js) is pure for a bare name (`local.get`/
+  // `global.get`, no side effect, no shared node object between the two
+  // emissions — each `emit(callee)` call returns a fresh IR node), so
+  // evaluating it twice is exactly as safe as the single-eval case and costs
+  // nothing extra once optimized (V8/watr CSE the repeated load). A COMPOUND
+  // callee (`m.get(k)()`, `arr[i]()`) may carry a real side effect (the
+  // `.get` call itself) — hoisted through a temp, exactly as before; this
+  // shape was never the ternary-select-of-constants pattern the devirt pass
+  // targets, so hoisting it costs nothing there.
+  // Only a genuinely mayBeUndefined callee pays for the guard — same
+  // `censusMaybeUndefined` predicate as every other check in this design
+  // (tryRuntimeStringFork's comment has the SIZE cost of gating on
+  // "unresolved kind" alone instead). A callee that is unresolved only
+  // because it's a PLAIN closure-holding parameter/local (never touched by
+  // census/dict machinery — e.g. `const pass = (g, x) => g(x)`) is
+  // unaffected, byte-for-byte.
   const mayBeUndef = censusMaybeUndefined(callee)
   const pureCallee = typeof callee === 'string'
   const guarded = (whenOk) => {
@@ -4534,21 +4402,22 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
     const inner = vb[1]
     vbi = Array.isArray(inner) ? typed(inner, 'i32') : inner
   }
-  // P0-2 sibling (2026-08-02): this admission had NO magnitude gate at all —
-  // worse than the old (already-unsound) mulFitsI32, which needed at least one
-  // bound. `name op= val` desugars to the exact binary-op arithmetic below, so
-  // it must pass the SAME bilateral-bound proof the binary `+`/`-`/`*` operators
-  // now require (addFitsI32/mulFitsI32 + their typed-magnitude/AST-range twins,
-  // reused verbatim — no second bound tracker). Matters when this compound-
-  // assign's OWN result crosses to a DIFFERENT (non-i32) consumer as a VALUE
-  // (`y = (x *= huge)` with y f64-typed) — an unfaithfully-wrapped i32 result
-  // would be trusted at THAT boundary the same way a bare `return` trusts one
-  // (fixed alongside this at narrowI32Results, narrow.js). Value-neutral for
-  // the common "write straight back into x's own i32 storage" case either way
-  // (ir.js `writeVar` now coerces via `toI32`, which recovers the identical
-  // wrapped result through narrowI32 when this gate falls to the f64 arm).
-  // `%`/bitwise compounds reach here with no arithOp or an inherently-sound
-  // op, so they stay ungated.
+  // Compound-assign's arithmetic admission needs the same magnitude gate as
+  // the binary operators: `name op= val` desugars to the exact binary-op
+  // arithmetic below, so it must pass the SAME bilateral-bound proof the
+  // binary `+`/`-`/`*` operators require (addFitsI32/mulFitsI32 + their
+  // typed-magnitude/AST-range twins, reused verbatim — no second bound
+  // tracker); a one-sided-bounded heuristic alone is not enough. Matters
+  // when this compound-assign's OWN result crosses to a DIFFERENT (non-i32)
+  // consumer as a VALUE (`y = (x *= huge)` with y f64-typed) — an
+  // unfaithfully-wrapped i32 result would be trusted at THAT boundary the
+  // same way a bare `return` trusts one (see narrowI32Results, narrow.js,
+  // which closes the same gap there). Value-neutral for the common "write
+  // straight back into x's own i32 storage" case either way (ir.js
+  // `writeVar` coerces via `toI32`, which recovers the identical wrapped
+  // result through narrowI32 when this gate falls to the f64 arm). `%`/
+  // bitwise compounds reach here with no arithOp or an inherently-sound op,
+  // so they stay ungated.
   const compoundFitsI32 = arithOp === '*' ? (mulFitsI32(va, vbi) || mulBoundedFaithful(va, vbi) || mulRangeFitsI32(name, val))
     : arithOp === '+' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || addRangeFitsI32(name, val))
     : arithOp === '-' ? (addFitsI32(va, vbi) || addBoundedFaithful(va, vbi) || subRangeFitsI32(name, val))
@@ -4580,19 +4449,19 @@ const numLiteralNode = (n) =>
   (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 function bigintMixReject(op, a, b) {
   if (b === undefined) return
-  // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
-  // §4 — the "NEWLY added to that list" gap): a BIGINT claim whose only proof
-  // is a maybeUndefined-flagged dict/Map census read (arm 1/2, censusMaybeUndefined's
-  // direct node shapes) or a bare name that copies one through (arm 3, the REP
-  // fallback) is NOT a provable BIGINT for THIS compile-time TypeError check —
-  // the operand could be real `undefined` at runtime, and ToNumeric(undefined)
-  // is the Number NaN, not a BigInt, so real JS does NOT throw when the other
-  // side is a genuine number (only bigIntOperand's runtime UNDEF_NAN guard,
-  // audit-#8 P0-3, needs to actually decide the throw at the point the real
-  // type resolves). Treating this operand as unproven here — same direction
-  // as every other censusMaybeUndefined consumer in this file — falls through
-  // to the permissive default instead of wrongly rejecting a mix that's sound
-  // in real JS whenever the operand turns out to be undefined.
+  // mayBeUndefined join (.work/todo.md §deletion-sweep §4): a BIGINT claim
+  // whose only proof is a maybeUndefined-flagged dict/Map census read (arm
+  // 1/2, censusMaybeUndefined's direct node shapes) or a bare name that
+  // copies one through (arm 3, the REP fallback) is NOT a provable BIGINT
+  // for THIS compile-time TypeError check — the operand could be real
+  // `undefined` at runtime, and ToNumeric(undefined) is the Number NaN, not
+  // a BigInt, so real JS does NOT throw when the other side is a genuine
+  // number (only bigIntOperand's runtime UNDEF_NAN guard needs to actually
+  // decide the throw at the point the real type resolves). Treating this
+  // operand as unproven here — same direction as every other
+  // censusMaybeUndefined consumer in this file — falls through to the
+  // permissive default instead of wrongly rejecting a mix that's sound in
+  // real JS whenever the operand turns out to be undefined.
   const aBig = valTypeOf(a) === VAL.BIGINT && !censusMaybeUndefined(a)
   const bBig = valTypeOf(b) === VAL.BIGINT && !censusMaybeUndefined(b)
   if (aBig === bBig) return
@@ -4600,43 +4469,42 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
-// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
-// JOINT runtime-domain dispatch for binary arithmetic/bitwise ops, superseding
-// the old per-op OR-gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`, live
-// at every op below through 38dd0dca/f1c1256b) and Slice 7's `+`-only AND-gate
+// JOINT runtime-domain dispatch for binary arithmetic/bitwise ops
+// (.work/todo.md §deletion-sweep §14), superseding the old per-op OR-gate
+// (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`) and a `+`-only AND-gate
 // (`bothBigIntOperands`, removed here). Both were OPERAND-LOCAL guards — each
 // decided ONE operand's fate from a static claim alone, so neither could
 // distinguish "both operands genuinely absent" (JS: NaN, no throw —
 // ToNumeric(undefined) is a Number on both sides) from "one operand absent,
 // the other a real BigInt" (JS: TypeError) from "a proven BigInt paired with
-// a real, non-BigInt dynamic value" (JS: TypeError, f1c1256b's own pinned
-// KNOWN-FAIL) — three DIFFERENT runtime outcomes that collapse to the
-// identical static shape (bigintMixReject's own "operand-local guards are
-// architecturally insufficient" citation). Fixed: evaluate each operand
-// EXACTLY ONCE (ES2024 13.15.3 steps 1-4 — GetValue happens before
-// ToNumeric), classify EACH operand's REAL runtime domain, then dispatch on
-// the JOINT result: both Number → the plain numeric op; both BigInt → the
-// existing i64 op; mixed → TypeError (13.15.3 step 6 / 13.2.* "Type(lnum) is
-// not Type(rnum)").
+// a real, non-BigInt dynamic value" (JS: TypeError) — three DIFFERENT
+// runtime outcomes that collapse to the identical static shape
+// (bigintMixReject's own "operand-local guards are architecturally
+// insufficient" reasoning above applies here too). This function instead
+// evaluates each operand EXACTLY ONCE (ES2024 13.15.3 steps 1-4 — GetValue
+// happens before ToNumeric), classifies EACH operand's REAL runtime domain,
+// then dispatches on the JOINT result: both Number → the plain numeric op;
+// both BigInt → the existing i64 op; mixed → TypeError (13.15.3 step 6 /
+// 13.2.* "Type(lnum) is not Type(rnum)").
 //
 // bigIntDomain(node) — the STATIC evidence available for one operand:
 //   'bigint' — valTypeOf(node) === VAL.BIGINT: a PROVEN claim, never
-//              maybeUndefined (censusMaybeUndefinedKind never feeds `val` —
-//              the permanent invariant §14's Slice-4 revert restored).
-//              Always a real BigInt at runtime — no runtime check needed.
+//              maybeUndefined (censusMaybeUndefinedKind never feeds
+//              valTypeOf's result here — a permanent invariant, not a
+//              transitional state). Always a real BigInt at runtime — no
+//              runtime check needed.
 //   'number' — a plain numeric LITERAL (bigintMixReject's own numLiteralNode)
 //              ONLY — always a real Number, no runtime check needed.
 //              Deliberately NOT `valTypeOf(node) === VAL.NUMBER` in general:
 //              that claim can be a kind-DEFAULT, not a proof (bigintMixReject's
 //              own doc comment — "kernel carriers read NUMBER as a kind-
 //              DEFAULT" — the SAME reason it only ever rejects a LITERAL
-//              mismatch, never a general NUMBER-claimed expression). Confirmed
-//              live, not assumed: layout.js's `i64Hex` (part of the self-host
-//              graph) and a self-hosted-build-only inlined-local shape both
-//              mix a `valTypeOf===NUMBER`-optimistic-default operand with a
-//              real BigInt LITERAL/expression on purpose — treating that
-//              NUMBER claim as throw-worthy broke the self-hosted kernel
-//              build outright (caught by the gate, not assumed safe).
+//              mismatch, never a general NUMBER-claimed expression).
+//              layout.js's `i64Hex` (part of the self-host graph) and a
+//              self-hosted-build-only inlined-local shape both mix a
+//              `valTypeOf===NUMBER`-optimistic-default operand with a real
+//              BigInt LITERAL/expression on purpose — treating that NUMBER
+//              claim as throw-worthy breaks the self-hosted kernel build.
 //   'census' — censusMaybeUndefinedKind(node) === VAL.BIGINT: the container
 //              proves its value is BIGINT whenever present, but PRESENCE
 //              itself is runtime-only — needs isUndef: present → BigInt,
@@ -4646,8 +4514,8 @@ function bigintMixReject(op, a, b) {
 //              magnitude heuristic (below) — a NEVER-REASSIGNED parameter of
 //              the CURRENT function, AND that function is itself a WASM
 //              EXPORT — crossing the JS↔wasm boundary directly from the host
-//              caller (f1c1256b's own named shape, `export let f = (v, w) =>
-//              { let x = BigInt(v); return x - w }`).
+//              caller (e.g. `export let f = (v, w) => { let x = BigInt(v);
+//              return x - w }`).
 //   'skip'   — no static evidence AND not safe to runtime-probe — every other
 //              unresolved shape (a reassigned local, a non-param expression,
 //              or a param of a NON-exported internal function). See the
@@ -4664,8 +4532,7 @@ function bigIntDomain(node) {
   // do NOT read as subnormal, so applying it to an arbitrary internally-
   // computed value produces FALSE positives (a real large bigint misread as
   // "not bigint", wrongly throwing a TypeError on otherwise-correct code).
-  // Confirmed live, not assumed — TWO separate self-host regressions, both
-  // caught by the gate, neither a hypothetical:
+  // Two restrictions close this, each closing a distinct counter-example:
   //  (1) watr's own self-hosted i64 LEB128 encoder (node_modules/watr/src/
   //      encode.js `i64()` — `n` REASSIGNED across a conditional diamond via
   //      `BigInt(n)`/`i64.parse(n)`, later `n & 0x7Fn`, where `n` can
@@ -4680,7 +4547,7 @@ function bigIntDomain(node) {
   //      by requiring the CURRENT function itself be a WASM export.
   // Every other unresolved shape stays 'skip' — `bigIntDomainsCanMix` treats
   // it as NO evidence at all, falling through to whatever the PRE-EXISTING
-  // (pre-§14-point-4) code path already did — unaffected.
+  // code path already did — unaffected.
   if (ctx.func.exported && typeof node === 'string' && ctx.func.current?.params?.some(p => p.name === node) &&
       !(ctx.func.body && isReassigned(ctx.func.body, node))) return null
   return 'skip'
@@ -4760,10 +4627,10 @@ function bigIntJointDispatch(a, b, i64Compute, numCompute) {
   // above), so its TRUE ToNumeric value is the Number NaN (ES2024 13.5.6/
   // 7.1.3) — never its raw UNDEF_NAN carrier bits passed through unexamined.
   // WASM does NOT guarantee arithmetic ops canonicalize a NaN operand's
-  // payload (confirmed live: `f64.add` of two identical UNDEF_NAN bit
-  // patterns returned that SAME tagged payload verbatim, not a generic NaN —
-  // decoding wrong downstream, since the tagged bits collide with the actual
-  // UNDEF_NAN sentinel other consumers compare against). Explicit select
+  // payload: `f64.add` of two identical UNDEF_NAN bit patterns can return
+  // that SAME tagged payload verbatim, not a generic NaN — decoding wrong
+  // downstream, since the tagged bits collide with the actual UNDEF_NAN
+  // sentinel other consumers compare against. Explicit select
   // substitutes literal NaN before the op runs, matching `coerceNullishToNum`'s
   // own ES semantics (reused conceptually, not the function itself — this
   // already has the value in a temp and the undef flag computed, no second
@@ -4783,7 +4650,7 @@ function bigIntJointDispatch(a, b, i64Compute, numCompute) {
     typed(['if', ['result', 'f64'], ['i32.eq', flagA, flagB], ['then', bothBranch], ['else', throwIR]], 'f64')], 'f64')
 }
 
-// audit-#8 P0-3: the runtime twin of bigintMixReject's compile-time literal proof.
+// The runtime twin of bigintMixReject's compile-time literal proof.
 // A BIGINT-census `node` whose exact kind comes SOLELY from censusMaybeUndefined's
 // soundness carve-out (a dict/Map absent-key read, e.g. `m.get('missing')`) may hold
 // the UNDEF_NAN sentinel at runtime, not a real bigint payload — plain `asI64(v)`
@@ -4802,20 +4669,20 @@ function bigIntJointDispatch(a, b, i64Compute, numCompute) {
 // that are BOTH genuinely absent at once (`m.get('a') + m.get('b')`, both keys missing)
 // are Number NaN + Number NaN = NaN, no throw. This independently guards each operand,
 // so that double-absent case throws instead of yielding NaN — strictly better than the
-// prior silent-garbage-bigint answer (moves an unsound VALUE to a sound-but-wider
-// THROW, never a wrong number), and matches this fix's explicit brief ("the runtime
-// semantics for the absent case must be the thrown TypeError"). Not applied to unary
+// alternative silent-garbage-bigint answer (moves an unsound VALUE to a sound-but-wider
+// THROW, never a wrong number): the runtime semantics for the absent case must be the
+// thrown TypeError. Not applied to unary
 // negation/'~': those single-operand ops ToNumeric their one value and never
 // compare against a second operand's type, so an absent key there really does decay
-// to NaN (no throw) — a different, narrower semantics, closed separately below by
-// bigIntUnary (audit-#8 P0-4 Part 3). Postfix/prefix increment/decrement need no
+// to NaN (no throw) — a different, narrower semantics, handled separately below by
+// bigIntUnary. Postfix/prefix increment/decrement need no
 // analogous fix: `n++`/`n--` on a member target lowers to the '+1'/'-1' op below,
 // gated on `valTypeOf(a[1]) === VAL.BIGINT` — for the bracket-string-literal-key
 // shape (`d['missing']++`) that's the SAME VT['[]'] null-return disambiguation
 // bigIntOperand's own comment above documents, so it never takes the raw-i64
 // member-op path at all (falls to the generic `n + 1`/`n - 1` spelled-out form,
-// already sound); for a dynamic-key member (`d[k]++`) — verified live, not
-// assumed — the same is true, confirmed byte-for-byte against the JS oracle.
+// already sound); for a dynamic-key member (`d[k]++`) the same is true, confirmed
+// byte-for-byte against the JS oracle.
 function bigIntOperand(node) {
   const v = emit(node)
   // censusMaybeUndefinedKind, not valTypeOf(node) === VAL.BIGINT: for a bracket
@@ -4848,7 +4715,7 @@ function bigIntOperand(node) {
     bits], 'i64')
 }
 
-// audit-#8 P0-4 Part 3: unary twin of bigIntOperand above — same runtime
+// Unary twin of bigIntOperand above — same runtime
 // censusMaybeUndefinedKind + UNDEF_NAN guard on a maybeUndefined-BIGINT
 // operand, but RESOLVES TO A VALUE instead of throwing. ES2024 13.5.6
 // UnaryMinus / 13.5.9 BitwiseNOT: both ToNumeric a SINGLE operand — undefined's
@@ -4892,18 +4759,14 @@ function bigIntUnary(node, mkI64, undefF64) {
 
 // BigInt `<<`/`>>` — ES2024 13.2.9/13.2.10 BigInt::leftShift/rightShift: a
 // NEGATIVE shift amount flips DIRECTION (`x << -3n` === `x >> 3n`, exactly —
-// not "shift by a huge wrapped count"). Found live sweeping the general
-// valTypeOfWithLocals fix (38dd0dca follow-up): WASM's `i64.shl`/`i64.shr_s`
-// both take the shift count mod 64 unconditionally (two's-complement -3 → 61),
-// with no such sign awareness — `av << -3n` computed a 61-bit wrong-direction
-// shift instead of `av >> 3n`. Pre-existing (the same raw `i64.${fn}` dispatch
-// this fixes was already there before this session), just unreachable through
-// any correctly-DECODED export until the general fix above made `<<`/`>>` on
-// proven-BigInt locals/params cross the boundary as a real BigInt at all —
-// confirmed via direct JS-oracle diff, not assumed. `bv` is captured into a
-// temp FIRST (not inlined twice) — it may be `bigIntOperand`'s own maybeUndefined
-// block form, which must evaluate exactly once. `av` is embedded once, same
-// single-evaluation discipline every other binary BigInt op here already has.
+// not "shift by a huge wrapped count"). WASM's `i64.shl`/`i64.shr_s` both
+// take the shift count mod 64 unconditionally (two's-complement -3 → 61),
+// with no such sign awareness — an unguarded `av << -3n` would compute a
+// 61-bit wrong-direction shift instead of `av >> 3n`, confirmed via direct
+// JS-oracle diff. `bv` is captured into a temp FIRST (not inlined twice) — it
+// may be `bigIntOperand`'s own maybeUndefined block form, which must evaluate
+// exactly once. `av` is embedded once, same single-evaluation discipline
+// every other binary BigInt op here already has.
 function bigIntShiftIR(op, av, bv) {
   const t = tempI64('bshiftN')
   const sameOp = op === '<<' ? 'shl' : 'shr_s'
@@ -5051,10 +4914,8 @@ function emitErrorInstanceof(a, rhs) {
   const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
   if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
   // Fold, tier 2: a bound name whose ValueRep already proves its EXACT schema id.
-  // audit-#9 P0-2 brand redesign: each class now has its OWN sid (module/schema.js's
-  // errorSid), so a settled schemaId settles the WHOLE question — which class, not
-  // merely "some Error" (the old shared-sid design could only fold the base
-  // `rhs === 'Error'` case; a specific-subclass check still needed the runtime arm).
+  // Each Error class has its OWN sid (module/schema.js's errorSid), so a settled
+  // schemaId settles the WHOLE question — which class, not merely "some Error".
   if (typeof a === 'string') {
     const sid = repOf(a)?.schemaId
     if (sid != null) {
@@ -5063,9 +4924,9 @@ function emitErrorInstanceof(a, rhs) {
     }
   }
   // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
-  // audit-#8 P0-2 (2026-08-03) deleted the numeric-range arm that used to live
-  // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
-  // …) is caught as a raw NUMBER (.work/todo.md §deletion-sweep §3(b)), bit-identical to
+  // There is no numeric-range arm below: an internally-thrown coded value
+  // (JSON.parse failure, OOB Array#with, …) is caught as a raw NUMBER
+  // (.work/todo.md §deletion-sweep §3(b)), bit-identical to
   // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
   // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
   // caller-supplied number landing in a class's internal range answered `true`
@@ -5194,7 +5055,7 @@ export const emitter = {
         ['f64.const', 0],
         ['br', `$outer${id}`]],
       ['local.set', `$${errName}`],
-      // audit-#8 P1-1: this catch fully HANDLES the error — nothing downstream
+      // This catch fully HANDLES the error — nothing downstream
       // rethrows it — so $__jz_last_err_bits must not keep pointing at it. Left
       // set, a LATER genuine trap (OOB, stack overflow, …) unrelated to this
       // catch would read this stale marker at the host boundary and misdecode
@@ -5236,7 +5097,7 @@ export const emitter = {
         ...normalCleanup,
         ['br', `$fin_done${id}`]],
       ['local.set', `$${errLocal}`],
-      // audit-#8 P1-1 (mirrors 'catch' above): zero BEFORE throwCleanup runs, not
+      // Mirrors 'catch' above: zero BEFORE throwCleanup runs, not
       // after. Two outcomes, both correct: (1) throwCleanup falls through
       // normally → the rethrow below unconditionally re-sets the marker to
       // errLocal's real bits before throwing, so escaping-throw decode is
@@ -5304,8 +5165,7 @@ export const emitter = {
     // carries booleans as their atom (emitStrictEq's BOOL-vs-unknown branch,
     // '+'​'s atom-aware numSide, __to_num) — leaving it raw silently crossed
     // `return false` as the plain float 0, indistinguishable from a real 0 at
-    // the call site (audit #5 item 2, ledger "KERNEL LEG ZERO FAILS" —
-    // boolconst). carrierF64 is a no-op (byte-identical to asParamType/asF64)
+    // the call site. carrierF64 is a no-op (byte-identical to asParamType/asF64)
     // whenever this return's own static valType isn't BOOL, so uniform-NUMBER
     // (or any non-bool-mixed) funcs are untouched.
     //
@@ -5735,16 +5595,16 @@ export const emitter = {
     // bigintMemberAssignTarget above ('+').
     if (isLit1(b) && bigintMemberAssignTarget(a))
       return fromI64(['i64.sub', readI64(a, emit(a)), ['i64.const', 1]])
-    // §14 point 4: joint runtime-domain dispatch (see bigIntDomain's own doc
+    // Joint runtime-domain dispatch (see bigIntDomain's own doc
     // comment) — binary form only; `b === undefined` here is unary minus
     // (reached through this same table entry, see the plain OR-gate below),
     // a single-operand op with no second domain to mix against.
-    // `f1c1256b`'s own pinned KNOWN-FAIL (`let x = BigInt(v); return x - w`,
-    // `w` a zero-evidence dynamic param) closes here: `valTypeOfWithLocals`
-    // (kind.js) already proves `x` BIGINT for the export-lane decode, but the
-    // WASM computation below still took `x`'s proof as license to treat `w`'s
-    // raw bits as an i64 carrier unconditionally, with no runtime check that
-    // `w` genuinely IS one — `bigIntDomainsCanMix`/`bigIntJointDispatch`
+    // A proven-BIGINT `x` (e.g. `let x = BigInt(v); return x - w`, `w` a
+    // zero-evidence dynamic param): `valTypeOfWithLocals` (kind.js) proves
+    // `x` BIGINT for the export-lane decode, but the WASM computation below
+    // must not take `x`'s proof as license to treat `w`'s raw bits as an
+    // i64 carrier unconditionally, with no runtime check that `w` genuinely
+    // IS one — `bigIntDomainsCanMix`/`bigIntJointDispatch`
     // (allowUnresolved=true — no STRING ambiguity for `-`, unlike `+`) close
     // that gap the same way as the census-vs-census/census-vs-proven shapes.
     if (b !== undefined && bigIntDomainsCanMix(a, b, true)) {
@@ -6315,7 +6175,7 @@ export const emitter = {
       return isLit(iv) ? emitNum(~~litVal(iv)) : typed(toI32(isI32Num(iv) ? iv : toNumF64(inner, iv)), 'i32')
     }
     // BigInt complement is the i64 `x ^ -1` (all bits flipped), like emitNeg's i64.sub.
-    // bigIntUnary (audit-#8 P0-4 Part 3): a maybeUndefined-BIGINT operand's real
+    // bigIntUnary: a maybeUndefined-BIGINT operand's real
     // JS value is ToInt32(NaN)'s complement, NUMBER -1 — not `x ^ -1` on the raw
     // UNDEF_NAN sentinel bits (see emitNeg's identical substitution above).
     // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` — see emitNeg's identical
@@ -6528,7 +6388,7 @@ export const emitter = {
         // every LIFTED level is proven by THIS guard — brake their own intercepts
         // (re-versioning per level compounds 2^depth checked twins)
         for (const vs of levels) if (vs.bodyNode && !vs.partial) vs.bodyNode._tbVersioned = ctx.func
-        // Loop-counter RANGE-PROOF lever (c8700daa), rescued from this guard's OWN
+        // Loop-counter RANGE-PROOF lever, rescued from this guard's OWN
         // re-emission: both arms below re-emit the loop via `emitter['for'](null,
         // cond, step, body)` — init nulled because the REAL init already ran once,
         // just above — and forCounterRange(null, …) can prove nothing from a null
@@ -6622,7 +6482,7 @@ export const emitter = {
         // and extent conjuncts (nested recognizers need the BARE nest in the fast
         // arm, and one guard per nest beats one per row)
         const levelInfo = new Map()
-        // Bound-name MAGNITUDE lever (audit-#8 P1-2, stencil recovery): a level's
+        // Bound-name MAGNITUDE lever: a level's
         // `f64`-kind bound is commonly an invariant EXPRESSION over a free name this
         // guard never separately proves (`w - 1` — the 1px-border stencil interior;
         // `w`/`h` trace to a resize(w,h) runtime param, genuinely unbounded
@@ -6711,8 +6571,7 @@ export const emitter = {
           // ALREADY i32-STORED via the separate, deliberately-scoped
           // "comparison-governed, sound for n≤2^31" storage-typing tolerance
           // (collectBareEscapes/widenLocalTypes) — real for bit-storage (the cell
-          // re-truncates every write) but NOT a magnitude proof (c8700daa's own
-          // explicit rejection of reusing it as one) — so intExprRange(name) is
+          // re-truncates every write) but NOT a magnitude proof — so intExprRange(name) is
           // still null regardless of bKind, and the fits-gate still declines
           // `w-1` without this. A BARE-NAME bound (`vs.bound` itself a string —
           // `i < N`) needs none of this: a comparison between two i32-typed
@@ -6878,11 +6737,12 @@ export const emitter = {
             // TOP-owned, every kind: each kept level is LIFTED — its extents are
             // proven by the top guard reading the inner bound at top entry — so
             // the proof holds anywhere inside the top body. Level-owned scoping
-            // (the old form for affine cands) broke exactly when the inner loop
-            // UNROLLED in the fast arm: an unrolled loop pushes no frame, so its
-            // level-owned assumptions could never validate and the guarded arm
-            // re-emitted every checked form (biquad's 40 coefficient reads at
-            // 5.6% vs zig-wasm; 1.7% after this fix). Index names are the
+            // (the old form for affine cands) breaks exactly when the inner loop
+            // UNROLLS in the fast arm: an unrolled loop pushes no frame, so its
+            // level-owned assumptions can never validate and the guarded arm
+            // re-emits every checked form (biquad's 40 coefficient reads regress
+            // to 5.6% vs zig-wasm under level-owned scoping; TOP-owned holds it
+            // to 1.7%). Index names are the
             // level's own body-lets/iv (unreachable outside it) or invariant
             // slots — a textual twin outside the level cannot exist with the
             // same key, so top-ownership loses no safety.
@@ -6999,8 +6859,8 @@ export const emitter = {
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
-    // HIR provenance link (.work/research.md §BodyModel slice 4; audit-#16 pre-
-    // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
+    // HIR provenance link (.work/research.md §BodyModel slice 4): stamp this
+    // WAT loop's originating HIR facts so the vectorizer's
     // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the
     // {plan, lowering} split and the identity/fail-open contract. `plan` (id/hull/
     // boundConst) is no longer built HERE — it's minted pre-emission, once per AST
@@ -7359,7 +7219,7 @@ export function emit(node, expect) {
   if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
 
   // Self-describing bigint literal, tagged at parse time (parse.js's digit-lookup
-  // override, audit P0-2) off the source `n` suffix — a purely structural signal,
+  // override) off the source `n` suffix — a purely structural signal,
   // sound whether this code runs natively or self-hosted in-kernel. args[0] is
   // the unsigned-64 decimal (BigInt.asUintN(64,·) semantics, computed via
   // bignum.js's limb arithmetic at parse time — no host BigInt, no ambiguity),

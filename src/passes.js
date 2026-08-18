@@ -1,7 +1,7 @@
 /**
- * THE pass/tuning registry — the single authority for optimization policy names
- * (audit P2: two hand-maintained lists lived in optimize/index.js and ctx.js and
- * could drift despite the load-time assert). Pure metadata, ZERO imports — both
+ * THE pass/tuning registry — the single authority for optimization policy names,
+ * so optimize/index.js and ctx.js can't hold divergent hand-maintained lists.
+ * Pure metadata, ZERO imports — both
  * src/ctx.js (hot bitmask) and src/optimize/index.js (presets, validation)
  * consume it, so no cycle can form. Presets, unknown-key validation, ALL_ON/OFF
  * generation, and the OPTF bitmask are all DERIVED from these lists.
@@ -11,11 +11,12 @@
 export const PASS_NAMES = [
   'watr',                     // third-party WAT-level CSE/DCE/inlining (heaviest)
   'devirtIndirect',           // call_indirect w/ known closure consts → guarded direct calls (WAT-level, grows bytes)
-  // Formerly-implicit emit-time transformations, gated on BARE `ctx.transform.optimize`
-  // truthiness — which resolveOptimize(0)'s all-false OBJECT still satisfied, so they
-  // silently ran at O0 and weakened it as the representation-free oracle (audit P1).
-  // Named here so ALL_OFF genuinely disables them; L1 keeps them (pre-existing tier
-  // behavior — they ran at every truthy cfg).
+  // These emit-time transformations must be gated on individual pass flags, not on
+  // BARE `ctx.transform.optimize` truthiness — resolveOptimize(0)'s all-false OBJECT
+  // is still truthy, so a bare-truthiness gate would silently run them at O0 and
+  // weaken it as the representation-free oracle. Named here so ALL_OFF genuinely
+  // disables them; L1 keeps them (pre-existing tier behavior — they ran at every
+  // truthy cfg).
   'inlineToNum',              // inline NaN-check ToNumber fast path (O0: compact __to_num call)
   'hashRmwFusion',            // lean-dict layout + d[k]=f(d[k]) single-probe RMW fusion (one representation feature)
   'inplaceStore',             // in-place replace store on the inline-cell layout
@@ -31,9 +32,9 @@ export const PASS_NAMES = [
   // gated by these flags. Listing them here is load-bearing: ALL_OFF sets them false so level 0/1
   // (the self-host fast path) actually skip them, instead of `undefined !== false` running them
   // unconditionally at every level. ALL_ON keeps them on at level 2+ where they belong.
-  // REPRESENTATION passes (audit decision: optimize false/0/1 is the
-  // representation-free REFERENCE tier — plain layouts, an independent oracle
-  // for three-way differentials; `{ level: 0, unionInline: true }` re-enables):
+  // REPRESENTATION passes (optimize false/0/1 is the representation-free
+  // REFERENCE tier — plain layouts, an independent oracle for three-way
+  // differentials; `{ level: 0, unionInline: true }` re-enables):
   'structInline',             // Array<S> packed inline cells (whole-program SRoA)
   'unionInline',              // closed heterogeneous-record union carrier + cursor clones
   'loopIVDivMod',             // strength-reduce per-iter `i%w` / `(i/w)|0` → incremental i32 counters
@@ -50,9 +51,9 @@ export const PASS_NAMES = [
                               // — the cold relocation-chase call ($__ptr_offset_fwd) stays out-of-
                               // line. Its own late pass (inlinePtrOffsetFastPass, optimize/index.js),
                               // run AFTER unswitchTypedParamLoop/vectorizeLaneLocal so their raw-call
-                              // pattern match still gets first pick. Trades bytes/site for the
-                              // dominant self-host helper call (17.9M/compile, 2026-07-28 helper-
-                              // rank audit); opt-in like boolConvertToSelect (off at 'size'/level 2,
+                              // pattern match still gets first pick. Trades bytes/site for
+                              // __ptr_offset, self-host's dominant helper call by invocation count;
+                              // opt-in like boolConvertToSelect (off at 'size'/level 2,
                               // on at 'speed'/level 3).
   'hoistAddrBase',
   'boolConvertToSelect',      // f64 ± (cond?1:0) → branchless select (kills i32↔f64 domain cross on recurrences)

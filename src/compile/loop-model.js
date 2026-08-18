@@ -27,7 +27,7 @@ export const freshLoopId = () => ctx.transform.loopXformId++
 // primitives (pre-emission), while the link connects an EMITTED WAT block node back to HIR facts
 // — a different layer. It now lives in ir.js (WAT-node-level helpers, the neutral module both
 // emit.js and vectorize.js already import) — see the doc there for the {plan, lowering} split and
-// the identity/fail-open contract (.work/research.md §BodyModel slice 4, audit-#15 item 5).
+// the identity/fail-open contract (.work/research.md §BodyModel slice 4).
 
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
 // slot `n[0]` is the elided hole == null). `loopLitVal` returns the numeric value or
@@ -147,7 +147,7 @@ export function rewriteBlocks(body, tryStmt) {
   return walk(body)
 }
 
-// === LoopPlan pre-emission mint (audit-#16: was minted inside emit.js's 'for'
+// === LoopPlan pre-emission mint (previously minted inside emit.js's 'for'
 // handler at emission time; moved here so the frozen HIR half is computed once,
 // where the facts originate, BEFORE any semantic consumer — ir.js's loopPlanLink
 // doc for the {plan, lowering} split and identity/fail-open contract is unchanged;
@@ -168,10 +168,10 @@ export function rewriteBlocks(body, tryStmt) {
 // only piece common to both loop kinds. emit.js captures this same identity as
 // `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
 // this WeakMap uses that identical anchor.
-// SESSION-OWNED (audit-#19 P0, folded into ctx.plans by architecture re-audit
-// item 3, .work/todo.md — see src/compile/closure-plan.js's sibling doc
-// comment for the full stale-plan-HIT hazard under self-hosting). Lives at
-// `ctx.plans.loops`, a fresh WeakMap every reset() (src/ctx.js).
+// COMPILE-SESSION-OWNED (folded into ctx.plans — .work/todo.md; see
+// src/compile/closure-plan.js's sibling doc comment for the full
+// stale-plan-HIT hazard under self-hosting). Lives at `ctx.plans.loops`,
+// a fresh WeakMap every reset() (src/ctx.js).
 
 // Walks `body` (a function's, or a closure's OWN body — never descends into a
 // nested `=>`/`function`, which gets its own separate mint call when ITS

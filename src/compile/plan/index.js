@@ -61,15 +61,15 @@ import {
  *  `narrowSignatures` itself (and its own internal narrow.js machinery,
  *  the single largest cost in this function — .work/research.md §Region
  *  arena "jz×jz phase-localized") is deliberately OUTSIDE every boundary
- *  here: narrow.js's O(functions×params×callSites) census is a NAMED,
- *  separately-banked pathology (627cf92a), not a churn-vs-retain shape a
- *  region round can help — wrapping it would mean rooting `programFacts`
- *  mid-fixpoint while narrowSignatures is still mutating it in place, a
- *  correctness hazard for zero reclaim (its own allocations ARE the
- *  fixpoint's live state, not garbage). Every boundary below starts AFTER
- *  narrowSignatures returns. Five rounds, one per named pass-group from
- *  the diffuse-cost phase map (0ae75f07, .work/research.md §Region arena
- *  "analyzeFuncForEmit's OWN clone-shape instances FIXED"): each pass's
+ *  here: narrow.js's O(functions×params×callSites) census is a separately-
+ *  banked cost, not a churn-vs-retain shape a region round can help —
+ *  wrapping it would mean rooting `programFacts` mid-fixpoint while
+ *  narrowSignatures is still mutating it in place, a correctness hazard for
+ *  zero reclaim (its own allocations ARE the fixpoint's live state, not
+ *  garbage). Every boundary below starts AFTER narrowSignatures returns.
+ *  Five rounds, one per named pass-group from the diffuse-cost phase map
+ *  (.work/research.md §Region arena "analyzeFuncForEmit's OWN clone-shape
+ *  instances FIXED"): each pass's
  *  own working state (siteState-shaped temporaries, per-call scratch
  *  objects, body-walk locals) is garbage the instant the pass returns —
  *  never read by a LATER pass — while the FACTS each pass publishes
@@ -87,24 +87,22 @@ export default function plan(ast, profiler, regionHooks) {
   // refresh), so the profile must show WHICH pass and refresh dominate.
   const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
   // One round shape shared by all five plan-tail boundaries below — mark,
-  // run `body`, exit rooting `ast`/`programFacts` (phase-local, not session
-  // state) + the UNION-FIELD root (Slice C-v2, `.work/compile-session-
+  // run `body`, exit rooting `ast`/`programFacts` (phase-local, not durable
+  // ctx state) + the UNION-FIELD root (Slice C-v2, `.work/compile-session-
   // design.md` §2.1/§3, front.js's own doc has the full rationale for why
-  // this is the union of every `ctx.*` field ANY round in this campaign has
-  // ever needed — `funcs, module, schema, closure, scope, types, warnings,
-  // plans, inspect, func, transform, facts` — applied uniformly here too,
-  // not just this round's own historical subset, closing the SAME kind of
-  // cross-round inconsistency a616ca43's session found and fixed). A
-  // durable container's BACKING STORE can still grow, ephemeral, post-mark,
-  // during any of these rounds' own passes — round 1's `narrowBoolResults`
-  // populating `bodyFacts` (`ctx.facts`) on first touch per function was
-  // the confirmed case — so `ctx.facts` rides along explicitly rather than
-  // via a trailing, non-rebound `getFactStore()` call.
+  // this is the union of every `ctx.*` field ANY round needs — `funcs,
+  // module, schema, closure, scope, types, warnings, plans, inspect, func,
+  // transform, facts` — applied uniformly here, not a narrower per-round
+  // subset, to avoid a cross-round rooting inconsistency. A durable
+  // container's BACKING STORE can still grow, ephemeral, post-mark, during
+  // any of these rounds' own passes — e.g. round 1's `narrowBoolResults`
+  // populating `bodyFacts` (`ctx.facts`) on first touch per function — so
+  // `ctx.facts` rides along explicitly rather than via a trailing,
+  // non-rebound `getFactStore()` call.
   // `exitRound` is factored out of `round` below so the two upstream rounds
-  // (early-plan prefix, narrowSignatures whole-call — 7346f7e7's own design,
-  // reimplemented here against the CURRENT 14-field union bundle rather than
-  // reproducing that session's own narrower 11-field `fullRoot()`) can share
-  // the identical exit shape without a third copy of this array literal.
+  // (early-plan prefix, narrowSignatures whole-call) can share the identical
+  // exit shape, rooting the CURRENT 14-field union bundle, without a third
+  // copy of this array literal.
   const exitRound = m => {
     if (regionHooks)
       [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
@@ -135,16 +133,16 @@ export default function plan(ast, profiler, regionHooks) {
     if (t(name, pass)) _dirty = true
   }
 
-  // Region-arena EARLY-PLAN round (7346f7e7's own design — 627cf92a's phase
-  // map named this exact span "+900MB before narrowSignatures even starts":
-  // compileAst entry → plan() entry → classifyHashDictGlobals →
-  // flattenFuncNamespaces/devirtGlobalCalls/inlineHotInternalCalls →
-  // collectProgramFacts's own dirty-resweep loop → narrowSignatures entry).
+  // Region-arena EARLY-PLAN round (the phase map names this exact span
+  // "+900MB before narrowSignatures even starts": compileAst entry →
+  // plan() entry → classifyHashDictGlobals → flattenFuncNamespaces/
+  // devirtGlobalCalls/inlineHotInternalCalls → collectProgramFacts's own
+  // dirty-resweep loop → narrowSignatures entry).
   // Every pass from here through `resolveClosureWidth` is a SEQUENTIAL
   // top-level call, none a loop body holding a stale container reference
   // across an exit (the `ctx.funcs.list` relocation hazard `round()`'s own
-  // doc and e640e77a's design note name doesn't apply — nothing below
-  // iterates `ctx.funcs.list` across this boundary). One round spanning the
+  // doc describes doesn't apply — nothing below iterates `ctx.funcs.list`
+  // across this boundary). One round spanning the
   // WHOLE early-plan prefix: mark here, exit right before the
   // `canSkipWholeProgramNarrowing` branch below — after `programFacts` is
   // declared and `resolveClosureWidth` has settled it — so BOTH the skip-path
@@ -240,34 +238,32 @@ export default function plan(ast, profiler, regionHooks) {
     return programFacts
   }
 
-  // Region-arena NARROWSIGNATURES round (7346f7e7's own design — the named
-  // next lever after e640e77a's own "narrowSignatures itself is EXCLUDED"
-  // boundary design and 0ae75f07's callee-index fix). e640e77a's exclusion
-  // rationale ("wrapping it would mean rooting `programFacts` mid-fixpoint
-  // while narrowSignatures is still mutating it in place — a correctness
-  // hazard for zero reclaim") is about boundaries INSIDE narrowSignatures'
-  // own internal fixpoint (its internal `runFixpointConverged()` sweeps) —
-  // never attempted here. This wraps the WHOLE call via the standard
-  // `round(body)` helper: mark before, exit strictly AFTER narrowSignatures
-  // returns (its own fixpoint fully converged, `programFacts.paramReps`/
-  // `.callSites` settled) — no mid-mutation rooting, by construction.
+  // Region-arena NARROWSIGNATURES round: narrowSignatures itself stays
+  // EXCLUDED from every boundary above ("wrapping it would mean rooting
+  // `programFacts` mid-fixpoint while narrowSignatures is still mutating it
+  // in place — a correctness hazard for zero reclaim") — that exclusion is
+  // about boundaries INSIDE narrowSignatures' own internal fixpoint (its
+  // internal `runFixpointConverged()` sweeps), never attempted here. This
+  // wraps the WHOLE call via the standard `round(body)` helper: mark before,
+  // exit strictly AFTER narrowSignatures returns (its own fixpoint fully
+  // converged, `programFacts.paramReps`/`.callSites` settled) — no
+  // mid-mutation rooting, by construction.
   // narrowSignatures returns nothing — its entire effect is IN-PLACE
   // MUTATION of `programFacts` (`.paramReps`/`.callSites`) and `ctx.funcs`
   // (`func.sig.*`/`.valResult`/...), both already union-root members, plus
   // `ctx.facts` (`analyzeBody` first-touch population inside its own
-  // multi-phase fixpoint — the same 274b6bd8 hazard the early-plan round
-  // above already covers) — every touched container already rides in
-  // `round()`'s own 14-field bundle, no extra audit needed beyond
-  // confirming narrowSignatures writes nothing outside it (verified:
-  // narrow.js references only `programFacts`, `ctx.funcs`/`.func`,
-  // `ctx.scope`/`.types` read-only + self-restored `ctx.func.typedElem`).
+  // multi-phase fixpoint — the same hazard the early-plan round above
+  // already covers) — every touched container already rides in `round()`'s
+  // own 14-field bundle; narrow.js references only `programFacts`,
+  // `ctx.funcs`/`.func`, `ctx.scope`/`.types` read-only + self-restored
+  // `ctx.func.typedElem`, nothing outside that bundle.
   round(() => t('narrowSignatures', () => narrowSignatures(programFacts, ast)))
   // Boolean/bigint result kinds for funcs the call-site census can't reach —
   // value-used-only functions have no direct sites, but their results still
   // cross boxed positions (closure trampolines, boundary wrappers). Guarded:
   // only ever SETS an unset valResult (see narrowBoolResults doc).
   // Plan-tail round 1 (own boundary — the single largest individual delta
-  // outside narrowSignatures itself, +198 MB measured, 0ae75f07's phase map).
+  // outside narrowSignatures itself, +198 MB measured per the phase map).
   round(() => t('narrowBoolResults', () => narrowBoolResults()))
   // Plan-tail round 2: the six passes below (+~395 MB combined, dominated by
   // analyzeParamDistinctness's own +159 MB) share one round — none indivi-

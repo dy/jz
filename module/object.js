@@ -213,10 +213,10 @@ export default (ctx) => {
     // storedValueNarrow when !shadow — same reasoning as the static-segment
     // branch just above (carrierF64Narrow's own doc comment, ir.js): no
     // __dyn_set mirror below means no registry-aware reader ever observes
-    // this slot. Found live: `let o = {n: 4611686018427387903n}; o.n += 1n`
-    // (this object doesn't qualify for the static path — `values.length < 2`
-    // — so it takes this runtime-alloc path) boxed the literal field on
-    // construction, corrupted by the next fixed-offset f64.load reading raw.
+    // this slot. Using the wide box here instead would corrupt the next
+    // fixed-offset f64.load reading raw, e.g. `let o = {n: 4611686018427387903n};
+    // o.n += 1n` on an object that doesn't qualify for the static path
+    // (`values.length < 2`) and so takes this runtime-alloc path.
     //
     // CARRIER PROGRAM §15/§16: the per-FIELD choice derives from
     // ctx.schema.slotBigintBoxedBySid (module/schema.js) — the per-SCHEMA
@@ -874,25 +874,22 @@ const hasOutOfSchemaWrites = (obj, schema) => {
 }
 
 // `sourceSchema` is the spread/Object.assign SOURCE-position schema resolver.
-// audit-#9 P0-2 gave Error a SOURCE-position override (`[]`, matching real
-// JS's non-enumerable `message`/`name`) that this session's finding-3 audit
-// (.work/todo.md §deletion-sweep's "enumerability contradiction") found made
-// `Object.keys`/`JSON.stringify` (physical 2-slot schema, enumerable) and
-// `spread`/`Object.assign` (`[]`, non-enumerable) internally contradictory —
-// the SAME object answering "does this property enumerate" differently
-// depending only on which builtin asked. DECISION (documented divergence,
-// .work/todo.md §deletion-sweep finding-3): Error is an ordinary object on every
-// enumeration surface — keys/JSON/spread/assign/for-in all see the physical
-// `['message','name']` layout, consistently. This diverges from real JS
-// (whose Error properties are non-enumerable on all four surfaces) but keeps
-// jz's OWN four surfaces mutually consistent, at zero machinery cost: the
-// alternative (full JS fidelity) needs a per-property enumerability flag
-// threaded through every enumeration site — the exact "enumerated invariant"
-// shape audit-#9's own Brand redesign (this file, `errorSid`) already spent
-// a session removing for the schema-id axis. `sourceSchema` is now a plain
-// alias for `resolveSchema` — kept as a distinct name because call sites
-// below document SOURCE-position intent, not because it still special-cases
-// anything.
+// Error must resolve to the SAME schema — physical `['message','name']`,
+// enumerable — on every enumeration surface: `Object.keys`/`JSON.stringify`
+// and `spread`/`Object.assign` must agree on what enumerates, or the same
+// object answers "does this property enumerate" differently depending only
+// on which builtin asked. DECISION (documented divergence, see .work/todo.md
+// §deletion-sweep): Error is an ordinary object on every enumeration surface
+// — keys/JSON/spread/assign/for-in all see the physical `['message','name']`
+// layout, consistently. This diverges from real JS (whose Error properties
+// are non-enumerable on all four surfaces) but keeps jz's OWN four surfaces
+// mutually consistent, at zero machinery cost: the alternative (full JS
+// fidelity) needs a per-property enumerability flag threaded through every
+// enumeration site — the exact per-property "enumerated" flag the schema-id
+// design (this file, `errorSid`) deliberately avoids carrying. `sourceSchema`
+// is now a plain alias for `resolveSchema` — kept as a distinct name because
+// call sites below document SOURCE-position intent, not because it still
+// special-cases anything.
 const sourceSchema = (obj) => resolveSchema(obj)
 
 // Recognizes a literal `new X(...)`/`X(...)` Error-constructor-call node
@@ -910,9 +907,9 @@ const sourceSchema = (obj) => resolveSchema(obj)
 // works (if slowly); `Object.assign`'s dynamic arm (`emitObjectAssignDynamic`)
 // has an unrelated pre-existing bug (never pulls the `array` module its own
 // `__dyn_set` dependency needs, "internal: stdlib '__arr_set_idx_ptr' was
-// requested but never registered") that this closes the same way audit-#9
-// closed the sibling spread-source crash: by making the schema KNOWN, not by
-// fixing the dynamic path itself.
+// requested but never registered") that this closes the same way the sibling
+// spread-source crash is closed: by making the schema KNOWN, not by fixing
+// the dynamic path itself.
 const errorLiteralSchema = (obj) =>
   Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1])
     ? ERR_SCHEMA_PROPS : null
@@ -1526,8 +1523,8 @@ function emitEnumerateObject(t, emitStaticStore, emitDynStore, ro) {
     // array, and __schema_tbl[sid] already holds it as a static jz array —
     // return it boxed directly. Read-only by for-in's contract, static by
     // construction: no alloc, no cache, no invalidation. Every schema
-    // (including the Error schema, audit-#9 P0-2 brand redesign — its two
-    // slots are ordinary, fully enumerable properties) qualifies uniformly.
+    // (including the Error schema — its two slots are ordinary, fully
+    // enumerable properties) qualifies uniformly.
     ...(ro ? [['if', ['i32.and',
         ['i32.and', ['i32.eqz', ['local.get', `$${dnG}`]], ['i32.eqz', ['local.get', `$${dnS}`]]],
         ['i32.ne', ['local.get', `$${src}`], ['i32.const', 0]]],

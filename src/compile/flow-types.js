@@ -83,11 +83,11 @@ export function extractRefinements(cond, out, sense = true) {
   }
   // Type-predicate calls under positive sense — refine by the asserted VAL.
   // Callee may be the flattened string 'Array.isArray' or the raw ['.', 'Array',
-  // 'isArray'] pair; __is_map / __is_set / __is_typed were jzify's OWN pre-audit-#8
-  // instanceof lowering as a bare string callee — jzify now passes Array/Map/Set/
-  // TypedArray/ArrayBuffer/Error-family `instanceof` straight through as a real
-  // `['instanceof', name, rhs]` node instead (see the case just below), but this
-  // arm stays for any other caller still shaped as a direct predicate call.
+  // 'isArray'] pair. jzify passes Array/Map/Set/TypedArray/ArrayBuffer/Error-family
+  // `instanceof` straight through as a real `['instanceof', name, rhs]` node (see
+  // the case just below), but this arm stays for any other caller still shaped
+  // as a direct predicate call, including the legacy bare-string __is_map /
+  // __is_set / __is_typed callees.
   if (op === '()' && sense && typeof cond[2] === 'string') {
     const callee = cond[1]
     const val = predicateRefinement(callee)
@@ -95,10 +95,10 @@ export function extractRefinements(cond, out, sense = true) {
   }
   // `x instanceof Array/Map/Set/<TypedCtor>/ArrayBuffer` under positive sense
   // (.work/todo.md §deletion-sweep §4's sound instanceof op — src/prepare/index.js's
-  // handler, reached in BOTH strict source and default-mode source since
-  // audit-#8 P0-1 made jzify pass these through instead of answering them
-  // itself). Same refinement as the predicate-call arm above, keyed off the
-  // RHS class name instead of a callee string.
+  // handler, reached in both strict source and default-mode source since jzify
+  // passes these through instead of answering them itself). Same refinement as
+  // the predicate-call arm above, keyed off the RHS class name instead of a
+  // callee string.
   if (op === 'instanceof' && sense && typeof cond[1] === 'string' && typeof cond[2] === 'string') {
     const val = instanceofRefinement(cond[2])
     if (val != null) { mergeRefinement(out, cond[1], { val }); return out }

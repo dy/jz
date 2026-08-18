@@ -4,12 +4,12 @@
  *   parse → reject-reserved-prefix → liftIIFEs → jzify → prepare → preEval
  *
  * Host (index.js jzCompileInner) and self-host kernel (scripts/self.js — ALL
- * entries: compileSelf, compileWat, compileWarnings, compileDiag) consume THIS
- * function, so the two pipelines cannot drift. They previously did: the kernel
- * entries skipped preEval entirely, so `0.1 + 0.2 - 0.3` folded natively but
- * not in-kernel (different result bits), and `Math.sqrt(9) + Math.abs(-2)`
- * emitted 76ch natively vs 139ch in-kernel at O0 — an observable semantic
- * split the 12-row parity corpus never exercised (audit P0, 2026-07-25).
+ * entries: compileSelf, compileWat, compileWarnings, compileDiag) MUST consume
+ * THIS function, not a re-implementation, so the two pipelines cannot drift —
+ * a kernel entry that skips a step here (e.g. preEval) folds constants
+ * differently from the host (`0.1 + 0.2 - 0.3` gets different result bits) and
+ * emits different code size for the same source, an observable semantic split
+ * the parity corpus needs every step exercised to catch.
  *
  * `jzify` is injected, not imported: both callers own their jzify binding
  * (host imports it, the kernel also wires it into ctx.transform for module
@@ -52,29 +52,21 @@ export const rejectReservedPrefix = (node) => {
  *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
  *  one region round: every allocation that span makes gets reclaimed at
  *  `exit` EXCEPT what's reachable from the root.
- *  UNION-FIELD ROOT (Slice C-v2, `.work/compile-session-design.md` §2.1/§3,
- *  revised after the region-live gate — see `.work/research.md`'s Slice D
- *  entry): the root is the UNION of every `ctx.*` field ANY region round in
- *  this campaign has ever needed (`funcs, module, schema, closure, scope,
- *  types, warnings, plans, inspect, func, transform, facts` — 12 fields),
- *  applied UNIFORMLY at all nine round-exit call sites instead of each
- *  site's own hand-picked subset — the seven-times-repeated root-
- *  completeness defect class (ns-round-2026-08-14's dig found THIS exact
- *  array rooting a dead `ctx.func.list`) is closed the same way a full
- *  `[ast, ctx]` wholesale-session root would close it, WITHOUT exposing
- *  the nine fields no round has ever touched (`core, bridge, names,
- *  runtime, memory, error, abi, features, linkDemand` — `ctx.core.emit`/
- *  `ctx.core.stdlib`/`ctx.bridge` in particular carry hundreds of CLOSURE-
- *  valued properties, the self-hosted stdlib registration machinery,
- *  `__region_copy_rec` was never exercised against under region-live: the
- *  wholesale-`ctx` attempt traded the JS-level `Unknown op: ++` AST-
- *  corruption signature for a WASM-level `memory access out of
- *  bounds`/`unreachable` trap signature — DIFFERENT, not fixed, evidence
- *  the newly-exposed subtrees are where the regression actually lives).
- *  `ctx` itself is NEVER a root element here — only its individual fields
- *  are, exactly as before Slice B's identity-swap, so no `setSession()`
- *  rebind seam is needed. Any later read through a stale `ast`/`ctx.*`
- *  binding is a use-after-free. */
+ *  UNION-FIELD ROOT (see `.work/compile-session-design.md` §2.1/§3 and
+ *  `.work/research.md`'s region-arena entry): the root MUST be the UNION of
+ *  every `ctx.*` field ANY region round needs (`funcs, module, schema,
+ *  closure, scope, types, warnings, plans, inspect, func, transform, facts`
+ *  — 12 fields), applied UNIFORMLY at every round-exit call site — never
+ *  each site's own hand-picked subset, which silently drops a field some
+ *  OTHER round needs and leaves it collected out from under a live
+ *  reference. The remaining `ctx.*` fields (`core, bridge, names, runtime,
+ *  memory, error, abi, features, linkDemand`) must stay OUT of the root:
+ *  `ctx.core.emit`/`ctx.core.stdlib`/`ctx.bridge` carry hundreds of
+ *  CLOSURE-valued properties (the self-hosted stdlib registration
+ *  machinery) that the region-arena relocation walk is not proven safe
+ *  against. `ctx` itself is NEVER a root element here — only its individual
+ *  fields are, so no `setSession()` rebind seam is needed. Any later read
+ *  through a stale `ast`/`ctx.*` binding is a use-after-free. */
 export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
   const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))

@@ -172,7 +172,7 @@ const NO_CAPTURES = new Map()
  *  the SAME per-element paramTypes/paramTypedCtors/minArgc lattice
  *  tryDirectClosureCall already builds for a single directly-bound closure
  *  (narrow.js's direct-call param lattice, extended across indexed dispatch —
- *  the return-side analog of the closure-return-kind pre-pass, af731cf0).
+ *  the return-side analog of the closure-return-kind pre-pass).
  *  Fail-open by construction: any use this walk can't prove safe leaves the
  *  name out of the returned set, and emit.js/emitClosureBody's existing
  *  consumer path is unchanged — an unproven param just stays boxed/dynamic,

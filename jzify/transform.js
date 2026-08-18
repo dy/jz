@@ -17,11 +17,12 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
 // emitInstanceof, error-object-design.md (git history) §4) already supports — mirrors prepare/
 // index.js:83's INSTANCEOF_ALLOW verbatim (same two upstream arrays, same four
 // tag names) so default and strict mode can never drift on which RHS is sound.
-// audit-#8 P0-1: this file's own 'instanceof' handler used to answer every one of
-// these itself via a broad shape guess (staticInstanceofFold + a permissive
-// `typeof===object` fallback) BEFORE prepare's sound handler ever saw the node —
-// default mode never reached the tag/schema/range machinery strict mode used,
-// so `new TypeError(x) instanceof RangeError` wrongly answered `true` there.
+// If CORE_INSTANCEOF_ALLOW drifts from prepare's INSTANCEOF_ALLOW, this file's
+// own 'instanceof' handler goes back to answering every one of these itself via
+// a broad shape guess (staticInstanceofFold + a permissive `typeof===object`
+// fallback) BEFORE prepare's sound handler ever sees the node — default mode
+// then never reaches the tag/schema/range machinery strict mode uses, so
+// `new TypeError(x) instanceof RangeError` wrongly answers `true` there.
 const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'

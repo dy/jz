@@ -1266,13 +1266,13 @@ export function optimizeModule(sec, profiler) {
 
   const dataLen = ctx.runtime.data?.length || 0
   if (dataLen > 1024 && !ctx.memory.shared) {
-    // 64-byte heap-base alignment (was 8): the compiler's own vectorizer emits
-    // v128 stream loads/stores, and an 8-mod-16 heap base makes every such
-    // access straddle cache lines on memory-bound kernels — measured 1.47× on
-    // particle purely from the base landing 8-mod-64 after an unrelated 88-byte
-    // prelude growth (HEAD-vs-v0.9.2 audit: patching the base back recovered
-    // the whole gap). Cache-line alignment also makes perf immune to prelude
-    // size changes — without it every stdlib edit re-rolls the layout lottery.
+    // 64-byte heap-base alignment: the compiler's own vectorizer emits v128
+    // stream loads/stores, and a heap base that isn't 64-byte aligned makes
+    // every such access straddle cache lines on memory-bound kernels — a real,
+    // measurable slowdown that a single unrelated prelude-size change can
+    // trigger by shifting the base's alignment. Cache-line alignment makes
+    // perf immune to prelude size changes — without it every stdlib edit
+    // re-rolls the layout lottery.
     // Cost: ≤56 bytes of memory per module, zero code bytes.
     const heapBase = (dataLen + 63) & ~63
     // Non-shared memory always carries a $__heap global — start it past the

@@ -2,25 +2,25 @@ import { extractParams, classifyParam, T } from '../ast.js'
 import { findFreeVars } from './analyze.js'
 import { ctx } from '../ctx.js'
 
-// ClosureEnvPlan (.work/closure-plan-design.md, audit-#18 item 1; record shape
-// per architecture re-audit item 4, .work/todo.md) — mirrors loop-model.js's
+// ClosureEnvPlan (.work/closure-plan-design.md) — mirrors loop-model.js's
 // astLoopPlan/mintLoopPlans idiom: a frozen, pre-emission fact keyed on AST
 // node identity, computed once after this function's analysis has settled,
 // read-only from emission on.
 //
-// COORDINATOR RULINGS (2026-08-10, binding — see the design doc's own tail):
+// Design invariants (see the design doc's own tail):
 //   1. Keyed on the arrow's BODY node (the loopPlanLink precedent — the
 //      identity that survives lowering; decl nodes die in prepare). WeakMap,
 //      fail-open: a lookup miss falls through to ctx.closure.make's own
 //      inline re-derivation, never a hard error.
-//   2. Static-path retired FIRST (module/function.js's `_nonEscaping`/
-//      `OPTF.staticClosureEnv` branch, scanAndTagNonEscapingClosures, the
-//      passes.js registry entry — all gone before this module existed).
-//   3. `callMultiplicity` DROPPED — it was the retired static-env concept's
-//      own need (bounding live activations sharing one slot); irrelevant once
-//      that path is gone.
+//   2. There is no static-closure-env path to reconcile with: module/
+//      function.js's `_nonEscaping`/`OPTF.staticClosureEnv` branch,
+//      scanAndTagNonEscapingClosures, and the passes.js registry entry that
+//      implemented it are all gone.
+//   3. `callMultiplicity` is not part of the record: it was the retired
+//      static-env concept's own need (bounding live activations sharing one
+//      slot) and has no meaning without that path.
 //
-// Record shape (item 4): `{ id, storage, captures }`.
+// Record shape: `{ id, storage, captures }`.
 //   id       — ClosureId: a stable id minted once per plan, a monotonic
 //              counter scoped to the compile session (ctx.transform.closureId,
 //              src/ctx.js's reset()) — identifies a PLAN RECORD, never names
@@ -31,12 +31,11 @@ import { ctx } from '../ctx.js'
 //              a slot, boxed or not; module/function.js's per-capture store
 //              loop already branches on a capture's OWN mode for each slot,
 //              so 'heap' does not distinguish boxed from unboxed itself, that
-//              lives per-capture below). The now-provably-dead static path
-//              and the never-wired lambda-lift path (design §4 slice 3,
-//              COORDINATOR RULING: DEFERRED — census showed near-nil bench
-//              payoff against a real call-site-rewrite risk, .work/todo.md's
-//              own AS-LANDED account) are both OUT of this enum: 'none'/
-//              'heap' is the complete, currently-reachable set.
+//              lives per-capture below). The dead static path and the
+//              not-yet-wired lambda-lift path (design §4 slice 3 — deferred,
+//              bench payoff was near-nil against real call-site-rewrite
+//              risk) are both OUT of this enum: 'none'/'heap' is the
+//              complete, currently-reachable set.
 //   captures — per-capture classification array, declaration order (the SAME
 //              order the env slots get written in, and — for a lift day that
 //              may come later — the order lifted params would take):
@@ -69,15 +68,14 @@ import { ctx } from '../ctx.js'
 // JZ_DEBUG_INVARIANTS shadow-assert instead (module/function.js's own doc,
 // where the plan is read).
 //
-// SESSION-OWNED (audit-#19 P0, folded into ctx.plans by architecture re-audit
-// item 3, .work/todo.md): lives at `ctx.plans.closures`, a fresh WeakMap every
-// reset()/beginSession() (src/ctx.js's reset(), the ctx.features/ctx.linkDemand
-// subtree idiom). Ownership matters because under self-hosting WeakMap lowers
-// to a strong Map (no native GC) — a module-global map would let plans from a
-// PRIOR compile() session survive into the next one, and arena-reset offset
-// reuse can then pointer-collide a fresh AST node with a stale key, producing
-// a stale-plan HIT where every reader here assumes a miss (fail-open, per the
-// coordinator rulings above).
+// This plan store lives at `ctx.plans.closures` (.work/todo.md), a fresh
+// WeakMap every reset()/beginSession() (src/ctx.js's reset(), the
+// ctx.features/ctx.linkDemand subtree idiom). Session ownership matters
+// because under self-hosting WeakMap lowers to a strong Map (no native GC) —
+// a module-global map would let plans from a PRIOR compile() session survive
+// into the next one, and arena-reset offset reuse can then pointer-collide a
+// fresh AST node with a stale key, producing a stale-plan HIT where every
+// reader here assumes a miss (fail-open, per invariant 1 above).
 const freshClosureId = () => ctx.transform.closureId++
 
 // Names a destructuring pattern binds (mirrors src/prepare/lift-iife.js's own
@@ -109,7 +107,7 @@ export function mintClosureEnvPlans(body) {
       if (c.kind === 'default' || c.kind === 'destruct-default') defaultVals.push(c.defValue)
     }
 
-    // Plan key: the arrow's BODY node (coordinator ruling 1) for the common
+    // Plan key: the arrow's BODY node (see invariant 1 above) for the common
     // case — but emit.js's own '=>' handler reconstructs a FRESH body array
     // to prepend the destructuring `let`s for ANY destructured param (that
     // handler's own doc), so a body-keyed plan for such a closure could never
@@ -123,8 +121,8 @@ export function mintClosureEnvPlans(body) {
     // at emission time, in emit.js — moving it earlier would reorder
     // ctx.func.uniq's temp-name allocation against every OTHER uniq
     // consumer in the function and change emitted WAT text for a program
-    // that has nothing to do with this plan, which the byte-identity gate
-    // this item ships under forbids).
+    // that has nothing to do with this plan; emitted WAT must stay
+    // byte-identical for programs the plan doesn't touch).
     const key = destructured ? rawParams : arrowBody
     if (key == null || typeof key !== 'object') return   // WeakMap keys must be objects
 

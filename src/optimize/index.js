@@ -245,10 +245,10 @@ export function resolveOptimize(opt) {
       else if (n === 'watr' && typeof v === 'object') out[n] = v
       else out[n] = !!v
     }
-    // Tuning keys carry through — but ONLY registered ones. A silent passthrough
-    // accepted `{ watrLcm: true }` as a no-op (the audit's coverage hole); every
-    // read site is enumerated in TUNING_KEYS, so an unknown key is a typo — fail
-    // with the nearest registered name.
+    // Tuning keys carry through — but ONLY registered ones. Every read site is
+    // enumerated in TUNING_KEYS; an unregistered key would otherwise pass through
+    // silently as a no-op, masking typos, so an unknown key must fail loudly with
+    // the nearest registered name instead.
     for (const k of Object.keys(opt)) {
       if (PASS_NAMES.includes(k)) continue
       if (!TUNING_KEYS.includes(k)) {
@@ -3232,7 +3232,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
 // proven-f64 param would otherwise read as impure. Built in the emit phase (optimizeModule),
 // BEFORE the per-function lane vectorizer runs, so callee bodies are still clean scalar.
 //
-// SOUNDNESS (audit fix, 2026-08): folds a CLONE, never `fn` itself. `fn` is the real,
+// SOUNDNESS: folds a CLONE, never `fn` itself. `fn` is the real,
 // shared function object also emitted verbatim for its own ordinary (non-inlined) call
 // sites — under jz's NaN-boxing ABI EVERY dynamically-typed value (string, undefined,
 // null, a boolean atom, a boxed object) is carried in an `f64`-typed local exactly like
@@ -3442,8 +3442,8 @@ export function unswitchTypedParamLoop(fn) {
   const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__typed_idx' && n.length >= 4 && reintParam(n[2], p)
 
   // A receiver-pointer-kind guard on the SAME param `p` — module/array.js's
-  // unknown-receiver, proven-NUMBER-key read fallback (re-audit #5 finding
-  // #1, 2026-07-30): `ptrTypeEq(p,ARRAY) || ptrTypeEq(p,TYPED) ?
+  // unknown-receiver, proven-NUMBER-key read fallback:
+  // `ptrTypeEq(p,ARRAY) || ptrTypeEq(p,TYPED) ?
   // __typed_idx(p,i) : __dyn_get_expr(...)`, optionally wrapped by its own
   // STRING pointer-kind check. This clone already runs where the OUTER
   // __utb gate has proven `p` IS the target typed-array ctor (PTR.TYPED,
@@ -3782,18 +3782,17 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // Vectorization is jz LOWERING — it always runs pre-watr (never in a post-watr
     // re-optimize). watr is the sole optimizer that runs after, and it preserves the
     // v128 the lift produces. `phase === 'post'` is now vestigial (no post caller).
-    // foldStrDispatchF64(fn) USED to run here too ("Phase 1: fold dead string-dispatch
-    // blocks on proven-f64 locals before the vectorizer pattern-matches") — removed
-    // (audit fix, 2026-08): `fn` here is the real, standalone-callable function, and
-    // foldStrDispatchF64's "proven rawF64 param" claim is unsound for a bare declared
-    // param (see buildPureFuncMap's note above — under NaN-boxing an f64 param can
-    // carry a string/undefined/atom just as validly as a real number). Folding `fn`
-    // directly stripped its own live runtime string/atom dispatch, not just a copy
-    // used for proven-numeric inline substitution — the `g(m.get(missingKey))`
-    // "+"-miscompile class. The pureFuncMap-driven inline path (buildPureFuncMap,
-    // above in assemble.js) still folds a private CLONE for the one context where the
-    // substituted argument is independently proven numeric (a per-lane typed-array
-    // read) — that's the only place this fold is sound.
+    // foldStrDispatchF64(fn) must not run directly on `fn` here: `fn` is the real,
+    // standalone-callable function, and foldStrDispatchF64's "proven rawF64 param"
+    // claim is unsound for a bare declared param (see buildPureFuncMap's note above —
+    // under NaN-boxing an f64 param can carry a string/undefined/atom just as validly
+    // as a real number). Folding `fn` directly would strip its own live runtime
+    // string/atom dispatch, not just a copy used for proven-numeric inline
+    // substitution — the `g(m.get(missingKey))` "+"-miscompile class. The
+    // pureFuncMap-driven inline path (buildPureFuncMap, above in assemble.js) instead
+    // folds a private CLONE for the one context where the substituted argument is
+    // independently proven numeric (a per-lane typed-array read) — that's the only
+    // place this fold is sound.
     if (!cfg || cfg.unswitchTypedParamLoop !== false) unswitchTypedParamLoop(fn)
     if (vectorizeLaneLocal(fn, {
       multiAcc: cfg.reduceUnroll === true,
@@ -3811,7 +3810,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
     // multi-accumulator reduction (a[i],a[i+2],a[i+4]…) and stencil/strided reads.
     // fusedRewrite's memarg fold already ran (above, before vectorize), so fold the
     // freshly-created v128 memargs now — one fewer i32.add per accumulator per
-    // iteration, the hot-loop waste audit-fixpoint.mjs flagged on dot/sum.
+    // iteration in hot dot/sum-style reduction loops.
     foldV128Memargs(fn)
   }
   // Speed-tier only, and deliberately LATE (after unswitchTypedParamLoop/
@@ -3898,8 +3897,8 @@ function foldV128Memargs(node) {
  *  followForwardingWat's bounds/sentinel check) at each surviving call site —
  *  the cold relocation-chase call ($__ptr_offset_fwd, the only loop) stays
  *  out-of-line. Trades bytes/site for the self-host kernel's dominant helper
- *  call (17.9M/compile, 2026-07-28 helper-rank audit — every NaN-box deref is
- *  an out-of-line call, kept a real function by the forwarding branch).
+ *  call by call count — every NaN-box deref is an out-of-line call, kept a
+ *  real function by the forwarding branch.
  *
  *  Deliberately its OWN late pass, not folded into fusedRewrite's earlier walk
  *  (where a first version lived): unswitchTypedParamLoop's polymorphic-store
