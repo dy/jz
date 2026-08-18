@@ -70,7 +70,7 @@ import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinall
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
   REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
-  recordClosureCallRepresentations, representationCallArgAction,
+  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction,
 } from './representation-plan.js'
 
 const stringOps = (node) => {
@@ -1457,6 +1457,13 @@ const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?
  *  already be argIR(node)'s result (or ptrKind-appropriate) — this function
  *  itself never emits, only coerces, so it cannot re-decide emit vs
  *  emitIdentitySafe after the fact (see argIR's comment). */
+const applyRepresentationAction = (ir, node, action) => {
+  if (!CARRIER_BOX || valTypeOf(node) !== VAL.BIGINT) return ir
+  if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
+  if (action === REP_EDGE_UNBOX) return fromI64(unboxBigInt(asF64(ir)))
+  return ir
+}
+
 function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   if (param?.ptrKind != null) {
     // PTR.OBJECT never forwards (FORWARDING_MASK — only ARRAY/HASH/SET/MAP
@@ -2229,7 +2236,8 @@ export function emitDecl(...inits) {
     if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
-    const val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
+    let val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
+    val = applyRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
     // emitting init — not just for sibling `let`s in the same block (emitBlockBody used
@@ -5391,10 +5399,11 @@ export const emitter = {
     // (ir.js) for the established pattern this mirrors.
     const neverEscapes = Array.isArray(val) && val[0] === '[' && ctx.schema.arrayVars?.has(name)
       ? true : ctx.func._arrayLiteralNeverEscapes
-    const ev = withFunctionFields({
+    let ev = withFunctionFields({
       _selfAccumConcat: selfAccum ? name : null,
       _arrayLiteralNeverEscapes: neverEscapes,
     }, () => emit(val))
+    ev = applyRepresentationAction(ev, val, representationBindingWriteAction(ctx, name, val))
     return writeVar(name, ev, void_)
   },
 

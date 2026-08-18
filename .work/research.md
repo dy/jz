@@ -20986,3 +20986,76 @@ zero conflicts both times — no other session touched `layout-kinds.js`,
 `module/collection.js`), deleted after landing along with its two
 worktrees (`setmap-durable`, `setmap-durable-build2`) and the disposable
 detached control worktree (`setmap-durable-control`).
+---
+
+## §RepresentationPlan v2 Slice 3b — materialize plain local-write targets
+## (2026-08-18)
+
+The second codegen family normalizes complete plain-write local lifetimes.
+A private `materializedNames` readiness set admits only non-parameter,
+non-global bindings whose entire def set consists of declaration/`=` writes.
+Every explicit `BOX`/`UNBOX` write must also have a statically-BigInt source so
+the emitter can apply it unconditionally; NONE writes and true raw identities
+remain no-ops. BOXED→BOXED `KEEP` is deliberately not readiness evidence yet,
+because that target depends on an upstream producer family that may still be
+legacy. Reads see the target representation only after this proof. No Set or
+Map escapes the private session plan; projections remain scalar.
+
+The fixed class is any plain local whose complete lifetime joins Number and
+BigInt. Before this slice, `let value=0; if(c)value=4n; typeof value` returned
+`"number"` for both arms at O0/O2/O3. Native JS returns `"bigint"` on the
+second arm. The BigInt assignment now allocates one `PTR.BIGINT` cell, generic
+`typeof` sees tag 5, and guarded arithmetic unboxes its payload. New native,
+WASI, and wasm-host assertions verify Number→`"number"`, BigInt→`"bigint"`,
+and both guarded consumer branches at O0/O2/O3. The focused O0 WAT shows the
+expected `__alloc`/`i64.store`/`__mkptr(5)` write and one
+`i64.load(__ptr_offset(...))` read; raw-only bindings remain unchanged.
+
+Three planner-precision repairs were prerequisites, not output workarounds.
+Prepared initialized declarations no longer count their binder token as a
+second undefined write; `BigInt(...)` is recognized as a raw origin before a
+same-named generic function boundary; and self-referential numeric defs start
+at BOTTOM rather than manufacturing a permanent Number member during round
+one. All graph, semantic, and representation solvers now terminate on their
+monotone change signal instead of silently exhausting a guessed round budget.
+The complete watr library remains WAT-byte-identical to Slice 3a.
+
+Broader readiness was rejected twice. First, the false nullable/self-cycle
+facts boxed watr `i64.parse`'s local `bi`; its later BigInt64Array write consumed
+the pointer bits and broke int-literal/call-indirect/SIMD rows. The full watr
+WAT diff localized that mistake and the precision fixes return it to zero
+bytes. Second, treating every planned BOXED→BOXED `KEEP` as already emitted
+built a valid self-host kernel but made its first `Math.pow` compile
+nonterminate (the full wasm suite stalled at `pow-ulp`). Those producers are
+now deferred, not special-cased by function name; the final kernel compiles
+that source in about 0.5 s and clears the whole wasm leg.
+
+External output discipline: **129/130** corpus subjects are SHA-256
+byte-identical to Slice 3a. The only delta is self-source `jzify-entry`,
+973,110→973,220 bytes (+110), because the input includes the changed compiler
+module itself; jessie, watr, all benches, and all examples are identical.
+After rebasing over the concurrent region-arm landing, build ×2 converges
+(`dist/jz.wasm`
+`8cdf5cd4fe9471fceba4471fd6a309c631dc0d5825e3ae12faa9e88244ba32b1`,
+16,956.0 KiB). Direct alternating candidate/control self-host A/B is within
+the required 1.03 band on every round: **1.004×, 1.005×, 1.008×** geomean.
+
+Final rebased gates: default **3,511/3,505/0/6**; O0 and O3 each
+**3,511/3,505/0/6**; WASI **3,510/3,504/0/6**; wasm-target
+**2,770/2,764/0/6**; focused carrier/watr/inference/session **416/416**;
+selfhost correctness **21/21**; kernel parity **33/33**; dormant kernel oracle
+**13/13 ×3**; focused watr output byte-identical. The standalone warm
+self-host-vs-V8 pin remains independently red, as on the untouched control;
+fresh remains green. `test:claims` keeps size geomean **1.020×** and retains
+its pre-existing stale evidence failures.
+
+**Status:** plain local writes are consumable. Reassigned parameters, result/
+return, join, storage, closure, and host edges are not. RepresentationPlan v2
+as a whole remains non-consumable; FeaturePlan stays blocked. Region-live on
+the rebased candidate converges across two builds (`dist/jz.wasm`
+`df3eab8c313b0554631dcb34552614fb6f6ac24628c11c33f89262920fa5883b`,
+14,773.4 KiB), passes kernel parity **33/33**, and passes kernel oracle
+**13/13 ×15**. Notably, the concurrent region-arm commit's own control ledger
+records a deterministic 12/13 failure on the heterogeneous-BigInt-array O0 row;
+this slice's normalized local write closes that row on all 15 repetitions. Only
+the validation worktree had `REGION_HOOKS_ACTIVE=true`.

@@ -404,9 +404,9 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     return changed
   }
 
-  const budget = ctx.funcs.list.length + 2
-  for (let round = 0; round < budget; round++) {
-    let changed = false
+  let graphChanged = true
+  while (graphChanged) {
+    graphChanged = false
     for (const func of ctx.funcs.list) {
       if (func.raw || !func.body) continue
       const names = namesFor(func), defs = defMapByFunc.get(func)
@@ -415,26 +415,25 @@ function solveBigintProvenance(ctx, programFacts, ast) {
         localChanged = false
         for (const [name, entries] of defs) {
           for (const entry of entries) if (entry.rhs != null && exprMay(entry.rhs, func, names)) {
-            if (mark(names, name)) { localChanged = true; changed = true }
+            if (mark(names, name)) { localChanged = true; graphChanged = true }
             break
           }
           // Storage aliases preserve the receiver's content provenance.
           for (const entry of entries) if (typeof entry.rhs === 'string') {
-            if (storage.has(entry.rhs) && mark(storage, name)) { localChanged = true; changed = true }
-            if (bigintTyped.has(entry.rhs) && mark(bigintTyped, name)) { localChanged = true; changed = true }
+            if (storage.has(entry.rhs) && mark(storage, name)) { localChanged = true; graphChanged = true }
+            if (bigintTyped.has(entry.rhs) && mark(bigintTyped, name)) { localChanged = true; graphChanged = true }
           }
         }
       }
       if (!Array.isArray(func.body) || func.body[0] !== '{}')
-        if (noteResult(func, func.body)) changed = true
-      if (scan(func.body, func, names)) changed = true
+        if (noteResult(func, func.body)) graphChanged = true
+      if (scan(func.body, func, names)) graphChanged = true
     }
     if (!indirectResult)
-      for (const name of programFacts.valueUsed) if (results.has(name)) { indirectResult = true; changed = true; break }
-    if (scan(ast, null, globals)) changed = true
+      for (const name of programFacts.valueUsed) if (results.has(name)) { indirectResult = true; graphChanged = true; break }
+    if (scan(ast, null, globals)) graphChanged = true
     if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits)
-      if (scan(init, null, globals)) changed = true
-    if (!changed) break
+      if (scan(init, null, globals)) graphChanged = true
   }
 
   return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay }
@@ -632,9 +631,17 @@ function collectDefs(body) {
     const op = node[0]
     if (!root && op === '=>') return
     if (op === 'let' || op === 'const') {
+      // Prepared declarations carry both a binder token and its `=` init
+      // (`['let', name, ['=', name, rhs]]`). The binder is not a second
+      // undefined write when an initializer for that same BindingId exists.
+      const initialized = new Set()
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
-        if (typeof decl === 'string') add(decl, null, node, i)
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') initialized.add(decl[1])
+      }
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
+        if (typeof decl === 'string') { if (!initialized.has(decl)) add(decl, null, node, i) }
         else if (Array.isArray(decl) && decl[0] === '=') add(decl[1], decl[2], decl, 2)
       }
     } else if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') {
@@ -692,6 +699,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         return bigintRepIsClosed(rep) && bigintRepBits(rep) !== BIGINT_REP_TOP ? semKind(VAL.BIGINT) : semAll()
       }
       if (provenance && !taintedNames?.has(node)) return noBigintSemantic()
+      if (defs.has(node)) return semBottom()
       return semanticFromRep(localReps?.get(node))
     }
     if (!Array.isArray(node)) return semAll()
@@ -706,19 +714,23 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else if (node[0] === '?:') out = joinSem(semanticOf(node[2]), semanticOf(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
       out = joinSem(semanticOf(node[1]), semanticOf(node[2]))
-    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
-      out = directCallBoundary(ctx, node[1]).result.semantic
     else if (node[0] === '()' && typeof node[1] === 'string' &&
              (node[1] === 'BigInt' || node[1].startsWith('BigInt.')))
       out = semKind(VAL.BIGINT)
+    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
+      out = directCallBoundary(ctx, node[1]).result.semantic
     else if (NUMERIC_VALUE_OPS.has(node[0])) {
       const operands = node.slice(1).filter(x => x !== undefined).map(semanticOf)
       const anyBig = operands.some(canBeBigint)
       const allBig = operands.length > 0 && operands.every(definiteBigint)
-      if (allBig) out = semKind(VAL.BIGINT)
+      // A self-referential def is BOTTOM on the first widening round. Do not
+      // manufacture a Number member from that temporary lack of evidence;
+      // the next round will classify it from the other concrete defs.
+      if (operands.some(x => !semanticObserved(x))) out = semBottom()
+      else if (allBig) out = semKind(VAL.BIGINT)
       else if (anyBig) out = packSemantic(
         BIGINT_KIND_BIT | bitOfKind(VAL.NUMBER),
-        operands.every(x => semanticObserved(x) && semanticClosed(x)),
+        operands.every(x => semanticClosed(x)),
         false,
       )
       else out = semKind(VAL.NUMBER)
@@ -738,9 +750,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
 
   // Semantic binding fixpoint. Definitions are body-local and joins widen;
   // recursive cycles with no seed remain BOTTOM and are opened after settle.
-  const budget = defs.size + 2
-  for (let round = 0; round < budget; round++) {
-    let changed = false
+  let semanticChanged = true
+  while (semanticChanged) {
+    semanticChanged = false
     for (const [name, list] of defs) {
       let next = params.has(name) ? semanticNames.get(name) : semBottom()
       for (const def of list) {
@@ -750,10 +762,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         next = joinSem(next, value)
       }
       const prev = semanticNames.get(name) || semBottom()
-      if (!sameSem(prev, next)) { semanticNames.set(name, next); changed = true }
+      if (!sameSem(prev, next)) { semanticNames.set(name, next); semanticChanged = true }
     }
-    if (!changed) break
-    nodeSemantic.clear()
+    if (semanticChanged) nodeSemantic.clear()
   }
   for (const name of defs.keys()) {
     const sem = semanticNames.get(name)
@@ -769,9 +780,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const cached = nodeCurrent.get(node)
     if (cached != null) return cached
     let out
-    if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
+    if (isBigintOrigin(node)) out = RAW_BIGINT
+    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
       out = directCallBoundary(ctx, node[1]).result.current
-    else if (isBigintOrigin(node)) out = RAW_BIGINT
     else if (node[0] === ',') out = currentOf(node[node.length - 1])
     else if (node[0] === '=') out = currentOf(node[2])
     else {
@@ -799,8 +810,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return out
   }
 
-  for (let round = 0; round < budget; round++) {
-    let changed = false
+  let representationChanged = true
+  while (representationChanged) {
+    representationChanged = false
     nodeCurrent.clear()
     for (const [name, list] of defs) {
       let out = params.has(name) ? (currentNames.get(name) ?? ANY_BIGINT) : null
@@ -809,9 +821,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         out = out == null ? next : joinRep(out, next)
       }
       out ??= ANY_BIGINT
-      if (currentNames.get(name) !== out) { currentNames.set(name, out); changed = true }
+      if (currentNames.get(name) !== out) { currentNames.set(name, out); representationChanged = true }
     }
-    if (!changed) break
   }
   nodeCurrent.clear()
   for (const [name, sem] of semanticNames)
@@ -919,6 +930,31 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const expr of returnExprs(body)) plannedOf(expr)
   }
 
+  // A non-parameter local whose complete def set uses plain writes can have
+  // every incoming edge normalized at emitDecl / the '=' handler. Keep this
+  // readiness private: readers get only a scalar projection, never the Set.
+  const materializedNames = new Set()
+  for (const [name, list] of defs) {
+    if (params.has(name) || ctx.scope.globals?.has(name)) continue
+    const target = targetNames.get(name) ?? ANY_BIGINT
+    const ready = list.every(def => {
+      if (def.rhs == null) return true
+      if (def.owner?.[0] !== '=') return false
+      const source = plannedOf(def.rhs)
+      const action = edgeAction(source, target)
+      if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
+        return valTypeOf(def.rhs) === VAL.BIGINT
+      if (action !== REP_EDGE_KEEP) return false
+      // NONE is unchanged on a tagged union write. A raw KEEP is also a real
+      // identity. BOXED→BOXED readiness is intentionally deferred: it depends
+      // on whether the upstream producer family has migrated, not just its
+      // eventual target fact.
+      return bigintRepBits(source) === BIGINT_REP_NONE ||
+        (source === RAW_BIGINT && target === RAW_BIGINT)
+    })
+    if (ready) materializedNames.add(name)
+  }
+
   // Compact canonical node facts into one primitive-valued Map. The three
   // temporary caches above are build-time solver state and do not remain
   // reachable from the published plan.
@@ -941,13 +977,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
 
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,
-    semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null, edges,
+    semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null,
+    materializedNames: null, edges,
   } : {
     kind: 'body', identity, boundary, trivial: false,
     semanticNames: packedSemantics,
     currentNames: keptCurrent,
     targetNames: keptTarget,
     nodeFacts,
+    materializedNames,
     edges,
   }
 }
@@ -1052,12 +1090,31 @@ const activeRep = (ctx, node, target) => {
   return NO_BIGINT
 }
 
-/** Target representation for a stable active-function parameter. */
-export function representationActiveParamRep(ctx, name) {
+/** Materialized representation of a stable parameter or normalized local. */
+export function representationActiveMaterializedRep(ctx, name) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
-  return k >= 0 && record.boundary.params[k]?.stable === true ? activeRep(ctx, name, true) : NO_BIGINT
+  if (k >= 0)
+    return record.boundary.covered === true && record.boundary.params[k]?.stable === true
+      ? activeRep(ctx, name, true) : NO_BIGINT
+  return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** Frozen action for one plain declaration/assignment write. */
+export function representationBindingWriteAction(ctx, name, source) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
+  return edgeAction(activeRep(ctx, source, true), activeRep(ctx, name, true))
+}
+
+const activeEmittedRep = (ctx, node) => {
+  if (typeof node === 'string') {
+    const materialized = representationActiveMaterializedRep(ctx, node)
+    if (materialized !== NO_BIGINT) return materialized
+  }
+  return activeRep(ctx, node, false)
 }
 
 /** Current source→callee target action for one direct-call argument. */
@@ -1072,7 +1129,7 @@ export function representationCallArgAction(ctx, node, params, index) {
   // the legacy path; switching its entry alone would split the local's ABI.
   if (targetBoundary.params[index]?.stable !== true) return REP_EDGE_REJECT
   const target = targetBoundary.params[index]?.target ?? ANY_BIGINT
-  return edgeAction(activeRep(ctx, node, false), target)
+  return edgeAction(activeEmittedRep(ctx, node), target)
 }
 
 /** Record direct-closure argument provenance before that closure is planned. */

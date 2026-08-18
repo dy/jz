@@ -53,6 +53,29 @@ test('RepresentationPlan: direct call edges preserve raw-only helpers and normal
   }
 })
 
+test('RepresentationPlan: plain local writes normalize a Number-or-BigInt binding', () => {
+  const src = `
+    export let classify = c => {
+      let value = 0
+      if (c) value = 4n
+      return typeof value
+    }
+    export let use = c => {
+      let value = 0
+      if (c) value = 4n
+      if (typeof value === 'bigint') return value + 1n === 5n
+      return value + 1 === 1
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.classify(0), 'number', `O${optimize || 0}: Number write keeps its native carrier`)
+    is(e.classify(1), 'bigint', `O${optimize || 0}: BigInt write enters the tagged local carrier`)
+    is(e.use(0), true, `O${optimize || 0}: Number consumer remains correct`)
+    is(e.use(1), true, `O${optimize || 0}: guarded BigInt consumer reads the boxed payload`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —
