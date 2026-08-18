@@ -48,7 +48,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
-import { mintRepresentationPlan, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
+import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -1727,11 +1727,16 @@ function synthesizeBoundaryWrappers() {
       ? ['func', `$${name}$exp`, ['export', `"${name}"`]]
       : ['func', `$${name}$exp`]
     // jsstring params flow as externref end-to-end; boxed params ride i64; numbers f64.
-    const i64Params = []
+    const i64Params = [], bigintBoxParams = []
     sig.params.forEach((p, i) => {
       wrapNode.push(['param', `$${p.name}`, p.jsstring ? 'externref' : paramIsI64(p) ? 'i64' : 'f64'])
       if (paramIsI64(p)) i64Params.push(i)
+      if (representationHostBoxesParam(ctx, func, i)) {
+        if (!paramIsI64(p)) throw new Error(`RepresentationPlan host-box param lacks i64 boundary: ${name}[${i}]`)
+        bigintBoxParams.push(i)
+      }
     })
+    if (bigintBoxParams.length) inc('__alloc', '__mkptr')
     // Track externref param positions so interop.js can pass JS values raw (skipping
     // `mem.wrapVal`) at those slots — today only `jsstring` params; future externref carriers
     // wire here too. `extParams` is per-slot: false | { def: '...' } for a JS-side default.
@@ -2857,6 +2862,21 @@ export default function compile(ast, profiler, regionHooks) {
   }
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+
+  // jz:bigintbox — JS-host-only ingress metadata. Each listed i64 slot is a
+  // tagged dynamic ABI: interop preserves Number bits but materializes an
+  // actual JS BigInt as PTR.BIGINT before entering wasm.
+  const bigintBoxExports = []
+  for (const f of ctx.funcs.list) {
+    if (!isExported(f)) continue
+    const p = []
+    for (let i = 0; i < f.sig.params.length; i++)
+      if (representationHostBoxesParam(ctx, f, i)) p.push(i)
+    if (!p.length) continue
+    for (const exportName of exportNamesOf(f.name)) bigintBoxExports.push({ name: exportName, p })
+  }
+  if (bigintBoxExports.length)
+    sec.customs.push(['@custom', '"jz:bigintbox"', `"${JSON.stringify(bigintBoxExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile

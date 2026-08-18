@@ -149,6 +149,26 @@ test('RepresentationPlan: ternary arms normalize before entering a tagged local'
   }
 })
 
+test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits', () => {
+  const src = `
+    export let kind = value => typeof value
+    export let check = value => typeof value === 'bigint'
+    export let payload = value => typeof value === 'bigint'
+      ? value + 1n === 6n
+      : value + 1 === 3
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.kind(2), 'number', `O${optimize || 0}: host Number remains Number`)
+    is(e.kind(5n), 'bigint', `O${optimize || 0}: host BigInt is boxed at ingress`)
+    is(e.kind(Number.MIN_VALUE), 'number', `O${optimize || 0}: subnormal Number is never magnitude-classified`)
+    is(e.check(2), false, `O${optimize || 0}: tag check rejects host Number`)
+    is(e.check(5n), true, `O${optimize || 0}: tag check accepts host BigInt`)
+    is(e.payload(2), true, `O${optimize || 0}: Number payload remains usable`)
+    is(e.payload(5n), true, `O${optimize || 0}: boxed BigInt payload unboxes in wasm`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —

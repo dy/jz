@@ -964,9 +964,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
 
   const materializedNames = new Set()
+  const exportedIdentity = isExported(ctx, identity)
   for (const [name, list] of defs) {
     if (ctx.scope.globals?.has(name)) continue
-    if (params.has(name) && boundary.covered !== true) continue
+    if (params.has(name) && boundary.covered !== true && !exportedIdentity) continue
     // RepresentationPlan only normalizes the BigInt member. A BOOL member in
     // an otherwise dynamic scalar still needs the separate BOOL-atom producer;
     // do not claim the whole binding materialized before that project lands.
@@ -979,6 +980,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       return edgeMaterializable(plannedOf(def.rhs), target, def.rhs)
     })
     if (ready) materializedNames.add(name)
+  }
+
+  const hostBoxParams = new Set()
+  if (exportedIdentity) for (const [name, k] of params) {
+    const sem = semanticNames.get(name) ?? semAll()
+    const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
+    if (ready && targetNames.get(name) === BOXED_BIGINT &&
+        !(semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0))
+      hostBoxParams.add(k)
   }
 
   const materializedJoins = new WeakSet()
@@ -1067,7 +1077,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,
     semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null,
-    materializedNames: null, materializedJoins: null, materializedResult: false,
+    materializedNames: null, hostBoxParams: null, materializedJoins: null, materializedResult: false,
     resultSemantic: bodyResultSemantic, resultTarget: bodyResultTarget, edges,
   } : {
     kind: 'body', identity, boundary, trivial: false,
@@ -1076,6 +1086,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     targetNames: keptTarget,
     nodeFacts,
     materializedNames,
+    hostBoxParams,
     materializedJoins,
     materializedResult,
     resultSemantic: bodyResultSemantic,
@@ -1204,10 +1215,17 @@ export function representationActiveMaterializedRep(ctx, name) {
   const record = handle && ctx.plans.representationData.get(handle)
   const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
   if (k >= 0) {
+    const hostReady = record.body?.hostBoxParams?.has(k)
     const ready = record.boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
-    return record.boundary.covered === true && ready ? activeRep(ctx, name, true) : NO_BIGINT
+    return (record.boundary.covered === true && ready) || hostReady ? activeRep(ctx, name, true) : NO_BIGINT
   }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** True when JS interop must box an actual BigInt at this export slot. */
+export function representationHostBoxesParam(ctx, identity, index) {
+  const handle = ctx.plans.representations.get(identity)
+  return ctx.plans.representationData.get(handle)?.body?.hostBoxParams?.has(index) === true
 }
 
 /** Frozen action for one materialized ternary arm. */
@@ -1247,16 +1265,17 @@ export function representationCallArgAction(ctx, node, params, index) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
   const targetHandle = ctx.plans.representations.get(params)
   const targetRecord = targetHandle && ctx.plans.representationData.get(targetHandle)
-  if (targetRecord?.boundary?.covered !== true) return REP_EDGE_REJECT
-  const targetBoundary = targetRecord.boundary
+  const targetBoundary = targetRecord?.boundary
+  if (!targetBoundary) return REP_EDGE_REJECT
   // A reassigned parameter is ready only when Slice 3b can normalize its
   // complete plain-write def set; otherwise switching entry alone would split
   // the local's ABI.
   const targetName = targetBoundary.func?.sig?.params?.[index]?.name
   const bodyReady = targetName != null && targetRecord.body?.materializedNames?.has(targetName)
+  const hostReady = targetRecord.body?.hostBoxParams?.has(index) === true
   const ready = targetBoundary.params[index]?.stable === true || bodyReady
-  if (!ready) return REP_EDGE_REJECT
-  const target = bodyReady
+  if ((!ready || targetBoundary.covered !== true) && !hostReady) return REP_EDGE_REJECT
+  const target = bodyReady || hostReady
     ? targetRecord.body.targetNames?.get(targetName) ?? ANY_BIGINT
     : targetBoundary.params[index]?.target ?? ANY_BIGINT
   return edgeAction(activeEmittedRep(ctx, node), target)

@@ -21758,3 +21758,66 @@ round's final cap — halves the tax, insufficient alone (needs ≤33 MB/batch);
 (3) eliminate the memo for single-reference pointers / move forwarding
 fully into from-space headers — conceptually strongest, touches
 previously-hardened correctness invariants, needs equal rigor.
+---
+
+## §RepresentationPlan v2 Slice 4a — JS host BigInt ingress normalization
+## (2026-08-18)
+
+Exported dynamic parameters now have an explicit host edge. A private
+`hostBoxParams` set is admitted only when the parameter's complete body target
+is tagged, its lifetime is stable/fully materialized, and no closed BOOL member
+requires the separate BOOL-atom producer. Scalar projections drive both body
+reads and metadata; emission does not create a second representation authority.
+Direct internal calls to the same exported function consume that tagged target
+too.
+
+The compiler emits a separate `jz:bigintbox` custom section instead of
+widening `jz:i64exp`'s already schema-sensitive shapes. Interop reads the new
+section, leaves Number bits unchanged, and only when the original JS argument
+is an actual `bigint` allocates an eight-byte payload cell and passes a tag-5
+pointer. Tagged exports force allocator/memory reachability. Raw-only BigInt
+exports retain their existing i64 ABI and emit no metadata. `memory.BigInt`
+owns the one host-side cell layout; generic `wrapVal(BigInt)` remains unchanged
+for non-tagged APIs.
+
+The fixed class is an exported dynamic/`typeof` parameter. Before this slice a
+plain JS BigInt was marshalled as a decimal STRING pointer in heap modules (or
+as ambiguous raw bits), while a Number subnormal could hit the magnitude arm.
+Native, WASI, and wasm-host O0/O2/O3 now prove: `2 → number`, `5n → bigint`,
+`Number.MIN_VALUE → number`; tag comparisons reject/accept the same values;
+and both Number and boxed-BigInt payloads remain usable in guarded arithmetic.
+A raw-only control `x=>x+1n` still returns `5n` and has no `jz:bigintbox`
+section.
+
+Focused WAT removes the finite/nonzero/subnormal test from all three exported
+comparisons, leaving only `is NaN-box && $__ptr_type==5`, adds the payload
+unbox for arithmetic, and records parameter index 0 in `jz:bigintbox`. The full
+watr graph's only delta is one metadata line for its exported `print` param;
+its instructions are byte-identical. The 130-program corpus remains **130/130
+byte-identical**.
+
+Rejected alternatives: wasm-side discrimination cannot recover the original
+JS `typeof` once Number and raw-BigInt bits share an i64 carrier; changing every
+`mem.wrapVal(BigInt)` would break raw-only/string/container APIs; and extending
+`jz:i64exp` would multiply its direct-literal schema combinations. The separate
+metadata lane normalizes exactly the host edge the frozen plan names.
+
+Final rebased gates: default/O0/O3 each **3,518/3,512/0/6**; WASI
+**3,517/3,511/0/6**; wasm-target **2,776/2,770/0/6**; focused carrier/watr/
+inference/session/interop **438/438**; self-compile correctness **21/21**; kernel
+parity **33/33**; dormant kernel oracle **13/13 ×3**. After the concurrent
+region-arm correctness landing, build ×2 converges (`dist/jz.wasm`
+`e0c22f586c2be8ed68469e87ed4539869a8e011439bed25eba0f880c30d9ad93`,
+16,995.8 KiB; `dist/interop.js`
+`b3e318e86ba35c79123f55c1af20a660ebd4ff072ea7c43896bcbc6e42950f99`).
+Direct alternating candidate/control self-compile A/B is **1.003×, 1.000×,
+1.000×** geomean. Claims size remains **1.020×**; stale evidence failures are
+unchanged.
+
+**Status:** JS host ingress for materialized tagged params is consumable and no
+magnitude discriminator remains on those paths. Generic closure ABI, storage,
+return-tail/inlined joins, and remaining consumers are not; FeaturePlan remains
+blocked. Final-rebase region-live build ×2 converges (`dist/jz.wasm`
+`2bc980f8bfa6f559696c25a5197d3a41f9224f1324c9d540ab1cdbe055bfe2d5`,
+14,810.0 KiB), kernel parity passes **33/33**, and kernel oracle passes
+**13/13 ×15**; production remains region-dormant.

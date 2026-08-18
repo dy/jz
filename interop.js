@@ -388,6 +388,12 @@ export const memory = (src) => {
     return ptr(4, 0, off)
   }
 
+  mem.BigInt = (value) => {
+    const off = alloc(8)
+    dv().setBigInt64(off, BigInt.asIntN(64, value), true)
+    return ptr(5, 0, off)
+  }
+
   mem.Buffer = (data) => {
     const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
       : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
@@ -730,6 +736,13 @@ export const wrap = (memSrc, inst, state) => {
     try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, s: e.s || 0 }) }
     catch { /* ignore */ }
   }
+  // JS BigInt ingress slots whose wasm-side representation is PTR.BIGINT.
+  const bigintBoxExp = new Map()
+  const bigintBoxBytes = customSection(mod, 'jz:bigintbox')
+  if (bigintBoxBytes) {
+    try { for (const e of JSON.parse(td.decode(bigintBoxBytes))) bigintBoxExp.set(e.name, new Set(e.p || [])) }
+    catch { /* ignore */ }
+  }
   const mem = memory(memSrc)
   // Async boundary: a module compiled from async source exports __mt_drain /
   // __p_state / __p_value (the jzify-injected runtime). Every export call ends
@@ -927,8 +940,10 @@ export const wrap = (memSrc, inst, state) => {
   // jz:i64exp) pass its i64 bits (a boxed value is already a BigInt; a numeric arg to a
   // dynamic i64 param → its f64 bits). The box never materializes as f64, so JSC can't
   // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
-  const i64Arg = (ie, ext, box) => (x, i) => {
-    const w = wrapArgAt(ext, i, x, box)
+  const i64Arg = (ie, ext, box, bigintSlots) => (x, i) => {
+    const w = bigintSlots?.has(i) && typeof x === 'bigint'
+      ? mem.BigInt(x)
+      : wrapArgAt(ext, i, x, box)
     if (ie && ie.p.has(i)) {
       // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
       // atom, matching how the SAME slot already boxes null/undefined (via
@@ -969,6 +984,7 @@ export const wrap = (memSrc, inst, state) => {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
+      const bigintSlots = bigintBoxExp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
@@ -979,7 +995,7 @@ export const wrap = (memSrc, inst, state) => {
         // fresh call never starts with a stale marker from a PRIOR call.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn(...args.map(i64Arg(ie, ext, coerce)))
+          const ret = fn(...args.map(i64Arg(ie, ext, coerce, bigintSlots)))
           // A bigint-value result returns raw; the `s` lane (census-BIGINT sentinel) decodes
           // only its own fixed sentinel bit pattern; everything else (a boxed i64 result or an
           // f64/number result) takes the generic decode.
@@ -999,8 +1015,9 @@ export const wrap = (memSrc, inst, state) => {
       const fixed = restFuncs.get(name)
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
+      const bigintSlots = bigintBoxExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal))
+        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, bigintSlots))
         while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
         const restArr = mem.Array(args.slice(fixed))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
@@ -1020,13 +1037,14 @@ export const wrap = (memSrc, inst, state) => {
     } else if (typeof fn === 'function') {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
+      const bigintSlots = bigintBoxExp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal)))
+          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, bigintSlots)))
           if (typeof ret === 'bigint') {
             if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
             if (!(ie && ie.r)) return ret
