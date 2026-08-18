@@ -21676,3 +21676,52 @@ wall: this session changes nothing about that lever inventory — it remains
 `274b6bd8`/`627cf92a`/`c8246307`'s own regionArena-reclaim-depth-vs-
 `narrowSignatures`-fixpoint-cost tradeoff, now with one fewer confound
 (this correctness defect) sitting in front of it.
+
+## §Frontier re-trace on the honest build — lever inventory VOIDED, negative-reclaim anomaly named (2026-08-18)
+
+Re-measured the full jz×jz per-round frontier on current main (`a3b500a5` —
+post `d58ef517` stale-$i fix, post-rename), WAT-splice method per fa9fcc1a
+(12 anchor edits in the decompiled kernel, never JS source; worktree
+disposable, `REGION_HOOKS_ACTIVE` flip uncommitted). Raw event log, per-round
+table, and the splice script archived at `.work/frontier2/`
+(`rounds.json`/`trace-result.json`/`splice.mjs`).
+
+**Trap point**: `unreachable` @ exactly 4,294,967,296 B, wall 32.7 s —
+`afe_calls=1711` of 2,219 ground-truth (53 complete 32-func batches + 15
+calls into batch 54; 70 batches needed). The trap fires inside ordinary
+`analyzeFuncForEmit` work — batch 54's MARK logged (4090.831 MB), its exit
+never entered. Different trap shape than fa9fcc1a's (in-rebuild alloc).
+
+**What the landed levers bought (measured, vs fa9fcc1a's table)**: plan-tail
+1/5 now SKIP (−166.6/−291.75 MB, the 16 MiB cap); plan-tail 2/3/4 +
+scan-round each −30..36% (the setmap patch); AFE loop went from 100%
+real-compact @ ~292.5 MB/batch (6 exits survived) to 77% skip @ ~5.9 MB +
+23% real @ ~195.7 MB (53 survived) — ~8.8× more exits survived. Setmap
+durable short-circuit measured across the whole run: 4,274,469 durable-table
+visits, 99.9979% value-patched, 89 durable-unstable fallbacks total. **The
+setmap lever is exhausted — it is not the residual bottleneck.**
+
+**Deficit arithmetic**: headroom at last completed exit 204.136 MB; 17
+batches remain at blended 48.843 MB/batch (extrapolated from the observed
+77/23 mix) → ≥830.3 MB needed → **deficit ≈ 626 MB lower-bound** (outer
+`compile()` boundary exit + assembly never reached, unmeasured). To close
+within current structure: real-compact cost must fall 195.68→≤33 MB (5.9×),
+or real-compact frequency 22.6%→≤3.2% — the frequency framing is the
+already-falsified "widen the skip cap" direction (48 MiB cap measured
+trapping SOONER this campaign); the cost framing is untried.
+
+**The finding that voids the recorded inventory**
+(`274b6bd8`/`627cf92a`/`c8246307` reclaim-depth tradeoff, C1/C2 [separately
+voided — see walk-count-design.md §7], `refineSlotIntCensus` skip [real but
+~192 MB once, insufficient vs 626 MB]): every real compaction now shows
+**negative reclaim** — floor EXCEEDS peak by 150–230 MB while true churn is
+17–44 MB and setmap fallbacks are 6–9 per batch. Compacted output larger
+than the pre-compaction span is consistent with `$__region_copy_rec`'s own
+scratch/memo bookkeeping (allocated via ordinary `$__alloc` after the `$T`
+snapshot) being swept into the final `memory.copy(mark, T, size)` span as if
+it were survivor data. Evidence-supported hypothesis from this run's
+arithmetic, NOT root-caused — no per-allocation-site instrumentation this
+session. **Next session starts there: root-cause the ~195 MB flat
+compaction tax (memo-retention hypothesis) in `$__region_exit`/
+`$__region_copy_rec`, then size the fix — nothing else on record touches a
+626 MB gap.**
