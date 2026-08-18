@@ -32,7 +32,7 @@ import { enterActiveFunction, restoreActiveFunction } from './active-function.js
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
-import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS } from '../ast.js'
+import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
@@ -2530,8 +2530,16 @@ export default function compile(ast, profiler, regionHooks) {
   // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
   // compared at 'pre-assemble' below.
   assertCtxInvariants('post-analyze')
-  const funcs = timePhase(profiler, 'emitFuncs', () => ctx.funcs.list.map(func =>
-    func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts)))
+  // isReassigned memo window: emission is a pure projection of the frozen
+  // post-analyze AST, so per-subtree assigned-name sets stay valid for the
+  // whole stage (see the memo doc in ast.js).
+  const funcs = timePhase(profiler, 'emitFuncs', () => {
+    beginAssignedMemo()
+    try {
+      return ctx.funcs.list.map(func =>
+        func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
+    } finally { endAssignedMemo() }
+  })
   funcs.push(...synthesizeBoundaryWrappers())
 
   const closureFuncs = []
@@ -2541,11 +2549,16 @@ export default function compile(ast, profiler, regionHooks) {
     // Emitting a body may discover nested closures. Process stable batches:
     // every body known at batch entry is fully planned before any body in that
     // batch emits; newly discovered bodies become the next batch.
+    // NOTE: analyzeClosureBodyForEmit runs OUTSIDE the isReassigned memo window
+    // (it may touch analyze-side caches); only the pure emit half is bracketed.
     while (compiledBodyCount < bodies.length) {
       const batchEnd = bodies.length
       for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(bodies[i])
-      for (let i = compiledBodyCount; i < batchEnd; i++)
-        closureFuncs.push(emitClosureBody(bodies[i], functionPlanOf(ctx, bodies[i])))
+      beginAssignedMemo()
+      try {
+        for (let i = compiledBodyCount; i < batchEnd; i++)
+          closureFuncs.push(emitClosureBody(bodies[i], functionPlanOf(ctx, bodies[i])))
+      } finally { endAssignedMemo() }
       compiledBodyCount = batchEnd
     }
   })

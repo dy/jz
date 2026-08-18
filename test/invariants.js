@@ -253,3 +253,54 @@ test('layout: i64Hex is self-compile-safe across the full 64-bit range', async (
     is(i64Hex(bits), ref(bits), `i64Hex(${bits.toString(16)})`)
   ok(/^0xFFF8/.test(nanPrefixMaskHex()), 'sign-bit-forced mask formats unsigned')
 })
+
+// ============================================================================
+// isReassigned emission memo — memoized path must be bit-equivalent to the walk
+// ============================================================================
+// The emit driver brackets its stages with begin/endAssignedMemo (ast.js), so
+// every emit-time isReassigned query resolves through a per-subtree
+// assigned-name set instead of an O(|body|) rescan. The set collection must
+// mirror the walk's tree contract EXACTLY — a `let`/`const` declarator's `=`
+// binds rather than writes (only initializers scanned), non-name mutation
+// targets contribute nothing but their subexpressions are scanned.
+// (`redeclaresName` in type.js is the same walk shape and often paired at call
+// sites — left unmemoized deliberately: it never showed in the m86 profile.
+// If it ever does, it takes this same treatment and this same test.)
+test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async () => {
+  const { isReassigned, beginAssignedMemo, endAssignedMemo } = await import('../src/ast.js')
+  const both = (node, name) => {
+    const a = isReassigned(node, name)
+    beginAssignedMemo()
+    try { is(isReassigned(node, name), a, `memo diverges: ${name} in ${JSON.stringify(node)}`) }
+    finally { endAssignedMemo() }
+    return a
+  }
+  // declarator `=` binds, does not write
+  is(both(['let', ['=', 'x', ['num', 1]]], 'x'), false)
+  // ...but a write inside the initializer counts
+  is(both(['let', ['=', 'x', ['=', 'y', ['num', 1]]]], 'y'), true)
+  // bare declarator, empty body, non-array body
+  is(both(['let', 'x'], 'x'), false)
+  is(both([';'], 'x'), false)
+  is(both('x', 'x'), false)
+  // plain and compound writes, inc/dec
+  is(both([';', ['=', 'x', ['num', 1]]], 'x'), true)
+  is(both([';', ['+=', 'x', ['num', 1]]], 'x'), true)
+  is(both([';', ['++', 'x']], 'x'), true)
+  // member target is not a name write, but its subexpressions are scanned
+  is(both([';', ['=', ['.', 'o', 'p'], ['num', 1]]], 'o'), false)
+  is(both([';', ['=', ['idx', 'a', ['++', 'i']], ['num', 1]]], 'i'), true)
+  // nested let inside an initializer keeps the binder rule at depth
+  is(both(['let', ['=', 'x', ['=>', ['args'], ['let', ['=', 'q', ['num', 1]]]]]], 'q'), false)
+  // memo reuse across roots: query root, child, root again — all consistent
+  const root = [';', ['=', 'a', ['num', 1]], ['if', 'c', [';', ['++', 'b']]]]
+  beginAssignedMemo()
+  try {
+    is(isReassigned(root, 'a'), true)
+    is(isReassigned(root[2][2], 'b'), true)   // child subtree gets its own set
+    is(isReassigned(root[2][2], 'a'), false)  // 'a' write is outside this subtree
+    is(isReassigned(root, 'b'), true)
+  } finally { endAssignedMemo() }
+  // window discipline: after end, the fresh walk is back (no lingering memo)
+  is(isReassigned(root, 'a'), true)
+})

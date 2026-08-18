@@ -111,9 +111,45 @@ export const ASSIGN_OPS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '**=', '&=
 /** Every op that writes its first operand: assignments plus ++/--. */
 export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
 
-/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`. */
+/** Detect whether `name` is written to (=, +=, ++, --, etc.) anywhere within `body`.
+ *
+ *  Emission-scoped memo: emit-time callers query this against the SAME enclosing
+ *  body once per relevant declaration/reference — O(decls × |body|) unmemoized,
+ *  which is what turned module-sized synthetic default functions (m86_math$default,
+ *  24 closure registrations in one 175K-char body) into a 3.2 GB wasm-arena blowup
+ *  (.work/research.md §emitFunc blowup). The emit driver brackets its stages with
+ *  begin/endAssignedMemo — sound there because emission never mutates the source
+ *  AST (post-analyze freeze). Outside that window (plan/analyze callers, which DO
+ *  interleave AST mutation) the original always-fresh walk runs unchanged. */
+let assignedMemo = null
+export const beginAssignedMemo = () => { assignedMemo = new Map() }
+export const endAssignedMemo = () => { assignedMemo = null }
+// One-pass collection of every name written (=, +=, ++, --, …) anywhere in the
+// subtree — the exact same tree contract as the walk below: a `let`/`const`
+// declarator's own `=` binds rather than writes (only its initializer is
+// scanned); mutation targets that aren't bare names contribute nothing
+// themselves but their subexpressions are scanned.
+const collectAssignedNames = (body, out) => {
+  if (!Array.isArray(body)) return out
+  const op = body[0]
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < body.length; i++) {
+      const d = body[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null) collectAssignedNames(d[2], out)
+    }
+    return out
+  }
+  if (MUTATE_OPS.has(op) && typeof body[1] === 'string') out.add(body[1])
+  for (let i = 1; i < body.length; i++) collectAssignedNames(body[i], out)
+  return out
+}
 export function isReassigned(body, name) {
   if (!Array.isArray(body)) return false
+  if (assignedMemo) {
+    let s = assignedMemo.get(body)
+    if (!s) assignedMemo.set(body, s = collectAssignedNames(body, new Set()))
+    return s.has(name)
+  }
   const op = body[0]
   if (MUTATE_OPS.has(op) && body[1] === name) return true
   if (op === 'let' || op === 'const') {
