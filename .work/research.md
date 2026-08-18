@@ -21926,3 +21926,23 @@ retains. Suspect #2 on record: crkWalkSites/closureReturnSites
 bytes per single call. Sampling-heap-profile forensic scoped to the call
 in flight; fix follows the named allocator, with the structural fallback
 (region hooks inside emitFuncs) if churn proves spread thin.
+
+## §Heap profile: native allocation is SMALL — the wall is kernel-side amplification (2026-08-18)
+
+Sampling heap profile bracketing the m86 call natively: **5.2 MB total**
+(cross-check heapUsed delta 13.7 MB), 73% in module/string.js's str/strcat
+emit handlers, rest proportional IR-building. crkWalkSites KILLED as a
+byte-allocator (absent from top 40). **5-14 MB native cannot explain 3.3 GB
+arena by unreclaimed-churn arithmetic — the premise "same allocation,
+unreclaimed" is dead.** The blowup is a ~300× amplification present ONLY in
+the self-compiled kernel. Prime suspect: string representation — V8 concat
+is an O(1) rope node (linearized once, why the native profile is tiny); the
+kernel's NaN-boxed/SSO strings eagerly copy, so accumulating WAT text by
+repeated append is O(n²) BYTES in the arena. A module whose emission is
+almost pure string building (math.js: 24 reg() WAT-text closures) hits it
+worst. NOTE: this also kills the structural fallback — 3.3 GB of churn
+inside ONE emitFunc call cannot be capped by per-function region hooks;
+the reclaim point never arrives mid-call. Next: kernel-side counter on
+$__str_concat (bytes allocated during call #726) to confirm the quadratic
+signature, then fix at the right seam (parts+join in the emit accumulation
+path, or rope/builder support in the kernel string layer).
