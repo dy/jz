@@ -21308,3 +21308,96 @@ added it to the existing `static.js` import line), `src/compile/emit.js`
 (moved `constIntExpr` from the `type.js` import to the `static.js` import),
 `module/typedarray.js` (split its `type.js` import, added a `constIntExpr`
 import from `static.js`). `src/compile/narrow.js` read-only, untouched.
+
+## Comment sweep: forensic-history comments rewritten as invariant statements
+
+Codebase-wide audit adopted the rule: a source comment states the INVARIANT
+the code maintains, never the forensic story of how it was found (no commit
+hashes, audit/finding numbers, dated bisection narrative, "this session
+found..." framing) — that story belongs in git history and the other
+`.work/*.md` ledgers, not in `src/`/`module/`/`scripts/`/`jzify/`.
+
+**Flagship**: `src/ctx.js`'s ~20-line header narrating the Slice B
+`const`→`let` identity-swap regression bisection collapsed to the invariant
+it protects — `ctx`'s object identity must never be reassigned; `reset()`
+mutates subtree fields in place because swapping identity corrupts
+region-arena relocation; a subtree reference held across `reset()` goes
+stale — five lines, no hashes, no dates.
+
+**Scope**: every file under `src/` `module/` `scripts/` `jzify/` flagged by
+`audit`, 4-digit `2026-` dates, 7-8 hex commit-hash-shaped tokens, or
+`COORDINATOR RULING` in a comment — EXCLUDING active-territory files reserved
+for concurrent work: `src/compile/narrow.js`, `src/reps.js`, `src/kind.js`,
+`src/ir.js` (RepPlan v2), `src/compile/function-plan.js` + `module/core.js` +
+`src/compile/layout-kinds.js` + `module/collection.js` (FunctionPlan
+forensic), `src/static.js` + `src/type.js` (constIntExpr landing), plus
+`README.md`/`.work/strategy.md`/`.work/todo-original.md`/`bench/**` per
+instruction.
+
+36 files swept (2 more — `module/date.js`, `module/string.js` — were
+grep-flagged but had zero actual comment matches on inspection, false
+positives from the coarse `audit`/`session` keyword scan):
+
+`jzify/transform.js`, `module/array.js`, `module/function.js`,
+`module/number.js`, `module/object.js`, `module/regex.js`,
+`module/schema.js`, `module/typedarray.js`, `scripts/self.js`,
+`src/compile/active-function.js`, `src/compile/analyze-scans.js`,
+`src/compile/analyze.js`, `src/compile/closure-plan.js`,
+`src/compile/dyn-closure-tables.js`, `src/compile/emit.js`,
+`src/compile/erasure-diag.js`, `src/compile/flow-types.js`,
+`src/compile/index.js`, `src/compile/infer.js`, `src/compile/loop-model.js`,
+`src/compile/plan/index.js`, `src/compile/plan/literals.js`,
+`src/compile/program-facts.js`, `src/ctx.js`, `src/front.js`,
+`src/kind-traits.js`, `src/optimize/index.js`, `src/optimize/vectorize.js`,
+`src/parse.js`, `src/passes.js`, `src/prepare/index.js`,
+`src/prepare/pre-eval.js`, `src/session-views.js`, `src/session.js`,
+`src/wat/assemble.js`, `src/widen.js`.
+
+Deferred to the second pass (excluded territories, untouched by this sweep
+even though several carry flagged forensic comments of their own):
+`src/compile/narrow.js`, `src/reps.js`, `src/kind.js`, `src/ir.js`,
+`src/compile/function-plan.js`, `module/core.js`, `module/collection.js`,
+`src/static.js`, `src/type.js`.
+
+Per comment: extracted the invariant/constraint the forensic story was
+protecting and restated it plainly; deleted comments that were PURE history
+with no standing constraint on the code (e.g. `scripts/self.js`'s ~150-line
+day-by-day O2/O3 kernel-parity bisection log — condensed to the current gate
+state and the one open caveat still worth flagging; `src/compile/emit.js`'s
+EXPORT-LOSS MECHANISM investigation block — condensed to the standing
+invariants it left behind); kept bare `.work/*.md` §-pointers where the doc
+plausibly has more depth, stripped of any riding hash/date/audit-number.
+
+One correction made during verification: `module/number.js`'s two
+`;;`-prefixed WAT-source comments live inside JS template-literal STRINGS
+(embedded WAT assembly text), not JS comments — editing them is a code
+change (string-literal content) from the parser's perspective, not a comment
+change, so those two edits were reverted to keep the diff strictly
+comment-only. Left as pre-existing WAT comments, out of scope for a
+JS-comment sweep.
+
+**Rebase**: landed on top of `main` tip `24652b86` (representation-plan
+slices 3b/3c/3d, landed concurrently) — two overlap files,
+`src/compile/emit.js` and `src/compile/index.js`, both rebased clean with no
+conflicts (the RepPlan commits touched code lines, the sweep touched only
+comment lines; no line-range collisions).
+
+**Gates**: comment-only diff verified by parsing `main` (`24652b86`) vs. the
+swept worktree with jz's own `src/parse.js` and diffing the resulting ASTs —
+AST-identical on all 36 files (stronger than a text-based comment-strip
+diff: immune to `//`/`/*`-inside-string-literal false positives, which is
+exactly what caught the `module/number.js` case above). `npm test`: 3513
+total, 3507 pass, 6 skip, 0 fail. Self-build (`npm run build`): succeeded,
+`dist/jz.wasm` written, wat-strip parity 3/3 probes byte-identical.
+`node test/selfhost.js`: **21/21** — self-hosted kernel bytes legitimately
+shift (`scripts/self.js` is compiled into the kernel), byte-identity was
+never the bar here, correctness was.
+
+Landed on `main`: the 36 swept files + this ledger entry — nothing else.
+Branch `comments-2026-08-17` rebased twice as `main` advanced under
+concurrent sessions (`24652b86` → `ff30a748`, zero conflicts on the code
+commit both times — the vectorizer-option-rename and constIntExpr-unification
+commits that landed concurrently touched code lines in files this sweep also
+touched comments in, `src/compile/emit.js`/`module/typedarray.js`/
+`src/optimize/{index,vectorize}.js`/`src/passes.js`, but never the same
+lines), deleted after landing along with its worktree.
