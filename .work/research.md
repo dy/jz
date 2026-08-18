@@ -22191,3 +22191,29 @@ emission; (3) find the cache on that path, instrument hit/miss kernel vs
 native — a miss-storm confirms; fix = relocation-stable keying or overlay
 refinement (makeMapOverlay delta instead of full Map copy — O(facts) not
 O(env), worth doing regardless).
+
+## §Cache-miss hypothesis refuted (exact counter equality); __map_from named; size-vs-frequency question remains (2026-08-18)
+
+Clear-at-exit tagging + 10th tag: $__obj_clone = 0 events (prior attribution
+wrong); the untagged 3,049.7 MB mass is **__map_from** (new Map(iterable)
+intrinsic, collection.js:2298 — pre-sizes pow2 > 2·n in ONE alloc, inserts
+never grow, hence invisible to every growth tag). closureBodyReturnKind has
+NO cache; the only pointer-keyed cache on that path
+(mayUndefinedTrace, kind.js) measured **bit-for-bit identical
+hit/miss native vs kernel** (14 calls / 11+3 both sides) — relocation
+degrades nothing; crkWalkSites 11,304 both sides. The "269×" was
+same-kernel big-call-vs-small-call, not divergence.
+
+**Open contradiction, sharpened**: 64,691 __map_from allocs × ~49 KB
+(cap ≈ 2048 → header-len n ≈ 1000 at clone time) in the kernel, while the
+native heap profile for the same call is 5-14 MB total. Two candidate
+resolutions, NOT yet discriminated: (a) **size amplification** — kernel
+header len@-8 (the __map_from sizing input) inflated far above live size
+(the header-vs-live divergence __coll_order's own doc + 5e77f814 already
+document as real) → kernel clones tiny Maps into 2048-cap tables; native
+V8 sizes from live count → tiny; (b) **construction-count divergence** —
+the 64K __map_from count was never measured natively (the equality table
+covered closure-path counters only). Decisive next probe: enumerate `call
+$__map_from` sites in the WAT (names the enclosing kernel functions → the
+exact JS construct), per-site counters + log (n, live-size-via-coll_order)
+distribution at clone time; native counter on the named construct.
