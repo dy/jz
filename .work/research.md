@@ -21856,3 +21856,28 @@ in, INSIDE the previously-never-reached post-`compile()` territory (final
 assembly / watr-encode). That stage's 738 MB → 4 GiB climb is unmeasured;
 forensic in flight. The multi-MB wasm output makes SOME large allocation
 legitimate there — the question is what makes it ~3.5 GB.
+
+## §Post-AFE wall — single-site emitFunc blowup on m86_math$default (2026-08-18)
+
+Instrumented the post-AFE climb (738 MB → 4 GiB) at three altitudes
+(region rounds / timePhase stages / per-emitFunc-call breadcrumbs;
+artifacts `trace-result-emitfunc.json` in `.work/frontier2/`). Per-stage:
+structInline +2.27 MB, unionInline +1.83 MB, then `emitFuncs` calls 1-725
+cost ~172 MB total (~0.24 MB/function, flat, healthy), then **call #726 —
+`m86_math$default`, module math.js's synthetic default/init, 175,694-char
+body, 4th-largest in the compile — jumps +3,368.5 MB in ONE call and traps
+before returning**. emitClosures/buildStart/pullStdlib/optimizeModule/
+optimizeTail/watrCompile never reached. No region hooks exist anywhere in
+the post-AFE pipeline (zero reclaim opportunity there today).
+
+NOT yet determined: whether it's one outsized materialization or a
+super-linear sub-pass (vectorizer scan, inline expansion, pair
+enumeration) on this body's shape. Note `m98_typedarray$default`
+(205,049 chars, the largest) sits LATER in the list — any fix must
+eradicate the shape-class, not special-case m86. Also note the native
+pipeline completes this same graph (V8 GC absorbs whatever churn this is)
+— the arena can't reclaim mid-emitFunc, so both fix families are live:
+(a) algorithmic (kill the super-linear churn at source — helps native
+too), (b) structural (region hooks threaded into the emitFuncs loop,
+AFE-batch style). Measure first: next step is instrumenting INSIDE
+emitFunc on this one function to name the sub-pass.
