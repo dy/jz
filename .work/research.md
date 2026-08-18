@@ -21419,3 +21419,59 @@ Landed on `main`: 33 of the 36 swept files + this ledger entry. Deferred:
 `src/widen.js`, `src/compile/analyze.js`, `src/compile/emit.js`. Landing
 branch `comments-2026-08-17-land` deleted after landing along with its
 worktree; `comments-2026-08-17` (full 36-file sweep) kept for the follow-up.
+---
+
+## §RepresentationPlan v2 Slice 3e — materialize non-return ternary joins
+## (2026-08-18)
+
+A private `materializedJoins` WeakSet now proves complete `?:` arm
+normalization. It admits a tagged target only when both actual producers have
+an executable edge action; closed BOOL-bearing joins remain deferred to the
+separate BOOL-atom project. Nested readiness converges by change signal, and a
+second narrowly-scoped pass propagates newly materialized ternaries through
+their immediate plain-write binding. Neither set escapes the session plan.
+
+The ternary emitter receives the original node identity, consumes each frozen
+arm action, and merges f64 bit carriers through a branch so an untaken boxing
+arm is never evaluated. Constant-folded conditions still apply the selected
+edge action. The opt-in BigInt-retirement diagnostic remains at the exact
+legacy nullish-ternary class; RepresentationPlan does not suppress it. A small
+projection repair also makes a node absent from compact `nodeFacts` return the
+closed-NONE fact rather than shifting closed-NONE into an accidental open
+BOTTOM fact.
+
+The fixed class is a Number/BigInt ternary entering a local. Before this slice,
+`let value=flag?4n:2; typeof value` returned `"number"` on both arms at every
+optimization level. Native JS returns `number/bigint`; bare `typeof` and the
+`=== 'bigint'` form now agree at O0/O2/O3, native/WASI/wasm-host. Focused WAT
+shows one branch-local `__alloc`/`i64.store`/tag-5 construction and a tag-only
+reader. A constant-true control proves folding cannot drop the selected BOX
+action.
+
+Direct return-tail ternaries are intentionally excluded. An initial version
+materialized the join in the callee at O0, but O2/O3 inlined/cloned the return
+tail after planning and lost its node link, producing optimization-level ABI
+drift. That class remains on the result/variant queue until optimizer plan-link
+ownership is explicit; this slice changes only joins whose normalized value is
+captured before return. Full watr WAT is byte-identical to Slice 3d, and the
+130-program corpus is **130/130 byte-identical**.
+
+Final rebased gates: default/O0/O3 each **3,515/3,509/0/6**; WASI
+**3,514/3,508/0/6**; wasm-target **2,773/2,767/0/6**; focused carrier/watr/
+inference/session **419/419**; selfhost correctness **21/21**; kernel parity
+**33/33**; dormant kernel oracle **13/13 ×3**. After rebasing over the
+concurrent const-expression, vector-option, and comment-invariant landings,
+build ×2 converges (`dist/jz.wasm`
+`b9013a679669d50f6d2735b62bb6e101f7b0f530b62b84906f266a905e2a88f2`,
+16,985.5 KiB); all semantic gates and full-watr/corpus identity remain
+unchanged. Direct alternating candidate/control self-host A/B is
+**1.003×, 1.006×, 1.002×** geomean. Claims size remains **1.020×**; stale
+evidence failures are unchanged.
+
+**Status:** non-return ternary joins and their immediate plain binding are
+consumable. Return-tail/inlined joins, logical joins, storage, closures, host
+boundaries, and remaining consumers are not; FeaturePlan remains blocked.
+Final-rebase region-live build ×2 converges (`dist/jz.wasm`
+`ed95ab073a68ed7d98dbc60616b5f97845e29ecabcde9202dc72d3decb141d5b`,
+14,800.6 KiB), kernel parity passes **33/33**, and kernel oracle passes
+**13/13 ×15**; region hooks remain validation-only.

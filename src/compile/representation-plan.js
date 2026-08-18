@@ -950,17 +950,17 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // set uses plain writes can have every incoming edge normalized at
   // emitDecl / the '=' handler. Keep this
   // readiness private: readers get only a scalar projection, never the Set.
-  const edgeMaterializable = (source, target, node) => {
+  const edgeMaterializable = (source, target, node, sourceReady = false) => {
     const action = edgeAction(source, target)
     if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
       return valTypeOf(node) === VAL.BIGINT
     if (action !== REP_EDGE_KEEP) return false
     // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
-    // identity. BOXED→BOXED readiness is intentionally deferred: it depends
-    // on whether the upstream producer family has migrated, not just its
-    // eventual target fact.
+    // identity. BOXED→BOXED is ready only when the upstream producer family
+    // has itself materialized, not merely because its eventual target is BOXED.
     return bigintRepBits(source) === BIGINT_REP_NONE ||
-      (source === RAW_BIGINT && target === RAW_BIGINT)
+      (source === RAW_BIGINT && target === RAW_BIGINT) ||
+      (source === BOXED_BIGINT && target === BOXED_BIGINT && sourceReady)
   }
 
   const materializedNames = new Set()
@@ -981,11 +981,68 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (ready) materializedNames.add(name)
   }
 
+  const materializedJoins = new WeakSet()
+  const directResultNodes = new WeakSet(resultExprs.filter(Array.isArray))
+  const emittedCandidate = node => {
+    if (typeof node === 'string') {
+      if (materializedNames.has(node)) return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+      const k = params.get(node)
+      if (k != null && boundary.covered === true && boundary.params[k]?.stable === true)
+        return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+    }
+    if (Array.isArray(node)) {
+      if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
+      if (node[0] === '()' && typeof node[1] === 'string') {
+        const callee = ctx.funcs.map.get(node[1])
+        const calleeHandle = callee && ctx.plans.representations.get(callee)
+        const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+        if (calleeBody?.materializedResult === true)
+          return { rep: calleeBody.resultTarget ?? ANY_BIGINT, ready: true }
+      }
+    }
+    return { rep: currentOf(node), ready: false }
+  }
+  let joinChanged = true
+  while (joinChanged) {
+    joinChanged = false
+    for (const [node, target] of nodeTarget) {
+      if (materializedJoins.has(node) || directResultNodes.has(node) ||
+          node[0] !== '?:' || target !== BOXED_BIGINT) continue
+      const sem = semanticOf(node)
+      if (semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0) continue
+      const left = emittedCandidate(node[2]), right = emittedCandidate(node[3])
+      if (edgeMaterializable(left.rep, target, node[2], left.ready) &&
+          edgeMaterializable(right.rep, target, node[3], right.ready)) {
+        materializedJoins.add(node)
+        joinChanged = true
+      }
+    }
+  }
+
+  // Propagate newly-materialized ternaries through their immediate plain-write
+  // binding edges. Other producer dependencies stay deferred to their own
+  // slices; this pass cannot accidentally admit an unrelated raw expression.
+  for (const [name, list] of defs) {
+    if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
+    if (params.has(name) && boundary.covered !== true) continue
+    if (!list.some(def => Array.isArray(def.rhs) && materializedJoins.has(def.rhs))) continue
+    const nameSemantic = semanticNames.get(name) ?? semAll()
+    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
+    const target = targetNames.get(name) ?? ANY_BIGINT
+    if (list.every(def => {
+      if (def.rhs == null) return true
+      if (def.owner?.[0] !== '=') return false
+      const source = emittedCandidate(def.rhs)
+      return edgeMaterializable(source.rep, target, def.rhs, source.ready)
+    })) materializedNames.add(name)
+  }
+
   const resultHasClosedBool = semanticClosed(bodyResultSemantic) &&
     (semanticKinds(bodyResultSemantic) & bitOfKind(VAL.BOOL)) !== 0
   const materializedResult = boundary.covered === true && !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
-    resultExprs.every(expr => expr == null || edgeMaterializable(currentOf(expr), bodyResultTarget, expr))
+    resultExprs.every(expr => expr == null ||
+      edgeMaterializable(currentOf(expr), bodyResultTarget, expr))
 
   // Compact canonical node facts into one primitive-valued Map. The three
   // temporary caches above are build-time solver state and do not remain
@@ -1010,7 +1067,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   return trivial ? {
     kind: 'body', identity, boundary, trivial: true,
     semanticNames: null, currentNames: null, targetNames: null, nodeFacts: null,
-    materializedNames: null, materializedResult: false,
+    materializedNames: null, materializedJoins: null, materializedResult: false,
     resultSemantic: bodyResultSemantic, resultTarget: bodyResultTarget, edges,
   } : {
     kind: 'body', identity, boundary, trivial: false,
@@ -1019,6 +1076,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     targetNames: keptTarget,
     nodeFacts,
     materializedNames,
+    materializedJoins,
     materializedResult,
     resultSemantic: bodyResultSemantic,
     resultTarget: bodyResultTarget,
@@ -1120,7 +1178,8 @@ const activeRep = (ctx, node, target) => {
   if (typeof node === 'string')
     return (target ? body.targetNames : body.currentNames)?.get(node) ?? NO_BIGINT
   if (Array.isArray(node)) {
-    const packed = body.nodeFacts?.get(node) ?? NO_BIGINT
+    const packed = body.nodeFacts?.get(node)
+    if (packed == null) return NO_BIGINT
     return target ? packed & 7 : (packed >> 3) & 7
   }
   return NO_BIGINT
@@ -1128,6 +1187,12 @@ const activeRep = (ctx, node, target) => {
 
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
+  if (Array.isArray(name) && name[0] === '?:') {
+    const activeHandle = ctx.plans.representations.get(ctx.func.current)
+    const activeBody = activeHandle && ctx.plans.representationData.get(activeHandle)?.body
+    if (activeBody?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
+    return NO_BIGINT
+  }
   if (Array.isArray(name) && name[0] === '()' && typeof name[1] === 'string') {
     const callee = ctx.funcs.map.get(name[1])
     const calleeHandle = callee && ctx.plans.representations.get(callee)
@@ -1143,6 +1208,14 @@ export function representationActiveMaterializedRep(ctx, name) {
     return record.boundary.covered === true && ready ? activeRep(ctx, name, true) : NO_BIGINT
   }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** Frozen action for one materialized ternary arm. */
+export function representationJoinArmAction(ctx, join, arm) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body?.materializedJoins?.has(join)) return REP_EDGE_REJECT
+  return edgeAction(activeEmittedRep(ctx, arm), activeRep(ctx, join, true))
 }
 
 /** Frozen action for one materialized return edge. */

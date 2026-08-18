@@ -124,6 +124,31 @@ test('RepresentationPlan: covered return edges materialize dynamic call results'
   }
 })
 
+test('RepresentationPlan: ternary arms normalize before entering a tagged local', () => {
+  const src = `
+    export let kind = flag => {
+      let value = flag ? 4n : 2
+      return typeof value
+    }
+    export let check = flag => {
+      let value = flag ? 4n : 2
+      return typeof value === 'bigint'
+    }
+    export let staticKind = () => {
+      let value = true ? 4n : 2
+      return typeof value
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.kind(0), 'number', `O${optimize || 0}: Number ternary arm stays Number`)
+    is(e.kind(1), 'bigint', `O${optimize || 0}: BigInt ternary arm is boxed before merge`)
+    is(e.check(0), false, `O${optimize || 0}: tag comparison rejects Number arm`)
+    is(e.check(1), true, `O${optimize || 0}: tag comparison accepts BigInt arm`)
+    is(e.staticKind(), 'bigint', `O${optimize || 0}: folded condition preserves selected edge action`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —

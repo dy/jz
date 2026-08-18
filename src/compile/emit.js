@@ -70,7 +70,7 @@ import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinall
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
   REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
-  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationReturnAction,
+  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationReturnAction,
 } from './representation-plan.js'
 
 const stringOps = (node) => {
@@ -5933,16 +5933,34 @@ export const emitter = {
     return typed(['i32.eqz', truthyIR(v)], 'i32')
   },
 
-  '?:': (a, b, c) => {
-    // Constant condition → emit only the live branch
+  '?:': (a, b, c, self) => {
+    // Constant condition → emit only the live branch, but preserve the
+    // materialized join's selected edge normalization.
     const ca = emit(a)
-    if (isLit(ca)) { const v = litVal(ca); return (v !== 0 && v === v) ? emit(b) : emit(c) }
+    if (isLit(ca)) {
+      const v = litVal(ca), arm = (v !== 0 && v === v) ? b : c
+      return applyBigintRepresentationAction(emit(arm), arm, representationJoinArmAction(ctx, self, arm))
+    }
     const cond = toBoolFromEmitted(ca)
     // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
     const thenRefs = extractRefinements(a, new Map(), true)
     const elseRefs = extractRefinements(a, new Map(), false)
     const vb = withRefinements(thenRefs, b, () => emit(b))
     const vc = withRefinements(elseRefs, c, () => emit(c))
+    const repB = representationJoinArmAction(ctx, self, b)
+    const repC = representationJoinArmAction(ctx, self, c)
+    if (repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
+      const legacyBigintArm = valTypeOf(b) === VAL.BIGINT && nullishArm(c) ? b
+        : valTypeOf(c) === VAL.BIGINT && nullishArm(b) ? c : null
+      if (bigintStrict() && legacyBigintArm != null && needsBigintBox(legacyBigintArm))
+        bigintEraseErr('ternary-nullish', typeof legacyBigintArm === 'string' ? legacyBigintArm : 'this ternary\'s BigInt arm')
+      const fb = asF64(applyBigintRepresentationAction(vb, b, repB))
+      const fc = asF64(applyBigintRepresentationAction(vc, c, repC))
+      return typed(['f64.reinterpret_i64',
+        ['if', ['result', 'i64'], cond,
+          ['then', ['i64.reinterpret_f64', fb]],
+          ['else', ['i64.reinterpret_f64', fc]]]], 'f64')
+    }
     // A BOOL arm beside a non-BOOL, non-NUMBER arm: the merge kills the static
     // type, so the boolean's identity is observable only through its atom box —
     // materialize it per-arm here, BEFORE the raw-bit collapses below erase it
@@ -7403,7 +7421,7 @@ export function emit(node, expect) {
   if (op === 'let' || op === 'const') return emitDecl(...args)
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
-  const ir = handler(...args)
+  const ir = op === '?:' ? handler(...args, node) : handler(...args)
   if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
   return ir
 }
