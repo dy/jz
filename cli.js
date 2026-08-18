@@ -68,8 +68,8 @@ Options:
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
-  --experimental-stencil    Enable neighbour-load stencil vectorization (a[i±1]; opt-in)
-  --experimental-outer-strip  Strip-mine pixel loops over an inner reduction to f64x2 (opt-in)
+  --stencil                 Enable neighbour-load stencil vectorization (a[i±1]; opt-in)
+  --outer-strip             Strip-mine pixel loops over an inner reduction to f64x2 (opt-in)
   --no-tail-call            Use ordinary call frames instead of return_call
   --no-eh-abort             Lower internal throws to unreachable even with a bare throw
                             in source (no wasm-exceptions tag), when no try/catch is reachable
@@ -188,7 +188,7 @@ function printStats(profile) {
 async function handleCompile(args) {
   let inputFile = null, outputFile = null, wat = false, strict = false, resolveNode = false, importsFile = null
   let optimize, host, alloc = true, names = false, stats = false, noSimd = false, noTailCall = false, noEhAbort = false
-  let memory, maxMemory, importMemory = false, define, whyNotSimd = false, experimentalStencil = false, experimentalOuterStrip = false
+  let memory, maxMemory, importMemory = false, define, whyNotSimd = false, stencil = false, outerStrip = false
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
@@ -208,8 +208,8 @@ async function handleCompile(args) {
     else if (a === '--no-alloc') alloc = false
     else if (a === '--no-simd') noSimd = true
     else if (a === '--why-not-simd') whyNotSimd = true
-    else if (a === '--experimental-stencil') experimentalStencil = true
-    else if (a === '--experimental-outer-strip') experimentalOuterStrip = true
+    else if (a === '--stencil' || a === '--experimental-stencil') stencil = true
+    else if (a === '--outer-strip' || a === '--experimental-outer-strip') outerStrip = true
     else if (a === '--no-tail-call') noTailCall = true
     else if (a === '--no-eh-abort') noEhAbort = true
     else if (a === '--names') names = true
@@ -244,8 +244,8 @@ async function handleCompile(args) {
     ...(alloc === false && { alloc: false }),
     ...(noSimd && { noSimd: true }),
     ...(whyNotSimd && { whyNotSimd: true }),
-    ...(experimentalStencil && { experimentalStencil: true }),
-    ...(experimentalOuterStrip && { experimentalOuterStrip: true }),
+    ...(stencil && { stencil: true }),
+    ...(outerStrip && { outerStrip: true }),
     ...(noTailCall && { noTailCall: true }),
     ...(noEhAbort && { noEhAbort: true }),
     ...(define && { define }),

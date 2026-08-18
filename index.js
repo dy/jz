@@ -321,13 +321,13 @@ jz.pool = async function pool(source, opts = {}) {
  * @param {boolean} [opts.whyNotSimd] - Diagnostic: emit a `simd-why-not` warning (via
  *   opts.warnings) for each canonical loop the auto-vectorizer declined, naming the
  *   first blocking op. Finds loops one op away from SIMD. Noisy — off by default.
- * @param {boolean} [opts.experimentalStencil] - Opt-in: vectorize neighbour-load
+ * @param {boolean} [opts.stencil] - Opt-in: vectorize neighbour-load
  *   stencils (`b[i]=f(a[i-1],a[i],a[i+1])`, 2-D 5-point) to f64x2. Bit-exact vs scalar.
  *   Unstable — off by default until proven across the corpus.
- * @param {boolean} [opts.experimentalOuterStrip] - Opt-in: strip-mine a pixel loop whose
+ * @param {boolean} [opts.outerStrip] - Opt-in: strip-mine a pixel loop whose
  *   per-pixel value is an inner reduction (metaballs-shape) into f64x2 lanes (2 pixels at
  *   once). Bit-exact vs scalar. Unstable — off by default.
- * @param {boolean} [opts.experimentalToneMap] - Mixed-lane log-tonemap vectorizer: a flat
+ * @param {boolean} [opts.toneMap] - Mixed-lane log-tonemap vectorizer: a flat
  *   `i32 dens[i] → f64 Math.log → i32 pack → px[i]` loop lifts to a 2-wide f64x2 island
  *   (fern/bifurcation/attractors). Bit-exact vs scalar; default-on at speed, pass `false` to disable.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
@@ -553,7 +553,7 @@ const jzCompileInner = (code, opts = {}) => {
   // after auto-config so it wins over any re-resolved preset.
   if (opts.noSimd) {
     ctx.transform.optimize.vectorizeLaneLocal = false
-    ctx.transform.optimize.experimentalSlp = false
+    ctx.transform.optimize.slp = false
   }
 
   // opts.whyNotSimd (CLI --why-not-simd): emit a `simd-why-not` warning per
@@ -562,18 +562,18 @@ const jzCompileInner = (code, opts = {}) => {
   // resolved optimize cfg to the vectorizer; off by default (the report is noisy).
   if (opts.whyNotSimd && ctx.transform.optimize) ctx.transform.optimize.whyNotSimd = true
 
-  // opts.experimentalStencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
+  // opts.stencil: the neighbour-load stencil vectorizer (a[i±1] / 2-D 5-point).
   // Now default-on at optimize:'speed' (proven bit-exact corpus-wide); the opt is two-way so an
   // explicit `false` can still disable it (e.g. to A/B against the scalar path).
-  if (opts.experimentalStencil !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalStencil = !!opts.experimentalStencil
+  { const v = opts.stencil !== undefined ? opts.stencil : opts.experimentalStencil; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.stencil = !!v }
 
-  // opts.experimentalOuterStrip: the outer-loop strip-mine vectorizer (2 adjacent pixels in f64x2
-  // lanes over an inner reduction). Default-on at speed; two-way like experimentalStencil.
-  if (opts.experimentalOuterStrip !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalOuterStrip = !!opts.experimentalOuterStrip
+  // opts.outerStrip: the outer-loop strip-mine vectorizer (2 adjacent pixels in f64x2
+  // lanes over an inner reduction). Default-on at speed; two-way like stencil.
+  { const v = opts.outerStrip !== undefined ? opts.outerStrip : opts.experimentalOuterStrip; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.outerStrip = !!v }
 
-  // opts.experimentalToneMap: the mixed-lane log-tonemap vectorizer (i32 dens[i] → f64 log →
+  // opts.toneMap: the mixed-lane log-tonemap vectorizer (i32 dens[i] → f64 log →
   // i32 pack → px[i], 2-wide f64x2 island). Default-on at speed; two-way like the others.
-  if (opts.experimentalToneMap !== undefined && ctx.transform.optimize) ctx.transform.optimize.experimentalToneMap = !!opts.experimentalToneMap
+  { const v = opts.toneMap !== undefined ? opts.toneMap : opts.experimentalToneMap; if (v !== undefined && ctx.transform.optimize) ctx.transform.optimize.toneMap = !!v }
 
   const module = time('compile', () => compile(ast, profiler))
   assertCtxInvariants('post-compile')

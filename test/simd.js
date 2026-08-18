@@ -2586,8 +2586,8 @@ test('SIMD reduce - offset-indexed dot (matmul A[off+i]*B[off+i]) folds the inva
 // Neighbour loads `a[i±1]` / 2-D `a[c±1]`, a[rn+x] (c = rc+x derived IV). The lift is
 // address-preserving (each f64.load → v128.load at the SAME address ⇒ the δ-shifted
 // pair), so it's BIT-EXACT vs the scalar oracle (a lane-parallel map reorders nothing
-// within a lane — unlike a horizontal reduction). Opt-in behind experimentalStencil.
-const STENCIL = { optimize: 'speed', experimentalStencil: true }
+// within a lane — unlike a horizontal reduction). Opt-in behind stencil.
+const STENCIL = { optimize: 'speed', stencil: true }
 // Oracle: SAME pipeline with the stencil pass OFF (its loop stays scalar) — so the
 // shared checksum-reduction vectorizes identically in both and cancels; only the
 // stencil loop differs. (vs optimize:false the checksum would reassociate ⇒ ulp noise.)
@@ -2836,7 +2836,7 @@ const CONV_SRC = `
             for(let kx=0;kx<K;kx++){ acc += inp[irow+kx]*wt[wrow+kx] } } }
         let q=acc>>SHIFT; if(q<0)q=0; if(q>127)q=127; out[ocBase+oy*OW+ox]=q } } } }
   export let cs=()=>{ let h=0x811c9dc5|0; for(let i=0;i<out.length;i++) h=((h^out[i])*0x01000193)|0; return h>>>0 }`
-const CV_ON = { optimize: 'speed' }, CV_NO = { optimize: { level: 'speed', experimentalOuterStrip: false } }
+const CV_ON = { optimize: 'speed' }, CV_NO = { optimize: { level: 'speed', outerStrip: false } }
 
 test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact + vectorized', () => {
   const on = runVec(CONV_SRC, CV_ON), no = runVec(CONV_SRC, CV_NO)
@@ -2845,7 +2845,7 @@ test('conv-column i16x8 - int8 conv2d strip-mines the output column, bit-exact +
   if (onKernel()) return  // op-shape is a host-codegen assertion; bit-exactness above is the portable gate
   const w = wat(CONV_SRC, CV_ON)
   ok(/i16x8\.mul/.test(w) && /v128\.load64_zero/.test(w), `conv2d column loop vectorizes (${(w.match(/i16x8\.mul/g) || []).length} i16x8.mul, ${(w.match(/v128\.load64_zero/g) || []).length} gathers)`)
-  ok(!/i16x8\.mul/.test(wat(CONV_SRC, CV_NO)), 'experimentalOuterStrip:false leaves it scalar (isolates the pass)')
+  ok(!/i16x8\.mul/.test(wat(CONV_SRC, CV_NO)), 'outerStrip:false leaves it scalar (isolates the pass)')
 })
 
 // Mirror-lane store: `inp[N−k] = lm` inside a lane-mapped loop targets
@@ -3684,4 +3684,27 @@ test('SIMD cost model - a real if-converted stencil (enough per-lane work) still
   const w = wat(src, SIMD_OPT)
   ok(/v128\.bitselect/.test(w), 'bitselect present — profitable, still vectorizes')
   is(runVec(src, SIMD_OPT).main(), runVec(src, NOVEC).main(), 'bit-exact vs scalar')
+})
+
+test('vectorizer pass names: legacy experimental* keys stay accepted as aliases', () => {
+  // The four vectorizer passes renamed experimental* → canonical (stencil/outerStrip/
+  // toneMap/slp). Old keys must keep working: same source compiled with the LEGACY
+  // disable key must match the CANONICAL disable key byte-for-byte, and differ from
+  // the default (pass-on) build.
+  const src = `export const main = (n=64) => {
+    const a = new Float64Array(n), out = new Float64Array(n)
+    for (let i = 0; i < n; i++) a[i] = i * 0.5
+    for (let i = 1; i < n - 1; i++) out[i] = (a[i-1] + a[i+1]) * 0.5
+    let s = 0
+    for (let i = 0; i < n; i++) s += out[i]
+    return s
+  }`
+  const on = jz.compile(src, { optimize: { level: 3 }, wat: true })
+  const canon = jz.compile(src, { optimize: { level: 3, stencil: false, slp: false }, wat: true })
+  const legacy = jz.compile(src, { optimize: { level: 3, experimentalStencil: false, experimentalSlp: false }, wat: true })
+  is(canon, legacy, 'legacy alias produces byte-identical output to canonical key')
+  // Liveness proof for the plumbing itself: noSimd (which clears slp via the same
+  // normalized cfg) must differ from the default build on this SIMD-heavy source.
+  const scalar = jz.compile(src, { optimize: { level: 3 }, noSimd: true, wat: true })
+  ok(on !== scalar, 'cfg plumbing is live (noSimd changes output)')
 })

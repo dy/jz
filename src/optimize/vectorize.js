@@ -2065,7 +2065,7 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
 //     plain map path already relies on. A ping-pong buffer swap (waves) is OUTSIDE
 //     the loop, so in-loop bases stay distinct globals — safe without a runtime guard.
 //   • Reassociation: summing neighbours reorders f64 adds across lanes (ulp, like
-//     float reductions) — gated behind cfg.experimentalStencil until proven.
+//     float reductions) — gated behind cfg.stencil until proven.
 function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   if (!enabled) return null
   // Consumes the dispatch-computed inner scaffold (LoopPlan) — the opts there
@@ -5974,7 +5974,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
 // per-lane IEEE-754-identical) — a per-lane reduction reorders nothing, unlike a horizontal
 // fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
 // only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
-// Gated behind cfg.experimentalOuterStrip until proven across the corpus.
+// Gated behind cfg.outerStrip until proven across the corpus.
 function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
   if (!outer) return null
@@ -6173,7 +6173,7 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 // BIT-EXACT: f64x2 arithmetic is per-lane IEEE-identical, $math.log_v/exp_v are the per-lane mirrors
 // of the scalar polys, and the conditional accumulate adds bitselect(f(x), 0, mask) — exactly the
 // scalar add-or-skip. The speculatively-evaluated transcendental of a masked-out lane is discarded
-// (the helpers never trap). Gated behind cfg.experimentalOuterStrip; only fires when an inner loop
+// (the helpers never trap). Gated behind cfg.outerStrip; only fires when an inner loop
 // carries a transcendental (the latency-bound work SIMD actually accelerates — cheap-arithmetic
 // pixel loops are left to the scalar JIT, which already pipelines independent iterations).
 function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
@@ -6354,7 +6354,7 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
 // never overflow. Requant + clamp + store run scalar per lane; the kept scalar loop is the <8 tail.
 //
 // BIT-EXACT: integer arithmetic reorders nothing — each lane's i32 sum equals the scalar f64's exact
-// integer, and ToInt32(acc)>>SHIFT == lane>>SHIFT. Gated behind cfg.experimentalOuterStrip. ~5×
+// integer, and ToInt32(acc)>>SHIFT == lane>>SHIFT. Gated behind cfg.outerStrip. ~5×
 // over the scalar reduction (the serial f64 add-chain is latency-bound; 8 columns hide it).
 function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null

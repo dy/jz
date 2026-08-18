@@ -195,7 +195,7 @@ const LEVEL_PRESETS = Object.freeze({
   // from the non-fused JS/native reference (bench `fma` parity class). speed-only.
   // (The stencil + outer-strip vectorizers are NOT level-gated here: they're bit-exact pure wins
   // like the base lane vectorizer, so they run whenever it does — default-on at level 2+ via
-  // `cfg.experimentalStencil !== false` at the call site, not a speed-only size/precision trade.)
+  // `cfg.stencil !== false` at the call site, not a speed-only size/precision trade.)
   speed: Object.freeze({ ...ALL_ON, hoistConstantPool: false, arrayMinCap: 16, hashSmallInitCap: 8, reduceUnroll: true, relaxedSimd: true, inlineFns: true, rotateLoops: true, watrLicm: true, watrProfile: 'speed', watrGuard: false, unrollScalarChain: true, selectArmUpdates: true }),
 })
 
@@ -226,6 +226,12 @@ export function resolveOptimize(opt) {
     return { ...p }
   }
   if (typeof opt === 'object') {
+    // Legacy aliases: the four vectorizer passes shipped default-on under an
+    // `experimental*` prefix; canonical names dropped it. Old keys stay accepted
+    // (normalized here, before validation) so existing configs keep working.
+    for (const [legacy, canon] of [['experimentalStencil', 'stencil'], ['experimentalOuterStrip', 'outerStrip'], ['experimentalToneMap', 'toneMap'], ['experimentalSlp', 'slp']])
+      if (legacy in opt && !(canon in opt)) { opt = { ...opt, [canon]: opt[legacy] }; delete opt[legacy] }
+      else if (legacy in opt) { opt = { ...opt }; delete opt[legacy] }
     const baseLevel = typeof opt.level === 'number' || typeof opt.level === 'string' ? opt.level : 2
     const base = LEVEL_PRESETS[String(baseLevel)]
     if (!base) throw new Error(`Unknown optimize level '${opt.level}' — valid: 0, 1, 2, 3, 'size', 'speed', 'fast'`)
@@ -259,7 +265,7 @@ export function resolveOptimize(opt) {
     // store-pair packer. First-class here so `{ level:'speed', noSimd:true }` is a TRUE
     // scalar baseline whether passed nested or via the top-level opts.noSimd flag; the
     // SIMD-vs-scalar correctness oracles depend on it actually disabling SLP.
-    if (out.noSimd) { out.vectorizeLaneLocal = false; out.experimentalSlp = false }
+    if (out.noSimd) { out.vectorizeLaneLocal = false; out.slp = false }
     return out
   }
   return { ...ALL_ON }
@@ -3794,11 +3800,11 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
       relaxedFma: cfg.relaxedSimd === true,
       blurMP: cfg.blurMultiPixel !== false,
       whyNot: cfg.whyNotSimd === true,
-      stencil: cfg.experimentalStencil !== false,
-      outerStrip: cfg.experimentalOuterStrip !== false,
+      stencil: cfg.stencil !== false,
+      outerStrip: cfg.outerStrip !== false,
       pureFuncMap: cfg._pureFuncMap || null,
-      toneMap: cfg.experimentalToneMap !== false,
-      slp: cfg.experimentalSlp !== false,  // SLP default-on (testing single-use fix)
+      toneMap: cfg.toneMap !== false,
+      slp: cfg.slp !== false,  // SLP default-on
       crPow: cfg.crPow === true,
     }) && typeof fn[1] === 'string') (cfg._vectorizedFnNames ??= new Set()).add(fn[1])
     // The vectorizer emits `v128.load/store (i32.add base K)` for the unrolled

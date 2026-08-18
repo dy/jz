@@ -90,10 +90,10 @@ export const PASS_NAMES = [
   // optimizeFunc (found by the registry-coverage gate on its first run):
   'foldStaticArrReads',       // const-index reads of static-data arrays → immediates
   'blurMultiPixel',           // stencil vectorizer's multi-pixel mode
-  'experimentalStencil',      // stencil vectorizer (bit-exact pure win; listed for the O0 contract)
-  'experimentalOuterStrip',   // outer-loop strip-mining vectorizer
-  'experimentalToneMap',      // tone-map reduction vectorizer
-  'experimentalSlp',          // superword-level parallelism (adjacent-scalar packing)
+  'stencil',                  // stencil vectorizer (bit-exact pure win; listed for the O0 contract)
+  'outerStrip',               // outer-loop strip-mining vectorizer
+  'toneMap',                  // tone-map reduction vectorizer
+  'slp',                      // superword-level parallelism (adjacent-scalar packing)
   'devirtFnArrays',           // const fn-array call_indirect → guarded direct calls
   'devirtSchemaReads',        // megamorphic dyn-get probe → br_table over registered schemas
   'inlineDevirtArms',         // inline the devirt guard's direct-call arms
