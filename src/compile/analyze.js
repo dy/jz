@@ -1064,7 +1064,7 @@ function sigFingerprint(sig) {
  * Pass D (fixed 2026-08-02, .work/todo.md KNOWN GAP #1 sibling): Pass A/B's
  * `keepI32`/exprType checks are magnitude-blind BY DESIGN (a value merely
  * STORED i32 is safe regardless of magnitude ONLY WHEN every read re-applies
- * the same ToInt32 the write did — widen.js's own load-bearing perf
+ * the same ToInt32 the write did — type.js's widening invariant (load-bearing perf
  * tradeoff) — so an intCertain-but-UNBOUNDED (intLevelMap level 1: `+`/`-`/
  * `*` are "integral-closed, range-open") local that grows past i32 range via
  * a compound-assign NEVER widens through them. That premise breaks the

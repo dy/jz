@@ -109,6 +109,9 @@ const peelI32 = (v) =>
 // ring-buffer indexing). Bit-identical for an i32 result: ToInt32(exact) ≡ two's-complement wrap.
 // Gated on exprType(whole expr)==='i32' so an f64-consumed sum — or an unsigned-wide (uint32)
 // operand, which exprType already reports as f64 — still widens. Returns null when inapplicable.
+// Widening contract: this is the DECIDE side of the numeric widening invariant —
+// the mirror (exprType's i32/f64 prediction) and the full rule set live in
+// src/type.js's header. Edit either side only with the other open.
 const tryI32Arith = (wasmOp, astOp, a, b, va, vb) => {
   const pa = peelI32(va); if (pa == null) return null
   const pb = peelI32(vb); if (pb == null) return null

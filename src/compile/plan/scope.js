@@ -693,7 +693,7 @@ export const inferModuleIntGlobals = (ast) => {
   // range-open" verdict intLevelMap gives a local's `+`/`-`/`*` chain, never
   // a magnitude bound. i32 storage is sound for a value ONLY as long as
   // every read re-applies the same ToInt32 the writes did (declGlobal's own
-  // load-bearing tradeoff, identical to widen.js's local one) — broken the
+  // load-bearing tradeoff, identical to type.js's widening-invariant local one) — broken the
   // instant an integral-but-unbounded global (`counter *= 100000`) is ALSO
   // read bare with no governing comparison ANYWHERE. A local's relevant
   // scope for that proof is its one function body; a global's is the WHOLE
