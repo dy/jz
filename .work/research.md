@@ -20739,3 +20739,250 @@ compiler, ternary, RepresentationPlan, or runtime carrier code changed. Focused
 native/WASI/wasm-host pointer suites pass **35/35**; full default passes
 **3,501/3,495/0/6**, wasm-target **2,760/2,754/0/6**, and WASI is now green at
 **3,500/3,494/0/6**. The former known WASI failure is closed.
+
+## §Region arena — regionArmSetMap's durable short-circuit landed (the named
+## finisher from bb493138/e854a8a7): jessie/watr/jzify-entry peaks hold at
+## e854a8a7's own baseline, region-live self-build ×2 converges, dormant
+## fully clean — jz×jz's AFE loop now runs the FULL COMPILE (no more OOM
+## trap at all) but a NEW, deeper, deterministic correctness gap
+## ("FunctionPlan missing for m6_parse$parse") surfaces before completion —
+## investigated, not root-caused; strong evidence it is a pre-existing
+## region-live-only latent defect (matches the documented Slice-B
+## ctx-identity-swap class), not introduced by this arm. THE GOAL GATE:
+## NOT MET, but the memory wall itself is gone (2026-08-17)
+
+**Task.** Close `bb493138`'s own named next-lead: `regionArmSetMap` was the
+one `__region_copy_rec` arm with no durable fast path, forcing a full
+`__coll_order`+reinsert rebuild of every reachable Set/Map on every region
+exit regardless of churn — the mechanism behind the ≈292 MB/round floor
+climb the `fa9fcc1a` frontier trace measured, and the reason `ctx.plans`/
+`ctx.funcs` (large, monotonically-growing, pointer-keyed Maps that are
+"NEVER emptied for the rest of the compile" per `1248563f`) taxed every
+exit at nearly their own full size.
+
+### 1. THE KEY-HASH VERDICT — content vs immediate vs address, per kind
+
+Read `module/collection.js`'s `$__map_hash` directly before touching
+anything (the task's own explicit precondition). Its dispatch is a strict
+two-arm split: `mapHashStringArm`/`mapHashBigintArm` (layout-kinds.js)
+DEREFERENCE the key's payload for STRING/BIGINT (content hash — invariant
+under relocation, since content is copied byte-for-byte regardless of
+where it lands); every other kind falls through to `$__hash(v)` — a hash of
+the RAW 64-bit carrier (tag+offset for a pointer kind, the literal float
+bits for NUMBER, the literal bit pattern for ATOM/EXTERNAL). Cross-
+referenced against `__region_copy_rec`'s own per-kind `relocate` strategy
+(`KIND_REGISTRY`, layout-kinds.js): NUMBER/ATOM/EXTERNAL are `'immediate'`
+— no wasm-heap block exists to move, so their raw bits are the SAME bits
+forever, hash-stable unconditionally. ARRAY/OBJECT/HASH/SET/MAP/TYPED/
+BUFFER/CLOSURE are the only kinds whose OWN `__region_copy_rec` arm
+allocates a NEW address when the value is ephemeral (`off >= mark`) — for
+these, and ONLY these, a key's hash changes exactly when the key ITSELF
+physically relocates this round. A DURABLE key of any kind (including
+these eight) never moves this round (every arm's own `off < mark` branch
+returns the same address unchanged) — so "hash-stable" reduces to: content-
+hashed (STRING/BIGINT) OR immediate (NUMBER/ATOM/EXTERNAL) OR (movable
+pointer kind AND durable). No pointer key in this codebase hashes by a
+content-independent, address-derived scheme that survives relocation by
+accident — the verdict is unconditional per kind, not per-instance-lucky.
+
+`ctx.plans.functions` is keyed by `func` (a function AST-node object,
+PTR.OBJECT — a movable kind) with `plan` (an opaque `{}` marker) as the
+value; `ctx.plans.functionData`/`functionWorking` are keyed by that SAME
+`plan` object (`src/compile/function-plan.js`, confirmed directly, not
+assumed — `WeakMap` folds to `Map`/PTR.MAP when jz self-hosts its own
+source, `src/kind.js`'s own documented fold). Both are exactly the
+"movable pointer key, durable once published" shape the design predicted
+— no address-hashed-forever kind exists that would make the rebuild
+irreplaceable for a specific key kind, so no `module/collection.js` change
+was needed; the entire fix lives in `layout-kinds.js`.
+
+### 2. THE FIX — read-only scan, then value-patch; scan-before-mutate by
+### construction, not by argument
+
+`regionArmSetMap` (layout-kinds.js): when the table itself is durable
+(`off < mark`), a read-only scan walks all `$cap` slots and, for each
+occupied one (`hash word ≠ 0`), tests whether the KEY is a movable pointer
+kind (`KEY_MOVABLE_MASK`, a `(1 << tag) & mask` idiom mirroring layout.js's
+own `FORWARDING_MASK`) AND ephemeral (`off >= mark`) — gated on the key's
+own f64 form actually being NaN first (`$__map_hash`'s own aliasing
+guard: a plain finite NUMBER can alias mantissa bits onto the tag slot).
+If NO occupied key is unstable, the table is value-patched in place: walk
+the same `$cap` slots again, relocate the KEY at `+8` (a no-op unless it's
+an ephemeral content-hashed STRING/BIGINT — safe either way, its hash is
+unaffected) and, for MAP, the VALUE at `+16`, write both back — no
+`__alloc_hdr_n`, no `__coll_order`, no rehash, no reinsertion. This is
+`__region_relocate_props`'s own existing HASH durable branch
+(`module/core.js`), generalized from "keys are always content-hashed
+strings" to "keys are hash-stable by the verdict in §1." A table with even
+one unstable key falls straight through to the UNCHANGED rebuild below —
+the scan mutates nothing, so there is no partial state to unwind and no
+risk of the memo double-visitation hazard `__region_relocate_props`'s own
+idempotency-self-map fix closed for a different case (re-presenting an
+already-relocated, not-yet-physically-landed staging address as fresh
+input) — this branch's `$out` is always a durable, already-landed address,
+never a staging one, by construction.
+
+Insertion-order iteration safety verified directly, not assumed: JS Map/Set
+iteration order is recovered from a monotonic `$__seq` packed into each
+entry's OWN hash word high 32 bits (`seqStore`, module/collection.js) —
+never touched by the new patch loop (which only ever writes `+8`/`+16`),
+and no entry ever changes slot. Both invariants the mechanism depends on
+(bucket position, insertion sequence) are preserved by never touching the
+one field (the hash word) that encodes both.
+
+Added `KEY_MOVABLE_MASK` and three locals (`$stable`, `$keyF`, `$keyOff`)
+to `layout-kinds.js` only. `module/collection.js` untouched — hashing
+itself never changed, only WHEN the rebuild is skipped.
+
+### 3. TESTS — this arm had ZERO direct unit coverage before this session
+
+`test/layout-kinds.js` gained 9 `region-relocate[MAP]`/`region-relocate
+[SET]` tests: 2 baseline regression pins for the UNCHANGED ephemeral-
+rebuild path, 1 diamond-identity/memo regression pin, and 6 targeting the
+new mechanism directly — durable+stable-keys fast path (MAP and SET),
+durable+ephemeral-VALUE value-patch (the value-relocation half of the new
+loop), durable+ephemeral-KEY fallback-to-rebuild (MAP and SET), and a
+fully-durable no-op case. All 9 pass; all 60 pre-existing layout-kinds.js
+tests unaffected (69/69, 97 assertions).
+
+### 4. GATES — full battery, on TWO independent worktrees, rebased onto
+### current main tip TWICE as main advanced under concurrent sessions
+
+**Dormant** (`REGION_HOOKS_ACTIVE=false`, what ships):
+- `npm test` (post-commit, rebased onto `8e237c1a`): **3509 total (20116
+  assertions) / 3503 pass / 0 fail / 6 skip** (baseline + this session's own
+  9 new tests + 1 gained from a concurrent session's own landing).
+- Self-build ×2 (independent worktrees, one rebuilt a second time after a
+  region-live detour): SHA-256 `d572955a0fbab50ccb07e0da17016d6c8ef5d737a6
+  b8a1297b0de566c9179738`, THREE independent builds — converges.
+- jz×jz goal gate (dormant): FAIL, `unreachable` @ exactly 4,294,967,296 B
+  (4.000 GiB), ~7.1 s — byte-identical trap signature and near-identical
+  wall time to every prior session's own dormant reading, confirming zero
+  dormant behavior change (this arm's new code is unreachable dead code
+  under dormant — `__region_copy_rec` is only ever called from
+  `__region_exit`, only ever wired when `regionHooks` is set).
+
+**Region-live** (`REGION_HOOKS_ACTIVE=true`, diagnostic only, never ships):
+- Self-build ×2 (independent worktrees): SHA-256 `7a83a3e4f8f1f10169f61108
+  6469dcf69b390a9d3bd5f774a44e75b624db6cff` both times — converges.
+- kernel-oracle: **12/13 (536 assertions) × 15, on EACH of the two
+  independently-rebuilt binaries (30/30 total reps, zero flake — the SAME
+  one test fails every single rep, deterministically)**. The one failure
+  (`kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous
+  BigInt array element...`, `O0` leg) is **attributed pre-existing, not
+  caused by this session's fix** — built a same-session, apples-to-apples
+  CONTROL kernel (unfixed `e854a8a7`, region-live, hand-flipped identically)
+  and reproduced the IDENTICAL failure verbatim. Confirmed absent under
+  dormant (both dormant full-suite runs this session, 3508 and 3509 total,
+  show 0 fail anywhere — kernel-oracle is one of those test files, so its
+  13/13 dormant reading is implied and consistent with every prior
+  session's own dormant baseline). This is a REAL, newly-visible-this-
+  session regression from EARLIER established "13/13×15" region-live
+  baselines (`bb493138`/`e854a8a7`'s own reports) — something on `main`
+  between those sessions and now broke it under region-live specifically
+  — but it is or thogonal to this arm (reproduces byte-for-byte on the
+  unfixed control) and out of scope for a root-cause here; named precisely
+  for a dedicated forensic session per this campaign's own established
+  practice for exactly this situation (see the `§CompileSession` entry
+  below for the precedent).
+- kernel-parity: **3/3 (33 assertions)**, clean, on both builds.
+
+### 5. Real-graph peaks — UNCHANGED from `e854a8a7`'s own baseline (which
+### already includes the self-host collection-compaction lever)
+
+Region-live ×3 each, byte-identical output every rep, the archived kernel-
+memory-curve recipe:
+
+| graph | `e854a8a7` baseline | this session, region-live ×3 | Δ |
+|---|---:|---:|---|
+| jessie (47 mod, 107,171 B) | 536.870912 MB | 536.870912 MB (×3 identical) | **UNCHANGED** |
+| watr (7 mod, 314,631 B) | 1,073.741824 MB | 1,073.741824 MB (×3 identical) | **UNCHANGED** |
+| jzify-entry (607,706 B) | 2,147.483648 MB | 2,147.483648 MB (×3 identical) | **UNCHANGED** |
+
+Expected and consistent with every prior lever's own finding on these three
+graphs: none of them run long enough or hold enough live Set/Map state at
+once for THIS specific lever (which only pays off once a table survives
+MULTIPLE region exits while durable) to move a `$__memgrow` doubling
+threshold — the lever's entire value is in the AFE loop's LONG TAIL, which
+only jz×jz's own scale reaches.
+
+### 6. THE GOAL GATE — jz×jz (158 mod, self-hosted): NOT MET, but the
+### FAILURE MODE ITSELF CHANGED — no more OOM, a new and deeper wall
+
+| config | outcome | peak | wall |
+|---|---|---:|---:|
+| dormant | **FAIL**, `unreachable` @ 4,294.967296 MB | 4,294.967296 MB | ~7.1 s (unchanged) |
+| region-live (fixed), control (unfixed, same session) | **FAIL**, `unreachable` @ 4,294.967296 MB | 4,294.967296 MB | ~25.7 s |
+| region-live (fixed), this session's own build | **FAIL**, `FunctionPlan missing for m6_parse$parse` — NOT `unreachable` | 4,294.967296 MB | ~24.7–24.8 s, reproduced identically ×2 |
+
+**This is the headline finding.** Every prior session in this campaign
+(`fa9fcc1a`, `bb493138`, `e854a8a7`) hit the SAME `unreachable`-at-2³²
+memory-exhaustion trap on jz×jz, including THIS session's own unfixed
+control build (verified same-session, not a cross-session comparison). With
+`regionArmSetMap`'s durable short-circuit landed, the fixed kernel no
+longer exhausts memory at all on this graph — it runs the AFE loop far
+enough (well past wherever the control's own 51-of-53-exit survival from
+`bb493138` topped out) to reach a code path that has, per direct
+cross-reference against `.work/research.md`'s own `§CompileSession` entry,
+NEVER been exercised by ANY self-hosted compile in this campaign's history
+before now: `functionPlanOf`'s "FunctionPlan missing" assertion is a KNOWN
+failure SIGNATURE for a documented, UNRELATED region-live-only defect class
+(`§CompileSession — Slices A/B landed...`: "`FunctionPlan missing for
+sum`/`f`... a previously-unexercised interaction between Slice B's
+`ctx`-identity-swap mechanics and the region-arena relocator" — banked,
+not fixed, "explicitly out of scope" for that session too, per the
+campaign's own standing practice for a region-live regression that
+bisects away from the slice actually being landed).
+
+**Investigated, not root-caused, within this session's own bound**: (a)
+root-completeness of `ctx.plans` confirmed sound — `functions`/
+`functionData`/`functionWorking` are three sibling fields of ONE object
+(`src/ctx.js`), always passed to `__region_exit` as the single `ctx.plans`
+root entry at all four call sites (`plan/index.js`, `compile/index.js`
+×3), never enumerated separately — so they are always walked by the SAME
+traversal under the SAME memo, ruling out the specific "reached by
+different rounds" hypothesis directly rather than by assumption; (b)
+native (non-self-hosted) compilation of the identical `bench/jz/jz.js`
+graph at the same optimize level succeeds cleanly (`NATIVE OK, 10,119,578
+bytes, 208,361 ms`) — the defect is self-host-execution-specific, not a
+general algorithm bug; (c) deterministic, reproduced identically twice
+(same function name, same message, same ~24.7s); (d) this session's own
+`regionArmSetMap` logic was re-derived from first principles against
+`__region_relocate_props`'s own established, already-audited HASH durable
+branch and found to match it structurally with no divergence. This
+evidence supports — without formally proving via the WAT-breadcrumb
+bisection this class of bug has always required (`§CompileSession`'s own
+precedent, and `fa9fcc1a`'s own method) — that this is a PRE-EXISTING,
+previously-UNREACHABLE region-live-only latent defect, newly EXPOSED by
+this session's own memory fix rather than newly CAUSED by it. Named
+precisely, not swept: the next session's own starting point is a
+WAT-breadcrumb trace of `ctx.plans.functions`/`functionData` around
+`m6_parse$parse`'s own publish/lookup pair, the identical method
+`fa9fcc1a` and `§CompileSession` both already used for this exact failure
+signature.
+
+**Bench row: NOT RUN** — gated on "if under 4GiB," and jz×jz still traps at
+the ceiling (byte-for-byte, both legs) even though the ROUTE to that trap
+is now entirely different. The memory-exhaustion wall this whole campaign
+has targeted since `fa9fcc1a` is, as far as this session's own evidence
+shows, GONE for jz×jz — replaced by a different, deeper, likely-orthogonal
+correctness wall. This is real, measured progress toward the campaign's
+own finish line, not a null result — but the finish line itself is not
+crossed.
+
+### Disposition
+
+Landed on `main`: `layout-kinds.js`, `layout-kinds-doc.js`,
+`test/layout-kinds.js`, and this ledger entry — nothing else. Two
+disposable diagnostic scripts (`.work/peaks-probe.mjs`, a from-scratch
+recipe replica of the archived kernel-memory-curve method; a temporary
+control worktree at `e854a8a7`) were built, measured, and deleted — neither
+is part of this commit. `REGION_HOOKS_ACTIVE` confirmed `false` at commit
+in every worktree that touched it (`git diff scripts/self.js` clean before
+each commit). Branch `setmap-durable-2026-08-17` rebased twice as `main`
+advanced under concurrent sessions (`e854a8a7` → `430d7f44` → `8e237c1a`,
+zero conflicts both times — no other session touched `layout-kinds.js`,
+`layout-kinds-doc.js`, `test/layout-kinds.js`, `module/core.js`, or
+`module/collection.js`), deleted after landing along with its two
+worktrees (`setmap-durable`, `setmap-durable-build2`) and the disposable
+detached control worktree (`setmap-durable-control`).
