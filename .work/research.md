@@ -21393,11 +21393,29 @@ total, 3507 pass, 6 skip, 0 fail. Self-build (`npm run build`): succeeded,
 shift (`scripts/self.js` is compiled into the kernel), byte-identity was
 never the bar here, correctness was.
 
-Landed on `main`: the 36 swept files + this ledger entry — nothing else.
 Branch `comments-2026-08-17` rebased twice as `main` advanced under
 concurrent sessions (`24652b86` → `ff30a748`, zero conflicts on the code
 commit both times — the vectorizer-option-rename and constIntExpr-unification
 commits that landed concurrently touched code lines in files this sweep also
 touched comments in, `src/compile/emit.js`/`module/typedarray.js`/
 `src/optimize/{index,vectorize}.js`/`src/passes.js`, but never the same
-lines), deleted after landing along with its worktree.
+lines).
+
+**Landing deferred 3 of 36 files**: at land time, `main`'s working checkout
+had UNCOMMITTED, in-progress work from the constIntExpr/type.js unification
+session directly colliding with this sweep — `src/widen.js` staged for
+deletion (its content is being folded into `src/type.js`'s header) and
+`src/compile/analyze.js`/`src/compile/emit.js` mid-edit on the same lines
+this sweep rewrote. `git merge --ff-only` correctly refused rather than
+overwrite that uncommitted work. Rather than force it, those three files'
+sweep changes were reverted back to `main`'s committed content for the land
+commit; the other 33 files landed clean. The full 36-file sweep (including
+these three) stays on branch `comments-2026-08-17` for a follow-up once the
+concurrent session commits or the `widen.js`→`type.js` fold lands — at that
+point `src/widen.js`'s comment sweep is moot (the file will be gone) and
+`analyze.js`/`emit.js` need a fresh diff against whatever they land as.
+
+Landed on `main`: 33 of the 36 swept files + this ledger entry. Deferred:
+`src/widen.js`, `src/compile/analyze.js`, `src/compile/emit.js`. Landing
+branch `comments-2026-08-17-land` deleted after landing along with its
+worktree; `comments-2026-08-17` (full 36-file sweep) kept for the follow-up.
