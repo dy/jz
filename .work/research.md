@@ -22238,3 +22238,30 @@ site-ID global.set before EVERY static `call $__alloc`/`__alloc_hdr`/
 sites), histogram ≥16 KB allocations by site-ID during the fatal window,
 map the top sites to enclosing functions. One round, no candidates,
 definitive.
+
+## §EXHAUSTIVE ATTRIBUTION: 100% = one site in $__str_concat_raw_fresh (2026-08-18)
+
+19,657 alloc call sites individually tagged (20/20 sample-verified, same
+trap signature): fatal call's large-alloc mass = **site 347 inside
+$__str_concat_raw_fresh: 64,243 calls / 3,128,053,048 bytes = 100.00%**.
+The construct: emit.js's `+` string dispatch (5616/5640) routes
+non-self-accumulating joins (selfAccum=false) through
+concatRaw→fresh-alloc-and-copy; tryConcatChain (5582) exists for
+accumulator loops but does not fire for math.js's shape — its synthesized
+default builds 24 WAT-template strings via chained `+`/template parts →
+~64K joins each copying the accumulated prefix (avg 49 KB) = O(n²).
+Native V8 ropes make the same chain O(1)/join — the entire kernel-vs-
+native contradiction resolves.
+
+**Ledger correction**: the §String-concat-REFUTED entry above measured the
+optimize:0 diagnostic kernel, where wasm2wat showed the *_raw_* variants
+reachability-pruned — that refutation was build-profile-scoped and WRONG
+for production. The original quadratic-append hypothesis was correct for
+the O3 kernel. Lesson recorded: variant sets differ per optimize level;
+refutations must be re-validated on the profile that actually traps.
+
+**Fix (design in flight, main session, emit.js seam)**: fuse non-
+accumulating chains — evaluate parts left-to-right, then build the result
+in ONE exact-size allocation (parts-then-join shape), or bump-extend
+sequentially where heap-top invariants can be guaranteed. O(n) total,
+benefits native too.
