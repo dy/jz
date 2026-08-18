@@ -21993,3 +21993,31 @@ benefits every jz program using the op, not just self-compile. NOT string
 $__str_concat (refuted, <1 KB). Not yet localized to the call site — next:
 tag-global instrumentation on candidate growth helpers (arr push/grow,
 upsert family, byte-buffer builders) + large-alloc ring buffer in $__alloc.
+
+## §Unamortized-growth localization: __hash_set_local 100% — with a build-profile caveat (2026-08-18)
+
+Tag-global attribution across 9 candidate growth helpers: **tag 7
+`__hash_set_local` = 65,910 events / 3,264,311,568 bytes = 100.00%** of the
+fatal call's ≥16 KB allocations (map_set: 1 event; all others zero; trap
+fires mid-hash_set_local). The structure: per-object dynamic-property hash
+($__dyn_set backing, module/collection.js:2546 genUpsertGrow). Growth
+policy read and CLEARED — correct 2× doubling at 75% load with sound
+multi-hop forwarding; not the bug. Arithmetic: one doubling table needs
+~28 events to reach GB scale, not 65,910 — the volume is tens of thousands
+of SEPARATE small dyn-shaped objects, each paying grows from a tiny
+initial capacity. The codebase already documents this exact profile
+(collection.js:2430: "AST-style nodes carry 3-5 props") — default
+hashSmallInitCap=2, with =8 wired at optimize:3/'speed'.
+
+**CAVEAT (blocks any fix)**: the diagnostic kernel is optimize:0 (names
+survive splicing) → cap=2; the production goal-gate kernel is optimize:3 →
+cap=8 already baked in. The production kernel STILL traps at the same
+ceiling — so either cap=8 merely defers the same tax, or production dies
+from a different mix entirely. The optimize:0 attribution is NOT yet
+evidence about the production trap. Next: replicate histogram+tag
+fingerprint on an optimize:3 names:true build (anchors may differ; only
+$__alloc + helper entries needed), plus a one-level-up caller tag to name
+the JS construct mass-creating ≥3-prop dyn-shaped objects. Fix directions
+ranked AFTER that evidence: (a) production already-fixed → find real
+production killer; (b) raise/adapt initial cap; (c) static-shape the
+compile-time-known literals off the dyn-hash path entirely.
