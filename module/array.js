@@ -295,6 +295,20 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
 export default (ctx) => {
+  // Slice 4c/4e (RepresentationPlan v2): ONE plan-driven representation
+  // decision for every fresh VALUE slot an array producer stores — literals
+  // (4c) and the mutator family push/unshift/fill/Array.from (4e). Checked
+  // per call (not at registration): ctx.features.bigint settles after module
+  // registration. REJECT or a bigint-free program falls back to storedValue.
+  // splice is deletion-only in the subset (no insert slots); copyWithin moves
+  // already-stored bits; struct/packed/union pushes store schema-typed i32
+  // fields (bigint-free by the slotI32Certain packing precondition) — exempt.
+  const taggedStoredValue = (node) => {
+    if (!ctx.features.bigint) return storedValue(node)
+    const action = representationStorageWriteAction(ctx, node)
+    return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
+  }
+
   deps({
     __arr_idx: ['__ptr_offset_fwd'],
     __arr_grow: arrayGrowDeps(false),
@@ -524,7 +538,7 @@ export default (ctx) => {
         const body = [out.init, ...(cb ? [cb.setup] : [])]
         for (let i = 0; i < staticLen; i++) {
           const valNode = arrayLikeProp(src, String(i))
-          const raw = valNode === undefined ? undefExpr() : storedValue(valNode)
+          const raw = valNode === undefined ? undefExpr() : taggedStoredValue(valNode)
           const idxV = cb && (!cb.usedParams || cb.usedParams[1]) ? typed(['f64.const', i], 'f64') : null
           const item = cb ? cb.call([raw, idxV]) : raw
           body.push(['f64.store', slotAddr(out.local, i), asF64(item)])
@@ -762,10 +776,6 @@ export default (ctx) => {
     // (`let [a, b] = [1n, [2n, 3n]]`, `b` bound to the whole inner array): a
     // real, independently-escaping value that must not inherit it.
     const neverEscapes = ctx.func._arrayLiteralNeverEscapes
-    const taggedStoredValue = ctx.features.bigint ? (node) => {
-      const action = representationStorageWriteAction(ctx, node)
-      return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
-    } : storedValue
     const elemStoredValue = neverEscapes ||
       (elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT))
       ? storedValueNarrow : taggedStoredValue
@@ -1381,7 +1391,7 @@ export default (ctx) => {
       const isGlobal = !box && ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr)
       const readVar = box ? ['f64.load', ['local.get', `$${box}`]] : isGlobal ? ['global.get', `$${arr}`] : ['local.get', `$${arr}`]
       const writeVar = v => box ? ['f64.store', ['local.get', `$${box}`], v] : isGlobal ? ['global.set', `$${arr}`, v] : ['local.set', `$${arr}`, v]
-      const vv = storedValue(vals[0])
+      const vv = taggedStoredValue(vals[0])
       const pushed = ['call', '$__arr_push1', ['i64.reinterpret_f64', readVar], vv]
       if (void_) return typed(['block', writeVar(pushed)], 'void')
       return typed(['block', ['result', 'f64'],
@@ -1469,7 +1479,7 @@ export default (ctx) => {
     } else {
       // Store each value and increment len
       for (const val of vals) {
-        const vv = storedValue(val)
+        const vv = taggedStoredValue(val)
         body.push(
           ['f64.store',
             ['i32.add', ['local.get', `$${pushBase}`], ['i32.shl', ['local.get', `$${len}`], ['i32.const', 3]]],
@@ -1579,7 +1589,7 @@ export default (ctx) => {
     inc('__arr_fill')
     return typed(['call', '$__arr_fill',
       asI64(emit(arr)),
-      val == null ? undefExpr() : storedValue(val),
+      val == null ? undefExpr() : taggedStoredValue(val),
       // ToIntegerOrInfinity position args (23.1.3.7 step 6/8) — asI32Sat, not asI32:
       // __clamp_idx needs ±Infinity to saturate to INT32_MAX/MIN, not wrap (see asI32Sat's
       // doc comment in src/ir.js).
@@ -1701,13 +1711,13 @@ export default (ctx) => {
       ? rawVals[0].slice(1) : rawVals
     if (vals.length <= 1) {
       const val = vals[0]
-      return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : storedValue(val)], 'f64')
+      return typed(['call', '$__arr_unshift', asI64(emit(arr)), val === undefined ? undefExpr() : taggedStoredValue(val)], 'f64')
     }
     const recv = temp('usr')
     const temps = vals.map(() => temp('us'))
     const body = [
       ['local.set', `$${recv}`, asF64(emit(arr))],
-      ...vals.map((v, i) => ['local.set', `$${temps[i]}`, storedValue(v)]),
+      ...vals.map((v, i) => ['local.set', `$${temps[i]}`, taggedStoredValue(v)]),
     ]
     for (let i = vals.length - 1; i >= 1; i--)
       body.push(['drop', ['call', '$__arr_unshift', ['i64.reinterpret_f64', ['local.get', `$${recv}`]], ['local.get', `$${temps[i]}`]]])

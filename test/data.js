@@ -1642,3 +1642,40 @@ test('RepresentationPlan: Set membership preserves dynamic BigInt members', () =
     is(e.del(1), 0, `O${optimize || 0}: BigInt member deletes`)
   }
 })
+
+test('RepresentationPlan: array mutators preserve dynamic BigInt values', () => {
+  const src = `
+    export let viaPush = flag => {
+      let a = []
+      a.push(flag ? 5n : 2)
+      return typeof a[0]
+    }
+    export let viaPushMulti = flag => {
+      let a = []
+      a.push(1, flag ? 5n : 2, 3)
+      return typeof a[1]
+    }
+    export let viaUnshift = flag => {
+      let a = [0]
+      a.unshift(flag ? 5n : 2)
+      return typeof a[0]
+    }
+    export let viaUnshiftMulti = flag => {
+      let a = [0]
+      a.unshift(flag ? 5n : 2, 9)
+      return typeof a[0]
+    }
+    export let viaFill = flag => {
+      let a = [0, 0]
+      a.fill(flag ? 5n : 2)
+      return typeof a[1]
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    for (const name of ['viaPush', 'viaPushMulti', 'viaUnshift', 'viaUnshiftMulti', 'viaFill']) {
+      is(e[name](0), 'number', `O${optimize || 0}: ${name} Number member`)
+      is(e[name](1), 'bigint', `O${optimize || 0}: ${name} BigInt member stored tagged`)
+    }
+  }
+})
