@@ -2908,9 +2908,22 @@ export function narrowBoolResults() {
     if (!exprs.length) continue
     const bodyFacts = isBlock ? analyzeBody(body) : null
     const localValTypes = bodyFacts ? bodyFacts.valTypes : null
-    const vt = e => typeof e === 'string'
-      ? (localValTypes?.get(e) || ctx.scope.globalValTypes?.get(e) || null)
-      : valTypeOf(e)
+    // Locals-aware FIRST, like narrowValResults' own valTypeOfWithCalls (same
+    // helper — kind.js valTypeOfWithLocals): a compound return tail (e.g.
+    // `return m.has(k)`) has its receiver's kind only known through THIS body's
+    // own analyzeBody facts, invisible to the global-only plain valTypeOf.
+    // UNLIKE narrowValResults, still falls back to the plain (locals-blind)
+    // valTypeOf when the local resolver can't decide: narrowValResults omits
+    // that fallback on purpose (its own doc comment — the optimistic `+`
+    // default is unsound to hand back as a whole-function result claim), but
+    // narrowBoolResults' pre-existing behavior already relied on that same
+    // optimistic default to catch e.g. `return x + 1n` on an untyped param as
+    // BIGINT (`RepresentationPlan: direct call edges…` regression, caught
+    // live) — losing it outright regressed a previously-working case instead
+    // of only ADDING the missing method-call proof. valTypeOfWithLocals's own
+    // local proofs are sound by construction, so preferring them and falling
+    // back to the historical default is strictly additive, not a new risk.
+    const vt = e => valTypeOfWithLocals(e, name => localValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null) ?? valTypeOf(e)
     // Same ctx.func.flatObjects gap as narrowValResults above — a `return
     // obj.p` tail on a proven-BIGINT flat field needs it to resolve BIGINT
     // here (this is the leaf-module skip path's own valResult pass, so there

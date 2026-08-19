@@ -834,13 +834,16 @@ test('array: alias sees element write', () => {
 // ============================================
 
 test('Set: add returns same pointer (alias-safe)', () => {
-  const { f } = run(`export let f = () => {
+  // `jz(...).exports` (not the module's `run()`, which decodes through the legacy
+  // adaptI64 f64 NaN-box shim — a genuine JS boolean would reinterpret to NaN there):
+  // `.has()`'s return crosses the real interop boundary as a proper JS boolean.
+  const { f } = jz(`export let f = () => {
     let s = new Set()
     let s2 = s
     s.add(42)
     return s2.has(42)
-  }`)
-  is(f(), 1)  // s2 sees the add
+  }`).exports
+  is(f(), true)  // s2 sees the add
 })
 
 test('Map: set returns same pointer (alias-safe)', () => {
@@ -1029,6 +1032,82 @@ test('Set: delete down to empty then re-add', () => {
     return emptied * 10 + (s.has(7) ? 1 : 0) + s.size
   }`)
   is(f(), 2)  // emptied=0, has(7)=1, size=1
+})
+
+// ============================================
+// Set/Map has/delete boundary: real JS booleans, not 1/0
+// ============================================
+// Regression for the banked ".has()/.delete() boundary returns 1/0, not
+// boolean" deviation (.work/todo.md, 2026-08-19): ECMA-262 Map.prototype.has/
+// Set.prototype.has/delete return a genuine boolean. kind-traits.js'
+// methodValType already claimed VAL.BOOL for these on a proven Map/Set
+// receiver, and the boundary wrapper's own resultBool/boolBoxIR mechanism
+// (src/compile/index.js synthesizeBoundaryWrappers) already boxes a proven-
+// BOOL result correctly — but the whole-function return-kind passes
+// (narrowValResults/narrowBoolResults, src/compile/narrow.js) couldn't see a
+// body-local receiver's kind through a compound return tail (`return m.has(k)`),
+// so func.valResult never got set and the boxing never fired.
+// Fixed at the type-inference layer (kind.js valTypeOfWithLocals now resolves
+// an `obj.method(...)` return tail through its own local receiver-kind
+// resolver — the same locals-aware mechanism every other op there already
+// uses), not by hand-patching interop.js's decoder.
+test('Map/Set: has/delete cross the JS boundary as real booleans (proven receiver), every optimize level', () => {
+  for (const optimize of [false, 2, 3]) {
+    const o = `O${optimize || 0}`
+    is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.has(7) }`, { optimize }).exports.f(), true, `${o}: Map.has present`)
+    is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.has(8) }`, { optimize }).exports.f(), false, `${o}: Map.has absent`)
+    is(jz(`export let f = () => { let s = new Set(); s.add(7); return s.has(7) }`, { optimize }).exports.f(), true, `${o}: Set.has present`)
+    is(jz(`export let f = () => { let s = new Set(); s.add(7); return s.has(8) }`, { optimize }).exports.f(), false, `${o}: Set.has absent`)
+    is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.delete(7) }`, { optimize }).exports.f(), true, `${o}: Map.delete present`)
+    is(jz(`export let f = () => { let m = new Map(); m.set(7, 1); return m.delete(8) }`, { optimize }).exports.f(), false, `${o}: Map.delete absent`)
+    is(jz(`export let f = () => { let s = new Set(); s.add(7); return s.delete(7) }`, { optimize }).exports.f(), true, `${o}: Set.delete present`)
+    is(jz(`export let f = () => { let s = new Set(); s.add(7); return s.delete(8) }`, { optimize }).exports.f(), false, `${o}: Set.delete absent`)
+  }
+})
+
+test('Map/Set: has() crosses the boundary as a real boolean through a genuinely dynamic (unproven) receiver, every optimize level', () => {
+  // A single closure called with BOTH a Map and a Set receiver: no single ptrKind
+  // narrows its param, so at O0 `.has()` routes through module/collection.js's
+  // collProbeDyn (the runtime Map-vs-Set __ptr_type dispatch) rather than the
+  // proven `.MAP:has`/`.SET:has` emitters — the other half of the probe family
+  // this fix covers (collProbeDyn already boxed its own result; the gap was
+  // purely in func.valResult never getting set to route through it at the
+  // boundary). O2/O3 constant-fold this same program before dispatch is
+  // observable in the WAT, but the crossed VALUE must still agree.
+  const src = `export let f = () => {
+    let probe = (c, k) => c.has(k)
+    let m = new Map(); m.set(7, 1)
+    let s = new Set(); s.add(9)
+    return probe(m, 7) && !probe(m, 8) && probe(s, 9) && !probe(s, 10)
+  }`
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.f(), true, `O${optimize || 0}: dynamic Map+Set receiver`)
+})
+
+test('Map: has() on a receiver laundered across the export boundary itself', () => {
+  // A Map returned from one export and passed as an argument into another
+  // round-trips through interop's JS-Map materialize/re-encode path — hitting
+  // a SEPARATE, already-banked bug (.work/todo.md: Map/Set set/get/has "total
+  // miss" on a boundary-round-tripped receiver, fix pending in a parallel
+  // worktree), not this fix's own concern. This fix's own claim — that a
+  // has() result, hit or miss, decodes as a genuine boolean rather than a
+  // bare 0/1 number — is asserted unconditionally; the real hit/miss VALUE is
+  // only asserted once `size()` proves the separate bug isn't the reason
+  // (`size` reading back `undefined` is that bug's own signature).
+  const src = `
+    export let mk = () => { let m = new Map(); m.set(7, 1); return m }
+    export let sizeOf = (c) => c.size
+    export let probe = (c, k) => c.has(k)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const o = `O${optimize || 0}`
+    const { exports } = jz(src, { optimize })
+    const m = exports.mk()
+    const r = exports.probe(m, 7)
+    is(typeof r, 'boolean', `${o}: boundary-round-tripped receiver still decodes has() as a real boolean`)
+    if (exports.sizeOf(m) === undefined) continue  // known separate bug (banked) — not this fix's scope
+    is(r, true, `${o}: Map.has(7) on a boundary-round-tripped receiver`)
+  }
 })
 
 // ============================================

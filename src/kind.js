@@ -1342,6 +1342,29 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
     if (a == null) return null
     return valTypeOf(expr)
   }
+  // Method call `obj.method(...)` (parsed as `['()', ['.', obj, method], argsNode]`):
+  // plain valTypeOf's own VT['()'] already special-cases this shape (methodValType(
+  // method, obj, valTypeOf(obj), ctx)), but valTypeOf(obj) for a bare-identifier
+  // receiver resolves through the GLOBAL lookupValType only — blind to a kind this
+  // pass's own `resolveLocal` already proved body-locally (analyzeBody's valTypes,
+  // not yet installed into ctx.func.localReps at plan time). A handful of methods
+  // GATE their claim on a proven receiver kind (`.has`/`.delete` on Map/Set,
+  // `.add`/`.set`, the Set-algebra family — kind-traits.js methodValType) rather
+  // than claiming unconditionally, so an unproven-but-locally-known receiver (e.g.
+  // `let m = new Map(); return m.has(k)`) silently lost its VAL.BOOL claim here,
+  // leaving func.valResult unset and the boundary wrapper crossing a raw 0/1
+  // number instead of the canonical TRUE_NAN/FALSE_NAN atom. Resolve the receiver
+  // through `rec` (this function's own local-aware recursion) first; methodValType
+  // itself is representation-agnostic (works the same whether objType came from
+  // here or the global path), so this is purely additive — a method whose claim
+  // doesn't depend on objType (most STRING/NUMBER/ARRAY methods) was never blocked
+  // by this gap in the first place.
+  if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.') {
+    const [, obj, method] = args[0]
+    const objType = rec(obj)
+    const vt = methodValType(method, obj, objType, ctx)
+    if (vt != null) return vt
+  }
   return valTypeOf(expr)
 }
 

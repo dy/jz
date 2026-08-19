@@ -257,7 +257,7 @@ test('Map.set: omitted value stores undefined and keeps key present', () => {
       return m.has('x') && m.get('x') === undefined
     }
   `, { jzify: true })
-  is(exports.f(), 1)
+  is(exports.f(), true)
 })
 
 test('watr: compiled compile.js handles empty func module', async () => {

@@ -167,7 +167,7 @@ test('Set: create + add + has', () => {
     s = s.add(42)
     return s.has(42)
   }`)
-  is(f(), 1)
+  is(f(), true)
 })
 
 test('Set: has missing', () => {
@@ -176,7 +176,7 @@ test('Set: has missing', () => {
     s = s.add(1)
     return s.has(99)
   }`)
-  is(f(), 0)
+  is(f(), false)
 })
 
 test('Set: size', () => {
@@ -263,7 +263,7 @@ test('Map: SameValueZero keys', () => {
     m = m.set(-0, 2)
     return m.has('x') && m.get('x') === 7 && m.has(NaN) && m.get(NaN) === 3 && m.has(0) && m.get(0) === 2
   }`)
-  is(f(), 1)
+  is(f(), true)
 })
 
 test('Map: delete uses Map lookup semantics', () => {
