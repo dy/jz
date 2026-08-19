@@ -13,7 +13,8 @@
  */
 
 import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, TOMB_NAN, temp, tempI32, tempI64, allocPtr, undefExpr, mkPtrIR, ptrTypeEq, elemStore, elemLoad, extractF64Bits, boolBoxIR, freshId } from '../src/ir.js'
-import { emit, deps, call, storedValue } from '../src/bridge.js'
+import { emit, deps, call, storedValue, storedValuePlanned } from '../src/bridge.js'
+import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
@@ -1606,7 +1607,10 @@ export default (ctx) => {
       ['local.get', `$${setL}`]], 'f64')
   }
 
-  ctx.core.emit['.add'] = call('__set_add', 'II', 'i64')
+  ctx.core.emit['.add'] = (setExpr, member) => {
+    inc('__set_add')
+    return typed(['f64.reinterpret_i64', ['call', '$__set_add', asI64(emit(setExpr)), asI64(taggedColl(member))]], 'f64')
+  }
 
   // `.has` / `.delete` exist on BOTH Set and Map, which differ only in entry
   // stride (16 vs 24). A receiver of unproven kind (e.g. a Map read off a nested
@@ -1633,13 +1637,27 @@ export default (ctx) => {
   // Map/Set) branch below is the only one that produced the bare number; the call_indirect
   // branch (a genuine custom `.has` closure) already returns a properly boxed value via
   // the normal call-return convention.
+  // Slice 4d (RepresentationPlan v2): every Map/Set KEY and VALUE slot routes
+  // through ONE representation decision, on both the write side (.set/.add)
+  // and the probe side (.get/.has/.delete) — a key stored tagged must probe
+  // tagged or SameValueZero on bits misses. Mirrors slice 4c's array-literal
+  // helper; REJECT (or a bigint-free program) falls back to storedValue.
+  const taggedColl = ctx.features?.bigint ? (node) => {
+    const action = representationStorageWriteAction(ctx, node)
+    return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
+  } : storedValue
   const collProbeDyn = (mapFn, setFn) => (collExpr, key, h) => {
     inc(mapFn, setFn, '__ptr_type')
     const o = temp('cp'), k = tempI64('cpk')
     const extra = h != null ? [['i32.const', h]] : []
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${o}`, asF64(emit(collExpr))],
-      ['local.set', `$${k}`, asI64(emit(key))],
+      // storedValue-family, NOT raw emit: .set stores keys through the same
+      // family (bool -> atom bits, plan-tagged bigints -> the same tag), so
+      // the probe must produce the SAME bits or SameValueZero misses. (An
+      // unproven-receiver O0 miss exists independently of this — banked in
+      // .work/todo.md 2026-08-19, all key kinds, pre-dates this slice.)
+      ['local.set', `$${k}`, asI64(taggedColl(key))],
       boolBoxIR(typed(['if', ['result', 'i32'],
         ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
         ['then', ['call', `$${mapFn}`, ['i64.reinterpret_f64', ['local.get', `$${o}`]], ['local.get', `$${k}`], ...extra]],
@@ -1656,11 +1674,17 @@ export default (ctx) => {
   // Typed Set.has: literal key → prehashed __set_has_h, else the generic probe.
   ctx.core.emit[`.${VAL.SET}:has`] = (collExpr, key) => {
     const h = litKeyHash(key)
-    if (h == null) return call('__set_has', 'II', 'i32')(collExpr, key)
+    if (h == null) {
+      inc('__set_has')
+      return typed(['f64.convert_i32_s', ['call', '$__set_has', asI64(emit(collExpr)), asI64(taggedColl(key))]], 'f64')
+    }
     inc('__set_has_h')
     return typed(['f64.convert_i32_s', ['call', '$__set_has_h', asI64(emit(collExpr)), asI64(emit(key)), ['i32.const', h]]], 'f64')
   }
-  ctx.core.emit[`.${VAL.SET}:delete`] = call('__set_delete', 'II', 'i32')
+  ctx.core.emit[`.${VAL.SET}:delete`] = (collExpr, key) => {
+    inc('__set_delete')
+    return typed(['f64.convert_i32_s', ['call', '$__set_delete', asI64(emit(collExpr)), asI64(taggedColl(key))]], 'f64')
+  }
 
   // Map.prototype.clear / Set.prototype.clear — drop every entry. `.clear` only
   // exists on Map/Set in JS, so a single generic emitter is unambiguous; the
@@ -1843,8 +1867,8 @@ export default (ctx) => {
     inc('__map_set')
     // Keys and values are boxed-value slots — booleans cross as their atom so
     // set(true, …)/get(true) agree on bits and stored values keep identity.
-    const value = val === undefined ? asI64(undefExpr()) : asI64(storedValue(val))
-    return typed(['f64.reinterpret_i64', ['call', '$__map_set', asI64(emit(mapExpr)), asI64(storedValue(key)), value]], 'f64')
+    const value = val === undefined ? asI64(undefExpr()) : asI64(taggedColl(val))
+    return typed(['f64.reinterpret_i64', ['call', '$__map_set', asI64(emit(mapExpr)), asI64(taggedColl(key)), value]], 'f64')
   }
   ctx.core.emit[`.${VAL.MAP}:set`] = ctx.core.emit['.set']
 
@@ -1856,7 +1880,7 @@ export default (ctx) => {
     }
     inc('__map_get')
     // Key is a boxed-value slot — a bool key probes with the same atom bits .set stored.
-    return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(storedValue(key))]], 'f64')
+    return typed(['f64.reinterpret_i64', ['call', '$__map_get', asI64(emit(mapExpr)), asI64(taggedColl(key))]], 'f64')
   }
 
   ctx.core.emit['.get'] = emitMapGet

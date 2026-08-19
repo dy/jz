@@ -11579,3 +11579,20 @@ remaining prerequisite, not attempted this session).
 
 **Commits**: `src/front.js`, `scripts/self.js` (region-hooks wiring) + this
 entry + `.work/research.md`'s matching append.
+
+## BANKED (2026-08-19): O0 unproven-receiver Map/Set total miss
+`let m = mk(); m.set(5,7); m.has(5)` → false at optimize:false when the
+receiver is laundered through an identity function (`mk = () => pick(new
+Map())`; `pick = v => v`). ALL key kinds (bool/number/string), get() reads
+undefined. O2/O3 correct (inlining proves the receiver). Pre-existing
+(reproduced at e20de7ba before slice 4d). Suspect class: handle NaN-bits
+canonicalization through the unproven return path, or the __map_set
+returns-new-handle contract unbound on unproven receivers. Found during
+slice 4d's key-representation consistency analysis.
+
+## BANKED (2026-08-19): .has() boundary returns 1/0, not boolean
+`new Map().has(k)` / `Set.has` decode as number 1/0 at the JS boundary
+(all levels, pre-existing; JS spec says boolean). Slice 4d's tagged path
+makes O2/O3 return proper `true` for bigint-featured programs while O0
+stays 1 — normalize the boundary bool decode for collection probes in a
+dedicated pass (valResult BOOL for has/delete + boundary atom decode).

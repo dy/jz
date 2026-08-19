@@ -1583,3 +1583,62 @@ test('dyn-keys: plain (non-RMW) write to an i32-lean HASH local is readable', ()
       return probe(counts, picks)
     }`).f(), 7)
 })
+
+test('RepresentationPlan: Map storage preserves dynamic BigInt keys and values', () => {
+  const src = `
+    export let vkind = flag => {
+      let m = new Map()
+      m.set('k', flag ? 5n : 2)
+      return typeof m.get('k')
+    }
+    export let kget = flag => {
+      let m = new Map()
+      m.set(flag ? 7n : 7, 'seen')
+      return m.get(flag ? 7n : 7) === 'seen'
+    }
+    export let khas = flag => {
+      let m = new Map()
+      m.set(flag ? 7n : 7, 1)
+      return m.has(flag ? 7n : 7) ? 1 : 0
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.vkind(0), 'number', `O${optimize || 0}: Number map value`)
+    is(e.vkind(1), 'bigint', `O${optimize || 0}: BigInt map value stored tagged`)
+    is(e.kget(0), true, `O${optimize || 0}: Number key round-trips`)
+    is(e.kget(1), true, `O${optimize || 0}: BigInt key round-trips through get`)
+    is(e.khas(0), 1, `O${optimize || 0}: Number key probes`)
+    is(e.khas(1), 1, `O${optimize || 0}: BigInt key probes through has`)
+  }
+})
+
+test('RepresentationPlan: Set membership preserves dynamic BigInt members', () => {
+  const src = `
+    export let member = flag => {
+      let s = new Set()
+      s.add(flag ? 9n : 9)
+      return s.has(flag ? 9n : 9) ? 1 : 0
+    }
+    export let cross = flag => {
+      let s = new Set()
+      s.add(flag ? 9n : 9)
+      return s.has(flag ? 9 : 9n) ? 1 : 0
+    }
+    export let del = flag => {
+      let s = new Set()
+      s.add(flag ? 9n : 9)
+      s.delete(flag ? 9n : 9)
+      return s.size
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.member(0), 1, `O${optimize || 0}: Number member probes`)
+    is(e.member(1), 1, `O${optimize || 0}: BigInt member probes`)
+    is(e.cross(0), 0, `O${optimize || 0}: 9n stored, 9 probed - SameValueZero distinguishes`)
+    is(e.cross(1), 0, `O${optimize || 0}: 9 stored, 9n probed - SameValueZero distinguishes`)
+    is(e.del(0), 0, `O${optimize || 0}: Number member deletes`)
+    is(e.del(1), 0, `O${optimize || 0}: BigInt member deletes`)
+  }
+})
