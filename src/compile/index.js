@@ -2561,8 +2561,8 @@ export default function compile(ast, profiler, regionHooks) {
         const last = i === ctx.funcs.list.length - 1
         if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || last)) {
           endAssignedMemo()
-          ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory] =
-            regionHooks.exit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory])
+          ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+            regionHooks.exit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
           __mark = null
           beginAssignedMemo()
         }
@@ -2599,8 +2599,8 @@ export default function compile(ast, profiler, regionHooks) {
       } finally { endAssignedMemo() }
       compiledBodyCount = batchEnd
       if (regionHooks) {
-        ;[ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory] =
-          regionHooks.exit(__mark, [ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory])
+        ;[ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+          regionHooks.exit(__mark, [ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
         if (__secRoot) sec = __secRoot
       }
     }
@@ -2696,8 +2696,8 @@ export default function compile(ast, profiler, regionHooks) {
   const __buildMark = regionHooks?.mark()
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
   if (regionHooks) {
-    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory] =
-      regionHooks.exit(__buildMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory])
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(__buildMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
     __secRoot = sec
   }
 
@@ -2741,8 +2741,8 @@ export default function compile(ast, profiler, regionHooks) {
   const __stdlibMark = regionHooks?.mark()
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
   if (regionHooks) {
-    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory] =
-      regionHooks.exit(__stdlibMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.core, ctx.runtime, ctx.abi, ctx.linkDemand, ctx.names, ctx.bridge, ctx.error, ctx.features, ctx.memory])
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(__stdlibMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
     __secRoot = sec
   }
 
