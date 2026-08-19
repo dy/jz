@@ -1103,9 +1103,10 @@ CARRIER_BOX session config, not import-time constant) · item 2 five
 still-failing representation shapes (flag off AND on: 5n-3n subtraction via
 generic param, Map-value-through-unary-callee, Array.from(BigInt64Array),
 BOOL∪NUMBER false join, dynamic subnormal in BigInt-using program) · item 3
-FeaturePlan/LinkDemand split SLICES 1-2 LANDED 2026-08-07 (see below +
-.work/research.md §FeaturePlan freeze); slices 3 (reader-contract grep
-sweep) and 4 (post-carrier bigint gate retirement) still open · item 4 registry → executable columns with generated
+FeaturePlan/LinkDemand split SLICES 1-3 LANDED (1-2 2026-08-07, 3
+2026-08-19 — reader-contract sweep CLEAN, no code change, .work/research.md
+§FeaturePlan freeze Slice 3); slice 4 (post-carrier bigint gate retirement)
+open, coupled to the strict-default flip (blocked on subscript publish) · item 4 registry → executable columns with generated
 consumer arms · item 6 BodyModel dedupe (old deriveOffsetTees path still
 runs beside new tables; per-name classify walks are quadratic-ish) + HIR
 provenance link · item 7 solver/session counts unchanged (43 ctx importers,

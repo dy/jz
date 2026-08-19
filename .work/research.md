@@ -22812,3 +22812,29 @@ same churn class the elephant attribution is chasing, not new; (2) apples-
 to-apples tip footprints (watr/jzify) must come from the forensic
 battery's own scripts — queued with that agent. jessie is unaffected
 (same smoke method throughout: 432 → 380.8 with the tier).
+
+## §FeaturePlan freeze Slice 3 — reader-contract sweep CLEAN (2026-08-19)
+
+Exhaustive grep-classification of every ctx.features / ctx.linkDemand
+reader and writer across src+module+scripts (user-dirty files audited
+read-only):
+
+- ctx.linkDemand readers: module dep-thunks (`__typed_idx: () => …`) and
+  stdlib body generators — all evaluated at resolveIncludes()/pullStdlib;
+  vectorize.js's SLP bail and wat/assemble.js's heap helpers go through
+  assembleView() as documented in session-views.js. The suspicious-looking
+  `linkDemand.typedView` read is CORRECT — typedView was reclassified from
+  the ANALYSIS stratum into ctx.linkDemand (ctx.js:945, 2026-08-08 slice),
+  and the ANALYSIS stratum is now empty.
+- ctx.features writers: setFeature() calls only from prepare's prescan
+  (bigint/error at prepare/index.js) and autoload's includeForTimerRuntime,
+  whose sole caller is prepare/index.js:813 — all PROGRAM-stratum-at-
+  prepare, none post-freeze. errorClasses Set accretion likewise
+  prepare-only. Both write tripwires (setFeature post-analyze,
+  setLinkDemand post-pre-assemble) present and correctly scoped.
+- ctx.features readers: emit handlers, stdlib factories, assemble — all
+  post-freeze reads, conformant.
+
+Slice 3 closes with no code change required. Remaining FeaturePlan item:
+slice 4 (post-carrier bigint gate retirement) — coupled to the
+strict-default flip, i.e. blocked on the same subscript publish.
