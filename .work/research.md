@@ -22287,3 +22287,21 @@ the emitFuncs loop (AFE-round pattern) + stage-boundary rounds
 (post-emitFuncs / post-emitClosures / post-pullStdlib) is now the correct
 and likely FINAL lever. Roots: the accumulating funcs/closureFuncs arrays
 + the standard ctx bundle. Implementation in flight (main session).
+
+## §Emission rounds v1 REGRESSED region-live — root-set under-coverage (2026-08-18)
+
+53bcb112 full battery: dormant/oracle/parity/SHA all PASS (shipping config
+unaffected), but region-live REGRESSED: watr/jzify OOB traps at
+1142.94/2210.19 MB (parent 69c8baad completes both, at 1024/2048 MB —
+better than baseline); goal gate dies at emitfuncCalls=544 (was 2234) with
+2 phantom allocations averaging 2047.58 MB each (bucket 30) — the
+garbage-length-read fingerprint (5e77f814 class). Diagnosis (main
+session): the emission rounds reused the ANALYSIS root bundle verbatim,
+but emission writes containers analysis never touches — ctx.runtime
+(dataParts/dataDedup grow per string literal), ctx.core (includes/deps per
+helper), ctx.linkDemand — none rooted, so per-batch exits relocate them
+under live references. Fix: audit emission's write-set into the bundle
+(+ctx.core, +ctx.runtime, +ctx.linkDemand, +ctx.abi) across all five new
+round sites; re-run the full battery. jessie improving to 512 MB (vs
+536.9 baseline) on the SAME build shows the rounds DO reclaim when the
+graph is small enough not to trip the unrooted-container window.
