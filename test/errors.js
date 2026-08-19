@@ -976,12 +976,27 @@ test('errors: non-Error throws are unchanged (number/string still legal)', () =>
 })
 
 // §3(b): an INTERNAL coded throw (e.g. JSON.parse's SyntaxError) still binds
-// catch(e) to the raw f64 code, exactly as before this slice — Slice A/B do
-// not build the code→message table (deferred to optional Slice C, §5).
-test('errors: internal coded throw still binds catch(e) to the raw code (Slice C not built)', () => {
+// catch(e) to the raw f64 code — it is never boxed into a real Error object
+// (that's §3(a)'s user-constructed path, buildErrorObject/errorSid above).
+// Slice C (§5's code→message table, module/collection.js's __err_prop, gated
+// via module/core.js's maybeIncErrProp): .message/.name on that raw code now
+// decode the SAME err-codes.js ERR_INFO text interop.js's host-side
+// decodeThrown resolves the identical code to, so an in-wasm catch and an
+// escaping throw agree on wording. Every other property name is unaffected —
+// the receiver is still an honest NUMBER, not a materialized object, so
+// `instanceof`/enumeration/spread see no new shape (the block below this one
+// pins instanceof staying false). A user's own `throw <sameCodeValue>` decodes
+// identically — err-codes.js's own header names this a known, accepted
+// imprecision (an internal code and a user int are bit-identical, same
+// caveat instanceof's own P0-2 fix already documents; pinned below too).
+test('errors: internal coded throw binds catch(e) to the raw code — .message/.name decode via Slice C', () => {
   const j = (code) => jz(code).exports.f()
   is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e } }`), 300, 'e is the raw $__jz_err code (JSON_PARSE_SYNTAX)')
-  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e.message === undefined ? 1 : 0 } }`), 1, '.message on a number receiver reads undefined, same as today\'s "number.length" gap — no crash')
+  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e.message } }`), 'Unexpected token in JSON', '.message decodes to err-codes.js ERR_INFO[300].message')
+  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e.name } }`), 'SyntaxError', '.name decodes to ERR_INFO[300].name')
+  is(j(`export let f = () => { try { let a = [1]; a.with(5, 2); return 0 } catch (e) { return e.message + '|' + e.name } }`), 'Invalid index|RangeError', 'a different code family (Array#with OOB, RangeError-class) decodes independently')
+  is(j(`export let f = () => { try { JSON.parse('x'); return 0 } catch (e) { return e.foo === undefined ? 1 : 0 } }`), 1, 'a property name other than message/name still reads undefined, same as today\'s "number.length" gap — no crash')
+  is(j(`export let f = () => { try { throw 300 } catch (e) { return e.message } }`), 'Unexpected token in JSON', 'accepted divergence: a user-thrown number that collides with a real internal code decodes the same way (no tag distinguishes them, same caveat as instanceof\'s P0-2 fix)')
 })
 
 // ============================================================================
@@ -1066,8 +1081,12 @@ test('instanceof: Error family — tag+schema compare, class hierarchy (both mod
 // The range arm is deleted; internal-code catches are honestly
 // `instanceof`-false for every Error class now — pinned below, both modes.
 // Recovering `instanceof` for a caught internal code needs a materialized
-// Error object at the catch site (.work/todo.md §deletion-sweep §7 Slice C,
-// deliberately deferred, not landed here).
+// Error object at the catch site — a heavier, still-unbuilt mechanism,
+// DISTINCT from the §5 code→message table (Slice C, landed above): Slice C
+// only teaches .message/.name to read real text off the raw code, it does
+// not change the receiver's tag/shape, so instanceof (a tag+schema-id
+// compare, src/compile/emit.js's emitErrorInstanceof) still sees a plain
+// NUMBER and stays honestly false here, unaffected by Slice C landing.
 test('instanceof: internal coded throws are NOT instanceof any Error class (audit-#8 P0-2, both modes)', () => {
   // repro 2, exact form: an arbitrary caller-supplied number that happens to
   // land in SyntaxError's internal range must NOT be instanceof SyntaxError.
@@ -1076,7 +1095,7 @@ test('instanceof: internal coded throws are NOT instanceof any Error class (audi
   is(jz(`export let f = (x) => x instanceof SyntaxError`, { strict: true }).exports.f(300), false, 'audit-#8 repro 2 strict: f(300) instanceof SyntaxError')
   // the user-thrown-number collision, pinned directly on a `throw`
   isBoth(`export let f = () => { try { throw 300 } catch (e) { return e instanceof SyntaxError } }`, false, 'throw 300 caught — NOT instanceof SyntaxError (user number, not the compiler)')
-  isBoth(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof SyntaxError } return false }`, false, 'JSON.parse internal SyntaxError code — instanceof SyntaxError is false (range arm deleted, Slice C not built)')
+  isBoth(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof SyntaxError } return false }`, false, 'JSON.parse internal SyntaxError code — instanceof SyntaxError is false (range arm deleted; unaffected by the .message/.name Slice C decode above)')
   isBoth(`export let f = () => { try { JSON.parse('x') } catch (e) { return e instanceof Error } return false }`, false, 'JSON.parse internal SyntaxError code — instanceof Error is false too (same reason)')
   isBoth(`export let f = () => { try { let a = [1]; a.with(5, 2) } catch (e) { return e instanceof RangeError } return false }`, false, 'Array#with OOB internal RangeError code — instanceof RangeError is false')
 })

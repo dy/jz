@@ -2375,12 +2375,28 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     return ['call', '$__ptr_type', cloneIR(receiver)]
   }
 
+  // Slice C of the error-object model (.work/todo.md): a .message/.name read
+  // whose receiver's kind isn't proven reaches the dynamic dispatch below,
+  // which is also the ONLY place a real-number receiver (a catch(e)-bound
+  // internal $__jz_err code, never boxed into an Error object) can decode its
+  // class's message/name text (module/collection.js's __err_prop, gated on
+  // this inc()). Own-memory builds only: __err_prop bakes its message/name
+  // table via ctx.core.emit['str'] at stdlib-pull time, after shared memory's
+  // __start byte-copy length is already fixed (see __err_prop's own comment).
+  // Conservative per the design's own scope: fires on the PROP NAME alone,
+  // not on proof the receiver could be one of jz's ~48 internal codes — same
+  // granularity src/autoload.js's includeForProperty already uses program-
+  // wide, so an ordinary object's own .message/.name field costs nothing
+  // extra (the table itself is reachability-pruned when never referenced).
+  const maybeIncErrProp = (prop) => { if ((prop === 'message' || prop === 'name') && !ctx.memory.shared) inc('__err_prop') }
+
   function emitDynGetExprTyped(base, key, vt, prop) {
     const receiver = asI64(base?.type ? base : typed(base, 'f64'))
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access.
     if (typeof prop === 'string') {
       inc('__dyn_get_expr_t_h')
+      maybeIncErrProp(prop)
       const call = ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
       // Schema-set devirt marker — same contract as emitDynGetAnyTyped below
       // (identical 4-arg layout); without it the wasi host (linkDemand.external
@@ -2403,6 +2419,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
     if (typeof prop === 'string') {
       inc('__dyn_get_any_t_h')
+      maybeIncErrProp(prop)
       const call = ['call', '$__dyn_get_any_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
       // Schema-set devirt marker: the optimizer (devirtSchemaReads) rewrites this
       // megamorphic probe into a br_table over the module's registered schemas —
