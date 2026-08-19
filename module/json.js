@@ -449,6 +449,11 @@ export default (ctx) => {
     ;; OBJECT — schema-based: iterate props with schema name table
     (if (i32.eq (local.get $type) (i32.const ${PTR.OBJECT}))
       (then (call $__json_obj (local.get $val)) (return)))
+    ;; BIGINT: JSON.stringify throws per spec. The compile-time emitter already
+    ;; throws for statically-proven BigInt; this arm covers the dynamic case, a
+    ;; tagged box reaching the runtime walker from a kind-merge in any position.
+    (if (i32.eq (local.get $type) (i32.const ${PTR.BIGINT}))
+      (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.JSON_BIGINT}))) (throw $__jz_err (f64.const ${ERR.JSON_BIGINT}))))
     ;; Unknown type → null
     (call $__jput (i32.const 110)) (call $__jput (i32.const 117))
     (call $__jput (i32.const 108)) (call $__jput (i32.const 108)))`

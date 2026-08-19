@@ -11596,3 +11596,12 @@ slice 4d's key-representation consistency analysis.
 makes O2/O3 return proper `true` for bigint-featured programs while O0
 stays 1 — normalize the boundary bool decode for collection probes in a
 dedicated pass (valResult BOOL for has/delete + boundary atom decode).
+
+## BANKED (2026-08-19): in-wasm catch of builtin errors — property access OOBs
+`try { JSON.parse("{bad") } catch (e) { e.message }` → memory access out of
+bounds at every level (pre-existing; reproduced without any new code). The
+catch binds the raw f64 error-code sentinel; any property access on it
+faults. The host boundary decodes codes to real Error classes (2a973082's
+error-model work) but the IN-WASM catch path has no decode — e.message/
+e.name inside wasm need a registry-backed arm (or a boxed error object at
+throw time). Found while adding the JSON.stringify dynamic-BigInt throw.

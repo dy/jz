@@ -1790,3 +1790,28 @@ test('RepresentationPlan: array mutators preserve dynamic BigInt values', () => 
     }
   }
 })
+
+test('RepresentationPlan: JSON.stringify throws on dynamic BigInt in every position', () => {
+  const src = `
+    export let bare = flag => { try { return JSON.stringify(flag ? 5n : 2) } catch (e) { return "threw" } }
+    export let inObj = flag => { try { return JSON.stringify({v: flag ? 5n : 2}) } catch (e) { return "threw" } }
+    export let inArr = flag => { try { return JSON.stringify([flag ? 5n : 2]) } catch (e) { return "threw" } }
+    export let nested = flag => { try { return JSON.stringify({a: [1, {b: flag ? 5n : 2}]}) } catch (e) { return "threw" } }
+    export let uncaught = () => JSON.stringify(9n)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.bare(0), '2', `O${optimize || 0}: bare Number serializes`)
+    is(e.bare(1), 'threw', `O${optimize || 0}: bare BigInt throws`)
+    is(e.inObj(0), '{"v":2}', `O${optimize || 0}: object Number serializes`)
+    is(e.inObj(1), 'threw', `O${optimize || 0}: object BigInt throws`)
+    is(e.inArr(1), 'threw', `O${optimize || 0}: array BigInt throws`)
+    is(e.nested(0), '{"a":[1,{"b":2}]}', `O${optimize || 0}: nested Number serializes`)
+    is(e.nested(1), 'threw', `O${optimize || 0}: nested BigInt throws`)
+    // host boundary decodes the code to the real TypeError class + message
+    let caught = null
+    try { e.uncaught() } catch (err) { caught = err }
+    ok(caught instanceof TypeError, `O${optimize || 0}: host boundary TypeError`)
+    ok(String(caught.message).includes('BigInt'), `O${optimize || 0}: host boundary message`)
+  }
+})
