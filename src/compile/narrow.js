@@ -879,6 +879,52 @@ function passthroughPtrParam(func) {
     p.ptrKind && exprs.every(e => passesParamThrough(e, p.name, idx, func.name))) || null
 }
 
+/** A function whose every return is a plain call `callee(...)` INTO another,
+ *  already pointer-ABI-narrowed function (own-param passthrough one call-hop
+ *  removed — `mk = () => { let x = new Map(); return pick(x) }`, `pick`'s
+ *  OWN param already narrowed to VAL.MAP by passthroughPtrParam above). The
+ *  result IS the callee's pointer, so mk's sig must inherit its ptrKind (+
+ *  ptrAux) exactly like the param case.
+ *
+ *  This is NOT a redundant restatement of the `func.valResult`-driven arm
+ *  below: narrowSignatures' earlier E-phase sweep (src/compile/plan/index.js
+ *  runs narrowI32Results there, before this function's own first call)
+ *  classifies a call tail purely by the callee's WASM-level result TYPE
+ *  ('i32' vs 'f64') — it has no notion of ptrKind, so once a param
+ *  passthrough like `pick` narrows to i32 for genuinely being a pointer,
+ *  any CALLER whose return is `pick(x)` reads that i32 as an ordinary
+ *  number on the very same fixpoint sweep and
+ *  (finding valResult still unset) commits `valResult = VAL.NUMBER` — wrong,
+ *  and load-bearing-wrong: the `func.valResult`-driven arm below requires
+ *  `sig.results[0] === 'f64'`, a precondition narrowI32Results has already
+ *  destroyed by the time THIS function gets a chance to run, so the mistake
+ *  is never revisited. `passthroughPtrParam` above survives the identical
+ *  race only because its branch has no such precondition — it overwrites
+ *  unconditionally. This does the same, one call-hop out: found live via an
+ *  O0 `let m = mk(); m.set(k, v); m.has(k)` receiver laundered through a
+ *  `mk`/`pick` pair — the miss was `m`'s NaN-boxed pointer bits getting
+ *  numerically converted (f64.convert_i32_s) instead of reboxed at the
+ *  `.set`/`.has` call sites, corrupting the Map identity into an ordinary
+ *  finite double every key silently missed against.
+ *
+ *  Returns the callee's `sig` (ptrKind/.ptrAux already resolved), else null. */
+function passthroughPtrCall(func) {
+  const body = func.body
+  if (isBlockBody(body) && (!alwaysReturns(body) || hasBareReturn(body))) return null
+  const exprs = returnExprs(body)
+  if (!exprs.length) return null
+  let calleeSig = null
+  for (const e of exprs) {
+    if (!Array.isArray(e) || e[0] !== '()' || typeof e[1] !== 'string' || e[1] === func.name) return null
+    const callee = ctx.funcs.map?.get(e[1])
+    const sig = callee?.sig
+    if (sig?.ptrKind == null) return null
+    if (calleeSig == null) calleeSig = sig
+    else if (calleeSig.ptrKind !== sig.ptrKind || calleeSig.ptrAux !== sig.ptrAux) return null
+  }
+  return calleeSig
+}
+
 function narrowPointerResults(funcs, paramReps) {
   let changed = true
   while (changed) {
@@ -911,6 +957,20 @@ function narrowPointerResults(funcs, paramReps) {
             changed = true
             continue
           }
+        }
+        // Call pass-through (passthroughPtrCall's own doc comment): every return is a
+        // call straight into an already ptrKind-narrowed function. Same unconditional
+        // overwrite as the param case just above, for the same reason (survives
+        // narrowI32Results' earlier wrong NUMBER guess, which the func.valResult arm
+        // below cannot — its `sig.results[0] === 'f64'` precondition is already gone).
+        const cp = passthroughPtrCall(func)
+        if (cp) {
+          func.sig.results = ['i32']
+          func.sig.ptrKind = cp.ptrKind
+          func.valResult = cp.ptrKind
+          if (cp.ptrAux != null) func.sig.ptrAux = cp.ptrAux
+          changed = true
+          continue
         }
       }
       if (!func.valResult) continue

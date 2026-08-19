@@ -853,6 +853,38 @@ test('Map: set returns same pointer (alias-safe)', () => {
   is(f(), 100)  // m2 sees the set
 })
 
+test('Map/Set: receiver laundered through an identity call keeps its pointer identity (O0 regression)', () => {
+  // .work/todo.md "O0 unproven-receiver Map/Set total miss": at optimize:false, a Map/Set
+  // handle returned from `mk()` — where `mk` itself just forwards `new Map()` through a
+  // generic identity function `pick(v) => v` — total-missed every .has()/.get() at the O0
+  // call site. Root cause: narrowSignatures' E-phase numeric-result narrowing
+  // (narrowI32Results) classifies a call tail purely by the callee's WASM-level i32/f64
+  // result type, with no notion of ptrKind; once `pick`'s own-param passthrough narrows to
+  // i32 for genuinely being a pointer, `mk`'s `return pick(x)` tail reads that i32 as an
+  // ordinary number on the SAME fixpoint sweep and (finding valResult unset) wrongly
+  // commits `valResult = VAL.NUMBER` before narrowPointerResults' call-passthrough case
+  // ever gets a chance to prove otherwise. The caller then reboxed `m` via a numeric
+  // f64.convert_i32_s widen instead of NaN-tag-fusing it back into a pointer — an ordinary
+  // finite double no longer recognized as a Map/Set by __ptr_type, so every .has()/.get()
+  // silently missed. O2/O3 never hit this: inlining collapses mk/pick away entirely, so the
+  // receiver is directly provable as `new Map()`/`new Set()` at the call site.
+  const src = `
+    export let mapProbe = () => { let m = mk(); m.set(5, 7); return m.has(5) ? m.get(5) : -1 }
+    export let setProbe = () => { let s = mk2(); s.add('x'); return s.has('x') ? 1 : 0 }
+    export let chained = () => { let m = mk3(); m.set(1, 2); return m.has(1) ? 1 : 0 }
+    let mk = () => { let x = new Map(); return pick(x) }
+    let mk2 = () => { let x = new Set(); return pick(x) }
+    let mk3 = () => mk()
+    let pick = (v) => v
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.mapProbe(), 7, `O${optimize || 0}: Map receiver laundered through pick() keeps identity`)
+    is(e.setProbe(), 1, `O${optimize || 0}: Set receiver laundered through pick() keeps identity`)
+    is(e.chained(), 1, `O${optimize || 0}: two-hop call chain (mk3 -> mk -> pick) keeps identity`)
+  }
+})
+
 test('self-compile compact collections: entry hash replaces the redundant probe lane', () => {
   // `_compactCollections` is an artifact-build option, not a user-facing output
   // mode. The kernel target cannot forward it through the wasm ABI; that leg is
