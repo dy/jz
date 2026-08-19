@@ -22607,3 +22607,27 @@ on bucket collision (correctness stays exact; the stringify and its
 half-gigabyte of transient text die). Gates: dedup groups byte-identical
 (output WAT unchanged), suite, then goal-gate rerun — expect ~810 MB
 reclaimed, unlocking Window B measurement or completion.
+
+## §Live miscompile: loop-carried boxed-bigint local written raw (2026-08-19)
+
+Found building the watr-provability slice's repro. Default mode, all levels:
+`let f = (n) => { let acc = 0; while (n > 127n) { acc += Number(n & 127n);
+n = n >> 7n } return acc + Number(n) }; f(BigInt("300"))` returns 0
+(expected 46); with an array push in the loop it OOBs — this IS watr's
+uleb/limits break shape from the dc6139d9 post-mortem, reproduced minimal.
+
+WAT-level mechanism (dumped, O0): param n's rep is BOXED (call-site coerceArg
+boxes BigInt()'s return), so every READ derefs — i64.load(__ptr_offset(n)) —
+but the loop REASSIGNMENT stores the shift result RAW:
+local.set $n (f64.reinterpret_i64 <raw shr result>). After iteration 1 the
+local holds raw payload bits that the next read derefs as a pointer →
+garbage compare → loop exits early → Number(n) derefs garbage → 0/OOB.
+Read/write representation disagreement on a loop-carried local.
+
+FIX SEAM: plain-name assignment where the target is isProvenBoxedBigint
+(reads deref) and the RHS is a raw bigint-op result must REBOX (boxBigInt)
+— the write-side mirror of ir.js:825's read-side handling. Under the
+retirement's end state this local would be proven raw end-to-end and the
+box disappears; today the invariant must hold. The provability slice then
+makes exactly these chains raw (BigInt() ctor ingress + loop-carried
+bigint-op closure + return chains, fixpointed like passthroughPtrCall).
