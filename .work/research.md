@@ -22330,3 +22330,24 @@ New lever order for the 100-200 MB bar: (1) initial-commitment sizing
 (small initial + on-demand growth — the 362 MB lever); (2) memo-lane
 right-sizing (~10-20 MB); (3) emission rounds re-land (for jz×jz scale);
 (4) growth-policy granularity if doubling overshoots the bar.
+
+## §Footprint levers verified — three-tier picture established (2026-08-18)
+
+de0c9c75 battery: all correctness gates green (SHA ×2 both modes, oracle
+30/30, parity 3/3); watr/jzify complete again post-revert. Committed
+footprints: jessie 536.9→**432.00 MB** (−19.5%), watr 1073.7→**972.00**
+(−9.5%), jzify 2147.5→**1458.00** (−32.1%). Wall-time neutral (jessie
+2042-2059 ms ×3). Goal gate byte-identical to 69c8baad (trap in
+optimizeModule at 4 GiB, emitfuncCalls 2234) — levers touch commitment
+granularity only, as designed.
+
+**Jessie three-tier**: live floor **149.94 MB** < true inter-round peak
+**251.74 MB** (round 3: 142.72 live + ~109 churn) < committed **432.00 MB**.
+The 100-200 MB bar needs, in order: (a) churn reduction in the round-3
+window (early-plan/narrowSignatures span churns ~109 MB between exits —
+finer round placement there, or the churn sources themselves); (b) lane
+ceiling tightening (committed 432 vs peak 252 — the scratch lane's
+survivorMargin (churn/2) positions the reservation ceiling well above
+heap peak; sizing it from the memo hint alone could drop a growth tier);
+(c) the jz×jz optimizeModule blowup remains its own campaign (assembly-
+stage churn, the reverted emission-rounds' target — re-land bisected).
