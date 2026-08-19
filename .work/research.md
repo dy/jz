@@ -22421,3 +22421,26 @@ rebasing over concurrent region work.
 **Status:** covered array-literal tagged storage writes are consumable. Other
 storage producers/readers, captured cells, closure results, and remaining
 consumers are not; FeaturePlan remains blocked.
+
+## §Slice 4f design note — object/SRoA storage needs census-plan lock-step (2026-08-19)
+
+4d (70b0dccc) and 4e (8b419c33) applied the plan decision to Map/Set and
+array-mutator value slots mechanically. Object schema slots are DIFFERENT:
+writes already branch on ctx.schema.slotBigintBoxedBySid (box iff
+bigintObserved AND schemaShadowed) and reads pair with
+slotBigintProvenBySid (unconditional unbox ONLY when the slot census is
+uniformly BIGINT) — a STATIC pairing whose own doc forbids runtime tag
+guards (raw bigint bits can coincide with the PTR.BIGINT box pattern).
+A per-site plan override on the write side would break the read proof.
+
+4f's correct shape, in order: (1) NO-OP REFACTOR first — route the
+schema-slot write branch through a plan query that returns exactly the
+census-equivalent action (byte-identity gated), landing the seam;
+(2) STRENGTHEN second — teach the plan to derive slot actions from the
+census lattice plus whole-program provenance, updating BOTH sides
+(slotBigintBoxedBySid consumers AND slotBigintProvenBySid consumers) in
+one slice with differential tests for mixed-kind slots (a slot holding
+5n in one instance and 5 in another must never unconditionally unbox).
+Sites: module/object.js 183/237/1039/1078, emit-assign.js
+402/427/506/598/619/662/852/902/932/959 (several are dyn-key/captured-cell
+territory — later slices; classify each during (1)).
