@@ -132,9 +132,9 @@ Options:
 
 <table>
 <tr>
-<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b>: swept-frequency nodal figures.</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/dwa/"><img src="examples/thumbs/dwa.webp" width="100%" alt="Dynamic Window Approach"></a><br><b>dwa</b>: local robot motion planning.</td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/hydrogen/"><img src="examples/thumbs/hydrogen.webp" width="100%" alt="Hydrogen orbital"></a><br><b>hydrogen</b>: electron probability clouds.</td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b></td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/dwa/"><img src="examples/thumbs/dwa.webp" width="100%" alt="Dynamic Window Approach"></a><br><b>robot motion</b></td>
+<td width="33%"><a href="https://dy.github.io/jz/examples/hydrogen/"><img src="examples/thumbs/hydrogen.webp" width="100%" alt="Hydrogen orbital"></a><br><b>hydrogen</b></td>
 </tr>
 </table>
 
@@ -514,4 +514,6 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 
 </details>
 
-[MIT](LICENSE). [ॐ](https://github.com/krishnized/license/)
+<p align="center">
+  <a href="LICENSE">MIT</a>, <a href="https://github.com/krishnized/license/">ॐ</a>
+</p>
