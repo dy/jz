@@ -26,7 +26,6 @@ import {
   freshId,
 } from '../ir.js'
 import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
-import { representationSchemaSlotBoxed } from './representation-plan.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -504,7 +503,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
     // objects of a structInline-eligible schema are independent and can
     // coexist). No-op under CARRIER_BOX=off (byte-identical either way).
     ...fields.map((v, i) => ['local.set', `$${vTs[i]}`, packed ? asI32(emit(v))
-      : (representationSchemaSlotBoxed(ctx, sid, schema[i]) ? storedValue : storedValueNarrow)(v)]),
+      : (ctx.schema.slotBigintBoxedBySid?.(sid, schema[i]) ? storedValue : storedValueNarrow)(v)]),
     ['local.set', `$${cT}`, cellIdx],
     ['local.set', `$${bT}`, alias
       ? ['i32.sub', ['local.get', `$${alias}`], ['i32.shl', ['local.get', `$${cT}`], ['i32.const', 3]]]
@@ -899,7 +898,7 @@ export function emitPropertyAssign(obj, prop, val) {
         // untouched, still governs the __dyn_set mirror install below.
         // No-op under CARRIER_BOX=off (storedValue/storedValueNarrow are
         // byte-identical then).
-        const boxed = representationSchemaSlotBoxed(ctx, vaProbe.ptrAux, prop)
+        const boxed = ctx.schema.slotBigintBoxedBySid?.(vaProbe.ptrAux, prop)
         return withTemp(boxed ? storedValue(val) : storedValueNarrow(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), si, ['local.get', `$${t}`]),
           ...(shadow ? [['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', asF64(emit(obj))], asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]] : []),
@@ -929,7 +928,7 @@ export function emitPropertyAssign(obj, prop, val) {
       // binding) — fall back to the raw per-site `shadow` exactly there,
       // the pre-fix behavior, rather than guessing a sid to query.
       const sid = ctx.schema.idOf(obj)
-      const boxed = sid != null ? representationSchemaSlotBoxed(ctx, sid, prop) : shadow
+      const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : shadow
       const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
       if (shadow) inc('__dyn_set')
       const stmts = [

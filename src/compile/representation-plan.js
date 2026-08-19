@@ -1241,16 +1241,6 @@ export function representationActiveMaterializedRep(ctx, name) {
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
 }
 
-/** Slice 4f phase 1 (no-op seam, .work/research.md §Slice 4f design note):
- *  the plan-side query for one SCHEMA-SLOT write's box decision. Returns
- *  exactly the census verdict (ctx.schema.slotBigintBoxedBySid) — the write
- *  side of a STATIC write/read pairing whose read side
- *  (slotBigintProvenBySid) must agree; phase 2 strengthens BOTH sides from
- *  whole-program provenance in one slice, never this query alone. */
-export function representationSchemaSlotBoxed(ctx, sid, prop) {
-  return !!ctx.schema.slotBigintBoxedBySid?.(sid, prop)
-}
-
 /** Frozen action for one ordinary tagged storage/value slot. */
 export function representationStorageWriteAction(ctx, source) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_REJECT
