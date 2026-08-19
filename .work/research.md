@@ -22483,3 +22483,21 @@ shadow/box interaction, not root-caused. Kept as evidence: per-slot
 box/raw proving is genuinely hard even with the census in hand, which
 WEIGHS FOR the retirement (delete the box) over perfecting the plan.
 Branch never lands; delete with the retirement's step-4 sweep.
+
+## §Region-live regression: culprit 0465a37e (4f-1 seam), REVERTED (2026-08-19)
+
+Bisection (independent agent, binary order over the four slice commits):
+4c/4d/4e all PASS region-live; **0465a37e (the 4f phase-1 schema-slot
+seam) is the exact culprit** — jessie OOBs at the untouched 64 MB floor,
+bigint-free input passes on the same kernel (clean bigint discrimination).
+Mechanism hypothesis (banked, not root-caused): the write-side seam
+indirection shifted a boxing-decision consistency window that
+__region_copy_rec's runtime-bits-only OBJECT walk (no static schema-boxing
+metadata) is sensitive to — "raw bigint bits can coincide with a
+PTR.BIGINT NaN-box pattern" per the code's own hazard note. DECISION:
+reverted (c3c16c5d), not debugged — the seam existed solely for the plan
+payload being retired (compat-handoff ratified same day); debugging a
+doomed indirection has negative value. GATE LESSON (process, permanent):
+every future slice touching storage representation gates on a REGION-LIVE
+jessie smoke in addition to dormant/native byte-identity — dormant gates
+provably cannot see this class.
