@@ -22631,3 +22631,20 @@ retirement's end state this local would be proven raw end-to-end and the
 box disappears; today the invariant must hold. The provability slice then
 makes exactly these chains raw (BigInt() ctor ingress + loop-carried
 bigint-op closure + return chains, fixpointed like passthroughPtrCall).
+
+## §Miscompile refined: the val-merge/boxed-verdict asymmetry IS the target (2026-08-19)
+
+bigintBoxedVerdict (narrow.js ~2670): a param settles bigintBoxed=true when
+ANY call site proves a BIGINT arg — but ONLY IF the stricter val merge above
+did NOT settle r.val=VAL.BIGINT (which returns false → raw, correct). In
+the uleb repro, inferValAtSite proves BigInt("300") is BIGINT for the boxed
+scan, yet the val merge does NOT settle VAL.BIGINT for the same single call
+site — this asymmetry creates the boxed param, whose reassignment then
+breaks the durable-box contract (the raw write under boxed reads). FIX
+TARGET: make the val merge settle VAL.BIGINT where the boxed scan already
+proves it (starting with BigInt() ctor args) — then the param runs raw
+end-to-end: miscompile gone AND provability gained in one move; the boxed
+arm simply stops firing for these chains (retirement-aligned, no new box
+arms). Find "the hard val merge above" in narrow.js and align its arg-kind
+acceptance with inferValAtSite's BIGINT proof; gate with the uleb repro
+(expect 46 / 44002), test/watr.js 35/35, full suite, npm run build.
