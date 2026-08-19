@@ -496,6 +496,20 @@ export function hoistConstGlobalInits(sec) {
  * the elem table to the canonical name. Closure bodies often share shape because
  * the same inner arrow can be instantiated in many places (e.g. parser combinators).
  */
+// Module-scope helpers for dedupClosureBodies below — deliberately NOT
+// function-scoped consts captured by the nested walk closures: a function-
+// scoped binding captured 2-3 arrow levels deep tripped a latent self-compile
+// closure-capture defect (reference emitted without declaration,
+// 'SENTINELf..._N is not in scope'; banked in .work/todo.md 2026-08-19).
+// Module-scope bindings never enter the capture machinery.
+const dedupIsSentinel = (v) => v === undefined || v === null ||
+  (typeof v === 'number' && !Number.isFinite(v))
+const mix = (h, x) => Math.imul(h ^ x, 0x01000193) | 0
+const mixStr = (h, str) => {
+  for (let i = 0; i < str.length; i++) h = mix(h, str.charCodeAt(i))
+  return h
+}
+
 export function dedupClosureBodies(closureFuncs, sec) {
   if (closureFuncs.length <= 1) return
   // Rename-invariant rolling hash + exact compare on hash collision.
@@ -509,9 +523,6 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // NaN and +/-Infinity all serialized to the same JSON token 'null', so they
   // form ONE equivalence class in both the hash and the comparator below --
   // collapsing them differently would split/merge groups and change output.
-  const SENTINEL = -2  // hash tag for the JSON-null equivalence class
-  const isSentinel = (v) => v === undefined || v === null ||
-    (typeof v === 'number' && !Number.isFinite(v))
   const localNamesOf = (fn) => {
     const names = new Set()
     const collect = (node) => {
@@ -522,11 +533,6 @@ export function dedupClosureBodies(closureFuncs, sec) {
     }
     collect(fn)
     return names
-  }
-  const mix = (h, x) => Math.imul(h ^ x, 0x01000193) | 0
-  const mixStr = (h, str) => {
-    for (let i = 0; i < str.length; i++) h = mix(h, str.charCodeAt(i))
-    return h
   }
   const hashOf = (fn, locals) => {
     let counter = 0
@@ -540,7 +546,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
         }
         return mixStr(mix(h, 7), node)
       }
-      if (isSentinel(node)) return mix(h, SENTINEL)
+      if (dedupIsSentinel(node)) return mix(h, -2)
       if (typeof node === 'number') return mixStr(mix(h, 11), String(node))
       if (typeof node === 'boolean') return mix(mix(h, 29), node ? 1 : 0)
       if (!Array.isArray(node)) return mixStr(mix(h, 17), String(node))
@@ -576,7 +582,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
         for (let i = 0; i < a.length; i++) if (!eq(a[i], b[i])) return false
         return true
       }
-      if (isSentinel(a) || isSentinel(b)) return isSentinel(a) && isSentinel(b)
+      if (dedupIsSentinel(a) || dedupIsSentinel(b)) return dedupIsSentinel(a) && dedupIsSentinel(b)
       return a === b
     }
     for (let i = 2; i < fa.length; i++) if (!eq(fa[i], fb[i])) return false

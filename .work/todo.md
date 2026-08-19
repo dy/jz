@@ -11605,3 +11605,15 @@ faults. The host boundary decodes codes to real Error classes (2a973082's
 error-model work) but the IN-WASM catch path has no decode — e.message/
 e.name inside wasm need a registry-backed arm (or a boxed error object at
 throw time). Found while adding the JSON.stringify dynamic-BigInt throw.
+
+## BANKED (2026-08-19): self-compile closure-capture defect — deep-captured const loses declaration
+A function-scoped `const` captured by closures nested 2-3 arrow levels deep
+(dedupClosureBodies' SENTINEL/isSentinel/mix shape, pre-hoist a6220d95)
+self-compiles to a mangled local reference (`$SENTINELf4585_2`) with NO
+declaration — watr rejects "Unknown local"; jz surfaces "is not in scope".
+General (dormant AND region-live). Worked around by hoisting the helpers to
+module scope (assemble.js); the ENGINE defect (closure-plan capture loss at
+depth) needs a minimal repro + fix as its own slice. GATE LESSON: changes to
+self-graph source files (src/**, module/**) gate on `npm run build` (full
+self-compile), not suite alone — the suite's differential snippets cannot
+see self-compile-only codegen breaks.
