@@ -72,30 +72,18 @@ export function resolveSelfCompileBuild({
 } = {}) {
   const graph = resolveModuleGraph(SELF_ENTRY, { resolveNode: true })
 
-  // ── CARRIER_BOX self-compile build-time injection (.work/carrier-representation-
-  // design.md §32 — the item-8/rawField() root cause; §34 flipped the default
-  // ON). src/ctx.js declares `CARRIER_BOX = typeof process === 'undefined' ||
-  // process.env?.JZ_CARRIER_BOX !== '0'` — a native-process host-capability
-  // probe, correct when ctx.js runs NATIVELY. But when ctx.js's OWN SOURCE is
-  // what's being self-compiled (compiled BY jz, below), jz's compiler —
-  // CORRECTLY, per spec §13.5.3 (prepare/index.js staticTypeofString/
-  // isUnresolvableBareIdent) — folds `typeof process` to the literal
-  // 'undefined' for ANY compile, because `process` is never declared anywhere
-  // in jz's own source or its GLOBALS table. That permanently folds
-  // CARRIER_BOX to `true` inside ANY self-compiled kernel regardless of the flag
-  // THIS build runs under (the OR's left arm always wins once `typeof
-  // process` is a literal 'undefined'): the running kernel's own compiled
-  // decisions (module/schema.js slotBigintBoxedBySid, src/ir.js
-  // isSchemaSlotBigintPossible, etc.) can never observe a live env var — wasm
-  // has no `process`. Bake THIS BUILD's actual flag value in as a source-text
-  // literal before compiling, the standard technique for a build-time
-  // constant that must survive into a self-compiled artifact (webpack
-  // DefinePlugin / rustc cfg! precedent). Native runs (`node index.js`, every
-  // test/*.js) read the real declaration, untouched.
   const CTX_PATH = Object.keys(graph.modules).find(p => p.endsWith('/src/ctx.js'))
   if (!CTX_PATH) throw new Error('resolveSelfCompileBuild: src/ctx.js not found in self.js module graph — DBG_INVARIANTS injection site missing')
 
-  // ── DBG_INVARIANTS injection — same host/runtime split as CARRIER_BOX.
+  // ── DBG_INVARIANTS injection — a build-time constant baked in as a
+  // source-text literal (webpack DefinePlugin / rustc cfg! precedent).
+  // Why injection instead of the env probe: ctx.js's declaration guards on
+  // `typeof process`, which jz — CORRECTLY, per spec §13.5.3 (prepare/index.js
+  // staticTypeofString/isUnresolvableBareIdent) — folds to the literal
+  // 'undefined' for ANY self-compile (`process` is never declared in jz's own
+  // source or GLOBALS), so a self-compiled kernel could never observe a live
+  // env var — wasm has no `process`. Native runs (`node index.js`, every
+  // test/*.js) read the real declaration, untouched.
   // Always inject the literal, including false: leaving the process.env probe in
   // a production self-compile graph keeps every debug-only branch and helper body
   // reachable because the cross-module value is not folded early enough.
