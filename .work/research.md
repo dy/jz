@@ -22586,3 +22586,24 @@ identity spot check (`bitwise`, `biquad`, `conv2d`, O0+O3, base = this same
 worktree with only `static.js` stashed back to main tip) — 6/6 identical, as
 expected: none of the three route an out-of-i32-range literal through
 `constIntExpr`.
+
+## §Attribution verdict: dedupClosureBodies stringify churn = Window A (2026-08-19)
+
+Healthy-kernel attribution (2360 sites, 810.76 MB / 99.2% of the
+buildStartFn-entry→trap window): the construct is dedupClosureBodies
+(src/wat/assemble.js:499) — canonicalize() JSON.stringifies EVERY closure's
+full WAT S-expression tree as a transient Map key ($__jput 182.5 MB,
+closure-walk 122.3 MB, str_concat_raw 87.8, mkstr 64.8, ftoa 63.0,
+IR-node allocs 86.9, hash/map inserts 61.9 ... ≈90-95% of the window), all
+discarded after comparison, all unreclaimed (no region round in the span).
+NOT bigint machinery — the retirement does not shrink this. Trap point
+moved earlier post-revert (3279.09 at buildStartFn-entry → 4096 inside it);
+Window B (pullStdlib +927 MB) unmeasured until this blocker falls.
+
+FIX (point, algorithmic, mine): rename-invariant rolling structural hash
+computed during the canonicalization walk (i32 imul mixing — subset-safe,
+no strings), bucket by hash, exact rename-aware tree-equality compare only
+on bucket collision (correctness stays exact; the stringify and its
+half-gigabyte of transient text die). Gates: dedup groups byte-identical
+(output WAT unchanged), suite, then goal-gate rerun — expect ~810 MB
+reclaimed, unlocking Window B measurement or completion.
