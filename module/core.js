@@ -95,7 +95,7 @@ export default (ctx) => {
     // — __ptr_offset used to be pulled in only via the dyn_props-gated
     // branch below, which would have silently under-declared it for a build
     // with no __dyn_props global anywhere.
-    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__ptr_offset',
+    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__memgrow_exact', '__ptr_offset',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
     // longer gated on __dyn_props — a bare PTR.HASH region-root value
@@ -497,6 +497,36 @@ export default (ctx) => {
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
             (then (unreachable)))))))
+    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
+    (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
+
+  // Exact-fit grow — no geometric floor (.work/research.md §Footprint levers —
+  // geometric-floor tier boundary): used ONLY by __region_exit's own scratch-lane
+  // reservation below, never by ordinary __alloc/string bump-extend growth (which
+  // keep calling plain $__memgrow, unchanged, so their amortization is untouched).
+  // $__memgrow's geometric floor amortizes MANY small, UNPLANNED grow calls (a hot
+  // bump allocator that can't see its own future demand — jessie's own 1.1M-entry
+  // __alloc traffic is the case it's sized for). __region_exit's reservation is the
+  // opposite shape: ONE grow call per real-compaction round, to a ceiling the
+  // caller has ALREADY computed exactly (scratchBase + memoReserve, both derived
+  // from measured churn/hint, not guessed) — ordinary geometric over-provisioning
+  // buys nothing there, because the very next __region_exit call resets and
+  // re-reserves the lane from scratch (see that function's own "Explicit reset"
+  // comment) — slack left by rounding THIS call up is never spent by a later one.
+  // Worse: wasm memory never shrinks, so an over-grow here becomes the new floor
+  // for EVERY later grow (both ordinary __alloc traffic and the next round's own
+  // reservation) — a geometric floor at this one call site compounds across the
+  // whole compile's round sequence, not just within it. Call COUNT here is already
+  // bounded by round count (tens, not the millions __alloc sees), so dropping the
+  // floor doesn't turn O(log n) grows into O(n) anywhere — it only shrinks each of
+  // this call site's already-few grows to the caller's own known-final size.
+  ctx.core.stdlib['__memgrow_exact'] = `(func $__memgrow_exact (param $next i32)
+    (local $need i32)
+    (local.set $need (i32.wrap_i64 (i64.shr_u (i64.add (i64.extend_i32_u (local.get $next)) (i64.const 65535)) (i64.const 16))))
+    (if (i32.gt_u (local.get $need) (memory.size))
+      (then
+        (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
+        (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1)) (then (unreachable)))))
     (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
@@ -1228,16 +1258,22 @@ export default (ctx) => {
         (then (local.set $memoReserve64 (i64.const 262144))))
       (local.set $neededCeil64 (i64.add (local.get $scratchBase64) (local.get $memoReserve64)))
       ;; Ceiling guard: if reserving would need memory at or past the true
-      ;; wasm32 4 GiB limit, don't even try — __memgrow itself traps
+      ;; wasm32 4 GiB limit, don't even try — __memgrow_exact itself traps
       ;; (unreachable) rather than failing gracefully past that point, and a
       ;; compile already this close to the ceiling gets zero benefit from a
       ;; scratch lane anyway. $__scratch_base stays 0 (its own init value) —
       ;; __region_memo_get/__region_memo_set fall straight through to the
       ;; unmodified, pre-fix behavior for this ONE call, never worse than
       ;; before this fix landed.
+      ;; __memgrow_exact, not __memgrow (.work/research.md §Footprint levers —
+      ;; geometric-floor tier boundary): neededCeil64 IS the caller's own
+      ;; final, precisely-computed ceiling — growing to it exactly (page-
+      ;; rounded) instead of $__memgrow's amortization-for-unplanned-callers
+      ;; floor is what closes the committed-vs-need gap (see __memgrow_exact's
+      ;; own header comment above for why this call site is the right one).
       (if (i64.lt_u (local.get $neededCeil64) (i64.const 4294967296))
         (then
-          (call $__memgrow (i32.wrap_i64 (local.get $neededCeil64)))
+          (call $__memgrow_exact (i32.wrap_i64 (local.get $neededCeil64)))
           (global.set $__scratch_base (i32.wrap_i64 (local.get $scratchBase64)))
           (global.set $__scratch_heap (i32.wrap_i64 (local.get $scratchBase64)))
           (global.set $__scratch_end (i32.wrap_i64 (local.get $neededCeil64)))
