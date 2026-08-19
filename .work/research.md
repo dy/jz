@@ -22501,3 +22501,35 @@ doomed indirection has negative value. GATE LESSON (process, permanent):
 every future slice touching storage representation gates on a REGION-LIVE
 jessie smoke in addition to dormant/native byte-identity — dormant gates
 provably cannot see this class.
+
+## §Phase C anchor: watr-provability slice brief (2026-08-19)
+
+Ratified order (compat-handoff): watr-provability FIRST, then slice-0
+finish, then strict flip, then the ~1450-line deletion. Read + banked:
+dc6139d9 post-mortem (todo.md:10044-10097) and retirement-design §5.
+
+THE MECHANISM TO BUILD: internal/transient BigInt flows (arithmetic
+results, bare returns, params fed from BigInt(str) — values that never
+cross a storage sink) currently stay RAW with only the magnitude heuristic
+guarding their kind at $__to_num/TYPEOF.bigint. The retirement needs these
+flows PROVEN instead. watr's known break shape: encode.js uleb()'s 64-bit
+branch does Number(n & 0x7Fn) on an internal AND-result; compile.js
+limits() feeds BigInt(str) into it. The needed inference is cross-function
+BIGINT-kind propagation for exactly the passthrough/return/param chains —
+the SAME class as today's passthroughPtrCall fix (ce079059) which is the
+model implementation: unconditional kind inheritance through call chains,
+converging in narrowPointerResults' fixpoint. A bigint sibling
+(passthroughBigintCall / param ingress from BigInt() ctor returns / binary-
+op closure over proven-bigint operands) should make watr's 4 sites +
+i64Hex's param provable raw.
+
+VERIFY-FIRST STEP (blocked right now): JZ_DBG_BIGINT_STATS=1 enumeration
+of current boxed sites on the self-graph fails with "cur.charCodeAt is not
+a function" — the USER's uncommitted parse.js dual-mode WIP is mid-tree;
+re-run the enumeration after their dirty set commits, THEN design against
+the real current list (may have drifted from §5's 11→5).
+
+Gates for the slice: stats enumeration shows watr's sites raw; test/watr.js
+35/35 incl. the memory64-limits regression pin; full suite; self-build SHA
+x2; region-live jessie smoke (the permanent new gate); byte-identity census
+where claimed no-op.
