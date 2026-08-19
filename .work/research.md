@@ -22444,3 +22444,30 @@ one slice with differential tests for mixed-kind slots (a slot holding
 Sites: module/object.js 183/237/1039/1078, emit-assign.js
 402/427/506/598/619/662/852/902/932/959 (several are dyn-key/captured-cell
 territory — later slices; classify each during (1)).
+
+## §4f phase 2 design anchor (2026-08-19)
+
+Study results for the both-sides strengthening. Census side: schema slot
+facts live in ctx.schema.slotFacts (factAt(sid, idx) → {kind, bigintObserved,
+objSid, typedCtor}); the write decision (slotBigintBoxedBySid) = bigintObserved
+AND schemaShadowed(sid); the read proof (slotBigintProvenBySid) additionally
+requires factAt.kind === VAL.BIGINT (the clash-poisoned lattice — uniform
+writes only). Plan side: representationSchemaSlotBoxed (4f-1 seam, delegates
+verbatim); the plan's own storage rep vocabulary is packRep BOXED_BIGINT /
+RAW_BIGINT / ANY_BIGINT with edgeAction() computing transforms.
+
+Phase-2 shape: (a) plan ingests per-slot facts during solveBigintProvenance
+(one new fact family: schemaSlotReps keyed (sid,prop) — derived from
+factAt.kind × bigintObserved × whole-program write provenance the solver
+already tracks for locals/params); (b) representationSchemaSlotBoxed answers
+from schemaSlotReps when the record is CLOSED, falling back to the census
+verdict when open (soundness: plan may only STRENGTHEN box→box-with-known-
+payload-rep or prove uniformly-raw where census said box — never weaken the
+read proof; any (sid,prop) with a single non-BIGINT-proven write stays on
+census); (c) reader side moves in the same commit: slotBigintProvenBySid
+consumers (module/core.js emitSchemaSlotRead sites) consult the same
+schemaSlotReps record so unbox decisions stay paired; (d) differential
+tests: mixed-kind slot (5n one instance / 5 another — must never
+unconditionally unbox), uniform-bigint slot (may unbox), shadowed dyn-write
+slot (stays boxed), cross-function write provenance (writer in another
+function). Gates: byte-identity on non-bigint corpus + suite + kernel legs.
