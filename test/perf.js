@@ -1505,11 +1505,7 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   // withRawCarrier for the full rationale; same escape hatch, scoped to
   // this one synchronous jz() call so it can't race a concurrently-running
   // test expecting the default CARRIER_BOX=1 diagnostic to fire.
-  const prevCarrierBox = process.env.JZ_CARRIER_BOX
-  process.env.JZ_CARRIER_BOX = '0'
-  let jzWatr
-  try { jzWatr = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' }) }
-  finally { if (prevCarrierBox === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prevCarrierBox }
+  const jzWatr = jz(watrJs, { jzify: true, modules: ENTRY, memory: 4096, optimize: 'speed' })
   const { exports: { compile: jzCompile } } = jzWatr
   const { default: jsCompile } = await import('../node_modules/watr/src/compile.js')
 

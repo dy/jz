@@ -17,21 +17,11 @@ const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, impo
 // F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
 // unreachable from this repo to fix. This file compiles watr's REAL bundled
 // source through jz (not a self-compiled kernel — a native, in-process
-// compile, same mechanism), so it hits those same sites. Main-stabilization
-// interim flip (2026-08-14, src/ir.js's bigintStrict() doc comment): boxing
-// (CARRIER_BOX, frozen at process start) is the default for an unprovable
-// BigInt flow again, the Slice 1 diagnostic now opt-in via
-// JZ_BIGINT_STRICT=1 — so `withRawCarrier` no longer changes what these
-// compiles do (CARRIER_BOX can't be toggled mid-process anyway; see ir.js).
-// Left in place as a harmless no-op rather than stripped, since a future
-// inference session closing the residual sites (design §5) may want the
-// opt-in strict check re-exercised here without re-deriving this rationale.
-const withRawCarrier = (fn) => {
-  const prev = process.env.JZ_CARRIER_BOX
-  process.env.JZ_CARRIER_BOX = '0'
-  try { return fn() }
-  finally { if (prev === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prev }
-}
+// compile, same mechanism), so it hits those same sites. The boxed carrier is
+// the unconditional representation (the CARRIER_BOX flag and its env toggle
+// were deleted); a caller wanting the strict raw-i64 diagnostic uses
+// JZ_BIGINT_STRICT=1 (ir.js bigintStrict()).
+const withRawCarrier = (fn) => fn()
 
 const ENTRY_MODULES = {
   './src/compile.js': watrSrc('compile.js'),

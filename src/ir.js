@@ -22,7 +22,7 @@ import { ERR } from '../err-codes.js'
  * @module ir
  */
 
-import { ctx, err, inc, PTR, LAYOUT, CARRIER_BOX } from './ctx.js'
+import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { declareLocal, freshEmitId } from './compile/active-function.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
@@ -418,35 +418,22 @@ export const fromI64 = n => {
   return typed(['f64.reinterpret_i64', n], 'f64')
 }
 
-// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
-// representation-design.md §7, default flipped ON at §34) — every consumer
-// below is gated behind JZ_CARRIER_BOX/CARRIER_BOX (`JZ_CARRIER_BOX=0` opts
-// back out to the legacy raw carrier). PTR.BIGINT (layout.js,
-// tag 5) is the heap-boxed representation round-3/4's `bigintBoxed` solver
-// fact (reps.js) names: an 8-byte cell holding the raw i64 payload,
-// NaN-boxed the same way every other heap kind (STRING/OBJECT/…) already is.
-
-// Main-stabilization interim flip (2026-08-14, .work/bigint-retirement-
-// design.md §9's own "any input program legitimately reaching boxing must
-// keep compiling by DEFAULT" requirement): Slice 1 originally made the
-// diagnostic below fire BY DEFAULT, opting back out to the legacy box via
-// `JZ_CARRIER_BOX=0`. That broke plain `npm test`/`scripts/build-dist.mjs`
-// out of the box — Slice 0 left 5 sites banked unresolved (1 jz-source
-// site, layout.js's i64Hex `bits` param; 4 in the external `watr` npm
-// dependency; a 6th found live in `subscript`'s number.js BigInt literal
-// parser, pulled in by jessie) that the self-host kernel build and any
-// native compile of watr's/subscript's bundled source hit under the
-// default profile, with no env var set. Inverted: boxing (CARRIER_BOX,
-// frozen import above — unchanged, still the pre-Slice-1 mechanism) stays
-// the default consequence for an unprovable BigInt flow; the diagnostic is
-// now the OPT-IN, live-read via `JZ_BIGINT_STRICT=1` — a caller wanting
-// Slice 1's fail-fast behavior (e.g. a future inference session verifying
-// the residual sites are gone) sets it around exactly the compile() call
-// that needs it, same scoping discipline test/watr.js's withRawCarrier
-// already established for CARRIER_BOX itself. End state (Slices 2-5, once
-// an inference pass proves every residual site raw) flips this default and
-// deletes the box arm entirely — this is the documented interim, not the
-// design's final semantics.
+// === BigInt carrier boxing (.work/carrier-representation-design.md) —
+// PTR.BIGINT (layout.js, tag 5) is THE representation for an unprovable
+// BigInt flow: an 8-byte cell holding the raw i64 payload, NaN-boxed the
+// same way every other heap kind (STRING/OBJECT/…) is. Boxing is
+// unconditional (the CARRIER_BOX flag and its JZ_CARRIER_BOX toggle were
+// deleted once the boxed arm became the ratified default — genuine
+// Number|BigInt unions in real programs make it the lawful semantics, not
+// an interim). INVARIANT: any change here must keep "any input program
+// legitimately reaching boxing compiles by DEFAULT" (5 banked unprovable
+// sites: layout.js's i64Hex bits param, 4 in the watr npm dependency, plus
+// subscript's BigInt literal parser via jessie).
+//
+// The fail-fast diagnostic below is OPT-IN, live-read via
+// `JZ_BIGINT_STRICT=1` — for an inference session verifying residual
+// unprovable sites are gone; scope it around exactly the compile() call
+// that needs it.
 export const bigintStrict = () => typeof process !== 'undefined' && process.env?.JZ_BIGINT_STRICT === '1'
 
 /** BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§9): the
@@ -495,7 +482,7 @@ export function unboxBigInt(f64expr) {
 
 /** Apply one frozen RepresentationPlan edge action to a definite BigInt. */
 export function applyBigintRepresentationAction(ir, node, action) {
-  if (!CARRIER_BOX || valTypeOf(node) !== VAL.BIGINT) return ir
+  if (valTypeOf(node) !== VAL.BIGINT) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(unboxBigInt(asF64(ir)))
   return ir
@@ -550,7 +537,7 @@ export function maybeUnboxBigInt(f64expr) {
  *  live differential against the unfixed baseline before landing this
  *  narrower, readI64-scoped version instead). */
 export const isSchemaSlotBigintPossible = (node) =>
-  CARRIER_BOX && Array.isArray(node) && node[0] === '.' &&
+  Array.isArray(node) && node[0] === '.' &&
   typeof node[1] === 'string' && typeof node[2] === 'string' &&
   ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true &&
   ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
@@ -684,7 +671,7 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
  *  last — after the two proven, static, zero-runtime-cost predicates — so
  *  a name that's ALSO a boxed param never pays the extra tag check its own
  *  static proof already made unnecessary. */
-export const isPlanTaggedBigint = node => CARRIER_BOX &&
+export const isPlanTaggedBigint = node =>
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
 
 export function readI64(node, emitted) {
@@ -694,7 +681,7 @@ export function readI64(node, emitted) {
   // every other CARRIER_BOX consumer), never the strict-mode diagnostic
   // toggle, which only decides refuse-vs-box at the WRITE site and never
   // reaches this read at all when it fires (the compile already aborted).
-  if (CARRIER_BOX &&
+  if (
       ((typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))) ||
        isPlanTaggedBigint(node)))
     return unboxBigInt(emitted)
@@ -782,7 +769,7 @@ export function carrierF64(node, emitted, kind = 'collection') {
   // defaults to 'collection' (the overwhelming majority of this
   // chokepoint's callers); callers with a more specific flow-class name
   // (return) pass it explicitly.
-  if (CARRIER_BOX && needsBigintBox(node)) {
+  if (needsBigintBox(node)) {
     if (bigintStrict()) bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
     return boxBigInt(asI64(emitted))
   }
@@ -839,7 +826,7 @@ export function carrierF64(node, emitted, kind = 'collection') {
  *  reader the unconditional fallback assumes. */
 export function carrierF64Narrow(node, emitted, kind = 'collection') {
   if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
-  if (CARRIER_BOX && typeof node === 'string' && isProvenBoxedBigint(node)) {
+  if (typeof node === 'string' && isProvenBoxedBigint(node)) {
     if (bigintStrict()) bigintEraseErr(kind, node)
     return boxBigInt(asI64(emitted))
   }

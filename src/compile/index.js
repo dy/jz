@@ -28,7 +28,7 @@ import { dataAlign, dataPush, dataLen, dataString, strPoolLen, strPoolString } f
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants, CARRIER_BOX } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
@@ -1844,17 +1844,15 @@ function synthesizeBoundaryWrappers() {
       // (ir.js) verbatim but against a manually-declared, collision-checked
       // local — the same collision-avoidance discipline the multi-value
       // `__mlaneN` lanes just above already use for the identical reason.
-      if (CARRIER_BOX) {
-        const pnames = new Set(sig.params.map((p) => p.name))
-        let bl = '__expbig0'
-        while (pnames.has(bl)) bl = `_${bl}`
-        wrapNode.push(['local', `$${bl}`, 'f64'])
-        inc('__ptr_type')
-        body = typed(['if', ['result', 'i64'],
-          ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${bl}`, callIR]]], ['i32.const', PTR.BIGINT]],
-          ['then', unboxBigInt(['local.get', `$${bl}`])],
-          ['else', ['i64.reinterpret_f64', ['local.get', `$${bl}`]]]], 'i64')
-      } else body = toI64(callIR)
+      const pnames = new Set(sig.params.map((p) => p.name))
+      let bl = '__expbig0'
+      while (pnames.has(bl)) bl = `_${bl}`
+      wrapNode.push(['local', `$${bl}`, 'f64'])
+      inc('__ptr_type')
+      body = typed(['if', ['result', 'i64'],
+        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${bl}`, callIR]]], ['i32.const', PTR.BIGINT]],
+        ['then', unboxBigInt(['local.get', `$${bl}`])],
+        ['else', ['i64.reinterpret_f64', ['local.get', `$${bl}`]]]], 'i64')
     } else if (resultBigint || resultDynamic) {
       // BigInt rides the i64-reinterpret-f64 carrier internally; a dynamic result is already
       // an f64 NaN-box carrier. Either way expose the raw i64 at the JS boundary for a

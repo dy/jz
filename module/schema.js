@@ -11,7 +11,7 @@ import { typed, asF64 } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
-import { err, inc, CARRIER_BOX } from '../src/ctx.js'
+import { err, inc } from '../src/ctx.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 /** Initialize schema helpers on ctx. Called once per compilation from core module. */
@@ -494,7 +494,7 @@ export function initSchema(ctx) {
    *  storedValueNarrow is unaffected (byte-identical either way when the
    *  flag is off — both degrade to the same asF64/boolBoxIR fallback). */
   ctx.schema.slotBigintBoxedBySid = (sid, prop) => {
-    if (!CARRIER_BOX || sid == null) return false
+    if (sid == null) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     if (!factAt(sid, idx)?.bigintObserved) return false
@@ -523,7 +523,7 @@ export function initSchema(ctx) {
    *  $__eq) already handle PTR.BIGINT per Slice 3. Consumed by
    *  emitSchemaSlotRead's call sites (module/core.js). */
   ctx.schema.slotBigintProvenBySid = (sid, prop) => {
-    if (!CARRIER_BOX || sid == null || slotHazarded(sid, prop, true)) return false
+    if (sid == null || slotHazarded(sid, prop, true)) return false
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     return factAt(sid, idx)?.kind === VAL.BIGINT && ctx.schema.slotBigintBoxedBySid(sid, prop)

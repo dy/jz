@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, CARRIER_BOX, setLinkDemand, getFactStore } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, setLinkDemand, getFactStore } from '../ctx.js'
 import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
@@ -1481,7 +1481,7 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   // instead of ambiguous raw bits. Only fires when THIS call's argument is
   // itself BIGINT-kinded; a non-bigint argument at the same position needs no
   // change (param.bigintBoxed says nothing about what THIS site passes).
-  if (CARRIER_BOX && node !== undefined && valTypeOf(node) === VAL.BIGINT) {
+  if (node !== undefined && valTypeOf(node) === VAL.BIGINT) {
     // Is `node` a bare name whose CURRENT storage already IS a real box?
     // Two durable sources, both for the WHOLE current function per their own
     // doc comments (ir.js): isCurrentlyBoxedBigint (the current function's
@@ -2227,7 +2227,7 @@ export function emitDecl(...inits) {
     // tier, which passes.js's own exit grep asserts never writes durable
     // analysis state; a per-function transient Set is the established
     // pattern here (maybeNullish/closureAux, same file, same shape).
-    if (CARRIER_BOX && !viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
+    if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
@@ -4752,7 +4752,7 @@ function bigIntJointDispatch(a, b, i64Compute, numCompute) {
   // sourced — `asI64` stays correct, unchanged, for both. Reached only when
   // flagA===flagB picked the BigInt arm, so a 'census' operand here is
   // provably present (not the UNDEF_NAN sentinel) — safe to dereference.
-  const i64Operand = (dom, get) => CARRIER_BOX && dom === 'census' ? maybeUnboxBigInt(get) : asI64(typed(get, 'f64'))
+  const i64Operand = (dom, get) => dom === 'census' ? maybeUnboxBigInt(get) : asI64(typed(get, 'f64'))
   const bigResult = fromI64(i64Compute(i64Operand(domA, getA), i64Operand(domB, getB)))
   // Number-domain operand normalization: a `census` operand only ever reaches
   // numCompute when its OWN flag proved it undef (the flagA===flagB join
@@ -4837,7 +4837,7 @@ function bigIntOperand(node) {
   // `maybeUnboxBigInt` (CONSERVATIVE PAIRING, §16/§24/§29) dereferences a
   // genuine box and passes anything else through unchanged; off-flag this
   // is byte-identical to the prior plain reinterpret.
-  const bits = CARRIER_BOX ? maybeUnboxBigInt(['local.get', `$${t}`]) : ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+  const bits = maybeUnboxBigInt(['local.get', `$${t}`])
   return typed(['block', ['result', 'i64'],
     ['local.set', `$${t}`, asF64(v)],
     ['if', isUndef(['local.get', `$${t}`]),
@@ -4882,7 +4882,7 @@ function bigIntUnary(node, mkI64, undefF64) {
   // ATOM tag never matches PTR.BIGINT, so it falls to the same plain
   // reinterpret this select arm always ran, and its result is discarded
   // regardless). Off-flag: byte-identical to the prior plain reinterpret.
-  const bits = CARRIER_BOX ? maybeUnboxBigInt(['local.get', `$${t}`]) : ['i64.reinterpret_f64', ['local.get', `$${t}`]]
+  const bits = maybeUnboxBigInt(['local.get', `$${t}`])
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${t}`, asF64(emit(node))],
     ['select', undefF64, ['f64.reinterpret_i64', mkI64(bits)],
@@ -5346,7 +5346,7 @@ export const emitter = {
     // the dynamic/tagged result ABI a box is correct for.
     const ir = pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted, 'return'))
-      : (CARRIER_BOX && repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX &&
+      : (repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX &&
          !ctx.func.exported && rt === 'f64' && typeof expr === 'string' && isProvenBoxedBigint(expr))
         ? (bigintStrict() ? bigintEraseErr('return', expr) : boxBigInt(asI64(emitted)))
       : asParamType(emitted, rt)
@@ -6012,7 +6012,7 @@ export const emitter = {
     // storage. Found live: `let [a, b] = [1, c ? BigInt(v) : null]; return c ?
     // b * 2n : -1n` boxed the bigint arm unconditionally, then `b * 2n`'s own
     // raw bigIntOperand arithmetic read the pointer's bits raw.
-    if (CARRIER_BOX && !ctx.func._arrayLiteralNeverEscapes) {
+    if (!ctx.func._arrayLiteralNeverEscapes) {
       const taM = valTypeOf(b), tbM = valTypeOf(c)
       const bigintArm = (taM === VAL.BIGINT && nullishArm(c)) ? 'b'
         : (tbM === VAL.BIGINT && nullishArm(b)) ? 'c' : null

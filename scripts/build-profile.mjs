@@ -2,31 +2,17 @@
 /**
  * resolveSelfCompileBuild — the ONE self-compile build-config resolver shared by
  * scripts/build-dist.mjs and scripts/self-compile-build.mjs (architecture re-audit
- * item 2, .work/todo.md). Before this module, build-dist.mjs alone did the
- * CARRIER_BOX build-time source-literal injection (.work/carrier-representation-
- * design.md §32/§34) and the region-arena × inlinePtrOffsetFast gate
- * (.work/research.md §Region arena) — self-compile-build.mjs did NEITHER, so
- * JZ_CARRIER_BOX=0 silently had no effect on a self-compile-build.mjs kernel (the
- * env var was read at compile() call time, but src/ctx.js's own
- * `typeof process === 'undefined'` fold — see the CARRIER_BOX doc below — means
- * an un-injected self-compiled kernel always freezes CARRIER_BOX to `true`
- * regardless of the flag), and a region-live kernel built via self-compile-build.mjs
- * would carry inlinePtrOffsetFast's region hazard (module/core.js's
- * __region_exit relocation vs. watr's own CSE, same doc below) that build-dist.mjs
- * takes care to gate off. Two builders, two entry points, one config resolver:
- * this function is the only place either literal injection or the region-arena
- * derivation happens.
+ * item 2, .work/todo.md): the only place literal injection (DBG_INVARIANTS) or
+ * the region-arena × inlinePtrOffsetFast derivation happens, so both builders
+ * always agree. (The CARRIER_BOX injection this resolver was born for is gone —
+ * the boxed carrier became the unconditional representation and the flag was
+ * deleted, .work/carrier-representation-design.md §34's own end state.)
  *
  * @param {object} [p]
- * @param {boolean} [p.carrierBox]      Bake CARRIER_BOX as this literal boolean
- *   into the self-compiled src/ctx.js. Default: `process.env.JZ_CARRIER_BOX !== '0'`
- *   (this build process's own env var — matches build-dist.mjs's pre-existing
- *   default and is now ALSO self-compile-build.mjs's default, closing the
- *   inconsistency this item exists to fix).
  * @param {boolean} [p.debugInvariants] Bake DBG_INVARIANTS as this literal into
- *   the self-compiled src/ctx.js (same source-literal-injection mechanism as
- *   carrierBox — a live JZ_DEBUG_INVARIANTS env var cannot be observed by the
- *   running wasm kernel). Default false: debug-only invariant code folds out of
+ *   the self-compiled src/ctx.js (source-literal injection — a live
+ *   JZ_DEBUG_INVARIANTS env var cannot be observed by the running wasm
+ *   kernel). Default false: debug-only invariant code folds out of
  *   production kernels; callers opt in explicitly for an instrumented build.
  * @param {boolean|null} [p.regionArena] Whether scripts/self.js's watrTail
  *   regionHooks are active for THIS build, controlling the inlinePtrOffsetFast
@@ -74,7 +60,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
 
 export function resolveSelfCompileBuild({
-  carrierBox = process.env.JZ_CARRIER_BOX !== '0',
   debugInvariants = false,
   regionArena = null,
   optimize = 3,
@@ -108,11 +93,7 @@ export function resolveSelfCompileBuild({
   // DefinePlugin / rustc cfg! precedent). Native runs (`node index.js`, every
   // test/*.js) read the real declaration, untouched.
   const CTX_PATH = Object.keys(graph.modules).find(p => p.endsWith('/src/ctx.js'))
-  if (!CTX_PATH) throw new Error('resolveSelfCompileBuild: src/ctx.js not found in self.js module graph — CARRIER_BOX injection site missing')
-  const carrierNeedle = "export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'"
-  if (!graph.modules[CTX_PATH].includes(carrierNeedle))
-    throw new Error('resolveSelfCompileBuild: CARRIER_BOX declaration shape changed in src/ctx.js — update this self-compile injection to match')
-  graph.modules[CTX_PATH] = graph.modules[CTX_PATH].replace(carrierNeedle, `export const CARRIER_BOX = ${!!carrierBox}`)
+  if (!CTX_PATH) throw new Error('resolveSelfCompileBuild: src/ctx.js not found in self.js module graph — DBG_INVARIANTS injection site missing')
 
   // ── DBG_INVARIANTS injection — same host/runtime split as CARRIER_BOX.
   // Always inject the literal, including false: leaving the process.env probe in
@@ -190,7 +171,7 @@ export function resolveSelfCompileBuild({
 
   return {
     graph,
-    defines: { CARRIER_BOX: !!carrierBox, DBG_INVARIANTS: !!debugInvariants },
+    defines: { DBG_INVARIANTS: !!debugInvariants },
     regionArenaLive,
     optimize: optimizeCfg,
     optimizerOverrides,

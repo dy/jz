@@ -1056,12 +1056,6 @@ export const optFlagsOf = (cfg) => {
 
 export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 
-// Carrier program (.work/carrier-representation-design.md): the BigInt
-// tagged-pointer box (PTR.BIGINT) is the standard representation, on by
-// default. `JZ_CARRIER_BOX=0` is the escape-hatch opt-OUT back to the legacy
-// raw-i64-in-f64-slot carrier, kept for A/B and as a rollback lever.
-export const CARRIER_BOX = typeof process === 'undefined' || process.env?.JZ_CARRIER_BOX !== '0'
-
 // Session wave W1 (stage 4): the lifecycle table above is an executable,
 // ORDERED contract — each named phase must follow its predecessor within one
 // compile session ('pre-emit', 'post-analyze', 'pre-assemble' are unordered:

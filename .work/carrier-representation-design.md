@@ -6053,3 +6053,15 @@ matches §35's own citation exactly, unrelated to this attempt — the audit-
 #16 fixture's fix was §24 CONSERVATIVE PAIRING, landed before this session);
 `test/data.js` 126/126 both legs (unmodified). No commit made — nothing to
 commit, the tree never left `34b23b07`.
+
+---
+
+## END STATE REACHED (2026-08-19)
+
+The CARRIER_BOX flag is deleted (user-ratified flip-and-delete): boxing is
+the unconditional representation. The env toggle (JZ_CARRIER_BOX), the
+build-time source-literal injection (build-profile.mjs carrierBox), the
+legacy raw arms at every branch site (ir/emit/compile-index/schema), and
+the test-side env guards are all removed. JZ_BIGINT_STRICT=1 remains the
+one documented knob (opt-in fail-fast diagnostic, ir.js bigintStrict()).
+This document is historical from here.

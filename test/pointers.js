@@ -349,10 +349,9 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
 test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16) [RETIRED: layout.js i64Hex\'s residual call-arg ambiguity (Slice 0 banked site) is now a compile-time diagnostic]', () => {
   if (onKernel()) return
-  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
-  // under JZ_CARRIER_BOX=0 this compiles raw (Slice 0's own verified
+  // CARRIER_BOX flag deleted — boxing unconditional (was: §34 flip opt-out guard;
+  // the raw arm no longer exists, so the assertion always applies.
   // finding), nothing left to assert about a boxed payload.
-  if (process.env.JZ_CARRIER_BOX === '0') return
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
   throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
 })
@@ -384,9 +383,7 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // instead. Converted to expect-error.
 test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING) [RETIRED: layout.js\'s residual BigInt ambiguity is now a compile-time diagnostic]', () => {
   if (onKernel()) return
-  // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
-  // under JZ_CARRIER_BOX=0 this compiles raw, nothing left to assert.
-  if (process.env.JZ_CARRIER_BOX === '0') return
+  // CARRIER_BOX flag deleted — boxing unconditional; assertion always applies.
   const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
   throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
 })

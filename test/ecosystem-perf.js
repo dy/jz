@@ -44,12 +44,7 @@ const timeMin = (fn) => {
 // encode.js — see test/watr.js's withRawCarrier for the full rationale).
 // `compile()` is synchronous, so the whole build — and the env-var restore
 // — completes before any other concurrently-running test can observe it.
-const withRawCarrier = (fn) => {
-  const prev = process.env.JZ_CARRIER_BOX
-  process.env.JZ_CARRIER_BOX = '0'
-  try { return fn() }
-  finally { if (prev === undefined) delete process.env.JZ_CARRIER_BOX; else process.env.JZ_CARRIER_BOX = prev }
-}
+const withRawCarrier = (fn) => fn()  // CARRIER_BOX flag deleted — boxing is unconditional; see test/watr.js
 const buildWasm = (driverName, driverSrc) => {
   const dir = mkdtempSync(join(tmpdir(), 'jz-eco-'))
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'))  // bare-specifier resolution

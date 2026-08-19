@@ -697,9 +697,8 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
   for (const opt of [0, 1, 2, 3]) {
     for (const [label, src, want] of [['heap', heapSrc, 'bare-fired'], ['sso', ssoSrc, 'short']]) {
       is(runNative(src, opt).start(), 1, `${label} O${opt}: native runs cleanly`)
-      // §34 flip: CARRIER_BOX default is now ON, opt-out via JZ_CARRIER_BOX=0 —
+      // CARRIER_BOX flag deleted — boxing unconditional; row always runs.
       // kernel leg below is meaningful only when carrier boxing is active.
-      if (process.env.JZ_CARRIER_BOX === '0') continue
       const seen = []
       const origLog = console.log
       console.log = (...a) => seen.push(a)
