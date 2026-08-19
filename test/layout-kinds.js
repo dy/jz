@@ -663,3 +663,32 @@ test('golden: BIGINT arm text is IDENTICAL between eqIdentityChain and sameValue
   ok(bigintPrefixLen > 0)
   is(eqIdentityChain().slice(0, bigintPrefixLen), sameValueZeroIdentityChain().slice(0, bigintPrefixLen))
 })
+
+// ============================================================================
+// Lane-below-survivors invariant (.work/research.md §survivorMargin
+// unsoundness, 2026-08-19): the memo lane sits AT the heap cursor and
+// survivor copies start ABOVE its reserved end. The pre-redesign layout
+// (lane at heap + min(churn/2, 256 MiB), survivors below) corrupted the memo
+// on any round whose survivor ratio exceeded 1/2 — this construction retains
+// essentially ALL of its >16 MiB churn in the root (survivor ratio ≈ 1), the
+// shape that reproduced the emission-rounds phantom-allocation regression.
+// ============================================================================
+
+test('region-relocate[LANE]: high-survivor-ratio round (nearly all churn retained in the root) relocates intact — survivors cannot collide with the memo lane', () => {
+  is(run(`
+    export let f = () => {
+      let mark = __region_mark()
+      let a = new Float64Array(1500000)  // ~12 MiB, retained
+      for (let i = 0; i < 1500000; i += 100000) a[i] = i
+      let b = new Float64Array(1500000)  // ~12 MiB, retained — churn ~24 MiB, survivors ≈ churn
+      for (let i = 0; i < 1500000; i += 100000) b[i] = i * 2
+      let m = new Map()
+      for (let i = 0; i < 30; i++) m.set('k' + i, [i])  // pointer values — deep relocation, memo-exercising
+      let out = __region_exit(mark, [a, b, m])
+      let ok = out[0][100000] === 100000 && out[1][100000] === 200000
+      let sum = 0
+      for (let i = 0; i < 30; i++) sum += out[2].get('k' + i)[0]
+      return ok && out[2].size === 30 && sum === 435
+    }
+  `, { optimize: false }).f(), true)
+})

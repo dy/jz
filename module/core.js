@@ -124,7 +124,7 @@ export default (ctx) => {
     // these two instead of raw __map_get/__map_set — see their own
     // definitions below for why.
     __region_memo_get: ['__map_get'],
-    __region_memo_set: ['__map_set'],
+    __region_memo_set: ['__map_set', '__ptr_offset_fwd'],
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
       '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__region_memo_get', '__region_memo_set', '__set_add', '__coll_order',
       '__len', '__region_relocate_props', '__region_relocate_cell',
@@ -581,6 +581,7 @@ export default (ctx) => {
     // $__closure_env_len already use just below).
     declGlobal('__scratch_base', 'i32', 0)
     declGlobal('__scratch_heap', 'i32', 0)
+    declGlobal('__scratch_end', 'i32', 0)
     declGlobal('__memo_cap_hint', 'i32', 64)
     // See the shared-memory __alloc above for why the unsigned-wraparound guard
     // (`next < ptr`) is needed here too: once memory.size() organically reaches the
@@ -1023,10 +1024,24 @@ export default (ctx) => {
           (local.get $result))))`
 
     ctx.core.stdlib['__region_memo_set'] = `(func $__region_memo_set (param $memo i64) (param $key i64) (param $val i64) (result i64)
-      (local $savedHeap i32) (local $result i64)
+      (local $savedHeap i32) (local $result i64) (local $off i32) (local $growBytes i32)
       (if (result i64) (i32.eqz (global.get $__scratch_base))
         (then (call $__map_set (local.get $memo) (local.get $key) (local.get $val)))
         (else
+          ;; Lane-fit guard (lane-below-survivors layout): the lane is BOUNDED
+          ;; above by the survivor span, so a doubling that would not fit must
+          ;; land on the normal heap instead (bypass the redirect for this ONE
+          ;; call). The grown table is then retained for one round — bounded,
+          ;; rare (the hint sizes the lane for the common case), and strictly
+          ;; better than overrunning into survivor bytes. Growth predicate and
+          ;; sizing mirror genUpsert's own (size*4 >= cap*3 -> newcap = cap*2).
+          (local.set $off (call $__ptr_offset_fwd (i32.wrap_i64 (i64.and (local.get $memo) (i64.const 4294967295)))))
+          (if (i32.ge_s (i32.mul (i32.load (i32.sub (local.get $off) (i32.const 8))) (i32.const 4))
+                        (i32.mul (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 3)))
+            (then
+              (local.set $growBytes (i32.add (i32.mul (i32.mul (i32.load (i32.sub (local.get $off) (i32.const 4))) (i32.const 2)) (i32.const ${MAP_ENTRY + lane})) (i32.const 32)))
+              (if (i32.gt_u (i32.add (global.get $__scratch_heap) (local.get $growBytes)) (global.get $__scratch_end))
+                (then (return (call $__map_set (local.get $memo) (local.get $key) (local.get $val)))))))
           (local.set $savedHeap (global.get $__heap))
           (global.set $__heap (global.get $__scratch_heap))
           (local.set $result (call $__map_set (local.get $memo) (local.get $key) (local.get $val)))
@@ -1149,9 +1164,6 @@ export default (ctx) => {
       ;; ceiling — starting fresh, unused address space needs no margin at
       ;; all, it simply doesn't exist yet until __memgrow commits it below.
       (local.set $churn (i32.sub (global.get $__heap) (local.get $mark)))
-      (local.set $survivorMargin
-        (select (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456)
-          (i32.lt_u (i32.shr_u (local.get $churn) (i32.const 1)) (i32.const 268435456))))
       ;; i64 throughout: the final ceiling reaches into the low billions near
       ;; the wasm32 4 GiB ceiling, well past what i32 arithmetic can hold
       ;; without wrapping (the exact overflow class the frontier trace's own
@@ -1179,7 +1191,28 @@ export default (ctx) => {
       ;; case for small compiles, matching this lever's own established
       ;; "small compiles rarely even reach here" discipline), a genuine
       ;; (correctly-sized) grow only when it doesn't.
-      (local.set $scratchBase64 (i64.add (i64.extend_i32_u (global.get $__heap)) (i64.extend_i32_u (local.get $survivorMargin))))
+      ;; LANE-BELOW-SURVIVORS (2026-08-19, .work/research.md §survivorMargin
+      ;; unsoundness): the lane sits AT the current heap cursor and survivor
+      ;; copies start ABOVE its reserved end — collision is impossible by
+      ;; construction. The previous layout (lane at heap+survivorMargin with
+      ;; margin = min(churn/2, 256 MiB), survivors below) was an unsound
+      ;; heuristic: any round whose survivor ratio exceeds 1/2 of churn
+      ;; overruns the lane (jessie round 3 already overlapped it by ~6 MB and
+      ;; survived only on unused reservation padding; emission-phase rounds,
+      ;; whose survivor ratio approaches 1, corrupt the memo outright — the
+      ;; phantom-multi-GB-allocation regression, ledger §Emission rounds v1).
+      ;; Bonus: neededCeil no longer carries a churn-proportional margin, so
+      ;; committed memory tracks true peak + memo reserve.
+      ;; Disarm the lane BEFORE attempting this round's reservation: if the
+      ;; ceiling guard below declines, a stale $__scratch_base from a PRIOR
+      ;; round would redirect this round's memo into what is now live
+      ;; survivor territory (the prior lane's address range was recycled by
+      ;; the closing memory.copy/rewind) — silent corruption near the 4 GiB
+      ;; ceiling. Zero means "passthrough to the real heap this call".
+      (global.set $__scratch_base (i32.const 0))
+      (global.set $__scratch_heap (i32.const 0))
+      (global.set $__scratch_end (i32.const 0))
+      (local.set $scratchBase64 (i64.and (i64.add (i64.extend_i32_u (global.get $__heap)) (i64.const 7)) (i64.const -8)))
       ;; memoReserve sized from the PRIOR call's own final cap (\`$__memo_cap_hint\`,
       ;; updated at the end of this function below), 2x headroom for this
       ;; round's own growth beyond that hint — under-sizing is never a
@@ -1188,6 +1221,11 @@ export default (ctx) => {
       ;; own normal extension, still safely inside the scratch lane, just
       ;; with one extra real grow call), only a missed-optimization one.
       (local.set $memoReserve64 (i64.mul (i64.extend_i32_u (i32.mul (global.get $__memo_cap_hint) (i32.const 2))) (i64.const ${MAP_ENTRY + lane})))
+      ;; Reservation floor (256 KiB): the hint is 0 on the first round of a
+      ;; fresh instance — a zero-size lane would bypass the redirect entirely
+      ;; and put round 0's whole memo back in the survivor span.
+      (if (i64.lt_u (local.get $memoReserve64) (i64.const 262144))
+        (then (local.set $memoReserve64 (i64.const 262144))))
       (local.set $neededCeil64 (i64.add (local.get $scratchBase64) (local.get $memoReserve64)))
       ;; Ceiling guard: if reserving would need memory at or past the true
       ;; wasm32 4 GiB limit, don't even try — __memgrow itself traps
@@ -1201,7 +1239,11 @@ export default (ctx) => {
         (then
           (call $__memgrow (i32.wrap_i64 (local.get $neededCeil64)))
           (global.set $__scratch_base (i32.wrap_i64 (local.get $scratchBase64)))
-          (global.set $__scratch_heap (i32.wrap_i64 (local.get $scratchBase64)))))
+          (global.set $__scratch_heap (i32.wrap_i64 (local.get $scratchBase64)))
+          (global.set $__scratch_end (i32.wrap_i64 (local.get $neededCeil64)))
+          ;; survivors (and the memo's own tiny cap-8 header, allocated just
+          ;; below at the then-current cursor) start ABOVE the lane
+          (global.set $__heap (i32.wrap_i64 (local.get $neededCeil64)))))
       ;; fresh memo Map (identity: old bits -> new/final bits), same bootstrap __sclone uses
       (local.set $memo (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
         (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane})))))
