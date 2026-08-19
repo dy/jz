@@ -753,9 +753,14 @@ export function reset(proto, globals, bridge) {
   ctx.runtime = {
     atom: null,
     regex: null,
-    data: null,
+    // Static data segment — parts-array accumulator (src/static-data.js owns
+    // the representation; all access goes through its helpers).
+    dataParts: [],
+    dataLen: 0,
     dataDedup: new Map(),  // str → offset (dedup literal bytes in active data segment)
-    strPool: null,         // shared-memory: accumulated raw bytes of string literals (no length prefix)
+    strPoolParts: [],      // shared-memory: accumulated raw bytes of string literals (no length prefix)
+    strPoolLen: 0,
+    strPoolInit: false,    // __strBase declared once on first pooled literal
     strPoolDedup: new Map(),  // str → offset in strPool
     throws: false,
     userThrows: false,  // user wrote `throw`/`try`/`catch`/`finally` — keep runtime declared

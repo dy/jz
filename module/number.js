@@ -13,6 +13,7 @@ import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
+import { dataPush } from '../src/static-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
@@ -868,7 +869,7 @@ export default (ctx) => {
   // 9=ok 10=not-equal 11=timed-out (Atomics.wait results, module/atomics.js)
   const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out'
   ctx.runtime.staticDataLen = staticStr.length
-  ctx.runtime.data = (ctx.runtime.data || '') + staticStr
+  dataPush(staticStr)
 
   // Eisel-Lemire power-of-10 table: 131 entries × 16 bytes = 2096 bytes,
   // staticStr.length = 57, pad 7 → table starts at byte 64 (always constant).

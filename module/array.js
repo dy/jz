@@ -8,7 +8,8 @@
  * @module array
  */
 
-import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, appendStaticSlots, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
+import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
+import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -41,14 +42,15 @@ function allocArray(len, cap) {
  *  for-in / named-prop lookup (which read off-16 as the props-sidecar pointer)
  *  walked garbage → OOB (test262 built-ins/Object/keys sparse-array). */
 export function staticArrayPtr(slots) {
-  if (!ctx.runtime.data) ctx.runtime.data = ''
-  while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-  const headerOff = ctx.runtime.data.length
+  dataAlign(8)
+  const headerOff = dataLen()
   const len = slots.length
   const hdr = new Uint8Array(16); const dv = new DataView(hdr.buffer)
   dv.setInt32(8, len, true); dv.setInt32(12, len, true)  // off-8: len, off-4: cap (props word at 0..7 stays 0)
-  for (let i = 0; i < 16; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
-  appendStaticSlots(slots)
+  let hdrChunk = ''
+  for (let i = 0; i < 16; i++) hdrChunk += String.fromCharCode(hdr[i])
+  dataPush(hdrChunk)
+  pushStaticSlots(slots)
   const ptr = mkPtrIR(PTR.ARRAY, 0, headerOff + 16)
   // Compile-time identity for the static base/len read fold (see the saArr tag in
   // the '[]' handler + optimize's foldStaticConstArrayReads): a const global bound

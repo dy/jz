@@ -1,4 +1,5 @@
 import { OPTF } from '../ctx.js'
+import { dataAlign, dataPush, dataLen, dataString, strPoolLen, strPoolString } from '../static-data.js'
 /**
  * Compile prepared AST to WASM module (S-expression arrays for watr).
  *
@@ -218,14 +219,14 @@ function buildInternTable() {
     slots[i * 2] = h
     slots[i * 2 + 1] = off
   }
-  while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-  const base = ctx.runtime.data.length
+  dataAlign(8)
+  const base = dataLen()
   let s = ''
   for (let i = 0; i < slots.length; i++) {
     const v = slots[i]
     s += String.fromCharCode(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF)
   }
-  ctx.runtime.data += s
+  dataPush(s)
   ctx.runtime.internTable = { base, size }
   declGlobal('__internBase', 'i32', base, { mut: false })
   declGlobal('__internMask', 'i32', mask, { mut: false })
@@ -2737,16 +2738,16 @@ export default function compile(ast, profiler, regionHooks) {
     }
     return esc
   }
-  if (ctx.runtime.data && !ctx.memory.shared)
-    sec.data.push(['data', ['i32.const', 0], '"' + escBytes(ctx.runtime.data) + '"'])
+  if (dataLen() && !ctx.memory.shared)
+    sec.data.push(['data', ['i32.const', 0], '"' + escBytes(dataString()) + '"'])
   // Shared memory: no active segment at 0 (instances would collide) — ship the
   // static region (static strings + lazy conversion tables) as a PASSIVE segment,
   // memory.init it into __alloc'd space at start, and rebase its consumers:
   // $__staticBase for __static_str, plus each surviving table global (their
   // declared inits hold offsets WITHIN the region — see injectTable/strip).
-  else if (ctx.runtime.data && ctx.memory.shared && ctx.scope.globals.has('__staticBase')) {
-    const len = ctx.runtime.data.length
-    sec.data.push(['data', '$__staticData', '"' + escBytes(ctx.runtime.data) + '"'])
+  else if (dataLen() && ctx.memory.shared && ctx.scope.globals.has('__staticBase')) {
+    const len = dataLen()
+    sec.data.push(['data', '$__staticData', '"' + escBytes(dataString()) + '"'])
     const inits = [
       ['global.set', '$__staticBase', ['call', '$__alloc', ['i32.const', len]]],
       ['memory.init', '$__staticData', ['global.get', '$__staticBase'], ['i32.const', 0], ['i32.const', len]],
@@ -2762,8 +2763,8 @@ export default function compile(ast, profiler, regionHooks) {
     startFn.splice(at, 0, ...inits)
   }
   // Passive segment for shared-memory string literals (copied via memory.init at runtime)
-  if (ctx.runtime.strPool)
-    sec.data.push(['data', '$__strPool', '"' + escBytes(ctx.runtime.strPool) + '"'])
+  if (strPoolLen())
+    sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolString()) + '"'])
 
   // Custom section: embed object schemas for JS-side interop.
   // Compact binary format: varint(nSchemas); per schema: varint(nProps); per prop:

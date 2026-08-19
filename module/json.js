@@ -8,7 +8,7 @@
  * @module json
  */
 
-import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, appendStaticSlots, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
+import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
 import { emit, bool, deps, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { T } from '../src/ast.js'

@@ -14,6 +14,7 @@
 
 import parseWat from 'watr/parse'
 import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { dataAlign, dataPush, dataLen, dataString, dataReset, strPoolLen, strPoolString, pushStaticSlots } from '../static-data.js'
 import { assembleView } from '../session-views.js'
 
 // Stdlib WAT templates are fixed text (or feature-keyed text from a factory) —
@@ -51,7 +52,7 @@ import {
   hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
 } from '../optimize/index.js'
 import { emit, emitVoid } from '../compile/emit.js'
-import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64, appendStaticSlots } from '../ir.js'
+import { mkPtrIR, MAX_CLOSURE_ARITY, MEM_OPS, findBodyStart, extractF64Bits, asF64 } from '../ir.js'
 import { staticArrayPtr } from '../../module/array.js'
 import { installHelperCounters, instrumentHelperCounter } from '../helper-counters.js'
 
@@ -296,7 +297,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       staticBits.push(extractF64Bits(staticArrayPtr(bits)))
     }
     if (staticBits) {
-      const tblOff = appendStaticSlots([...staticBits, ...Array(runtimeReserve).fill('0x0000000000000000')])
+      const tblOff = pushStaticSlots([...staticBits, ...Array(runtimeReserve).fill('0x0000000000000000')])
       // The consumers declGlobal '__schema_tbl' lazily at TEMPLATE EXPANSION
       // (pullStdlib) — AFTER this runs. Declare it here so the static offset
       // lands as the initializer instead of silently missing a not-yet-declared
@@ -343,8 +344,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   }
 
   const strPoolInit = []
-  if (ctx.runtime.strPool) {
-    const total = ctx.runtime.strPool.length
+  if (strPoolLen()) {
+    const total = strPoolLen()
     strPoolInit.push(
       ['global.set', '$__strBase', ['call', '$__alloc', ['i32.const', total]]],
       ['memory.init', '$__strPool', ['global.get', '$__strBase'], ['i32.const', 0], ['i32.const', total]],
@@ -738,9 +739,9 @@ export function pullStdlib(sec) {
   //    host marshals across the boundary). A data segment with no memory is invalid wasm,
   //    so memory can't be gated on allocation alone.
   const ALLOC_FUNCS = ['__alloc', '__alloc_hdr', '__alloc_hdr_n']
-  const needsAlloc = !!ctx.runtime.strPool || ALLOC_FUNCS.some(a => reachable.has(a)) ||
+  const needsAlloc = strPoolLen() > 0 || ALLOC_FUNCS.some(a => reachable.has(a)) ||
     // shared memory memory.init's the static region into __alloc'd space at start
-    !!(ctx.memory.shared && ctx.runtime.data)
+    !!(ctx.memory.shared && dataLen() > 0)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
   const hasMemOp = (node) => Array.isArray(node) &&
@@ -753,7 +754,7 @@ export function pullStdlib(sec) {
   // reaches — honour it even for an otherwise-memoryless program.
   const explicitMemory = ctx.memory.pages > 0 || !!ctx.memory.shared
   const needsMemory = needsAlloc || explicitMemory ||
-    (ctx.runtime.data?.length || 0) > (ctx.runtime.staticDataLen || 0) ||
+    dataLen() > (ctx.runtime.staticDataLen || 0) ||
     reachable.has('__ptr_type') ||
     [...reachable].some(n => MEM_OPS.test(realize(n))) ||
     sec.funcs.some(hasMemOp) || sec.start.some(hasMemOp)
@@ -786,15 +787,14 @@ export function pullStdlib(sec) {
     // this via a module with no such dependency (e.g. module/math.js's CR-pow tables, needed
     // by any `**`/Math.pow call, independent of number formatting) can hit pullStdlib with
     // ctx.runtime.data still at its unset default — initialize defensively.
-    ctx.runtime.data ??= ''
-    const start = ctx.runtime.data.length
-    while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
+    const start = dataLen()
+    dataAlign(8)
     // Shared memory: the table lands via memory.init at a runtime base, so the
     // global is MUTABLE and re-pointed at start (compile/index.js); its declared
     // init meanwhile holds the offset WITHIN the static region.
-    declGlobal(global, 'i32', ctx.runtime.data.length, ctx.memory.shared ? undefined : { mut: false })
+    declGlobal(global, 'i32', dataLen(), ctx.memory.shared ? undefined : { mut: false })
     if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
-    ctx.runtime.data += bytes
+    dataPush(bytes)
     ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
     ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, bytes })
     return true
@@ -1033,7 +1033,7 @@ export function pullStdlib(sec) {
     // segment that overflows its own memory. The heap grows past this on demand via
     // __memgrow. (Shared memory loads literals via memory.init into allocated space, so
     // its initial size isn't pinned by the data length.)
-    const dataPages = ctx.memory.shared ? 0 : Math.ceil((ctx.runtime.data?.length || 0) / 65536)
+    const dataPages = ctx.memory.shared ? 0 : Math.ceil(dataLen() / 65536)
     const pages = Math.max(ctx.memory.pages || 1, dataPages)
     const max = ctx.memory.max || 0   // 0 = no maximum (unbounded growth)
     // Truly-shared memory (opts.sharedMemory) declares the `shared` memtype —
@@ -1264,8 +1264,8 @@ export function optimizeModule(sec, profiler) {
   //   for (const s of [...sec.funcs, ...sec.stdlib, ...sec.start]) promoteGlobals(s, globalTypesMap2)
   // }
 
-  const dataLen = ctx.runtime.data?.length || 0
-  if (dataLen > 1024 && !ctx.memory.shared) {
+  const dataBytes = dataLen()
+  if (dataBytes > 1024 && !ctx.memory.shared) {
     // 64-byte heap-base alignment: the compiler's own vectorizer emits v128
     // stream loads/stores, and a heap base that isn't 64-byte aligned makes
     // every such access straddle cache lines on memory-bound kernels — a real,
@@ -1274,7 +1274,7 @@ export function optimizeModule(sec, profiler) {
     // perf immune to prelude size changes — without it every stdlib edit
     // re-rolls the layout lottery.
     // Cost: ≤56 bytes of memory per module, zero code bytes.
-    const heapBase = (dataLen + 63) & ~63
+    const heapBase = (dataBytes + 63) & ~63
     // Non-shared memory always carries a $__heap global — start it past the
     // static data so the bump allocator never overwrites a literal. `__heap_reset`
     // seeds to the same data end (its runtime value is overwritten by `__start`'s
@@ -1336,12 +1336,12 @@ export function stripDeadLazyTables(sec) {
       if (Array.isArray(c) && c[0] === 'i32.const') c[1] = off
     }
   }
-  ctx.runtime.data = ctx.runtime.data.slice(0, spans[0].start)
+  dataReset(dataString().slice(0, spans[0].start))
   for (const s of spans) {
     if (!live.has(s.fn)) { setInit(s.global, 0); continue }
-    while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-    setInit(s.global, ctx.runtime.data.length)
-    ctx.runtime.data += s.bytes
+    dataAlign(8)
+    setInit(s.global, dataLen())
+    dataPush(s.bytes)
   }
   // Shared memory needs the survivor list after this pass — the start-time
   // rebase (compile/index.js) re-points each surviving table global.
@@ -1355,7 +1355,7 @@ export function stripStaticDataPrefix(sec) {
   if (!ctx.runtime.staticDataLen || ctx.core.includes.has('__static_str')) return
   const prefix = ctx.runtime.staticDataLen
   const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
-  const data = ctx.runtime.data || ''
+  const data = dataString()
   const buf = new Uint8Array(data.length)
   for (let i = 0; i < data.length; i++) buf[i] = data.charCodeAt(i)
   const dv = new DataView(buf.buffer)
@@ -1400,7 +1400,7 @@ export function stripStaticDataPrefix(sec) {
     if (s.start >= prefix) s.start -= prefix
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
-  ctx.runtime.data = s
+  dataReset(s)
   if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
     .filter(o => o >= prefix).map(o => o - prefix)
   const shift = (node) => {

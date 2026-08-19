@@ -7,7 +7,8 @@
  * @module object
  */
 
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, appendStaticSlots, slotAddr, elemLoad, elemStore, freshId } from '../src/ir.js'
+import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -196,13 +197,14 @@ export default (ctx) => {
         // per-prop __dyn_set mirror was pure init cost — the block it emitted
         // also made the literal non-const, forcing every ENCLOSING literal
         // (`const A = [{…}, {…}]`) to build at runtime.
-        if (!ctx.runtime.data) ctx.runtime.data = ''
-        while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-        const hdrOff = ctx.runtime.data.length
+        dataAlign(8)
+        const hdrOff = dataLen()
         const hdr = new Uint8Array(16); const hdv = new DataView(hdr.buffer)
         hdv.setInt32(12, ctx.abi.object.ops.allocSlots ? ctx.abi.object.ops.allocSlots(schema.length) : schema.length, true)
-        for (let i = 0; i < 16; i++) ctx.runtime.data += String.fromCharCode(hdr[i])
-        appendStaticSlots(orderedBits)
+        let hdrChunk = ''
+        for (let i = 0; i < 16; i++) hdrChunk += String.fromCharCode(hdr[i])
+        dataPush(hdrChunk)
+        pushStaticSlots(orderedBits)
         return mkPtrIR(PTR.OBJECT, schemaId, hdrOff + 16)
       }
     }

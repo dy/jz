@@ -26,6 +26,7 @@ import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '..
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { dataAlign, dataPush, dataLen, strPoolPush, strPoolLen } from '../src/static-data.js'
 import { ssoBitI64Hex, sliceBitI64Hex, hcacheBitI64Hex, ptrNanHex, STR_INTERN_BIT, STR_HCACHE_BIT } from '../layout.js'
 import { ERR } from '../err-codes.js'
 
@@ -256,11 +257,15 @@ export default (ctx) => {
       const interned = !!ctx.transform.optimize?.internStrings
       const hdr = interned ? 8 : 4
       const aux = interned ? STR_INTERN_BIT : 0
-      if (!ctx.runtime.data) ctx.runtime.data = ''
       const prior = ctx.runtime.dataDedup.get(str)
       if (prior !== undefined) return mkPtrIR(PTR.STRING, aux, prior + hdr)
-      while (ctx.runtime.data.length % 4 !== 0) ctx.runtime.data += '\0'
-      const offset = ctx.runtime.data.length
+      // Build the record in a LOCAL chunk (selfAccum shape — the kernel
+      // bump-extends O(1) per append), then hand ONE chunk to the parts
+      // accumulator. See src/static-data.js's header for why the segment must
+      // never be grown by member-target `+=`.
+      dataAlign(4)
+      const offset = dataLen()
+      let chunk = ''
       if (interned) {
         // byte-FNV + clamp — must equal __str_hash's output exactly (it hashes
         // UTF-8 bytes, then clamps ≤1 → +2 for the empty/tombstone sentinels).
@@ -270,10 +275,11 @@ export default (ctx) => {
         for (let i = 0; i < len; i++) h = Math.imul(h ^ bytes[i], 0x01000193) | 0
         if (h <= 1) h = (h + 2) | 0
         h = h >>> 0
-        ctx.runtime.data += String.fromCharCode(h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF)
+        chunk += String.fromCharCode(h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF, (h >> 24) & 0xFF)
       }
-      ctx.runtime.data += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
-      for (let i = 0; i < len; i++) ctx.runtime.data += String.fromCharCode(bytes[i])
+      chunk += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
+      for (let i = 0; i < len; i++) chunk += String.fromCharCode(bytes[i])
+      dataPush(chunk)
       ctx.runtime.dataDedup.set(str, offset)
       return mkPtrIR(PTR.STRING, aux, offset + hdr)
     }
@@ -281,16 +287,20 @@ export default (ctx) => {
     // length prefixes. At __start, alloc the whole pool once and memory.init it in a single
     // call. Each use site resolves to `strBase + compile-time-offset` — O(1) IR nodes per
     // use, independent of string length AND reused across uses.
-    if (!ctx.runtime.strPool) {
-      ctx.runtime.strPool = ''
+    if (!ctx.runtime.strPoolInit) {
+      ctx.runtime.strPoolInit = true
       declGlobal('__strBase', 'i32')
     }
     let off = ctx.runtime.strPoolDedup.get(str)
     if (off === undefined) {
-      // Pack length header then UTF-8 bytes; offset points PAST the length (at the data).
-      ctx.runtime.strPool += String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF)
-      off = ctx.runtime.strPool.length
-      for (let i = 0; i < len; i++) ctx.runtime.strPool += String.fromCharCode(bytes[i])
+      // Pack length header then UTF-8 bytes; offset points PAST the length (at
+      // the data). Chunk built in a local (selfAccum shape), pushed once — see
+      // src/static-data.js.
+      strPoolPush(String.fromCharCode(len & 0xFF, (len >> 8) & 0xFF, (len >> 16) & 0xFF, (len >> 24) & 0xFF))
+      off = strPoolLen()
+      let chunk = ''
+      for (let i = 0; i < len; i++) chunk += String.fromCharCode(bytes[i])
+      strPoolPush(chunk)
       ctx.runtime.strPoolDedup.set(str, off)
     }
     return mkPtrIR(PTR.STRING, 0, ['i32.add', ['global.get', '$__strBase'], ['i32.const', off]])
