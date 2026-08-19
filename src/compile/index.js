@@ -2539,33 +2539,70 @@ export default function compile(ast, profiler, regionHooks) {
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
   // whole stage (see the memo doc in ast.js).
-  const funcs = timePhase(profiler, 'emitFuncs', () => {
+  // Region rounds through EMISSION (same batching rationale and iterator
+  // discipline as the analyzeFuncs loop above — index-based fresh reads, roots
+  // rebound at every exit, batch size shared with AFE_ROUND_BATCH). Nothing
+  // reclaimed here before 2026-08-18: the whole emission+assembly pipeline ran
+  // hook-free, accumulating every emit temporary from the last AFE exit to the
+  // (never-reached) outer boundary — the residual jz×jz wall once the
+  // per-construct pathologies were fixed (.work/research.md §Parts-fix
+  // verified). The accumulating output array rides in the root bundle; the
+  // isReassigned memo is pointer-keyed off AST nodes, so it is closed before
+  // every exit and reopened after (relocation would strand its keys).
+  let funcs = timePhase(profiler, 'emitFuncs', () => {
+    let out = []
+    let __mark = null
     beginAssignedMemo()
     try {
-      return ctx.funcs.list.map(func =>
-        func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
+      for (let i = 0; i < ctx.funcs.list.length; i++) {
+        if (regionHooks && __mark == null) __mark = regionHooks.mark()
+        const func = ctx.funcs.list[i]
+        out.push(func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
+        const last = i === ctx.funcs.list.length - 1
+        if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || last)) {
+          endAssignedMemo()
+          ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+            regionHooks.exit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+          __mark = null
+          beginAssignedMemo()
+        }
+      }
     } finally { endAssignedMemo() }
+    return out
   })
   funcs.push(...synthesizeBoundaryWrappers())
 
-  const closureFuncs = []
+  let closureFuncs = []
+  // `sec` doesn't exist yet at the first compilePendingClosures() call, but the
+  // buildStartFn callback re-enters it AFTER sec holds every emitted function —
+  // a region exit there must root sec or reclaim the module. Registered once
+  // sec is built; null until then (an inert root).
+  let __secRoot = null
   let compiledBodyCount = 0
   const compilePendingClosures = () => timePhase(profiler, 'emitClosures', () => {
-    const bodies = ctx.closure.bodies || []
     // Emitting a body may discover nested closures. Process stable batches:
     // every body known at batch entry is fully planned before any body in that
     // batch emits; newly discovered bodies become the next batch.
     // NOTE: analyzeClosureBodyForEmit runs OUTSIDE the isReassigned memo window
     // (it may touch analyze-side caches); only the pure emit half is bracketed.
-    while (compiledBodyCount < bodies.length) {
-      const batchEnd = bodies.length
-      for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(bodies[i])
+    // Region round per batch (see the emitFuncs loop above): `ctx.closure.bodies`
+    // is re-read fresh each access (never held across an exit), `funcs`/
+    // `closureFuncs` ride in the root bundle.
+    while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
+      const __mark = regionHooks?.mark()
+      const batchEnd = ctx.closure.bodies.length
+      for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
       beginAssignedMemo()
       try {
         for (let i = compiledBodyCount; i < batchEnd; i++)
-          closureFuncs.push(emitClosureBody(bodies[i], functionPlanOf(ctx, bodies[i])))
+          closureFuncs.push(emitClosureBody(ctx.closure.bodies[i], functionPlanOf(ctx, ctx.closure.bodies[i])))
       } finally { endAssignedMemo() }
       compiledBodyCount = batchEnd
+      if (regionHooks) {
+        ;[ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+          regionHooks.exit(__mark, [ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+        if (__secRoot) sec = __secRoot
+      }
     }
   })
 
@@ -2608,7 +2645,7 @@ export default function compile(ast, profiler, regionHooks) {
   }
 
   // Build module sections — named slots, assembled at the end (no index bookkeeping)
-  const sec = {
+  let sec = {
     extStdlib: [],  // external stdlib (imports that must precede all other imports)
     imports: [...jssImports, ...ctx.module.imports],
     types: [],      // function types for call_indirect
@@ -2653,7 +2690,16 @@ export default function compile(ast, profiler, regionHooks) {
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
+  __secRoot = sec
+  // Stage region round: mark before buildStart (late closure batches + start-
+  // function IR churn), exit after — mirrors the AFE-round shape.
+  const __buildMark = regionHooks?.mark()
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
+  if (regionHooks) {
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(__buildMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+    __secRoot = sec
+  }
 
   // dyn-closure-tables.js: every function AND module init has now emitted, so
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve
@@ -2690,7 +2736,15 @@ export default function compile(ast, profiler, regionHooks) {
   // + deps lambdas).
   assertCtxInvariants('pre-assemble')
 
+  // Stage region round: pullStdlib realizes every stdlib helper's WAT template
+  // (+927 MB churn measured on jz×jz, .work/research.md §Parts-fix verified).
+  const __stdlibMark = regionHooks?.mark()
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
+  if (regionHooks) {
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+      regionHooks.exit(__stdlibMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+    __secRoot = sec
+  }
 
   stripStaticDataPrefix(sec)
 
