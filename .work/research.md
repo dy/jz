@@ -22265,3 +22265,25 @@ accumulating chains — evaluate parts left-to-right, then build the result
 in ONE exact-size allocation (parts-then-join shape), or bump-extend
 sequentially where heap-top invariants can be guaranteed. O(n) total,
 benefits native too.
+
+## §Parts-fix verified at the goal gate — emission COMPLETES; wall now diffuse post-AFE accumulation (2026-08-18)
+
+Goal gate on 69c8baad: **emitFuncs runs to completion — 2234/2234 calls**
+(was: never past #731), largest single-call delta 26.29 MB (was +3.3 GB) —
+the single-construct pathology is GONE (untagged mass 3.2 GB → 431 MB,
+−87%). Three virgin stages executed for the first time in the campaign:
+buildStartFn (3080.15 MB), pullStdlib (4007.35), optimizeModule (4057.73);
+trap now inside/at-tail-of optimizeModule at the same 4 GiB ceiling, wall
+41.2 s. Composition: map_set 91.42% = the region-exit memo (scratch-laned,
+pre-understood; count scales with how much further the compile now runs).
+
+**The remaining shape is structural, not a construct**: the entire
+emission+assembly pipeline (emitFuncs loop +1058.80 MB, loop-end→
+buildStartFn +1210 MB incl. synthesizeBoundaryWrappers/emitClosures,
+pullStdlib +927 MB, optimizeModule +50) has ZERO region hooks — nothing
+reclaims from the last AFE exit to the never-reached outer boundary.
+With per-call spikes eliminated (max 26 MB), batched reclamation inside
+the emitFuncs loop (AFE-round pattern) + stage-boundary rounds
+(post-emitFuncs / post-emitClosures / post-pullStdlib) is now the correct
+and likely FINAL lever. Roots: the accumulating funcs/closureFuncs arrays
++ the standard ctx bundle. Implementation in flight (main session).
