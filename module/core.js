@@ -484,13 +484,22 @@ export default (ctx) => {
       (then
         (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
         (local.set $cur (i32.sub (local.get $need) (memory.size)))            ;; minimum delta
-        ;; Geometric floor: 2x below 2048 pages (128 MiB), 1.5x at or above —
-        ;; amortization stays O(log n) grows while committed memory tracks true
-        ;; demand within ~33% at scale instead of doubling past it (the
-        ;; 100-200 MB-per-package footprint bar, census 2026-08-18).
+        ;; Geometric floor: 2x below 2048 pages (128 MiB), 1.5x to 4096 pages
+        ;; (256 MiB), 1.0625x (1/16) above. Committed memory is a high-water
+        ;; mark (wasm never shrinks), so the LAST floor-driven grow bounds the
+        ;; whole compile's footprint at need x factor — above 256 MiB precision
+        ;; beats amortization (a 1.5x tier committed 432 MB against jessie's
+        ;; measured 274 MB ceiling; a coarse 1.25x tier measured WORSE, 450 MB,
+        ;; because interleaved exact-fit lane grows shift the geometric path).
+        ;; Grow calls stay O(log n) (~45 across 4 GiB at 1/16), and 64-bit
+        ;; engines reserve wasm address space up front, so memory.grow commits
+        ;; pages without copying — the old per-page O(n^2) hazard this floor
+        ;; exists to avoid never involved copy-free growth counts this small.
         (local.set $floor (memory.size))
         (if (i32.ge_u (memory.size) (i32.const 2048))
           (then (local.set $floor (i32.shr_u (memory.size) (i32.const 1)))))
+        (if (i32.ge_u (memory.size) (i32.const 4096))
+          (then (local.set $floor (i32.shr_u (memory.size) (i32.const 4)))))
         (if (i32.lt_u (local.get $cur) (local.get $floor)) (then (local.set $cur (local.get $floor))))  ;; geometric
         (if (i32.gt_u (i32.add (local.get $cur) (memory.size)) (i32.const 65536))
           (then (local.set $cur (i32.sub (i32.const 65536) (memory.size)))))  ;; cap at wasm32 max

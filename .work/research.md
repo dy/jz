@@ -22769,3 +22769,29 @@ bignum.js limb arithmetic ("no BigInt anywhere") precisely to remove this —
 i.e. the strict-default flip is blocked on exactly the ratified execution
 order's step 1, the user's subscript publish + dirty-set commit, and on
 nothing else. No compiler-side work remains for the flip.
+
+## §memgrow third tier — 1/16 above 256 MiB (2026-08-19)
+
+The geometric-floor tier-boundary lever (banked in the lane-redesign
+verdict) is landed, with one measured correction to the banked guess: the
+suggested 1.25x tier made jessie WORSE (450 vs 432 MB) — interleaved
+memgrow_exact lane reservations shift the geometric path, so a coarse
+factor still overshoots a bigger absolute step at a worse base. The landed
+shape is 1.0625x (floor = size>>4) at/above 4096 pages: the last
+floor-driven grow then bounds the whole compile's committed high-water
+mark at ~1.06x true need regardless of path. Grow-call count stays ~45
+across the full 4 GiB range, and 64-bit engines reserve wasm address space
+up front (memory.grow commits without copying), so the old per-page O(n^2)
+copy hazard the 2x floor guards against does not apply at these counts.
+
+Measured (region-live jessie smoke): **432.0 → 380.8 MB** peak committed.
+Residual slack is now ≤6% of true need (~358 MB = live heap + memo-lane
+reserve); further footprint movement is need-side (churn constructs, lane
+sizing), not commit-policy — the policy lever is exhausted. Battery
+expectation for the tip: watr < 972, jzify < 1458 proportionally (forensic
+combined battery to confirm).
+
+Gate ordering lesson (new permanent rule): a module/core.js stdlib change
+must run `npm run build` BEFORE the suite — kernel-parity legs compare
+native output against dist/jz.wasm, so a stale kernel false-fails dict
+parity with exactly the stdlib-body-size delta (seen live: 760 B).
