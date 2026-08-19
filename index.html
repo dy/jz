@@ -1328,7 +1328,7 @@
         <div class="pcol pleft">
           <div class="phead">
             <a class="logo" href="./" aria-label="JZ – home"><img src="jz.svg" width="160" height="160" alt="JZ"><span class="logo-refl" aria-hidden="true"></span></a>
-            <h1>Compile JS <br class="hb">to native speed</h1>
+            <h1>Compile JS as-is <br class="hb">to native speed</h1>
           </div>
           <p class="sub">Plain JS in, tiny WASM out. No rewrite, no runtime, no GC.<br> For DSP, math, visuals and more.</p>
           <button class="install" id="install1" title="click to copy"><span class="dollar">$</span><span class="cmd">npm install jz</span></button>
@@ -1482,6 +1482,15 @@
             <p>JZ leads V8 and AssemblyScript by geomean on the covered corpus and targets near-native speed. The release gate is stricter than an average: JZ must be the fastest WASM on every case. Per-case numbers, missing target coverage, and every measured loss stay visible on the <a href="bench/">bench page</a>; a rival win remains a bug to close, not an exception to hide.</p>
             <a href="bench/" class="bench-svg" id="bench-chart" role="img" aria-label="Geomean speed across the bench corpus – jz vs the wasm field (C, Rust, Go, Zig, MoonBit, AssemblyScript, compiled to WASM and run in V8), V8 itself, and Porffor's native AOT; native C the lone reference, jz = 1.00× baseline"></a>
             <p>If you hit a slow case, <a href="https://github.com/dy/jz/issues/new?title=Slow%20case%3A%20&amp;body=Paste%20the%20slow%20JS%20(or%20a%20%2Frepl%2F%20link)%2C%20which%20engine%20it%20loses%20to%2C%20and%20the%20slowdown%3A%0A%0A" target="_blank" rel="noopener">report it →</a></p>
+          </div>
+        </details>
+
+        <details name="faq">
+          <summary><span class="fq">How can it beat V8?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg></summary>
+          <div class="ans">
+            <p>WASM isn't magically faster – V8 also JIT-compiles hot JS to machine code. But a JIT pays for staying ready for any JS: shape checks, deopt guards, GC pauses in the hot loop. JZ's subset is closed, so it commits ahead of time to what a JIT only gambles on – static layout, monomorphic calls, no GC – and auto-vectorizes loops to SIMD, which V8 doesn't attempt on plain JS.</p>
           </div>
         </details>
 

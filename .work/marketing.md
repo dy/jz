@@ -248,9 +248,11 @@ trust than any win).
 | Fix meta description | credibility bug; first text a skeptic reads | 10 | **done** |
 | Foreground "valid jz is valid JS / no lock-in" + name DSP in sub | #1 objection + makes best persona feel seen | 9 | **done** |
 | FAQ: "Does it fit my build pipeline?" (honest gap) | kills the "toy?" doubt for persona #2 | 6 | **done** |
-| Caption the JS/JZ toggle ("Same source. Flip to compile to WASM.") | turns verified-11.8× proof from decoration to proof | 8 | todo — verify visually |
-| Move `npm install jz` chip into the hero | conversion action shouldn't be 4 screens down | 8 | todo — verify visually |
-| Rewrite H1 mechanism-first: “Same JS, native WASM” | 5× read headline vs body; carries the unique claim | 8 | **done 2026-07-15** |
+| Caption the JS/JZ toggle ("Same source. Flip to compile to WASM.") | turns verified-11.8× proof from decoration to proof | 8 | **done 2026-08-19** — "same source," leads the hero compile-proof line |
+| Move `npm install jz` chip into the hero | conversion action shouldn't be 4 screens down | 8 | **done** — `#install1` beside the slogan |
+| Rewrite H1 mechanism-first: “Same JS, native WASM” | 5× read headline vs body; carries the unique claim | 8 | done 2026-07-15; **author reverted 2026-08-13** to "Compile JS to native speed" — open finding (worn-claim class per §3′), author's call |
+| FAQ "How can it beat V8?" — the reason-why mechanism | retires the verified skeptic objection (*"C/Rust ≈3× over V8, not much room left"*, HN); concedes "wasm isn't magically faster" first | 8 | **done 2026-08-19** |
+| Surface "your test suite is the compiler's test suite" in What-is-JZ | the locked trust argument (strategy §positioning) finally on-page; answers the AS-dialect-trap objection at first contact | 7 | **done 2026-08-19** |
 | FAQ: "What JS semantics differ?" + "Can I debug it?" | answer diligence on-page | 5 | todo |
 | Remove `FIXME` comment (`index.html:384`) | hygiene | 2 | todo |
 

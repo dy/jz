@@ -8,12 +8,13 @@ for the full dissection of anything that needs it.
 
 ## V1 (pinned)
 
+* [ ] rename self-host to self-compile
 * [ ] Beat all bench cases, all examples — the standing mandate (residual V2-class
   tails: shapes record layout, qoi branch-sched, sdf symbolic hull, ulam/raymarcher
   parity noise; tracked in `todo.md`).
 * [ ] sourcemaps
 * [ ] floatbeat
-* [ ] color-space
+* [x] color-space
 * [ ] audiojs
 * [ ] unplugin
 * [ ] hsluv wasm — https://www.hsluv.org/implementations/
