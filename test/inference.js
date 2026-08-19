@@ -31,6 +31,8 @@ import { run } from './util.js'
 import { parse as watTree, callsOutside } from '../scripts/wat-probe.mjs'
 import { ctx } from '../src/ctx.js'
 import { VAL } from '../src/reps.js'
+import { constIntExpr, intLiteralValue } from '../src/static.js'
+import { I32_MIN, I32_MAX } from '../src/ast.js'
 
 const count = (wat, re) => (wat.match(re) || []).length
 
@@ -3028,4 +3030,44 @@ test('receiver-HASH: does NOT fire when the name is absent from dynWriteVars (no
   jz.compile(src, { wat: true })
   is(ctx.scope.globalValTypes?.get('bag'), undefined,
     'no computed-key write anywhere — dynWriteVars never gains the name, so no HASH claim')
+})
+
+// ───────────────────────────────────────────────────────────── constIntExpr: i32 boundary clamp
+
+test('constIntExpr: i32 boundary — MAX/MIN fold exactly, MAX+1/MIN-1 refuse (no unclamped re-derivation)', () => {
+  // constIntExpr used to re-derive a literal's value itself (bare `number` and
+  // `[null,N]` array-literal node shapes) in a second copy of intLiteralValue's own
+  // lookup, run only when the first (clamped) attempt returned null — silently handing
+  // back the raw out-of-i32-range value instead of null. A source literal like
+  // `2147483648` parses straight into that exact `[null,N]` node shape (subscript's
+  // number.js `num()`), so this was reachable through ordinary source, not just a
+  // hypothetical fact-propagation state. Fixed by deleting the re-derivation: constIntExpr
+  // now resolves literals through intLiteralValue's ONE clamped lookup only.
+  const cases = [
+    [I32_MAX, I32_MAX], [I32_MAX + 1, null],
+    [I32_MIN, I32_MIN], [I32_MIN - 1, null],
+  ]
+  for (const [n, expected] of cases) {
+    is(intLiteralValue(n), expected, `intLiteralValue(${n}) bare number`)
+    is(constIntExpr(n), expected, `constIntExpr(${n}) bare number`)
+    is(intLiteralValue([, n]), expected, `intLiteralValue([,${n}]) [null,N] literal`)
+    is(constIntExpr([, n]), expected, `constIntExpr([,${n}]) [null,N] literal`)
+  }
+})
+
+test('constIntExpr: i32-boundary refusal reaches a real consumer — for-loop step past I32_MAX blocks unrollSmallConstFor', () => {
+  // End-to-end proof the clamp fix changes emitted WAT, not just the isolated helper:
+  // emit.js's unrollSmallConstFor folds a `for(i=0;i<N;i+=STEP)` with a compile-time
+  // STEP into an unrolled constant sequence (no `(loop`) when constIntExpr(STEP)
+  // resolves; a STEP one past I32_MAX must fail to resolve and fall back to a real
+  // runtime `(loop`. Before the fix, the unclamped re-derivation resolved BOTH steps,
+  // wrongly unrolling the second (still numerically coincidental for this body, but
+  // the wrong compile-time DECISION — the un-narrowed WASM type of a genuinely
+  // reachable STEP would flip codegen shape either way).
+  const mk = (step) => `export const f = () => { let sum = 0; for (let i = 0; i < 5; i += ${step}) sum += i; return sum }`
+  const inRange = jz.compile(mk(I32_MAX), { wat: true, optimize: 3 })
+  const overRange = jz.compile(mk(I32_MAX + 1), { wat: true, optimize: 3 })
+  const bodyOf = (wat) => wat.match(/\(func \$f[\s\S]*?^  \)/m)?.[0]
+  ok(!/\(loop/.test(bodyOf(inRange)), 'I32_MAX step: constant-folds away, no runtime loop')
+  ok(/\(loop/.test(bodyOf(overRange)), 'I32_MAX+1 step: refuses the fold, real runtime loop')
 })

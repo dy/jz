@@ -43,11 +43,11 @@ export const staticIndexKey = (node) =>
 
 /** Fold compile-time integer expressions (literals, const bindings, + - * <<). */
 export function constIntExpr(node) {
-  let lit = intLiteralValue(node)
-  if (lit == null && typeof node === 'number' && Number.isInteger(node)) lit = node
-  if (lit == null && Array.isArray(node) && node[0] == null && Number.isInteger(node[1])) lit = node[1]
+  // Literal/name resolution (number, `[null,N]`, and string-bound intConst) is
+  // intLiteralValue's own job, ONE lookup with its i32 end clamp — no re-derived
+  // copy here that could skip it and hand back an out-of-i32-range raw value.
+  const lit = intLiteralValue(node)
   if (lit != null) return lit
-  if (typeof node === 'string') return repOf(node)?.intConst ?? ctx.scope.constInts?.get(node) ?? null
   if (!Array.isArray(node)) return null
   const op = node[0]
   if (op === 'u-') {

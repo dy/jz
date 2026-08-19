@@ -22533,3 +22533,56 @@ Gates for the slice: stats enumeration shows watr's sites raw; test/watr.js
 35/35 incl. the memory64-limits regression pin; full suite; self-build SHA
 x2; region-live jessie smoke (the permanent new gate); byte-identity census
 where claimed no-op.
+---
+
+
+## §constIntExpr clamp-bypass — closed (2026-08-19)
+
+The "pre-existing note, left alone" above (`static.js`'s `constIntExpr`
+string fallback re-doing `intLiteralValue`'s `repOf`/`ctx.scope.constInts`
+lookup without its i32 end clamp) is fixed: `constIntExpr` no longer
+re-derives any literal shape itself, it resolves through `intLiteralValue`'s
+one clamped lookup and nothing else.
+
+**Reachability, precisely**: the STRING/`intConst` variant named above is
+unreachable as described — every writer of `rep.intConst` and
+`ctx.scope.constInts` (narrow.js's `mergeParamFact`/`intConstArg`,
+index.js's module-const fold and `seedLocalIntConsts`, closure-plan.js's
+capture fold) already clamps to `[I32_MIN, I32_MAX]` before storing;
+confirmed by an exhaustive grep of every `.intConst =`/`updateRep(...,
+{intConst})`/`constInts.set` site — none bypass the clamp. But the SAME
+duplicate-lookup pattern also lived in two sibling branches of the same
+function — a bare `number` node and subscript's `[null,N]` literal-array
+node — and THOSE are directly reachable: an ordinary out-of-i32-range
+integer literal in source (`2147483648`) parses straight into that exact
+shape (subscript's `feature/number.js` `num()` does no range clamping).
+Verified live: `constIntExpr([, 2147483648])` returned the raw `2147483648`
+pre-fix, `null` post-fix. Traced one observable consumer divergence —
+`emit.js`'s `unrollSmallConstFor` wrongly unrolled a `for` loop whose step
+was one past I32_MAX (no fold should have fired) — but could not construct
+a case where the final runtime VALUE differs: every consumer either range-
+guards the folded constant before use (typedarray.js bound folding, the
+scalar-array/typed-array slot-index families in plan/literals.js), or relies
+on JS's own ToInt32-wrapping `&`/`>>>` (intExprRange's mask/shift arms), or
+— for `unrollSmallConstFor` itself — the affected loop counter's wasm type
+stays f64 whenever the step doesn't cleanly fit i32, so the compile-time
+trip-count simulation (plain JS double arithmetic) and the real runtime
+loop (real f64 arithmetic) stay in exact agreement regardless of the huge
+step's magnitude. Codegen-shape divergence confirmed and fixed; a
+wrong-answer instance wasn't found despite a real search, consistent with
+this codebase's established defense-in-depth pattern for constIntExpr
+consumers (weak-consumer audit above).
+
+**Test**: `test/inference.js`, two new cases — a direct `constIntExpr`/
+`intLiteralValue` unit pin at all four boundary points (I32_MAX, I32_MAX+1,
+I32_MIN, I32_MIN-1, both bare-number and `[null,N]` node shapes), and an
+end-to-end WAT-shape pin through `unrollSmallConstFor` (I32_MAX step
+unrolls away the loop, I32_MAX+1 must keep a real `(loop`). Both fail on
+the pre-fix code, pass post-fix.
+
+**Gates**: `npm test` — 3525 total (20304 assertions), **3519 pass, 0 fail**,
+6 skip (pre-existing, environment-gated — unchanged). 3-specimen byte-
+identity spot check (`bitwise`, `biquad`, `conv2d`, O0+O3, base = this same
+worktree with only `static.js` stashed back to main tip) — 6/6 identical, as
+expected: none of the three route an out-of-i32-range literal through
+`constIntExpr`.
