@@ -22795,3 +22795,20 @@ Gate ordering lesson (new permanent rule): a module/core.js stdlib change
 must run `npm run build` BEFORE the suite — kernel-parity legs compare
 native output against dist/jz.wasm, so a stale kernel false-fails dict
 parity with exactly the stdlib-body-size delta (seen live: 760 B).
+
+## §watr footprint probe — method artifact, not a regression (2026-08-19)
+
+A tip battery probe (my own harness: region-live O3 kernel, watr micro-
+kernel entry .work/watr-harness-entry.js = parse+optimize+print graph,
+kernel-invocation opts {level:2}) showed watr FAIL unreachable@4096 —
+alarming against the committed "watr 972.06 PASS". Bisect worktrees at
+a9449127 (the commit the 972 was recorded at) and 9c647b4a reproduced the
+SAME 4096 trap — the committed number was measured by the forensic
+battery's own scripts against a different specimen/config, so the two are
+not comparable and there is NO tip regression. Two real notes stand:
+(1) the heavier full-watr entry (incl. optimize.js) traps region-live at
+4 GiB at every tested commit — a pre-existing need-side condition in the
+same churn class the elephant attribution is chasing, not new; (2) apples-
+to-apples tip footprints (watr/jzify) must come from the forensic
+battery's own scripts — queued with that agent. jessie is unaffected
+(same smoke method throughout: 432 → 380.8 with the tier).
