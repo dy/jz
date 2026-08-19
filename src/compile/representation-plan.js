@@ -346,6 +346,10 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (!Array.isArray(node)) return false
     let changed = false
     const op = node[0]
+    if (Array.isArray(op)) {
+      for (let i = 0; i < node.length; i++) if (scan(node[i], func, localNames)) changed = true
+      return changed
+    }
     if (op === '=>') return false
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -630,6 +634,7 @@ function collectDefs(body) {
   const walk = (node, root = false) => {
     if (!Array.isArray(node)) return
     const op = node[0]
+    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) walk(node[i]); return }
     if (!root && op === '=>') return
     if (op === 'let' || op === 'const') {
       // Prepared declarations carry both a binder token and its `=` init
@@ -899,7 +904,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const walkEdges = (node, root = false) => {
     if (!Array.isArray(node)) return
     const op = node[0]
+    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) walkEdges(node[i]); return }
     if (!root && op === '=>') return
+    if (op === '?:' || op === '&&' || op === '||' || op === '??') plannedOf(node)
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const decl = node[i]
@@ -1232,6 +1239,12 @@ export function representationActiveMaterializedRep(ctx, name) {
     return (record.boundary.covered === true && ready) || boundaryReady ? activeRep(ctx, name, true) : NO_BIGINT
   }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
+}
+
+/** Frozen action for one ordinary tagged storage/value slot. */
+export function representationStorageWriteAction(ctx, source) {
+  if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_REJECT
+  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
 }
 
 /** Frozen action for one generic closure/call_indirect argument slot. */

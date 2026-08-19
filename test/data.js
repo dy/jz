@@ -169,6 +169,26 @@ test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits'
   }
 })
 
+test('RepresentationPlan: ordinary array storage preserves a dynamic BigInt member', () => {
+  const src = `
+    export let kind = flag => {
+      let values = [flag ? 5n : 2]
+      return typeof values[0]
+    }
+    export let check = flag => {
+      let values = [flag ? 5n : 2]
+      return typeof values[0] === 'bigint'
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.kind(0), 'number', `O${optimize || 0}: Number array element`)
+    is(e.kind(1), 'bigint', `O${optimize || 0}: BigInt array element is stored tagged`)
+    is(e.check(0), false, `O${optimize || 0}: array read rejects Number`)
+    is(e.check(1), true, `O${optimize || 0}: array read accepts BigInt`)
+  }
+})
+
 // --- audit P0-2 pins: literal-kind tagging, native-vs-kernel differential ---
 // Every case below must agree byte-for-byte across BOTH legs (this file runs
 // under `node test/data.js` AND `JZ_TEST_TARGET=jz.wasm node test/data.js` —

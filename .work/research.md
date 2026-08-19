@@ -22371,3 +22371,53 @@ sites, one at a time with the battery per step; optimizeModule blowup gets
 its own attribution round first. Footprint next lever: the geometric-floor
 tier boundary (274 MB ceiling still commits 432) — consider exact-fit
 final grow or 1.25× floor above 256 MiB, measured.
+---
+
+---
+
+---
+
+## §RepresentationPlan v2 Slice 4c — covered array-literal storage writes
+## (2026-08-18)
+
+The first storage family now consumes frozen actions at ordinary array-literal
+element stores. BigInt-free programs and REJECT sites remain byte-for-byte on
+`storedValue`; covered BigInt programs use `storedValuePlanned`, preserving the
+existing BOOL/ambiguous-BOOL path and the opt-in retirement diagnostic.
+Homogeneous proven-BigInt arrays and compiler-synthesized nonescaping
+destructure arrays retain `storedValueNarrow`: their readers intentionally use
+the raw representation, so tagging them would be a category error.
+
+Planning now walks AST list containers from index 0. Array/object element lists
+store their first AST node at list slot 0 rather than an operator string; the old
+operator-shaped walker skipped that element entirely. Join nodes encountered
+inside such lists are forced through `plannedOf`, making the existing ternary
+edge equation available to storage emission. This is graph-completeness, not an
+array-name exception.
+
+The fixed class is `[flag ? 5n : 2]`. Before this slice, `typeof values[0]`
+returned `number` on both arms at O0/O2/O3 because the raw BigInt bits were
+stored directly. Native JS returns `number/bigint`; native, WASI, and
+wasm-hosted tests now agree, including comparison forms. Focused WAT shows the
+BigInt arm allocating/storing one tag-5 payload before the f64 element store;
+the Number arm is unchanged. Full watr WAT remains byte-identical.
+
+A global replacement of the shared `storedValue` chokepoint was rejected. Even
+with a BigInt-free fallback, the altered self-compiled bridge caused timer
+callbacks to carry invalid closure table indices and crashed the wasm suite.
+The array-literal producer is therefore migrated explicitly; Map/Set,
+array-mutator, object/SRoA, JSON, dynamic-key, and captured-cell storage remain
+separate slices. The nonescaping destructure failure found during gating is
+pinned by retaining its existing context guard, not by weakening the plan.
+
+Pre-rebase gates: default/O0/O3 each **3,521/3,515/0/6**; WASI
+**3,520/3,514/0/6**; wasm-target **2,779/2,773/0/6**; focused matrix
+**550/550**; self-compile correctness **21/21**; kernel parity **33/33**;
+dormant kernel oracle **13/13 ×3**; build ×2 converges (`dist/jz.wasm`
+`20a5f0b33a34c61cd681f28f28fecdb0302896a0e1fe90c845867ec2d6aad601`,
+17,027.4 KiB). Fresh-parent corpus/perf and region-live gates follow after
+rebasing over concurrent region work.
+
+**Status:** covered array-literal tagged storage writes are consumable. Other
+storage producers/readers, captured cells, closure results, and remaining
+consumers are not; FeaturePlan remains blocked.

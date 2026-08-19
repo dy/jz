@@ -5939,7 +5939,9 @@ export const emitter = {
     const ca = emit(a)
     if (isLit(ca)) {
       const v = litVal(ca), arm = (v !== 0 && v === v) ? b : c
-      return applyBigintRepresentationAction(emit(arm), arm, representationJoinArmAction(ctx, self, arm))
+      const action = ctx.func._arrayLiteralNeverEscapes ? REP_EDGE_REJECT
+        : representationJoinArmAction(ctx, self, arm)
+      return applyBigintRepresentationAction(emit(arm), arm, action)
     }
     const cond = toBoolFromEmitted(ca)
     // Flow-sensitive refinement: each arm sees narrowing consistent with `a` being truthy / falsy.
@@ -5949,7 +5951,7 @@ export const emitter = {
     const vc = withRefinements(elseRefs, c, () => emit(c))
     const repB = representationJoinArmAction(ctx, self, b)
     const repC = representationJoinArmAction(ctx, self, c)
-    if (repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
+    if (!ctx.func._arrayLiteralNeverEscapes && repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
       const legacyBigintArm = valTypeOf(b) === VAL.BIGINT && nullishArm(c) ? b
         : valTypeOf(c) === VAL.BIGINT && nullishArm(b) ? c : null
       if (bigintStrict() && legacyBigintArm != null && needsBigintBox(legacyBigintArm))

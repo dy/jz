@@ -11,7 +11,7 @@
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
-import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow } from '../src/bridge.js'
+import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
@@ -21,6 +21,7 @@ import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIA
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
+import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -761,9 +762,13 @@ export default (ctx) => {
     // (`let [a, b] = [1n, [2n, 3n]]`, `b` bound to the whole inner array): a
     // real, independently-escaping value that must not inherit it.
     const neverEscapes = ctx.func._arrayLiteralNeverEscapes
+    const taggedStoredValue = ctx.features.bigint ? (node) => {
+      const action = representationStorageWriteAction(ctx, node)
+      return action === REP_EDGE_REJECT ? storedValue(node) : storedValuePlanned(node, action)
+    } : storedValue
     const elemStoredValue = neverEscapes ||
       (elems.length && elems.every(e => valTypeOf(e) === VAL.BIGINT))
-      ? storedValueNarrow : storedValue
+      ? storedValueNarrow : taggedStoredValue
     const emitElem = (e) => {
       if (!Array.isArray(e) || e[0] !== '[') return elemStoredValue(e)
       return withArrayLiteralEscape(false, () => elemStoredValue(e))
