@@ -22648,3 +22648,26 @@ arm simply stops firing for these chains (retirement-aligned, no new box
 arms). Find "the hard val merge above" in narrow.js and align its arg-kind
 acceptance with inferValAtSite's BIGINT proof; gate with the uleb repro
 (expect 46 / 44002), test/watr.js 35/35, full suite, npm run build.
+
+## §Watr-slice core: the THREE-STORE bigint rep disagreement (2026-08-19)
+
+Full mechanism, empirically pinned (WAT + stats + write-arm experiment):
+1. Boundary verdict (narrow bigintBoxedVerdict on shared paramReps): RAW
+   (r.val settles VAL.BIGINT — call sites pass raw carriers).
+2. Intra-body sink OR (analyze markBigintSink → noteLocalBoxed): flips
+   bigintBoxed on ctx.func.localReps — the COPY seeded at entry — so body
+   READS deref the param slot (isCurrentlyBoxedBigint reads the local rep).
+3. Writes (loop reassignment) store raw; an experimental write-side rebox
+   arm (isCurrentlyBoxedBigint + RAW_BIGINT_OPS guard) fires correctly but
+   cannot help: the call site passed RAW per store (1), so reads deref raw
+   bits from iteration 0 regardless. Result 0 / OOB (watr uleb shape).
+
+THE FIX (Phase C first implementation task): unify the stores — either the
+sink OR must not mark PARAMS on the local copy (params keep the boundary
+verdict; sinks box FRESH copies from raw via the inline-expression arm), or
+the OR must write through to the shared param rep so call sites box too
+(against the retirement direction — prefer the former). Acceptance tests
+(currently WRONG, expect): no-array loop repro → 46; full uleb → 44002 at
+O0+O3; then test/watr.js 35/35, suite, npm run build, JZ_BIGINT_STRICT=1
+enumeration shrink. The write-rebox arm (correct for its narrower class)
+re-lands WITH the unification if still needed after params stay raw.
