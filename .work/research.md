@@ -22671,3 +22671,44 @@ the OR must write through to the shared param rep so call sites box too
 O0+O3; then test/watr.js 35/35, suite, npm run build, JZ_BIGINT_STRICT=1
 enumeration shrink. The write-rebox arm (correct for its narrower class)
 re-lands WITH the unification if still needed after params stay raw.
+
+## §three-store unification — LANDED (2026-08-19)
+
+The 5f13eebd disagreement is closed with two small arms, exactly the banked
+direction:
+
+1. **Write-through** (src/compile/analyze.js markBigintSink): when the sink
+   OR marks a BIGINT param boxed on the seeded local rep, the flip now also
+   stamps `bigintBoxed` on the owning function's **sig.params entry** — the
+   store coerceArg reads — so every call site boxes the argument. Two
+   subtleties found live: (a) `ctx.func.current` is NULL during the
+   top-level analysis passes that do this marking (stats attributed to
+   `(top)`), so the owner is resolved by scanning `ctx.funcs.list` for the
+   param's mangled name — globally unique, so the scan is exact; (b) AFE
+   completes before any call-site emission, so the stamp is always observed.
+
+2. **Write-rebox arm** (src/compile/emit.js '=' emitter): a durable-boxed
+   param reassigned from raw-by-construction BIGINT arithmetic
+   (`RAW_BIGINT_OPS`: + - * / % ** & | ^ << >> u- ~) reboxes before the
+   store — the assignment-side mirror of the return path's
+   isProvenBoxedBigint arm. Guarded by isCurrentlyBoxedBigint + op-shape +
+   VAL.BIGINT, so bare names/calls/ternaries keep their wiring and nothing
+   double-boxes. (This arm alone was proven insufficient earlier — it fired
+   correctly but the boundary still passed raw; both arms together are the
+   fix.)
+
+Acceptance (all PASS): no-array loop repro → 46 and full uleb → 44002 on
+O0+O3; test/watr.js 36/36 (new permanent pin: "bigint param loop-reassigned
+through a sink keeps one representation"); full suite 3527 pass / 6 skip /
+0 fail; npm run build + region-live jessie smoke as landing gates.
+
+Consequence for the retirement sequence: the dc6139d9 watr-provability wall
+is now behind correctness — watr's uleb shape computes correctly under the
+DEFAULT mode. Provability (making those sites raw so the boxed stack can
+delete) remains the next slice, but it is now a pure-performance slice with
+a correct baseline, not a miscompile chase.
+
+Cleanup candidate spotted en route: scripts/build-profile.mjs still carries
+the CARRIER_BOX injection doc-block (lines ~75-95) describing a deleted
+flag; the code under it is the DBG_INVARIANTS injection. Sweep with
+retirement step 4.

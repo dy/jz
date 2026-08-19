@@ -695,6 +695,21 @@ export function analyzeBody(body) {
   const markBigintSink = (expr) => {
     if (typeof expr !== 'string' || valTypeOf(expr) !== VAL.BIGINT) return
     updateRep(expr, { bigintBoxed: true })
+    // Three-store unification (ledger 2026-08-19 watr-slice core): marking a
+    // PARAM on the seeded local rep alone leaves the CALL SITES passing raw
+    // carriers (coerceArg reads sig.params' own bigintBoxed, stamped by
+    // narrow's boundary verdict) while body reads deref the slot — the
+    // boundary/local disagreement behind the uleb miscompile. Write the flip
+    // through to the shared sig so every call site boxes the argument; AFE
+    // completes before any call-site emission, so the stamp is always seen.
+    // ctx.func.current can be null here (top-level analysis passes) — resolve
+    // the owning function by the mangled name, which is globally unique.
+    let sp = ctx.func.current?.sig?.params?.find(pp => pp.name === expr)
+    if (!sp) for (const fo of ctx.funcs.list) {
+      const q = fo.sig?.params?.find(pp => pp.name === expr)
+      if (q) { sp = q; break }
+    }
+    if (sp) sp.bigintBoxed = true
     if (DBG_BIGINT_STATS) noteLocalBoxed(ctx.func.current?.name ?? '(top)', expr)
   }
   // Whole-body outer-scope set (mirrors boxedCaptures' own `outerScope`,

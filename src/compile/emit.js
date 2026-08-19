@@ -73,6 +73,9 @@ import {
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationReturnAction,
 } from './representation-plan.js'
 
+// Raw-by-construction BIGINT producers (see the '=' emitter's durable-rebox arm).
+const RAW_BIGINT_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', 'u-', '~'])
+
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null
   return ctx.abi.resolve('string', rep)?.ops ?? ctx.abi.string.ops
@@ -5401,6 +5404,16 @@ export const emitter = {
       _arrayLiteralNeverEscapes: neverEscapes,
     }, () => emit(val))
     ev = applyBigintRepresentationAction(ev, val, representationBindingWriteAction(ctx, name, val))
+    // Durable-boxed param reassignment must MAINTAIN the boxed-slot invariant
+    // (three-store unification, ledger 2026-08-19): reads deref this param's
+    // slot for the whole function extent, so a raw-producing BIGINT RHS must
+    // rebox before the store — the assignment-side mirror of the 'return'
+    // path's isProvenBoxedBigint arm. Scoped to arithmetic/shift/bitwise RHS
+    // (raw i64 carrier by construction — no double-box risk); bare names,
+    // calls and '?:' keep their established wiring.
+    if (typeof name === 'string' && isCurrentlyBoxedBigint(name) &&
+        Array.isArray(val) && RAW_BIGINT_OPS.has(val[0]) && valTypeOf(val) === VAL.BIGINT)
+      ev = boxBigInt(asI64(ev))
     return writeVar(name, ev, void_)
   },
 

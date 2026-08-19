@@ -294,6 +294,23 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
   is(exports.f(8), 0)
 })
 
+// A sink-boxed bigint PARAM reassigned inside a loop (watr's uleb shape): the
+// sink OR flips the param's rep to boxed for body reads, so the boundary store
+// call sites consult and the loop's raw arithmetic writes must both agree —
+// three stores, one verdict. Regressed as: f(300n) returned 0 (boxed reads
+// deref'd a raw carrier), OOB with arrays in scope.
+test('jz: bigint param loop-reassigned through a sink keeps one representation', () => {
+  for (const optimize of [false, 3]) {
+    const { exports } = jz(`
+      let push8 = (out, b) => { out.push(b); return out }
+      let uleb = (n, out) => { while (n > 127n) { push8(out, Number(n & 127n)); n = n >> 7n } push8(out, Number(n)); return out }
+      let limits = (s) => uleb(BigInt(s), [])
+      export let run = () => { let r = limits("300"); return r[0] * 1000 + r[1] }
+    `, { jzify: true, optimize })
+    is(exports.run(), 44002, `uleb bytes O${optimize || 0}`)
+  }
+})
+
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {
   const inst = await withRawCarrier(() => jz(watrSrc('compile.js'), {
     jzify: true,
