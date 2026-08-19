@@ -384,8 +384,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // program has always already happened by this point in buildStartFn).
   //
   // Runtime alloc+store sequence (mirrors schemaInit's own dynamic-fallback
-  // shape just above, NOT appendStaticSlots's static-data-segment path):
-  // appendStaticSlots's per-8-byte-slot pointer-relocation marking
+  // shape just above, NOT pushStaticSlots's static-data-segment path):
+  // pushStaticSlots's per-8-byte-slot pointer-relocation marking
   // (staticPtrSlots, keyed on the NaN-prefix bit pattern) is for BOXED
   // values — reusing it for these plain integers risks a false-positive
   // match purely by chance on a cellMask's bit pattern. A future slice could

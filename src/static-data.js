@@ -16,10 +16,6 @@
  * O(bytes) end to end, in the kernel and natively alike.
  *
  * The shared-memory string pool (`strPool`) gets the same treatment.
- *
- * NOTE: src/ir.js's `appendStaticSlots` is the string-form twin of
- * `pushStaticSlots` below; its call sites now route here. Unify (delete the
- * ir.js copy) when that file's active-agent territory reopens — sweep pass 3.
  */
 
 import { ctx } from './ctx.js'
@@ -62,7 +58,7 @@ export const dataReset = (s) => {
  *  byte offset of the first slot. NaN-boxed-pointer-looking slots are recorded
  *  in `ctx.runtime.staticPtrSlots` for the prefix-strip pass. Writes go
  *  through u32 halves — DataView's BigInt accessors are unfaithful in the
- *  self-compiled kernel. Parts-aware twin of src/ir.js's appendStaticSlots. */
+ *  self-compiled kernel. */
 export function pushStaticSlots(slots, headerBytes = 0) {
   dataAlign(8)
   const off = dataLen()

@@ -966,35 +966,6 @@ export function extractF64Bits(node) {
   return null
 }
 
-/** Append `slots` ('0x'+16-hex bit strings, see contract above) to
- *  ctx.runtime.data 8-byte aligned, return raw byte offset of first slot.
- *  Slots that look like NaN-boxed pointers are recorded in
- *  `ctx.runtime.staticPtrSlots` so the prefix-strip pass can patch their
- *  embedded offsets. Writes go through u32 halves — DataView's BigInt
- *  accessors are unfaithful in the self-host kernel. */
-export function appendStaticSlots(slots, headerBytes = 0) {
-  if (!ctx.runtime.data) ctx.runtime.data = ''
-  while (ctx.runtime.data.length % 8 !== 0) ctx.runtime.data += '\0'
-  const off = ctx.runtime.data.length
-  const u8 = new Uint8Array(headerBytes + slots.length * 8)
-  const dv = new DataView(u8.buffer)
-  for (let i = 0; i < slots.length; i++) {
-    const h = slots[i]
-    dv.setUint32(headerBytes + i * 8, parseInt(h.slice(10), 16) >>> 0, true)
-    dv.setUint32(headerBytes + i * 8 + 4, parseInt(h.slice(2, 10), 16) >>> 0, true)
-  }
-  let chunk = ''
-  for (let i = 0; i < u8.length; i++) chunk += String.fromCharCode(u8[i])
-  ctx.runtime.data += chunk
-  if (!ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = []
-  for (let i = 0; i < slots.length; i++) {
-    if ((parseInt(slots[i].slice(2, 6), 16) & 0xFFF8) === LAYOUT.NAN_PREFIX) {
-      ctx.runtime.staticPtrSlots.push(off + i * 8)
-    }
-  }
-  return off
-}
-
 // === Literal / purity checks ===
 
 /** Check if emitted node is a compile-time constant. */
