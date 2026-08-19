@@ -240,8 +240,8 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   // 50+ emission sites on every stored/compared/returned node; the previous
   // `const [op, ...args] = node` allocated a fresh array per call, which the
   // self-hosted kernel pays as a real __alloc in its hottest loops while V8
-  // escape-analyzes it away (the OPTF-bitmask asymmetry class — warm-margin
-  // hunt 2026-08-01: alloc +33%, the gate's dominant regression).
+  // escape-analyzes it away (the OPTF-bitmask asymmetry class: +33% alloc,
+  // the gate's dominant regression).
   if (!Array.isArray(node)) return false
   const op = node[0]
   if (op === '?:') {
@@ -269,22 +269,20 @@ export function hasAmbiguousBoolMerge(node, vt = valTypeOf) {
   return false
 }
 
-// Dict-value-type census consumer — RESTORED AS AN INTERNAL HELPER ONLY
-// (.work/todo.md §deletion-sweep Slice 1, audit #9 follow-up).
+// Dict-value-type census consumer — an INTERNAL HELPER ONLY
+// (.work/todo.md §deletion-sweep Slice 1).
 // `name[key]`/`name.prop` on a HASH dict-mode receiver: the VAL.* kind of
 // every value ever WRITTEN through `name[anyKey] = v`
 // (.work/todo.md §deletion-sweep §2, nameEscapes alias gate per
-// .work/todo.md §deletion-sweep §2 Slice 3 — unchanged logic, restored
-// verbatim from before the audit-#9 revert). NOT wired into VT['[]']/
-// VT['.']'s own dict-mode fold — Slice 4 (3782a692) wired it in briefly and
-// was REVERTED (audit #10: promoting a census read to an exact VT globally
-// makes every OTHER consumer of that VT — composed expressions, container
-// storage, kind-specific dispatch, string `+`, BigInt joint ops — silently
-// bypass the mayBeUndefined protection unless it separately remembers to
-// call censusMaybeUndefined too; opt-out instead of opt-in, unsound by
-// construction. .work/todo.md §deletion-sweep §14 is the
+// .work/todo.md §deletion-sweep §2 Slice 3). INVARIANT: this stays OUT of
+// VT['[]']/VT['.']'s own dict-mode fold — promoting a census read to an
+// exact VT globally would make every OTHER consumer of that VT — composed
+// expressions, container storage, kind-specific dispatch, string `+`,
+// BigInt joint ops — silently bypass the mayBeUndefined protection unless it
+// separately remembers to call censusMaybeUndefined too; opt-out instead of
+// opt-in, unsound by construction. .work/todo.md §deletion-sweep §14 is the
 // re-enablement path: an opt-in `presentVal` fact consumers must explicitly
-// ask for, not a global VT promotion). Called ONLY from
+// ask for, not a global VT promotion. Called ONLY from
 // censusMaybeUndefinedKind below, which asks a narrower question ("is THIS
 // node maybeUndefined-shaped, and what kind does the census claim for it")
 // that bypasses VT/valTypeOf entirely — restoring this helper for that
@@ -326,8 +324,8 @@ export function dictValueKindOf(name) {
   return s && s.size === 1 ? [...s][0] : null
 }
 
-// RECEIVER-KIND GUARD (test/simd.js regression, found landing the original
-// .work/todo.md §deletion-sweep Slice 1): the dict census's GLOBAL half
+// RECEIVER-KIND GUARD (.work/todo.md §deletion-sweep Slice 1; test/simd.js
+// pins the regression this guards against): the dict census's GLOBAL half
 // (program-facts.js) records a dictValueValType fact for ANY
 // `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named `a` written
 // via `a[i] = …` gets one too. In VT['[]']/VT['.']'s real dispatch this is
@@ -344,12 +342,11 @@ const dictCensusReceiverIsLive = (name) => {
   return true
 }
 
-// Map-value-type census Tier 1 consumer — RESTORED AS AN INTERNAL HELPER
-// ONLY, same status as dictValueKindOf above (Slice 1, not Slice 4): NOT
-// wired into VT['()']'s `.get` short-circuit — Slice 4 (3782a692) wired it
-// in and was REVERTED (audit #10, see dictValueKindOf's own doc comment
-// above; re-enablement path is §14's opt-in presentVal model, not this
-// global promotion). Called ONLY from censusMaybeUndefinedKind below.
+// Map-value-type census Tier 1 consumer — an INTERNAL HELPER ONLY, same
+// status as dictValueKindOf above. INVARIANT: this stays OUT of
+// VT['()']'s `.get` short-circuit — see dictValueKindOf's own doc comment
+// above for the soundness argument; re-enablement path is §14's opt-in
+// presentVal model, not this global promotion. Called ONLY from censusMaybeUndefinedKind below.
 // `mapValueValType` is "every value ever WRITTEN through recv.set(anyKey,
 // v)", unsound to promote to an EXACT VAL.* kind at a `.get()` read site the
 // same two ways dictValueKindOf is: an ABSENT key reads real JS `undefined`
@@ -381,8 +378,8 @@ export function mapValueKindOf(name) {
 // projection, never the general Fact.possibleKinds field a future slice
 // exposes for every OTHER kind question — mirrors the presentVal precedent:
 // a real, individually-gated consumer list built one caller at a time, never
-// a blanket promotion; the exact axis three prior reverts (f8f61591,
-// 7288b69b, 098014a5) killed). ZERO consumers as of product-lattice Slice 1
+// a blanket promotion; three prior attempts to promote this exact axis
+// globally were reverted as unsound). ZERO consumers as of product-lattice Slice 1
 // (.work/lattice-design.md §5) — the structural landing only. Folds through
 // the SAME `joinKinds` union primitive (param-reps.js) every later
 // Fact-shaped field will use, so this is the primitive's first real caller,
@@ -399,65 +396,53 @@ export function mapValueKindOf(name) {
 // dict/map now answers {NUMBER, STRING}-shaped, not null. A defensive copy
 // (`new Set(s)`) is returned — the underlying Set is a published rep field,
 // never mutated by a caller.
-// PURE (audit-#16 P1-4): a projection must never touch solver state. The
-// earlier draft routed through joinKinds, whose latticeMeet.changed side
-// channel would flag convergence on every non-empty QUERY — a read
-// preventing a fixpoint from settling. Projections construct their answer
-// locally; only PRODUCERS join.
+// INVARIANT: a projection must stay PURE — never touch solver state. Routing
+// through joinKinds would trip its latticeMeet.changed side channel on every
+// non-empty QUERY, a read preventing a fixpoint from settling. Projections
+// construct their answer locally; only PRODUCERS join.
 export function censusKindsOf(name) {
   const s = dictValueKindSet(name) ?? mapValueKindSet(name)
   return s ? new Set(s) : new Set()
 }
 
-// maybeUndefined value-join — RE-ENABLED (Slice 1, .work/todo.md
-// §deletion-sweep §4/§8). Two ORIGINAL arms, unchanged logic, restored
-// from before the audit-#9 revert: a `name[key]`/`name.prop` dict-census
-// READ node (arm 1) or a `recv.get(key)` Map-census CALL node (arm 2) whose
-// claimed kind comes SOLELY from dictValueKindOf/mapValueKindOf's soundness
-// carve-out. PLUS a third arm (§2/§3 decl inference, §4 "REP fallback for
-// a bare name"): a bare NAME whose rep carries BOTH `mayBeUndefined` and a
-// `presentVal` answers identically — this is what lets a maybeUndefined read
-// survive being bound to a local (`let x = m.get(missing); x + 1`) instead
-// of evaporating at the decl boundary the way the audit-#9 AST-shape-only
-// join did. Consulted directly (not via valTypeOf) at every existing
+// maybeUndefined value-join (.work/todo.md §deletion-sweep §4/§8). Two
+// arms: a `name[key]`/`name.prop` dict-census READ node (arm 1) or a
+// `recv.get(key)` Map-census CALL node (arm 2) whose claimed kind comes
+// SOLELY from dictValueKindOf/mapValueKindOf's soundness carve-out. PLUS a
+// third arm (§2/§3 decl inference, §4 "REP fallback for a bare name"): a
+// bare NAME whose rep carries BOTH `mayBeUndefined` and a `presentVal`
+// answers identically — INVARIANT: this is required for a maybeUndefined
+// read to survive being bound to a local (`let x = m.get(missing); x + 1`)
+// instead of evaporating at the decl boundary; an AST-shape-only join (arms
+// 1/2 alone) misses this case. Consulted directly (not via valTypeOf) at every existing
 // censusMaybeUndefined chokepoint — ir.js toNumF64/toStrI64, emit.js
 // nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-concat.
 //
-// LANDED STATE (§14 Slice 6, "begin the presentVal opt-in model"): arm 3
-// originally read ONLY `val` here (Slice 1/2, before the Slice-4-VT-
-// promotion revert). For a DECL/REASSIGN local this really was dead — §14
-// makes "val never carries a census claim" an invariant for that shape, and
-// always has been in practice since the census never fed `val`. But it was
-// NOT uniformly dead: a PARAM can carry `mayBeUndefined = true` (Slice 2's
-// own deliberate over-approximation — `censusShapedNode` flags ANY `[]`/`.`
-// 2-arg read, not just a dict/Map one, so a plain array/typed-array
-// OOB-possible index read on a call-site argument flags the receiving
-// param too) alongside a `val` set by narrow.js's ENTIRELY SEPARATE
-// call-site-argument fixpoint (`hardParamVal`/`inferValAtSite`, no census
-// involvement at all) — found LIVE, not assumed, when an initial rewrite to
-// `presentVal`-only regressed test/dyn-keys.js's "sibling carrier-domain
-// producers: out-of-bounds array read" pin from `NaN` back to `undefined`
-// (caught by the gate, not by inspection). Fixed: `presentVal` (reps.js) is
-// consulted FIRST — a SEPARATE, poison-disciplined kind claim, propagated
-// at decl/reassign time (analyze.js analyzeValTypes' `setPresentVal`
-// tracker, mirroring `setVal`'s poison-on-disagreement discipline exactly,
-// NOT `mayBeUndefined`'s spread-merge boolean OR) — with `val` KEPT as a
-// fallback for exactly the param case above, where it remains sound and
-// load-bearing. Arms 1/2/4 were already reachable pre-Slice-6; arm 3 is the
-// one this slice extends (decl-hop locals) without removing what already
-// worked (params). Whether a GIVEN chokepoint above ever actually SEES a
-// non-null claim from any arm still depends on that chokepoint's OWN outer
-// gate: several (ir.js toNumF64/toStrI64, emit.js nullableOperand/
-// bigIntOperand/bigIntUnary) compute `vt = valTypeOf(node)` FIRST and only
-// consult this function when `vt` already proves a matching kind — true for
-// the param case above (`val` IS `vt`'s own source there) but never true for
-// a census-shaped node itself, by §14's own point 3 ("no optimistic
-// default"). Widening
-// those chokepoints' own outer gates to fall back to this function when
-// `valTypeOf` is null is explicitly NOT part of this slice (§14 names it as
-// the actual "runtime presence dispatch" work, a separate, larger surface —
-// see .work/todo.md §deletion-sweep §15 for exactly which
-// consumers this slice made live vs left gated out, verified not assumed).
+// INVARIANT: arm 3 must consult `presentVal` FIRST, `val` second. For a
+// DECL/REASSIGN local, `val` never carries a census claim (the census never
+// feeds `val` for that shape) — `presentVal` (reps.js) is the only source,
+// propagated at decl/reassign time (analyze.js analyzeValTypes'
+// `setPresentVal` tracker, mirroring `setVal`'s poison-on-disagreement
+// discipline exactly, NOT `mayBeUndefined`'s spread-merge boolean OR). For a
+// PARAM, though, `val` stays load-bearing: `mayBeUndefined = true` can
+// coexist with a `val` set by narrow.js's ENTIRELY SEPARATE call-site-
+// argument fixpoint (`hardParamVal`/`inferValAtSite`, no census involvement
+// at all) — Slice 2's own deliberate over-approximation (`censusShapedNode`
+// flags ANY `[]`/`.` 2-arg read, not just a dict/Map one, so a plain
+// array/typed-array OOB-possible index read on a call-site argument flags
+// the receiving param too). Dropping the `val` fallback regresses
+// test/dyn-keys.js's "sibling carrier-domain producers: out-of-bounds array
+// read" pin from `NaN` back to `undefined`. Whether a GIVEN chokepoint above
+// ever actually SEES a non-null claim from any arm still depends on that
+// chokepoint's OWN outer gate: several (ir.js toNumF64/toStrI64, emit.js
+// nullableOperand/bigIntOperand/bigIntUnary) compute `vt = valTypeOf(node)`
+// FIRST and only consult this function when `vt` already proves a matching
+// kind — true for the param case above (`val` IS `vt`'s own source there)
+// but never true for a census-shaped node itself — no optimistic default.
+// Widening those chokepoints' own outer gates to fall back to this function
+// when `valTypeOf` is null is separate, larger future work — see
+// .work/todo.md §deletion-sweep §15 for which consumers are live vs still
+// gated out.
 //
 // censusShapedNode (Slice 2, .work/todo.md §deletion-sweep §3)
 // factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
@@ -478,32 +463,27 @@ export const censusShapedNode = (node) =>
   (Array.isArray(node) && node[0] === '()' && node.length === 3 &&
     Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string')
 
-// Call-RESULT mayBeUndefined arm — closes a Slice 4 gap found LIVE (not
-// assumed) while walking §5 criterion 3's chokepoint-composition check.
-// KEPT through the Slice-4 VT-wiring revert (audit #10): this arm's own
-// precondition (`f.valResultMayBeUndefined` true AND `f.valResult`
-// non-null) requires narrowValResults' return-kind unify to have already
-// settled a non-null `valResult` for a census-shaped return tail — which
-// itself requires `valTypeOf` on that tail to be non-null, i.e. requires
-// the very VT['[]']/['.']/['()'] promotion this revert just turned back
-// off. So with VT dormant this arm is reachable but returns null on every
-// real input — sound-but-inert, same status as arms 1-3 above, not a
-// separate risk. Left in place (not stubbed) so §14's re-enablement does
-// not have to re-derive this wiring. Originally: a call to a user
-// function/direct closure whose whole-program return-kind
-// fixpoint (narrow.js narrowValResults :732-733, flow-types.js
-// closureBodyReturnMayBeUndefined — both Slice 2, §3 "Return kinds") settled
+// Call-RESULT mayBeUndefined arm: a call to a user function/direct closure
+// whose whole-program return-kind fixpoint (narrow.js narrowValResults,
+// flow-types.js closureBodyReturnMayBeUndefined — §3 "Return kinds") settled
 // BOTH a definite `valResult` kind AND `valResultMayBeUndefined` is itself a
 // census fact one call-hop removed: `const g = (k) => { ...; return
 // m.get(k) }; g(k) === undefined` must not const-fold identically to a
-// direct `m.get(k) === undefined` — but nothing consulted
-// `valResultMayBeUndefined` anywhere before this (reps.js's own doc comment
-// already NAMED the field; ctx.inspect was its only reader, per
-// compile/index.js :347). Repro'd live: a two-statement (non-inlined)
-// callee's `g(k) === undefined` constant-folded to the SAME wrong boolean
-// for both a present and an absent key, because kind-traits.js
-// `calleeValType` returns `f.valResult` unconditionally with no accompanying
-// signal. Mirrors calleeValType's own two lookup paths (direct closure via
+// direct `m.get(k) === undefined`. INVARIANT: without this arm,
+// kind-traits.js's `calleeValType` returns `f.valResult` unconditionally
+// with no accompanying signal, so a two-statement (non-inlined) callee's
+// `g(k) === undefined` const-folds to the SAME wrong boolean for both a
+// present and an absent key. This arm's own precondition
+// (`f.valResultMayBeUndefined` true AND `f.valResult` non-null) requires
+// narrowValResults' return-kind unify to have already settled a non-null
+// `valResult` for a census-shaped return tail — which itself requires
+// `valTypeOf` on that tail to be non-null, i.e. requires the
+// VT['[]']/['.']/['()'] promotion that stays dormant (see the dict-value-
+// census consumer's doc comment above). So with VT dormant this arm is
+// reachable but returns null on every real input — sound-but-inert, same
+// status as arms 1-3 above, not a separate risk. Left in place (not
+// stubbed) so a future VT re-enablement does not have to re-derive this
+// wiring. Mirrors calleeValType's own two lookup paths (direct closure via
 // `ctx.func.directClosures` + `ctx.closure.valResult`, plain named function
 // via `ctx.funcs.map`) so a call-result claim and its mayBeUndefined
 // companion always travel together.
@@ -527,25 +507,22 @@ export function censusMaybeUndefinedKind(node) {
     // (lattice-design.md §5 Slice 3 precedent, the Fact.presence component
     // formalized) — same underlying REP field, same computation.
     if (mayBeUndefined(node)) {
-      // presentVal FIRST (§14 Slice 6): the precise, poison-disciplined census
-      // kind, live for a decl-hop local (never available via `val` — §14's
-      // permanent invariant, `val` never carries a census claim for that
-      // shape). Fall back to `val` (the ORIGINAL Slice 1 arm, KEPT — found
-      // load-bearing, not dead, while landing this slice): a PARAM's `val` is
-      // set by narrow.js's ORDINARY call-site-argument fixpoint, entirely
-      // independent of census provenance, while its `mayBeUndefined` can
-      // ALSO be true via Slice 2's own deliberate over-approximation
-      // (censusShapedNode flags ANY `[]`/`.` 2-arg read, including a plain
-      // array/typed-array OOB-possible index — not just dict/Map — sound
-      // because every mayBeUndefined consumer only ever asks a boolean
-      // question with it, reps.js's own doc comment). When both land on the
-      // SAME param, `val`'s NUMBER claim really can be undefined at runtime
-      // (an OOB read), and this arm answering it is what keeps toNumF64's
-      // coerceNullishToNum safety net reachable for a single-call-site
-      // `(v) => v + 1` over an out-of-bounds array read — removing this
-      // fallback regressed test/dyn-keys.js's "sibling carrier-domain
-      // producers" pin from NaN back to `undefined`, caught by the gate
-      // before landing, not assumed safe.
+      // INVARIANT: check `presentVal` FIRST — the precise, poison-disciplined
+      // census kind, live for a decl-hop local (never available via `val`,
+      // which never carries a census claim for that shape). Fall back to
+      // `val`: a PARAM's `val` is set by narrow.js's ORDINARY call-site-
+      // argument fixpoint, entirely independent of census provenance, while
+      // its `mayBeUndefined` can ALSO be true via a deliberate
+      // over-approximation (censusShapedNode flags ANY `[]`/`.` 2-arg read,
+      // including a plain array/typed-array OOB-possible index — not just
+      // dict/Map — sound because every mayBeUndefined consumer only ever
+      // asks a boolean question with it, reps.js's own doc comment). When
+      // both land on the SAME param, `val`'s NUMBER claim really can be
+      // undefined at runtime (an OOB read), and this arm answering it is
+      // what keeps toNumF64's coerceNullishToNum safety net reachable for a
+      // single-call-site `(v) => v + 1` over an out-of-bounds array read —
+      // dropping this fallback regresses test/dyn-keys.js's "sibling
+      // carrier-domain producers" pin from NaN back to `undefined`.
       if (r.presentVal) return r.presentVal
       if (r.val) return r.val
     }
@@ -567,23 +544,17 @@ export function censusMaybeUndefinedKind(node) {
 // bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
 // interop must recognize differs per operator, hence the distinct kind. Returns 0
 // when `node` isn't any of these shapes (not this export lane at all).
-// Slice 7 binary sibling (.work/todo.md §deletion-sweep §14/§15),
-// generalized by §14 point 4 (audit #10): emit.js's `bigIntJointDispatch`
-// (superseding Slice 7's `+`-only `bothBigIntOperands`) reaches its i64
-// arithmetic — for ANY of the 9 binary arithmetic/bitwise ops now, not just
-// `+` — when BOTH operands' census independently claim BIGINT (the SAME AND,
+// Binary sibling of kinds 1-3 (.work/todo.md §deletion-sweep §14/§15):
+// emit.js's `bigIntJointDispatch` reaches its i64 arithmetic — for ANY of
+// the 9 binary arithmetic/bitwise ops, not just `+` — when BOTH operands'
+// census independently claim BIGINT (the SAME AND,
 // never OR — see `bigIntDomainsCanMix`'s own comment for why an OR would be
 // unsound). Unlike kinds 1-3, this shape has NO absent-case bit pattern to
 // special-case: `bigIntJointDispatch`'s own runtime domain check throws
 // BIGINT_UNDEF_MIX before a genuinely-mismatched operand pair could ever
 // reach a return here, so every value this export lane ever sees IS a
 // genuine i64 arithmetic result — kind 4, for every op in
-// BIGINT_JOINT_BINARY_OPS. Widened from `+`-only (Slice 7's own scoping) now
-// that emit.js's WASM computation is correct for the other 8 ops too —
-// verified via direct repro before landing, not assumed (the SEPARATE,
-// pre-existing `valTypeOfWithLocals` gap Slice 7 cited for withholding this
-// was closed independently by f1c1256b's own general fix; §14 point 4's own
-// `bigIntJointDispatch` closes the remaining WASM-computation half). interop.js
+// BIGINT_JOINT_BINARY_OPS. interop.js
 // needs no new table entry for kind 4: `decodeBigintSentinel`'s
 // `BIGINT_SENTINEL_BITS[4]` is simply absent, so its `ret === undefined`
 // comparison is always false for a real BigInt `ret` and the raw value passes
@@ -597,21 +568,19 @@ export function censusBigintSentinelKind(node) {
   if (Array.isArray(node) && node.length === 3 && BIGINT_JOINT_BINARY_OPS.has(node[0])
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
     return BIGINT_SENTINEL_KIND.JOINT_BINARY
-  // Kind 5 (§16→§18 "presentVal param producers"): a call whose CALLEE is a
+  // Kind 5 ("presentVal param producers"): a call whose CALLEE is a
   // plain single-param function/const-arrow (ctx.funcs.map) entirely made of
   // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
   // single-return block `{ return -v }`) — the call-boundary sibling of kinds
-  // 2/3 above, closing the exact param-hop shape 38dd0dca/§16 pinned as a
-  // KNOWN-FAIL (`const f = (v) => -v; return f(m.get('x'))`, present-key
-  // BIGINT). Deliberately NOT built on `func.valResult`/
-  // `valResultMayBeUndefined` (narrowValResults' own return-kind join,
-  // .work/todo.md §deletion-sweep §3 "Return kinds"): that
-  // fixpoint runs BEFORE narrow.js's presentVal param propagation
-  // (hardParamPresentVal) ever populates paramReps, so it can never observe
-  // a param-sourced BIGINT claim through a unary wrapper — the identical
-  // ordering gap 15c789ac's own commit already found and documented
-  // ("narrowValResults' own join stays empirically unreachable") for
-  // mayBeUndefined's return-kind join. Reading the callee's raw AST directly
+  // 2/3 above, covering the param-hop shape `const f = (v) => -v; return
+  // f(m.get('x'))` (present-key BIGINT). Deliberately NOT built on
+  // `func.valResult`/`valResultMayBeUndefined` (narrowValResults' own
+  // return-kind join, .work/todo.md §deletion-sweep §3 "Return kinds"):
+  // INVARIANT: that fixpoint runs BEFORE narrow.js's presentVal param
+  // propagation (hardParamPresentVal) ever populates paramReps, so it can
+  // never observe a param-sourced BIGINT claim through a unary wrapper —
+  // the same ordering gap makes narrowValResults' own join empirically
+  // unreachable for mayBeUndefined's return-kind join too. Reading the callee's raw AST directly
   // (ctx.funcs.map, populated by prepare — before any narrowing runs) and the
   // ARGUMENT's own presentVal-fed census claim (censusMaybeUndefinedKind,
   // computed HERE, at whatever time THIS caller is itself analyzed — after
@@ -649,9 +618,9 @@ export function censusBigintSentinelKind(node) {
 // narrow.js's inter-procedural param join and return-kind join, flow-types.js's
 // closureBodyReturnKind sibling.
 //
-// Ownership (audit-#11, session factStore slice — see the DEPS table in
-// session.js, and the bindingUses precedent this mirrors): stored at
-// getFactStore().mayBeUndefinedTrace, NOT a private module-level WeakMap.
+// Ownership: session-owned, stored at getFactStore().mayBeUndefinedTrace,
+// NOT a private module-level WeakMap — see the DEPS table in session.js,
+// and the bindingUses precedent this mirrors.
 // Cache-correctness is body-identity-keyed and needs NO surgical
 // invalidation — same argument as bindingUses (analyze-scans.js): every pass
 // that restructures a function's AST does so through compile/analyze.js's
@@ -714,31 +683,30 @@ export const exprMayBeUndefinedIn = (expr, bodyRoot) =>
 
 // Narrower sibling of censusShapedNode's OWN arm 2 only (a `.get()` call —
 // unambiguously Map, never an array/typed-array index the way arm 1's bare
-// `[]`/`.` shape is) — §14 point 4 fallout, type.js's bitwise-ops i32-
-// narrowing guard. Needed because a LOCAL Map receiver (`const m = new
+// `[]`/`.` shape is) — type.js's bitwise-ops i32-
+// narrowing guard needs it because a LOCAL Map receiver (`const m = new
 // Map()` inside the SAME function body) is invisible to `mapValueKindOf`
 // at narrow.js's whole-program `narrowI32Results` pre-pass (that function's
 // own first check, `valTypeOf(name) === VAL.MAP`, can't resolve a purely
 // LOCAL receiver without `ctx.func.localReps`, uninstalled there — the SAME
-// "local-receiver visibility at a plan-time fixpoint" gap test/dyn-keys.js's
-// own KNOWN-FAIL already names) — so `exprPresentValIn`'s KIND-precise trace
-// resolves null for this shape, silently permitting an i32 narrowing that
-// desyncs from emit.js's own later, correctly-census-aware
-// `bigIntJointDispatch` (a genuine WASM validation crash, not just a wrong
-// value — confirmed live). Deliberately NOT the full `censusShapedNode`
+// "local-receiver visibility at a plan-time fixpoint" gap test/dyn-keys.js
+// pins). INVARIANT: without this predicate, `exprPresentValIn`'s KIND-precise
+// trace resolves null for this shape, silently permitting an i32 narrowing
+// that desyncs from emit.js's own later, correctly-census-aware
+// `bigIntJointDispatch` — a genuine WASM validation crash, not just a wrong
+// value. Deliberately NOT the full `censusShapedNode`
 // (which also matches a plain array/typed-array 2-arg index — `arr[i] &
 // mask` is common in hot bitwise code and must keep narrowing; broadening to
-// that shape regressed exactly that class, measured via a direct compile
-// before landing this narrower predicate instead) — a boolean-only "might be
+// that shape regresses exactly that class) — a boolean-only "might be
 // a Map .get() read" signal is enough here: this consumer only ever asks
 // "may I narrow to i32", never "what kind", so it doesn't need presence
 // resolved either, unlike exprPresentValIn.
 const mapGetShapedNode = (node) =>
   Array.isArray(node) && node[0] === '()' && node.length === 3 &&
   Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'get' && typeof node[1][1] === 'string'
-// Ownership (audit-#12 item 1, session factStore slice — same argument as
-// mayBeUndefinedTrace above / see the DEPS table in session.js): stored at
-// getFactStore().mapGetShapedTrace, NOT a private module-level WeakMap.
+// Ownership: session-owned, stored at getFactStore().mapGetShapedTrace,
+// NOT a private module-level WeakMap — same argument as mayBeUndefinedTrace
+// above; see the DEPS table in session.js.
 // Body-identity-keyed, no surgical invalidation needed (setFuncBody always
 // assigns a fresh func.body reference on rewrite — same no-stale-hit
 // argument as mayBeUndefinedTrace/bindingUses). Session ownership still
@@ -802,7 +770,7 @@ export const censusMaybeUndefined = (node) => !!censusMaybeUndefinedKind(node)
 // this trace never reaches it (a bare name inside the walk recurses back into
 // THIS function, never into censusMaybeUndefinedKind's own repOf lookup).
 // WeakMap-cached per bodyRoot, mirroring nameMayBeUndefinedInBody exactly —
-// including its ownership: audit-#12 item 1 moves this into
+// including its ownership: session-owned, stored at
 // getFactStore().presentValTrace, NOT a private module-level WeakMap, for
 // the SAME self-hosted-WeakMap-folds-to-strong-Map reason documented on
 // nameMayBeUndefinedInBody above (kind.js is on the self-hosted compiler
@@ -931,12 +899,12 @@ VT['[]'] = (args) => {
       if (gElem && !ctx.types?.dynWriteVars?.has(args[0])) return gElem
     }
   }
-  // NO dict-mode receiver fold here: dictValueKindOf (restored above, Slice 1)
-  // is an internal helper for censusMaybeUndefinedKind only — VT['[]'] does
-  // NOT promote dictValueValType to an exact VT at a `[]` read site. Slice 4
-  // (3782a692) wired this fold in and it was REVERTED (audit #10 — see
-  // dictValueKindOf's own doc comment above). Re-enabling THAT is §14's
-  // opt-in presentVal model, not a repeat of this global promotion.
+  // INVARIANT: NO dict-mode receiver fold here: dictValueKindOf (above) is
+  // an internal helper for censusMaybeUndefinedKind only — VT['[]'] must NOT
+  // promote dictValueValType to an exact VT at a `[]` read site (see
+  // dictValueKindOf's own doc comment above for the soundness argument).
+  // Re-enabling that is the opt-in presentVal model, not a repeat of this
+  // global promotion.
   // Direct double-index on a module-level nested numeric table — `C[i][j]` where
   // `C = [[…number…], …]`. The receiver is itself a single-index read of a global
   // array whose nested element kind was recorded at decl time. Same dynWriteVars
@@ -1005,21 +973,21 @@ VT['.'] = (args) => {
       const sid = typeof args[0] === 'string'
         ? (repOf(args[0])?.schemaId ?? ctx.schema?.vars?.get(args[0])) : null
       if (sid != null && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
-      // `child.literal` (shapeOfObjectLiteralAst's scalar-leaf fallback,
-      // BigInt inference session): a compile-time constant drawn straight
+      // `child.literal` (shapeOfObjectLiteralAst's scalar-leaf fallback):
+      // a compile-time constant drawn straight
       // from the object literal's own source text has no runtime slot to
       // write through — the write-hazard census below exists to catch an
       // ALIASED heap write this analysis can't trace, which cannot apply to
       // a value that was never a property STORE in the first place. Skip it
       // ONLY for that flagged case; every other `child` (JSON.parse'd,
       // propagated through a chain, a nested object) still goes through the
-      // census exactly as before. Confirmed load-bearing, not a guess: the
-      // unconditional gate below reads `hz.pointsTo === 'ALL'` in the real
-      // 156-module self-hosted kernel (a whole-program "too many
+      // census exactly as before. INVARIANT: this skip is load-bearing — the
+      // unconditional gate below reads `hz.pointsTo === 'ALL'` in the
+      // self-hosted kernel (a whole-program "too many
       // unresolvable writes to track individually" fallback state), which
-      // was silently vetoing `layout.js`'s `LAYOUT.NAN_PREFIX_BITS` — a
-      // `const`, never-written module table — right after the scalar-leaf
-      // fix above had already proven its kind.
+      // would otherwise silently veto `layout.js`'s `LAYOUT.NAN_PREFIX_BITS`
+      // — a `const`, never-written module table — right after the
+      // scalar-leaf handling above already proved its kind.
       if (!child.literal) {
         const hz = ctx.schema?.slotWriteHazards
         if (hz && (hz.pointsTo === 'ALL' || hz.props.has(args[1]) ||
@@ -1028,11 +996,11 @@ VT['.'] = (args) => {
       return child.val
     }
   }
-  // NO dict-mode receiver fold here, same as VT['[]'] above (dictValueKindOf
-  // is a censusMaybeUndefinedKind-only helper, Slice 1 — not wired into VT):
-  // `prec['in']` → `['.','prec','in']` rewrite (module/array.js:762-763)
-  // used to benefit identically to `prec[k]` — see dictValueKindOf's own
-  // doc comment above (Slice 4 wired this in, audit #10 reverted it).
+  // INVARIANT: NO dict-mode receiver fold here, same as VT['[]'] above
+  // (dictValueKindOf is a censusMaybeUndefinedKind-only helper — not wired
+  // into VT): `prec['in']` → `['.','prec','in']` rewrite
+  // (module/array.js:762-763) resolves the same way as `prec[k]` — see
+  // dictValueKindOf's own doc comment above for the soundness argument.
   // Built-in property on a known sized kind — `.length` on STRING/ARRAY/TYPED,
   // `.size` on SET/MAP, `.byteLength`/`.byteOffset` on TYPED/BUFFER. These are
   // language invariants (the property is always a number on that kind), so typing
@@ -1048,15 +1016,11 @@ VT['.'] = (args) => {
 const numericBinaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
-// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
-// the binary sibling of censusBigintUnaryVT below — generalizes VT['+']'s own
-// original both-census-BIGINT branch (kept there, unchanged) to the other 8
-// arithmetic/bitwise ops now that emit.js's `bigIntJointDispatch` (replacing
-// the old per-op OR/AND gates — see its own doc comment) makes their WASM
-// computation correct for this shape too (previously blocked here: Slice 7
-// deliberately withheld this upgrade because the OLD computation was still
-// wrong for it — landing the static claim alone would have been
-// representationally complete but not live). Same AND (never OR)
+// The binary sibling of censusBigintUnaryVT below (.work/todo.md
+// §deletion-sweep §14) — generalizes VT['+']'s own both-census-BIGINT branch
+// (kept there, unchanged) to the other 8 arithmetic/bitwise ops: emit.js's
+// `bigIntJointDispatch` (see its own doc comment) makes their WASM
+// computation correct for this shape too. Same AND (never OR)
 // requirement as VT['+']/`bigIntDomainsCanMix`: a single census-BigInt
 // operand paired with an unproven/proven-NUMBER other side must NOT
 // upgrade — that combination resolves via `bigIntJointDispatch`'s own
@@ -1077,30 +1041,30 @@ const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
-// `u-`/`~` census-BIGINT hardening (audit #10 fallout, found reverting Slice 4's VT
-// wiring — .work/todo.md §deletion-sweep §14): numericBinaryVT/
-// numericUnaryVT's shared "unknown operand → optimistic NUMBER default" (same class
-// as VT['+']'s own accepted imprecision, see valTypeOfWithLocals's SOUND-`+`/SOUND-
-// unary doc comments) used to resolve correctly for a census-BIGINT dict/Map operand
-// ONLY because Slice 4's VT['[]']/['.']/['()'] wiring made `valTypeOf(args[0])`
-// itself prove BIGINT directly. With that wiring reverted, `-m.get(k)`/`~d[k]` on a
-// BIGINT-census container silently fell back to the optimistic NUMBER default —
-// regressing `_resultNumeric`'s boundary-wrap decision (fixed separately, see
-// compile/index.js) AND emitStrictEq's REF_EQ_KINDS raw-i64-compare dispatch (`vta
-// === vtb === VAL.BIGINT`, emit.js :2732), which needs THIS static claim to route
-// `-m.get(k) === -5n` correctly. Overridden here for EXACTLY the two ops
-// censusBigintSentinelKind recognizes (`u-`, `~`) — not the general numericBinaryVT/
-// numericUnaryVT default, and not `++`/`--`/`**`/`>>>`/`u+` (no export-lane sentinel
-// exists for those shapes, Slice 5 never covered them, out of scope here) — mirroring
-// emitNeg/`~`'s own OR-arm activation-gate hardening (§13) so the STATIC kind claim
-// and the RUNTIME dispatch it feeds stay in lockstep independent of Slice 4. Sound for
+// `u-`/`~` census-BIGINT hardening (.work/todo.md §deletion-sweep §14):
+// numericBinaryVT/numericUnaryVT's shared "unknown operand → optimistic
+// NUMBER default" (same class as VT['+']'s own accepted imprecision, see
+// valTypeOfWithLocals's SOUND-`+`/SOUND-unary doc comments) is wrong for a
+// census-BIGINT dict/Map operand: with VT['[]']/['.']/['()'] NOT proving
+// BIGINT directly (see the dict-mode fold invariant above), `-m.get(k)`/
+// `~d[k]` on a BIGINT-census container would otherwise silently fall back
+// to the optimistic NUMBER default — regressing `_resultNumeric`'s
+// boundary-wrap decision (compile/index.js) AND emitStrictEq's
+// REF_EQ_KINDS raw-i64-compare dispatch (`vta === vtb === VAL.BIGINT`,
+// emit.js), which needs THIS static claim to route `-m.get(k) === -5n`
+// correctly. INVARIANT: override applies for EXACTLY the two ops
+// censusBigintSentinelKind recognizes (`u-`, `~`) — not the general
+// numericBinaryVT/numericUnaryVT default, and not `++`/`--`/`**`/`>>>`/`u+`
+// (no export-lane sentinel exists for those shapes) — mirroring emitNeg/`~`'s
+// own OR-arm activation-gate hardening so the STATIC kind claim and the
+// RUNTIME dispatch it feeds stay in lockstep. Sound for
 // the SAME reason emitNeg's OR-arm is sound: this claim is per-CONTAINER (the census
 // proves every value ever written through this receiver is BIGINT), not per-key — an
 // absent-key read still resolves through bigIntUnary's own runtime select/isUndef
 // branch and the sentinel export lane, both of which decide the ACTUAL present-vs-
-// absent value independent of this static claim (verified: absent-key strict-eq
+// absent value independent of this static claim (an absent-key strict-eq
 // against a BigInt literal stays correctly `false`, REF_EQ_KINDS' i64 bit-compare
-// naturally differs, same as the pre-existing Slice-4-live behavior this restores).
+// naturally differs).
 const censusBigintUnaryVT = (base) => (args) =>
   args[1] == null && censusMaybeUndefinedKind(args[0]) === VAL.BIGINT ? VAL.BIGINT : base(args)
 VT['u-'] = censusBigintUnaryVT(numericBinaryVT)
@@ -1111,21 +1075,21 @@ VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-  // Slice 7 (.work/todo.md §deletion-sweep §14/§15 honest
-  // boundary): BOTH operands' census independently claiming BIGINT upgrades
+  // Honest boundary (.work/todo.md §deletion-sweep §14/§15): BOTH operands'
+  // census independently claiming BIGINT upgrades
   // this static claim too — the binary sibling of censusBigintUnaryVT above,
   // same AND (never OR) requirement as emit.js's bigIntDomainsCanMix (a
   // single census-BigInt operand paired with an unproven/proven-NUMBER other
   // side must NOT upgrade: that combination resolves via `bigIntJointDispatch`'s
-  // own runtime branch, §14 point 4, not a static claim here). Load-bearing,
-  // not decorative: without this, `let x = m.get(a);
+  // own runtime branch, not a static claim here). INVARIANT: this branch is
+  // load-bearing, not decorative — without it, `let x = m.get(a);
   // let y = m.get(b); return x + y` (both present-key BIGINT census, emit.js's
-  // own widened gate now computes the CORRECT i64 sum) still decoded wrong at
+  // own widened gate computes the CORRECT i64 sum) decodes wrong at
   // the export boundary — compile/index.js's `_resultNumeric`/
   // `_resultBigintSentinel` boundary-wrap decision reads THIS function's
-  // return value, and the old optimistic-NUMBER default below sent it down
-  // the NUMBER decode lane instead of the BigInt sentinel lane (confirmed
-  // live: returned `4e-323`, the raw i64-sum bits misread as a NUMBER, not `8n`).
+  // return value, and the optimistic-NUMBER default below would send it down
+  // the NUMBER decode lane instead of the BigInt sentinel lane (the raw
+  // i64-sum bits misread as a NUMBER — `4e-323` instead of `8n`).
   if (censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT)
     return VAL.BIGINT
   // OPTIMISTIC NUMBER for unknown sides — load-bearing for local numeric
@@ -1207,11 +1171,11 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
-    // NO `.get` short-circuit here: mapValueKindOf (restored above, Slice 1)
-    // is a censusMaybeUndefinedKind-only helper — VT['()'] does not promote
-    // a `.get()` read to an exact VT. Slice 4 (3782a692) wired this in and
-    // it was REVERTED (audit #10 — see mapValueKindOf's own doc comment
-    // above; re-enablement is §14's opt-in presentVal model).
+    // INVARIANT: NO `.get` short-circuit here: mapValueKindOf (above)
+    // is a censusMaybeUndefinedKind-only helper — VT['()'] must NOT promote
+    // a `.get()` read to an exact VT (see mapValueKindOf's own doc comment
+    // above for the soundness argument; re-enablement is the opt-in
+    // presentVal model).
     const vt = methodValType(method, obj, valTypeOf(obj), ctx)
     if (vt != null) return vt
   }
@@ -1303,14 +1267,14 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // (analyzeBody's per-function valTypes map, e.g. `let x = BigInt(v)`) that the
   // GLOBAL-only plain `valTypeOf` re-derivation below cannot see at all — a bare
   // name is invisible to `lookupValType` unless it's also a MODULE-level global.
-  // Falling through to `valTypeOf(expr)` after `rec` already proved BOTH sides
-  // BIGINT silently discarded that proof and re-resolved through the blind,
-  // globally-optimistic default, landing back on VAL.NUMBER — exactly the
-  // general miscompile this whole function exists to prevent (confirmed via
-  // direct repro: `(v,w) => { let x = BigInt(v); let y = BigInt(w); return x +
-  // y }` misdecoded at the export boundary before this fix, the identical class
-  // as the sibling arithmetic ops below, not something `+` was actually immune
-  // to despite this function's own prior "SOUND +" framing).
+  // INVARIANT: falling through to `valTypeOf(expr)` after `rec` already
+  // proved BOTH sides BIGINT would silently discard that proof and
+  // re-resolve through the blind, globally-optimistic default, landing back
+  // on VAL.NUMBER — exactly the general miscompile this whole function
+  // exists to prevent, e.g. `(v,w) => { let x = BigInt(v); let y =
+  // BigInt(w); return x + y }` misdecoding at the export boundary, the
+  // identical class as the sibling arithmetic ops below (`+` is not immune
+  // to this despite the "SOUND +" framing elsewhere in this file).
   if (op === '+') {
     const a = rec(args[0]), b = rec(args[1])
     if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
@@ -1319,15 +1283,14 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   }
   // Arithmetic/bitwise siblings (- * / % & | ^ << >>, the binary half of
   // NUMERIC_BINARY_OPS minus its unary member `u-`, handled by the unary
-  // family just below): the general `valTypeOfWithLocals` gap named at
-  // 38dd0dca — every one of these fell all the way through to the file-
-  // ending `return valTypeOf(expr)`, which re-derives via numericBinaryVT's
-  // OWN global-only `valTypeOf(args[0])`/`valTypeOf(args[1])`, blind to
-  // whatever `rec` (this function's own local resolver) just proved. A
-  // genuinely BigInt-valued local (`let x = BigInt(v)`) flowing through `x -
-  // y` therefore claimed `func.valResult`/`_resultNumeric` = NUMBER — wrong,
-  // sending a real i64 BigInt result down the plain-f64 (or generic-dynamic)
-  // export lane instead of the i64exp BigInt lane.
+  // family just below): INVARIANT: these must NOT fall all the way through
+  // to the file-ending `return valTypeOf(expr)`, which re-derives via
+  // numericBinaryVT's OWN global-only `valTypeOf(args[0])`/`valTypeOf(args[1])`,
+  // blind to whatever `rec` (this function's own local resolver) just
+  // proved. A genuinely BigInt-valued local (`let x = BigInt(v)`) flowing
+  // through `x - y` would otherwise claim `func.valResult`/`_resultNumeric`
+  // = NUMBER — wrong, sending a real i64 BigInt result down the plain-f64
+  // (or generic-dynamic) export lane instead of the i64exp BigInt lane.
   //
   // UNLIKE `+` just above: no "unknown side → no claim" veto here. `+` needs
   // that veto because an unproven operand could ALSO be a STRING (silently
@@ -1341,14 +1304,14 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // bearing for local numeric inference"). Mirroring that formula exactly —
   // just sourced from `rec` instead of the blind global `valTypeOf` — ADDS
   // the missing local-BigInt proof without changing behavior for the "rec
-  // can't resolve either side" case at all (proven live: a `null`-propagating
-  // veto here breaks the closure-table call-site param lattice's own
+  // can't resolve either side" case at all. INVARIANT: a `null`-propagating
+  // veto here would break the closure-table call-site param lattice's own
   // bootstrapping — dyn-closure-tables.js's `closureBodyReturnKind` unifies
   // over `(x,k)=>(x+k)|0`-shaped elements BEFORE `x`/`k` have any local
   // evidence at all, relying on exactly this "unknown → NUMBER" default to
-  // settle the table's call-expression result kind; vetoing it to null broke
-  // that fixpoint and regressed the `f64.add`-with-no-`__str_concat` codegen
-  // pin in test/closures.js — found and reverted before landing).
+  // settle the table's call-expression result kind; vetoing it to null
+  // breaks that fixpoint and regresses the `f64.add`-with-no-`__str_concat`
+  // codegen pin in test/closures.js.
   if (op === '-' || op === '*' || op === '/' || op === '%' ||
       op === '&' || op === '|' || op === '^' || op === '<<' || op === '>>') {
     const a = rec(args[0]), b = rec(args[1])
@@ -1522,8 +1485,8 @@ function spreadSchema(obj) {
   }
   // Literal `new X(...)`/`X(...)` Error-constructor call — mirrors module/
   // object.js `resolveSchema`'s identical branch (.work/todo.md §deletion-sweep
-  // finding-1/3: closes a pre-existing analyze/emit disagreement this session
-  // found — a BOUND Error name already agreed via ctx.schema.resolve above,
+  // finding-1/3). INVARIANT: this closes an analyze/emit disagreement — a
+  // BOUND Error name already agreed via ctx.schema.resolve above,
   // but this literal shape fell through to `shapeOf` below, which doesn't
   // know Error calls, so it resolved null/HASH here while emit's own
   // resolveSchema resolved the physical schema. Same physical layout for
@@ -1545,23 +1508,24 @@ function spreadSchema(obj) {
  *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
  *  locking a static jsonShape onto it.
  *
- *  Scalar-literal property leaf (BigInt inference session, .work/bigint-
+ *  Scalar-literal property leaf (.work/bigint-
  *  retirement-design.md §5 residual-site rule 1): a property whose VALUE is
  *  itself a compile-time-decidable scalar expression (`NAN_PREFIX_BITS:
  *  0x7FF8000000000000n`, or any other literal/arithmetic form `valTypeOf`
- *  already classifies — NUMBER/STRING/BOOL/BIGINT/…) was previously
- *  invisible here: the recursive call above only ever returns non-null for a
- *  NESTED `{}`/name-reference child, so a scalar leaf's `child` was always
- *  null and the property silently dropped from `props`. `VT['.']` then had
- *  nothing to answer a `.prop` read with, forcing every reader back to the
- *  untyped/dynamic path — concretely, `layout.js`'s `LAYOUT.NAN_PREFIX_BITS`
- *  (a plain module-object BigInt-literal property) was unprovable at its own
- *  read sites, which poisoned `i64Hex`'s cross-call-site `val` consensus
- *  (narrow.js `hardParamVal`/`bigintBoxedVerdict`) into the one residual
- *  boxed PARAM the Slice-0 ledger banked. General fix, not layout.js-
- *  specific: ANY module-level object literal with a literal/statically-
- *  decidable scalar property now gets that property's kind recorded, the
- *  same way `shapeOfJsonValue` already does for a JSON.parse'd scalar. */
+ *  already classifies — NUMBER/STRING/BOOL/BIGINT/…). INVARIANT: this must
+ *  be recorded here — the recursive call above only ever returns non-null
+ *  for a NESTED `{}`/name-reference child, so without this branch a scalar
+ *  leaf's `child` stays null and the property silently drops from `props`,
+ *  leaving `VT['.']` nothing to answer a `.prop` read with and forcing every
+ *  reader back to the untyped/dynamic path — concretely, `layout.js`'s
+ *  `LAYOUT.NAN_PREFIX_BITS` (a plain module-object BigInt-literal property)
+ *  would be unprovable at its own read sites, poisoning `i64Hex`'s
+ *  cross-call-site `val` consensus (narrow.js `hardParamVal`/
+ *  `bigintBoxedVerdict`) into a residual boxed PARAM. General fix, not
+ *  layout.js-specific: ANY module-level object literal with a
+ *  literal/statically-decidable scalar property now gets that property's
+ *  kind recorded, the same way `shapeOfJsonValue` already does for a
+ *  JSON.parse'd scalar. */
 export function shapeOfObjectLiteralAst(expr) {
   if (typeof expr === 'string') return shapeOf(expr)
   if (!Array.isArray(expr) || expr[0] !== '{}') return shapeOf(expr)

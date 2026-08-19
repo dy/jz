@@ -124,7 +124,7 @@ function buildCallerElems(sliceKey) {
 // i32 (so a self-referential def like `nc = nc + 1` doesn't vacuously ground
 // at the anti-fixpoint's level 0, see intLevelMap's param-seeding comment) and
 // read back its settled level. collectIntDefs (intLevelMap's def-collector)
-// already recognizes exactly the classic shapes named in the ledger — `p++`,
+// already recognizes exactly the classic shapes — `p++`,
 // `p += <int>`, `p = p + <int>`, `p = <int-expr of p>` desugar to the same
 // def-list entries a plain int-certain local would produce. Anything it can't
 // see (a write inside a nested arrow — capturedNames not passed) or that
@@ -133,8 +133,8 @@ function buildCallerElems(sliceKey) {
 // reverted and the param stays f64 — never a miscompile, only a forgone
 // optimization. On success the seed IS the specialization (p.type stays
 // 'i32'); the reassignment then needs writeVar (src/ir.js) to honor the
-// param's declared type on the store side — the fix for the "generic f64
-// assign path" the old comment named (mirrors readVar's own params fallback).
+// param's declared type on the store side, not the generic f64 assign path
+// (mirrors readVar's own params fallback).
 function isIntSafeMutatedParam(func, p) {
   const saved = p.type
   p.type = 'i32'
@@ -562,7 +562,7 @@ function narrowI32Results(funcs) {
     // the false-branch value is a genuine JS `false`, not the NUMBER 0: the
     // i32→f64 export rebox (`f64.convert_i32_s`) can only ever produce a raw
     // number, permanently losing the FALSE atom no downstream fix could
-    // recover (verified live: `f(-1)` returned 0, JS oracle `false`). A
+    // recover (e.g. `f(-1)` returns 0, where the JS oracle is `false`). A
     // locals-aware hasAmbiguousBoolMerge (this phase runs before
     // ctx.func.localReps is populated for the func under analysis — mirrors
     // the BigInt gate two lines below) vetoes i32-narrowing for any such
@@ -646,9 +646,9 @@ function narrowI32Results(funcs) {
 // "ABOVE" the per-function localReps state that fact normally rides on
 // (populated at emit time — compile/index.js's analyzeFuncForEmit-equivalent
 // `updateRep` loop over the identical `facts.arrElemValTypes` slice). Without
-// this, `let a = [1n]; return a[0]` read as an unproven (Number) boundary
-// kind even though the i64 VALUE was already correct (re-audit #6 finding 2;
-// .work/todo.md "NOT FIXED, BANKED" entry — BigInt array literals never
+// this, `let a = [1n]; return a[0]` reads as an unproven (Number) boundary
+// kind even though the i64 VALUE is already correct (.work/todo.md
+// "NOT FIXED, BANKED" entry — BigInt array literals never
 // qualify for flat SRoA, so this whole-program fact is the only path to the
 // correct kind).
 //
@@ -690,7 +690,7 @@ function narrowValResults(funcs) {
   // function call results (`f?.valResult`) route through valTypeOf(expr)'s own
   // VT['()'] → calleeValType, same as before this delegation.
   //
-  // NOT wired here (deliberately, after diagnosis): a same-body local-closure
+  // INVARIANT: NOT wired here — a same-body local-closure
   // extension — resolving `return parse(v)` (watr's uleb/limits shape) through
   // closureBodyReturnKind (flow-types.js) the moment a typeof-guard is
   // involved — round-tripped correctly NATIVE but diverged self-hosted
@@ -1916,7 +1916,7 @@ export default function narrowSignatures(programFacts, ast) {
   // itself is untouched by this: the mergeParamFact call and the
   // `r[field]===null` early-return still fire exactly where they did before.
   const mergeRule = (field, infer, soft = false, trackKind = false) => ({
-    // audit-#16 P0-1: an UNRESOLVED live observation (v == null — a call-site
+    // INVARIANT: an UNRESOLVED live observation (v == null — a call-site
     // argument the inferrer cannot classify, or a missing arg with no default)
     // must join the FULL universe, not be skipped — otherwise possibleKinds
     // reads as a complete superset while silently omitting the unclassifiable
@@ -2038,7 +2038,7 @@ export default function narrowSignatures(programFacts, ast) {
   // poisons params whose call sites still can't be proven (genuinely-untyped args).
   const runArrElemFixpoint = (field, inferFn, elemsCtxMap, sidsCtxMap) => {
     // Named cx, not a positional tail (infer.js's "Fixpoint call-site inference
-    // context" doc has the field shape + the da040a5a collision history that
+    // context" doc has the field shape + the collision history that
     // motivated it). Extends `state` in place rather than allocating a fresh
     // object per call: `state` is already a per-site-per-sweep throwaway
     // (siteState builds a new one every runCallsiteLattice pass, with these
@@ -2046,23 +2046,23 @@ export default function narrowSignatures(programFacts, ast) {
     // a reshape), and this runs inside narrowSignatures' hottest worklist
     // loop — which is itself compiled and executed AS the self-host kernel,
     // so allocation/shape churn here is on the self-host compile-speed
-    // critical path (caught live: an earlier cut spread a NEW object per
-    // call and tipped test/selfhost-perf.js's warm-instance ratio well past
-    // its 0.99× cap; this mutate-in-place form recovers most of it).
-    // KNOWN RESIDUAL COST (not fully closed, not gated by this task): `cx`
+    // critical path. INVARIANT: allocating a NEW object per call here tips
+    // test/self-compile-perf.js's warm-instance ratio well past
+    // its 0.99× cap; this mutate-in-place form is required to stay under it.
+    // KNOWN RESIDUAL COST (not fully closed): `cx`
     // still reaches inferFn through a function-VALUE parameter (inferFn
     // itself is passed in, not named at the call site below) — narrow.js's
     // own schema/VAL narrowing can't prove an argument's shape across an
     // indirectly-dispatched call, so each inferFn's `cx.field` reads fall
     // back to generic dyn-get, unlike the old positional Map/scalar args
-    // (a Map dispatches through one cheap fixed VAL tag check). Confirmed by
-    // isolated probe (object-cx doubles __dyn_get vs positional args) and by
-    // test/selfhost-perf.js's warm-instance geomean sitting a few % over its
-    // cap post-mitigation where pre-refactor baseline sat a few % under it.
+    // (a Map dispatches through one cheap fixed VAL tag check): an isolated
+    // probe shows object-cx doubles __dyn_get vs positional args, and
+    // test/self-compile-perf.js's warm-instance geomean sits a few % over its
+    // cap post-mitigation where a positional-args baseline sits a few % under it.
     // Not fixed here: doing so would mean either abandoning the named-object
     // shape this refactor exists to deliver, or degrading it to a `cx.get(k)`
-    // Map — a real ergonomics trade nobody asked for. selfhost-perf.js isn't
-    // in test/index.js's battery or this task's gate list; flagged, not fixed.
+    // Map — a real ergonomics trade nobody asked for. test/self-compile-perf.js
+    // isn't in test/index.js's battery; flagged, not fixed.
     const infer = (arg, _k, state) => {
       state.callerElems = elemsCtxMap.get(state.callerFunc)
       state.paramFacts = state.callerParamFacts(field)
@@ -2667,7 +2667,7 @@ export default function narrowSignatures(programFacts, ast) {
   // universal-nullability contract), mayBeUndefined's provenance is narrow
   // enough that "no trace to a census read" is the same honest default the
   // decl producer (Slice 1) already applies to every ordinary RHS.
-  // presence (re-audit item 9(b)): 'maybe-undef' sibling stamped alongside
+  // presence: 'maybe-undef' sibling stamped alongside
   // r.mayBeUndefined at both writes below — same fail-closed
   // (destructured-param-body) and call-site-union sources, no 'present' arm
   // here (a param's positive-presence proof, if any, is settled at the
@@ -2698,9 +2698,9 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
 
-  // presentVal param propagation (§16→§18 "presentVal param producers") — the
+  // presentVal param propagation — the
   // inter-procedural half of the SAME fact analyze.js's `setPresentVal`
-  // already seeds at decl/reassign time (§14 Slice 6). Unlike mayBeUndefined's
+  // already seeds at decl/reassign time. Unlike mayBeUndefined's
   // boolean OR-fold just above, presentVal is an EXACT KIND claim (reps.js's
   // own doc: mutually exclusive with `val`, poison-on-disagreement, same
   // discipline as `val` itself) — so this fold is modeled on `hardParamVal`
@@ -2715,15 +2715,16 @@ export default function narrowSignatures(programFacts, ast) {
   // exact-kind fact, and absence of a presentVal claim is always safe — every
   // consumer (censusMaybeUndefinedKind's arm 3) only ever gets asked "what
   // kind does the census claim", never "is this definitely a container
-  // value", so under-claiming just forwards to the plain dynamic path (§16),
+  // value", so under-claiming just forwards to the plain dynamic path,
   // never wrong.
   //
-  // This is what flips the param-hop BigInt unary KNOWN-FAIL from 38dd0dca/
-  // §16 (`const f = (v) => -v; f(m.get('x'))`, present-key BIGINT): emitNeg's
-  // OR-arm (emit.js bigIntUnary) already asks `censusMaybeUndefinedKind(v)`
-  // unconditionally — §16 found nullableOperand/bigIntOperand/bigIntUnary
-  // "needed NO widening" for exactly this reason — so seeding `v`'s
-  // `presentVal` here is the ENTIRE fix; no consumer-side change needed.
+  // INVARIANT: this fact is what makes a param-hop BigInt unary shape
+  // (`const f = (v) => -v; f(m.get('x'))`, present-key BIGINT) correct:
+  // emitNeg's OR-arm (emit.js bigIntUnary) already asks
+  // `censusMaybeUndefinedKind(v)` unconditionally —
+  // nullableOperand/bigIntOperand/bigIntUnary need NO further widening for
+  // that shape — so seeding `v`'s `presentVal` here is the ENTIRE fix; no
+  // consumer-side change needed.
   const hardParamPresentVal = (funcName, k) => {
     let consensus
     const sites = sitesByCallee.get(funcName)
@@ -2783,7 +2784,7 @@ export default function narrowSignatures(programFacts, ast) {
     }
   }
 
-  // kindsCoverage (re-audit item 9(a), param-reps.js's Fact JSDoc + updated
+  // kindsCoverage (param-reps.js's Fact JSDoc + the
   // exclusion-projection contract): mark 'closed' ONLY for a func whose every
   // call site this fixpoint's `callSites` census actually enumerated — not
   // raw (no facts model), not exported (no external JS/host caller with
@@ -3262,7 +3263,7 @@ export function specializeBimorphicTyped(programFacts) {
 /**
  * Phase: VAL-kind landslide specialization — the general-kind sibling of
  * specializeBimorphicTyped (`.work/context-sensitivity-survey.md` §3-4,
- * COORDINATOR RULING 2026-08-09). specializeBimorphicTyped only fires on
+ * COORDINATOR RULING). specializeBimorphicTyped only fires on
  * the `typedCtor` sub-lattice (`r.val === VAL.TYPED && r.typedCtor ===
  * null`); this fires on the general `val` field itself, for the params the
  * survey's ground-truth census found genuinely, cross-call-site polymorphic
@@ -3289,8 +3290,8 @@ export function specializeBimorphicTyped(programFacts) {
  * the call sites PROVEN to carry that kind is sound without touching
  * `func.sig.params[k].type`/`ptrKind` at all. That decouples this pass
  * from specializeBimorphicTyped's "abort unless EVERY site resolves"
- * discipline: a genuine landslide majority (≥90% of RESOLVED sites, per
- * the task's threshold) gets ONE clone; the minority AND any still-
+ * discipline: a genuine landslide majority (≥90% of RESOLVED sites, the
+ * DOMINANCE threshold below) gets ONE clone; the minority AND any still-
  * unresolved sites simply keep calling the untouched, fully generic
  * original — no partial-coverage risk, because the original never
  * changes.
@@ -3298,9 +3299,8 @@ export function specializeBimorphicTyped(programFacts) {
 export function specializeValKindDichotomy(programFacts) {
   const { callSites, valueUsed, paramReps } = programFacts
   // Landslide threshold — a pass-registry tuning key (src/passes.js
-  // TUNING_KEYS), not a hidden local constant (architecture re-audit item
-  // 10): same value, now a visible/overridable knob like every other tuning
-  // key (e.g. scalarTypedArrayLen).
+  // TUNING_KEYS), not a hidden local constant: a visible/overridable knob
+  // like every other tuning key (e.g. scalarTypedArrayLen).
   const DOMINANCE = ctx.transform.optimize?.valKindDominance ?? 0.9
 
   const sitesByCallee = new Map()
@@ -3428,8 +3428,9 @@ function collectUnionSites(body, callerFunc, candidateNames, sitesByCallee) {
  *  BEFORE emitFuncs. Sites are collected FRESH over the current AST
  *  (programFacts.callSites is stale at this phase — plan's loop rewrites
  *  clone body nodes). KERNEL-SAFE STYLE throughout: plain loops (no nested
- *  predicate arrows), manual Map copies — this function is compiled INTO
- *  the self-host kernel and its earlier form broke the kernel by presence.
+ *  predicate arrows), manual Map copies — INVARIANT: this function is
+ *  compiled INTO the self-host kernel, so a non-kernel-safe form breaks the
+ *  kernel by mere presence, regardless of whether it's ever called.
  */
 export function specializeUnionCursorParams(programFacts) {
   const clones = []

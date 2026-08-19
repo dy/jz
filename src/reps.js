@@ -113,30 +113,26 @@ export const VAL = {
  *   `presentVal` answers exactly like the read node itself would at every
  *   existing censusMaybeUndefined chokepoint (ir.js toNumF64/toStrI64,
  *   emit.js nullableOperand/bigIntOperand/bigIntUnary/bigintMixReject/`+`-
- *   concat). CORRECTION (§14, audit #10): the arm originally read `val`
- *   here, not `presentVal` — dead on arrival, since `val` (by §14's own
- *   permanent invariant) never settles non-null for a census-shaped RHS at
- *   ANY hop; a census-shaped call-site ARGUMENT still contributes null to
- *   hardParamVal's own fold (poisoning specialization, never claiming a
- *   kind), so `val` itself stays unproven right along with it forever, not
- *   just until some future re-enable. `presentVal` (this file, its own entry
- *   below) is the field the arm now reads — a SEPARATE, poison-disciplined
- *   kind claim that never touches `val`, landed to make the arm live for the
- *   first time (§14's Slice 6, "begin the presentVal opt-in model"). Whether
- *   any given chokepoint above ALSO needs its own outer `valTypeOf(node) ===
- *   VAL.SOMETHING` gate widened to consult `presentVal` as a fallback (not
- *   just this REP-fallback arm reaching a non-null claim) is unresolved by
- *   that slice — see its own ledger entry (§15) for exactly what's live vs
- *   still gated out. func.valResultMayBeUndefined / ctx.closure.
+ *   concat). INVARIANT: the arm must read `presentVal` here, not `val` —
+ *   `val` never settles non-null for a census-shaped RHS at ANY hop (a
+ *   census-shaped call-site ARGUMENT still contributes null to
+ *   hardParamVal's own fold, poisoning specialization rather than claiming a
+ *   kind), so `val` stays permanently unproven for this shape. `presentVal`
+ *   (this file, its own entry below) is a SEPARATE, poison-disciplined kind
+ *   claim that never touches `val`. Whether any given chokepoint above also
+ *   needs its own outer `valTypeOf(node) === VAL.SOMETHING` gate widened to
+ *   consult `presentVal` as a fallback (not just this REP-fallback arm
+ *   reaching a non-null claim) is open — see .work/todo.md §deletion-sweep
+ *   for scope. func.valResultMayBeUndefined / ctx.closure.
  *   valResultMayBeUndefined (Map<closureBodyName, true>) carry the return-
  *   kind join's result alongside func.valResult / ctx.closure.valResult —
  *   parallel facts, not merged into those (their return shapes have live
  *   consumers, kind-traits.js calleeValType, this design must not disturb).
  * @property {'present'|'maybe-undef'} [presence]  Tri-state sibling of
- *   `mayBeUndefined` (re-audit item 9(b), completing the AUDIT-#16 P0-2
- *   ruling's queued upgrade: "the boolean stays positive-evidence-only...
- *   the presence upgrade to a 4-point lattice or coverage bit is queued as
- *   its own gated slice"). Absent = UNKNOWN (not-yet-analyzed — the SAME
+ *   `mayBeUndefined`: the boolean alone stays positive-evidence-only, so
+ *   `presence` exists to distinguish "never observed maybe-undef" from
+ *   "positively proven present" — a full 4-point lattice or coverage bit is
+ *   future scope (.work/todo.md). Absent = UNKNOWN (not-yet-analyzed — the SAME
  *   silence `mayBeUndefined`'s `false`/absent already conflates with
  *   "proven present", which is exactly the gap this field closes: `!mayBeUndefined(name)`
  *   remains NOT a definitelyPresent proof (the standing ruling — the boolean
@@ -156,20 +152,18 @@ export const VAL = {
  *   exclusive with the `'maybe-undef'` arm at that site by construction (one
  *   `if`/`else if`, not two independent `if`s) — a census-shaped RHS is
  *   already `mayBeNullish`-true (a call/bracket read fails `mayBeNullish`
- *   closed), so the two arms never both fire for the same write. Deliberately
- *   conservative per the task's own instruction — few `'present'` marks are
- *   fine, a missed one just stays UNKNOWN, never wrong. `mayBeUndefined`
- *   itself is UNCHANGED (still written at every site, still the sole field
- *   every existing consumer reads) — `presence` is purely additive; a
- *   `mayBeUndefined(name)` projection could derive as `presence(name) ===
- *   'maybe-undef'` but no consumer does yet (re-audit item 9(b) lands the
- *   field with zero consumers, same "safe to consume later" precedent as
- *   item 9(a)'s `kindsCoverage`).
+ *   closed), so the two arms never both fire for the same write. INVARIANT:
+ *   stay conservative — few `'present'` marks are fine, a missed one just
+ *   stays UNKNOWN, never wrong. `mayBeUndefined` itself is UNCHANGED (still
+ *   written at every site, still the sole field every existing consumer
+ *   reads) — `presence` is purely additive; a `mayBeUndefined(name)`
+ *   projection could derive as `presence(name) === 'maybe-undef'` but no
+ *   consumer does yet — safe to wire up later, same as `kindsCoverage`.
  * @property {string}  [presentVal]       VAL.* kind the census claims for a
  *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
- *   `mayBeUndefined` (.work/todo.md §deletion-sweep §14,
- *   audit-#10's opt-in re-enablement gate, superseding §5's global-VT-
- *   promotion path Slice 4 landed and audit #10 reverted). NEVER a substitute
+ *   `mayBeUndefined` (.work/todo.md §deletion-sweep §14's opt-in
+ *   re-enablement gate, superseding an earlier global-VT-promotion path).
+ *   NEVER a substitute
  *   for `val` and NEVER consulted by `valTypeOf`/`lookupValType` — `val` stays
  *   exact-only permanently, this is a SEPARATE fact only an explicit opt-in
  *   consumer may ask for (kind.js `censusMaybeUndefinedKind`'s bare-name arm,
@@ -196,11 +190,10 @@ export const VAL = {
  *   carry both a real `val` AND `mayBeUndefined = true` (Slice 2's
  *   `censusShapedNode` deliberately over-approximates to any `[]`/`.`
  *   2-arg read, including a plain array/typed-array OOB-possible index, not
- *   just dict/Map). Found LIVE, not assumed, when kind.js's REP-fallback arm
- *   was rewritten to read ONLY `presentVal` and a param-hop regression pin
- *   flipped from JS-correct back to wrong (test/dyn-keys.js) — the arm now
- *   checks `presentVal` first, `val` second, keeping both live for their own
- *   distinct binding shapes. Same flow-INsensitive whole-body-unification
+ *   just dict/Map). INVARIANT: kind.js's REP-fallback arm must check
+ *   `presentVal` first, `val` second — checking `presentVal` alone regresses
+ *   the param-hop shape test/dyn-keys.js pins, since both fields stay live
+ *   for their own distinct binding shapes. Same flow-INsensitive whole-body-unification
  *   scope as `val`'s own documented cost ("a later write that unconditionally
  *   overwrites the initializer still poisons" — accepted, not fixed, matching
  *   `val`'s own precedent). `censusMaybeUndefinedKind(rhs)` already composes
@@ -209,11 +202,10 @@ export const VAL = {
  *   helper — DRY, one predicate, matching §4's "not one [check] per site"
  *   discipline.
  *
- *   PARAM propagation (§16→§18 "presentVal param producers", extending
- *   Slice 6's decl/reassign-only scope — the same size-of-surface precedent
- *   `mayBeUndefined`'s own Slice 1 → Slice 2 split set): narrow.js's
- *   `hardParamPresentVal`, modeled on `hardParamVal` (the SAME poison-on-
- *   disagreement fold this field's decl producer already uses, NOT
+ *   PARAM propagation extends the decl/reassign-only scope above to params,
+ *   the same size-of-surface split `mayBeUndefined` itself went through:
+ *   narrow.js's `hardParamPresentVal`, modeled on `hardParamVal` (the SAME
+ *   poison-on-disagreement fold this field's decl producer already uses, NOT
  *   `mayBeUndefined`'s monotonic OR) — every live call site's argument must
  *   independently resolve the SAME presentVal kind (kind.js
  *   `exprPresentValIn`/`namePresentValInBody`, the ctx-independent-at-plan-
@@ -221,12 +213,12 @@ export const VAL = {
  *   or the param declines (no claim, never a wrong one). Seeded onto the
  *   param's entry-time rep in compile/index.js exactly where `r.val` is,
  *   with the SAME `!reassigned` guard (this field shares `val`'s exact-claim
- *   discipline, not `mayBeUndefined`'s unconditional-safe one). This is what
- *   flips the param-hop BigInt-unary KNOWN-FAIL from 38dd0dca/§16 (`const f
- *   = (v) => -v; f(m.get('x'))`): the consumer side (emitNeg's OR-arm, other
- *   `censusMaybeUndefinedKind`-consulting chokepoints) already asks
- *   unconditionally — §16's own "needed NO widening" finding — so seeding
- *   this fact onto the param is the entire fix.
+ *   discipline, not `mayBeUndefined`'s unconditional-safe one). INVARIANT:
+ *   a param-hop BigInt-unary site (`const f = (v) => -v; f(m.get('x'))`)
+ *   needs exactly this seeded fact and nothing else — the consumer side
+ *   (emitNeg's OR-arm, other `censusMaybeUndefinedKind`-consulting
+ *   chokepoints) already asks unconditionally, so seeding the fact onto the
+ *   param is the entire fix.
  * @property {Set<string>} [dictValueValType] Set<VAL.*> — every kind ever
  *   observed for a value written through `name[key] = v` (any key, HASH
  *   dict-mode local or global). Product-lattice Slice 7: UNION lattice, not
@@ -270,8 +262,8 @@ export const VAL = {
  *   (Slice 1) alongside a bare-name REP fallback consulting the new
  *   `mayBeUndefined` field (this file). Do not wire mapValueKindOf back into
  *   VT['()'] without first meeting §5.
- * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof (2026-07-31,
- *   named follow-up to the numeric-key unknown-receiver soundness fix, 9f46d517):
+ * @property {boolean} [recvArrTyped]     receiver-kind CLASS proof, the
+ *   follow-up to the numeric-key unknown-receiver soundness fix:
  *   true iff every live call site's argument at this position proves VAL.ARRAY OR
  *   VAL.TYPED — never both the SAME site (that's ordinary `val` consensus, exact-
  *   kind), but POSSIBLY a different one of the two at different sites (`f(anArray)`
@@ -350,8 +342,8 @@ export const lookupNotString = name => {
 
 /** Full domain of VAL.* kinds — the powerset universe `possibleKinds`/
  * `isDisjointFrom` range over (`.work/lattice-design.md` §1.1, §1.6).
- * FROZEN ARRAY, not a Set (audit-#16 P1-5): an exported mutable Set would let
- * any consumer shrink/grow the universe globally and Object.freeze cannot
+ * INVARIANT: this stays a FROZEN ARRAY, not a Set — an exported mutable Set
+ * would let any consumer shrink/grow the universe globally and Object.freeze cannot
  * freeze Set contents. Consumers build their own local sets from it
  * (spread/filter) or iterate it for a universe join — membership tests go
  * through `isKind` below. */
