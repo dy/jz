@@ -408,3 +408,42 @@ test('invariant: static-data parts accumulator matches string-form bytes and off
     ctx.runtime.dataParts = savedParts; ctx.runtime.dataLen = savedLen; ctx.runtime.staticPtrSlots = savedSlots
   }
 })
+
+// ============================================================================
+// dedupClosureBodies — hash-cons grouping parity with the retired stringify key
+// ============================================================================
+// The dedup key moved from JSON.stringify of each closure's renamed tree
+// (measured 810.76 MB of transient churn on the jz×jz region-live self-compile)
+// to a rename-invariant rolling hash + exact alpha-aware comparator. Grouping
+// must be bit-compatible with the old key, including its accidental JSON-null
+// equivalence class: undefined/null/NaN/±Infinity all serialized to 'null'.
+test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and order counterexamples exactly', async () => {
+  const { dedupClosureBodies } = await import('../src/wat/assemble.js')
+  const { ctx } = await import('../src/ctx.js')
+  const savedTable = ctx.closure.table
+  try {
+    const mk = (name, body) => ['func', `$${name}`, ['param', '$a', 'f64'], ['result', 'f64'], body]
+    const run = (funcs) => {
+      ctx.closure.table = funcs.map(f => f[1].slice(1))
+      const sec = { funcs: [...funcs] }
+      dedupClosureBodies(funcs, sec)
+      return sec.funcs.map(f => f[1]).join(',')
+    }
+    // alpha-renamed duplicates collapse
+    const dupA = ['func', '$c1', ['param', '$x', 'f64'], ['result', 'f64'], ['f64.add', ['local.get', '$x'], ['f64.const', 1]]]
+    const dupB = ['func', '$c2', ['param', '$y', 'f64'], ['result', 'f64'], ['f64.add', ['local.get', '$y'], ['f64.const', 1]]]
+    is(run([dupA, dupB]), '$c1', 'alpha-renamed duplicate collapses to canonical')
+    // JSON-null class: NaN and null in the same slot stay ONE group (old-key parity)
+    const nanF = mk('c3', ['f64.const', NaN])
+    const nulF = mk('c4', ['f64.const', null])
+    is(run([nanF, nulF]), '$c3', 'NaN/null slots share the JSON-null equivalence class')
+    // different local correspondence order must NOT dedup
+    const ord1 = ['func', '$c5', ['param', '$p', 'f64'], ['param', '$q', 'f64'], ['result', 'f64'], ['f64.sub', ['local.get', '$p'], ['local.get', '$q']]]
+    const ord2 = ['func', '$c6', ['param', '$p', 'f64'], ['param', '$q', 'f64'], ['result', 'f64'], ['f64.sub', ['local.get', '$q'], ['local.get', '$p']]]
+    is(run([ord1, ord2]), '$c5,$c6', 'reversed local correspondence stays distinct')
+    // distinct constants stay distinct
+    const k1 = mk('c7', ['f64.const', 2])
+    const k2 = mk('c8', ['f64.const', 3])
+    is(run([k1, k2]), '$c7,$c8', 'distinct constants stay distinct')
+  } finally { ctx.closure.table = savedTable }
+})

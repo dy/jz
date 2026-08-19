@@ -498,38 +498,105 @@ export function hoistConstGlobalInits(sec) {
  */
 export function dedupClosureBodies(closureFuncs, sec) {
   if (closureFuncs.length <= 1) return
-  const canonicalize = (fn) => {
-    const localNames = new Set()
+  // Rename-invariant rolling hash + exact compare on hash collision.
+  // The previous key was JSON.stringify of every closure's fully-renamed tree
+  // -- measured at 810.76 MB of transient string churn on the jz x jz
+  // region-live self-compile, 99.2% of the buildStartFn window
+  // (.work/research.md 2026-08-19 attribution verdict). The hash walk
+  // allocates nothing and the exact comparator runs only within a hash
+  // bucket, so dedup GROUPS stay bit-identical while the churn dies.
+  // INVARIANT (grouping parity with the old stringify key): undefined, null,
+  // NaN and +/-Infinity all serialized to the same JSON token 'null', so they
+  // form ONE equivalence class in both the hash and the comparator below --
+  // collapsing them differently would split/merge groups and change output.
+  const SENTINEL = -2  // hash tag for the JSON-null equivalence class
+  const isSentinel = (v) => v === undefined || v === null ||
+    (typeof v === 'number' && !Number.isFinite(v))
+  const localNamesOf = (fn) => {
+    const names = new Set()
     const collect = (node) => {
       if (!Array.isArray(node)) return
       if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
-        localNames.add(node[1])
+        names.add(node[1])
       for (const c of node) collect(c)
     }
     collect(fn)
-    let counter = 0
-    const renameMap = new Map()
-    const walk = node => {
-      if (typeof node === 'string') {
-        if (!localNames.has(node)) return node
-        let r = renameMap.get(node)
-        if (!r) { r = `$_c${counter++}`; renameMap.set(node, r) }
-        return r
-      }
-      if (!Array.isArray(node)) return node
-      return node.map(walk)
-    }
-    return JSON.stringify(['func', ...fn.slice(2).map(walk)])
+    return names
   }
-  const hashToName = new Map()
+  const mix = (h, x) => Math.imul(h ^ x, 0x01000193) | 0
+  const mixStr = (h, str) => {
+    for (let i = 0; i < str.length; i++) h = mix(h, str.charCodeAt(i))
+    return h
+  }
+  const hashOf = (fn, locals) => {
+    let counter = 0
+    const ord = new Map()
+    const walk = (node, h) => {
+      if (typeof node === 'string') {
+        if (locals.has(node)) {
+          let r = ord.get(node)
+          if (r === undefined) { r = counter++; ord.set(node, r) }
+          return mix(mix(h, 5), r)
+        }
+        return mixStr(mix(h, 7), node)
+      }
+      if (isSentinel(node)) return mix(h, SENTINEL)
+      if (typeof node === 'number') return mixStr(mix(h, 11), String(node))
+      if (typeof node === 'boolean') return mix(mix(h, 29), node ? 1 : 0)
+      if (!Array.isArray(node)) return mixStr(mix(h, 17), String(node))
+      h = mix(h, 19)
+      for (const c of node) h = walk(c, h)
+      return mix(h, 23)
+    }
+    let h = 0x811c9dc5 | 0
+    for (let i = 2; i < fn.length; i++) h = walk(fn[i], h)
+    return h
+  }
+  // Exact alpha-rename-aware structural equality, string-free: locals must
+  // correspond by first-occurrence order on both sides (same relation the
+  // old rename-to-$_cN + stringify encoded).
+  const equalBodies = (fa, la, fb, lb) => {
+    if (fa.length !== fb.length) return false
+    const ma = new Map(), mb = new Map()
+    let counter = 0
+    const eq = (a, b) => {
+      const as = typeof a === 'string', bs = typeof b === 'string'
+      if (as || bs) {
+        if (!as || !bs) return false
+        const al = la.has(a), bl = lb.has(b)
+        if (al !== bl) return false
+        if (!al) return a === b
+        const ra = ma.get(a), rb = mb.get(b)
+        if (ra === undefined && rb === undefined) { ma.set(a, counter); mb.set(b, counter); counter++; return true }
+        return ra !== undefined && ra === rb
+      }
+      const aa = Array.isArray(a), ba = Array.isArray(b)
+      if (aa || ba) {
+        if (!aa || !ba || a.length !== b.length) return false
+        for (let i = 0; i < a.length; i++) if (!eq(a[i], b[i])) return false
+        return true
+      }
+      if (isSentinel(a) || isSentinel(b)) return isSentinel(a) && isSentinel(b)
+      return a === b
+    }
+    for (let i = 2; i < fa.length; i++) if (!eq(fa[i], fb[i])) return false
+    return true
+  }
+  const buckets = new Map()  // hash -> [{ fn, locals, name }]
   const redirect = new Map()
   const keepSet = new Set()
   for (const fn of closureFuncs) {
-    const key = canonicalize(fn)
+    const locals = localNamesOf(fn)
+    const h = hashOf(fn, locals)
     const name = fn[1].slice(1)
-    const canonical = hashToName.get(key)
+    let bucket = buckets.get(h)
+    if (!bucket) buckets.set(h, bucket = [])
+    let canonical = null
+    for (const cand of bucket) {
+      if (equalBodies(fn, locals, cand.fn, cand.locals)) { canonical = cand.name; break }
+    }
     if (canonical) redirect.set(name, canonical)
-    else { hashToName.set(key, name); keepSet.add(name) }
+    else { bucket.push({ fn, locals, name }); keepSet.add(name) }
   }
   if (!redirect.size) return
   const kept = sec.funcs.filter(fn => {
