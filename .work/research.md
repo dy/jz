@@ -22305,3 +22305,28 @@ under live references. Fix: audit emission's write-set into the bundle
 round sites; re-run the full battery. jessie improving to 512 MB (vs
 536.9 baseline) on the SAME build shows the rounds DO reclaim when the
 graph is small enough not to trip the unrooted-container window.
+
+## §Emission rounds REVERTED (two failed fix attempts); census flips the footprint priority (2026-08-18)
+
+7085cb57 (bundle extension) did NOT cure the 53bcb112 regression — watr
+now traps `unreachable` at 2141.44 MB (third failure mode), jzify OOB at
+the FIRST memory-grow, goal gate still dies at emitfuncCalls=544 with the
+phantom pair GROWN to 3973.60+2047.53 MB. Root cause is deeper than
+root-list membership (possibly the copier meeting closure-bearing
+containers like ctx.abi/ctx.bridge, or a header desync the new round
+boundaries expose — 5e77f814 class). Both commits REVERTED on main —
+region-live restores to 69c8baad behavior (watr/jzify clean at 1024/2048,
+goal gate reaches optimizeModule). Re-landing plan: bisected — one round
+site at a time, full battery per step, starting with the emitFuncs-loop
+round alone.
+
+**Census (jessie, region-live)**: true post-compaction floor **149.93 MB**
+— ALREADY inside the user's 100-200 MB per-package target. Committed
+memory 512 MB = the hardcoded 8192-page initial declaration
+(resolveSelfCompileBuild default + harness instantiate); memory.grow never
+fires; **70.7% of committed memory is never touched**. Memo-lane
+reservation waste is real but small (~50% steady-state of ~12 MB/round).
+New lever order for the 100-200 MB bar: (1) initial-commitment sizing
+(small initial + on-demand growth — the 362 MB lever); (2) memo-lane
+right-sizing (~10-20 MB); (3) emission rounds re-land (for jz×jz scale);
+(4) growth-policy granularity if doubling overshoots the bar.
