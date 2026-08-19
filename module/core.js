@@ -478,13 +478,20 @@ export default (ctx) => {
   // capacity reads as 0 and every allocation spuriously tries to grow past the
   // ceiling, trapping near 4 GiB.
   ctx.core.stdlib['__memgrow'] = `(func $__memgrow (param $next i32)
-    (local $cur i32) (local $need i32)
+    (local $cur i32) (local $need i32) (local $floor i32)
     (local.set $need (i32.wrap_i64 (i64.shr_u (i64.add (i64.extend_i32_u (local.get $next)) (i64.const 65535)) (i64.const 16))))
     (if (i32.gt_u (local.get $need) (memory.size))
       (then
         (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
         (local.set $cur (i32.sub (local.get $need) (memory.size)))            ;; minimum delta
-        (if (i32.lt_u (local.get $cur) (memory.size)) (then (local.set $cur (memory.size))))  ;; geometric
+        ;; Geometric floor: 2x below 2048 pages (128 MiB), 1.5x at or above —
+        ;; amortization stays O(log n) grows while committed memory tracks true
+        ;; demand within ~33% at scale instead of doubling past it (the
+        ;; 100-200 MB-per-package footprint bar, census 2026-08-18).
+        (local.set $floor (memory.size))
+        (if (i32.ge_u (memory.size) (i32.const 2048))
+          (then (local.set $floor (i32.shr_u (memory.size) (i32.const 1)))))
+        (if (i32.lt_u (local.get $cur) (local.get $floor)) (then (local.set $cur (local.get $floor))))  ;; geometric
         (if (i32.gt_u (i32.add (local.get $cur) (memory.size)) (i32.const 65536))
           (then (local.set $cur (i32.sub (i32.const 65536) (memory.size)))))  ;; cap at wasm32 max
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))

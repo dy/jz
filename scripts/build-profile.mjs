@@ -41,7 +41,7 @@
  * @param {boolean} [p.snapshot]  optimize.snapshotInit. Default true.
  * @param {boolean} [p.watrGuard] optimize.watrGuard. Default false (both
  *   builders already skip watr's size-revert guard on this controlled artifact).
- * @param {number} [p.memory]     memory pages. Default 8192 (both builders' value).
+ * @param {number} [p.memory]     memory pages — the kernel's declared INITIAL commitment; $__memgrow extends on demand (no max). Default 1024 (64 MiB): small graphs stay near their true need instead of paying the old flat 8192-page/512 MiB floor (census 2026-08-18: jessie's real working set is ~150 MB, 70.7% of the old commitment was never touched).
  * @param {boolean} [p.helperCounters]  compile() opts.helperCounters passthrough
  *   (self-compile-build.mjs's JZ_HELPER_COUNTERS diagnostic profiling knob; unused
  *   by build-dist.mjs, default false so its behavior is unchanged).
@@ -80,7 +80,7 @@ export function resolveSelfCompileBuild({
   optimize = 3,
   snapshot = true,
   watrGuard = false,
-  memory = 8192,
+  memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',
   helperCounters = false,
   helperCallsites = false,
