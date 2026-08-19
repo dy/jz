@@ -10,6 +10,7 @@
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
+import { representationSchemaSlotBoxed } from '../src/compile/representation-plan.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
@@ -234,7 +235,7 @@ export default (ctx) => {
     // ir.js), so this substitution is a true no-op for the default build
     // regardless of which branch the fact picks.
     const fieldStoredValue = (i) =>
-      (ctx.schema.slotBigintBoxedBySid?.(schemaId, names[i]) ? storedValue : storedValueNarrow)(values[i])
+      (representationSchemaSlotBoxed(ctx, schemaId, names[i]) ? storedValue : storedValueNarrow)(values[i])
     for (let i = 0; i < values.length; i++)
       body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
@@ -1036,7 +1037,7 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
       // isn't itself shadowed. No-op under CARRIER_BOX=off (storedValue and
       // storedValueNarrow are byte-identical then).
       if (ti >= 0) body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti,
-        (ctx.schema.slotBigintBoxedBySid?.(schemaId, p[1]) ? storedValue : storedValueNarrow)(p[2])))
+        (representationSchemaSlotBoxed(ctx, schemaId, p[1]) ? storedValue : storedValueNarrow)(p[2])))
     }
   }
 
