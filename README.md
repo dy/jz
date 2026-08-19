@@ -514,4 +514,6 @@ Adoption is ejectable: remove the JZ build step and the source remains JavaScrip
 
 </details>
 
-[MIT](LICENSE). [ॐ](https://github.com/krishnized/license/)
+<p align="center">
+  <a href="LICENSE">MIT</a>, <a href="https://github.com/krishnized/license/">ॐ</a>
+</p>
