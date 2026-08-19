@@ -22471,3 +22471,15 @@ tests: mixed-kind slot (5n one instance / 5 another — must never
 unconditionally unbox), uniform-bigint slot (may unbox), shadowed dyn-write
 slot (stays boxed), cross-function write provenance (writer in another
 function). Gates: byte-identity on non-bigint corpus + suite + kernel legs.
+
+## §4f phase 2 PARKED unlanded (2026-08-19)
+
+Branch worktree-agent-ae5c9299259331c7e @ 4454011b, stopped mid-flight by
+the bigint-retirement ratification (compat-handoff step 0: do not deepen
+the plan being deleted). State at stop: schemaSlotReps built + paired
+read-side query wired, but 3 of 4 differentials FAILING including
+corrupted-BigInt in the cross-function case — a live soundness gap in the
+shadow/box interaction, not root-caused. Kept as evidence: per-slot
+box/raw proving is genuinely hard even with the census in hand, which
+WEIGHS FOR the retirement (delete the box) over perfecting the plan.
+Branch never lands; delete with the retirement's step-4 sweep.
