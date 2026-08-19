@@ -22351,3 +22351,23 @@ survivorMargin (churn/2) positions the reservation ceiling well above
 heap peak; sizing it from the memo hint alone could drop a growth tier);
 (c) the jz×jz optimizeModule blowup remains its own campaign (assembly-
 stage churn, the reverted emission-rounds' target — re-land bisected).
+
+## §Lane-redesign battery + probe verdict (2026-08-19)
+
+1124c6cb battery: all green (region-live SHA bf55937b… ×2, dormant
+f95c33ca… ×2, oracle 15/15 both, parity 3/3 both). Footprints UNCHANGED
+(jessie 432 / watr 972 / jzify 1458): max neededCeil dropped 318.48→274.25
+MB (−13.9%) but the geometric floor lands on the same tier — slack ratio
+rose 1.356→1.575. Baseline goal gate: same 4096.00 MB unreachable, 58.0 s.
+
+**PROBE NEGATIVE**: emission rounds (53bcb112 content) on top of the lane
+redesign still regress — watr phantom-alloc unreachable at 3285.25 MB,
+jzify OOB at 288 MB, jz×jz same ceiling at 3× wall. The lane redesign
+fixed a real unsoundness but is NOT the emission-rounds mechanism; the
+write-set rooting (7085cb57 content) is a required companion, and the
+jz×jz optimizeModule trap is a distinct third problem. Re-land plan
+reordered: lane redesign (landed) + write-set rooting + bisected round
+sites, one at a time with the battery per step; optimizeModule blowup gets
+its own attribution round first. Footprint next lever: the geometric-floor
+tier boundary (274 MB ceiling still commits 432) — consider exact-fit
+final grow or 1.25× floor above 256 MiB, measured.
