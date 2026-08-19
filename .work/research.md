@@ -22712,3 +22712,60 @@ Cleanup candidate spotted en route: scripts/build-profile.mjs still carries
 the CARRIER_BOX injection doc-block (lines ~75-95) describing a deleted
 flag; the code under it is the DBG_INVARIANTS injection. Sweep with
 retirement step 4.
+
+## §slice-0 self-graph: sid-veto erased const-table literal folds — FIXED (2026-08-19)
+
+Post-unification enumeration (JZ_DBG_BIGINT_STATS, self-graph O0) showed the
+boxed-param list had collapsed from the banked 11→5 to exactly ONE:
+`m61_layout$i64Hex param0`. Site dump: every call site proved BIGINT except
+the two bare `LAYOUT.NAN_PREFIX_BITS` member reads (wrapped reads proved via
+the existing binary-op/BigInt()/call-return lanes — no passthroughBigintCall
+sibling needed; that whole planned lane is already covered).
+
+Root cause (traced through VT['.'] with tagged-exit probes): three landed
+rules compose into an erasure. (1) The self-graph's slotWriteHazards settle
+at pointsTo='ALL' (unrelated unresolvable `arr[idx]=v` writes), which makes
+slotHazarded true for EVERY slot → ctx.schema.slotVT answers null
+program-wide. (2) module-lowering puts layout.js's `const LAYOUT = {…}`
+inside the module-init function, so analyzeValTypes binds it a schemaId
+(sid 29). (3) VT['.']'s sid-veto ("slot census is authoritative") then
+returns null unconditionally — BEFORE the literal-decl skip that was
+written, per its own comment, precisely for LAYOUT.NAN_PREFIX_BITS under
+the 'ALL' blanket. Net: the fold that two landed mechanisms each intended
+to protect was unreachable in exactly the program class (big real graphs)
+that needs it. Minimal repros pass because small graphs never reach
+pointsTo='ALL' — slotVT answers from the census and the veto never fires.
+
+Fix (src/kind.js VT['.']): the veto now spares `child.literal` props whose
+name is never a NAMED write target anywhere (`ctx.types.writtenProps`) —
+the same never-written discipline slotTypedCtorAt already trusts for raw
+typed loads. Any `o.NAN_PREFIX_BITS = x` anywhere re-arms the veto
+(fail-closed); the computed-alias-write residue is the same envelope the
+landed literal hazard-skip already accepted.
+
+The differential pin exposed this was a LIVE MISCOMPILE, not a deopt:
+pre-fix, `i64Hex(LAYOUT.NAN_PREFIX_BITS)` in the cross-module + hazard
+shape returned `0x7ffa800000000420` — the NaN-box carrier's own bits —
+instead of the value, on O0 AND O3. Post-fix both PASS. Pin added:
+test/watr.js "const-table bigint prop read survives whole-program write
+hazard" (37/37).
+
+Self-graph enumeration after the fix: **paramsBoxed 0, paramsRaw 3,
+localsBoxed 0** — the self-host graph is boxed-bigint-free. Slice-0's
+provability goal is met with this one engine fix; next retirement steps
+(strict-default flip, boxed-stack deletion) are unblocked pending the
+usual gates + watr-graph re-enumeration under the real test/watr.js
+compile shapes.
+
+## §strict-flip blocker pinned to subscript (2026-08-19)
+
+With both graphs enumerating zero boxed sites, JZ_BIGINT_STRICT=1 on the
+self-graph still refuses at ONE construct: `["()","BigInt","strf43_1"]`
+stored into a mixed-kind literal-array slot — traced to
+**node_modules/subscript/feature/number.js:27** (`return [, BigInt(str)]`),
+subscript's own bigint-literal value node. The user's uncommitted parse.js
+WIP re-tags bigint literals as `['bigint', decimalStr]` markers via
+bignum.js limb arithmetic ("no BigInt anywhere") precisely to remove this —
+i.e. the strict-default flip is blocked on exactly the ratified execution
+order's step 1, the user's subscript publish + dirty-set commit, and on
+nothing else. No compiler-side work remains for the flip.

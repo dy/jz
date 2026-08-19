@@ -972,7 +972,20 @@ VT['.'] = (args) => {
     if (child) {
       const sid = typeof args[0] === 'string'
         ? (repOf(args[0])?.schemaId ?? ctx.schema?.vars?.get(args[0])) : null
-      if (sid != null && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
+      // Literal-decl scalar whose prop name is NEVER a named write target
+      // anywhere in the program keeps its fold even when sid-bound: the veto
+      // exists for slots the census saw written (`o.x = 'oops'`), but under
+      // the whole-program hazard blanket (slotWriteHazards.pointsTo === 'ALL',
+      // raised by UNRELATED unresolvable writes) slotVT above answers null for
+      // every slot, and the veto then silently erases exactly the const-table
+      // reads the literal skip below exists for — `LAYOUT.NAN_PREFIX_BITS`
+      // stayed unprovable at all 100 self-graph sites, poisoning i64Hex's
+      // cross-site val consensus into a residual boxed param. `writtenProps`
+      // is the same never-written discipline slotTypedCtorAt already trusts
+      // for raw typed loads; a named write to the prop on ANY receiver keeps
+      // the veto (fail-closed).
+      const litNeverWritten = child.literal && !ctx.types?.writtenProps?.has(args[1])
+      if (sid != null && !litNeverWritten && ctx.schema?.list?.[sid]?.indexOf(args[1]) >= 0) return null
       // `child.literal` (shapeOfObjectLiteralAst's scalar-leaf fallback):
       // a compile-time constant drawn straight
       // from the object literal's own source text has no runtime slot to

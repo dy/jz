@@ -294,6 +294,28 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
   is(exports.f(8), 0)
 })
 
+// A module-const table's bigint-literal prop read under the whole-program
+// write-hazard blanket (an unresolvable `o[k]=v` anywhere sets
+// slotWriteHazards.pointsTo='ALL', nulling every slotVT answer): the sid-veto
+// in VT['.'] must not erase the literal-decl fold for a never-written prop.
+// Regressed as a live miscompile — `i64Hex(LAYOUT.NAN_PREFIX_BITS)` printed
+// the NaN-box carrier's own bits (0x7ffa8000…) instead of the value.
+test('jz: const-table bigint prop read survives whole-program write hazard', () => {
+  const layout = `
+    export const LAYOUT = { NAN_PREFIX_BITS: 0x7FF8000000000000n, TAG_SHIFT: 47 }
+    const _hx8 = (n) => n.toString(16).padStart(8, "0")
+    export const i64Hex = bits => "0x" + _hx8(Number((bits >> 32n) & 0xFFFFFFFFn)) + _hx8(Number(bits & 0xFFFFFFFFn))
+    export const nanPrefixHex = () => i64Hex(LAYOUT.NAN_PREFIX_BITS)`
+  for (const optimize of [false, 3]) {
+    const { exports } = jz(`
+      import { LAYOUT, i64Hex, nanPrefixHex } from "./layout.js"
+      export const run = () => i64Hex(LAYOUT.NAN_PREFIX_BITS) + "|" + nanPrefixHex()
+      export const poison = (o, k, v) => { o[k] = v; return o }
+    `, { modules: { './layout.js': layout }, jzify: true, optimize })
+    is(exports.run(), '0x7ff8000000000000|0x7ff8000000000000', `const-table bigint O${optimize || 0}`)
+  }
+})
+
 // A sink-boxed bigint PARAM reassigned inside a loop (watr's uleb shape): the
 // sink OR flips the param's rep to boxed for body reads, so the boundary store
 // call sites consult and the loop's raw arithmetic writes must both agree —
