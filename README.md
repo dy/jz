@@ -43,15 +43,19 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 | `modules: { specifier: source }` | Static ES imports to bundle. CLI import resolution does this from files automatically. |
 | `imports: { mod: host }` | Host imports `import { fn } from "mod"`. |
 | `memory` | Pass `memory: N` for owned memory with `N` initial pages, or `memory: jz.memory()` / `WebAssembly.Memory` to share across modules. `maxMemory: N` caps growth; `importMemory: true` imports `env.memory` instead of exporting own. |
-| `host: 'js' \| 'wasi'` | Runtime-service lowering. Default `js`; `wasi` for standalone runtimes. |
-| `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm. (Object form for per-pass overrides is internal/unstable.) |
+| `host: 'js' \| 'wasi' \| 'native'` | Runtime-service lowering. Default `js`; `wasi` for standalone runtimes; `native` targets the wasm2c/native lane (same module shape as `js`, tail calls off). |
+| `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm, `'fast'` for fastest compile (default passes, final wat optimizer off). (Object form for per-pass overrides is internal/unstable.) |
 | `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
 | `strict: true` | Skip jzify lowering and reject dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
 | `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) from modules that never marshal heap values. |
 | `noSimd: true` | Disable auto-vectorization. Explicit `f32x4` and `i32x4` intrinsics still compile. |
 | `whyNotSimd: true` | Report the first operation that prevented each loop from being vectorized. Warnings go to the `warnings` sink. |
-| `experimentalStencil: true` | Vectorize neighbour-load stencils such as `b[i] = f(a[i-1], a[i], a[i+1])` and 2-D 5-point sweeps to f64x2. Unstable and off by default. |
-| `experimentalOuterStrip: true` | Strip-mine a pixel loop containing an inner reduction into f64x2. Each lane keeps scalar accumulation order. Unstable and off by default. |
+| `stencil` / `outerStrip` / `toneMap` | Structure vectorizers: neighbour-load stencils (`b[i] = f(a[i-1], a[i], a[i+1])`, 2-D 5-point), strip-mined pixel loops over an inner reduction, and log-tonemap islands — all to f64x2, bit-exact vs scalar. On by default at `optimize` 2+; pass `false` to disable one, `true` to force it at lower levels. |
+| `noTailCall: true` | Use ordinary call frames instead of `return_call` for engines/tools without the tail-call proposal. |
+| `noEhAbort: true` | Lower internal throws to `unreachable` in genuinely catch-free modules even when source has a bare `throw` — drops the exceptions tag for consumers with no wasm-EH (wasm2c, w2c2). |
+| `sharedMemory: true` | Compile against an imported SHARED memory (wasm threads): atomic heap bump; link with `new WebAssembly.Memory({ initial, maximum, shared: true })`. |
+| `nativeTimers: true` | Emit a blocking timer loop in `_start` so `setTimeout`/`setInterval` fire under standalone runtimes with no host event loop (e.g. the wasmtime CLI). |
+| `warnings` | Mutable sink populated with `entries: [{ code, message, fn?, line?, column? }]` — heap-growth advisories, `simd-why-not` reports. |
 | `randomSeed` | Set a number for a reproducible `Math.random` sequence. The default uses host entropy; `true` requests entropy explicitly. |
 | `wat: true` | `compile()` returns WAT text instead of WASM binary. |
 | `names: true` | Emit a WASM `name` section (function symbols) for profilers/debuggers. |
@@ -66,7 +70,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 jz program.js              # → program.wasm
 jz program.js --wat        # → program.wat
 jz program.js -o out.wasm  # custom output (- for stdout)
-jz program.js -O3          # optimization: -O0 off, -O1 minimal, -O2 default, -O3 speed (-Os for size)
+jz program.js -O3          # optimization: -O0 off, -O1 min, -O2 default, -O3 speed, -Os size
 jz program.js --host wasi  # standalone WASI output
 jz --strict program.js     # pure canonical subset (also implied by .jz extension)
 jz -e "1 + 2"              # eval → 3
@@ -80,10 +84,10 @@ jz. min JS → WASM compiler
 
 Usage:
   jz <file.js>              Compile JS to WASM (full JS subset; .jz = strict)
-  jz --strict <file.js>     Strict mode: pure canonical subset, no lowering
+  jz --strict <file.js>     Strict mode — pure canonical subset, no lowering
   jz --jzify <file.js>      Transform JS → jz source (auto-derives output file)
   jz -e <expression>        Evaluate expression
-  jz --help                 Show this help
+  jz --help, -h             Show this help
 
 Examples:
   jz program.js                    # → program.wasm
@@ -102,19 +106,27 @@ Examples:
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
   -O<n>, --optimize <n>     Optimization level: 0 off, 1 minimal, 2 default (all
-                            stable passes), 3 speed. -Os optimizes for size.
+                            stable passes), 3 speed. -Os optimizes for size,
+                            -Ofast compiles fastest (default passes, wat optimizer off).
   --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
                             else string). Repeatable.
-  --host <js|wasi>          Runtime-service lowering (default js)
+  --host <js|wasi|native>   Runtime-service lowering (default js). 'native' targets
+                            the wasm2c/native-lowering lane (scripts/native/) —
+                            same module shape as 'js', tail calls off (wasm2c
+                            return_call + multi-value codegen bug)
   --memory <pages>          Initial memory size in 64 KiB pages
   --max-memory <pages>      Cap memory growth at this many pages (default unbounded)
   --import-memory           Import env.memory instead of exporting own memory
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
-  --experimental-stencil    Vectorize neighbour-load stencils (a[i±1]); opt-in
-  --experimental-outer-strip  Strip-mine pixel loops over an inner reduction to f64x2; opt-in
+  --stencil                 Force neighbour-load stencil vectorization (a[i±1]) at
+                            levels where it's off (on by default at -O2+)
+  --outer-strip             Force pixel-loop strip-mining over an inner reduction to
+                            f64x2 at levels where it's off (on by default at -O2+)
   --no-tail-call            Use ordinary call frames instead of return_call
+  --no-eh-abort             Lower internal throws to unreachable even with a bare throw
+                            in source (no wasm-exceptions tag), when no try/catch is reachable
   --names                   Emit wasm name section for profilers/debuggers
   --stats                   Print compile-phase timings to stderr
   --strict                  Pure canonical subset: reject full-JS syntax + dynamic fallbacks
@@ -156,7 +168,7 @@ See [all examples](https://dy.github.io/jz/examples/).
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
 │ │   ArrayBuffer  DataView  typed arrays  Map  Set  Atomics           │ │
 │ │   Float16Array  base64/hex codecs  TextEncoder  timers  Date       │ │
-│ │   crypto randomness  URLSearchParams  structuredClone              │ │
+│ │   crypto randomness  URLSearchParams  structuredClone  Set algebra │ │
 │ │   WASI file I/O                                                    │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ jz default (jzify)                                                     │
@@ -494,12 +506,12 @@ JZ emits WASM, which [`wasm2c`](https://github.com/WebAssembly/wabt/tree/main/wa
 JS → JZ → WASM → wasm2c → C → clang → native
 ```
 
-The native benchmark lane uses `--host wasi -O3 --no-tail-call`, lowers with
-`wasm2c`, removes its C optimizer barriers, hoists the guard-page-backed memory
-base, and builds with native CPU tuning plus LTO. It does not require
-`wasm-opt`. A host harness and wasm2c runtime must be linked, so this is
-currently a toolchain rather than a one-command JZ target. See the
-[native pipeline](scripts/native/README.md).
+`--host native` targets this lane directly (same module shape as `js`, tail
+calls off for wasm2c). The native benchmark lane lowers with `wasm2c`, removes
+its C optimizer barriers, hoists the guard-page-backed memory base, and builds
+with native CPU tuning plus LTO. It does not require `wasm-opt`. A host harness
+and wasm2c runtime must be linked, so this is currently a toolchain rather than
+a one-command JZ target. See the [native pipeline](scripts/native/README.md).
 
 </details>
 

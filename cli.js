@@ -36,7 +36,7 @@ Usage:
   jz --strict <file.js>     Strict mode — pure canonical subset, no lowering
   jz --jzify <file.js>      Transform JS → jz source (auto-derives output file)
   jz -e <expression>        Evaluate expression
-  jz --help                 Show this help
+  jz --help, -h             Show this help
 
 Examples:
   jz program.js                    # → program.wasm
@@ -55,7 +55,8 @@ Examples:
 Options:
   --output, -o <file>       Output file (.wat, .wasm, or - for stdout)
   -O<n>, --optimize <n>     Optimization level: 0 off, 1 minimal, 2 default (all
-                            stable passes), 3 speed. -Os optimizes for size.
+                            stable passes), 3 speed. -Os optimizes for size,
+                            -Ofast compiles fastest (default passes, wat optimizer off).
   --define, -D <K=V>        Inject a compile-time constant (VALUE parsed as JSON,
                             else string). Repeatable.
   --host <js|wasi|native>   Runtime-service lowering (default js). 'native' targets
@@ -68,8 +69,10 @@ Options:
   --no-alloc                Omit _alloc/_clear allocator exports (standalone wasm)
   --no-simd                 Disable auto-vectorization (no v128) for non-SIMD engines
   --why-not-simd            Report, per loop, why the auto-vectorizer declined it
-  --stencil                 Enable neighbour-load stencil vectorization (a[i±1]; opt-in)
-  --outer-strip             Strip-mine pixel loops over an inner reduction to f64x2 (opt-in)
+  --stencil                 Force neighbour-load stencil vectorization (a[i±1]) at
+                            levels where it's off (on by default at -O2+)
+  --outer-strip             Force pixel-loop strip-mining over an inner reduction to
+                            f64x2 at levels where it's off (on by default at -O2+)
   --no-tail-call            Use ordinary call frames instead of return_call
   --no-eh-abort             Lower internal throws to unreachable even with a bare throw
                             in source (no wasm-exceptions tag), when no try/catch is reachable

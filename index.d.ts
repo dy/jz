@@ -4,10 +4,10 @@
 // See README for semantics and the JS↔WASM value ABI.
 
 /** Optimization level / preset. `2` is the default (all stable passes). */
-export type OptimizeLevel = boolean | 0 | 1 | 2 | 3 | 'speed' | 'size'
+export type OptimizeLevel = boolean | 0 | 1 | 2 | 3 | 'speed' | 'size' | 'fast'
 
-/** Runtime-service lowering target. */
-export type Host = 'js' | 'wasi'
+/** Runtime-service lowering target. `'native'` targets the wasm2c/native lane. */
+export type Host = 'js' | 'wasi' | 'native'
 
 /** Value injectable as a compile-time `define` constant. */
 export type DefineValue = number | boolean | string | null | DefineValue[] | { [k: string]: DefineValue }
@@ -35,8 +35,24 @@ export interface CompileOptions {
   alloc?: boolean
   /** Disable auto-vectorization (no jz-emitted `v128`). Explicit intrinsics still compile. */
   noSimd?: boolean
+  /** Report, per canonical loop, the first op that blocked auto-vectorization (via `warnings`). */
+  whyNotSimd?: boolean
+  /** Neighbour-load stencil vectorizer. Default-on at optimize 2+; `false` disables. */
+  stencil?: boolean
+  /** Pixel-loop strip-mining over an inner reduction. Default-on at optimize 2+; `false` disables. */
+  outerStrip?: boolean
+  /** Mixed-lane log-tonemap vectorizer. Default-on at optimize 2+; `false` disables. */
+  toneMap?: boolean
   /** Use ordinary call frames instead of `return_call` tail calls. */
-  tailCall?: boolean
+  noTailCall?: boolean
+  /** Lower internal throws to `unreachable` in catch-free modules (drops the wasm-EH tag). */
+  noEhAbort?: boolean
+  /** Compile against an imported SHARED memory (wasm threads): atomic heap bump. */
+  sharedMemory?: boolean
+  /** Emit a blocking timer loop in `_start` for standalone runtimes with no event loop. */
+  nativeTimers?: boolean
+  /** Mutable sink collecting `{ code, message, fn?, line?, column? }` warning entries. */
+  warnings?: { entries?: unknown[] } & Record<string, unknown>
   /** `Math.random` seeding: a number fixes the stream; `true` forces host entropy. */
   randomSeed?: number | boolean
   /** Emit a WASM `name` section (function symbols) for profilers/debuggers. */

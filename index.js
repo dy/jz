@@ -313,6 +313,8 @@ jz.pool = async function pool(source, opts = {}) {
  *     `hashSmallInitCap`) + `hoistConstantPool` off (inline `f64.const` over
  *     mutable globals); trades size for speed.
  *   - `'size'`: full passes with unrolling/SIMD off and tight scalar caps — smallest wasm.
+ *   - `'fast'`: level-2 passes with the final wat optimizer off — fastest compile
+ *     for non-trivial sources (watch loops, REPLs); larger, slower output than 2.
  *   - `{ level?, <pass>?: bool, ... }`: per-pass overrides on top of a base level.
  *     INTERNAL/unstable — pass names track compiler internals (PASS_NAMES in
  *     src/optimize/index.js) and change between versions; prefer the level/string forms.
@@ -321,15 +323,15 @@ jz.pool = async function pool(source, opts = {}) {
  * @param {boolean} [opts.whyNotSimd] - Diagnostic: emit a `simd-why-not` warning (via
  *   opts.warnings) for each canonical loop the auto-vectorizer declined, naming the
  *   first blocking op. Finds loops one op away from SIMD. Noisy — off by default.
- * @param {boolean} [opts.stencil] - Opt-in: vectorize neighbour-load
+ * @param {boolean} [opts.stencil] - Vectorize neighbour-load
  *   stencils (`b[i]=f(a[i-1],a[i],a[i+1])`, 2-D 5-point) to f64x2. Bit-exact vs scalar.
- *   Unstable — off by default until proven across the corpus.
- * @param {boolean} [opts.outerStrip] - Opt-in: strip-mine a pixel loop whose
+ *   Default-on at level 2+ (`false` disables, `true` forces at levels where it's off).
+ * @param {boolean} [opts.outerStrip] - Strip-mine a pixel loop whose
  *   per-pixel value is an inner reduction (metaballs-shape) into f64x2 lanes (2 pixels at
- *   once). Bit-exact vs scalar. Unstable — off by default.
+ *   once). Bit-exact vs scalar. Default-on at level 2+ (`false` disables).
  * @param {boolean} [opts.toneMap] - Mixed-lane log-tonemap vectorizer: a flat
  *   `i32 dens[i] → f64 Math.log → i32 pack → px[i]` loop lifts to a 2-wide f64x2 island
- *   (fern/bifurcation/attractors). Bit-exact vs scalar; default-on at speed, pass `false` to disable.
+ *   (fern/bifurcation/attractors). Bit-exact vs scalar; default-on at level 2+, pass `false` to disable.
  * @param {object} [opts.warnings] - Optional mutable warning sink populated with
  *   `entries: [{ code, message, fn?, line?, column? }]`. Heap-growth advisories
  *   fire when a module uses the bump allocator and an export or loop retains
