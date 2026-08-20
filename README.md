@@ -66,7 +66,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 jz program.js              # → program.wasm
 jz program.js --wat        # → program.wat
 jz program.js -o out.wasm  # custom output (- for stdout)
-jz program.js -O3          # optimization: -O0 off, -O1 minimal, -O2 default, -O3 speed (-Os for size)
+jz program.js -O3          # optimization: -O0 off, -O1 min, -O2 default, -O3 speed, -Os size
 jz program.js --host wasi  # standalone WASI output
 jz --strict program.js     # pure canonical subset (also implied by .jz extension)
 jz -e "1 + 2"              # eval → 3
