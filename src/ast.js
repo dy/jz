@@ -103,6 +103,30 @@ export const isFuncRef = (node, funcNames) => typeof node === 'string' && funcNa
  *  source of truth for "is this trivially duplicatable" across ir/abi/optimize. */
 export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'global.get' || n[0].endsWith('.const'))
 
+// === Shared traversal ===
+
+/** Pre-order walk over an array AST/IR tree.
+ *
+ * `enter(node, parent, index)` sees each array node. Returning `false` prunes
+ * that node's children. `boundary`, when supplied, runs after `enter` and
+ * prunes children when it returns true. Primitive operands are not visited;
+ * callers inspect them through their containing node.
+ * The root has `parent === null` and `index === -1`; array opcode slots (`[0]`)
+ * are not visited separately because `enter` already receives their node.
+ *
+ * The walk deliberately keeps no visited set: AST is a tree, and optimizer IR
+ * may share a subtree whose occurrences must each retain their original visit. */
+export function walkAst(node, { enter, boundary } = {}) {
+  const visit = (value, parent, index) => {
+    if (!Array.isArray(value)) return
+    if (enter && enter(value, parent, index) === false) return
+    if (boundary && boundary(value, parent, index)) return
+    for (let i = 1; i < value.length; i++) visit(value[i], value, i)
+  }
+  visit(node, null, -1)
+  return node
+}
+
 // === Assignment / reassignment ===
 
 /** Assignment operators — shared across analyze, plan, emit, abi. */
