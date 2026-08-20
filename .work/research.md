@@ -23296,3 +23296,27 @@ ARC SUMMARY (the honest state, complete):
   Next tool: with reproducibility established, a watchpoint-style probe
   on cb's hash slot across rounds (find the exact round/operation where
   the entry disappears) becomes an exact-replay bisection, not sampling.
+
+## §post-subscript strict surface — watr is the last blocker class (2026-08-20)
+
+subscript 10.7.1 removed number.js's bigint value-node — its strict
+refusal is GONE. The next-in-queue refusal is watr's: optimize.js's
+nullable-bigint folder idiom (`cb ? BigInt(cb.value) : null` and the
+typeof-dispatch variant at :973 — confirmed by instrumented dump as the
+exact firing site), ~8 sites (547/551/643/652/973/1106/1109/1134/1147),
+riding the self-graph via scripts/self.js's watr import. Per the ratified
+§4 contract these are LEGITIMATE compile errors post-retirement
+(ternary-nullish flow class) — the resolution is the same pattern as the
+subscript step: a watr release reshaping the folder's null-carrying
+ternaries into provable idioms (early-return / hex-string carriers per
+the SELF-HOST CONTRACT), then bump + re-run the strict enumeration until
+clean. jz-side inference work is NOT the answer (§4 explicitly turns
+unproven ternary-nullish into a diagnostic by design).
+
+Also landed this session: user's dirty set (11588771, bigint re-tag +
+subscript bump), error-decode branch (55aa5399 — in-wasm e.message/name
+decode; the 3 pre-existing order-dependent test:wasm fails verified cured
+on the merged tip, 0/0/0). All dangling branches/worktrees resolved and
+deleted (4f-2 mooted, repplan-v2/frontier-recheck fully merged, memo-lane
+content re-landed as 7b87a874/198ae328, three diagnostic worktrees
+removed). Full test:wasm leg re-running on the merged tip for the record.
