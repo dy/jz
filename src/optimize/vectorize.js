@@ -1,7 +1,7 @@
 import { findBodyStart, dollar } from '../ir.js'
 import { warn, ctx, DBG_INVARIANTS, registerResetHook } from '../ctx.js'
 import { assembleView } from '../session-views.js'
-import { nodeEqual as exprEq, cloneNode } from '../ast.js'
+import { nodeEqual as exprEq, cloneNode, walkAst } from '../ast.js'
 
 /**
  * Lane-local SIMD-128 vectorizer.
@@ -49,6 +49,14 @@ import { nodeEqual as exprEq, cloneNode } from '../ast.js'
 
 
 const isArr = n => Array.isArray(n)   // wrap, not alias: jz self-compile rejects a builtin used as a first-class value
+
+const forEachLocalDef = (roots, visit) => {
+  const enter = n => {
+    if (isArr(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+      visit(n[1], n[2], n)
+  }
+  for (const root of roots) walkAst(root, { enter })
+}
 
 // Structural node equality — must be non-finite- AND bigint-safe: plain
 // JSON.stringify maps Infinity/-Infinity/NaN→null and -0→0, so it would equate a
@@ -352,8 +360,7 @@ const hoistDotInvariant = (loop, parent, idx, fnLocals, freshIdRef, newLocalDecl
       i += repl.length
     }
   }
-  const scan = (n) => { if (!isArr(n)) return; processList(n); for (let j = 0; j < n.length; j++) if (isArr(n[j])) scan(n[j]) }
-  scan(loop)
+  walkAst(loop, { enter: n => { if (isArr(n)) processList(n) } })
   if (invInits.length) parent.splice(idx, 0, ...invInits)
 }
 
@@ -455,15 +462,13 @@ const slpSameMem = (a, b) => {
 // overlap iff their offsets are equal.
 const slpReadsOffset = (value, addr, off) => {
   let hit = false
-  const walk = (n) => {
-    if (hit || !isArr(n)) return
+  walkAst(value, { enter: n => {
+    if (hit || !isArr(n)) return false
     if (n[0] === 'f64.load') {
       const m = slpMem(n)
-      if (m && m.off === off && slpSameMem(m.addr, addr)) { hit = true; return }
+      if (m && m.off === off && slpSameMem(m.addr, addr)) { hit = true; return false }
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(value)
+  } })
   return hit
 }
 
@@ -526,12 +531,9 @@ const slpUnitAt = (stmts, i, getCounts) => {
 // resolution above can confirm a store value's temp is single-use before removing it.
 const slpGetCounts = (fn) => {
   const counts = new Map()
-  const walk = (n) => {
-    if (!isArr(n)) return
-    if (n[0] === 'local.get' && typeof n[1] === 'string') counts.set(n[1], (counts.get(n[1]) || 0) + 1)
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(fn)
+  walkAst(fn, { enter: n => {
+    if (isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string') counts.set(n[1], (counts.get(n[1]) || 0) + 1)
+  } })
   return counts
 }
 
@@ -1105,39 +1107,36 @@ function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPix, idxT
  */
 function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
   let stride = null, found = false, ok = true, pix = null
-  function walk(n) {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
-      found = true
-      const v = n[2]
-      let k = null
-      if (isArr(v) && v[0] === 'i32.shl' && v.length === 3) {
-        const kk = constNum(v[2])
-        // Power-of-2 AoS offset local `(i32.shl ind K)` with K>3 — matches matchLaneOffset's
-        // power-of-2 arm: element shift 3, pixel stride 2^(K-3). Verify all writes share one P.
-        if (allowAos && isLocalGet(v[1], ind) && kk != null && kk >= 4 && kk <= 9) {
-          k = 3; const p = 1 << (kk - 3); if (pix == null) pix = p; else if (pix !== p) ok = false
-        }
-        else if (isLocalGet(v[1], ind)) { k = kk; if (k == null || k < 0 || k > 3) ok = false }
-        else if (allowAos && kk != null && kk >= 0 && kk <= 3) {
-          // AoS offset local (i32.shl <P·ind> K) — folded `(i32.mul P ind)` or a pixel-index
-          // local `(local.get $J)` with $J = P·ind (idxTees). Verify every write shares one P.
-          let p = matchConstMulIV(v[1], ind)
-          if (p == null && isArr(v[1]) && v[1][0] === 'local.get' && idxTees && idxTees.get(v[1][1]) > 1) p = idxTees.get(v[1][1])
-          if (p != null) { k = kk; if (pix == null) pix = p; else if (pix !== p) ok = false }
-          else ok = false
-        } else ok = false
-      } else if (isLocalGet(v, ind)) {
-        k = 0
-      } else ok = false
-      if (k != null) {
-        if (stride == null) stride = k
-        else if (stride !== k) ok = false
+  const inspect = n => {
+    if (!isArr(n) || (n[0] !== 'local.tee' && n[0] !== 'local.set') || n[1] !== name || n.length !== 3) return
+    found = true
+    const v = n[2]
+    let k = null
+    if (isArr(v) && v[0] === 'i32.shl' && v.length === 3) {
+      const kk = constNum(v[2])
+      // Power-of-2 AoS offset local `(i32.shl ind K)` with K>3 — matches matchLaneOffset's
+      // power-of-2 arm: element shift 3, pixel stride 2^(K-3). Verify all writes share one P.
+      if (allowAos && isLocalGet(v[1], ind) && kk != null && kk >= 4 && kk <= 9) {
+        k = 3; const p = 1 << (kk - 3); if (pix == null) pix = p; else if (pix !== p) ok = false
       }
+      else if (isLocalGet(v[1], ind)) { k = kk; if (k == null || k < 0 || k > 3) ok = false }
+      else if (allowAos && kk != null && kk >= 0 && kk <= 3) {
+        // AoS offset local (i32.shl <P·ind> K) — folded `(i32.mul P ind)` or a pixel-index
+        // local `(local.get $J)` with $J = P·ind (idxTees). Verify every write shares one P.
+        let p = matchConstMulIV(v[1], ind)
+        if (p == null && isArr(v[1]) && v[1][0] === 'local.get' && idxTees && idxTees.get(v[1][1]) > 1) p = idxTees.get(v[1][1])
+        if (p != null) { k = kk; if (pix == null) pix = p; else if (pix !== p) ok = false }
+        else ok = false
+      } else ok = false
+    } else if (isLocalGet(v, ind)) {
+      k = 0
+    } else ok = false
+    if (k != null) {
+      if (stride == null) stride = k
+      else if (stride !== k) ok = false
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
   }
-  for (const s of body) walk(s)
+  for (const s of body) walkAst(s, { enter: inspect })
   return found && ok ? stride : null
 }
 
@@ -1261,16 +1260,15 @@ function offsetTeesFromAddrTable(addrTable) {
 // either consumer has ever had, precisely the "silently widening" risk the design's §6 flags).
 function buildSiteAccess(body, ind, offsetTees) {
   const siteAccess = new WeakMap()
-  const walk = (node) => {
+  const recordSite = node => {
     if (!isArr(node)) return
     const op = node[0]
     if (LOAD_OPS[op] || STORE_OPS[op]) {
       const m = matchLaneAddr(node[1], ind, undefined, offsetTees)
       if (m) siteAccess.set(node, { base: m.base, strideLog2: m.strideLog2, pixelStride: m.pixelStride || 1, elemWidth: 1 << m.strideLog2, teeName: m.teeName || null })
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  for (const s of body) walk(s)
+  for (const s of body) walkAst(s, { enter: recordSite })
   return siteAccess
 }
 
@@ -1335,7 +1333,7 @@ function assertBodyModelSound(body, ind, bm) {
   // tryReduceBitExact/tryRampMap's non-recordAddrTees paths already make at every
   // load/store site — a fresh re-derivation compared against the built table (the same
   // cache-freshness-assert shape as analyze.js's assertBodyFactsFresh).
-  const walk = (node) => {
+  const assertSite = node => {
     if (!isArr(node)) return
     const op = node[0]
     if (LOAD_OPS[op] || STORE_OPS[op]) {
@@ -1346,9 +1344,8 @@ function assertBodyModelSound(body, ind, bm) {
       if (refKey !== gotKey)
         throw new Error(`BodyModel siteAccess diverges at a load/store site: ref=${refKey} got=${gotKey}`)
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  for (const s of body) walk(s)
+  for (const s of body) walkAst(s, { enter: assertSite })
 }
 
 // True if the tree contains any branch or return — control flow that a flattened value-block
@@ -1679,15 +1676,12 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // matchLaneOffset resolve $J → pixel-stride P. Value -1 marks an inconsistent local (bail).
   const idxTees = new Map()
   {
-    const walk = (n) => {
-      if (!isArr(n)) return
-      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
-        const p = matchConstMulIV(n[2], incVar)
-        if (p != null) idxTees.set(n[1], idxTees.has(n[1]) && idxTees.get(n[1]) !== p ? -1 : p)
-      }
-      for (let i = 1; i < n.length; i++) walk(n[i])
+    const recordIndex = n => {
+      if (!isArr(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string' || n.length !== 3) return
+      const p = matchConstMulIV(n[2], incVar)
+      if (p != null) idxTees.set(n[1], idxTees.has(n[1]) && idxTees.get(n[1]) !== p ? -1 : p)
     }
-    for (const s of body) walk(s)
+    for (const s of body) walkAst(s, { enter: recordIndex })
   }
 
   // The compute/lane type is the WIDEST FLOAT among all loads+stores. A narrower
@@ -1700,14 +1694,13 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   const isNarrowStore = (lane, sty) => (lane === 'f32' && (sty === 'i16' || sty === 'i8'))
     || (lane === 'f64' && (sty === 'f32' || sty === 'i32'))
   let preFloat = null
-  const scanFloatWidth = (n) => {
+  const recordFloatWidth = n => {
     if (!isArr(n)) return
     const t = LOAD_OPS[n[0]] || STORE_OPS[n[0]]
     if (t === 'f64') preFloat = 'f64'
     else if (t === 'f32' && preFloat == null) preFloat = 'f32'
-    for (let i = 1; i < n.length; i++) scanFloatWidth(n[i])
   }
-  for (const s of body) scanFloatWidth(s)
+  for (const s of body) walkAst(s, { enter: recordFloatWidth })
   if (preFloat) { laneType = preFloat; stride = LANE_INFO[preFloat].stride }
 
   // Record a memory site's pixel stride. An AoS stride (P>1) is f64-lane only (the gather/scatter
@@ -2207,8 +2200,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
       let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
       if (fk === 'write') { derived.add(name); added = true }
     }
-    const walk = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string' && x.length === 3) consider(x[1], x[2]); for (let i = 1; i < x.length; i++) walk(x[i]) }
-    for (const s of body) walk(s)
+    forEachLocalDef(body, consider)
     if (!added) break
   }
 
@@ -2903,25 +2895,15 @@ function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 function _isAddressLocal(body, name, ind) {
   let onlyAsAddrTee = true
   let foundTee = false
-  function walk(n) {
-    if (!isArr(n)) return
-    if (n[0] === 'local.tee' && n[1] === name) {
-      foundTee = true
-      // Check the value is a lane-address shape
-      const m = matchLaneAddr(['local.tee', name, n[2]], ind)
-      if (!m) onlyAsAddrTee = false
-      return
-    }
-    if (n[0] === 'local.set' && n[1] === name) {
-      // A set-not-tee: check value shape
-      const m = matchLaneAddr(['local.tee', name, n[2]], ind)
-      if (!m) onlyAsAddrTee = false
-      foundTee = true
-      return
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i])
+  const inspect = n => {
+    if (!isArr(n) || (n[0] !== 'local.tee' && n[0] !== 'local.set') || n[1] !== name) return
+    foundTee = true
+    // A set is checked through the equivalent tee-shaped matcher.
+    const m = matchLaneAddr(['local.tee', name, n[2]], ind)
+    if (!m) onlyAsAddrTee = false
+    return false
   }
-  for (const s of body) walk(s)
+  for (const s of body) walkAst(s, { enter: inspect })
   return foundTee && onlyAsAddrTee
 }
 
@@ -2930,16 +2912,13 @@ function _isAddressLocal(body, name, ind) {
 // keeps it a recomputed scalar i32, never a v128 lane. (Only tryVectorize consults this.)
 function _isPixelIndexLocal(body, name, ind) {
   let found = false, ok = true
-  function walk(n) {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name && n.length === 3) {
-      found = true
-      if (matchConstMulIV(n[2], ind) == null) ok = false
-      return
-    }
-    for (let i = 1; i < n.length; i++) walk(n[i])
+  const inspect = n => {
+    if (!isArr(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee') || n[1] !== name || n.length !== 3) return
+    found = true
+    if (matchConstMulIV(n[2], ind) == null) ok = false
+    return false
   }
-  for (const s of body) walk(s)
+  for (const s of body) walkAst(s, { enter: inspect })
   return found && ok
 }
 
@@ -3920,16 +3899,15 @@ function tryStrengthReduceIV(bl, fnLocals, freshIdRef) {
   const sites = []                 // { parent, idx, base, k }
   const written = new Set()
   let bail = false
-  const scan = (node, parent, pi) => {
-    if (bail || !isArr(node)) return
+  const inspect = (node, parent, pi) => {
+    if (bail || !isArr(node)) return false
     const op = node[0]
-    if ((op === 'br' || op === 'br_if') && node[1] === loopLabel) { bail = true; return }
+    if ((op === 'br' || op === 'br_if') && node[1] === loopLabel) { bail = true; return false }
     if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') written.add(node[1])
     const m = matchAffineAddr(node, incVar)
     if (m) sites.push({ parent, idx: pi, base: m.base, k: m.k })
-    for (let i = 1; i < node.length; i++) scan(node[i], node, i)
   }
-  for (let i = 3; i < incIdx; i++) scan(loopNode[i], loopNode, i)
+  for (let i = 3; i < incIdx; i++) walkAst(loopNode[i], { enter: inspect })
   if (bail || !sites.length || written.has(incVar)) return null
 
   // Group by (base, k); keep only loop-invariant i32 bases.
@@ -4689,12 +4667,9 @@ function buildPivotCoeff(loopNode, pivot) {
       default: return null                     // any other op (and/or/div/…) ⇒ unanalyzable
     }
   }
-  const visit = (n) => {
-    if (!isArr(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { coeff.set(n[1], delta(n[2])); visit(n[2]); return }
-    n.forEach(visit)
-  }
-  visit(loopNode)
+  walkAst(loopNode, { enter: n => {
+    if (isArr(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') coeff.set(n[1], delta(n[2]))
+  } })
   return delta
 }
 
@@ -5728,8 +5703,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   const pxAlias = new Map()
   {
     const defs = new Map()
-    const scan = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { (defs.get(n[1]) || defs.set(n[1], []).get(n[1])).push(n[2]) } for (let i = 1; i < n.length; i++) scan(n[i]) }
-    obody.forEach(scan)
+    forEachLocalDef(obody, (name, rhs) => { (defs.get(name) || defs.set(name, []).get(name)).push(rhs) })
     for (const [name, rhss] of defs) {
       const j = JSON.stringify(rhss[0])
       if (!rhss.every(r => JSON.stringify(r) === j)) continue   // multiple distinct defs → not a stable alias
@@ -5904,8 +5878,8 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   // the clamp runs per-lane after extraction, corrupting no other lane.)
   {
     const consumedShadows = new Set()
-    const scanShadow = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') consumedShadows.add(n[1]); for (const c of n.slice(1)) scanShadow(c) }
-    for (const expr of laneLifted.values()) scanShadow(expr)
+    const recordShadow = n => { if (isArr(n) && n[0] === 'local.get' && typeof n[1] === 'string') consumedShadows.add(n[1]) }
+    for (const expr of laneLifted.values()) walkAst(expr, { enter: recordShadow })
     const hazard = (n) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee') && laneMap.has(n[1]) && consumedShadows.has(laneMap.get(n[1]))) || n.slice(1).some(hazard))
     if (epilogue.some(hazard)) return null
   }
@@ -6626,22 +6600,26 @@ function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   // f64-convert requirement is what distinguishes this from a plain i32 map (tryVectorize,
   // which runs earlier and already owns those).
   let hasConvert = false, storeCount = 0, loadCount = 0, overread = 0, ok = true
-  const scan = (n) => {
-    if (!ok || !isArr(n)) return
+  const inspect = n => {
+    if (!ok || !isArr(n)) return false
     const o = n[0]
     if (o === 'f64.convert_i32_s' || o === 'f64.convert_i32_u') hasConvert = true
-    if (o === 'i32.store') { storeCount++; if (!matchToneAddrShift(n[1], incVar, 2)) ok = false; scan(n[2]); return }
+    if (o === 'i32.store') {
+      storeCount++
+      if (!matchToneAddrShift(n[1], incVar, 2)) ok = false
+      if (ok) walkAst(n[2], { enter: inspect })
+      return false
+    }
     const ld = TONE_LOAD[o]
     if (ld && n.length === 2) {   // i32 (stride-4) or a narrow typed-array read at its own stride
       loadCount++
-      if (!matchToneAddrShift(n[1], incVar, ld.shift)) { ok = false; return }
+      if (!matchToneAddrShift(n[1], incVar, ld.shift)) { ok = false; return false }
       if (ld.over > overread) overread = ld.over
-      return
+      return false
     }
-    if (LOAD_OPS[o] || STORE_OPS[o]) { ok = false; return }  // any other-width memop → not this shape
-    for (let i = 1; i < n.length; i++) scan(n[i])
+    if (LOAD_OPS[o] || STORE_OPS[o]) { ok = false; return false }  // any other-width memop → not this shape
   }
-  for (const s of body) scan(s)
+  for (const s of body) { walkAst(s, { enter: inspect }); if (!ok) break }
   // 1 store (unconditional, attractors) or 2 (the then/else arms of a conditional store,
   // bifurcation/fern — both write the same pixel and collapse to one masked store).
   if (!ok || !hasConvert || storeCount < 1 || storeCount > 2 || loadCount < 1) return null
@@ -7134,7 +7112,7 @@ function opCostWeight(op) {
 }
 function weighTree(nodes) {
   let w = 0
-  const walk = (n) => {
+  const account = n => {
     if (!isArr(n)) return
     const op = n[0]
     w += opCostWeight(op)
@@ -7149,11 +7127,13 @@ function weighTree(nodes) {
     // Scalar-domain load/store (pre-lift `body`) AND their lifted v128 form (post-lift
     // `lifted` — same address-skip reasoning applies identically to both sides of the ÷lanes
     // comparison this model computes).
-    if (LOAD_OPS[op] || op === 'v128.load') return
-    if ((STORE_OPS[op] && n.length === 3) || (op === 'v128.store' && n.length === 3)) { if (isArr(n[2])) walk(n[2]); return }
-    for (let i = 0; i < n.length; i++) if (isArr(n[i])) walk(n[i])
+    if (LOAD_OPS[op] || op === 'v128.load') return false
+    if ((STORE_OPS[op] && n.length === 3) || (op === 'v128.store' && n.length === 3)) {
+      if (isArr(n[2])) walkAst(n[2], { enter: account })
+      return false
+    }
   }
-  for (const n of nodes) walk(n)
+  for (const n of nodes) walkAst(n, { enter: account })
   return w
 }
 // Fixed per-loop overhead the op-weight walk above can't see structurally (it isn't part of
@@ -7467,17 +7447,14 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   // in the lift (tryVectorize's own `_isAddressLocal` pattern, ported onto this pass's matchAddr).
   const _isAddrLocalGM = (name) => {
     let onlyAddr = true, found = false
-    const walk = (n) => {
-      if (!isArr(n)) return
-      if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
-        found = true
-        const m = matchAddr(['local.tee', name, n[2]])
-        if (!m && !(isArr(n[2]) && n[2][0] === 'i32.shl' && n[2].length === 3 && isI32Const(n[2][2]) && ivCoeff(n[2][1]) === 1)) onlyAddr = false
-        return
-      }
-      for (let i = 1; i < n.length; i++) walk(n[i])
+    const inspect = n => {
+      if (!isArr(n) || (n[0] !== 'local.tee' && n[0] !== 'local.set') || n[1] !== name || n.length !== 3) return
+      found = true
+      const m = matchAddr(['local.tee', name, n[2]])
+      if (!m && !(isArr(n[2]) && n[2][0] === 'i32.shl' && n[2].length === 3 && isI32Const(n[2][2]) && ivCoeff(n[2][1]) === 1)) onlyAddr = false
+      return false
     }
-    for (const s of body) walk(s)
+    for (const s of body) walkAst(s, { enter: inspect })
     return found && onlyAddr
   }
 
@@ -7726,8 +7703,7 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
       let fk = null; for (const t of body) { const k = firstAccess(t, name); if (k) { fk = k; break } }
       if (fk === 'write') { derived.add(name); added = true }
     }
-    const walk = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string' && x.length === 3) consider(x[1], x[2]); for (let i = 1; i < x.length; i++) walk(x[i]) }
-    for (const s of body) walk(s)
+    forEachLocalDef(body, consider)
     if (!added) break
   }
 
@@ -7875,16 +7851,13 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
   // classifies correctly too). ----
   const _isAddrLocalGS = (name) => {
     let onlyAddr = true, found = false
-    const walk = (n) => {
-      if (!isArr(n)) return
-      if ((n[0] === 'local.tee' || n[0] === 'local.set') && n[1] === name && n.length === 3) {
-        found = true
-        if (ivCoeff(n[2]) == null && !matchAddr(['local.tee', name, n[2]])) onlyAddr = false
-        return
-      }
-      for (let i = 1; i < n.length; i++) walk(n[i])
+    const inspect = n => {
+      if (!isArr(n) || (n[0] !== 'local.tee' && n[0] !== 'local.set') || n[1] !== name || n.length !== 3) return
+      found = true
+      if (ivCoeff(n[2]) == null && !matchAddr(['local.tee', name, n[2]])) onlyAddr = false
+      return false
     }
-    for (const s of body) walk(s)
+    for (const s of body) walkAst(s, { enter: inspect })
     return found && onlyAddr
   }
   const referenced = blReferenced
@@ -8315,15 +8288,11 @@ export function vectorizeLaneLocal(fn, opts = {}) {
   const constLocals = new Map()
   {
     const setCount = new Map()
-    const walkC = (n) => {
-      if (!isArr(n)) return
-      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
-        setCount.set(n[1], (setCount.get(n[1]) || 0) + 1)
-        if (isArr(n[2]) && n[2][0] === 'f64.const') constLocals.set(n[1], +n[2][1])
-      }
-      for (let i = 1; i < n.length; i++) walkC(n[i])
-    }
-    for (let i = bodyStart; i < fn.length; i++) walkC(fn[i])
+    forEachLocalDef(fn.slice(bodyStart), (name, rhs, node) => {
+      if (node.length !== 3) return
+      setCount.set(name, (setCount.get(name) || 0) + 1)
+      if (isArr(rhs) && rhs[0] === 'f64.const') constLocals.set(name, +rhs[1])
+    })
     for (const [k, c] of setCount) if (c !== 1) constLocals.delete(k)   // multiply-written → not invariant
   }
 
