@@ -23053,3 +23053,19 @@ same method, next session.
 Emission rounds themselves remain green at small/medium scale (jessie
 380.8 / jzify −30 MB / byte-identical dormant) — the frontier defects are
 all jz×jz-scale only.
+
+## §defect 1' resolved + priority call (2026-08-20)
+
+The 6.5s dormant jz×jz trap is NOT a phantom single allocation: breadcrumb
+census (389,713 grow events, max newCap 1024) shows it is volume — one
+fresh `paramFactsCache = new Map()` per siteState() per consumer inside
+narrowSignatures' call-site lattice (~9 distinct fact keys per state; the
+code's own comment already names the hazard: "self-hosted-only: native V8
+GCs the resulting churn; the self-host bump arena can't"). PRIORITY CALL:
+this is DORMANT-only — the region-live elephant attribution measured 91%
+reclaim across the planning phase (narrowSignatures included), and
+region-live is the shipping destination — so the algorithmic fix
+(per-(callerFunc,key) phase-level caching, or allocation-free fact lookup)
+is banked as a dormant-robustness slice, NOT taken now. The jz×jz frontier
+blocker remains defect 2 (rounds-active copy_rec corruption @3,059 MB),
+raw-bits decode in flight.
