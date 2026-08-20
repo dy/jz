@@ -23328,3 +23328,38 @@ branches/worktrees resolved and
 deleted (4f-2 mooted, repplan-v2/frontier-recheck fully merged, memo-lane
 content re-landed as 7b87a874/198ae328, three diagnostic worktrees
 removed). Full test:wasm leg re-running on the merged tip for the record.
+
+## §strict queue walk — session progress + the proven-BIGINT-slot slice (2026-08-20)
+
+Queue cleared so far (each verified by the stack-probe method — instrument
+carrierF64, read the sink chain, fix, re-run):
+1. watr folder ternaries (ternary-nullish class) — reshaped to guarded
+   blocks with unconditional BigInt locals; patch applied to node_modules
+   (validation) AND /Users/div/projects/watr (uncommitted, for the user's
+   release round 2). watr 5.9.0 did NOT contain the reshape.
+2. ENGINE: prepare-level constant-if fold (foldConstIf) + unreachable-tail
+   pruning (truncateUnreachable, reference-safe bail) — the class fix that
+   makes host-capability early-returns actually eliminate their host-only
+   tails before analysis; dual of the '?:' emitter's literal fold at the
+   proper pipeline level.
+3. build-profile snapshot.js host-guard specialization — added but
+   snapshot.js turned out NOT to be in the self-graph (guard no-ops,
+   harmless; kept for when it enters).
+4. module/json.js le(): reduce((a,b,k)=>…, 0n) → provable loop (bigint
+   accumulator no longer crosses the dynamic closure ABI).
+5. layout.js BIGINT_SENTINEL_BITS → '0x' hex-string values per the
+   SELF-HOST CONTRACT; interop.js decodeBigintSentinel wraps with BigInt()
+   (presence-guarded — kind 4's absence is load-bearing).
+
+REMAINING (the head of the queue): LAYOUT's own `NAN_PREFIX_BITS:
+0x7FF8000000000000n` field store — sink chain storedValueLegacy ←
+storedValue ← fieldStoredValue ← the '{}' emitter. The CLASS fix (engine,
+not input): a schema slot whose census proves uniform BIGINT is a
+KIND-PROVEN position — the store should emit raw i64 bits into the slot
+(reinterpret to the f64 carrier, bits exact) instead of refusing; reads
+already compute raw through the sid-veto literal fold. Seam: object.js's
+fieldStoredValue selector (slotBigintBoxedBySid) routes to a raw-store
+helper in bridge.js. SEQUENCED AFTER the conditional-spread agent lands
+(it holds module/object.js); not input-reshaped (migrating LAYOUT to hex
+strings would touch ~15 consumer files and reshape the input instead of
+fixing the engine).
