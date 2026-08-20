@@ -23119,3 +23119,22 @@ Idiomatic-pattern provability: would give bodyFn (and every conditional-
 spread literal) a real schema, devirtualizing its reads program-wide.
 Deliberately NOT taken as the defect-2 fix — it would mask the
 relocate_props bug, not fix it.
+
+## §defect 2 — relocate_props stub ELIMINATED; array arm next (2026-08-20)
+
+Intervention probe: old-site forwarding stub in __region_relocate_props'
+ephemeral branch → jz×jz outcome BIT-IDENTICAL (trap at byteLength
+3207987200 = 3059.375 MB, the same across original/counter-only/stub
+runs). Clean elimination: no revisit-reads-stale-old-site defect at that
+site. Method note now proven twice: relocate_props is too hot to
+instrument (13.3M calls/compile; ANY code-size change — even pure
+counters — shifts which downstream symptom fires first, while the
+corruption byteLength never moves). The byteLength invariance is the
+signal; trap messages are codegen-perturbation noise.
+
+Next per the ranking: the SAME stub probe on regionArmArray's no-stub
+ephemeral branch (layout-kinds.js:385-409) — cb.params is itself an
+ARRAY, relocated by that arm, the site most directly upstream of the
+value that decodes as undefined. Then regionArmObject's branch; then
+genuinely-upstream candidates ($__region_exit root-walk sequencing,
+$__alloc_hdr_n at 13.3M-call volume).
