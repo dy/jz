@@ -22855,7 +22855,21 @@ the new guard path. Same class as the va.type!=='f64' precondition the
 change itself already tripped once during development: emitSchemaSlotGuarded
 has kernel-side representation preconditions that native gates cannot see.
 
-RE-LAND SPEC (banked): lane 4's value was marginal (~2% on provenance
+ATTRIBUTION RETRACTED (same day, one section later): the full test:wasm
+leg on the REVERTED tip fails the SAME 3 — bc48ac02 was not the culprit.
+The bisect compared a FULL run (tip) against INDIVIDUAL-file runs
+(b5073043/7535974e), and the failures are order-dependent: each named test
+passes standalone at every commit probed, incl. the failing tip. bc48ac02
+is restored (4d05c50a). Method-consistent attribution (full leg per
+commit) running; the parked error-decode branch — whose full leg was the
+only recent 0-fail datum, and whose fix targets exactly this catch-path
+OOB class — is the leading suspect as the FIXER of pre-existing fails,
+not bc48ac02 as the breaker. Second same-day lesson on comparing
+measurements across methods: a bisect's probe must be the SAME command
+end-to-end.
+
+RE-LAND SPEC (superseded by the retraction above — kept for the gate
+lesson only): lane 4's value was marginal (~2% on provenance
 bench; fftplan untouched) — re-land only with (a) the kernel-target suite
 leg (npm run test:wasm) added to the gate ladder for any emit-path change,
 (b) the kernel-side precondition of emitSchemaSlotGuarded understood and
