@@ -23092,3 +23092,30 @@ pointer primitives already cleared by static read — the hazard, if i32,
 is in the descent's own cursor math). Repro rig in place: instrumented
 kernels + 16-min tagged probe at /private/tmp scratchpad frontier2;
 worktrees jz-elephant2-53e50328{,-live}.
+
+## §defect 2 hunt — cb is a HASH; hunt redirected to __region_relocate_props (2026-08-20)
+
+Candidates closed with evidence: schema_tbl durability CONFIRMED
+empirically (value 634656 identical across the full ~1000s run, below the
+first round's mark 20726208); candidate-3-as-framed does not apply because
+`bodyFn` never becomes a schema'd OBJECT at all — every one of its 8
+conditional spreads is the `...(cond && {…})` shape, resolveSchema has no
+'&&' arm, spreadLiteralSchema nulls out on the first unknown source, and
+the literal compiles through emitDynamicSpread into a PTR.HASH. So
+`cb.params` is a dynamic read against a HASH, and cb's region arm is
+regionArmHash → __region_relocate_props — the function whose own comments
+document TWO previously-fixed garbage-length defects of exactly this
+class. Hunt now focused there with a lens no prior audit covered:
+CROSS-ROUND revisits (both landed fixes were within-round memo defects;
+with four round sites firing per compile, a hash relocated+landed in
+round N is revisited by round N+1's ephemeral branch — first-visit
+invariant assumptions, per-round memo reset, lingering forwarding
+headers, __durable_fwd_log interaction).
+
+SEPARATE BANKED SLICE (engine inference, not the bug fix): teach
+resolveSchema/spreadSourceSchema the `expr && {literal}` conditional-
+spread shape — keys statically known per source, presence conditional.
+Idiomatic-pattern provability: would give bodyFn (and every conditional-
+spread literal) a real schema, devirtualizing its reads program-wide.
+Deliberately NOT taken as the defect-2 fix — it would mask the
+relocate_props bug, not fix it.
