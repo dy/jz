@@ -23199,3 +23199,29 @@ post-mortem against layout.js masks. Three-way discrimination: genuine
 UNDEF pattern → upstream never-wrote path; stale pointer with valid tag
 → names the responsible relocation arm directly; non-decoding bits → raw
 memory corruption outside typed relocation logic entirely.
+
+## §defect 2 — CLOSING VERDICT of the diagnostic arc: silent key-loss (2026-08-20)
+
+Value-identity probe (site 1109, clean baseline-class run, invariant
+byteLength): raw $t bits = 0x7FF8000200000000 — decoded tag=PTR.ATOM,
+aux=ATOM.UNDEF, offset=0; reconstructed ptrBits(PTR.ATOM, ATOM.UNDEF, 0)
+matches BIT-FOR-BIT. Classification: **genuine canonical UNDEF**, not a
+stale tagged pointer, not un-decodable garbage. Cross-checked at source:
+`params` is written UNCONDITIONALLY in bodyFn's base literal group (never
+inside the conditional spreads) — "upstream never wrote it" is ruled out.
+
+REFRAME: since cb is a dynamic PTR.HASH, a get-miss on a once-present key
+decodes as exactly this canonical UNDEF. Defect 2 is therefore **silent
+KEY-LOSS during dynamic-HASH relocation**: the 'params' entry existed,
+survived until a region round physically relocated cb's backing table,
+and came out missing. All stale-read/revisit/root/alloc mechanisms were
+individually falsified this arc — the remaining audit target, never yet
+probed from this angle, is __region_relocate_props' per-slot copy/re-key
+loop COMPLETENESS (module/core.js ~1479-1558): does every occupied source
+slot within cap land in the destination — cap growth/rehash math,
+collision handling during re-key, tombstone treatment, and the ordering
+between the bulk memory.copy and the fixup loop. The function's two
+previously-fixed defects were both garbage-LENGTH variants; a third
+variant that DROPS entries on re-key collision fits every observation:
+deterministic (same table state each run), symptom-clean (canonical
+UNDEF), and invisible to all stale-read probes.
