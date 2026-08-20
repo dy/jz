@@ -1736,7 +1736,7 @@ export function analyzeValTypes(body) {
   // this only as a preallocation hint (the table still grows), so a missed
   // alias costs speed while an over/underestimate cannot affect semantics.
   const dictDomain = (name) => dictDomainOf(body, name)
-  function walk(node) {
+  function walk(node, cond) {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
     if (op === '=>') return  // don't leak inner-closure val types
@@ -1935,7 +1935,7 @@ export function analyzeValTypes(body) {
       }
     }
     if (op === '=' && typeof args[0] === 'string') {
-      walk(args[1])
+      walk(args[1], cond)
       const merged = ctx.schema.resolve?.(args[0])
       const dict = Array.isArray(args[1]) && args[1][0] === '{}' && args[1].length === 1 &&
         ctx.types.dynWriteVars?.has(args[0]) && !merged?.length
@@ -1958,7 +1958,22 @@ export function analyzeValTypes(body) {
         const domain = dictDomain(args[0])
         if (domain) (ctx.func.leanHashDomains ??= new Map()).set(args[0], domain)
       }
-      setVal(args[0], poisonUndeclared(args[0], vt))
+      // A CONDITIONALLY-positioned BIGINT write to a PARAM poisons, never
+      // settles: the entry kind is call-site truth this body walk can't see,
+      // and this tracker writes DURABLE localReps, so `if (r) v = 4n` would
+      // otherwise stamp v BIGINT for Number entries with no competing
+      // observation to poison it (params have no decl node), folding
+      // `typeof v` wrong. An UNCONDITIONAL write (`n = BigInt(n)` at body
+      // top level — watr's normalization idiom) dominates every later use
+      // and still adopts. Scoped to VAL.BIGINT: the hazard is the bit-level
+      // carrier (raw i64 misread as a subnormal Number and vice versa) — the
+      // plan's tagged materialization handles the runtime, this only stops
+      // the false STATIC claim. Non-BigInt conditional adopts stay: numeric
+      // loop-write adoption is load-bearing for the typing pipeline
+      // (unswitch-typed-param's i32 guard locals validate against it).
+      const bigintParamWrite = vt === VAL.BIGINT && (ctx.func.current?.params?.some(p => p.name === args[0]) ||
+        ctx.func.current?.sig?.params?.some(p => p.name === args[0]))
+      setVal(args[0], bigintParamWrite && cond ? null : poisonUndeclared(args[0], vt))
       if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
       // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
       // boolean here too. No 'present' arm at a REASSIGN site — this write
@@ -1984,10 +1999,20 @@ export function analyzeValTypes(body) {
         ctx.func.localProps.get(obj).add(prop)
       }
     }
-    for (const a of args) walk(a)
+    // Conditional-position threading (the param-write rule above): arms whose
+    // execution depends on a runtime test descend with cond=true — 'if'/'?:'
+    // arms (their tests stay at the current position), '&&'/'||'/'??' right
+    // sides, and every part of a loop (a body that may run zero times).
+    // Everything else inherits the caller's position.
+    if (op === 'if' || op === '?:') { walk(args[0], cond); for (let i = 1; i < args.length; i++) walk(args[i], true); return }
+    if (op === '&&' || op === '||' || op === '??') { walk(args[0], cond); walk(args[1], true); return }
+    // Loops and try: every part may run zero times (loop body / catch arm) or
+    // stop mid-way (a throw skips the try body's tail) — all conditional.
+    if (op === 'while' || op === 'do' || op === 'for' || op === 'for-in' || op === 'for-of' || op === 'try') { for (const a of args) walk(a, true); return }
+    for (const a of args) walk(a, cond)
   }
   const objAssignSites = []
-  walk(body)
+  walk(body, false)
 
   // Slice-4 P3 predictor: `Object.assign(x, …)` onto a non-OBJECT binding
   // (boxed primitive / array carrier) allocates an `__inner__` record at emit;

@@ -104,6 +104,52 @@ test('RepresentationPlan: covered reassigned params use tagged typeof without ma
   }
 })
 
+test('RepresentationPlan: body-write-only BigInt acquisition still materializes the tagged param', () => {
+  // The provenance corner the covered-reassigned-params pin above misses: its
+  // source ALSO passes 5n at a call site, which alone trips the call-arg
+  // provenance. Here BigInt enters ONLY via the body write — paramsByFunc
+  // needs the body-write acquisition rule (solveBigintProvenance's ASSIGN_OPS
+  // arm), or the tagged carrier never materializes and `typeof` folds to the
+  // write's kind for Number entries (numberKind() read 'bigint' — silently
+  // wrong, found by direct probe 2026-08-20).
+  const src = `
+    function kind(value, replace) {
+      if (replace) value = 4n
+      return typeof value
+    }
+    export let numberKind = () => kind(2, 0)
+    export let assignedKind = () => kind(2, 1)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.numberKind(), 'number', `O${optimize || 0}: Number entry keeps its own kind`)
+    is(e.assignedKind(), 'bigint', `O${optimize || 0}: body-written BigInt reads through the tag`)
+  }
+  // Position variants of the same acquisition: a catch-arm write (conditional
+  // by throw-reachability) and a nullish-assign write — both must keep the
+  // untaken path's Number identity.
+  const pos = jz(`
+    function catchKind(value, go) {
+      try { if (go) { JSON.parse('{bad') } } catch (er) { value = 4n }
+      return typeof value
+    }
+    function nullishKind(value, go) { if (go) value = null; value ??= 4n; return typeof value }
+    export let catchNumber = () => catchKind(2, 0)
+    export let catchThrown = () => catchKind(2, 1)
+    export let nullishNumber = () => nullishKind(2, 0)
+    export let nullishTaken = () => nullishKind(2, 1)
+  `).exports
+  is(pos.catchNumber(), 'number', 'no-throw path keeps Number')
+  is(pos.catchThrown(), 'bigint', 'catch-arm BigInt write reads through the tag')
+  is(pos.nullishNumber(), 'number', 'non-nullish entry keeps Number')
+  // KNOWN-WRONG (pre-existing, nullable-BIGINT lane family — .work/research.md
+  // §Body-write-only BigInt params 2026-08-20): the TAKEN nullish-assign path
+  // (`value = null; value ??= 4n`) reads 'number' where JS says 'bigint' —
+  // the null-sentinel + tagged-union interaction, banked with the three-store
+  // unification. AGREE pin: flip to 'bigint' when that slice lands.
+  is(pos.nullishTaken(), 'number', 'KNOWN-WRONG: taken nullish-assign misses the tag (should be bigint)')
+})
+
 test('RepresentationPlan: covered return edges materialize dynamic call results', () => {
   const src = `
     function choose(flag) {

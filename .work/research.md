@@ -23443,3 +23443,73 @@ Fresh tip jessie baseline from the wrap's smoke: **288.0 MB** (was 380.8
 at the memgrow-tier landing) — the session's landings (prepare DCE, strict
 slices, cond-spread devirt, data-segment fix) compounded a further −93 MB
 region-live. The 100-200 MB bar is now ~88 MB away.
+
+## §Body-write-only BigInt params: provenance gap CURED; flip HALTED with trail (2026-08-20)
+
+Direct probes (no suite coverage) found MAIN silently wrong on two shapes:
+`function kind(value, replace) { if (replace) value = 4n; return typeof value }`
+with Number-only call sites returned 'bigint' for kind(2,0) at every level;
+`if (typeof n === 'string') n = BigInt(n)` misreads a Number entry's raw f64
+bits as a bigint payload downstream (4619567317775286272n for 7.0 — the
+5f13eebd three-store class, unchanged). The suite's own covered-reassigned-
+params pin passes only because its source ALSO passes 5n at a call site —
+call-arg provenance masks the corner.
+
+TWO-PART CURE for the typeof class, landed on main:
+1. solveBigintProvenance ASSIGN_OPS arm: a body write of a may-bigint RHS
+   into one of the function's OWN params marks paramsByFunc — body-write
+   ACQUISITION is provenance, not just call-arg arrival. With mayBigint
+   true, the existing boundary/materialization pipeline does the rest: the
+   plan tags the param, writes box via the plan action, reads/typeof
+   dispatch on the runtime tag.
+2. analyzeValTypes '=' walk: conditional-position threading ('if'/'?:' arms,
+   '&&'/'||'/'??' right sides, loop interiors descend cond=true) — a param
+   write at CONDITIONAL position poisons the val census instead of adopting
+   (no decl node = no competing observation, so a lone conditional write's
+   kind previously stood as "the" static kind and disarmed/misfolded every
+   consumer); an UNCONDITIONAL write (`n = BigInt(n)` top-level) still
+   dominates and adopts. analyzeBody's local slice keeps its index.js merge
+   guard; this walk writes durable localReps and needed its own rule.
+
+Verified: numberKind 'number' / assignedKind 'bigint' at O0/O2/O3; data
+140/140, pointers 35/35; corner pinned as a new RepresentationPlan test.
+
+STILL WRONG (same class, banked): returning/consuming the mixed value
+itself (`return n` boundary decode reads raw bits; `n + 1n` on a Number
+entry computes garbage instead of the JS TypeError). That is the 5f13eebd
+Phase-C three-store unification — entry edges at call sites, tag-dispatching
+reads, by-tag boundary decode — its own campaign, now with three live
+probes as acceptance material.
+
+RETIREMENT FLIP: halted and mothballed on branch retirement-flip @ 1fb35d75
+(full rationale in the branch's ledger): with the adopt fixed, strict-only
+surfaced 40+ lawful guarded-normalization sites as refusals (self-graph dist
+build included) — the §4 "refuse all unprovable flows" doctrine as absolute
+contradicts the ratified architecture (9c170a8b: boxing is the unconditional
+carrier, JZ_BIGINT_STRICT stays opt-in; ir.js INVARIANT: programs
+legitimately reaching boxing compile by default). The earlier "strict
+self-graph CLEAN" was an artifact of the unsound adopt masking those sites.
+Retirement re-aims: ONE representation authority (the plan) — delete the
+LEGACY parallel machinery (sink-OR marking, sentinel lanes, bigIntDomain
+heuristics, isCurrentlyBoxed/isTernaryBoxed family) mechanism-by-mechanism
+as plan coverage is verified; boxing stays as the plan's carrier; strict
+stays the opt-in diagnostic.
+
+Addendum (same session): position variants probed — catch-arm and
+nullish-assign acquisition both correct on the UNTAKEN path; catch-arm
+taken path correct ('bigint' through the tag). NEW sibling pinned
+KNOWN-WRONG: the TAKEN nullish-assign path (`if (go) value = null;
+value ??= 4n` → nk(2,1)) reads 'number' where JS says 'bigint' — verified
+pre-existing on stock main, the null-sentinel × tagged-union interaction
+(nullable-BIGINT lane family). Banked with the Phase-C unification; AGREE
+pin in test/data.js flips when it lands. analyze walk: 'try' routed
+conditional alongside loops (catch arms throw-reachable; try tails
+skippable).
+
+Scope correction (post-gate): the analyzeValTypes param-write poison is
+SCOPED TO VAL.BIGINT writes — the hazard is the bit-level carrier, and the
+plan's tagged materialization owns the runtime; non-BigInt conditional
+adopts stay, being load-bearing for the numeric typing pipeline
+(unswitch-typed-param's loop-reassigned i32 guard local failed WASM
+validation under the unscoped poison — caught by the existing pin, cured
+by the scoping; 7/7 green).

@@ -392,6 +392,19 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     }
     if (ASSIGN_OPS.has(op) && typeof node[1] === 'string' && exprMay(node[2], func, localNames)) {
       if (mark(localNames, node[1])) changed = true
+      // Body-write acquisition: a param that ACQUIRES its BigInt via a body
+      // write (`if (r) v = 4n`, `if (typeof n === 'string') n = BigInt(n)`)
+      // is bigint-provenant even when NO call site ever passes one. Without
+      // this the boundary's mayBigint stays false, the plan never
+      // materializes the tagged carrier for the binding, and the adopted
+      // write-kind folds `typeof` wrong for the non-BigInt entries
+      // (numberKind() === 'bigint' with Number-only call sites — found by
+      // direct probe; the suite's own pin passes only because its source
+      // also has a 5n call site that trips the call-arg provenance).
+      if (func?.sig?.params) {
+        const kp = func.sig.params.findIndex(p => p.name === node[1])
+        if (kp >= 0 && mark(paramsFor(func), kp)) changed = true
+      }
       if (!func) {
         const rep = isBigintOrigin(node[2]) ? RAW_BIGINT : ANY_BIGINT
         const prev = globalReps.get(node[1])
