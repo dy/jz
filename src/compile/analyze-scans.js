@@ -16,9 +16,24 @@ export function findFreeVars(node, bound, free, scope) {
   if (node == null) return
   if (typeof node === 'string') {
     if (bound.has(node) || free.includes(node)) return
+    // repOf(node)?.intConst: a name the CURRENT function itself received as a
+    // constant-folded capture (module/function.js's ctx.closure.make/
+    // legacyDerive, mirrored in src/compile/closure-plan.js's mintArrow) has
+    // no entry in ctx.func.locals — folding it away IS the point, there's no
+    // slot to declare. Without this arm, a closure nested inside THIS one
+    // that references the same name reads as "not in scope" here and gets
+    // silently dropped from `free` entirely (not merely unclassified) —
+    // ctx.closure.make then believes the nested closure captures nothing,
+    // while that closure's own body still contains the bare reference with
+    // no local, no param, no capture and no inherited fold to resolve it: a
+    // reference emitted with no declaration behind it (2026-08-19 banked
+    // defect, .work/todo.md — self-compile closure-capture depth≥2 repro).
+    // A name that's a real int constant one level up is exactly as
+    // "in scope" here as one that's a real local — same value, just a
+    // different (slot-free) storage decision upstream.
     const inScope = scope
       ? scope.has(node)
-      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node))
+      : (ctx.func.locals?.has(node) || ctx.func.current?.params.some(p => p.name === node) || repOf(node)?.intConst != null)
     if (inScope) free.push(node)
     return
   }

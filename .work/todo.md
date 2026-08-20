@@ -6,6 +6,97 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
+## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
+The 2026-08-19 banked entry below is superseded — the defect is a GENERAL
+native miscompile, not self-compile-specific; the self-compile leg was just
+the first program complex enough to contain the trigger shape by accident.
+A standalone repro as small as `function outer(x) { const S = -2; const mid
+= (node) => { const inner = () => S; return inner() + node }; return mid(x)
+}` fails identically, natively, at every optimize level (0-3) — no
+self-compile involved.
+
+**Mechanism** (two independent gaps, both required for the fix): a
+function-scoped const captured by a closure nested 2+ arrow levels deep,
+where the IMMEDIATE enclosing arrow ('mid') references the const directly
+(or not at all) but does not itself need special handling, while a closure
+nested INSIDE mid ('inner') also references it.
+1. `src/compile/analyze-scans.js`'s `findFreeVars`, no-scope fallback: `is
+   this name in scope` was tested via `ctx.func.locals?.has(node) ||
+   ctx.func.current?.params.some(...)` — the CURRENT (innermost) function's
+   own locals/params only. mid's OWN ClosureEnvPlan (src/compile/
+   closure-plan.js) correctly folds S away as a compile-time constant (mode
+   'constant', no env slot — mid's body has `const S` as a direct top-level
+   declaration when mid's plan mints under outer's frame). Folding away IS
+   the point: no local for S is ever declared inside mid. When inner's plan
+   mints LATER, while mid's OWN body is the active frame, findFreeVars's
+   scope check asks "is S in mid's locals" — false, since mid never
+   declared it — and SILENTLY DROPS S from inner's capture set entirely,
+   not merely misclassifies it.
+2. Even with (1) fixed, the const-classification lookup in both
+   `mintClosureEnvPlans` (closure-plan.js) and `legacyDerive`
+   (module/function.js) only checked `ctx.scope.constInts` (module-scope
+   only) and `topLevelIntConsts(ctx.func.body)` (current-frame's own
+   top-level declarations only) — neither sees a constant declared in an
+   ANCESTOR closure. Fixed by adding `repOf(name)?.intConst` as a third
+   fallback: by mint time, the ancestor's own `seedClosureFrame` has already
+   republished its fold into the current frame's `localReps` via
+   `updateRep` (src/compile/index.js's `seedClosureFrame`, consuming
+   `cb.intConsts`) — the same source `readVar`/`emit` (src/ir.js, src/
+   compile/emit.js) already trust to decide whether a name needs a real
+   slot. This chains correctly through arbitrary nesting depth (each level
+   relays what it inherited to the next).
+Without either fix: inner's plan believed it captured nothing (gap 1) or
+believed S needed a real runtime env slot that mid never carries (gap 2 in
+isolation) — either way, inner's compiled body held a bare reference to S
+with no local, no param, no capture, and no inherited fold to resolve it: a
+reference emitted with no declaration behind it ('NAME is not in scope').
+
+**Fix**: `src/compile/analyze-scans.js` (`findFreeVars`'s no-scope "in
+scope" test gains a third arm, `repOf(node)?.intConst != null`),
+`src/compile/closure-plan.js` (`mintArrow`'s int-const lookup gains
+`repOf(cname)?.intConst` as a third fallback, imports `repOf` from
+`../reps.js`), `module/function.js` (`legacyDerive` mirrors the same third
+fallback, kept in lockstep because `DBG_INVARIANTS` diffs plan vs legacy
+and hard-errors on any mismatch — verified clean under
+`JZ_DEBUG_INVARIANTS=1`).
+
+**Regression test**: `test/closures.js`, two new tests — `closure-plan:
+constant capture through a non-capturing intermediate arrow` (the minimal
+shape above, optimize 0-3) and `closure-plan: dedupClosureBodies SENTINEL/
+isSentinel shape (a6220d95 self-compile trigger)` (the exact historical
+shape, pinned against a JS oracle over undefined/null/NaN/nested-array
+inputs via `runHost`).
+
+**Gates**: native suite 3538 total / 3532 pass / 6 skip / 0 fail. `npm run
+build` (full self-compile, `dist/jz.wasm` rebuilt from the fix) green —
+wat-strip parity 3/3 byte-identical. `JZ_TEST_TARGET=jz.wasm` (rebuilt
+kernel) 2796 total / 2787 pass / 6 skip / 3 fail — all three
+(`URLSearchParams: sort, escaping, inits, iteration`, `Regression:
+destructured-param OBJECT literal — inner .prop resolves`, `mixed: nested
+function calls`) are the PRE-EXISTING, order-dependent lane-4
+devirtualization regression (§lane-4 devirtualization reverted, this file,
+2026-08-19) — unrelated to this fix, confirmed by file-overlap (this fix
+never touches devirtualization/closure-table code) and by matching the
+already-banked failure signature exactly.
+
+**Note found, not fixed** (separate, out of scope for this slice): the same
+"is this name capturable" question has a THIRD blind spot in
+`src/prepare/lift-iife.js`'s `liftIIFEs` — its own scope-tracking (`visit`)
+only extends the `locals` set descending through `=>` nodes, never through
+`function` declarations, so a const declared inside a `function`-form outer
+scope and captured by an IIFE nested inside it is invisible to the SAME
+findFreeVars call (this one WITH an explicit `scope` argument, so
+`repOf`'s fallback doesn't apply — a prepare-time pass, before any
+`ctx.func`/rep machinery exists). Repro (verified against this fix, still
+fails): `export function outer(x) { const S = -2; const r = (() => { const
+walk = (node) => { const inner = () => S; return inner() }; return walk(x)
+})(); return r }` — `'S' is not in scope`. Doesn't fire on the historical
+dedupClosureBodies shape (no IIFE there), so it's not this defect's
+trigger — flagged for its own slice.
+
+## BANKED (2026-08-19): self-compile closure-capture defect — deep-captured const loses declaration
+
 ## Region arena front boundary — SET/MAP rebuild timing bug FOUND+FIXED,
 ## a SECOND wall (CLOSURE cellOff corruption) found behind it — 2026-08-12
 Full account: `.work/research.md §Region arena`'s "REAL WALL FOUND+FIXED"

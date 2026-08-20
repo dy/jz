@@ -1,6 +1,7 @@
 import { extractParams, classifyParam, T } from '../ast.js'
 import { findFreeVars } from './analyze.js'
 import { ctx } from '../ctx.js'
+import { repOf } from '../reps.js'
 
 // ClosureEnvPlan (.work/closure-plan-design.md) — mirrors loop-model.js's
 // astLoopPlan/mintLoopPlans idiom: a frozen, pre-emission fact keyed on AST
@@ -135,10 +136,32 @@ export function mintClosureEnvPlans(body) {
     // ctx.closure to avoid a module→ctx→src import cycle with this file — and
     // ctx.scope.constInts, a whole-module fact settled before any function's
     // analysis begins, so both are safely re-derivable here, pre-emission).
+    //
+    // A THIRD source, `repOf(cname)?.intConst`, closes a depth≥2 capture-chain
+    // gap the two above cannot: `topLevelIntConsts(ctx.func.body)` only sees a
+    // `const` declared directly at the CURRENT (innermost enclosing) function's
+    // own top level. When this arrow sits inside ANOTHER closure that itself
+    // merely captures (doesn't declare) the constant — e.g. `function F() {
+    // const S = -2; const mid = () => { const inner = () => S; ... } }` — S is
+    // declared in F's body, not mid's, so minting mid's plan (ctx.func.body ===
+    // F's body, correct) folds S away for mid (mode 'constant', no env slot),
+    // but minting inner's plan happens later while mid's OWN body is the active
+    // frame (ctx.func.body === mid's body) — S isn't declared there either, so
+    // the first two sources both miss and inner's plan falls to mode 'value',
+    // expecting a real env slot mid never carries (mid folded S away — nothing
+    // to store into that slot at closure-construction time): a reference with
+    // no backing declaration. `repOf(cname)?.intConst` is the fix: by the time
+    // inner's plan mints, mid's OWN frame has already run seedClosureFrame on
+    // mid's `cb.intConsts` (module/function.js) — which republishes exactly
+    // this same fold via `updateRep` — so `repOf` sees it regardless of which
+    // ancestor originally declared the constant, chaining correctly through
+    // any nesting depth (each level's seedClosureFrame relays what it inherited
+    // to the next), the same source `readVar`/`emit` (src/ir.js, src/compile/
+    // emit.js) already trust to decide whether a name needs a real slot at all.
     const localIntConsts = ctx.func.body ? ctx.closure.topLevelIntConsts?.(ctx.func.body) ?? new Map() : new Map()
     const captureIntConsts = new Map()
     for (const cname of captures) {
-      const v = ctx.scope.constInts?.get(cname) ?? localIntConsts.get(cname)
+      const v = ctx.scope.constInts?.get(cname) ?? localIntConsts.get(cname) ?? repOf(cname)?.intConst
       if (v != null && !ctx.func.boxed?.has(cname)) captureIntConsts.set(cname, v)
     }
 

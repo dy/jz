@@ -147,7 +147,18 @@ export default (ctx) => {
       const localIntConsts = ctx.func.body ? topLevelIntConsts(ctx.func.body) : new Map()
       const intConsts = new Map()
       for (const name of captures) {
-        const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name)
+        // Third fallback mirrors src/compile/closure-plan.js's mintArrow (see
+        // its doc comment): a depth≥2 capture chain whose constant was
+        // declared in an ANCESTOR closure, not the current one, is invisible
+        // to topLevelIntConsts(ctx.func.body) (current-frame-only) and
+        // ctx.scope.constInts (module-only) alike — repOf(name)?.intConst
+        // carries it forward regardless, since the ancestor's own
+        // seedClosureFrame already republished its fold into this frame's
+        // localReps before this arrow's capture set is derived. Keeping this
+        // legacy path in lockstep with the plan's is required, not optional:
+        // DBG_INVARIANTS diffs the two and treats any mismatch as a hard
+        // error (ClosureEnvPlan drift, just below).
+        const v = ctx.scope.constInts?.get(name) ?? localIntConsts.get(name) ?? repOf(name)?.intConst
         if (v != null && !ctx.func.boxed?.has(name)) intConsts.set(name, v)
       }
       const env = intConsts.size ? captures.filter(name => !intConsts.has(name)) : captures

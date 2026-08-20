@@ -1682,3 +1682,69 @@ test('static closure env: re-entrant enclosing function with two call sites read
     is(instance.exports.outer(2), 12, `optimize ${lvl}`)
   }
 })
+
+// closure-plan: deep-captured const loses its declaration (banked 2026-08-19,
+// .work/todo.md) — a function-scoped const captured by a closure nested 2+
+// arrow levels deep, where the IMMEDIATE enclosing arrow ('mid') never
+// references the const itself (only a closure nested INSIDE mid does).
+// mid's own ClosureEnvPlan (src/compile/closure-plan.js) correctly folds the
+// const away (mode 'constant', no env slot — mid's body has it as a direct
+// top-level declaration). The nested closure's plan mints later, while mid's
+// OWN body is the active frame: `topLevelIntConsts(ctx.func.body)` only sees
+// mid's own top-level statements, not the ancestor where the const is
+// actually declared, and `findFreeVars`'s no-scope fallback (src/compile/
+// analyze-scans.js) checked only `ctx.func.locals`/params for "is this name
+// capturable" — a name mid folded away (by design, no local) failed that
+// check and was silently dropped from the capture set entirely. The nested
+// closure's plan then believed it captured nothing, while its body still
+// held a bare reference to the const with no local, no param, no env slot,
+// and no inherited fold to resolve it: a reference emitted with no
+// declaration behind it ('NAME is not in scope').
+//
+// First observed only via self-compile (src/wat/assemble.js's
+// dedupClosureBodies, commit a6220d95's SENTINEL/isSentinel/mix shape,
+// worked around by hoisting to module scope in a9449127) and mis-attributed
+// as self-compile-specific — it is not: the shape below reproduces natively,
+// no self-compile involved, at every optimize level.
+test('closure-plan: constant capture through a non-capturing intermediate arrow', () => {
+  const src = `export function outer(x) {
+    const S = -2
+    const mid = (node) => {
+      const inner = () => S
+      return inner() + node
+    }
+    return mid(x)
+  }`
+  for (const lvl of [0, 1, 2, 3])
+    is(run(src, { optimize: lvl }).outer(10), 8, `optimize ${lvl}`)
+})
+
+test('closure-plan: dedupClosureBodies SENTINEL/isSentinel shape (a6220d95 self-compile trigger)', () => {
+  const src = `
+    export let classify = (nodes) => {
+      const SENTINEL = -2
+      const isSentinel = (v) => v === undefined || v === null ||
+        (typeof v === 'number' && !Number.isFinite(v))
+      const hashOf = (fn) => {
+        const walk = (node) => {
+          if (isSentinel(node)) return SENTINEL
+          if (Array.isArray(node)) {
+            let h = 0
+            for (const c of node) h = h + walk(c) + 1
+            return h
+          }
+          if (typeof node === 'number') return node * 2
+          return 1
+        }
+        return walk(fn)
+      }
+      let total = 0
+      for (const n of nodes) total += hashOf(n)
+      return total
+    }
+  `
+  const { classify } = runHost(src)
+  is(classify([1, 2, 3]), 12)
+  is(classify([undefined, null, NaN]), -6)
+  is(classify([[1, [2, 3]], 4]), 24)
+})
