@@ -23138,3 +23138,25 @@ ARRAY, relocated by that arm, the site most directly upstream of the
 value that decodes as undefined. Then regionArmObject's branch; then
 genuinely-upstream candidates ($__region_exit root-walk sequencing,
 $__alloc_hdr_n at 13.3M-call volume).
+
+## §defect 2 — revisit class CLOSED end-to-end; two candidates remain (2026-08-20)
+
+Elimination table (forensic, methods named): schema_tbl durability closed
+empirically; relocate_props old-site stub eliminated (bit-identical);
+regionArmArray old-site stub eliminated CLEANLY (bit-identical byteLength
+AND identical trap/wall vs true baseline); regionArmObject ruled out by
+construction (PTR.OBJECT not in FORWARDING_MASK — __ptr_offset never
+reads an OBJECT stub); emitDynamicSpread falsy-conditional-source refuted
+(runtimeKeysFromTemp's else-branch is correctly defensive). Named
+artifact: __region_relocate_props is codegen-perturbation-sensitive under
+optimize:3 (any body-size change flips which downstream symptom fires,
+byteLength invariant) — negative results from instrumenting THAT function
+carry reduced weight.
+
+Remaining, ranked: (1) $__alloc/__alloc_hdr_n at 13.3M-call volume — the
+wraparound guard's behavior under sustained tens-of-millions allocations
+is unaudited; cheap allocation-free counter on the guard delta next.
+(2) Root-array ALIASING in emissionRoundExit — two root slots transitively
+reaching the same object via an IDENTITY-keyed side table (name-keyed maps
+can't alias) could produce two different final addresses for one object;
+static census of ctx.closure.* keying first, no rebuild.
