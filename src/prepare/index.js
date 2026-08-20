@@ -3554,15 +3554,13 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
-    // No GC → weakness is unobservable, so we fold WeakSet/WeakMap to Set/Map right here:
-    // construction and every .add/.has/.get/.set/.delete reuse the concrete emit path.
-    // The fold lives in prepare, not jzify — so `strict` (which only skips jzify) wouldn't
-    // drop it on its own; we reject explicitly. It's a deviation anyway (accepts primitive
-    // keys, exposes .size/iteration), not a true subset member — there, use Set/Map directly.
+    // No GC → weakness is unobservable. Default (compat) mode renames WeakSet/
+    // WeakMap to Set/Map in jzify (pure sugar, never reaches here); reaching this
+    // site means jzify was skipped — reject: a deviation (accepts primitive keys,
+    // exposes .size/iteration) is not a subset member. Use Set/Map directly.
     if (name === 'WeakSet' || name === 'WeakMap') {
       const concrete = name === 'WeakSet' ? 'Set' : 'Map'
-      if (ctx.transform.strict) err(`strict mode: ${name} is not in the canonical subset — use ${concrete} (jz has no GC, so weak references are unobservable).`)
-      name = concrete
+      err(`strict mode: ${name} is not in the canonical subset — use ${concrete} (jz has no GC, so weak references are unobservable).`)
     }
     // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and
     // `new Map(null)`/`new Map(undefined)` are spec-equivalent to it (null/undefined

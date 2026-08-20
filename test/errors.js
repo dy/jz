@@ -786,6 +786,9 @@ test('strict rejects: switch', () =>
 test('unknown method on KNOWN receiver rejects in default mode', () => {
   throws('export let f = () => [3, 1, 2].frobnicate()[0]', 'not implemented', 'missing array method should fail at compile')
   throws('export let f = () => "abc".frobnicate()', 'not implemented', 'missing string method should fail at compile')
+  // ES2025 Set algebra removed (union/intersection/… — out of jz scope): rejects
+  // like any unknown method, no silent host fallthrough.
+  throws('export let f = () => new Set([1]).union(new Set([2])).size', 'not implemented', 'removed Set.union should fail at compile')
 })
 test('const reassignment rejects (every operator, local + module scope)', () => {
   throws('export let f = () => { const c = 2; c = 3; return c }', 'constant', 'const = should error')

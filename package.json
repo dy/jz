@@ -76,7 +76,7 @@
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {
-    "subscript": "^10.7.0",
+    "subscript": "^10.7.1",
     "watr": "5.7.16"
   },
   "keywords": [

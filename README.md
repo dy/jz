@@ -156,7 +156,7 @@ See [all examples](https://dy.github.io/jz/examples/).
 │ │   Math  Number  String  Array  Object  JSON  RegExp  Symbol        │ │
 │ │   ArrayBuffer  DataView  typed arrays  Map  Set  Atomics           │ │
 │ │   Float16Array  base64/hex codecs  TextEncoder  timers  Date       │ │
-│ │   crypto randomness  URLSearchParams  structuredClone  Set algebra │ │
+│ │   crypto randomness  URLSearchParams  structuredClone              │ │
 │ │   WASI file I/O                                                    │ │
 │ └────────────────────────────────────────────────────────────────────┘ │
 │ jz default (jzify)                                                     │

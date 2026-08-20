@@ -1369,35 +1369,6 @@ test('Regression (Root F): RUNTIME-variable typed index — OOB reads undefined,
   is(loopSum(), 7 + 2.5)                               // proven loop reads all elements (a[3] was overwritten to 2.5)
 })
 
-// ES2025 Set algebra (2026-07-11, Ring 2): union/intersection/difference/
-// symmetricDifference return a NEW Set (receiver untouched) in the spec result
-// order (test262 result-order.js: union = A then B-not-in-A; intersection
-// walks the SMALLER side, ties → this; difference always A's order; symmetric
-// = A-not-in-B then B-not-in-A). Predicates return real booleans. A Map other
-// participates as its key set; a non-Set/Map other is treated as empty (the
-// native-litmus line: no arbitrary set-like .has/.keys dispatch).
-test('Set algebra: union/intersection/difference/symmetricDifference', () => {
-  const j = (code) => jz(code).exports.f()
-  is(j(`export let f = () => [...new Set([1,2]).union(new Set([2,3]))].join(",")`), '1,2,3')
-  is(j(`export let f = () => [...new Set([3,1]).union(new Set([2,1]))].join(",")`), '3,1,2')      // insertion order
-  is(j(`export let f = () => [...new Set([1,3,5]).intersection(new Set([3,2,1]))].join(",")`), '1,3')   // A ≤ B → A's order
-  is(j(`export let f = () => [...new Set([3,2,1,0]).intersection(new Set([1,3,5]))].join(",")`), '1,3') // B smaller → B's order
-  is(j(`export let f = () => [...new Set([1,2,3]).difference(new Set([2]))].join(",")`), '1,3')
-  is(j(`export let f = () => [...new Set([1,2,3]).symmetricDifference(new Set([2,4]))].join(",")`), '1,3,4')
-  is(j(`export let f = () => { let m = new Map(); m.set(9, 1); return [...new Set([1]).union(m)].join(",") }`), '1,9')  // Map = key set
-  is(j(`export let f = () => { let a = new Set([1]); a.union(new Set([2])); return a.size }`), 1)  // receiver intact
-  is(j(`export let f = () => new Set().union(new Set()).size`), 0)
-})
-test('Set algebra predicates: isSubsetOf/isSupersetOf/isDisjointFrom', () => {
-  const j = (code) => jz(code).exports.f()
-  is(j(`export let f = () => new Set([1,2]).isSubsetOf(new Set([1,2,3]))`), true)
-  is(j(`export let f = () => new Set([1,9]).isSubsetOf(new Set([1,2,3]))`), false)
-  is(j(`export let f = () => new Set([1,2,3]).isSupersetOf(new Set([2,3]))`), true)
-  is(j(`export let f = () => new Set([1,2]).isSupersetOf(new Set([2,9]))`), false)
-  is(j(`export let f = () => new Set([1,2]).isDisjointFrom(new Set([3,4]))`), true)
-  is(j(`export let f = () => new Set([1,2]).isDisjointFrom(new Set([2,3]))`), false)
-  is(j(`export let f = () => new Set().isSubsetOf(new Set())`), true)   // vacuous truth
-})
 
 // ES2024 Object.groupBy / Map.groupBy (2026-07-11, Ring 2): buckets are arrays
 // in iteration order; Object.groupBy keys via ToPropertyKey (string), result is

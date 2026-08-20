@@ -184,11 +184,6 @@ export function methodValType(method, obj, objType, ctx) {
   if (method === 'valueOf') return objType ?? null
   if (BOOL_METHODS.has(method)) return VAL.BOOL
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
-  // ES2025 Set algebra — proven-SET receiver only (same guard rationale as add/set).
-  if ((method === 'union' || method === 'intersection' || method === 'difference' ||
-    method === 'symmetricDifference') && objType === VAL.SET) return VAL.SET
-  if ((method === 'isSubsetOf' || method === 'isSupersetOf' || method === 'isDisjointFrom') &&
-    objType === VAL.SET) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
   if (method === 'split') return VAL.ARRAY

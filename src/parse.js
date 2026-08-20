@@ -13,7 +13,7 @@
  * literal and needs no override.
  */
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
-import { lookup, idx, cur } from 'subscript/parse'
+import { lookup, idx, cur, skip, err } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
 
 // Strip a leading `#!` shebang line before subscript sees it. subscript registers the
@@ -43,37 +43,18 @@ token('NaN', 200, a => !a && ['nan'])
 token('true', 200, a => !a && ['bool', 1])
 token('false', 200, a => !a && ['bool', 0])
 
-// BigInt literals parse to `[, BigInt(str)]` (subscript/feature/number.js) — a
-// REAL host BigInt payload, reliably distinguishable from a number literal via
-// `typeof` — but only NATIVELY. Once this parser is itself self-compile-compiled
-// (front.js's kernel graph) and runs INSIDE the kernel to parse a NEW source
-// string, `BigInt(str)` returns jz's own i64-bits-as-f64 CARRIER value, which
-// for small magnitudes is bit-identical to a genuine subnormal float — the
-// very AST node built in-kernel has already lost the distinction the moment
-// it's constructed, and no LATER `typeof` check (kind.js, prepare, pre-eval,
-// emit) can recover it (kernel-compiled `() => 5e-324` would export `1n` if
-// this relied on a runtime `typeof` check — see .work/todo.md). The only
-// reliable signal is STRUCTURAL: did
-// the SOURCE TEXT end in `n`? That's a character-code comparison, never a
-// value-type inspection — sound natively AND in-kernel alike.
-//
-// Wrap the digit-lookup handlers (0-9) the same way number.js installed them
-// and re-derive the literal as a TAGGED `['bigint', decimalStr]` node
-// whenever the consumed span ends in `n` — same self-describing-marker shape
-// as the `nan`/`bool` overrides above, same fix for the same collapse class.
-// `decimalStr` is the UNSIGNED-64 decimal (`BigInt.asUintN(64,·)` semantics —
-// the carrier's own width ceiling; every consumer already expects this exact
-// form, see compile/emit.js `op === 'bigint'` / `bigintUnsignedBound`).
-// Radix-prefixed literals (0x/0b/0o, enabled by justin.js's `parse.number`)
-// are converted via bignum.js's limb arithmetic — plain number-array math, no
-// BigInt anywhere in the conversion, so it self-compiles identically.
-// Original digit-lookup handlers (number.js), captured ONCE into a flat array
-// indexed by charCode-48 — NOT via a per-iteration closure over `lookup[c]`
-// (a `for (let c=…)` loop whose body installs a closure capturing that
-// iteration's own binding is exactly the shape self-compile closure-in-loop bugs
-// hit; looking the original handler up by INDEX at call time, from ONE shared
-// wrapper function installed at every slot, has no per-iteration binding to
-// get wrong). digit '0'..'9' -> index 0..9.
+// BigInt literals re-tag as `['bigint', decimalStr]` — a self-describing marker,
+// same shape/reason as the `nan`/`bool` overrides above. A raw `[, BigInt(str)]`
+// value node is only distinguishable from a number via `typeof`, which collapses
+// in-kernel: the self-compiled parser's `BigInt(str)` is an i64-bits-as-f64
+// carrier, bit-identical to a subnormal float for small magnitudes. The only
+// sound signal, natively AND in-kernel, is STRUCTURAL: did the source span end
+// in `n`? `decimalStr` is the unsigned-64 decimal (`BigInt.asUintN(64,·)`
+// semantics — see compile/emit.js `op === 'bigint'`), derived via bignum.js limb
+// arithmetic — no BigInt anywhere, so it self-compiles identically.
+// Original digit handlers are captured ONCE into a flat array indexed by
+// charCode-48 and looked up at call time — a per-iteration closure over
+// `lookup[c]` is exactly the closure-in-loop shape self-compile bugs hit.
 const ORIG_NUM = []
 for (let c = 48; c <= 57; c++) ORIG_NUM.push(lookup[c])
 const N_CHAR = 110  // 'n'
@@ -82,7 +63,15 @@ const digitWrapper = (a, b) => {
   if (a) return origNum(a, b)
   const start = idx
   const r = origNum(a, b)
-  if (r === undefined || cur.charCodeAt(idx - 1) !== N_CHAR) return r
+  if (r === undefined) return r
+  if (cur.charCodeAt(idx - 1) !== N_CHAR) {
+    // Suffix not consumed by the handler: either not a bigint literal, or a
+    // subscript where bigint parsing is the opt-in feature/bigint.js (jz doesn't
+    // import it — this wrapper IS jz's bigint surface). Consume the `n` here.
+    if (r[0] !== undefined || cur.charCodeAt(idx) !== N_CHAR) return r
+    if ((cur.charCodeAt(start + 1) | 32) !== 120 && /[.eE]/.test(cur.slice(start, idx))) err('Invalid BigInt')
+    skip()
+  }
   const hasPrefix = cur.charCodeAt(start) === 48
   const prefixLetter = hasPrefix ? (cur.charCodeAt(start + 1) | 32) : 0
   const radix = prefixLetter === 120 ? 16 : prefixLetter === 111 ? 8 : prefixLetter === 98 ? 2 : 10

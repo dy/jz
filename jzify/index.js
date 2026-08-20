@@ -75,7 +75,8 @@ const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose', asyncIterator
 // objects (__it_mk). Fusable chains still fuse; this covers value positions.
 const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
   'toArray', 'reduce', 'forEach', 'some', 'every', 'find'])
-// Entry walk, two jobs in one pass:
+// Entry walk, three jobs in one pass:
+// 0. Compat aliases: `new WeakMap`/`new WeakSet` → `new Map`/`new Set`.
 // 1. Canonicalize well-known-symbol shapes to reserved literal props — a
 //    fixed-shape object has no symbol slots, so `[Symbol.iterator]` becomes
 //    the '@@iterator' prop in BOTH key position (computed member/method) and
@@ -85,6 +86,15 @@ const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
 function canonSymbols(node) {
   if (!Array.isArray(node)) return node
   const [op] = node
+  // No GC → weakness is unobservable: `new WeakMap`/`new WeakSet` are pure sugar
+  // for Map/Set (documented deviation: primitive keys accepted, .size/iteration
+  // exposed). Renamed here so the core subset never sees the Weak ctors; strict
+  // mode (which skips jzify) rejects them in prepare.
+  if (op === 'new') {
+    const c = node[1]
+    if (c === 'WeakMap' || c === 'WeakSet') node[1] = c.slice(4)
+    else if (Array.isArray(c) && c[0] === '()' && (c[1] === 'WeakMap' || c[1] === 'WeakSet')) c[1] = c[1].slice(4)
+  }
   if (op === 'function*') iterProto.on = true
   if (op === ':' && (node[1] === 'next' || node[1] === '@@iterator') &&
       Array.isArray(node[2]) && (node[2][0] === '=>' || node[2][0] === 'function' || node[2][0] === 'function*'))

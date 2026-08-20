@@ -1370,9 +1370,6 @@ export default (ctx) => {
     __set_add_h: () => ['__same_value_zero', '__zomb_scan', ...slotLogDeps()],
     __set_has: () => ctx.linkDemand.external ? ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd', '__ext_has'] : ['__map_hash', '__same_value_zero', '__ptr_offset', '__ptr_offset_fwd'],
     __set_delete: () => ['__map_hash', '__same_value_zero', ...relogDeps()],
-    __set_add_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add'],
-    __set_filter: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_add', '__set_has', '__map_has'],
-    __set_all: ['__ptr_offset', '__ptr_offset_fwd', '__cap', '__len', '__coll_order', '__set_has', '__map_has'],
     __sclone: ['__sclone_rec', '__mkptr', '__alloc_hdr_n'],
     __sclone_rec: ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish', '__len', '__alloc', '__alloc_hdr_n', '__mkptr', '__map_get', '__map_set', '__set_add', '__coll_order', '__arr_from', '__obj_clone', '__sclone_hash_vals'],
     __sclone_hash_vals: ['__sclone_rec'],
@@ -1793,60 +1790,6 @@ export default (ctx) => {
   ctx.core.stdlib['__set_has_h'] = () => genLookupStrictPrehashed('__set_has_h', SET_ENTRY, sameValueZeroEqG, PTR.SET, UNDEF_NAN, ctx.linkDemand.external, false)
   ctx.core.stdlib['__set_delete'] = genDelete('__set_delete', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET)
 
-  // ES2025 Set algebra (union/intersection/difference/symmetricDifference +
-  // isSubsetOf/isSupersetOf/isDisjointFrom). Three shared walkers over the
-  // receiver's insertion order (__coll_order — result order is spec-exact); an
-  // `other` that is not a real Set/Map is treated as empty (__set_has/__map_has
-  // type-guard a wrong receiver to 0), the native-litmus line (a proven Set or
-  // Map is in-model; an arbitrary set-like is not, no .has/.keys dispatch).
-  // __set_add's SameValueZero dedup + insertion-seq stamping make add-order the
-  // result order for free.
-  // $stride is the src collection's entry stride (SET_ENTRY for a Set, MAP_ENTRY
-  // for a Map) — a Map's keys sit at slot+8 too, so a Map `other` iterates as a
-  // key set. The key is always at slot+8 in both layouts.
-  const setWalkPreamble = `(local $off i32) (local $cap i32) (local $n i32) (local $ord i32) (local $i i32) (local $slot i32) (local $key i64) (local $has i32)
-    (local.set $off (call $__ptr_offset (local.get $src)))
-    (local.set $cap (call $__cap (local.get $src)))
-    (local.set $ord (call $__coll_order (local.get $off) (local.get $cap) (local.get $stride)))
-    (local.set $n (global.get $__coll_order_n))`
-  const setWalkKey = `(local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
-      (local.set $key (i64.load (i32.add (local.get $slot) (i32.const 8))))`
-  const otherHas = `(if (result i32) (local.get $otherIsMap)
-        (then (call $__map_has (local.get $other) (local.get $key)))
-        (else (call $__set_has (local.get $other) (local.get $key))))`
-  // dst ← dst ∪ src (add every src key in insertion order).
-  ctx.core.stdlib['__set_add_all'] = `(func $__set_add_all (param $dst i64) (param $src i64) (param $stride i32) (result i64)
-    ${setWalkPreamble}
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
-      ${setWalkKey}
-      (local.set $dst (call $__set_add (local.get $dst) (local.get $key)))
-      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
-    (local.get $dst))`
-  // For each src key, add to dst iff (other has key) == keep. keep=1 → intersection;
-  // keep=0 → difference / symmetricDifference pass.
-  ctx.core.stdlib['__set_filter'] = `(func $__set_filter (param $dst i64) (param $src i64) (param $stride i32) (param $other i64) (param $otherIsMap i32) (param $keep i32) (result i64)
-    ${setWalkPreamble}
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
-      ${setWalkKey}
-      (local.set $has ${otherHas})
-      (if (i32.eq (local.get $has) (local.get $keep))
-        (then (local.set $dst (call $__set_add (local.get $dst) (local.get $key)))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
-    (local.get $dst))`
-  // Predicate: return 0 as soon as any src key's presence in other != want; else 1.
-  // isSubsetOf(A,B) = all(A, B, want=1); isDisjointFrom(A,B) = all(A, B, want=0).
-  ctx.core.stdlib['__set_all'] = `(func $__set_all (param $src i64) (param $stride i32) (param $other i64) (param $otherIsMap i32) (param $want i32) (result i32)
-    ${setWalkPreamble}
-    (block $d (loop $l
-      (br_if $d (i32.ge_s (local.get $i) (local.get $n)))
-      ${setWalkKey}
-      (local.set $has ${otherHas})
-      (if (i32.ne (local.get $has) (local.get $want)) (then (return (i32.const 0))))
-      (local.set $i (i32.add (local.get $i) (i32.const 1))) (br $l)))
-    (i32.const 1))`
-
   // === Map ===
 
   ctx.core.emit['new.Map'] = (iterExpr) => {
@@ -1975,83 +1918,6 @@ export default (ctx) => {
   }
   ctx.core.emit[`.${VAL.MAP}:forEach`] = collForEach(MAP_ENTRY, 16, 8)
   ctx.core.emit[`.${VAL.SET}:forEach`] = collForEach(SET_ENTRY, 8, 8)
-
-  // === ES2025 Set algebra emitters ===
-  // A = receiver (proven SET). `other` (B) may be a Set or Map at runtime; its
-  // stride/probe-kind is resolved once via __ptr_type (a Map's keys are its key
-  // set). Set-returning ops thread the fresh dst through the walker (forwarding
-  // is transparent, but re-capture is defensively correct); predicates fold the
-  // i32 result to a boolean carrier.
-  const isMapRT = (f64) => ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', f64]], ['i32.const', PTR.MAP]]
-  const strideRT = (f64) => ['select', ['i32.const', MAP_ENTRY], ['i32.const', SET_ENTRY], isMapRT(f64)]
-  const isMapI32 = (f64) => isMapRT(f64)  // 1 if Map, 0 otherwise
-  // Evaluate A,B into temps; hand their f64 accessors to `body`, which returns
-  // the block's final value node. resultType picks Set (f64) vs predicate (i32).
-  const setBin = (a, b, resultType, body) => {
-    inc('__ptr_type')
-    const aT = temp('sopa'), bT = temp('sopb')
-    const aF = typed(['local.get', `$${aT}`], 'f64'), bF = typed(['local.get', `$${bT}`], 'f64')
-    return typed(['block', ['result', resultType],
-      ['local.set', `$${aT}`, asF64(emit(a))],
-      ['local.set', `$${bT}`, asF64(emit(b))],
-      body(aF, bF)], resultType)
-  }
-  // Build the fresh-dst + threaded-walker-call sequence, returning the dst temp.
-  const buildSet = (steps, tag) => {
-    const dst = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + lane, tag })
-    const dstT = temp('sopd')
-    const dI = () => ['i64.reinterpret_f64', ['local.get', `$${dstT}`]]
-    const seq = ['block', ['result', 'f64'], dst.init, ['local.set', `$${dstT}`, dst.ptr]]
-    for (const call of steps(dstT, dI)) seq.push(['local.set', `$${dstT}`, ['f64.reinterpret_i64', call]])
-    seq.push(['local.get', `$${dstT}`])
-    return seq
-  }
-  const addAll = (dI, srcF, strideIR) => ['call', '$__set_add_all', dI(), ['i64.reinterpret_f64', srcF], strideIR]
-  const filterInto = (dI, srcF, strideIR, otherF, otherIsMap, keep) =>
-    ['call', '$__set_filter', dI(), ['i64.reinterpret_f64', srcF], strideIR, ['i64.reinterpret_f64', otherF], otherIsMap, ['i32.const', keep]]
-  const allMatch = (srcF, strideIR, otherF, otherIsMap, want) =>
-    ['call', '$__set_all', ['i64.reinterpret_f64', srcF], strideIR, ['i64.reinterpret_f64', otherF], otherIsMap, ['i32.const', want]]
-
-  ctx.core.emit['.set:union'] = (a, b) => { inc('__set_add_all')
-    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
-      addAll(dI, aF, ['i32.const', SET_ENTRY]),
-      addAll(dI, bF, strideRT(bF)),
-    ], 'setu')) }
-
-  ctx.core.emit['.set:intersection'] = (a, b) => { inc('__set_filter', '__len')
-    // Walk the SMALLER operand (ties → `this`, A) for spec-exact result order.
-    return setBin(a, b, 'f64', (aF, bF) => {
-      const aLen = ['call', '$__len', ['i64.reinterpret_f64', aF]]
-      const bLen = ['call', '$__len', ['i64.reinterpret_f64', bF]]
-      const walkA = buildSet((dstT, dI) => [filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 1)], 'seti')
-      const walkB = buildSet((dstT, dI) => [filterInto(dI, bF, strideRT(bF), aF, ['i32.const', 0], 1)], 'seti')
-      return ['if', ['result', 'f64'], ['i32.le_s', aLen, bLen], ['then', walkA], ['else', walkB]]
-    }) }
-
-  ctx.core.emit['.set:difference'] = (a, b) => { inc('__set_filter')
-    // Always A's order (spec: iterate `this`, keep those NOT in other).
-    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
-      filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0),
-    ], 'setd')) }
-
-  ctx.core.emit['.set:symmetricDifference'] = (a, b) => { inc('__set_filter')
-    // (A not in B, A's order) then (B not in A, B's order).
-    return setBin(a, b, 'f64', (aF, bF) => buildSet((dstT, dI) => [
-      filterInto(dI, aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0),
-      filterInto(dI, bF, strideRT(bF), aF, ['i32.const', 0], 0),
-    ], 'setx')) }
-
-  ctx.core.emit['.set:isSubsetOf'] = (a, b) => { inc('__set_all')
-    // every key of A is in B
-    return setBin(a, b, 'i32', (aF, bF) => allMatch(aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 1)) }
-
-  ctx.core.emit['.set:isSupersetOf'] = (a, b) => { inc('__set_all')
-    // every key of B is in A (walk B; A is always a Set → otherIsMap=0)
-    return setBin(a, b, 'i32', (aF, bF) => allMatch(bF, strideRT(bF), aF, ['i32.const', 0], 1)) }
-
-  ctx.core.emit['.set:isDisjointFrom'] = (a, b) => { inc('__set_all')
-    // no key of A is in B
-    return setBin(a, b, 'i32', (aF, bF) => allMatch(aF, ['i32.const', SET_ENTRY], bF, isMapI32(bF), 0)) }
 
   // === ES2024 Object.groupBy / Map.groupBy ===
   // Both bucket items by cb(item, i): Object.groupBy keys a dictionary (HASH)

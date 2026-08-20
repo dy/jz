@@ -225,9 +225,10 @@ test('features.map ON: new Map pulls map stdlibs', () => {
   ok(hasDef(w, '__map_get_h'))   // literal key 'k' → prehashed probe (no __map_hash per access)
 })
 
-// No GC → weakness is unobservable, so WeakMap/WeakSet fold to Map/Set in default mode:
-// they route through the very same stdlib (and so also accept primitive keys). strict
-// rejects them — see test/errors.js. Folding happens in src/prepare, not jzify.
+// No GC → weakness is unobservable, so WeakMap/WeakSet rename to Map/Set in default
+// mode (jzify canonSymbols — pure sugar, the core never sees the Weak ctors): they
+// route through the very same stdlib (and so also accept primitive keys). strict
+// skips jzify and rejects them in prepare — see test/errors.js.
 test('WeakMap folds to Map: new WeakMap pulls map stdlibs', () => {
   const w = wat(`export let f = () => { let m = new WeakMap(); m.set('k', 1); return m.get('k') }`)
   ok(hasDef(w, '__map_set'))
@@ -235,7 +236,8 @@ test('WeakMap folds to Map: new WeakMap pulls map stdlibs', () => {
 })
 
 test('WeakSet folds to Set: new WeakSet pulls set stdlibs', () => {
-  const w = wat(`export let f = () => { let s = new WeakSet(); s.add(1); return s.has(1) }`)
+  // bare `new WeakSet` (no parens) — the rename covers both ctor AST shapes
+  const w = wat(`export let f = () => { let s = new WeakSet; s.add(1); return s.has(1) }`)
   ok(hasDef(w, '__set_add'))
   ok(hasDef(w, '__set_has_h'))   // literal key 1 → prehashed probe
 })
