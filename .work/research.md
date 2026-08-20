@@ -23225,3 +23225,19 @@ previously-fixed defects were both garbage-LENGTH variants; a third
 variant that DROPS entries on re-key collision fits every observation:
 deterministic (same table state each run), symptom-clean (canonical
 UNDEF), and invisible to all stale-read probes.
+
+## §defect 2 — nesting eliminated by byteLength criterion (2026-08-20)
+
+Site-3-disabled probe: jessie smoke 345.44 PASS; jz×jz trap at the exact
+invariant byteLength 3,207,987,200 (48,950 pages to the byte) — nesting
+eliminated as the locus per the stated criterion. Trap flavor shifted
+(iterate-nullish → raw memory-OOB) and wall collapsed 18.5× — the
+established structural-perturbation artifact class, though a genuine
+secondary effect can't be excluded from one point. Control run PROVED the
+invariant is not an engine ceiling (bare Memory.grow reaches 4,074 MB in
+the same process). KEY REFRAME: identical failure bytes with an entire
+round REMOVED means the failure tracks CUMULATIVE ALLOCATION VOLUME, not
+compaction structure or round count. Next observation: trap-frame
+decompile (which instruction faults, on what operand, vs heap-top/lane
+boundaries) + cross-variant $__alloc-count comparison (is the allocation
+SCHEDULE itself the second invariant).
