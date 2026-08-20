@@ -23418,3 +23418,28 @@ expect-refusal to clean-strict-compile + bit-exact hex differentials
 helper). Full test:wasm leg on the assembled tip: 2809 pass / 0 fail —
 first fully-green kernel-target record. Next: the flip itself (strict
 default) + Tables A+B deletion + §7 conversions as one coordinated slice.
+
+## §defect 2 — THIRD reframe: array-slot aliasing, not key-loss (2026-08-20, forensic wrap)
+
+The Object.keys differential (bypassing __str_eq via __hash_keys_ro's raw
+slot walk, deterministic ×2 on tip): at emitFuncs round 24 (site 1, before
+any closure processing), ctx.closure.bodies[537] holds a COMPLETELY
+DIFFERENT OBJECT — exactly two keys {type, valKind}, the signature shape
+of a WAT-IR expression node (ir.js typed()). Both prior hypotheses ruled
+out: not key-loss from an intact bodyFn (its other 5+ fields would
+enumerate; they don't), not a key-string length misread (a garbled key
+would surface; it doesn't). The defect is an ARRAY-level aliasing /
+misdirected write: a bodies[] slot overwritten with an unrelated IR node
+during the emitFuncs rounds. The earlier 53e50328-era nondeterminism was
+almost certainly the version-skew artifact, not a property of the defect —
+on tip it is fully deterministic (same round/site/idx twice).
+
+NEXT LEAD (handed out as a parallel package): which allocation owns that
+IR node — allocation-site-ID on the address in bodies[537] at round 24,
+exact replay. Assets: scratchpad/frontier2 kernel-tip-watchpoint.wasm +
+goalgate-tip-watchpoint*.mjs/log.
+
+Fresh tip jessie baseline from the wrap's smoke: **288.0 MB** (was 380.8
+at the memgrow-tier landing) — the session's landings (prepare DCE, strict
+slices, cond-spread devirt, data-segment fix) compounded a further −93 MB
+region-live. The 100-200 MB bar is now ~88 MB away.
