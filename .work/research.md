@@ -23178,3 +23178,24 @@ ctx.closure.bodies[i] fresh per access and re-bind every root through the
 round's destructuring return. No unrooted identity-keyed holder found.
 Rank-2 is closed at census level; rank-1 (alloc guard at 13.3M-call
 volume) is the live line, counter probe in flight.
+
+## §defect 2 — full elimination sweep complete; value-identity probe next (2026-08-20)
+
+Rank-1 (alloc guard at volume) ELIMINATED with a clean, unperturbed run:
+118,417,410 $__alloc calls, guard never fired, max single request 192.0 MB
+(legitimately shaped), min delta 0 (benign), trap = the true-baseline
+iterate-nullish at 972s, byteLength the exact invariant 3207987200.
+Combined with the negative rank-2 census, EVERY named mechanism is now
+individually falsified: relocation timing (three stub interventions),
+root completeness (four config eliminations), schema durability
+(empirical), allocation-size corruption (guard census). Honest state:
+defect 2 is real, deterministic, upstream of everything nameable so far,
+and NOT located — a shrinking search space, no positive finding yet.
+
+Next instrument (authorized): extend the proven-cold __iter_arr site tag
+to dump the RAW i64 BITS of the iterated value ($t — what cb.params
+actually evaluated to) into a debug global before the throw; decode
+post-mortem against layout.js masks. Three-way discrimination: genuine
+UNDEF pattern → upstream never-wrote path; stale pointer with valid tag
+→ names the responsible relocation arm directly; non-decoding bits → raw
+memory corruption outside typed relocation logic entirely.
