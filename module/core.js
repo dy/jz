@@ -2556,45 +2556,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       // at off-16 (set by __dyn_set). __hash_get assumes HASH bucket layout
       // and would mis-read OBJECT memory.
       if (vt === VAL.OBJECT) {
-        // Same monomorphic devirtualization as the vt==null arm below (see
-        // emitSchemaSlotGuarded's doc) — a receiver PROVEN OBJECT (but whose
-        // exact schema id this call site never pinned: a Map/global-memo
-        // provenance edge, e.g. `plan = cache.get(k)` / a module-scope memo
-        // variable) still benefits from it, and the precondition is only
-        // STRONGER here (the value is definitely some object, never a
-        // primitive/HASH/undefined), so `guardedSlotOf`'s soundness argument
-        // carries over unchanged. Before this arm existed, a receiver with
-        // NO type evidence at all (vt==null) devirtualized through the guard
-        // while one with the STRONGER "definitely an object" proof fell
-        // straight to the always-dynamic dispatch below — the exact
-        // asymmetry the compat-handoff provenance census caught: a Map-cache/
-        // module-memo field read reaching here as proven VAL.OBJECT paid full
-        // __dyn_get_expr_t_h on every access instead of one guard compare.
-        //
-        // Gated on `va.type === 'f64'`: emitSchemaSlotGuarded's only PRIOR
-        // caller (the vt==null arm below) never reaches it with anything else
-        // — a fully unproven receiver is boxed by construction, never
-        // pointer-narrowed — so that precondition was implicit and never
-        // enforced. Reproduced empirically (self-compiling jz's own ~50K-line
-        // source via `npm run build`, which the two bench specimens and the
-        // unit/differential suite never exercise): without this gate, SOME
-        // vt===VAL.OBJECT receiver in that source reaches here already in a
-        // non-boxed representation, and emitSchemaSlotGuarded's mask compare
-        // on it lowers to `i64.reinterpret_f64` over an i32-typed operand —
-        // invalid wasm, caught by build-dist.mjs's post-encode
-        // `new WebAssembly.Module()` validation ("expected type f64, found
-        // local.get of type i32"). Root shape not pinned further (function
-        // #3459 of a 2.1 MB self-compiled binary); the gate is the safe,
-        // narrow fix — trust the guard only for the ONE representation it was
-        // ever built and tested against, and let anything else fall through
-        // unchanged to the pre-existing dynamic dispatch (no regression,
-        // just no new win). Both target provenance edges (bench/provenance's
-        // module-memo, fftplan's cache-through-getPlan) always reach this
-        // arm with `va.type === 'f64'` — confirmed via WAT diff — so the gate
-        // costs them nothing.
-        const guard = (va?.type === 'f64' && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
-        const slow = () => emitDynGetExprTyped(va, key, vt, prop)
-        return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
+        return emitDynGetExprTyped(va, key, vt, prop)
       }
       if (vt == null) {
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).

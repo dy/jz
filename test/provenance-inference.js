@@ -70,36 +70,6 @@ export let go = () => {
   is(exports.go(), 1008)
 })
 
-// module-memo OBJECT-FIELD route (bench/provenance's edge 4, distinct from the
-// KNOWN-OPEN bare-typed-array "memo" edge above): `getMemo`'s return is
-// classified VAL.OBJECT (never nullish by construction — every path either
-// returns the already-populated global or freshly makes one), so
-// module/core.js's emitPropAccess devirtualizes the `.wre`/`.wim` field reads
-// through guardedSlotOf's runtime tag-checked fast path (same mechanism the
-// `field`/`fieldInline` edges above already use, previously skipped for a
-// vt===VAL.OBJECT receiver — see module/core.js emitPropAccess's `vt ===
-// VAL.OBJECT` arm). Guarded, not unconditional: a schema mismatch still falls
-// to the ordinary dynamic dispatch, so this can only ever be as fast, never
-// wrong — the same safety margin the KNOWN-OPEN edges above are pinned on.
-test('provenance: module-memo object-field route is value-correct', () => {
-  const src = `const mk = (n) => { const wre = new Float64Array(n), wim = new Float64Array(n); for (let i = 0; i < n; i++) { wre[i] = i * 0.5; wim[i] = i * 0.25 }; return { wre, wim } }
-let lastN = 0, lastPlan = null
-const getMemo = (n) => { if (n === lastN) return lastPlan; lastPlan = mk(n); lastN = n; return lastPlan }
-export let go = () => {
-  const memo = getMemo(64)
-  const wre = memo.wre
-  const wim = memo.wim
-  let s = 0
-  for (let i = 0; i < 64; i++) s += wre[i] + wim[i]
-  return s
-}`
-  const { exports } = jz(src)
-  // Σ i·0.5 + Σ i·0.25 for i in [0,64) = 0.75·(63·64/2) = 0.75·2016 = 1512
-  is(exports.go(), 1512)
-  // Same value across every optimize tier (the guard must not change behavior).
-  for (const optimize of [false, 2, 3]) is(jz(src, { optimize }).exports.go(), 1512, `O${optimize || 0}`)
-})
-
 // the write gate: a single prop write anywhere keeps the dynamic path (soundness)
 test('provenance: a written field prop disables the slot-ctor trust', () => {
   const src = `const mk = (n) => { const wre = new Float64Array(n), wim = new Float64Array(n); return { wre, wim } }
