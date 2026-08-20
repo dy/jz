@@ -22838,3 +22838,29 @@ read-only):
 Slice 3 closes with no code change required. Remaining FeaturePlan item:
 slice 4 (post-carrier bigint gate retirement) — coupled to the
 strict-default flip, i.e. blocked on the same subscript publish.
+
+## §lane-4 devirtualization reverted — kernel-target regression (2026-08-19)
+
+bc48ac02 (emitPropAccess vt===VAL.OBJECT devirtualization through
+guardedSlotOf, provenance lane 4) regressed the KERNEL-TARGET suite leg:
+test:wasm on the merged tip failed 3 (URLSearchParams iteration OOB,
+destructured-param OBJECT literal .prop OOB, mixed nested-function-calls
+value mismatch). Bisect: all three PASS at b5073043 AND at 7535974e (the
+memgrow tier is clean) — the devirtualization is the culprit by
+elimination. Reverted (982d0357), zero fails across the three files
+post-revert; the change's own ladder (native suite, build, wat-strip
+parity, region smoke, ratchet, 125-corpus byte-identity) was green
+throughout — the break only manifests when the SELF-COMPILED kernel runs
+the new guard path. Same class as the va.type!=='f64' precondition the
+change itself already tripped once during development: emitSchemaSlotGuarded
+has kernel-side representation preconditions that native gates cannot see.
+
+RE-LAND SPEC (banked): lane 4's value was marginal (~2% on provenance
+bench; fftplan untouched) — re-land only with (a) the kernel-target suite
+leg (npm run test:wasm) added to the gate ladder for any emit-path change,
+(b) the kernel-side precondition of emitSchemaSlotGuarded understood and
+enforced structurally (why does the guard misbehave only self-hosted —
+representation drift between native and kernel compile of the SAME guard
+IR?), (c) the three named tests as the acceptance probes. The permanent
+lesson joins the gate list: NATIVE suites cannot see kernel-run-path
+breaks; test:wasm is the gate for changes to emit dispatch helpers.
