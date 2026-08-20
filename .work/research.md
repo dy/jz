@@ -23022,3 +23022,34 @@ could reach. Recommended next step: WAT-breadcrumb instrumentation of
 `__region_copy_rec`'s ARRAY arm specifically on the jz×jz `out`/`funcs`
 accumulator, isolating the exact allocation whose length reads garbage —
 same method, next session.
+
+## §jz×jz frontier — THREE distinct defects at tip 53e50328 (2026-08-20, forensic interim)
+
+1. **Rounds-active corruption (defect 2)**: reproduced exactly at 3,059.375
+   MB (byteLength 3207987200), wall 965s. Surfaced as decodeThrown's
+   "Cannot iterate null or undefined" — decode logic is SOUND on garbage
+   input (corrupted aux bits resolve to AggregateError, whose ctor demands
+   an iterable). Pointer/forwarding audits came back clean (i64-extended
+   unsigned throughout; $__heap_end64 exists precisely for the 4 GiB wrap;
+   regionArmArray's no-stub ephemeral relocation is deliberate and
+   documented). Live hypothesis: signed-i32 crossing — 3.06 GB is past
+   2^31 and NO smaller specimen (jessie/watr/jzify ≤1.5 GB) ever crosses
+   it. Next: raw __jz_last_err_bits dump, then offset-arithmetic (not
+   pointer-bit) audit of __region_copy_rec/regionArmArray/lane-fit guard.
+
+2. **NEW dormant phantom (defect 1')**: plain (REGION_HOOKS_ACTIVE=false)
+   jz×jz at tip traps unreachable@4096.00 MB in **6.489 s** — far too fast
+   for organic accumulation. Call chain (names:true): __alloc ←
+   __alloc_hdr_n ← __hash_set_local ← __dyn_set ← closures ←
+   m133_narrow$narrowSignatures — a phantom huge single allocation during
+   PLANNING, the same class as the pre-fix __str_concat_raw_fresh phantom.
+   Next: grow-size breadcrumb at __hash_set_local's alloc site.
+
+3. **Stack-overflow @3,669 MB**: reported by the emission-rounds session's
+   HEAD probe at base 2d926c0b; did NOT reproduce at tip with the forensic
+   driver — treated as stale/unconfirmed (older base or driver delta), not
+   chased.
+
+Emission rounds themselves remain green at small/medium scale (jessie
+380.8 / jzify −30 MB / byte-identical dormant) — the frontier defects are
+all jz×jz-scale only.
