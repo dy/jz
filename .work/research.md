@@ -23241,3 +23241,27 @@ compaction structure or round count. Next observation: trap-frame
 decompile (which instruction faults, on what operand, vs heap-top/lane
 boundaries) + cross-variant $__alloc-count comparison (is the allocation
 SCHEDULE itself the second invariant).
+
+## §defect 2 — nondeterminism source IDENTIFIED: env.now kernel import (2026-08-20)
+
+The trap-frame recapture failed for the best possible reason: the SAME
+nosite3 binary on the SAME input produced memory-OOB@53.6s once and
+iterate-nullish@7-10min twice — trap identity is RUN-TO-RUN
+NONDETERMINISTIC, retroactively invalidating every trap-flavor reading in
+the arc (including the "codegen perturbation" attributions — real
+confound either way). Root cause of the nondeterminism, verified via
+WebAssembly.Module.imports on the kernel: **the self-compiled kernel
+imports env.now** (bundled timePhase profiler reading real wall-clock
+inside the compile) — time-dependent branches diverge per run, while
+committed byteLength stays pinned because the memgrow 1/16 tier QUANTIZES
+the final grow into one band (the "bit-identical 3,207,987,200" invariant
+is a quantization band, not an exact allocation count). The one solid
+conclusion stands: a single underlying defect near a fixed cumulative-
+allocation volume, surfacing through whichever consumer trips first.
+Decisive next (in flight): deterministic now-stub in the driver imports —
+restores full reproducibility, makes the surviving trap cleanly
+capturable with a stack, and converts every future probe into an exact
+replay. Also banked for the retirement/design docs: a SELF-COMPILE KERNEL
+SHOULD BE DETERMINISTIC — the profiler's Date.now must be stubbed or
+excluded from the self-graph (engine-level fix: front.js/self.js should
+compile timePhase to a no-op or counter in the kernel profile).
