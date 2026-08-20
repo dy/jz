@@ -23363,3 +23363,35 @@ helper in bridge.js. SEQUENCED AFTER the conditional-spread agent lands
 (it holds module/object.js); not input-reshaped (migrating LAYOUT to hex
 strings would touch ~15 consumer files and reshape the input instead of
 fixing the engine).
+
+## §"order-dependent" RETRACTED — two deterministic kernel miscompiles (2026-08-20)
+
+The bisect agent disproved the premise with the decisive test nobody ran:
+both test:wasm failures reproduce 100% deterministically in single-compile
+isolation (fresh process, one compile, zero prior files), at 11588771,
+55aa5399, and tip alike — bit-identical results, 3-5/3-5 repeats. The
+"order-dependent" chain (five ledger entries from 2026-08-19 onward) was
+an unverified hypothesis born of a full-run-vs-individual-run method
+mismatch — and the "passes standalone" half was ITSELF a method error
+(direct `node test/file.js` execution does not activate the kernel-target
+harness the way `node test/index.js <name>` does). AUDIT-#17 had the same
+lesson banked; not applied until now. The error-decode merge (55aa5399)
+is orthogonal (real-number-receiver dyn-get bailout; these are
+ARRAY/OBJECT-receiver reads) and its claimed 0-fail full leg does not
+reproduce.
+
+THE TWO REAL DEFECTS (kernel-only; native correct at every optimize
+level; trivial-scale repros, scripts in /private/tmp/jz-wasmbisect):
+1. data.js nested-function-calls: baseline self-hosted codegen bug —
+   wrong at EVERY kernel optimize level (0/1 → 0; 2/3 → garbage double
+   7.53609406698407e+288). Minimized trigger needs BOTH: callee binds its
+   returned object literal to a named local before returning, AND caller
+   binds the result and reads ≥2 fields. Slot/liveness conflation between
+   callee return-local and caller receiving-local.
+2. URLSearchParams array-of-pairs ctor (jzify/webrt.js:62-136 __usp_new):
+   kernel-correct at optimize false/0/1, OOB at 2/3/'size'/'speed' —
+   cleanly optimizer-tier-gated, SROA/narrowing-class pass unsound only
+   self-hosted.
+Fix method: the established differential kernel forensics (WAT
+breadcrumbs, value-identity dumps) — both repro at 10-line scale, far
+cheaper than the defect-2 saga.
