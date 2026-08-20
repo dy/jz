@@ -22878,3 +22878,16 @@ representation drift between native and kernel compile of the SAME guard
 IR?), (c) the three named tests as the acceptance probes. The permanent
 lesson joins the gate list: NATIVE suites cannot see kernel-run-path
 breaks; test:wasm is the gate for changes to emit dispatch helpers.
+
+## §test:wasm 3-fail attribution CLOSED (2026-08-19)
+
+Method-consistent full-leg run at b5073043 (fresh worktree, fresh kernel):
+the SAME 3 failures (URLSearchParams iteration OOB, destructured-param
+OBJECT literal .prop OOB, mixed nested-function-calls mismatch) are
+present BEFORE the memgrow tier and lane-4 landings — both innocent
+(lane-4's revert is itself reverted, 4d05c50a). The failures are
+pre-existing, order-dependent (each file passes standalone at every
+commit probed), and the parked error-decode branch d648ad18 — the only
+recent 0-fail full-leg datum, whose fix targets exactly this catch-path
+OOB class — cures them. They close when the user's dirty-set commit
+unblocks that branch's landing. No further action on main.
