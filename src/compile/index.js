@@ -221,12 +221,19 @@ function buildInternTable() {
   }
   dataAlign(8)
   const base = dataLen()
-  let s = ''
+  // Parts-array + single join, NOT `s += chunk`: a member-free `+=` still
+  // fresh-copies the whole accumulated string per iteration in the kernel
+  // (no rope strings), and `slots.length` runs into the tens of thousands on
+  // a self-compile — measured 207.6 MB / 39,216 $__str_concat_raw calls of
+  // Window-A churn (.work/research.md §elephant attribution). Same
+  // remediation class as the ctx.runtime.data parts-array and the dedup
+  // rolling-hash fixes.
+  const parts = []
   for (let i = 0; i < slots.length; i++) {
     const v = slots[i]
-    s += String.fromCharCode(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF)
+    parts.push(String.fromCharCode(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF))
   }
-  dataPush(s)
+  dataPush(parts.join(''))
   ctx.runtime.internTable = { base, size }
   declGlobal('__internBase', 'i32', base, { mut: false })
   declGlobal('__internMask', 'i32', mask, { mut: false })
