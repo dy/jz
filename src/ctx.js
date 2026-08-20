@@ -689,6 +689,40 @@ export function reset(proto, globals, bridge) {
                                 //   census reader (slotVT / slotTypedCtor* /
                                 //   slotIntCertainAt / guardedNumSlot stamp)
                                 //   answers null/false for them.
+    condAbsentProps: new Map(), // schemaId → Set<prop> — conditional-spread
+                                //   schema inference (module/object.js
+                                //   conditionalSpreadGroup/mergeSpreadNames): a
+                                //   slot contributed EXCLUSIVELY by a
+                                //   `cond && {k: v}` spread group
+                                //   (module/function.js bodyFn's
+                                //   `...(restParam && {rest: restParam})`
+                                //   idiom) — present iff cond was truthy at
+                                //   THIS construction, written as the UNDEF
+                                //   sentinel otherwise. Every registration is
+                                //   salted by its own prop-name set (see
+                                //   emitObjectSpread) so it never aliases an
+                                //   ordinary schema with the same physical
+                                //   prop list — an explicit `{a: undefined}`
+                                //   keeps its own, unflagged sid and stays
+                                //   unconditionally-present everywhere.
+                                //   Consumed at COMPILE TIME only (routes
+                                //   hasOwnProperty/`in`'s value-blind schema
+                                //   fold, and Object.keys/values/entries/
+                                //   for-in's static-fold gate + bespoke
+                                //   value-checked enumerator, off the
+                                //   ordinary always-present path) — no
+                                //   runtime table. `.prop` reads are
+                                //   unaffected either way (an absent slot's
+                                //   UNDEF sentinel already matches JS's own
+                                //   `undefined`-on-miss read). Residual,
+                                //   documented gap: a PRESENT group whose OWN
+                                //   value expression independently evaluates
+                                //   to `undefined` is indistinguishable from
+                                //   ABSENT on these surfaces — inherent to
+                                //   signaling presence through the value
+                                //   channel instead of a separate presence
+                                //   bit (see module/object.js's
+                                //   conditionalSpreadGroup doc).
     inlineArray: new Set(),     // schemaId set — schemas whose `Array<S>` instances
                                 //   use the `structInline` SRoA carrier (K f64
                                 //   fields inlined per element, no per-row object).

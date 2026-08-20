@@ -8,7 +8,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, isUndef, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
@@ -350,12 +350,24 @@ export default (ctx) => {
     if (arrayValType(obj)) return idxKeys(obj, '__len')
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
-    // A static schema lists only the literal-known keys; a var that takes
-    // computed writes (`o[k]=v`) also carries props in its per-object dyn HASH
-    // that the schema omits. Enumerate those live (schema ∪ dyn props) — the gap
-    // that blocked metacircularity (the compiler grows dicts then enumerates).
-    if (schema && !mayHaveDynProps(obj) && !hasOutOfSchemaWrites(obj, schema))
+    // Conditional-spread slots (schemaCondNames): the plain value-blind fold
+    // below (every schema name unconditionally present) is wrong for a
+    // schema whose slot(s) may hold the UNDEF absent-sentinel — route those
+    // through the compile-time-specialized value-checked enumerator instead.
+    // Gate: dynWriteVars, NOT mayHaveDynProps — mayHaveDynProps's dynKeyVars
+    // census flags a computed READ (`o[k]`) as readily as a computed WRITE
+    // (`o[k]=v`; see __keys_ro's own identical narrowing, just below), but
+    // only a write can add a prop this fold would miss. Found live, not
+    // assumed: `for (k in o) sum += o[k]` — for-in's OWN `o[k]` read inside
+    // the SAME loop that enumerates `o` — tripped mayHaveDynProps on `o`,
+    // silently falling through to the value-blind emitRuntimeKeys path
+    // below and wrongly counting an absent conditional slot.
+    const condNames = schemaCondNames(obj)
+    if (schema && !hasOutOfSchemaWrites(obj, schema) &&
+      (condNames?.size ? !ctx.types.dynWriteVars?.has(obj) : !mayHaveDynProps(obj))) {
+      if (condNames?.size) return emitCondAwareKeys(obj, schema, condNames)
       return emitStringArray(schema)
+    }
     // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
     // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
     return emitRuntimeKeys(obj, ro)
@@ -380,9 +392,16 @@ export default (ctx) => {
     // writes land in the dyn sidecar — see hasOutOfSchemaWrites).
     // `mayHaveDynProps` is too coarse here — it also flags computed-READ receivers,
     // and for-in's own `o[k]` read would otherwise veto its own pooling.
+    // Conditional-spread slots (schemaCondNames): pooling a SINGLE static key
+    // array requires the key SET to be a compile-time constant shared by
+    // EVERY instance of the schema — false here by construction (a DIFFERENT
+    // instance's group can be absent). Excluded up front so a cond-absent
+    // receiver falls to emitKeysGeneric(obj, true), which recomputes
+    // per-instance via emitCondAwareKeys — freshly allocated each for-in,
+    // correct over pooled.
     if (typeof obj === 'string' && !ctx.types.dynWriteVars?.has(obj) && !isHashTyped(obj) && !arrayValType(obj) && !stringValType(obj)) {
       const schema = resolveSchema(obj)
-      if (schema && !hasOutOfSchemaWrites(obj, schema)) {
+      if (schema && !hasOutOfSchemaWrites(obj, schema) && !schemaCondNames(obj)?.size) {
         const slots = schema.map(name => extractF64Bits(asF64(emit(['str', name]))))
         if (slots.every(b => b !== null)) return staticArrayPtr(slots)
       }
@@ -403,7 +422,14 @@ export default (ctx) => {
           ['drop', asF64(emit(obj))],
           ['f64.const', has ? 1 : 0]], 'f64')
       }
-      if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
+      // Conditional-spread slot (ctx.schema.condAbsentProps — module/object.js
+      // conditionalSpreadGroup): "in schema" no longer means "present" for
+      // this exact prop, so the value-blind fold below must not fire — fall
+      // through to the runtime `in` operator, whose own generic OBJECT arm
+      // (module/collection.js) is already value-based (`__dyn_get` +
+      // nullish), giving the correct answer with no help needed here.
+      if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0 &&
+        !ctx.schema.condAbsentAt?.(ctx.schema.idOf(obj), litKey))
         return typed(['f64.const', 1], 'f64')
     }
     return typed(['f64.convert_i32_s', emit(['in', key, obj])], 'f64')
@@ -480,7 +506,12 @@ export default (ctx) => {
     if (arrayValType(obj)) { inc('__arr_from'); return typed(['call', '$__arr_from', asI64(emit(obj))], 'f64') }
     if (isHashTyped(obj)) return emitHashValues(obj)
     const schema = resolveSchema(obj)
-    if (!schema || mayHaveDynProps(obj) || hasOutOfSchemaWrites(obj, schema)) return emitRuntimeValues(obj)
+    // Conditional-spread slots — see Object.keys' identical guard (dynWriteVars,
+    // not mayHaveDynProps — the read-vs-write narrowing) above.
+    const condNames = schemaCondNames(obj)
+    if (!schema || hasOutOfSchemaWrites(obj, schema) ||
+      (condNames?.size ? ctx.types.dynWriteVars?.has(obj) : mayHaveDynProps(obj))) return emitRuntimeValues(obj)
+    if (condNames?.size) return emitCondAwareValues(obj, schema, condNames)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('ov'), base = tempI32('vb')
@@ -543,7 +574,12 @@ export default (ctx) => {
     }
     if (isHashTyped(obj)) return emitHashEntries(obj)
     const schema = resolveSchema(obj)
-    if (!schema || mayHaveDynProps(obj) || hasOutOfSchemaWrites(obj, schema)) return emitRuntimeEntries(obj)
+    // Conditional-spread slots — see Object.keys' identical guard (dynWriteVars,
+    // not mayHaveDynProps — the read-vs-write narrowing) above.
+    const condNames = schemaCondNames(obj)
+    if (!schema || hasOutOfSchemaWrites(obj, schema) ||
+      (condNames?.size ? ctx.types.dynWriteVars?.has(obj) : mayHaveDynProps(obj))) return emitRuntimeEntries(obj)
+    if (condNames?.size) return emitCondAwareEntries(obj, schema, condNames)
     const va = asF64(emit(obj))
     const n = schema.length
     const t = temp('oe'), pair = tempI32('op'), base = tempI32('eb')
@@ -565,12 +601,22 @@ export default (ctx) => {
     // RequireObjectCoercible(target) — null/undefined is a TypeError.
     const nullish = requireCoercible(target)
     if (nullish) return nullish
+    // Conditional-spread slots (schemaCondNames): every branch below copies
+    // RAW slot bits, value-blind — correct only when every slot a source
+    // schema lists is unconditionally present. Treat a cond-absent
+    // target/source's schema as UNRESOLVABLE here (exactly resolveSchema's
+    // pre-this-feature answer for the same binding, back when its
+    // construction still took the dynamic-HASH path) — every branch already
+    // has a documented dynamic fallback (or, for the boxed-non-OBJECT-target
+    // branch, an existing "source needs known schema" compile error) for
+    // that case; none of them need to learn a new one.
+    const knownSchema = (x) => { const s = sourceSchema(x); return s && !schemaCondNames(x)?.size ? s : null }
     if (typeof target === 'string') {
       const vt = repOf(target)?.val
       if (vt && vt !== VAL.OBJECT) {
         const allProps = []
         for (const src of sources) {
-          const s = sourceSchema(src)
+          const s = knownSchema(src)
           if (!s) err('Object.assign: source needs known schema')
           for (const p of s) if (!allProps.includes(p)) allProps.push(p)
         }
@@ -605,7 +651,7 @@ export default (ctx) => {
       }
     }
     const tSchema = resolveSchema(target)
-    const sourceSchemas = sources.map(sourceSchema)
+    const sourceSchemas = sources.map(knownSchema)
     if (!tSchema) return emitObjectAssignDynamic(target, sources)
     if (sourceSchemas.some(s => !s)) return emitDynamicAssign(target, sources, sourceSchemas)
     // Extern-write belt: cross-schema slot copies into the TARGET's sid below
@@ -966,22 +1012,83 @@ function takeLiteralTarget() {
   return frame.name
 }
 
+// Recognizes `cond && {k: v, …}` (module/function.js bodyFn's
+// `...(restParam && { rest: restParam })` idiom, 12 independent instances in
+// that one literal) as a CONDITIONAL spread group: a spread source whose KEY
+// SET is statically known — the inner literal's own props — but whose
+// PRESENCE at any one construction depends on a runtime condition. Chained
+// guards (`a && (b && {…})`) unwrap through the right arm — the ORIGINAL
+// node is still emitted as ONE unit by the caller (short-circuit + side
+// effects run exactly once); only the key list needs unwrapping here. The
+// inner literal must carry ONLY ':' props (no nested spread — keeps the
+// runtime branch below a single present/absent copy, not a recursive
+// merge); a spread-bearing inner literal falls through to null, same as any
+// other unresolvable source (today's `emitDynamicSpread`, unchanged).
+function conditionalSpreadGroup(node) {
+  if (!Array.isArray(node) || node[0] !== '&&' || node.length !== 3) return null
+  let inner = node[2]
+  while (Array.isArray(inner) && inner[0] === '&&' && inner.length === 3) inner = inner[2]
+  if (!Array.isArray(inner) || inner[0] !== '{}') return null
+  const props = inner.length === 2 && Array.isArray(inner[1]) && inner[1][0] === ','
+    ? inner[1].slice(1) : inner.slice(1)
+  if (!props.length || !props.every(p => Array.isArray(p) && p[0] === ':')) return null
+  return { keys: props.map(p => p[1]), props }
+}
+
+// Shared spread-merge walker behind spreadLiteralSchema (resolveSchema's
+// consumer — key list only) and emitObjectSpread (needs the condNames split
+// too, to know which slots get a runtime present/absent branch instead of an
+// unconditional copy). Unions names in first-occurrence order; a name
+// touched by more than one source bails the WHOLE merge (→ null, today's
+// `emitDynamicSpread`) EXACTLY when a conditional group is on either side of
+// the collision — resolving "does a later absent group leave an earlier
+// value untouched" needs per-write provenance this fold doesn't track, and
+// the target shape (bodyFn's 12 groups, each owning distinct keys) never
+// collides. Two ORDINARY (non-conditional) sources sharing a key is
+// unaffected: that's spread's ordinary last-wins semantics, unchanged from
+// before this function existed. Re-spreading an ALREADY conditionally-
+// schema'd source (`{...bodyFnLikeThing}`) also bails — propagating
+// condNames through a second hop of spread is real but out of scope (see
+// conditionalSpreadGroup's doc); staying null here just keeps that source on
+// today's proven-safe dynamic path instead of silently losing the "maybe
+// absent" fact one hop out.
+function mergeSpreadNames(props) {
+  const names = [], condNames = new Set(), seen = new Set()
+  for (const p of props) {
+    if (Array.isArray(p) && p[0] === '...') {
+      const group = conditionalSpreadGroup(p[1])
+      if (group) {
+        for (const n of group.keys) {
+          if (seen.has(n)) return null
+          seen.add(n); names.push(n); condNames.add(n)
+        }
+        continue
+      }
+      const s = spreadSourceSchema(p[1])
+      if (!s) return null
+      // A bare-name source whose OWN schema already carries conditional
+      // slots (an earlier application of this same fold) — bail rather than
+      // silently drop the "maybe absent" fact one spread hop out (see doc).
+      if (typeof p[1] === 'string' && ctx.schema.hasCondAbsent?.(ctx.schema.idOf(p[1]))) return null
+      for (const n of s) {
+        if (condNames.has(n)) return null
+        if (!seen.has(n)) { seen.add(n); names.push(n) }
+      }
+    } else if (Array.isArray(p) && p[0] === ':') {
+      if (condNames.has(p[1])) return null
+      if (!seen.has(p[1])) { seen.add(p[1]); names.push(p[1]) }
+    }
+  }
+  return { names, condNames }
+}
+
 // Merged static schema of a spread-bearing literal, or null when any spread
 // source's key set is unknown at compile time (→ HASH result). The SINGLE
 // source of truth for emitObjectSpread (which builds the object with exactly
 // this slot layout) and resolveSchema (which keys/values/entries/for-in fold
 // against) — the two MUST agree or enumeration drops the spread's keys.
 function spreadLiteralSchema(props) {
-  const names = []
-  const add = n => { if (!names.includes(n)) names.push(n) }
-  for (const p of props) {
-    if (Array.isArray(p) && p[0] === '...') {
-      const s = spreadSourceSchema(p[1])
-      if (!s) return null
-      for (const n of s) add(n)
-    } else if (Array.isArray(p) && p[0] === ':') add(p[1])
-  }
-  return names
+  return mergeSpreadNames(props)?.names ?? null
 }
 
 function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
@@ -990,7 +1097,8 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   // HASH (dynamic dict) — a fixed schema would silently drop the source's keys
   // it doesn't list. Only when EVERY source is known do we build the fixed-shape
   // OBJECT below.
-  const allNames = spreadLiteralSchema(props)
+  const merged = mergeSpreadNames(props)
+  const allNames = merged?.names ?? null
   const allKnown = allNames != null
   // Single unknown spread `{ ...src }` → shallow-clone src at runtime, preserving
   // its type (OBJECT→OBJECT, HASH→HASH). Aliasing src (the old shortcut) leaked
@@ -1005,7 +1113,18 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   }
   if (!allKnown) return emitDynamicSpread(props)
 
-  const schemaId = ctx.schema.register(allNames)
+  const condNames = merged.condNames
+  // Salted by the conditional prop set itself (not just a fixed marker): two
+  // conditional literals sharing both the FULL prop list AND the identical
+  // condNames set may still safely share a sid (schema.register's own content
+  // dedup); one that differs in EITHER must not, or ctx.schema.condAbsentProps
+  // (keyed by sid) would only be able to record one of the two truths. An
+  // ordinary literal/spread with the identical physical prop list but no
+  // conditional group (e.g. `{a: undefined}` colliding with `{...(c&&{a:1})}`'s
+  // merged shape) never shares the salted id either — it keeps its own,
+  // unconditionally-present sid (see test/conditional-spread.js).
+  const schemaId = ctx.schema.register(allNames, condNames.size ? 'cond:' + [...condNames].sort().join(',') : undefined)
+  if (condNames.size) ctx.schema.condAbsentProps.set(schemaId, condNames)
   // Extern-write belt: the spread slot-copies below write source-schema values
   // into this sid outside the write censuses' view (collectSlotWriteHazards
   // normally resolves the same merge at plan time; the belt covers divergence).
@@ -1020,6 +1139,37 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   // Process props in order — later props override earlier (JS semantics)
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
+      const group = conditionalSpreadGroup(p[1])
+      if (group) {
+        // `cond && {k: v, …}` — emit the ORIGINAL node once (correct
+        // short-circuit, side effects run exactly once), then branch on
+        // whether the result is a genuine OBJECT pointer. `&&` is
+        // value-preserving: a falsy `cond` surfaces AS-IS (false/null/
+        // undefined/0/…, not necessarily the `false` atom), so the sound,
+        // general presence test is the pointer's OWN tag, not a specific
+        // sentinel-bits compare. Present: copy the group's own freshly-built
+        // slots across (mirrors the ordinary known-schema copy below).
+        // Absent: every slot this group owns gets the UNDEF sentinel
+        // explicitly — each slot in `schema` is written EXACTLY once across
+        // this whole loop (mergeSpreadNames' collision bail guarantees no
+        // other prop/group also targets it), so there is no earlier value
+        // to accidentally clobber.
+        inc('__ptr_type', '__ptr_offset')
+        const gv = temp('csv'), go = tempI32('cso')
+        const present = [], absent = []
+        group.props.forEach((gp, gi) => {
+          const ti = schema.indexOf(group.keys[gi])
+          if (ti < 0) return
+          present.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, ctx.abi.object.ops.load(['local.get', `$${go}`], gi)))
+          absent.push(ctx.abi.object.ops.store(['local.get', `$${t}`], ti, undefExpr()))
+        })
+        body.push(
+          ['local.set', `$${gv}`, asF64(emit(p[1]))],
+          ['if', ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${gv}`]]], ['i32.const', PTR.OBJECT]],
+            ['then', ['local.set', `$${go}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${gv}`]]]], ...present],
+            ['else', ...absent]])
+        continue
+      }
       const sSchema = spreadSourceSchema(p[1])
       body.push(['local.set', `$${src}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', asF64(emit(p[1]))]]])
       for (let si = 0; si < sSchema.length; si++) {
@@ -1078,12 +1228,45 @@ function emitDynamicSpread(props) {
       body.push(setKey(asI64(emit(['str', String(p[1])])), asI64(storedValue(p[2]))))
       continue
     }
+    const group = conditionalSpreadGroup(p[1])
+    if (group) {
+      // `cond && {k: v, …}` reaching a HASH destination (some OTHER source in
+      // this same literal is genuinely unresolvable) — mirrors emitObjectSpread's
+      // OWN conditional-group arm, but simpler: a HASH has no pre-allocated
+      // slot to blank, so the absent arm inserts NOTHING (no setKey calls at
+      // all) rather than writing an UNDEF placeholder — exactly `{...false}`'s
+      // real JS "contributes zero keys" semantics, with no residual "present
+      // but happens to be undefined" ambiguity (unlike the OBJECT arm, a HASH
+      // key's mere INSERTION already means present — see conditionalSpreadGroup's
+      // own doc for why that residual gap is inherent to the OBJECT slot model).
+      inc('__ptr_type')
+      body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
+      const setKeys = group.props.map((gp, gi) =>
+        setKey(asI64(emit(['str', String(group.keys[gi])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], gi)))
+      body.push(['if', ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]], ['i32.const', PTR.OBJECT]],
+        ['then', ['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]], ...setKeys]])
+      continue
+    }
     const sSchema = spreadSourceSchema(p[1])
     body.push(['local.set', `$${s}`, asF64(emit(p[1]))])
     if (sSchema) {
       body.push(['local.set', `$${sBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]])
-      for (let si = 0; si < sSchema.length; si++)
-        body.push(setKey(asI64(emit(['str', String(sSchema[si])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si)))
+      // An ORDINARY (non-conditional-group) source whose OWN schema already
+      // carries conditional slots (mergeSpreadNames bailed the WHOLE literal
+      // here rather than fold it — see that function's own doc; this branch
+      // is exactly what runs instead) must NOT blindly insert every schema
+      // key: an absent slot (its value is the UNDEF sentinel) must
+      // contribute NOTHING to the destination HASH, mirroring the
+      // conditional-group arm's own "absent inserts nothing" semantics
+      // just above — found live, not assumed: Object.keys on the result
+      // wrongly included the absent key before this check existed.
+      const srcCondNames = typeof p[1] === 'string' ? ctx.schema.condAbsentProps.get(ctx.schema.idOf(p[1])) : null
+      for (let si = 0; si < sSchema.length; si++) {
+        const setStmt = setKey(asI64(emit(['str', String(sSchema[si])])), ctx.abi.object.ops.loadBits(['local.get', `$${sBase}`], si))
+        body.push(srcCondNames?.has(sSchema[si])
+          ? ['if', ['i32.eqz', isUndef(ctx.abi.object.ops.load(['local.get', `$${sBase}`], si))], ['then', setStmt]]
+          : setStmt)
+      }
       continue
     }
     body.push(
@@ -1112,6 +1295,92 @@ function emitStringArray(names) {
     body.push(['f64.store', slotAddr(out.local, i), emit(['str', names[i]])])
   body.push(out.ptr)
   return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+// resolveSchema's condNames sibling: which of THIS receiver's resolved
+// schema names (if any) come from a conditional-spread group
+// (conditionalSpreadGroup/mergeSpreadNames above) — the set
+// Object.keys/values/entries' static fold (and __keys_ro's pool) must
+// exclude from their value-blind "in schema ⇒ present" shortcut, routing
+// them through emitCondAwareEnumerate below instead. Mirrors resolveSchema's
+// OWN two receiver shapes: a bare name consults the POST-REGISTRATION
+// ctx.schema.condAbsentProps side table (populated when that name's own
+// `emitObjectSpread` ran, always before this — jz emits in source order);
+// a raw `{}` AST node (an inline literal passed directly, e.g.
+// `Object.keys({...(cond && {x:1})})` — never separately declared, so no
+// sid exists to look up) re-derives it from mergeSpreadNames directly, the
+// same recomputation resolveSchema's own '{}' branch does for `.names`.
+// Null (not an empty Set) when `obj` carries no conditional slots at all —
+// callers gate on `?.size` so the ordinary, zero-cost path is unaffected.
+function schemaCondNames(obj) {
+  if (typeof obj === 'string') {
+    const sid = ctx.schema.idOf(obj)
+    return sid != null ? ctx.schema.condAbsentProps.get(sid) : null
+  }
+  if (Array.isArray(obj) && obj[0] === '{}') {
+    const props = obj.length === 2 && Array.isArray(obj[1]) && obj[1][0] === ','
+      ? obj[1].slice(1) : obj.slice(1)
+    if (props.some(p => Array.isArray(p) && p[0] === '...')) return mergeSpreadNames(props)?.condNames ?? null
+  }
+  return null
+}
+
+// Compile-time-specialized keys/values/entries enumerator for a receiver
+// whose schema IS known at this call site (same no-dyn-props/no-out-of-
+// schema-writes precondition the plain static fold above already requires)
+// AND carries conditional-spread slots (schemaCondNames). Unlike
+// emitEnumerateObject (ONE runtime-dispatched shape serving EVERY schema via
+// the `__schema_tbl` sid lookup, blind to any one schema's own layout — the
+// path a receiver with an UNRESOLVABLE-here schema still takes, unchanged),
+// this generates ONE UNROLLED sequence per call site: an ordinary slot
+// stores unconditionally (zero added cost vs today's plain static fold); a
+// conditional slot is guarded by a runtime `isUndef` check on ITS OWN slot
+// value, skipped (not stored, output index not advanced) when absent —
+// `undefExpr()`/`isUndef` is exactly the sentinel emitObjectSpread's
+// conditional-group arm writes for an absent group, so this reads back
+// precisely what construction recorded. `storeAt({i, base, out, o})`
+// returns the IR for storing schema[i]'s key/value/pair at output index
+// `o` (`i` is compile-time, `base`/`out`/`o` are locals). Residual,
+// documented gap (shared with hasOwnProperty/`in`'s own guard, see
+// conditionalSpreadGroup): a PRESENT group whose value happens to BE
+// `undefined` is indistinguishable from absent here, same as everywhere
+// else this design signals presence through the value channel.
+function emitCondAwareEnumerate(obj, schema, condNames, storeAt) {
+  inc('__ptr_offset')
+  const t = temp('cae'), base = tempI32('caeb'), o = tempI32('caeo')
+  const out = allocPtr({ type: PTR.ARRAY, len: schema.length, tag: 'cae' })
+  const body = [
+    ['local.set', `$${t}`, asF64(emit(obj))], out.init,
+    ['local.set', `$${base}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+    ['local.set', `$${o}`, ['i32.const', 0]]]
+  for (let i = 0; i < schema.length; i++) {
+    const store = [...storeAt({ i, base, out: out.local, o }),
+      ['local.set', `$${o}`, ['i32.add', ['local.get', `$${o}`], ['i32.const', 1]]]]
+    if (condNames.has(schema[i]))
+      body.push(['if', ['i32.eqz', isUndef(ctx.abi.object.ops.load(['local.get', `$${base}`], i))], ['then', ...store]])
+    else
+      body.push(...store)
+  }
+  body.push(['i32.store', ['i32.sub', ['local.get', `$${out.local}`], ['i32.const', 8]], ['local.get', `$${o}`]])
+  body.push(out.ptr)
+  return typed(['block', ['result', 'f64'], ...body], 'f64')
+}
+
+const emitCondAwareKeys = (obj, schema, condNames) => emitCondAwareEnumerate(obj, schema, condNames,
+  ({ i, out, o }) => [elemStore(out, o, emit(['str', String(schema[i])]))])
+
+const emitCondAwareValues = (obj, schema, condNames) => emitCondAwareEnumerate(obj, schema, condNames,
+  ({ i, out, o, base }) => [elemStore(out, o, ctx.abi.object.ops.load(['local.get', `$${base}`], i))])
+
+const emitCondAwareEntries = (obj, schema, condNames) => {
+  const pair = tempI32('caep')
+  inc('__alloc_hdr')
+  return emitCondAwareEnumerate(obj, schema, condNames,
+    ({ i, out, o, base }) => [
+      ['local.set', `$${pair}`, ['call', '$__alloc_hdr', ['i32.const', 2], ['i32.const', 2]]],
+      ['f64.store', slotAddr(pair, 0), emit(['str', String(schema[i])])],
+      ['f64.store', slotAddr(pair, 1), ctx.abi.object.ops.load(['local.get', `$${base}`], i)],
+      elemStore(out, o, mkPtrIR(PTR.ARRAY, 0, ['local.get', `$${pair}`]))])
 }
 
 // VAL.HASH covers both literal-typed bindings and JSON-shape inferred chains

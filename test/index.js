@@ -35,6 +35,7 @@ const TESTS = [
   'simd',
   'cli',
   'objects',
+  'conditional-spread',
   'dyn-keys',
   'interop',
   'abi',

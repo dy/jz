@@ -1056,6 +1056,21 @@ function bindDeclSchema(name, sid) {
   ctx.schema.vars.set(name, sid)
 }
 
+// Recognizes `cond && {k: v, …}` — decl-schema-binding's own hand-synced copy
+// of module/object.js's conditionalSpreadGroup / src/kind.js's identical
+// mirror (see the decl-tracking call site below for why prepare needs its
+// own). Returns the inner literal's key list (order preserved) or null.
+function conditionalSpreadGroupPrepare(node) {
+  if (!Array.isArray(node) || node[0] !== '&&' || node.length !== 3) return null
+  let inner = node[2]
+  while (Array.isArray(inner) && inner[0] === '&&' && inner.length === 3) inner = inner[2]
+  if (!Array.isArray(inner) || inner[0] !== '{}') return null
+  const props = inner.length === 2 && Array.isArray(inner[1]) && inner[1][0] === ','
+    ? inner[1].slice(1) : inner.slice(1)
+  if (!props.length || !props.every(p => Array.isArray(p) && p[0] === ':')) return null
+  return props.map(p => p[1])
+}
+
 const hasFunc = name => ctx.funcs.names.has(name)
 // A builtin name (`Map`, `Array`, `Math`, …) is shadowed when the user bound it
 // as a local (let/const/param, via `isDeclared`), a top-level function (via
@@ -2181,24 +2196,78 @@ function prepDecl(op, ...inits) {
       // Track object schemas (after prefix so schema is keyed to final name)
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '{}' && normed.length > 1) {
         const props = []
-        const addProp = n => { if (!props.includes(n)) props.push(n) }
+        const condNames = new Set()
+        const seen = new Set()
         let allKnown = true
+        // Dedupe every key (explicit AND spread-sourced) so a `k: v` that overrides
+        // a spread-provided key doesn't push a duplicate — that would shift the
+        // indices of later keys past emitObjectSpread's deduped slot assignment
+        // (its `addName` dedupes both), making `decl.laterKey` read the wrong slot.
+        // A conditional-spread group's key colliding with anything else (see
+        // conditionalSpreadGroupPrepare below) bails `allKnown` instead of
+        // deduping — mirrors module/object.js mergeSpreadNames' identical bail.
+        const addProp = (n, isCond) => {
+          if (seen.has(n)) { if (isCond || condNames.has(n)) allKnown = false; return }
+          seen.add(n); props.push(n)
+          if (isCond) condNames.add(n)
+        }
         for (const p of normed.slice(1)) {
-          // Dedupe every key (explicit AND spread-sourced) so a `k: v` that overrides
-          // a spread-provided key doesn't push a duplicate — that would shift the
-          // indices of later keys past emitObjectSpread's deduped slot assignment
-          // (its `addName` dedupes both), making `decl.laterKey` read the wrong slot.
-          if (Array.isArray(p) && p[0] === ':') addProp(p[1])
+          if (Array.isArray(p) && p[0] === ':') addProp(p[1], false)
           else if (Array.isArray(p) && p[0] === '...') {
-            const srcSchema = typeof p[1] === 'string' && ctx.schema.resolve(p[1])
-            if (srcSchema) for (const n of srcSchema) addProp(n)
+            // `cond && {k: v, …}` (module/object.js conditionalSpreadGroup) —
+            // its key set is statically known even though its runtime
+            // PRESENCE depends on `cond`. THIRD hand-synced copy of the same
+            // recognizer (module/object.js, src/kind.js) — this decl-binding
+            // pass runs at PREPARE time, before emit ever computes a schema
+            // id, so it must predict the SAME id emitObjectSpread will
+            // register later (including the salt below) or `decl.prop`/
+            // hasOwnProperty/Object.keys reads through this NAME resolve a
+            // sid ctx.schema.condAbsentProps was never populated for —
+            // exactly the mismatch this fix closes (found live: enumeration
+            // silently stayed value-blind because the decl was never bound
+            // to ANY schema at all, only emit's own literal-position resolution
+            // saw the conditional groups).
+            const group = conditionalSpreadGroupPrepare(p[1])
+            if (group) { for (const n of group) addProp(n, true); continue }
+            // An ORDINARY spread source whose OWN schema already carries
+            // conditional slots (an earlier `const o = {...(cond&&{b:1})}`,
+            // now re-spread as `{...o, c: 3}`) — module/object.js
+            // mergeSpreadNames bails the WHOLE merge for exactly this case
+            // (propagating condNames one more spread hop is out of scope —
+            // see conditionalSpreadGroup's own doc), so emit will build p as
+            // a dynamic HASH. This decl-binding pass MUST bail identically:
+            // found LIVE, not assumed — binding p to a STATIC OBJECT schema
+            // here while emit built a HASH made `p.b` read raw HASH probe-
+            // table bytes as if they were sequential OBJECT slots (a type-
+            // confusion memory read, caught by this session's own
+            // differential test before landing, not by inspection).
+            const srcSchema = typeof p[1] === 'string' && !ctx.schema.hasCondAbsent?.(ctx.schema.idOf(p[1]))
+              && ctx.schema.resolve(p[1])
+            if (srcSchema) for (const n of srcSchema) addProp(n, false)
             else allKnown = false
           }
         }
         // An unknown spread source makes the value a runtime HASH (see
         // emitObjectSpread). Binding a static schema would compile `decl.prop`
         // to a fixed slot load that misreads the hash, so leave reads dynamic.
-        if (allKnown && props.length && ctx.schema.register) bindDeclSchema(declName, ctx.schema.register(props))
+        if (allKnown && props.length && ctx.schema.register) {
+          const sid = ctx.schema.register(props,
+            condNames.size ? 'cond:' + [...condNames].sort().join(',') : undefined)
+          // Populate condAbsentProps HERE, not only in emitObjectSpread
+          // (module/object.js): prepare runs whole-program BEFORE emit, so a
+          // LATER decl re-spreading THIS one (`const p = {...o, c: 3}`) needs
+          // ctx.schema.hasCondAbsent(sid) to already answer true when ITS
+          // OWN prepare-time binding check runs — found live, not assumed:
+          // without this, `p`'s decl-binding saw hasCondAbsent(o's sid) as
+          // false (not yet populated), bound p to a static OBJECT schema
+          // anyway, while emit correctly bailed `p` to a dynamic HASH —
+          // `p.b` then read raw HASH bytes through a fixed OBJECT slot
+          // offset (a type-confusion memory read caught by this session's
+          // own differential test). emitObjectSpread's own `.set()` at emit
+          // time is now a same-Set no-op re-confirmation, not the only writer.
+          if (condNames.size) ctx.schema.condAbsentProps.set(sid, condNames)
+          bindDeclSchema(declName, sid)
+        }
         else censusUnknownInitDecl(declName)
       } else if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()' &&
                  typeof normed[1] === 'string' && ERR_CLASS_SET.has(normed[1]) && ctx.schema.errorSid) {

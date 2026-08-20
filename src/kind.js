@@ -130,15 +130,17 @@ VT['{}'] = (args) => {
   // spread source has a compile-time schema, emit builds a fixed-shape OBJECT
   // and the existing schema-by-name read path resolves props with no val-type
   // tag, so leave it untyped (tagging OBJECT here regresses it — the merged
-  // schema isn't bound to this name). When any source's schema is unknown, emit
-  // builds a dynamic HASH (emitDynamicSpread); that result carries no schema, so
-  // the binding MUST be HASH-typed or computed/static reads silently misdispatch
-  // (fixed-slot / array index) and return undefined — the bug this fixes.
-  for (const p of args)
-    if (Array.isArray(p) && p[0] === '...' && !spreadSchema(p[1])) {
-      // `{ ...src }` with a single unknown spread aliases src — carry its type.
-      return args.length === 1 ? valTypeOf(args[0][1]) : VAL.HASH
-    }
+  // schema isn't bound to this name). When any source's schema is unknown (or
+  // a conditional-spread group's key collides with another prop/source —
+  // spreadMergeResolves, same bail emitObjectSpread's mergeSpreadNames takes),
+  // emit builds a dynamic HASH (emitDynamicSpread); that result carries no
+  // schema, so the binding MUST be HASH-typed or computed/static reads
+  // silently misdispatch (fixed-slot / array index) and return undefined —
+  // the bug this fixes.
+  if (!spreadMergeResolves(args)) {
+    // `{ ...src }` with a single unresolvable spread aliases src — carry its type.
+    return args.length === 1 && Array.isArray(args[0]) && args[0][0] === '...' ? valTypeOf(args[0][1]) : VAL.HASH
+  }
   return null
 }
 
@@ -1506,6 +1508,23 @@ export function shapeOf(expr) {
   return null
 }
 
+// Recognizes `cond && {k: v, …}` — kind.js's cycle-free mirror of module/
+// object.js's identical-named function (this file must not import the
+// object stdlib module — see spreadSchema's own doc just below). Duplicated,
+// not shared; keep the two in lockstep by hand, same discipline spreadSchema
+// itself already documents for resolveSchema. Returns the inner literal's
+// key list (order preserved) or null.
+function conditionalSpreadGroup(node) {
+  if (!Array.isArray(node) || node[0] !== '&&' || node.length !== 3) return null
+  let inner = node[2]
+  while (Array.isArray(inner) && inner[0] === '&&' && inner.length === 3) inner = inner[2]
+  if (!Array.isArray(inner) || inner[0] !== '{}') return null
+  const props = inner.length === 2 && Array.isArray(inner[1]) && inner[1][0] === ','
+    ? inner[1].slice(1) : inner.slice(1)
+  if (!props.length || !props.every(p => Array.isArray(p) && p[0] === ':')) return null
+  return props.map(p => p[1])
+}
+
 /** Spread source's static schema (key list) or null if unknown at compile time.
  *  Mirrors module/object.js `resolveSchema` so kind inference predicts the same
  *  OBJECT-vs-HASH decision emitObjectSpread makes (kept here to keep kind.js
@@ -1529,10 +1548,57 @@ function spreadSchema(obj) {
   // every one of the 7 classes, so no class-name branching needed).
   if (Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1]))
     return ERR_SCHEMA_PROPS
+  // Conditional-spread group (module/object.js conditionalSpreadGroup /
+  // mergeSpreadNames) — checked BEFORE the plain '{}' branch below, whose
+  // no-nested-spread-recursion contract stays exactly as it was for every
+  // other shape (an existing spreadSchema/resolveSchema asymmetry this
+  // doesn't touch).
+  const condKeys = conditionalSpreadGroup(obj)
+  if (condKeys) return condKeys
   if (Array.isArray(obj) && obj[0] === '{}')
     return obj.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])
   const sh = shapeOf(obj)
   return (sh?.val === VAL.OBJECT && sh.names) ? sh.names : null
+}
+
+// Kind.js's cycle-free mirror of module/object.js `mergeSpreadNames` — VT['{}']
+// below only needs the resolves/doesn't-resolve verdict (no consumer here
+// needs a schema id or the merged name list itself), so this returns a bool.
+// Same collision discipline: a conditional group's key touched by more than
+// one prop/source bails the WHOLE merge (→ false, HASH-typed) — MUST match
+// emitObjectSpread's own bail exactly, or analysis predicts OBJECT while
+// emit builds a HASH and reads misdispatch (the exact class of bug this
+// mirror exists to prevent — see spreadSchema's own doc above).
+function spreadMergeResolves(props) {
+  const seen = new Set(), condSeen = new Set()
+  for (const p of props) {
+    if (Array.isArray(p) && p[0] === '...') {
+      const group = conditionalSpreadGroup(p[1])
+      if (group) {
+        for (const n of group) {
+          if (seen.has(n)) return false
+          seen.add(n); condSeen.add(n)
+        }
+        continue
+      }
+      const s = spreadSchema(p[1])
+      if (!s) return false
+      // An ORDINARY spread source whose OWN schema already carries
+      // conditional slots — module/object.js mergeSpreadNames' identical
+      // bail (re-spreading an already-conditional binding propagates no
+      // further; see conditionalSpreadGroup's own doc). Precise-sid only,
+      // same documented boundary as the collection.js `in` operator guard.
+      if (typeof p[1] === 'string' && ctx.schema?.hasCondAbsent?.(ctx.schema.idOf(p[1]))) return false
+      for (const n of s) {
+        if (condSeen.has(n)) return false
+        seen.add(n)
+      }
+    } else if (Array.isArray(p) && p[0] === ':') {
+      if (condSeen.has(p[1])) return false
+      seen.add(p[1])
+    }
+  }
+  return true
 }
 
 /** Build a structural shape from a `{}` AST node — recursive for nested
