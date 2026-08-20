@@ -34,7 +34,7 @@ import { findBodyStart, buildRefcount, nextLocalId, verifyFn, isPureIR, hasExpen
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
 const DBG_DSR = typeof process !== 'undefined' && !!process.env?.JZ_DBG_DSR
 const DBG_UNSWITCH = typeof process !== 'undefined' && (process.env?.JZ_DBG_UNSWITCH || null)
-import { T, isLeaf, stableNodeKey } from '../ast.js'
+import { T, isLeaf, stableNodeKey, walkAst } from '../ast.js'
 import { vectorizeLaneLocal, inlinePureCallExpr } from './vectorize.js'
 import { recursionUnroll } from './recurse.js'
 export { SIMD_PINNED, inlinePureFnsInFn } from './vectorize.js'
@@ -45,6 +45,16 @@ const NAN_BITS = nanPrefixHex()
 const NULL_BITS = atomNanHex(1)
 const UNDEF_BITS = atomNanHex(2)
 const FALSE_BITS = atomNanHex(4)
+
+const containsV128 = node => {
+  let found = false
+  walkAst(node, { enter: n => {
+    if (found || !Array.isArray(n)) return false
+    const op = n[0]
+    if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { found = true; return false }
+  } })
+  return found
+}
 
 // IR is usually a tree but optimizer nodes may share large subgraphs. Keep
 // feature probes linear rather than recursively revisiting a shared DAG.
@@ -554,16 +564,14 @@ function boolConvertToSelect(fn) {
   const params = new Set()
   for (let i = 2; i < fn.length; i++) if (Array.isArray(fn[i]) && fn[i][0] === 'param') params.add(fn[i][1])
   const defCount = new Map(), defIsCmp = new Map()
-  const scan = (n) => {
+  walkAst(fn, { enter: n => {
     if (!Array.isArray(n)) return
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
       defCount.set(n[1], (defCount.get(n[1]) || 0) + 1)
       const cmp = Array.isArray(n[2]) && BOOL_RESULT_OPS.has(n[2][0])
       defIsCmp.set(n[1], (defIsCmp.has(n[1]) ? defIsCmp.get(n[1]) : true) && cmp)
     }
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
-  scan(fn)
+  } })
   const boolLocals = new Set()
   for (const [name, c] of defCount) if (c === 1 && defIsCmp.get(name) && !params.has(name)) boolLocals.add(name)
 
@@ -828,14 +836,13 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
   for (let i = 2; i < bodyStart; i++)
     if (Array.isArray(fn[i]) && fn[i][0] === 'param' && typeof fn[i][1] === 'string') paramNames.add(fn[i][1])
   const singleDef = new Map(), defCount = new Map()
-  const scanDefs = (n) => {
+  const recordDef = n => {
     if (!Array.isArray(n)) return
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
-      defCount.set(n[1], (defCount.get(n[1]) || 0) + 1); singleDef.set(n[1], n[2]); scanDefs(n[2]); return
+      defCount.set(n[1], (defCount.get(n[1]) || 0) + 1); singleDef.set(n[1], n[2])
     }
-    for (let i = 1; i < n.length; i++) scanDefs(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordDef })
   for (const [k, c] of defCount) if (c > 1) singleDef.delete(k)   // multi-def → can't trust the resolution
   return (addr) => {
     const found = new Set(); const seen = new Set(); let bad = false
@@ -865,25 +872,26 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
 function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null }) {
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
   let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
-  const scan = (node) => {
+  const recordEffect = node => {
     if (!Array.isArray(node)) return
     const op = node[0]
     // A vectorized loop (lane/v128 ops) is already register-tight and hand-tuned;
     // extra scalar hoisting there only adds spill pressure — keep it conservative.
     if (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op)) hasV128 = true
-    if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-    if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]); for (let i = 2; i < node.length; i++) scan(node[i]); return }
-    if (op === 'call') { hasAnyCall = true; if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1]) && !isPureFnCall(node[1])) hasUnsafeCall = true; for (let i = 2; i < node.length; i++) scan(node[i]); return }
-    if (op === 'call_ref' || op === 'call_indirect') { hasAnyCall = hasUnsafeCall = true; for (let i = 1; i < node.length; i++) scan(node[i]); return }
+    if (op === 'local.set' || op === 'local.tee') { if (typeof node[1] === 'string') locals.add(node[1]) }
+    else if (op === 'global.set') { if (typeof node[1] === 'string') globals.add(node[1]) }
+    else if (op === 'call') {
+      hasAnyCall = true
+      if (!SAFE_OFFSET_CALLS.has(node[1]) && !READONLY_MEM_CALLS.has(node[1]) && !NON_MUTATING_CALLS.has(node[1]) && !isPureFnCall(node[1])) hasUnsafeCall = true
+    } else if (op === 'call_ref' || op === 'call_indirect') hasAnyCall = hasUnsafeCall = true
     if ((op === 'f64.store' || op === 'i32.store') && node.length >= 3) {
       hasDirectStore = true
       const a = node[1]
       if (Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string' && a[1].startsWith(CELL_PREFIX)) storedCells.add(a[1])
       if (distinctParams) { const sb = baseParamOf(a); if (sb) storedBases.add(sb) }   // alias: which buffers this loop writes
     }
-    for (let i = 1; i < node.length; i++) scan(node[i])
   }
-  for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+  for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: recordEffect })
 
   const pureGiven = (node, bound) => {
     if (!Array.isArray(node)) return true   // bare operand string/number
@@ -1195,12 +1203,11 @@ export function hoistInvariantLoop(fn) {
 
   // Cheap early-out: no loop ⇒ nothing to hoist (skip the buildRefcount walk).
   let hasLoop = false
-  const scanLoop = (n) => {
-    if (!Array.isArray(n) || hasLoop) return
-    if (n[0] === 'loop') { hasLoop = true; return }
-    for (let i = 1; i < n.length && !hasLoop; i++) scanLoop(n[i])
-  }
-  for (let i = bodyStart; i < fn.length && !hasLoop; i++) scanLoop(fn[i])
+  const findLoop = { enter: n => {
+    if (!Array.isArray(n) || hasLoop) return false
+    if (n[0] === 'loop') { hasLoop = true; return false }
+  } }
+  for (let i = bodyStart; i < fn.length && !hasLoop; i++) walkAst(fn[i], findLoop)
   if (!hasLoop) return
 
   // Result wasm type of a hoistable node (for the snap local decl). null ⇒ can't
@@ -1254,14 +1261,12 @@ export function hoistInvariantLoop(fn) {
   // post-watr optimize phases, leaving a non-contiguous $__li set; a lowest-free +
   // sequential-increment scheme would then re-issue an in-use id (Duplicate local).
   const usedLi = new Set()
-  const scanLi = (n) => {
+  walkAst(fn, { enter: n => {
     if (!Array.isArray(n)) return
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__li')) {
       const t = n[1].slice(5); if (/^\d+$/.test(t)) usedLi.add(+t)
     }
-    for (let i = 0; i < n.length; i++) scanLi(n[i])
-  }
-  scanLi(fn)
+  } })
   let snapCounter = 0
   const freshSnap = () => { while (usedLi.has(snapCounter)) snapCounter++; const id = snapCounter++; usedLi.add(id); return `$__li${id}` }
   const newLocals = []
@@ -1426,12 +1431,11 @@ export function narrowLoopBound(fn) {
 
   // Cheap early-out: no loop ⇒ nothing to narrow.
   let hasLoop = false
-  const scanLoop = (n) => {
-    if (!Array.isArray(n) || hasLoop) return
-    if (n[0] === 'loop') { hasLoop = true; return }
-    for (let i = 1; i < n.length && !hasLoop; i++) scanLoop(n[i])
-  }
-  for (let i = bodyStart; i < fn.length && !hasLoop; i++) scanLoop(fn[i])
+  const findLoop = { enter: n => {
+    if (!Array.isArray(n) || hasLoop) return false
+    if (n[0] === 'loop') { hasLoop = true; return false }
+  } }
+  for (let i = bodyStart; i < fn.length && !hasLoop; i++) walkAst(fn[i], findLoop)
   if (!hasLoop) return
 
   // Header types. Params are excluded as counters: their init is caller-supplied,
@@ -1475,14 +1479,12 @@ export function narrowLoopBound(fn) {
 
   // Collision-proof snap ids (same scheme as hoistInvariantLoop's $__li).
   const usedLb = new Set()
-  const scanLb = (n) => {
+  walkAst(fn, { enter: n => {
     if (!Array.isArray(n)) return
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__lb')) {
       const t = n[1].slice(5); if (/^\d+$/.test(t)) usedLb.add(+t)
     }
-    for (let i = 0; i < n.length; i++) scanLb(n[i])
-  }
-  scanLb(fn)
+  } })
   let lbCounter = 0
   const freshLb = () => { while (usedLb.has(lbCounter)) lbCounter++; const id = lbCounter++; usedLb.add(id); return `$__lb${id}` }
   const newLocals = []
@@ -1509,12 +1511,10 @@ export function narrowLoopBound(fn) {
 
     // Locals written anywhere in this loop (incl. nested) — bound invariance.
     const written = new Set()
-    const scanW = (n) => {
-      if (!Array.isArray(n)) return
-      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') written.add(n[1])
-      for (let i = 1; i < n.length; i++) scanW(n[i])
+    const recordWrite = n => {
+      if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') written.add(n[1])
     }
-    for (let i = 1; i < loopNode.length; i++) scanW(loopNode[i])
+    for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: recordWrite })
 
     const sites = []
     const collect = (node) => {
@@ -1795,6 +1795,19 @@ export function cseScalarLoad(fn) {
  *   - no read-local of `E` is written between the def and the use (incl. the use statement itself).
  * Anything it can't prove safe is left untouched.
  */
+const localRefTallies = (fn, bodyStart) => {
+  const setN = new Map(), getN = new Map(), teed = new Set()
+  const recordRef = n => {
+    if (!Array.isArray(n)) return
+    const op = n[0]
+    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
+    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
+    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
+  }
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordRef })
+  return { setN, getN, teed }
+}
+
 export function propagateSingleUse(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
@@ -1802,23 +1815,11 @@ export function propagateSingleUse(fn) {
 
   // Leave a vectorized function alone: it carries v128 lane sequences that are already register-tight,
   // and forward-substituting into them only adds pressure (mirrors hoistInvariantLoop's hasV128 gate).
-  let hasV128 = false
-  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
-  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
-  if (hasV128) return
+  if (containsV128(fn)) return
 
   // def/use tally over the whole body. A `local.tee` is both a read and a write — exclude any
   // tee'd local from candidacy rather than reason about it.
-  const setN = new Map(), getN = new Map(), teed = new Set()
-  const tally = (n) => {
-    if (!Array.isArray(n)) return
-    const op = n[0]
-    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
-    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
-    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
-    for (let i = 1; i < n.length; i++) tally(n[i])
-  }
-  for (let i = bodyStart; i < fn.length; i++) tally(fn[i])
+  const { setN, getN, teed } = localRefTallies(fn, bodyStart)
 
   const cand = new Set()
   for (const [name, c] of setN) if (c === 1 && getN.get(name) === 1 && !teed.has(name)) cand.add(name)
@@ -1923,21 +1924,9 @@ export function foldSetToTee(fn) {
   if (bodyStart < 0) return
 
   // v128 lane sequences are already register-tight — folding only adds pressure (mirrors propagateSingleUse).
-  let hasV128 = false
-  const scanV = (n) => { if (hasV128 || !Array.isArray(n)) return; const op = n[0]; if (typeof op === 'string' && (op.startsWith('v128.') || /^[if]\d+x\d+\./.test(op))) { hasV128 = true; return } for (let i = 1; i < n.length; i++) scanV(n[i]) }
-  for (let i = bodyStart; i < fn.length && !hasV128; i++) scanV(fn[i])
-  if (hasV128) return
+  if (containsV128(fn)) return
 
-  const setN = new Map(), getN = new Map(), teed = new Set()
-  const tally = (n) => {
-    if (!Array.isArray(n)) return
-    const op = n[0]
-    if (op === 'local.set' && typeof n[1] === 'string') setN.set(n[1], (setN.get(n[1]) || 0) + 1)
-    else if (op === 'local.tee' && typeof n[1] === 'string') teed.add(n[1])
-    else if (op === 'local.get' && typeof n[1] === 'string') getN.set(n[1], (getN.get(n[1]) || 0) + 1)
-    for (let i = 1; i < n.length; i++) tally(n[i])
-  }
-  for (let i = bodyStart; i < fn.length; i++) tally(fn[i])
+  const { setN, getN, teed } = localRefTallies(fn, bodyStart)
 
   const cand = new Set()
   for (const [name, c] of setN) if (c === 1 && (getN.get(name) || 0) >= 1 && !teed.has(name)) cand.add(name)
@@ -2049,18 +2038,12 @@ export function foldSetToTee(fn) {
  */
 export function collectVolatileGlobals(funcs) {
   const volatile = new Set()
-  const scan = (node) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === 'global.set') {
-      if (typeof node[1] === 'string') volatile.add(node[1])
-      for (let i = 2; i < node.length; i++) scan(node[i])
-      return
-    }
-    for (let i = 1; i < node.length; i++) scan(node[i])
+  const recordWrite = node => {
+    if (Array.isArray(node) && node[0] === 'global.set' && typeof node[1] === 'string') volatile.add(node[1])
   }
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || fn[1] === '$__start') continue
-    for (let i = 2; i < fn.length; i++) scan(fn[i])
+    for (let i = 2; i < fn.length; i++) walkAst(fn[i], { enter: recordWrite })
   }
   return volatile
 }
@@ -2082,14 +2065,13 @@ export function collectReachableGlobalWrites(funcs) {
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
     const w = new Set(), c = new Set()
-    const scan = (n) => {
+    const recordEffect = n => {
       if (!Array.isArray(n)) return
       if (n[0] === 'global.set' && typeof n[1] === 'string') { w.add(n[1]); all.add(n[1]) }
       else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') c.add(n[1])
       else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') indirect.add(fn[1])
-      for (let i = 1; i < n.length; i++) scan(n[i])
     }
-    for (let i = 2; i < fn.length; i++) scan(fn[i])
+    for (let i = 2; i < fn.length; i++) walkAst(fn[i], { enter: recordEffect })
     writes.set(fn[1], w); callees.set(fn[1], c)
   }
   // Worklist fixpoint over the call graph.
@@ -2213,14 +2195,12 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
 
   // Collision-proof snap ids (same scheme as hoistInvariantLoop's $__li).
   const used = new Set()
-  const scanIds = (n) => {
+  walkAst(fn, { enter: n => {
     if (!Array.isArray(n)) return
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__go')) {
       const t = n[1].slice(5); if (/^\d+$/.test(t)) used.add(+t)
     }
-    for (let i = 0; i < n.length; i++) scanIds(n[i])
-  }
-  scanIds(fn)
+  } })
   let idCounter = 0
   const freshId = () => { while (used.has(idCounter)) idCounter++; const id = idCounter++; used.add(id); return `$__go${id}` }
 
@@ -2290,12 +2270,9 @@ const irI32Const = n => {
 }
 const globalBaseAliases = fn => {
   const aliases = new Map(), assigns = [], poisoned = new Set()
-  const scan = n => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigns.push([n[1], n[2]])
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
-  scan(fn)
+  walkAst(fn, { enter: n => {
+    if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigns.push([n[1], n[2]])
+  } })
   const resolve = rhs => {
     // Snapshot shape emitted by hoistGlobalPtrOffset:
     // i32.wrap_i64(i64.and(i64.reinterpret_f64(global.get $G), MASK))
@@ -2381,7 +2358,7 @@ export function collectReachableMemoryWrites(funcs) {
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
     const aliases = globalBaseAliases(fn), writes = new Set(), callees = new Set()
-    const scan = n => {
+    walkAst(fn, { enter: n => {
       if (!Array.isArray(n)) return
       const op = n[0]
       if (typeof op === 'string' && (op.endsWith('.store') || op.includes('.store8') || op.includes('.store16') || op.includes('.store32'))) {
@@ -2393,9 +2370,7 @@ export function collectReachableMemoryWrites(funcs) {
         // through its JS closure and mutate arbitrary bytes: fail closed.
         if (names.has(n[1])) callees.add(n[1]); else writes.add('*')
       } else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') writes.add('*')
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
-    scan(fn)
+    } })
     direct.set(fn[1], writes); calls.set(fn[1], callees)
   }
   let changed = true
@@ -2562,8 +2537,9 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
   const nodeCount = n => Array.isArray(n) ? 1 + n.slice(1).reduce((s, x) => s + nodeCount(x), 0) : 0
   const safeRegion = region => {
     const defs = new Set(), refs = []
-    const scan = n => {
-      if (!Array.isArray(n)) return true
+    let safe = true
+    const inspect = n => {
+      if (!safe || !Array.isArray(n)) return false
       const op = n[0]
       if ((op === 'block' || op === 'loop') && typeof n[1] === 'string') defs.add(n[1])
       if ((op === 'br' || op === 'br_if') && typeof n[1] === 'string') refs.push(n[1])
@@ -2571,11 +2547,15 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
           op === 'return' || op === 'unreachable' || op === 'global.set' ||
           (typeof op === 'string' && (op === 'memory.grow' || op.startsWith('memory.') ||
             /^(?:i32|i64)\.(?:div|rem|trunc_f)/.test(op))) ||
-          (typeof op === 'string' && (op.includes('.store') || (op.includes('.load') && !safeLoad(n))))) return false
-      for (let i = 1; i < n.length; i++) if (!scan(n[i])) return false
-      return true
+          (typeof op === 'string' && (op.includes('.store') || (op.includes('.load') && !safeLoad(n))))) {
+        safe = false
+        return false
+      }
     }
-    for (const n of region) if (!scan(n)) return false
+    for (const n of region) {
+      walkAst(n, { enter: inspect })
+      if (!safe) return false
+    }
     return refs.every(label => defs.has(label))
   }
   const processLoop = loop => {
@@ -2686,21 +2666,16 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
   // other expression) poisons the name for this loop.
   const buildLocalGlobalAlias = (loopNode) => {
     const alias = new Map(), poisoned = new Set()
-    const scan = (n) => {
-      if (!Array.isArray(n)) return
-      if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
-        const name = n[1], rhs = n[2]
-        if (!poisoned.has(name)) {
-          const g = Array.isArray(rhs) && rhs[0] === 'global.get' && typeof rhs[1] === 'string' ? rhs[1] : null
-          if (g != null && (!alias.has(name) || alias.get(name) === g)) alias.set(name, g)
-          else { poisoned.add(name); alias.delete(name) }
-        }
-        scan(rhs)
-        return
+    const recordAlias = n => {
+      if (!Array.isArray(n) || (n[0] !== 'local.set' && n[0] !== 'local.tee') || typeof n[1] !== 'string') return
+      const name = n[1], rhs = n[2]
+      if (!poisoned.has(name)) {
+        const g = Array.isArray(rhs) && rhs[0] === 'global.get' && typeof rhs[1] === 'string' ? rhs[1] : null
+        if (g != null && (!alias.has(name) || alias.get(name) === g)) alias.set(name, g)
+        else { poisoned.add(name); alias.delete(name) }
       }
-      for (let i = 1; i < n.length; i++) scan(n[i])
     }
-    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+    for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: recordAlias })
     return alias
   }
 
@@ -2730,14 +2705,12 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
   // Collision-proof snap ids — shared `$__goN` numbering space with
   // hoistGlobalPtrOffset so re-running either pass never collides.
   const used = new Set()
-  const scanIds = (n) => {
+  walkAst(fn, { enter: n => {
     if (!Array.isArray(n)) return
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith('$__go')) {
       const t = n[1].slice(5); if (/^\d+$/.test(t)) used.add(+t)
     }
-    for (let i = 0; i < n.length; i++) scanIds(n[i])
-  }
-  scanIds(fn)
+  } })
   let idCounter = 0
   const freshId = () => { while (used.has(idCounter)) idCounter++; const id = idCounter++; used.add(id); return `$__go${id}` }
 
@@ -2753,21 +2726,20 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
     const alias = buildLocalGlobalAlias(loopNode)
     const sites = new Map(), ownWrites = new Set(), ownCallees = new Set(), ptrOffsetForm = new Set()
     let hasIndirect = false
-    const scan = (n) => {
+    const inspect = n => {
       if (!Array.isArray(n)) return
       const g = siteGlobal(n, alias)
       if (g != null) {
         let arr = sites.get(g); if (!arr) { arr = []; sites.set(g, arr) }
         arr.push(n)
         if (n[0] === 'call') ptrOffsetForm.add(g)
-        return
+        return false
       }
       if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
       else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
       else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
-      for (let i = 1; i < n.length; i++) scan(n[i])
     }
-    for (let i = 1; i < loopNode.length; i++) scan(loopNode[i])
+    for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: inspect })
 
     const preheader = []
     if (sites.size && !hasIndirect) {
@@ -2857,24 +2829,19 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
   const written = new Set(), callees = new Set()
   let hasCall = false, hasIndirect = false
 
-  const scan = (node) => {
+  const inspect = node => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === 'global.get' && typeof node[1] === 'string') {
       getCounts.set(node[1], (getCounts.get(node[1]) || 0) + 1)
-      return  // don't recurse into the name string
+      return false
     }
-    if (op === 'global.set') {
-      if (typeof node[1] === 'string') written.add(node[1])
-      if (node[2]) scan(node[2])
-      return
-    }
+    if (op === 'global.set' && typeof node[1] === 'string') written.add(node[1])
     if (op === 'call' || op === 'return_call') { hasCall = true; if (typeof node[1] === 'string') callees.add(node[1]) }
     else if (op === 'call_indirect' || op === 'call_ref' || op === 'return_call_indirect') { hasCall = true; hasIndirect = true }
-    for (let i = 1; i < node.length; i++) scan(node[i])
   }
 
-  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: inspect })
 
   // Build replacement map: globalName → { localName, type } for globals read ≥ 3 times, not written.
   // Threshold 3 avoids size regressions in tiny functions where local setup cost dominates.
@@ -3001,20 +2968,15 @@ export function hoistConstantPool(funcs, addGlobal) {
   // kernel's dynamic dispatch confuses it). key → exact original c[1] (number, or source string).
   const exactVal = new Map()
   const sites = []  // { parent, idx, key }
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 0; i < node.length; i++) {
-      const c = node[i]
-      if (Array.isArray(c) && c[0] === 'f64.const' && (typeof c[1] === 'number' || typeof c[1] === 'string')) {
-        const k = typeof c[1] === 'number' ? f64BitsKey(c[1]) : `s:${c[1]}`
-        counts.set(k, (counts.get(k) || 0) + 1)
-        if (!exactVal.has(k)) exactVal.set(k, c[1])
-        sites.push({ parent: node, idx: i, key: k })
-      }
-      walk(c)
-    }
+  const collectConst = (node, parent, idx) => {
+    if (!parent || !Array.isArray(node) || node[0] !== 'f64.const' ||
+        (typeof node[1] !== 'number' && typeof node[1] !== 'string')) return
+    const k = typeof node[1] === 'number' ? f64BitsKey(node[1]) : `s:${node[1]}`
+    counts.set(k, (counts.get(k) || 0) + 1)
+    if (!exactVal.has(k)) exactVal.set(k, node[1])
+    sites.push({ parent, idx, key: k })
   }
-  for (let i = 0; i < funcs.length; i++) walk(funcs[i])
+  for (let i = 0; i < funcs.length; i++) walkAst(funcs[i], { enter: collectConst })
 
   const hoist = new Map()
   const sorted = [...counts].filter(([, n]) => n >= MIN_USES).sort((a, b) => b[1] - a[1])
@@ -3097,22 +3059,19 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   // so reverse iteration in pass 3 yields leaf-first rewrite order (inner before outer).
   const counts = new Map()  // 'target##sig' → count
   const sites = []  // { parent, idx, fullKey, parts }
-  const walk = (node, parent, idx) => {
-    if (!Array.isArray(node)) return
-    if (parent && node[0] === 'call' && typeof node[1] === 'string' && SPECS[node[1]]) {
-      const spec = SPECS[node[1]]
-      if (node.length === 2 + spec.params.length) {
-        const k = sigKey(node, spec.params.length)
-        if (k) {
-          const fullKey = node[1] + '##' + k
-          counts.set(fullKey, (counts.get(fullKey) || 0) + 1)
-          sites.push({ parent, idx, fullKey, parts: k.split('|') })
-        }
+  const collectCall = (node, parent, idx) => {
+    if (!parent || !Array.isArray(node) || node[0] !== 'call' || typeof node[1] !== 'string' || !SPECS[node[1]]) return
+    const spec = SPECS[node[1]]
+    if (node.length === 2 + spec.params.length) {
+      const k = sigKey(node, spec.params.length)
+      if (k) {
+        const fullKey = node[1] + '##' + k
+        counts.set(fullKey, (counts.get(fullKey) || 0) + 1)
+        sites.push({ parent, idx, fullKey, parts: k.split('|') })
       }
     }
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
-  for (let i = 0; i < funcs.length; i++) walk(funcs[i], null, 0)
+  for (let i = 0; i < funcs.length; i++) walkAst(funcs[i], { enter: collectCall })
 
   // Pass 2: for each eligible (target, sig), emit helper.
   const specialized = new Set()
@@ -3314,15 +3273,13 @@ export function foldStrDispatchF64(fn) {
   let changed = true
   while (changed) {
     changed = false
-    const scan = (node) => {
-      if (!Array.isArray(node)) return
-      if ((node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string' &&
+    const markRaw = node => {
+      if (Array.isArray(node) && (node[0] === 'local.set' || node[0] === 'local.tee') && typeof node[1] === 'string' &&
           localTypeMap.get(node[1]) === 'f64' && !rawF64.has(node[1]) && isRawF64Expr(node[2])) {
         rawF64.add(node[1]); changed = true
       }
-      for (let i = 1; i < node.length; i++) scan(node[i])
     }
-    for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+    for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: markRaw })
   }
 
   // Pattern-match and fold in-place (bottom-up recursive walk so nested blocks resolve).
@@ -3637,16 +3594,12 @@ export function unswitchTypedParamLoop(fn) {
     parent[idx] = ['if', gate, ['then', baseSnap, ...hoistedDrops, fastLoop], ['else', blockNode]]
   }
 
-  function walk(node, parent, idx) {
-    if (!Array.isArray(node)) return
-    if (node[0] === 'block') {
-      const before = parent[idx]
-      processBlock(node, parent, idx)
-      if (parent[idx] !== before) return
-    }
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
-  }
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+  walkAst(fn, { enter: (node, parent, idx) => {
+    if (!Array.isArray(node) || !parent || node[0] !== 'block') return
+    const before = parent[idx]
+    processBlock(node, parent, idx)
+    if (parent[idx] !== before) return false
+  } })
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
 
@@ -3694,23 +3647,19 @@ function unswitchStringRepLoop(fn) {
     if (match(n) === flag) return choose(n[arm], flag, arm)
     return n.map(x => choose(x, flag, arm))
   }
-  const visit = (n, parent, idx) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === 'loop' && parent && size(n) <= 250 &&
-        !n.some(x => Array.isArray(x) && (x[0] === 'result' || x[0] === 'param'))) {
-      const flags = []
-      collect(n, flags)
-      const flag = flags[0]
-      if (flag && flags.every(x => x === flag) && !hasCallOrWrite(n, flag)) {
-        parent[idx] = ['if', ['local.get', flag],
-          ['then', choose(cloneIR(n), flag, 1)],
-          ['else', choose(cloneIR(n), flag, 2)]]
-        return
-      }
+  walkAst(fn, { enter: (n, parent, idx) => {
+    if (!Array.isArray(n) || n[0] !== 'loop' || !parent || size(n) > 250 ||
+        n.some(x => Array.isArray(x) && (x[0] === 'result' || x[0] === 'param'))) return
+    const flags = []
+    collect(n, flags)
+    const flag = flags[0]
+    if (flag && flags.every(x => x === flag) && !hasCallOrWrite(n, flag)) {
+      parent[idx] = ['if', ['local.get', flag],
+        ['then', choose(cloneIR(n), flag, 1)],
+        ['else', choose(cloneIR(n), flag, 2)]]
+      return false
     }
-    for (let i = 1; i < n.length; i++) visit(n[i], n, i)
-  }
-  visit(fn, null, -1)
+  } })
 }
 
 /**
@@ -4019,17 +3968,16 @@ const boolSimp = (n) => {
   }
 }
 function simplifyBoolContexts(fn) {
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 1; i < node.length; i++) walk(node[i])
-    const op = node[0]
+  const nodes = []
+  const bodyStart = findBodyStart(fn)
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: node => { if (Array.isArray(node)) nodes.push(node) } })
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i], op = node[0]
     if (op === 'br_if' && node.length === 3) node[2] = boolSimp(node[2])
     else if (op === 'i32.eqz' && node.length === 2) node[1] = boolSimp(node[1])
     else if (op === 'if') { const ci = (Array.isArray(node[1]) && node[1][0] === 'result') ? 2 : 1; if (Array.isArray(node[ci])) node[ci] = boolSimp(node[ci]) }
     else if (op === 'select' && node.length === 4 && Array.isArray(node[3])) node[3] = boolSimp(node[3])
   }
-  const bodyStart = findBodyStart(fn)
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i])
 }
 
 /**
@@ -4231,12 +4179,12 @@ function fusedRewrite(fn, counts) {
         const d = fn[i]
         if (Array.isArray(d) && d[0] === 'param' && typeof d[1] === 'string') defCnt.set(d[1], 2)
       }
-      const scanDefs = (n) => {
-        if (!Array.isArray(n)) return
-        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') { defCnt.set(n[1], (defCnt.get(n[1]) || 0) + 1); defVal.set(n[1], n[2]) }
-        for (let i = 1; i < n.length; i++) scanDefs(n[i])
+      const recordDef = n => {
+        if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
+          defCnt.set(n[1], (defCnt.get(n[1]) || 0) + 1); defVal.set(n[1], n[2])
+        }
       }
-      for (let i = bodyStart; i < fn.length; i++) scanDefs(fn[i])
+      for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordDef })
       for (const [k, c] of defCnt) if (c > 1) defVal.delete(k)
     }
     return defVal.get(name) || null
@@ -4640,18 +4588,15 @@ export function treeshake(funcSections, allModuleNodes, opts) {
   // Counting here is free — we already visit every node in these funcs.
   const callCount = new Map()
   const CALL_OPS = new Set(['call', 'return_call', 'ref.func'])
-  const visitCalls = (node) => {
-    if (!Array.isArray(node)) return
-    if (CALL_OPS.has(node[0]) && typeof node[1] === 'string') {
-      addRoot(node[1])
-      if (node[0] === 'call' || node[0] === 'return_call')
-        callCount.set(node[1], (callCount.get(node[1]) || 0) + 1)
-    }
-    for (const c of node) visitCalls(c)
+  const recordCall = node => {
+    if (!Array.isArray(node) || !CALL_OPS.has(node[0]) || typeof node[1] !== 'string') return
+    addRoot(node[1])
+    if (node[0] === 'call' || node[0] === 'return_call')
+      callCount.set(node[1], (callCount.get(node[1]) || 0) + 1)
   }
   // Anonymous funcs can't be pruned (no name) — walk them to seed roots.
-  for (const fn of allFuncs) if (typeof fn[1] !== 'string') visitCalls(fn)
-  while (stack.length) visitCalls(funcByName.get(stack.pop()))
+  for (const fn of allFuncs) if (typeof fn[1] !== 'string') walkAst(fn, { enter: recordCall })
+  while (stack.length) walkAst(funcByName.get(stack.pop()), { enter: recordCall })
 
   // Compiler-internal funcs (stdlib helpers, allocator wrappers — everything not in the
   // user's own `ctx.funcs.list`) carry no source meaning, so an unreachable one is reclaimed
@@ -4751,12 +4696,9 @@ export function devirtSchemaReads(fn) {
   // every read on that receiver drops its per-read __ptr_type guard + aux
   // extract and br_tables on the cached local (-1 wraps u32-huge → default arm).
   const assigned = new Set()
-  const scanAssigns = (n) => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigned.add(n[1])
-    for (let k = 1; k < n.length; k++) scanAssigns(n[k])
-  }
-  scanAssigns(fn)
+  walkAst(fn, { enter: n => {
+    if (Array.isArray(n) && (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') assigned.add(n[1])
+  } })
   // receiver expr → { name, bits } for a bare never-written local (f64 local
   // wrapped in reinterpret, or an already-i64 local), else null (keep the
   // per-read spill+guard path)
@@ -5103,12 +5045,7 @@ export function foldStaticConstArrayReads(fn) {
     }
     subLen(node)
   }
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
-    if (n.saArr != null) rewrite(n)
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(fn)
+  walkAst(fn, { enter: n => { if (Array.isArray(n) && n.saArr != null) rewrite(n) } })
 }
 
 /** `constOps[idx](args)` — data-driven dispatch through a module-const array of
@@ -5205,16 +5142,15 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       if (!Array.isArray(fnNode)) return false
       const exits = []
       let last = null
-      const walkR = (n) => {
+      const returns = { enter: n => {
         if (!Array.isArray(n)) return
-        if (n[0] === 'return') { exits.push(n.length === 2 ? n[1] : null); return }
-        for (let k = 1; k < n.length; k++) walkR(n[k])
-      }
+        if (n[0] === 'return') { exits.push(n.length === 2 ? n[1] : null); return false }
+      } }
       for (let k = 2; k < fnNode.length; k++) {
         const s = fnNode[k]
         if (!Array.isArray(s) || s[0] === 'param' || s[0] === 'result' || s[0] === 'local' || s[0] === 'export' || s[0] === 'type') continue
         last = s
-        walkR(s)
+        walkAst(s, returns)
       }
       if (last && last[0] !== 'return') exits.push(last)
       return exits.length > 0 && exits.every(e => Array.isArray(e) && e[0] === 'f64.convert_i32_s')
@@ -5297,13 +5233,11 @@ export function sortLocalsByUse(fn, precomputedCounts) {
   let counts = precomputedCounts
   if (!counts) {
     counts = new Map()
-    const visit = (n) => {
-      if (!Array.isArray(n)) return
-      if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
+    const recordRef = n => {
+      if (Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
         counts.set(n[1], (counts.get(n[1]) || 0) + 1)
-      for (const c of n) visit(c)
     }
-    for (let i = totalDecls + 2; i < fn.length; i++) visit(fn[i])
+    for (let i = totalDecls + 2; i < fn.length; i++) walkAst(fn[i], { enter: recordRef })
   }
   const locals = localIdxs.map(i => fn[i])
   const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
@@ -5366,7 +5300,7 @@ export function arenaRewindModule(fns) {
       if (i >= bodyStart) break
     }
 
-    const scan = node => {
+    const recordEffect = node => {
       if (!Array.isArray(node)) return
       const op = node[0]
       if (op === 'global.set') hasGlobalSet = true
@@ -5378,9 +5312,8 @@ export function arenaRewindModule(fns) {
         if (callee === '$__alloc' || callee === '$__alloc_hdr' || callee === '$__alloc_hdr_n') hasAlloc = true
         if (typeof callee === 'string' && !BUILTIN_SAFE.has(callee)) calls.add(callee)
       }
-      for (let i = 1; i < node.length; i++) scan(node[i])
     }
-    for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+    for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: recordEffect })
 
     fnMap.set(name, {
       fn, results,
