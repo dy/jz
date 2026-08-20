@@ -1418,7 +1418,23 @@ export function stripDeadLazyTables(sec) {
       if (Array.isArray(c) && c[0] === 'i32.const') c[1] = off
     }
   }
-  dataReset(dataString().slice(0, spans[0].start))
+  // spans[0].start is ALREADY the exact byte length of the kept prefix — it was
+  // captured by injectTable's own `dataLen()` read at push time. dataReset's
+  // SECOND arg passes that known-good number straight through
+  // instead of re-deriving it from the freshly-sliced string's OWN `.length`:
+  // observed unreliable under self-compile specifically here — a `.slice()`
+  // result taken from this same large (thousands of bytes), binary-content,
+  // heap-allocated compiler-internal string (`dataString()`, the accumulated
+  // static-data segment) read back `.length === 0` while still testing
+  // truthy (a genuine non-empty string), a self-hosted-only inconsistency
+  // reproduced with debug instrumentation (kernel: dataLen collapsed to 0
+  // pre-realign; native: correct). Root-caused to the length-recompute step,
+  // not to the byte content itself — spans[0].start was bit-identical
+  // native/kernel throughout. dataString()'s own second call inside dataReset
+  // still re-derives the STRING (cheap: dataParts is already collapsed to one
+  // element by the first call above), only the LENGTH re-derivation is
+  // skipped now that the caller already has it.
+  dataReset(dataString().slice(0, spans[0].start), spans[0].start)
   for (const s of spans) {
     if (!live.has(s.fn)) { setInit(s.global, 0); continue }
     dataAlign(8)
@@ -1482,7 +1498,11 @@ export function stripStaticDataPrefix(sec) {
     if (s.start >= prefix) s.start -= prefix
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
-  dataReset(s)
+  // Explicit length, same rationale as stripDeadLazyTables's own dataReset call
+  // above: the caller already knows the exact byte count
+  // (`buf.length - prefix`, arithmetic on a plain i32 loop bound) — pass it
+  // through instead of re-trusting `s`'s own `.length` on this build-up path.
+  dataReset(s, buf.length - prefix)
   if (ctx.runtime.staticPtrSlots) ctx.runtime.staticPtrSlots = ctx.runtime.staticPtrSlots
     .filter(o => o >= prefix).map(o => o - prefix)
   const shift = (node) => {

@@ -47,11 +47,25 @@ export const dataString = () => {
   return r.dataParts.length ? r.dataParts[0] : ''
 }
 
-/** Replace the whole segment (assemble-time surgery: strip/reorder spans). */
-export const dataReset = (s) => {
+/** Replace the whole segment (assemble-time surgery: strip/reorder spans).
+ *  `len`, when given, is the caller's OWN already-known correct byte count of
+ *  `s` — used verbatim for both the emptiness check and `dataLen`, instead of
+ *  re-deriving it from `s`'s own `.length`/truthiness. Both call sites
+ *  (wat/assemble.js's stripDeadLazyTables and stripStaticDataPrefix) build `s`
+ *  by slicing or concatenating the large (thousands of bytes, arbitrary
+ *  binary content) self-hosted compiler-internal data-segment string down to
+ *  a byte count they already computed arithmetically — re-deriving that same
+ *  number from the RESULT's own `.length` was observed unreliable under
+ *  self-compile specifically on this string shape (a `.slice()` result read
+ *  back `.length === 0` while still testing truthy — a genuine non-empty
+ *  string, confirmed by an independently-tracked byte count staying
+ *  bit-identical native/kernel throughout; native/self-compile forensics,
+ *  kernel-only data-segment truncation). Defaults to `s.length` so any future
+ *  caller that omits `len` keeps the old (re-derive from `s`) behavior. */
+export const dataReset = (s, len = s.length) => {
   const r = ctx.runtime
-  r.dataParts = s ? [s] : []
-  r.dataLen = s ? s.length : 0
+  r.dataParts = len ? [s] : []
+  r.dataLen = len
 }
 
 /** Append `slots` ('0x'+16-hex bit strings) 8-byte aligned, return the raw
