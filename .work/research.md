@@ -23265,3 +23265,34 @@ replay. Also banked for the retirement/design docs: a SELF-COMPILE KERNEL
 SHOULD BE DETERMINISTIC — the profiler's Date.now must be stubbed or
 excluded from the self-graph (engine-level fix: front.js/self.js should
 compile timePhase to a no-op or counter in the kernel profile).
+
+## §defect 2 — ARC CLOSED; env.now attribution RETRACTED (2026-08-20)
+
+Deterministic-now triple run: 3/3 identical (iterate-nullish, 966-987s,
+byteLength exact) — reproducibility for the canonical failure is
+demonstrated 5/6 across all runs of this binary. CORRECTION to the prior
+entry: the now-stub was NEVER CALLED (fake-now-final: 0 across three full
+compiles) — timePhase is `profiler?.time ? ... : fn()` and the self-
+compile runs profiler-less, so env.now is a structurally-present but DEAD
+import on this path; it does NOT explain the single OOB outlier, which
+stays honestly unattributed (1/6, not chased further this arc). The
+kernel-determinism engine fix (strip dead env.now / profiler plumbing
+from the self-graph) remains banked as hygiene, not as the explanation.
+
+ARC SUMMARY (the honest state, complete):
+- POSITIVE: canonical failure fully characterized — site 1109
+  (`cb.params` in seedClosureFrame), value = bit-exact canonical UNDEF
+  (0x7ff8000200000000), byteLength 3,207,987,200 every run, wall ~970s,
+  reproducible. `params` is written unconditionally at construction; cb
+  is a conditional-spread HASH; therefore a once-present key reads as
+  absent — key-loss phenomenology.
+- ELIMINATED (each with method): schema_tbl staleness, relocate_props
+  revisit + copy/re-key completeness (4 hazards), regionArmArray revisit,
+  regionArmObject (by construction), falsy-spread handling, alloc guard
+  @118.4M calls, root-set configs ×4, rank-2 aliasing/rehash census,
+  NESTED ROUNDS (site-3 disable, byteLength-invariant).
+- OPEN: the actual mechanism by which the 'params' entry goes missing
+  from cb's backing HASH — upstream of every relocation mechanic probed.
+  Next tool: with reproducibility established, a watchpoint-style probe
+  on cb's hash slot across rounds (find the exact round/operation where
+  the entry disappears) becomes an exact-replay bisection, not sampling.
