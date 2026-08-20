@@ -123,6 +123,26 @@ export function resolveSelfCompileBuild({
       throw new Error(`resolveSelfCompileBuild: DBG_INVARIANTS specialization left ${remaining} references (expected only ctx.js's export)`)
   }
 
+  // ── snapshot.js host-capability specialization — same build-time-literal
+  // technique as DBG_INVARIANTS. `WebAssembly` is a modeled HOST global
+  // (emit.js HOST_GLOBALS), so `typeof WebAssembly === 'undefined'` stays a
+  // RUNTIME probe in the kernel — correct in general (a host could inject it),
+  // but snapshotInit's hermetic-instantiation tail is host-API-only machinery
+  // the kernel can never run, and its `new WebAssembly.Global(..., 0n)` is a
+  // BigInt crossing an unknown host boundary — exactly the flow class the
+  // strict BigInt contract refuses. Fold the guard true for the SELF-COMPILE
+  // graph; prepare's constant-if fold + unreachable-tail pruning then drop the
+  // whole tail before analysis. Kernel behavior: snapshotInit declines (no
+  // snapshot optimization for programs the kernel compiles) — same result the
+  // runtime probe would produce, decided at build time.
+  const SNAP_PATH = Object.keys(graph.modules).find(p => p.endsWith('/src/snapshot.js'))
+  if (SNAP_PATH) {
+    const snapNeedle = "if (typeof WebAssembly === 'undefined') return false"
+    if (!graph.modules[SNAP_PATH].includes(snapNeedle))
+      throw new Error('resolveSelfCompileBuild: snapshot.js host guard shape changed — update this specialization to match')
+    graph.modules[SNAP_PATH] = graph.modules[SNAP_PATH].replace(snapNeedle, 'if (true) return false')
+  }
+
   // ── REGION-ARENA × inlinePtrOffsetFast (.work/research.md §Region arena,
   // ROOT-CAUSE ATTEMPT 2026-08-11 — confirmed by ablation, 7/7 banked fuzz
   // findings + both minimal repros clean ×3 reps with this flag off, kernel-

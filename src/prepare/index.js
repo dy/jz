@@ -360,6 +360,58 @@ const dropDeadPostfix = s => {
   }
   return s
 }
+// Constant-condition `if` at STATEMENT level folds to its live arm (dual of the
+// '?:' emitter's literal-condition fold, but at prep — the proper level: the dead
+// arm's code never reaches analysis/emission at all). `litTruth` is deliberately
+// literal-only, so a host-capability probe (`typeof WebAssembly === 'undefined'`,
+// folded by resolveTypeof under spec §13.5.3) is the canonical trigger.
+const foldConstIf = (s) => {
+  if (!Array.isArray(s) || s[0] !== 'if') return s
+  const t = litTruth(s[1])
+  return t === true ? s[2] : t === false ? (s[3] ?? null) : s
+}
+// Unreachable-tail pruning: statements after an unconditional `return`/`throw`
+// never execute — without this, a folded host-capability early-return
+// (`if (typeof WebAssembly === 'undefined') return false` → `return false`)
+// leaves the whole host-only remainder of the function flowing through
+// analysis + emission (snapshot.js's hermetic-instantiation block was the live
+// case: its `new WebAssembly.Global(..., 0n)` tripped the strict BigInt
+// boundary check from provably-dead code). Hoisting safety: `function`
+// declarations don't survive to this IR (jzify lowers them to bindings), and a
+// live-prefix closure referencing a tail-declared binding is permanently-TDZ
+// code — but rather than silently change that to a compile error, BAIL (keep
+// the tail) whenever the live prefix references any name the tail declares.
+const declNamesOf = (s, out) => {
+  if (!Array.isArray(s)) return
+  if ((s[0] === 'let' || s[0] === 'const') && s.length) {
+    for (let i = 1; i < s.length; i++) {
+      const d = s[i]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') out.add(d[1])
+      else if (typeof d === 'string') out.add(d)
+    }
+  }
+}
+const referencesAny = (node, names) => {
+  if (typeof node === 'string') return names.has(node)
+  if (!Array.isArray(node)) return false
+  for (let i = 1; i < node.length; i++) if (referencesAny(node[i], names)) return true
+  return false
+}
+const truncateUnreachable = (list) => {
+  for (let i = 0; i < list.length - 1; i++) {
+    const s = list[i]
+    if (Array.isArray(s) && (s[0] === 'return' || s[0] === 'throw')) {
+      const tail = list.slice(i + 1)
+      const declared = new Set()
+      for (const t of tail) declNamesOf(t, declared)
+      if (declared.size) {
+        for (let k = 0; k <= i; k++) if (referencesAny(list[k], declared)) return list
+      }
+      return list.slice(0, i + 1)
+    }
+  }
+  return list
+}
 const stringValue = node => Array.isArray(node) && node[0] == null && typeof node[1] === 'string' ? node[1] : null
 const MUTATING_ARRAY_METHODS = new Set(['copyWithin', 'fill', 'pop', 'push', 'reverse', 'shift', 'sort', 'splice', 'unshift'])
 
@@ -2793,7 +2845,7 @@ const handlers = {
   // Statements
   ';': (...stmts) => {
     preRegisterBuiltinAliases(stmts)
-    return [';', ...stmts.map(prep).filter(x => x != null).map(dropDeadPostfix)]
+    return [';', ...truncateUnreachable(stmts.map(prep).filter(x => x != null).map(dropDeadPostfix).map(foldConstIf).filter(x => x != null))]
   },
   'let': (...inits) => prepDecl('let', ...inits),
   'const': (...inits) => prepDecl('const', ...inits),

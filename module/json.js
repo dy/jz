@@ -1278,7 +1278,13 @@ export default (ctx) => {
       // .work/todo.md "JSON SHAPED-PARSER 'Bad int 9.067910317e-315'"). Avoiding
       // BigInt entirely for the ≤4-byte packer sidesteps that arm rather than
       // fixing it (the general fix is a separate, larger architectural task).
-      const le = (arr) => arr.reduce((a, b, k) => a | (BigInt(b) << BigInt(8 * k)), 0n)
+      // Plain loop, NOT `arr.reduce((a, b, k) => …, 0n)`: a reduce routes the 0n
+      // seed and the bigint accumulator through the dynamic closure ABI's
+      // kind-erased f64 arg slots — the exact "collection/closure-boundary"
+      // flow class the strict BigInt contract refuses (and the boxed carrier
+      // existed to paper over). The loop keeps `a` a provable single-kind
+      // BIGINT local for its whole lifetime; identical left-to-right fold.
+      const le = (arr) => { let a = 0n; for (let k = 0; k < arr.length; k++) a = a | (BigInt(arr[k]) << BigInt(8 * k)); return a }
       const leNum = (arr) => arr.reduce((a, b, k) => a | (b << (8 * k)), 0)
       const at = (i) => (i ? `offset=${i} ` : '') + '(local.get $kp)'
       const out = [`(local.set $kp (i32.add (global.get $__jpstr) (global.get $__jppos)))`]

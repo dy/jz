@@ -241,11 +241,17 @@ export const BIGINT_SENTINEL_KIND = {
  *  all-absent case (ToInt32(NaN)=0 collides with genuine BigInt 0n) — a
  *  documented, accepted gap (kind.js censusBigintSentinelKind), not encoded
  *  here. */
+// Values are canonical '0x'+16-hex STRINGS, not BigInts — the SELF-HOST
+// CONTRACT (ir.js): a BigInt crossing an object slot is kind-erased in the
+// kernel, and under the strict contract that store refuses outright. The one
+// consumer (interop.js decodeBigintSentinel, host-side) wraps with BigInt()
+// at its compare. i64Hex's two's-complement halves make the negative literal
+// exact.
 export const BIGINT_SENTINEL_BITS = {
-  [BIGINT_SENTINEL_KIND.BARE]: BigInt(ATOM_HI[ATOM.UNDEF]) << 32n,
-  [BIGINT_SENTINEL_KIND.UNARY_NEG]: LAYOUT.NAN_PREFIX_BITS,
-  [BIGINT_SENTINEL_KIND.UNARY_NOT]: -4616189618054758400n,
-  [BIGINT_SENTINEL_KIND.JOINT_BINARY]: LAYOUT.NAN_PREFIX_BITS,
+  [BIGINT_SENTINEL_KIND.BARE]: i64Hex(BigInt(ATOM_HI[ATOM.UNDEF]) << 32n),
+  [BIGINT_SENTINEL_KIND.UNARY_NEG]: i64Hex(LAYOUT.NAN_PREFIX_BITS),
+  [BIGINT_SENTINEL_KIND.UNARY_NOT]: i64Hex(-4616189618054758400n),
+  [BIGINT_SENTINEL_KIND.JOINT_BINARY]: i64Hex(LAYOUT.NAN_PREFIX_BITS),
 }
 
 /** Per-kind JS value interop.js's decodeBigintSentinel returns instead of a

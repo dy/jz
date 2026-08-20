@@ -172,7 +172,11 @@ export const coerce = v => v === null ? NULL_NAN : v === undefined ? UNDEF_NAN :
 // pattern collides with a genuine BigInt 0n, the same permanent, accepted
 // single-point-collision class the raw-i64-carrier doctrine already tolerates
 // elsewhere — left as a documented narrow gap, not fixed here.
-const decodeBigintSentinel = (ret, s) => ret === BIGINT_SENTINEL_BITS[s] ? BIGINT_SENTINEL_VALUE[s] : ret
+// BIGINT_SENTINEL_BITS values are '0x' hex STRINGS (layout.js — kernel slot
+// contract); BigInt() the entry at the compare. Absent kind → undefined →
+// BigInt(undefined) would throw, so guard presence first (kind 4's absence is
+// load-bearing, see layout.js).
+const decodeBigintSentinel = (ret, s) => BIGINT_SENTINEL_BITS[s] !== undefined && ret === BigInt(BIGINT_SENTINEL_BITS[s]) ? BIGINT_SENTINEL_VALUE[s] : ret
 
 // SSO-encode a string ≤6 ASCII chars to a NaN-box BigInt (no heap needed).
 // Mirrors mem.String's SSO branch. Used when marshaling a string into an i64-carrier
