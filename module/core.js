@@ -2272,6 +2272,59 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // (OBJECT_SCHEMA_HI_MASK / objectSchemaGuardHex now live in layout.js — shared
   // with src/ir.js's Error-schema toStrI64 guard, same encoding, one definition.)
 
+  /** Devirtualization-guard eligibility for emitSchemaSlotGuarded's `va`
+   *  receiver — the STRUCTURAL precondition behind the historical incidental
+   *  `va.type === 'f64'` call-site check (bc48ac02), enumerated once and
+   *  enforced explicitly: both call sites below consult it before even
+   *  building a guard, and emitSchemaSlotGuarded itself asserts it at entry
+   *  (.work/research.md §lane-4 re-land spec) so a future third call site
+   *  can't silently reopen the gap. `va` must be a genuine per-instance
+   *  NaN-boxed carrier — the ONE representation `ctx.schema.guardedSlotOf`'s
+   *  mask compare and the write-side slot census (module/object.js's
+   *  literal/spread construction) were proven against:
+   *
+   *   - va.type !== 'f64': anything not already a plain boxed f64 value.
+   *     emitSchemaSlotGuarded's own `va?.type ? va : typed(va, 'f64')` trusts
+   *     an already-tagged node's `.type` verbatim, so an untagged node whose
+   *     real wasm-level type is i32 gets force-relabeled 'f64' and reaches a
+   *     bit-preserving `i64.reinterpret_f64` over what is actually an
+   *     i32 operand — invalid wasm. Found empirically self-compiling jz's
+   *     own ~50K-line source (npm run build; bc48ac02) — the two bench
+   *     specimens and the unit/differential suite never produced the shape.
+   *   - va.ptrKind != null: an unboxed pointer-narrowed local/global/element
+   *     cell (i32-typed — ir.js's boxPtrIR documents "f64-typed nodes are
+   *     never ptrKind-tagged", which already implies this from the va.type
+   *     check above; kept explicit so this contract does not silently ride
+   *     on that OTHER invariant holding forever). The one instance of this
+   *     shape that IS soundly devirtualizable — a narrowed pointer whose
+   *     `.ptrAux` names the exact schema — already resolves BETTER, one
+   *     level up in emitPropAccess (the `va.ptrAux != null` short-circuit
+   *     straight into emitSchemaSlotRead: zero runtime check, vs. this
+   *     guard's one compare). Any ptrKind receiver that still reaches THIS
+   *     arm has already failed that short-circuit — either its schema is
+   *     known but provably lacks `prop` (the guard, aimed at a DIFFERENT
+   *     schema by construction, can then only ever miss — sound but dead
+   *     weight, not worth special-casing) or it has no resolvable schema
+   *     at all, which in practice today means the case below.
+   *   - va.cellI32: a packed struct/union-cell address riding the uniform
+   *     f64 ABI in disguise (module/array.js's union-inline cursor
+   *     construction; src/ir.js readVar's "Union-cursor PARAM" arm — a
+   *     cursor whose callee couldn't be carrier-specialized, per
+   *     src/compile/narrow.js specializeUnionCursorParams's own doc: "The
+   *     f64 original keeps the generic body for any caller specialization
+   *     can't see"). These carry NO real per-instance schema id: the cell
+   *     never gets `.ptrAux` set at construction (module/array.js), so
+   *     boxing it (asF64's `n.ptrAux || 0` fallback) NaN-boxes it with a
+   *     PLACEHOLDER aux of 0. The guard's mask compare can then spuriously
+   *     match whichever schema happens to be id 0, regardless of the
+   *     cursor's actual member — and even on a genuine match, `fast`'s
+   *     `ctx.abi.object.ops.load` uses the wrong (ordinary per-schema
+   *     f64-slot) layout for what is actually a packed i32 cell. Silent
+   *     wrong-value, not something wasm validation can catch. */
+  function schemaGuardOk(va) {
+    return va?.type === 'f64' && va.ptrKind == null && !va.cellI32
+  }
+
   /** Monomorphic schema-slot devirtualization for a receiver whose static type
    *  is fully unknown (emitPropAccess's `vt == null` case, the __dyn_get_any_t_h
    *  path). `guard` (from ctx.schema.guardedSlotOf) proves `prop` names a field
@@ -2291,6 +2344,14 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
    *  `obj[k] = v` write through the dyn-props sidecar/global table — schema
    *  fields are never shadowed by a dynamic write. */
   function emitSchemaSlotGuarded(va, guard, slow, prop) {
+    // Structural precondition (schemaGuardOk's doc, above): every caller MUST
+    // pre-check this — asserted again here, not just trusted, so a future
+    // call site that forgets fails LOUD (a clear compiler-internal error) at
+    // the exact emit point instead of silently miscompiling, only catchable
+    // by exhaustive self-compilation (the way bc48ac02's original gate gap
+    // was actually found).
+    if (!schemaGuardOk(va))
+      err(`compiler internal: emitSchemaSlotGuarded requires a plain NaN-boxed f64 receiver for '${prop}' (schemaGuardOk) — got type=${va?.type ?? '<untyped>'} ptrKind=${va?.ptrKind ?? 'null'} cellI32=${!!va?.cellI32}`)
     // Clone: `slow` is a closure the CALLER built over the same `va` object
     // (emitPropAccess's `const slow = () => …emitDynGetAnyTyped(va, …)`), so this
     // function's own use of `va` below and the caller's use inside `slow()` would
@@ -2588,28 +2649,26 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         // module-memo field read reaching here as proven VAL.OBJECT paid full
         // __dyn_get_expr_t_h on every access instead of one guard compare.
         //
-        // Gated on `va.type === 'f64'`: emitSchemaSlotGuarded's only PRIOR
-        // caller (the vt==null arm below) never reaches it with anything else
-        // — a fully unproven receiver is boxed by construction, never
-        // pointer-narrowed — so that precondition was implicit and never
-        // enforced. Reproduced empirically (self-compiling jz's own ~50K-line
-        // source via `npm run build`, which the two bench specimens and the
-        // unit/differential suite never exercise): without this gate, SOME
-        // vt===VAL.OBJECT receiver in that source reaches here already in a
-        // non-boxed representation, and emitSchemaSlotGuarded's mask compare
-        // on it lowers to `i64.reinterpret_f64` over an i32-typed operand —
-        // invalid wasm, caught by build-dist.mjs's post-encode
-        // `new WebAssembly.Module()` validation ("expected type f64, found
-        // local.get of type i32"). Root shape not pinned further (function
-        // #3459 of a 2.1 MB self-compiled binary); the gate is the safe,
-        // narrow fix — trust the guard only for the ONE representation it was
-        // ever built and tested against, and let anything else fall through
-        // unchanged to the pre-existing dynamic dispatch (no regression,
-        // just no new win). Both target provenance edges (bench/provenance's
-        // module-memo, fftplan's cache-through-getPlan) always reach this
-        // arm with `va.type === 'f64'` — confirmed via WAT diff — so the gate
-        // costs them nothing.
-        const guard = (va?.type === 'f64' && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
+        // Gated on `schemaGuardOk(va)` (see its doc above emitSchemaSlotGuarded
+        // — bc48ac02's original `va.type === 'f64'` narrowed to the exact
+        // structural precondition, not just the one representation it
+        // happened to be tested against). Both target provenance edges
+        // (bench/provenance's module-memo, fftplan's cache-through-getPlan)
+        // always reach this arm with a plain boxed f64 receiver — confirmed
+        // via WAT diff — so the gate costs them nothing. RE-LAND PROBE
+        // (.work/research.md §lane-4): is this gate tighter than necessary —
+        // could a narrowed (ptrKind-tagged) receiver be adapted instead of
+        // bailing? No profitable case exists: the one narrowed shape that IS
+        // sound (`.ptrAux` names the exact schema) already resolves better,
+        // statically, one level up (this function's own `va.ptrAux != null`
+        // short-circuit above emitSchemaSlotRead — zero runtime check); any
+        // ptrKind receiver still reaching here has already failed that, so
+        // either its real schema is known and provably lacks `prop` (the
+        // guard, built against a DIFFERENT schema, can only ever miss —
+        // sound but dead weight) or it's a packed union-cell cursor
+        // (schemaGuardOk's cellI32 case — actively unsound to guard, see its
+        // doc). Kept as a bail, not adapted.
+        const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
         const slow = () => emitDynGetExprTyped(va, key, vt, prop)
         return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
       }
@@ -2625,8 +2684,19 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         // Monomorphic schema-slot devirtualization (see emitSchemaSlotGuarded):
         // `prop` uniquely identifies one registered schema program-wide, so
         // guard on it instead of always paying the full dynamic dispatch
-        // (durable-receiver check + ihash probe + schema-table scan).
-        const guard = ctx.func._schemaSpecSlow ? null : ctx.schema.guardedSlotOf(prop)
+        // (durable-receiver check + ihash probe + schema-table scan). Gated
+        // on `schemaGuardOk(va)` — see its doc above emitSchemaSlotGuarded.
+        // Previously UNCHECKED here (only the vt===OBJECT arm above carried
+        // bc48ac02's va.type==='f64' condition): "a fully unproven receiver
+        // is boxed by construction, never pointer-narrowed" was true of
+        // every caller observed but never structurally enforced — the exact
+        // incidental-precondition pattern the lane-4 re-land spec calls out.
+        // A vt==null receiver CAN carry a representation tag (kind.js's
+        // valType census and reps.js's representation facts are separate
+        // analyses that can diverge — e.g. a receiver proven pointer-narrowed
+        // without also being classified OBJECT), so this arm needs the same
+        // check as its sibling, not a weaker one.
+        const guard = (schemaGuardOk(va) && !ctx.func._schemaSpecSlow) ? ctx.schema.guardedSlotOf(prop) : null
         return guard ? emitSchemaSlotGuarded(va, guard, slow, prop) : slow()
       }
       // Primitive receiver (number/boolean/bigint): no dynamic props — `(5).foo` is
