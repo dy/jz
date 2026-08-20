@@ -23069,3 +23069,26 @@ region-live is the shipping destination — so the algorithmic fix
 is banked as a dormant-robustness slice, NOT taken now. The jz×jz frontier
 blocker remains defect 2 (rounds-active copy_rec corruption @3,059 MB),
 raw-bits decode in flight.
+
+## §defect 2 ATTRIBUTED — copy_rec recursive-descent corruption (2026-08-20)
+
+Tag-every-site run (site IDs on every err-throw emit; native mapping
+compile for ID→source): firing site **1109 = `for (const p of cb.params)`
+in seedClosureFrame (src/compile/index.js:1946)**, executing during
+emission round 2 (the closure round) of the jz×jz self-compile. Verdict:
+**corruption, hypothesis 1 confirmed** — `ctx.closure` (cb's container)
+and out/funcs ARE in every round's root bundle (verified from the literal
+bundle lists), so this is NOT root-completeness. The defect is inside
+`__region_copy_rec`/`regionArmArray`'s recursive relocation LOGIC on the
+closure-descriptor-within-out-within-WAT-IR-tree shape — the deepest
+nesting AFE's proven-safe rounds never exercise. A reader ends up with a
+pointer into memory a subsequent memory.copy overwrote; the bytes decode
+as undefined; downstream for-of throws a CLEAN ITERATE_NULLISH (the decode
+side was verified sound end-to-end). Narrowed audit surface: (a) depth
+limits on the recursive walk, (b) forwarding-header handling for very
+large/deeply-nested arrays, (c) i32 offset arithmetic in the
+array-relocation arm at 3+ GB addresses (past signed-i32; top-level
+pointer primitives already cleared by static read — the hazard, if i32,
+is in the descent's own cursor math). Repro rig in place: instrumented
+kernels + 16-min tagged probe at /private/tmp scratchpad frontier2;
+worktrees jz-elephant2-53e50328{,-live}.
