@@ -23160,3 +23160,21 @@ is unaudited; cheap allocation-free counter on the guard delta next.
 reaching the same object via an IDENTITY-keyed side table (name-keyed maps
 can't alias) could produce two different final addresses for one object;
 static census of ctx.closure.* keying first, no rebuild.
+
+## §rank-2 aliasing census — NEGATIVE (2026-08-20, coordinator)
+
+Identity-keyed side-table sweep: ctx.closure's maps (valResult/paramTypes/
+minArgc) are all closureBodyName-keyed (strings — content-hashed, aliasing
+impossible); envMeta is a plain-record array; the two pointer-keyed maps
+the design names (ctx.plans, ctx.funcs — keyed by durable FunctionPlan/
+registry records) both ride every round's root bundle. The
+relocated-pointer-key rehash discipline EXISTS and is correctly shaped:
+regionArmSetMap rebuilds via __coll_order+reinsert whenever any occupied
+key is BOTH movable-kind AND ephemeral (address-hashed kinds are exactly
+the movable set; content-hashed STRING/BIGINT and immediates are hash-
+invariant), with the durable short-circuit taking the in-place patch only
+when the bucket layout provably cannot change. The batch loops re-index
+ctx.closure.bodies[i] fresh per access and re-bind every root through the
+round's destructuring return. No unrooted identity-keyed holder found.
+Rank-2 is closed at census level; rank-1 (alloc guard at 13.3M-call
+volume) is the live line, counter probe in flight.
