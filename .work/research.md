@@ -23315,8 +23315,16 @@ unproven ternary-nullish into a diagnostic by design).
 
 Also landed this session: user's dirty set (11588771, bigint re-tag +
 subscript bump), error-decode branch (55aa5399 — in-wasm e.message/name
-decode; the 3 pre-existing order-dependent test:wasm fails verified cured
-on the merged tip, 0/0/0). All dangling branches/worktrees resolved and
+decode). CORRECTION (same-day): the per-file 0/0/0 check was
+method-blind — the FULL test:wasm leg on the merged tip still fails 2 of
+the 3 order-dependent cases (nested-function-calls mismatch,
+URLSearchParams OOB); only the destructured-param OOB is cured. The
+remaining 2 are order-dependent-only (each file passes standalone) and
+need their own full-leg-method bisect; the error-decode agent's 0-fail
+full leg was measured on its pre-rebase base, so the residual pair traces
+to something in the merged combination (user re-tag + subscript 10.7.1 +
+this session's landings) — unattributed, banked open. All dangling
+branches/worktrees resolved and
 deleted (4f-2 mooted, repplan-v2/frontier-recheck fully merged, memo-lane
 content re-landed as 7b87a874/198ae328, three diagnostic worktrees
 removed). Full test:wasm leg re-running on the merged tip for the record.
