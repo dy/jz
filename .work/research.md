@@ -22891,3 +22891,134 @@ commit probed), and the parked error-decode branch d648ad18 — the only
 recent 0-fail full-leg datum, whose fix targets exactly this catch-path
 OOB class — cures them. They close when the user's dirty-set commit
 unblocks that branch's landing. No further action on main.
+
+## §Emission rounds RE-LANDED (4 sites, small/medium scale) — jz×jz-scale trap ROOT-CAUSE NARROWED, not closed (2026-08-19/20)
+
+Branch `worktree-agent-a0c7ea5737932c2cd`. Re-applied 53bcb112+7085cb57's
+content (emitFuncs batch round, per-batch closure rounds with `sec` rooted
+for buildStart re-entry, buildStart/pullStdlib stage rounds) per the banked
+plan, bisected one site at a time as instructed. **Not** a verbatim
+re-application: the write-set is narrower than 7085cb57's, and one genuinely
+new hazard class (non-`ctx` module-scope caches) was found and fixed along
+the way.
+
+**Write-set finding — 7085cb57's own fix was the wrong lever.** front.js's
+own doc (§Union-field root) and a dedicated 2026-08-14 investigation
+(§CompileSession Slice D, two direct hypothesis tests) already establish
+that `ctx.core`/`ctx.bridge`/`ctx.abi` carry hundreds of CLOSURE-valued
+properties and that wholesale-rooting them reproduces real WASM traps
+(`unreachable`, `memory access out of bounds`) — exactly 7085cb57's own
+observed failure mode ("phantom pair GROWN", third failure mode). Read
+literally, `ctx.core` is NOT uniformly unsafe: only `.emit`/`.stdlib` (the
+closure dicts) are; `.includes`/`.extImports`/`.jsstring`/`.hostGlobals`/
+`.stdlibDeps` are plain Sets/objects with zero closures, confirmed by
+reading `src/ctx.js`'s own `ctx.core = {...}` literal. The re-land roots
+these SPECIFIC sub-fields (not `ctx.core` itself) plus `ctx.runtime`/
+`ctx.memory`/`ctx.error`/`ctx.linkDemand`/`ctx.names`/`ctx.features`
+(confirmed plain-data by the same method) at every site, uniformly. The one
+read of an excluded closure dict found anywhere after any round's exit
+(`ensureThrowRuntime`'s post-pullStdlib `ctx.core.stdlib[n]` check) is closed
+by REORDERING the call inside the pullStdlib round's live window, not by
+rooting the dict.
+
+**New hazard class found: non-`ctx` module-scope caches.** `DOLLAR`
+(src/ir.js, the `$name` string memo `dollar()` fires on effectively every
+emitted IR node) and `stdlibParseCache` (src/wat/assemble.js, `parseTemplate`
+— fires per stdlib helper `pullStdlib` realizes) are BOTH module-scope `let`
+bindings entirely outside `ctx` — invisible to ANY ctx.*-based root array,
+no matter how it's extended. Both already carry a doc comment naming "the
+same dangling-arena-pointer hazard" for warm-instance reuse (swap in a fresh
+Map after every `_clear`, don't just `.clear()` the old one — its backing
+table is itself an arena allocation) — but that existing fix only runs once
+at compile START, not at region-round boundaries mid-compile. No amount of
+ctx.*-root-array tuning could ever have caught this: it's a structurally
+different class from root-set under-coverage. Fixed via
+`dollarMap`/`setDollarMap` (ir.js) and `stdlibParseCacheMap`/
+`setStdlibParseCacheMap` (assemble.js) — get/set pairs threaded through a
+new `emissionRoundExit(mark, root, extern)` wrapper in compile/index.js that
+roots/rebinds them alongside the ordinary ctx.* array (`extern` defaults to
+`[DOLLAR_EXTERN]`; the pullStdlib site adds the stdlibParseCache pair too,
+site-scoped since no other round touches it). This fix is real and
+unconditionally safer regardless of the open issue below — kept.
+
+**Gate table (region-live probes, resolveSelfCompileBuild({optimize:3,
+snapshot:true, regionArena:true, memory:1024}), REGION_HOOKS_ACTIVE
+hand-flipped, .work/jessie-entry.mjs / jzify-entry.mjs / watr-harness-
+entry.js drivers, fresh instance per workload, one kernel build per
+configuration):**
+
+| Site | jessie (≤380.8 MB) | jzify (baseline ~1624.6, completes) | watr (pre-existing 4 GiB trap) |
+|---|---|---|---|
+| none (HEAD, front+AFE only) | 345.44 MB PASS | 2032.56 MB PASS | traps @4096, unreachable |
+| 1: emitFuncs | 345.44 MB PASS | 2032.56 MB PASS | traps @4096, unreachable (neutral) |
+| 1+2: +closures | 345.44 MB PASS | 2002.31 MB PASS | traps @4096, unreachable (neutral) |
+| 1+2+3: +buildStart | 345.44 MB PASS | 2002.31 MB PASS | traps @4096, unreachable (neutral) |
+| 1+2+3+4: +pullStdlib | 345.44 MB PASS | 2002.31 MB PASS | traps @4096, unreachable (neutral) |
+
+Every row's jessie/jzify output bytes are BYTE-IDENTICAL (147250 / 977516)
+regardless of which sites are active — the rounds are provably output-
+neutral at this scale, only committed-memory differs. Sites 1-4 introduce
+**zero regression** at jessie/watr/jzify scale; site 2 (closures) is the only
+one that moves jzify's own number (2032.56→2002.31 MB, -1.5%), consistent
+with jzify's workload containing few/small closures and no large
+emitFuncs/buildStart/pullStdlib churn at this size — the quantified 69.1%/
+2,274 MB target is jz×jz-scale specific and this probe tier cannot see it.
+
+**jz×jz goal probe — OPEN, root-caused to a DIFFERENT mechanism than root-
+set coverage.** HEAD (front+AFE only, no emission round) does NOT pass this
+probe either, under this exact methodology: `Maximum call stack size
+exceeded` @ peak 3669.50 MB, wall 38.7s — a host-side JS RangeError (V8's
+own recursion-limit message), not a WASM trap, most likely from `interop.js`
+recursively decoding a very deep/wide result structure. With ANY emission
+round active (tested: site-1-with-full-extension-and-DOLLAR; site-1-with-
+extension-but-no-DOLLAR; site-1-with-DOLLAR-but-12-field-union-only; full
+4-site config), the failure mode changes to a DIFFERENT, but internally
+IDENTICAL-across-all-four-configs signature: peak **3059.38 MB**, error
+`memory access out of bounds` (2 configs) or `Cannot iterate null or
+undefined` (2 configs) — the latter is ALSO host-side (a WASM trap cannot
+produce that V8 message), meaning the wasm execution likely runs to
+completion in these cases and the corruption surfaces only when
+`interop.js` tries to marshal a garbage-length result — the classic
+phantom-alloc/garbage-length-read fingerprint (3ad0b734), but NOT
+attributable to any of the four tested root-set variants since all four
+hit the exact same peak. Ruled out by direct elimination: DOLLAR (present
+in 2/4 configs, absent in 2/4, same peak either way) and the ctx.runtime/
+ctx.core extension (present in 2/4, absent in 2/4, same peak either way).
+The one structural constant across every emission-round config that HEAD's
+own (working, if still-failing-differently) AFE round doesn't share: the
+`out`/`funcs` accumulator — a large, deeply-nested WAT-IR array, rooted and
+Cheney-copied at every exit. Leading hypothesis (NOT confirmed): a latent
+`__region_copy_rec` bug specific to relocating this shape/scale of nested
+array content, exposed only once an emission-phase round exists at all,
+independent of which additional fields ride alongside it. Needs WAT-
+breadcrumb-level tracing (the campaign's own established method for
+this exact class of hard-to-pin bug, §CompileSession Slice B) — banked per
+this campaign's repeated precedent (Slice D, Slice B) of not spot-fixing an
+unconfirmed mechanism. Wall time scales badly with round count (61.9s → 952s
+→ 1149s → 1430s across the four configs) — `DOLLAR`/`ctx.core.includes`
+etc. are pointer-keyed and get fully rebuilt on every one of ~70 exits (the
+same "≈292 MB/round floor climb" cost this file's own memo-lane doc already
+names for `ctx.plans`) — a real cost, orthogonal to the correctness bug,
+worth a follow-up tuning pass (larger batch size, or a cheaper incremental
+rebuild) once the trap itself is closed.
+
+**Native gates (final 4-site config):** `npm test` 3532 pass / 6 skip / 0
+fail (byte-identical to the pre-change baseline — confirms genuine dormant
+no-op). `npm run build`: wat-strip parity 3/3 probes byte-identical,
+dist/jz.wasm 17,049.5 KiB. `npm run test:wasm`: 2786 pass / 2 fail / 6 skip
+— both fails (`mixed: nested function calls`, `URLSearchParams: sort,
+escaping, inits, iteration`) are members of the pre-existing, order-
+dependent 3-fail set this task's own gate spec names as not-mine; zero
+fails outside that set.
+
+**Disposition:** all 4 sites land (dormant no-op, `REGION_HOOKS_ACTIVE`
+stays `false` — zero effect on any shipped build). The DOLLAR/
+stdlibParseCache fix lands unconditionally (net safety improvement,
+verified not sufficient alone but never harmful). The jz×jz-scale payoff
+this campaign quantified (69.1%/2,274 MB) is NOT YET REALIZED — the goal
+probe fails before/around the emitFuncs window regardless, on a mechanism
+distinct from and deeper than everything this session's write-set audit
+could reach. Recommended next step: WAT-breadcrumb instrumentation of
+`__region_copy_rec`'s ARRAY arm specifically on the jz×jz `out`/`funcs`
+accumulator, isolating the exact allocation whose length reads garbage —
+same method, next session.

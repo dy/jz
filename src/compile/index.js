@@ -84,6 +84,7 @@ import {
   carrierF64,
   unboxBigInt, applyBigintRepresentationAction,
   freshId,
+  dollarMap, setDollarMap,
 } from '../ir.js'
 import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
@@ -91,6 +92,7 @@ import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
   pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables,
   stripLocalRenameSuffixes,
+  stdlibParseCacheMap, setStdlibParseCacheMap,
 } from '../wat/assemble.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 
@@ -2544,33 +2546,148 @@ export default function compile(ast, profiler, regionHooks) {
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
   // whole stage (see the memo doc in ast.js).
-  const funcs = timePhase(profiler, 'emitFuncs', () => {
+  //
+  // EMISSION region-round exit wrapper — roots/rebinds non-`ctx` module-scope
+  // caches alongside the ordinary ctx.* root array. DOLLAR (src/ir.js,
+  // dollarMap/setDollarMap) lives entirely outside `ctx`, invisible to any
+  // ctx.*-based root no matter how that array is extended: `dollar()` fires
+  // on effectively every emitted IR node, growing DOLLAR's backing Map
+  // heavily mid-emission, and with DOLLAR unrooted a round-exit mid-batch
+  // reclaims that growth out from under it — the SAME class this binding's
+  // own doc already names for warm-instance reuse (`_clear` swap-in-fresh-
+  // Map), just triggered by a region-round boundary instead of a new
+  // compile. Verified NOT sufficient alone to close the jz×jz-scale trap
+  // (see the ledger note below) but real and worth keeping regardless — it
+  // is unconditionally safer than leaving DOLLAR unrooted. `extern` pairs
+  // (get, set) let a specific round add MORE non-ctx caches (pullStdlib's
+  // stdlibParseCache, src/wat/assemble.js — same documented hazard class,
+  // only live during that one stage) without every site paying for it.
+  const DOLLAR_EXTERN = [dollarMap, setDollarMap]
+  const emissionRoundExit = (mark, root, extern = [DOLLAR_EXTERN]) => {
+    const out = regionHooks.exit(mark, [...root, ...extern.map(([get]) => get())])
+    for (let i = extern.length - 1; i >= 0; i--) extern[i][1](out.pop())
+    return out
+  }
+  // Region rounds through EMISSION (re-landing .work/research.md §Emission
+  // rounds — same batching rationale and iterator discipline as the
+  // analyzeFuncs loop above: index-based fresh reads, roots rebound at every
+  // exit, batch size shared with AFE_ROUND_BATCH). Nothing reclaimed here
+  // before this re-land: the whole emission+assembly pipeline ran hook-free,
+  // accumulating every emit temporary from the last AFE exit to the
+  // (never-reached) outer boundary — the quantified 69.1%/2,274 MB jz×jz
+  // window (fresh forensic attribution, this entry). The accumulating output
+  // array rides in the root bundle; the isReassigned memo is pointer-keyed
+  // off AST nodes, so it is closed before every exit and reopened after
+  // (relocation would strand its keys).
+  //
+  // ROOT BUNDLE — extended past the ANALYSIS-stratum 12-field union (front.js's
+  // own doc, shared by every round so far) with EMISSION's own write-set,
+  // PLAIN-DATA FIELDS ONLY: ctx.runtime (dataParts/dataDedup grow per string
+  // literal), ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features
+  // (scalars/Maps/Sets, no closures) — plus the specific ctx.core SUB-fields
+  // emission writes (ctx.core.includes/extImports/jsstring/hostGlobals/
+  // stdlibDeps — Sets/plain objects). `ctx.core` ITSELF (its `.emit`/`.stdlib`
+  // siblings — hundreds of CLOSURE-valued dispatch/codegen entries), plus
+  // `ctx.bridge`/`ctx.abi` (same shape), stay OUT of every round root: this is
+  // the load-bearing lesson of the FIRST re-land attempt (53bcb112+7085cb57,
+  // reverted) — 7085cb57 rooted `ctx.core`/`ctx.abi`/`ctx.bridge` wholesale to
+  // fix exactly this under-coverage and made the regression WORSE ("phantom
+  // pair GROWN", third failure mode), and a dedicated prior investigation unrelated
+  // to this file (.work/research.md §CompileSession Slice D, two direct
+  // experiments) independently proved wholesale-rooting these same nine
+  // fields reproduces real WASM traps (`unreachable`, `memory access out of
+  // bounds`) neither hypothesis closed — walking a several-hundred-entry
+  // closure dict is a shape `__region_copy_rec` has never been proven safe
+  // against. Narrower fix: root only the plain-data containers actually
+  // written; `ensureThrowRuntime`'s one post-pullStdlib read of
+  // `ctx.core.stdlib` (the sole read of the excluded closure dicts found
+  // anywhere after any round's exit) is closed by reordering, not rooting —
+  // see the pullStdlib round below.
+  //
+  // KNOWN OPEN ISSUE (re-land session, jz×jz scale only): this round is
+  // GATE-CLEAN on jessie/watr/jzify (region-live probes: jessie 345.44 MB,
+  // ≤380.8 baseline PASS; jzify 2032.56 MB PASS, completes; watr traps at
+  // the pre-existing 4 GiB ceiling, neutral — bit-identical to the SAME
+  // probes run against this round entirely absent, i.e. genuinely zero
+  // regression at this scale). The jz×jz goal probe (self.js compiling
+  // itself, 2234 functions) does NOT yet pass with this round active: it
+  // hits a deterministic "memory access out of bounds" / "Cannot iterate
+  // null or undefined" at peak 3059.38 MB, IDENTICAL across three tested
+  // root-set configurations (full ctx.runtime/ctx.core extension + DOLLAR;
+  // extension without DOLLAR; DOLLAR without extension) — ruling out both
+  // DOLLAR and the ctx.* extension as the cause by elimination. HEAD (no
+  // emission round at all, front+AFE only) ALSO fails the same probe, but
+  // with a DIFFERENT, pre-existing signature ("Maximum call stack size
+  // exceeded" @ 3669.50 MB) — the jz×jz goal probe was not passing on this
+  // exact methodology before this round existed either, so this is a
+  // genuinely distinct, deeper mechanism (likely in `__region_copy_rec`'s
+  // handling of the `out` accumulator's large/deeply-nested WAT-IR content
+  // specifically — the one structural difference between this round and
+  // AFE's own proven-safe use of the same 12-field union), not a simple
+  // root-completeness gap. Needs dedicated WAT-breadcrumb forensics (the
+  // campaign's own established method for this exact class, .work/
+  // research.md §CompileSession Slice B) — banked, not chased further this
+  // session, per the same campaign's repeated precedent of not spot-fixing
+  // an unconfirmed mechanism.
+  let funcs = timePhase(profiler, 'emitFuncs', () => {
+    let out = []
+    let __mark = null
     beginAssignedMemo()
     try {
-      return ctx.funcs.list.map(func =>
-        func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
+      for (let i = 0; i < ctx.funcs.list.length; i++) {
+        if (regionHooks && __mark == null) __mark = regionHooks.mark()
+        const func = ctx.funcs.list[i]
+        out.push(func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
+        const last = i === ctx.funcs.list.length - 1
+        if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || last)) {
+          endAssignedMemo()
+          ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
+            emissionRoundExit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
+          __mark = null
+          beginAssignedMemo()
+        }
+      }
     } finally { endAssignedMemo() }
+    return out
   })
   funcs.push(...synthesizeBoundaryWrappers())
 
-  const closureFuncs = []
+  let closureFuncs = []
+  // `sec` doesn't exist yet at the first compilePendingClosures() call (its
+  // declaration is further below), but the buildStartFn callback re-enters
+  // this function AFTER sec holds every emitted function — a region exit
+  // there must root sec or reclaim the module. Registered once sec is built
+  // (right after its own declaration, below); null until then (an inert,
+  // always-safe root — every round tolerates a null element, same as
+  // ctx.inspect's own null-until-populated shape in the 12-field union).
+  let __secRoot = null
   let compiledBodyCount = 0
   const compilePendingClosures = () => timePhase(profiler, 'emitClosures', () => {
-    const bodies = ctx.closure.bodies || []
     // Emitting a body may discover nested closures. Process stable batches:
     // every body known at batch entry is fully planned before any body in that
     // batch emits; newly discovered bodies become the next batch.
     // NOTE: analyzeClosureBodyForEmit runs OUTSIDE the isReassigned memo window
     // (it may touch analyze-side caches); only the pure emit half is bracketed.
-    while (compiledBodyCount < bodies.length) {
-      const batchEnd = bodies.length
-      for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(bodies[i])
+    // Region round per batch (see the emitFuncs loop above, same write-set +
+    // DOLLAR discipline via emissionRoundExit): `ctx.closure.bodies` is
+    // re-read fresh each access (never held across an exit — the AFE loop's
+    // own "durable receiver, stale pointer" note applies identically here);
+    // `funcs`/`closureFuncs`/`__secRoot` ride in the root bundle.
+    while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
+      const __mark = regionHooks?.mark()
+      const batchEnd = ctx.closure.bodies.length
+      for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
       beginAssignedMemo()
       try {
         for (let i = compiledBodyCount; i < batchEnd; i++)
-          closureFuncs.push(emitClosureBody(bodies[i], functionPlanOf(ctx, bodies[i])))
+          closureFuncs.push(emitClosureBody(ctx.closure.bodies[i], functionPlanOf(ctx, ctx.closure.bodies[i])))
       } finally { endAssignedMemo() }
       compiledBodyCount = batchEnd
+      if (regionHooks) {
+        ;[ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
+          emissionRoundExit(__mark, [ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
+        if (__secRoot) sec = __secRoot
+      }
     }
   })
 
@@ -2613,7 +2730,7 @@ export default function compile(ast, profiler, regionHooks) {
   }
 
   // Build module sections — named slots, assembled at the end (no index bookkeeping)
-  const sec = {
+  let sec = {
     extStdlib: [],  // external stdlib (imports that must precede all other imports)
     imports: [...jssImports, ...ctx.module.imports],
     types: [],      // function types for call_indirect
@@ -2628,6 +2745,9 @@ export default function compile(ast, profiler, regionHooks) {
     stdlib: [],     // stdlib functions
     customs: [],    // custom sections + exports
   }
+  // Register `sec` for the closure round above (its `__secRoot` was null
+  // until now — see that binding's own doc) and for the stage rounds below.
+  __secRoot = sec
 
   // Uniform closure convention: (env f64, argc i32, a0..a{MAX-1} f64) → f64.
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
@@ -2658,7 +2778,20 @@ export default function compile(ast, profiler, regionHooks) {
   if (ctx.closure.table?.length)
     sec.elem.push(['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)])
 
+  // Stage region round: mark before buildStart (late closure batches + the
+  // start-function IR churn — top-level statements, module-init code — none
+  // of which any prior round has ever reclaimed), exit after — mirrors the
+  // AFE-round shape, same write-set + DOLLAR discipline via
+  // emissionRoundExit. `sec` rides via __secRoot (registered above); `funcs`/
+  // `closureFuncs` may still grow here (compilePendingClosures' own re-entry
+  // from inside buildStartFn) so both stay in the root too.
+  const __buildMark = regionHooks?.mark()
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
+  if (regionHooks) {
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
+      emissionRoundExit(__buildMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
+    __secRoot = sec
+  }
 
   // dyn-closure-tables.js: every function AND module init has now emitted, so
   // callSites/paramClosureDefaults/directReturnClosures are complete — resolve
@@ -2695,11 +2828,35 @@ export default function compile(ast, profiler, regionHooks) {
   // + deps lambdas).
   assertCtxInvariants('pre-assemble')
 
+  // Stage region round: pullStdlib realizes every stdlib helper's WAT
+  // template (+927 MB churn measured on jz×jz, .work/research.md §Parts-fix
+  // verified) via resolveIncludes()/includeModule() — module registration,
+  // which is ALSO where ctx.core.emit/ctx.core.stdlib (the closure-bearing
+  // dicts excluded from every round's root, see the emitFuncs round's own
+  // doc above) grow most heavily. `ensureThrowRuntime` is called INSIDE this
+  // round's mark/exit window, not after: it is the one caller anywhere that
+  // reads `ctx.core.stdlib` post-pullStdlib (checking realized helper bodies
+  // for `(throw `), and with those dicts deliberately unrooted a read after
+  // THIS exit would be the exact dangling-arena-pointer class the DOLLAR fix
+  // documents — closed by REORDERING the read inside the live round instead
+  // of rooting the closure dict. `stripStaticDataPrefix` stays after the
+  // exit: its own ctx.core dependency (`.includes`, a plain Set) is already
+  // rooted, so a post-exit read is sound. `stdlibParseCache` (src/wat/
+  // assemble.js) is the SAME non-ctx module-scope hazard class as DOLLAR,
+  // fired by every `parseTemplate` call inside pullStdlib's own realize
+  // step — rooted here via the `extern` list (site-scoped: no other round
+  // touches it).
+  const __stdlibMark = regionHooks?.mark()
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
+  ensureThrowRuntime(sec)
+  if (regionHooks) {
+    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
+      emissionRoundExit(__stdlibMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps],
+        [DOLLAR_EXTERN, [stdlibParseCacheMap, setStdlibParseCacheMap]])
+    __secRoot = sec
+  }
 
   stripStaticDataPrefix(sec)
-
-  ensureThrowRuntime(sec)
 
   timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
   if (ctx.transform.helperCallsites) instrumentHelperCallsites([...sec.funcs, ...sec.stdlib, ...sec.start])

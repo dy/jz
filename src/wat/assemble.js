@@ -40,6 +40,15 @@ const parseTemplate = (str) => {
 // backing table is itself an arena allocation `_clear` invalidates). Must run every
 // compile in a warm-instance loop (see scripts/self.js setupSelf).
 export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
+// Region-arena EMISSION rounds (re-landing .work/research.md §Emission
+// rounds): same non-`ctx` module-scope hazard as DOLLAR (src/ir.js,
+// dollarMap/setDollarMap) — stdlibParseCache lives entirely outside `ctx`,
+// invisible to any ctx.*-based region-round root array. `parseTemplate`
+// fires for every stdlib helper `pullStdlib` realizes, growing this cache's
+// backing Map heavily during that one stage — a pullStdlib-scoped round must
+// root/rebind it exactly like DOLLAR, via this pair.
+export const stdlibParseCacheMap = () => stdlibParseCache
+export const setStdlibParseCacheMap = (m) => { stdlibParseCache = m }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'

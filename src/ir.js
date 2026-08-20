@@ -1911,6 +1911,21 @@ export const dollar = (name) => {
   if (v === undefined) { v = '$' + name; DOLLAR.set(name, v) }
   return v
 }
+// Region-arena EMISSION rounds (re-landing .work/research.md §Emission rounds):
+// DOLLAR is a module-scope Map, entirely outside `ctx` — invisible to any
+// ctx.*-based region-round root array. `dollar()` fires on effectively every
+// emitted IR node (every param/local/name reference), so it grows heavily
+// DURING emission — exactly the "arena strings are immortal" assumption this
+// binding's own doc makes, which a region round breaks (the arena is no
+// longer immortal within a round's [mark, exit) window). Without threading
+// DOLLAR through the round's root/rebind, a round-exit mid-emission can
+// reclaim a just-grown backing table out from under it — the same class this
+// binding's own doc already names for warm-instance reuse (`_clear`
+// swap-in-fresh-Map), just triggered by a region-round boundary instead of a
+// new compile. `dollarMap`/`setDollarMap` let compile/index.js root and
+// rebind it exactly like a ctx.* field.
+export const dollarMap = () => DOLLAR
+export const setDollarMap = (m) => { DOLLAR = m }
 // Self-host-only: DOLLAR's keys/values are both arena strings built during compile
 // (the `name`s come from the source being compiled) AND the Map's own backing
 // table is itself an arena allocation. Natively the arena is the host GC heap, so
