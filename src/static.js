@@ -447,6 +447,14 @@ export function staticValue(node) {
   // resolve on the kernel leg (e.g. `{ [true ? 3 : 4]: 5 }`).
   if (op === 'bool') { const c = staticValue(args[0]); return c === NO_VALUE ? NO_VALUE : !!c }
   if (op === '[]' && args.length === 1) return staticValue(args[0])
+  // Member read of a module-const object-literal scalar field (`KIND.BARE`) —
+  // registry populated at the const decl (prepare/index.js, beside constStrs).
+  // has() before get(): a legitimately-undefined field must not fold.
+  if (op === '.' && typeof args[0] === 'string' && typeof args[1] === 'string') {
+    const fields = ctx.scope.constObjFields?.get(args[0]) ?? (ctx.scope.chain?.[args[0]] != null ? ctx.scope.constObjFields?.get(ctx.scope.chain[args[0]]) : undefined)
+    if (fields?.has(args[1])) return fields.get(args[1])
+    return NO_VALUE
+  }
   if (op === '()' && args[0] === 'String' && args.length === 2) {
     const value = staticValue(args[1])
     return value === NO_VALUE ? NO_VALUE : String(value)

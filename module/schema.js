@@ -498,6 +498,22 @@ export function initSchema(ctx) {
     const idx = ctx.schema.list[sid]?.indexOf(prop)
     if (idx == null || idx < 0) return false
     if (!factAt(sid, idx)?.bigintObserved) return false
+    // DECL-LITERAL-ONLY slot → RAW, not boxed (bigint retirement §4: the boxed
+    // pairing exists only for the UNPROVEN case). A prop name never NAMED-
+    // written anywhere in the program means every write to this slot is an
+    // object-literal decl initializer; each receiver's read then resolves
+    // through VT['.']'s decl-literal fold (the sid-veto fix) with the
+    // receiver's OWN kind, so raw bits stay straight per receiver even if two
+    // literals sharing the sid seed different kinds. The store writes raw
+    // bits (fieldStoredValue → storedValueNarrow → asF64), and
+    // slotBigintProvenBySid — which requires this predicate — flips false in
+    // lockstep, so unconditional unbox-reads stop: both sides re-pair on the
+    // raw representation. Same computed-access envelope the landed read fold
+    // already accepted (writtenProps — the discipline slotTypedCtorAt
+    // trusts). The census's own kind lattice can't carry this proof — it
+    // blanket-nulls under pointsTo='ALL' (LAYOUT.NAN_PREFIX_BITS is the live
+    // case: decl-literal-only, uniformly BIGINT, kind census null).
+    if (!ctx.types?.writtenProps?.has(prop)) return false
     return schemaShadowed(sid)
   }
   /** varName convenience form — resolves sid via idOf (precise path only,

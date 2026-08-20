@@ -36,7 +36,7 @@ import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook 
 import { T } from '../ast.js'
 import { extractParams, collectParamNames, classifyParam } from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
-import { staticObjectProps, staticPropertyKey } from '../static.js'
+import { staticObjectProps, staticPropertyKey, staticValue, NO_VALUE } from '../static.js'
 import { VAL } from '../reps.js'
 import { STMT_OPS } from '../ast.js'
 import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
@@ -2180,6 +2180,23 @@ function prepDecl(op, ...inits) {
           if (staticStr != null) (ctx.scope.constStrs ||= new Map()).set(declName, staticStr)
           const strs = arrEligible || (!mutatedArrayNames.has(name) && stringArrayValues(normed))
           if (strs) (ctx.scope.shapeStrArrays ||= new Map()).set(declName, strs)
+          // Module-const object literal: register each STATIC-KEY scalar
+          // field's folded VALUE so `TABLE.KEY` participates in staticValue's
+          // const-fold — the missing member-read arm that left
+          // `{[KIND.BARE]: …}` computed keys "truly dynamic" and forced the
+          // whole literal onto the dict path. Same const-table idiom (and
+          // envelope) as constStrs/constInts one line up, one level deeper.
+          if (Array.isArray(normed) && normed[0] === '{}') {
+            const raw = normed.length === 2 && Array.isArray(normed[1]) && normed[1][0] === ',' ? normed[1].slice(1) : normed.slice(1)
+            let fields = null
+            for (const p of raw) {
+              if (!Array.isArray(p) || p[0] !== ':' || typeof p[1] !== 'string') continue
+              const v = staticValue(p[2])
+              if (v === NO_VALUE || (typeof v !== 'number' && typeof v !== 'string' && typeof v !== 'boolean')) continue
+              ;(fields ||= new Map()).set(p[1], v)
+            }
+            if (fields) (ctx.scope.constObjFields ||= new Map()).set(declName, fields)
+          }
         } else if (op === 'let' && ctx.scope.consts?.has(declName)) {
           ctx.scope.consts.delete(declName)
           ctx.scope.constStrs?.delete(declName)

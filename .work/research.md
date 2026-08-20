@@ -23395,3 +23395,26 @@ level; trivial-scale repros, scripts in /private/tmp/jz-wasmbisect):
 Fix method: the established differential kernel forensics (WAT
 breadcrumbs, value-identity dumps) — both repro at 10-line scale, far
 cheaper than the defect-2 saga.
+
+## §STRICT SELF-GRAPH CLEAN — the flip precondition is MET (2026-08-20)
+
+JZ_BIGINT_STRICT=1 now compiles the ENTIRE scripts/self.js module graph
+with zero refusals. The final two engine slices:
+1. Decl-literal RAW slots (module/schema.js slotBigintBoxedBySid): a prop
+   name never NAMED-written anywhere means every write is a decl literal —
+   the slot stores raw i64 bits and slotBigintProvenBySid flips in
+   lockstep so unbox-reads stop; per-receiver VT['.'] folds keep mixed-kind
+   sids straight. Same writtenProps envelope as the landed read fold. (An
+   earlier census-kind-based attempt failed: the kind lattice blanket-nulls
+   under pointsTo='ALL' — the discipline, not the census, carries the
+   proof.)
+2. Const-object-field staticValue fold (prepare registry constObjFields +
+   static.js '.' arm): `{[KIND.BARE]: …}` computed keys now fold to named
+   props at prep, making every const-table literal schema-eligible —
+   the LAYOUT/sentinel tables included.
+Era-3 test conversions in test/pointers.js: both carrier pins flipped from
+expect-refusal to clean-strict-compile + bit-exact hex differentials
+(incl. UNDER the pointsTo='ALL' blanket via the pairing fixture's corrupt
+helper). Full test:wasm leg on the assembled tip: 2809 pass / 0 fail —
+first fully-green kernel-target record. Next: the flip itself (strict
+default) + Tables A+B deletion + §7 conversions as one coordinated slice.

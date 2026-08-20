@@ -347,13 +347,21 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // not deleted: the shape (a genuinely unprovable BigInt schema field read
 // through layout.js's real i64Hex) remains valuable coverage that Slice 0's
 // documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
-test('carrier: a boxed BigInt schema field read via static dot-access unboxes to its payload (.work/carrier-representation-design.md §15/§16) [RETIRED: layout.js i64Hex\'s residual call-arg ambiguity (Slice 0 banked site) is now a compile-time diagnostic]', () => {
+test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
   if (onKernel()) return
-  // CARRIER_BOX flag deleted — boxing unconditional (was: §34 flip opt-out guard;
-  // the raw arm no longer exists, so the assertion always applies.
-  // finding), nothing left to assert about a boxed payload.
+  // Third era of this pin. Era 1: asserted the boxed payload unboxed
+  // correctly. Era 2 [RETIRED]: asserted the shape REFUSED under strict
+  // (residual call-arg ambiguity as a named diagnostic). Era 3 (now): the
+  // decl-literal raw-slot predicate (module/schema.js) + the const-object-
+  // field staticValue fold made the whole LAYOUT class PROVABLE — strict
+  // compiles it clean, slots hold raw i64 bits, and every derived hex string
+  // must match the native oracle bit-for-bit.
   const g = resolveModuleGraph(new URL('./fixtures/carrier-layout-repro.js', import.meta.url).pathname, { resolveNode: true })
-  throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
+  const exp = withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 }))
+  is(exp.rawField(), 0x7FF8000000000000n)
+  is(exp.undefAtom(), '0x7FF8000200000000')
+  is(exp.nullAtom(), '0x7FF8000100000000')
+  is(exp.ptrHex(), '0x7FFB000300000400')
 })
 
 // CONSERVATIVE PAIRING (.work/carrier-representation-design.md — the §15/§16
@@ -381,11 +389,21 @@ test('carrier: a boxed BigInt schema field read via static dot-access unboxes to
 // read-side dispatch has no remaining input to exercise once the
 // write-side ambiguity it existed to cover is a compile-time refusal
 // instead. Converted to expect-error.
-test('carrier: a bigint-possible-but-UNPROVEN (pointsTo===\'ALL\'-poisoned) schema field read through arithmetic still decodes correctly (.work/carrier-representation-design.md CONSERVATIVE PAIRING) [RETIRED: layout.js\'s residual BigInt ambiguity is now a compile-time diagnostic]', () => {
+test('carrier: LAYOUT-class bigint fields stay provable-raw UNDER the pointsTo=ALL blanket (.work/carrier-representation-design.md CONSERVATIVE PAIRING → decl-literal discipline survives the hazard blanket)', () => {
   if (onKernel()) return
-  // CARRIER_BOX flag deleted — boxing unconditional; assertion always applies.
+  // Third era (see the sibling test above). The load-bearing extra here: the
+  // fixture's `corrupt(obj, key, val)` trips the whole-program pointsTo='ALL'
+  // hazard blanket exactly as the real self-compile does — and the
+  // decl-literal never-named-written discipline (the same envelope as
+  // VT['.']'s literal fold) must keep the LAYOUT class raw-provable THROUGH
+  // that blanket, not just in clean-hazard programs.
   const g = resolveModuleGraph(new URL('./fixtures/carrier-conservative-pairing-repro.js', import.meta.url).pathname, { resolveNode: true })
-  throws(() => withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 })), /BigInt value at this collection/)
+  const exp = withBigintStrict(() => run(g.code, { modules: g.modules, optimize: 0 }))
+  exp.poke()
+  is(exp.rawField(), 0x7FF8000000000000n)
+  is(exp.undefAtom(), '0x7FF8000200000000')
+  is(exp.nullAtom(), '0x7FF8000100000000')
+  is(exp.ptrHex(), '0x7FFB000300000400')
 })
 
 // === Limits ===
