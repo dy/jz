@@ -112,8 +112,12 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
 const unionMods = (a, b) => [...new Set([...(a || []), ...(b || [])])]
 export const RESOLVED_PROP_MODULES = (() => {
   const out = Object.create(null)
-  for (const name of Object.keys(PROP_MODULES))
-    out[name] = unionMods(PROP_MODULES[name].filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
+  // Union of BOTH key sets (re-audit finding 5): iterating only the hand
+  // table's keys silently dropped every DERIVED-ONLY row — Date/RegExp/
+  // DataView/TypedArray methods the generator attributes but no hand row
+  // names (e.g. getDate) never reached includeForProperty at all.
+  for (const name of new Set([...Object.keys(PROP_MODULES), ...Object.keys(DERIVED_PROP_MODULES)]))
+    out[name] = unionMods((PROP_MODULES[name] || []).filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
   return out
 })()
 

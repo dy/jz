@@ -127,3 +127,11 @@ test('self-compile: prop-modules.generated.js is fresh (matches live re-derivati
   is(freshLines.join('\n'), checkedInLines.join('\n'),
     'src/prop-modules.generated.js is stale — run `node scripts/gen-prop-modules.mjs` and commit the result')
 })
+
+test('RESOLVED_PROP_MODULES consults derived-only rows (re-audit finding 5)', async () => {
+  const { RESOLVED_PROP_MODULES } = await import('../src/autoload.js')
+  // getDate exists only in the generated table — no hand row. Iterating only
+  // hand keys silently dropped every such row from includeForProperty.
+  ok(Array.isArray(RESOLVED_PROP_MODULES.getDate) && RESOLVED_PROP_MODULES.getDate.includes('date'),
+    'derived-only method rows reach the resolved table')
+})
