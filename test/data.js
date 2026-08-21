@@ -1854,3 +1854,39 @@ test('tagged-union strict equality: a non-BigInt member never bit-collides with 
     is(e.h(1), true, `O${optimize || 0}: 1n === 1n beside a subnormal arm`)
   }
 })
+
+test('equality folds preserve operand effects, in source order (re-audit P0)', () => {
+  // JS sequences operand evaluation before comparing — a statically-decided
+  // fold (differing primitives, non-nullable vs sentinel, tagged-union
+  // dispatch) must still evaluate effectful operands exactly once, in
+  // order. Pure operands (names/literals) keep the zero-cost constant.
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(`
+      let n = 0
+      function bump() { n = n + 1; return 0n }
+      export let f = (flag) => { let value = flag ? 1n : 0; return value === bump() }
+      export let frev = (flag) => { let value = flag ? 1n : 0; return bump() === value }
+      export let count = () => n
+    `, { optimize }).exports
+    is(e.f(0), false, `O${optimize || 0}: tagged-Number vs 0n compares false`)
+    is(e.count(), 1, `O${optimize || 0}: raw-side effect ran (left operand tagged)`)
+    is(e.frev(0), false, `O${optimize || 0}: reversed order compares false`)
+    is(e.count(), 2, `O${optimize || 0}: raw-side effect ran (right operand tagged)`)
+    const d = jz(`
+      let m = 0
+      function bump2() { m = m + 1; return 5 }
+      export let g = () => { let s = 'a'; return s === bump2() }
+      export let mc = () => m
+    `, { optimize }).exports
+    is(d.g(), false, `O${optimize || 0}: differing-primitive fold false`)
+    is(d.mc(), 1, `O${optimize || 0}: differing-primitive fold still evaluated the call`)
+    const s = jz(`
+      let k = 0
+      function mk() { k = k + 1; return 7 }
+      export let h = () => mk() === null
+      export let kc = () => k
+    `, { optimize }).exports
+    is(s.h(), false, `O${optimize || 0}: non-nullable vs null folds false`)
+    is(s.kc(), 1, `O${optimize || 0}: sentinel fold still evaluated the call`)
+  }
+})

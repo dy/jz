@@ -1383,19 +1383,31 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
           : ctx.schema.slotBigintBoxedAt?.(e[1], e[2]) === true
-      if (op === '?:') return exprMayBox(e[2]) || exprMayBox(e[3])
-      if (op === '&&' || op === '||' || op === '??') return exprMayBox(e[1]) || exprMayBox(e[2])
+      // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
+      // to false but false||null to null — arm ORDER changed the verdict):
+      // TRUE dominates, else UNKNOWN (null) dominates, else FALSE.
+      const j3 = (x, y) => x === true || y === true ? true : x == null || y == null ? null : false
+      if (op === '?:') return j3(exprMayBox(e[2]), exprMayBox(e[3]))
+      if (op === '&&' || op === '||' || op === '??') return j3(exprMayBox(e[1]), exprMayBox(e[2]))
     }
     return null  // unresolved — defer to the boundary fallback
   }
-  let sawUnresolved = false
+  // strict (the compare arm's question) demands a UNIVERSAL proof: EVERY
+  // result-producing tail must be proven tagged — one tagged tail beside a
+  // raw or unresolved sibling means a raw BigInt can still flow, and the
+  // else-FALSE short-circuit would erase it. Non-strict (the boundary lane)
+  // is existential: any may-box tail routes the generic decode, which is
+  // total over every tag.
+  let sawUnresolved = false, sawTagged = false, sawUntagged = false
   for (const e of tails) {
     const v = exprMayBox(e)
-    if (v === true) return true
-    if (v == null) sawUnresolved = true
+    if (v === true) sawTagged = true
+    else if (v === false) sawUntagged = true
+    else sawUnresolved = true
   }
+  if (strict) return sawTagged && !sawUntagged && !sawUnresolved
+  if (sawTagged) return true
   if (!sawUnresolved) return false
-  if (strict) return false  // unresolved tails: never a PROVEN tag
   return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0 && !bigintRepIsClosed(r.current)
 }
 
