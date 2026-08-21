@@ -957,7 +957,20 @@ test('inferModuleGlobalValTypes: a global written only inside a closure resolves
     export let setG = (arr) => { arr.forEach(x => { g = 'hi' }) }
     export let getFirst = () => g[0]
   `
-  noTypeFork(jz.compile(src, { wat: true }), 'a literal STRING write inside a closure must resolve the global')
+  const wat = jz.compile(src, { wat: true })
+  // Scope the check to getFirst's OWN body (agent/typed-decline-b): `arr.forEach(...)`
+  // on an unknown-vt `arr` now ALSO loads the typedarray module (src/autoload.js
+  // PROP_MODULES — `.forEach` gained a `.typed:` counterpart, the fork-reachability
+  // audit this branch landed), which independently broadens `$__to_str`'s own
+  // conditional codegen (generic value→string coercion, unrelated to g's own
+  // resolution — used for e.g. an uncalled-here `${x}` template path) to its
+  // typed-aware branch, which also happens to call `$__typed_idx` — a real, correct,
+  // but UNRELATED occurrence a whole-module scan can't tell apart from g[0]'s own
+  // dispatch. getFirst's own body is the actual claim under test (file header:
+  // "The `[]`-index read is the cleanest probe") — confirmed still a bare
+  // `(return_call $__str_idx (global.get $g) (i32.const 0))`, no dispatch at all.
+  const getFirstBody = wat.match(/\(func \$getFirst\b[\s\S]*?\n  \)/)?.[0] ?? wat
+  noTypeFork(getFirstBody, 'a literal STRING write inside a closure must resolve the global')
   const ex = run(src)
   ex.setG([1])
   is(ex.getFirst(), 'h', 'closure-proven global reads correctly')
