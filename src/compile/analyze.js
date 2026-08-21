@@ -2512,11 +2512,19 @@ export function analyzeStructInline(programFacts) {
                                     // they stay on f64 cells (no i32 packing)
   // A no-array frame needs the call-composition walk ONLY when some function
   // program-wide returns an `Array<S>` (its result could flow into an
-  // un-sanctioned call position here). With zero such functions, no `mk()`
-  // call can carry an inline array, so the walk is a guaranteed no-op — skip
-  // it (compile-time: the self-compile compiler has hundreds of array-free frames
-  // whose full-body walk was pure waste).
+  // un-sanctioned call position here), OR some function's PARAM carries an
+  // arrayElemSchema fact (a fresh array-literal argument built right at a
+  // call site — `pick([{gain: 2}])` — is a live structInline hazard even
+  // when the CALLER tracks no arrays of its own and nothing returns one:
+  // inferArrElemSchema's cross-call fixpoint seeds a param's arrayElemSchema
+  // from the literal argument's own element shapes, not only by forwarding
+  // an Array<S> return). With neither condition, no call anywhere can carry
+  // or receive an inline array, so the walk is a guaranteed no-op — skip it
+  // (compile-time: the self-compile compiler has hundreds of array-free
+  // frames whose full-body walk was pure waste).
   const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
+  const anyParamArrFn = paramReps != null &&
+    [...paramReps.values()].some(m => m && [...m.values()].some(r => r?.arrayElemSchema != null))
   for (const func of ctx.funcs.list) {
     const functionPlan = ctx.plans.functions.get(func)
     const body = func?.body
@@ -2536,8 +2544,12 @@ export function analyzeStructInline(programFacts) {
     // returns through call compositions (`use(mk())` in a helper-free main,
     // `mk().length`) — the verify walk's call rules must see those sites (this
     // closed a live wrong-value: `mk().length` read the PHYSICAL cell count
-    // K·n). When nothing returns Array<S>, the walk is provably a no-op.
-    if (!arrName.size && !anyArrRetFn) continue
+    // K·n). It also still needs the walk when some function's PARAM carries
+    // an arrayElemSchema fact: this frame could be the one CALLING it with a
+    // fresh array-literal argument (`pick([{gain: 2}])`), and verifyCall's
+    // default-disqualify poisoning is the only thing that ever sees that
+    // call site. When NEITHER holds, the walk is provably a no-op.
+    if (!arrName.size && !anyArrRetFn && !anyParamArrFn) continue
 
     // A structInline `Array<S>` value is only ever born from an empty `[]`
     // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`
@@ -2618,7 +2630,31 @@ export function analyzeStructInline(programFacts) {
           const rsid = ctx.funcs.map.get(arg[1]).arrayElemSchema
           if (!(known && cParams?.get(k)?.arrayElemSchema === rsid)) black.add(rsid)
           verifyCall(arg)
-        } else if (!flag(arg)) verify(arg)
+        } else {
+          // Any other argument shape — array literal (`f([{S}, …])`,
+          // `f([d])`), ternary, member/index expression, a call whose OWN
+          // return fact doesn't match, … — is not a proven structInline
+          // producer. The two branches above are the ONLY sanctioned proofs
+          // (a tracked alias in exact fact agreement, or a nested call whose
+          // return fact agrees) — this module's own default-disqualify rule
+          // ("a missed or unrecognized use poisons the schema", doc above)
+          // must poison the callee's k-th param elem-schema here too, or
+          // `inlineArraySid` (static.js) keeps trusting a param fact that
+          // this call site never backed with an inline-packed layout.
+          // Concretely, an array literal ALWAYS builds a taggedLinear
+          // (boxed-pointer) array — same as any other producer this function
+          // doesn't recognize — regardless of whether its elements happen to
+          // share the callee's expected schema (`inferArrElemSchema`'s
+          // cross-call fact only ever claims "elements share a schema",
+          // never "physically inline"). Missing this arm let
+          // `pick([{gain: 2}])` reach module/array.js's `[]` read believing
+          // `inputs` was inline-packed: it read the NaN-boxed element
+          // pointer's raw bits as the `gain` field itself (test/objects.js's
+          // `inputs[0].gain` silently returned 0, not 2).
+          const psid = cParams?.get(k)?.arrayElemSchema
+          if (psid != null) black.add(psid)
+          if (!flag(arg)) verify(arg)
+        }
       }
     }
 
