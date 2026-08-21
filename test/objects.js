@@ -1387,8 +1387,17 @@ test('spread copy: dynamically-added props on the source carry over, independent
 // second shape fixes the first. Live instance: fourier-transform/index.js — the
 // split-radix `cache` entry {x, spectrum, complex, bSi, tw, stages, perm} vs the
 // complex-FFT `cCache` entry {perm, twRe, twFwd, twInv} silently zeroed fft() output
-// end-to-end. Flip `test.todo` → `test` when fixed.
-test.todo('shape collision: same field name in two Map-cached schemas reads the right slot', () => {
+// end-to-end. Root cause: `makeA`'s and `makeB`'s `e` are different bindings (one
+// per function) but shared one module-global, bare-name-keyed slot in
+// ctx.schema.vars — whichever literal registered LAST won the name, so the other
+// function's `.perm` read resolved against a foreign schema's slot offset. Fixed by
+// cd3d8abf (binding census bars a name from ctx.schema.vars the moment ≥2 sites
+// disagree on its schema) and superseded by 4a0102d2 (BindingId totality: every
+// function-local binding gets a module-wide-unique name before it ever reaches
+// ctx.schema.vars, making the collision structurally unrepresentable — see
+// module/schema.js's `idOf` doc and test/slot-hazards.js's "cross-function bare-name
+// binding collision" pins for the same root cause, other trigger shapes).
+test('shape collision: same field name in two Map-cached schemas reads the right slot', () => {
   const r = run(`
     const cacheA = new Map()
     const cacheB = new Map()
@@ -1419,7 +1428,8 @@ test.todo('shape collision: same field name in two Map-cached schemas reads the 
       return s
     }
   `)
-  is(r.f(8), 76543210)
+  is(r.f(8), 76543210)    // schema A's perm slot (index 1): bit-reversed count
+  is(r.g(8), 0)           // schema B's perm slot (index 0): perm[0] + twRe[0] = 0 + 0
 })
 
 // Optional chaining on a host-marshalled object arg always yields undefined —
