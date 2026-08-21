@@ -1520,18 +1520,46 @@ test('fields named like TypedArray accessors resolve like any other field', () =
 // Distinct from the accessor-name class above (confirmed unrelated: reproduces
 // identically with `gain`, a plain number field, and no typed-array field at
 // all) — reading a property off `arr[i]` INSIDE the callee, where `arr` is an
-// array-of-object-literals passed as the call arg itself, misreads: a number
-// field (`gain`) reads 0 instead of 2, a typed-array field (`buffer`) combined
-// with a second `inputs[0].x` read on the same line reads NaN. Isolated so far
-// (probed on fd593164 + the accessor-name fix above): passing the object
-// directly (`pick({...})`, no array wrapper) is correct; pre-indexing outside
-// the call (`pick(arr[0])`) is correct; a LOCAL `let inputs = [{...}]; return
-// inputs[0].x` with no call boundary at all is correct. Only "array literal as
-// the call arg, then `arg[0].prop` read back inside the callee" misreads — a
-// schema/marshaling gap specific to that boundary, not a TypedArray-accessor
-// collision. Needs its own root-cause session; kept separate so it doesn't
-// block the accessor-name fix above.
-test.todo('property read off an array-literal call-arg element inside the callee', () => {
+// array-of-object-literals passed as the call arg itself, misread: a number
+// field (`gain`) read 0 instead of 2, a typed-array field (`buffer`) combined
+// with a second `inputs[0].x` read on the same line read NaN. Passing the
+// object directly (`pick({...})`, no array wrapper) was correct; pre-indexing
+// outside the call (`pick(arr[0])`) was correct; a LOCAL `let inputs =
+// [{...}]; return inputs[0].x` with no call boundary at all was correct. Only
+// "array literal as the call arg, then `arg[0].prop` read back inside the
+// callee" misread — not a TypedArray-accessor collision, a representation
+// mismatch at the call boundary.
+//
+// Root cause: `pick`'s param `inputs` gets a real, sound `arrayElemSchema`
+// fact ("every element is this schema") from inferArrElemSchema's cross-call
+// fixpoint (src/compile/infer.js) — the same fact `dispatch([d])`-shaped code
+// legitimately needs. But `inlineArraySid` (src/static.js) treats that fact
+// as proof the array is physically inline-packed (structInline: K schema
+// fields laid out AS the array cells, no per-element heap object) — a much
+// stronger claim that only a `[]` + `.push({S})`-built array actually earns.
+// An array LITERAL (`[{buffer: a, gain: 2}]`) always boxes each element as
+// its own heap object instead, same as any other array. module/array.js's
+// `[]` read then computed the structInline fused offset load against that
+// boxed-pointer array, reading the NaN-boxed element pointer's raw bits as
+// the field itself (`i32.trunc_sat_f64_s`/`convert_i32_s` on a pointer bit
+// pattern saturates NaN to 0 — the observed misread).
+//
+// analyzeStructInline (src/compile/analyze.js) was supposed to catch this:
+// its own doc already states a non-empty array literal must poison the
+// schema. Two gaps let it through: (1) verifyCall's per-argument check only
+// cross-validated a named-variable alias or a nested user-call whose OWN
+// return fact agreed — an inline array-literal argument fell through
+// unverified, to a branch that recursed into the literal's substructure but
+// never poisoned anything; (2) a caller with no tracked array of its own and
+// no Array<S>-returning function anywhere in the program (e.g. `f` here) was
+// skipped by the walk entirely on the (previously true, now incomplete)
+// assumption that such a frame can't touch an inline array — a fresh literal
+// argument to a schema-carrying param proves it can. Fixed by poisoning the
+// callee's param candidate for any argument shape that isn't one of the two
+// proven-safe producers, and by widening the walk's skip guard to also fire
+// whenever any function's PARAM (not just its return) carries an
+// arrayElemSchema fact.
+test('property read off an array-literal call-arg element inside the callee', () => {
   const r = run(`
     let pick = (inputs) => inputs[0].buffer[0] * inputs[0].gain
     export let f = () => {

@@ -387,17 +387,40 @@ test('inferArrElemSchema: consistent caller schemas → direct slot load', () =>
   ok(/(f64|i32)\.load offset=\d+/.test(wat), 'expected direct schema-slot load')
 })
 
-test('inferArrElemSchema: inline array-literal call argument classifies', () => {
+test('inferArrElemSchema: inline array-literal call argument stays generic (not a structInline producer)', () => {
   if (belowOpt(1)) return
   // subscript's register(d) → dispatch([d, ...]) shape, minus the spread: an
   // array literal built AND passed in one expression (never bound to a local
   // first) whose sole element is a caller PARAM. `d`'s own schemaId comes from
-  // build's callers (both {x,y} object literals); inferArrElemSchema's new
-  // array-literal branch resolves `[d]`'s element through
+  // build's callers (both {x,y} object literals), so inferArrElemSchema's
+  // array-literal branch DOES resolve `[d]`'s element through
   // state.callerParamFacts('schemaId') the same way the plain `schemaId`
-  // mergeRule does — so dispatch's `ops` param gets arrayElemSchema and
-  // `ops[i].y` becomes a direct slot load.
-  const wat = jz.compile(`
+  // mergeRule does — dispatch's `ops` param genuinely gets arrayElemSchema
+  // (every element IS that schema; the fact itself is sound).
+  //
+  // That fact alone used to also fold `ops[i].y` to a direct structInline
+  // slot load (zero __dyn_get_ calls) — this test originally asserted exactly
+  // that and passed. It was a false positive: array-literal syntax always
+  // boxes each element as its own heap object (taggedLinear), the same as
+  // `[1,2,3]` or any other literal — never analyzeStructInline's required
+  // "born from empty `[]` grown by structInline .push" shape. `ops[i]` is a
+  // boxed element POINTER, not an inline record cell, so the direct slot load
+  // read the pointer's raw NaN-boxed bits as `.y` itself: `main()` silently
+  // returned -655360, not 6 (JS). Root cause: analyzeStructInline's
+  // verifyCall (src/compile/analyze.js) only cross-checked named-variable and
+  // nested-user-call arguments against the callee's param fact — an inline
+  // array-literal argument fell through unverified, so its element schema
+  // never got poisoned out of ctx.schema.inlineArray. A second gap let a
+  // schema-free caller (no tracked array of its own, no Array<S>-returning
+  // function anywhere) skip the call-site walk entirely, so a CALLER like
+  // `build` here was never even inspected. Both closed: a non-empty
+  // array-literal argument now always poisons the callee param's candidate
+  // sid, and any function with a schema'd PARAM (not just a schema'd RETURN)
+  // forces the walk. `ops[i].y` now correctly stays on the generic dyn-get
+  // path — the WAT assertion below proves the unsound fast path didn't fire;
+  // the value assertion is what actually matters (WAT shape alone is exactly
+  // what gave false confidence before).
+  const src = `
     const dispatch = (ops) => {
       let s = 0
       for (let i = 0; i < ops.length; i++) s = s + ops[i].y
@@ -405,8 +428,10 @@ test('inferArrElemSchema: inline array-literal call argument classifies', () => 
     }
     const build = (d) => dispatch([d])
     export const main = () => (build({x: 1, y: 2}) + build({x: 3, y: 4})) | 0
-  `, { wat: true })
-  is(count(wat, /\$__dyn_get_/g), 0, 'schema-aware → no __dyn_get fallback')
+  `
+  const wat = jz.compile(src, { wat: true })
+  ok(count(wat, /\$__dyn_get_/g) > 0, 'array-literal call arg is not structInline-eligible — generic dyn-get path stays')
+  is(jz(src).exports.main(), 6, 'runtime value is JS-correct: build({x:1,y:2})=2, build({x:3,y:4})=4, sum=6')
 })
 
 test('inferArrElemSchema: heterogeneous literal elements stay generic', () => {
