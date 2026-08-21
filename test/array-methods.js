@@ -1296,7 +1296,7 @@ test('every: typed-array field of heap-returned object', () => {
 // hit or optimized-away first, not yet isolated further.
 // JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
 // localization run above used `npm run build`'s O3 default.
-// DIRECTION (a) TRIED THIS SESSION AND REVERTED — UNSAFE, do not repeat as-is.
+// DIRECTION (a) TRIED PRIOR SESSION AND REVERTED — UNSAFE, do not repeat as-is.
 // Guarded `tryRuntimeStringFork`: a nullish `callMethod(t, typedEmitter)` (or
 // `strEmitter`) is omitted from `cases`, not pushed — falls through to the next
 // case or to `generic` instead of embedding `null`. Build-crash gate PASSED
@@ -1308,26 +1308,64 @@ test('every: typed-array field of heap-returned object', () => {
 // arrays involved at all), threw an empty-message `SyntaxError` from the
 // KERNEL'S OWN compiled parser (confirmed directly: `self.exports.default(...)`
 // on a plain `sum` source throws `SyntaxError("")`, not a WASM trap). This
-// disproves the working assumption behind (a) — that a declined TYPED case is
+// disproved the working assumption behind (a) — that a declined TYPED case is
 // effectively dead code at runtime, so falling through to `generic` is
 // consequence-free. It is NOT dead code: watr's assembler rejects malformed IR
 // at BUILD time regardless of reachability (explaining the clean 5/5 build),
 // but at least one of the ~112 census-found sites sits on the kernel's live
 // tokenizer/parser hot path and IS reached with real data — `generic`'s
-// wrong-layout read there corrupts the compiled parser itself. (b) — audit
-// every `.typed:*` "return null" site and give the declining shape (BigInt-
-// element / unresolved-element receivers hitting `.typed:slice`/`.typed:filter`
-// through a fully-erased vt) a CORRECT runtime-safe path, e.g. extending
-// `.typed:slice`'s existing `!r` → `__typed_slice_rt` runtime-dispatch fallback
-// (module/typedarray.js:2598-2608) to also cover the `isBigInt` decline instead
-// of bailing to `null` — is the remaining, untaken, properly-scoped direction;
-// out of this session's timebox (root-causing the corruption itself took the
-// remainder of it). `set:` PROP_MODULES row (coordinator audit finding, src/
-// autoload.js) also reverted uncommitted — meaningless without a landed (a)/(b).
+// wrong-layout read there corrupts the compiled parser itself.
+//
+// FIXED (agent/typed-decline-b, direction (b) — audit + close every reachable
+// decline, rather than guard-and-omit it). Audited all ~29 `.typed:*` emitters
+// (grep `'.typed:` module/typedarray.js): `.typed:fill`/`.reverse`/`.copyWithin`/
+// `.sort`/`.set`/`.at`/`.subarray`/`.toBase64`/`.toHex`/`.setFrom*` never decline
+// (unconditional runtime aux-byte dispatch); `.typed:forEach`/`.reduce`/
+// `.indexOf`/`.lastIndexOf`/`.includes`/`.find`/`.findIndex`/`.findLast`/
+// `.findLastIndex`/`.some`/`.every` share one dynamic-branch helper (`typedLoop`)
+// that itself never returns falsy, so their own `if (!loop) return null` guards
+// are dead; `.typed:toReversed`/`.toSorted`/`.with` only propagate `.typed:slice`'s
+// decline. Two had a REAL reachable decline once the TYPED case below embeds a
+// typed emitter's raw return into `dispatchByPtrType` unguarded: `.typed:slice`'s
+// `r.isBigInt` case now routes into the SAME `!r` → `__typed_slice_rt` runtime
+// fallback direction (a) sketched (slice is a raw byte copy — BigInt needs no
+// separate static path); `.typed:filter`'s `!r || r.isBigInt` case gets a new
+// runtime aux-dispatch loop (module/typedarray.js) — `__typed_get_idx`/
+// `__typed_set_idx` per element (the same helpers `typedLoop`'s own dynamic
+// branch already leans on unconditionally), `__ptr_aux`/`__typed_shift`/
+// `__alloc_hdr_n`/`__mkptr` for a correctly-strided, correctly-tagged output
+// allocated worst-case and patched to the true passed count — mirrors
+// `__typed_slice_rt`'s own runtime-aux-dispatch allocation shape, extended with
+// filter's per-element callback. `tryRuntimeStringFork` renamed `tryRuntimePtrTypeFork`
+// (src/compile/emit.js) — it dispatches STRING vs TYPED vs generic now, not just
+// string vs generic. `set: ['core','typedarray','collection']` landed in
+// src/autoload.js PROP_MODULES, generalized to every OTHER `.typed:*` name that
+// shares a generic `.${method}` emitter (fill/map/filter/reduce/forEach/find*/
+// every/some/copyWithin/at/toSorted/toReversed/with/sort/reverse/slice/indexOf/
+// lastIndexOf/includes) — audit found ALL of them missing `typedarray`, not just
+// `set`; differentially confirmed load-bearing (a host-provided typed-array
+// PARAMETER — source names no typed ctor anywhere, so `includeForRuntimeCtor`
+// never fires — silently misdispatched `.fill()` without this row: 1003 instead
+// of 9009, reading a real Float64Array as a guessed plain array). `.typed:[]`/
+// `.typed:[]=` (index ops, not method calls) stay out of scope: a different,
+// pre-existing, already-guarded compile-time-only call path (module/array.js /
+// src/compile/emit-assign.js) never reached through this fork.
+//
+// SEPARATELY NOTED, NOT FIXED (pre-existing, out of this session's scope):
+// `.typed:map`'s own `!r` (fully-unresolved, non-BigInt) case falls back to
+// generic `.map` — sound for BigInt (bit-identical 8-byte load, the same
+// reasoning as its own accepted BigInt fallback a few lines above it) but a
+// latent width-correctness gap for a genuinely narrow unresolved receiver
+// (array.js's generic `.map`/`.filter` read the header via a direct, non-
+// polymorphic `arrayLenFromPtr`, not the aux-aware `__len`). Not reachable as a
+// bare-null crash through this fork specifically (guarded by the same
+// `ctx.core.emit['.map']`-exists precondition the fork itself requires to fire
+// at all) — a correctness question, not this defect's crash class.
 // Flip `test.todo` → `test` once a build run holds clean across a real repeat
 // count (10+) AND kernel-oracle/kernel-parity both hold at 13/13 and 33/33 —
-// not just the build exit code.
-test.todo('set: into typed-array field added dynamically to an empty object', () => {
+// not just the build exit code. (Both held clean on this branch — see its
+// commits for the exact tallies.)
+test('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
     s.a = new Float64Array(4)
@@ -1336,6 +1374,89 @@ test.todo('set: into typed-array field added dynamically to an empty object', ()
     return s.a[0] * 1000 + s.a[3]
   }`)
   is(f(), 1004)
+})
+
+// The registration-totality case: `dst`/`src` are opaque exported-function
+// params — this source names NO typed ctor anywhere, so `typedarray` can ONLY
+// autoload via src/autoload.js PROP_MODULES' `set` row (includeForRuntimeCtor
+// never fires — there is no `new XArray(...)` literal for it to see). Uses
+// `r.memory.Float64Array(...)` (test/buffer.js's own host-marshaling idiom) to
+// pass real host typed arrays into params the compiler never pins a vt for.
+// Differentially confirmed load-bearing pre-fix (agent/typed-decline-b): 1003
+// (misdispatched to a guessed-array read of dst's raw bytes), not 1004.
+test('set: host-provided typed receiver (source names no typed ctor at all)', () => {
+  const r = jz(`export function setIt(dst, src) { dst.set(src); return dst[0] * 1000 + dst[3] }`)
+  is(Number(r.exports.setIt(r.memory.Float64Array([0, 0, 0, 0]), r.memory.Float64Array([1, 2, 3, 4]))), 1004)
+})
+
+// .fill sibling probe — same dyn-field shape as the .set pin above, the other
+// method the original defect report named as misfiring via the generic
+// fallback (a typed array's BYTE-length header misread as a raw element count).
+test('fill: into typed-array field added dynamically to an empty object', () => {
+  const { f } = runHost(`export let f = () => {
+    const s = {}
+    s.a = new Float64Array(4)
+    s.a.fill(7)
+    return s.a[0] * 1000 + s.a[3]
+  }`)
+  is(f(), 7007)
+})
+
+// .forEach sibling probe — same shape; asserts both correct call COUNT (the
+// original defect fired 24 times for a 3-element array, 8× its true length)
+// and correct per-call VALUES (sum, not just count).
+test('forEach: into typed-array field added dynamically to an empty object', () => {
+  const { f } = runHost(`export let f = () => {
+    const s = {}
+    s.a = new Float64Array([1, 2, 3])
+    let calls = 0, sum = 0
+    s.a.forEach((v) => { calls++; sum += v })
+    return calls * 1000 + sum
+  }`)
+  is(f(), 3006)
+})
+
+// .filter sibling probe on a NARROW (1-byte) element width — the actual shape
+// `.typed:filter`'s new runtime aux-dispatch branch (module/typedarray.js) has
+// to get right: a wrong-stride generic fallback would misread this immediately
+// (8-byte f64 slots over 1-byte elements), unlike Float64Array above where a
+// stride mismatch happens to be bit-invisible.
+test('filter: into typed-array field added dynamically to an empty object (narrow element width)', () => {
+  const { f } = runHost(`export let f = () => {
+    const s = {}
+    s.a = new Int8Array([1, -2, 3, -4, 5])
+    const t = s.a.filter(x => x > 0)
+    return t.length * 1000 + t[0] * 10 + t[2]
+  }`)
+  is(f(), 3015)
+})
+
+// .typed:slice / .typed:filter BigInt pins — the OTHER decline condition this
+// branch closed (`r.isBigInt`, alongside `!r` above). Both now route through a
+// runtime aux-byte dispatch instead of a bare `return null`; asserted via
+// `.length` (the runtime structure `__typed_slice_rt`/the new filter loop
+// produce is correct) rather than further element indexing — re-indexing a
+// BigInt slice/filter RESULT held in a variable hits a separate, pre-existing
+// analyze.js gap (BigInt element-kind isn't propagated through a `.slice()`/
+// `.map()` assignment's static type tracking, same as this file's existing
+// accepted `.typed:map` BigInt-fallback rows already exhibit) — out of the
+// `.typed:*` emitter-decline scope this branch audits.
+test('slice: BigInt64Array (isBigInt no longer bails to a bare decline)', () => {
+  const { f } = runHost(`export let f = () => {
+    let b = new BigInt64Array(4)
+    b[0] = 5n; b[1] = 6n; b[2] = 7n
+    return b.slice(0, 2).length
+  }`)
+  is(f(), 2)
+})
+
+test('filter: BigInt64Array (isBigInt no longer bails to a bare decline)', () => {
+  const { f } = runHost(`export let f = () => {
+    let b = new BigInt64Array(4)
+    b[0] = 5n; b[1] = 0n; b[2] = 7n; b[3] = 0n
+    return b.filter(x => x !== 0n).length
+  }`)
+  is(f(), 2)
 })
 
 test('map: named constructor-fn callback reboxes (ptrKind through the inline wrapper)', () => {
