@@ -1449,15 +1449,13 @@ export function narrowLoopBound(fn) {
   // reused by a later loop is re-zeroed between them, and a negative write
   // anywhere voids the proof.
   const writes = new Map()
-  const collectWrites = (n) => {
-    if (!Array.isArray(n)) return
+  const collectWrites = n => {
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
       let arr = writes.get(n[1]); if (!arr) writes.set(n[1], arr = [])
       arr.push(n[2])
     }
-    for (let i = 1; i < n.length; i++) collectWrites(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) collectWrites(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: collectWrites })
 
   const constVal = (n) => Array.isArray(n) && n[0] === 'i32.const' ? Number(n[1]) : NaN
   const nonNegCounter = (name) => {
