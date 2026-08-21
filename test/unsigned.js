@@ -17,10 +17,16 @@
  *   • emit.js    — `>>>` const-fold ≥ 2^31 keeps `.unsigned`; foldConst / cmpOp
  *                  const-fold bail on `.unsigned` operands.
  *   • ir.js      — asF64 of an `.unsigned` i32.const widens by its uint32 value.
+ *   • emit.js    — the '?:' handler's i32-select join widens EACH arm by its OWN
+ *                  sign when two plain arms disagree (falls to an f64 select/if,
+ *                  still branchless), and propagates the agreed `.unsigned` flag
+ *                  onto the joined node when they agree (keeps the single-select
+ *                  fast path — a single downstream asF64 now converts correctly
+ *                  either way, instead of always guessing signed).
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
-import { run, evaluate } from './util.js'
+import { run, evaluate, compileSrc } from './util.js'
 
 // ───────────────────────────────────────────────── canonical uint32 boundary
 
@@ -256,16 +262,80 @@ test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 
   // proven here by the signed arm staying exactly `x` (committing unsigned
   // would instead read a negative `x`'s bits as a huge positive magnitude).
   //
-  // The h arm itself is a KNOWN, SEPARATE gap this fix does not close: even
-  // with sig.unsignedResult correctly left false, emit.js compiles the '?:'
-  // as a single wasm `select` over i32 and widens the SELECTED value ONCE
-  // (f64.convert_i32_s) — it doesn't carry a per-arm sign through the select,
-  // so the h arm still misreads. That's a return-STATEMENT-level widening gap
-  // (src/compile/emit.js / src/ir.js's asF64), a different phase than the
-  // function-RESULT-boundary narrowing this task's confirmed probes and root
-  // cause describe — left for separate follow-up, not asserted here either
-  // way (asserting its current wrong value would pin a bug as a spec).
+  // The h arm itself was a SEPARATE gap this fix did not close (see the
+  // '?:' select-join tests below, now fixed): with sig.unsignedResult
+  // correctly left false, emit.js compiled the '?:' as a single wasm
+  // `select` over i32 and widened the SELECTED value ONCE (f64.convert_i32_s)
+  // — no per-arm sign through the select, so the h arm still misread. That
+  // was a return-STATEMENT-level widening gap (src/compile/emit.js's '?:'
+  // handler / src/ir.js's asF64), a different phase than the function-
+  // RESULT-boundary narrowing this test targets — closed separately, now
+  // asserted here too since both arms are correct.
   const { f } = run('export let f = (c, x) => { let h = 0; h = (h + 3000000000) >>> 0; return c ? h : (x | 0) }')
   is(f(false, -5), -5)
   is(f(false, 5), 5)
+  is(f(true, -5), 3000000000)
+  is(f(true, 5), 3000000000)
+})
+
+// ────────────────────────────────────── '?:' select-join per-arm sign (emit.js)
+
+test('mixed-sign `?:` ternary: each arm widens by its OWN sign at O0/O2/O3 (regression for the select-join gap above)', () => {
+  // The exact shape the mixed-sign-tail test above documented as a known,
+  // separate gap: `h` is a narrowUint32-proven uint32 accumulator (the true
+  // arm), `s` an ordinary negative signed local (the false arm). Both are
+  // i32-representable, so emit.js's '?:' handler used to take the i32
+  // `select` fast path and widen the JOINED result ONCE via f64.convert_i32_s
+  // — correct for `s`, sign-flipping `h` (3000000000 read as a negative i32
+  // bit pattern). Fixed by widening each arm with its own `.unsigned` BEFORE
+  // the join when the two plain arms disagree. Pinned at all three optimize
+  // tiers since O2/O3 inline `f` into its caller (different IR shape reaching
+  // the same '?:' handler).
+  for (const optimize of [0, 2, 3]) {
+    const { f } = run(`export let f = (c) => { let h = 0; h = (h + 3000000000) >>> 0; let s = -5; return c ? h : s }`, { optimize })
+    is(f(true), 3000000000, `O${optimize}: unsigned arm (h) reads its true uint32 magnitude`)
+    is(f(false), -5, `O${optimize}: signed arm (s) is untouched by the unsigned sibling`)
+  }
+})
+
+test('agreeing-unsigned `?:` arms: the joined select still needs its OWN `.unsigned` (both-agree half of the same fix)', () => {
+  // The '?:' handler's fast path (single i32 select + single widen) previously
+  // dropped `.unsigned` unconditionally, even when BOTH arms agreed unsigned —
+  // the same root cause as the mixed-sign case above, just with the disagreement
+  // gate never tripping. Isolated from the ternary's own return-tail position
+  // (`picked + 0`, not `return c ? h : h2` directly) so this exercises the
+  // '?:' handler's own select+asF64 join, not narrow.js's separate function-
+  // result tailSign mechanism (which already had its own `h ? h : h` pin).
+  for (const optimize of [0, 2, 3]) {
+    const { f } = run(`export let f = (c) => {
+      let h = 0; h = (h + 3000000000) >>> 0
+      let h2 = 0; h2 = (h2 + 4000000000) >>> 0
+      let picked = c ? h : h2
+      return picked + 0
+    }`, { optimize })
+    is(f(true), 3000000000, `O${optimize}: true arm keeps its uint32 magnitude`)
+    is(f(false), 4000000000, `O${optimize}: false arm keeps its uint32 magnitude`)
+  }
+})
+
+test('agreeing-SIGNED `?:` arms keep the branchless i32-select fast path (no regression from the sign-join fix)', () => {
+  // Control for the two tests above: two ordinary signed i32 arms (the
+  // overwhelming common case) must still compile through the single
+  // i32-select-then-single-widen fast path — the sign-disagreement check
+  // must cost nothing when there's nothing to disagree about. Same
+  // return-tail isolation as the agreeing-unsigned test (`picked + 0`)
+  // so this hits the '?:' handler's own join, not a different narrowing path.
+  const src = `export let f = (c, x, y) => { let a = x | 0; let b = y | 0; let picked = c ? a : b; return picked + 0 }`
+  const w = compileSrc(src, { wat: true, optimize: 0 })
+  // The ternary's OWN join (the $picked store) must be a single i32 select, not
+  // an f64 select/if fallback — `|0`'s own coercion emits unrelated selects for
+  // `a`/`b`, so this checks the $picked site specifically rather than counting
+  // every `select` in the module.
+  is(/local\.set \$picked\s*\(select/.test(w), true, 'ternary join is a single i32 select (fast path)')
+  is(/local\.set \$picked\s*\(if/.test(w), false, 'ternary join did not fall back to if/else')
+  is((w.match(/f64\.convert_i32_[su]/g) || []).length, 1, 'single widen at the return, not per-arm')
+  is(/f64\.convert_i32_u/.test(w), false, 'signed arms convert signed, not unsigned')
+  const { f } = run(src)
+  is(f(1, 7, -9), 7)
+  is(f(0, 7, -9), -9)
 })

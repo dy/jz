@@ -6165,12 +6165,26 @@ export const emitter = {
       const bothPlain = vb.ptrKind == null && vc.ptrKind == null
       const samePtr = vb.ptrKind != null && vb.ptrKind === vc.ptrKind
         && (vb.ptrAux ?? null) === (vc.ptrAux ?? null)
-      if (bothPlain || samePtr) {
+      // A plain arm can ALSO carry `.unsigned` (a proven-uint32 magnitude, cf. ir.js
+      // asF64: `n.unsigned ? convert_i32_u : convert_i32_s`) — the same single-widen-
+      // after-select hazard the ptrKind check above guards against applies to sign:
+      // asF64 widens the JOINED select's result ONCE, with ONE signedness, so a single
+      // i32 select is sound only when both plain arms AGREE (pointer arms don't carry
+      // `.unsigned`, so samePtr is always "agreement"). Disagreement falls through to
+      // the general per-arm asF64 path below (the SAME one a ptrKind mismatch already
+      // falls through to) — it widens each arm independently, so it's correct by
+      // construction for exactly this reason, no separate branch needed here.
+      const signOK = !bothPlain || !!vb.unsigned === !!vc.unsigned
+      if ((bothPlain || samePtr) && signOK) {
         const tagPtr = (n) => {
           if (vb.ptrKind != null && vb.ptrKind === vc.ptrKind) {
             n.ptrKind = vb.ptrKind
             if (vb.ptrAux != null && vb.ptrAux === vc.ptrAux) n.ptrAux = vb.ptrAux
           }
+          // Agreement propagated onto the joined node so the caller's OWN asF64
+          // (this select's result is itself just another i32-typed IR node) converts
+          // with the right sign instead of defaulting to signed.
+          if (bothPlain && vb.unsigned && vc.unsigned) n.unsigned = true
           return n
         }
         if (eagerSelectOK(vb, vc) && selectCondOK(cond))
