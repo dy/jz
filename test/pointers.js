@@ -340,7 +340,7 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // resolve (".work/research.md 'BigInt retirement Slice 0'": both rewrite
 // techniques tried either miscompiled the self-compiled kernel for unrelated
 // programs or broke this very test; reverted, banked not forced). Under
-// Slice 1's flip, this residual "call-arg" ambiguity is now a compile-time
+// Slice 1's flip, this residual "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time
 // refusal instead of a box — the CONSERVATIVE PAIRING read-side machinery
 // this test verified has no remaining input to exercise (nothing ever
 // reaches a real box for it to correctly unbox). Converted to expect-error,

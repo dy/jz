@@ -23,6 +23,8 @@
  * @module jzify/async
  */
 
+import { FN_BOUNDARY_OPS } from './generators.js'
+
 // The runtime, as readable jz source — parsed + spliced ahead of user code
 // when async is present. Exported entries are the host-boundary contract.
 export const ASYNC_RUNTIME = `
@@ -259,8 +261,10 @@ export function createAsyncLowering({ genTemp, err }) {
 
   // await → yield inside THIS function body only (nested function forms keep
   // their own await/this rules; a stray await inside a nested sync fn falls
-  // through to prepare's clean reject).
-  const FN_OPS = new Set(['=>', 'function', 'function*', 'class', 'async'])
+  // through to prepare's clean reject). The boundary set is the layer-wide
+  // canonical one (generators.js FN_BOUNDARY_OPS) — one definition for every
+  // control-effects walker.
+  const FN_OPS = FN_BOUNDARY_OPS
 
   // `for await (decl of src)` → protocol loop in terms of PLAIN await: unwrap
   // @@asyncIterator (else @@iterator), drive next() through await, and await

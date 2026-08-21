@@ -1880,10 +1880,10 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // example for the "ternary-nullish" flow class ("a `cond ? bigVal : null`
 // merge... 'the one kind with no runtime tag'"). This test's whole purpose
 // was verifying the boxed carrier's isTernaryBoxedBigint tracking for
-// exactly this shape — now a compile-time refusal instead, since the
+// exactly this shape — under JZ_BIGINT_STRICT (opt-in) a compile-time refusal instead, since the
 // merge's kind (bigint vs null) is only knowable at runtime, never
 // statically uniform. Converted to expect-error, not deleted.
-test('bigint∪null: kind carries through the nullish ternary arm, guards stay live [RETIRED: BigInt-or-null ternary merge is now a compile-time "ternary-nullish" diagnostic]', () => {
+test('bigint∪null: kind carries through the nullish ternary arm, guards stay live [RETIRED: BigInt-or-null ternary merge is a "ternary-nullish" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
     export let viaTern = (a) => {

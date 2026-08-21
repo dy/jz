@@ -175,3 +175,38 @@ test('async generators: for await + yield* delegation', async () => {
                 async function drive() { let out = ''; for await (const v of g()) out += v; return out }
                 export let f = () => drive()`), '0123')
 })
+
+test('async/generator bodies: nested function forms own their returns and declarations', async () => {
+  if (onWasi() || onKernel()) return
+  // Re-audit finding (2026-08-20): hasReturn/hasYield/hasFreeJump/collectLocals
+  // stopped only at '=>' (or nowhere), so a nested function declaration's own
+  // `return` forced statement decomposition and read as a machine return.
+  // One canonical boundary (FN_BOUNDARY_OPS) + fn-decl hoisting fix these.
+  // Function DECLARATION at machine-body top level — hoisted to a const-bound
+  // expression; callable before its textual position (JS hoisting semantics).
+  is(await val(`export let f = async () => { function helper() { return 1 } return helper() }`), 1)
+  is(await val(`export let f = async () => { const v = helper(); function helper() { return 6 } return v }`), 6)
+  // Function EXPRESSION with its own return — was decomposed into a machine
+  // return pre-fix ("yield inside `const`" rejection).
+  is(await val(`export let f = async () => { const h = function () { return 2 }; return h() }`), 2)
+  // Nested declaration's own locals stay its own (collectLocals boundary).
+  is(await val(`export let f = async () => { function helper() { let x = 7; return x } return helper() }`), 7)
+  // Interleaves with genuine machine effects (await) correctly.
+  is(await val(`export let f = async () => { function helper() { return 10 } const v = await Promise.resolve(helper()); return v + 1 }`), 11)
+  // Nested arrows keep working (the one boundary the old walkers had).
+  is(await val(`export let f = async () => { const h = () => 3; return h() }`), 3)
+  // Same machinery, plain generator: fn decl at generator-body top level.
+  is(jz(`function* g() { function h() { return 4 } yield h() }
+         export let f = () => g().next().value`).exports.f(), 4)
+})
+
+test('async/generator bodies: block-nested function declaration is a named v1 reject', () => {
+  if (onWasi() || onKernel()) return
+  // A declaration inside a DECOMPOSED block (if/loop arm) has no hoist lane
+  // yet — must refuse with the named limit, never leak an unresolvable
+  // reference or a silent trap.
+  let msg = ''
+  try { jz(`export let f = async (c) => { if (c) { function h() { return 5 } return h() } return 0 }`) }
+  catch (e) { msg = e.message }
+  ok(/generators v1: function declaration 'h' inside a decomposed/.test(msg), `named reject (got: ${msg.slice(0, 60)})`)
+})

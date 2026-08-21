@@ -1,5 +1,18 @@
 # BigInt retirement — design (boxed + runtime-discriminated carrier paths)
 
+> **SUPERSEDED IN DIRECTION (2026-08-20, `.work/research.md` §"Body-write-only
+> BigInt params" / §"RETIREMENT FLIP — HALTED", branch `retirement-flip`):**
+> the strict-only endpoint this doc prescribes (delete boxing, refuse every
+> unprovable flow) was falsified by the fixed inference surfacing 40+ lawful
+> guarded-normalization sites, self-graph included — the earlier "strict
+> self-graph clean" was an artifact of an unsound census adopt. Ratified
+> direction (9c170a8b): the BOXED carrier stays the unconditional default,
+> `JZ_BIGINT_STRICT` stays a diagnostic-only opt-in, and the retirement
+> re-aims at deleting the LEGACY parallel heuristics as RepresentationPlan
+> coverage is verified — the plan as sole representation authority. §4's six
+> flow classes, the sink-walk inventory, and Tables A/B remain the accurate
+> MAP of the machinery; only the flip-to-refuse consequence is withdrawn.
+
 Design-only deliverable, HEAD 53b17654 (2026-08-13). No `src/` changes.
 Answers the user decision made on `.work/feature-reach-census.md`'s evidence
 (BigInt — all three paths, raw/boxed/runtime-discriminated — reached by

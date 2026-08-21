@@ -231,8 +231,9 @@ not supported
 
 Ordinary code already carries useful type evidence: `let x = 0.5`,
 `Float32Array`, an array index, a loop counter. JZ infers it instead of
-turning the file into another language. Ambiguous values take a slower,
-always-correct dynamic path.
+turning the file into another language. Ambiguous values fall back to a
+slower dynamic path; the handful of shapes where that path is still wrong
+are pinned openly in the test suite (marked KNOWN-WRONG) rather than hidden.
 
 </details>
 

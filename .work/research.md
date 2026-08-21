@@ -23513,3 +23513,29 @@ adopts stay, being load-bearing for the numeric typing pipeline
 (unswitch-typed-param's loop-reassigned i32 guard local failed WASM
 validation under the unscoped poison — caught by the existing pin, cured
 by the scoping; 7/7 green).
+
+## §Async/generator function-boundary regression CURED + fn-decl hoisting (2026-08-20)
+
+Re-audit's high-confidence finding, confirmed by probe: the async-settlement
+fix's hasReturn stopped only at '=>', so nested function DECLARATIONS and
+EXPRESSIONS inside async bodies decomposed ("yield inside `function`"
+rejections). Baseline check: both shapes TRAPPED unreachable pre-fix — never
+supported — so the expression case is a net new capability, not a
+restoration. Fixes, one layer-wide primitive each:
+1. FN_BOUNDARY_OPS (generators.js, exported): the ONE canonical function
+   boundary ('=>', function, function*, class, async) for every
+   control-effects walker — hasYield (had NO boundary: a nested function*'s
+   own yields leaked), hasReturn, hasFreeJump, collectLocals, and async.js's
+   await mapper (its local FN_OPS copy now aliases the import).
+2. blockStmts lifted to module scope and used to normalize lowerGenerator's
+   entry (block bodies arrived as ONE '{}' node; the ';'-split never fired).
+3. Top-level function declarations in a machine body hoist to const-bound
+   function expressions (JS hoisting semantics — callable before their
+   textual position; the machine assigns hoisted locals before dispatch).
+   Block-nested declarations are a NAMED v1 reject (was: unresolvable-ref
+   error post-boundary, silent trap pre-fix).
+Pinned: 7 positive shapes + the named reject (test/async.js). Doc drift from
+the re-aim swept: 19 "[RETIRED: …now a compile-time diagnostic]" comments →
+"under JZ_BIGINT_STRICT (opt-in)"; README's "always-correct dynamic path" →
+honest KNOWN-WRONG-pins wording; bigint-retirement-design.md carries a
+SUPERSEDED-IN-DIRECTION header pointing at the ratified re-aim.

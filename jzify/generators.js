@@ -22,23 +22,34 @@
  */
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
-const hasYield = (n) => Array.isArray(n) && (isYield(n) || n.some(hasYield))
+// THE one canonical function boundary for every control-effects walker in
+// this layer (hasYield/hasReturn/hasFreeJump/collectLocals here, async.js's
+// await mapper via import): a nested function form OWNS its yields, returns,
+// jumps, and declarations — none of them belong to the enclosing machine.
+// 'async' is the pre-lowering wrapper node; 'class' bodies hold methods
+// (each its own function). Walkers that stopped only at '=>' (or nowhere,
+// hasYield) misrouted nested function declarations/expressions: their inner
+// `return` forced statement decomposition and then read as a machine return
+// ("yield inside `function`" rejections for previously-supported bodies).
+export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 'async'])
+
+const hasYield = (n) => Array.isArray(n) && !FN_BOUNDARY_OPS.has(n[0]) && (isYield(n) || n.some(hasYield))
 
 // A break/continue that would bind OUTSIDE this statement (its target loop was
 // decomposed into states, so the raw op would bind my dispatch while(1) instead).
-// Inner loops re-bind their own jumps; arrows are their own function.
+// Inner loops re-bind their own jumps; nested function forms bind their own.
 const hasFreeJump = (n, depth = 0) => {
   if (!Array.isArray(n)) return false
   const op = n[0]
   if ((op === 'break' || op === 'continue') && n[1] == null) return depth === 0
-  if (op === '=>') return false
+  if (FN_BOUNDARY_OPS.has(op)) return false
   const inner = op === 'while' || op === 'do' || op === 'for' || op === 'for-in' ||
     op === 'for-of' || op === 'switch' ? depth + 1 : depth
   return n.some((c, i) => i > 0 && hasFreeJump(c, inner))
 }
 
-// A `return` anywhere in this statement (mirrors hasFreeJump's `=>` boundary —
-// a nested arrow's own return belongs to IT, not this generator/async body).
+// A `return` anywhere in this statement (same canonical boundary — a nested
+// function form's own return belongs to IT, not this generator/async body).
 // Needed alongside hasYield: a compound statement with no yield but a plain
 // `return` is NOT inert — splicing it atomically (below) would let the return
 // execute as a bare host return out of the __next closure instead of the
@@ -47,9 +58,19 @@ const hasFreeJump = (n, depth = 0) => {
 // read back as a wrong-shaped result).
 const hasReturn = (n) => {
   if (!Array.isArray(n)) return false
-  if (n[0] === '=>') return false
+  if (FN_BOUNDARY_OPS.has(n[0])) return false
   return n[0] === 'return' || n.some(hasReturn)
 }
+
+// Canonical statement-list view of any body/branch node: '{}' unwraps
+// (recursively — a block's payload may itself be a ';' list or one stmt),
+// ';' splits, anything else is a single statement. Shared by the machine
+// entry normalization and every flattenStmt branch walk.
+const blockStmts = (b) =>
+  b == null ? []
+  : Array.isArray(b) && b[0] === '{}' ? blockStmts(b[1])
+  : Array.isArray(b) && b[0] === ';' ? b.slice(1)
+  : [b]
 
 const S = { NEXT: '__s', SENT: '__sent' }
 
@@ -202,13 +223,29 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
         out.add(name)
       }
     }
-    // arrows create their own scope — their decls don't hoist
-    if (node[0] === '=>') return
+    // nested function forms create their own scope — their decls don't hoist
+    if (FN_BOUNDARY_OPS.has(node[0])) return
     for (let i = 1; i < node.length; i++) collectLocals(node[i], out, path)
   }
 
   function lowerGenerator(params, rawBody) {
-    const body = Array.isArray(rawBody) && rawBody[0] === ';' ? rawBody.slice(1) : [rawBody]
+    const body = blockStmts(rawBody)
+
+    // JS hoists function declarations: a machine body binds its TOP-LEVEL
+    // ones as consts up front (the machine assigns hoisted locals before
+    // dispatch reaches any user statement, so call-before-declaration keeps
+    // working). The const-bound function EXPRESSION rides the proven closure
+    // lane; the raw declaration statement would otherwise reach the machine
+    // splice as an unresolvable reference (transform-level hoistFnDecl binds
+    // a scope the __next closure never sees). Block-nested declarations stay
+    // a named v1 reject in flattenStmt below.
+    for (let i = 0; i < body.length; i++) {
+      const st = body[i]
+      if (Array.isArray(st) && st[0] === 'function' && st[1]) {
+        body.splice(i, 1)
+        body.unshift(['const', ['=', st[1], ['function', '', st[2], st[3]]]])
+      }
+    }
 
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
@@ -312,6 +349,12 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       if (op === 'break' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.brk)); return null }
       if (op === 'continue' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.cont)); return null }
 
+      // --- function declarations: top-level ones were hoisted to consts by
+      // lowerGenerator's pre-pass; one reaching HERE sits inside a DECOMPOSED
+      // block — name the v1 limit instead of leaking an unresolvable ref ---
+      if (op === 'function' && st[1])
+        err(`generators v1: function declaration '${st[1]}' inside a decomposed async/generator block is not supported yet — move it to the function's top level or bind it as \`const ${st[1]} = function () { … }\``)
+
       // --- compound statements stay atomic only when they carry no yield, no
       // plain return (see hasReturn — a nested return must reach the `return`
       // case above, not fall-through as a bare host return), AND no
@@ -392,11 +435,6 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       err(`generators v1: yield inside \`${op}\` is not supported yet — hoist the yield to statement position`)
     }
 
-    const blockStmts = (b) =>
-      b == null ? []
-      : Array.isArray(b) && b[0] === '{}' ? blockStmts(b[1])
-      : Array.isArray(b) && b[0] === ';' ? b.slice(1)
-      : [b]
 
     const entry = newState()
     const end = flattenList(body, entry, null)

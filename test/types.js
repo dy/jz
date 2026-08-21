@@ -708,13 +708,13 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it �
 // BigInt) passed as a call argument, whose per-index kind param
 // destructuring never resolved. That gap is exactly the "collection" flow
 // class §4 defines (an array literal carrying a BigInt element into
-// storage this program never proves uniform) — now a compile-time refusal
+// storage this program never proves uniform) — under JZ_BIGINT_STRICT (opt-in) a compile-time refusal
 // instead of a silently-unresolved kind. STRUCTURALLY IMPOSSIBLE to
 // construct the old repro anymore, same class as test/data.js's audit-#11
 // P0-1 deletion the design calls out — converted, not deleted, since the
 // shape itself (heterogeneous-array-literal call-arg) remains valuable
 // negative-space coverage.
-test('array-destructure kind: a heterogeneous BigInt-element array literal as a call-arg is now a compile-time "collection" diagnostic (was: silently-unresolved per-index kind)', () => {
+test('array-destructure kind: a heterogeneous BigInt-element array literal as a call-arg is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in) (was: silently-unresolved per-index kind)', () => {
   if (onKernel()) return
   if (onKernel()) return
   const src = `

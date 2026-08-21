@@ -522,7 +522,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // of carried (raw or boxed) into `Number()`'s dynamic dispatch, there is no
 // longer a value for either mechanism to act on — the whole KNOWN-FAIL
 // class is eliminated at the root, not narrowed or reordered around.
-test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigInt array element is now a compile-time "collection" diagnostic, not a runtime module-ordering corruption', () => {
+test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigInt array element is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in), not a runtime module-ordering corruption', () => {
   const bSrc = `
     const arr = [1.5, 123456789012345n, 2.5]
     export let mkBig = (i) => Number(arr[i])
