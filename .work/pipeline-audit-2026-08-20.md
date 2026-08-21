@@ -46,6 +46,8 @@ Calibration check (so this isn't a blind "jz can't do dispatch" claim): `bench/v
 
 **Payoff.** High, and precisely on the user's stated bar: this is a class-level lever named by a bench file the user's own suite ships, not a bench-specific hack.
 
+**Retracted by re-audit.** False finding — current lowering is intentional and measured faster (seltree 4.2×).
+
 ---
 
 ### 4. NEW — `valTypeOf`/`valTypeOfWithLocals`/`inferValType`: justified fork, but `inferValType` silently drops local-awareness for compound call-site arguments

@@ -17,28 +17,27 @@
  * caller), no bitwise and/or/xor, no modexp.
  *
  * LIMB BASE IS 2^15 (32768), NOT 2^32 — deliberately narrower than the
- * "u32-limb" shorthand suggests, forced by a real jz self-compile constraint
+ * "u32-limb" shorthand suggests. Originally forced by a jz self-compile bug
  * discovered compiling THIS module: emit.js's `mulFitsI32` fast-path
- * (compile/emit.js, the `*` operator) treats a multiply as i32-safe whenever
- * EITHER operand's value is provably <= FITS_I32_MAX (2^22) — a heuristic
- * calibrated for typical index/hash-mix shapes (`i*4`, `t*(m&63)`), where
- * the OTHER operand is expected to already be small from context. It does
- * NOT check the actual product range. A 16-bit-limb split (the natural
- * choice for 32-bit limbs: mask+shift into two <2^16 halves, multiply the
- * halves) has BOTH halves individually <= FITS_I32_MAX, so the heuristic
- * fires on every partial product — but two <2^16 values can multiply past
- * 2^31, and the resulting `i32.mul` silently wraps (verified: compiling
- * `midLo * 65536` for midLo=32768 produced -2147483648 instead of
- * 2147483648 when this module was self-compiled, while identical native JS
- * gave the correct value — a compiler-narrowing bug, not an algorithm bug).
- * 15-bit limbs sidestep it structurally: the worst-case product of two
- * limbs is 32767*32767 = 1073676289 < 2^31-1, so `i32.mul` (whether or not
- * emit.js's heuristic is the reason it was chosen) is ALWAYS the exact
- * product — no split/recombine step is even needed. Every other per-limb op
- * here (add/sub/compare/shift-by-1) already stays far under 2^31 for the
- * same reason. This is a workaround for the compiler's own bootstrap, not a
- * general fix to `mulFitsI32` (out of this audit's scope — that heuristic's
- * soundness contract is a separate, wider concern with its own tests).
+ * (compile/emit.js, the `*` operator) used to treat a multiply as i32-safe
+ * whenever EITHER operand's value was provably <= FITS_I32_MAX (2^22),
+ * without checking the actual product range. A 16-bit-limb split (the
+ * natural choice for 32-bit limbs: mask+shift into two <2^16 halves,
+ * multiply the halves) had BOTH halves individually <= FITS_I32_MAX, so the
+ * heuristic fired on every partial product — but two <2^16 values can
+ * multiply past 2^31, and the resulting `i32.mul` silently wrapped
+ * (verified: compiling `midLo * 65536` for midLo=32768 produced
+ * -2147483648 instead of 2147483648 when this module was self-compiled,
+ * while identical native JS gave the correct value — a compiler-narrowing
+ * bug, not an algorithm bug). `mulFitsI32` has SINCE been fixed at the root
+ * (P0-2: it now bounds the PRODUCT of both operands, not either alone), so
+ * this is no longer a live constraint — the product-range check catches a
+ * 16-bit split correctly today. 15-bit limbs are kept anyway for the
+ * invariant they still buy: the worst-case product of two limbs is
+ * 32767*32767 = 1073676289 < 2^31-1, so `i32.mul` is ALWAYS the exact
+ * product — no split/recombine step is even needed. Every other per-limb
+ * op here (add/sub/compare/shift-by-1) already stays far under 2^31 for the
+ * same reason.
  *
  * @module bignum
  */

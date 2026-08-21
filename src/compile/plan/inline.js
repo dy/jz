@@ -18,6 +18,13 @@
  * indicating whether anything changed (so `plan()` knows to invalidate the
  * program-facts cache).
  *
+ * TIER BOUNDARY: inlines at the SOURCE-AST level, pre-emission, driven by
+ * call-site/loop-depth/escape heuristics — never purity or straight-line
+ * analysis, and never anything WAT-shaped (no `local.get`/`call` IR nodes).
+ * That's the optimizer tier's job: pure, straight-line callees only, inlined
+ * post-emission to expose arithmetic to the vectorizer/narrower/const-folder
+ * — documented at optimize/vectorize.js's `inlinePureFnsInFn`/`inlinePureCallExpr`.
+ *
  * @module compile/plan/inline
  */
 
