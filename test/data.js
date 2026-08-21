@@ -1832,3 +1832,25 @@ test('RepresentationPlan: JSON.stringify throws on dynamic BigInt in every posit
     ok(String(caught.message).includes('BigInt'), `O${optimize || 0}: host boundary message`)
   }
 })
+
+test('tagged-union strict equality: a non-BigInt member never bit-collides with a raw BigInt (re-audit P0)', () => {
+  // A plan-MATERIALIZED union local (every BigInt member boxed): its Number
+  // member must never compare strictly equal to a BigInt by bit collision —
+  // tagged Number 0's bits equal raw 0n's payload, Number.MIN_VALUE's equal
+  // 1n's. The proven-tagged compare arm short-circuits non-box members to
+  // FALSE; OPEN operands (raw BigInt possible) never take that arm and keep
+  // the documented raw-carrier bits semantics on the dynamic path.
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(`
+      export let f = (flag) => { let value = flag ? 1n : 0; return value === 0n }
+      export let g = (flag) => { let value = flag ? 1n : 0; return value === 1n }
+      export let h = (flag) => { let value = flag ? 1n : Number.MIN_VALUE; return value === 1n }
+    `, { optimize }).exports
+    is(e.f(0), false, `O${optimize || 0}: Number 0 !== 0n (zero-bits collision)`)
+    is(e.f(1), false, `O${optimize || 0}: 1n !== 0n`)
+    is(e.g(1), true, `O${optimize || 0}: 1n === 1n through the box`)
+    is(e.g(0), false, `O${optimize || 0}: Number 0 !== 1n`)
+    is(e.h(0), false, `O${optimize || 0}: MIN_VALUE !== 1n (subnormal collision)`)
+    is(e.h(1), true, `O${optimize || 0}: 1n === 1n beside a subnormal arm`)
+  }
+})

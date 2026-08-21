@@ -107,3 +107,29 @@ the union rides an inline temp local the plan does not materialize
 inline temp must inherit materialization (plan the inlined body's locals
 like any body's), or inlining of box-producing unions defers until C's
 edges cover inline temps.
+
+## C4 state (2026-08-21)
+
+C4a LANDED (707f4306): consumer-side containment at coerceArg — the legacy
+sig.bigintBoxed arms fire ONLY on plan-REJECT; any real verdict (BOX/
+UNBOX/KEEP) is the plan's own. Producer-side gating (markBigintSink) was
+REJECTED as circular: the plan's current-rep derivation reads the sink's
+marks, so the sink keeps marking and the plan keeps deriving — authority
+resolves at the EDGE. Verified: acceptance shapes + data/pointers/
+statements/watr/closures all green.
+
+C4b DESIGNED, not yet implemented (boundary ABI — do with fresh care):
+zero-evidence host BigInt ingress → correct-or-reject at the wrapper.
+Mechanism: interop's wrapVal line ~413 sends a plain BigInt VALUE as a
+decimal string (mem.String(v.toString())) — a happy accident for
+typeof-guarded params, silent garbage for zero-evidence numeric params
+(the dyn-keys.js KNOWN-FAIL `f(5n,3n) → number` pin). With the plan's
+exported-identity materialization, typeof-guarded EXPORTED params can take
+hostBoxParams' PTR.BIGINT ingress and handle real host BigInts CORRECTLY
+through the tag — so the reject scope narrows to genuinely zero-evidence
+slots: at the export call wrapper (per-slot marker data — the jz:i64exp
+lane), a plain-BigInt argument at a NON-ingress slot throws a typed
+TypeError naming the param and the two remedies (give the program BigInt
+evidence, or pass the guarded-normalization string). Flip the dyn-keys pin
+from silent-number to throws. AUDIT ANSWER embodied: dynamic-correct where
+the plan carries it, loud reject where it can't, never a guess.
