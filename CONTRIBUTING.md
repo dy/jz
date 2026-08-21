@@ -59,8 +59,9 @@ All values are f64. Heap types use NaN-boxing (see README). The shared `ctx` obj
 
 1. Find or create the module file in `module/` (e.g. `module/string.js`)
 2. Register the handler — plain `ctx.core.emit['name'] = fn` (`inc()` any deps inline) unless deps must auto-include or arity must be explicit, in which case `reg('name', deps, fn)` / `call` / `method` from `src/bridge.js` (see "Stdlib registration" above). WAT include deps via `deps({ … })`. Emit helpers: `flat`, `body`, `bool`, `idx`, `spread`.
-3. Add tests in `test/`
-4. Run `npm test`
+3. If the handler's key is `.name` or `.kind:name` (a `.prop`-dispatched method/property, as opposed to a bare global-call name like `parseInt`), run `node scripts/gen-prop-modules.mjs` and commit the resulting `src/prop-modules.generated.js` diff — it's the derived table `includeForProperty` (`src/autoload.js`) uses to decide which modules a property NAME might auto-load at prepare() time, before value-type inference can say which module it'll actually dispatch to. `test/self-compile-includes.js`'s freshness test fails loudly (naming this command) if you forget.
+4. Add tests in `test/`
+5. Run `npm test`
 
 ## Adding an auto-vectorizer recognizer
 
