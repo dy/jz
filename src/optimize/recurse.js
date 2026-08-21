@@ -18,6 +18,8 @@
  * @module optimize/recurse
  */
 
+import { walkAst } from '../ast.js'
+
 const isArr = (x) => Array.isArray(x)   // wrapped: jz self-compile rejects a builtin used as a value
 
 const UNROLL_DEPTH = 2
@@ -140,17 +142,15 @@ export function recursionUnroll(fn) {
   // Gate: exactly one non-tail self-call, only soundly-cloneable constructs.
   let selfCalls = 0, bail = false
   const labelNames = new Set()
-  const scan = (n) => {
-    if (!isArr(n)) return
+  const scan = n => {
     const op = n[0]
     if (op === 'call' && n[1] === self) selfCalls++
     else if (op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref') bail = true
     else if (op === 'br_table') bail = true
     else if ((op === 'br' || op === 'br_if') && typeof n[1] !== 'string') bail = true
     else if ((op === 'block' || op === 'loop') && typeof n[1] === 'string' && n[1][0] === '$') labelNames.add(n[1])
-    for (let i = 1; i < n.length; i++) scan(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: scan })
   if (bail || selfCalls !== 1) return
 
   // The recursive call must be consumed by `acc = acc ± self(…)`, acc a local.
