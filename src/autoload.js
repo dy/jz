@@ -9,15 +9,29 @@ export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', S
   // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
   f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
+// Method names below are listed per-property because `includeForProperty` runs
+// before value-type inference (prepare() precedes analyze()), so it can't yet
+// know whether a given `.prop` receiver will resolve to string/array/typedarray/
+// collection — each row lists every module whose `.<mod>:prop` (or generic
+// `.prop`) emitter that name could resolve to, so whichever one the runtime
+// dispatch fork (tryRuntimePtrTypeFork, emit.js) picks at compile time is
+// actually registered. `typedarray` was missing from every method name TYPED
+// shares with ARRAY/STRING (agent/typed-decline-b audit, coordinator finding
+// for `set` generalized to the rest): a typed array reached ONLY through an
+// erased-vt receiver (dyn-prop field, host-provided param — no `new XArray(...)`
+// anywhere in source to trigger includeForRuntimeCtor) relied solely on this
+// table to pull `typedarray` in, and every one of these rows silently didn't.
 export const PROP_MODULES = Object.assign(Object.create(null), {
   push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
-  splice: ['core', 'array'], reverse: ['core', 'array'], sort: ['core', 'array'], fill: ['core', 'array'],
-  map: ['core', 'array'], filter: ['core', 'array'], reduce: ['core', 'array'], reduceRight: ['core', 'array'],
-  forEach: ['core', 'array'], find: ['core', 'array'], findIndex: ['core', 'array'],
-  findLast: ['core', 'array'], findLastIndex: ['core', 'array'],
-  every: ['core', 'array'], some: ['core', 'array'], flat: ['core', 'array'], flatMap: ['core', 'array'],
-  join: ['core', 'array'], copyWithin: ['core', 'array'], at: ['core', 'string', 'array'],
-  toSorted: ['core', 'array'], toReversed: ['core', 'array'], with: ['core', 'array'],
+  splice: ['core', 'array'], reverse: ['core', 'array', 'typedarray'], sort: ['core', 'array', 'typedarray'],
+  fill: ['core', 'array', 'typedarray'],
+  map: ['core', 'array', 'typedarray'], filter: ['core', 'array', 'typedarray'], reduce: ['core', 'array', 'typedarray'],
+  reduceRight: ['core', 'array'],
+  forEach: ['core', 'array', 'typedarray'], find: ['core', 'array', 'typedarray'], findIndex: ['core', 'array', 'typedarray'],
+  findLast: ['core', 'array', 'typedarray'], findLastIndex: ['core', 'array', 'typedarray'],
+  every: ['core', 'array', 'typedarray'], some: ['core', 'array', 'typedarray'], flat: ['core', 'array'], flatMap: ['core', 'array'],
+  join: ['core', 'array'], copyWithin: ['core', 'array', 'typedarray'], at: ['core', 'string', 'array', 'typedarray'],
+  toSorted: ['core', 'array', 'typedarray'], toReversed: ['core', 'array', 'typedarray'], with: ['core', 'array', 'typedarray'],
   charAt: ['core', 'string'], charCodeAt: ['core', 'string'], codePointAt: ['core', 'string'],
   toUpperCase: ['core', 'string'], toLowerCase: ['core', 'string'], toLocaleLowerCase: ['core', 'string'], trim: ['core', 'string'],
   trimStart: ['core', 'string'], trimEnd: ['core', 'string'],
@@ -27,9 +41,14 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   matchAll: ['core', 'string'], match: ['core', 'string'],
   substring: ['core', 'string'], substr: ['core', 'string'],
   add: ['core', 'collection'], clear: ['core', 'collection'],
-  slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
-  indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
-  includes: ['core', 'string', 'array'],
+  // No `.array:set`/generic-array `.set` exists (Array has no `.set`) — only
+  // Map (collection) and TypedArray. The dyn-field .set defect this branch
+  // fixes (test/array-methods.js) is precisely `.set` on an erased-vt receiver
+  // falling to Map.prototype.set for lack of this row.
+  set: ['core', 'typedarray', 'collection'],
+  slice: ['core', 'string', 'array', 'typedarray'], concat: ['core', 'string', 'array'],
+  indexOf: ['core', 'string', 'array', 'typedarray'], lastIndexOf: ['core', 'string', 'array', 'typedarray'],
+  includes: ['core', 'string', 'array', 'typedarray'],
   length: ['core', 'string', 'array', 'typedarray', 'collection'],
   toBase64: ['core', 'typedarray', 'string'], toHex: ['core', 'typedarray', 'string'],
   setFromBase64: ['core', 'typedarray', 'string', 'collection'],
