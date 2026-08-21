@@ -1351,16 +1351,66 @@ test('every: typed-array field of heap-returned object', () => {
 // pre-existing, already-guarded compile-time-only call path (module/array.js /
 // src/compile/emit-assign.js) never reached through this fork.
 //
-// SEPARATELY NOTED, NOT FIXED (pre-existing, out of this session's scope):
-// `.typed:map`'s own `!r` (fully-unresolved, non-BigInt) case falls back to
-// generic `.map` — sound for BigInt (bit-identical 8-byte load, the same
-// reasoning as its own accepted BigInt fallback a few lines above it) but a
-// latent width-correctness gap for a genuinely narrow unresolved receiver
-// (array.js's generic `.map`/`.filter` read the header via a direct, non-
-// polymorphic `arrayLenFromPtr`, not the aux-aware `__len`). Not reachable as a
-// bare-null crash through this fork specifically (guarded by the same
-// `ctx.core.emit['.map']`-exists precondition the fork itself requires to fire
-// at all) — a correctness question, not this defect's crash class.
+// CLOSED IN A FOLLOW-UP SESSION (agent/typed-map-width): `.typed:map`'s own
+// `!r` (fully-unresolved, non-BigInt) case used to fall back to generic
+// `.map` — sound for BigInt (bit-identical 8-byte load, the same reasoning as
+// its own accepted BigInt fallback a few lines above it) but a real
+// width-correctness gap for a genuinely narrow unresolved receiver: not just
+// "double-width" but a raw header/stride misread (array.js's generic `.map`
+// reads the header via a direct, non-polymorphic `arrayLenFromPtr`/8-byte-
+// stride `arrayLoop`, not the aux-aware `__len`/per-width `elemLoadIR`),
+// confirmed to read outright garbage (denormal `2.5e-316`-class values, raw
+// adjacent heap bytes) for an Int8Array through the opaque-polymorphic/
+// dyn-field/host-receiver fork shapes below — not a plausible wrong number.
+// Fixed the same way `.typed:filter`'s `!r` branch above was: a runtime
+// aux-dispatch loop (module/typedarray.js) — `__typed_get_idx`/
+// `__typed_set_idx` per element (the SAME helpers `typedLoop`'s own dynamic
+// branch and `.typed:set`'s `!r` branch already lean on unconditionally),
+// `__ptr_aux`/`__typed_shift`/`__alloc_hdr_n`/`__mkptr` for a correctly-
+// strided, correctly-tagged output — simpler than filter's shape since map's
+// output length is always EXACTLY the input length (one-shot alloc, no
+// worst-case-then-patch-the-count dance; mirrors `__typed_slice_rt`'s own
+// shape instead). Differentially verified against real Node/V8 typed arrays
+// (not hand-picked literals) for Int8Array wrap (ECMA-262 ToInt8, 7.1.11),
+// Uint8Array wrap-not-clamp (ToUint8, 7.1.10 — contrast with
+// Uint8ClampedArray's ToUint8Clamp, 7.1.12, which only its element WRITES
+// use), and Float32Array f32 store-rounding (distinct from f64 arithmetic),
+// at optimize 0/2/3.
+//
+// A SEPARATE, narrower, pre-existing gap surfaced while probing the
+// host-receiver shape with `Uint8ClampedArray` specifically (not one of this
+// fix's required pins — left unfixed, noted here so it isn't lost): a program
+// whose source names NO `Uint8ClampedArray`/`Float16Array` ctor anywhere (the
+// host-receiver shape's whole premise) never calls `setLinkDemand('clamped'/
+// 'f16')` — that only fires from inside a resolved `resolveElem` or a literal
+// `new Uint8ClampedArray(...)`/`new Float16Array(...)` node — so
+// `__typed_set_idx`'s clamped/f16 branches (module/typedarray.js, gated
+// behind `ctx.linkDemand.clamped`/`.f16` template conditionals) compile OUT
+// entirely; a REAL clamped/f16 value flowing in from the host at runtime then
+// falls through to the plain-integer wrap path instead of clamping/f16-
+// converting. Reproduces with `.filter`'s existing `!r` branch too (shared
+// stdlib fns) given an out-of-range value — `.filter` just never surfaced it
+// (it only ever stores back an already-in-range LOADED value, no arithmetic).
+// Infra-level (`setLinkDemand`/autoload conservativeness for the
+// zero-ctor-syntax host-receiver shape), not `.typed:map`-specific; out of
+// this fix's scope.
+//
+// A SECOND separate, pre-existing gap surfaced the same way, fully
+// independent of `.map()`: bracket-index reads (`dst[i]`) on an erased-vt
+// HOST-PROVIDED receiver read garbage for any element width narrower than
+// 8 bytes — reproduces on a bare `let m = dst; return m[0]` with zero method
+// calls involved. `.set`'s own host-receiver pin above only ever exercises
+// Float64Array (8-byte stride), which happens to read correctly BY
+// COINCIDENCE (same class this file's `.at` fix note already documents for a
+// different site: "Float64Array/BigInt64Array/BigUint64Array (also 8-byte)
+// happened to read the right bytes by coincidence of matching stride, not by
+// correctness"). Matches this file's own prior note two paragraphs up:
+// "`.typed:[]`/`.typed:[]=` (index ops, not method calls) stay out of scope:
+// a different, pre-existing, already-guarded compile-time-only call path
+// (module/array.js / src/compile/emit-assign.js) never reached through this
+// fork" — confirmed here to be live, not hypothetical. The host-receiver pin
+// below reads back via `.forEach` (a proven-correct dispatch) specifically to
+// route around this independent gap rather than accidentally re-test it.
 // Flip `test.todo` → `test` once a build run holds clean across a real repeat
 // count (10+) AND kernel-oracle/kernel-parity both hold at 13/13 and 33/33 —
 // not just the build exit code. (Both held clean on this branch — see its
@@ -1457,6 +1507,80 @@ test('filter: BigInt64Array (isBigInt no longer bails to a bare decline)', () =>
     return b.filter(x => x !== 0n).length
   }`)
   is(f(), 2)
+})
+
+// === .typed:map `!r` decline — species/width fix (agent/typed-map-width) ===
+// See the long comment above the BigInt pins for the full mechanism. Four
+// pins: the opaque-polymorphic idiom this file already uses for `.at`'s own
+// dynamic-dispatch test, the dyn-field shape (narrow width, matching
+// `.filter`'s sibling probe just above), the host-receiver shape (zero
+// typed-ctor syntax anywhere in source), and the Uint8Array wrap-vs-clamp
+// truth. Each differential against a real engine value, not a hand-picked one.
+
+test('.map: opaque/polymorphic receiver preserves species + width (was reading garbage via the generic-array decline)', () => {
+  // `which` makes the element kind unprovable at compile time (resolveElem's
+  // `!r` case) — the same idiom '.at: opaque/polymorphic receiver' above uses.
+  // ECMA-262 ToInt8 (7.1.11): 100*2=200 wraps to 200-256=-56, two's-complement.
+  const f = runHost(`export let f = (which) => {
+    let t = which ? new Int8Array([100, 100]) : new Float32Array([100, 100])
+    let m = t.map(x => x * 2)
+    return m[0] * 1000 + m[1]
+  }`).f
+  is(f(1), -56 * 1000 + -56, 'Int8Array branch: wraps like JS, not [200,200]')
+  is(f(0), 200 * 1000 + 200, 'Float32Array branch: exact (200 is f32-representable)')
+})
+
+test('.map: into typed-array field added dynamically to an empty object (narrow element width)', () => {
+  const { f } = runHost(`export let f = () => {
+    const s = {}
+    s.a = new Int8Array([100, 100])
+    const m = s.a.map(x => x * 2)
+    return m[0] * 1000 + m[1]
+  }`)
+  is(f(), -56 * 1000 + -56)
+})
+
+test('.map: host-provided typed receiver (source names no typed ctor at all) preserves species + width', () => {
+  // dst carries no typed-ctor syntax anywhere in source, so resolveElem(dst) can
+  // never trace a binding — the `!r` decline this fix closes. Reads back via
+  // .forEach (proven-correct dispatch) rather than dst[i]/m[i] bracket
+  // indexing — seeing the SEPARATE bracket-index-on-erased-vt-host-receiver
+  // gap noted in the long comment above, not re-testing it here.
+  const r = jz(`export function f(dst) {
+    let m = dst.map(x => x * 2)
+    let out = 0
+    m.forEach(x => { out = out * 1000 + x })
+    return out
+  }`)
+  is(Number(r.exports.f(r.memory.Int8Array([100, 100]))), -56 * 1000 + -56)
+})
+
+test('.map: Uint8Array wraps (ToUint8) not clamps, through the runtime decline path', () => {
+  // Unlike Uint8ClampedArray (whose element WRITES saturate via ToUint8Clamp,
+  // ECMA-262 7.1.12), plain Uint8Array wraps modulo 256 like every other
+  // integer kind (ToUint8, 7.1.10) — the same modular law as Int8Array's
+  // ToInt8 (7.1.11) above, just unsigned: 200*2=400, 400 mod 256 = 144 (NOT
+  // 255, which is what a clamp would give).
+  const f = runHost(`export let f = (which) => {
+    let t = which ? new Uint8Array([200, 200]) : new Float64Array([200, 200])
+    let m = t.map(x => x * 2)
+    return m[0] * 1000 + m[1]
+  }`).f
+  is(f(1), 144 * 1000 + 144)
+})
+
+test('.map: Float32Array keeps f32 store-rounding through the runtime decline path (distinct from f64)', () => {
+  // TypedArray element WRITES coerce via the store width (f32.demote_f64 for
+  // Float32Array), so the result differs from plain f64 arithmetic — computed
+  // in FULL f64 precision inside the callback, then rounded once on store.
+  // Differential against the real engine, not a hand-derived Math.fround chain.
+  const f = runHost(`export let f = (which) => {
+    let t = which ? new Float32Array([0.1, 0.2]) : new Int8Array([0, 0])
+    let m = t.map(x => x + 0.2)
+    return m[0]
+  }`).f
+  is(f(1), new Float32Array([0.1]).map(x => x + 0.2)[0])
+  ok(f(1) !== 0.1 + 0.2, 'must NOT equal plain f64 arithmetic')
 })
 
 test('map: named constructor-fn callback reboxes (ptrKind through the inline wrapper)', () => {

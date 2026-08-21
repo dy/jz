@@ -2232,9 +2232,75 @@ export default (ctx) => {
         dst.ptr], 'f64')
     }
 
-    // Unknown typed array type: fall back to generic array .map
-    if (ctx.core.emit['.map']) return ctx.core.emit['.map'](arr, fn)
-    return null
+    // Unknown typed array type at compile time: runtime aux-dispatch loop, NOT
+    // a fall-through to generic (Array.prototype) .map. A generic map
+    // materializes a plain f64-slotted ARRAY and reads the receiver through
+    // array.js's ARRAY-only header/stride assumptions — for a receiver that's
+    // actually TYPED (reached here via the dyn-field / host-provided-param /
+    // opaque-polymorphic-ctor fork shapes, the same class `.typed:filter`'s
+    // `!r` branch closed just above) that's not merely "double-width", it
+    // misreads the byte-length header as an element count AND the base
+    // offset — confirmed empirically as outright garbage (denormal
+    // `2.5e-316`-class values reading adjacent heap bytes), not a plausible
+    // wrong number. JS requires the SAME species with per-element coercion:
+    // `new Int8Array([100,100]).map(x=>x*2)` wraps to `Int8Array[-56,-56]`
+    // (ECMA-262 ToInt8, 7.1.11 — mod 256, two's-complement); Uint8Array wraps
+    // too (ToUint8, 7.1.10 — mod 256, NOT saturating) — only
+    // Uint8ClampedArray's element WRITES clamp (ToUint8Clamp, 7.1.12).
+    //
+    // Mirrors `.typed:filter`'s `!r` branch (agent/typed-decline-b): the SAME
+    // __typed_get_idx/__typed_set_idx runtime aux-tag-dispatch helpers
+    // typedLoop's own dynamic branch and .typed:set's `!r` branch already
+    // lean on unconditionally, and the SAME __ptr_aux/__typed_shift/
+    // __alloc_hdr_n/__mkptr allocation shape for a correctly-strided,
+    // correctly-tagged output — simpler than filter's version since .map's
+    // output length is always EXACTLY the input length (no worst-case-then-
+    // patch-the-count dance; one-shot alloc, like __typed_slice_rt's own
+    // shape). Calling convention matches the scalar-fallback branch just
+    // above (single `item` arg, no index) — the two branches must stay
+    // semantically identical; only which one a given receiver reaches
+    // (compile-time-known vs runtime-resolved element kind) differs.
+    // No extra scoping block around the locals below (matches `.typed:filter`'s
+    // `!r` branch just above, which is flat too) — NOT just style: a bare
+    // identifier call statement (`inc(...)`) directly followed by a `{`
+    // block statement mis-prepares as a labeled statement in this compiler's
+    // own self-hosted subset (confirmed in isolation — `x()\n{ return 1 }`
+    // throws "labeled statements not supported"; `arr.push(x)\n{ … }`, a
+    // MEMBER-call callee, does not; neither does inserting a `;`). Real,
+    // narrow, pre-existing parser gap, unrelated to this fix — avoided here
+    // by construction rather than chased, since these `const`s are the LAST
+    // statements on this path (every earlier branch already returned) and
+    // need no extra scope.
+    inc('__len', '__typed_get_idx', '__typed_set_idx', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
+    const cbLoc = temp('tmrc'), arrLoc = temp('tmra'), dstLoc = temp('tmrd')
+    const len = tempI32('tmrl'), i = tempI32('tmri')
+    const aux = tempI32('tmrx'), shift = tempI32('tmrsh'), byteLen = tempI32('tmrb')
+    const id = freshId(ctx)
+    const srcPtr64 = ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]
+    const dstPtr64 = ['i64.reinterpret_f64', ['local.get', `$${dstLoc}`]]
+    const mapped = asF64(ctx.closure.call(
+      typed(['local.get', `$${cbLoc}`], 'f64'),
+      [typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${i}`]], 'f64')]))
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+      ['local.set', `$${arrLoc}`, asF64(emit(arr))],
+      ['local.set', `$${len}`, ['call', '$__len', srcPtr64]],
+      // Non-view aux (mask off bit 3, keeps the BigInt flag bit — dead here,
+      // BigInt receivers never reach this branch, but mirrors filter's own
+      // mask exactly): the fresh OWNED result is never mistagged as a view
+      // onto the source, but stays tagged the same element kind.
+      ['local.set', `$${aux}`, ['i32.and', ['call', '$__ptr_aux', srcPtr64], ['i32.const', 119]]],
+      ['local.set', `$${shift}`, ['call', '$__typed_shift', ['i32.and', ['local.get', `$${aux}`], ['i32.const', 7]]]],
+      ['local.set', `$${byteLen}`, ['i32.shl', ['local.get', `$${len}`], ['local.get', `$${shift}`]]],
+      ['local.set', `$${dstLoc}`, ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['local.get', `$${aux}`],
+        ['call', '$__alloc_hdr_n', ['local.get', `$${byteLen}`], ['local.get', `$${byteLen}`], ['i32.const', 1]]]],
+      ['local.set', `$${i}`, ['i32.const', 0]],
+      ['block', `$brk${id}`, ['loop', `$loop${id}`,
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+        ['drop', ['call', '$__typed_set_idx', dstPtr64, ['local.get', `$${i}`], mapped]],
+        ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+        ['br', `$loop${id}`]]],
+      ['local.get', `$${dstLoc}`]], 'f64')
   }
 
   // === Shared typed iteration core ===
