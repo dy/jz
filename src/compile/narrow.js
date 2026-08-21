@@ -519,20 +519,69 @@ function resetParamWasmFacts(paramReps) {
  * the narrowable filter.
  */
 function narrowI32Results(funcs) {
-  // A return tail is unsigned-valued when it is a top-level `>>>`, a call to a
-  // function already proven unsignedResult, or a bare read of THIS body's own
-  // narrowUint32-proven accumulator (`unsignedLocals` — see analyze-scans.js:
-  // a local whose every reassignment is `name = (…) >>> k` always holds a
-  // canonical uint32 bit pattern, `return acc` included). Other i32 tails are
-  // signed. Missing this last case narrowed e.g. `let h = 0; h = (…) >>> 0;
-  // return h` to a signed i32 result: sig.unsignedResult stayed false, so the
+  // A return tail's SIGN — 'unsigned' (a uint32 magnitude that needs
+  // f64.convert_i32_u at the boundary), 'signed' (ordinary ToInt32 range,
+  // f64.convert_i32_s), or null (an unsigned value reaches this tail but the
+  // classifier can't collapse it to one boundary flag — narrowing must be
+  // REFUSED, not guessed). Grounded in the three base facts: a top-level
+  // `>>>` (ECMA-262 §7.1.8 ToUint32), a call to a function already proven
+  // unsignedResult, or a bare read of THIS body's own narrowUint32-proven
+  // accumulator local (`unsignedLocals` — see analyze-scans.js: a local whose
+  // every reassignment is `name = (…) >>> k` always holds a canonical uint32
+  // bit pattern, `return acc` included).
+  //
+  // That sign then THREADS through every identity-preserving position an
+  // expression can sit in on its way to the tail, instead of being decided
+  // once (as an i32 STORAGE type, in exprType) and separately re-derived here
+  // from a syntactic allowlist that stops at the outermost node: `u+` (ToNumber
+  // is identity on a number — exprType already treats it as type-preserving,
+  // src/type.js's own `op === 'u+'` comment), a `,` tail (only the last
+  // member's value survives), and a '?:' / '&&' / '||' JOIN — sign-preserving
+  // only when BOTH value-arms agree (mirrors the whole-function cross-tail
+  // rule below: a function mixing a signed and an unsigned RETURN also stays
+  // f64, because the same i32 bit pattern maps to two different JS numbers
+  // under the two conversions). A mismatched join (one arm unsigned, the
+  // other signed-or-itself-null) is exactly the unclassifiable case: which
+  // value reaches the boundary is a RUNTIME branch, so no single static flag
+  // can rebox it — null propagates outward and vetoes i32 narrowing for the
+  // whole function (falling back to f64, where each arm already carries its
+  // own correct value, is merely slower — silently reboxing the unsigned arm
+  // SIGNED, or vice versa, is a silent wrong answer).
+  //
+  // Any other op (comparison, bitwise, arithmetic, a plain call, `.`/`[]`)
+  // defaults to 'signed': a comparison/logical-not is always a 0/1 boolean, a
+  // non-`>>>` bitwise result is spec'd ToInt32 regardless of operand sign
+  // (`h | 0` is the canonical uint32→int32 RESIGN idiom — its result is a
+  // genuinely different, genuinely signed number), and `+`/`-`/`*`/`%` on an
+  // unproven-range operand already fail exprType's own magnitude-bound proof
+  // (never reach 'i32' at all) — so 'signed' here is a proof, not a guess.
+  //
+  // Pre-fix, missing the `unsignedLocals` base case alone narrowed e.g.
+  // `let h = 0; h = (…) >>> 0; return h` to a signed i32 result — the
   // export/call-site boundary reboxed with f64.convert_i32_s and silently
   // flipped any h ≥ 2^31 negative (djb2/FNV-style hash accumulators returned
-  // bare at the end of the function, not re-masked through a final `>>> 0`).
-  const isUnsignedTail = (e, unsignedLocals) => Array.isArray(e)
-    ? e[0] === '>>>' ||
-      (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true)
-    : typeof e === 'string' && (unsignedLocals?.has(e) ?? false)
+  // bare, not re-masked through a final `>>> 0`). Threading that same fact
+  // through `u+`/`?:` closed the identical leak one AST shape over: `return
+  // +h` and `return c ? h : h` narrowed the same way, for the same reason —
+  // exprType already called both tails 'i32' (u+ and a same-typed join are
+  // both type-preserving there), but the OLD isUnsignedTail's allowlist ended
+  // at the outermost node and never looked through them.
+  const tailSign = (e, unsignedLocals) => {
+    if (!Array.isArray(e)) return typeof e === 'string' && (unsignedLocals?.has(e) ?? false) ? 'unsigned' : 'signed'
+    const op = e[0]
+    if (op === '>>>') return 'unsigned'
+    if (op === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true) return 'unsigned'
+    if (op === 'u+') return tailSign(e[1], unsignedLocals)
+    if (op === ',') return tailSign(e[e.length - 1], unsignedLocals)
+    if ((op === '?:' && e.length === 4) || ((op === '&&' || op === '||') && e.length === 3)) {
+      const [a, b] = op === '?:' ? [e[2], e[3]] : [e[1], e[2]]
+      const sa = tailSign(a, unsignedLocals), sb = tailSign(b, unsignedLocals)
+      return sa === sb ? sa : null   // mismatch (or either side already null) — unclassifiable
+    }
+    return 'signed'
+  }
+  const isUnsignedTail = (e, unsignedLocals) => tailSign(e, unsignedLocals) === 'unsigned'
+  const isUnclassifiableTail = (e, unsignedLocals) => tailSign(e, unsignedLocals) === null
   const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
   // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
   const evalTails = (func, body, exprs) => withCurrentFunction(func.sig, () => {
@@ -589,6 +638,11 @@ function narrowI32Results(funcs) {
       allV128, allI32,
       anyUnsigned: exprs.some(e => isUnsignedTail(e, unsignedLocals)),
       allUnsigned: exprs.every(e => isUnsignedTail(e, unsignedLocals)),
+      // A mismatched '?:'/'&&'/'||' join (one value-arm unsigned, the other
+      // not) reaching a tail — narrowing to EITHER sign would silently
+      // corrupt whichever arm's convention it guessed wrong. Vetoes the i32
+      // commit below outright, same as a magnitude/BigInt/atom veto.
+      anyUnclassifiable: exprs.some(e => isUnclassifiableTail(e, unsignedLocals)),
     }
     }
     return te ? withTypedElems(te, classify) : classify()
@@ -612,7 +666,7 @@ function narrowI32Results(funcs) {
         const saved = func.sig.results
         func.sig.results = ['i32']
         const opt = reanalyzeBody(body, () => evalTails(func, body, exprs))
-        if (opt.allI32 && (!opt.anyUnsigned || opt.allUnsigned)) {
+        if (opt.allI32 && !opt.anyUnclassifiable && (!opt.anyUnsigned || opt.allUnsigned)) {
           if (opt.allUnsigned) func.sig.unsignedResult = true
           changed = true
           continue
@@ -624,7 +678,7 @@ function narrowI32Results(funcs) {
       if (r.allV128) {
         func.sig.results = ['v128']
         changed = true
-      } else if (r.allI32 && (!r.anyUnsigned || r.allUnsigned)) {   // sign-consistent i32 tails
+      } else if (r.allI32 && !r.anyUnclassifiable && (!r.anyUnsigned || r.allUnsigned)) {   // sign-consistent i32 tails
         func.sig.results = ['i32']
         if (r.allUnsigned) func.sig.unsignedResult = true
         // A committed i32 result is a genuine NUMBER, so stamp valResult for the call-site
