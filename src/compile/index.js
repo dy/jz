@@ -1230,7 +1230,30 @@ function paramNeverString(body, name) {
     if (typeof node === 'string') { if (node === name) ok = false; return }  // bare escape → reject
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') return                                  // shadowing-safe: closure handled conservatively (escape)
+    // Closure capture: recurse into the arrow (params — default-value exprs
+    // may reference `name` — and body) unless the arrow's OWN param list
+    // shadows `name`, exactly mirroring paramAllUsesNumeric's arrow arm just
+    // above in this file. Previously this bailed unconditionally ("handled
+    // conservatively (escape)" per the stale comment it replaces) WITHOUT
+    // setting `ok = false` — the opposite of conservative: a param used only
+    // inside a nested arrow (`{...s, [k]: v}`'s prepare-time computed-key
+    // desugaring is exactly this — `((t) => (t[k]=v, t))({...s})`, k free
+    // in the arrow) went completely unseen, so `k[…]`/string-concat/method-
+    // call uses of it inside the closure never tripped the reject at the
+    // `.`/`?.`/`[]`-receiver check or the generic bare-name fallback below.
+    // paramNeverString then wrongly returned true, and the exported-param
+    // trust optimization (`if (func.exported) …`, above this function's own
+    // caller) stamped the param VAL.NUMBER — corrupting every dynamic-key
+    // write through it (root-caused via `emitElementAssign`'s idxNumericName
+    // trusting that stamp to skip the runtime `__is_str_key` fork).
+    if (op === '=>') {
+      const ps = node[1]
+      const shadowed = Array.isArray(ps)
+        ? ps.some(p => p === name || (Array.isArray(p) && p[1] === name))
+        : ps === name
+      if (!shadowed) { walk(node[1]); walk(node[2]) }
+      return
+    }
     // `+` (binary): a string-literal/template operand makes it concat → reject.
     // Otherwise the param is in an arithmetic add; recurse the non-name operand.
     if (op === '+' && node.length === 3) {
