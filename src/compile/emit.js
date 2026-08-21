@@ -3921,29 +3921,44 @@ function tryStaticDispatch({ obj, method, vt, callMethod }) {
   }
 }
 
-// 8. Unknown / guessed-array type, both string + generic exist → runtime dispatch by ptr type.
-// analyze.js defaults untyped `.slice()` results to VAL.ARRAY, which is a guess, not a proof;
-// runtime dispatch resolves whether the operand is actually a string or an array.
-// Concretely-typed non-string values (BUFFER, TYPED, MAP, …) fall through to the generic
-// emitter which already knows how to handle them.
-function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
-  const strKey = `.string:${method}`, genKey = `.${method}`
+// 8. Unknown / guessed-array type, (string and/or typed) + generic exist → runtime
+// dispatch by ptr type. analyze.js defaults untyped `.slice()` results to VAL.ARRAY,
+// which is a guess, not a proof; runtime dispatch resolves whether the operand is
+// actually a string, a typed array, or a plain array. Concretely-typed values whose
+// kind IS proven (BUFFER, MAP, a proven STRING/TYPED/ARRAY, …) never reach here —
+// `vt` is set and strategy 7 (tryStaticDispatch) already dispatched them statically.
+//
+// TYPED joined this fork (previously string-only): a typed array read through a
+// fully-erased receiver — a dyn-prop field (`s.a = new Float64Array(4)` on an empty
+// object, then `s.a.set(b)`), or any other path where the compiler never pins a
+// ctor — used to reach ONLY the STRING-vs-generic choice below. `.set` has no
+// `.string:` form, so it fell straight to the generic (Map.prototype.set) emitter,
+// silently mistaking the source array for a Map key; `.forEach`/`.fill` on the same
+// shape misfired too — the generic Array emitter reads a typed array's BYTE-length
+// header as a raw element count. Adding the `.typed:${method}` case to the SAME
+// dispatch (rather than a second, competing fork ahead of or behind this one) keeps
+// the five method names TYPED shares with STRING (at/includes/indexOf/lastIndexOf/
+// slice) resolving through one ordered decision, STRING still checked first — a
+// separate fork would have to re-decide that priority itself and could invert it
+// for some method, silently misrouting a real string through the typed/generic arm.
+function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
+  const strKey = `.string:${method}`, genKey = `.${method}`, typedKey = `.typed:${method}`
   // VAL.ARRAY is structurally incompatible with PTR.STRING — no fork needed.
   // Only fork when vt is truly unknown (!vt), not for proven types.
-  if (!vt && ctx.core.emit[strKey] && ctx.core.emit[genKey]) {
+  const strEmitter = ctx.core.emit[strKey]
+  const typedEmitter = ctx.core.emit[typedKey]
+  const genEmitter = ctx.core.emit[genKey]
+  if (!vt && genEmitter && (strEmitter || typedEmitter)) {
     const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
-    const strEmitter = ctx.core.emit[strKey]
-    const genEmitter = ctx.core.emit[genKey]
-    // A string/array method is only valid on a NaN-boxed pointer (string/array/…).
-    // `f64.eq(t,t)` is true only for a non-NaN value, so guard the dispatch with
-    // it. A plain-number receiver dispatches the `.number:` emitter when the
-    // method has one (`x.toString(16)` on an untyped x — the kernel-L2 ratchet's
-    // data-segment corruption root: this used to yield `undefined`, and
-    // `'\\' + undefined.padStart(2,'0')` collapsed every escaped byte to \\00);
-    // methods numbers don't have keep yielding `undefined` (spec: `(5).indexOf`
-    // is undefined) instead of feeding number bits to `__ptr_type` → OOB.
-    // Every NaN-boxed receiver still reaches the string-vs-generic fork unchanged.
+    // A string/typed/array method is only valid on a NaN-boxed pointer. `f64.eq(t,t)`
+    // is true only for a non-NaN value, so guard the dispatch with it. A plain-number
+    // receiver dispatches the `.number:` emitter when the method has one (`x.toString(16)`
+    // on an untyped x — the kernel-L2 ratchet's data-segment corruption root: this used
+    // to yield `undefined`, and `'\\' + undefined.padStart(2,'0')` collapsed every escaped
+    // byte to \\00); methods numbers don't have keep yielding `undefined` (spec:
+    // `(5).indexOf` is undefined) instead of feeding number bits to `__ptr_type` → OOB.
+    // Every NaN-boxed receiver still reaches the ptr-type fork unchanged.
     const numEmitter = ctx.core.emit[`.number:${method}`]
     // Only a genuinely mayBeUndefined receiver pays for the
     // nullish-receiver guard below — `censusMaybeUndefined` (kind.js), the
@@ -3953,6 +3968,45 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
     // sweep corpus, caught before landing). A plain kind-unresolved-but-
     // never-null receiver takes the unchanged, unguarded generic arm.
     const mayBeUndef = censusMaybeUndefined(obj)
+    // Not string (nor, now, typed) either: a real (non-nullish) pointer falls to the
+    // generic (array-shaped) emitter, unchanged. A genuinely nullish receiver here
+    // (e.g. `m.get('missing').slice()`, a STRING-census absent read — no proven vt,
+    // so it reached this fork at all) used to feed the nullish sentinel's bit pattern
+    // to the ARRAY-shaped emitter as if it were a real pointer — an OOB heap read
+    // (`RuntimeError: memory access out of bounds`). Real JS throws TypeError for a
+    // method call on null/undefined; the check is cheap and lands only on this
+    // already-dynamic fork, and only when the receiver is provably mayBeUndefined.
+    // Own-property shadow check (audit finding, agent/typed-decline-b): TYPED
+    // joining this fork widened its firing condition from "strEmitter exists"
+    // (5 method names: at/includes/indexOf/lastIndexOf/slice) to "strEmitter OR
+    // typedEmitter exists" (~20 more — map/filter/fill/forEach/…), so a plain
+    // OBJECT/ARRAY receiver with an OWN property of one of those names now
+    // reaches this fork's generic arm too, where it used to skip straight to
+    // strategy 10 (tryGenericEmitter)'s own shadow check. That check never ran
+    // here (this fork calls genEmitter directly) — confirmed regressed test/
+    // parser-bugs.js's "own prop shadows array builtin on unknown receiver
+    // (d.map)": `d.map(1)` on a `{ map: fn }`-shaped unknown-vt receiver called
+    // the Array builtin instead of `d`'s own `map`. Mirrors tryGenericEmitter's
+    // own probe exactly (same preconditions, same sidecarOverride shape) — a
+    // real (non-string, non-typed) receiver's own property still wins before
+    // the builtin runs. Not needed for the STRING arm (sidecarOverride's own
+    // doc: string property writes drop, so a string can never carry a shadowing
+    // own prop) or the TYPED arm (a PROVEN-typed receiver never shadow-checks
+    // either, via tryStaticDispatch above — same established rule this fork's
+    // TYPED case should stay consistent with, not invent a new one for).
+    const canShadowProbe = ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
+    const genericCall = canShadowProbe
+      ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+          (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+          () => asF64(callMethod(t, genEmitter)))
+      : callMethod(t, genEmitter)
+    const generic = mayBeUndef ? typed(['if', ['result', 'f64'],
+      isNullish(typed(['local.get', `$${t}`], 'f64')),
+      ['then', throwTypeErrorIR()],
+      ['else', genericCall]], 'f64') : genericCall
+    const cases = []
+    if (strEmitter) cases.push([PTR.STRING, callMethod(t, strEmitter)])
+    if (typedEmitter) cases.push([PTR.TYPED, callMethod(t, typedEmitter)])
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
@@ -3960,22 +4014,7 @@ function tryRuntimeStringFork({ obj, method, vt, callMethod }) {
         ['then', numEmitter ? asF64(callMethod(t, numEmitter)) : undefExpr()],
         ['else', block64(
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          ['if', ['result', 'f64'],
-            ['i32.eq', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
-            ['then', callMethod(t, strEmitter)],
-            // Not STRING either: a real (non-nullish) pointer falls to the generic
-            // (array-shaped) emitter, unchanged. A genuinely nullish receiver here
-            // (e.g. `m.get('missing').slice()`, a STRING-census absent
-            // read — no proven vt, so it reached this fork at all) used to feed the
-            // nullish sentinel's bit pattern to the ARRAY-shaped emitter as if it
-            // were a real pointer — an OOB heap read (`RuntimeError: memory access
-            // out of bounds`). Real JS throws TypeError for a method call on
-            // null/undefined; the check is cheap and lands only on this already-
-            // dynamic fork, and only when the receiver is provably mayBeUndefined.
-            ['else', mayBeUndef ? typed(['if', ['result', 'f64'],
-              isNullish(typed(['local.get', `$${t}`], 'f64')),
-              ['then', throwTypeErrorIR()],
-              ['else', callMethod(t, genEmitter)]], 'f64') : callMethod(t, genEmitter)]])]])
+          dispatchByPtrType(tt, cases, generic))]])
   }
 }
 
@@ -3991,7 +4030,7 @@ function tryRuntimeNumberMethod({ obj, method, parsed, vt, callMethod }) {
   ctx.func.locals.set(t, 'f64')
   // Only a genuinely mayBeUndefined receiver pays for the nullish
   // guard — same `censusMaybeUndefined` predicate as every other check in
-  // this design (see tryRuntimeStringFork's comment for the measured SIZE
+  // this design (see tryRuntimePtrTypeFork's comment for the measured SIZE
   // cost of gating on "vt unknown" alone instead).
   const mayBeUndef = censusMaybeUndefined(obj)
   return block64(
@@ -4168,7 +4207,7 @@ function externalMethodFallback({ obj, method, parsed }) {
   // engaged) silently read `undefined` instead of throwing, while the
   // identical js-host build (envImports=true) reached the same check and
   // threw correctly. `censusMaybeUndefined` is the same narrow, load-bearing
-  // gate every other site in this design uses (see tryRuntimeStringFork's
+  // gate every other site in this design uses (see tryRuntimePtrTypeFork's
   // comment for the measured SIZE cost of gating on "vt unknown" alone
   // instead) — a receiver that is provably never nullish takes the ORIGINAL,
   // byte-identical path below, unaffected by this fix.
@@ -4204,7 +4243,7 @@ function externalMethodFallback({ obj, method, parsed }) {
 }
 
 const TYPED_STRATEGIES = [
-  tryBoxedDelegate, trySidecarToPrimitive, tryStaticDispatch, tryRuntimeStringFork,
+  tryBoxedDelegate, trySidecarToPrimitive, tryStaticDispatch, tryRuntimePtrTypeFork,
   tryRuntimeNumberMethod, trySchemaClosureCall, tryGenericEmitter, tryDynamicPropCall,
   externalMethodFallback,
 ]
@@ -4220,7 +4259,7 @@ const TYPED_STRATEGIES = [
  *    5. Boxed-schema receiver → delegate to inner value at slot 0 (+ writeback)
  *    6. valueOf / toString — sidecar own-property shadow check
  *    7. Known-type static dispatch via .${vt}:${method}
- *    8. Unknown / guessed-ARRAY runtime ptr-type fork over string vs generic
+ *    8. Unknown / guessed-ARRAY runtime ptr-type fork over string/typed vs generic
  *    9. Schema property closure call
  *    10. Generic emitter (with collection/strIndex arity guards + object shadow)
  *    11. Dynamic property closure call (with PTR.EXTERNAL fallback if non-wasi)
@@ -4530,7 +4569,7 @@ function emitGenericClosureCall(callee, parsed) {
   // pattern the devirt pass targets, so hoisting it costs nothing there.
   // Only a genuinely mayBeUndefined callee pays for the guard —
   // same `censusMaybeUndefined` predicate as every other check in this
-  // design (tryRuntimeStringFork's comment has the measured SIZE cost of
+  // design (tryRuntimePtrTypeFork's comment has the measured SIZE cost of
   // gating on "unresolved kind" alone instead). A callee that is unresolved
   // only because it's a PLAIN closure-holding parameter/local (never
   // touched by census/dict machinery — e.g. `const pass = (g, x) => g(x)`)
