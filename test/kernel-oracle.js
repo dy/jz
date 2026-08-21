@@ -602,44 +602,44 @@ export let f = (s) => g(s) === false`
 // .work/todo.md §deletion-sweep — the three rows below moved to the AGREE
 // array's "FLIPPED from PENDING-FIX" formatter-dispatch entry, plus a
 // read-side sibling sweep (module/array.js dyn-get key sites, same design
-// doc's Finding #2). Only the generic-scalar-decl family remains here.
+// doc's Finding #2).
 //
-// GENERIC SCALAR DECL (a WALL, banked — see emit.js emitDecl's comment on
-// the `const val = viewInit || emit(init)` line): every implementation of
-// "box an ambiguous-merge scalar `let`/`const` init" tried miscompiled the
-// self-compiled kernel's own compiled emitDecl at that exact call site,
-// verified with a fresh dist rebuild and reproducing with a plain, non-
-// ambiguous `let v = x + 1` local (zero merge shapes anywhere in the
-// program) — a self-compile-only bug in how the kernel compiles ITS OWN
-// emitDecl, not a logic error in the fix, and out of this design's
-// carrier-boxing scope to chase further this session. RE-ATTEMPTED audit-#8
-// P0-4 Part 2 (2026-08-03) with a NARROWER, hasAmbiguousBoolMerge-gated fix
-// (`argIR(init)`, byte-identical to today for every non-ambiguous decl,
-// confirmed via kernel-parity's full byte-identity corpus) — still hits a
-// DIFFERENT self-compile miscompile (invalid WASM for a captured-and-mutated
-// closure decl, 'closure' AGREE row above, isolated via a clean A/B against
-// this session's other two parts, which self-compile cleanly). See emit.js's
-// emitDecl comment for the full finding and the next concrete lead
-// (resolveCallee's compiled-local shift). Still banked.
+// GENERIC SCALAR DECL, the decl-STORAGE lever (still a WALL, still banked —
+// see emit.js emitDecl's comment on the `const val = viewInit || emit(init)`
+// line): every implementation of "box an ambiguous-merge scalar `let`/`const`
+// init AT ITS OWN DECLARATION" tried miscompiled the self-compiled kernel's
+// own compiled emitDecl at that exact call site — first the broad
+// `storedValue` swap, then a NARROWER `hasAmbiguousBoolMerge`-gated `argIR`
+// swap (RE-ATTEMPTED audit-#8 P0-4 Part 2, 2026-08-03) — both self-compile
+// miscompiles, unrelated mechanisms. See emit.js's emitDecl comment for the
+// full finding. Still banked.
 //
-// Verified live: the wrong value is asserted explicitly (both legs share
-// the bug) plus a not() tripwire against the true JS value, so a future
-// fix flips these loudly.
+// CLOSURE CAPTURE, the consumer lever — CLOSED, without touching the WALL
+// above. The `captured-then-read` row below moved to the AGREE tier (see
+// that test). Rather than boxing `v`'s OWN storage (the WALL's approach,
+// reshaping every consumer of that local, including self.js's own decls),
+// the fix boxes only at the ONE consumer this row exercises — the closure's
+// env-slot store (module/function.js ctx.closure.make) — extending
+// 756ae10f's box-at-consumer pattern one hop past a formatter site:
+// analyze-scans.js's boxedCaptures pre-scan now also records every captured
+// name regardless of mutation (capturedNames — broader than the cell-boxed
+// ctx.func.boxed set it already built), and emit.js's emitDecl mints a
+// one-time identity-safe shadow local (ctx.func.identityShadow) for a
+// captured name whose declaring init is hasAmbiguousBoolMerge — gated on
+// BOTH facts, so every other decl (captured-only, ambiguous-only, or
+// neither — including every decl in scripts/self.js's own source, verified
+// by the self-build gate) takes the exact same `emit(init)` path as before.
+// `v`'s own local storage stays the raw carrier (correct: its valTypeOf
+// reads NUMBER post-collapse and every arithmetic consumer of `v` expects
+// that) — only the env-slot store reads the shadow instead of re-deriving
+// from `v`'s already-spent bits. A captured-name consumer OTHER than the
+// closure env-slot (e.g. a bare name hitting a container store) is a
+// different, still-open instance of the same root and out of this row's
+// scope.
 const PENDING_FIX = [
-  // Generic scalar decl (the emitDecl self-compile wall above): `v`'s own
-  // declaration never gets boxed, so a later capture-then-read still
-  // observes the raw carrier. NOT the minimal `const g = () => v; return
-  // g()` shape — direct-closure devirtualization eligibility differs
-  // between native and kernel for that exact shape regardless of this bug
-  // (a SEPARATE, also out-of-scope divergence); wrapping `g` in an array
-  // before calling sidesteps it on both legs uniformly so this row isolates
-  // only the scalar-decl gap.
-  { name: 'captured-then-read',
-    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }`,
-    wrong: 0 },
 ]
 
-test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier collapse (research.md §Carrier invariant — not yet fixed; formatter/ToPropertyKey rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
+if (PENDING_FIX.length) test('kernel oracle: PENDING-FIX — research.md §Carrier invariant (not yet fixed; formatter/ToPropertyKey/closure-capture rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
   if (onWasi()) return
   for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
     const mod = await oracle(src)
@@ -652,6 +652,31 @@ test('kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier c
       is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
       not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
       not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
+    }
+  }
+})
+
+test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDING-FIX, closed by the closure-capture identity shadow)', async () => {
+  // Was PENDING-FIX 'captured-then-read': arr[0]() returned the raw carrier
+  // 0 (number) where JS says false — see the comment block above for the fix.
+  // NOT the minimal `const g = () => v; return g()` shape — direct-closure
+  // devirtualization eligibility differs between native and kernel for that
+  // exact shape, a separate, out-of-scope divergence; wrapping `g` in an
+  // array before calling sidesteps it on both legs uniformly.
+  if (onWasi()) return
+  const src = `export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }`
+  const mod = await oracle(src)
+  const cases = [
+    { args: [-1], want: false },  // x>0 is false; v is the coerced-false atom
+    { args: [1], want: 1 },       // x>0 is true; v is the genuine number 1
+  ]
+  for (const { args, want } of cases) is(mod.f(...args), want, `captured-then-read: JS oracle baseline f(${args.map(String)})`)
+  for (const opt of [0, 2, 3]) {
+    const nat = runNative(src, opt).f
+    const ker = runKernel(src, opt).f
+    for (const { args, want } of cases) {
+      is(nat(...args), want, `captured-then-read O${opt}: native f(${args.map(String)}) agrees with JS`)
+      is(ker(...args), want, `captured-then-read O${opt}: kernel f(${args.map(String)}) agrees with JS`)
     }
   }
 })

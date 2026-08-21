@@ -371,6 +371,30 @@ test('RepresentationPlan: generic closure slots carry Number, Bool, and boxed Bi
   }
 })
 
+test('closure: captured ambiguous BOOL∪NUMBER merge preserves identity (kernel-oracle.js "captured BOOL∪NUMBER merge" AGREE row)', () => {
+  // `let v = x > 0 && 1` (kind.js hasAmbiguousBoolMerge): the && collapses
+  // to NUMBER (v's own valTypeOf) but its runtime value is drawn from
+  // {coerced false, real number 1} — never a genuine 0. Capturing `v` by a
+  // closure reads a bare name, no expression shape left for
+  // hasAmbiguousBoolMerge to see, so the false arm's identity used to be
+  // unrecoverable by the time module/function.js's env-slot store ran —
+  // fixed by emit.js's emitDecl minting a one-time identity-safe shadow
+  // local for a captured, ambiguous-merge decl (ctx.func.identityShadow),
+  // read back at the env-slot store instead of re-deriving from `v`'s
+  // already-collapsed bits.
+  const src = `
+    export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }
+    export let t = (x) => { let v = x > 0 && 1; const g = () => typeof v; let arr = [g]; return arr[0]() }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = runHost(src, { optimize })
+    is(e.f(-1), false, `O${optimize || 0}: false arm keeps boolean identity, not raw 0`)
+    is(e.f(1), 1, `O${optimize || 0}: truthy arm stays the genuine number`)
+    is(e.t(-1), 'boolean', `O${optimize || 0}: typeof captured false-arm is 'boolean'`)
+    is(e.t(1), 'number', `O${optimize || 0}: typeof captured truthy-arm is 'number'`)
+  }
+})
+
 test('arity err: closure with 9 fixed params', () => {
   throws(
     `export let f = () => {
