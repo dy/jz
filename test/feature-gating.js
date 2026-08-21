@@ -51,14 +51,20 @@ test('features.external ON: untyped .prop read — __ext_prop import present', (
   is(hasImport(w, '__ext_prop'), true)
 })
 
-test('features.external OFF: untyped ?.prop read — no __ext_prop import', () => {
-  // `?.` on an unknown receiver routes through __dyn_get_any_t but does NOT
-  // pull __ext_prop: the EXTERNAL arm only fires for non-nullish receivers,
-  // and `?.` short-circuits to null on nullish ones — so the import is dead
-  // weight unless the caller has actual externals (in which case features.external
-  // is already on via opts.imports).
+test('features.external ON: untyped ?.prop read — __ext_prop import present', () => {
+  if (onWasi()) return  // wasi: external object
+  // `?.` on an unknown receiver delegates to the SAME emitPropAccess arm the
+  // plain `.` read uses (module/core.js) — same demand, same import. `o` itself
+  // may BE the PTR.EXTERNAL host object reaching in through this very read, no
+  // other access needed to put "externals in play" first (an exported function's
+  // own untyped parameter is exactly this — see test/objects.js's marshalled-arg
+  // regression). A prior version exempted `?.` from the demand on the false
+  // premise that the nullish short-circuit makes the EXTERNAL arm unreachable
+  // unless something else set it first — it doesn't; the short-circuit rules
+  // out null/undefined only, and dropped __ext_prop for every `opts?.x ?? dflt`
+  // whose only property access was itself optional-chained.
   const w = wat(`export let f = (o) => o?.x`)
-  is(hasImport(w, '__ext_prop'), false)
+  is(hasImport(w, '__ext_prop'), true)
 })
 
 test('features.external ON: untyped .prop write — __ext_set import present', () => {
