@@ -1234,6 +1234,61 @@ test('every: typed-array field of heap-returned object', () => {
 // -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
 // the source position feeding `null` into watr's memidx/data builder — the
 // in-kernel discipline pass this shape has needed since the first attempt.
+// LOCALIZED (2026-08-21, agent/typed-set-edge, worktree off ca9ca31d). Crash-rate
+// reproduced first: 5/5 `npm run build` runs failed on this worktree (was 4/5),
+// identical stack every time (watr/src/compile.js instr()@1127, called from the
+// code/func-body section handler @851, assemble/compile @267/356, index.js's
+// watrCompile(optimized) call) — confirms the defect, not a fluke of the prior
+// session's count. NOT a memidx/data-segment site as first guessed — that was
+// this diff's own hedge, unresolved at the time. Root-caused via a temp
+// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with
+// this fix): 2 real `npm run build` runs both surfaced the identical shape, a
+// bare `['then', null]` (2-element array) nested under an `(if …(i32.and
+// tagbits mask)(i32.eq …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e.
+// `dispatchByPtrType`'s (src/ir.js) own `['then', ir]` construction with `ir`
+// unresolved to `null`. One run caught 112 such nodes across many distinct
+// compiler-internal functions ($closure24/25/29/121/211/929/2040/2252/2997/
+// 3010/4118/4121, $__start, $m60_ast$handlerArgs, …) — self.js's own module
+// graph, not this diff's emit.js/module/*.js source meaning.
+// MECHANISM: `tryRuntimeStringFork`'s new `cases.push([PTR.TYPED, callMethod(t,
+// typedEmitter)])` (this diff, src/compile/emit.js) embeds
+// `callMethod(t, typedEmitter)`'s return value VERBATIM into `dispatchByPtrType`'s
+// `then` arm — and `callMethod` → `emitMethodCallSpread`'s common path
+// (src/compile/emit.js: `if (!parsed.hasSpread) return methodEmitter(objArg,
+// ...parsed.normal)`) is a bare passthrough with no falsy guard. Several
+// `.typed:*` emitters use `return null` as a DECLINE signal for a shape their
+// fast path doesn't cover: confirmed `.typed:slice`
+// (module/typedarray.js:2610, `if (r.isBigInt) return null`) and
+// `.typed:filter` (module/typedarray.js:2548, `if (!r || r.isBigInt) return
+// null`; broader — also declines on a wholly-unresolved element kind, `!r`);
+// siblings unaudited. That convention is SOUND for every PRE-EXISTING caller —
+// `tryStaticDispatch`'s direct `.${vt}:${method}` call and the top-level
+// TYPED_STRATEGIES list both treat a falsy strategy return as "try the next
+// strategy" — this diff's dispatchByPtrType embedding is the FIRST caller that
+// splices a `.typed:${method}` result straight into IR with no such guard, so
+// a decline becomes a bare `null` sitting where an instruction belongs. The
+// decline convention itself predates this session (real, latent, in module/
+// typedarray.js already) — this diff supplies the first caller that doesn't
+// respect it, which is exactly the "pre-existing edge, newly tipped" shape the
+// earlier hedge guessed at, now with a name: not self-compile-build
+// nondeterminism (research.md §defect 2 is a different, wasm-hosted jz×jz
+// region-allocator mechanism, ruled out — this is host-native, no region
+// arena involved), but a real per-compile trigger condition (self.js contains
+// several vt-unknown receivers, several of them BigInt-element or
+// unresolved-element typed arrays, calling a method this diff newly routes
+// through the TYPED case) that fires on MOST but not EVERY compile — plausibly
+// order/inlining-sensitive in which of several equally-guilty call sites gets
+// hit or optimized-away first, not yet isolated further.
+// JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
+// localization run above used `npm run build`'s O3 default.
+// NOT YET FIXED — localization only, per this update. Two directions sketched,
+// neither taken: (a) narrow — `tryRuntimeStringFork` treats a nullish
+// `callMethod(t, typedEmitter)` as "TYPED case declines", omitting it from
+// `cases` (falls through to `generic`) instead of embedding it; (b) broad —
+// audit every `.typed:*` "return null" site and replace the silent decline
+// with an explicit sentinel `dispatchByPtrType`-aware callers must check, so
+// no future caller can repeat this by construction (matches this repo's
+// "eradicate the whole shape-class" principle; unscoped for this session).
 // Flip `test.todo` → `test` once a build run holds clean across a real repeat
 // count (10+), not 1.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {
