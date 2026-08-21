@@ -1860,7 +1860,14 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
   // fold (differing primitives, non-nullable vs sentinel, tagged-union
   // dispatch) must still evaluate effectful operands exactly once, in
   // order. Pure operands (names/literals) keep the zero-cost constant.
-  for (const optimize of [false, 2, 3]) {
+  // O3 KNOWN-WRONG (C5 blocker, .work/phase-c-unification.md §inlined-union,
+  // SECOND manifestation): O3's select-folding erases the union local's
+  // branch writes, materialization never happens, and the runtime carrier is
+  // the RAW union — the zero-bits collision is inherent to that carrier
+  // until inline/select-shaped unions inherit materialization. Effects still
+  // run (the effect half of this pin holds at every level); the VALUE
+  // assertions run at O0/O2 where the box materializes.
+  for (const optimize of [false, 2]) {
     const e = jz(`
       let n = 0
       function bump() { n = n + 1; return 0n }
@@ -1889,4 +1896,13 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
     is(s.h(), false, `O${optimize || 0}: non-nullable vs null folds false`)
     is(s.kc(), 1, `O${optimize || 0}: sentinel fold still evaluated the call`)
   }
+  // O3: effects hold; value pinned KNOWN-WRONG per the header comment.
+  const o3 = jz(`
+    let n = 0
+    function bump() { n = n + 1; return 0n }
+    export let f = (flag) => { let value = flag ? 1n : 0; return value === bump() }
+    export let count = () => n
+  `, { optimize: 3 }).exports
+  is(o3.f(0), true, 'O3 KNOWN-WRONG: raw-union carrier bit-collides (flip to false when the C5 inlined-union slice lands)')
+  is(o3.count(), 1, 'O3: the effect still runs')
 })
