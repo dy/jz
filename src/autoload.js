@@ -30,7 +30,7 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   slice: ['core', 'string', 'array'], concat: ['core', 'string', 'array'],
   indexOf: ['core', 'string', 'array'], lastIndexOf: ['core', 'string', 'array'],
   includes: ['core', 'string', 'array'],
-  length: ['core', 'string', 'array', 'typedarray'],
+  length: ['core', 'string', 'array', 'typedarray', 'collection'],
   toBase64: ['core', 'typedarray', 'string'], toHex: ['core', 'typedarray', 'string'],
   setFromBase64: ['core', 'typedarray', 'string', 'collection'],
   setFromHex: ['core', 'typedarray', 'string', 'collection'],

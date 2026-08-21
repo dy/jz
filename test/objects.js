@@ -1454,17 +1454,27 @@ test.todo('optional chain reads a marshalled object arg like a plain member read
 // `.length` traps "Offset is outside the bounds of the DataView"); `byteLength` /
 // `byteOffset` read 0; `length` dies at compile with "'__schema_tbl' is not a known
 // global". Any other name — `_buf`, `buf`, `ptr` — behaves. Silent wrong results.
-// STATUS 2026-08-21 (probed on f9839f93): 4/5 symptoms already fixed upstream —
-// buffer/byteLength/byteOffset scalars AND the Float64Array-payload persistence
-// all correct; only `length` still fails, now with a DIFFERENT, loud error
-// (internal: stdlib '__dyn_get_expr_t_h' requested but never registered) — a
-// dyn-get stdlib-registration gap, not the old schema-table miss. Keep skipped
-// until `length` lands; then un-skip whole.
+// FIXED (probed on fd593164): `length`'s remaining loud error (internal: stdlib
+// '__dyn_get_expr_t_h' requested but never registered) was an autoload gap, not a
+// codegen bug. module/core.js's emitDynGetExprTyped unconditionally demands
+// `__dyn_get_expr_t_h` for ANY constant-string property name reaching the OBJECT/
+// HASH dyn-prop read path — but that stdlib entry is only REGISTERED when
+// module/collection.js's init runs (module/collection.js ~2951). src/autoload.js's
+// PROP_MODULES table decides which modules a property name auto-loads: `buffer`/
+// `byteLength`/`byteOffset` aren't listed there at all, so they fall through to
+// includeForProperty's catch-all default (`core, object, array, string,
+// collection`) — collection included for free. `length` DOES have its own explicit
+// entry (added for `typedarray`, needed by real TypedArray.prototype.length), and
+// that entry simply omitted `collection`. A program whose only dynamic property
+// name is `length` (this repro: no Map/Set, no other dyn-prop name) never loaded
+// collection.js, so `__dyn_get_expr_t_h` stayed unregistered while still being
+// demanded. Fix: `length: [..., 'collection']` in src/autoload.js's PROP_MODULES —
+// restores the same auto-include contract every sibling name already gets.
 // Live instance: audio-effect — flanger/chorus/vibrato/delay/multitap/haas keep
 // ring-buffer state in `params.buffer` and emit NaN or dry-only output; mixer reads
 // `{buffer, gain}` inputs and traps. Renaming the field to `_buf` makes all six
-// bit-exact vs JS. Flip `test.todo` → `test` when fixed.
-test.todo('fields named like TypedArray accessors resolve like any other field', () => {
+// bit-exact vs JS.
+test('fields named like TypedArray accessors resolve like any other field', () => {
   // name class: lazy-init guard on a missing field, numeric payload
   for (const name of ['buffer', 'byteLength', 'byteOffset', 'length']) {
     const r = run(`
@@ -1495,8 +1505,24 @@ test.todo('fields named like TypedArray accessors resolve like any other field',
     }
   `)
   is(g.f(), 421)
-  // literal-declared buffer field read back through a call arg
-  const m = run(`
+})
+
+// Distinct from the accessor-name class above (confirmed unrelated: reproduces
+// identically with `gain`, a plain number field, and no typed-array field at
+// all) — reading a property off `arr[i]` INSIDE the callee, where `arr` is an
+// array-of-object-literals passed as the call arg itself, misreads: a number
+// field (`gain`) reads 0 instead of 2, a typed-array field (`buffer`) combined
+// with a second `inputs[0].x` read on the same line reads NaN. Isolated so far
+// (probed on fd593164 + the accessor-name fix above): passing the object
+// directly (`pick({...})`, no array wrapper) is correct; pre-indexing outside
+// the call (`pick(arr[0])`) is correct; a LOCAL `let inputs = [{...}]; return
+// inputs[0].x` with no call boundary at all is correct. Only "array literal as
+// the call arg, then `arg[0].prop` read back inside the callee" misreads — a
+// schema/marshaling gap specific to that boundary, not a TypedArray-accessor
+// collision. Needs its own root-cause session; kept separate so it doesn't
+// block the accessor-name fix above.
+test.todo('property read off an array-literal call-arg element inside the callee', () => {
+  const r = run(`
     let pick = (inputs) => inputs[0].buffer[0] * inputs[0].gain
     export let f = () => {
       let a = new Float64Array(2)
@@ -1504,7 +1530,7 @@ test.todo('fields named like TypedArray accessors resolve like any other field',
       return pick([{ buffer: a, gain: 2 }])
     }
   `)
-  is(m.f(), 42)
+  is(r.f(), 42)
 })
 
 // A nested-container WRITE through a host-passed plain-object param silently
