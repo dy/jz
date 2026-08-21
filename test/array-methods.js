@@ -1281,16 +1281,37 @@ test('every: typed-array field of heap-returned object', () => {
 // hit or optimized-away first, not yet isolated further.
 // JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
 // localization run above used `npm run build`'s O3 default.
-// NOT YET FIXED — localization only, per this update. Two directions sketched,
-// neither taken: (a) narrow — `tryRuntimeStringFork` treats a nullish
-// `callMethod(t, typedEmitter)` as "TYPED case declines", omitting it from
-// `cases` (falls through to `generic`) instead of embedding it; (b) broad —
-// audit every `.typed:*` "return null" site and replace the silent decline
-// with an explicit sentinel `dispatchByPtrType`-aware callers must check, so
-// no future caller can repeat this by construction (matches this repo's
-// "eradicate the whole shape-class" principle; unscoped for this session).
+// DIRECTION (a) TRIED THIS SESSION AND REVERTED — UNSAFE, do not repeat as-is.
+// Guarded `tryRuntimeStringFork`: a nullish `callMethod(t, typedEmitter)` (or
+// `strEmitter`) is omitted from `cases`, not pushed — falls through to the next
+// case or to `generic` instead of embedding `null`. Build-crash gate PASSED
+// clean: `npm run build` × 5/5 (was 5/5 FAIL without the guard). But
+// kernel-oracle/kernel-parity, run immediately after per this repo's own gate
+// order, FAILED near-totally on the resulting dist/jz.wasm — kernel-oracle 1/13
+// pass (was 13/13 clean at ca9ca31d), kernel-parity 0/3 — every single kernel
+// invocation, including the trivial byte-identical-WAT-at-O0 probe (no typed
+// arrays involved at all), threw an empty-message `SyntaxError` from the
+// KERNEL'S OWN compiled parser (confirmed directly: `self.exports.default(...)`
+// on a plain `sum` source throws `SyntaxError("")`, not a WASM trap). This
+// disproves the working assumption behind (a) — that a declined TYPED case is
+// effectively dead code at runtime, so falling through to `generic` is
+// consequence-free. It is NOT dead code: watr's assembler rejects malformed IR
+// at BUILD time regardless of reachability (explaining the clean 5/5 build),
+// but at least one of the ~112 census-found sites sits on the kernel's live
+// tokenizer/parser hot path and IS reached with real data — `generic`'s
+// wrong-layout read there corrupts the compiled parser itself. (b) — audit
+// every `.typed:*` "return null" site and give the declining shape (BigInt-
+// element / unresolved-element receivers hitting `.typed:slice`/`.typed:filter`
+// through a fully-erased vt) a CORRECT runtime-safe path, e.g. extending
+// `.typed:slice`'s existing `!r` → `__typed_slice_rt` runtime-dispatch fallback
+// (module/typedarray.js:2598-2608) to also cover the `isBigInt` decline instead
+// of bailing to `null` — is the remaining, untaken, properly-scoped direction;
+// out of this session's timebox (root-causing the corruption itself took the
+// remainder of it). `set:` PROP_MODULES row (coordinator audit finding, src/
+// autoload.js) also reverted uncommitted — meaningless without a landed (a)/(b).
 // Flip `test.todo` → `test` once a build run holds clean across a real repeat
-// count (10+), not 1.
+// count (10+) AND kernel-oracle/kernel-parity both hold at 13/13 and 33/33 —
+// not just the build exit code.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
