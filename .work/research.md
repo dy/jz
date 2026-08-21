@@ -23716,3 +23716,24 @@ scripts, both dead-end run logs, the watchpoint diff) at
 `scratchpad/defect2-work/` and worktree at `scratchpad/defect2` (branch
 `agent/defect2-owner`, left in place, not merged) for whoever picks this up
 next — re-apply the recipe above rather than re-deriving it.
+
+## §defect 2 — NOT REPRODUCED on tip; goal-gate wall is pure VOLUME again (2026-08-21)
+
+First contention-free goal-gate run since the banked trail (empty machine,
+instrumented region-live kernel off 52182df5, the STRICTER full-array
+watchpoint from agent/defect2-owner's recipe): the jz×jz compile ran 2.9h
+(10,407s wall — the full-array per-round scan is the instrumentation tax)
+with the watchpoint SILENT through every emission round — no bodies[]
+aliasing, no {type,valKind} slot overwrite, no corruption of any class —
+and trapped at byteLength 4294967296 = exactly the wasm32 4 GiB ceiling
+(alloc-failure recursion pair 167<->3584 in the tail). CONCLUSION: the
+2026-08-20 deterministic aliasing does not reproduce on tip — one of the
+interim landings (13 merges today: analyze census position-threading,
+plan edges, walker retrofits, emission changes) removed or displaced it.
+Defect-2 downgraded: open-corruption -> unobserved-on-tip, recipe
+validated end-to-end and re-runnable in ~35min un-instrumented. The
+MEMORY ENDGAME's blocker is therefore FOOTPRINT, not correctness: next
+levers per the retained-set census stand — __hash_set_local unamortized
+dyn-props growth (100% of fatal-call >=16KB allocs, initial-cap/policy
+fix), then the region recopy-cost work, then REGION_HOOKS_ACTIVE
+flip-by-default consideration once the ceiling clears.
