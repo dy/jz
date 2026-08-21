@@ -940,7 +940,17 @@ export const wrap = (memSrc, inst, state) => {
   // jz:i64exp) pass its i64 bits (a boxed value is already a BigInt; a numeric arg to a
   // dynamic i64 param → its f64 bits). The box never materializes as f64, so JSC can't
   // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
-  const i64Arg = (ie, ext, box, bigintSlots) => (x, i) => {
+  const i64Arg = (ie, ext, box, bigintSlots, name) => (x, i) => {
+    // Phase-C C4b (correct-or-reject, the ratified zero-evidence policy): a
+    // plain JS BigInt VALUE at a slot WITHOUT BigInt evidence in the compiled
+    // program has no sound crossing — the legacy decimal-string accident only
+    // "worked" for typeof-guarded normalization params and silently garbled
+    // every numeric one (the dyn-keys zero-evidence pin). Ingress-marked
+    // slots (jz:bigintbox — the plan proved the param) box and work; NaN-box-
+    // shaped bigints (jz-side pointers built via memory.*) pass through as
+    // always. Everything else refuses loudly with both remedies named.
+    if (typeof x === 'bigint' && !bigintSlots?.has(i) && !isBox(x))
+      throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
     const w = bigintSlots?.has(i) && typeof x === 'bigint'
       ? mem.BigInt(x)
       : wrapArgAt(ext, i, x, box)
@@ -995,7 +1005,7 @@ export const wrap = (memSrc, inst, state) => {
         // fresh call never starts with a stale marker from a PRIOR call.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn(...args.map(i64Arg(ie, ext, coerce, bigintSlots)))
+          const ret = fn(...args.map(i64Arg(ie, ext, coerce, bigintSlots, name)))
           // A bigint-value result returns raw; the `s` lane (census-BIGINT sentinel) decodes
           // only its own fixed sentinel bit pattern; everything else (a boxed i64 result or an
           // f64/number result) takes the generic decode.
@@ -1017,7 +1027,7 @@ export const wrap = (memSrc, inst, state) => {
       const ie = i64Exp.get(name)
       const bigintSlots = bigintBoxExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, bigintSlots))
+        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, bigintSlots, name))
         while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
         const restArr = mem.Array(args.slice(fixed))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
@@ -1044,7 +1054,7 @@ export const wrap = (memSrc, inst, state) => {
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, bigintSlots)))
+          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, bigintSlots, name)))
           if (typeof ret === 'bigint') {
             if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
             if (!(ie && ie.r)) return ret

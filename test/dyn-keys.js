@@ -1178,14 +1178,16 @@ test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export
   for (const op of ['-', '*', '/', '%', '&'])
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
 })
-test('KNOWN-FAIL (architecturally out of reach — needs new boundary-boxing infra, §6 presentKindUnboxed/bigintBoxed, not this design): a fully zero-evidence dynamic-param BigInt pair still misdecodes', () => {
-  // A plain, zero-evidence exported param pair — architecturally out of reach
-  // of any static proof (see the block comment above): NEITHER param has ANY
-  // bigint evidence for `bigIntDomainsCanMix` to see, so the joint dispatch
-  // never activates and this stays on the untouched, pre-existing generic
-  // numeric path — unaffected by §14 point 4, by design.
+test('zero-evidence host BigInt REJECTS at the wrapper (phase-c C4b correct-or-reject; was KNOWN-FAIL silent misdecode)', () => {
+  // A plain, zero-evidence exported param pair is architecturally out of
+  // reach of any static proof (see the block comment above) — the old
+  // behavior silently misdecoded (returned a number where JS says 2n). The
+  // ratified policy is correct-or-reject: the interop wrapper now throws a
+  // typed error naming both remedies. Params WITH evidence take the tagged
+  // ingress and work dynamically (the host-ingress test above).
   const plainSub = jz('export let f = (a, b) => a - b', { jzify: true }).exports.f
-  is(typeof plainSub(5n, 3n), 'number', 'JS: 2n — a real, zero-evidence dynamic-param BigInt pair through `-`, architecturally unprovable, not a §14 point 4 gap')
+  throws(() => plainSub(5n, 3n), /BigInt argument at param 0 of f\(\) has no BigInt evidence/,
+    'zero-evidence BigInt ingress refuses loudly instead of silently misdecoding')
 })
 
 // FIXED (round-7): `valTypeOfWithLocals`'s binary arms (kind.js) now settle
