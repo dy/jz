@@ -98,20 +98,18 @@ const readsLocal = (n, name) => isArr(n) &&
 // Find `(local.set A (ADD (local.get A) (call $self …)))` (either operand order).
 // That statement IS the recursive call's only consumer — the fusion site.
 function findAccConsume(root, self) {
-  if (!isArr(root)) return null
-  for (let i = 1; i < root.length; i++) {
-    const c = root[i]
-    if (isArr(c) && c[0] === 'local.set' && typeof c[1] === 'string' && isArr(c[2]) && ADD_OPS.has(c[2][0])) {
+  let result = null
+  walkAst(root, { enter: (c, parent, i) => {
+    if (result) return false
+    if (parent && c[0] === 'local.set' && typeof c[1] === 'string' && isArr(c[2]) && ADD_OPS.has(c[2][0])) {
       const A = c[1], add = c[2]
       const isAcc = (e) => isArr(e) && e[0] === 'local.get' && e[1] === A
       const isCall = (e) => isArr(e) && e[0] === 'call' && e[1] === self
-      if (isAcc(add[1]) && isCall(add[2])) return { parent: root, idx: i, acc: A, add: add[0], call: add[2] }
-      if (isAcc(add[2]) && isCall(add[1])) return { parent: root, idx: i, acc: A, add: add[0], call: add[1] }
+      if (isAcc(add[1]) && isCall(add[2])) { result = { parent, idx: i, acc: A, add: add[0], call: add[2] }; return false }
+      if (isAcc(add[2]) && isCall(add[1])) { result = { parent, idx: i, acc: A, add: add[0], call: add[1] }; return false }
     }
-    const r = findAccConsume(c, self)
-    if (r) return r
-  }
-  return null
+  } })
+  return result
 }
 
 const freshen = (orig, level, used) => {
