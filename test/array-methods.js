@@ -801,13 +801,28 @@ test('Array.from: static array-like object literal reads real per-index values',
   is(run(`export let f = () => { let r = Array.from({0: 5, length: 1}, x => x * 2); return r[0] }`).f(), 10)
 })
 
-test('Array.from: dynamic array-like length is a documented gap, not a crash', () => {
-  // arrayLikeLength only locates a STATIC `{}` literal's length property; a `length`
-  // that isn't a compile-time int (a genuinely dynamic array-like, e.g. arriving
-  // through a function parameter) has no compile-time route to the indexed
-  // properties. This is the pre-existing gap, pinned here so it stays a documented,
-  // silent-undefined result — not something this fix was asked to close.
-  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[0] === undefined ? 1 : 0 }`).f(1), 1)
+test('Array.from: dynamic array-like length reads real per-index values (was: documented gap, silently undefined)', () => {
+  // Was the documented gap: arrayLikeLength found the literal `length:` property,
+  // but a `length` that isn't a compile-time-int literal (e.g. arriving through a
+  // function parameter) left every slot `undefined` — the loop knew the LENGTH,
+  // never the indexed properties. Closed: `src`'s literal indices are still fully
+  // known at compile time (only the loop bound is dynamic) — arrayLikeMaxIndex
+  // finds the highest literal index, each present index's value evaluates once
+  // up front, and the runtime loop dispatches by index instead of hardcoding
+  // undefined (module/array.js, the `if (lengthExpr)` gap branch). ECMA-262
+  // Array.from (22.1.2.1): LengthOfArrayLike reads `length` once, then
+  // Get(arrayLike, ToString(k)) for k in [0, len) — real JS gives
+  // `Array.from({0: 'a', length: 1})[0] === 'a'`.
+  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[0] === 'a' ? 1 : 0 }`).f(1), 1)
+  // A missing property (a real gap, or any index beyond the highest literal one)
+  // reads undefined, same as a real array-like — not a compile error, not garbage.
+  is(run(`export let f = (n) => { let r = Array.from({0: 'a', 2: 'c', length: n}); return r[1] === undefined ? 1 : 0 }`).f(3), 1)
+  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[4] === undefined ? 1 : 0 }`).f(5), 1)
+  // mapfn still runs per index against the real (or undefined-gap) element.
+  is(run(`export let f = (n) => { let r = Array.from({0: 5, length: n}, x => x * 2); return r[0] }`).f(1), 10)
+  // n = 0: an empty result, not a crash — the literal is still built, Array.from
+  // just never iterates any index.
+  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r.length }`).f(0), 0)
 })
 
 test('Array.from(string): pin current per-char behavior (unaffected by the typed-source fix)', () => {

@@ -1969,7 +1969,7 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // exactly this shape — under JZ_BIGINT_STRICT (opt-in) a compile-time refusal instead, since the
 // merge's kind (bigint vs null) is only knowable at runtime, never
 // statically uniform. Converted to expect-error, not deleted.
-test('bigint∪null: kind carries through the nullish ternary arm, guards stay live [RETIRED: BigInt-or-null ternary merge is a "ternary-nullish" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+test('bigint∪null: kind carries through the nullish ternary arm, guards stay live — BigInt-or-null ternary merge strict-mode (opt-in) ternary-nullish diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`
     export let viaTern = (a) => {

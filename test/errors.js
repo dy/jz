@@ -1184,10 +1184,9 @@ test('errors: Object.assign/spread over an Error copies message/name — no cras
   is(j(`export let f = () => { let e = new TypeError("y"); return Object.keys({...e}).sort().join(',') }`), 'message,name', 'spread from a BOUND Error variable copies message+name')
   is(j(`export let f = () => JSON.stringify({...new TypeError("x")})`), '{"message":"x","name":"TypeError"}', 'spread content matches Object.keys(err)/JSON.stringify(err) above — one consistent story')
   // Object.assign onto a target whose OWN schema already has message/name slots
-  // (Object.assign never GROWS a target's schema for new keys — a separate,
-  // general, pre-existing jz limitation unrelated to Error: `Object.assign({},
-  // {a:1})` also yields `[]` today, see .work/todo.md's audit-#10 entry — so a
-  // matching-schema target is what actually exercises the SOURCE-schema fix).
+  // — isolates the SOURCE-schema/enumerability decision this test pins from
+  // target-growth behavior (Object.assign onto a literal target now grows for
+  // new keys too, fixed by a0614fc3 — see the literal-target-growth test below).
   is(j(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).sort().join(',') }`), 'message,name', 'Object.assign copies message+name onto a target with matching slots')
   is(j(`export let f = () => { let t = {message: '', name: ''}; let e = new TypeError("y"); return JSON.stringify(Object.assign(t, e)) }`), '{"message":"y","name":"TypeError"}', 'Object.assign from a BOUND Error variable copies the real values')
   // optimize:2/3 must not crash either (kernel-parity-adjacent smoke check)

@@ -476,6 +476,25 @@ export default (ctx) => {
   // absurd `{length: 1e9}` (no matching indices) can't blow the module up.
   const ARRAY_LIKE_STATIC_CAP = 1 << 16
 
+  // Highest literal canonical-index key ("0","1",…) present on the SAME static
+  // array-like object literal arrayLikeLength/arrayLikeProp walk — bounds the
+  // runtime index-dispatch a dynamic-length literal (below) needs: any index
+  // beyond it can only read `undefined`, matching a missing array-like property,
+  // so there is nothing further to unroll. -1 when no literal index exists at all.
+  function arrayLikeMaxIndex(src) {
+    let max = -1
+    for (let i = 1; i < src.length; i++) {
+      const prop = src[i]
+      if (!Array.isArray(prop) || prop[0] !== ':') continue
+      const key = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
+      if (typeof key !== 'string') continue
+      const n = Number(key)
+      // Canonical array-index string only ("0","1",…, not "01"/"-1"/"1.5"/"").
+      if (Number.isInteger(n) && n >= 0 && n <= ARRAY_LIKE_STATIC_CAP && String(n) === key && n > max) max = n
+    }
+    return max
+  }
+
   // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
   // IsCallable(mapfn) is false, throw a TypeError before iterating items.
   // An explicit `undefined` arrives as the literal node [null, undefined];
@@ -546,21 +565,50 @@ export default (ctx) => {
         body.push(out.ptr)
         return typed(['block', ['result', 'f64'], ...body], 'f64')
       }
-      // Gap (documented, not fixed here): a `length` that isn't a small int
-      // literal — or a genuinely dynamic array-like object (arrayLikeLength
-      // returned null above because `src` isn't a static `{}` literal at all,
-      // e.g. an object passed in through a variable/param) — has no compile-time
-      // route to its indexed properties. This loop only knows the LENGTH; every
-      // slot reads as `undefined` rather than the real (unreachable) src[i].
+      // Gap CLOSED: `length` isn't a compile-time-int literal (e.g. arriving
+      // through a function parameter), but `src` IS a static object literal —
+      // its indexed properties are still fully known at compile time, only the
+      // LOOP BOUND is dynamic. ECMA-262 Array.from (22.1.2.1): LengthOfArrayLike
+      // reads `length` once, then Get(arrayLike, ToString(k)) runs for every k
+      // in [0, len). For a literal source, Get(k) resolves at compile time to
+      // arrayLikeProp's value node (same lookup the fully-static branch above
+      // uses) or `undefined` when no literal property matches. Every present
+      // index's value expression evaluates EXACTLY ONCE, unconditionally, up
+      // front (ascending-index order — same convention the fully-static branch
+      // above already uses, not necessarily left-to-right source order) —
+      // matching real JS's own object-literal construction, where a property's
+      // value is computed once when the literal is built, never re-evaluated by
+      // a later Get(); reading it LAZILY only if the runtime loop happens to
+      // reach that index would silently DROP the side effect whenever `length`
+      // turns out smaller than the index's position. The runtime loop then only
+      // SELECTS among the pre-evaluated temps by index — a plain `local.get`,
+      // no re-evaluation either way.
+      const maxIdx = arrayLikeMaxIndex(src)
       const len = tempI32('fl'), i = tempI32('fi')
       const lenIR = ['local.get', `$${len}`]
       const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'fr' })
       const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
-      const undef = typed(['f64.reinterpret_i64', ['i64.const', UNDEF_NAN]], 'f64')
-      const item = cb ? cb.call([undef, idxArg(cb, i)]) : undef
+      const idxSetup = [], idxTemp = new Map()
+      for (let k = 0; k <= maxIdx; k++) {
+        const valNode = arrayLikeProp(src, String(k))
+        if (valNode === undefined) continue  // a real gap (e.g. {0:'a', 2:'c'}) — undefined at read time, nothing to evaluate
+        const t = temp('flv')
+        idxTemp.set(k, t)
+        idxSetup.push(['local.set', `$${t}`, taggedStoredValue(valNode)])
+      }
+      let dyn = undefExpr()
+      for (let k = maxIdx; k >= 0; k--) {
+        const t = idxTemp.get(k)
+        if (t === undefined) continue
+        dyn = typed(['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${i}`], ['i32.const', k]],
+          ['then', ['local.get', `$${t}`]],
+          ['else', dyn]], 'f64')
+      }
+      const item = cb ? cb.call([dyn, idxArg(cb, i)]) : dyn
       const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${len}`, asI32(emit(lengthExpr))],
+        ...idxSetup,
         out.init,
         ...(cb ? [cb.setup] : []),
         ['local.set', `$${i}`, ['i32.const', 0]],
