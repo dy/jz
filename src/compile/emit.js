@@ -3039,6 +3039,22 @@ function matchVoidLocalStore(s) {
   return null
 }
 
+// Effect-preserving constant fold (re-audit P0): a statically-decided
+// comparison still evaluates its operands exactly once, in source order —
+// JS sequences operand evaluation before comparing, so a fold that skips
+// an effectful operand erases `(n++, 0n)`-class effects and thrown
+// exceptions. Pure operands — bare names and literal nodes (jz has no
+// getters; locals and literals cannot observe evaluation) — keep the
+// zero-cost direct constant.
+const foldOperandPure = (n) => typeof n === 'string' || !Array.isArray(n) ||
+  n[0] == null || n[0] === 'str' || n[0] === 'bigint'
+function effectFoldSeq(operands, constIR) {
+  const stmts = []
+  for (const o of operands) if (o != null && !foldOperandPure(o)) stmts.push(['drop', emit(o)])
+  if (!stmts.length) return constIR
+  return typed(['block', ['result', 'i32'], ...stmts, constIR], 'i32')
+}
+
 function emitLooseEq(a, b, negate, strict) {
   const eqOp = negate ? 'ne' : 'eq'
   const sentinel = emitNum(negate ? 1 : 0)
@@ -3047,7 +3063,7 @@ function emitLooseEq(a, b, negate, strict) {
   // JS loose nullish equality: x == null / x == undefined.
   // If the non-literal side has a known non-null VAL type, fold to the sentinel.
   const nullishOf = (other) => {
-    if (valTypeOf(other) && !nullableOperand(other)) return sentinel
+    if (valTypeOf(other) && !nullableOperand(other)) return effectFoldSeq([other], sentinel)
     const chk = isNullish(asF64(emit(other)))
     return negate ? typed(['i32.eqz', chk], 'i32') : chk
   }
@@ -3232,7 +3248,7 @@ function emitStrictEq(a, b, negate) {
     return null  // numeric / string literal value — not a nullish sentinel
   }
   const strictSentinel = (other, undef) => {
-    if (valTypeOf(other) && !nullableOperand(other)) return emitNum(negate ? 1 : 0)
+    if (valTypeOf(other) && !nullableOperand(other)) return effectFoldSeq([other], emitNum(negate ? 1 : 0))
     const chk = (undef ? isUndef : isNull)(asF64(emit(other)))
     return negate ? typed(['i32.eqz', chk], 'i32') : chk
   }
@@ -3258,11 +3274,12 @@ function emitStrictEq(a, b, negate) {
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
   }
-  // Known, differing primitive classes can never be strictly equal.
+  // Known, differing primitive classes can never be strictly equal — but the
+  // operands still evaluate, in order (effectFoldSeq).
   const strictA = resolveValType(a, valTypeOf, lookupValType)
   const strictB = resolveValType(b, valTypeOf, lookupValType)
   if (strictA && strictB && strictA !== strictB && (STRICT_PRIM.has(strictA) || STRICT_PRIM.has(strictB)))
-    return emitNum(negate ? 1 : 0)
+    return effectFoldSeq([a, b], emitNum(negate ? 1 : 0))
   // Both sides statically BOOL: compare TRUTH VALUES, not raw bits — a boolean's
   // carrier varies by source (raw 0/1 from locals/comparisons, TRUE/FALSE atom out
   // of slots/hashes/JSON) and truthyIR normalizes both representations.
@@ -3307,17 +3324,24 @@ function emitStrictEq(a, b, negate) {
        ctx.funcs.map?.get(n[1]) != null && representationResultTagRequired(ctx, ctx.funcs.map.get(n[1]), new WeakSet(), true))
     const planA = provenTagged(a), planB = provenTagged(b)
     if (planA !== planB) {
-      const tagSide = planA ? a : b, rawSide = planA ? b : a
+      const rawSide = planA ? b : a
       const rawVt = resolveValType(rawSide, valTypeOf, lookupValType)
       if (rawVt === VAL.BIGINT) {
-        const t = temp('teq')
+        // BOTH operands evaluate exactly once, in SOURCE order, before the
+        // tag dispatch (re-audit P0: the else-arm must not skip the raw
+        // side's effects, and a right-hand tagged operand must not reverse
+        // evaluation order).
+        const ta = temp('teqa'), tb = temp('teqb')
         inc('__ptr_type')
-        const tGet = typed(['local.get', `$${t}`], 'f64')
+        const tagT = planA ? ta : tb, rawT = planA ? tb : ta
+        const tagGet = typed(['local.get', `$${tagT}`], 'f64')
+        const rawGet = typed(['local.get', `$${rawT}`], 'f64')
         const eq = typed(['block', ['result', 'i32'],
-          ['local.set', `$${t}`, asF64(emit(tagSide))],
+          ['local.set', `$${ta}`, asF64(emit(a))],
+          ['local.set', `$${tb}`, asF64(emit(b))],
           ['if', ['result', 'i32'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', tGet]], ['i32.const', PTR.BIGINT]],
-            ['then', ['i64.eq', ['i64.load', ptrOffsetIR(tGet, VAL.BIGINT)], asI64(emit(rawSide))]],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', tagGet]], ['i32.const', PTR.BIGINT]],
+            ['then', ['i64.eq', ['i64.load', ptrOffsetIR(tagGet, VAL.BIGINT)], ['i64.reinterpret_f64', rawGet]]],
             ['else', ['i32.const', 0]]]], 'i32')
         return negate ? typed(['i32.eqz', eq], 'i32') : eq
       }

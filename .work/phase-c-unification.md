@@ -95,9 +95,12 @@ verdict one level deeper (cycle-guarded); '.'-members answer through
 slotBigintProvenAt/slotBigintBoxedAt; names through materializedNames×
 targetNames; joins OR their arms; unresolved tails fall back to the
 boundary current's BOXED bit only when OPEN. C3's compare arm reuses the
-same predicate for call operands and maybeUnboxBigInt for the emission
-(tag-check → deref, else bits ARE the payload — `else 0` misread every
-genuinely-raw open-ANY operand).
+same predicate for call operands; the emission is an explicit source-order
+two-stash tag dispatch with else-FALSE (the earlier maybeUnbox form was the
+carrier-collision P0 — a tagged Number's bits equated with a raw payload —
+and `else 0` before that misread genuinely-raw OPEN operands; the resolution
+is the three-state split: proven-tagged → else-FALSE arm, OPEN → dynamic
+raw-carrier path, never one form for both).
 
 BANKED SIBLING (C5 blocker): the INLINED union — with few call sites the
 callee inlines, the compare/return operand stops being a call node, and
@@ -133,3 +136,13 @@ TypeError naming the param and the two remedies (give the program BigInt
 evidence, or pass the guarded-normalization string). Flip the dyn-keys pin
 from silent-number to throws. AUDIT ANSWER embodied: dynamic-correct where
 the plan carries it, loud reject where it can't, never a guess.
+
+## C5 blocker: SECOND manifestation (2026-08-21)
+
+O3's select-folding erases a union local's branch writes (`flag ? 1n : 0`
+compiles to a raw select), materialization never happens, and the carrier
+is the RAW union — the zero-bits collision is then inherent (pinned
+KNOWN-WRONG at O3 in test/data.js's effect-fold pin; O0/O2 box and stay
+correct). Same root as the few-callsite inlining manifestation: inline/
+select-shaped unions must inherit materialization. The C5 slice now has
+two acceptance flips banked (the 2-export inline probe and the O3 pin).
