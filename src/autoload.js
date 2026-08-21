@@ -2,6 +2,7 @@
 
 import { ctx, err, setFeature, verifyEmitIntegrity } from './ctx.js'
 import * as mods from '../module/index.js'
+import { DERIVED_PROP_MODULES } from './prop-modules.generated.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
@@ -21,6 +22,16 @@ export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', S
 // erased-vt receiver (dyn-prop field, host-provided param — no `new XArray(...)`
 // anywhere in source to trigger includeForRuntimeCtor) relied solely on this
 // table to pull `typedarray` in, and every one of these rows silently didn't.
+//
+// This table is now a FLOOR, not the whole story: `includeForProperty` (below)
+// consults RESOLVED_PROP_MODULES, this table unioned with the registration-
+// derived one (src/prop-modules.generated.js) — see RESOLVED_PROP_MODULES's own
+// comment for why union rather than outright replacement. Hand-edit this table
+// only for a row with a genuine cross-module stdlib-helper edge the derivation
+// can't see (a NEW encodeInto-shaped case — verify by reading the emitter body,
+// don't guess); a plain "this module's `.name`/`.kind:name` key is missing"
+// fix belongs in the module that owns the key, then `node
+// scripts/gen-prop-modules.mjs` picks it up automatically.
 export const PROP_MODULES = Object.assign(Object.create(null), {
   push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
   splice: ['core', 'array'], reverse: ['core', 'array', 'typedarray'], sort: ['core', 'array', 'typedarray'],
@@ -55,6 +66,56 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
   setFromHex: ['core', 'typedarray', 'string', 'collection'],
   encodeInto: ['core', 'string', 'typedarray', 'collection'],
 })
+
+// `includeForProperty` consults THIS, not PROP_MODULES directly: PROP_MODULES ∪
+// the registration-DERIVED table (src/prop-modules.generated.js — see its own
+// header and scripts/gen-prop-modules.mjs for what it is and how it's built).
+// Union, not replacement: the derived table is authoritative for "which module
+// registers a `.name`/`.kind:name` dispatch key" (it's built by OBSERVING
+// registration, not guessing), so it safely ADDS rows PROP_MODULES's hand
+// audit missed entirely (e.g. `forEach` on Map/Set, `match`/`replace`/`split`/
+// `search`'s regex-side emitters) or never covered (Date/RegExp/DataView
+// methods, previously fell through to includeForProperty's broad `else`
+// catch-all with no module-specific coverage at all). It is NOT authoritative
+// for shrinking an EXISTING PROP_MODULES row, because dispatch-key ownership
+// isn't the whole story — a module's emitter body can call another module's
+// stdlib helper directly (a MOD_DEPS-shaped edge) without that showing up as
+// a ctx.core.emit key at all: `.encodeInto` is owned by `string` alone, but
+// its WAT body calls typedarray-owned `__typed_data`/setLinkDemand('typedarray')
+// — confirmed by reading module/string.js, not assumed — so the derived row
+// for `encodeInto` is `['string']`, silently short of what emission actually
+// needs. PROP_MODULES's hand-audited `['string','typedarray','collection']`
+// already covers it; union keeps that floor rather than trusting the narrower
+// derived row. (MOD_DEPS.typedarray now including 'core' — see MOD_DEPS above
+// — closes the analogous, actually-general gap: every derived typedarray-only
+// row, e.g. `buffer`/`byteLength`/`subarray`/the DataView accessor family,
+// needs core's pointer helpers too, and unlike encodeInto's cross-module edge
+// this one CAN be expressed as a plain module dependency.)
+// `length` is the one PROP_MODULES row with NO derived counterpart at all —
+// module/core.js's `.length` read is dispatched by an inline `emitLengthAccess`
+// helper, never a `.length`/`.kind:length` ctx.core.emit key — so it stays
+// exactly the hand-audited row (union with `undefined` is a no-op).
+//
+// byteLength/byteOffset/buffer are DELIBERATELY NOT folded in here (tried it —
+// reverted, see test/objects.js's own extensive comment on "fields named like
+// TypedArray accessors resolve like any other field"): they're kept OUT of
+// this table on purpose so a property read that ISN'T actually a typed array
+// (a plain-object field that merely happens to be spelled `buffer`) still
+// falls through to includeForProperty's generic catch-all below and gets
+// `string`/`collection` — needed for the dyn-prop fallback path's
+// `__dyn_get_expr_t_h`/string-literal-key machinery, NOT for any
+// typedarray-specific dispatch. Folding them into a precise `['typedarray']`
+// row (this table's normal shape) silently dropped that — confirmed by
+// re-running this exact test, not assumed. includeForProperty's own hardcoded
+// `if` for these three stays, unmodified, ADDITIONAL to (not instead of) the
+// catch-all — that non-obvious redundancy is load-bearing, not dead weight.
+const unionMods = (a, b) => [...new Set([...(a || []), ...(b || [])])]
+export const RESOLVED_PROP_MODULES = (() => {
+  const out = Object.create(null)
+  for (const name of Object.keys(PROP_MODULES))
+    out[name] = unionMods(PROP_MODULES[name].filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
+  return out
+})()
 
 export const OP_MODULES = {
   '?.': ['core', 'string', 'collection'],
@@ -188,15 +249,40 @@ const MOD_DEPS = {
   // f64x2.sin/cos lower to math's $math.sin2/$math.cos2 WAT helpers; pull math in so
   // they're registered. Unused math helpers are pruned by reachability — no output cost.
   simd: ['math'],
+  // typedarray's own emitters (`.byteLength`/`.buffer`/`.typed:*`/DataView get*/set*)
+  // call CORE-owned pointer/alloc helpers (__ptr_type, __ptr_offset, __ptr_aux,
+  // __mkptr) directly in their WAT bodies — a real edge, just never expressed here:
+  // every PROP_MODULES row that lists 'typedarray' happened to ALSO always list
+  // 'array' or 'string' or 'collection' (all of which already chain to 'core'), so
+  // the gap was masked by coincidence, not closed. src/prop-modules.generated.js's
+  // derived rows for typedarray-only properties (buffer/byteLength/byteOffset, the
+  // DataView accessor family, subarray) have no such accompanying module — this
+  // entry is the actual, general fix (root cause, not per-row patching).
+  typedarray: ['core'],
 }
 
-export function includeModule(name) {
+// `onRegister(modName, newKeys)` is an OPTIONAL build-time-only observation hook —
+// every real call site passes just `name`, so `onRegister` is `undefined` and the
+// `before`/diff line below never runs (one falsy check, no cost). scripts/
+// gen-prop-modules.mjs is the sole caller that supplies it: it drives every module
+// through here once (host-side, plain Node, never part of the self-compiled
+// surface) and diffs `Object.keys(ctx.core.emit)` around EACH module's own
+// `init(ctx)` call (including ones reached only via the MOD_DEPS loop below) to
+// attribute every `.method`/`.kind:method` dispatch key it registers to the module
+// that registered it — the authoritative source for src/prop-modules.generated.js,
+// replacing hand-typed guesses. Scoping the diff to THIS call's own before/after
+// window (not the caller's) is why circular MOD_DEPS pairs (e.g. string↔number)
+// still attribute correctly: a dep pulled in via the loop below finishes its own
+// registration (and its own onRegister callback) before this module's `before`
+// snapshot is even taken, so the dep's keys are already in `before` and never
+// double-counted here.
+export function includeModule(name, onRegister) {
   const modName = MOD_ALIAS[name] || name
   const init = mods[modName]
   if (!init) return err(`Module not found: ${name}`)
   if (ctx.module.modules[modName]) return
   ctx.module.modules[modName] = true
-  for (const dep of MOD_DEPS[modName] || []) includeModule(dep)
+  for (const dep of MOD_DEPS[modName] || []) includeModule(dep, onRegister)
   // Stdlib registration two-dialect gate (CONTRIBUTING "Stdlib registration"):
   // reg()/registerGetter() guard their OWN write (src/ctx.js registerName),
   // but can't see a LATER raw `ctx.core.emit[name] = …` assignment inside
@@ -205,13 +291,21 @@ export function includeModule(name) {
   // already landed. ctx.core.emit only — see verifyEmitIntegrity's doc
   // comment for why ctx.core.stdlib/wat() isn't symmetric here.
   ctx.core.currentModule = modName
+  const before = onRegister ? new Set(Object.keys(ctx.core.emit)) : null
   init(ctx)
+  if (onRegister) onRegister(modName, Object.keys(ctx.core.emit).filter(k => !before.has(k)))
   verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule)
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
 
-export const includeMods = (...names) => names.forEach(includeModule)
+// NOT `names.forEach(includeModule)`: Array#forEach's callback receives
+// `(element, index, array)` — with includeModule's 2nd param now meaningful
+// (the onRegister observation hook), the bare index leaked through as a
+// truthy-but-uncallable "onRegister" for every 2nd+ module in a call
+// (`includeMods('core','array','typedarray')` crashed on 'array' with
+// "onRegister is not a function" — the classic `.forEach(parseInt)` footgun).
+export const includeMods = (...names) => names.forEach(name => includeModule(name))
 
 export const includeForOp = op => {
   const modules = OP_MODULES[op]
@@ -252,8 +346,10 @@ export const includeForGenericMethod = prop => {
 }
 
 export const includeForProperty = prop => {
+  // Deliberately NOT part of RESOLVED_PROP_MODULES — see that table's own
+  // comment. Additional to, not instead of, the catch-all below.
   if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') includeMods('core', 'typedarray')
-  if (typeof prop === 'string' && PROP_MODULES[prop]) includeMods(...PROP_MODULES[prop])
+  if (typeof prop === 'string' && RESOLVED_PROP_MODULES[prop]) includeMods(...RESOLVED_PROP_MODULES[prop])
   else includeMods('core', 'object', 'array', 'string', 'collection')
 }
 

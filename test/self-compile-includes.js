@@ -15,11 +15,13 @@
 // i.e. it must appear in some `deps()` array or be directly `inc()`'d. A new helper that forgets
 // its explicit edge fails here in-process, long before the kernel leg traps on the dangling call.
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { ok, is } from 'tst/assert.js'
 import { readdirSync, readFileSync } from 'node:fs'
 import { compile } from '../index.js'
 import { ctx } from '../src/ctx.js'
 import { onKernel } from './_matrix.js'
+import { deriveMethodModules } from '../scripts/gen-prop-modules.mjs'
+import { DERIVED_PROP_MODULES } from '../src/prop-modules.generated.js'
 
 // Broad surface so most templates register (each compile resets ctx; accumulate across compiles).
 const PROBES = [
@@ -104,4 +106,24 @@ test('self-compile: no stdlib helper is reachable only via the (self-compile-unr
     `template body calls a helper its OWN explicit deps can't reach — add the deps() edge or inc(): ${[...new Set(vulnerable)].join(', ')} ` +
     `(these compile in-process but vanish from the self-compile kernel, e.g. "Unknown func $__clamp_idx" / "$__durable_slot_log")`)
   ok(callerBodyRefs.size > 20 && depTargets > 20, `realized surface: ${callerBodyRefs.size} templates, ${depTargets} dep edges`)
+})
+
+// src/prop-modules.generated.js (checked in, imported at kernel-compile time as
+// plain static data — see its own header) must match a FRESH re-derivation from
+// the live stdlib registrations. This is the drift tripwire for the whole
+// "derived, not hand-typed" design: a module can add/rename/remove a
+// `.method`/`.kind:method` ctx.core.emit registration without anyone
+// remembering to run the generator, and this catches that the moment it
+// happens instead of it silently rotting like a hand-maintained table would.
+test('self-compile: prop-modules.generated.js is fresh (matches live re-derivation)', () => {
+  if (onKernel()) return  // drives module registration directly via beginSession/includeModule — host-side derivation tooling, not compiler behavior; the in-process leg owns it
+  const fresh = deriveMethodModules()
+  // Render both sides through the exact same {name: sorted-modules} -> line
+  // shape (mirrors scripts/gen-prop-modules.mjs's own `render`), sorted by
+  // name, so the comparison doesn't depend on Map/object key insertion order.
+  const line = (name, mods) => `${name}: ${[...mods].sort().join(',')}`
+  const freshLines = [...fresh.keys()].sort().map(name => line(name, fresh.get(name)))
+  const checkedInLines = Object.keys(DERIVED_PROP_MODULES).sort().map(name => line(name, DERIVED_PROP_MODULES[name]))
+  is(freshLines.join('\n'), checkedInLines.join('\n'),
+    'src/prop-modules.generated.js is stale — run `node scripts/gen-prop-modules.mjs` and commit the result')
 })

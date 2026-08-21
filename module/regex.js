@@ -1392,6 +1392,22 @@ export default (ctx) => {
 
   // str.split(/re/) → array of substrings
   ctx.core.emit['.string:split'] = (str, sep, limit) => {
+    // split() with NO separator arg at all (`sep` is the raw JS `undefined` a
+    // missing callee arg parses as here, not an AST node for the value
+    // `undefined`) → [str]: JS spec step 3, whole string as one element, no
+    // regex/string search involved. Mirrors module/string.js's bare `.split`
+    // handler's identical `sep === undefined` special case (this fork exists
+    // for the SAME property name, dispatched here instead whenever this
+    // receiver is proven STRING — see tryStaticDispatch) — that handler
+    // guards this before ever touching `sep`; this one didn't, so `resolveRegex`
+    // correctly said "not a regex" (null) and the fallback below tried
+    // `emit(sep)` on a bare JS `undefined`, not an AST node — "expected
+    // emitted IR value, got empty value". Exposed by widening `split`'s
+    // autoload row to include `regex` (this key's owner) for EVERY
+    // proven-string receiver, not just ones already reaching it via some
+    // OTHER regex use in the same program — a latent gap this fork's own
+    // `sep`-optionality was never exercised against before.
+    if (sep === undefined) { inc('__wrap1'); return typed(['call', '$__wrap1', asI64(emit(str))], 'f64') }
     const id = resolveRegex(sep)
     if (id == null) {
       // Fall back to string split, forwarding the optional limit (0x7fffffff = no limit).
