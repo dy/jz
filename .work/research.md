@@ -23539,3 +23539,21 @@ the re-aim swept: 19 "[RETIRED: …now a compile-time diagnostic]" comments →
 "under JZ_BIGINT_STRICT (opt-in)"; README's "always-correct dynamic path" →
 honest KNOWN-WRONG-pins wording; bigint-retirement-design.md carries a
 SUPERSEDED-IN-DIRECTION header pointing at the ratified re-aim.
+
+## §Bench refresh attempt: partial-only on this machine (2026-08-20)
+
+`npm run bench` on the quiet machine refreshed the SELF-COMPILE cross-runtime
+comparison (jsc 31.0ms 1.00x / node 33.3 1.07x / bun 34.2 1.10x / deno 39.1
+1.26x / javy 401 12.9x, checksums ok) but the case-matrix competitor rows
+(C/Rust/Zig/Go/AS/MoonBit/TinyGo, jz-wasmtime/w2c/w2c2) all [skip]ped —
+toolchains absent locally — so the regenerated bench.svg mixed fresh JS rows
+with STALE cached aggregates (headline unchanged: JZ 1.00x, C 1.94x, Rust
+2.01x…). SVG change REVERTED, not committed: half-fresh evidence published
+as whole is the exact "unsupportable leadership claim" the re-audit flagged.
+Proper refresh = bench.yml CI (has the toolchains) on next push, or local
+toolchain install. One truncated `RuntimeError: unreachable` appeared during
+target probing (run continued, exit 0; case identity lost to output
+truncation — likely a probed target like porffor/jawsm failing over to
+[skip], shows as Porffor 0.00x) — re-run with full logging when the matrix
+refresh actually happens. bench/results.json still names 4e346183; the
+229-commit staleness stands until CI bench lands.
