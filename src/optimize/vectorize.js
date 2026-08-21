@@ -6379,7 +6379,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const oxDep = new Set([pxVar])
   const allSets = []
   const collectSets = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allSets.push([n[1], n[2]]) }
-  obody.forEach(collectSets)
+  for (const s of obody) walkAst(s, { enter: collectSets })
   for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsName(rhs, d))) { oxDep.add(name); changed = true } }
   const isGatherAddr = (addr) => [...oxDep].some(d => readsName(addr, d))
 
