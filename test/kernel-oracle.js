@@ -362,6 +362,98 @@ export let f = (x) => g(x > 0 && 1)`,
 function callAdd(x) { return add(x, 1) + add(x, 2.5) }
 export let f = (x) => callAdd(x)`,
     calls: [{ fn: 'f', args: [3] }, { fn: 'f', args: [-2] }] },
+  // Re-audit blocker 2 (root-cause regression test for f7d19d99's dataReset
+  // workaround). f7d19d99 fixed a self-compile-only data-segment truncation:
+  // wat/assemble.js's stripDeadLazyTables called
+  // dataReset(dataString().slice(0, spans[0].start)), re-deriving the kept
+  // prefix's byte length from the FRESH SLICE RESULT's own `.length` — under
+  // the KERNEL leg only, that `.length` read back 0 on the compiler's OWN
+  // ~11KB accumulated data-segment string (a genuine non-empty string,
+  // content proven bit-identical native/kernel throughout — only the length
+  // re-derivation was wrong). Fixed by having dataReset(s, len) accept the
+  // caller's already-known-correct length instead of re-deriving it. The
+  // re-audit flagged this as a WORKAROUND: the general primitive it sidesteps
+  // (module/string.js's compiled `.slice()`, on a large/binary-content
+  // string) had no direct semantic regression test of its own.
+  //
+  // This row + the next are that test, at the primitive level (an ORDINARY
+  // compiled program's own `.slice()` call, not the compiler's internal
+  // bootstrap machinery): an 11264-byte string (256-byte 0..255 cycle,
+  // `String.fromCharCode((j+p)&0xFF)` — same byte-packing technique as
+  // static-data.js's pushStaticSlots, incl. NUL and every high byte),
+  // built from a runtime PARAM so preEval can't constant-fold the slice away
+  // (test/strings.js's slice-view tests document the same discipline). `kind`
+  // selects the slice bounds, sweeping across LAYOUT.SLICE_LEN_MASK (0x1FFF =
+  // 8191, module/string.js) — the bit width of a view's packed length field:
+  // under (152, mimicking the original spans[0].start), AT the mask exactly,
+  // one OVER it (nlen > SLICE_LEN_MASK forces __str_slice_view's OWN internal
+  // fallback to a copy), and a large offset slice. Each `kind` branch's `t`
+  // is its own `let t = s.slice(...)` declaration read back only via
+  // `t.length` (a non-escaping local) — the documented trigger for
+  // __str_slice_view (SLICE_BIT, no-copy) lowering (src/compile/analyze-
+  // scans.js scanSliceViews requires the initializer to be a DIRECT
+  // `.slice()` call — a ternary-selected initializer does NOT qualify,
+  // verified while authoring this row: the ternary form the branches replace
+  // never emitted __str_slice_view at all). Confirmed via `compile(...,
+  // {wat:true})`: __str_slice_view present for this if/else form (kind 0/1/3
+  // route through it; kind 2's 8192-byte result exceeds SLICE_LEN_MASK and
+  // takes the view emitter's own copy fallback — __str_slice appears too,
+  // expected). AGREE on every case, every optimize tier, both legs
+  // (scratchpad/slice-repro-sweep*.mjs: 62 cases x {native,kernel} sizes
+  // 256B-20KB, 0 failures) — the general primitive is sound; the ORIGINAL
+  // defect was confined to the compiler's own self-hosted bootstrap state,
+  // not a reachable module/string.js bug.
+  { name: 'large-binary-slice-view (SLICE_BIT no-copy path, LAYOUT.SLICE_LEN_MASK boundary)',
+    src: `export let f = (p, kind) => {
+      let c = ''
+      for (let j = 0; j < 256; j = j + 1) c = c + String.fromCharCode((j + p) & 0xFF)
+      let s = ''
+      for (let k = 0; k < 44; k = k + 1) s = s + c
+      if (kind === 0) { let t = s.slice(0, 152); return t.length }
+      if (kind === 1) { let t = s.slice(0, 8191); return t.length }
+      if (kind === 2) { let t = s.slice(0, 8192); return t.length }
+      if (kind === 3) { let t = s.slice(100, 9100); return t.length }
+      let t = s.slice(0, 11264)
+      return t.length
+    }`,
+    calls: [
+      { fn: 'f', args: [0, 0] }, { fn: 'f', args: [0, 1] }, { fn: 'f', args: [0, 2] },
+      { fn: 'f', args: [0, 3] }, { fn: 'f', args: [0, 4] },
+    ] },
+  // Copying-path sibling of the row above: `t` is stored into an escaping
+  // field (an object property read back AFTER the storing call returns)
+  // instead of read as a synchronous non-escaping local — analyze-scans.js's
+  // scanSliceViews explicitly disqualifies this shape ("stored into a heap
+  // object" is a documented escaping use), forcing the ordinary copying
+  // __str_slice (fresh `__alloc` + an explicit i32 length header written at
+  // offset-4, per module/string.js's heapLenExpr) rather than the SLICE_BIT
+  // view above. Also mirrors the ORIGINAL bug's own call shape more closely
+  // than the view row does: an inline, non-let-bound `.slice()` result passed
+  // straight into a function that persists it (store.part = s) past its own
+  // return — structurally the same pattern as
+  // dataReset(dataString().slice(0, spans[0].start)) — just at ordinary
+  // user-program scale instead of the compiler's own internal data segment.
+  { name: 'large-binary-slice-copy (escaping through a storing callee, mirrors dataReset(dataString().slice(...)) shape)',
+    src: `let store = { part: '' }
+    function reset(s) { store.part = s }
+    function bigString(p) {
+      let c = ''
+      for (let j = 0; j < 256; j = j + 1) c = c + String.fromCharCode((j + p) & 0xFF)
+      let s = ''
+      for (let k = 0; k < 44; k = k + 1) s = s + c
+      return s
+    }
+    export let f = (p, kind) => {
+      if (kind === 0) reset(bigString(p).slice(0, 152))
+      else if (kind === 1) reset(bigString(p).slice(0, 8191))
+      else if (kind === 2) reset(bigString(p).slice(0, 8192))
+      else reset(bigString(p).slice(100, 9100))
+      return store.part.length
+    }`,
+    calls: [
+      { fn: 'f', args: [0, 0] }, { fn: 'f', args: [0, 1] },
+      { fn: 'f', args: [0, 2] }, { fn: 'f', args: [0, 3] },
+    ] },
 ]
 
 for (const opt of [0, 2, 3]) {
