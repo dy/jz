@@ -1113,6 +1113,42 @@ test('computed property names: effectful coercion runs and key stores under coer
   is(exports._run(), 3)
 })
 
+// Root cause: a computed key that ISN'T compile-time-foldable (`const k =
+// 'b'` folds away before reaching the buggy path, so the bug hides behind
+// any const-string key — only a genuinely dynamic key, e.g. a bare exported
+// param, exercises it) forces prepare's computed-key desugaring
+// (`{...s, [k]: v}` / `{a:1, [k]: v}` → `((t) => (t[k]=v, t))({...})`, the
+// `isComputed` handler in src/prepare/index.js) to capture `k` into a
+// synthesized ARROW. `paramNeverString` (src/compile/index.js) used to bail
+// out of `=>` nodes unconditionally, without ever walking into them, so a
+// param's ONLY use — hidden inside that synthesized arrow — was invisible
+// to the "trust numeric export params" proof (`if (func.exported) …` a few
+// lines above it). The proof wrongly certified `k` as VAL.NUMBER; emit-
+// assign.js's emitElementAssign then trusted that stamp (`idxNumericName`)
+// to skip the runtime `__is_str_key` fork and truncate the key through
+// `i64.trunc_sat_f64_s` (a NaN-boxed string pointer saturates to 0) before
+// re-stringifying it via `__i32_to_str` — an entirely bogus "0" key, wrong
+// insertion order, wrong identity. Spread is NOT the trigger — prepare
+// wraps every computed-key literal in the same IIFE regardless — so both
+// forms are pinned. Native JS: spread/static then computed-key write
+// (later key wins), Object.keys reflects own-property insertion order
+// (ECMA-262 CreateDataProperty / OrdinaryOwnPropertyKeys).
+test('Regression: spread + non-const-foldable computed key resolves the real key, not a phantom index', () => {
+  const { probe } = run(`export let probe = (k) => {
+    const o = { ...{ a: 1 }, [k]: 2 }
+    return Object.keys(o).join(',') + '|' + o.a + ',' + o.b
+  }`)
+  is(probe('b'), 'a,b|1,2')
+})
+
+test('Regression: computed key alone (no spread), non-const-foldable — same closure-capture mis-resolution', () => {
+  const { probe } = run(`export let probe = (k) => {
+    const o = { a: 1, [k]: 2 }
+    return Object.keys(o).join(',')
+  }`)
+  is(probe('b'), 'a,b')
+})
+
 // === static object-literal soundness: shared instance vs mutation ===
 // A pure-constant ≥2-prop literal takes the static-data fast path — ONE shared
 // instance returned from every evaluation. That used to leak writes between
