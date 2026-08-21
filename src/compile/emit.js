@@ -1514,10 +1514,15 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
     const who = typeof node === 'string' ? node : 'this argument'
     const legacyUnbox = alreadyBoxed && !param?.bigintBoxed
     const legacyBox = !alreadyBoxed && param?.bigintBoxed
-    // KEEP emits no transform, so retain the legacy no-op/identity decision
-    // until producer edges are migrated. Only an explicit BOX/UNBOX action
-    // replaces legacy code in this direct-edge slice.
-    const legacyEdge = repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX
+    // Phase-C C4 (plan as sole authority — consumer-side containment): the
+    // legacy sig.bigintBoxed arms fire ONLY when the plan has NO verdict for
+    // this edge (REJECT). Any real verdict — BOX, UNBOX, or KEEP — is the
+    // plan's own readiness-gated decision; layering a legacy box/unbox on
+    // top of a plan KEEP was the second authority the three-store class
+    // names (a plan-KEEP crossing re-boxed or re-unboxed off a stale
+    // sig stamp). Producer-side gating is circular (the plan's current-rep
+    // derivation reads the sink's marks), so containment lives here.
+    const legacyEdge = repAction === REP_EDGE_REJECT
     if (repAction === REP_EDGE_UNBOX || (legacyEdge && legacyUnbox)) {
       if (bigintStrict() && legacyUnbox) bigintEraseErr('call-arg', who)
       // Callee's OWN param settled "receives BIGINT consistently, stays raw
