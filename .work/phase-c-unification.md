@@ -83,3 +83,27 @@ kernel-oracle + full suite)
   retirement).
 - No mixed-arithmetic TypeError checking (separate, smaller slice).
 - No strict-mode changes.
+
+## C2/C3 landing notes (2026-08-21)
+
+The lane/compare predicate went through four forms, each falsified by a
+different pin family before the coherent one:
+demand-keyed (LAYOUT nullish-raw pins), target-keyed (same), current-bit
+(statements' raw member compounds — open-ANY is both shapes), and finally
+PER-RETURN-EXPRESSION with recursion: a call's verdict IS the callee's
+verdict one level deeper (cycle-guarded); '.'-members answer through
+slotBigintProvenAt/slotBigintBoxedAt; names through materializedNames×
+targetNames; joins OR their arms; unresolved tails fall back to the
+boundary current's BOXED bit only when OPEN. C3's compare arm reuses the
+same predicate for call operands and maybeUnboxBigInt for the emission
+(tag-check → deref, else bits ARE the payload — `else 0` misread every
+genuinely-raw open-ANY operand).
+
+BANKED SIBLING (C5 blocker): the INLINED union — with few call sites the
+callee inlines, the compare/return operand stops being a call node, and
+the union rides an inline temp local the plan does not materialize
+(observed: 2-export probe inlines gnorm → geq false, gs box-bits; the
+5-export probe keeps the call and is fully correct). Fix direction: the
+inline temp must inherit materialization (plan the inlined body's locals
+like any body's), or inlining of box-producing unions defers until C's
+edges cover inline temps.

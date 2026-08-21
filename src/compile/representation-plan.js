@@ -1335,23 +1335,58 @@ export function representationCallArgAction(ctx, node, params, index) {
  *  passthrough lane, which reinterprets the union's bits as one BigInt
  *  (a box POINTER's own bits, or a raw number's, both observed live:
  *  phase-c doc §gap 2a). */
-export function representationResultTagRequired(ctx, func) {
+export function representationResultTagRequired(ctx, func, seen = new WeakSet()) {
   if (programPlanRecord(ctx)?.bigint === false) return false
+  if (func == null || seen.has(func)) return false
+  seen.add(func)
   const handle = ctx.plans.representations.get(func)
   const record = handle && ctx.plans.representationData.get(handle)
   const r = record?.boundary?.result
   if (r == null) return false
-  // The one honest signal is the CURRENT rep's BOXED bit: the value actually
-  // crossing may be a NaN-box POINTER, and the raw-bigint lane would hand
-  // the host the pointer's own bits. Neither the demand nor the target may
-  // widen this: a nullish-RAW result (LAYOUT-class raw slots) reads
-  // TAG_REQUIRED from its nullish bit yet every real pattern is raw i64 —
-  // the sentinel/raw lanes own it, and the generic decode would misread
-  // small BigInts as subnormals (two pointers.js raw-exact pins caught the
-  // demand-keyed version); a BOXED *target* over a proven-raw current is
-  // merely the plan's wish, not the emission (target-keyed version caught
-  // by the same pins).
-  return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0
+  // The boundary record's CURRENT is too coarse here: BOTH a raw member-slot
+  // read (o.n on a decl-literal raw slot — statements' ++/-- pins) AND a
+  // genuinely box-producing union (gnorm) sit at open-ANY, while keying on
+  // demand or target both over-fire on nullish-raw LAYOUT shapes (pointers'
+  // raw-exact pins). The precise verdict is PER RETURN EXPRESSION, through
+  // the same arms the body solver plans with: a direct call may box iff its
+  // callee's own body resultTarget carries the BOXED bit; a '.'-member read
+  // is RAW when the slot is proven raw (slotBigintProvenAt) and otherwise
+  // follows the storage discipline (BOXED for census-boxed storage); a bare
+  // name may box iff this body materialized it to a BOXED target. Anything
+  // unresolved falls back to the boundary current's BOXED bit.
+  const body = record.body
+  const fb = func.body
+  const tails = Array.isArray(fb) && fb[0] === '{}' ? returnExprs(fb) : [fb]
+  const exprMayBox = (e) => {
+    if (typeof e === 'string')
+      return body?.materializedNames?.has(e) === true &&
+        (bigintRepBits(body.targetNames?.get(e) ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
+    if (Array.isArray(e)) {
+      const op = e[0]
+      if (op === '()' && typeof e[1] === 'string') {
+        // The callee's return may box exactly when ITS result would demand
+        // the tag at a boundary — the same question, one call deeper
+        // (C3's compare arm asks it of the callee directly, which is why
+        // the two stayed consistent only once this recursed).
+        const callee = ctx.funcs.map?.get(e[1])
+        return callee ? representationResultTagRequired(ctx, callee, seen) : null
+      }
+      if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
+        return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
+          : ctx.schema.slotBigintBoxedAt?.(e[1], e[2]) === true
+      if (op === '?:') return exprMayBox(e[2]) || exprMayBox(e[3])
+      if (op === '&&' || op === '||' || op === '??') return exprMayBox(e[1]) || exprMayBox(e[2])
+    }
+    return null  // unresolved — defer to the boundary fallback
+  }
+  let sawUnresolved = false
+  for (const e of tails) {
+    const v = exprMayBox(e)
+    if (v === true) return true
+    if (v == null) sawUnresolved = true
+  }
+  if (!sawUnresolved) return false
+  return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0 && !bigintRepIsClosed(r.current)
 }
 
 /** Record direct-closure argument provenance before that closure is planned. */

@@ -3299,15 +3299,12 @@ function emitStrictEq(a, b, negate) {
       const tagSide = planA ? a : b, rawSide = planA ? b : a
       const rawVt = resolveValType(rawSide, valTypeOf, lookupValType)
       if (rawVt === VAL.BIGINT) {
-        const t = temp('teq')
-        inc('__ptr_type')
-        const tGet = typed(['local.get', `$${t}`], 'f64')
-        const eq = typed(['block', ['result', 'i32'],
-          ['local.set', `$${t}`, asF64(emit(tagSide))],
-          ['if', ['result', 'i32'],
-            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', tGet]], ['i32.const', PTR.BIGINT]],
-            ['then', ['i64.eq', ['i64.load', ptrOffsetIR(tGet, VAL.BIGINT)], asI64(emit(rawSide))]],
-            ['else', ['i32.const', 0]]]], 'i32')
+        // maybeUnboxBigInt IS the sound shape for "no static boxed-or-raw
+        // proof": tag-check → deref the real box's payload, else the bits
+        // already ARE the raw payload (an `else 0` here mis-read every
+        // genuinely-raw operand whose record's current is open-ANY — three
+        // suite pins caught it: raw compound-assign/shift compares).
+        const eq = typed(['i64.eq', maybeUnboxBigInt(asF64(emit(tagSide))), asI64(emit(rawSide))], 'i32')
         return negate ? typed(['i32.eqz', eq], 'i32') : eq
       }
     }
