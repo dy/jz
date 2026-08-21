@@ -408,14 +408,16 @@ const F64X2_UN = { 'f64.neg': 'f64x2.neg', 'f64.abs': 'f64x2.abs', 'f64.sqrt': '
 // pointer per call — splatting it would make the two lanes ALIAS, the array-literal
 // scatter miscompile), loads, and any store/set/memory op.
 const slpSplatSafe = (n) => {
-  if (!isArr(n)) return true
-  const op = n[0]
-  if (typeof op !== 'string') return false
-  if (op.startsWith('call') || op.includes('.load') || op.includes('.store')
-      || op === 'local.set' || op === 'local.tee' || op === 'global.set'
-      || op.startsWith('memory.') || op.includes('.atomic.')) return false
-  for (let i = 1; i < n.length; i++) if (!slpSplatSafe(n[i])) return false
-  return true
+  let unsafe = false
+  walkAst(n, { enter: x => {
+    if (unsafe) return false
+    const op = x[0]
+    if (typeof op !== 'string') { unsafe = true; return false }
+    if (op.startsWith('call') || op.includes('.load') || op.includes('.store')
+        || op === 'local.set' || op === 'local.tee' || op === 'global.set'
+        || op.startsWith('memory.') || op.includes('.atomic.')) { unsafe = true; return false }
+  } })
+  return !unsafe
 }
 
 // Decompose a load/store node, normalizing the optional `offset=K` attribute jz
@@ -918,12 +920,10 @@ function matchExitBrIf(stmt, label) {
  * anywhere within. Used to detect loop-invariant locals.
  */
 function collectWrites(node, out) {
-  if (!isArr(node)) return
-  const op = node[0]
-  if ((op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
-    out.add(node[1])
-  }
-  for (let i = 0; i < node.length; i++) collectWrites(node[i], out)
+  walkAst(node, { enter: n => {
+    const op = n[0]
+    if ((op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string') out.add(n[1])
+  } })
 }
 
 /**
@@ -961,12 +961,10 @@ function firstAccess(node, name) {
  * here as the plan-level companion to collectWrites.
  */
 function collectReferencedNames(node, out) {
-  if (!isArr(node)) return
-  const op = node[0]
-  if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string') {
-    out.add(node[1])
-  }
-  for (let i = 0; i < node.length; i++) collectReferencedNames(node[i], out)
+  walkAst(node, { enter: n => {
+    const op = n[0]
+    if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string') out.add(n[1])
+  } })
 }
 
 /**
@@ -1218,16 +1216,14 @@ function classifyAddrLocal(writes, name, ind) {
 // "collect every tee-definition first, resolve second" argument.
 function buildAddrTable(body, ind) {
   const writesByName = new Map()
-  const gather = (n) => {
-    if (!isArr(n)) return
+  const gather = n => {
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && n.length === 3) {
       let list = writesByName.get(n[1])
       if (!list) writesByName.set(n[1], list = [])
       list.push(n)
     }
-    for (let i = 1; i < n.length; i++) gather(n[i])
   }
-  for (const s of body) gather(s)
+  for (const s of body) walkAst(s, { enter: gather })
   const addrTable = new Map()
   for (const [name, writes] of writesByName) {
     const e = classifyAddrLocal(writes, name, ind)
@@ -1315,12 +1311,10 @@ function assertBodyModelSound(body, ind, bm) {
   // allowed to be a STRICTER subset (see classifyAddrLocal's doc) but never a WIDER one: every
   // addrTable entry must be a case the private predicate also accepts.
   const names = new Set()
-  const gather = (n) => {
-    if (!isArr(n)) return
+  const gather = n => {
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') names.add(n[1])
-    for (let i = 1; i < n.length; i++) gather(n[i])
   }
-  for (const s of body) gather(s)
+  for (const s of body) walkAst(s, { enter: gather })
   for (const name of names) {
     const e = addrTable.get(name)
     if (e && e.kind === 'fullAddr' && !_isAddressLocal(body, name, ind))
@@ -1351,31 +1345,34 @@ function assertBodyModelSound(body, ind, bm) {
 // True if the tree contains any branch or return — control flow that a flattened value-block
 // lift can't preserve (an early `br`/`return` out of the block changes which value is produced).
 const hasBranchOrReturn = (node) => {
-  if (!isArr(node)) return false
-  const op = node[0]
-  if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return') return true
-  for (let i = 1; i < node.length; i++) if (hasBranchOrReturn(node[i])) return true
-  return false
+  let found = false
+  walkAst(node, { enter: n => {
+    if (found) return false
+    const op = n[0]
+    if (op === 'br' || op === 'br_if' || op === 'br_table' || op === 'return') { found = true; return false }
+  } })
+  return found
 }
 
 // True if any node in the tree writes a global. When false for a loop body,
 // every `global.get` inside it is loop-invariant — safe to splat for SIMD.
 const hasGlobalSet = (node) => {
-  if (!isArr(node)) return false
-  if (node[0] === 'global.set') return true
-  for (let i = 1; i < node.length; i++) if (hasGlobalSet(node[i])) return true
-  return false
+  let found = false
+  walkAst(node, { enter: n => { if (found) return false; if (n[0] === 'global.set') { found = true; return false } } })
+  return found
 }
 
 // True if EXPR carries any side effect — a call, a memory store/op, or a global
 // write. Used to reject an impure preamble we would otherwise clone (run twice).
 const hasSideEffect = (node) => {
-  if (!isArr(node)) return false
-  const op = node[0]
-  if (op === 'call' || op === 'call_indirect' || op === 'global.set'
-    || (typeof op === 'string' && (op.includes('.store') || op.startsWith('memory.')))) return true
-  for (let i = 1; i < node.length; i++) if (hasSideEffect(node[i])) return true
-  return false
+  let found = false
+  walkAst(node, { enter: n => {
+    if (found) return false
+    const op = n[0]
+    if (op === 'call' || op === 'call_indirect' || op === 'global.set'
+      || (typeof op === 'string' && (op.includes('.store') || op.startsWith('memory.')))) { found = true; return false }
+  } })
+  return found
 }
 
 // True if any node in the tree is a call whose callee is not a `$math.*` pure
@@ -1388,10 +1385,12 @@ const hasSideEffect = (node) => {
 // (tryPerPixelColor additionally exempts pureFuncMap-registered pure user
 // functions — a recognizer-specific admission, kept local there.)
 const hasImpureCall = (node) => {
-  if (!isArr(node)) return false
-  if (node[0] === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.')) return true
-  for (let i = 1; i < node.length; i++) if (hasImpureCall(node[i])) return true
-  return false
+  let found = false
+  walkAst(node, { enter: n => {
+    if (found) return false
+    if (n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.')) { found = true; return false }
+  } })
+  return found
 }
 
 // ---- Recognize a (block (loop)) pair --------------------------------------
@@ -1483,17 +1482,17 @@ function foldVecIdentities(node) {
 // single-`br`-then shape becomes a br_if — anything richer is left untouched for watr. In place,
 // top-down (a converted br_if has no nested `if` to revisit).
 function canonicalizeIfBr(node) {
-  if (!isArr(node)) return
-  for (let i = 1; i < node.length; i++) {
-    const c = node[i]
-    if (isArr(c) && c[0] === 'if' && c.length === 3 &&
+  walkAst(node, { enter: (c, parent, i) => {
+    if (!parent) return
+    if (c[0] === 'if' && c.length === 3 &&
         !(isArr(c[1]) && c[1][0] === 'result') &&
         isArr(c[2]) && c[2][0] === 'then' && c[2].length === 2 &&
-        isArr(c[2][1]) && c[2][1][0] === 'br' && c[2][1].length === 2 && typeof c[2][1][1] === 'string')
+        isArr(c[2][1]) && c[2][1][0] === 'br' && c[2][1].length === 2 && typeof c[2][1][1] === 'string') {
       // `(br L)` only — a value-carrying `(br L v)` would lose its operand under br_if's 2-arg form.
-      node[i] = ['br_if', c[2][1][1], c[1]]
-    else canonicalizeIfBr(c)
-  }
+      parent[i] = ['br_if', c[2][1][1], c[1]]
+      return false
+    }
+  } })
 }
 
 // Shared tail of every envelope below: the loop's own label (position 1) and its bottom
@@ -1862,8 +1861,8 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   let body2 = body
   {
     const getCount = new Map()
-    const countGets = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount.set(n[1], (getCount.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets(n[i]) }
-    for (const s of body) countGets(s)
+    const countGets = n => { if (n[0] === 'local.get' && typeof n[1] === 'string') getCount.set(n[1], (getCount.get(n[1]) || 0) + 1) }
+    for (const s of body) walkAst(s, { enter: countGets })
     const dropped = new Set()
     const inlined = body.map(s => {
       if (isArr(s) && STORE_OPS[s[0]] && s.length === 3 && STORE_OPS[s[0]] !== laneType &&
@@ -1893,8 +1892,8 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
         setDefs.set(s[1], setDefs.has(s[1]) ? null : s)   // a second def disqualifies (not single-assign)
     }
     const getCount3 = new Map()
-    const countGets3 = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount3.set(n[1], (getCount3.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets3(n[i]) }
-    for (const s of body2) countGets3(s)
+    const countGets3 = n => { if (n[0] === 'local.get' && typeof n[1] === 'string') getCount3.set(n[1], (getCount3.get(n[1]) || 0) + 1) }
+    for (const s of body2) walkAst(s, { enter: countGets3 })
     const isAddSubOfConverts = (v) => {
       if (!isArr(v) || (v[0] !== 'f64.add' && v[0] !== 'f64.sub') || v.length !== 3) return false
       const isConv = (n) => isArr(n) && (n[0] === 'f64.convert_i32_s' || n[0] === 'f64.convert_i32_u') && n.length === 2
@@ -1909,16 +1908,14 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
     body2 = body2.map(s => {
       if (!(isArr(s) && STORE_OPS[s[0]] && STORE_OPS[s[0]] === laneType && s.length === 3)) return s
       const names = new Set()
-      const collect = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') names.add(n[1]); for (let i = 1; i < n.length; i++) collect(n[i]) }
-      collect(s[2])
+      walkAst(s[2], { enter: n => { if (n[0] === 'local.get' && typeof n[1] === 'string') names.add(n[1]) } })
       let val = s[2], changed = false
       for (const nm of names) {
         if (localKind.get(nm) !== 'lane') continue
         const def = setDefs.get(nm)
         if (!def || !isAddSubOfConverts(def[2])) continue
         let inStore = 0
-        const w = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && n[1] === nm) inStore++; for (let i = 1; i < n.length; i++) w(n[i]) }
-        w(val)
+        walkAst(val, { enter: n => { if (n[0] === 'local.get' && n[1] === nm) inStore++ } })
         if (inStore !== getCount3.get(nm)) continue   // read outside this store too — not safe to drop
         val = substAll(val, nm, def[2])
         dropped3.add(def)
@@ -1938,8 +1935,8 @@ function tryVectorize(bl, fnLocals, freshIdRef, pureFuncMap, constLocals) {
   // specialized consumer" trick as the narrowing-store case above.
   {
     const getCount2 = new Map()
-    const countGets2 = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') getCount2.set(n[1], (getCount2.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countGets2(n[i]) }
-    for (const s of body2) countGets2(s)
+    const countGets2 = n => { if (n[0] === 'local.get' && typeof n[1] === 'string') getCount2.set(n[1], (getCount2.get(n[1]) || 0) + 1) }
+    for (const s of body2) walkAst(s, { enter: countGets2 })
     const dropDefs = new Set()
     const inlineSign = (n) => {
       if (!isArr(n)) return n
@@ -2068,9 +2065,14 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   // 2-D sweep, whose body contains the inner loop) or a non-$math call must NOT be lifted as a
   // stencil — its "neighbour reads" would be the nested loop's loads, misaligned. waves/schrodinger/
   // metaballs bodies are pure arithmetic (math calls allowed), so they pass.
-  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
-    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
-    || n.some(hasNestedLoopOrCall))
+  const hasNestedLoopOrCall = (n) => {
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (x[0] === 'loop' || (x[0] === 'call' && (typeof x[1] !== 'string' || !x[1].startsWith('$math.'))) || x[0] === 'call_indirect') { found = true; return false }
+    } })
+    return found
+  }
   if (body.some(hasNestedLoopOrCall)) return null
 
   // Bound is re-evaluated for the SIMD guard, so it must be a PURE loop-invariant
@@ -2186,8 +2188,7 @@ function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   }
   const countSets = (name) => {
     let k = 0
-    const w = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++; for (let i = 1; i < x.length; i++) w(x[i]) }
-    for (const s of body) w(s)
+    for (const s of body) walkAst(s, { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++ } })
     return k
   }
   // Derived IVs: `c = INV + x` (coeff 1) or a toroidal wrap-select; set exactly once, first access a
@@ -2620,12 +2621,7 @@ function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Classify locals referenced in EXPR. Anything not the induction var or an
   // address-tee is invariant (we forbade local.set/tee in scanExpr).
   const referenced = new Set()
-  const collectRefs = (n) => {
-    if (!isArr(n)) return
-    if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1])
-    for (let i = 1; i < n.length; i++) collectRefs(n[i])
-  }
-  collectRefs(exprNode)
+  walkAst(exprNode, { enter: n => { if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1]) } })
   const localKind = new Map()
   for (const name of referenced) {
     if (name === incVar) continue
@@ -3082,8 +3078,14 @@ export function inlinePureCallExpr(callNode, pureFuncMap, freshIdRef, localSink 
   // the expression in its lane context, where a tee'd callee local becomes a lane
   // local — bailing there would stop pure helpers with a CSE'd tee (spow's `av`)
   // from vectorizing.
-  const leaks = (n) => isArr(n) && !injected.has(n) &&
-    (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) || n.some((c, i) => i > 0 && leaks(c)))
+  const leaks = (root) => {
+    let found = false
+    walkAst(root, { enter: n => {
+      if (found || injected.has(n)) return false
+      if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && calleeLocals.has(n[1])) { found = true; return false }
+    } })
+    return found
+  }
   const wrap = (val) => {
     const r = pre.length ? ['block', ['result', resultType], ...pre, val] : val
     return (localSink && (broken || leaks(r))) ? null : r
@@ -4249,15 +4251,13 @@ function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // bug that kept every in-place trail-fade scalar). Record each such tee — its lifted
   // address (the tee) runs in the hoisted v128.load, so the store's get reads it back.
   const addrLocals = new Map()
-  const recordAddrTees = (n) => {
-    if (!isArr(n)) return
+  const recordAddrTees = n => {
     if (n[0] === 'local.tee' && typeof n[1] === 'string' && isArr(n[2]) && n[2][0] === 'i32.add') {
       const m = matchLaneAddr(n[2], ivName, addrLocals, offsetTees)
       if (m && m.teeName == null) addrLocals.set(n[1], { strideLog2: m.strideLog2, base: m.base })
     }
-    for (let i = 1; i < n.length; i++) recordAddrTees(n[i])
   }
-  for (const s of body) recordAddrTees(s)
+  for (const s of body) walkAst(s, { enter: recordAddrTees })
 
   const storeAddr = storeStmt[1]
   const addrM = matchLaneAddr(storeAddr, ivName, addrLocals, offsetTees)
@@ -4732,8 +4732,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
     const t = val[1], prev = loopNode[idx - 1]
     if (!(isArr(prev) && prev[0] === 'local.set' && prev.length === 3 && prev[1] === t)) return val
     let uses = 0
-    const count = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get' && n[1] === t) uses++; n.forEach(count) }
-    count(loopNode)
+    walkAst(loopNode, { enter: n => { if (n[0] === 'local.get' && n[1] === t) uses++ } })
     if (uses !== 1) return val
     resolvedTemps.add(t)
     return prev[2]
@@ -4775,8 +4774,7 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // dependent. (Statements between the inits and the inner loop ARE carried.)
   for (let i = 3; i < initIdx; i++) {
     let bad = false
-    const chk = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && pivotDelta(n[2]) !== 0) bad = true; n.forEach(chk) }
-    chk(loopNode[i])
+    walkAst(loopNode[i], { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string' && pivotDelta(n[2]) !== 0) bad = true } })
     if (bad) return null
   }
   // (c) Store values must read only the accumulators (set per-pixel by the epilogue)
@@ -4784,10 +4782,13 @@ function tryBlurMultiPixel(blockNode, fnLocals, freshIdRef, bl, scan) {
   // store template is reused verbatim for all 4 pixels (`dst[o]=(sr+x)&255` would use
   // the group-base x for pixels 1-3).
   const perPixel = new Set()
-  const collectSet = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') perPixel.add(n[1]); n.forEach(collectSet) }
-  collectSet(loopNode)
+  walkAst(loopNode, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') perPixel.add(n[1]) } })
   for (const a of grp.accs) perPixel.delete(a)   // accumulators are repopulated per pixel
-  const readsPerPixel = (n) => isArr(n) ? ((n[0] === 'local.get' && perPixel.has(n[1])) || n.some(readsPerPixel)) : false
+  const readsPerPixel = (root) => {
+    let found = false
+    walkAst(root, { enter: n => { if (found) return false; if (n[0] === 'local.get' && perPixel.has(n[1])) { found = true; return false } } })
+    return found
+  }
   for (let c = 0; c < 4; c++) if (readsPerPixel(storeVals[c])) return null
 
   // ── Lift ───────────────────────────────────────────────────────────────────
@@ -4969,8 +4970,19 @@ const CMP_LANE = {  // f64/i32 scalar compare → f64x2 lane compare (iter is f6
   'i32.lt_s': 'f64x2.lt', 'i32.le_s': 'f64x2.le', 'i32.ge_s': 'f64x2.ge', 'i32.gt_s': 'f64x2.gt',
   'i32.lt_u': 'f64x2.lt', 'i32.le_u': 'f64x2.le', 'i32.ge_u': 'f64x2.ge', 'i32.gt_u': 'f64x2.gt',
 }
-const readsVar = (n, v) => isArr(n) && ((n[0] === 'local.get' && n[1] === v) || n.some(c => readsVar(c, v)))
-const writesName = (n, name) => isArr(n) && (((n[0] === 'local.set' || n[0] === 'local.tee' || n[0] === 'global.set') && n[1] === name) || n.some(c => writesName(c, name)))
+const readsVar = (n, v) => {
+  let found = false
+  walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === v) { found = true; return false } } })
+  return found
+}
+const writesName = (n, name) => {
+  let found = false
+  walkAst(n, { enter: x => {
+    if (found) return false
+    if ((x[0] === 'local.set' || x[0] === 'local.tee' || x[0] === 'global.set') && x[1] === name) { found = true; return false }
+  } })
+  return found
+}
 
 // Epilogue safety (class-A hoist, .work/research.md §BodyModel §1a/§5 slice 3): the per-pixel
 // epilogue runs scalar per lane (each statement bumped to pixel j+k), so every in-loop read it
@@ -4983,10 +4995,9 @@ const writesName = (n, name) => isArr(n) && (((n[0] === 'local.set' || n[0] === 
 // when safe, `null` when the epilogue reads an in-loop value with no per-lane source (caller bails).
 function epilogueIsSafe(epilogue, loopNode, laneMap, pivType) {
   const epiWritten = new Set()
-  const wr = (n) => { if (!isArr(n)) return; const st = (n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string'; if (st) epiWritten.add(n[1]); for (const c of (st ? n.slice(2) : n.slice(1))) wr(c) }
-  epilogue.forEach(wr)
-  const reads = new Set(); const rd = (n) => { if (!isArr(n)) return; if (n[0] === 'local.get') reads.add(n[1]); else for (const c of n) rd(c) }
-  epilogue.forEach(rd)
+  for (const s of epilogue) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') epiWritten.add(n[1]) } })
+  const reads = new Set()
+  for (const s of epilogue) walkAst(s, { enter: n => { if (n[0] === 'local.get') { reads.add(n[1]); return false } } })
   for (const v of reads) if (writesName(loopNode, v) && !laneMap.has(v) && !epiWritten.has(v) && !pivType.has(v)) return null
   return { epiWritten, reads }
 }
@@ -5195,8 +5206,7 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // vs within-iteration temp (first access a WRITE — including squares tee'd in the guard).
   const seq = [innerLoop[2], ...ibody]
   const written = new Set()
-  const collectW = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && fnLocals.get(n[1]) === 'f64') written.add(n[1]); for (let i = 1; i < n.length; i++) collectW(n[i]) }
-  seq.forEach(collectW)
+  for (const s of seq) walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && fnLocals.get(n[1]) === 'f64') written.add(n[1]) } })
   const carried = new Set(), temp = new Set(), seen = new Set()
   const classify = (n) => {
     if (!isArr(n)) return
@@ -5252,17 +5262,23 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   // c-vars: f64 locals read in the lifted exprs but never written there (per-pixel/invariant inputs).
   // Also allow loop-invariant global.get (e.g. module constants like R3 in newton) — splatted inline.
   const cVars = new Set()
-  const liftable = (n) => {
-    if (!isArr(n)) return false
-    if (n[0] === 'local.get') {
-      const v = n[1]
-      if (v !== itVar && !carried.has(v) && !temp.has(v)) { if (fnLocals.get(v) !== 'f64') return false; cVars.add(v) }
-      return true
-    }
-    if (n[0] === 'f64.const') return true
-    if (n[0] === 'global.get') return !writesName(loopNode, n[1])   // loop-invariant global → splat
-    if (LANE_PURE.f64.has(n[0])) { for (let i = 1; i < n.length; i++) if (!liftable(n[i])) return false; return true }
-    return false
+  const liftable = (root) => {
+    let bad = false
+    walkAst(root, { enter: n => {
+      if (bad) return false
+      if (n[0] === 'local.get') {
+        const v = n[1]
+        if (v !== itVar && !carried.has(v) && !temp.has(v)) {
+          if (fnLocals.get(v) !== 'f64') { bad = true; return false }
+          cVars.add(v)
+        }
+        return false
+      }
+      if (n[0] === 'f64.const') return false
+      if (n[0] === 'global.get') { if (writesName(loopNode, n[1])) bad = true; return false }   // loop-invariant global → splat
+      if (!LANE_PURE.f64.has(n[0])) { bad = true; return false }
+    } })
+    return isArr(root) && !bad
   }
   const midIdxSet = new Set(midBreaks.map(mb => mb.idx))
   for (const t of tees) if (!liftable(t.expr)) return null
@@ -5334,9 +5350,10 @@ function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, outer) {
   {
     const written = new Set()
     for (const s of epilogue) {
-      const r = new Set(); (function rd(n){ if(!isArr(n)) return; if(n[0]==='local.get') r.add(n[1]); else for(const c of n) rd(c) })(s)
+      const r = new Set()
+      walkAst(s, { enter: n => { if (n[0] === 'local.get') { r.add(n[1]); return false } } })
       for (const v of r) if (!written.has(v) && (temp.has(v) || perPxInit.has(v))) return null
-      ;(function wr(n){ if(!isArr(n)) return; if((n[0]==='local.set'||n[0]==='local.tee')&&typeof n[1]==='string') written.add(n[1]); for(const c of n.slice(2)) wr(c) })(s)
+      walkAst(s, { enter: n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') written.add(n[1]) } })
     }
     if (!epilogue.length) return null
   }
@@ -5693,7 +5710,14 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   // stale, breaking bit-exactness. $math.* helpers are pure (no global/memory writes), so allow them.
   // Pure user-defined functions in pureFuncMap are also safe: they have no side effects (verified
   // when the map is built) and liftPPC inlines them expression-level rather than emitting a call.
-  const impureCall = (n) => isArr(n) && ((n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && !(pureFuncMap && pureFuncMap.has(n[1]))) || n.some(impureCall))
+  const impureCall = (root) => {
+    let found = false
+    walkAst(root, { enter: n => {
+      if (found) return false
+      if (n[0] === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && !(pureFuncMap && pureFuncMap.has(n[1]))) { found = true; return false }
+    } })
+    return found
+  }
   if (obody.some(impureCall)) return null
 
 
@@ -5889,8 +5913,8 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
 
   // Exactly one i32.store, found anywhere in the epilogue (jz wraps `mem[off]=…` in a `(block …)`).
   let storeStmt = null
-  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) { if (storeStmt) storeStmt = false; else if (storeStmt !== false) storeStmt = n } for (const c of n) findStore(c) }
-  epilogue.forEach(findStore)
+  const findStore = n => { if (STORE_OPS[n[0]]) { if (storeStmt) storeStmt = false; else if (storeStmt !== false) storeStmt = n } }
+  for (const s of epilogue) walkAst(s, { enter: findStore })
   if (!storeStmt || storeStmt[0] !== 'i32.store') return null   // not exactly one u32 colour store
   // The store cell must differ per lane, i.e. its address must depend on a pixel IV — directly
   // (chladni's `px[j]`) or transitively through an epilogue local (interference's `mem[offset]`,
@@ -5898,8 +5922,7 @@ function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   // Walk every child except a set's name slot (a def nested under an `(if … then)` must still be
   // recorded — the n.slice(2)-everywhere form would miss it, conservatively bailing a valid kernel).
   const epiDef = new Map()
-  const collect = (n) => { if (!isArr(n)) return; if (n[0] === 'local.set' && typeof n[1] === 'string' && !epiDef.has(n[1])) epiDef.set(n[1], n[2]); for (const c of (n[0] === 'local.set' ? n.slice(2) : n.slice(1))) collect(c) }
-  epilogue.forEach(collect)
+  for (const s of epilogue) walkAst(s, { enter: n => { if (n[0] === 'local.set' && typeof n[1] === 'string' && !epiDef.has(n[1])) epiDef.set(n[1], n[2]) } })
   const feedsIV = (n, seen = new Set()) => isArr(n) && (n[0] === 'local.get'
     ? (pivType.has(n[1]) || (epiDef.has(n[1]) && !seen.has(n[1]) && (seen.add(n[1]), feedsIV(epiDef.get(n[1]), seen))))
     : n.some(c => feedsIV(c, seen)))
@@ -5963,7 +5986,11 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
 
   const id = freshIdRef.next++
   const nm = (s) => `$__os${id}_${s}`
-  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+  const readsName = (n, name) => {
+    let found = false
+    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
+    return found
+  }
 
   const laneMap = new Map()   // f64 lane-local (per-pixel-varying) name → its v128 shadow
   // Lift a scalar f64 expr to f64x2 (null = not liftable). pxVar → ramp; lane local → shadow;
@@ -6096,8 +6123,8 @@ function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!epilogueIsSafe(epilogue, loopNode, laneMap, pivType)) return null
   // store must exist + vary per lane
   let hasStore = false
-  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
-  epilogue.forEach(findStore)
+  const findStore = n => { if (STORE_OPS[n[0]]) hasStore = true }
+  for (const s of epilogue) walkAst(s, { enter: findStore })
   if (!hasStore) return null
 
   // ============================ emit ============================
@@ -6162,11 +6189,20 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   const shadowOf = (v) => { let s = laneMap.get(v); if (!s) { s = nm(v.replace(/\W/g, '')); laneMap.set(v, s) } return s }
   let sawHeavy = false            // a transcendental lifted inside a loop → SIMD is worth it
 
-  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+  const readsName = (n, name) => {
+    let found = false
+    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
+    return found
+  }
   // Lane-invariant: reads no per-pixel lane local and no pixel IV → identical value in both lanes.
-  const laneInvariant = (n) => !isArr(n) ? true
-    : n[0] === 'local.get' ? !(laneMap.has(n[1]) || pivType.has(n[1]))
-    : n.slice(1).every(laneInvariant)
+  const laneInvariant = (root) => {
+    let found = false
+    walkAst(root, { enter: n => {
+      if (found) return false
+      if (n[0] === 'local.get' && (laneMap.has(n[1]) || pivType.has(n[1]))) { found = true; return false }
+    } })
+    return !found
+  }
 
   // Build the f64x2 form of `cond ? x : y` from already-lifted arms `x`,`y` and the raw `cond`.
   // A lane-INVARIANT cond (same both lanes — e.g. seq[si]<1) → a v128-typed scalar branch; a
@@ -6283,8 +6319,8 @@ function tryIteratedReduce(blockNode, fnLocals, freshIdRef, enabled, outer) {
   // ---- epilogue = obody[lastInner+1..]: colour pack+store, run scalar per lane ----
   const epilogue = obody.slice(lastInner + 1)
   let hasStore = false
-  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
-  epilogue.forEach(findStore)
+  const findStore = n => { if (STORE_OPS[n[0]]) hasStore = true }
+  for (const s of epilogue) walkAst(s, { enter: findStore })
   if (!hasStore) return null
   // epilogueIsSafe, hoisted — byte-identical at all 3 outer-pixel call sites.
   const epiSafety = epilogueIsSafe(epilogue, loopNode, laneMap, pivType)
@@ -6333,13 +6369,17 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (innerIdxs.length) return null  // body must be unrolled (no inner loop)
   // No impure calls — fact computed once at the dispatch (LoopPlan: matchOuterPixelLoop).
   if (outer.hasImpureCall) return null
-  const readsName = (n, name) => isArr(n) && ((n[0] === 'local.get' && n[1] === name) || n.some(c => readsName(c, name)))
+  const readsName = (n, name) => {
+    let found = false
+    walkAst(n, { enter: x => { if (found) return false; if (x[0] === 'local.get' && x[1] === name) { found = true; return false } } })
+    return found
+  }
 
   // Locals whose value depends on the column IV (transitively) — these address the per-pixel gather.
   const oxDep = new Set([pxVar])
   const allSets = []
-  const collectSets = (n) => { if (!isArr(n)) return; if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allSets.push([n[1], n[2]]); for (const c of n.slice(1)) collectSets(c) }
-  obody.forEach(collectSets)
+  const collectSets = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') allSets.push([n[1], n[2]]) }
+  for (const s of obody) walkAst(s, { enter: collectSets })
   for (let changed = true; changed;) { changed = false; for (const [name, rhs] of allSets) if (!oxDep.has(name) && [...oxDep].some(d => readsName(rhs, d))) { oxDep.add(name); changed = true } }
   const isGatherAddr = (addr) => [...oxDep].some(d => readsName(addr, d))
 
@@ -6426,8 +6466,8 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
   // Epilogue (requant + clamp + store) runs scalar per lane: acc ← the lane's i32 column sum.
   const epilogue = obody.slice(lastMac + 1)
   let hasStore = false
-  const findStore = (n) => { if (!isArr(n)) return; if (STORE_OPS[n[0]]) hasStore = true; n.forEach(findStore) }
-  epilogue.forEach(findStore)
+  const findStore = n => { if (STORE_OPS[n[0]]) hasStore = true }
+  for (const s of epilogue) walkAst(s, { enter: findStore })
   if (!hasStore) return null
   const epiLane = (k) => [
     ['local.set', accName, ['f64.convert_i32_s', ['i32x4.extract_lane', k & 3, ['local.get', k < 4 ? loV : hiV]]]],
@@ -6571,7 +6611,14 @@ const _toneUnwrapArm = (arm) => {  // arm = ['then'|'else', ...stmts]; unwrap a 
   return body
 }
 
-const _toneAppears = (n, name) => isArr(n) && (((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) || n.some(c => _toneAppears(c, name)))
+const _toneAppears = (n, name) => {
+  let found = false
+  walkAst(n, { enter: x => {
+    if (found) return false
+    if ((x[0] === 'local.get' || x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) { found = true; return false }
+  } })
+  return found
+}
 
 // First WRITE of `name`: returns { stmtIdx, nested } (nested = inside an `if`) or null.
 function _toneFirstWrite(body, name) {
@@ -6999,10 +7046,11 @@ function tryButterfly(blockNode, fnLocals, freshIdRef) {
   const invariants = new Set([U.RE, U.IM, U.WRE, U.WIM, HALF, STEP, U.I].filter(x => typeof x === 'string'))
   if (invariants.size !== 7) return null
   let clobbered = false
-  const wscan = (n) => { if (clobbered || !isArr(n)) return
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && invariants.has(n[1])) { clobbered = true; return }
-    for (let i = 1; i < n.length; i++) wscan(n[i]) }
-  for (const st of body) wscan(st)
+  const wscan = n => {
+    if (clobbered) return false
+    if ((n[0] === 'local.set' || n[0] === 'local.tee') && invariants.has(n[1])) { clobbered = true; return false }
+  }
+  for (const st of body) walkAst(st, { enter: wscan })
   if (clobbered) return null
   if (new Set([U.RE, U.IM, U.WRE, U.WIM]).size !== 4) return null
 
@@ -7275,9 +7323,14 @@ function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
 
   // Nested loop / non-$math call inside the body breaks the "every site is one straight-line
   // lane op" assumption a flat scan here relies on (verbatim from tryStencil).
-  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
-    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
-    || n.some(hasNestedLoopOrCall))
+  const hasNestedLoopOrCall = (n) => {
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (x[0] === 'loop' || (x[0] === 'call' && (typeof x[1] !== 'string' || !x[1].startsWith('$math.'))) || x[0] === 'call_indirect') { found = true; return false }
+    } })
+    return found
+  }
   if (body.some(hasNestedLoopOrCall)) return null
 
   const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
@@ -7608,9 +7661,14 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
   if (blHasGlobalSet) return null
 
   // Leaf-stencil guard (verbatim from tryStencil): no nested loop / non-$math call.
-  const hasNestedLoopOrCall = (n) => isArr(n) && (n[0] === 'loop'
-    || (n[0] === 'call' && (typeof n[1] !== 'string' || !n[1].startsWith('$math.'))) || n[0] === 'call_indirect'
-    || n.some(hasNestedLoopOrCall))
+  const hasNestedLoopOrCall = (n) => {
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (x[0] === 'loop' || (x[0] === 'call' && (typeof x[1] !== 'string' || !x[1].startsWith('$math.'))) || x[0] === 'call_indirect') { found = true; return false }
+    } })
+    return found
+  }
   if (body.some(hasNestedLoopOrCall)) return null
 
   // Bound must be a pure loop-invariant i32 expression (verbatim from tryStencil — broader than
@@ -7692,8 +7750,7 @@ function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
   }
   const countSets = (name) => {
     let k = 0
-    const w = (x) => { if (!isArr(x)) return; if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++; for (let i = 1; i < x.length; i++) w(x[i]) }
-    for (const s of body) w(s)
+    for (const s of body) walkAst(s, { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) k++ } })
     return k
   }
   for (let pass = 0; pass < 4; pass++) {
@@ -8105,12 +8162,7 @@ function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Classify locals referenced in EXPR. Anything not the induction var or an address-tee is
   // invariant (scanExpr forbade local.set/tee, so nothing else could be lane data).
   const referenced = new Set()
-  const collectRefs = (n) => {
-    if (!isArr(n)) return
-    if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1])
-    for (let i = 1; i < n.length; i++) collectRefs(n[i])
-  }
-  collectRefs(exprNode)
+  walkAst(exprNode, { enter: n => { if (n[0] === 'local.get' && typeof n[1] === 'string') referenced.add(n[1]) } })
   const localKind = new Map()
   for (const name of referenced) {
     if (name === incVar) continue
@@ -8403,8 +8455,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
         // Mark the consumed subtree: the wrapper REUSES these nodes (scalar tail, and the
         // lane splats alias the original load nodes), so a deferred strength-reduce must
         // never rewrite inside them — it would mutate the lifted lanes through the alias.
-        const mark = (n) => { if (isArr(n)) { srConsumed.add(n); for (let i = 0; i < n.length; i++) mark(n[i]) } }
-        mark(node)
+        walkAst(node, { enter: n => { srConsumed.add(n) } })
         parent[idx] = r.wrapper
         newLocalDeclsAll.push(...r.newLocalDecls)
       } else if (bl) {

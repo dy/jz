@@ -691,13 +691,12 @@ export function hoistInvariantPtrOffset(fn) {
   const sites = new Map()
   const unsafe = new Set()
 
-  const walk = (node, parent, pi) => {
+  const inspect = (node, parent, pi) => {
     if (!Array.isArray(node)) return
     const op = node[0]
 
     if (op === 'local.set' || op === 'local.tee') {
       if (typeof node[1] === 'string' && params.has(node[1])) unsafe.add(node[1])
-      for (let i = 2; i < node.length; i++) walk(node[i], node, i)
       return
     }
 
@@ -711,7 +710,7 @@ export function hoistInvariantPtrOffset(fn) {
           let arr = sites.get(inner[1])
           if (!arr) { arr = []; sites.set(inner[1], arr) }
           arr.push({ parent, idx: pi })
-          return
+          return false
         }
       }
       const isSafe = SAFE_OFFSET_CALLS.has(callee)
@@ -720,9 +719,7 @@ export function hoistInvariantPtrOffset(fn) {
         const inner = (Array.isArray(arg) && arg[0] === 'i64.reinterpret_f64' && arg.length === 2) ? arg[1] : arg
         if (Array.isArray(inner) && inner[0] === 'local.get' && typeof inner[1] === 'string' && params.has(inner[1])) {
           if (!isSafe) unsafe.add(inner[1])
-          continue
         }
-        walk(arg, node, i)
       }
       return
     }
@@ -730,19 +727,13 @@ export function hoistInvariantPtrOffset(fn) {
     if (op === 'call_indirect' || op === 'call_ref') {
       for (let i = 1; i < node.length; i++) {
         const arg = node[i]
-        if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string' && params.has(arg[1])) {
-          unsafe.add(arg[1])
-          continue
-        }
-        walk(arg, node, i)
+        if (Array.isArray(arg) && arg[0] === 'local.get' && typeof arg[1] === 'string' && params.has(arg[1])) unsafe.add(arg[1])
       }
       return
     }
-
-    for (let i = 0; i < node.length; i++) walk(node[i], node, i)
   }
 
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i], fn, i)
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: inspect })
 
   if (sites.size === 0) return
 
@@ -789,7 +780,14 @@ const HARD_OPS = new Set([
   'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
   'select', 'f64.load', 'i32.load', 'call',
 ])
-const hasHardOp = (n) => Array.isArray(n) && (HARD_OPS.has(n[0]) || n.some((c, i) => i > 0 && hasHardOp(c)))
+const hasHardOp = (n) => {
+  let found = false
+  walkAst(n, { enter: x => {
+    if (found) return false
+    if (HARD_OPS.has(x[0])) { found = true; return false }
+  } })
+  return found
+}
 
 // The inline typed-array base decode `(i32.wrap_i64 (i64.and (i64.reinterpret_f64
 // (local|global X)) 0xFFFFFFFF))` — what `typedBase` emits for a NaN-boxed pointer.
@@ -1049,13 +1047,11 @@ export function splitLoopPrivateScratch(fn) {
   if (!hasUnrolledScratch) return
   // Whole-function reference count per local (to verify a candidate is loop-local).
   const fnRefs = new Map()
-  const countRefs = (n) => {
-    if (!Array.isArray(n)) return
+  const countRefs = n => {
     if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
       fnRefs.set(n[1], (fnRefs.get(n[1]) || 0) + 1)
-    for (let i = 1; i < n.length; i++) countRefs(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) countRefs(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: countRefs })
   // Same proven alias substrate hoistInvariantLoop uses (re-attached after watOptimize, so it
   // survives into this 'post' pass) — lets pureGiven prove a read-only input-array load distinct
   // from the loop's output store, the SOUND replacement for the old address-local-disjointness
@@ -1065,8 +1061,12 @@ export function splitLoopPrivateScratch(fn) {
 
   const hasV128 = (n) => {
     let f = false
-    const w = (x) => { if (f || !Array.isArray(x)) return; const o = x[0]; if (typeof o === 'string' && (o.startsWith('v128') || /x(2|4|8|16)\b/.test(o) || o.includes('x2.') || o.includes('x4.') || o.includes('x8.') || o.includes('x16.'))) { f = true; return } for (let i = 1; i < x.length; i++) w(x[i]) }
-    w(n); return f
+    walkAst(n, { enter: x => {
+      if (f) return false
+      const o = x[0]
+      if (typeof o === 'string' && (o.startsWith('v128') || /x(2|4|8|16)\b/.test(o) || o.includes('x2.') || o.includes('x4.') || o.includes('x8.') || o.includes('x16.'))) { f = true; return false }
+    } })
+    return f
   }
   let minted = 0
   const newDecls = []
@@ -1085,8 +1085,7 @@ export function splitLoopPrivateScratch(fn) {
     for (const name of seen) {
       if (!SCALAR.has(localTypes.get(name))) continue
       let inLoop = 0
-      const cnt = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) inLoop++; for (let i = 1; i < n.length; i++) cnt(n[i]) }
-      cnt(loop)
+      walkAst(loop, { enter: n => { if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) inLoop++ } })
       if (inLoop !== (fnRefs.get(name) || 0)) continue
       let safe = true, first = null, defs = []
       const scan = (n, depth) => {
@@ -1123,21 +1122,20 @@ export function splitLoopPrivateScratch(fn) {
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
     const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf, allowPrivateSets: true })
-    const motionSafe = (n) => { if (!Array.isArray(n)) return true; if (n[0] === 'local.tee') return false; for (let i = 1; i < n.length; i++) if (!motionSafe(n[i])) return false; return true }
+    const motionSafe = (n) => {
+      let hasTee = false
+      walkAst(n, { enter: x => { if (hasTee) return false; if (x[0] === 'local.tee') { hasTee = true; return false } } })
+      return !hasTee
+    }
     const countName = (n, name) => {
-      if (!Array.isArray(n)) return 0
-      let c = ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === name) ? 1 : 0
-      for (let i = 1; i < n.length; i++) c += countName(n[i], name)
+      let c = 0
+      walkAst(n, { enter: x => { if ((x[0] === 'local.get' || x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name) c++ } })
       return c
     }
     const privateInternalWrites = (def, base) => {
       const bound = new Set(base), writes = new Set()
-      const gather = n => {
-        if (!Array.isArray(n)) return
-        if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.add(n[1])
-        for (let i = 1; i < n.length; i++) gather(n[i])
-      }
-      gather(def)
+      const gather = n => { if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') writes.add(n[1]) }
+      walkAst(def, { enter: gather })
       for (const name of writes) {
         if (countName(loop, name) !== countName(def, name)) return null
         bound.add(name)
@@ -1353,8 +1351,8 @@ export function hoistInvariantLoop(fn) {
     // it. Dedup structurally so a repeated invariant expr shares one snap local.
     const sites = new Map()  // structural key → [{ parent, idx, node }]
     const collect = (node, parent, idx) => {
-      if (!Array.isArray(node)) return
-      if (node[0] === 'loop') return  // already processed bottom-up
+      if (!parent) return
+      if (node[0] === 'loop') return false  // already processed bottom-up
       if (isHoistable(node) && (refcount.get(node) || 0) <= 1 && (refcount.get(parent) || 0) <= 1) {
         // stableNodeKey: hoistable boxed-pointer subtrees carry i64.const NaN-box
         // prefixes (BigInt) that plain JSON.stringify can't serialize, and it also
@@ -1364,11 +1362,10 @@ export function hoistInvariantLoop(fn) {
         const key = stableNodeKey(node)
         let arr = sites.get(key); if (!arr) { arr = []; sites.set(key, arr) }
         arr.push({ parent, idx, node })
-        return
+        return false
       }
-      for (let i = 0; i < node.length; i++) collect(node[i], node, i)
     }
-    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i], loopNode, i)
+    walkAst(loopNode, { enter: collect })
 
     const snaps = []
     for (const [, arr] of sites) {
@@ -1452,15 +1449,13 @@ export function narrowLoopBound(fn) {
   // reused by a later loop is re-zeroed between them, and a negative write
   // anywhere voids the proof.
   const writes = new Map()
-  const collectWrites = (n) => {
-    if (!Array.isArray(n)) return
+  const collectWrites = n => {
     if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') {
       let arr = writes.get(n[1]); if (!arr) writes.set(n[1], arr = [])
       arr.push(n[2])
     }
-    for (let i = 1; i < n.length; i++) collectWrites(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) collectWrites(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: collectWrites })
 
   const constVal = (n) => Array.isArray(n) && n[0] === 'i32.const' ? Number(n[1]) : NaN
   const nonNegCounter = (name) => {
@@ -1517,16 +1512,15 @@ export function narrowLoopBound(fn) {
     for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: recordWrite })
 
     const sites = []
-    const collect = (node) => {
-      if (!Array.isArray(node)) return
-      if (node[0] === 'loop') return  // already processed bottom-up
+    const collect = (node, parent) => {
+      if (!parent) return
+      if (node[0] === 'loop') return false  // already processed bottom-up
       const m = match(node)
       if (m && (refcount.get(node) || 0) <= 1
             && localTypes.get(m.bound) === 'f64' && !written.has(m.bound)
-            && nonNegCounter(m.ctr)) { sites.push({ node, m }); return }
-      for (let i = 1; i < node.length; i++) collect(node[i])
+            && nonNegCounter(m.ctr)) { sites.push({ node, m }); return false }
     }
-    for (let i = 1; i < loopNode.length; i++) collect(loopNode[i])
+    walkAst(loopNode, { enter: collect })
 
     // One snap per distinct (bound, op): `i < n` and `i <= n` of the SAME bound
     // need different snapped i32 values (ceil vs floor).
@@ -1635,12 +1629,9 @@ export function cseScalarLoad(fn) {
 
   // Scan a node's subtree and return the set of tracked bases referenced via local.get.
   const collectGets = (node, out) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === 'local.get' && typeof node[1] === 'string' && bases.has(node[1])) {
-      out.add(node[1])
-      return
-    }
-    for (let i = 1; i < node.length; i++) collectGets(node[i], out)
+    walkAst(node, { enter: n => {
+      if (n[0] === 'local.get' && typeof n[1] === 'string' && bases.has(n[1])) { out.add(n[1]); return false }
+    } })
   }
 
   // Parse f64.load shape; returns { K, addrIdx } or null.
@@ -1826,18 +1817,27 @@ export function propagateSingleUse(fn) {
   if (!cand.size) return
 
   const movablePure = (n) => {
-    if (!Array.isArray(n)) return true
-    const op = n[0]
-    if (op === 'local.get') return true
-    if (op === 'local.set' || op === 'local.tee' || op === 'call' || op === 'call_indirect' || op === 'call_ref'
-      || op === 'global.get' || op === 'global.set' || op === 'memory.size' || op === 'memory.grow'
-      || op === 'memory.copy' || op === 'memory.fill') return false
-    if (typeof op === 'string' && (op.includes('.load') || op.includes('.store') || op.includes('.atomic'))) return false
-    for (let i = 1; i < n.length; i++) if (!movablePure(n[i])) return false
-    return true
+    let pure = true
+    walkAst(n, { enter: x => {
+      if (!pure) return false
+      const op = x[0]
+      if (op === 'local.get') return false
+      if (op === 'local.set' || op === 'local.tee' || op === 'call' || op === 'call_indirect' || op === 'call_ref'
+        || op === 'global.get' || op === 'global.set' || op === 'memory.size' || op === 'memory.grow'
+        || op === 'memory.copy' || op === 'memory.fill') { pure = false; return false }
+      if (typeof op === 'string' && (op.includes('.load') || op.includes('.store') || op.includes('.atomic'))) { pure = false; return false }
+    } })
+    return pure
   }
-  const readsOf = (n, out) => { if (!Array.isArray(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out) }
-  const writesAny = (n, R) => { if (!Array.isArray(n)) return false; if ((n[0] === 'local.set' || n[0] === 'local.tee') && R.has(n[1])) return true; for (let i = 1; i < n.length; i++) if (writesAny(n[i], R)) return true; return false }
+  const readsOf = (n, out) => { walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') out.add(x[1]) } }) }
+  const writesAny = (n, R) => {
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if ((x[0] === 'local.set' || x[0] === 'local.tee') && R.has(x[1])) { found = true; return false }
+    } })
+    return found
+  }
   // Locate the (local.get $t) within `root`'s subtree (not root itself); flag if it sits under a
   // `loop` relative to root (→ would re-evaluate the moved RHS each iteration).
   const locateUse = (root, t) => {
@@ -1932,12 +1932,14 @@ export function foldSetToTee(fn) {
   for (const [name, c] of setN) if (c === 1 && (getN.get(name) || 0) >= 1 && !teed.has(name)) cand.add(name)
   if (!cand.size) return
 
-  const readsOf = (n, out) => { if (!Array.isArray(n)) return; if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1]); for (let i = 1; i < n.length; i++) readsOf(n[i], out) }
+  const readsOf = (n, out) => { walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') out.add(x[1]) } }) }
   const noLocalWrite = (n) => {
-    if (!Array.isArray(n)) return true
-    if (n[0] === 'local.set' || n[0] === 'local.tee') return false
-    for (let i = 1; i < n.length; i++) if (!noLocalWrite(n[i])) return false
-    return true
+    let clean = true
+    walkAst(n, { enter: x => {
+      if (!clean) return false
+      if (x[0] === 'local.set' || x[0] === 'local.tee') { clean = false; return false }
+    } })
+    return clean
   }
   const isWriteOp = (op) => op === 'call' || op === 'call_indirect' || op === 'call_ref' || op === 'return_call'
     || op === 'return_call_indirect' || op === 'global.set' || op === 'memory.grow' || op === 'memory.copy'
@@ -1948,8 +1950,7 @@ export function foldSetToTee(fn) {
     || op === 'return_call' || op === 'return_call_indirect' || op === 'unreachable' || op === 'throw' || op === 'rethrow'
   const rhsKind = (n) => {                              // 'writes' | 'reads' | 'pure'
     let w = false, r = false
-    const rec = (x) => { if (!Array.isArray(x)) return; if (isWriteOp(x[0])) w = true; else if (isReadOp(x[0])) r = true; for (let i = 1; i < x.length; i++) rec(x[i]) }
-    rec(n)
+    walkAst(n, { enter: x => { if (isWriteOp(x[0])) w = true; else if (isReadOp(x[0])) r = true } })
     return w ? 'writes' : r ? 'reads' : 'pure'
   }
   // Walk `root` in eval order for the first `(local.get t)`; return {use, conflict}.
@@ -2211,15 +2212,12 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   }
   if (!chosen.size) return
 
-  const replace = (n) => {
-    if (!Array.isArray(n)) return
-    for (let i = 1; i < n.length; i++) {
-      const g = siteGlobal(n[i])
-      if (g != null && chosen.has(g)) n[i] = ['local.get', chosen.get(g)]
-      else replace(n[i])
-    }
+  const replace = (node, parent, idx) => {
+    if (!parent) return
+    const g = siteGlobal(node)
+    if (g != null && chosen.has(g)) { parent[idx] = ['local.get', chosen.get(g)]; return false }
   }
-  for (let i = bodyStart; i < fn.length; i++) replace(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: replace })
 
   const decls = [], snaps = []
   for (const [g, name] of chosen) {
@@ -2523,18 +2521,14 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
       offset >= 0 && offset + width <= (byteLens.get(global) ?? -1)
   }
   const reads = (n, out = new Set()) => {
-    if (!Array.isArray(n)) return out
-    if (n[0] === 'local.get' && typeof n[1] === 'string') out.add(n[1])
-    for (let i = 1; i < n.length; i++) reads(n[i], out)
+    walkAst(n, { enter: x => { if (x[0] === 'local.get' && typeof x[1] === 'string') out.add(x[1]) } })
     return out
   }
   const writes = (n, out = new Set()) => {
-    if (!Array.isArray(n)) return out
-    if ((n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string') out.add(n[1])
-    for (let i = 1; i < n.length; i++) writes(n[i], out)
+    walkAst(n, { enter: x => { if ((x[0] === 'local.set' || x[0] === 'local.tee') && typeof x[1] === 'string') out.add(x[1]) } })
     return out
   }
-  const nodeCount = n => Array.isArray(n) ? 1 + n.slice(1).reduce((s, x) => s + nodeCount(x), 0) : 0
+  const nodeCount = n => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
   const safeRegion = region => {
     const defs = new Set(), refs = []
     let safe = true
@@ -2753,15 +2747,12 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
         chosen.set(g, freshId())
       }
       if (chosen.size) {
-        const replace = (n) => {
-          if (!Array.isArray(n)) return
-          for (let i = 1; i < n.length; i++) {
-            const g = siteGlobal(n[i], alias)
-            if (g != null && chosen.has(g)) n[i] = ['local.get', chosen.get(g)]
-            else replace(n[i])
-          }
+        const replace = (node, parent, idx) => {
+          if (!parent) return
+          const g = siteGlobal(node, alias)
+          if (g != null && chosen.has(g)) { parent[idx] = ['local.get', chosen.get(g)]; return false }
         }
-        for (let i = 1; i < loopNode.length; i++) replace(loopNode[i])
+        for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: replace })
         for (const [g, name] of chosen) {
           newDecls.push(['local', name, 'i32'])
           const snap = ptrOffsetForm.has(g)
@@ -2887,17 +2878,14 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
   }
 
   // Replace all global.get with local.get (only for promoted globals)
-  const replace = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === 'global.get' && typeof node[1] === 'string') {
+  const replace = node => {
+    if (node[0] === 'global.get' && typeof node[1] === 'string') {
       const info = replacements.get(node[1])
       if (info) { node[0] = 'local.get'; node[1] = info.lName }
-      return
+      return false
     }
-    for (let i = 1; i < node.length; i++) replace(node[i])
   }
-  for (let i = insertIdx; i < fn.length; i++) replace(fn[i])
+  for (let i = insertIdx; i < fn.length; i++) walkAst(fn[i], { enter: replace })
 }
 
 /**
@@ -2911,33 +2899,29 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
 function inferTypeFromContext(fn, gName, bodyStart) {
   let inferred = null
   const check = (node, parent, idx) => {
-    if (!Array.isArray(node) || inferred) return
+    if (inferred) return false
     if (node[0] === 'global.get' && node[1] === gName) {
       // Check parent context
-      if (Array.isArray(parent)) {
+      if (parent) {
         const pOp = parent[0]
         // If parent is an i32 op that takes this as operand, likely i32
         if (typeof pOp === 'string') {
           if (pOp.startsWith('i32.') && pOp !== 'i32.wrap_i64' && pOp !== 'i32.trunc_f64') {
             inferred = 'i32'
-            return
+            return false
           }
-          if (pOp === 'i32.store' && idx === 2) { inferred = 'i32'; return }  // addr
-          if (pOp === 'f64.store' && idx === 2) { inferred = 'f64'; return }  // addr can be i32, but value is f64
+          if (pOp === 'i32.store' && idx === 2) { inferred = 'i32'; return false }  // addr
+          if (pOp === 'f64.store' && idx === 2) { inferred = 'f64'; return false }  // addr can be i32, but value is f64
           // i32 comparisons already matched the `i32.` prefix above; a `local.set`
           // parent tells us nothing here — both fall through to the f64 default.
         }
       }
       // Default: f64 (the NaN-boxing carrier)
-      if (!inferred) inferred = 'f64'
-      return
-    }
-    for (let i = 0; i < node.length; i++) {
-      if (Array.isArray(node[i])) check(node[i], node, i)
-      if (inferred) return
+      inferred = 'f64'
+      return false
     }
   }
-  for (let i = bodyStart; i < fn.length && !inferred; i++) check(fn[i], null, i)
+  for (let i = bodyStart; i < fn.length && !inferred; i++) walkAst(fn[i], { enter: check })
   return inferred
 }
 
@@ -3205,13 +3189,16 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
 export function buildPureFuncMap(funcs) {
   const pureFuncMap = new Map()
   const hasSideEffect = (node) => {
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === 'global.set') return true
-    if (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) return true
-    if (op === 'call' && typeof node[1] === 'string' && !node[1].startsWith('$math.') && node[1] !== '$__to_num') return true
-    if (op === 'call_indirect' || op === 'call_ref') return true
-    return node.some((c, i) => i > 0 && hasSideEffect(c))
+    let found = false
+    walkAst(node, { enter: n => {
+      if (found) return false
+      const op = n[0]
+      if (op === 'global.set' ||
+          (typeof op === 'string' && (op.endsWith('.store') || op.startsWith('memory.'))) ||
+          (op === 'call' && typeof n[1] === 'string' && !n[1].startsWith('$math.') && n[1] !== '$__to_num') ||
+          op === 'call_indirect' || op === 'call_ref') { found = true; return false }
+    } })
+    return found
   }
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
@@ -3393,7 +3380,14 @@ export function unswitchTypedParamLoop(fn) {
   const newLocals = []
   let baseId = nextLocalId(fn, 'utb')
 
-  const has = (n, pred) => Array.isArray(n) && (pred(n) || n.some((c, i) => i > 0 && has(c, pred)))
+  const has = (n, pred) => {
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (pred(x)) { found = true; return false }
+    } })
+    return found
+  }
   const writes = (n, name) => has(n, (x) => (x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === name)
   const reintParam = (n, p) => Array.isArray(n) && n[0] === 'i64.reinterpret_f64' && Array.isArray(n[1]) && n[1][0] === 'local.get' && n[1][1] === p
   const typedIdx = (n, p) => Array.isArray(n) && n[0] === 'call' && n[1] === '$__typed_idx' && n.length >= 4 && reintParam(n[2], p)
@@ -3530,12 +3524,14 @@ export function unswitchTypedParamLoop(fn) {
       // OBJECT, so its dyn arm is dead there). Still bail on the 3-way __typed_set_idx
       // form (mixed element widths — the f64.store fallback isn't the sole non-ARRAY case).
       const findRawStore = (n) => {
-        if (!Array.isArray(n)) return null
-        if (n[0] === 'f64.store' && Array.isArray(n[1]) && n[1][0] === 'i32.add' &&
-            Array.isArray(n[1][2]) && n[1][2][0] === 'i32.shl' &&
-            has(n[1], (x) => x[0] === 'call' && x[1] === '$__ptr_offset')) return n
-        for (let k = 1; k < n.length; k++) { const r = findRawStore(n[k]); if (r) return r }
-        return null
+        let result = null
+        walkAst(n, { enter: x => {
+          if (result) return false
+          if (x[0] === 'f64.store' && Array.isArray(x[1]) && x[1][0] === 'i32.add' &&
+              Array.isArray(x[1][2]) && x[1][2][0] === 'i32.shl' &&
+              has(x[1], (y) => y[0] === 'call' && y[1] === '$__ptr_offset')) { result = x; return false }
+        } })
+        return result
       }
       if (has(elseArm, (x) => x[0] === 'call' && x[1] === '$__typed_set_idx')) continue
       const es = findRawStore(elseArm)
@@ -3613,12 +3609,14 @@ export function unswitchTypedParamLoop(fn) {
  * representation-level loop unswitch, not a source/benchmark special case.
  * Large or call-bearing parser loops fail closed to avoid I-cache growth. */
 function unswitchStringRepLoop(fn) {
-  const size = n => !Array.isArray(n) ? 1 : 1 + n.slice(1).reduce((s, x) => s + size(x), 0)
+  const size = n => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
   const containsName = (n, name) => {
-    if (!Array.isArray(n)) return false
-    if (n[0] === 'local.get' && n[1] === name) return true
-    for (let i = 1; i < n.length; i++) if (containsName(n[i], name)) return true
-    return false
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (x[0] === 'local.get' && x[1] === name) { found = true; return false }
+    } })
+    return found
   }
   const match = n => {
     if (!Array.isArray(n) || n[0] !== 'select' || n.length !== 4) return null
@@ -3629,18 +3627,20 @@ function unswitchStringRepLoop(fn) {
     return c[1]
   }
   const hasCallOrWrite = (n, flag) => {
-    if (!Array.isArray(n)) return false
-    if (n[0] === 'call' || n[0] === 'call_indirect' || n[0] === 'return_call' ||
-        ((n[0] === 'local.set' || n[0] === 'local.tee') && n[1] === flag)) return true
-    for (let i = 1; i < n.length; i++) if (hasCallOrWrite(n[i], flag)) return true
-    return false
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      if (x[0] === 'call' || x[0] === 'call_indirect' || x[0] === 'return_call' ||
+          ((x[0] === 'local.set' || x[0] === 'local.tee') && x[1] === flag)) { found = true; return false }
+    } })
+    return found
   }
-  const collect = (n, out, nested = false) => {
-    if (!Array.isArray(n)) return
-    if (nested && n[0] === 'loop') return
-    const m = match(n)
-    if (m) out.push(m)
-    for (let i = 1; i < n.length; i++) collect(n[i], out, nested || n[0] === 'loop')
+  const collect = (n, out) => {
+    walkAst(n, { enter: (c, parent) => {
+      if (parent && c[0] === 'loop') return false
+      const m = match(c)
+      if (m) out.push(m)
+    } })
   }
   const choose = (n, flag, arm) => {
     if (!Array.isArray(n)) return n
@@ -3826,20 +3826,20 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
 // lane vectorizer creates AFTER fusedRewrite has already run — so they'd otherwise keep a
 // per-iteration i32.add. Bottom-up, in place; an addr already in offset=/align= form is left.
 function foldV128Memargs(node) {
-  if (!Array.isArray(node)) return
-  const op = node[0]
-  if (op === 'v128.load' || op === 'v128.store') {
-    const m1 = node[1]
-    if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align='))) &&
-        Array.isArray(m1) && m1[0] === 'i32.add' && m1.length === 3) {
-      const a = m1[1], b = m1[2]
-      let base, offset
-      if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
-      else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
-      if (base != null) { node[1] = `offset=${offset}`; node.splice(2, 0, base) }
+  walkAst(node, { enter: n => {
+    const op = n[0]
+    if (op === 'v128.load' || op === 'v128.store') {
+      const m1 = n[1]
+      if (!(typeof m1 === 'string' && (m1.startsWith('offset=') || m1.startsWith('align='))) &&
+          Array.isArray(m1) && m1[0] === 'i32.add' && m1.length === 3) {
+        const a = m1[1], b = m1[2]
+        let base, offset
+        if (Array.isArray(b) && b[0] === 'i32.const' && typeof b[1] === 'number' && b[1] >= 0 && b[1] < 0x100000000) { base = a; offset = b[1] }
+        else if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number' && a[1] >= 0 && a[1] < 0x100000000) { base = b; offset = a[1] }
+        if (base != null) { n[1] = `offset=${offset}`; n.splice(2, 0, base) }
+      }
     }
-  }
-  for (let i = 1; i < node.length; i++) foldV128Memargs(node[i])
+  } })
 }
 
 /** Speed-tier: inline `$__ptr_offset`'s own loop-free body (mask+tag test, then
@@ -4020,16 +4020,15 @@ function rotateLoops(fn) {
     return ['i32.eqz', c]
   }
   const targetsLabel = (n, label) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === 'br' || op === 'br_if') { if (n[1] === label) return true }
-    else if (op === 'br_table') { for (let i = 1; i < n.length; i++) if (n[i] === label) return true }
-    for (let i = 1; i < n.length; i++) if (targetsLabel(n[i], label)) return true
-    return false
+    let found = false
+    walkAst(n, { enter: x => {
+      if (found) return false
+      const op = x[0]
+      if (op === 'br' || op === 'br_if') { if (x[1] === label) { found = true; return false } }
+      else if (op === 'br_table') { for (let i = 1; i < x.length; i++) if (x[i] === label) { found = true; return false } }
+    } })
+    return found
   }
-  const hasV128 = (n) => Array.isArray(n) && (
-    (typeof n[0] === 'string' && (n[0].startsWith('v128.') || /^[if]\d+x\d+\./.test(n[0]))) ||
-    n.some((c, i) => i > 0 && hasV128(c)))
 
   const tryRotate = (blk) => {
     let bi = 1, blockLabel = null
@@ -4064,7 +4063,7 @@ function rotateLoops(fn) {
     if (!(Array.isArray(tail) && tail[0] === 'br' && tail[1] === loopLabel && tail.length === 2)) return null
     const inner = body.slice(1, -1)
     if (inner.some((s) => targetsLabel(s, loopLabel))) return null   // continue → loop top: unsafe
-    if (hasV128(head) || inner.some(hasV128)) return null            // vectorized: leave tight
+    if (containsV128(head) || inner.some(containsV128)) return null  // vectorized: leave tight
     const cond = head[2]
     return ['block', blockLabel, ...preamble,
       ['br_if', blockLabel, cloneIR(cond)],
@@ -4575,13 +4574,11 @@ export function treeshake(funcSections, allModuleNodes, opts) {
     for (const name of opts.userFuncs) addRoot(name)
 
   const findRoots = (node) => {
-    if (!Array.isArray(node)) return
     if (node[0] === 'start' && typeof node[1] === 'string') addRoot(node[1])
     else if (node[0] === 'export' && Array.isArray(node[2]) && node[2][0] === 'func') addRoot(node[2][1])
     else if (node[0] === 'elem') for (const c of node) if (typeof c === 'string' && c.startsWith('$')) addRoot(c)
-    for (const c of node) findRoots(c)
   }
-  for (const n of allModuleNodes) findRoots(n)
+  for (const n of allModuleNodes) walkAst(n, { enter: findRoots })
 
   // Side-output: per-callee call counts over all reachable + anonymous funcs.
   // Caller uses this to sort funcs by hotness for low-LEB128-funcidx packing.
@@ -4637,10 +4634,10 @@ export function treeshake(funcSections, allModuleNodes, opts) {
   const globals = opts && Array.isArray(opts.globals) ? opts.globals : null
   if (globals) {
     const collectGlobalRefs = (node, refd) => {
-      if (!Array.isArray(node)) return
-      if ((node[0] === 'global.get' || node[0] === 'global.set') && typeof node[1] === 'string') refd.add(node[1])
-      else if (node[0] === 'export' && Array.isArray(node[2]) && node[2][0] === 'global' && typeof node[2][1] === 'string') refd.add(node[2][1])
-      for (const c of node) collectGlobalRefs(c, refd)
+      walkAst(node, { enter: n => {
+        if ((n[0] === 'global.get' || n[0] === 'global.set') && typeof n[1] === 'string') refd.add(n[1])
+        else if (n[0] === 'export' && Array.isArray(n[2]) && n[2][0] === 'global' && typeof n[2][1] === 'string') refd.add(n[2][1])
+      } })
     }
     let changed = true
     while (changed) {
@@ -4863,7 +4860,6 @@ export function devirtSchemaReads(fn) {
     return st && c.dvProp != null ? `${st.name} ${c.dvProp}` : null
   }
   const countScan = (n) => {
-    if (!Array.isArray(n)) return
     if (n[0] === 'call' && n.dvProp) {
       const st = stableRecv(n[2])
       if (st) {
@@ -4873,9 +4869,8 @@ export function devirtSchemaReads(fn) {
         keyReads.set(k, (keyReads.get(k) || 0) + 1)
       }
     }
-    for (let i = 1; i < n.length; i++) countScan(n[i])
   }
-  countScan(fn)
+  walkAst(fn, { enter: countScan })
   // Duplicate-read elimination riding the rewrite walk: a SECOND tagged read
   // of the SAME (stable receiver, prop) in the same straight-line region
   // reuses the first read's tee'd i64 — the whole sid-dispatch + slot load
@@ -4897,14 +4892,21 @@ export function devirtSchemaReads(fn) {
     return typeof op === 'string' && (op.includes('.store') || op === 'global.set' || op === 'memory.grow')
   }
   const hasClobber = (x) => {
-    if (!Array.isArray(x)) return false
-    if (isClobberNode(x)) return true
-    for (let i = 1; i < x.length; i++) if (hasClobber(x[i])) return true
-    return false
+    let found = false
+    walkAst(x, { enter: n => {
+      if (found) return false
+      if (isClobberNode(n)) { found = true; return false }
+    } })
+    return found
   }
-  const noTee = (x) => !Array.isArray(x) ? true
-    : x[0] === 'local.tee' ? false
-    : x.slice(1).every(noTee)
+  const noTee = (x) => {
+    let clean = true
+    walkAst(x, { enter: n => {
+      if (!clean) return false
+      if (n[0] === 'local.tee') { clean = false; return false }
+    } })
+    return clean
+  }
   const memo = new Map()
   let clobbers = 0
   const scoped = (walkBody) => {
@@ -5011,39 +5013,29 @@ export function foldStaticConstArrayReads(fn) {
       Array.isArray(n[1][1]) && n[1][1][0] === 'global.get' && n[1][1][1] === `$${node.saArr}`
     // 1) base tee → global-derived base: (local.tee $b (call $__ptr_offset …)) → baseIR
     let baseLocal = null
-    const subBase = (n) => {
-      if (!Array.isArray(n)) return
-      for (let i = 1; i < n.length; i++) {
-        const c = n[i]
-        if (!Array.isArray(c)) continue
-        if (c[0] === 'local.tee' && Array.isArray(c[2]) && c[2][0] === 'call' && c[2][1] === '$__ptr_offset') {
-          baseLocal = c[1]
-          n[i] = baseIR()
-          continue
-        }
-        subBase(c)
+    const subBase = (n, parent, idx) => {
+      if (!parent) return
+      if (n[0] === 'local.tee' && Array.isArray(n[2]) && n[2][0] === 'call' && n[2][1] === '$__ptr_offset') {
+        baseLocal = n[1]
+        parent[idx] = baseIR()
+        return false
       }
     }
-    subBase(node)
+    walkAst(node, { enter: subBase })
     if (!baseLocal) return
     // 2) len header load over the folded base → literal len (position-independent);
     //    remaining base reads → box-derived base
-    const subLen = (n) => {
-      if (!Array.isArray(n)) return
-      for (let i = 1; i < n.length; i++) {
-        const c = n[i]
-        if (!Array.isArray(c)) continue
-        if (c[0] === 'i32.load' && Array.isArray(c[1]) && c[1][0] === 'i32.sub' &&
-            isBaseIR(c[1][1]) &&
-            Array.isArray(c[1][2]) && c[1][2][0] === 'i32.const' && +c[1][2][1] === 8) {
-          n[i] = ['i32.const', st.len]
-          continue
-        }
-        if (c[0] === 'local.get' && c[1] === baseLocal) { n[i] = baseIR(); continue }
-        subLen(c)
+    const subLen = (n, parent, idx) => {
+      if (!parent) return
+      if (n[0] === 'i32.load' && Array.isArray(n[1]) && n[1][0] === 'i32.sub' &&
+          isBaseIR(n[1][1]) &&
+          Array.isArray(n[1][2]) && n[1][2][0] === 'i32.const' && +n[1][2][1] === 8) {
+        parent[idx] = ['i32.const', st.len]
+        return false
       }
+      if (n[0] === 'local.get' && n[1] === baseLocal) { parent[idx] = baseIR(); return false }
     }
-    subLen(node)
+    walkAst(node, { enter: subLen })
   }
   walkAst(fn, { enter: n => { if (Array.isArray(n) && n.saArr != null) rewrite(n) } })
 }
@@ -5127,7 +5119,7 @@ export function devirtConstFnArrayCalls(fn, cfg) {
     // straight-line shape and read-only params, and returns null for anything it
     // can't prove (the call stays). Purity mattered only for value-motion uses.
     const bodies = ctx.scope.dvArmFns
-    const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, k) => a + (k > 0 ? nodeCount(c) : 0), 0)
+    const nodeCount = (n) => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
     // i32 block-narrow: when the receiver is a facts-qualified STATIC table (the
     // same never-resized/never-aliased gate as foldStaticConstArrayReads — its
     // elements are exactly the original arrows, forever) and EVERY candidate body

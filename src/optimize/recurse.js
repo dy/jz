@@ -18,6 +18,8 @@
  * @module optimize/recurse
  */
 
+import { walkAst } from '../ast.js'
+
 const isArr = (x) => Array.isArray(x)   // wrapped: jz self-compile rejects a builtin used as a value
 
 const UNROLL_DEPTH = 2
@@ -96,20 +98,18 @@ const readsLocal = (n, name) => isArr(n) &&
 // Find `(local.set A (ADD (local.get A) (call $self …)))` (either operand order).
 // That statement IS the recursive call's only consumer — the fusion site.
 function findAccConsume(root, self) {
-  if (!isArr(root)) return null
-  for (let i = 1; i < root.length; i++) {
-    const c = root[i]
-    if (isArr(c) && c[0] === 'local.set' && typeof c[1] === 'string' && isArr(c[2]) && ADD_OPS.has(c[2][0])) {
+  let result = null
+  walkAst(root, { enter: (c, parent, i) => {
+    if (result) return false
+    if (parent && c[0] === 'local.set' && typeof c[1] === 'string' && isArr(c[2]) && ADD_OPS.has(c[2][0])) {
       const A = c[1], add = c[2]
       const isAcc = (e) => isArr(e) && e[0] === 'local.get' && e[1] === A
       const isCall = (e) => isArr(e) && e[0] === 'call' && e[1] === self
-      if (isAcc(add[1]) && isCall(add[2])) return { parent: root, idx: i, acc: A, add: add[0], call: add[2] }
-      if (isAcc(add[2]) && isCall(add[1])) return { parent: root, idx: i, acc: A, add: add[0], call: add[1] }
+      if (isAcc(add[1]) && isCall(add[2])) { result = { parent, idx: i, acc: A, add: add[0], call: add[2] }; return false }
+      if (isAcc(add[2]) && isCall(add[1])) { result = { parent, idx: i, acc: A, add: add[0], call: add[1] }; return false }
     }
-    const r = findAccConsume(c, self)
-    if (r) return r
-  }
-  return null
+  } })
+  return result
 }
 
 const freshen = (orig, level, used) => {
@@ -140,17 +140,15 @@ export function recursionUnroll(fn) {
   // Gate: exactly one non-tail self-call, only soundly-cloneable constructs.
   let selfCalls = 0, bail = false
   const labelNames = new Set()
-  const scan = (n) => {
-    if (!isArr(n)) return
+  const scan = n => {
     const op = n[0]
     if (op === 'call' && n[1] === self) selfCalls++
     else if (op === 'return_call' || op === 'return_call_indirect' || op === 'return_call_ref') bail = true
     else if (op === 'br_table') bail = true
     else if ((op === 'br' || op === 'br_if') && typeof n[1] !== 'string') bail = true
     else if ((op === 'block' || op === 'loop') && typeof n[1] === 'string' && n[1][0] === '$') labelNames.add(n[1])
-    for (let i = 1; i < n.length; i++) scan(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: scan })
   if (bail || selfCalls !== 1) return
 
   // The recursive call must be consumed by `acc = acc ± self(…)`, acc a local.
