@@ -688,13 +688,78 @@ export let f = (s) => g(s) === false`
 // closure env-slot (e.g. a bare name hitting a container store) is a
 // different, still-open instance of the same root and out of this row's
 // scope.
+//
+// DIRECT/INLINED BARE RETURN, a WALL sibling — NOT the CLOSURE CAPTURE
+// consumer above, and NOT a native/kernel divergence (PROBED 2026-08-21,
+// external-review sibling-gap check on the AGREE test's own former "direct-
+// closure devirtualization eligibility differs" comment — falsified: native
+// `compile(src,{wat:true})` and `compileViaKernel(src,{wat:true})` emit
+// BYTE-IDENTICAL WAT for `let v = x>0&&1; const g=()=>v; return g()` at
+// O0/O2/O3, zero call_indirect either leg). `g` is called exactly once and
+// never otherwise referenced, so plan/inline.js's inlineLocalLambdas (swept
+// unconditionally, plan/index.js:193 — independent of optimize level, fires
+// even at O0) deletes `g` and its call, splicing the body in — the survivor
+// is WAT-byte-identical to the plain non-closure program `export let f = (x)
+// => { let v = x > 0 && 1; return v }`. Both legs then hit the decl-STORAGE
+// WALL directly (previous paragraph): `v`'s own storage is the raw carrier,
+// `return v` is a bare name with no expression shape for hasAmbiguousBool-
+// Merge to see, so both compilers return the raw 0/number where JS returns
+// the coerced-false atom — agreeing with EACH OTHER, disagreeing with the
+// oracle. NOT fixed here: unlike the CLOSURE CAPTURE fix (one new consumer
+// site, the env-slot store, unconditionally correct once boxed), a bare
+// RETURN consumer needs its OWN gating layer upstream of the box, and that
+// layer is ALSO blind to a bare name today — compile/index.js's
+// `ctx.func.mixedAtomReturn` single-return admission (~line 1462) only
+// admits a lone return whose OWN expression `hasAmbiguousBoolMerge` (true
+// for `return cond && 1`, false for `return v`), and the return statement's
+// own box gate (emit.js ~line 5411, `ambiguous = boxes && hasAmbiguous-
+// BoolMerge(expr)`) repeats the same check. Closing this needs THREE
+// coordinated sites (the decl-storage box, the mixedAtomReturn admission,
+// and the return-statement box gate) where the WALL above already cost two
+// reverted self-compile miscompiles touching just ONE — out of this pass's
+// bounded scope. Pinned below ('direct-closure inlined bare-return'), not
+// fixed.
+const PENDING_FIX = [
+  { name: 'direct-closure inlined bare-return (decl-storage WALL sibling, see comment block above)',
+    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
+    wrong: 0 },
+  { name: 'direct-closure inlined bare-return, typeof observation (same WALL sibling)',
+    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`,
+    wrong: 'number' },
+]
+
+if (PENDING_FIX.length) test('kernel oracle: PENDING-FIX — research.md §Carrier invariant (not yet fixed; formatter/ToPropertyKey/closure-capture rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
+  if (onWasi()) return
+  for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
+    const mod = await oracle(src)
+    const want = mod.f(-1)
+    not(wrong, want, `${name}: TODO-flip guard — wrong !== want (else this row is stale, delete it)`)
+    for (const opt of opts) {
+      const nat = runNative(src, opt).f(-1)
+      const ker = runKernel(src, opt).f(-1)
+      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once fixed`)
+      is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
+      not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
+      not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
+    }
+  }
+})
+
 test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDING-FIX, closed by the closure-capture identity shadow)', async () => {
   // Was PENDING-FIX 'captured-then-read': arr[0]() returned the raw carrier
   // 0 (number) where JS says false — see the comment block above for the fix.
-  // NOT the minimal `const g = () => v; return g()` shape — direct-closure
-  // devirtualization eligibility differs between native and kernel for that
-  // exact shape, a separate, out-of-scope divergence; wrapping `g` in an
-  // array before calling sidesteps it on both legs uniformly.
+  // NOT the minimal `const g = () => v; return g()` shape (no array) — that
+  // isn't a native/kernel split (PROBED 2026-08-21, falsifying this test's
+  // prior "devirtualization eligibility differs" claim: jz.compile vs
+  // compileViaKernel emit byte-identical WAT for it, both legs, zero
+  // call_indirect). `g`'s only reference is its own call, so plan/inline.js's
+  // inlineLocalLambdas deletes the closure entirely and splices its body in,
+  // collapsing to the decl-STORAGE WALL's plain shape (comment block above)
+  // — a DIFFERENT, still-open WALL instance, wrong the same way on both
+  // legs. The array below gives `g` a second reference (the array store),
+  // which disqualifies inlineLocalLambdas and keeps the closure on THIS
+  // row's fixed path. Pinned PENDING-FIX below ('direct-closure inlined
+  // bare-return'), not fixed — see that row's comment for why.
   if (onWasi()) return
   const src = `export let f = (x) => { let v = x > 0 && 1; const g = () => v; let arr = [g]; return arr[0]() }`
   const mod = await oracle(src)
