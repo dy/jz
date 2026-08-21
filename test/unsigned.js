@@ -23,6 +23,14 @@
  *                  onto the joined node when they agree (keeps the single-select
  *                  fast path — a single downstream asF64 now converts correctly
  *                  either way, instead of always guessing signed).
+ *   • emit.js    — the '&&'/'||' handlers' own i32 if-join, the confirmed sibling
+ *                  of the '?:' fix above: '&&' propagates just the truthy arm's
+ *                  (b's) sign, since its falsy arm is provably zero and so never
+ *                  carries a magnitude either way; '||' — whose truthy arm returns
+ *                  a's OWN value, so both arms genuinely disagree — needs the same
+ *                  signedness-agreement gate as '?:', falling back to per-arm
+ *                  widening (by each side's OWN sign, not a hardcoded signed
+ *                  convert) on disagreement.
  */
 import test from 'tst'
 import { is } from 'tst/assert.js'
@@ -338,4 +346,91 @@ test('agreeing-SIGNED `?:` arms keep the branchless i32-select fast path (no reg
   const { f } = run(src)
   is(f(1, 7, -9), 7)
   is(f(0, 7, -9), -9)
+})
+
+// ────────────────────── '&&'/'||' if-join per-arm sign (emit.js, confirmed sibling of the '?:' fix)
+
+test('`(x|0) && h`: the i32 if-join keeps the TRUTHY arm\'s own sign at O0/O2/O3 (&& sibling of the select-join fix)', () => {
+  // `&&`'s i32 if-join (src/compile/emit.js, the '&&' handler's i32 fast path) is
+  // asymmetric, unlike '?:'/'||' below: the FALSY arm is provably `local.get $t`
+  // === 0 — wasm's `if` cond IS the same bits later read back on that path, and 0
+  // means the same thing signed or unsigned — so only the TRUTHY arm (b, returned
+  // verbatim) can ever surface a real magnitude. Before this fix the joined node
+  // never carried `.unsigned`, so a downstream asF64 always guessed signed:
+  // `(x|0) && h` with h a narrowUint32-proven uint32 accumulator misread h's true
+  // magnitude whenever the truthy (b) arm was taken.
+  for (const optimize of [0, 2, 3]) {
+    const { f } = run(`export let f = (x) => { let h = 0; h = (h + 3000000000) >>> 0; let picked = (x | 0) && h; return picked + 0 }`, { optimize })
+    is(f(1), 3000000000, `O${optimize}: truthy arm (h) reads its true uint32 magnitude`)
+    is(f(0), 0, `O${optimize}: falsy arm (x|0 === 0) is untouched — its own sign never mattered`)
+  }
+})
+
+test('`h || (x|0)`: mixed-sign arms widen by their OWN sign at O0/O2/O3 (|| sibling of the select-join fix)', () => {
+  // `||`'s i32 if-join is the true structural sibling of '?:': its THEN-arm returns
+  // a's own value verbatim when truthy, so — unlike '&&' above — BOTH arms can
+  // surface an independent real magnitude. h (a narrowUint32-proven uint32
+  // accumulator, conditionally assigned so both the compile-time unsigned proof
+  // and a runtime-falsy 0 stay reachable) beside an ordinary signed `x | 0` is the
+  // exact mixed-sign shape 9c313e58 fixed for '?:': before this fix, a single
+  // downstream asF64 guessed signed for the whole join, sign-flipping h whenever
+  // the truthy (a) arm was taken. Fixed by gating the i32 fast path on sign
+  // agreement, widening each arm by its own sign (still branchless, an `if` not a
+  // `select`) on disagreement.
+  for (const optimize of [0, 2, 3]) {
+    const { f } = run(`export let f = (c, x) => { let h = 0; if (c) h = (h + 3000000000) >>> 0; let picked = h || (x | 0); return picked + 0 }`, { optimize })
+    is(f(true, 5), 3000000000, `O${optimize}: truthy arm (h) reads its true uint32 magnitude`)
+    is(f(false, -7), -7, `O${optimize}: falsy-h arm (x|0) stays exactly x, unperturbed by the unsigned sibling`)
+  }
+})
+
+test('agreeing-unsigned `&&` / `||` arms: the joined if still needs its OWN `.unsigned` (both-agree half of the same fix)', () => {
+  // Same both-agree half '?:' pinned above: two arms that both happen to be
+  // proven unsigned must still propagate `.unsigned` onto the joined node — the
+  // disagreement gate never trips, but the fast path must not silently default
+  // to signed either.
+  for (const optimize of [0, 2, 3]) {
+    const { f: fAnd } = run(`export let f = (c) => {
+      let h = 0; if (c) h = (h + 3000000000) >>> 0
+      let h2 = 0; h2 = (h2 + 4000000000) >>> 0
+      let anded = h && h2
+      return anded + 0
+    }`, { optimize })
+    is(fAnd(true), 4000000000, `O${optimize}: && truthy arm (h2) keeps its uint32 magnitude`)
+    is(fAnd(false), 0, `O${optimize}: && falsy arm (h===0) stays exactly zero`)
+
+    const { f: fOr } = run(`export let f = (c) => {
+      let h = 0; if (c) h = (h + 3000000000) >>> 0
+      let h2 = 0; h2 = (h2 + 4000000000) >>> 0
+      let ored = h || h2
+      return ored + 0
+    }`, { optimize })
+    is(fOr(true), 3000000000, `O${optimize}: || truthy arm (h) keeps its uint32 magnitude`)
+    is(fOr(false), 4000000000, `O${optimize}: || falsy-h arm (h2) keeps its uint32 magnitude`)
+  }
+})
+
+test('agreeing-SIGNED `&&` / `||` arms keep the branchless i32-if fast path (no regression from the sign-join fix)', () => {
+  // Control for the tests above: two ordinary signed i32 arms (the overwhelming
+  // common case) must still compile through the single i32-if-then-single-widen
+  // fast path for both handlers — the sign-agreement check must cost nothing when
+  // there's nothing to disagree about. WAT-shape control, same style as the '?:'
+  // control above.
+  const srcAnd = `export let f = (x, y) => { let a = x | 0; let b = y | 0; let picked = a && b; return picked + 0 }`
+  const wAnd = compileSrc(srcAnd, { wat: true, optimize: 0 })
+  is(/local\.set \$picked\s*\(if/.test(wAnd), true, '&&: join is a single i32 if (fast path)')
+  is((wAnd.match(/f64\.convert_i32_[su]/g) || []).length, 1, '&&: single widen at the return, not per-arm')
+  is(/f64\.convert_i32_u/.test(wAnd), false, '&&: signed arms convert signed, not unsigned')
+  const { f: fAnd } = run(srcAnd)
+  is(fAnd(1, -9), -9)
+  is(fAnd(0, -9), 0)
+
+  const srcOr = `export let f = (x, y) => { let a = x | 0; let b = y | 0; let picked = a || b; return picked + 0 }`
+  const wOr = compileSrc(srcOr, { wat: true, optimize: 0 })
+  is(/local\.set \$picked\s*\(if/.test(wOr), true, '||: join is a single i32 if (fast path)')
+  is((wOr.match(/f64\.convert_i32_[su]/g) || []).length, 1, '||: single widen at the return, not per-arm')
+  is(/f64\.convert_i32_u/.test(wOr), false, '||: signed arms convert signed, not unsigned')
+  const { f: fOr } = run(srcOr)
+  is(fOr(1, -9), 1)
+  is(fOr(0, -9), -9)
 })

@@ -6300,10 +6300,20 @@ export const emitter = {
         return typed(['i32.and', va, vb], 'i32')
       const t = tempI32()
       if (vb.type === 'i32') {
-        return typed(['if', ['result', 'i32'],
+        // This if-join's else-arm (a falsy) is PROVABLY `local.get $t` === 0: the
+        // wasm `if` cond IS va's own bits tested nonzero, so the only bit pattern
+        // that ever reaches the else-arm is all-zero — and 0 means the same thing
+        // signed or unsigned. So va's OWN `.unsigned` can never affect this join's
+        // value; only vb (returned verbatim when a is truthy) can surface a real
+        // magnitude. Unlike '?:' (9c313e58) and '||' below, there is no second arm
+        // for vb to disagree WITH — the joined node just inherits vb's sign outright,
+        // no agreement gate needed.
+        const node = typed(['if', ['result', 'i32'],
           ['local.tee', `$${t}`, va],
           ['then', vb],
           ['else', ['local.get', `$${t}`]]], 'i32')
+        if (vb.unsigned) node.unsigned = true
+        return node
       }
       return typed(['if', ['result', 'f64'],
         ['local.tee', `$${t}`, va],
@@ -6363,15 +6373,27 @@ export const emitter = {
       if (vb.type === 'i32' && boolEagerBody() && isCanonicalBoolExpr(a) && isCanonicalBoolExpr(b) && eagerSelectOK(vb))
         return typed(['i32.or', va, vb], 'i32')
       const t = tempI32()
-      if (vb.type === 'i32') {
-        return typed(['if', ['result', 'i32'],
+      // Unlike `&&` above, this if-join's THEN-arm (a truthy) returns va's own
+      // value verbatim — so, like '?:' (9c313e58), BOTH arms can surface an
+      // independent real magnitude here (the else-arm returns vb whenever a was
+      // falsy, unconstrained). A single downstream asF64 can only apply ONE sign
+      // to whichever branch fires at runtime, so the single-i32-if fast path is
+      // sound only when the two arms AGREE; disagreement (or a non-i32 vb) widens
+      // each arm with its OWN sign inside the if instead (still one branch, no
+      // extra control flow) — asF64(vb) already respects vb.unsigned, the va side
+      // just needs the same sign-aware conversion instead of a hardcoded signed one.
+      const signOK = vb.type === 'i32' && !!va.unsigned === !!vb.unsigned
+      if (signOK) {
+        const node = typed(['if', ['result', 'i32'],
           ['local.tee', `$${t}`, va],
           ['then', ['local.get', `$${t}`]],
           ['else', vb]], 'i32')
+        if (va.unsigned && vb.unsigned) node.unsigned = true
+        return node
       }
       return typed(['if', ['result', 'f64'],
         ['local.tee', `$${t}`, va],
-        ['then', typed(['f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')],
+        ['then', typed([va.unsigned ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['local.get', `$${t}`]], 'f64')],
         ['else', asF64(vb)]], 'f64')
     }
     const t = temp()
