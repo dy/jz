@@ -1326,6 +1326,34 @@ export function representationCallArgAction(ctx, node, params, index) {
   return edgeAction(activeEmittedRep(ctx, node), target)
 }
 
+/** True when the plan's RESULT verdict for `func` is a tagged BigInt UNION —
+ *  the value can be BigInt AND another kind (demandFor: canBeBigint &&
+ *  canBeOther). Such a result is carried as the NaN-box tag discipline
+ *  (BigInt member BOXED, number raw, pointers self-tagged), so the export
+ *  boundary must take the generic tag decode (resultDynamic's `r` lane,
+ *  interop's t===PTR.BIGINT arm derefs the box) — never the raw-bigint
+ *  passthrough lane, which reinterprets the union's bits as one BigInt
+ *  (a box POINTER's own bits, or a raw number's, both observed live:
+ *  phase-c doc §gap 2a). */
+export function representationResultTagRequired(ctx, func) {
+  if (programPlanRecord(ctx)?.bigint === false) return false
+  const handle = ctx.plans.representations.get(func)
+  const record = handle && ctx.plans.representationData.get(handle)
+  const r = record?.boundary?.result
+  if (r == null) return false
+  // The one honest signal is the CURRENT rep's BOXED bit: the value actually
+  // crossing may be a NaN-box POINTER, and the raw-bigint lane would hand
+  // the host the pointer's own bits. Neither the demand nor the target may
+  // widen this: a nullish-RAW result (LAYOUT-class raw slots) reads
+  // TAG_REQUIRED from its nullish bit yet every real pattern is raw i64 —
+  // the sentinel/raw lanes own it, and the generic decode would misread
+  // small BigInts as subnormals (two pointers.js raw-exact pins caught the
+  // demand-keyed version); a BOXED *target* over a proven-raw current is
+  // merely the plan's wish, not the emission (target-keyed version caught
+  // by the same pins).
+  return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0
+}
+
 /** Record direct-closure argument provenance before that closure is planned. */
 export function recordClosureCallRepresentations(ctx, bodyName, args) {
   const program = programPlanRecord(ctx)

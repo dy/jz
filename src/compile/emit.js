@@ -70,7 +70,7 @@ import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinall
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
   REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
-  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationReturnAction,
+  recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
 } from './representation-plan.js'
 
 // Raw-by-construction BIGINT producers (see the '=' emitter's durable-rebox arm).
@@ -3275,6 +3275,42 @@ function emitStrictEq(a, b, negate) {
     const vb = strictB === VAL.BOOL ? carrierF64(b, emit(b)) : asF64(emit(b))
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
+  }
+  // Phase-c C3: a plan-TAGGED BigInt union strictly compared against a
+  // statically-RAW BigInt operand. The tagged side may hold a PTR.BIGINT box
+  // (compare its PAYLOAD) or a non-BigInt member — which can never strictly
+  // equal a BigInt, and must NOT be bit-reinterpreted (a subnormal number
+  // colliding with the literal's raw i64 pattern would read equal; a box
+  // POINTER's bits never match either way, which is how this compare read
+  // false pre-fix). Tag-dispatch with a short-circuit: only a real box is
+  // ever dereferenced. Both-tagged and every other shape keep the dynamic
+  // $__eq_strict fallthrough below.
+  {
+    // "May be a box at runtime": the plan materialized the operand as tagged,
+    // OR it is a direct call whose callee's result record says the crossing
+    // value's CURRENT rep can be BOXED (same signal the boundary-lane gate
+    // uses — the callee needn't have reached materializedResult for its
+    // return to really carry a box).
+    const mayBox = (n) => isPlanTaggedBigint(n) ||
+      (Array.isArray(n) && n[0] === '()' && typeof n[1] === 'string' &&
+       ctx.funcs.map?.get(n[1]) != null && representationResultTagRequired(ctx, ctx.funcs.map.get(n[1])))
+    const planA = mayBox(a), planB = mayBox(b)
+    if (planA !== planB) {
+      const tagSide = planA ? a : b, rawSide = planA ? b : a
+      const rawVt = resolveValType(rawSide, valTypeOf, lookupValType)
+      if (rawVt === VAL.BIGINT) {
+        const t = temp('teq')
+        inc('__ptr_type')
+        const tGet = typed(['local.get', `$${t}`], 'f64')
+        const eq = typed(['block', ['result', 'i32'],
+          ['local.set', `$${t}`, asF64(emit(tagSide))],
+          ['if', ['result', 'i32'],
+            ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', tGet]], ['i32.const', PTR.BIGINT]],
+            ['then', ['i64.eq', ['i64.load', ptrOffsetIR(tGet, VAL.BIGINT)], asI64(emit(rawSide))]],
+            ['else', ['i32.const', 0]]]], 'i32')
+        return negate ? typed(['i32.eqz', eq], 'i32') : eq
+      }
+    }
   }
   // Same type (or dynamic-unknown): identical to loose `==`/`!=` EXCEPT the one
   // case loose treats specially (null == undefined) — strict must still tell

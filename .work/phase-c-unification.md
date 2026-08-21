@@ -67,11 +67,14 @@ kernel-oracle + full suite)
   keep the boundary verdict; sinks box fresh copies via the inline-
   expression arm.
 - C5. Acceptance sweep + pin flips: gnorm(string)/gnorm(number) both
-  correct through `return n` AND `n + 1n` (TypeError-throw semantics for
-  number+bigint mixing is OUT of C-scope — that's arithmetic-checking,
-  banked); kind() probe stays correct; watr uleb no-array repro → 46,
-  full uleb → 44002 at O0+O3; nullish-taken pin (data.js KNOWN-WRONG)
-  flips to 'bigint'; JZ_BIGINT_STRICT enumeration shrinks.
+  correct through `return n`; `n + 1n` correct ON THE STRING PATH ONLY
+  (post-conversion bigint+bigint) — the NUMBER-entry path's JS truth is a
+  TypeError, and mixed-arithmetic CHECKING stays out of C-scope (banked as
+  its own slice; C does not make that expression "correct" for number
+  entries, it stays a recorded gap until the checking slice); kind() probe
+  stays correct; watr uleb no-array repro → 46, full uleb → 44002 at
+  O0+O3; nullish-taken pin (data.js KNOWN-WRONG) flips to 'bigint';
+  JZ_BIGINT_STRICT enumeration shrinks.
 
 ## Non-goals
 
