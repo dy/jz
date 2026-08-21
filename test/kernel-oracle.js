@@ -522,7 +522,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // of carried (raw or boxed) into `Number()`'s dynamic dispatch, there is no
 // longer a value for either mechanism to act on — the whole KNOWN-FAIL
 // class is eliminated at the root, not narrowed or reordered around.
-test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigInt array element is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in), not a runtime module-ordering corruption', () => {
+test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in) collection diagnostic (was audit-#16 KNOWN-FAIL, a runtime module-ordering corruption)', () => {
   const bSrc = `
     const arr = [1.5, 123456789012345n, 2.5]
     export let mkBig = (i) => Number(arr[i])
@@ -537,28 +537,6 @@ test('kernel oracle: RETIRED (was audit-#16 KNOWN-FAIL) — a heterogeneous BigI
     throws(() => withBigintStrict(() => jz(mainSrc, { modules, optimize: opt })), /BigInt value at this collection/, `O${opt}: heterogeneous BigInt array element refuses to compile`)
 })
 
-// ── PENDING-FIX tier: a REAL finding, not a documented tradeoff ───────────
-//
-// (boolconst LANDED — moved to the AGREE array above. It lived here as a
-// PENDING-FIX not()-tripwire from re-audit #5 item 4 until the mixed
-// BOOL|NUMBER return-representation class it named was fixed generically —
-// audit #5 item 2, see AGREE's boolconst comment for the fix location.)
-//
-// A sibling, DIFFERENT-mechanism gap the same audit item's sweep surfaced and
-// deliberately did NOT fix: a ternary `cond ? 1 : false` used AS a return
-// value. The return-statement fix above only boxes a return whose own static
-// valType is BOOL; `s ? 1 : false`'s valType is (by src/compile/emit.js '?:'
-// design) NUMBER — the ternary handler intentionally keeps a BOOL∪NUMBER arm
-// pair raw so `x + (cond ? 1 : false)` stays correct arithmetic (its `?:` has
-// no notion of its own consumer — return position vs arithmetic position).
-// Forcing the box unconditionally at every such ternary would reopen the
-// REVERTED broad fix's exact failure mode: an arithmetic consumer statically
-// proven "numeric arm" (emit.js isNumArm) would read a NaN atom's raw bits as
-// if they were the number, corrupting `+`. Same root (an atom crosses
-// unboxed at a boxed-value observation site), different, riskier mechanism
-// (needs consumer-position-aware context threading through emit(), not a
-// return-statement gate) — documented and pinned, not fixed, per the audit's
-// own "map it, fix if same-root, pin regardless" instruction.
 test('kernel oracle: ternary BOOL|NUMBER return — AGREE (closed by the ambiguous-BOOL-merge identity work)', async () => {
   // Was PENDING FIX: g(false) returned the `false` atom collapsed to raw 0.0,
   // so `g(s) === false` read false for both arguments. Closed by
@@ -585,28 +563,10 @@ export let f = (s) => g(s) === false`
   }
 })
 
-// ── PENDING-FIX tier: research.md §Carrier invariant's 51-mismatch sweep ─────
-//
-// MECHANISM A (the design's own framing): emit-assign.js's storedValue
-// (hasAmbiguousBoolMerge ? emitIdentitySafe : carrierF64(emit)) is the ONE
-// correct shape for a boxed-bool-aware container store. Step 3 promoted it
-// to src/bridge.js as the chokepoint and closed the 16 enumerated raw sites
-// PLUS several more the promotion surfaced (see the AGREE array's "FLIPPED"
-// comment above for the full inventory) — array/object/Map/Set/push/direct-
-// closure-arg/parenthesized-&& all moved there. Two families remain here:
-//
-// FORMATTER (design step 5, "un-traced" at design time): String()/template-
-// literal stringification and computed-key ToPropertyKey conversion —
-// different consumer code (module/string.js's String() dispatch, template
-// concat emission, module/array.js's computed-key path). CLOSED by
-// .work/todo.md §deletion-sweep — the three rows below moved to the AGREE
-// array's "FLIPPED from PENDING-FIX" formatter-dispatch entry, plus a
-// read-side sibling sweep (module/array.js dyn-get key sites, same design
-// doc's Finding #2).
-//
-// GENERIC SCALAR DECL, the decl-STORAGE lever (still a WALL, still banked —
-// see emit.js emitDecl's comment on the `const val = viewInit || emit(init)`
-// line): every implementation of "box an ambiguous-merge scalar `let`/`const`
+// A still-open gap in the carrier invariant (research.md §Carrier invariant):
+// GENERIC SCALAR DECL, the decl-STORAGE lever, is still a WALL, still banked
+// — see emit.js emitDecl's comment on the `const val = viewInit || emit(init)`
+// line. Every implementation of "box an ambiguous-merge scalar `let`/`const`
 // init AT ITS OWN DECLARATION" tried miscompiled the self-compiled kernel's
 // own compiled emitDecl at that exact call site — first the broad
 // `storedValue` swap, then a NARROWER `hasAmbiguousBoolMerge`-gated `argIR`
@@ -636,26 +596,6 @@ export let f = (s) => g(s) === false`
 // closure env-slot (e.g. a bare name hitting a container store) is a
 // different, still-open instance of the same root and out of this row's
 // scope.
-const PENDING_FIX = [
-]
-
-if (PENDING_FIX.length) test('kernel oracle: PENDING-FIX — research.md §Carrier invariant (not yet fixed; formatter/ToPropertyKey/closure-capture rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
-  if (onWasi()) return
-  for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
-    const mod = await oracle(src)
-    const want = mod.f(-1)
-    not(wrong, want, `${name}: TODO-flip guard — wrong !== want (else this row is stale, delete it)`)
-    for (const opt of opts) {
-      const nat = runNative(src, opt).f(-1)
-      const ker = runKernel(src, opt).f(-1)
-      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once fixed`)
-      is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
-      not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
-      not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
-    }
-  }
-})
-
 test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDING-FIX, closed by the closure-capture identity shadow)', async () => {
   // Was PENDING-FIX 'captured-then-read': arr[0]() returned the raw carrier
   // 0 (number) where JS says false — see the comment block above for the fix.
