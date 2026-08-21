@@ -510,15 +510,15 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // observe. The unary-decay behavior these tests pinned is moot: there is no
 // runtime value left to decay, correctly or not. Converted to expect-error,
 // not deleted — the shape remains valuable negative-space coverage.
-test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3) [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+test('Map: unary "-"/"~" on a .get() absent key decays to NUMBER NaN/-1, not a garbage bigint (audit-#8 P0-4 Part 3) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`const m = new Map(); m.set('x', 1n); return -m.get('missing')`)), /BigInt value at this collection/)
 })
-test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling) [RETIRED: BigInt-into-dict is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+test('dict: unary "-"/"~" on a DYNAMIC-key absent read decays to NUMBER NaN/-1 (audit-#8 P0-4 Part 3, dict sibling) — BigInt-into-dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = (k1, k2) => { const d = {}; d[k1] = 1n; return -d[k2] }`)), /BigInt value at this collection/)
 })
-test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control) [RETIRED: BigInt-into-dict is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+test('dict: unary "-" on a LITERAL-key absent read (already sound — not this bug, structural control) — BigInt-into-dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => run(`const d = {}; d['x'] = 1n; return -d['missing']`)), /BigInt value at this collection/)
 })
@@ -541,18 +541,18 @@ test('dict: unary "-" on a LITERAL-key absent read (already sound — not this b
 // to expect-error per the design's own suggested pattern (§7): "Convert
 // is(mapMod.exports.f(), 5n)-style assertions to throws(() => jz(src),
 // /collection.*BigInt/)-style assertions naming the new diagnostic."
-test('Slice 5: bare Map/dict .get()/[] read materializes the true BigInt across the export boundary (repro 5, was KNOWN-FAIL) [RETIRED: BigInt-into-Map/dict is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+test('Slice 5: bare Map/dict .get()/[] read materializes the true BigInt across the export boundary (repro 5, was KNOWN-FAIL) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k1) => { const d = {}; d[k1] = 5n; return d[k1] }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// Negative controls (Slice 5) — RETIRED: the mixed-kind-Map carve-out this
-// pinned as "documented (unfixed)" is exactly the class Slice 1 eliminates
-// at the root (same as test/data.js's audit-#11 P0-1 deletion) — `m.set('a',
-// 5n)` alone refuses to compile before the mixed-kind question is ever
-// reached. The statically-proven BigInt export negative control (no
-// Map/dict involved at all) is UNAFFECTED by this retirement — kept as-is.
+// Negative controls (Slice 5): the mixed-kind-Map carve-out this pinned as
+// "documented (unfixed)" is exactly the class Slice 1 eliminates at the root
+// (same as test/data.js's audit-#11 P0-1 deletion) — `m.set('a', 5n)` alone
+// refuses to compile before the mixed-kind question is ever reached. The
+// statically-proven BigInt export negative control (no Map/dict involved at
+// all) is unaffected — kept as-is.
 test('Slice 5: negative controls — mixed-kind Map falls back to documented (unfixed) behavior; a statically-proven BigInt export is untouched', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const m = new Map(); m.set('a', 5n); m.set('b', 6); return m.get(k) }`, { jzify: true })), /BigInt value at this collection/)
@@ -577,19 +577,19 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
 // 5's own lane/decode mechanism. Was silently wrong (`2.5e-323`, the exact
 // repro-5 bit-pattern misread) at HEAD before this slice; confirmed via a
 // direct stash diff, not assumed.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — same "collection" flow class as the Slice 5 tests above, one
-// decl-hop further. `m.set('a', 5n)`/`d[k]=5n` refuses to compile before
-// the decl-hop's own presentVal machinery is ever reached.
-test('Slice 6: decl-hop present-key BigInt census read materializes the true BigInt across the export boundary (one hop past repro 5) [RETIRED: BigInt-into-Map/dict is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// "collection" flow class as the Slice 5 tests above, one decl-hop further.
+// `m.set('a', 5n)`/`d[k]=5n` refuses to compile before the decl-hop's own
+// presentVal machinery is ever reached.
+test('Slice 6: decl-hop present-key BigInt census read materializes the true BigInt across the export boundary (one hop past repro 5) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k) => { const d = {}; d[k] = 5n; let x = d[k]; return x }`, { jzify: true })), /BigInt value at this collection/)
 })
 
-// Negative control (Slice 6) — RETIRED: the mixed-kind-Map carve-out is
-// eliminated at the root, same as the Slice 5 negative control above.
-test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// Negative control (Slice 6): the mixed-kind-Map carve-out is eliminated at
+// the root, same as the Slice 5 negative control above.
+test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the documented (unfixed) Slice 5 gap — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 6); let x = m.get('a'); return x }`, { jzify: true })), /BigInt value at this collection/)
 })
@@ -611,9 +611,9 @@ test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the 
 // arithmetic / TypeError jointly — wired at all 9 binary arithmetic/bitwise
 // ops (`+ - * / % & | ^ << >>`), not just `+`.
 // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — `m.set('x', 5n)` refuses to compile before the runtime
-// TypeError this test pinned is ever reached.
-test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: silent NUMBER garbage) [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// `m.set('x', 5n)` refuses to compile before the runtime TypeError this
+// test pinned is ever reached.
+test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: silent NUMBER garbage) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') + 1 }`, { jzify: true })), /BigInt value at this collection/)
 })
@@ -629,14 +629,14 @@ test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: si
 // type mismatch) — the exact discrimination an operand-local guard cannot
 // make, only a JOINT check evaluating both operands' actual runtime domains
 // together can.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — every cell of this matrix (both-present, both-absent,
-// present+absent, census-mixed-with-literal) shares one precondition,
-// `m.set('a'|'x', 6n)`, the "collection" flow class. All 9 ops now refuse
-// to compile at that shared precondition, before any presence×domain
-// distinction is ever reached — one throws() per op is enough to cover the
-// class (looping the full matrix would just repeat the identical refusal).
-test('§14 point 4: full presence×domain matrix over all 9 binary ops, differential against real JS [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): every
+// cell of this matrix (both-present, both-absent, present+absent,
+// census-mixed-with-literal) shares one precondition, `m.set('a'|'x', 6n)`,
+// the "collection" flow class. All 9 ops now refuse to compile at that
+// shared precondition, before any presence×domain distinction is ever
+// reached — one throws() per op is enough to cover the class (looping the
+// full matrix would just repeat the identical refusal).
+test('§14 point 4: full presence×domain matrix over all 9 binary ops, differential against real JS — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
@@ -653,11 +653,11 @@ test('§14 point 4: full presence×domain matrix over all 9 binary ops, differen
 // numerically correct (0n == 0); only the TYPE tag is wrong. A real,
 // documented divergence, not silently dropped — this codebase already accepts
 // the identical ambiguity class elsewhere (0-literal BigInt/Number mixing).
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — same class as test/data.js's audit-#11 P0-1 (§7): a documented,
-// "permanent," accepted carrier-collision wrongness class, eliminated at
-// the root once `m.set('a', 6n)` itself refuses to compile.
-test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n, not Number 0 (carrier collision, permanent) [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// class as test/data.js's audit-#11 P0-1 (§7): a documented, "permanent,"
+// accepted carrier-collision wrongness class, eliminated at the root once
+// `m.set('a', 6n)` itself refuses to compile.
+test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n, not Number 0 (carrier collision, permanent) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['&', '|', '^', '<<', '>>'])
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); let x = m.get('m1'); let y = m.get('m2'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
@@ -1101,20 +1101,19 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
 // upgrade plus `censusBigintSentinelKind`'s new kind-4 arm (kind.js) teach
 // the SAME both-census fact to the export lane, so the return crosses the
 // boundary as a real i64 BigInt, not a misdecoded NUMBER.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — every shape below shares the "collection" precondition
-// `m.set(k, 5n)`/`d[k]=5n`.
-test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads crosses the export boundary correctly (was garbage NUMBER) [RETIRED: BigInt-into-Map/dict is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): every
+// shape below shares the "collection" precondition `m.set(k, 5n)`/`d[k]=5n`.
+test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads crosses the export boundary correctly (was garbage NUMBER) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x + y }`, { jzify: true })), /BigInt value at this collection/)
   throws(() => withBigintStrict(() => jz(`export let f = (k, j) => { const d = {}; d[k] = 5n; d[j] = 3n; let x = d[k]; let y = d[j]; return x + y }`, { jzify: true })), /BigInt value at this collection/)
 })
 
 // Negative controls (Slice 7): a single census-BigInt operand paired with a
-// PROVEN (non-census) side is RETIRED too (same "collection" precondition).
-// The genuine literal BigInt/Number mix (bigIntMixReject, arithmetic-core,
-// NOT this retirement's mechanism) and genuine BigInt+BigInt arithmetic (no
-// Map/dict involved at all) are UNAFFECTED by this retirement — kept as-is.
+// PROVEN (non-census) side shares the same "collection" precondition. The
+// genuine literal BigInt/Number mix (bigIntMixReject, arithmetic-core, a
+// different mechanism) and genuine BigInt+BigInt arithmetic (no Map/dict
+// involved at all) are unaffected — kept as-is.
 test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine literal mixes are unaffected', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 5n); let x = m.get('a'); return x + 3n }`, { jzify: true })), /BigInt value at this collection/)
@@ -1171,10 +1170,10 @@ test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine
 //       side to prove ANY bigint evidence in the first place, so the joint
 //       dispatch never even activates (by design — §14 point 4's own "only
 //       emits where the static analysis says domains CAN mix" scope).
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — same "collection" precondition (`m.set('a', 6n)`) as the §14
-// point 4 tests above.
-test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export boundary as a real bigint (was: number) [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// "collection" precondition (`m.set('a', 6n)`) as the §14 point 4 tests
+// above.
+test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export boundary as a real bigint (was: number) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   for (const op of ['-', '*', '/', '%', '&'])
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); m.set('b', 3n); let x = m.get('a'); let y = m.get('b'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
@@ -1316,10 +1315,10 @@ test('§14 point 4 FIXED: a proven-local BigInt mixed with a zero-evidence dynam
 //
 // GLOBAL receiver only — see the KNOWN-FAIL immediately below for the
 // narrower, still-open LOCAL-receiver sibling this session does NOT close.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — same "collection" precondition (`m.set('a', 5n)`, a
-// module-level Map) as every other test in this file.
-test('single-call-site unary `-` param-hop: present-key BigInt census value (module-level Map) through a callee is JS-correct (regression pin, was KNOWN-FAIL) [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// "collection" precondition (`m.set('a', 5n)`, a module-level Map) as every
+// other test in this file.
+test('single-call-site unary `-` param-hop: present-key BigInt census value (module-level Map) through a callee is JS-correct (regression pin, was KNOWN-FAIL) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`
     const m = new Map(); m.set('a', 5n)
@@ -1327,8 +1326,8 @@ test('single-call-site unary `-` param-hop: present-key BigInt census value (mod
     export let f = () => g(m.get('a'))
   `, { jzify: true })), /BigInt value at this collection/)
 })
-// Negative control — RETIRED too, same precondition.
-test('single-call-site unary `-` param-hop: absent Map key (module-level Map) through a callee is JS-correct [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// Negative control — same precondition.
+test('single-call-site unary `-` param-hop: absent Map key (module-level Map) through a callee is JS-correct — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`
     const m = new Map(); m.set('a', 5n)
@@ -1358,15 +1357,14 @@ test('single-call-site unary `-` param-hop: absent Map key (module-level Map) th
 // separate, comparable-sized undertaking (the same class of gap
 // nameMayBeUndefinedInBody's own local-vs-global receiver split already
 // accepts elsewhere in this design), not attempted here.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
-// RETIRED — same as test/data.js's audit-#11 P0-1 (§7): this KNOWN-FAIL
-// pinned a documented VALUE-wrong divergence whose precondition
-// (`m.set('a', 5n)`) is now structurally impossible to construct. The
-// underlying presentVal gap (narrow.js's plan-time fixpoint can't see a
-// LOCAL Map receiver) is still real in principle, but has no remaining
-// BigInt-carrier value for it to corrupt — eliminated at the root, not
-// narrowed.
-test('KNOWN-FAIL (found landing §16→§18, out of scope): param-hop present-key BigInt census value through unary `-` in a callee, receiver LOCAL to the caller, still has no presentVal claim [RETIRED: BigInt-into-Map is a "collection" diagnostic under JZ_BIGINT_STRICT (opt-in)]', () => {
+// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// as test/data.js's audit-#11 P0-1 (§7): this KNOWN-FAIL pinned a documented
+// VALUE-wrong divergence whose precondition (`m.set('a', 5n)`) is now
+// structurally impossible to construct. The underlying presentVal gap
+// (narrow.js's plan-time fixpoint can't see a LOCAL Map receiver) is still
+// real in principle, but has no remaining BigInt-carrier value for it to
+// corrupt — eliminated at the root, not narrowed.
+test('KNOWN-FAIL (found landing §16→§18, out of scope): param-hop present-key BigInt census value through unary `-` in a callee, receiver LOCAL to the caller, still has no presentVal claim — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
   throws(() => withBigintStrict(() => jz(`
     const g = (v) => -v
