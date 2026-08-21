@@ -205,3 +205,67 @@ test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)'
   }`).main()
   is(wrapped, 4)   // 4294967290 + 10 = 4294967300 ≡ 4 (mod 2^32)
 })
+
+// ───────────────────────────────────── identity-preserving tail positions
+
+test('unsignedness threads through `u+` and a same-arm `?:` tail (ECMA-262 §7.1.8 ToUint32)', () => {
+  // ROOT CAUSE (fixed): narrowI32Results' isUnsignedTail (src/compile/narrow.js)
+  // proved a tail unsigned via a SYNTACTIC allowlist that stopped at the
+  // OUTERMOST node — top-level `>>>`, an unsignedResult call, or a bare
+  // unsignedLocals name — while exprType (src/type.js) already treats `u+` as
+  // type-preserving (ToNumber is identity on a number, its own `op === 'u+'`
+  // comment) and a '?:' whose both branches are i32 as i32-representable. The
+  // SAME semantic fact — this tail's runtime value is h, a narrowUint32-proven
+  // [0, 2^32) magnitude — was proven once by exprType (as a STORAGE type) and
+  // re-derived separately by isUnsignedTail (as a SIGN); for `+h` and
+  // `c ? h : h` the latter's allowlist never looked past the outer `u+`/`?:`
+  // node, so both narrowed to a SIGNED i32 result — the boundary reboxed via
+  // f64.convert_i32_s and silently flipped h ≥ 2^31 negative (the exact bit
+  // pattern ToUint32 reads as 3000000000, ToInt32 reads as -1294967296).
+  const acc = (v) => `let h = 0; h = (h + ${v}) >>> 0;`
+  is(run(`export let f = () => { ${acc(3000000000)} return +h }`).f(), 3000000000)
+  is(run(`export let f = (c) => { ${acc(3000000000)} return c ? h : h }`).f(true), 3000000000)
+  is(run(`export let f = (c) => { ${acc(3000000000)} return c ? h : h }`).f(false), 3000000000)
+})
+
+test('unsignedness threads through a same-arm `&&` / `||` tail', () => {
+  // Same identity-preserving join as '?:', for the OTHER two AST shapes
+  // exprType conciliates to i32 when both value-arms are i32 (src/type.js,
+  // `op === '?:' || op === '&&' || op === '||'`). `&&`/`||`'s "branches" are
+  // its own two operands (either can flow through as the result, per JS
+  // short-circuit semantics) — not a condition/result pair like '?:'.
+  is(run(`export let f = () => { let h = 0; h = (h + 3000000000) >>> 0; return h && h }`).f(), 3000000000)
+  is(run(`export let f = () => { let h = 0; h = (h + 3000000000) >>> 0; return h || h }`).f(), 3000000000)
+})
+
+test('const-folded `+((… >>> 0))` still reboxes unsigned (no regression from the tail fix)', async () => {
+  // Purely compile-time (`3000000000 >>> 0` folds to a literal before any
+  // return-tail analysis runs), so this never touches narrowI32Results —
+  // pinned to guard the SAME visible symptom (`+` of a uint32) via a
+  // completely different mechanism (src/static.js's constant folder) from a
+  // regression the tail fix above could plausibly cause.
+  is(await evaluate('+((3000000000) >>> 0)'), 3000000000)
+})
+
+test('a mixed-sign `?:` tail must NOT claim unsigned (ECMA-262 §7.1.8 ToUint32 vs §7.1.5 ToInt32)', () => {
+  // One arm is a narrowUint32-proven unsignedLocals name (h); the other is an
+  // ordinary signed `x | 0`. exprType calls both branches i32, but they
+  // disagree on SIGN — which arm's convention applies is a RUNTIME branch, so
+  // no single sig.unsignedResult flag can rebox both correctly. narrow.js's
+  // join must recognize the mismatch and refuse to commit unsignedResult —
+  // proven here by the signed arm staying exactly `x` (committing unsigned
+  // would instead read a negative `x`'s bits as a huge positive magnitude).
+  //
+  // The h arm itself is a KNOWN, SEPARATE gap this fix does not close: even
+  // with sig.unsignedResult correctly left false, emit.js compiles the '?:'
+  // as a single wasm `select` over i32 and widens the SELECTED value ONCE
+  // (f64.convert_i32_s) — it doesn't carry a per-arm sign through the select,
+  // so the h arm still misreads. That's a return-STATEMENT-level widening gap
+  // (src/compile/emit.js / src/ir.js's asF64), a different phase than the
+  // function-RESULT-boundary narrowing this task's confirmed probes and root
+  // cause describe — left for separate follow-up, not asserted here either
+  // way (asserting its current wrong value would pin a bug as a spec).
+  const { f } = run('export let f = (c, x) => { let h = 0; h = (h + 3000000000) >>> 0; return c ? h : (x | 0) }')
+  is(f(false, -5), -5)
+  is(f(false, 5), 5)
+})
