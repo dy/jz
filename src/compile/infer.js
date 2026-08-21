@@ -50,7 +50,7 @@ import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
 import { typedElemCtor, typedStaticLen } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
-import { shapeOfObjectLiteralAst, valTypeOf } from '../kind.js'
+import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
 import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 
@@ -412,10 +412,35 @@ export function recordGlobalRep(name, expr) {
 // extractors answer "what shape does this argument carry into a callee?".
 // Both feed the same `paramReps` lattice via narrow.js' signature fixpoint.
 
-/** Infer arg val type using caller's body-local valTypes and module globals. */
+/** Infer arg val type using caller's body-local valTypes and module globals.
+ *  A bare name resolves straight through `resolveLocal`. A compound expr
+ *  (audit-#4: re-audit finding 4) used to fall to the plain, LOCALS-BLIND
+ *  `valTypeOf`, which re-derives every nested bare name through the GLOBAL-
+ *  only `lookupValType` — invisible to a name whose kind is only known
+ *  body-locally in the CALLER (`let a = BigInt(x)`). `inferValType(['+','a',
+ *  'b'], callerValTypes-with-a,b-BIGINT)` answered NUMBER (VT['+']'s own
+ *  "unknown side → optimistic NUMBER" default, kind.js) instead of BIGINT —
+ *  a call site whose argument is genuinely BigInt got counted as NUMBER by
+ *  both consumers below (narrow.js's `inferValAtSite` paramReps `val`
+ *  census and `specializeValKindDichotomy`'s per-site kind tally), which
+ *  can settle the callee's param `val` to a confidently WRONG NUMBER and
+ *  license an identity-observing static fold (emitStrictEq's differing-
+ *  primitive-class fold) or a NUMBER-only method dispatch on real i64 bigint
+ *  bits — not just a missed optimization.
+ *  kind.js's `valTypeOfWithLocals` is the shared local-aware resolver
+ *  (round-6 prereq (a)'s sibling — narrowValResults/narrowBoolResults in
+ *  narrow.js already delegate to it the same way for the return-kind case);
+ *  routing the compound fallback through it recovers the local BigInt proof.
+ *  `?? valTypeOf(expr)` keeps the fail-open contract identical to before for
+ *  every shape valTypeOfWithLocals itself can't settle (its own SOUND '+'/
+ *  '?:'/'&&'/'||' rules return null on an unproven operand rather than
+ *  guess, and its '?:' handling omits valTypeOf's own literalTruthiness/
+ *  BOOL-coercion/BIGINT-nullish-arm branches) — strictly additive, same
+ *  shape as narrowBoolResults' own delegation (narrow.js). */
 export function inferValType(expr, callerValTypes) {
-  if (typeof expr === 'string') return callerValTypes?.get(expr) || ctx.scope.globalValTypes?.get(expr) || null
-  return valTypeOf(expr)
+  const resolveLocal = name => callerValTypes?.get(name) || ctx.scope.globalValTypes?.get(name) || null
+  if (typeof expr === 'string') return resolveLocal(expr)
+  return valTypeOfWithLocals(expr, resolveLocal) ?? valTypeOf(expr)
 }
 
 /** Resolve a constant schemaId for an expression in a caller-or-return scope.

@@ -14,6 +14,8 @@
  * Call-site facts (infer* family):
  *   • inferValType        — paramReps val agreement folds polymorphic dispatch
  *   • inferValType        — sticky-null on disagree forces __length poly
+ *   • inferValType        — compound arg (`a + b`) resolves local BigInt facts,
+ *                            not just bare names (audit-#4)
  *   • inferArrElemSchema — array-elem schema flows through paramReps
  *   • intConst            — unanimous int literal at every call site folds
  *
@@ -251,6 +253,65 @@ test('default-param narrowing: runtime stays JS-correct across arg shapes', () =
   const h = run(`const g = (a = []) => a.length; export const f = (x) => g(x)`).f
   is(h('hi'), 2, 'string forwarded through a default param reads string length')
   is(h([9, 8]), 2, 'array forwarded reads array length')
+})
+
+// audit-#4 (re-audit finding 4): inferValType (src/compile/infer.js) fell back to
+// the LOCALS-BLIND valTypeOf for any COMPOUND call-site argument, discarding the
+// very callerValTypes map it was handed. `f`'s only call site passes `a + b` —
+// both BIGINT locals proven by `main`'s own body (`let a = BigInt(x), b =
+// BigInt(y)`) — but neither name is a MODULE global, so plain valTypeOf's
+// GLOBAL-only lookupValType saw nothing for either operand and VT['+']'s
+// "unknown side → optimistic NUMBER" default (kind.js) won: the callee's param
+// settled a confidently WRONG val=NUMBER from its one and only call site. Two
+// independent consumer-visible failure classes below, both named in
+// inferValAtSite's own doc comment (narrow.js) as exactly what a wrong `val`
+// fact corrupts: an identity-observing static fold, and a numeric-vs-bigint
+// method dispatch. sourceInline:false keeps `f` a standalone callee — a
+// single-caller inline would splice the arg in directly and never touch the
+// param `val` lattice this bug lives in (see the `lin` param test above).
+test('inferValType (audit-#4): compound BigInt-local call-site arg no longer folds a strict-eq to a wrong constant', () => {
+  // Pre-fix: paramReps val=NUMBER let emitStrictEq's differing-primitive-class
+  // fold constant-fold `n === 8n` to `false` at COMPILE TIME — wrong, since `n`
+  // is genuinely 8n at runtime. Post-fix: val=BIGINT (or unresolved) keeps the
+  // compare a real runtime i64 check.
+  const wat = jz.compile(`
+    let f = (n) => n === 8n
+    export let main = (x, y) => { let a = BigInt(x), b = BigInt(y); return f(a + b) }
+  `, { wat: true, optimize: { sourceInline: false } })
+  const fnBody = wat.match(/\(func \$f\b[\s\S]*?\n  \)/)[0]
+  ok(/\$__eq_strict\b|i64\.eq\b/.test(fnBody), 'expected a real i64 runtime compare, not a compile-time-folded constant')
+  const main = run(`
+    let f = (n) => n === 8n
+    export let main = (x, y) => { let a = BigInt(x), b = BigInt(y); return f(a + b) }
+  `, { optimize: { sourceInline: false } }).main
+  is(main(5, 3), true, '8n === 8n must be true, not a miscompiled false')
+})
+
+test('inferValType (audit-#4): compound BigInt-local call-site arg keeps .toString(16) on the BigInt path', () => {
+  // Pre-fix: val=NUMBER on the callee's param routed .toString(16) through the
+  // NUMBER radix formatter ($__num_radix) applied to the raw i64 bit pattern —
+  // BIGINT has no runtime tag, so those bits read back as a near-zero f64
+  // denormal ("0.000…"), not the real digits. Post-fix: the BigInt radix path
+  // ($__radix_str) is used, matching the true value.
+  const main = run(`
+    let f = (n) => n.toString(16)
+    export let main = (x, y) => { let a = BigInt(x), b = BigInt(y); return f(a + b) }
+  `, { optimize: { sourceInline: false } }).main
+  is(main(5, 3), '8', 'BigInt(5) + BigInt(3) formatted as hex must read "8", not a NUMBER-lane denormal')
+})
+
+test('inferValType (audit-#4) soundness floor: a compound arg with NO local/global evidence keeps the historical optimistic-NUMBER fast path', () => {
+  // The fix must be strictly additive — it must not turn a compound expr that
+  // was already an unresolvable optimistic-NUMBER guess (neither operand has
+  // ANY local or global fact) into something MORE conservative. `p - q` over
+  // two bare exported params carries no evidence either way; f's body must
+  // still get the direct numeric fast path (no dynamic __to_num coercion).
+  const wat = jz.compile(`
+    let f = (n) => n + 1
+    export let main = (p, q) => f(p - q)
+  `, { wat: true, optimize: { sourceInline: false } })
+  const fnBody = wat.match(/\(func \$f\b[\s\S]*?\n  \)/)[0]
+  ok(!/\$__to_num\b/.test(fnBody), 'unresolved compound arg should still keep the optimistic-NUMBER fast path')
 })
 
 test('intConst: unanimous int-literal arg folds local.get to i32 const', () => {
