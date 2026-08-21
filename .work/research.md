@@ -23582,3 +23582,137 @@ Reliability learnings baked into the wave process: foreground/bounded-wait
 gates, pwd-verify (two cwd slips self-recovered), build-before-suite,
 transcript-mtime stall detection, main-leak monitoring — three parks
 caught and resumed in ~1 min each.
+
+## §defect 2 — reproduction BLOCKED by machine-wide resource contention, not
+by the defect (2026-08-21, agent/defect2-owner off 0315327f)
+
+**Honest state up front**: reproduction on tip was NOT established this
+session. Two independent jz×jz goal-gate attempts, same recipe as the banked
+session, both died to an EXTERNAL kill (SIGKILL — no JS-level exception, no
+"COMPILED OK"/"TRAPPED" line, just silence after "instantiating kernel…") at
+58 and 63 minutes respectively, under sustained multi-agent load on the
+shared 36 GB machine (`ps` confirmed 2-4 concurrent `node scripts/build-
+dist.mjs` / `node test/index.js` processes from other agents' worktrees
+throughout both attempts — never fewer than one, often three; own RSS
+oscillated 100 MB-2 GB under memory-compression pressure well before either
+kill). This is a procedural blocker (this machine could not sustain one
+~3-4 GB single-process compile alongside its ambient concurrent-agent load
+for the ~15-17 min the banked full-progression runs took, let alone this
+session's 2× slower contended pace), not a finding about defect 2 itself —
+report it as exactly that, not as "gone" or "still there."
+
+**Method (for the next attempt — re-run when the machine is quiet)**. The
+prior session's instrumented `compile/index.js` and its worktree
+(`/private/tmp/jz-tip-f9cc412d`) no longer exist — only the compiled kernel
+and driver `.mjs` scripts survived at `scratchpad/frontier2/`. Re-derived the
+watchpoint independently rather than reusing lost state, STRICTER than the
+banked single-shot check: it scans the FULL `ctx.closure.bodies` array at the
+top of EVERY `compilePendingClosures` round (not just the round's own
+about-to-process batch), so it fires at the earliest round the corruption is
+observable — bracketing the exact `region_exit` transition responsible,
+without needing per-allocation tagging. Recipe (throwaway — apply only in a
+scratch worktree, never commit; both files revert cleanly with `git checkout
+-- scripts/self.js src/compile/index.js`):
+
+1. `scripts/self.js`: flip `export const REGION_HOOKS_ACTIVE = false` to `true`.
+2. `src/compile/index.js`, `compilePendingClosures`, immediately inside the
+   `while (compiledBodyCount < …)` loop, before `const __mark =
+   regionHooks?.mark()`:
+   ```js
+   let __wpRound = 0
+   while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
+     __wpRound++
+     if (regionHooks) {
+       const __wpLen = ctx.closure.bodies.length
+       for (let __wi = 0; __wi < __wpLen; __wi++) {
+         const __wb = ctx.closure.bodies[__wi]
+         const __wpOk = __wb != null && typeof __wb.params !== 'undefined' && typeof __wb.name !== 'undefined' &&
+           typeof __wb.arity !== 'undefined' && typeof __wb.captures !== 'undefined' && typeof __wb.body !== 'undefined'
+         if (!__wpOk) {
+           const __wk = __wb == null ? [] : Object.keys(__wb)
+           let __wks = ''
+           for (let __wj = 0; __wj < __wk.length; __wj++) __wks += '[' + __wk[__wj] + ':len=' + __wk[__wj].length + ']'
+           const __wIsArr = Array.isArray(__wb)
+           throw new Error(`WATCHPOINT round=${__wpRound} site=1 idx=${__wi} bodiesLen=${__wpLen} keyCount=${__wk.length} hasParamsKey=${__wb != null && typeof __wb.params !== 'undefined'} keys=${__wks} isArray=${__wIsArr} arrLen=${__wIsArr ? __wb.length : -1} arr0=${__wIsArr ? __wb[0] : ''} arr1type=${__wIsArr ? typeof __wb[1] : ''} arr1isArr=${__wIsArr ? Array.isArray(__wb[1]) : ''} type=${__wb != null ? __wb.type : ''} valKind=${__wb != null ? __wb.valKind : ''}`)
+         }
+       }
+     }
+     const __mark = regionHooks?.mark()
+     …
+   ```
+   (`Array.isArray` on a corrupt slot resolves to a bare `PTR.ARRAY` tag check
+   — module/array.js:355 — so `isArray`/`arr0`/`type`/`valKind` in the thrown
+   message are a clean, decode-unambiguous read of what actually sits there,
+   no need for a second instrumented build just to learn the tag.)
+3. Build: `npm run build` (region-live auto-derives via
+   `resolveSelfCompileBuild`'s `REGION_HOOKS_ACTIVE` marker match, forces
+   `inlinePtrOffsetFast:false`). This session's build: 15,310,317 B, ~4.5 min
+   uncontended / up to 5.5 min lightly contended.
+4. Goal-gate: instantiate `dist/jz.wasm`, resolve `scripts/self.js`'s own
+   module graph (`resolveModuleGraph(SELF, {resolveNode:true})`), feed it to
+   `self.exports.default(codePtr, 0, optJSON, modulesPtr, 0)` with `optJSON =
+   {level:3, inlinePtrOffsetFast:false}` — mirrors banked
+   `frontier2/goalgate-tip-watchpoint.mjs` exactly, repointed at the new
+   worktree. **Run this ALONE — confirm zero other `node scripts/build-
+   dist.mjs`/`node test/index.js` processes machine-wide first (`ps aux |
+   grep "[b]uild-dist.mjs\|[t]est/index.js"` — bracket-trick the grep pattern,
+   a plain `pgrep -f` self-matches any wait-loop that embeds the same string
+   in its own command line, the mistake this session made three times
+   running fruitless never-terminating waits before catching it).** Budget
+   ≥25 min uncontended (this session's own contended-but-not-killed stretches
+   ran 45-58 min before the kill arrived) and ≥4 GB free physical RAM for
+   this process alone.
+
+**Mechanism analysis banked (static reading, not yet empirically verified
+against a live repro — treat as a narrowed hypothesis space for the next
+session, not a conclusion)**:
+- `ctx.closure.bodies` is a `PTR.ARRAY`; each element (`bodyFn`) is a
+  `PTR.HASH` (confirmed by a prior session, "cb is a HASH"). Its relocation
+  runs through `regionArmArray` (layout-kinds.js:249) — durable branch
+  (`off<mark`) walks in place, memoing itself before recursing per-slot;
+  ephemeral branch allocates a fresh block, memos `bits->out` BEFORE the
+  per-index `f64.store(newSlot, __region_copy_rec(oldSlot))` copy loop.
+- RULED OUT this session: every `__region_memo_set` call site (module/
+  core.js, layout-kinds.js) drops the return value — confirmed SAFE by
+  reading `__map_set`/`genUpsert`'s grow tail directly (module/
+  collection.js:515-579): a grow forward-marks the OLD header (new-ptr +
+  `-1` cap sentinel) and returns the SAME `$coll` bits unchanged, so callers
+  needn't rebind — this is the codebase's own established forwarding-
+  identity idiom (also used by `arrGrow`, module/array.js:605-645), not a
+  bug. The `__region_memo_set` overflow-guard fallback (module/core.js:
+  1082-83 — a memo-table grow that would overrun its scratch lane falls
+  through to `__map_set` on the REAL heap, bypassing the lane redirect for
+  that one call) reads as a documented, deliberate, bump-allocator-safe rare
+  path on inspection, NOT independently confirmed unsound — the single most
+  plausible remaining "scratch-lane collision" candidate named in this
+  campaign's own framing, but unproven either way without a live trap to
+  instrument further (e.g. counting how often this branch fires per round,
+  and whether firing correlates with which round the watchpoint catches).
+- 11 total `.valKind =` stamp sites exist in the whole compiler (grep
+  `\.valKind = ` over src/ + module/), ALL `VAL.NUMBER`: ir.js:1964
+  (`['f64.const', cn]`, const-folded global read), ir.js:1968 (`['global.get',
+  …]`), ir.js:1994-95 (`['local.get', …]` — by far the hottest IR node shape
+  in the entire compiler; if the watchpoint's `arr0`/`type` match THIS site,
+  the corrupt value's specific identity is uninformative and the true
+  "owner" is the ROUND/mechanism, not a source line — the round number
+  itself, from the earliest-detecting scan, IS the owner-attribution signal
+  in that case), emit.js:999/1019/6202/6207/6307/6370/7527, module/
+  typedarray.js:1746/1843. Cross-reference the trap's `arr0`/`type` fields
+  against this list first before reaching for a second (typed()-tagging)
+  instrumented build.
+- `__region_relocate_props` (module/core.js:1463-1543+, what a bare HASH's
+  relocation — `regionArmHash`, layout-kinds.js:742 — delegates to
+  verbatim) carries THREE previously-fixed, in-place-documented hazards from
+  earlier campaign sessions (memo-before-walk ordering on the durable
+  branch; an idempotency self-map for double-relocation via a re-derived
+  `$out`; the "durable dict reached twice, second visit corrupts" bug) —
+  heavily audited already; read in full this session, no NEW gap spotted by
+  inspection alone.
+
+**Assets**: none new checked into git (dormant config byte-identical,
+`REGION_HOOKS_ACTIVE` reverted to `false`, worktree diff clean against
+`0315327f` — verified via `git diff --stat`). Session scratch (driver
+scripts, both dead-end run logs, the watchpoint diff) at
+`scratchpad/defect2-work/` and worktree at `scratchpad/defect2` (branch
+`agent/defect2-owner`, left in place, not merged) for whoever picks this up
+next — re-apply the recipe above rather than re-deriving it.
