@@ -37,6 +37,20 @@ const hasFreeJump = (n, depth = 0) => {
   return n.some((c, i) => i > 0 && hasFreeJump(c, inner))
 }
 
+// A `return` anywhere in this statement (mirrors hasFreeJump's `=>` boundary —
+// a nested arrow's own return belongs to IT, not this generator/async body).
+// Needed alongside hasYield: a compound statement with no yield but a plain
+// `return` is NOT inert — splicing it atomically (below) would let the return
+// execute as a bare host return out of the __next closure instead of the
+// {value,done} record next()'s caller (__async_run, or a manual .next()) reads,
+// corrupting every settlement (numbers included, worst on heap/NaN-boxed values
+// read back as a wrong-shaped result).
+const hasReturn = (n) => {
+  if (!Array.isArray(n)) return false
+  if (n[0] === '=>') return false
+  return n[0] === 'return' || n.some(hasReturn)
+}
+
 const S = { NEXT: '__s', SENT: '__sent' }
 
 // ES2025 iterator helpers on iterator VALUES — injected (pay-per-use) when a
@@ -298,10 +312,12 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       if (op === 'break' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.brk)); return null }
       if (op === 'continue' && st[1] == null && loopCtx) { stmtsOf(cur).push(...gotoIR(loopCtx.cont)); return null }
 
-      // --- compound statements stay atomic only when they carry no yield AND no
+      // --- compound statements stay atomic only when they carry no yield, no
+      // plain return (see hasReturn — a nested return must reach the `return`
+      // case above, not fall-through as a bare host return), AND no
       // break/continue that binds a DECOMPOSED loop (the raw op would bind the
       // dispatch while(1) instead — an infinite next()) ---
-      if (!hasYield(st) && !(loopCtx && hasFreeJump(st))) {
+      if (!hasYield(st) && !hasReturn(st) && !(loopCtx && hasFreeJump(st))) {
         // let/const initializers become assignments (names are hoisted)
         if (op === 'let' || op === 'const') {
           for (let i = 1; i < st.length; i++) {

@@ -858,35 +858,57 @@ test('errors: a RETURNED (not thrown) Error decodes as a real host Error at the 
   ok(!(base instanceof TypeError), 'but is not instanceof a sibling subclass')
 })
 
-// KNOWN-FAIL, PRE-EXISTING, GENERAL, not Error-specific (found live testing
-// finding-4's async coverage): an async function that RESOLVES (not throws)
-// with ANY heap-carrying value — an Error, or an entirely ordinary plain
-// object — never correctly reaches host-side decode, in (at least) two
-// distinct pre-existing failure modes depending on AST shape:
-//   - concise arrow body (`async () => new TypeError(x)`, implicit return):
-//     resolves silently to `undefined` — the heap value is lost entirely,
-//     no trap, no error.
-//   - block body (`async () => { return new TypeError(x) }`, explicit
-//     return) OR an equally plain non-Error object (`async () => { return
-//     {x:1} }`) in EITHER shape: traps inside the wasm promise-value
-//     machinery itself (`__p_value`/`adopt`, "memory access out of bounds" /
-//     "table index is out of bounds" depending on shape) — BEFORE host-side
-//     decode is ever reached.
-// Confirmed general (not Error-specific) with a plain-object, non-Error
-// repro. The async/generator promise runtime (jzify's plain-jz state
-// machine) was apparently never exercised with a HEAP return value, only
-// numbers/strings/booleans. Interop.js's `readSettled`/`readRet` fix
-// (finding-4) is sound but CURRENTLY UNREACHABLE for the resolve side by
-// this pre-existing bug — the REJECT side (an async function that THROWS an
-// Error) is unaffected and pinned green above, since a throw traps through
-// the wasm exceptions tag, never touching `__p_value` at all. Out of scope
-// for the Error host-decode bundle — the bug is in async's own runtime, not
-// in interop.js's decode.
-test('KNOWN-FAIL (pre-existing, general, not Error-specific): an async function resolving with a heap value (object, Error, …) loses or traps on it', async () => {
+// audit-#20 (root-caused alongside finding-4 above): an async function that
+// RESOLVES (not throws) with ANY value — heap or primitive — lost or trapped
+// on it, in two AST-shape-dependent failure modes, both in the shared
+// generator/async machinery (not Error-specific — confirmed with a
+// plain-object, non-Error repro alongside the Error one):
+//   - concise arrow body (`async () => expr`, implicit return): lowerAsync
+//     (jzify/async.js) spliced the arrow's raw body straight into a
+//     synthetic `function*` node without wrapping it in a `return` — a REAL
+//     function* body is never concise (only arrows have that JS shape), so
+//     the generator lowering (jzify/generators.js) compiled the bare
+//     expression as a discarded expression-statement: `next()` always fell
+//     through to the machine's own `{value:undefined,done:true}` tail,
+//     whatever the arrow evaluated to. Fixed in jzify/transform.js's
+//     `'async'` handler: a concise body (anything but a leading '{}' block —
+//     even `({x:1})` parses as `['()', obj]`, never bare '{}') is now
+//     wrapped into `['return', body]` before lowering, the same shape a
+//     single-statement function body already carries unwrapped.
+//   - block body (`async () => { return expr }`) with NO await anywhere in
+//     it: jzify/generators.js's state-machine builder (`flattenStmt`)
+//     treated any compound statement containing no `yield` as inert and
+//     spliced it verbatim (the atomic fast path, gated on `hasYield` alone)
+//     — but a yield-free block can still hold a `return`, and splicing it
+//     let that `return` execute as a bare host return out of the `__next`
+//     closure instead of the `{value,done}` record its caller reads,
+//     corrupting the settlement (a number equally, but a heap/NaN-boxed
+//     pointer misread as the wrong shape is what trapped
+//     unreachable/OOB). Fixed by adding a boundary-respecting `hasReturn`
+//     alongside `hasYield` in the same gate, so a yield-free-but-return-
+//     bearing block now decomposes through the existing '{}' unwrap instead
+//     of short-circuiting.
+// Was blocking finding-4's readSettled/readRet decode from ever being
+// reached on the resolve side — the reject side (an async function that
+// THROWS) was always fine: a throw traps through the wasm exceptions tag,
+// never touching __p_value/the generator machine's return protocol at all.
+test('errors: an async function resolving with a heap value (object, Error, …) decodes correctly, both AST shapes (audit-#20)', async () => {
   if (onWasi() || onKernel()) return
-  const r = jz(`export let f = async () => new TypeError('resolved-not-thrown')`, { jzify: true }).exports.f()
-  const v = await r
-  is(v, undefined, 'JS: resolves to a real TypeError. jz (concise-arrow shape): silently resolves undefined — the value is lost, not decoded wrong')
+  const j = (code) => jz(code, { jzify: true }).exports.f()
+
+  const concise = await j(`export let f = async () => new TypeError('resolved-not-thrown')`)
+  ok(concise instanceof TypeError, 'concise-arrow shape: resolves to a real host TypeError, same decode as finding-4\'s sync return')
+  is(concise.message, 'resolved-not-thrown')
+
+  const block = await j(`export let f = async () => { return new TypeError('resolved-not-thrown') }`)
+  ok(block instanceof TypeError, 'block-body shape: resolves the same way (previously trapped unreachable)')
+  is(block.message, 'resolved-not-thrown')
+
+  const conciseObj = await j(`export let f = async () => ({x: 1})`)
+  is(conciseObj.x, 1, 'concise-arrow shape, plain (non-Error) object: resolves with the real value (previously silently undefined)')
+
+  const blockObj = await j(`export let f = async () => { return {x: 1} }`)
+  is(blockObj.x, 1, 'block-body shape, plain object: resolves with the real value (previously trapped unreachable)')
 })
 // coercion per ES 20.5.1.1 — "If message is not undefined, let msg be
 // ? ToString(message)" (argument absent OR its value is undefined → no
