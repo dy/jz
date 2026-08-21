@@ -23557,3 +23557,28 @@ truncation — likely a probed target like porffor/jawsm failing over to
 [skip], shows as Porffor 0.00x) — re-run with full logging when the matrix
 refresh actually happens. bench/results.json still names 4e346183; the
 229-commit staleness stands until CI bench lands.
+
+## §Soundness sweep SEALED — re-audit wrong-classes closed (2026-08-21)
+
+Union tip 54880f3d: suite 3567/0/3 (skips 6→3), kernel-oracle 13/13
+(539), build clean. Of the re-audit's ten wrong-answer items (5 pinned +
+5 skipped), EIGHT are closed on main this sweep: body-write BigInt typeof
+(provenance + census), phantom computed-key, async heap settlement (+ the
+function-boundary class as a net new capability), Object.assign
+literal-target, inferValType compound-arg, captured BOOL∪NUMBER (oracle
+row AGREE both legs), uint32 magnitude (3 root causes, incl. a bonus
+unary-minus signed-overflow fix), optional-chain marshalled-arg (false
+nullish-premise carve-out deleted; a feature-gating test had pinned the
+bug as intended), length-named dyn fields (autoload gap). One was already
+dead upstream (FFT-zero schema collision — bisected to binding census +
+BindingId totality; skip flipped, both directions pinned). REMAINING
+open: typed-.set-through-dyn-field (fix designed+verified, banked
+out-of-tree at scratchpad/dynfield-A-trail — tips a pre-existing
+self-compile assemble edge 4/5, trail in test/array-methods.js:1200), the
+split-out gain-field-through-array-literal-arg defect (own todo,
+test/objects.js:1524), nullish-taken BigInt + cond-spread presence
+(Phase-C family), spread-unknown-callee (sound reject, narrower surface).
+Reliability learnings baked into the wave process: foreground/bounded-wait
+gates, pwd-verify (two cwd slips self-recovered), build-before-suite,
+transcript-mtime stall detection, main-leak monitoring — three parks
+caught and resumed in ~1 min each.
