@@ -1454,6 +1454,12 @@ test.todo('optional chain reads a marshalled object arg like a plain member read
 // `.length` traps "Offset is outside the bounds of the DataView"); `byteLength` /
 // `byteOffset` read 0; `length` dies at compile with "'__schema_tbl' is not a known
 // global". Any other name — `_buf`, `buf`, `ptr` — behaves. Silent wrong results.
+// STATUS 2026-08-21 (probed on f9839f93): 4/5 symptoms already fixed upstream —
+// buffer/byteLength/byteOffset scalars AND the Float64Array-payload persistence
+// all correct; only `length` still fails, now with a DIFFERENT, loud error
+// (internal: stdlib '__dyn_get_expr_t_h' requested but never registered) — a
+// dyn-get stdlib-registration gap, not the old schema-table miss. Keep skipped
+// until `length` lands; then un-skip whole.
 // Live instance: audio-effect — flanger/chorus/vibrato/delay/multitap/haas keep
 // ring-buffer state in `params.buffer` and emit NaN or dry-only output; mixer reads
 // `{buffer, gain}` inputs and traps. Renaming the field to `_buf` makes all six
