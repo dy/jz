@@ -49,7 +49,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
-import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
+import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationResultTagRequired, representationReturnAction } from './representation-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -1770,7 +1770,14 @@ function synthesizeBoundaryWrappers() {
     // which misreads a small BigInt's raw i64 bits as a subnormal float.
     const resultBigintSentinel = !resultPtr ? (func._resultBigintSentinel || 0) : 0
     const resultBool = func.valResult === VAL.BOOL && !resultPtr && !resultBigintSentinel
-    const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultBigintSentinel
+    // Plan-tagged UNION result (phase-c C2): valResult can settle VAL.BIGINT
+    // for a result the plan carries as a tagged union (BigInt member BOXED,
+    // number raw, pointers self-tagged) — the raw-bigint passthrough lane
+    // would hand the host the union's BITS as one BigInt (a box pointer's
+    // own bits for the boxed member). Route it to resultDynamic's generic
+    // tag decode instead; interop's PTR.BIGINT arm derefs the box.
+    const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
+    const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultBigintSentinel && !resultTaggedUnion
     // Dynamic f64 result: not pointer/bool/bigint(-sentinel) and not a proven number →
     // may be a NaN-box at runtime, so i64. (An i32-carrier result is numeric → stays f64 via
     // convert below.)
