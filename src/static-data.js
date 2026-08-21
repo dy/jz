@@ -61,7 +61,28 @@ export const dataString = () => {
  *  string, confirmed by an independently-tracked byte count staying
  *  bit-identical native/kernel throughout; native/self-compile forensics,
  *  kernel-only data-segment truncation). Defaults to `s.length` so any future
- *  caller that omits `len` keeps the old (re-derive from `s`) behavior. */
+ *  caller that omits `len` keeps the old (re-derive from `s`) behavior.
+ *
+ *  Re-audit follow-up (root-cause investigation, closes blocker 2): is the
+ *  general primitive this sidesteps — module/string.js's compiled `.slice()`
+ *  on a large, binary-content string — reachable/broken OUTSIDE this one
+ *  self-hosted-bootstrap callsite? Swept as an ORDINARY compiled program (not
+ *  the compiler's own internals): an 11-20KB 0..255-byte-cycle string (incl.
+ *  NUL + every high byte), sliced across LAYOUT.SLICE_LEN_MASK's 8191-byte
+ *  boundary, on both the no-copy view (SLICE_BIT, __str_slice_view) and
+ *  copying (__str_slice) paths, including the ORIGINAL bug's own exact call
+ *  shape (an inline non-let-bound `.slice()` result passed straight into a
+ *  function that persists it past its own return — structurally
+ *  `dataReset(dataString().slice(...))` again, at user-program scale) — on
+ *  BOTH the native and kernel legs. Zero failures (test/kernel-oracle.js's
+ *  'large-binary-slice-view'/'large-binary-slice-copy' AGREE rows are the
+ *  landed regression pin; scratchpad sweep before that: 62 cases x
+ *  {native,kernel} x sizes 256B-20KB, 0 failures). The general primitive is
+ *  sound — this defaulted-`len` parameter stays as defense-in-depth for the
+ *  two known call sites (a caller that already knows its own byte count
+ *  should never re-derive it from a fresh allocation's `.length`, workaround
+ *  or not), not because module/string.js's `.slice()` is known-broken
+ *  elsewhere. */
 export const dataReset = (s, len = s.length) => {
   const r = ctx.runtime
   r.dataParts = len ? [s] : []
