@@ -2560,7 +2560,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   }
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
-  function emitPropAccess(va, obj, prop, fromOptional = false) {
+  function emitPropAccess(va, obj, prop) {
     // Anonymous-literal fast path: when `obj` resolves at compile time to an
     // object literal `{...}` (either directly, or through a `.prop` chain
     // walked back to one), use the literal's slot index instead of falling
@@ -2676,10 +2676,18 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         // In WASI mode, values are always JSON-derived (never PTR.EXTERNAL host objects).
         // Skip the external branch and dispatch through the typed HASH/OBJECT path.
         const isWasi = !ctx.transform.targetProfile.envImports
-        // `fromOptional` (a `?.prop` read) short-circuits on nullish, so its
-        // PTR.EXTERNAL arm is dead unless host externals are already in play —
-        // don't force the __ext_prop import just for an optional read.
-        if (!isWasi && !fromOptional) setLinkDemand('external')
+        // A vt==null receiver is, by definition, unproven — this arm serves both
+        // `.` and `?.` (the latter via ctx.core.emit['?.'] delegating here), and
+        // for EITHER, `obj` itself may BE the host-marshalled PTR.EXTERNAL value
+        // reaching in through this very read: `(o) => o?.factor` needs no other
+        // access to put "externals in play" first. A prior version exempted `?.`
+        // on the premise that its nullish short-circuit makes the PTR.EXTERNAL
+        // arm unreachable unless something else already demanded it — false: the
+        // short-circuit rules out null/undefined only, and a marshalled object is
+        // neither. That silently dropped the __ext_prop fallback whenever `?.`
+        // was a receiver's only property read (every `opts?.factor ?? 1` read
+        // the default, never the host value). No `.`/`?.` distinction here now.
+        if (!isWasi) setLinkDemand('external')
         const slow = () => isWasi ? emitDynGetExprTyped(va, key, vt, prop) : emitDynGetAnyTyped(va, key, vt, prop)
         // Monomorphic schema-slot devirtualization (see emitSchemaSlotGuarded):
         // `prop` uniquely identifies one registered schema program-wide, so
@@ -2989,7 +2997,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     const gKey = `.${prop}`
     const g = ctx.core.emit[gKey]
     if (g && ctx.core.getters.has(gKey)) return g(t)
-    return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop, true)
+    return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop)
   })
 
   // Optional index: arr?.[i] → null if arr is null, else arr[i]

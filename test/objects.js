@@ -1436,8 +1436,18 @@ test('shape collision: same field name in two Map-cached schemas reads the right
 // `o?.factor` reads nothing while plain `o.factor` on the same arg works, so the
 // idiomatic `opts?.x ?? dflt` silently collapses to the default. Live instance:
 // every @audio/stretch-* entry (`opts?.factor ?? 1` → WASM always stretched by 1×,
-// compiled and ran without any error). Flip `test.todo` → `test` when fixed.
-test.todo('optional chain reads a marshalled object arg like a plain member read', () => {
+// compiled and ran without any error). Root cause: emitPropAccess's vt==null arm
+// (module/core.js) called setLinkDemand('external') for plain `.` reads but
+// skipped it for `?.` (a `fromOptional` carve-out present since `?.` was first
+// hand-rolled, kept through 7ec01fbc's delegate-to-emitPropAccess refactor), on
+// the premise that the nullish short-circuit makes the PTR.EXTERNAL arm dead
+// unless externals were "already in play" — false: the short-circuit rules out
+// null/undefined only, and a marshalled object is neither, so a bare `?.` read
+// like `(o) => o?.factor` never set the demand and __dyn_get_any_t_h's whole
+// PTR.EXTERNAL branch (the __ext_prop host callback) compiled out, collapsing to
+// always-undefined. Fixed by dropping the fromOptional carve-out: `?.` now sets
+// the same link demand the plain `.` arm always did.
+test('optional chain reads a marshalled object arg like a plain member read', () => {
   if (onWasi()) return  // wasi: js-object arg
   const opt = run(`export let f = (o) => o?.factor ?? 1`)
   const plain = run(`export let f = (o) => o.factor ?? 1`)
