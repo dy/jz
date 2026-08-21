@@ -601,6 +601,33 @@ export default (ctx) => {
     // RequireObjectCoercible(target) — null/undefined is a TypeError.
     const nullish = requireCoercible(target)
     if (nullish) return nullish
+    // A fresh, anonymous object-LITERAL target (`Object.assign({}, {a:1})`,
+    // `Object.assign({b:2}, {a:1}, {c:3})`) is not a pre-existing allocation —
+    // nothing else can hold a reference to it, so unlike every other target
+    // shape below (a bound name or any other pre-existing value, whose
+    // physical slot layout was already fixed at ITS OWN construction site and
+    // can only be OVERWRITTEN — see `tSchema.indexOf(...) < 0 ⇒ continue` a
+    // few lines down, and src/prepare/index.js's inferAssignSchema, which
+    // grows a BOUND name's registered schema but explicitly bails
+    // `typeof target !== 'string'`), Object.assign here is free to choose the
+    // result's layout, because IT is the one constructing it. ECMA-262
+    // Object.assign copies each source's own enumerable keys onto target
+    // left-to-right via an ordinary [[Set]] (later source wins on a
+    // collision); CopyDataProperties (object spread) merges the identical run
+    // of props/sources the identical way — jz has no getters/setters/Proxies
+    // to tell the two apart. So for a literal target ONLY,
+    // `Object.assign({...targetProps}, s1, s2)` reduces structurally to
+    // `{...targetProps, ...s1, ...s2}` — the exact merge emitObjectSpread
+    // already builds (own props first, each source as a spread group, later
+    // wins, first-occurrence slot order) — reusing its schema-growth instead
+    // of re-deriving a second copy of it. Previously this shape fell through
+    // to `resolveSchema(target)` below, which reads a literal's OWN props as
+    // its COMPLETE fixed schema (correct for a real pre-existing object,
+    // wrong here) — so any source key absent from the target literal silently
+    // had no slot to land in (`Object.assign({}, {a:1})` produced a 0-slot
+    // object; JS gives `{a:1}`).
+    if (Array.isArray(target) && target[0] === '{}')
+      return emitObjectSpread([...literalProps(target), ...sources.map(s => ['...', s])])
     // Conditional-spread slots (schemaCondNames): every branch below copies
     // RAW slot bits, value-blind — correct only when every slot a source
     // schema lists is unconditionally present. Treat a cond-absent
@@ -962,15 +989,21 @@ const errorLiteralSchema = (obj) =>
   Array.isArray(obj) && obj[0] === '()' && typeof obj[1] === 'string' && ERR_CLASS_NAMES.includes(obj[1])
     ? ERR_SCHEMA_PROPS : null
 
+// A `{}` literal AST NODE's own props, flattened. Comma-grouped children
+// arrive as `['{}', [',', p1, p2, …]]` (prep's grouping of 2+ props) —
+// same unwrap needed everywhere a tagged '{}' node (not yet destructured
+// into an emit call's `...rawProps`) is inspected directly: resolveSchema,
+// conditionalSpreadGroup, and Object.assign's literal-target reduction
+// below all resolve the identical node shape and must agree on its props.
+const literalProps = (node) =>
+  node.length === 2 && Array.isArray(node[1]) && node[1][0] === ',' ? node[1].slice(1) : node.slice(1)
+
 function resolveSchema(obj) {
   if (typeof obj === 'string') return ctx.schema.resolve(obj)
   const errSchema = errorLiteralSchema(obj)
   if (errSchema) return errSchema
   if (Array.isArray(obj) && obj[0] === '{}') {
-    // Comma-grouped children arrive as ['{}', [',', p1, p2, …]] — same unwrap
-    // as the '{}' emitter's, or a grouped literal resolves to zero keys.
-    const props = obj.length === 2 && Array.isArray(obj[1]) && obj[1][0] === ','
-      ? obj[1].slice(1) : obj.slice(1)
+    const props = literalProps(obj)
     // A spread-bearing literal's schema is the MERGE emitObjectSpread builds
     // (or null when any source is unknown → HASH result, runtime enumeration).
     // Filtering to ':'-entries here made Object.keys({ ...S, z: 9 }) fold to
@@ -1029,8 +1062,7 @@ function conditionalSpreadGroup(node) {
   let inner = node[2]
   while (Array.isArray(inner) && inner[0] === '&&' && inner.length === 3) inner = inner[2]
   if (!Array.isArray(inner) || inner[0] !== '{}') return null
-  const props = inner.length === 2 && Array.isArray(inner[1]) && inner[1][0] === ','
-    ? inner[1].slice(1) : inner.slice(1)
+  const props = literalProps(inner)
   if (!props.length || !props.every(p => Array.isArray(p) && p[0] === ':')) return null
   return { keys: props.map(p => p[1]), props }
 }

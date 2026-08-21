@@ -1195,19 +1195,50 @@ test('errors: Object.assign/spread over an Error copies message/name — no cras
   is(jz(`export let f = () => { let t = {message: '', name: ''}; return Object.keys(Object.assign(t, new TypeError("x"))).length }`, { optimize: 2 }).exports.f(), 2, 'O2 does not crash (assign)')
 })
 
-// KNOWN-FAIL, PRE-EXISTING, GENERAL, Error-unrelated (found live while pinning
-// the enumerability decision above): Object.assign never GROWS its target's
-// static schema with new keys from a source — it only overwrites slots the
-// target's OWN declared schema already has. `Object.assign({}, {a:1})` (no
-// Error involved at all) already exhibits this: real JS gives `['a']`, jz
-// gives `[]`. Confirmed independent of Error/finding-3's enumerability call
-// (a target with pre-existing matching slots DOES receive the copy, tested
-// above) — this is Object.assign's own target-schema-growth story, out of
-// scope for the Error bundle. Pinned so it isn't mistaken for an
-// enumerability regression later.
-test('KNOWN-FAIL (pre-existing, Error-unrelated): Object.assign onto an empty-schema target does not grow the target — {} target yields no new keys, Error or not', () => {
-  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 0, 'JS: 1 (["a"]). jz: 0 — Object.assign never grows a target schema, non-Error case')
-  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).length`).exports.f(), 0, 'JS: 0 (Error props non-enumerable anyway). jz: 0 too, but for the unrelated schema-growth reason above, not enumerability')
+// FIXED (was KNOWN-FAIL, pre-existing, general, Error-unrelated — found live
+// while pinning the enumerability decision above): Object.assign onto an
+// ANONYMOUS object-LITERAL target (`Object.assign({}, {a:1})`, no bound name)
+// never grew the target's schema with a source's new keys — it only
+// overwrote slots the target literal's OWN props already declared, so a
+// genuinely new source key had no slot to land in and was silently dropped
+// (`Object.assign({}, {a:1})` gave `[]`, real JS gives `['a']`). Root cause:
+// module/object.js's `resolveSchema` read a `{}` literal's own props as its
+// COMPLETE, fixed schema — correct for a pre-existing allocation (a bound
+// name, or any other already-constructed value, whose physical slot layout
+// can only be OVERWRITTEN, never resized — matching src/prepare/index.js's
+// `inferAssignSchema`, which already grows a BOUND name's schema at prepare
+// time and was never affected by this bug) but wrong for a fresh literal
+// target, which Object.assign is free to size however it likes since IT is
+// the one allocating it right here. Fixed by recognizing a literal target as
+// structurally equivalent to a spread merge — `Object.assign({...t}, s1, s2)`
+// reduces to `{...t, ...s1, ...s2}` (identical left-to-right, later-source-
+// wins copy; jz has no getters/Proxies to tell Object.assign's [[Set]] and
+// spread's CreateDataProperty apart) — and reusing emitObjectSpread's
+// existing schema-growth instead of the fixed-slot copy loop below
+// (module/object.js, `ctx.core.emit['Object.assign']`'s literal-target
+// branch, right after the RequireObjectCoercible check). A BOUND target
+// (`let t = {}; Object.assign(t, {a:1})`) already grew correctly before this
+// fix, and still does, unchanged — see objects.js's "extends target with new
+// fields" regression test.
+test('Object.assign onto an object-literal target grows the result with every source key (ECMA-262: OrdinarySetWithOwnDescriptor copies left-to-right, later source wins a collision, a target key absent from every source survives)', () => {
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`).exports.f(), 1, 'a brand-new key from the source lands — the original pin (real JS: 1, [\'a\'])')
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).sort().join(',')`).exports.f(), 'a', 'key name matches')
+  is(jz(`export let f = () => Object.keys(Object.assign({b: 2}, {a: 1})).sort().join(',')`).exports.f(), 'a,b', 'a NON-empty literal target also grows — the bug was never empty-schema-specific')
+  is(jz(`export let f = () => { let r = Object.assign({}, {a: 1}); return r.a }`).exports.f(), 1, 'Object.assign RETURNS the grown target — r.a reads the merged-in value')
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1}, {b: 2})).sort().join(',')`).exports.f(), 'a,b', 'multiple sources all contribute their keys')
+  is(jz(`export let f = () => Object.assign({}, {a: 1}, {a: 2}).a`).exports.f(), 2, 'later source wins on a collision (OrdinarySetWithOwnDescriptor: last write standing)')
+  is(jz(`export let f = () => Object.assign({a: 1}, {a: 2}).a`).exports.f(), 2, 'a source overwrites a matching key the target literal already declared')
+  is(jz(`export let f = () => Object.assign({a: 1, b: 2}, {a: 9}).b`).exports.f(), 2, 'a target key absent from every source survives untouched')
+  // Consistent with the enumerability decision above (audit-#10 finding-3:
+  // Error is an ordinary object on every enumeration surface) rather than
+  // "coincidentally 0 for the unrelated growth-bug reason" the old pin
+  // recorded — matches `{...new TypeError('x')}`'s own message,name above
+  // exactly. Both diverge from real JS's true `[]` (Error props really are
+  // non-enumerable) by the SAME documented, decided choice — not a fluke.
+  is(jz(`export let f = () => Object.keys(Object.assign({}, new TypeError("x"))).sort().join(',')`).exports.f(), 'message,name', 'Error source into a literal target now copies message/name too, same divergence as spread')
+  // optimize:2/3 must not crash either (mirrors the O2/O3 smoke checks above).
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`, { optimize: 2 }).exports.f(), 1, 'O2 does not crash and grows correctly')
+  is(jz(`export let f = () => Object.keys(Object.assign({}, {a: 1})).length`, { optimize: 3 }).exports.f(), 1, 'O3 does not crash and grows correctly')
 })
 
 test('instanceof: compile-time fold — proven-kind LHS emits no runtime tag/aux/schema dispatch', () => {
