@@ -23737,3 +23737,28 @@ levers per the retained-set census stand — __hash_set_local unamortized
 dyn-props growth (100% of fatal-call >=16KB allocs, initial-cap/policy
 fix), then the region recopy-cost work, then REGION_HOOKS_ACTIVE
 flip-by-default consideration once the ceiling clears.
+
+## §Footprint lever-1 hypothesis RETIRED as stale (2026-08-21, agent/hash-amortize)
+
+CORRECTION to this ledger's own 45793ef3 entry ("next levers per the
+retained-set census stand — __hash_set_local unamortized dyn-props
+growth"): that was a carried-forward pre-fix hypothesis, not a fresh
+measurement. The agent's history-forward read shows b3b00361 ("fix
+plan-clone dict-growth blowup") ELIMINATED the hash_set_local pathology
+(64,112 events/3.1GB → 1 event/24KB) before the current base, and the
+subsequent $__str_concat_raw_fresh O(n²) fix moved the wall again — the
+2026-08-19 §Footprint-levers re-rank already demoted growth-policy to
+last-and-conditional. A measured size-classed growth floor (8→32 hop,
+sound logic) REGRESSED jessie region-live +0.6MB (+589,824B = exactly
+1,536 tables × 384B of unused floor — jessie's tables stop at 6-11 props;
+the census population that wanted 32 was the pre-fix clone storm). Landed:
+nothing, by measurement. NEXT for the footprint campaign: a FRESH per-site
+creator attribution on the CURRENT tip's goal-gate trap (the 2026-08-18
+exhaustive site-ID histogram method — both prior "obvious" suspects were
+wrong until that rigor) — quiet-machine item alongside the warm bisect;
+direction (b) grow-in-place only if re-confirmed, and only after proving
+the open-addressing in-place split invariant against this probe/tombstone
+scheme. Side flag (unexplained, not asserted): the agent's minimal
+measurement harness diverged on bench/watr between baseline (fast
+unrelated trap) and floored build (12min flat-RSS spin) — worth eyes if
+watr-scale footprint work resumes.
