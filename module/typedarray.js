@@ -2545,7 +2545,62 @@ export default (ctx) => {
   // load/store.
   ctx.core.emit['.typed:filter'] = (arr, fn) => {
     const r = resolveElem(arr)
-    if (!r || r.isBigInt) return null
+    if (!r || r.isBigInt) {
+      // Elem type unresolved, OR resolved-but-BigInt: unlike .typed:slice (a raw
+      // memory.copy, no element interpretation needed), filter must run the user
+      // callback per element — so it can't just extend __typed_slice_rt. Instead:
+      // the SAME __typed_get_idx/__typed_set_idx runtime helpers typedLoop's own
+      // dynamic branch (below) and .typed:set's `!r` branch already lean on
+      // unconditionally, one call per element, correct for any concrete kind
+      // including BigInt (view-indirection + width dispatch happen INSIDE those
+      // helpers, off the aux byte, at runtime). The output allocation mirrors
+      // __typed_slice_rt's own runtime-aux-dispatch shape: read the source's aux/
+      // shift at runtime, allocate worst-case (srcLen), patch the true count after.
+      // Audit finding (agent/typed-decline-b): this used to `return null` for both
+      // conditions — see .typed:slice's comment above for why a bare decline here
+      // is unsafe once a caller embeds the raw IR unguarded (dispatchByPtrType,
+      // the .set fork) instead of treating falsy as "try the next strategy".
+      inc('__len', '__typed_get_idx', '__typed_set_idx', '__ptr_aux', '__typed_shift', '__alloc_hdr_n', '__mkptr')
+      const cbLoc = temp('tfrc'), arrLoc = temp('tfra'), dstLoc = temp('tfrd')
+      const srcLen = tempI32('tfrl'), srci = tempI32('tfri'), count = tempI32('tfrn')
+      const aux = tempI32('tfrx'), shift = tempI32('tfrsh'), dstOff = tempI32('tfro')
+      const id = freshId(ctx)
+      const srcPtr64 = ['i64.reinterpret_f64', ['local.get', `$${arrLoc}`]]
+      const dstPtr64 = ['i64.reinterpret_f64', ['local.get', `$${dstLoc}`]]
+      const loadAt = () => typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${srci}`]], 'f64')
+      const passes = truthyIR(ctx.closure.call(
+        typed(['local.get', `$${cbLoc}`], 'f64'),
+        [loadAt(), typed(['f64.convert_i32_s', ['local.get', `$${srci}`]], 'f64')]))
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${cbLoc}`, asF64(emit(fn))],
+        ['local.set', `$${arrLoc}`, asF64(emit(arr))],
+        ['local.set', `$${srcLen}`, ['call', '$__len', srcPtr64]],
+        // Non-view aux (mask off bit 3, keeps the BigInt flag bit): mirrors
+        // __typed_slice_rt's own `aux & 119` so the fresh OWNED result is never
+        // mistagged as a view onto the source, but still tagged the same element kind.
+        ['local.set', `$${aux}`, ['i32.and', ['call', '$__ptr_aux', srcPtr64], ['i32.const', 119]]],
+        ['local.set', `$${shift}`, ['call', '$__typed_shift', ['i32.and', ['local.get', `$${aux}`], ['i32.const', 7]]]],
+        ['local.set', `$${dstOff}`, ['call', '$__alloc_hdr_n',
+          ['i32.shl', ['local.get', `$${srcLen}`], ['local.get', `$${shift}`]],
+          ['i32.shl', ['local.get', `$${srcLen}`], ['local.get', `$${shift}`]],
+          ['i32.const', 1]]],
+        ['local.set', `$${dstLoc}`, ['call', '$__mkptr', ['i32.const', PTR.TYPED], ['local.get', `$${aux}`], ['local.get', `$${dstOff}`]]],
+        ['local.set', `$${count}`, ['i32.const', 0]],
+        ['local.set', `$${srci}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${srci}`], ['local.get', `$${srcLen}`]]],
+          ['if', passes,
+            ['then',
+              ['drop', ['call', '$__typed_set_idx', dstPtr64, ['local.get', `$${count}`], loadAt()]],
+              ['local.set', `$${count}`, ['i32.add', ['local.get', `$${count}`], ['i32.const', 1]]]]],
+          ['local.set', `$${srci}`, ['i32.add', ['local.get', `$${srci}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        // Patch byte-count header exactly like the static path below — __alloc_hdr_n
+        // wrote the worst-case srcLen; the true passed count is only known now.
+        ['i32.store', ['i32.sub', ['local.get', `$${dstOff}`], ['i32.const', 8]],
+          ['i32.shl', ['local.get', `$${count}`], ['local.get', `$${shift}`]]],
+        ['local.get', `$${dstLoc}`]], 'f64')
+    }
     const { et, isView } = r
     const cbLoc = temp('tfc'), arrLoc = temp('tfa')
     const count = tempI32('tfn'), maxLen = tempI32('tfm')
@@ -2595,8 +2650,16 @@ export default (ctx) => {
   // Bulk copy via `memory.copy`.
   ctx.core.emit['.typed:slice'] = (arr, start, end) => {
     const r = resolveElem(arr)
-    if (!r) {
-      // Elem type / view-ness not statically known (owned→view reassigned binding).
+    // Elem type / view-ness not statically known (owned→view reassigned binding),
+    // OR resolved-but-BigInt: `.slice` is a raw byte copy + retag (memory.copy in
+    // __typed_slice_rt below) — it never interprets element VALUES, so BigInt needs
+    // no separate static path, only the same runtime aux-byte dispatch the `!r` case
+    // already uses. Audit finding (agent/typed-decline-b): this used to `return null`
+    // for isBigInt specifically — sound under every PRE-EXISTING caller (a falsy
+    // strategy return propagates to a clean `asF64` compiler error, not a crash), but
+    // UNSAFE once a caller embeds the raw IR (dispatchByPtrType, no null-guard) — the
+    // exact defect trail commits b3c1426a/8d54ac53 root-caused for the .set fork.
+    if (!r || r.isBigInt) {
       // Dispatch off the runtime aux byte instead of crashing on empty IR.
       inc('__typed_slice_rt')
       // ToIntegerOrInfinity position args — asI32Sat, not asI32: __clamp_idx (inside
@@ -2607,7 +2670,6 @@ export default (ctx) => {
         end == null ? ['i32.const', 0] : asI32Sat(emit(end)),
         ['i32.const', end == null ? 0 : 1]], 'f64')
     }
-    if (r.isBigInt) return null
     const { et, isView } = r
     const arrLoc = temp('tsa'), srcPtr = tempI32('tssp'), srcLen = tempI32('tssl')
     const lo = tempI32('tslo'), hi = tempI32('tshi'), n = tempI32('tsn')
