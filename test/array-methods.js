@@ -1197,10 +1197,45 @@ test('every: typed-array field of heap-returned object', () => {
 // instance: time-stretch pvoc/pvoc-lock/transient (`state.prev = new
 // Float64Array(n)` on the stftBatch state object, then `state.prev.set(phase)`
 // each frame — WASM output silently diverged from JS).
-// The emit-side fix for this shape (see the todo-batch session) miscompiles the
-// SELF-COMPILE kernel (tokenizer loses `let` — bisected to that emit.js hunk alone;
-// preserved in the session scratchpad as keep-emit.js). Needs the in-kernel
-// discipline pass before re-landing. Flip `test.todo` → `test` when fixed.
+// An earlier emit-side attempt at this fix miscompiled the SELF-COMPILE kernel
+// (tokenizer lost `let`). THIS session's re-attempt (probed on fd593164):
+// root-caused the earlier miscompile's likely mechanism first — a SECOND,
+// competing runtime fork racing the existing string fork. TYPED and STRING
+// share five method names (at/includes/indexOf/lastIndexOf/slice); a fork
+// bolted on separately from the string one has to re-decide, on its own, which
+// of the two checks a shared method name first, and can silently misroute a
+// real string through the wrong arm (the self-hosted tokenizer is
+// string-method-heavy: `source.slice(i, j)` etc.). Avoided by construction:
+// added the `.typed:${method}` case to tryRuntimeStringFork's OWN dispatch
+// (src/compile/emit.js) via the existing dispatchByPtrType helper — STRING
+// still checked first, TYPED second, generic last, one decision instead of
+// two competing ones. Correctness is solid: `npm run build` + kernel-oracle
+// (539/539 AGREE-tier assertions, native vs kernel vs JS-oracle) + kernel-parity
+// (byte-identical WAT at O2/O3) all passed clean on a dist/jz.wasm built with
+// this diff, plus this test's own runtime result and forEach/fill/slice/Map.set
+// differential probes — no logic or semantic defect found anywhere.
+// NOT LANDED — self-compile BUILD reliability regresses. `node scripts/build-
+// dist.mjs` / `scripts/self-compile-build.mjs` (both: native jz compiling its
+// own ~159-module source graph at -O3) call watr's assemble() and, WITH this
+// diff applied, die there 4 of 5 runs with "Unknown instruction null" (a
+// memidx/data-segment site, watr/src/compile.js) — including two failures on
+// scripts/build-dist.mjs itself, the exact script the ONE success came from
+// (byte-for-byte the same source: the build is flaky, not just script-
+// dependent). WITHOUT this diff (src/autoload.js's fix alone, or an untouched
+// fd593164 control worktree): 2/2 clean. So the trigger needs this diff
+// present, but doesn't fire every time — consistent with tipping a MARGINAL,
+// pre-existing edge in the self-compile pipeline rather than this diff being
+// unconditionally wrong (this repo's own .work/research.md documents active,
+// independent self-compile-build nondeterminism — §defect 2, 2026-08-20, the
+// day before this tip). The fix as designed is preserved, NOT committed to
+// src/compile/emit.js: full file + diff at .work-adjacent session scratchpad
+// keep-emit.js / keep-emit.diff (mirrors the prior attempt's own keep-emit.js
+// precedent). Next session: reproduce with JZ_SELF_COMPILE_OPT=2 (rule out
+// -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
+// the source position feeding `null` into watr's memidx/data builder — the
+// in-kernel discipline pass this shape has needed since the first attempt.
+// Flip `test.todo` → `test` once a build run holds clean across a real repeat
+// count (10+), not 1.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
