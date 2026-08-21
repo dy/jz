@@ -266,7 +266,19 @@ export function createTransform(opts) {
       if (inner[0] === 'function') return transform(_gen.lowerAsync(inner[2], inner[3]))
       if (inner[0] === '=>') {
         const params = Array.isArray(inner[1]) && inner[1][0] === '()' ? inner[1][1] : inner[1]
-        return transform(_gen.lowerAsync(params, inner[2]))
+        // A CONCISE arrow body (`async () => expr`, no braces) is an implicit
+        // return of `expr` — but the machine factory below is a real `function*`,
+        // whose body is always statement-shaped (real generators have no concise
+        // form). A block body (`{ … }`, always parsed with a leading '{}' node —
+        // even a parenthesized object literal `({x:1})` parses as `['()', obj]`,
+        // never bare '{}') passes through untouched; anything else gets wrapped
+        // into an explicit `return`, the same shape a single-statement function
+        // body already carries (prepare/parse strip its '{}' too — see async.js's
+        // header). Without this, the bare expression spliced straight into the
+        // state machine runs as a discarded expression-statement: the settled
+        // value is silently lost (concise-body heap/number resolves undefined).
+        const body = Array.isArray(inner[2]) && inner[2][0] === '{}' ? inner[2] : ['return', inner[2]]
+        return transform(_gen.lowerAsync(params, body))
       }
       // `async function () {}()` — the parser binds the CALL inside the async
       // wrapper; lower the callee, keep the call.
