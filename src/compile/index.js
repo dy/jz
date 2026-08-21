@@ -461,6 +461,17 @@ function analyzeFuncForEmit(func, programFacts) {
 
   const block = isBlockBody(body)
   ctx.func.boxed = new Map()
+  // Fresh per function — analyze-scans.js's boxedCaptures (called below, once
+  // `block` is confirmed) populates capturedNames; emitDecl consults it for
+  // the identity-safe closure-capture shadow (kind.js hasAmbiguousBoolMerge).
+  // identityShadow is emitDecl's OWN output (name → shadow local), read back
+  // by module/function.js's ctx.closure.make at the env-slot store. Both
+  // must reset here — ctx.func is a persistent, per-session object mutated
+  // in place across functions (createActiveFunction, src/ctx.js), never
+  // freshly allocated per function — so a stale Map/Set from a sibling
+  // function would otherwise leak forward.
+  ctx.func.capturedNames = new Set()
+  ctx.func.identityShadow = new Map()
   ctx.func.localReps = null
   ctx.func.leanHashLocals = new Set()
   ctx.func.i32HashLocals = new Set()
@@ -879,6 +890,17 @@ function analyzeFuncForEmit(func, programFacts) {
     block,
     locals: new Map(ctx.func.locals),
     boxed: new Map(ctx.func.boxed),
+    // Captured-anywhere names (analyze-scans.js's boxedCaptures pre-scan) —
+    // emitDecl (emit.js) consults this at EMISSION time to gate the
+    // identity-safe closure-capture shadow (kind.js hasAmbiguousBoolMerge),
+    // but boxedCaptures only ever runs HERE, during analysis. Must cross the
+    // same analyze→emit handoff `boxed` above does (function-plan.js's
+    // clonePlanData/installFunctionPlan) or it reads back empty every time —
+    // ctx.func is a fresh ActiveFunction record per enterFunc call
+    // (active-function.js createActiveFunction), not a persistent object, so
+    // nothing survives the analysis→emission boundary that isn't explicitly
+    // published through the plan.
+    capturedNames: new Set(ctx.func.capturedNames || []),
     cellTypes,
     flatObjects: new Map(ctx.func.flatObjects),
     sliceViews: new Set(ctx.func.sliceViews),
@@ -1447,6 +1469,14 @@ function emitFunc(func, functionPlan, programFacts) {
   // collections never leave function-plan.js.
   const installedPlan = installFunctionPlan(ctx, functionPlan)
   const block = installedPlan.block
+  // emitDecl's closure-capture identity shadow (emit.js, ctx.func.
+  // identityShadow — name → shadow-local name) is purely an EMISSION-tier
+  // fact: minted and consumed entirely within this one emitFunc call (unlike
+  // capturedNames above, it has no analysis-time source and needs no plan
+  // publication) — but createActiveFunction's baseline record doesn't carry
+  // it either, so it must start fresh here, not inherit whatever a sibling
+  // function's emission left on a reused field.
+  ctx.func.identityShadow = new Map()
   // Derive WAT-node metadata before call-site seeding mutates the active rep
   // map. This preserves the published analysis snapshot's exact semantics.
   const plannedCseLoadBases = installedPlan.cseLoadBases.size
@@ -1963,6 +1993,10 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
     ? makeMapOverlay(globalTL, new Map(cb.typedLens))
     : globalTL ? makeMapOverlay(globalTL) : null
   ctx.func.boxed = cb.boxed ? new Map([...cb.boxed].map(v => [v, v])) : new Map()
+  // Fresh per closure body too — see analyzeFuncForEmit's identical reset
+  // (above) for why these can't be left to carry over from the parent frame.
+  ctx.func.capturedNames = new Set()
+  ctx.func.identityShadow = new Map()
   ctx.func.cellTypes = new Set(cb.cellI32 || [])
   const parentBoxedCaptures = new Set(cb.boxed || [])
 

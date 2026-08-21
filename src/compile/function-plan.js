@@ -46,6 +46,11 @@ function clonePlanData(facts) {
     block: !!facts.block,
     locals: clonePlanValue(facts.locals || new Map()),
     boxed: clonePlanValue(facts.boxed || new Map()),
+    // Captured-anywhere names (src/compile/index.js's analyzeFuncForEmit
+    // facts, src/compile/analyze-scans.js boxedCaptures) — emitDecl's
+    // closure-capture identity shadow needs this restored at emission
+    // exactly like `boxed` above.
+    capturedNames: clonePlanValue(facts.capturedNames || new Set()),
     cellTypes: clonePlanValue(facts.cellTypes || new Set()),
     flatObjects: clonePlanValue(facts.flatObjects || new Map()),
     sliceViews: clonePlanValue(facts.sliceViews || new Set()),
@@ -148,6 +153,7 @@ export function installFunctionPlan(ctx, plan) {
   const working = clonePlanData(data)
   ctx.func.locals = working.locals
   ctx.func.boxed = working.boxed
+  ctx.func.capturedNames = working.capturedNames
   ctx.func.cellTypes = working.cellTypes
   ctx.func.flatObjects = working.flatObjects
   ctx.func.sliceViews = working.sliceViews

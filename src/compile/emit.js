@@ -2233,7 +2233,55 @@ export function emitDecl(...inits) {
     if (!viewInit && typeof name === 'string' && Array.isArray(init) && init[0] === '?:' &&
         ((valTypeOf(init[2]) === VAL.BIGINT && nullishArm(init[3])) || (valTypeOf(init[3]) === VAL.BIGINT && nullishArm(init[2]))))
       ctx.func.ternaryBoxedNames?.add(name)
-    let val = viewInit || withArrayLiteralEscape(neverEscapes, () => emit(init))
+    // Closure-capture identity shadow (kind.js hasAmbiguousBoolMerge; extends
+    // 756ae10f's formatter box-at-consumer pattern to the closure-capture
+    // consumer — test/kernel-oracle.js's PENDING-FIX 'captured-then-read'
+    // row). A captured `let v = cond && 1`-shaped local's OWN value collapses
+    // to a raw NUMBER the instant it's stored (valTypeOf(init) already reads
+    // NUMBER post-merge, per hasAmbiguousBoolMerge's own doc) — by the time
+    // module/function.js's env-slot-store loop reads `v` (a bare name, no
+    // expression shape left to inspect), the boolean identity is
+    // unrecoverable from the bits alone (0 is bit-identical whether it came
+    // from coerced-false or a genuine number arm — emitIdentitySafe's doc
+    // explains why only re-deriving via the ORIGINAL control flow is sound).
+    // So the box has to happen HERE, at the one point `init` is safely
+    // evaluated once — gated on capturedNames (analyze-scans.js's
+    // boxedCaptures pre-scan: captured-anywhere, broader than the mutation-
+    // gated ctx.func.boxed) so the branch below is DEAD for every decl that
+    // isn't both captured AND ambiguous — provably byte-identical to today's
+    // plain `emit(init)` for everything else, including (verified live, not
+    // assumed — see the self-build gate) every decl in scripts/self.js's own
+    // source, keeping this clear of the decl-init WALL a few lines up
+    // (storedValue/argIR swapped in HERE, unconditionally, reshaped the
+    // self-compiled kernel's own codegen enough to miscompile — research.md
+    // §Carrier invariant). identityShadowName, once set, publishes to
+    // ctx.func.identityShadow for module/function.js's ctx.closure.make to
+    // read back at the env-slot store — see that file's own comment there.
+    const identityCapture = typeof name === 'string' && ctx.func.capturedNames?.has(name) && hasAmbiguousBoolMerge(init)
+    let identityShadowName = null
+    let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
+      if (!identityCapture) return emit(init)
+      identityShadowName = `${T}idbox_${name}`
+      ctx.func.locals.set(identityShadowName, 'f64')
+      // Single evaluation: emitIdentitySafe(init) runs exactly once, teed
+      // into the shadow local. Every further use below is a cheap,
+      // repeatable local.get — no re-emission of `init`, so a side effect in
+      // `init` (a call, say) fires once, matching plain emit(init)'s own
+      // contract.
+      const setShadow = ['local.set', `$${identityShadowName}`, asF64(emitIdentitySafe(init))]
+      const shadowRef = typed(['local.get', `$${identityShadowName}`], 'f64')
+      // Derive the plain-number form this decl's OWN local (and every other
+      // consumer of `val` below) needs, from that SAME single evaluation:
+      // isBoolAtom/unboxBoolIR recognize the boxed TRUE/FALSE atom and
+      // extract its bit; anything else is already the correct number
+      // (emitIdentitySafe's own invariant — see its doc comment).
+      const unboxed = typed(['select',
+        ['f64.convert_i32_s', unboxBoolIR(shadowRef)],
+        shadowRef,
+        isBoolAtom(shadowRef)], 'f64')
+      return typed(['block', ['result', 'f64'], setShadow, unboxed], 'f64')
+    })
+    if (identityShadowName) ctx.func.identityShadow.set(name, identityShadowName)
     val = applyBigintRepresentationAction(val, init, representationBindingWriteAction(ctx, name, init))
     if (isObjLit) ctx.schema.targetStack.pop()
     // Record the declared name's valTypeOf(init) into the flow overlay right after
