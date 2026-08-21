@@ -1234,8 +1234,84 @@ test('every: typed-array field of heap-returned object', () => {
 // -O3-only), then bisect self.js's 159-module graph (disable half, retry) to
 // the source position feeding `null` into watr's memidx/data builder — the
 // in-kernel discipline pass this shape has needed since the first attempt.
+// LOCALIZED (2026-08-21, agent/typed-set-edge, worktree off ca9ca31d). Crash-rate
+// reproduced first: 5/5 `npm run build` runs failed on this worktree (was 4/5),
+// identical stack every time (watr/src/compile.js instr()@1127, called from the
+// code/func-body section handler @851, assemble/compile @267/356, index.js's
+// watrCompile(optimized) call) — confirms the defect, not a fluke of the prior
+// session's count. NOT a memidx/data-segment site as first guessed — that was
+// this diff's own hedge, unresolved at the time. Root-caused via a temp
+// pre-watrCompile IR census (index.js, gated on JZ_DEBUG_DUMP_TREE, deleted with
+// this fix): 2 real `npm run build` runs both surfaced the identical shape, a
+// bare `['then', null]` (2-element array) nested under an `(if …(i32.and
+// tagbits mask)(i32.eq …)(i32.const 3)… )` — PTR.TYPED=3 (layout.js) — i.e.
+// `dispatchByPtrType`'s (src/ir.js) own `['then', ir]` construction with `ir`
+// unresolved to `null`. One run caught 112 such nodes across many distinct
+// compiler-internal functions ($closure24/25/29/121/211/929/2040/2252/2997/
+// 3010/4118/4121, $__start, $m60_ast$handlerArgs, …) — self.js's own module
+// graph, not this diff's emit.js/module/*.js source meaning.
+// MECHANISM: `tryRuntimeStringFork`'s new `cases.push([PTR.TYPED, callMethod(t,
+// typedEmitter)])` (this diff, src/compile/emit.js) embeds
+// `callMethod(t, typedEmitter)`'s return value VERBATIM into `dispatchByPtrType`'s
+// `then` arm — and `callMethod` → `emitMethodCallSpread`'s common path
+// (src/compile/emit.js: `if (!parsed.hasSpread) return methodEmitter(objArg,
+// ...parsed.normal)`) is a bare passthrough with no falsy guard. Several
+// `.typed:*` emitters use `return null` as a DECLINE signal for a shape their
+// fast path doesn't cover: confirmed `.typed:slice`
+// (module/typedarray.js:2610, `if (r.isBigInt) return null`) and
+// `.typed:filter` (module/typedarray.js:2548, `if (!r || r.isBigInt) return
+// null`; broader — also declines on a wholly-unresolved element kind, `!r`);
+// siblings unaudited. That convention is SOUND for every PRE-EXISTING caller —
+// `tryStaticDispatch`'s direct `.${vt}:${method}` call and the top-level
+// TYPED_STRATEGIES list both treat a falsy strategy return as "try the next
+// strategy" — this diff's dispatchByPtrType embedding is the FIRST caller that
+// splices a `.typed:${method}` result straight into IR with no such guard, so
+// a decline becomes a bare `null` sitting where an instruction belongs. The
+// decline convention itself predates this session (real, latent, in module/
+// typedarray.js already) — this diff supplies the first caller that doesn't
+// respect it, which is exactly the "pre-existing edge, newly tipped" shape the
+// earlier hedge guessed at, now with a name: not self-compile-build
+// nondeterminism (research.md §defect 2 is a different, wasm-hosted jz×jz
+// region-allocator mechanism, ruled out — this is host-native, no region
+// arena involved), but a real per-compile trigger condition (self.js contains
+// several vt-unknown receivers, several of them BigInt-element or
+// unresolved-element typed arrays, calling a method this diff newly routes
+// through the TYPED case) that fires on MOST but not EVERY compile — plausibly
+// order/inlining-sensitive in which of several equally-guilty call sites gets
+// hit or optimized-away first, not yet isolated further.
+// JZ_SELF_COMPILE_OPT=2 (O2) discrimination: not yet run separately — every
+// localization run above used `npm run build`'s O3 default.
+// DIRECTION (a) TRIED THIS SESSION AND REVERTED — UNSAFE, do not repeat as-is.
+// Guarded `tryRuntimeStringFork`: a nullish `callMethod(t, typedEmitter)` (or
+// `strEmitter`) is omitted from `cases`, not pushed — falls through to the next
+// case or to `generic` instead of embedding `null`. Build-crash gate PASSED
+// clean: `npm run build` × 5/5 (was 5/5 FAIL without the guard). But
+// kernel-oracle/kernel-parity, run immediately after per this repo's own gate
+// order, FAILED near-totally on the resulting dist/jz.wasm — kernel-oracle 1/13
+// pass (was 13/13 clean at ca9ca31d), kernel-parity 0/3 — every single kernel
+// invocation, including the trivial byte-identical-WAT-at-O0 probe (no typed
+// arrays involved at all), threw an empty-message `SyntaxError` from the
+// KERNEL'S OWN compiled parser (confirmed directly: `self.exports.default(...)`
+// on a plain `sum` source throws `SyntaxError("")`, not a WASM trap). This
+// disproves the working assumption behind (a) — that a declined TYPED case is
+// effectively dead code at runtime, so falling through to `generic` is
+// consequence-free. It is NOT dead code: watr's assembler rejects malformed IR
+// at BUILD time regardless of reachability (explaining the clean 5/5 build),
+// but at least one of the ~112 census-found sites sits on the kernel's live
+// tokenizer/parser hot path and IS reached with real data — `generic`'s
+// wrong-layout read there corrupts the compiled parser itself. (b) — audit
+// every `.typed:*` "return null" site and give the declining shape (BigInt-
+// element / unresolved-element receivers hitting `.typed:slice`/`.typed:filter`
+// through a fully-erased vt) a CORRECT runtime-safe path, e.g. extending
+// `.typed:slice`'s existing `!r` → `__typed_slice_rt` runtime-dispatch fallback
+// (module/typedarray.js:2598-2608) to also cover the `isBigInt` decline instead
+// of bailing to `null` — is the remaining, untaken, properly-scoped direction;
+// out of this session's timebox (root-causing the corruption itself took the
+// remainder of it). `set:` PROP_MODULES row (coordinator audit finding, src/
+// autoload.js) also reverted uncommitted — meaningless without a landed (a)/(b).
 // Flip `test.todo` → `test` once a build run holds clean across a real repeat
-// count (10+), not 1.
+// count (10+) AND kernel-oracle/kernel-parity both hold at 13/13 and 33/33 —
+// not just the build exit code.
 test.todo('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
