@@ -519,12 +519,20 @@ function resetParamWasmFacts(paramReps) {
  * the narrowable filter.
  */
 function narrowI32Results(funcs) {
-  // A return tail is unsigned-valued when it is a top-level `>>>` or a call to
-  // a function already proven unsignedResult. Other i32 tails are signed.
-  const isUnsignedTail = (e) => Array.isArray(e) && (
-    e[0] === '>>>' ||
-    (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true)
-  )
+  // A return tail is unsigned-valued when it is a top-level `>>>`, a call to a
+  // function already proven unsignedResult, or a bare read of THIS body's own
+  // narrowUint32-proven accumulator (`unsignedLocals` — see analyze-scans.js:
+  // a local whose every reassignment is `name = (…) >>> k` always holds a
+  // canonical uint32 bit pattern, `return acc` included). Other i32 tails are
+  // signed. Missing this last case narrowed e.g. `let h = 0; h = (…) >>> 0;
+  // return h` to a signed i32 result: sig.unsignedResult stayed false, so the
+  // export/call-site boundary reboxed with f64.convert_i32_s and silently
+  // flipped any h ≥ 2^31 negative (djb2/FNV-style hash accumulators returned
+  // bare at the end of the function, not re-masked through a final `>>> 0`).
+  const isUnsignedTail = (e, unsignedLocals) => Array.isArray(e)
+    ? e[0] === '>>>' ||
+      (e[0] === '()' && typeof e[1] === 'string' && ctx.funcs.map?.get(e[1])?.sig?.unsignedResult === true)
+    : typeof e === 'string' && (unsignedLocals?.has(e) ?? false)
   const callsSelf = (n, name) => Array.isArray(n) && ((n[0] === '()' && n[1] === name) || n.some(c => callsSelf(c, name)))
   // Classify a func's return tails as all-v128 / all-i32 (+ sign) under the CURRENT sig.results.
   const evalTails = (func, body, exprs) => withCurrentFunction(func.sig, () => {
@@ -576,7 +584,12 @@ function narrowI32Results(funcs) {
     // ctx.func.localReps is live, so the bitwise-ops BigInt guard's bare-name arm
     // needs the ctx-independent structural trace (exprPresentValIn) instead.
     const allI32 = !allV128 && !anyAmbiguous && exprs.every(e => exprType(e, locals, valTypes, true, body) === 'i32')
-    return { allV128, allI32, anyUnsigned: exprs.some(isUnsignedTail), allUnsigned: exprs.every(isUnsignedTail) }
+    const unsignedLocals = bodyFacts?.unsignedLocals
+    return {
+      allV128, allI32,
+      anyUnsigned: exprs.some(e => isUnsignedTail(e, unsignedLocals)),
+      allUnsigned: exprs.every(e => isUnsignedTail(e, unsignedLocals)),
+    }
     }
     return te ? withTypedElems(te, classify) : classify()
   })

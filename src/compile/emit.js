@@ -312,8 +312,14 @@ const emitNeg = (a) => {
   if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
     return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'])
   const v = emit(a)
-  if (isLit(v)) return emitNum(-litVal(v))
-  if (isI32Num(v)) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
+  // `.unsigned` carries its uint32 value as a signed i32 bit pattern (litVal/i32.sub
+  // both read that raw pattern), so negating either fast path directly negates the
+  // WRONG number for any magnitude ≥ 2^31 (e.g. `-h` on a `(…) >>> 0` accumulator
+  // holding 3000000000 gave 1294967296, not -3000000000). A literal still folds —
+  // just via its true unsigned value; a runtime i32 widens through the f64 path
+  // below, whose `toNumF64` → `asF64` already convert_i32_u's an `.unsigned` operand.
+  if (isLit(v)) return emitNum(-(v.unsigned ? litVal(v) >>> 0 : litVal(v)))
+  if (isI32Num(v) && !v.unsigned) return typed(['i32.sub', typed(['i32.const', 0], 'i32'), v], 'i32')
   // f64.neg flips the sign bit, so negating a NaN yields 0xFFF8.. — a non-canonical
   // number-NaN that overlaps the NaN-boxed value space (jz reserves 0x7FF8.. as THE
   // number-NaN). `__is_truthy`/`__eq` compare against that exact pattern, so a sign-

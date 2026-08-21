@@ -765,18 +765,21 @@ export function scanNumericFill(body, isNumericRhs) {
 
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
- * initializer is a non-negative integer literal in [0, 2^32), every
- * reassignment is `name = (…) >>> k` (so it always holds a canonical uint32),
- * and every read sits inside a `>>>` (ToUint32) sink reached only through
- * bit-faithful operators (`^ & | ~ << >> + - *`). Under those constraints the
- * raw i32 bit pattern reproduces JS semantics exactly — every observable use is
- * funnelled through ToUint32 — so the f64 round-trip on the hot path is pure
- * overhead. Names that escape (closures, bare `return`, signed-sensitive
- * operands) keep their wider type. Returns the qualifying set; callers retype
- * `locals` to 'i32' and tag `readVar` reads `.unsigned` for convert_i32_u.
+ * initializer is a non-negative integer literal in [0, 2^32) and every
+ * reassignment is `name = (…) >>> k` — that WRITE invariant alone proves the
+ * local always holds a canonical uint32 bit pattern (ToUint32 is idempotent:
+ * re-masking an already-masked value is a no-op), independent of how the
+ * local is later read. Names that escape the invariant itself (closures — a
+ * captured binding must keep the outer f64 capture convention; `++`/`--`; a
+ * reassignment whose RHS isn't `>>>`-shaped) are disqualified; everything
+ * else — bare `return`, arithmetic, relational/equality compares, division —
+ * reads the proven bit pattern as-is. Returns the qualifying set; callers
+ * retype `locals` to 'i32' and tag `readVar` reads `.unsigned`, so every
+ * consumer that already dispatches on that flag (asF64 → convert_i32_u,
+ * cmpOp/+/-/*|% → f64-widen by true sign, foldConst → skip) sees its true
+ * [0, 2^32) value instead of silently reboxing the bit pattern signed.
  */
 export function narrowUint32(body, locals) {
-  const TRANSPARENT = new Set(['^', '&', '|', '~', '<<', '>>', '+', '-', '*'])
   const initLit = new Set()   // names with a valid u32-literal initializer
   const disq = new Set()      // names disqualified by an unsafe occurrence
   const seen = new Set()
@@ -789,15 +792,15 @@ export function narrowUint32(body, locals) {
     if (typeof n === 'string') disq.add(n)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
   }
-  const walk = (node, underShr, inClosure) => {
+  const walk = (node, inClosure) => {
     if (typeof node === 'string') { if (inClosure) disq.add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (typeof op !== 'string') {
-      for (let i = 1; i < node.length; i++) walk(node[i], false, inClosure)
+      for (let i = 1; i < node.length; i++) walk(node[i], inClosure)
       return
     }
-    if (op === '=>') { for (let i = 1; i < node.length; i++) walk(node[i], false, true); return }
+    if (op === '=>') { for (let i = 1; i < node.length; i++) walk(node[i], true); return }
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
@@ -806,9 +809,9 @@ export function narrowUint32(body, locals) {
           if (seen.has(nm) || inClosure || !isU32Lit(d[2])) disq.add(nm)
           else initLit.add(nm)
           seen.add(nm)
-          walk(d[2], false, inClosure)
+          walk(d[2], inClosure)
         } else if (typeof d === 'string') { disq.add(d); seen.add(d) }
-        else if (Array.isArray(d) && d[0] === '=') { banNames(d[1]); walk(d[2], false, inClosure) }
+        else if (Array.isArray(d) && d[0] === '=') { banNames(d[1]); walk(d[2], inClosure) }
       }
       return
     }
@@ -818,17 +821,12 @@ export function narrowUint32(body, locals) {
       if (typeof lhs === 'string') {
         if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) disq.add(lhs)
       } else banNames(lhs)
-      walk(node[2], false, inClosure)
+      walk(node[2], inClosure)
       return
     }
-    const childShr = op === '>>>' ? true : TRANSPARENT.has(op) ? underShr : false
-    for (let i = 1; i < node.length; i++) {
-      const c = node[i]
-      if (typeof c === 'string') { if (inClosure || !childShr) disq.add(c) }
-      else walk(c, childShr, inClosure)
-    }
+    for (let i = 1; i < node.length; i++) walk(node[i], inClosure)
   }
-  walk(body, false, false)
+  walk(body, false)
   const result = new Set()
   for (const nm of initLit) {
     if (disq.has(nm)) continue

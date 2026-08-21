@@ -157,18 +157,51 @@ test('uint32: Uint32Array element reads keep full unsigned range across all uses
   is(e.div(), 268435455.9375)     // f64 convert is unsigned
 })
 
-// ───────────────────────────────────────────── KNOWN LIMITATION (not yet fixed)
+// ───────────────────────────────────────────── local-binding unsigned reads
 
-test.todo('unsignedness survives a local binding read outside a >>> sink', () => {
-  // ROOT CAUSE: `narrowUint32` (src/analyze.js) only keeps a local as unsigned i32
-  // for the canonical accumulator pattern — a uint32 *literal* initializer where
-  // *every* read is funnelled through a `>>>` (ToUint32) sink (FNV/PRNG hash loops).
-  // A local initialized from `x >>> 0` and read raw (bare `return u`, or `u + 1`,
-  // `u < 5`) doesn't qualify, so the uint32 tag is dropped and the bits rebox signed
-  // (-1 instead of 4294967295). Extending unsigned tracking to such reads is sound
-  // but must preserve narrowUint32's "every use is ToUint32-sunk" guarantee, so it's
-  // a wider analyzeBody change deferred from this pass. Flip `test.todo` → `test` then.
+test('unsignedness survives a local binding read outside a >>> sink', () => {
+  // ROOT CAUSE (fixed): `narrowUint32` (src/compile/analyze-scans.js) proves a
+  // local is a canonical uint32 accumulator from its WRITES alone — a uint32
+  // literal initializer plus every reassignment shaped `name = (…) >>> k`.
+  // ToUint32 is idempotent (re-masking an already-masked value is a no-op), so
+  // that write invariant alone guarantees the stored bits always equal the true
+  // [0, 2^32) value — independent of how the local is later READ. The old code
+  // additionally required every READ to be re-sunk through its own `>>>`, which
+  // wrongly dropped the `.unsigned` tag for a bare `return u`, `u + 1`, or
+  // `u < 5`: the bits then reboxed SIGNED (-1 instead of 4294967295).
+  //
+  // A second leak in the same class: `narrowI32Results` (src/compile/narrow.js)
+  // decides whether a whole function's narrowed i32 RESULT reboxes at the call/
+  // export boundary via convert_i32_u or _s from its return tail's shape —
+  // but only recognized a literal `>>>` or a call to an already-unsignedResult
+  // function, not a bare read of the local narrowUint32 just proved unsigned.
+  // A function whose only tail is `return h` (h a `>>> 0`-reassigned local)
+  // narrowed to a SIGNED i32 result and reboxed -1294967296 instead of
+  // 3000000000 — the exact "hashing/checksum" shape named atop this file,
+  // returning the accumulator bare instead of re-masking it on the way out.
   is(run('export let main = (x) => { let u = x >>> 0; return u }').main(-1), 4294967295)
   is(run('export let main = (x) => { let u = x >>> 0; return u + 1 }').main(-1), 4294967296)
-  is(run('export let main = (x) => { let u = x >>> 0; return u < 5 }').main(-1), 0)
+  is(run('export let main = (x) => { let u = x >>> 0; return u < 5 }').main(-1), false)
+})
+
+test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)', () => {
+  // ToUint32(k) = k modulo 2^32, mapped into [0, 2^32) — the exact semantics
+  // `>>> 0` implements (ECMA-262 §7.1.8). A local reassigned `h = (…) >>> 0`
+  // and read BARE (no further `>>>` sink on the read side) must reproduce that
+  // magnitude exactly at every boundary, not just for values small enough to
+  // also fit signed i32.
+  const acc = (v) => run(`export let main = () => { let h = 0; h = (h + ${v}) >>> 0; return h }`).main()
+  is(acc(2147483648), 2147483648)   // 2^31 — first value whose signed i32 reading goes negative
+  is(acc(2147483649), 2147483649)   // 2^31 + 1
+  is(acc(4294967295), 4294967295)   // 2^32 - 1 — max uint32
+  // Wrap case: the accumulator crosses the 2^32 boundary through ordinary
+  // addition, same as a running FNV/djb2 hash total — ToUint32 wraps it back
+  // into [0, 2^32) rather than saturating or reading back negative.
+  const wrapped = run(`export let main = () => {
+    let h = 0
+    h = (h + 4294967290) >>> 0
+    h = (h + 10) >>> 0
+    return h
+  }`).main()
+  is(wrapped, 4)   // 4294967290 + 10 = 4294967300 ≡ 4 (mod 2^32)
 })

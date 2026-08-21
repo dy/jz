@@ -2400,8 +2400,29 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
     }
     return bound(args[0]) * bound(args[1]) <= 0x7fffffff ? 'i32' : 'f64'
   }
-  // Unary preserves type
-  if (op === 'u-' || op === 'u+') return exprType(args[0], locals, valTypes, strict)
+  // `u+` truly just preserves its operand's type (ToNumber, no arithmetic). `u-`
+  // is `0 - x` — same overflow shape as binary `-` (line ~2351 above) and needs
+  // the same magnitude-bound proof under `strict`: negating I32_MIN (-2^31)
+  // overflows to 2^31, one past I32_MAX, and negating a proven-unsigned i32
+  // ([0, 2^32)) — a `>>>`/unsignedResult/Uint32Array-read value, or a
+  // narrowUint32 accumulator local (isUnsignedI32Expr doesn't see the latter;
+  // its range is simply unproven, so the generic bound fallback below already
+  // catches it) — can go far past it (`-(3000000000)` = -3000000000). Missing
+  // this let narrowI32Results (the only `strict` caller with no further
+  // ToInt32 sink) commit a function's result to i32 for `return -y`, then
+  // wrap the true value through i32.wrap_i64(trunc_sat) instead of leaving it
+  // f64 — silently corrupting both `-(-2^31)` (signed) and `-(unsigned h)`.
+  if (op === 'u+') return exprType(args[0], locals, valTypes, strict)
+  if (op === 'u-') {
+    const t = exprType(args[0], locals, valTypes, strict)
+    if (t !== 'i32') return t
+    if (isUnsignedI32Expr(args[0], locals)) return 'f64'
+    if (!strict) return 'i32'
+    if (sv !== NO_VALUE && typeof sv === 'number') return isI32(sv) ? 'i32' : 'f64'
+    const r = intExprRange(args[0])
+    const bound = r != null ? Math.max(Math.abs(r[0]), Math.abs(r[1])) : 0x80000000
+    return bound <= 0x7fffffff ? 'i32' : 'f64'
+  }
   // Ternary / logical: conciliate
   if (op === '?:' || op === '&&' || op === '||') {
     const branches = op === '?:' ? [args[1], args[2]] : [args[0], args[1]]
