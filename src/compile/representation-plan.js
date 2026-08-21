@@ -1335,7 +1335,16 @@ export function representationCallArgAction(ctx, node, params, index) {
  *  passthrough lane, which reinterprets the union's bits as one BigInt
  *  (a box POINTER's own bits, or a raw number's, both observed live:
  *  phase-c doc §gap 2a). */
-export function representationResultTagRequired(ctx, func, seen = new WeakSet()) {
+/** `strict` (three-state discipline, re-audit P0): when true, answer TRUE
+ *  only for PROVEN-tagged results — materialized names with BOXED targets,
+ *  proven-boxed slots, and callee recursion thereof. The trailing
+ *  open-current fallback is DISABLED: an open operand may carry a raw
+ *  BigInt whose bits the tag test cannot distinguish, so consumers that
+ *  short-circuit non-box members to false (strict equality's tagged arm)
+ *  must never fire on it. The boundary LANE keeps the non-strict form —
+ *  its generic decode is total over every tag, so over-routing is safe
+ *  there and under-routing is not. */
+export function representationResultTagRequired(ctx, func, seen = new WeakSet(), strict = false) {
   if (programPlanRecord(ctx)?.bigint === false) return false
   if (func == null || seen.has(func)) return false
   seen.add(func)
@@ -1369,7 +1378,7 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet())
         // (C3's compare arm asks it of the callee directly, which is why
         // the two stayed consistent only once this recursed).
         const callee = ctx.funcs.map?.get(e[1])
-        return callee ? representationResultTagRequired(ctx, callee, seen) : null
+        return callee ? representationResultTagRequired(ctx, callee, seen, strict) : null
       }
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
@@ -1386,6 +1395,7 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet())
     if (v == null) sawUnresolved = true
   }
   if (!sawUnresolved) return false
+  if (strict) return false  // unresolved tails: never a PROVEN tag
   return (bigintRepBits(r.current) & BIGINT_REP_BOXED) !== 0 && !bigintRepIsClosed(r.current)
 }
 
