@@ -1921,6 +1921,33 @@ test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)',
   }
 })
 
+test('bigint: ANONYMOUS direct-return union join never materializes (C5b KNOWN-WRONG pin)', () => {
+  // C5's fixpoint (representation-plan.js buildBodyData, materializedJoins) only
+  // ever admits a join reached through a NAMED LOCAL (`let value = flag ? 1n :
+  // 0; return value` — the gnorm-adjacent shape above, and the tagged-equality
+  // test below). `directResultNodes` unconditionally excludes any join that IS
+  // itself the return/expression-body result (representation-plan.js ~1049),
+  // so an ANONYMOUS direct-return union never reaches materializedJoins:
+  // representationJoinArmAction rejects both arms, the '?:' emitter falls
+  // through to the raw select/if path (emit.js ~6149), and 1n's raw i64 bits
+  // cross unboxed. The host reads them reinterpreted as a plain f64 — 1n's
+  // bits (0x1) read as the subnormal Number.MIN_VALUE (5e-324) — never a real
+  // BigInt. Wrong at EVERY optimization level (a plan-time gap, not an
+  // optimizer artifact — checked live, O0 included).
+  // FLIP CONDITION: once the join fixpoint materializes a direct-result join
+  // the same way it materializes a named local's RHS (AND resultTagRequired
+  // routes the export's generic decode for it), g(1) crosses typed (1n).
+  for (const optimize of [false, 2, 3]) {
+    const t = jz(`export let g = (flag) => flag ? 1n : 0`, { optimize }).exports
+    is(t.g(1), 5e-324, `O${optimize || 0} KNOWN-WRONG: direct-return '?:' 1n arm crosses as raw subnormal bits, not bigint`)
+    is(t.g(0), 0, `O${optimize || 0}: the Number 0 arm is already correct (a NO_BIGINT member self-tags)`)
+
+    const o = jz(`export let g = (n) => n || 1n`, { optimize }).exports
+    is(o.g(0), 5e-324, `O${optimize || 0} KNOWN-WRONG: direct-return '||' 1n arm crosses as raw subnormal bits, not bigint`)
+    is(o.g(5), 5, `O${optimize || 0}: the Number arm is already correct`)
+  }
+})
+
 test('typeof folds preserve operand effects, in source order (audit P0: emitTypeofCmp erased calls)', () => {
   // emitTypeofCmp (src/compile/emit.js) emits its operand into `va` ONCE, up front —
   // but three fold sites (staticFold, shared by 'boolean'/'bigint', and the NUMBER-
