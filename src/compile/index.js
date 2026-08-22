@@ -41,7 +41,6 @@ import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
   analyzeStructInline, analyzeUnionInline, reanalyzeBody,
 } from './analyze.js'
-import { scanErasureSinks, assertErasureConsistency } from './erasure-diag.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
@@ -2549,7 +2548,6 @@ export default function compile(ast, profiler, regionHooks) {
         const facts = analyzeFuncForEmit(func, programFacts)
         publishPlan(func, facts)
         captureFuncInspect(func, facts, programFacts)
-        scanErasureSinks(func)
       }
       const lastFunc = i === ctx.funcs.list.length - 1
       if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
@@ -2568,13 +2566,6 @@ export default function compile(ast, profiler, regionHooks) {
       }
     }
   })
-  // CARRIER PROGRAM Slice 0 (.work/carrier-representation-design.md §7):
-  // erasure-graph soundness cross-check, now that both `erasureHits` (just
-  // populated per-function above) and `bigintBoxedStats` (params settled by
-  // narrowSignatures under `plan()` above; locals settled in the same
-  // analyzeFuncs loop just closed) are complete for this compile. No-op
-  // unless JZ_DEBUG_INVARIANTS=1.
-  assertErasureConsistency()
   // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the
   // `structInline` carrier. Runs once the per-function reps have settled (they
   // are codegen truth) and before any function is emitted.

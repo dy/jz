@@ -24,7 +24,6 @@ import { normalizeLoop, unitIncVar } from './loop-model.js'
 import { scanBoundedLoops, exprType, typedElemCtor, typedStaticLen, intLevelMap } from '../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../layout.js'
 import { observeProgramSlots } from './program-facts.js'
-import { noteParamVerdict } from './bigint-boxed-stats.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn, exprPresentValIn } from '../kind.js'
 import { typedCtorElemValType } from '../kind-traits.js'
 import { VAL, updateRep, lookupValType, KIND_UNIVERSE } from '../reps.js'
@@ -2751,7 +2750,6 @@ export default function narrowSignatures(programFacts, ast) {
     for (const [k, r] of reps) {
       const v = bigintBoxedVerdict(fname, k, r)
       if (v) r.bigintBoxed = true
-      if (v || r.val === VAL.BIGINT) noteParamVerdict(fname, k, v)
     }
   // Fixpoint-completeness (design §4.4, assertBodyFactsFresh class): every
   // input this verdict reads (r.val, callSites, func.body/sig) is already

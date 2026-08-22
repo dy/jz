@@ -1,5 +1,4 @@
 import { OPTF, getFactStore, DBG_INVARIANTS } from '../ctx.js'
-import { DBG_BIGINT_STATS, noteLocalBoxed } from './bigint-boxed-stats.js'
 /**
  * Pre-analysis passes — type inference, local analysis, capture detection.
  *
@@ -710,7 +709,6 @@ export function analyzeBody(body) {
       if (q) { sp = q; break }
     }
     if (sp) sp.bigintBoxed = true
-    if (DBG_BIGINT_STATS) noteLocalBoxed(ctx.func.current?.name ?? '(top)', expr)
   }
   // Whole-body outer-scope set (mirrors boxedCaptures' own `outerScope`,
   // analyze-scans.js): every name THIS analyzeBody call's own `body` binds
