@@ -215,6 +215,87 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
   }
 })
 
+// dyn-reach slice (per-schema precision for needsDynShadow, .work/dyn-reach-
+// slice.md): anyDynKey used to mirror EVERY object literal's schema fields
+// into the per-object props-hash the instant ANY `obj[computedKey]` read or
+// `for-in` existed ANYWHERE in the program. schemaDynReach narrows this to
+// the schemas a dyn-key read/for-in receiver can actually resolve to
+// (collectSlotWriteHazards' hz.dynPointsTo sibling channel, program-facts.js)
+// — fail-closed on an unresolvable call-site sid and on dynPointsTo's own
+// 'ALL' top sentinel.
+test('dyn-reach: a dyn-touched schema keeps its mirror; an untouched sibling schema loses it', () => {
+  // b's OWN sid is the only entry a resolvable `b[k]` read adds to
+  // dynPointsTo — a's sid (a DIFFERENT schema, never itself a `[]`/for-in
+  // receiver) must not be in it, even though anyDynKey is true program-wide.
+  const src = `export let f = (k) => {
+    let a = { aOnly: 1 }
+    let b = { bOnly: 2 }
+    let touched = b[k]
+    a.aOnly = a.aOnly + 41
+    return a.aOnly + (touched|0)
+  }`
+  for (const optimize of [0, 2, 3]) {
+    is(jz(src, { optimize }).exports.f('bOnly'), 44, `O${optimize}: clean schema a reads/writes through the plain static path`)
+    is(jz(src, { optimize }).exports.f('missing'), 42, `O${optimize}: clean schema a stays correct when the dyn read misses`)
+  }
+  // O0: no inlining to collapse call-site text, so a direct count is exact
+  // (O2/O3 fold this toy program's whole computation away at the wasm level —
+  // downstream of and irrelevant to the shadow DECISION itself, which the
+  // value checks above already confirm holds at every optimize level).
+  const wat = compile(src, { optimize: 0, wat: true })
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 1,
+    'exactly one __dyn_set call site: b\'s construction mirrors bOnly; a\'s construction and later write do not')
+
+  // for-in is the load-bearing read: its own codegen (module/collection.js
+  // `for-in`) walks ONLY the off-16 props sidecar, no schema-table fallback —
+  // a missing mirror enumerates ZERO fields, not merely dispatches slower.
+  const enumSrc = `export let f = (k) => {
+    let b = { bOnly: 2, bTwo: 3 }
+    let touched = b[k]
+    let keys = ''
+    for (let kk in b) keys += kk + ','
+    return keys + '|' + touched
+  }`
+  for (const optimize of [0, 2, 3])
+    is(jz(enumSrc, { optimize }).exports.f('bOnly'), 'bOnly,bTwo,|2', `O${optimize}: for-in over the dyn-reached schema enumerates every field`)
+
+  // The historical corruption class (emit-assign.js SHADOW CONTRACT comment:
+  // "this silently dropped `p.then = closure`..."): once a schema IS
+  // shadowed, a LATER plain dot-write must ALSO update the mirror, or a
+  // subsequent dynamic read returns the stale construction-time value.
+  const syncSrc = `export let f = (k) => {
+    let b = { bOnly: 2 }
+    let before = b[k]
+    b.bOnly = 99
+    let after = b[k]
+    return before + '|' + after
+  }`
+  for (const optimize of [0, 2, 3])
+    is(jz(syncSrc, { optimize }).exports.f('bOnly'), '2|99', `O${optimize}: a plain dot-write after construction stays visible to a later dynamic read`)
+})
+
+test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema keeps its mirror', () => {
+  // `o` is a raw, untyped parameter: sidOf(o) cannot resolve and o's kind
+  // isn't provably non-OBJECT (KEYED_EXEMPT_VALS) either, so dynPointsTo
+  // becomes the 'ALL' top sentinel — schemaDynReach then answers true for
+  // EVERY sid, including a's, which `o[k]` never itself touches by name.
+  // `a` must escape (returned) to rule out an unrelated, orthogonal
+  // optimization (SRoA flat-object locals, src/compile/emit-assign.js) from
+  // pre-empting the shadow question entirely.
+  const src = `export let f = (o, k) => {
+    let a = { aOnly: 1 }
+    let touched = o[k]
+    a.aOnly = a.aOnly + (touched|0)
+    return a
+  }`
+  for (const optimize of [0, 2, 3])
+    is(jz(src, { optimize }).exports.f(0, 'x').aOnly, 1, `O${optimize}: value correctness holds under the ALL-sentinel fallback`)
+
+  const wat = compile(src, { optimize: 0, wat: true })
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 2,
+    'a shadows at both construction and its later write despite never itself appearing in a [] or for-in — the fail-closed ALL sentinel')
+})
+
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
 // consumer promoted EVERY read on a proven-Map receiver to the exact VAL.*
 // kind of every observed .set() write. Unsound two ways: (1) an ABSENT key
@@ -1285,6 +1366,11 @@ test('phase-c C4b (5): rest-element BigInt evidence has no plan source today —
   `, { jzify: true }).exports.f
   is(f(1, 2, 3), 2, 'sanity: fixed+rest split unaffected')
   is(f(5n), 5n, 'the FIXED param, evidenced, tags and computes correctly')
+  // NEGATIVE tagged FIXED param (interop.js isBox fix, test/inference.js):
+  // a raw negative host BigInt's two's-complement sign-extension used to
+  // collide with isBox's sign-blind mask, so this exact box-then-passthrough
+  // shape read back a garbage/zero value instead of the round-tripped -5n.
+  is(f(-5n), -5n, 'the FIXED param, evidenced, tags and round-trips a NEGATIVE BigInt correctly too')
   throws(() => f(1, 5n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
     'the REST element, zero-evidence, still rejects even though the sibling fixed slot is tagged')
 })

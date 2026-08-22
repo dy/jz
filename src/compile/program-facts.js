@@ -1264,9 +1264,9 @@ function isSelfPreservingPropWrite(obj, prop, rhs) {
 
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
 
-/** Program-wide slot-write hazard scan → `{ pointsTo, props, numeric,
- *  kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the census
- *  readers' belt checks. `pointsTo` (product-lattice design .work/
+/** Program-wide slot-write hazard scan → `{ pointsTo, dynPointsTo, props,
+ *  numeric, kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the
+ *  census readers' belt checks. `pointsTo` (product-lattice design .work/
  *  lattice-design.md §1.3/§5) is one field replacing what used to be a
  *  separate `hz.all: boolean`/`hz.sids: Set` pair: `Set<SchemaId>` for every
  *  narrowed write, or the literal string `'ALL'` — an ABSTRACT top sentinel
@@ -1284,18 +1284,40 @@ const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.
  *  shape divergence falls back to the generic parser's disjoint runtime sids,
  *  so the sample's kinds hold for every object carrying the sid): slotTypes
  *  OBSERVES those kinds, slotIntCertain still poisons (a JSON number is any
- *  double). */
+ *  double).
+ *
+ *  `dynPointsTo` (dyn-reach slice) is `pointsTo`'s READ-side sibling, same
+ *  `Set<SchemaId> | 'ALL'` shape, fed from this SAME visit() walk by ALSO
+ *  observing `[]` READS and `for-in` (mirroring observeNodeFacts:154-162 —
+ *  that walk's `anyDyn`/`dynVars` fold every dyn-key touch, read OR write,
+ *  into one whole-program bit; `pointsTo` above already gives WRITES sid
+ *  precision, so this channel exists to give READS the same precision,
+ *  through the identical sidOf/addPointsTo-shape/markPointsToAll-shape/
+ *  KEYED_EXEMPT_VALS machinery). Consumed by module/schema.js's
+ *  schemaDynReach, in turn by src/ir.js's needsDynShadow: a schema's
+ *  construction-time props-sidecar mirror is only needed for sids this set
+ *  names (or when the set is 'ALL') — the mirror exists SPECIFICALLY so a
+ *  dyn-key READ elsewhere finds the field, so a schema no READ can ever
+ *  reach needs no mirror. `for-in` is a REAL (not merely conservative) READ
+ *  dependency here, not just a stand-in for "some read exists": its own
+ *  codegen (module/collection.js `for-in`) walks ONLY the off-16 props
+ *  sidecar — a zero/absent sidecar iterates ZERO times, no schema-table
+ *  fallback — so under-marking a for-in receiver's sid silently drops every
+ *  field of every instance from enumeration, not merely slower dispatch. */
 export function collectSlotWriteHazards(ast, opts) {
   const pf = getFactStore().programFacts
   const late = !!opts?.paramReps
   if (pf.hazard && pf.hazard.gen === pf.gen && pf.hazard.late === late)
     return (ctx.schema.slotWriteHazards = pf.hazard.hz)
-  const hz = { pointsTo: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
+  const hz = { pointsTo: new Set(), dynPointsTo: new Set(), props: new Set(), numeric: false, kindSafeSids: new Map() }
   // pointsTo mutators: 'ALL' absorbs (once TOP, stays TOP — a later addSid is
   // a no-op, matching the old hz.all sticky-poison shape); every setter below
   // goes through these two instead of touching pointsTo directly.
   const addPointsTo = (sid) => { if (hz.pointsTo !== 'ALL') hz.pointsTo.add(sid) }
   const markPointsToAll = () => { hz.pointsTo = 'ALL' }
+  // dynPointsTo twin of the two mutators above — same sticky-TOP shape, own field.
+  const addDynPointsTo = (sid) => { if (hz.dynPointsTo !== 'ALL') hz.dynPointsTo.add(sid) }
+  const markDynPointsToAll = () => { hz.dynPointsTo = 'ALL' }
   let curSids = null, curParamVts = null, curParamIntCertain = null
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
@@ -1348,6 +1370,32 @@ export function collectSlotWriteHazards(ast, opts) {
     if (valTypeOf(key) === VAL.NUMBER ||
         (typeof key === 'string' && (repOf(key)?.intCertain === true || curParamIntCertain?.has(key)))) hz.numeric = true
     else markPointsToAll()
+  }
+  // dynPointsTo twin of keyedWrite, for a `[]` READ (`obj[key]` in value
+  // position) instead of a write target. Same shape, deliberately: a literal
+  // string key resolves to a fixed schema slot at compile time (no dyn-props
+  // probe ever reached, see litKey/staticPropertyKey in emit-assign.js) so it
+  // is exempt exactly like keyedWrite's own propWrite fast-out; a resolved
+  // receiver sid marks precisely; an exempt non-OBJECT kind (KEYED_EXEMPT_VALS)
+  // can never BE a schema instance so it can't reach any sid; anything else
+  // (unresolvable AND possibly OBJECT) fails closed to the 'ALL' top sentinel.
+  const dynKeyedRead = (obj, key) => {
+    if (isLiteralStr(key)) return
+    const sid = sidOf(obj)
+    if (sid != null) { addDynPointsTo(sid); return }
+    const vt = kindOf(obj)
+    if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
+    markDynPointsToAll()
+  }
+  // dynPointsTo feed for `for-in obj` — a REAL read dependency (see this
+  // function's own doc comment above), not merely conservative: no literal-key
+  // exemption applies (for-in has no key expression to fold away).
+  const dynKeyedEnum = (obj) => {
+    const sid = sidOf(obj)
+    if (sid != null) { addDynPointsTo(sid); return }
+    const vt = kindOf(obj)
+    if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
+    markDynPointsToAll()
   }
   // Member targets buried in a destructuring pattern — written with values the
   // censuses can't see; hazard them like opaque writes.
@@ -1430,6 +1478,16 @@ export function collectSlotWriteHazards(ast, opts) {
       const keysets = ctx.schema.jsonParseKeysets?.(node[2])
       if (keysets) for (const { keys, kinds } of keysets)
         hz.kindSafeSids.set(ctx.schema.register(keys), kinds)
+    } else if (op === '[]') {
+      // READ-position `[]` (mirrors observeNodeFacts:154-156's anyDyn/dynVars
+      // shape). A MUTATE_OPS write target's own `[]` lhs node is ALSO visited
+      // here via the generic recursion below (it isn't excluded) — harmless,
+      // over-marks a write-only receiver's sid into dynPointsTo too, the same
+      // safe direction as keyedWrite's own hz.pointsTo (a strict superset of
+      // "genuinely read somewhere" is still sound, only more conservative).
+      dynKeyedRead(node[1], node[2])
+    } else if (op === 'for-in') {
+      dynKeyedEnum(node[2])
     }
     for (let i = 1; i < node.length; i++) visit(node[i])
   }

@@ -2403,17 +2403,77 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
   const { f } = run(src)
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
-  // Host-BigInt ingress through the CLOSURE-mediated normalizer now rejects
-  // loudly (C4b jz:hostabi: param v has no tag evidence — `parse`, a local
-  // closure, is invisible to solveBigintProvenance's producers). Forcing
-  // evidence without closure-edge unboxing was PROVEN silent-wrong (f(5n) →
-  // 9221823924482868225n: box pointer bits + 1n), so the loud reject stands
-  // until the plan's RAW/BOXED edge tracking extends through closure
-  // call-argument/return flow (queued: closure-forwarding slice,
-  // .work/phase-c-unification.md §C4b). Direct (non-closure) normalizers
-  // take the tagged ingress and compute correctly — test/types.js.
-  throws(() => f(5n), /BigInt argument at param 0/,
-    'closure-mediated normalizer: zero-evidence host BigInt rejects loudly (flip to is(f(5n), 6n) when closure-forwarding lands)')
+  // Closure-forwarding slice LANDED (.work/phase-c-unification.md §C4b):
+  // host-BigInt ingress through the CLOSURE-mediated normalizer now computes
+  // correctly instead of rejecting. Two halves, both required (forcing
+  // ingress evidence alone was PROVEN silent-wrong first: f(5n) →
+  // 9221823924482868225n, box pointer bits + 1n) —
+  // 1. Ingress: paramNeedsHostTag (representation-plan.js solveBigintProvenance)
+  //    gained a closure-forwarding case — `v` passed positionally into a
+  //    same-body local closure whose own param is typeof/Number/BigInt-used
+  //    earns the SAME host-tag evidence a direct `typeof v` would.
+  // 2. Edge tracking: buildBodyData's materializedResult gained a
+  //    closure-boundary admission (closureAbiIdentity + closureBoxParams
+  //    non-empty — the narrower AND, not closureAbiIdentity alone, matters:
+  //    see the array-methods.js .map(BigInt64Array) note this same commit
+  //    fixes, where a closure with NO tag-required param must stay on the
+  //    unboxed default) so a closure's OWN return tails box uniformly once
+  //    a tag-required param feeds them (both `return x` and
+  //    `return BigInt(x)` now box); the caller's currentOf gained
+  //    closureCallNeedsBox, recognizing a call whose callee has a
+  //    return-passthrough tail fed a non-excluded argument — the caller and
+  //    callee proofs share the identical condition, so they agree by
+  //    construction. A THIRD, foundational gap
+  //    surfaced during this slice and was fixed at its root: closures'
+  //    ctx.func.current (the uniform call_indirect ABI sig, `closureSig`)
+  //    was never registered as a RepresentationPlan lookup key — only the
+  //    closure's OWN synthesized `repSig` was — so representationReturnAction
+  //    and every other ctx.func.current-implicit accessor silently missed on
+  //    EVERY closure, always (dormant until this slice made materializedResult
+  //    reachable for a closure for the first time). mintRepresentationPlan
+  //    now also registers whatever ctx.func.current holds at mint time.
+  is(f(5n), 6n, 'closure-mediated normalizer: host BigInt ingress now computes correctly (was: loud reject)')
+  // Companion shapes verified live (probe script, not independently pinned
+  // here — same `f`): f(0n)→1n, f(-5)→-4n (plain-number path, unaffected),
+  // f('5')→6n (BigInt('5') decimal-string idiom, matches BigInt('5')+1n===6n).
+  //
+  // FIXED (was KNOWN-WRONG — pre-existing, independent of closure-forwarding;
+  // reproduced identically on an unmodified DIRECT non-closure typeof-guarded
+  // normalizer too, see the standalone pin below): root cause was
+  // interop.js's `isBox`, whose mask (0x7FF80000) never examined the sign
+  // bit, so a plain NEGATIVE host BigInt's 64-bit two's-complement sign-
+  // extension (top bits all 1) satisfied the mask and isBox misclassified it
+  // as "already a jz box". i64Arg's `!isBox(x)` gate (and mem.wrapVal's
+  // `isBox(v)` fallback) then skipped mem.BigInt's box allocation entirely —
+  // the raw unboxed bits crossed into wasm, `$__ptr_type` read a garbage tag
+  // off them (never PTR.BIGINT), and BigInt(v)'s dispatch (module/number.js
+  // __to_bigint) fell through its "not a box, not a string" arm to 0n. Fixed
+  // by widening isBox's mask to 0xFFF80000 (sign bit included, matching
+  // module/core.js $__typeof's own already-correct sign-inclusive gate) —
+  // see interop.js's `isBox` doc comment. JS truth: -5n + 1n === -4n.
+  is(f(-5n), -4n, 'negative host BigInt via tagged ingress computes correctly (was: read back as magnitude 0)')
+})
+
+test('negative host BigInt tagged ingress: DIRECT (non-closure) normalizer — same fix, confirms the defect was never closure-forwarding-specific', () => {
+  // The exact shape the test above's old KNOWN-WRONG comment described but
+  // never independently pinned: no closure at all, just an inline typeof
+  // guard. Reproduced the identical magnitude-0 misread pre-fix (probe
+  // script) — proving the defect lived in the tagged host-BigInt
+  // ingress/egress path itself (interop.js isBox), not anywhere in
+  // closure-forwarding's own representation-plan machinery.
+  const { f2 } = run(`
+    export let f2 = (v) => {
+      let x = typeof v === 'bigint' ? v : BigInt(v)
+      return x + 1n
+    }
+  `)
+  is(f2(5n), 6n, 'positive host BigInt: unaffected control')
+  is(f2(-5n), -4n, 'negative host BigInt: computes correctly (was: magnitude 0 → 1n)')
+  is(f2(-1n), 0n, 'negative host BigInt at the small-magnitude boundary')
+  // Lossless past 2^53 (Number.MAX_SAFE_INTEGER + 1) — proves the fix boxes
+  // the full i64 payload (BigInt.asIntN(64,·) two's complement), not just
+  // enough bits to dodge the isBox collision at small magnitudes.
+  is(f2(-9007199254740993n), -9007199254740992n, 'large-negative host BigInt stays lossless through the boxed round trip')
 })
 
 test('closure return-kind: fails open when the return depends on an unsettled capture', () => {

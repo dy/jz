@@ -688,7 +688,11 @@ export function emitElementAssign(arr, idx, val) {
   if (litKey != null && typeof arr === 'string' && ctx.schema.slotOf) {
     const slot = ctx.schema.slotOf(arr, litKey)
     if (slot >= 0) {
-      const shadow = needsDynShadow(arr)
+      // sid (dyn-reach slice): resolved fresh here (slotOf's own structural
+      // fallback can succeed with no precise idOf — needsDynShadow then fails
+      // closed on the null sid, matching the pre-slice behavior exactly).
+      const sid = ctx.schema.idOf(arr)
+      const shadow = needsDynShadow(arr, sid)
       if (shadow) inc('__dyn_set')
       return withTemp(valueExpr, t => [
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(arr)), lookupValType(arr) || VAL.OBJECT), slot, ['local.get', `$${t}`]),
@@ -872,7 +876,9 @@ export function emitPropertyAssign(obj, prop, val) {
       const sch = ctx.schema.list[vaProbe.ptrAux]
       const si = sch ? sch.indexOf(prop) : -1
       if (si >= 0) {
-        const shadow = needsDynShadow(typeof obj === 'string' ? obj : null)
+        // vaProbe.ptrAux (dyn-reach slice) IS this receiver's sid directly —
+        // it is indexed into ctx.schema.list just above.
+        const shadow = needsDynShadow(typeof obj === 'string' ? obj : null, vaProbe.ptrAux)
         if (shadow) inc('__dyn_set')
         // Packed i32 cells (structInline cursor, `.cellI32` node tag): the
         // field is a raw i32 at +si*4 — i32.store, no f64 boxing. The store
@@ -910,7 +916,16 @@ export function emitPropertyAssign(obj, prop, val) {
   if (typeof obj === 'string' && ctx.schema.slotOf) {
     const idx = ctx.schema.slotOf(obj, prop)
     if (idx >= 0) {
-      const shadow = needsDynShadow(obj)
+      // sid (dyn-reach slice + CARRIER PROGRAM §15/§16): hoisted ABOVE shadow —
+      // both the shadow decision and the BIGINT-boxing decision below need the
+      // SAME sid, and both must fail closed together when `ctx.schema.slotOf`
+      // resolves `idx` via its structural fallback with no precise idOf (a
+      // poisoned/ambiguous binding): needsDynShadow(obj, null) itself then
+      // falls back to the raw anyDynKey/dynKeyVars answer exactly as before
+      // (the pre-slice behavior), and the boxed decision below falls back to
+      // that same `shadow` value in that case too — one sid, one fallback.
+      const sid = ctx.schema.idOf(obj)
+      const shadow = needsDynShadow(obj, sid)
       // storedValueNarrow when NOT shadowed — see the identical reasoning at
       // this function's flat-object/unboxed-ptrAux branches above and
       // carrierF64Narrow's own doc comment (ir.js): no __dyn_set mirror means
@@ -922,12 +937,7 @@ export function emitPropertyAssign(obj, prop, val) {
       // CARRIER PROGRAM §15/§16: derive the BIGINT-boxing half from the
       // per-schema slotBigintBoxedBySid fact (module/object.js's construction
       // comment has the granularity rationale) — `shadow` itself stays the
-      // real needsDynShadow(obj), still governing the __dyn_set mirror below.
-      // `ctx.schema.slotOf` can resolve `idx` via its structural fallback
-      // even when `idOf(obj)` has no precise sid (a poisoned/ambiguous
-      // binding) — fall back to the raw per-site `shadow` exactly there,
-      // the pre-fix behavior, rather than guessing a sid to query.
-      const sid = ctx.schema.idOf(obj)
+      // real needsDynShadow(obj, sid), still governing the __dyn_set mirror below.
       const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : shadow
       const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
       if (shadow) inc('__dyn_set')
@@ -954,7 +964,15 @@ export function emitPropertyAssign(obj, prop, val) {
       if (i >= 0) {
         // Same SHADOW CONTRACT as the ptrAux arm above: a slot-only write on a
         // shadowed object is masked by the mint-seeded sidecar for dyn reads.
-        const shadow = needsDynShadow(null)
+        // sid (dyn-reach slice): `obj` is itself the chain expression (e.g.
+        // `ctx.func` in `ctx.func.finallyStack = …`) — resolve it the SAME way
+        // the write-hazard scan resolves a non-string receiver (sidOf's own
+        // `ctx.schema.chainSid(obj, sidOf)`), using the public idOf as the
+        // bare-name base case (mirrors kind.js's `chainSid(name, ctx.schema.idOf)`).
+        // Fails closed to null (→ shadow=true under anyDynKey) on any
+        // unresolved hop, exactly chainSid's own documented fail-closed shape.
+        const chainedSid = ctx.schema.chainSid?.(obj, ctx.schema.idOf)
+        const shadow = needsDynShadow(null, chainedSid)
         if (shadow) inc('__dyn_set')
         return withTemp(storedValue(val), t => [
           ctx.abi.object.ops.store(ptrOffsetIR(asF64(emit(obj)), VAL.OBJECT), i, ['local.get', `$${t}`]),

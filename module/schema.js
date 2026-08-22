@@ -475,6 +475,37 @@ export function initSchema(ctx) {
     return shadowedSidsCache.has(sid)
   }
 
+  /** Per-schema READ-reach (dyn-reach slice): true iff schema `sid` might be
+   *  observed through a dyn-key READ (`obj[computedKey]`, `for-in`) ANYWHERE
+   *  in the program — collectSlotWriteHazards' `hz.dynPointsTo`
+   *  (program-facts.js), the sibling of the write-hazard `hz.pointsTo`, fed
+   *  from the SAME visit() walk. Consumed by needsDynShadow (src/ir.js) in
+   *  place of the whole-program `ctx.types.anyDynKey` bit: today anyDynKey
+   *  alone shadows EVERY object literal in the program the instant any dyn-key
+   *  access exists anywhere; schemaDynReach narrows that to the schemas a
+   *  dyn-key read/for-in receiver can actually resolve to.
+   *
+   *  Deliberately NOT built on dynKeyVars like schemaShadowed above:
+   *  schemaShadowed's own doc names dynKeyVars' bare-name blind spot (a
+   *  binding not itself the exact receiver expression is invisible to it) —
+   *  dynPointsTo resolves expression receivers too via sidOf's chainSid
+   *  fallback (`a.b.c[k]`, not just a bare `x[k]`), so this is a strictly more
+   *  complete feed, not a name-keyed shortcut.
+   *
+   *  Fail-closed, matching the module-wide slot-write hazard belt checks
+   *  (slotHazarded above): hazards not yet computed (`dp == null` — should not
+   *  happen by codegen time, defensive only) or the 'ALL' top sentinel (some
+   *  dyn-key read/for-in receiver in the program couldn't be resolved to a
+   *  single sid, and wasn't provably non-OBJECT either) ⇒ true for every sid.
+   *  needsDynShadow itself ALSO fails closed on an unresolvable call-site sid
+   *  before ever reaching here — this is the second, independent belt: a
+   *  resolvable sid that simply isn't in the (non-'ALL') set answers false. */
+  ctx.schema.schemaDynReach = (sid) => {
+    const dp = ctx.schema.slotWriteHazards?.dynPointsTo
+    if (dp == null || dp === 'ALL') return true
+    return sid != null && dp.has(sid)
+  }
+
   /** WRITE-usable fact: true iff a BIGINT value stored at (sid, prop) must be
    *  boxed (a real PTR.BIGINT heap cell) rather than left as raw i64-as-f64
    *  bits. TRUE iff (a) slotBigintObserved (ctx.js) ever joined a BIGINT
