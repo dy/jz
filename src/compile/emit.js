@@ -672,10 +672,19 @@ const REF_EQ_KINDS = new Set([
   VAL.BUFFER, VAL.TYPED, VAL.CLOSURE, VAL.REGEX, VAL.DATE,
 ])
 
+// C5b hardening: the `[null, string]` fallback arm is deleted. That shape is
+// the RAW parser's own literal-node encoding (subscript yields `[null, "x"]`
+// for every quoted/template-segment string), but prepare/index.js's generic
+// op==null handler (~:1356) converts every one to the canonical `['str', x]`
+// tag before analyze/compile ever runs — no producer past that point emits
+// `[null, string]` (audited: the one that did, inline.js's hoisted-temp
+// wrapper, was C5's own fix — 7068ae8e/accb21d0 — the wrapper now returns the
+// bare name). A `[null, string]` node reaching here would mean a NEW producer
+// reintroduced the ambiguity this class of bug keeps coming from (a name and
+// a string literal are indistinguishable through this shape); returning null
+// (no match) is the fail-closed answer, not a silent reinterpretation.
 function stringLiteral(node) {
-  if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
-  if (Array.isArray(node) && node[0] == null && typeof node[1] === 'string') return node[1]
-  return null
+  return Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string' ? node[1] : null
 }
 
 // Index expressions where peepholing `s[k] === 'X'` to char-byte compare is
