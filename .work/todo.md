@@ -12004,4 +12004,30 @@ functional self-compile 21/21 and ratchet 10/10 (+0).
 Ledger correction discovered during the flip: test/data.js still contains an
 older ordinary passing assertion of the wrong nullish-assigned BigInt result
 (`value = null; value ??= 4n`). The prior "only getTime" handoff statement was
-therefore stale; that pin is now the only explicit KNOWN-WRONG and remains P0.
+therefore stale.
+
+## FIXED (2026-08-22): conditional BigInt writes + C5b adjacent join gaps
+
+Commit b9dd87fe teaches collectDefs/walkEdges/materialization that logical
+compound assignment's actual producer is its conditional RHS; emission applies
+the binding action only inside the taken arm. `value = null; value ??= 4n` now
+returns BigInt, while all three logical assignment families preserve untaken
+Number values and skip RHS effects. Nested no-BigInt joins are analyzed by
+structure before the coarse fallback, removing the false BOOL veto in
+`(flag?null:5)??1n`. A covered bare param contributes its closed observed kind
+only while solving a join arm—the broader boundary-semantic change was tested,
+broke watr parity, and was discarded. Finally, direct-call result queries trust
+a callee body's materialized RAW/TAGGED target, and a new raw-result proof keeps
+wrappers aligned when O2/O3 specialize a union callee to raw i64 while its coarse
+boundary fact remains open. Product battery: data 149/149 (723), watr 37/37,
+pointers 35/35, statements 202/202, closures 114/114, inference 142/142,
+array-methods 144/145+1 skip, dyn-keys 69/69, build/wat-strip 3/3,
+kernel-oracle 14/14, kernel-parity 3/3, full suite 3632/3630/0/2,
+functional self-compile 21/21 and ratchet 10/10.
+
+Ledger correction, round 2: repository-wide static grep found additional
+accepted-wrong rows hidden outside the handoff's ledger—two subnormal Number
+coercions in BigInt-using programs (test/data.js), conditional-spread
+presence/enumeration divergences, and two BOOL∪NUMBER decl-storage PENDING_FIX
+rows in kernel-oracle.js. They remain release-blocking despite the stale
+"only getTime"/"only nullish" summaries.
