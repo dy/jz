@@ -260,10 +260,11 @@ export default (ctx) => {
     __str_join: [...(ctx.core.stdlibDeps.__str_join ?? []), '__typed_idx'],
   })
 
-  // .map invokes with arity 1; .forEach/.find/.some/.every/.filter/.findIndex
-  // invoke with (item, idx) → arity 2. Reduce with (acc, item) → arity 2.
-  // (jz omits the `arr` arg array-spec callbacks normally receive — matches
-  // array.js convention.)
+  // .map/.forEach/.find/.some/.every/.filter/.findIndex all invoke with
+  // (item, idx) → arity 2. Reduce with (acc, item) → arity 2. (jz omits the
+  // `arr` arg array-spec callbacks normally receive — matches array.js
+  // convention; agent/typed-map-index closed .map's own gap, formerly the one
+  // holdout that invoked with item only.)
   ctx.closure.floor = Math.max(ctx.closure.floor ?? 0, 2)
 
   inc('__mkptr', '__alloc', '__len')
@@ -2170,16 +2171,12 @@ export default (ctx) => {
     const isView = r?.isView
     const elemName = r?.name
 
-    // BigInt typed arrays: SIMD path doesn't support them; defer to scalar map.
-    if (r?.isBigInt) {
-      // Fall through to generic .map below — keeps i64-via-NaN-box semantics intact.
-      if (ctx.core.emit['.map']) return ctx.core.emit['.map'](arr, fn)
-      return null
-    }
-
-    // Try SIMD: inline arrow with recognizable pattern (f16/clamped decline —
-    // their element conversion is a call, not a lane op)
-    if (elemType != null && !r.isF16 && !r.isClamped && Array.isArray(fn) && fn[0] === '=>') {
+    // Try SIMD: inline arrow with recognizable pattern (f16/clamped/BigInt
+    // decline — f16/clamped's element conversion is a call, not a lane op;
+    // BigInt lanes aren't a SIMD numeric kind at all. BigInt falls through
+    // past the scalar branch below too — see its own comment — down to the
+    // runtime aux-dispatch loop, which is species-correct for it.)
+    if (elemType != null && !r.isF16 && !r.isClamped && !r.isBigInt && Array.isArray(fn) && fn[0] === '=>') {
       const [, rawParam, body] = fn
       const param = Array.isArray(rawParam) && rawParam[0] === '()' ? rawParam[1] : rawParam
       const pattern = analyzeSimd(body, param)
@@ -2200,8 +2197,17 @@ export default (ctx) => {
       }
     }
 
-    // Scalar fallback: proper typed-array map (preserves element type)
-    if (elemType != null) {
+    // Scalar fallback: proper typed-array map (preserves element type).
+    // Excludes BigInt (r.isBigInt) — falls through to the runtime aux-dispatch
+    // loop below instead, the SAME species-correct path `.typed:filter`'s
+    // `!r || r.isBigInt` branch and typedLoop's dynamic fallback already use
+    // for BigInt: __typed_get_idx/__typed_set_idx roundtrip the raw i64 bits
+    // bit-exact (f64.reinterpret_i64), and that branch's aux mask already
+    // preserves TYPED_ELEM_BIGINT_FLAG when tagging the fresh result — so the
+    // output is correctly species'd as BigInt64Array/BigUint64Array (was:
+    // routed to generic Array.prototype.map above, which returns PTR.ARRAY —
+    // wrong species, even though the 8-byte payload itself survived unharmed).
+    if (elemType != null && !r.isBigInt) {
       const va = emit(arr), vf = emit(fn)
       const len = tempI32('tml'), ptr = tempI32('tmp'), i = tempI32('tmi')
       const stride = STRIDE[elemType], shift = SHIFT[elemType]
@@ -2226,30 +2232,50 @@ export default (ctx) => {
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-          storeElem(asF64(ctx.closure.call(vf, [loadElem()]))),
+          // Callback receives (item, idx) — matches array.js/forEach/find/
+          // some/every's convention (JS itself also passes a 3rd `array` arg;
+          // jz omits it everywhere, see the closure.floor=2 comment above).
+          storeElem(asF64(ctx.closure.call(vf,
+            [loadElem(), typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))),
           ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
           ['br', `$loop${id}`]]],
         dst.ptr], 'f64')
     }
 
-    // Unknown typed array type at compile time: runtime aux-dispatch loop, NOT
-    // a fall-through to generic (Array.prototype) .map. A generic map
-    // materializes a plain f64-slotted ARRAY and reads the receiver through
-    // array.js's ARRAY-only header/stride assumptions — for a receiver that's
-    // actually TYPED (reached here via the dyn-field / host-provided-param /
-    // opaque-polymorphic-ctor fork shapes, the same class `.typed:filter`'s
-    // `!r` branch closed just above) that's not merely "double-width", it
-    // misreads the byte-length header as an element count AND the base
-    // offset — confirmed empirically as outright garbage (denormal
-    // `2.5e-316`-class values reading adjacent heap bytes), not a plausible
-    // wrong number. JS requires the SAME species with per-element coercion:
+    // Reached by TWO receiver shapes, both requiring the same runtime dance:
+    //  (1) Unknown typed array type at compile time (r == null) — runtime
+    //      aux-dispatch loop, NOT a fall-through to generic (Array.prototype)
+    //      .map. A generic map materializes a plain f64-slotted ARRAY and
+    //      reads the receiver through array.js's ARRAY-only header/stride
+    //      assumptions — for a receiver that's actually TYPED (reached here
+    //      via the dyn-field / host-provided-param / opaque-polymorphic-ctor
+    //      fork shapes, the same class `.typed:filter`'s `!r` branch closed
+    //      just above) that's not merely "double-width", it misreads the
+    //      byte-length header as an element count AND the base offset —
+    //      confirmed empirically as outright garbage (denormal
+    //      `2.5e-316`-class values reading adjacent heap bytes), not a
+    //      plausible wrong number.
+    //  (2) Statically-KNOWN BigInt64Array/BigUint64Array (r.isBigInt, excluded
+    //      from the scalar branch above) — the SIMD/scalar branches above
+    //      already declined it. This used to short-circuit to generic
+    //      Array.prototype.map instead (a different species bug: the 8-byte
+    //      payload round-trips intact through a plain f64 ARRAY by
+    //      coincidence of matching width, but `ArrayBuffer.isView()` on the
+    //      result reports false and the result is a plain Array, not a
+    //      BigInt64Array/BigUint64Array — wrong species, same defect class as
+    //      (1) just at a different resolution stage). __typed_get_idx/
+    //      __typed_set_idx already roundtrip BigInt elements bit-exact
+    //      (f64.reinterpret_i64 of the raw i64 bits — see their own comments),
+    //      so routing BigInt through this SAME loop needs no separate code.
+    //
+    // JS requires the SAME species with per-element coercion:
     // `new Int8Array([100,100]).map(x=>x*2)` wraps to `Int8Array[-56,-56]`
     // (ECMA-262 ToInt8, 7.1.11 — mod 256, two's-complement); Uint8Array wraps
     // too (ToUint8, 7.1.10 — mod 256, NOT saturating) — only
     // Uint8ClampedArray's element WRITES clamp (ToUint8Clamp, 7.1.12).
     //
-    // Mirrors `.typed:filter`'s `!r` branch (agent/typed-decline-b): the SAME
-    // __typed_get_idx/__typed_set_idx runtime aux-tag-dispatch helpers
+    // Mirrors `.typed:filter`'s `!r || r.isBigInt` branch (agent/typed-decline-b):
+    // the SAME __typed_get_idx/__typed_set_idx runtime aux-tag-dispatch helpers
     // typedLoop's own dynamic branch and .typed:set's `!r` branch already
     // lean on unconditionally, and the SAME __ptr_aux/__typed_shift/
     // __alloc_hdr_n/__mkptr allocation shape for a correctly-strided,
@@ -2257,9 +2283,10 @@ export default (ctx) => {
     // output length is always EXACTLY the input length (no worst-case-then-
     // patch-the-count dance; one-shot alloc, like __typed_slice_rt's own
     // shape). Calling convention matches the scalar-fallback branch just
-    // above (single `item` arg, no index) — the two branches must stay
-    // semantically identical; only which one a given receiver reaches
-    // (compile-time-known vs runtime-resolved element kind) differs.
+    // above — (item, idx), the `arr` 3rd arg omitted (closure.floor=2 comment
+    // above) — the two branches must stay semantically identical; only which
+    // one a given receiver reaches (compile-time-known-non-BigInt vs
+    // runtime-resolved-or-BigInt element kind) differs.
     // No extra scoping block around the locals below (matches `.typed:filter`'s
     // `!r` branch just above, which is flat too) — NOT just style: a bare
     // identifier call statement (`inc(...)`) directly followed by a `{`
@@ -2280,15 +2307,19 @@ export default (ctx) => {
     const dstPtr64 = ['i64.reinterpret_f64', ['local.get', `$${dstLoc}`]]
     const mapped = asF64(ctx.closure.call(
       typed(['local.get', `$${cbLoc}`], 'f64'),
-      [typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${i}`]], 'f64')]))
+      [typed(['call', '$__typed_get_idx', srcPtr64, ['local.get', `$${i}`]], 'f64'),
+       typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')]))
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${cbLoc}`, asF64(emit(fn))],
       ['local.set', `$${arrLoc}`, asF64(emit(arr))],
       ['local.set', `$${len}`, ['call', '$__len', srcPtr64]],
-      // Non-view aux (mask off bit 3, keeps the BigInt flag bit — dead here,
-      // BigInt receivers never reach this branch, but mirrors filter's own
-      // mask exactly): the fresh OWNED result is never mistagged as a view
-      // onto the source, but stays tagged the same element kind.
+      // Non-view aux (mask off bit 3, keeps the BigInt flag bit — a REAL
+      // typed-BigInt receiver reaches this branch now, per this function's own
+      // isBigInt routing above; the mask still applies unconditionally so a
+      // dynamically-unknown-but-actually-BigInt receiver, which always
+      // reached here, keeps working the same way): the fresh OWNED result is
+      // never mistagged as a view onto the source, but stays tagged the same
+      // element kind (BigInt flag included).
       ['local.set', `$${aux}`, ['i32.and', ['call', '$__ptr_aux', srcPtr64], ['i32.const', 119]]],
       ['local.set', `$${shift}`, ['call', '$__typed_shift', ['i32.and', ['local.get', `$${aux}`], ['i32.const', 7]]]],
       ['local.set', `$${byteLen}`, ['i32.shl', ['local.get', `$${len}`], ['local.get', `$${shift}`]]],
