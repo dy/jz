@@ -202,6 +202,9 @@ test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits'
     export let payload = value => typeof value === 'bigint'
       ? value + 1n === 6n
       : value + 1 === 3
+    export let payloadNeg = value => typeof value === 'bigint'
+      ? value + 1n === -5n
+      : value + 1 === -5
   `
   for (const optimize of [false, 2, 3]) {
     const e = jz(src, { optimize }).exports
@@ -212,6 +215,22 @@ test('RepresentationPlan: host ingress distinguishes JS BigInt from Number bits'
     is(e.check(5n), true, `O${optimize || 0}: tag check accepts host BigInt`)
     is(e.payload(2), true, `O${optimize || 0}: Number payload remains usable`)
     is(e.payload(5n), true, `O${optimize || 0}: boxed BigInt payload unboxes in wasm`)
+    // NEGATIVE host BigInt (interop.js isBox fix): a raw negative BigInt's
+    // 64-bit two's-complement sign-extension used to collide with isBox's
+    // sign-blind mask, so i64Arg/wrapVal skipped mem.BigInt's box allocation
+    // and the unboxed bits reached wasm looking like neither a box nor a
+    // string — $__typeof (module/core.js) read them as "number" (its own
+    // sign-inclusive NaN mask correctly rejects them as a box, so they fell
+    // to the generic-number arm), the exact inverse of the intended tag.
+    is(e.kind(-5n), 'bigint', `O${optimize || 0}: NEGATIVE host BigInt is boxed at ingress (was: misread as number)`)
+    is(e.check(-5n), true, `O${optimize || 0}: tag check accepts NEGATIVE host BigInt (was: false)`)
+    // payloadNeg's target (-5n) is only reachable via the correct BigInt
+    // branch computing -6n+1n=-5n — a misclassified-as-number -6n would fall
+    // to the Number arm instead and compare its (garbage, unboxed-bits-as-
+    // float) carrier against -5, discriminating fixed from broken rather
+    // than coincidentally agreeing the way `payload`'s 6n target would.
+    is(e.payloadNeg(-6n), true, `O${optimize || 0}: negative BigInt payload unboxes and computes in wasm`)
+    is(e.payloadNeg(-4n), false, `O${optimize || 0}: wrong negative magnitude correctly rejected (not a vacuous true)`)
   }
 })
 
@@ -1918,6 +1937,17 @@ test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)',
     is(e.gnorm(7), 7, `O${optimize || 0} ${label}: number path unboxed`)
     const big = e.gnorm('9007199254740993')
     ok(typeof big === 'bigint' && big === 9007199254740993n, `O${optimize || 0} ${label}: lossless past 2^53`)
+    // Negative sign coverage (test/inference.js's negative-host-BigInt-
+    // ingress fix is a DIFFERENT seam — interop.js isBox misclassifying a
+    // raw negative host BigInt argument — than this string-parse path
+    // exercises: BigInt('-7') negates inside wasm, module/number.js
+    // __to_bigint's own `$neg` two's-complement branch, never touching
+    // isBox/mem.BigInt at all. Pinned here so the C5 gnorm family carries
+    // full sign coverage alongside the positive/lossless cases above.
+    const neg = e.gnorm('-7')
+    ok(typeof neg === 'bigint' && neg === -7n, `O${optimize || 0} ${label}: negative bigint string crosses typed`)
+    const bigNeg = e.gnorm('-9007199254740993')
+    ok(typeof bigNeg === 'bigint' && bigNeg === -9007199254740993n, `O${optimize || 0} ${label}: negative lossless past 2^53`)
   }
 })
 

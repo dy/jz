@@ -1285,6 +1285,11 @@ test('phase-c C4b (5): rest-element BigInt evidence has no plan source today —
   `, { jzify: true }).exports.f
   is(f(1, 2, 3), 2, 'sanity: fixed+rest split unaffected')
   is(f(5n), 5n, 'the FIXED param, evidenced, tags and computes correctly')
+  // NEGATIVE tagged FIXED param (interop.js isBox fix, test/inference.js):
+  // a raw negative host BigInt's two's-complement sign-extension used to
+  // collide with isBox's sign-blind mask, so this exact box-then-passthrough
+  // shape read back a garbage/zero value instead of the round-tripped -5n.
+  is(f(-5n), -5n, 'the FIXED param, evidenced, tags and round-trips a NEGATIVE BigInt correctly too')
   throws(() => f(1, 5n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
     'the REST element, zero-evidence, still rejects even though the sibling fixed slot is tagged')
 })

@@ -390,6 +390,40 @@ closure-forwarding defect): negative-magnitude host BigInt through the
 jz:hostabi tagged-ingress lane (mem.BigInt) reads back as magnitude 0.
 Pinned in test/inference.js next to the flipped assertion.
 
+FIXED (branch fix/neg-bigint, based on this slice's 95ad2159): root seam
+was interop.js's `isBox` — its mask (0x7FF80000) never examined the sign
+bit, so a plain negative host BigInt's 64-bit two's-complement sign-
+extension (top bits saturated, verified live across -1n..-2^51n) satisfied
+the mask and isBox misclassified it as an already-built jz box. i64Arg's
+`!isBox(x)` gate and mem.wrapVal's own `isBox(v)` fallback both consult
+isBox to tell "raw value, needs mem.BigInt boxing" from "already a box,
+pass through" — misclassified, they skipped mem.BigInt's allocation
+entirely. The unboxed bits crossed into wasm looking like neither a box
+nor a string: `$__ptr_type` read a garbage tag off them (never
+PTR.BIGINT), so BigInt(v)'s dispatch (module/number.js __to_bigint) fell
+through to its "not a box, not a string" 0n default — the exact magnitude-
+0 misread this note originally logged. module/core.js's $__typeof already
+gated the identical sign/prefix distinction correctly (its own
+`0xFFF0000000000000` mask, "negative-NaN bit patterns... are uniquely
+numeric") — same bug class independently confirmed there too (`typeof
+(-5n)` misread "number" pre-fix, live A/B probe). Fix: widen isBox's mask
+to 0xFFF80000 (sign bit included) — one line, sign-safe for every existing
+box (always sign=0 by construction), closes the collision for the entire
+negative i64 range (spot-checked i64 MIN). Pins: flipped test/inference.js's
+KNOWN-WRONG assertion to is(f(-5n),-4n); added the DIRECT non-closure
+normalizer as its own pin (proves the defect was never closure-forwarding-
+specific) plus a lossless-past-2^53 negative case; test/data.js gained
+negative kind/check/payload cases on the host-ingress test and negative +
+lossless-negative cases on the C5 gnorm test (string-parse sibling path,
+confirmed already-correct both sides of the fix — different seam);
+test/dyn-keys.js's phase-c C4b(5) gained a negative FIXED-param round-trip.
+Battery: inference+data+dyn-keys 353/353 (1254 assertions), kernel-oracle+
+kernel-parity 14/14 (619 assertions, 33/33 byte-identical WAT O0/O2/O3
+unaffected — interop.js is host-bridge only, never compiled into the
+kernel), FULL SUITE 3611 total / 3609 pass / 0 fail / 2 skip (20998
+assertions, unchanged pre-existing skips) — build (dist/jz.wasm) rebuilt
+clean before the kernel legs.
+
 Battery: inference 141/141 (319 assertions), dyn-keys 65/65 (284),
 data 146/146 (622), array-methods 144/144+1skip (301), kernel-parity 3/3
 (33/33 byte-identical O2/O3 — closure changes did not alter non-bigint

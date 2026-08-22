@@ -2437,14 +2437,43 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   // here — same `f`): f(0n)→1n, f(-5)→-4n (plain-number path, unaffected),
   // f('5')→6n (BigInt('5') decimal-string idiom, matches BigInt('5')+1n===6n).
   //
-  // KNOWN-WRONG, discovered but OUT OF SCOPE for this slice (pre-existing —
-  // reproduces identically on an unmodified, DIRECT non-closure typeof-
-  // guarded normalizer too: `(v) => { let x = typeof v==='bigint' ? v :
-  // BigInt(v); return x+1n }`, so this is a jz:hostabi/mem.BigInt host-
-  // boxing defect for NEGATIVE magnitudes, not a closure-forwarding gap):
-  // a negative host BigInt through the SAME tagged-ingress lane silently
-  // computes wrong instead of erroring. JS truth: -5n + 1n === -4n.
-  is(f(-5n), 1n, 'KNOWN-WRONG: negative host BigInt via tagged ingress reads back as magnitude 0 (pre-existing jz:hostabi/mem.BigInt negative-magnitude defect, independent of closure-forwarding — flip to is(f(-5n), -4n) when that defect is fixed')
+  // FIXED (was KNOWN-WRONG — pre-existing, independent of closure-forwarding;
+  // reproduced identically on an unmodified DIRECT non-closure typeof-guarded
+  // normalizer too, see the standalone pin below): root cause was
+  // interop.js's `isBox`, whose mask (0x7FF80000) never examined the sign
+  // bit, so a plain NEGATIVE host BigInt's 64-bit two's-complement sign-
+  // extension (top bits all 1) satisfied the mask and isBox misclassified it
+  // as "already a jz box". i64Arg's `!isBox(x)` gate (and mem.wrapVal's
+  // `isBox(v)` fallback) then skipped mem.BigInt's box allocation entirely —
+  // the raw unboxed bits crossed into wasm, `$__ptr_type` read a garbage tag
+  // off them (never PTR.BIGINT), and BigInt(v)'s dispatch (module/number.js
+  // __to_bigint) fell through its "not a box, not a string" arm to 0n. Fixed
+  // by widening isBox's mask to 0xFFF80000 (sign bit included, matching
+  // module/core.js $__typeof's own already-correct sign-inclusive gate) —
+  // see interop.js's `isBox` doc comment. JS truth: -5n + 1n === -4n.
+  is(f(-5n), -4n, 'negative host BigInt via tagged ingress computes correctly (was: read back as magnitude 0)')
+})
+
+test('negative host BigInt tagged ingress: DIRECT (non-closure) normalizer — same fix, confirms the defect was never closure-forwarding-specific', () => {
+  // The exact shape the test above's old KNOWN-WRONG comment described but
+  // never independently pinned: no closure at all, just an inline typeof
+  // guard. Reproduced the identical magnitude-0 misread pre-fix (probe
+  // script) — proving the defect lived in the tagged host-BigInt
+  // ingress/egress path itself (interop.js isBox), not anywhere in
+  // closure-forwarding's own representation-plan machinery.
+  const { f2 } = run(`
+    export let f2 = (v) => {
+      let x = typeof v === 'bigint' ? v : BigInt(v)
+      return x + 1n
+    }
+  `)
+  is(f2(5n), 6n, 'positive host BigInt: unaffected control')
+  is(f2(-5n), -4n, 'negative host BigInt: computes correctly (was: magnitude 0 → 1n)')
+  is(f2(-1n), 0n, 'negative host BigInt at the small-magnitude boundary')
+  // Lossless past 2^53 (Number.MAX_SAFE_INTEGER + 1) — proves the fix boxes
+  // the full i64 payload (BigInt.asIntN(64,·) two's complement), not just
+  // enough bits to dodge the isBox collision at small magnitudes.
+  is(f2(-9007199254740993n), -9007199254740992n, 'large-negative host BigInt stays lossless through the boxed round trip')
 })
 
 test('closure return-kind: fails open when the return depends on an unsettled capture', () => {

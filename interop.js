@@ -130,8 +130,28 @@ export const f64ToI64 = (n) => { _f64[0] = n; return (BigInt(_u32[1]) << 32n) | 
 export const i64ToF64 = (b) => { _u32[0] = Number(b & MASK32); _u32[1] = Number((b >> 32n) & MASK32); return _f64[0] }
 
 const hi32 = (b) => Number((b >> 32n) & MASK32)
-// A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix.
-const isBox = (b) => (hi32(b) & 0x7FF80000) === 0x7FF80000
+// A NaN-box is a sign-0 quiet NaN — high u32 carries jz's 0x7FF8 prefix. The
+// mask MUST include the sign bit (0xFFF80000, not 0x7FF80000): a plain host
+// BigInt's 64-bit two's-complement sign-extension sets hi32's top 12 prefix
+// bits (0x7FF8's own span, bits 30-19) to 1 for any negative value whose
+// magnitude keeps them saturated (every -1n..-2^51n verified live) — with
+// the sign bit (bit 31, 0x80000000) left out of the mask, isBox(-5n) read
+// true, so i64Arg's `!isBox(x)` gate and wrapVal's `isBox(v)` gate both
+// treated a raw negative host BigInt as an ALREADY-BUILT box and skipped
+// mem.BigInt's allocation entirely. The unboxed bits then reached
+// __to_bigint's (module/number.js) tag dispatch inside wasm, whose
+// $__ptr_type read a garbage tag off the non-box pattern (not PTR.BIGINT)
+// and fell to the "not a box, not a string" 0n default — negative host
+// BigInt ingress silently computed from magnitude 0 instead of throwing or
+// computing correctly (`f(-5n)` where `f=(v)=>parse(v)+1n` read back `1n`,
+// not `-4n`). module/core.js's $__typeof already gates the identical
+// distinction correctly (its own `0xFFF0000000000000` mask: "negative-NaN
+// bit patterns (sign bit set) don't match NAN_PREFIX so are uniquely
+// numeric") — this brings isBox into agreement with that reference. A
+// GENUINE box always has sign=0 (ptrBits/encodePtrHi never set bit 63), so
+// this tightening never rejects a real box — it only excludes negative bit
+// patterns no legitimate box can ever produce.
+const isBox = (b) => (hi32(b) & 0xFFF80000) === 0x7FF80000
 // i64 bits for a wrapVal result (BigInt box, or number → its f64 bits): memory staging + i64 params.
 const bits = (v) => typeof v === 'bigint' ? v : f64ToI64(v)
 
