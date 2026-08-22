@@ -34,7 +34,7 @@ import {
 } from '../../layout.js'
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
-import { includeForStringOnly } from '../autoload.js'
+import { includeForStringOnly, includeForArrayLiteral } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, constIntExpr, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
@@ -2549,8 +2549,27 @@ function emitSpreadCopy(dest, posLocal, srcLocal, srcLenLocal, staticVT) {
 /**
  * Build an array from items, handling ['__spread', expr] markers.
  * Split into sections (normal arrays and spreads), then copy all into result.
+ *
+ * Every caller hand-builds a `['[', …]` IR node below (or, on the spread path,
+ * allocates a PTR.ARRAY directly) — this is emit-TIME array construction, not
+ * a user-source array literal prepare() ever saw, so none of the ordinary
+ * `includeForArrayLiteral()` call sites in prepare/index.js run for it. Most
+ * callers are safe by COINCIDENCE (spread/rest syntax in the source already
+ * pulled 'array' in during prepare — see prepare/index.js's `'...'`/rest-param
+ * handlers), but externalMethodFallback's __ext_call arg-marshalling reaches
+ * here for a receiver whose method resolves via GENERIC_METHOD_MODULES/the
+ * registration-derived RESOLVED_PROP_MODULES row alone (e.g. `.toFixed()`),
+ * neither of which mention 'array' — that dependency belongs to THIS
+ * mechanism (packing call args for the host boundary), not to whichever
+ * property name happened to trigger it. Same fix shape as emitSpreadCopy's
+ * own includeForStringOnly() call a few dozen lines up (__str_idx) — pull the
+ * module in at the actual point of need instead of trusting an incidental
+ * upstream autoload to have already covered it. Idempotent (includeModule
+ * no-ops once 'array' is in ctx.module.modules for this compile), so the
+ * already-covered callers pay one extra Set/Map lookup, nothing else.
  */
 export function buildArrayWithSpreads(items) {
+  includeForArrayLiteral()
   const spreads = []
   for (let i = 0; i < items.length; i++) {
     if (Array.isArray(items[i]) && items[i][0] === '__spread') {
