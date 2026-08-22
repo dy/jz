@@ -49,6 +49,29 @@ const objectToStringTagForVal = (obj) => {
 // receiver policy rationale.
 const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get', '$__heap_reset'] : ['i32.const', 0]
 
+// Exact safe capacity for a KNOWN-SIZE dyn-props shadow mirror (the per-object
+// props hash a `needsDynShadow` literal mirrors every schema field into at
+// construction — see the `shadow` branch below). module/collection.js's
+// __hash_new_small floors/guesses a fixed cap (module-wide hashSmallInitCap,
+// 2 or 8) for the ad-hoc "unknown eventual size, probably 0-2 props" receiver
+// — the RIGHT default for that case (module/collection.js's own doc), but
+// wrong in both directions for a schema mirror, whose final size
+// (schema.length) is a compile-time FACT, not a guess: too big for a 1-2-field
+// schema (wasted slots, paid on every construction) and too small for a
+// 7+-field schema (1-2 wasted grow generations under genUpsertGrow's 2x
+// doubling — module/collection.js's `size*4 >= cap*3` 75%-load rule — each
+// generation abandoned forever in the bump arena, never reclaimed). This
+// simulates that exact grow predicate (rather than a derived closed form) so
+// it can never drift out of sync with the real trigger it's sizing against.
+const hashCapFor = (n) => {
+  let cap = 2, size = 0
+  for (let i = 0; i < n; i++) {
+    if (size * 4 >= cap * 3) cap *= 2
+    size++
+  }
+  return cap
+}
+
 export default (ctx) => {
   inc('__mkptr', '__alloc', '__alloc_hdr', '__ptr_offset', '__len', '__ptr_type')
   // Pure schema resolver for expressions (name → bound schema, literal → keys,
@@ -239,7 +262,15 @@ export default (ctx) => {
       body.push(ctx.abi.object.ops.store(['local.get', `$${t}`], slotOf(i), fieldStoredValue(i)))
     body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
     if (shadow) {
-      inc('__dyn_set')
+      inc('__dyn_set', '__hash_new_cap')
+      // Presize the props hash to hold every schema field with zero grows
+      // (hashCapFor's doc above) instead of leaving it to __dyn_set's own
+      // lazy __hash_new_small create-on-first-write. off-16 is the fresh
+      // __alloc_hdr header's props slot (zeroed above) — writing the sized
+      // hash there directly means the FIRST __dyn_set call below already
+      // finds a correctly-sized table and never re-creates or re-grows it.
+      body.push(['i64.store', ['i32.sub', ['local.get', `$${t}`], ['i32.const', 16]],
+        ['i64.reinterpret_f64', ['call', '$__hash_new_cap', ['i32.const', hashCapFor(schema.length)]]]])
       for (let i = 0; i < schema.length; i++)
         body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),
           ctx.abi.object.ops.loadBits(['local.get', `$${t}`], i)]])

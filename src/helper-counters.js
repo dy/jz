@@ -30,6 +30,7 @@ export const HELPER_COUNTERS = [
   ['__hash_set_local', 'hash_set_local'],
   ['__ihash_get_local', 'ihash_get_local'],
   ['__ihash_set_local', 'ihash_set_local'],
+  ['__hash_new_small', 'hash_new_small'],
   ['__dyn_get', 'dyn_get'],
   ['__dyn_get_t', 'dyn_get_t'],
   ['__dyn_get_t_h', 'dyn_get_t_h'],
