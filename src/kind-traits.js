@@ -181,7 +181,21 @@ export function methodValType(method, obj, objType, ctx) {
   if (method === 'set') return objType === VAL.MAP ? VAL.MAP : null
   // jz's valueOf is a receiver passthrough (module/string.js `.valueOf`), so the
   // result kind IS the receiver kind — `Boolean(x).valueOf() === true` needs it.
-  if (method === 'valueOf') return objType ?? null
+  // Date is the ONE exception (module/date.js emitDateGetTime): `.valueOf()`
+  // returns the timestamp, a NUMBER, never the receiver itself — this static
+  // fact was already true before the printer-trio fix (a PROVEN-Date
+  // `d.valueOf() === n` folded unsound even then, since tryStaticDispatch's
+  // `.date:valueOf` never went through this receiver-passthrough path's
+  // premise), just latent: nothing exercised `===` against a `.valueOf()`
+  // result until .work/printer-trio.md's Item 3 pins did. A genuinely
+  // unresolved objType (null) stays null here either way — this only
+  // narrows the PROVEN-DATE case from a false receiver-kind claim to the
+  // correct NUMBER one. Two if-statements (not a nested ternary) purely for
+  // readability, matching this trait table's plain early-return style.
+  if (method === 'valueOf') {
+    if (objType === VAL.DATE) return VAL.NUMBER
+    return objType ?? null
+  }
   if (BOOL_METHODS.has(method)) return VAL.BOOL
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING

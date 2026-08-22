@@ -81,20 +81,32 @@ export const idx = (...a) => ctx.bridge.idx(...a)
 export const spread = (...a) => ctx.bridge.spread(...a)
 
 /** Attach a pre-built handler (e.g. from method/emitter) to ctx.core.emit.
- *  Plain write, same as a raw `ctx.core.emit[name] = handler` — bind() is
- *  sugar for the DEFAULT dialect (CONTRIBUTING "Stdlib registration"), not
- *  the structured reg()/wat() one, so it's allowed to shadow an earlier
- *  bind()/raw entry for the same name: a later, more specific module
- *  overriding an earlier generic default (e.g. date.js's Date-specific
- *  `.valueOf` over string.js's generic Object.prototype fallback) is a
- *  deliberate, load-order-dependent specialization idiom, not a bug. Only
- *  clobbering a reg()/wat()/registerGetter name is a mistake — caught by
- *  verifyRegistrationIntegrity (src/ctx.js) after every module's init(ctx)
- *  (src/autoload.js includeModule), which is mechanism-agnostic: it flags
- *  the protected name being overwritten regardless of whether a raw
- *  assignment or a bind() call did it. */
+ *  Sugar for the DEFAULT dialect (CONTRIBUTING "Stdlib registration"), not
+ *  the structured reg()/wat() one — but a FLAT key (no `:`) still goes
+ *  through registerName's same guarded write as reg()/wat()/registerGetter,
+ *  and throws on collision. This used to be a bare `ctx.core.emit[name] =
+ *  handler`, deliberately unguarded, on the theory that a later, more
+ *  specific module shadowing an earlier generic default (e.g. date.js's
+ *  Date-specific `.valueOf` over string.js's generic Object.prototype
+ *  fallback) was a load-bearing specialization idiom. It wasn't: that exact
+ *  pair WAS the bug (.work/printer-trio.md) — date.js's handler is only
+ *  correct for a PROVEN Date receiver, but the flat `.valueOf` key is the
+ *  fallback for every UNRESOLVED-type receiver, so the "override" silently
+ *  broke `.valueOf()` on every array/object/map/set whose static type
+ *  wasn't proven. A flat key has exactly one legitimate owner; two bind()
+ *  (or bind()-vs-raw) writers for the same flat name is always a mistake,
+ *  same as two reg() writers. Type-qualified keys (`.date:valueOf`,
+ *  `.string:padStart`, …) stay unguarded — namespaced by design, one
+ *  physical owner (the type's own module) per key, so cross-module
+ *  collision there isn't a realistic hazard the way a shared flat name is.
+ *  A raw (non-bind) assignment clobbering a bind()-registered flat key is
+ *  still only catchable post-hoc — `verifyEmitIntegrity` (src/ctx.js),
+ *  after every module's init(ctx) (src/autoload.js includeModule), which is
+ *  mechanism-agnostic: it flags the protected name being overwritten
+ *  regardless of whether a raw assignment or a bind()/reg() call did it. */
 export const bind = (name, handler) => {
-  ctx.core.emit[name] = handler
+  if (name.includes(':')) { ctx.core.emit[name] = handler; return handler }
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, name, 'bind', handler)
   return handler
 }
 
@@ -110,7 +122,7 @@ export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
 /** WAT stdlib body (+ optional deps edge for resolveIncludes). */
 export const wat = (name, body, depNames = []) => {
-  registerName(ctx.core.stdlib, ctx.core.regStdlibOrder, ctx.core.regStdlibDialect, ctx.core.regStdlibModule, name, 'wat', body)
+  registerName(ctx.core.stdlib, ctx.core.regStdlibOrder, ctx.core.regStdlibDialect, ctx.core.regStdlibModule, ctx.core.regStdlibValue, name, 'wat', body)
   if (depNames.length) deps({ [name]: depNames })
 }
 
@@ -128,13 +140,13 @@ export const reg = (name, depsOrOpts, maybeFn) => {
     }
     if (o.emit) {
       const h = emitter(depsList, o.emit)
-      registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, name, 'reg', h)
+      registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, name, 'reg', h)
       return h
     }
     return
   }
   const h = emitter(depsOrOpts, maybeFn)
-  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, name, 'reg', h)
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, name, 'reg', h)
   return h
 }
 

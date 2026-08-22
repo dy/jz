@@ -234,7 +234,7 @@ test('passes: raw stdlib assignments never shadow a reg()-registered name (stdli
 test('passes: duplicate stdlib registration throws at registration time, both dialect orders (stdlib fail-fast)', async () => {
   // Runtime counterpart to the static gate above (CONTRIBUTING "Stdlib
   // registration"): registerName/verifyRegistrationIntegrity (src/ctx.js,
-  // wired into reg()/wat()/registerGetter() — src/bridge.js — and
+  // wired into reg()/wat()/registerGetter()/bind() — src/bridge.js — and
   // includeModule() — src/autoload.js) make a duplicate name-registration
   // fail LOUD at registration time instead of the module/*.js text scan
   // being the only line of defense. Exercises both temporal orders: a raw
@@ -256,6 +256,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // currentModule`). `m.reset`/`m.registerName`/`m.verifyEmitIntegrity` are
   // stable function references (never reassigned), safe to hold directly.
   const m = await import('../src/ctx.js')
+  const { bind } = await import('../src/bridge.js')
   const { reset, registerName, verifyEmitIntegrity } = m
   const noopBridge = { emit: () => {}, flat: () => {}, body: () => {}, bool: () => {}, idx: () => {}, spread: () => {}, emitIdentitySafe: () => {} }
   const freshHandler = () => Object.assign(() => 1, { deps: [], argc: 0 })
@@ -265,7 +266,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   m.ctx.core.currentModule = 'testModuleA'
   m.ctx.core.emit['__testDup1'] = () => 0
   let threw = null
-  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup1', 'reg', freshHandler()) }
+  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue, '__testDup1', 'reg', freshHandler()) }
   catch (e) { threw = e }
   ok(threw, 'raw-then-reg: registerName throws')
   ok(threw && /already exists/.test(threw.message) && /__testDup1/.test(threw.message), 'raw-then-reg: message names the colliding name')
@@ -274,11 +275,11 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // clobbering module's init(ctx) would have returned.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'testModuleB'
-  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup2', 'reg', freshHandler())
+  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue, '__testDup2', 'reg', freshHandler())
   m.ctx.core.currentModule = 'testModuleC'
   m.ctx.core.emit['__testDup2'] = () => 2   // raw clobber — drops the emitter() wrapper's .deps tag
   threw = null
-  try { verifyEmitIntegrity(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule) }
+  try { verifyEmitIntegrity(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue) }
   catch (e) { threw = e }
   ok(threw, 'reg-then-raw: verifyEmitIntegrity throws')
   ok(threw && /silently overwritten/.test(threw.message) && /__testDup2/.test(threw.message), 'reg-then-raw: message names the colliding name')
@@ -286,12 +287,66 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // combo 3: reg() twice for the same name — caught immediately, same as combo 1.
   reset({}, {}, noopBridge)
   m.ctx.core.currentModule = 'testModuleD'
-  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler())
+  registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue, '__testDup3', 'reg', freshHandler())
   threw = null
-  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, '__testDup3', 'reg', freshHandler()) }
+  try { registerName(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue, '__testDup3', 'reg', freshHandler()) }
   catch (e) { threw = e }
   ok(threw, 'reg-then-reg: registerName throws')
   ok(threw && /already registered/.test(threw.message) && /testModuleD/.test(threw.message), 'reg-then-reg: message names the original registering module')
+
+  // combo 4 (flat-key raw-vs-raw class, .work/printer-trio.md): bind() then
+  // bind() again for the SAME flat key from a different module — caught
+  // immediately, exactly like reg()-then-reg(). Before this guard, TWO
+  // bind() writers for one flat name silently "last one wins" by design
+  // (CONTRIBUTING's old carve-out) — the class that let date.js's raw
+  // `.valueOf` clobber string.js's bind()'d `.valueOf` go undetected.
+  reset({}, {}, noopBridge)
+  m.ctx.core.currentModule = 'testModuleE'
+  bind('__testDup4', freshHandler())
+  threw = null
+  try { bind('__testDup4', freshHandler()) } catch (e) { threw = e }
+  ok(threw, 'bind-then-bind (flat key): throws')
+  ok(threw && /already registered/.test(threw.message) && /testModuleE/.test(threw.message), 'bind-then-bind: message names the original registering module')
+
+  // combo 5 (THE historical shape, byte-for-byte): bind() registers a flat
+  // key first (string.js's `bind('.valueOf', …)`), a LATER raw assignment
+  // — not bind(), a literal `ctx.core.emit[name] = …`, exactly date.js's
+  // pre-fix `ctx.core.emit['.valueOf'] = emitDateGetTime` — clobbers it.
+  // Undetectable at the moment of the raw write (no Proxy), so this is
+  // verifyEmitIntegrity's post-hoc catch, same as combo 2, but now reached
+  // from bind()'s ledger entry instead of only reg()'s.
+  reset({}, {}, noopBridge)
+  m.ctx.core.currentModule = 'string'
+  bind('.valueOf', (val) => val)                    // string.js's generic identity fallback
+  m.ctx.core.currentModule = 'date'
+  m.ctx.core.emit['.valueOf'] = (d) => 0             // date.js's pre-fix raw clobber (emitDateGetTime, shape-only)
+  threw = null
+  try { verifyEmitIntegrity(m.ctx.core.emit, m.ctx.core.regEmitOrder, m.ctx.core.regEmitDialect, m.ctx.core.regEmitModule, m.ctx.core.regEmitValue) }
+  catch (e) { threw = e }
+  ok(threw, 'bind-then-raw (flat key, the date.js/string.js shape): verifyEmitIntegrity throws')
+  ok(threw && /silently overwritten/.test(threw.message) && /\.valueOf/.test(threw.message), 'bind-then-raw: message names the colliding key')
+
+  // combo 6: raw assignment first, bind() second (same flat key) — caught
+  // immediately, registerName's pre-write check sees the raw value already
+  // occupying the slot (mirrors combo 1, through bind() instead of reg()).
+  reset({}, {}, noopBridge)
+  m.ctx.core.currentModule = 'testModuleF'
+  m.ctx.core.emit['__testDup6'] = () => 0
+  threw = null
+  try { bind('__testDup6', freshHandler()) } catch (e) { threw = e }
+  ok(threw, 'raw-then-bind (flat key): throws')
+  ok(threw && /already exists/.test(threw.message) && /__testDup6/.test(threw.message), 'raw-then-bind: message names the colliding name')
+
+  // combo 7 (carve-out proof): TYPE-QUALIFIED keys (`.type:method`) are
+  // namespaced by design and stay unguarded — two bind() writers for the
+  // SAME type-qualified name never throw. Distinct from combo 4's flat key.
+  reset({}, {}, noopBridge)
+  m.ctx.core.currentModule = 'testModuleG'
+  bind('.date:__testDup7', freshHandler())
+  m.ctx.core.currentModule = 'testModuleH'
+  let qualifiedThrew = null
+  try { bind('.date:__testDup7', freshHandler()) } catch (e) { qualifiedThrew = e }
+  ok(!qualifiedThrew, 'bind-then-bind (type-qualified key): does NOT throw — namespaced by design')
 
   // Sanity: a real compile still works after directly poking ctx.core above —
   // reset() rebuilds ctx.core.emit/regEmitOrder/etc. from scratch each call,

@@ -3968,6 +3968,49 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
   }
 }
 
+// Date discrimination for an UNRESOLVED-vt flat-key fallback
+// (.work/printer-trio.md residual, .work/todo.md Item 3). Two independent
+// dispatch forks — trySidecarToPrimitive (6) and tryRuntimePtrTypeFork (8)
+// below — both fall back to the flat `.${method}` key (string.js's generic
+// identity handler) whenever a receiver's static kind isn't proven; Date
+// shares PTR.OBJECT's coarse tag with every plain object/array/map/set/etc.,
+// so neither fork's own tag-only dispatch can tell an unresolved-but-
+// actually-Date receiver apart from a genuine unresolved object — pre-fix,
+// `unresolvedValueOf(someDate)` silently returned the Date itself (identity)
+// instead of its timestamp.
+//
+// emitNewDate's OWN `aux` field (module/date.js emitNewDate: `{type:
+// PTR.OBJECT, aux: ctx.schema.dateSid, …}`) is always `ctx.schema.dateSid` —
+// a schema registered under the property name `'\x00time'` (module/date.js
+// init), a NUL-prefixed key no real object-literal source can ever spell —
+// so it can never alias any other (content-addressed) schema id. Testing
+// `ptrType===PTR.OBJECT && aux===dateSid` is therefore a SOUND, cheap
+// runtime discriminator: aux lives in the NaN-box's own high bits
+// (`$__ptr_aux`, the same accessor `emitTypedInstanceof` above uses for its
+// own aux compare), no extra heap load.
+//
+// `recv` is the local name holding the receiver's raw f64 bits. Gated on
+// this method actually having a `.date:` handler (mirrors the
+// strEmitter/typedEmitter-shaped gates each caller already applies) —
+// returns `fallback` UNCHANGED (one Map lookup, no extra codegen) for any
+// method Date doesn't define, so a non-Date-shaped `.valueOf`/`.getTime`-
+// unrelated call never pays for the check. `ptrTypeLocal` lets a caller that
+// already computed `$__ptr_type` into a local (tryRuntimePtrTypeFork does,
+// for its own STRING/TYPED cases) reuse it instead of a second call.
+function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
+  const dateEmitter = ctx.core.emit[`.date:${method}`]
+  if (!dateEmitter) return fallback
+  inc('__ptr_aux')
+  const isObjectTag = ptrTypeLocal
+    ? ['i32.eq', ['local.get', `$${ptrTypeLocal}`], ['i32.const', PTR.OBJECT]]
+    : ptrTypeEq(['local.get', `$${recv}`], PTR.OBJECT)
+  return typed(['if', ['result', 'f64'],
+    ['i32.and', isObjectTag,
+      ['i32.eq', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], ['i32.const', ctx.schema.dateSid]]],
+    ['then', callMethod(recv, dateEmitter)],
+    ['else', fallback]], 'f64')
+}
+
 // 6. valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
 // property shadows. An assigned `obj.valueOf`/`obj.toString` must win over
 // the builtin emitter for any receiver that can carry a dynamic-prop
@@ -3985,9 +4028,16 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
       && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
     const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
     if (builtin) {
+      // Date carve-out, unresolved receivers only (.work/printer-trio.md
+      // residual): a PROVEN vt reaching this arm is ARRAY/TYPED/OBJECT,
+      // never DATE — strategy 7's tryStaticDispatch already owns any
+      // proven-Date receiver before this fork ever runs — so dateAuxFallback
+      // (see its own doc) only ever engages on the `!vt` arm, same carve-out
+      // as tryRuntimePtrTypeFork below.
+      const onFallback = (o) => asF64(vt ? callMethod(o, builtin) : dateAuxFallback(o, method, callMethod, callMethod(o, builtin)))
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
         (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), []),  // CALL the override
-        (o) => asF64(callMethod(o, builtin)))                                // else the builtin method
+        onFallback)                                                          // else the builtin method
     }
   }
 }
@@ -4085,6 +4135,12 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     const cases = []
     if (strEmitter) cases.push([PTR.STRING, callMethod(t, strEmitter)])
     if (typedEmitter) cases.push([PTR.TYPED, callMethod(t, typedEmitter)])
+    // Date carve-out — see dateAuxFallback's doc for the discrimination
+    // rationale (.work/printer-trio.md residual). `tt` is already computed
+    // below (the ptr-type local this fork uses for its own STRING/TYPED
+    // dispatch), so pass it through instead of paying for a second
+    // `$__ptr_type` call.
+    const fallback = dateAuxFallback(t, method, callMethod, generic, tt)
     return block64(
       ['local.set', `$${t}`, asF64(emit(obj))],
       ['if', ['result', 'f64'],
@@ -4092,7 +4148,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
         ['then', numEmitter ? asF64(callMethod(t, numEmitter)) : undefExpr()],
         ['else', block64(
           ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
-          dispatchByPtrType(tt, cases, generic))]])
+          dispatchByPtrType(tt, cases, fallback))]])
   }
 }
 

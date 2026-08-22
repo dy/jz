@@ -198,6 +198,78 @@ test('mem.Object: unknown schema marshals as first-class hash', async () => {
   is(r.memory.read(h), { z: 1, w: 2 }, 'round-trips through mem.read')
 })
 
+// === BigInt through mem bridge (mem.Object/mem.write route through mem.wrapVal) ===
+//
+// mem.Object's inline marshal loop, and mem.write's array/object in-place
+// update branches, used to hand-roll their own null/string/array dispatch
+// and fall through to bare `bits(v)` for everything else — a plain
+// (non-isBox) BigInt value silently stored raw, unmarked i64 bits instead
+// of going through mem.wrapVal's typed post-C4b throw (interop.js, the
+// `isBox(v)` check). mem.Array/mem.Hash already routed every element/value
+// through mem.wrapVal; mem.Object/mem.write now do too — one dispatch,
+// same C4b doctrine everywhere a host value crosses into jz memory.
+
+test('mem.Object: plain BigInt property value throws (post-C4b doctrine, mirrors mem.wrapVal)', async () => {
+  const r = await run(`
+    export let getX = (o) => o.x
+    export let make = (a, b) => { let o = {x: a, y: b}; return o }
+  `)
+  const m = jz.memory(r)
+  let threw = null
+  try { m.Object({ x: 5n, y: 1 }) } catch (e) { threw = e }
+  ok(threw, 'plain BigInt property value throws')
+  ok(threw && /no BigInt evidence/.test(threw.message) && /mem\.BigInt/.test(threw.message),
+    'message names mem.BigInt as the fix')
+})
+
+test('mem.Object: boxed BigInt (mem.BigInt) property value round-trips', async () => {
+  const r = await run(`
+    export let getX = (o) => o.x
+    export let make = (a, b) => { let o = {x: a, y: b}; return o }
+  `)
+  const m = jz.memory(r)
+  const ptr = m.Object({ x: m.BigInt(5n), y: 1 })
+  is(m.read(ptr).x, 5n, 'isBox BigInt property value round-trips through mem.read')
+})
+
+test('mem.write: plain BigInt array element throws (same class as mem.Object)', async () => {
+  const r = await run(`export let make = () => { let a = [0, 0]; return a }`)
+  const m = jz.memory(r)
+  const ptr = r.instance.exports.make()
+  let threw = null
+  try { m.write(ptr, [1, 2n]) } catch (e) { threw = e }
+  ok(threw, 'plain BigInt array element throws')
+  ok(threw && /no BigInt evidence/.test(threw.message) && /mem\.BigInt/.test(threw.message),
+    'message names mem.BigInt as the fix')
+})
+
+test('mem.write: plain BigInt object property throws (same class as mem.Object)', async () => {
+  const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
+  const m = jz.memory(r)
+  const ptr = r.instance.exports.make(1, 2)
+  let threw = null
+  try { m.write(ptr, { x: 9n }) } catch (e) { threw = e }
+  ok(threw, 'plain BigInt object property value throws')
+  ok(threw && /no BigInt evidence/.test(threw.message) && /mem\.BigInt/.test(threw.message),
+    'message names mem.BigInt as the fix')
+})
+
+test('mem.write: boxed BigInt (mem.BigInt) array element round-trips', async () => {
+  const r = await run(`export let make = () => { let a = [0, 0]; return a }`)
+  const m = jz.memory(r)
+  const ptr = r.instance.exports.make()
+  m.write(ptr, [1, m.BigInt(5n)])
+  is(m.read(ptr)[1], 5n, 'isBox BigInt element round-trips through mem.read')
+})
+
+test('mem.write: boxed BigInt (mem.BigInt) object property round-trips', async () => {
+  const r = await run(`export let make = (a, b) => { let o = {x: a, y: b}; return o }`)
+  const m = jz.memory(r)
+  const ptr = r.instance.exports.make(1, 2)
+  m.write(ptr, { x: m.BigInt(9n) })
+  is(m.read(ptr).x, 9n, 'isBox BigInt property round-trips through mem.read')
+})
+
 // === Null through mem bridge ===
 
 test('mem.Array: null elements preserved', async () => {

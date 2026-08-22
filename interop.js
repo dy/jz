@@ -504,15 +504,17 @@ export const memory = (src) => {
     }
     const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
     // Stage as i64 bits so V8 can't canonicalize NaN-payload pointers across
-    // recursive allocations. See mem.Array for the same pattern.
+    // recursive allocations. See mem.Array for the same pattern — and route
+    // every property value through mem.wrapVal the same way mem.Array/
+    // mem.Hash do: this loop used to hand-roll a partial null/string/array
+    // dispatch and fall through to bare `bits(v)` for everything else
+    // (numbers were incidentally fine; a plain BIGINT property value was
+    // not — silently stored as raw unmarked bits, no BigInt tag, instead of
+    // wrapVal's post-C4b typed throw. Nested plain objects/typed arrays/
+    // buffers/functions were equally unhandled). One dispatch, no duplicate
+    // logic to drift out of sync with wrapVal's.
     const wrapped = new BigInt64Array(n)
-    for (let i = 0; i < n; i++) {
-      let v = obj[schema[i]]
-      if (v === null || v === undefined) v = coerce(v)
-      else if (typeof v === 'string') v = mem.String(v)
-      else if (Array.isArray(v)) v = mem.Array(v)
-      wrapped[i] = bits(v)
-    }
+    for (let i = 0; i < n; i++) wrapped[i] = bits(mem.wrapVal(obj[schema[i]]))
     const dst = new BigInt64Array(mem.buffer, raw, n)
     for (let i = 0; i < n; i++) dst[i] = wrapped[i]
     return ptr(6, sid, raw)
@@ -616,7 +618,12 @@ export const memory = (src) => {
       const cap = m.getInt32(off - 4, true)
       if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
       m.setInt32(off - 8, data.length, true)
-      for (let i = 0; i < data.length; i++) m.setBigInt64(off + i * 8, bits(coerce(data[i])), true)
+      // mem.wrapVal, not bare bits(coerce(…)): an in-place array write accepts
+      // the same value shapes the mem.Array constructor does (string/bigint/
+      // nested array/typed array/…), not numbers only — same marshal contract,
+      // same dispatch, see mem.Object's identical fix for why a hand-rolled
+      // partial dispatch here silently mis-stored a plain BigInt element.
+      for (let i = 0; i < data.length; i++) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[i])), true)
     } else if (t === 3) {
       const a2 = aux(p), elem = a2 & 7
       const [, stride, , setter] = ELEM_BY_ID[elem]
@@ -636,7 +643,7 @@ export const memory = (src) => {
       if (!schema) throw Error(`write: unknown schema`)
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
-        if (i >= 0) m.setBigInt64(off + i * 8, bits(coerce(data[k])), true)
+        if (i >= 0) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[k])), true)  // mem.wrapVal — see the t===1 branch above
       }
     } else {
       throw Error(`write: unsupported type ${t}`)

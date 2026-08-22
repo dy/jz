@@ -303,17 +303,18 @@ export function includeModule(name, onRegister) {
   ctx.module.modules[modName] = true
   for (const dep of MOD_DEPS[modName] || []) includeModule(dep, onRegister)
   // Stdlib registration two-dialect gate (CONTRIBUTING "Stdlib registration"):
-  // reg()/registerGetter() guard their OWN write (src/ctx.js registerName),
-  // but can't see a LATER raw `ctx.core.emit[name] = …` assignment inside
-  // this module's init(ctx) silently clobbering one of them — that needs
-  // checking AFTER init(ctx) runs, once its raw assignments (if any) have
-  // already landed. ctx.core.emit only — see verifyEmitIntegrity's doc
-  // comment for why ctx.core.stdlib/wat() isn't symmetric here.
+  // reg()/registerGetter()/bind() guard their OWN flat-key write (src/ctx.js
+  // registerName), but can't see a LATER raw `ctx.core.emit[name] = …`
+  // assignment inside this module's init(ctx) silently clobbering one of
+  // them — that needs checking AFTER init(ctx) runs, once its raw
+  // assignments (if any) have already landed. ctx.core.emit only — see
+  // verifyEmitIntegrity's doc comment for why ctx.core.stdlib/wat() isn't
+  // symmetric here.
   ctx.core.currentModule = modName
   const before = onRegister ? new Set(Object.keys(ctx.core.emit)) : null
   init(ctx)
   if (onRegister) onRegister(modName, Object.keys(ctx.core.emit).filter(k => !before.has(k)))
-  verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule)
+  verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue)
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])

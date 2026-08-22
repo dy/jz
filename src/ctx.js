@@ -162,10 +162,10 @@ export const emitter = (deps, fn) => {
 export const emitArity = (h) => h?.argc ?? h?.length
 
 /** THE guarded write for the structured stdlib-registration dialects —
- *  reg()/wat() (src/bridge.js) and registerGetter() below. Throws
+ *  reg()/wat()/bind() (src/bridge.js) and registerGetter() below. Throws
  *  immediately, naming both registration sites, instead of silently
  *  overwriting (CONTRIBUTING "Stdlib registration"): a name already claimed
- *  — by an earlier reg()/wat()/registerGetter() call, OR by a raw
+ *  — by an earlier reg()/wat()/registerGetter()/bind() call, OR by a raw
  *  `table[name] = …` assignment (~580 sites across module/*.js, the OTHER
  *  half of the two-dialect split) — is a mistake, not a legitimate override.
  *
@@ -178,27 +178,36 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *  `table[name]` read below sees it — no registered value is ever
  *  `undefined`); `verifyEmitIntegrity` (called after every module's
  *  init(ctx) in src/autoload.js, ctx.core.emit only) closes the other
- *  direction — a raw write AFTER a reg() call, which is the direction
- *  CONTRIBUTING documents as dangerous (it silently drops emitter()'s
- *  auto-inc/argc wrapper).
+ *  direction — a raw write AFTER a reg()/bind() call, which is the
+ *  direction CONTRIBUTING documents as dangerous (it silently drops the
+ *  earlier handler, `emitter()`'s auto-inc/argc wrapper included).
  *
- *  `order`/`siteDialect`/`siteModule` MUST stay plain ARRAYS (insertion-
- *  ordered names, two parallel attribution arrays) — never a name-keyed
- *  dict/Map, and never string-CONCATENATED on the hot (non-throwing) path.
- *  A name-keyed dict/Map here, as a SECOND such structure alongside
- *  `ctx.core.emit`'s own large dict, corrupts self-compiled warm-instance
- *  reuse (a `_clear()`-then-recompile round-trip within one wasm instance)
- *  with a bare "memory access out of bounds", even though one large dynamic
- *  dict alone is fine every compile; string-concatenating `${module}|
- *  ${dialect}` at this call volume (~150-600 registrations) corrupts the
- *  same warm-instance reuse even with zero dicts involved. Root cause lives
- *  in the self-compiled dyn-props/string runtime (see .work/research.md); this
- *  function sidesteps both hazards by only ever `.push()`-ing already-
- *  existing string references (`dialect`, `ctx.core.currentModule`) into
- *  plain arrays. Every `+`/template literal below lives ONLY inside a
- *  `throw` branch (dead code on any passing compile), so it never executes
- *  during warm reuse either. */
-export const registerName = (table, order, siteDialect, siteModule, name, dialect, value) => {
+ *  FLAT keys only (no `:` — type-qualified keys like `.date:valueOf` are
+ *  namespaced by design, one owner per type, never routed here from
+ *  bind()): see bind()'s own doc for why a bare-name collision is always a
+ *  mistake and never a legitimate generic→specific override, unlike what
+ *  CONTRIBUTING used to claim (the `date.js`-over-`string.js` `.valueOf`
+ *  "override" was this exact silent-collision class, not a specialization
+ *  idiom — see .work/printer-trio.md).
+ *
+ *  `order`/`siteDialect`/`siteModule`/`siteValue` MUST stay plain ARRAYS
+ *  (insertion-ordered names, three parallel attribution arrays) — never a
+ *  name-keyed dict/Map, and never string-CONCATENATED on the hot
+ *  (non-throwing) path. A name-keyed dict/Map here, as a SECOND such
+ *  structure alongside `ctx.core.emit`'s own large dict, corrupts
+ *  self-compiled warm-instance reuse (a `_clear()`-then-recompile
+ *  round-trip within one wasm instance) with a bare "memory access out of
+ *  bounds", even though one large dynamic dict alone is fine every compile;
+ *  string-concatenating `${module}|${dialect}` at this call volume
+ *  (~150-600 registrations) corrupts the same warm-instance reuse even with
+ *  zero dicts involved. Root cause lives in the self-compiled dyn-props/
+ *  string runtime (see .work/research.md); this function sidesteps both
+ *  hazards by only ever `.push()`-ing already-existing references
+ *  (`dialect`, `ctx.core.currentModule`, `value` itself — a function
+ *  reference, not a new allocation) into plain arrays. Every `+`/template
+ *  literal below lives ONLY inside a `throw` branch (dead code on any
+ *  passing compile), so it never executes during warm reuse either. */
+export const registerName = (table, order, siteDialect, siteModule, siteValue, name, dialect, value) => {
   if (table[name] !== undefined) {
     const i = order.indexOf(name)
     if (i >= 0) throw new Error(`Duplicate stdlib registration: '${name}' already registered by module '${siteModule[i]}' via ${siteDialect[i]}(), registered again by module '${ctx.core.currentModule}' via ${dialect}(). Rename one or delete the redundant registration — silent overwrite drops the earlier handler with no error.`)
@@ -208,33 +217,38 @@ export const registerName = (table, order, siteDialect, siteModule, name, dialec
   order.push(name)
   siteDialect.push(dialect)
   siteModule.push(ctx.core.currentModule)
+  siteValue.push(value)
 }
 
 /** Complements registerName's pre-write check: after a module's init(ctx)
  *  returns (src/autoload.js includeModule), verify none of the previously
- *  reg()-registered ctx.core.emit handlers got silently clobbered by a raw
- *  assignment inside that module — the dangerous direction registerName
+ *  registered ctx.core.emit handlers (reg()/registerGetter()/bind()-on-a-
+ *  flat-key, everything registerName tracks) got silently clobbered by a
+ *  raw assignment inside that module — the dangerous direction registerName
  *  can't see coming (it only guards the moment of ITS OWN write, not a
  *  later raw one). Together the two calls cover both temporal orders
  *  without a Proxy.
+ *
+ *  Exact identity comparison (`table[name] !== siteValue[i]`), not a
+ *  wrapper-tag heuristic: registration only ever runs once per name per
+ *  compile (includeModule's `ctx.module.modules[modName]` guard — no
+ *  module's init(ctx) re-runs within a session) and nothing legitimate
+ *  reassigns `ctx.core.emit[name]` after registration (registration is the
+ *  ONLY writer — emit/compile only ever READ `ctx.core.emit`), so the
+ *  stored reference and the live table entry must stay `===` for the
+ *  handler's whole life; any divergence IS a silent clobber, full stop —
+ *  strictly more precise than checking for a surviving `.deps` tag (which
+ *  a clobbering `reg()`-wrapped replacement would still carry).
  *
  *  ctx.core.emit ONLY — not ctx.core.stdlib/wat(): a WAT body is a plain
  *  string with no attached wrapper metadata to silently lose, so a raw
  *  clobber there is an outright wrong-text bug (caught by ordinary
  *  functional tests), not the invisible-guarantee-drop CONTRIBUTING singles
- *  out for `ctx.core.emit`. Detecting it needs a per-name marker
- *  distinguishable from a plain overwrite; tagging a STRING isn't possible.
- *  reg()'d ctx.core.emit handlers already carry that marker for free —
- *  `emitter()` (this file) tags every one with `.deps`/`.argc`; a raw
- *  handler clobbering one loses that tag, which is the check below.
- *  registerGetter() entries aren't emitter()-wrapped (no deps to
- *  auto-include), so they're checked for bare presence only. */
-export const verifyEmitIntegrity = (table, order, siteDialect, siteModule) => {
+ *  out for `ctx.core.emit`. */
+export const verifyEmitIntegrity = (table, order, siteDialect, siteModule, siteValue) => {
   for (let i = 0; i < order.length; i++) {
     const name = order[i]
-    const v = table[name]
-    const isReg = siteDialect[i] === 'reg'
-    if (v === undefined || (isReg && (typeof v !== 'function' || v.deps === undefined)))
+    if (table[name] !== siteValue[i])
       throw new Error(`Duplicate stdlib registration: core.emit '${name}' registered by module '${siteModule[i]}' via ${siteDialect[i]}() was silently overwritten by a raw assignment (likely in module '${ctx.core.currentModule}', just registered). Rename one or delete the redundant raw assignment.`)
   }
 }
@@ -249,7 +263,7 @@ export const verifyEmitIntegrity = (table, order, siteDialect, siteModule) => {
  *  silently read `undefined` and every getter fell through to `__dyn_get`. A Set
  *  key-lookup is kernel-safe. Dispatch (module/core.js) checks `ctx.core.getters.has(key)`. */
 export const registerGetter = (key, fn) => {
-  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, key, 'registerGetter', fn)
+  registerName(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue, key, 'registerGetter', fn)
   ctx.core.getters.add(key)
 }
 
@@ -426,17 +440,27 @@ export function reset(proto, globals, bridge) {
                             // includeModule(), src/autoload.js) — attributes a
                             // registerName()/verifyEmitIntegrity() collision to a module
                             // without threading a param through every call site.
-    regEmitOrder: [],       // names registered on ctx.core.emit via reg()/registerGetter()
-                            // this compile, in registration order — registerName's
-                            // collision ledger (see registerName's doc comment: plain
-                            // arrays, deliberately NOT a name-keyed dict/Map, and never
-                            // string-concatenated on the hot path — both broke self-compile
-                            // warm-instance reuse; see registerName's own doc for why).
-    regEmitDialect: [],     // parallel to regEmitOrder: dialect string ('reg'/'registerGetter').
+    regEmitOrder: [],       // names registered on ctx.core.emit via reg()/registerGetter()/
+                            // bind()-on-a-flat-key this compile, in registration order —
+                            // registerName's collision ledger (see registerName's doc
+                            // comment: plain arrays, deliberately NOT a name-keyed dict/Map,
+                            // and never string-concatenated on the hot path — both broke
+                            // self-compile warm-instance reuse; see registerName's own doc
+                            // for why).
+    regEmitDialect: [],     // parallel to regEmitOrder: dialect string ('reg'/'registerGetter'/'bind').
     regEmitModule: [],      // parallel to regEmitOrder: registering module's name.
+    regEmitValue: [],       // parallel to regEmitOrder: the exact registered value/function
+                            // reference — verifyEmitIntegrity's identity check (`table[name]
+                            // !== regEmitValue[i]`) reads this to detect a later raw clobber,
+                            // flat-key bind() included, not just reg()'s `.deps` wrapper tag.
     regStdlibOrder: [],     // same trio, for ctx.core.stdlib names registered via wat().
     regStdlibDialect: [],
     regStdlibModule: [],
+    regStdlibValue: [],     // parallel to regStdlibOrder, for signature symmetry with
+                            // registerName's shared 8-arg form — NOT read by any post-hoc
+                            // check today (verifyEmitIntegrity stays ctx.core.emit-only,
+                            // per its own doc comment); wat()'s pre-write check alone uses
+                            // regStdlibOrder/Dialect/Module.
                         // MUST remain last: adding fields before stdlib/stdlibDeps/… shifts
                         // their slot indices and breaks the self-compile compiled kernel's reads.
   }

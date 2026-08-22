@@ -44,6 +44,112 @@ test('Date object: getTime and valueOf', () => {
   same(run('export let f = () => { let d = new Date(NaN); return d.getTime() }'), NaN)
 })
 
+test('Date object: proven-receiver .valueOf()/.getTime() compares correctly against a NUMBER literal', () => {
+  // kind-traits.js methodValType's `.valueOf() -> receiver kind` rule is
+  // right for every OTHER type (jz's valueOf is a receiver passthrough,
+  // module/string.js) but wrong for Date: `.valueOf()` returns the
+  // timestamp, a NUMBER, never the receiver. Pre-existing and independent of
+  // the unresolved-dispatch pins below — a PROVEN Date never reaches the
+  // unresolved path at all (tryStaticDispatch's `.date:valueOf` dispatches
+  // it directly) — so `d.valueOf() === n` folded unsound (false) even for a
+  // fully statically-known Date, on EVERY optimize level, until
+  // kind-traits.js's own VAL.DATE carve-out landed.
+  is(run('export let f = () => { let d = new Date(1234567890000); return d.valueOf() === 1234567890000 }'), true)
+  is(run('export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }'), true)
+})
+
+test('Date object: unresolved-vt receiver .valueOf() discriminates Date from plain object/array (.work/printer-trio.md residual)', () => {
+  // The printer-trio fix (module/date.js) deleted date.js's flat `.valueOf`
+  // override so every OTHER unresolved-type receiver's `.valueOf()` stopped
+  // reading garbage (array[0]'s bits as f64) — but left an
+  // unresolved-but-ACTUALLY-Date receiver undiscriminated: `.valueOf()` fell
+  // through to string.js's identity fallback (the Date itself, not its
+  // timestamp). Date shares PTR.OBJECT's coarse tag with plain
+  // objects/arrays, so a runtime ptr-TYPE fork alone can't tell them apart —
+  // the fix (emit.js dateAuxFallback, wired into both trySidecarToPrimitive
+  // and tryRuntimePtrTypeFork) additionally tests the receiver's own `aux`
+  // field against ctx.schema.dateSid (a schema registered under a
+  // NUL-prefixed property name, `'\x00time'`, no real object literal can
+  // ever alias — a sound, cheap discriminator, no extra heap load beyond the
+  // existing `$__ptr_type` read).
+  //
+  // Heterogeneous-array-element shape, mirroring the ORIGINAL kernel-parity
+  // repro exactly (watr's print.js `node[i]?.valueOf?.()`): vt is genuinely
+  // unresolved at every optimize level, immune to inlining resolving the
+  // ambiguity away (a single named-function call site, by contrast, can get
+  // specialized per call site once inlined — see the pin below for that
+  // shape instead).
+  const src = `
+    export let f = (which) => {
+      let items = [new Date(1234567890000), {}, [7, 8, 9]]
+      let x = items[which]
+      return x.valueOf()
+    }
+    export let isIdentity = (which) => {
+      let items = [new Date(1234567890000), {}, [7, 8, 9]]
+      let x = items[which]
+      return x.valueOf() === x
+    }
+  `
+  const { exports: e } = jz(src)
+  is(e.f(0), 1234567890000, 'unresolved-but-actually-Date: valueOf() returns the timestamp, not identity')
+  is(e.isIdentity(1), true, 'unresolved-but-actually-object: valueOf() still returns identity')
+  is(e.isIdentity(2), true, 'unresolved-but-actually-array: valueOf() still returns identity')
+})
+
+test('Date object: unresolved-vt receiver .valueOf() via a shared dispatch function', () => {
+  // Same discrimination, named-helper-function shape: a function called with
+  // BOTH a Date and a plain object at different call sites keeps its
+  // parameter's vt genuinely unresolved inside the function body. This
+  // specific shape reaches trySidecarToPrimitive (the ctx.closure.call-gated
+  // fork that runs AHEAD of tryRuntimePtrTypeFork whenever the compiled
+  // program has any function at all — the common case) rather than
+  // tryRuntimePtrTypeFork itself, so both forks needed the same aux guard.
+  const src = `
+    function unresolvedValueOf(x) { return x.valueOf() }
+    export let f = () => {
+      let d = new Date(1234567890000)
+      let o = {}
+      return unresolvedValueOf(d) === 1234567890000 && unresolvedValueOf(o) === o
+    }
+  `
+  is(jz(src).exports.f(), true)
+})
+
+test('Date object: KNOWN-WRONG — unresolved-vt receiver .getTime() has no discriminator, silently misreads a non-Date', () => {
+  // Adjacent finding, deliberately NOT fixed here (out of the .valueOf()-only
+  // scope this session's Item 3 covers) — flagged so it doesn't stay
+  // invisible. `.getTime` shares emitDateGetTime with `.valueOf` and is
+  // registered on the SAME kind of flat key (module/date.js: `ctx.core.emit
+  // ['.getTime'] = emitDateGetTime`), but NEITHER dispatch fork this
+  // session's fix touched can reach it: trySidecarToPrimitive only ever
+  // engages for 'valueOf'/'toString' (method-name-gated); tryRuntimePtrTypeFork
+  // only engages when a `.string:`/`.typed:` sibling exists for the SAME
+  // method, and '.string:getTime'/'.typed:getTime' don't — so `.getTime()`
+  // on an unresolved receiver falls through to tryGenericEmitter (strategy
+  // 9/11, emit.js), which calls the flat '.getTime' key UNCONDITIONALLY
+  // whenever the receiver isn't proven OBJECT/HASH. A non-Date, unresolved
+  // receiver's `.getTime()` therefore still reads emitDateGetTime's
+  // `f64.load` at the receiver's OWN base address — for an array, that's
+  // element 0's raw bits, exactly the printer-trio corruption shape, just
+  // for a different method name and a call real JS would TypeError on.
+  // FLIP CONDITION: extends dateAuxFallback (emit.js, this session) into
+  // tryGenericEmitter's three ctx.core.emit['.'+method] call sites — more
+  // invasive than the valueOf forks (obj isn't always a materialized local
+  // there, and the fast-path/sidecar/plain arms each need their own guard),
+  // deliberately deferred rather than rushed alongside the valueOf fix.
+  const src = `
+    export let f = (which) => {
+      let items = [new Date(1234567890000), [111, 222, 333]]
+      let x = items[which]
+      return x.getTime()
+    }
+  `
+  const { exports: e } = jz(src)
+  is(e.f(0), 1234567890000, 'unresolved-but-actually-Date: correct, unaffected by the gap')
+  is(e.f(1), 111, 'KNOWN-WRONG: unresolved-but-actually-array silently reads element 0, should TypeError like real JS')
+})
+
 test('Date object: setTime', () => {
   same(run('export let f = () => { let d = new Date(0); d.setTime(999); return d.getTime() }'), 999)
   same(run('export let f = () => { let d = new Date(0); return d.setTime(999) }'), 999)
