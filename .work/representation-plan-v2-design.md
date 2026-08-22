@@ -1,6 +1,6 @@
 # RepresentationPlan v2 — edge-normalized BigInt provenance
 
-Status: **implementation in progress — Slices 1–2 shadow plan + complete provenance landed; not yet codegen-consumable**
+Status: **RATIFIED as the standing architecture — see `.work/adr-0001-bigint-representation.md` (2026-08-21)**; implementation through C4a on main, C4b host-ABI descriptor in flight, C5 (optimizer-preserved materialization) open and release-blocking
 (2026-08-17). Grounded in current main
 `2e4072df` and an exact resurrection of the rejected five-commit experiment:
 

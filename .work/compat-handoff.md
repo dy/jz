@@ -1,5 +1,13 @@
 # Compat-diet handoff: HASH dict-mode + BigInt retirement
 
+> **§BigInt SUPERSEDED** 2026-08-21 by `.work/adr-0001-bigint-representation.md`: the
+> retirement end-state (raw-i64-only, unprovable flows = compile errors by default) is
+> rejected — self-host is load-bearing mixed BigInt (the dc6139d9 wall below), so tagged
+> dynamic BigInt is core, with raw i64 as plan-proven specialization and strict mode
+> opt-in only. The inventory below remains valid as the **deletion-phase target list**
+> (legacy fallback authorities die; the tagged mechanism itself does not). The HASH
+> dict-mode workstream is unaffected and still live.
+
 2026-08-19. Context: compat features split two ways — desugar-to-core (jzify: generators,
 async, classes, switch, var, arguments — architecturally free, zero core dispatch arms)
 vs leak-into-core (BigInt mixing semantics, dynamic HASH fallback). Ratified direction:
