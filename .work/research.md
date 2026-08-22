@@ -23942,3 +23942,186 @@ this commit). Assets (not committed, scratchpad-local): worktree at
 `goalgate-attrib.mjs`, `probe-scratch-vs-main.mjs` — all reproducible from
 this entry's method description if the scratchpad is gone by the time
 someone reads this.
+
+## §hash-wall: __hash_new_small call-site attribution (root cause named:
+## needsDynShadow's whole-program anyDynKey) + presizing kill, -93.8% calls,
+## dormant gate wall NOT closed (2026-08-22, agent/hash-wall)
+
+Picks up the map-growth session's own NEXT exactly as handed off: "why does
+compiling ~6.4 MB of the compiler's own source create 6.15 million distinct
+dynamic-property-bag objects? — a RepresentationPlan-coverage question."
+Answer, evidenced: it isn't a RepresentationPlan (src/compile/
+representation-plan.js — that system tags BigInt-vs-Number carriers, an
+unrelated mechanism) coverage gap in the schema-registration sense at all.
+It's `needsDynShadow` (src/ir.js): `if (ctx.types?.anyDynKey) return true` —
+a WHOLE-PROGRAM, not per-binding, boolean. `anyDynKey` derives from
+`collectProgramFacts`'s `anyDyn` (any `obj[computedKey]` access anywhere,
+read or write, on a non-TYPED/ARRAY/STRING/BUFFER receiver — program-facts.js
+observeNodeFacts), narrowed back toward false by `refineDynKeys`
+(narrow.js) ONLY if a live whole-program scan finds zero such sites. A
+160-module, ~6.4 MB general-purpose compiler has real dispatch tables and
+config lookups keyed by variable — `anyDynKey` stays true, and once it does,
+EVERY `{}` object literal anywhere in the program mirrors ALL of its schema
+fields into a per-object dyn-props HASH via `__dyn_set`, in addition to (not
+instead of) its normal static schema slots (module/object.js's `shadow`
+branch, `for (i of schema.length) call $__dyn_set(...)`) — "the compiler's
+own internal object usage falls off static coverage" was the right instinct,
+wrong mechanism: it's not that these objects LACK a schema, it's that the
+schema isn't trusted to be the only reader.
+
+**Attribution method**: no WAT splicing needed — `src/helper-counters.js`'s
+existing `instrumentHelperCallsites`/`JZ_HELPER_SITES` opt-in, pointed at
+`dyn_set` (already registered; `__hash_new_small` was NOT — added one row,
+harmless/opt-in, kept in this commit). `__dyn_set` is a single shared
+runtime function, never inlined, so wrapping its call SITES (not its entry)
+attributes by ENCLOSING COMPILED FUNCTION — i.e. by self-hosted source
+call site — for free. Built via `JZ_HELPER_SITES=dyn_set node
+scripts/self-compile-build.mjs`, driven by a throwaway scratchpad script
+that mirrors `resolveSelfCompileBuild({optimize:3})` → instantiate →
+`default(graph.code, 0, '{"level":3}', graph.modules, 0)` → catch the
+`unreachable` trap → read every exported `__hcs_*` global. Confirmed
+sound: `__hc_dyn_set` (entry counter) === `__hc_hash_set_local` (every
+dyn_set call for a header-carrying receiver ends in one) to the call;
+`__hc_ihash_set_local` (the slow global-`__dyn_props`-table fallback) is
+168 out of 13.48M — confirms the fast per-object header-sidecar path
+carries essentially all traffic, matching module/object.js's own doc.
+Two independent runs one session apart agree to 0.01% (13,483,396 vs
+13,483,360 total dyn_set calls) — the env.now nondeterminism the 2026-08-20
+"defect 2" entries name is real but negligible at this scale.
+
+**Also answers the task's own capacity-policy question directly**: why does
+a "small" hash land in the same tracked class as big allocations at all?
+It doesn't, physically — `__hash_new_small`'s allocation is `16 +
+smallCap×24` bytes (module/collection.js: `smallCap=8` at level 3,
+`compactCollections` true by default for the self-compile profile so
+`lane=0`, stride=`MAP_ENTRY`=24) = 208 bytes/call, nowhere near 16 KB. The
+"≥16KB-class" tag on `alloc_hdr_n` in the prior sessions' own language is a
+naming carry-over from the OLDER region-live WAT-splice method (which WAS
+byte-size-filtered at the wasm level); the `helperCallsites` method reused
+here has no size filter and simply counts every call — the dormant wall is
+CALL-COUNT volume (6.15M constructions), not a fat per-call allocation.
+Verdict on the task's (a)/(b)/(c): **primarily (a)** — one whole-program
+conservative flag, not "a few sites," fans out to affect nearly every
+schema'd object literal in the compiled program; **with a genuine,
+independent (c) layered on top** — `__hash_new_small`'s fixed cap (a
+guess tuned for the ad-hoc "0-2 unknown-eventual-size" receiver,
+module/collection.js's own doc) is simply the wrong capacity for a shadow
+mirror, whose final size is a compile-time-known fact (`schema.length`),
+not a guess, in EITHER direction.
+
+**Top attributed sites** (dyn_set calls, function = compiled self-hosted
+function; closures are numbered non-stably build-to-build, per the
+2026-08-20 forensic entries — named only where a NAMED function, not
+decompiled further):
+
+| calls | sites | function | shape (read from source) |
+|---|---|---|---|
+| 2,550,041 | 13 | `_closure2757` | anonymous, 13-field literal per call |
+| 1,310,880 | 6 | `m147_literals_scalarizeObjectLiterals` | `{node,changed}`-shaped return, per AST node visited |
+| 1,310,880 | 6 | `m147_literals_scalarizeArrayLiterals` | same shape, array-literal sibling pass |
+| 1,068,946 | 1 | `m60_ast_some_rest3` | src/ast.js |
+| 1,019,648 | 8 | `m145_inline_inlineInExpr` | src/compile/plan/inline.js |
+| 1,000,236 | 1 | `m60_ast_some` | src/ast.js |
+| 757,672 | 1 | `__hash_set` | stdlib helper calling `__dyn_set` internally, not a self-host site |
+| 707,792 | 6 | `m147_literals_scalarizeTypedArrayLiterals` | third scalarize sibling |
+| 398,952 | 1 | `m5_parse_loc` | src/parse.js |
+| 189,279 | 24 | `m74_analyze_analyzeBody` | src/compile/analyze.js |
+| 88,200 | 18 | `m67_facts_emptyWalkFacts` | src/compile/program-facts.js:215 — CONFIRMED by source read: an 18-key object literal, ALL keys compile-time-literal, called once per function body walked (`collectProgramFacts`) |
+
+Top-15 functions = 88.24% of 13,483,396 total tracked dyn_set calls.
+`emptyWalkFacts` is the cleanest ground-truth confirmation available this
+session: 18 sites in the histogram, 18 literal keys in the source
+(`dynVars, dynWriteVars, anyDyn, hasSchemaLiterals, hasMapSet, hasBigint,
+maxDef, maxCall, hasRest, hasSpread, propMap, valueUsed, callSites,
+writtenProps, literalWriteKeys, arrResized, nameEscapes, objectLiteralDefs`
+— exact count match, not a coincidence) — a per-AST-node-analysis-pass
+accumulator object with a fully static shape, going through the fully
+dynamic per-field `__dyn_set` mirror on every construction, purely because
+some UNRELATED part of the 6.4 MB program does `dispatch[nodeType]`
+somewhere.
+
+**Fix landed** (module/object.js, `hashCapFor()` + the `shadow` branch):
+presize the props hash directly to the exact 75%-load-safe capacity for
+`schema.length` known fields — `__hash_new_cap(hashCapFor(schema.length))`
+written to the fresh object's off-16 header slot BEFORE the per-field
+`__dyn_set` loop, so the first mirror-write already finds a correctly-sized
+table and never touches `__hash_new_small` or triggers a grow.
+`hashCapFor` SIMULATES genUpsertGrow's own pre-insert trigger (`size*4 >=
+cap*3`, module/collection.js) step by step rather than deriving a closed
+form, specifically so it can't silently drift out of sync with the real
+grow condition it's sizing against — correctness is grow-path-invariant by
+construction either way (an imperfect capacity just costs one ordinary,
+already-tested grow, never a wrong answer). Verified in the emitted WAT
+directly (`compile(src,{wat:true,optimize:3})` on an 18-field shadowed
+literal): watr's O3 inliner folds the tiny `__hash_new_cap` body inline at
+the call site (locals renamed `$__inlN___inl2_want`/`_cap`) — text search
+for the literal call disappears, the computation (want=32, matching
+`hashCapFor(18)` by hand) is verified present and correct by direct
+inspection, not just by the call existing. Scope: this session's fix
+targets ONLY the object-LITERAL construction shadow branch
+(module/object.js) — `needsDynShadow`-driven mirroring also fires from
+src/compile/emit-assign.js (plain-assignment/spread mirroring) and
+module/json.js; same class, not touched here (kept the diff to the
+single, measured-dominant, best-understood site rather than widening
+blast radius across a hot correctness-sensitive path in one pass).
+
+**Gates**: full suite 3610 total / 3608 pass / 2 skip / 0 fail (unchanged
+bar — no golden re-baseline needed: this changes NATIVE and KERNEL codegen
+identically since both compile from the same modified module/object.js, so
+kernel-parity compares native-vs-kernel agreement, not a fixed golden byte
+snapshot). kernel-parity 3/3 (33 assertions, all byte-identical O0/O2/O3).
+kernel-oracle 14/14 (619 assertions), `dvnested-mechanism` AGREE at every
+level on both legs — direct confirmation the build stayed dormant, not
+region-live. Smoke-tested independently (2/13/18-field shadowed literals,
+including a `for-in` enumeration read-back of the 18-field case) before
+the full-suite run.
+
+**THE gate — dormant-config jz×jz goal-gate, before/after, same machine,
+same instrumentation method** (helperCallsites build, so wall time carries
+~15-20% instrumentation tax on BOTH sides — an apples-to-apples pair, not
+an absolute number):
+- `__hash_new_small` calls: 6,157,748 → 379,895 (**-93.8%**, a 16.2×
+  reduction) at the same trap.
+- Trap point: still `unreachable` at byteLength EXACTLY 4,294,967,296 (the
+  wasm32 hard ceiling — a constant regardless of how efficiently memory
+  gets there, not a signal either way on its own).
+- Wall time to trap: ~6.67-6.81s (two pre-fix runs) → ~7.74-7.84s (two
+  post-fix runs, instrumented + a clean `build-dist.mjs` production
+  rebuild) — **+13-16% more compute survived before the ceiling**, cross-
+  checked by `__hc_dyn_set`/`__hc_alloc_hdr_n` totals at trap both rising
+  (13.48M→17.88M dyn_set calls; 8.30M→8.91M alloc_hdr_n calls) — MORE of
+  the 160-module source got processed inside the same 4 GiB, the expected
+  shape of a real (not noise) improvement.
+- **Gate NOT closed.** Honest reading, per the task's own framing: real,
+  measured runway extension; `__hash_new_small` was the single largest
+  NAMED contributor (74% of tracked alloc_hdr_n calls) but reducing ITS
+  call count 16× only bought ~15% more wall-clock runway, not proportional
+  headroom — confirms the 4 GiB wall is a diffuse SUM (this session's own
+  first-principles estimate: 6.15M × 208 B ≈ 1.19 GiB pre-fix, ~30% of the
+  ceiling from this one mechanism alone; the other ~70% is everything
+  else — genuine growth-path bytes, the compiler's own AST/IR/output
+  representation of 6.4 MB of source, and the ~26% of alloc_hdr_n calls
+  this session didn't attribute).
+
+**NEXT for whoever continues**: (1) the SAME presizing technique, applied
+to emit-assign.js's/json.js's needsDynShadow call sites (same mechanism,
+different codegen location — not attempted this session, scope
+discipline) — smaller expected yield (module/object.js's literal
+constructor is the highest-count site class by a wide margin per the
+table above) but real. (2) `anyDynKey`'s whole-program-vs-per-binding
+imprecision is the actual root: a real per-binding/alias-aware version
+(does THIS SPECIFIC literal's binding ever reach a dynamic-key
+expression's receiver, not "does ANY dynamic-key expression exist
+anywhere") would let most of the compiler's own schema'd literals skip
+the shadow mirror ENTIRELY, not just pay less for it — this is the "large
+re-architecture" the task's own brief anticipated as the alternative to a
+capacity kill; real alias/points-to analysis, out of one session's scope,
+and the honest reason this pass's kill is a runway extension and not a
+close. (3) The unattributed ~26% of alloc_hdr_n calls (2.2M of 8.3M
+pre-fix) — Array/growth/other sites below this session's top-40 cutoff —
+untouched, unmeasured individually. Assets (not committed, scratchpad-
+local, gone with the session scratchpad): `goalgate-dormant.mjs` (the
+driver — resolveSelfCompileBuild + instantiate + catch-trap + read
+`__hcs_*`), `dynset-sites.json` (full site+function dump), `wat-check*.mjs`
+(the inline-verification probes) — reproducible from this entry's method
+description.
