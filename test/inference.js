@@ -2402,8 +2402,18 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   const wat = jz.compile(src, { wat: true, optimize: 0 })
   ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
   const { f } = run(src)
-  is(f(5n), 6n, 'proven-bigint arm proves through the guard')
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
+  // Host-BigInt ingress through the CLOSURE-mediated normalizer now rejects
+  // loudly (C4b jz:hostabi: param v has no tag evidence — `parse`, a local
+  // closure, is invisible to solveBigintProvenance's producers). Forcing
+  // evidence without closure-edge unboxing was PROVEN silent-wrong (f(5n) →
+  // 9221823924482868225n: box pointer bits + 1n), so the loud reject stands
+  // until the plan's RAW/BOXED edge tracking extends through closure
+  // call-argument/return flow (queued: closure-forwarding slice,
+  // .work/phase-c-unification.md §C4b). Direct (non-closure) normalizers
+  // take the tagged ingress and compute correctly — test/types.js.
+  throws(() => f(5n), /BigInt argument at param 0/,
+    'closure-mediated normalizer: zero-evidence host BigInt rejects loudly (flip to is(f(5n), 6n) when closure-forwarding lands)')
 })
 
 test('closure return-kind: fails open when the return depends on an unsettled capture', () => {

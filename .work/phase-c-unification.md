@@ -222,7 +222,22 @@ on landing the slice branch. Follow-up hardening in the same campaign:
 delete stringLiteral's [null,string] arm (no producer remains) + make
 valTypeOf throw-or-null on [null,string] rather than misclassify.
 
-## C4b state (2026-08-22): redesigned on branch, merge gated
+## C4b LANDED (2026-08-22, main ef444bfc)
+
+Merged with the BigInt(v) provenance producer (paramNeedsHostTag, symmetric
+with Number(name)) + a second necessary fix it surfaced: module/number.js
+`__to_bigint` fell through to hardcoded 0 for a PTR.BIGINT box — identity
+arm added (mirrors `__to_num`). types.js both compute 6n via the tag path.
+ONE corner regressed loud-on-purpose and is PINNED as specified behavior
+(test/inference.js): a CLOSURE-mediated typeof-normalizer param rejects
+host BigInt — the local closure is invisible to solveBigintProvenance, and
+force-granting evidence was PROVEN silent-wrong (f(5n) → box bits + 1n =
+9221823924482868225n). Flip condition named in the pin. QUEUED: the
+closure-forwarding slice — extend plan RAW/BOXED edge tracking through
+closure call-argument/return flow (closureBoxParams machinery partially
+exists). Battery at merge: suite 3609 total, the pin green, 0 fail.
+
+## C4b original state (2026-08-22): redesigned on branch, merge gated
 
 phase-c4b @ a74ae3eb: jz:hostabi descriptor replaces jz:bigintbox
 ({tag, raw, rest} per export; raw PROVEN architecturally unreachable
