@@ -11966,3 +11966,20 @@ dist/jz.wasm falls 17,115.3→17,082.8 kB. Product battery: data 147/147, watr
 37/37, types 178/178, ABI 5/5, interop 18/18, dyn-keys 69/69, passes 9/9,
 session 20/20, build/wat-strip 3/3, kernel-oracle 14/14, kernel-parity 3/3,
 full suite 3626/3624/0/2, functional self-compile 21/21 and ratchet 10/10.
+
+## WALL (2026-08-22): dynPointsTo precision rung 3 local literals
+
+Implemented the handoff's proposed fail-closed local def-site solver (literal
+and known-sid RHS, local aliases, parameter forwarding, reassignment unions,
+cycle/opaque-write ALL) with runtime and WAT pins. On the current O3 self graph,
+opt-in attribution recorded 4,923 local-union attempts, 0 resolved and 4,923
+ALL. Forty sampled sites all had call/member results, array-element reads,
+global aliases or missing initializers; none had the literal/known-sid shape
+the proposed rung could discharge. `dynPointsTo` stayed `ALL`. Native self-graph
+compile output grew 17,512,988→17,516,206 bytes (+3,218); measured compile time
+was 306.6 s baseline vs 325.9 s with the solver (directional only, noisy). The
+source/tests/instrumentation were reverted completely—no zero-effect machinery
+landed, and the 4 GiB helper gate was not rerun because emitted dyn-shadow
+code was provably unchanged. Next honest prerequisite: scope-stable result/kind
+provenance for direct calls, member/element results and globals (preferably
+indexed HIR), then re-attempt points-to precision.

@@ -24215,3 +24215,34 @@ driver — resolveSelfCompileBuild + instantiate + catch-trap + read
 `__hcs_*`), `dynset-sites.json` (full site+function dump), `wat-check*.mjs`
 (the inline-verification probes) — reproducible from this entry's method
 description.
+
+## §dyn-reach rung 3 falsification — local literal solver resolves 0 current
+## self-graph sites; reverted, no source landed (2026-08-22)
+
+The handoff's next proposed lever was a local-variable def-site union layered
+on `resolveParamUnion`: literal/known-sid initializers, alias/param forwarding,
+reassignment joins, and ALL for cycles, compounds, captures with opaque writes,
+or unresolved expressions. The implementation was sound on focused pins:
+a local literal passed into a polymorphic callee narrowed its parameter union;
+two literal reassignments joined both schemas; a call-result initializer stayed
+ALL. It was also lazy (only built a per-function def map after an unresolved
+local receiver actually reached dynPointsTo), avoiding a map per function.
+
+Fresh O3 self-graph evidence falsified its expected reach. An opt-in counter at
+the exact `tryLocalUnion` seam reported `attempts=4923, resolved=0, all=4923`.
+Forty sampled definitions were representative: direct calls (`parse.expr`,
+`decodeEscape`, `divModSmall`), member calls (`slice`, `shift`, `Map.get`),
+array elements/iterator temps, module-global aliases, or missing initializers.
+None was a `{}`/known-sid source. This also explains why adding scoped
+`analyzeBody().valTypes` did not move the count: these are precisely the result
+unions the existing single-kind analysis leaves open. The final native probe:
+`dynPointsTo='ALL'`, 796 schemas, artifact 17,516,206 bytes versus the clean
+17,512,988 (+3,218); compile 325.9 s versus 306.6 s (timing directional only).
+
+Disposition: reverted source, pins and instrumentation in full. The helper-site
+4 GiB gate was not rerun: with dynPointsTo still literally ALL, emitted shadow
+code is identical, so an instrumented run could only add noise. The prerequisite
+is no longer "walk local defs": it is scope-stable result/kind provenance for
+calls, member/element reads and globals—preferably stable HIR IDs plus a
+revisioned analysis manager. Only after that fact exists can local points-to
+consume it without duplicating another mini type system.
