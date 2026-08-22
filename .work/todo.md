@@ -11842,3 +11842,70 @@ has a live producer (markBigintSink) and a live consumer
 be deleted without first closing item 2's gap. Not re-instrumented
 separately — item 2's evidence already answers item 3's question. No
 source changed; no commit needed beyond this note.
+
+## WALL (2026-08-22): funded-deletion item 4 — _resultBigintSentinel lane
+## (compile/index.js) still required. NOT a no-op deletion. Not deleted.
+
+Per the task's own protocol ("verify by test: bigint-returning exports at
+every optimize level, host receives real BigInt, then delete"): forced
+`resultBigintSentinel = 0` in `synthesizeBoundaryWrappers`
+(compile/index.js:1771, one-line temp edit) to route every census-BIGINT
+export result through the generic tagged decode (`resultDynamic`) instead,
+and differentially probed the REAL production decode path (`jz(src,
+opts).exports.f()` — NOT test/data.js's own `run()` convention, which uses
+`.instance.exports` + `_matrix.js`'s `adaptI64`, a TEST-ONLY re-decode that
+doesn't implement the `s`-marker at all and so is not a valid probe for
+this question) against baseline, covering all four `layout.js
+BIGINT_SENTINEL_KIND`s (BARE/UNARY_NEG/UNARY_NOT/JOINT_BINARY), present
+and absent, at optimize false/1/2/3.
+
+**Kind 1 (BARE — plain `m.get(k)`/`d[k]` passthrough) matches exactly**,
+disabled vs baseline, present/absent/negative/lossless-past-2^53 — this
+part of the lane really is redundant with the generic decode today.
+
+**Kinds 2-4 (UNARY_NEG/UNARY_NOT/JOINT_BINARY) do NOT** — disabling
+produces silent wrong values on the PRESENT-real-bigint sub-case, at every
+optimize level, identically:
+```
+                    baseline (correct)   sentinel disabled (WRONG)
+-m.get('x')  (x=5n)   bigint -5             number NaN
+-m.get('x')  (x=-5n)  bigint 5              number 2.5e-323
+~m.get('x')  (x=5n)   bigint -6             number NaN
+m.get('a')+m.get('b') bigint 8              number 4e-323
+  (a=5n,b=3n present)
+```
+`2.5e-323`/`4e-323` are the exact signature of the disease this whole
+mechanism exists to prevent (raw i64 bigint bits reinterpreted as an f64
+subnormal — same class the compat-handoff doc's v1-heuristic postmortem
+and this session's own item-1/2 findings both name). The absent-key
+sub-case of kinds 2-4 (NaN/-1) DOES survive disabling — those specific bit
+patterns (canonical no-payload NaN, plain -1.0) happen to already look
+like ordinary numbers to the generic NaN-box dispatch, which is almost
+certainly why kinds 2-4's ABSENT case was never separately regression-
+tested against the generic lane before — but their PRESENT case does not:
+`func.valResult`'s "optimistic NUMBER default" for `-`/`~`/`+` on a
+census-uncertain operand means the static result kind is NUMBER even
+though the true runtime value for the present sub-case is a real BigInt,
+so the export wrapper is the ONLY place left that reconciles "static claim
+says NUMBER" against "runtime carrier may actually be a live PTR.BIGINT
+box" — `resultBigintSentinel`'s wasm-side body (the maybeUnboxBigInt-style
+tag-check-and-conditionally-unbox inline block, compile/index.js
+~1875-1924) is that reconciliation; `resultDynamic`'s plain `toI64(callIR)`
+has no such check and just ships whatever bits `callIR` produced,
+un-dereferenced.
+
+(Orthogonal, unaffected either way: `m.get('a') + m.get('missing')`
+throws "Cannot mix BigInt and other types" identically on baseline AND
+disabled — a pre-existing JOINT_BINARY absent-operand gap, not caused or
+fixed by this probe, not investigated further here.)
+
+**Disposition**: reverted the one-line probe cleanly (`git diff` empty).
+The lane's `s`-marker/`decodeBigintSentinel` machinery stays whole —
+kinds 2-4 have no substitute today. If kind-1-only were worth carving out
+on its own (delete just the BARE-shaped fraction, keep 2-4), that is a
+new, narrower slice requiring its own producer change
+(`censusBigintSentinelKind`/`_resultBigintSentinel` would need to
+special-case kind 1 while leaving 2-4 routed through `s` exactly as now)
+— out of scope for a same-day deletion pass; recorded here as the one
+concrete opening this item leaves, not attempted. No source changed; no
+commit needed beyond this note.
