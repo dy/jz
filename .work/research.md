@@ -23942,3 +23942,93 @@ this commit). Assets (not committed, scratchpad-local): worktree at
 `goalgate-attrib.mjs`, `probe-scratch-vs-main.mjs` — all reproducible from
 this entry's method description if the scratchpad is gone by the time
 someone reads this.
+
+## §Map-growth kill: tiered 2x/4x policy landed; dormant wall is
+## __hash_new_small VOLUME, not growth-doubling — region-live/dormant split
+## resolved (2026-08-22, agent/map-growth)
+
+**Scratch-vs-main resolved — structurally, then confirmed empirically —
+and it dissolves the open question rather than answering it as posed**:
+region-arena is DEAD CODE for the config that actually gates. Every path
+that builds the self-compile artifact (`build-dist.mjs`, `self-compile-
+build.mjs`, `test/self-compile-source.js`) calls `resolveSelfCompileBuild()`
+with no `regionArena` override, which derives `regionArenaLive` from
+`scripts/self.js`'s own `REGION_HOOKS_ACTIVE` literal marker — currently,
+and structurally (kernel-oracle would break otherwise, see below), `false`.
+Traced `regionHooks` through `frontHalf`/`watrTail`: when inactive it's
+`undefined`, so `__region_mark`/`__region_exit`/`__region_memo_get`/
+`__region_memo_set` are never invoked by the shipped dist/jz.wasm compiling
+anything, including itself. The 2026-08-21 footprint-attrib session's
+97.69%-at-site-4 measurement is real for what it measured, but that was a
+THROWAWAY hand-edited `REGION_HOOKS_ACTIVE=true` build — not the config
+`resolveSelfCompileBuild()` (hence kernel-oracle, kernel-parity, and every
+prior "goal gate" session that built via the standard recipe) actually
+runs. Confirmed region-live cannot currently BE the gated config either
+way: it traps `dvnested-mechanism` — test/kernel-oracle.js's own corpus,
+not an obscure case — at O2/O3 (scripts/self.js's own header comment,
+independently corroborated here, not re-derived from scratch).
+
+**Fresh dormant-config attribution** (own instrumentation — reused
+src/helper-counters.js's existing `helperCallsites` opt-in, zero WAT
+splicing: `JZ_HELPER_SITES=alloc_hdr_n node scripts/self-compile-build.mjs`,
+then a goal-gate driver mirroring `goalgate-attrib.mjs`'s method
+(`resolveModuleGraph(scripts/self.js) → instantiate → default(code, 0,
+{level:3}, modules, 0)`, region-live's `inlinePtrOffsetFast:false` override
+dropped as inapplicable to dormant). Traps `unreachable` at byteLength
+4294967296 in **~7s**, not ~35min/~2.5h — those figures are all region-live
+(dormant has zero reclaim of anything, ever, so it hits the ceiling far
+earlier in the compile's natural progression). 8,296,262 tracked
+`alloc_hdr_n` calls (≥16 KB-class); **74% (6,151,322) is `__hash_new_small`**
+— called from `__dyn_set`, first-dynamic-property-write per-object hash
+CONSTRUCTION (smallCap=8 under level:3's preset), not a growth site at all.
+Growth-path sites are real but a full order of magnitude smaller
+(`__hash_set_local` 437,080, `__set_add` 93,531, `__map_set` 60,562
+combined ≈ 7% of tracked mass). **This is the load-bearing correction**:
+the region-live-scoped "site 4 = 97.69%" framing does not describe the
+config that ships or gates. 6.15M small-hash constructions compiling ~6.4 MB
+of the compiler's own source (160 modules) suggests a RepresentationPlan
+static-coverage gap in the self-hosted compiler's own internal object
+usage — flagged, not investigated (needs its own session; out of scope for
+a growth-policy fix, and not something to half-do here).
+
+**Fix landed** (module/collection.js, `nextCapIR()`/`GROW_QUAD_CAP=8192`):
+genUpsert/genUpsertGrow/genSlotUpsert/genEphemeralSlotUpsert's four
+independent copies of the same doubling formula (`newcap = cap<<1` at 75%
+load — every Set/Map/Hash table including dyn-props, per the 2026-08-21
+entry's own correct read of the shared mechanism) unified into one helper;
+tiered 2×→4× past 8192 entries, unchanged below it. Rationale specific to
+dormant: nothing ever reclaims a grow's abandoned old table (forward-marked
+header, chased via `__ptr_offset` — genUpsert's own long-standing design),
+so under zero-reclaim cumulative-allocated ≈ actually-retained; cutting
+generations directly cuts real, permanent footprint. Closed form
+`C·f/(f−1)`: 2×→2.00C, 4×→1.33C — a 33%-of-C reduction in abandoned-
+generation bytes for any table reaching the tier. **Verified in isolation**
+(synthetic 300K-entry Map, `$__heap` bump-pointer before/after, GROW_QUAD_CAP
+temporarily neutered for the control leg): 28.00 MB → 18.81 MB, **−32.8%**,
+matching the closed-form prediction almost exactly. **Does NOT move the
+jz×jz dormant trap point**: before/after event counts and wall time are not
+distinguishably different (8,296,262→8,265,107 tracked events, ~0.4% fewer,
+inside this run's own known nondeterminism envelope — the env.now source
+the 2026-08-20 "defect 2" entries name) — no table reaches 8192 before
+`__hash_new_small`'s own volume alone exhausts 4 GiB first, so the fix
+never gets a chance to fire on this specific race. Gates: full native suite
+**3603/0/2** (0 fail — the `unknown/dynamic object` golden-size pin
+re-baselined 13009→13689 bytes, `__hash_set_local`+`__ihash_set_local` both
+gaining the tier check, ~340 B/fn, a justified ring-ratchet update matching
+this file's own `known-shape object` golden trail precedent), kernel-oracle
+14/14, kernel-parity 3/3 (33 assertions, `dvnested` passes — direct
+confirmation this build is dormant, not region-live). Committed
+`perf/map-growth` (fab60e65), NOT merged to main.
+
+**NEXT for whoever continues the memory-wall campaign**: the dormant wall's
+real lever is `__hash_new_small` CALL VOLUME — why does compiling ~6.4 MB of
+the compiler's own source create 6.15 million distinct dynamic-property-bag
+objects? — a RepresentationPlan-coverage question, not a growth-policy one;
+a different and larger investigation than this session's scope. Separately,
+region-live remains the only currently-known route to closing the gate
+ENTIRELY (this campaign's own multi-week trail), but is blocked on the O2/O3
+`dvnested-mechanism` miscompile (scripts/self.js's own comment, independently
+reconfirmed here) — until THAT lands, region-live cannot be the shipped/
+gated config, and this session's growth-policy fix, while real and verified
+on its own target mechanism, is capped in observable effect on the actual
+jz×jz goal gate by dormant's earlier, bigger `__hash_new_small` bottleneck.
