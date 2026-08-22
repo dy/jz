@@ -353,13 +353,13 @@ export function scanBindingUses(body, trackNames) {
     }
     if (op === '!' || op === 'typeof' || op === 'void') {
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST)
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, { op })
       else walk(c)
       return
     }
     if (op === 'if' || op === 'while' || op === '?:') {  // `prepare` normalizes `?` → `?:`
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST)
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, { op })
       else walk(c)
       for (let i = 2; i < node.length; i++) val(node[i])
       return

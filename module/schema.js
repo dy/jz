@@ -581,12 +581,4 @@ export function initSchema(ctx) {
     return ctx.schema.slotBigintProvenBySid(ctx.schema.idOf(varName), prop)
   }
 
-  /** True iff (sid, prop) is a conditional-spread slot (ctx.schema.condAbsentProps
-   *  — see its own doc, src/ctx.js) — the value-blind "in schema ⇒ present" fold
-   *  (hasOwnProperty/`in`'s literal-key shortcut, Object.keys/values/entries/
-   *  for-in's static fold) must NOT apply to it; every such caller falls
-   *  through to its existing, already-value-based dynamic path instead. */
-  ctx.schema.condAbsentAt = (sid, prop) => !!ctx.schema.condAbsentProps.get(sid)?.has(prop)
-  /** True iff schema `sid` carries ANY conditional-spread slot. */
-  ctx.schema.hasCondAbsent = (sid) => !!ctx.schema.condAbsentProps.get(sid)?.size
 }

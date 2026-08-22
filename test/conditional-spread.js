@@ -354,19 +354,10 @@ test('conditional-spread: re-spreading an already-conditional object stays corre
     [[1], [0]], 're-spread')
 })
 
-test('conditional-spread: dot-access value through Object.assign stays correct even where enumeration does not (documented boundary)', () => {
-  // Object.assign(target, source) where `source` carries conditional slots:
-  // ctx.core.emit['Object.assign']'s knownSchema wrapper (module/object.js)
-  // treats such a source as unresolvable — same as before this feature
-  // existed for that binding — so it always takes the dynamic fallback
-  // (emitDynamicAssign's runtime-keys walk), never a bespoke cond-aware
-  // Object.assign emitter (none was built — out of scope, Object.assign is
-  // not named in the presence-semantics gate). That fallback enumerates via
-  // emitEnumerateObject, which (like the fully-dynamic Object.keys fallback)
-  // stays value-blind — the SAME documented, inherent gap as the KNOWN
-  // LIMITATION test above, reached through a different door. VALUE reads are
-  // unaffected: target.b reads back exactly what source.b held (undefined
-  // when absent) either way.
+test('conditional-spread: Object.assign copies exactly the runtime-present keys', () => {
+  // Conditional groups lower to HASH so source enumeration carries a real
+  // presence bit. Object.assign's unknown-source path updates the target
+  // sidecar and marks the target's later enumeration dynamic.
   const src = `
     export let f = (cond) => {
       const o = { a: 1, ...(cond && { b: 2 }) }
@@ -376,9 +367,6 @@ test('conditional-spread: dot-access value through Object.assign stays correct e
     }
   `
   const { f } = jz(src, { optimize: 0 }).exports
-  // Native: falsy → target.b undefined (1) AND key count 2 ({c,a}, b never copied).
-  // jz:     falsy → target.b undefined (1, correct) but key count 3 (b copied
-  //         with an UNDEF value by the value-blind dynamic fallback).
   const native = (cond) => {
     const o = { a: 1, ...(cond && { b: 2 }) }
     const target = { c: 3 }
@@ -386,20 +374,10 @@ test('conditional-spread: dot-access value through Object.assign stays correct e
     return (target.b === undefined ? 1 : 0) + ',' + Object.keys(target).length
   }
   is(f(1), native(1), 'truthy: value AND key count both match native (source genuinely has b)')
-  is(f(0), '1,3', 'falsy: value reads correctly (documented divergence: native key count would be 2, not 3)')
+  is(f(0), native(0), 'falsy: absent key is not copied or enumerated')
 })
 
-// ============================================================================
-// Documented boundary (not a bug to fix here — see module/object.js
-// conditionalSpreadGroup's own doc and src/ctx.js's condAbsentProps field
-// doc): presence is signaled through the value channel, so a PRESENT
-// group's value that itself evaluates to `undefined` is indistinguishable
-// from ABSENT on presence-observing surfaces. Dot-access is unaffected
-// (JS reads `undefined` for both cases anyway). Pinned here so the
-// limitation is an explicit, visible fact — not a silent surprise.
-// ============================================================================
-
-test('conditional-spread: KNOWN LIMITATION — a present group whose value IS undefined reads as absent on enumeration surfaces (dot-access stays correct)', () => {
+test('conditional-spread: present undefined remains distinct from an absent group', () => {
   const src = `
     export let f = () => {
       const o = { a: 1, ...(true && { b: undefined }) }
@@ -407,9 +385,7 @@ test('conditional-spread: KNOWN LIMITATION — a present group whose value IS un
     }
   `
   const { f } = jz(src).exports
-  // Native: dot-access undefined (1), 'b' in o TRUE (1, genuinely present), 2 keys.
-  // jz:     dot-access undefined (1), 'b' in o FALSE (0, value-channel conflated with absence), 1 key.
-  is(f(), '1,0,1', 'documented divergence from native (native would be 1,1,2)')
+  is(f(), '1,1,2', 'dot access, in, and enumeration agree on presence')
   is(({ a: 1, ...(true && { b: undefined }) }.b === undefined ? 1 : 0) + ',' +
      ('b' in { a: 1, ...(true && { b: undefined }) } ? 1 : 0) + ',' +
      Object.keys({ a: 1, ...(true && { b: undefined }) }).length, '1,1,2', 'native reference value, for contrast')

@@ -2207,7 +2207,16 @@ export function emitDecl(...inits) {
     // §Carrier invariant). identityShadowName, once set, publishes to
     // ctx.func.identityShadow for module/function.js's ctx.closure.make to
     // read back at the env-slot store — see that file's own comment there.
-    const identityCapture = typeof name === 'string' && ctx.func.capturedNames?.has(name) && hasAmbiguousBoolMerge(init)
+    const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
+    if (ambiguousIdentity && !neverEscapes) {
+      const uses = scanBindingUses(ctx.func.body).get(name)?.uses || []
+      const unsupported = uses.some(use =>
+        use.kind !== USE.CAPTURE &&
+        !(use.kind === USE.BOOL_TEST && use.op !== 'typeof'))
+      if (unsupported)
+        err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
+    }
+    const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
     let identityShadowName = null
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
       if (!identityCapture) return emit(init)

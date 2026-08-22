@@ -1544,36 +1544,10 @@ export default (ctx) => {
     (local $radix i32) (local $digit i32) (local $sbase i32)
     (local $result f64) (local $f f64) (local $mant i64)
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    ${ctx.features.bigint ? `;; ToNumber(BigInt) must yield the bigint's mathematical value, not the raw
-    ;; carrier bits — unlike every other non-number kind, the self-compile BigInt
-    ;; carrier is i64 bits reinterpreted as f64 directly (never NaN-boxed), so it
-    ;; passes the "not NaN" test below just like a genuine number. Detect it with
-    ;; the same magnitude heuristic \`typeof x === 'bigint'\` uses elsewhere
-    ;; (emit.js TYPEOF.bigint): finite, nonzero, subnormal abs — ambiguous with a
-    ;; genuine subnormal Number by carrier design (documented limit, P0-2), same
-    ;; heuristic applied consistently here. Gated on ctx.features.bigint (see the
-    ;; else-arm below) — this ambiguity is real ONLY in a program that can ever
-    ;; construct a BigInt.
-    (if (f64.eq (local.get $f) (local.get $f))
-      (then
-        (if (i32.and (f64.ne (local.get $f) (f64.const 0))
-                     (f64.lt (f64.abs (local.get $f)) (f64.const 2.2250738585072014e-308)))
-          (then (return (f64.convert_i64_s (local.get $v)))))
-        (return (local.get $f))))` : `;; audit-#11 P0-1: the sibling BigInt-carrier build of this function (see the
-    ;; other arm, gated on ctx.features.bigint) treats any nonzero finite
-    ;; subnormal f64 as raw bigint carrier bits — sound ONLY because a program
-    ;; that can construct a BigInt might legitimately produce that carrier.
-    ;; ctx.features.bigint is prep's whole-program prescan (src/prepare/
-    ;; index.js:1159 — set on the sole two construction sites, a bigint
-    ;; literal or \`BigInt(x)\`): false here means THIS program can never
-    ;; construct a BigInt, so the raw-i64-as-f64 carrier can never occur —
-    ;; every non-NaN f64, subnormal or not, is a genuine Number
-    ;; (\`+Number.MIN_VALUE\`/\`+5e-324\` used to decode as bigint 1 under the
-    ;; unconditional heuristic; toNumF64's own inline fast path, src/ir.js
-    ;; ~1195, already made this same distinction — this brings the full
-    ;; __to_num call body in line with it for O0 and the inline-fast-path's
-    ;; own fallback call).
-    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))`}
+    ;; RepresentationPlan boxes every BigInt that reaches a dynamic ToNumber
+    ;; edge. Every non-NaN raw f64 here is therefore a genuine Number,
+    ;; including subnormals; PTR.BIGINT is handled by the tagged arm below.
+    (if (f64.eq (local.get $f) (local.get $f)) (then (return (local.get $f))))
     (if (i64.eq (local.get $v) (i64.const ${NULL_NAN})) (then (return (f64.const 0))))
     (if (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})) (then (return (f64.const nan))))
     (if (i64.eq (local.get $v) (i64.const ${FALSE_NAN})) (then (return (f64.const 0))))
@@ -1585,14 +1559,8 @@ export default (ctx) => {
     (if (i32.and (i32.eqz (local.get $t))
                  (i32.ge_u (call $__ptr_aux (local.get $v)) (i32.const 16)))
       (then (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.SYMBOL_TO_NUMBER}))) (throw $__jz_err (f64.const ${ERR.SYMBOL_TO_NUMBER}))))
-    ;; CARRIER PROGRAM Slice 3 — registry-derived 'interop-decode' arm
-    ;; (layout-kinds.js KIND_REGISTRY.BIGINT), the interop mem.read fix's
-    ;; in-wasm twin: ToNumber(bigint) is the mathematical value, read from the
-    ;; box's OWN payload cell — not the sibling ctx.features.bigint-gated
-    ;; magnitude arm above, which only ever sees RAW (unboxed) carrier bits
-    ;; and can never observe this tag (a NaN-boxed pointer always fails the
-    ;; self-equal test that arm gates on). Landed alongside, not replacing,
-    ;; that heuristic — Slice 5 retires it once every arm is verified.
+    ;; Dynamic BigInt is always tagged; ToNumber reads its mathematical i64
+    ;; payload. Raw BigInt is confined to statically-proven paths.
     (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
       (then (return (f64.convert_i64_s (i64.load (call $__ptr_offset (local.get $v)))))))
     ;; Non-string values go through ToString per JS spec, then re-check the
