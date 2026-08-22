@@ -48,7 +48,7 @@ import { optimizeFunc, treeshake } from '../optimize/index.js'
 import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
-import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationResultTagRequired, representationReturnAction } from './representation-plan.js'
+import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationResultRawBigint, representationResultTagRequired, representationReturnAction } from './representation-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -1726,8 +1726,9 @@ function synthesizeBoundaryWrappers() {
     // own bits for the boxed member). Route it to resultDynamic's generic
     // tag decode instead; interop's PTR.BIGINT arm derefs the box.
     const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
+    const resultRawBigint = !resultPtr && !resultTaggedUnion && representationResultRawBigint(ctx, func)
     const resultBool = func.valResult === VAL.BOOL && !resultPtr
-    const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultTaggedUnion
+    const resultBigint = (func.valResult === VAL.BIGINT || resultRawBigint) && !resultPtr && !resultTaggedUnion
     // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven number.
     // It may be a NaN box, so cross i64 and let interop's generic decoder own it.
     const resultDynamic = !resultPtr && !resultBool && !resultBigint &&
