@@ -328,3 +328,73 @@ evidence (the correct crossing for those tests' real bigints), then
 merge on a fresh product battery. Also queued from its report:
 mem.Object's inline marshal stores plain-bigint property values as raw
 unmarked bits (silent-wrong, wrapVal-independent duplicate logic).
+
+## Closure-forwarding slice LANDED (2026-08-22, branch phase-closure-fwd)
+
+The pin flips: `f(v){ let parse = x => typeof x==='bigint' ? x : BigInt(x);
+return parse(v)+1n }` now computes `is(f(5n), 6n)` correctly (was: loud
+reject). Three parts, none optional — probing showed each alone is either
+insufficient or actively wrong:
+
+1. **Ingress**: `paramNeedsHostTag` (solveBigintProvenance) gained a
+   closure-forwarding case, symmetric with its existing `Number(name)`/
+   `BigInt(name)` producers — a bare-name argument at a position where a
+   SAME-BODY local closure's own param is host-tag-eligible (structurally,
+   via a new `collectLocalClosures` scan — same construction as
+   paramAllUsesNumeric's own closures map, compile/index.js) earns the tag
+   too. Alone, this reproduced the PRIOR agent's proof exactly: box bits +
+   1n = 9221823924482868225n — confirms the C4b note's warning was accurate
+   and the two-halves framing was correct.
+2. **Edge tracking**: buildBodyData gained `closureCallNeedsBox` (currentOf/
+   emittedCandidate: a call to a local closure whose callee has a bare-
+   param return tail — `paramForwardsToReturn`, new — fed a non-excluded
+   argument boxes the call result, replacing the unresolved-callee default
+   RAW guess) and a narrowed `materializedResult` admission for closures
+   (`closureAbiIdentity && closureBoxParams.size > 0` — NOT
+   closureAbiIdentity alone, see gap below). Both sides key off the
+   identical condition (passthrough tail + non-excluded feed), so caller
+   and callee agree by construction rather than by replicated guesswork.
+   `semanticOf` also gained a `closureCalleeKind` fallback
+   (`valTypeOf(node) ?? closureCalleeKind(node)`) reusing flow-types.js's
+   `closureBodyReturnKind` directly — `calleeValType`'s own closure lookup
+   (`ctx.closure.valResult`) populates at emission time, strictly after
+   buildBodyData already ran, so a same-body closure call's KIND (not just
+   its representation) is otherwise unprovable at this analysis point.
+3. **Foundational gap, found by probing, fixed at the root**: closures'
+   `ctx.func.current` (the uniform call_indirect ABI sig object,
+   `closureSig(cb)`) was never a RepresentationPlan lookup key — only the
+   closure's own synthesized `repSig` was (mintRepresentationPlan's
+   pre-existing `sig`/`sig.params` registration). Every `ctx.func.current`-
+   implicit accessor (representationReturnAction,
+   representationActiveMaterializedRep, …) therefore silently missed on
+   EVERY closure's own body, always — completely dormant, because nothing
+   before this slice ever made materializedResult/closureBoxParams
+   reachable for a closure at all. mintRepresentationPlan now also
+   registers whatever `ctx.func.current` holds at mint time (verified
+   `sig === ctx.func.current` for ordinary functions; false for closures).
+
+Gap found and closed mid-slice: `closureAbiIdentity` alone as the
+materializedResult admission is too broad — array-methods.js's
+`new BigInt64Array(…).map(x => { return x + 1n })` has NO tag-required
+param (x's own boundary semantic excludes bigint outright; the mixed
+{number,bigint} result semantic comes from the bigint LITERAL operand
+alone, not from x), so the ordinary "unproven mixed result → BOXED"
+default doesn't apply to it — but `.map()`'s own internal call site
+($__typed_set_idx) has a fixed, plan-blind, unboxed calling convention,
+and boxing corrupted the store. `closureBoxParams.size > 0` (a REAL,
+plan-proven tag-required param) is the precise, narrower gate.
+
+KNOWN-WRONG, found but out of scope (pre-existing, reproduces identically
+on an unmodified DIRECT non-closure typeof-guarded normalizer too — not a
+closure-forwarding defect): negative-magnitude host BigInt through the
+jz:hostabi tagged-ingress lane (mem.BigInt) reads back as magnitude 0.
+Pinned in test/inference.js next to the flipped assertion.
+
+Battery: inference 141/141 (319 assertions), dyn-keys 65/65 (284),
+data 146/146 (622), array-methods 144/144+1skip (301), kernel-parity 3/3
+(33/33 byte-identical O2/O3 — closure changes did not alter non-bigint
+codegen), kernel-oracle 14/14 (619), FULL SUITE 3610 total / 3608 pass /
+0 fail / 2 skip. Self-compiled (JZ_TEST_TARGET=jz.wasm) verified
+byte-for-byte behavior-identical to native for the flipped pin and its
+companion shapes — no divergence (the specific risk flow-types.js's own
+closureBodyReturnKind doc flags for a similar-looking prior attempt).

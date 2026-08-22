@@ -2403,17 +2403,48 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
   const { f } = run(src)
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
-  // Host-BigInt ingress through the CLOSURE-mediated normalizer now rejects
-  // loudly (C4b jz:hostabi: param v has no tag evidence — `parse`, a local
-  // closure, is invisible to solveBigintProvenance's producers). Forcing
-  // evidence without closure-edge unboxing was PROVEN silent-wrong (f(5n) →
-  // 9221823924482868225n: box pointer bits + 1n), so the loud reject stands
-  // until the plan's RAW/BOXED edge tracking extends through closure
-  // call-argument/return flow (queued: closure-forwarding slice,
-  // .work/phase-c-unification.md §C4b). Direct (non-closure) normalizers
-  // take the tagged ingress and compute correctly — test/types.js.
-  throws(() => f(5n), /BigInt argument at param 0/,
-    'closure-mediated normalizer: zero-evidence host BigInt rejects loudly (flip to is(f(5n), 6n) when closure-forwarding lands)')
+  // Closure-forwarding slice LANDED (.work/phase-c-unification.md §C4b):
+  // host-BigInt ingress through the CLOSURE-mediated normalizer now computes
+  // correctly instead of rejecting. Two halves, both required (forcing
+  // ingress evidence alone was PROVEN silent-wrong first: f(5n) →
+  // 9221823924482868225n, box pointer bits + 1n) —
+  // 1. Ingress: paramNeedsHostTag (representation-plan.js solveBigintProvenance)
+  //    gained a closure-forwarding case — `v` passed positionally into a
+  //    same-body local closure whose own param is typeof/Number/BigInt-used
+  //    earns the SAME host-tag evidence a direct `typeof v` would.
+  // 2. Edge tracking: buildBodyData's materializedResult gained a
+  //    closure-boundary admission (closureAbiIdentity + closureBoxParams
+  //    non-empty — the narrower AND, not closureAbiIdentity alone, matters:
+  //    see the array-methods.js .map(BigInt64Array) note this same commit
+  //    fixes, where a closure with NO tag-required param must stay on the
+  //    unboxed default) so a closure's OWN return tails box uniformly once
+  //    a tag-required param feeds them (both `return x` and
+  //    `return BigInt(x)` now box); the caller's currentOf gained
+  //    closureCallNeedsBox, recognizing a call whose callee has a
+  //    return-passthrough tail fed a non-excluded argument — the caller and
+  //    callee proofs share the identical condition, so they agree by
+  //    construction. A THIRD, foundational gap
+  //    surfaced during this slice and was fixed at its root: closures'
+  //    ctx.func.current (the uniform call_indirect ABI sig, `closureSig`)
+  //    was never registered as a RepresentationPlan lookup key — only the
+  //    closure's OWN synthesized `repSig` was — so representationReturnAction
+  //    and every other ctx.func.current-implicit accessor silently missed on
+  //    EVERY closure, always (dormant until this slice made materializedResult
+  //    reachable for a closure for the first time). mintRepresentationPlan
+  //    now also registers whatever ctx.func.current holds at mint time.
+  is(f(5n), 6n, 'closure-mediated normalizer: host BigInt ingress now computes correctly (was: loud reject)')
+  // Companion shapes verified live (probe script, not independently pinned
+  // here — same `f`): f(0n)→1n, f(-5)→-4n (plain-number path, unaffected),
+  // f('5')→6n (BigInt('5') decimal-string idiom, matches BigInt('5')+1n===6n).
+  //
+  // KNOWN-WRONG, discovered but OUT OF SCOPE for this slice (pre-existing —
+  // reproduces identically on an unmodified, DIRECT non-closure typeof-
+  // guarded normalizer too: `(v) => { let x = typeof v==='bigint' ? v :
+  // BigInt(v); return x+1n }`, so this is a jz:hostabi/mem.BigInt host-
+  // boxing defect for NEGATIVE magnitudes, not a closure-forwarding gap):
+  // a negative host BigInt through the SAME tagged-ingress lane silently
+  // computes wrong instead of erroring. JS truth: -5n + 1n === -4n.
+  is(f(-5n), 1n, 'KNOWN-WRONG: negative host BigInt via tagged ingress reads back as magnitude 0 (pre-existing jz:hostabi/mem.BigInt negative-magnitude defect, independent of closure-forwarding — flip to is(f(-5n), -4n) when that defect is fixed')
 })
 
 test('closure return-kind: fails open when the return depends on an unsettled capture', () => {
