@@ -185,3 +185,56 @@ O0/O2 legs stay green (materialization must not regress the call-kept
 falsified-forms note — four wrong predicate shapes died in
 representationResultTagRequired's design; extend the fixpoint by the same
 discipline (per-expression, tri-state, no demand-keyed shortcuts).
+
+## C5 LANDED (2026-08-22, main 10b7d3c0) + C5b residual
+
+The landing plan's fixpoint suspicion was one layer too deep: live trace
+showed the plan HAD materialized both the named union local AND the
+hoisted temp (matNames = [inl0_h, value…]) — the loss was in the READERS.
+hoistNestedCalls (inline.js:381, from 7068ae8e) wrapped its temp as
+`[null, tmp]` — the boxed-literal shape, whose payload every reader
+treats as a VALUE: valTypeOf kind-erased the temp's bigint to number (so
+emitStrictEq's rawVt gate skipped the C3 dispatch → raw f64.eq → the
+0-bits collision), representationActiveMaterializedRep's name lookup
+missed (Set of strings), and stringLiteral would have read the temp NAME
+as a string literal (latent adjacent wrong-value class). Fix: the hoist
+returns the bare name — a name IS a bare string in this AST; every
+reader then resolves it like any local. One line + comment.
+Both banked flips landed: O3 pin asserts correct false at [O0,O2,O3];
+gnorm 2/5-export pin committed (30 assertions incl. lossless past 2^53
+— manifestation 1 was already healed on tip by C1-C4, now locked).
+Battery (quintuple integration product): data 145/145, array-methods
+143+1skip, optimizer 219/219, kernel-parity 3/3 (33 asserts — trio DEAD,
+see .work/printer-trio.md: date.js flat .valueOf overwrite, same root as
+the watr-regression trio), kernel-oracle 14/14, FULL SUITE 3603/0/2 —
+first zero-fail suite.
+
+C5b RESIDUAL (pre-existing, probed on the integration product): a
+DIRECT-return union expression — `export let g = (flag) => flag ? 1n : 0`
+— never materializes: g(1) crosses as 5e-324 (raw 1n bits as subnormal)
+at O2 and O3. The named-local shape (C5's pin) works; the anonymous
+direct-return join doesn't reach materializedJoins/the boxed return
+edge, and the result lane exports raw f64. Same class the c4b agent hit
+independently (its pin 2 rewrote around it). Slice: return-edge drives
+materialization for direct '?:'/'||'/'&&'/'??' return expressions +
+resultTagRequired routes the generic decode (C2 lane). Pin KNOWN-WRONG
+on landing the slice branch. Follow-up hardening in the same campaign:
+delete stringLiteral's [null,string] arm (no producer remains) + make
+valTypeOf throw-or-null on [null,string] rather than misclassify.
+
+## C4b state (2026-08-22): redesigned on branch, merge gated
+
+phase-c4b @ a74ae3eb: jz:hostabi descriptor replaces jz:bigintbox
+({tag, raw, rest} per export; raw PROVEN architecturally unreachable
+today — makeBoundaryData's `uncovered = isExported` forces ANY_BIGINT →
+BOXED for every export param — encoded + dispatched anyway, never
+guessed from absence); wrapVal decimal-string accident DEAD (typed
+throw naming mem.BigInt); rest elements policy-mapped before mem.Array;
+5 pins adapted to reachable states; differential battery zero-regression.
+MERGE GATE: 3 suite tests (types ×2, inference ×1) relied on the
+stringify accident via `BigInt(v)`-normalized dynamic params — the
+provenance slice must grant BigInt(v)'s argument position tag-ingress
+evidence (the correct crossing for those tests' real bigints), then
+merge on a fresh product battery. Also queued from its report:
+mem.Object's inline marshal stores plain-bigint property values as raw
+unmarked bits (silent-wrong, wrapVal-independent duplicate logic).
