@@ -5769,9 +5769,11 @@ export const emitter = {
     const lhs = typed(['local.tee', `$${t}`, asF64(va)], 'f64')
     const cond = op === '??=' ? isNullish(lhs) : truthyIR(lhs)
     // &&= and ??= assign when cond is true (truthy / nullish); ||= assigns when cond is false
+    const repAction = representationBindingWriteAction(ctx, name, val)
+    const assigned = asF64(applyBigintRepresentationAction(emit(val), val, repAction))
     const [thenExpr, elseExpr] = op === '||='
-      ? [['local.get', `$${t}`], asF64(emit(val))]
-      : [asF64(emit(val)), ['local.get', `$${t}`]]
+      ? [['local.get', `$${t}`], assigned]
+      : [assigned, ['local.get', `$${t}`]]
     const result = typed(['if', ['result', 'f64'], cond, ['then', thenExpr], ['else', elseExpr]], 'f64')
     // Write back — writeVar owns the cell/global/local discipline INCLUDING the
     // i32-narrowed-cell width (a direct f64.store here desynced narrowed cells).

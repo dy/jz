@@ -142,12 +142,32 @@ test('RepresentationPlan: body-write-only BigInt acquisition still materializes 
   is(pos.catchNumber(), 'number', 'no-throw path keeps Number')
   is(pos.catchThrown(), 'bigint', 'catch-arm BigInt write reads through the tag')
   is(pos.nullishNumber(), 'number', 'non-nullish entry keeps Number')
-  // KNOWN-WRONG (pre-existing, nullable-BIGINT lane family — .work/research.md
-  // §Body-write-only BigInt params 2026-08-20): the TAKEN nullish-assign path
-  // (`value = null; value ??= 4n`) reads 'number' where JS says 'bigint' —
-  // the null-sentinel + tagged-union interaction, banked with the three-store
-  // unification. AGREE pin: flip to 'bigint' when that slice lands.
-  is(pos.nullishTaken(), 'number', 'KNOWN-WRONG: taken nullish-assign misses the tag (should be bigint)')
+  is(pos.nullishTaken(), 'bigint', 'taken nullish-assign writes through the tagged binding edge')
+})
+
+test('RepresentationPlan: conditional assignments normalize only the taken BigInt write', () => {
+  const src = `
+    let hits = 0
+    function big() { hits = hits + 1; return 4n }
+    function n(v) { hits = 0; v ??= big(); return (typeof v === 'bigint' ? 10 : 0) + hits }
+    function o(v) { hits = 0; v ||= big(); return (typeof v === 'bigint' ? 10 : 0) + hits }
+    function a(v) { hits = 0; v &&= big(); return (typeof v === 'bigint' ? 10 : 0) + hits }
+    export let nullishTake = () => n(null)
+    export let nullishKeep = () => n(2)
+    export let orTake = () => o(0)
+    export let orKeep = () => o(2)
+    export let andTake = () => a(2)
+    export let andKeep = () => a(0)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.nullishTake(), 11, `O${optimize || 0}: ??= taken arm boxes BigInt and evaluates RHS once`)
+    is(e.nullishKeep(), 0, `O${optimize || 0}: ??= untaken arm keeps Number and skips RHS`)
+    is(e.orTake(), 11, `O${optimize || 0}: ||= taken arm boxes BigInt and evaluates RHS once`)
+    is(e.orKeep(), 0, `O${optimize || 0}: ||= untaken arm keeps Number and skips RHS`)
+    is(e.andTake(), 11, `O${optimize || 0}: &&= taken arm boxes BigInt and evaluates RHS once`)
+    is(e.andKeep(), 0, `O${optimize || 0}: &&= untaken arm keeps Number and skips RHS`)
+  }
 })
 
 test('RepresentationPlan: covered return edges materialize dynamic call results', () => {
@@ -1997,6 +2017,30 @@ test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN
     const n = jz(`export let g = (flag) => (flag ? 1n : null) ?? 5`, { optimize }).exports
     ok(typeof n.g(1) === 'bigint' && n.g(1) === 1n, `O${optimize || 0}: direct-return '??' 1n arm crosses typed`)
     is(n.g(0), 5, `O${optimize || 0}: '??' Number arm stays a Number`)
+  }
+})
+
+test('bigint: C5b adjacent join gaps — bare params, nested nullish unions, and raw-specialized callees', () => {
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+
+    const open = jz(`function choose(flag, n) { return flag ? 1n : n }
+      export let big = () => choose(1, 0)
+      export let num = () => choose(0, 0)`, { optimize }).exports
+    is(open.big(), 1n, `${lbl}: precise non-BigInt param arm no longer injects a BOOL veto`)
+    is(open.num(), 0, `${lbl}: bare Number param arm stays Number`)
+
+    const nested = jz(`export let f = flag => (flag ? null : 5) ?? 1n`, { optimize }).exports
+    is(nested.f(1), 1n, `${lbl}: nested nullish-vs-Number join materializes its BigInt outer arm`)
+    is(nested.f(0), 5, `${lbl}: nested Number arm stays Number`)
+
+    const specialized = jz(`function choose(flag, n) { return flag ? 1n : n }
+      export let boxed = () => choose(1, 0)
+      export let raw = () => choose(0, 2n)
+      export let number = () => choose(0, 0)`, { optimize }).exports
+    is(specialized.boxed(), 1n, `${lbl}: boxed specialized caller crosses tagged`)
+    is(specialized.raw(), 2n, `${lbl}: raw-specialized callee result keeps raw boundary ABI`)
+    is(specialized.number(), 0, `${lbl}: Number specialization stays Number`)
   }
 })
 

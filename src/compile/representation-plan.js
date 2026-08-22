@@ -561,12 +561,14 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     const mayBigint = generic
       ? options.localProvenance?.params.has(k)
       : options.provenance?.paramsByFunc.get(func.name)?.has(k)
+    const observed = rep ? semanticFromRep(rep) : semAll()
     const semantic = mayBigint
-      ? (generic ? (rep ? semanticFromRep(rep) : semAll()) : boundaryParamSemantic(rep, uncovered))
+      ? (generic ? observed : boundaryParamSemantic(rep, uncovered))
       : noBigintSemantic()
     const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, semantic, uncovered)) : NO_BIGINT
     return {
       semantic,
+      observed,
       current,
       target: targetRepFor(semantic, current),
       demand: demandFor(semantic),
@@ -709,6 +711,7 @@ const NON_BIGINT_OPS = new Set([
 // sits at [1]); the three short-circuit ops carry theirs at [1]/[2] (no
 // separate condition slot — the left operand IS the first arm).
 export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
+const CONDITIONAL_ASSIGN_OPS = new Set(['&&=', '||=', '??='])
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
 
@@ -740,7 +743,7 @@ function collectDefs(body) {
         else if (Array.isArray(decl) && decl[0] === '=') add(decl[1], decl[2], decl, 2)
       }
     } else if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') {
-      add(node[1], op === '=' ? node[2] : node, node, 2)
+      add(node[1], op === '=' || CONDITIONAL_ASSIGN_OPS.has(op) ? node[2] : node, node, 2)
     } else if ((op === '++' || op === '--') && typeof node[1] === 'string') {
       add(node[1], node, node, 1)
     }
@@ -812,6 +815,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       ? closureBodyReturnKind(localClosures.get(node[1]).body, EMPTY_KIND_MAP)
       : null
 
+  const semanticJoinArm = node => {
+    if (boundary.covered === true && typeof node === 'string') {
+      const k = params.get(node)
+      const observed = k == null ? null : boundary.params[k]?.observed
+      if (observed != null && semanticObserved(observed) && semanticClosed(observed)) return observed
+    }
+    return semanticOf(node)
+  }
+
   const semanticOf = node => {
     if (typeof node === 'number') return semKind(VAL.NUMBER)
     if (node == null) return packSemantic(0, true, true)
@@ -829,18 +841,21 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const cached = nodeSemantic.get(node)
     if (cached) return cached
     let out
-    if (!mayCarryBigint(node)) {
-      const vt = valTypeOf(node) ?? closureCalleeKind(node)
-      out = nullishArm(node) ? packSemantic(0, true, true)
-        : vt ? semKind(vt) : noBigintSemantic()
-    }
-    else if (nullishArm(node)) out = packSemantic(0, true, true)
-    else if (isBigintOrigin(node)) out = semKind(VAL.BIGINT)
+    // Join structure is precise even when provenance says neither arm can
+    // carry BigInt. Preserve its actual kind/nullish union instead of falling
+    // to noBigintSemantic's coarse all-kinds set (whose synthetic BOOL member
+    // vetoes an enclosing BigInt join).
+    if (nullishArm(node)) out = packSemantic(0, true, true)
     else if (node[0] === ',') out = semanticOf(node[node.length - 1])
     else if (node[0] === '=') out = semanticOf(node[2])
-    else if (node[0] === '?:') out = joinSem(semanticOf(node[2]), semanticOf(node[3]))
+    else if (node[0] === '?:') out = joinSem(semanticJoinArm(node[2]), semanticJoinArm(node[3]))
     else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
-      out = joinSem(semanticOf(node[1]), semanticOf(node[2]))
+      out = joinSem(semanticJoinArm(node[1]), semanticJoinArm(node[2]))
+    else if (!mayCarryBigint(node)) {
+      const vt = valTypeOf(node) ?? closureCalleeKind(node)
+      out = vt ? semKind(vt) : noBigintSemantic()
+    }
+    else if (isBigintOrigin(node)) out = semKind(VAL.BIGINT)
     else if (node[0] === '()' && typeof node[1] === 'string' &&
              (node[1] === 'BigInt' || node[1].startsWith('BigInt.')))
       out = semKind(VAL.BIGINT)
@@ -1071,7 +1086,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       }
     } else if (ASSIGN_OPS.has(op)) {
       if (typeof node[1] === 'string') {
-        const source = op === '=' ? node[2] : node
+        const source = op === '=' || CONDITIONAL_ASSIGN_OPS.has(op) ? node[2] : node
         addEdge('binding-write', plannedOf(source), targetNames.get(node[1]) ?? ANY_BIGINT, node)
       } else if (Array.isArray(node[1]) && (node[1][0] === '[]' || node[1][0] === '.')) {
         const rv = valTypeOf(node[1][1])
@@ -1140,7 +1155,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def.rhs == null) return true
-      if (def.owner?.[0] !== '=') return false
+      if (def.owner?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def.owner?.[0])) return false
       // Readiness is about the carrier the emitter produces before this
       // binding-write edge, not the expression's eventual planned target.
       // A fresh BigInt computation can target BOXED while still emitting raw
@@ -1277,7 +1292,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const target = targetNames.get(name) ?? ANY_BIGINT
     if (list.every(def => {
       if (def.rhs == null) return true
-      if (def.owner?.[0] !== '=') return false
+      if (def.owner?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def.owner?.[0])) return false
       const source = emittedCandidate(def.rhs)
       return edgeMaterializable(source.rep, target, def.rhs, source.ready)
     })) materializedNames.add(name)
@@ -1624,6 +1639,41 @@ export function representationCallArgAction(ctx, node, params, index) {
   return edgeAction(activeEmittedRep(ctx, node), target)
 }
 
+/** True when every result tail is a proven raw BigInt carrier. This is the
+ *  boundary twin of representationResultTagRequired: transformed callers can
+ *  retain a direct call whose callee body has specialized to RAW even when
+ *  the caller's coarse valResult/boundary semantic is still open. */
+export function representationResultRawBigint(ctx, func, seen = new WeakSet()) {
+  if (programPlanRecord(ctx)?.bigint === false || func == null || seen.has(func)) return false
+  seen.add(func)
+  const handle = ctx.plans.representations.get(func)
+  const record = handle && ctx.plans.representationData.get(handle)
+  const body = record?.body
+  if (!body) { seen.delete(func); return false }
+  const fb = func.body
+  const tails = Array.isArray(fb) && fb[0] === '{}' ? returnExprs(fb) : [fb]
+  const exprRaw = e => {
+    if (isBigintOrigin(e)) return true
+    if (typeof e === 'string')
+      return body.materializedNames?.has(e) === true && body.targetNames?.get(e) === RAW_BIGINT
+    if (!Array.isArray(e)) return false
+    if (e[0] === ',') return exprRaw(e[e.length - 1])
+    if (e[0] === '=') return exprRaw(e[2])
+    if (e[0] === '()' && typeof e[1] === 'string') {
+      const callee = ctx.funcs.map?.get(e[1])
+      if (!callee) return false
+      const calleeHandle = ctx.plans.representations.get(callee)
+      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+      if (calleeBody?.materializedResult === true) return calleeBody.resultTarget === RAW_BIGINT
+      return representationResultRawBigint(ctx, callee, seen)
+    }
+    return false
+  }
+  const result = tails.length > 0 && tails.every(exprRaw)
+  seen.delete(func)
+  return result
+}
+
 /** True when the plan's RESULT verdict for `func` is a tagged BigInt UNION —
  *  the value can be BigInt AND another kind (demandFor: canBeBigint &&
  *  canBeOther). Such a result is carried as the NaN-box tag discipline
@@ -1676,7 +1726,12 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
         // (C3's compare arm asks it of the callee directly, which is why
         // the two stayed consistent only once this recursed).
         const callee = ctx.funcs.map?.get(e[1])
-        return callee ? representationResultTagRequired(ctx, callee, seen, strict) : null
+        if (!callee) return null
+        const calleeHandle = ctx.plans.representations.get(callee)
+        const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+        if (calleeBody?.materializedResult === true)
+          return (bigintRepBits(calleeBody.resultTarget ?? NO_BIGINT) & BIGINT_REP_BOXED) !== 0
+        return representationResultTagRequired(ctx, callee, seen, strict)
       }
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
