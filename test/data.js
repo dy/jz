@@ -1921,30 +1921,52 @@ test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)',
   }
 })
 
-test('bigint: ANONYMOUS direct-return union join never materializes (C5b KNOWN-WRONG pin)', () => {
+test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN-WRONG)', () => {
   // C5's fixpoint (representation-plan.js buildBodyData, materializedJoins) only
-  // ever admits a join reached through a NAMED LOCAL (`let value = flag ? 1n :
+  // ever admitted a join reached through a NAMED LOCAL (`let value = flag ? 1n :
   // 0; return value` — the gnorm-adjacent shape above, and the tagged-equality
-  // test below). `directResultNodes` unconditionally excludes any join that IS
-  // itself the return/expression-body result (representation-plan.js ~1049),
-  // so an ANONYMOUS direct-return union never reaches materializedJoins:
-  // representationJoinArmAction rejects both arms, the '?:' emitter falls
-  // through to the raw select/if path (emit.js ~6149), and 1n's raw i64 bits
-  // cross unboxed. The host reads them reinterpreted as a plain f64 — 1n's
-  // bits (0x1) read as the subnormal Number.MIN_VALUE (5e-324) — never a real
-  // BigInt. Wrong at EVERY optimization level (a plan-time gap, not an
-  // optimizer artifact — checked live, O0 included).
-  // FLIP CONDITION: once the join fixpoint materializes a direct-result join
-  // the same way it materializes a named local's RHS (AND resultTagRequired
-  // routes the export's generic decode for it), g(1) crosses typed (1n).
+  // test below). `directResultNodes` unconditionally excluded any join that IS
+  // itself the return/expression-body result, so an ANONYMOUS direct-return
+  // union never reached materializedJoins: representationJoinArmAction
+  // rejected both arms, the '?:' emitter fell through to the raw select/if
+  // path, and 1n's raw i64 bits crossed unboxed — the host read them
+  // reinterpreted as a plain f64 (1n's bits, 0x1, read as the subnormal
+  // Number.MIN_VALUE, 5e-324) — never a real BigInt. Wrong at EVERY
+  // optimization level (a plan-time gap, not an optimizer artifact).
+  //
+  // Fix: a join's position (direct result / named-local RHS / any other
+  // operand) doesn't gate materialization — the fixpoint now admits ANY
+  // eligible '?:'/'&&'/'||'/'??' node regardless of where its value flows.
+  // representationResultTagRequired's exprMayBox also consults
+  // materializedJoins directly (ground truth) instead of only guessing from
+  // unresolved arm recursion, so the export lane routes the generic decode
+  // precisely rather than by coincidence of the boundary-current fallback.
   for (const optimize of [false, 2, 3]) {
     const t = jz(`export let g = (flag) => flag ? 1n : 0`, { optimize }).exports
-    is(t.g(1), 5e-324, `O${optimize || 0} KNOWN-WRONG: direct-return '?:' 1n arm crosses as raw subnormal bits, not bigint`)
-    is(t.g(0), 0, `O${optimize || 0}: the Number 0 arm is already correct (a NO_BIGINT member self-tags)`)
+    ok(typeof t.g(1) === 'bigint' && t.g(1) === 1n, `O${optimize || 0}: direct-return '?:' 1n arm crosses typed`)
+    is(t.g(0), 0, `O${optimize || 0}: the Number 0 arm stays a Number`)
 
-    const o = jz(`export let g = (n) => n || 1n`, { optimize }).exports
-    is(o.g(0), 5e-324, `O${optimize || 0} KNOWN-WRONG: direct-return '||' 1n arm crosses as raw subnormal bits, not bigint`)
-    is(o.g(5), 5, `O${optimize || 0}: the Number arm is already correct`)
+    const big = jz(`export let g = (flag) => flag ? 9007199254740993n : 0`, { optimize }).exports
+    ok(typeof big.g(1) === 'bigint' && big.g(1) === 9007199254740993n, `O${optimize || 0}: direct-return '?:' lossless past 2^53`)
+    is(big.g(0), 0, `O${optimize || 0}: the Number 0 arm stays a Number (lossless variant)`)
+
+    // '||'/'&&'/'??' materialize the same way — none had ANY box-application
+    // wiring before this slice (not even through a named local), a larger gap
+    // than '?:'s alone. Each arm doubles as condition-tested value for these
+    // three (unlike '?:'s separate condition slot), so a bare open param arm
+    // can't trivially prove its own carrier — these use a literal-producing
+    // sub-expression on the non-bigint side, mirroring '?:'s own literal arm.
+    const o = jz(`export let g = (flag) => (flag ? 0 : 5) || 1n`, { optimize }).exports
+    ok(typeof o.g(1) === 'bigint' && o.g(1) === 1n, `O${optimize || 0}: direct-return '||' 1n arm crosses typed`)
+    is(o.g(0), 5, `O${optimize || 0}: '||' Number arm stays a Number`)
+
+    const a = jz(`export let g = (flag) => (flag ? 5 : 0) && 1n`, { optimize }).exports
+    ok(typeof a.g(1) === 'bigint' && a.g(1) === 1n, `O${optimize || 0}: direct-return '&&' 1n arm crosses typed`)
+    is(a.g(0), 0, `O${optimize || 0}: '&&' Number arm stays a Number`)
+
+    const n = jz(`export let g = (flag) => (flag ? 1n : null) ?? 5`, { optimize }).exports
+    ok(typeof n.g(1) === 'bigint' && n.g(1) === 1n, `O${optimize || 0}: direct-return '??' 1n arm crosses typed`)
+    is(n.g(0), 5, `O${optimize || 0}: '??' Number arm stays a Number`)
   }
 })
 

@@ -69,7 +69,7 @@ import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements
 import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinallyStack, withFunctionFields, withPendingLabel, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
-  REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
+  JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
 } from './representation-plan.js'
 
@@ -6347,7 +6347,31 @@ export const emitter = {
     return markNumeric(typed(['if', ['result', 'f64'], cond, ['then', branchB], ['else', branchC]], 'f64'))
   },
 
-  '&&': (a, b) => {
+  '&&': (a, b, self) => {
+    // Plan-materialized BigInt∪other join (C5b, mirrors '?:'s materialized
+    // fast path above): both arms proven box-or-keep-able into this join's
+    // BOXED_BIGINT target. `a` is BOTH the condition and (when falsy) a
+    // surfacing arm, so it's tee'd: truthiness is tested on its RAW value
+    // (boxing first would corrupt a falsy BigInt 0n's own truthiness), and
+    // only the arm that actually surfaces gets its representation action
+    // applied. When the join isn't materialized both actions are
+    // REP_EDGE_REJECT (a cheap WeakSet miss) and every branch below runs
+    // exactly as before — this check never changes non-bigint codegen.
+    const repA0 = representationJoinArmAction(ctx, self, a)
+    const repB0 = representationJoinArmAction(ctx, self, b)
+    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+      const va0 = emit(a)
+      const t0 = temp()
+      const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
+      const rightRefs0 = extractRefinements(a, new Map(), true)
+      const vb0 = withRefinements(rightRefs0, b, () => emit(b))
+      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
+      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      return typed(['f64.reinterpret_i64',
+        ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
+          ['then', ['i64.reinterpret_f64', fb0]],
+          ['else', ['i64.reinterpret_f64', faBoxed]]]], 'f64')
+    }
     // Range-check fusion: `x >= LO && x <= HI` (x a pure i32 local, LO ≤ HI compile-time
     // constants) collapses to one unsigned compare `(x - LO) <=u (HI - LO)` — a subtract
     // plus a branch instead of two compares, an AND, and a short-circuit branch. This is
@@ -6447,7 +6471,27 @@ export const emitter = {
       ['else', ['local.get', `$${t}`]]], 'f64')
   },
 
-  '||': (a, b) => {
+  '||': (a, b, self) => {
+    // Plan-materialized BigInt∪other join (C5b) — mirror of '&&' above with
+    // the then/else arms swapped: `a` surfaces (tee'd, RAW truthiness test)
+    // when truthy, `b` only when `a` was falsy. See '&&'s comment for why
+    // truthiness is tested before any boxing and why a REJECTed action
+    // (the common case) leaves every branch below byte-for-byte unchanged.
+    const repA0 = representationJoinArmAction(ctx, self, a)
+    const repB0 = representationJoinArmAction(ctx, self, b)
+    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+      const va0 = emit(a)
+      const t0 = temp()
+      const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
+      const rightRefs0 = extractRefinements(a, new Map(), false)
+      const vb0 = withRefinements(rightRefs0, b, () => emit(b))
+      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
+      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      return typed(['f64.reinterpret_i64',
+        ['if', ['result', 'i64'], toBoolFromEmitted(teed0),
+          ['then', ['i64.reinterpret_f64', faBoxed]],
+          ['else', ['i64.reinterpret_f64', fb0]]]], 'f64')
+    }
     // Outside-range fusion (the complement of `&&`): `x < LO || x > HI` → one unsigned
     // compare `(x - LO) >u (HI - LO)`. Common in validation (`if (c < 'a' || c > 'z') …`).
     const fusedOr = fuseRangeCheckOr(a, b)
@@ -6523,7 +6567,24 @@ export const emitter = {
   },
 
   // a ?? b: returns b only if a is nullish
-  '??': (a, b) => {
+  '??': (a, b, self) => {
+    // Plan-materialized BigInt∪other join (C5b) — see '&&'s comment. `??`'s
+    // condition is nullishness, not truthiness, but the same tee-before-box
+    // discipline applies: test on `a`'s raw value, box only the arm that
+    // actually surfaces.
+    const repA0 = representationJoinArmAction(ctx, self, a)
+    const repB0 = representationJoinArmAction(ctx, self, b)
+    if (!ctx.func._arrayLiteralNeverEscapes && repA0 !== REP_EDGE_REJECT && repB0 !== REP_EDGE_REJECT) {
+      const va0 = emit(a), vb0 = emit(b)
+      const t0 = temp()
+      const teed0 = typed(['local.tee', `$${t0}`, asF64(va0)], 'f64')
+      const faBoxed = applyBigintRepresentationAction(typed(['local.get', `$${t0}`], 'f64'), a, repA0)
+      const fb0 = asF64(applyBigintRepresentationAction(vb0, b, repB0))
+      return typed(['f64.reinterpret_i64',
+        ['if', ['result', 'i64'], ['i32.eqz', isNullish(teed0)],
+          ['then', ['i64.reinterpret_f64', faBoxed]],
+          ['else', ['i64.reinterpret_f64', fb0]]]], 'f64')
+    }
     const va = emit(a), vb = emit(b)
     const t = temp()
     // Mixed BOOL/non-NUMBER sides — see `&&`: a surfacing bool carries its atom box.
@@ -7672,7 +7733,7 @@ export function emit(node, expect) {
   if (op === 'let' || op === 'const') return emitDecl(...args)
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
-  const ir = op === '?:' ? handler(...args, node) : handler(...args)
+  const ir = JOIN_OPS.has(op) ? handler(...args, node) : handler(...args)
   if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
   return ir
 }
