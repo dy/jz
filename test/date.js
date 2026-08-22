@@ -1,5 +1,5 @@
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 import { onWasi } from './_matrix.js'
 
@@ -116,28 +116,7 @@ test('Date object: unresolved-vt receiver .valueOf() via a shared dispatch funct
   is(jz(src).exports.f(), true)
 })
 
-test('Date object: KNOWN-WRONG — unresolved-vt receiver .getTime() has no discriminator, silently misreads a non-Date', () => {
-  // Adjacent finding, deliberately NOT fixed here (out of the .valueOf()-only
-  // scope this session's Item 3 covers) — flagged so it doesn't stay
-  // invisible. `.getTime` shares emitDateGetTime with `.valueOf` and is
-  // registered on the SAME kind of flat key (module/date.js: `ctx.core.emit
-  // ['.getTime'] = emitDateGetTime`), but NEITHER dispatch fork this
-  // session's fix touched can reach it: trySidecarToPrimitive only ever
-  // engages for 'valueOf'/'toString' (method-name-gated); tryRuntimePtrTypeFork
-  // only engages when a `.string:`/`.typed:` sibling exists for the SAME
-  // method, and '.string:getTime'/'.typed:getTime' don't — so `.getTime()`
-  // on an unresolved receiver falls through to tryGenericEmitter (strategy
-  // 9/11, emit.js), which calls the flat '.getTime' key UNCONDITIONALLY
-  // whenever the receiver isn't proven OBJECT/HASH. A non-Date, unresolved
-  // receiver's `.getTime()` therefore still reads emitDateGetTime's
-  // `f64.load` at the receiver's OWN base address — for an array, that's
-  // element 0's raw bits, exactly the printer-trio corruption shape, just
-  // for a different method name and a call real JS would TypeError on.
-  // FLIP CONDITION: extends dateAuxFallback (emit.js, this session) into
-  // tryGenericEmitter's three ctx.core.emit['.'+method] call sites — more
-  // invasive than the valueOf forks (obj isn't always a materialized local
-  // there, and the fast-path/sidecar/plain arms each need their own guard),
-  // deliberately deferred rather than rushed alongside the valueOf fix.
+test('Date object: unresolved .getTime() discriminates Date and rejects non-Date receivers', () => {
   const src = `
     export let f = (which) => {
       let items = [new Date(1234567890000), [111, 222, 333]]
@@ -145,9 +124,70 @@ test('Date object: KNOWN-WRONG — unresolved-vt receiver .getTime() has no disc
       return x.getTime()
     }
   `
-  const { exports: e } = jz(src)
-  is(e.f(0), 1234567890000, 'unresolved-but-actually-Date: correct, unaffected by the gap')
-  is(e.f(1), 111, 'KNOWN-WRONG: unresolved-but-actually-array silently reads element 0, should TypeError like real JS')
+  for (const optimize of [false, 2, 3]) {
+    const { exports: e } = jz(src, { optimize })
+    is(e.f(0), 1234567890000, `O${optimize || 0}: unresolved runtime Date takes the aux-discriminated emitter`)
+    throws(() => e.f(1), err => err instanceof TypeError, `O${optimize || 0}: unresolved runtime array throws instead of reading element 0`)
+  }
+})
+
+test('Date object: guarded no-arg Date methods preserve ignored argument effects', () => {
+  const src = `
+    let n = 0
+    function bump() { n = n + 1; return 7 }
+    export let f = (which) => {
+      let items = [new Date(1234567890000), [111, 222, 333], null]
+      let x = items[which]
+      try { x.getTime(bump()) } catch (e) {}
+      return n
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(0), 1, `O${optimize || 0}: Date branch evaluates ignored args once`)
+    is(f(1), 2, `O${optimize || 0}: non-callable branch evaluates args before throwing`)
+    is(f(2), 2, `O${optimize || 0}: nullish property read throws before evaluating args`)
+
+    const proven = jz(`let n = 0; function bump() { n++; return 1 }
+      export let f = () => { let d = new Date(0); d.getTime(bump()); return n }`, { optimize }).exports
+    is(proven.f(), 1, `O${optimize || 0}: statically-proven Date also evaluates ignored args once`)
+
+    const spread = jz(`let n = 0; function bump() { n++; return 1 }
+      export let f = () => { let d = new Date(0); d.getTime(...[bump()]); return n }`, { optimize }).exports
+    is(spread.f(), 1, `O${optimize || 0}: ignored spread is iterated once`)
+  }
+})
+
+test('Date object: every zero-arg Date-only flat emitter uses the aux guard', () => {
+  const src = `export let f = (which) => {
+    let items = [new Date(0), [2024]]
+    let x = items[which]
+    return x.getUTCFullYear()
+  }`
+  const { f } = jz(src).exports
+  is(f(0), 1970)
+  throws(() => f(1), err => err instanceof TypeError)
+})
+
+test('Date object: unresolved host Date falls through to external method dispatch', () => {
+  const { f } = jz('export let f = x => x.getTime()').exports
+  is(f(new Date(321)), 321)
+})
+
+test('Date object: unresolved argument-taking Date methods preserve args and discriminate', () => {
+  throws(() => jz.compile('export let f = (x, args) => x.setTime(...args)'),
+    /Spread arguments on Date method \.setTime/, 'dynamic setter spread rejects instead of guessing optional-argument arity')
+  const src = `export let f = (which, n) => {
+    let items = [new Date(0), [111]]
+    let x = items[which]
+    return x.setTime(n)
+  }`
+  for (const optimize of [false, 2, 3]) {
+    const { f } = jz(src, { optimize }).exports
+    is(f(0, 999), 999, `O${optimize || 0}: runtime Date setter receives its argument`)
+    throws(() => f(1, 999), err => err instanceof TypeError,
+      `O${optimize || 0}: non-Date setter receiver throws after argument evaluation`)
+  }
 })
 
 test('Date object: setTime', () => {
