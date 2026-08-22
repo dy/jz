@@ -139,7 +139,6 @@ const boundaryParamSemantic = (rep, uncovered) => {
 const currentParamRep = (rep, sem, uncovered) => {
   if (excludesBigint(sem)) return NO_BIGINT
   if (uncovered) return ANY_BIGINT
-  if (rep?.bigintBoxed === true && semanticClosed(sem)) return BOXED_BIGINT
   if (onlyBigintKind(sem)) return RAW_BIGINT
   return ANY_BIGINT
 }
@@ -320,7 +319,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
       const observed = rep?.possibleKinds
       if (typeof rep?.typedCtor === 'string' && (rep.typedCtor.includes('BigInt64') || rep.typedCtor.includes('BigUint64')))
         bigintTyped.add(func.sig.params[k].name)
-      if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true ||
+      if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT ||
           (observed instanceof Set && observed.size < KIND_UNIVERSE.length && observed.has(VAL.BIGINT)) ||
           (isExported(ctx, func) && paramNeedsHostTag(func.body, func.sig.params[k].name, localClosures, EMPTY_SEEN)))
         pset.add(k)
@@ -531,13 +530,13 @@ function deriveLocalProvenance(sig, body, localReps, program) {
   const observedParams = program?.closureParams.get(sig?.name)
   for (let k = 0; k < (sig?.params?.length || 0); k++) {
     const name = sig.params[k].name, rep = localReps?.get(name)
-    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true || observedParams?.has(k)) {
+    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || observedParams?.has(k)) {
       params.add(k)
       names.add(name)
     }
   }
   if (localReps) for (const [name, rep] of localReps)
-    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true) names.add(name)
+    if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT) names.add(name)
   const defs = collectDefs(body)
   let changed = true
   while (changed) {
@@ -1436,7 +1435,23 @@ export function representationParamRep(ctx, identity, index, target = true) {
   const record = ctx.plans.representationData.get(representationBoundaryOf(ctx, identity))
   if (record.programEmpty) return NO_BIGINT
   const data = record.boundary
-  return target ? data.params[index]?.target : data.params[index]?.current
+  const param = data.params[index]
+  if (target || !record.body) return target ? param?.target : param?.current
+
+  // Boundary solving precedes body materialization. Once the body proves a
+  // parameter's complete entry/write normalization, its active entry carrier
+  // is the body target—not the coarse pre-body current estimate. Read that
+  // second-phase verdict without mutating the already-published boundary.
+  const name = data.func?.sig?.params?.[index]?.name
+  const ready = name != null && (
+    (data.covered === true && param?.stable === true) ||
+    record.body.materializedNames?.has(name) === true ||
+    record.body.hostBoxParams?.has(index) === true ||
+    record.body.closureBoxParams?.has(index) === true
+  )
+  return ready
+    ? record.body.targetNames?.get(name) ?? param?.target ?? NO_BIGINT
+    : param?.current ?? NO_BIGINT
 }
 
 export function representationResultRep(ctx, identity, target = true) {
