@@ -777,7 +777,8 @@ export function observeProgramSlots(ast, opts) {
   // (fftplan's `re[j] = tr` on a then-unnarrowed param poisoned the world).
   // Sound to rebuild: every kind consumer left reads at emit, after this.
   if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
-  const hazards = collectSlotWriteHazards(ast, opts?.fresh ? { paramReps: opts.paramReps } : undefined)
+  const hazards = collectSlotWriteHazards(ast, opts?.fresh
+    ? { paramReps: opts.paramReps, callSites: opts.callSites, valueUsed: opts.valueUsed } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
   // kind census can't resolve precisely (Object.assign/spread merges,
   // computed-key writes, extern constructors) marks BIGINT-possible instead
@@ -1318,7 +1319,125 @@ export function collectSlotWriteHazards(ast, opts) {
   // dynPointsTo twin of the two mutators above — same sticky-TOP shape, own field.
   const addDynPointsTo = (sid) => { if (hz.dynPointsTo !== 'ALL') hz.dynPointsTo.add(sid) }
   const markDynPointsToAll = () => { hz.dynPointsTo = 'ALL' }
-  let curSids = null, curParamVts = null, curParamIntCertain = null
+
+  // ——— union points-to (dyn-reach slice 2, parameter shape): a bare-name
+  // dyn-key receiver that's a function PARAMETER — sidOf's own fallbacks
+  // (curSids/repOf/ctx.schema.vars below) never bind a param name, so this
+  // was an automatic markDynPointsToAll before — resolves to the UNION of
+  // schemas its call sites actually pass, instead of the whole-program 'ALL'
+  // sentinel. Late-only (needs opts.callSites, mirroring opts.paramReps's own
+  // late-only threading): the early pre-narrowing hazard pass stays exactly
+  // as conservative as before, and only the LAST hazard computation before
+  // emit (plan/index.js's refineSlotKindCensus) ever reaches codegen, so
+  // precision here is free to start late.
+  //
+  // Resolution per call-site argument (.work/dyn-reach-slice.md's own 3-way
+  // split): a `{}` literal with static keys resolves via the SAME
+  // objLiteralSchemaId/register path collectProgramFacts already registers it
+  // through (idempotent re-resolution — never mints a new schema); a bare
+  // name that is ITSELF a parameter of the calling function recurses into
+  // THAT param's own union (memoized + a DFS seen-set for cycle safety);
+  // anything else (a `.`-chain, a local variable, a call, a primitive
+  // literal, a missing/defaulted arg) is unresolvable — that whole PARAM
+  // unions to 'ALL', exactly today's markDynPointsToAll fallback, just scoped
+  // to the one param instead of the one dyn-key site.
+  //
+  // Exported/value-used/raw callees, and the rest-param slot, are excluded up
+  // front: `callSites` (built by isFuncRef-gated direct `f(...)` sites,
+  // this module's own walk above) is NOT a complete enumeration of every way
+  // such a function/slot can be invoked/filled — an external host caller, an
+  // indirect call through a stored reference, or the packed tail of a rest
+  // param could supply a value no site here ever sees, so the union would be
+  // unsound. A function with zero statically-visible call sites (dead code,
+  // or reached only indirectly) can't be proven anything either — 'ALL'.
+  const callSites = opts?.callSites
+  const csValueUsed = opts?.valueUsed
+  let sitesByCallee = null
+  if (late && callSites) {
+    sitesByCallee = new Map()
+    for (const cs of callSites) {
+      const list = sitesByCallee.get(cs.callee)
+      if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
+    }
+  }
+  const paramUnionMemo = new Map()
+  const paramUnionSeen = new Set()
+  // One call-site argument → a resolved sid Set, or 'ALL' (unresolvable,
+  // forces the whole param). A bare-name arg that is itself the CALLER's own
+  // parameter recurses into resolveParamUnion below.
+  function resolveArgSids(arg, callerFunc) {
+    if (Array.isArray(arg) && arg[0] === '{}') {
+      const sid = objLiteralSchemaId(arg)
+      return sid != null ? new Set([sid]) : 'ALL'
+    }
+    if (typeof arg === 'string' && callerFunc?.sig?.params) {
+      const params = callerFunc.sig.params
+      for (let i = 0; i < params.length; i++)
+        if (params[i].name === arg) return resolveParamUnion(callerFunc.name, i)
+    }
+    return 'ALL'
+  }
+  // Per-(function,paramIdx) union, memoized + cycle-guarded. DFS seen-set:
+  // `add` on entry, `delete` on exit — every exit path (the loop's normal
+  // completion AND its early `break`) falls through to the same delete, so a
+  // param depending on itself (directly or through a forwarding chain) reads
+  // back 'ALL' for the in-progress entry rather than recursing forever; the
+  // memo then caches that same conservative answer so a later, unrelated
+  // query for the same key doesn't re-walk the cycle. A true self-identity
+  // edge — `f(…, p, …)` calling itself with its OWN param p at the SAME
+  // position — contributes NOTHING rather than tripping the cycle guard
+  // (mirrors narrow.js's narrowSignatures applySiteRules identical
+  // "constrains nothing" skip for the same shape): the equation `U = U ∪
+  // rest` reduces to `U = rest`, so folding that edge in is exact, not merely
+  // conservative.
+  function resolveParamUnion(funcName, paramIdx) {
+    const key = funcName + '#' + paramIdx
+    if (paramUnionMemo.has(key)) return paramUnionMemo.get(key)
+    if (paramUnionSeen.has(key)) return 'ALL'
+    const func = ctx.funcs.map?.get(funcName)
+    const params = func?.sig?.params
+    const restIdx = func?.rest && params ? params.length - 1 : -1
+    if (!func || func.raw || func.exported || csValueUsed?.has(funcName) || !params?.length || paramIdx === restIdx) {
+      paramUnionMemo.set(key, 'ALL')
+      return 'ALL'
+    }
+    const sites = sitesByCallee.get(funcName)
+    if (!sites || !sites.length) { paramUnionMemo.set(key, 'ALL'); return 'ALL' }
+    const pname = params[paramIdx].name
+    paramUnionSeen.add(key)
+    const acc = new Set()
+    let all = false
+    for (const cs of sites) {
+      if (paramIdx >= cs.argList.length) { all = true; break }
+      const arg = cs.argList[paramIdx]
+      if (funcName === cs.callerFunc?.name && arg === pname) continue
+      const r = resolveArgSids(arg, cs.callerFunc)
+      if (r === 'ALL') { all = true; break }
+      for (const sid of r) acc.add(sid)
+    }
+    paramUnionSeen.delete(key)
+    const result = all ? 'ALL' : acc
+    paramUnionMemo.set(key, result)
+    return result
+  }
+  // dynKeyedRead/dynKeyedEnum's shared last-resort fallback: obj is a bare
+  // name, unresolved by sidOf, not provably non-OBJECT by kindOf — before
+  // giving up to the whole-program 'ALL' sentinel, check whether it's a
+  // PARAMETER of the function currently being walked (curParamIdx below) and,
+  // if so, mark its resolved call-site union instead. Returns true iff it
+  // handled the union (possibly empty — a param proven to receive object args
+  // from zero call sites needs no mark either), leaving markDynPointsToAll as
+  // the caller's own fallback when this returns false.
+  const tryParamUnion = (obj) => {
+    if (!sitesByCallee || typeof obj !== 'string' || !curParamIdx) return false
+    const k = curParamIdx.get(obj)
+    if (k == null) return false
+    const result = resolveParamUnion(curFuncName, k)
+    if (result === 'ALL') return false
+    for (const sid of result) addDynPointsTo(sid)
+    return true
+  }
+  let curSids = null, curParamVts = null, curParamIntCertain = null, curParamIdx = null, curFuncName = null
   const sidOf = (obj) => {
     // PROPERTY-KIND TRACING (§19/§20): a `.`-node receiver chain-resolves
     // through slotObjSids (module/schema.js's chainSid — shared walker, see
@@ -1385,6 +1504,7 @@ export function collectSlotWriteHazards(ast, opts) {
     if (sid != null) { addDynPointsTo(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
+    if (tryParamUnion(obj)) return
     markDynPointsToAll()
   }
   // dynPointsTo feed for `for-in obj` — a REAL read dependency (see this
@@ -1395,6 +1515,7 @@ export function collectSlotWriteHazards(ast, opts) {
     if (sid != null) { addDynPointsTo(sid); return }
     const vt = kindOf(obj)
     if (vt != null && vt !== VAL.OBJECT && KEYED_EXEMPT_VALS.has(vt)) return
+    if (tryParamUnion(obj)) return
     markDynPointsToAll()
   }
   // Member targets buried in a destructuring pattern — written with values the
@@ -1516,8 +1637,15 @@ export function collectSlotWriteHazards(ast, opts) {
           ? new Set(params.filter((p, k) => p.type === 'i32' && reps.get(k)?.val === VAL.NUMBER).map(p => p.name))
           : null
       }
+      // curParamIdx/curFuncName feed tryParamUnion's "is this bare name a
+      // PARAMETER of the function currently being walked" check — only
+      // needed (and only built) when sitesByCallee exists to resolve against.
+      if (sitesByCallee) {
+        curFuncName = func.name
+        curParamIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
+      }
       try { visit(func.body) }
-      finally { curSids = curParamVts = curParamIntCertain = null }
+      finally { curSids = curParamVts = curParamIntCertain = null; curFuncName = curParamIdx = null }
     })
   }
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
