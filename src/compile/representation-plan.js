@@ -1142,7 +1142,11 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const ready = list.every(def => {
       if (def.rhs == null) return true
       if (def.owner?.[0] !== '=') return false
-      return edgeMaterializable(plannedOf(def.rhs), target, def.rhs)
+      // Readiness is about the carrier the emitter produces before this
+      // binding-write edge, not the expression's eventual planned target.
+      // A fresh BigInt computation can target BOXED while still emitting raw
+      // i64 bits; this edge is precisely where that RAW→BOX transition lives.
+      return edgeMaterializable(currentOf(def.rhs), target, def.rhs)
     })
     if (ready) materializedNames.add(name)
   }

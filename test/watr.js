@@ -322,15 +322,28 @@ test('jz: const-table bigint prop read survives whole-program write hazard', () 
 // three stores, one verdict. Regressed as: f(300n) returned 0 (boxed reads
 // deref'd a raw carrier), OOB with arrays in scope.
 test('jz: bigint param loop-reassigned through a sink keeps one representation', () => {
+  const src = `
+    let push8 = (out, b) => { out.push(b); return out }
+    let uleb = (n, out) => { while (n > 127n) { push8(out, Number(n & 127n)); n = n >> 7n } push8(out, Number(n)); return out }
+    let limits = (s) => uleb(BigInt(s), [])
+    export let run = () => { let r = limits("300"); return r[0] * 1000 + r[1] }
+  `
   for (const optimize of [false, 3]) {
-    const { exports } = jz(`
-      let push8 = (out, b) => { out.push(b); return out }
-      let uleb = (n, out) => { while (n > 127n) { push8(out, Number(n & 127n)); n = n >> 7n } push8(out, Number(n)); return out }
-      let limits = (s) => uleb(BigInt(s), [])
-      export let run = () => { let r = limits("300"); return r[0] * 1000 + r[1] }
-    `, { jzify: true, optimize })
+    const { exports } = jz(src, { jzify: true, optimize })
     is(exports.run(), 44002, `uleb bytes O${optimize || 0}`)
   }
+
+  // RepresentationPlan owns both transitions: BigInt(s) boxes at the call
+  // edge and n >> 7n boxes at the reassignment edge. One allocation in each
+  // function proves neither legacy fallback stacked a second box on the plan.
+  const wat = jz.compile(src, { jzify: true, optimize: false, wat: true })
+  const bodyOf = name => {
+    const start = wat.indexOf(`(func $${name}`)
+    const end = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, end < 0 ? wat.length : end)
+  }
+  is((bodyOf('limits').match(/call \$__alloc\b/g) || []).length, 1, 'BigInt(s) boxes exactly once at the call edge')
+  is((bodyOf('uleb').match(/call \$__alloc\b/g) || []).length, 1, 'n >> 7n boxes exactly once at the binding-write edge')
 })
 
 test('watr metacircular: jz-built watr.wasm produces byte-identical output', async () => {

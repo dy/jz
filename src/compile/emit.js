@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isTernaryBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1511,69 +1511,11 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
     if (param.ptrKind === VAL.OBJECT) return asPtrOffset(ir, param.ptrKind)
     return ptrOffsetIR(ir, param.ptrKind)
   }
-  // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
-  // call-arg def-side wiring — OFF by default (CARRIER_BOX). `param.bigintBoxed`
-  // (narrow.js bigintBoxedVerdict, stamped onto sig.params) is the CALL-SITE
-  // half of the invariant: this param can't be trusted to receive BIGINT
-  // uniformly across every live call site, so a caller passing an actual
-  // BigInt value here must box it before the call — the callee then carries
-  // an opaque, self-describing pointer through its generic/untyped param path
-  // instead of ambiguous raw bits. Only fires when THIS call's argument is
-  // itself BIGINT-kinded; a non-bigint argument at the same position needs no
-  // change (param.bigintBoxed says nothing about what THIS site passes).
+  // RepresentationPlan is the sole call-edge carrier authority. A nullable
+  // BigInt merge can still carry its nullish sentinel, so normalization must
+  // preserve that member instead of treating it as a box or raw i64 payload.
   if (node !== undefined && valTypeOf(node) === VAL.BIGINT) {
-    // Is `node` a bare name whose CURRENT storage already IS a real box?
-    // Two durable sources, both for the WHOLE current function per their own
-    // doc comments (ir.js): isCurrentlyBoxedBigint (the current function's
-    // OWN bigintBoxed param, boxed by ITS caller's coerceArg on entry) and
-    // isTernaryBoxedBigint (a ternary-nullish BIGINT decl, whose OWN storage
-    // IS the box, never a fresh-copy-at-use-site like every other
-    // bigintBoxed sink — and, being nullish-typed by construction, may ALSO
-    // genuinely hold the null/undefined sentinel at runtime, never a box:
-    // both branches below guard on that at runtime, never assume-box or
-    // assume-raw statically for a nullable name).
-    // Main-stabilization interim flip (ir.js's bigintStrict() doc comment):
-    // both directions insert a runtime-conditional box/unbox (nullish-
-    // guarded when the argument node could genuinely BE null/undefined at
-    // runtime, e.g. a `?:` nullish-BIGINT merge — nodeIsNullishBigintMerge)
-    // — the pre-Slice-1 default, restored here — UNLESS bigintStrict() is
-    // live, in which case this whole shape (a call-arg whose static kind
-    // can't be trusted uniform at the callee, in EITHER crossing direction)
-    // is exactly the design's "call-arg" flow class and refuses to compile
-    // instead.
-    const alreadyBoxed = typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))
-    const who = typeof node === 'string' ? node : 'this argument'
-    const legacyUnbox = alreadyBoxed && !param?.bigintBoxed
-    const legacyBox = !alreadyBoxed && param?.bigintBoxed
-    // Phase-C C4 (plan as sole authority — consumer-side containment): the
-    // legacy sig.bigintBoxed arms fire ONLY when the plan has NO verdict for
-    // this edge (REJECT). Any real verdict — BOX, UNBOX, or KEEP — is the
-    // plan's own readiness-gated decision; layering a legacy box/unbox on
-    // top of a plan KEEP was the second authority the three-store class
-    // names (a plan-KEEP crossing re-boxed or re-unboxed off a stale
-    // sig stamp). Producer-side gating is circular (the plan's current-rep
-    // derivation reads the sink's marks), so containment lives here.
-    const legacyEdge = repAction === REP_EDGE_REJECT
-    if (repAction === REP_EDGE_UNBOX || (legacyEdge && legacyUnbox)) {
-      if (bigintStrict() && legacyUnbox) bigintEraseErr('call-arg', who)
-      // Callee's OWN param settled "receives BIGINT consistently, stays raw
-      // at the boundary" (bigintBoxedVerdict, narrow.js) — a verdict computed
-      // from EVERY call site's argument STATIC KIND alone, with no idea one
-      // of those uniformly-BIGINT-typed arguments is secretly a durable box.
-      // Unbox before crossing — the callee's body (readI64-covered arithmetic,
-      // OR a boundary re-export) assumes raw i64-as-f64 bits, and hands them
-      // straight through unmodified otherwise. Found live: `chain(5)` →
-      // `arith(r)` (`r` ternary-boxed, coerceArg correctly passes it through
-      // unboxed already — see below) → `hex(r)` (`hex`'s param0 settled
-      // "stays raw", `r` is `arith`'s own ALREADY-boxed param) — hex's
-      // `v.toString(16)` read the pointer's own bits raw.
-      // `typed(['local.get', ...], 'f64')`, NOT a bare array: asI64/asF64
-      // (ir.js) dispatch on `.type` to decide the coercion shape, defaulting
-      // an UNTAGGED node to "i32, needs f64.convert_i32_s" — found live as a
-      // self-compile build failure (WebAssembly.Module() validation: "f64.
-      // convert_i32_s[0] expected type i32, found local.get of type f64") —
-      // `$t` is a genuine f64 local (temp() mints one), the untagged
-      // local.get read of it defaulted straight into that wrong i32 path.
+    if (repAction === REP_EDGE_UNBOX) {
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
@@ -1582,25 +1524,7 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
           ['then', tGet],
           ['else', fromI64(unboxBigInt(tGet))]]], 'f64')
     }
-    if (repAction === REP_EDGE_BOX || (legacyEdge && legacyBox)) {
-      if (bigintStrict() && legacyBox) bigintEraseErr('call-arg', who)
-      // The mirror direction (Slice 2's original wiring): callee's param
-      // can't be trusted uniformly, box a genuinely-raw argument before the
-      // call. `alreadyBoxed` being false also covers the box-of-a-box guard
-      // isProvenBoxedBigint's own param exclusion established (Slice 2's
-      // "param double-box" bug) — this `if` simply never re-boxes an
-      // already-boxed bare name (the case just above already handled it,
-      // taking `ir` through unchanged when both callee and caller agree the
-      // value crosses as a box). Nullish-guarded for the same reason as the
-      // unbox direction above — a nullable-BIGINT argument (proven or
-      // unproven-boxed alike) may genuinely be the sentinel at runtime.
-      // `tGet` typed 'f64' — see the unbox branch's own comment just above.
-      // Nullish-GUARDED only for a node that can genuinely BE null/undefined
-      // at runtime (a `?:` nullish-BIGINT merge, nodeIsNullishBigintMerge
-      // above) — every other BIGINT-typed argument boxes unconditionally, so
-      // a value that merely happens to bit-collide with a reserved sentinel
-      // (atomNanHex's own NULL_NAN/UNDEF_NAN construction) still gets boxed,
-      // matching what the callee's own bigintBoxed proof assumes (§29).
+    if (repAction === REP_EDGE_BOX) {
       if (!nodeIsNullishBigintMerge(node)) return boxBigInt(asI64(ir))
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
@@ -5742,7 +5666,10 @@ export const emitter = {
       _selfAccumConcat: selfAccum ? name : null,
       _arrayLiteralNeverEscapes: neverEscapes,
     }, () => emit(val))
-    ev = applyBigintRepresentationAction(ev, val, representationBindingWriteAction(ctx, name, val))
+    const repAction = representationBindingWriteAction(ctx, name, val)
+    ev = applyBigintRepresentationAction(ev, val, repAction)
+    // REJECT-only legacy fallback: a real plan action above is authoritative
+    // and must never be followed by this second box.
     // Durable-boxed param reassignment must MAINTAIN the boxed-slot invariant
     // (three-store unification, ledger 2026-08-19): reads deref this param's
     // slot for the whole function extent, so a raw-producing BIGINT RHS must
@@ -5750,7 +5677,7 @@ export const emitter = {
     // path's isProvenBoxedBigint arm. Scoped to arithmetic/shift/bitwise RHS
     // (raw i64 carrier by construction — no double-box risk); bare names,
     // calls and '?:' keep their established wiring.
-    if (typeof name === 'string' && isCurrentlyBoxedBigint(name) &&
+    if (repAction === REP_EDGE_REJECT && typeof name === 'string' && isCurrentlyBoxedBigint(name) &&
         Array.isArray(val) && RAW_BIGINT_OPS.has(val[0]) && valTypeOf(val) === VAL.BIGINT)
       ev = boxBigInt(asI64(ev))
     return writeVar(name, ev, void_)

@@ -11767,6 +11767,20 @@ not fallback deletion, per ADR-0001's own "completion is measured by
 deleting fallback authority, not adding planners"). No source changed; no
 commit needed beyond this note.
 
+## COVERED (2026-08-22): funded-deletion item 1 — coerceArg fallback deleted
+
+Merge product c7486727 changed binding readiness to inspect the pre-edge
+emitted carrier (`currentOf(rhs)`), not the expression's eventual planned
+target. That closes all three `uleb(BigInt(s), [])` fires: the call entry
+and loop reassignment now each receive one plan-owned RAW→BOX action. The
+assignment fallback is REJECT-only to prevent double boxing, and coerceArg's
+legacy `sig.bigintBoxed` box/unbox arms are deleted. An instrumented full
+suite recorded zero legacy fires before deletion; O0 WAT pins assert one
+allocation at each edge. Product battery: watr 37/37, data 147/147, pointers
+35/35, statements 202/202, closures 114/114, build/wat-strip 3/3,
+kernel-oracle 14/14, kernel-parity 3/3, full suite 3626/3624/0/2,
+functional self-compile 21/21 and ratchet 10/10 (+0).
+
 ## WALL (2026-08-22): funded-deletion item 2 — analyze.js markBigintSink/
 ## narrow.js bigintBoxedVerdict still have a live consumer. Not deleted.
 ## (item 3, reps.js bigintBoxed field, is BLOCKED TRANSITIVELY — see below)
