@@ -116,8 +116,23 @@ export const RESOLVED_PROP_MODULES = (() => {
   // table's keys silently dropped every DERIVED-ONLY row — Date/RegExp/
   // DataView/TypedArray methods the generator attributes but no hand row
   // names (e.g. getDate) never reached includeForProperty at all.
+  //
+  // DERIVED-ONLY rows additionally keep the CATCH-ALL set (regression
+  // 3085bba6, bisected): before the union landed, these 86 names fell
+  // through to includeForProperty's generic catch-all, and emit-time
+  // hand-built IR sites (buildArrayWithSpreads' '[' node, object.js's 'in'
+  // node, 'str' nodes, ...) depended on the catch-all's modules BY
+  // ACCIDENT — narrowing to the derived row alone broke them (`m.get(k)
+  // .toFixed(2)` → "Unknown op: [", 25-fail blast radius). Superset-of-old
+  // semantics restores main to green; the SIZE narrowing returns
+  // site-by-site as each hand-built-IR emitter gains its own
+  // includeFor*() self-demand (the emitter-owns-dependencies doctrine —
+  // buildArrayWithSpreads is the first, 57fa6989).
+  const CATCH_ALL = ['object', 'array', 'string', 'collection']
   for (const name of new Set([...Object.keys(PROP_MODULES), ...Object.keys(DERIVED_PROP_MODULES)]))
-    out[name] = unionMods((PROP_MODULES[name] || []).filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
+    out[name] = PROP_MODULES[name] != null
+      ? unionMods(PROP_MODULES[name].filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
+      : unionMods(CATCH_ALL, DERIVED_PROP_MODULES[name])
   return out
 })()
 
