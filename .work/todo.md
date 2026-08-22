@@ -12029,5 +12029,29 @@ Ledger correction, round 2: repository-wide static grep found additional
 accepted-wrong rows hidden outside the handoff's ledger—two subnormal Number
 coercions in BigInt-using programs (test/data.js), conditional-spread
 presence/enumeration divergences, and two BOOL∪NUMBER decl-storage PENDING_FIX
-rows in kernel-oracle.js. They remain release-blocking despite the stale
+rows in kernel-oracle.js. They remained release-blocking despite the stale
 "only getTime"/"only nullish" summaries.
+
+## FIXED (2026-08-22): accepted-wrong sweep reaches zero explicit pins
+
+Commit b9ce0c62 closes all rows found by the repository-wide ledger sweep and
+removes 435 net lines. RepresentationPlan's completed tagged crossing makes
+the `ctx.features.bigint` subnormal-magnitude guess obsolete in both __to_num
+and its inline fast path: every non-NaN f64 is Number; dynamic BigInt is a
+PTR.BIGINT box. Conditional spread now always lowers to HASH so key insertion
+records presence independently of value; this fixes absent versus
+present-undefined, Object.assign copying and enumeration. Object.assign named
+targets are conservatively dyn-write-marked, and the now-dead condAbsentProps
+side table, schema methods, specialized enumerators and old dynamic-assign
+helper are deleted. Ambiguous BOOL∪NUMBER local storage still lacks a universal
+tagged carrier, so identity-sensitive stored uses now correct-reject with an
+actionable compile error; truthiness-only uses and the existing capture-shadow
+path remain accepted. The two PENDING_FIX rows now assert native+kernel
+rejection at O0/O2/O3. dist/jz.wasm: 17,107.4→16,966.0 kB.
+
+Gates: conditional-spread 21/21 (106), data 149/149 (729), number 53/53,
+objects 134/134, spread 40/41+1 skip, watr 37/37, kernel-oracle 14/14 (605),
+build/wat-strip 3/3, kernel-parity 3/3, full suite 3632/3630/0/2 (21,156),
+functional self-compile 21/21 and ratchet 10/10 (+0). Static grep now finds no
+test that intentionally asserts a current wrong value; historical "was wrong"
+comments remain evidence, not ledger entries.
