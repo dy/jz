@@ -11709,3 +11709,60 @@ depth) needs a minimal repro + fix as its own slice. GATE LESSON: changes to
 self-graph source files (src/**, module/**) gate on `npm run build` (full
 self-compile), not suite alone — the suite's differential snippets cannot
 see self-compile-only codegen breaks.
+
+## WALL (2026-08-22): funded-deletion item 1 — coerceArg legacy sig.bigintBoxed
+## arms (emit.js ~1536-1602) are STILL LIVE, not dead. Not deleted.
+
+Per ADR-0001 Consequences §1 / phase-c-unification.md's C4a note ("legacy
+sig.bigintBoxed arms fire ONLY when the plan has NO verdict for this edge
+[REJECT]"), instrumented `coerceArg` (emit.js:1546 `legacyEdge`) with a
+`JZ_DBG_LEGACY_BIGINT=1`-gated counter/logger at the exact point
+`legacyEdge && (legacyUnbox || legacyBox)` — i.e. repAction is
+REP_EDGE_REJECT (the plan abstains) AND the legacy sink-OR heuristic
+(`alreadyBoxed`/`param?.bigintBoxed`) disagrees with passthrough — then ran
+the full corpus + self-host graph: `npm run build` (dist/jz.wasm self-
+compile, src/module through jz itself) → **0 fires**; `node test/self-
+compile.js` (21 rounds) → **0 fires**; `node test/index.js` (full suite,
+3623/3621/2/0) → **3 fires**, all `box` direction, all `who=this argument`
+(inline expr, not a bare name), all `func=(top)` (module-level init).
+
+**Exact site**: `test/watr.js:324` "jz: bigint param loop-reassigned through
+a sink keeps one representation" (the test's own docstring: "Regressed as:
+f(300n) returned 0 (boxed reads deref'd a raw carrier), OOB with arrays in
+scope" — this IS the watr uleb/limits shape ADR-0001 Context §1 names as
+the load-bearing self-host reason mixed BigInt can't retire):
+```js
+let push8 = (out, b) => { out.push(b); return out }
+let uleb = (n, out) => { while (n > 127n) { push8(out, Number(n & 127n)); n = n >> 7n } push8(out, Number(n)); return out }
+let limits = (s) => uleb(BigInt(s), [])
+export let run = () => { let r = limits("300"); return r[0] * 1000 + r[1] }
+```
+1 fire at optimize:false, 2 at optimize:3 (the test's own `for (const
+optimize of [false, 3])` loop — both legs fire, not just one). The firing
+edge is the `uleb(BigInt(s), [])` call-arg: `BigInt(s)` is a fresh inline
+BIGINT expression (never a name, so `alreadyBoxed` is always false) landing
+on `uleb`'s param `n`, which the LEGACY sink-OR mechanism (narrow.js
+`bigintBoxedVerdict` and/or analyze.js `markBigintSink` — `n` is loop-
+reassigned AND flows into `push8(out, …)`) marks `bigintBoxed=true`.
+`representationCallArgAction` (the plan) returns REJECT for this exact
+edge — readiness-gating (`stable || materializedNames`, phase-c-
+unification.md's own note) does not yet cover a param that acquires its
+box-worthiness purely from an intra-body sink read with no direct-BIGINT
+call-site census. Without the legacy `legacyBox` arm, this argument would
+cross unboxed and `uleb`'s own boxed-read body (deref'ing `n` as a
+pointer) would misread the raw bits — the EXACT regression the test's
+docstring already names.
+
+**Disposition**: reverted the probe cleanly (`git diff` against emit.js is
+empty). Item 1 does NOT land standalone: it is entangled with item 2 (the
+plan's call-arg action must independently prove this edge before the
+legacy fallback can retire) — coerceArg's REJECT-only legacy consumption
+stays exactly as C4a left it. Re-attempt item 1 only after item 2 either
+(a) migrates this shape's provenance into a plan-internal fact so
+`representationCallArgAction` stops REJECTing it, or (b) is itself found to
+also wall on the identical shape, in which case both stay banked together
+pending a real "intra-body sink acquisition → call-arg action" plan
+extension (out of this deletion phase's scope — it is new plan coverage,
+not fallback deletion, per ADR-0001's own "completion is measured by
+deleting fallback authority, not adding planners"). No source changed; no
+commit needed beyond this note.
