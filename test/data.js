@@ -2000,17 +2000,15 @@ test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN
   }
 })
 
-test('bigint: unary "-"/"~" and joint-binary result expressions over a census-BIGINT operand materialize (funded-deletion item 4 — sentinel kinds 2-4 coverage)', () => {
-  // .work/todo.md WALL 2026-08-22 (funded-deletion item 4): the legacy
-  // `_resultBigintSentinel` export lane's kinds 2-4 (layout.js
-  // BIGINT_SENTINEL_KIND UNARY_NEG/UNARY_NOT/JOINT_BINARY) were NOT redundant
-  // with the generic tagged decode — forcing the sentinel off produced silent
+test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
+  // The retired sentinel export lane could not be disabled until these
+  // producer shapes materialized through the generic tagged decode; doing so
+  // earlier produced silent
   // wrong values on the present-key case at every optimize level (`-m.get('x')`
   // with x=5n present read back as `2.5e-323`, 5n's raw i64 bits misread as an
   // f64 subnormal — the exact disease this whole mechanism exists to prevent).
-  // Fix: representation-plan.js's buildBodyData gained a sentinel-shaped
-  // admission (mirrors kind.js censusBigintSentinelKind's own kind 2-4 shapes
-  // exactly) into the SAME materializedJoins set C5b's join fixpoint populates
+  // Fix: representation-plan.js's buildBodyData admits the census-shaped
+  // producers into the SAME materializedJoins set C5b's join fixpoint populates
   // — the return edge now boxes the "real bigint" branch, representation
   // ResultTagRequired's exprMayBox sees it (STRICT proof), and compile/
   // index.js's synthesizeBoundaryWrappers routes the generic decode lane
@@ -2050,17 +2048,9 @@ test('bigint: unary "-"/"~" and joint-binary result expressions over a census-BI
     is(jointNum.f(), 8, `${lbl}: joint-binary on a plain-number Map stays a plain Number (unaffected)`)
   }
 
-  // Sentinel-bypass WAT-shape proof (O0 only — deliberately, watr's own
-  // optimizer can inline the $__ptr_type stdlib call at O2/O3, which erases
-  // the LITERAL `call $__ptr_type` text this fingerprint greps for without
-  // changing which lane actually fired; O0 never inlines it, so the text is
-  // a faithful proxy there). The sentinel lane's own wasm body (compile/
-  // index.js resultBigintSentinel branch) is the ONLY $exp-wrapper emitter
-  // that calls `$__ptr_type` inline — its absence means synthesizeBoundary
-  // Wrappers took resultDynamic (the generic decode) instead, exactly the
-  // bypass this slice's task requires proving. A BARE (kind 1, uncovered by
-  // this slice) export is the positive control: its sentinel lane is
-  // unaffected by this change and must still show the fingerprint.
+  // The retired sentinel wrapper was the only export body that called
+  // $__ptr_type inline. Every census-BigInt shape now takes the generic
+  // plan-owned tagged decode, including the formerly residual bare read.
   const wrapperBody = (src, fname) => {
     const wat = compile(src, { optimize: false, wat: true })
     const start = wat.indexOf(`(func $${fname}$exp`)
@@ -2069,7 +2059,7 @@ test('bigint: unary "-"/"~" and joint-binary result expressions over a census-BI
     return next >= 0 ? wat.slice(start, next) : wat.slice(start)
   }
   const bareBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, 'f')
-  ok(/call \$__ptr_type/.test(bareBody), 'O0: BARE (kind 1, uncovered) export wrapper still takes the sentinel lane (positive control)')
+  ok(!/call \$__ptr_type/.test(bareBody), 'O0: BARE export no longer takes the sentinel lane')
   const negBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return -m.get('x') }`, 'f')
   ok(!/call \$__ptr_type/.test(negBody), 'O0: UNARY_NEG export wrapper no longer takes the sentinel lane (generic decode routes instead)')
   const notBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return ~m.get('x') }`, 'f')

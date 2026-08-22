@@ -14,7 +14,6 @@ import {
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
-import { BIGINT_SENTINEL_KIND } from '../layout.js'
 import { isBlockBody, returnExprs, alwaysReturns } from './ast.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
@@ -555,21 +554,18 @@ export function censusMaybeUndefinedKind(node) {
 // special-case: `bigIntJointDispatch`'s own runtime domain check throws
 // BIGINT_UNDEF_MIX before a genuinely-mismatched operand pair could ever
 // reach a return here, so every value this export lane ever sees IS a
-// genuine i64 arithmetic result — kind 4, for every op in
-// BIGINT_JOINT_BINARY_OPS. interop.js
-// needs no new table entry for kind 4: `decodeBigintSentinel`'s
-// `BIGINT_SENTINEL_BITS[4]` is simply absent, so its `ret === undefined`
-// comparison is always false for a real BigInt `ret` and the raw value passes
-// through unchanged — already correct.
+// genuine i64 arithmetic result — category 4, for every op in
+// BIGINT_JOINT_BINARY_OPS.
+const BIGINT_RESULT_SHAPE = { BARE: 1, UNARY_NEG: 2, UNARY_NOT: 3, JOINT_BINARY: 4 }
 export const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
-export function censusBigintSentinelKind(node) {
-  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return BIGINT_SENTINEL_KIND.BARE
+export function censusBigintResultShape(node) {
+  if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return BIGINT_RESULT_SHAPE.BARE
   if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT)
-    return node[0] === 'u-' ? BIGINT_SENTINEL_KIND.UNARY_NEG : BIGINT_SENTINEL_KIND.UNARY_NOT
+    return node[0] === 'u-' ? BIGINT_RESULT_SHAPE.UNARY_NEG : BIGINT_RESULT_SHAPE.UNARY_NOT
   if (Array.isArray(node) && node.length === 3 && BIGINT_JOINT_BINARY_OPS.has(node[0])
       && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
-    return BIGINT_SENTINEL_KIND.JOINT_BINARY
+    return BIGINT_RESULT_SHAPE.JOINT_BINARY
   // Kind 5 ("presentVal param producers"): a call whose CALLEE is a
   // plain single-param function/const-arrow (ctx.funcs.map) entirely made of
   // `-`/`~` applied to its OWN param (`const g = (v) => -v`, or an equivalent
@@ -601,7 +597,7 @@ export function censusBigintSentinelKind(node) {
       const pname = params[0].name
       const sites = returnExprs(callee.body)
       const kindOf = (e) => Array.isArray(e) && e.length === 2 && (e[0] === 'u-' || e[0] === '~') && e[1] === pname
-        ? (e[0] === 'u-' ? BIGINT_SENTINEL_KIND.UNARY_NEG : BIGINT_SENTINEL_KIND.UNARY_NOT) : 0
+        ? (e[0] === 'u-' ? BIGINT_RESULT_SHAPE.UNARY_NEG : BIGINT_RESULT_SHAPE.UNARY_NOT) : 0
       const k0 = sites.length ? kindOf(sites[0]) : 0
       if (k0 > 0 && sites.every(e => kindOf(e) === k0) && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT)
         return k0
@@ -1068,7 +1064,7 @@ for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
 // REF_EQ_KINDS raw-i64-compare dispatch (`vta === vtb === VAL.BIGINT`,
 // emit.js), which needs THIS static claim to route `-m.get(k) === -5n`
 // correctly. INVARIANT: override applies for EXACTLY the two ops
-// censusBigintSentinelKind recognizes (`u-`, `~`) — not the general
+// censusBigintResultShape recognizes (`u-`, `~`) — not the general
 // numericBinaryVT/numericUnaryVT default, and not `++`/`--`/`**`/`>>>`/`u+`
 // (no export-lane sentinel exists for those shapes) — mirroring emitNeg/`~`'s
 // own OR-arm activation-gate hardening so the STATIC kind claim and the
@@ -1100,11 +1096,9 @@ VT['+'] = (args) => {
   // load-bearing, not decorative — without it, `let x = m.get(a);
   // let y = m.get(b); return x + y` (both present-key BIGINT census, emit.js's
   // own widened gate computes the CORRECT i64 sum) decodes wrong at
-  // the export boundary — compile/index.js's `_resultNumeric`/
-  // `_resultBigintSentinel` boundary-wrap decision reads THIS function's
-  // return value, and the optimistic-NUMBER default below would send it down
-  // the NUMBER decode lane instead of the BigInt sentinel lane (the raw
-  // i64-sum bits misread as a NUMBER — `4e-323` instead of `8n`).
+  // the export boundary — compile/index.js's `_resultNumeric` veto reads
+  // the same census shape, and the optimistic-NUMBER default below would
+  // otherwise send raw i64 sum bits down the NUMBER decode lane.
   if (censusMaybeUndefinedKind(args[0]) === VAL.BIGINT && censusMaybeUndefinedKind(args[1]) === VAL.BIGINT)
     return VAL.BIGINT
   // OPTIMISTIC NUMBER for unknown sides — load-bearing for local numeric

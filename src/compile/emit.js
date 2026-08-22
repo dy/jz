@@ -71,12 +71,12 @@ import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
-  representationSentinelExprAction, representationStorageWriteAction, representationProgramHasBigint,
+  representationComputedExprAction, representationStorageWriteAction, representationProgramHasBigint,
 } from './representation-plan.js'
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
 // "should my own value be boxed" — JOIN_OPS (C5b precedent) plus, funded-
-// deletion item 4, the unary '-'/'~' and joint-binary sentinel-shaped ops
+// deletion item 4, the unary '-'/'~' and joint-binary census-shaped ops
 // (kind.js's canonical BIGINT_JOINT_BINARY_OPS + the two unary op names).
 // Threaded through the generic dispatch below exactly like JOIN_OPS
 // already was — an opt-in Set, not a blanket `handler(...args, node)` for
@@ -318,7 +318,7 @@ const emitNeg = (a, self) => {
   // this activation gate reachable for a dynamic dict/Map-read operand
   // independent of whether that promotion stays wired.
   if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
-    return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'], sentinelBoxOf(self))
+    return bigIntUnary(a, i64v => ['i64.sub', ['i64.const', 0], i64v], ['f64.const', 'nan'], computedBoxOf(self))
   const v = emit(a)
   // `.unsigned` carries its uint32 value as a signed i32 bit pattern (litVal/i32.sub
   // both read that raw pattern), so negating either fast path directly negates the
@@ -4930,21 +4930,14 @@ function bigIntDomainsCanMix(a, b, allowUnresolved) {
 // expression). Both receive the operand ALREADY evaluated into a temp local
 // (`local.get`) — `emit(a)`/`emit(b)` run exactly once each, here.
 
-// Shared `box` query for bigIntUnary/bigIntJointDispatch's sentinel-shaped
-// callers (funded-deletion item 4): `self` is the OUTER '-'/'~'/joint-binary
-// AST node, threaded in by the dispatcher (SELF_AWARE_OPS, near the top of
-// this file) exactly like JOIN_OPS's own `self` — representationSentinelExprAction
-// answers REP_EDGE_BOX only when buildBodyData's sentinel-admission pass
-// (representation-plan.js) already proved THIS node materialized/boxed;
-// every other case (internal-only function, non-covered boundary, BOOL-veto,
-// …) answers REP_EDGE_REJECT here and the caller keeps its untouched raw
-// carrier — REJECT is the fail-closed default, never a guess.
-const sentinelBoxOf = (self) => self != null && representationSentinelExprAction(ctx, self) === REP_EDGE_BOX
+// Plan query for census-shaped unary/joint results. REJECT preserves the raw
+// carrier; BOX materializes only the runtime BigInt branch.
+const computedBoxOf = (self) => self != null && representationComputedExprAction(ctx, self) === REP_EDGE_BOX
 
 // `box` (funded-deletion item 4, .work/todo.md WALL 2026-08-22): true when
 // RepresentationPlan proved the OUTER node's target BOXED_BIGINT — only ever
 // passed true when `domA`/`domB` are BOTH 'census' (representation-plan.js's
-// sentinel admission mirrors kind.js censusBigintSentinelKind's kind-4 shape
+// census admission mirrors kind.js censusBigintResultShape's joint shape
 // exactly: both operands independently census-BIGINT), so `definite` below
 // is always null whenever `box` is true — the runtime-forked `if` branch
 // (never the `definite` shortcut) is the only place boxing can apply. Kept
@@ -5063,8 +5056,7 @@ function bigIntOperand(node) {
   // the container's own live carrier for a BigInt value is a boxed
   // PTR.BIGINT pointer (coerceArg boxes every BigInt argument crossing into
   // `.set()`/`[]=` unconditionally, §29), so a naive `i64.reinterpret_f64`
-  // exposes the box's own tag/offset bits instead of the payload — the same
-  // class synthesizeBoundaryWrappers' resultBigintSentinel lane hit.
+  // exposes the box's own tag/offset bits instead of the payload.
   // `maybeUnboxBigInt` (CONSERVATIVE PAIRING, §16/§24/§29) dereferences a
   // genuine box and passes anything else through unchanged; off-flag this
   // is byte-identical to the prior plain reinterpret.
@@ -5898,7 +5890,7 @@ export const emitter = {
       bigintMixReject('+', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.add', ia, ib],
-        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), sentinelBoxOf(self))
+        (fa, fb) => typed(['f64.add', fa, fb], 'f64'), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('+', a, b)
@@ -5998,7 +5990,7 @@ export const emitter = {
       bigintMixReject('-', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.sub', ia, ib],
-        (fa, fb) => typed(['f64.sub', fa, fb], 'f64'), sentinelBoxOf(self))
+        (fa, fb) => typed(['f64.sub', fa, fb], 'f64'), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('-', a, b)
@@ -6038,7 +6030,7 @@ export const emitter = {
       bigintMixReject('*', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.mul', ia, ib],
-        (fa, fb) => typed(['f64.mul', fa, fb], 'f64'), sentinelBoxOf(self))
+        (fa, fb) => typed(['f64.mul', fa, fb], 'f64'), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('*', a, b)
@@ -6082,7 +6074,7 @@ export const emitter = {
       bigintMixReject('/', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.div_s', ia, ib],
-        (fa, fb) => typed(['f64.div', fa, fb], 'f64'), sentinelBoxOf(self))
+        (fa, fb) => typed(['f64.div', fa, fb], 'f64'), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('/', a, b)
@@ -6112,7 +6104,7 @@ export const emitter = {
       bigintMixReject('%', a, b)
       return bigIntJointDispatch(a, b,
         (ia, ib) => ['i64.rem_s', ia, ib],
-        (fa, fb) => f64rem(fa, fb), sentinelBoxOf(self))
+        (fa, fb) => f64rem(fa, fb), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject('%', a, b)
@@ -6635,7 +6627,7 @@ export const emitter = {
     // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` — see emitNeg's identical
     // OR-arm comment (§6/§12 Slice 5): keeps this gate VT-Slice-4-independent.
     if (valTypeOf(a) === VAL.BIGINT || censusMaybeUndefinedKind(a) === VAL.BIGINT)
-      return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1], sentinelBoxOf(self))
+      return bigIntUnary(a, i64v => ['i64.xor', i64v, ['i64.const', -1]], ['f64.const', -1], computedBoxOf(self))
     const v = emit(a); return isLit(v) ? emitNum(~litVal(v)) : typed(['i32.xor', toI32(isI32Num(v) ? v : toNumF64(a, v)), typed(['i32.const', -1], 'i32')], 'i32')
   },
   ...Object.fromEntries([
@@ -6648,7 +6640,7 @@ export const emitter = {
       bigintMixReject(op, a, b)
       return bigIntJointDispatch(a, b,
         op === '<<' || op === '>>' ? (ia, ib) => bigIntShiftIR(op, ia, ib) : (ia, ib) => [`i64.${fn}`, ia, ib],
-        (fa, fb) => asF64(typed([`i32.${fn}`, toI32(fa), toI32(fb)], 'i32')), sentinelBoxOf(self))
+        (fa, fb) => asF64(typed([`i32.${fn}`, toI32(fa), toI32(fb)], 'i32')), computedBoxOf(self))
     }
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT) {
       bigintMixReject(op, a, b)

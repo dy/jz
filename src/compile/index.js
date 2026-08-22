@@ -34,7 +34,7 @@ import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunc
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
-import { valTypeOf, hasAmbiguousBoolMerge, censusBigintSentinelKind } from '../kind.js'
+import { valTypeOf, hasAmbiguousBoolMerge, censusBigintResultShape } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
@@ -81,7 +81,7 @@ import {
   boolBoxIR,
   I32_MIN, I32_MAX, dollar,
   carrierF64,
-  unboxBigInt, applyBigintRepresentationAction,
+  applyBigintRepresentationAction,
   freshId,
   dollarMap, setDollarMap,
 } from '../ir.js'
@@ -822,45 +822,16 @@ function analyzeFuncForEmit(func, programFacts) {
     // (not `null`) for a shape like `let x = m.get(a); let y = m.get(b); return
     // x - y` (both present-key BIGINT census) — without `censusSafe`, that would
     // short-circuit `_resultNumeric = true` on the FIRST disjunct below, never
-    // reaching `censusBigintSentinelKind` at all, skipping the i64 boundary wrap
+    // reaching `censusBigintResultShape` at all, skipping the i64 boundary wrap
     // for a value that's genuinely a present-key BigInt at runtime (the raw i64
     // sum's bits misread as a subnormal float, `1e-323` instead of `2n`).
-    // `censusBigintSentinelKind` sources its answer from the census helpers
+    // `censusBigintResultShape` sources its answer from the census helpers
     // DIRECTLY (dictValueKindOf/mapValueKindOf via censusMaybeUndefinedKind),
     // never through VT/valTypeOf/valResult, so this check stays correct
     // regardless of which optimistic default fired.
-    const censusSafe = rex.length === 0 || rex.every(e => censusBigintSentinelKind(e) === 0)
+    const censusSafe = rex.length === 0 || rex.every(e => censusBigintResultShape(e) === 0)
     func._resultNumeric = censusSafe && (func.valResult === VAL.NUMBER ||
       (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
-  }
-
-  // Present-key BigInt through the census, export sentinel lane (.work/
-  // .work/todo.md §deletion-sweep §6/§12 Slice 5 — the
-  // `presentKindUnboxed` family): a dict/Map `.get()`/`[]` read (or a bare
-  // name/call-result/unary `-`/`~` that traces to one) whose kind census
-  // claims BIGINT, computed HERE — same "while reps are live" reasoning as
-  // `_resultNumeric` above. Computed UNCONDITIONALLY (not gated on
-  // `func.valResult == null`, unlike `_resultNumeric`): `dictValueKindOf`
-  // resolving EARLIER than `mapValueKindOf` (dict's census has a whole-
-  // program pre-scan half, program-facts.js; Map's is per-function-only)
-  // means `func.valResult` can ALREADY settle to a plain VAL.BIGINT for a
-  // dict-sourced census read at narrowValResults' own early pass — WITHOUT
-  // its `valResultMayBeUndefined` companion, because `exprMayBeUndefinedIn`
-  // (that OR-join's own predicate) doesn't peel through a `-`/`~` unary
-  // wrapper the way censusBigintSentinelKind does. So this fact must be
-  // re-derived independently here and allowed to OVERRIDE a stale/incomplete
-  // `func.valResult` claim (synthesizeBoundaryWrappers below gives it
-  // priority over resultBigint for exactly this reason) rather than trusting
-  // `valResult == null` as a proxy for "not yet claimed". Left unset (falls
-  // through to whatever resultBigint/resultDynamic already decide) whenever
-  // ANY return site doesn't independently prove the SAME sentinel kind —
-  // covers a mixed-kind Map/dict (BIGINT∪NUMBER writes → dictValueKindOf/
-  // mapValueKindOf already return null, no exact lane) and any other
-  // disagreement, matching narrowValResults' own allSame-or-nothing rule.
-  if (isExported(func)) {
-    const rex = returnExprs(body)
-    const s0 = rex.length > 0 ? censusBigintSentinelKind(rex[0]) : 0
-    func._resultBigintSentinel = s0 > 0 && rex.every(e => censusBigintSentinelKind(e) === s0) ? s0 : 0
   }
 
   // LoopPlan pre-emission mint (.work/research.md §BodyModel /
@@ -1755,60 +1726,15 @@ function synthesizeBoundaryWrappers() {
     // own bits for the boxed member). Route it to resultDynamic's generic
     // tag decode instead; interop's PTR.BIGINT arm derefs the box.
     const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
-    // Funded-deletion item 4 (.work/todo.md WALL 2026-08-22): the STRICT
-    // verdict — every return tail UNIVERSALLY proven boxed, never the non-
-    // strict form's coarse open-current fallback (representationResultTagRequired's
-    // own doc comment: "an open operand may carry a raw BigInt whose bits the
-    // tag test cannot distinguish"). Deliberately a SEPARATE query from
-    // resultTaggedUnion above (which stays non-strict/existential for ITS
-    // OWN purpose two lines down — gating resultBigint): suppressing the
-    // sentinel lane needs the stronger, per-expression PROOF that this
-    // export's return edge actually materializes a box today (representation-
-    // plan.js's sentinel-admission pass in buildBodyData, mirrored at
-    // emission by bigIntUnary/bigIntJointDispatch's `box` param) — not merely
-    // "the boundary's coarse current-rep guess allows a box", which would
-    // also fire on kind-1 (BARE) exports this slice never re-verified (kind
-    // 1 stays correct today for an UNRELATED reason — the census container
-    // already stores its BigInt member as a box, not because any return-edge
-    // materialization was ever proven for it).
-    const resultSentinelCovered = !resultPtr && representationResultTagRequired(ctx, func, undefined, true)
-    // Present-key BigInt through the census, sentinel lane (§6/§12 Slice 5,
-    // `func._resultBigintSentinel` set in analyzeFuncForEmit while local reps were
-    // live — see that comment). Checked BEFORE resultBool/resultBigint/resultDynamic
-    // and takes PRIORITY over them: `func.valResult` can independently, WRONGLY
-    // settle to a plain VAL.BIGINT for this same shape (the analyzeFuncForEmit
-    // comment explains why: dict's census resolves earlier than Map's, so
-    // narrowValResults' own allSame fold can claim BIGINT for a dict-sourced unary
-    // read without its valResultMayBeUndefined companion) — trusting THAT claim
-    // here would take the plain resultBigint lane (raw unmarked passthrough), which
-    // is unsound whenever the true runtime value can be the sentinel's real NUMBER
-    // instead. The i64 bits this lane carries are IDENTICAL to resultDynamic's own
-    // (`toI64(callIR)` below, unchanged) — only the `jz:i64exp` marker differs, so
-    // interop.js decodes them as a raw BigInt (or the sentinel's JS value —
-    // `undefined`/NaN/-1) instead of taking the generic NaN-box/number decode path,
-    // which misreads a small BigInt's raw i64 bits as a subnormal float.
-    // `!resultSentinelCovered` (funded-deletion item 4): once the plan's own
-    // return-edge materialization proves THIS export already crosses boxed,
-    // the sentinel's census-only proof is a redundant second decode of a
-    // value the generic lane already decodes correctly — it steps aside
-    // (this flag goes to 0) rather than racing the generic lane for the
-    // dispatch below. ADR-0001: the plan is sole representation authority;
-    // once it covers an export's result, a second, independent authority
-    // for the SAME export must not also fire.
-    const resultBigintSentinel = !resultPtr && !resultSentinelCovered ? (func._resultBigintSentinel || 0) : 0
-    const resultBool = func.valResult === VAL.BOOL && !resultPtr && !resultBigintSentinel
-    const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultBigintSentinel && !resultTaggedUnion
-    // Dynamic f64 result: not pointer/bool/bigint(-sentinel) and not a proven number →
-    // may be a NaN-box at runtime, so i64. (An i32-carrier result is numeric → stays f64 via
-    // convert below.)
-    const resultDynamic = !resultPtr && !resultBool && !resultBigint && !resultBigintSentinel
-      && sig.results[0] === 'f64' && !func._resultNumeric
-    const resultI64 = resultPtr || resultBool || resultBigint || resultBigintSentinel !== 0 || resultDynamic
-    // jz:i64exp `r` marks results interop must reinterpret then `mem.read`. A bigint result is
-    // i64 too, but the BigInt *is* the value (no reinterpret) — so it stays unmarked. The
-    // census-BIGINT sentinel lane gets its OWN marker (`s`, below) — neither `r`'s generic
-    // decode nor plain unmarked passthrough (which would decode a genuinely-absent key's
-    // sentinel bits as a garbage BigInt instead of its real JS value).
+    const resultBool = func.valResult === VAL.BOOL && !resultPtr
+    const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultTaggedUnion
+    // Dynamic f64 result: not pointer/bool/raw-bigint and not a proven number.
+    // It may be a NaN box, so cross i64 and let interop's generic decoder own it.
+    const resultDynamic = !resultPtr && !resultBool && !resultBigint &&
+      sig.results[0] === 'f64' && !func._resultNumeric
+    const resultI64 = resultPtr || resultBool || resultBigint || resultDynamic
+    // jz:i64exp `r` marks results interop must reinterpret then `mem.read`.
+    // A proven raw BigInt result is already the value, so it stays unmarked.
     const resultReinterpret = resultPtr || resultBool || resultDynamic
     // i64 carrier per param: pointer-ABI (offset) or a dynamic f64 param (boundaryI64).
     const paramIsI64 = (p) => !p.jsstring && (p.ptrKind != null || p.boundaryI64)
@@ -1892,66 +1818,9 @@ function synthesizeBoundaryWrappers() {
         carrier = typed(['call', '$__is_truthy', toI64(callIR)], 'i32')
       }
       body = toI64(boolBoxIR(carrier))
-    } else if (resultBigintSentinel) {
-      // Census-BIGINT sentinel lane (§6/§12 Slice 5): under CARRIER_BOX, a
-      // dict/Map value census-classified BIGINT crosses this exact lane
-      // carrying whatever the container's OWN storage cell holds — which,
-      // for a real BigInt, is now a boxed PTR.BIGINT pointer (the container
-      // stores values by their live f64 carrier uninterpreted, and a
-      // CARRIER_BOX BigInt's live carrier IS the box — coerceArg boxes every
-      // BigInt-typed argument at the `.set()`/`[]=` call site unconditionally
-      // per §29's own coerceArg fix). interop.js's `decodeBigintSentinel`
-      // (the `s`-marker decode this lane feeds) only ever compares the raw
-      // i64 against a SENTINEL's fixed bit pattern or returns it as-is — it
-      // has no memory access to dereference a box, unlike the generic `r`-
-      // marker decode's own PTR.BIGINT arm (interop.js mem.read). A naive
-      // `i64.reinterpret_f64` here exposes the BOX POINTER's own tag/offset
-      // bits as if they were the payload (verified live: `m.set('x',5n);
-      // return m.get('x')` crossed as the box's raw bits, not `5n`). Fixed
-      // at the source instead of teaching interop.js to dereference blind:
-      // `maybeUnboxBigInt` (ir.js, the CONSERVATIVE PAIRING primitive §16/
-      // §24/§29 already established) runtime-tag-checks and dereferences
-      // ONLY a genuine PTR.BIGINT box, passing every other bit pattern
-      // (including the UNDEF_NAN/etc. sentinels this very lane's OWN decode
-      // still needs to match byte-exact) through untouched — sound because
-      // this lane's provenance is ALREADY proven census-BIGINT-or-sentinel
-      // (the `func._resultBigintSentinel` gate above), never an arbitrary
-      // raw BigInt whose bit pattern might coincidentally alias a NaN-box.
-      // Off-flag: CARRIER_BOX is false, so this is byte-identical to the
-      // pre-existing `toI64(callIR)` — zero default-build change.
-      //
-      // Can't call `maybeUnboxBigInt` (ir.js) directly: it allocates its own
-      // scratch local via `temp()`, which registers into `ctx.func.locals` —
-      // this wrapper function is assembled by hand (`wrapNode`, no `(local
-      // ...)` section for the single-result shape at all, unlike the multi-
-      // value branch above which manages its own `__mlaneN` locals
-      // explicitly) and is built in a separate pass after normal body
-      // emission, so `ctx.func` here belongs to whatever function compiled
-      // last — `temp()` would silently register the scratch local onto the
-      // WRONG function's locals list, producing an unresolvable reference.
-      // Inlined by hand instead, reusing `maybeUnboxBigInt`'s own logic
-      // (ir.js) verbatim but against a manually-declared, collision-checked
-      // local — the same collision-avoidance discipline the multi-value
-      // `__mlaneN` lanes just above already use for the identical reason.
-      const pnames = new Set(sig.params.map((p) => p.name))
-      let bl = '__expbig0'
-      while (pnames.has(bl)) bl = `_${bl}`
-      wrapNode.push(['local', `$${bl}`, 'f64'])
-      inc('__ptr_type')
-      body = typed(['if', ['result', 'i64'],
-        ['i32.eq', ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.tee', `$${bl}`, callIR]]], ['i32.const', PTR.BIGINT]],
-        ['then', unboxBigInt(['local.get', `$${bl}`])],
-        ['else', ['i64.reinterpret_f64', ['local.get', `$${bl}`]]]], 'i64')
     } else if (resultBigint || resultDynamic) {
-      // BigInt rides the i64-reinterpret-f64 carrier internally; a dynamic result is already
-      // an f64 NaN-box carrier. Either way expose the raw i64 at the JS boundary for a
-      // lossless value. Internal callers use `$name` (the f64 carrier) untouched; only `$exp`
-      // is i64. Neither lane needs resultBigintSentinel's own CARRIER_BOX unboxing: `resultBigint`
-      // is EXCLUSIVE with `resultBigintSentinel` by construction (line above — a census-sourced
-      // BIGINT always takes the sentinel lane first), so a plain-`resultBigint` value is provably
-      // never container-sourced; `resultDynamic` crosses with `ie.r` set, so interop.js's own
-      // generic `decode()`/mem.read already carries a PTR.BIGINT arm that dereferences it
-      // (interop.js:564) — no source-side change needed there.
+      // Proven raw BigInt and generic tagged results both cross losslessly as
+      // i64. Only the latter sets `r`, so interop dereferences PTR.BIGINT boxes.
       body = toI64(callIR)
     } else if (sig.results[0] === 'i32') {
       body = [sig.unsignedResult ? 'f64.convert_i32_u' : 'f64.convert_i32_s', callIR]
@@ -1959,18 +1828,10 @@ function synthesizeBoundaryWrappers() {
       body = callIR
     }
     wrapNode.push(body)
-    // Record the i64 carrier map for interop.js (jz:i64exp). A pure-numeric export
-    // (no i64 params, f64 result) records nothing — zero footprint off the box path.
-    // `s` (own literal shape, not folded into `r` — jz:extparam/i64exp's own "each
-    // shape a direct literal" discipline, self-compile schema inference needs it) marks
-    // the census-BIGINT sentinel lane (§6/§12 Slice 5) with a layout.js
-    // BIGINT_SENTINEL_KIND value — see censusBigintSentinelKind's doc (kind.js) for
-    // which AST shape produces which kind, and layout.js for the kind→bits→value
-    // decode table interop.js reads on the other side of this custom section.
-    if (i64Params.length || resultReinterpret || resultBigintSentinel)
-      func._exportI64 = resultBigintSentinel
-        ? { p: i64Params, s: resultBigintSentinel }
-        : { p: i64Params, r: resultReinterpret ? 1 : 0 }
+    // Record the i64 carrier map for interop.js (jz:i64exp). A pure-numeric
+    // export records nothing.
+    if (i64Params.length || resultReinterpret)
+      func._exportI64 = { p: i64Params, r: resultReinterpret ? 1 : 0 }
     wrappers.push(wrapNode)
   }
   return wrappers
@@ -3096,27 +2957,19 @@ export default function compile(ast, profiler, regionHooks) {
   if (extExports.length)
     sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
-  // jz:i64exp — per-export i64 carrier map (NaN-canonicalization dodging). Each entry
-  // `{name, p:[i64 param indices], r:1? | s:BIGINT_SENTINEL_KIND value? | m:N?}`: `p` lists
-  // params interop must pass as BigInt (f64ToI64); `r` marks a single result to reinterpret
-  // (i64ToF64) before mem.read; `s` marks a census-BIGINT sentinel result (§6/§12 Slice 5,
-  // presentKindUnboxed) — one of layout.js's BIGINT_SENTINEL_KIND values, named there rather
-  // than a bare magic int here, since this field's value crosses the wasm custom section
-  // into interop.js's decodeBigintSentinel, a SEPARATE package/process reading the SAME
-  // table. interop decodes the sentinel's fixed bit pattern
-  // (BIGINT_SENTINEL_BITS[s]) to its real JS value (BIGINT_SENTINEL_VALUE[s]) and anything
-  // else as a raw BigInt, WITHOUT `r`'s generic NaN-box/number decode (which would misread a
-  // small BigInt's raw bits as a subnormal float); `m` marks an N-lane multi-value result
-  // whose lanes interop/the adapter decode element-wise. Pure-numeric single-result exports
-  // emit no entry. A plain bigint result is i64 but unmarked (the BigInt is the value).
+  // jz:i64exp — per-export i64 carrier map (NaN-canonicalization dodging).
+  // `{name, p:[i64 param indices], r:1? | m:N?}`: `p` lists params interop
+  // passes as BigInt; `r` marks a single result for generic tagged decode;
+  // `m` marks an N-lane multi-value result. Pure-numeric single-result
+  // exports emit no entry. A proven raw BigInt result is i64 but unmarked.
   // Written under every JS-visible alias, like jz:extparam. Each shape is built as a direct
   // literal (no spread) — the self-compile kernel's fixed schemas don't enumerate post-hoc keys.
   const i64Exports = []
   for (const f of ctx.funcs.list) {
     if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue
-    const { p, r, m, s } = f._exportI64
+    const { p, r, m } = f._exportI64
     for (const exportName of exportNamesOf(f.name))
-      i64Exports.push(m ? { name: exportName, p, m } : s ? { name: exportName, p, s } : r ? { name: exportName, p, r } : { name: exportName, p })
+      i64Exports.push(m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p })
   }
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
