@@ -146,3 +146,42 @@ KNOWN-WRONG at O3 in test/data.js's effect-fold pin; O0/O2 box and stay
 correct). Same root as the few-callsite inlining manifestation: inline/
 select-shaped unions must inherit materialization. The C5 slice now has
 two acceptance flips banked (the 2-export inline probe and the O3 pin).
+
+## C5 landing plan (2026-08-21 recon, cites verified read-only)
+
+ONE fix point, not three. Recon falsified both "fix the inliner" and "fix
+the optimizer":
+
+- Inliner CANNOT consult the plan: `inlineHotInternalCalls` runs at
+  plan/index.js:190, but `solveRepresentationBoundaries` publishes at :237/
+  :332 and per-body plans mint later still (compile/index.js:882-887). At
+  splice time (`inline.js:232-234`, `:253`, `:265`, `:275` — where
+  `shape.value`, the callee's stripped return expression, becomes a bare
+  caller operand) NO plan exists for ANY function. Pre-minting per-callee
+  boundaries before inlining = two authorities (forbidden by ADR-0001) and
+  conflicts with solveRepresentationBoundaries' stated precondition of
+  seeing the final post-inline graph (plan/index.js:329-331).
+- Optimizer gating is redundant-or-masking: the if→select fold
+  (optimize/index.js:4407-4442) is already inert on boxed arms because
+  `isPureIR` (ir.js:982-990) excludes `call` and boxBigInt emits
+  `['call','$__alloc',…]`. When the fold fires on a raw union, emission had
+  ALREADY failed to materialize (emit.js:6148-6150 join-action gate found
+  no `materializedJoins` entry). A "refuse the fold" marker would keep the
+  wrong raw carrier in an unfolded `if` — symptom moved, bug intact.
+
+THE fix: `buildBodyData`'s materialization fixpoint
+(representation-plan.js:677-1128; `materializedNames` :987-1004,
+`materializedJoins` :1045-1060) must prove spliced/select-shaped unions —
+an inlined body's result expression and its inline temp local planned like
+any body's own locals/joins, so `flag ? 1n : 0` reaches materializedJoins
+regardless of whether it arrived by source text or by splice. Plan stays
+sole authority; no pipeline reorder; optimizer stays plan-blind.
+
+Acceptance: (1) flip test/data.js:1905 O3 pin KNOWN-WRONG→correct
+(`o3.f(0)` → false, matching O0/O2); (2) COMMIT the 2-export gnorm probe
+as a real pin (it exists only as prose here — never landed in test/); (3)
+O0/O2 legs stay green (materialization must not regress the call-kept
+5-export shape); (4) full battery. Hazard log: this file's own
+falsified-forms note — four wrong predicate shapes died in
+representationResultTagRequired's design; extend the fixpoint by the same
+discipline (per-expression, tri-state, no demand-keyed shortcuts).
