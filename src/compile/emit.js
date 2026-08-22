@@ -45,7 +45,7 @@ import {
   exprType, MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL,
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey, SLOT_OPS,
 } from '../type.js'
-import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind, nullishArm } from '../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind, nullishArm } from '../kind.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI32Sat, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -69,7 +69,7 @@ import { extractRefinements, inferSchemaBranch, mergeRefinement, withRefinements
 import { withArrayLiteralEscape, withControlFrame, withExpectedValue, withFinallyStack, withFunctionFields, withPendingLabel, withSchemaSpeculation, withTryState } from './flow-state.js'
 import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit-assign.js'
 import {
-  JOIN_OPS, SENTINEL_JOINT_BINARY_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
+  JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
   representationSentinelExprAction, representationProgramHasBigint,
 } from './representation-plan.js'
@@ -80,12 +80,12 @@ const RAW_BIGINT_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
 // "should my own value be boxed" — JOIN_OPS (C5b precedent) plus, funded-
 // deletion item 4, the unary '-'/'~' and joint-binary sentinel-shaped ops
-// (representation-plan.js's SENTINEL_JOINT_BINARY_OPS + the two unary op
-// names). Threaded through the generic dispatch below exactly like JOIN_OPS
+// (kind.js's canonical BIGINT_JOINT_BINARY_OPS + the two unary op names).
+// Threaded through the generic dispatch below exactly like JOIN_OPS
 // already was — an opt-in Set, not a blanket `handler(...args, node)` for
 // every op, because SOME handlers (variadic ones) take a REST-shaped `args`
 // where an appended trailing element would corrupt the operand list.
-const SELF_AWARE_OPS = new Set(['u-', '~', ...SENTINEL_JOINT_BINARY_OPS, ...JOIN_OPS])
+const SELF_AWARE_OPS = new Set(['u-', '~', ...BIGINT_JOINT_BINARY_OPS, ...JOIN_OPS])
 
 const stringOps = (node) => {
   const rep = typeof node === 'string' ? repOf(node) : null

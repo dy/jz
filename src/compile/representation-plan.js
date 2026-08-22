@@ -1,5 +1,5 @@
 import { ASSIGN_OPS, commaList, isReassigned, returnExprs } from '../ast.js'
-import { censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../kind.js'
+import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../kind.js'
 import { DBG_INVARIANTS } from '../ctx.js'
 import { KIND_UNIVERSE, VAL } from '../reps.js'
 import { closureBodyReturnKind } from './flow-types.js'
@@ -712,14 +712,6 @@ const NON_BIGINT_OPS = new Set([
 export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
-// Funded-deletion item 4 sibling set: the legacy `_resultBigintSentinel`
-// lane's kind-4 (JOINT_BINARY) op universe — mirrors kind.js's own
-// (unexported) BIGINT_JOINT_BINARY_OPS/censusBigintSentinelKind exactly, on
-// purpose duplicated rather than imported (a 10-string-literal Set, cheap to
-// keep in sync by inspection, cheaper than a new cross-module export for one
-// caller). Unary siblings ('u-'/'~') need no analogous Set — only two ops,
-// checked by name at each call site.
-export const SENTINEL_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
 
 function collectDefs(body) {
   const defs = new Map()
@@ -1260,7 +1252,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
     const op = node[0]
     const sentinelUnary = (op === 'u-' || op === '~') && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT
-    const sentinelJoint = SENTINEL_JOINT_BINARY_OPS.has(op) &&
+    const sentinelJoint = BIGINT_JOINT_BINARY_OPS.has(op) &&
       censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT
     if (!sentinelUnary && !sentinelJoint) continue
     const sem = semanticOf(node)
@@ -1555,7 +1547,11 @@ export function representationSentinelExprAction(ctx, node) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const body = handle && ctx.plans.representationData.get(handle)?.body
   if (!body?.materializedJoins?.has(node)) return REP_EDGE_REJECT
-  return edgeAction(activeEmittedRep(ctx, node), activeRep(ctx, node, true))
+  // This emitter branch computes a fresh raw i64 result even though the
+  // expression's planned value is materialized. Name the actual producer
+  // carrier explicitly; consulting activeEmittedRep(node) would become KEEP
+  // if generic materialized-expression lookup later learns this node shape.
+  return edgeAction(RAW_BIGINT, activeRep(ctx, node, true))
 }
 
 /** Frozen action for one materialized return edge. */
@@ -1671,7 +1667,7 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       // deletion item 4): same ground truth as the JOIN_OPS line above — the
       // body fixpoint's sentinel-admission pass (buildBodyData, beside the
       // JOIN_OPS materialization loop) already proved this exact node boxed.
-      if ((op === 'u-' || op === '~' || SENTINEL_JOINT_BINARY_OPS.has(op)) &&
+      if ((op === 'u-' || op === '~' || BIGINT_JOINT_BINARY_OPS.has(op)) &&
           body?.materializedJoins?.has(e) === true) return true
       // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
       // to false but false||null to null — arm ORDER changed the verdict):

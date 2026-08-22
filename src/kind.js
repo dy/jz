@@ -561,7 +561,7 @@ export function censusMaybeUndefinedKind(node) {
 // `BIGINT_SENTINEL_BITS[4]` is simply absent, so its `ret === undefined`
 // comparison is always false for a real BigInt `ret` and the raw value passes
 // through unchanged — already correct.
-const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
+export const BIGINT_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
 export function censusBigintSentinelKind(node) {
   if (censusMaybeUndefinedKind(node) === VAL.BIGINT) return BIGINT_SENTINEL_KIND.BARE
   if (Array.isArray(node) && node.length === 2 && (node[0] === 'u-' || node[0] === '~')
