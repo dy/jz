@@ -237,6 +237,12 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (node[0] === 'typeof' && node[1] === name) return true
     if (node[0] === 'u+' && node[1] === name) return true
     if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
+    // BigInt(name) — same producer as Number(name): BigInt() is a total
+    // normalizer over string/number/boolean/bigint (ES2024 21.2.1.1), so a
+    // param feeding it is well-equipped for the tagged ingress — a plain
+    // host bigint there should box and pass through BigInt()'s identity
+    // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
+    if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
     for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, false)) return true
     return false
   }
