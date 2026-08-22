@@ -1190,6 +1190,105 @@ test('zero-evidence host BigInt REJECTS at the wrapper (phase-c C4b correct-or-r
     'zero-evidence BigInt ingress refuses loudly instead of silently misdecoding')
 })
 
+// --- phase-c C4b: jz:hostabi — ONE per-export per-slot host-BigInt ingress
+// policy authority, replacing jz:bigintbox's bare boolean membership
+// (external audit P0 #1/#2). i64Arg (interop.js) now dispatches on an
+// explicit enum per slot — raw | tag | (absent = reject) — instead of
+// reading "absent from the box map" as "reject" with no way to represent a
+// hypothetical proven-raw slot. The five states below are the full space the
+// audit asked to pin; see each test for which are reachable.
+
+test('phase-c C4b (1): proven-RAW BigInt export param is architecturally UNREACHABLE today — documented, not a regression', () => {
+  // jz:hostabi's `raw` field is real wire format and interop.js's i64Arg
+  // dispatches on it (a plain bigint would pass straight through, no box —
+  // native wasm BigInt→i64 coercion) — but the current compiler never
+  // populates it. Reachability proof (representation-plan.js): makeBoundaryData
+  // sets `uncovered = isExported(...)` UNCONDITIONALLY for every exported
+  // function's params — the JS host can call with ANY value regardless of
+  // what the function body proves about its own internal call sites,
+  // so the export boundary can never be "closed world" the way an
+  // internal-only call graph can. `uncovered` forces `currentParamRep` to
+  // ANY_BIGINT (never CLOSED) for any param that may touch bigint at all;
+  // `targetRepFor` only returns RAW_BIGINT when `current` IS closed — with
+  // `current` forced open, every path falls through to BOXED_BIGINT
+  // instead. Verified empirically against the STRONGEST evidence shape
+  // (direct bigint arithmetic on the param, no typeof guard at all) — even
+  // stronger than the reachable "tagged" shape below — and it still produces
+  // NO jz:hostabi entry whatsoever (the census's own optimistic NUMBER
+  // default wins before RepresentationPlan's boundary logic would even get a
+  // chance to choose BOXED over RAW): the export stays a zero-evidence f64
+  // numeric slot, pin (3) below, not a raw-bigint acceptor.
+  const td = new TextDecoder()
+  const hostAbiOf = (src) => {
+    const wasm = compile(src, { jzify: true })
+    const secs = WebAssembly.Module.customSections(new WebAssembly.Module(wasm), 'jz:hostabi')
+    return secs.length ? JSON.parse(td.decode(secs[0])) : null
+  }
+  is(hostAbiOf('export let f = (n) => n * 2n'), null,
+    'direct bigint arithmetic on a zero-evidence param: no hostabi entry at all — not raw, not tagged')
+  const tagged = hostAbiOf(`export let check = value => typeof value === 'bigint'`)
+  is(tagged[0].raw, undefined, 'raw is never populated by the current compiler')
+  ok(tagged[0].tag.includes(0), 'the one reachable evidenced state lands tag, never raw')
+})
+
+test('phase-c C4b (2): tagged (evidenced) BigInt param accepts plain bigint via the box path and computes correctly', () => {
+  // The one REACHABLE evidenced state — jz:hostabi's `tag` array (formerly
+  // jz:bigintbox's whole content). Broader coverage of this state: test/data.js
+  // "RepresentationPlan: host ingress distinguishes JS BigInt from Number
+  // bits". Result asserted via comparison, not a raw returned bigint: a
+  // Number/BigInt-MIXED ternary RESULT has its own pre-existing, UNRELATED
+  // egress gap (confirmed present on unmodified da831ded too, before any C4b
+  // change — `value => typeof value==='bigint' ? value*3n : value*3` returns
+  // a reinterpreted-float garbage number for the bigint arm, since the
+  // export wrapper's resultDynamic/generic-decode lane can't tell a genuine
+  // small raw BigInt's i64 bits from a NaN-box-reinterpreted float). That's
+  // an EGRESS concern — this task redesigns INGRESS only — so the pin below
+  // keeps the mixed value fully wasm-internal and crosses only an
+  // unambiguous boolean, sidestepping it.
+  const { exports: e } = jz(`
+    export let check = value => typeof value === 'bigint'
+    export let math = value => typeof value === 'bigint' ? value * 3n === 15n : value * 3 === 15
+  `, { jzify: true })
+  is(e.check(5n), true)
+  is(e.check(2), false)
+  is(e.math(5n), true, 'tagged BigInt ingress unboxes in wasm and computes correctly')
+  is(e.math(5), true, 'the Number arm is unaffected')
+  is(e.math(2), false, 'wrong magnitude correctly rejected (not a vacuous true)')
+})
+
+// (3) zero-evidence FIXED param rejects: the pre-existing test immediately above this block.
+
+test('phase-c C4b (4) NEW: zero-evidence REST BigInt argument REJECTS — audit P0 #2, was silent decimal-string stringify', () => {
+  // Before this fix, interop.js's rest path bypassed i64Arg entirely:
+  // `mem.Array(args.slice(fixed))` ran every element through mem.wrapVal,
+  // which turned a plain bigint into a decimal STRING
+  // (`mem.String(v.toString())`) — silent-wrong, the worst class: no error,
+  // a numeric consumer silently received a string instead of a computed
+  // value or a thrown error.
+  const f = jz('export let f = (...args) => args.length', { jzify: true }).exports.f
+  is(f(1, 2, 3), 3, 'sanity: ordinary rest args unaffected')
+  throws(() => f(5n, 3n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
+    'a zero-evidence BigInt rest element refuses loudly instead of silently stringifying')
+})
+
+test('phase-c C4b (5): rest-element BigInt evidence has no plan source today — rejects even alongside a tagged FIXED sibling', () => {
+  // Rest elements are host-populated (interop's own mem.Array), never a
+  // traceable in-program def site RepresentationPlan's provenance solver can
+  // reach (zero "rest" references anywhere in representation-plan.js) — so
+  // jz:hostabi's `rest` flag is never true today; documented unsupported,
+  // not merely untested. Demonstrated against a function whose FIXED sibling
+  // param IS evidenced (tagged, works) to show the two policies are
+  // independent — evidence on one slot never leaks tag treatment onto
+  // another.
+  const f = jz(`
+    export let f = (flag, ...args) => { if (typeof flag === 'bigint') return flag; return args.length }
+  `, { jzify: true }).exports.f
+  is(f(1, 2, 3), 2, 'sanity: fixed+rest split unaffected')
+  is(f(5n), 5n, 'the FIXED param, evidenced, tags and computes correctly')
+  throws(() => f(1, 5n), /BigInt argument in the rest arguments of f\(\) has no BigInt evidence/,
+    'the REST element, zero-evidence, still rejects even though the sibling fixed slot is tagged')
+})
+
 // FIXED (round-7): `valTypeOfWithLocals`'s binary arms (kind.js) now settle
 // BIGINT-vs-NUMBER directly from `rec`'s own locally-resolved operand kinds
 // — for `+` (previously silently wrong for this exact shape despite the

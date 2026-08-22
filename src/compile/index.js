@@ -3108,20 +3108,51 @@ export default function compile(ast, profiler, regionHooks) {
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
-  // jz:bigintbox — JS-host-only ingress metadata. Each listed i64 slot is a
-  // tagged dynamic ABI: interop preserves Number bits but materializes an
-  // actual JS BigInt as PTR.BIGINT before entering wasm.
-  const bigintBoxExports = []
+  // jz:hostabi — ONE authority for the per-slot host-BigInt ingress policy
+  // (phase-c C4b, external audit P0 #1/#2: interop must dispatch on an
+  // explicit enum, never guess a slot's policy from the absence of a
+  // different signal). Supersedes jz:bigintbox's bare boolean membership
+  // (interop used to read "absent" as "reject" with no way to represent a
+  // hypothetical proven-raw slot at all). Per export: `raw` lists i64 param
+  // indices the plan proved ALWAYS bigint — a plain host bigint would cross
+  // with no box (wasm's native BigInt→i64 coercion). ALWAYS EMPTY TODAY:
+  // reachability audit (phase-c C4b) — makeBoundaryData (representation-
+  // plan.js) sets `uncovered = isExported(...)` unconditionally for every
+  // exported function's params, because the JS host can call with ANY value
+  // regardless of what the body proves about its own internal call sites.
+  // `uncovered` forces `currentParamRep` to ANY_BIGINT (never CLOSED) for
+  // any param that may touch bigint at all, which forces `targetRepFor` past
+  // both `bigintRepIsClosed(current)` guards straight to BOXED_BIGINT — RAW
+  // is only reachable there when `current` is closed, which an exported
+  // param's forced-open boundary can never be. Confirmed empirically too:
+  // every export-param shape tried (direct bigint arithmetic on a param,
+  // typeof-guarded params, BigInt()-converted params) either lands in `tag`
+  // below or gets no i64/bigint marking at all — never a bare i64 carrier
+  // proven bigint with no box. The field is real (not a placeholder) and
+  // reserved: a future closed-world export analysis needs no interop
+  // redesign, only a producer for this array. `tag` lists indices the plan
+  // proved MAY be bigint (representationHostBoxesParam) — the one reachable
+  // evidenced state today; interop boxes a plain bigint via mem.BigInt, wasm
+  // dispatches by tag. `rest` (present+truthy only) would mark the
+  // REST-ELEMENT policy tagged when the plan can prove bigint evidence for
+  // elements past the fixed count — omitted always today: rest elements are
+  // host-populated (interop's own mem.Array, never a traceable in-program
+  // def site RepresentationPlan's provenance solver can reach), so no
+  // evidence source exists yet; interop.js rejects a plain bigint rest
+  // element exactly like an unmarked fixed slot. A slot in neither `raw` nor
+  // `tag` — the overwhelming common case — carries no BigInt evidence of any
+  // kind: reject.
+  const hostAbiExports = []
   for (const f of ctx.funcs.list) {
     if (!isExported(f)) continue
-    const p = []
+    const tag = []
     for (let i = 0; i < f.sig.params.length; i++)
-      if (representationHostBoxesParam(ctx, f, i)) p.push(i)
-    if (!p.length) continue
-    for (const exportName of exportNamesOf(f.name)) bigintBoxExports.push({ name: exportName, p })
+      if (representationHostBoxesParam(ctx, f, i)) tag.push(i)
+    if (!tag.length) continue
+    for (const exportName of exportNamesOf(f.name)) hostAbiExports.push({ name: exportName, tag })
   }
-  if (bigintBoxExports.length)
-    sec.customs.push(['@custom', '"jz:bigintbox"', `"${JSON.stringify(bigintBoxExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
+  if (hostAbiExports.length)
+    sec.customs.push(['@custom', '"jz:hostabi"', `"${JSON.stringify(hostAbiExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
   // Named export aliases: export { name } or export { source as alias }. A `run`/`_start`
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile

@@ -408,9 +408,18 @@ export const memory = (src) => {
     if (typeof v === 'number' || typeof v === 'boolean') return Number(v)
     if (typeof v === 'string') return mem.String(v)
     // A BigInt that is a NaN-box (jz's i64 carrier — e.g. a value pre-built via memory.String/
-    // ptr) passes straight through. A plain bigint *value* crosses as a decimal-string (wasm
-    // numeric parsers accept it).
-    if (typeof v === 'bigint') return isBox(v) ? v : mem.String(v.toString())
+    // ptr/BigInt) passes straight through. A plain bigint VALUE has no per-slot host-ABI
+    // evidence to consult here — wrapVal is the GENERAL memory.*/mem.Array/mem.Hash/host-import-
+    // return marshalling entry, not the export-argument path (i64Arg, below, consults
+    // jz:hostabi per param; the rest-element path consults its `rest` flag per element) — so
+    // this refuses loudly instead of the phase-c-C4b-killed silent-wrong fallback
+    // (`mem.String(v.toString())`, a decimal string a wasm numeric parser happens to accept —
+    // every consumer expecting a real BigInt got a corrupted value instead with no error, the
+    // worst class).
+    if (typeof v === 'bigint') {
+      if (isBox(v)) return v
+      throw new TypeError(`jz: plain BigInt ${v}n passed to memory marshaling (memory.Array/memory.Object/memory.Hash/a host-import return/…) with no BigInt evidence — box it explicitly: mem.BigInt(${v}n)`)
+    }
     if (Array.isArray(v)) return mem.Array(v)
     if (v instanceof ArrayBuffer) return mem.Buffer(v)
     if (v instanceof DataView) return mem.Buffer(v.buffer)
@@ -736,12 +745,26 @@ export const wrap = (memSrc, inst, state) => {
     try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, s: e.s || 0 }) }
     catch { /* ignore */ }
   }
-  // JS BigInt ingress slots whose wasm-side representation is PTR.BIGINT.
-  const bigintBoxExp = new Map()
-  const bigintBoxBytes = customSection(mod, 'jz:bigintbox')
-  if (bigintBoxBytes) {
-    try { for (const e of JSON.parse(td.decode(bigintBoxBytes))) bigintBoxExp.set(e.name, new Set(e.p || [])) }
-    catch { /* ignore */ }
+  // jz:hostabi — the ONE authority for per-slot host-BigInt ingress policy
+  // (phase-c C4b, audit P0 #1/#2). Per export: `raw` = i64 param indices the
+  // plan proved ALWAYS bigint (plain bigint crosses with no box —
+  // architecturally unreachable at the export boundary today, see
+  // src/compile/index.js's jz:hostabi doc for the reachability proof; the
+  // field is real and consulted below, just never populated by the current
+  // compiler). `tag` = indices the plan proved MAY be bigint — box via
+  // mem.BigInt (the one reachable evidenced state, formerly jz:bigintbox's
+  // sole content). `rest` = truthy only when the plan can prove bigint
+  // evidence for this export's rest-parameter elements (never true today —
+  // no evidence source exists for host-populated rest elements). A slot in
+  // neither `raw` nor `tag` has no evidence of any kind: i64Arg (below)
+  // rejects a plain bigint there instead of guessing from the absence.
+  const hostAbiExp = new Map()
+  const hostAbiBytes = customSection(mod, 'jz:hostabi')
+  if (hostAbiBytes) {
+    try {
+      for (const e of JSON.parse(td.decode(hostAbiBytes)))
+        hostAbiExp.set(e.name, { raw: new Set(e.raw || []), tag: new Set(e.tag || []), rest: !!e.rest })
+    } catch { /* ignore */ }
   }
   const mem = memory(memSrc)
   // Async boundary: a module compiled from async source exports __mt_drain /
@@ -940,20 +963,32 @@ export const wrap = (memSrc, inst, state) => {
   // jz:i64exp) pass its i64 bits (a boxed value is already a BigInt; a numeric arg to a
   // dynamic i64 param → its f64 bits). The box never materializes as f64, so JSC can't
   // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
-  const i64Arg = (ie, ext, box, bigintSlots, name) => (x, i) => {
-    // Phase-C C4b (correct-or-reject, the ratified zero-evidence policy): a
-    // plain JS BigInt VALUE at a slot WITHOUT BigInt evidence in the compiled
-    // program has no sound crossing — the legacy decimal-string accident only
-    // "worked" for typeof-guarded normalization params and silently garbled
-    // every numeric one (the dyn-keys zero-evidence pin). Ingress-marked
-    // slots (jz:bigintbox — the plan proved the param) box and work; NaN-box-
-    // shaped bigints (jz-side pointers built via memory.*) pass through as
-    // always. Everything else refuses loudly with both remedies named.
-    if (typeof x === 'bigint' && !bigintSlots?.has(i) && !isBox(x))
-      throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
-    const w = bigintSlots?.has(i) && typeof x === 'bigint'
-      ? mem.BigInt(x)
-      : wrapArgAt(ext, i, x, box)
+  const i64Arg = (ie, ext, box, hostAbi, name) => (x, i) => {
+    // Phase-C C4b (correct-or-reject, audit P0 #1: dispatch on jz:hostabi's
+    // own per-slot enum — never a boolean guess from the absence of a
+    // different signal). A plain JS BigInt VALUE (not a jz-built NaN-box
+    // pointer — isBox check first, those pass through as always) has exactly
+    // ONE authority for what happens at THIS slot:
+    //   - raw: the plan proved the slot ALWAYS bigint — passes straight
+    //     through with no box (wasm's native BigInt→i64 ToWebAssemblyValue
+    //     coercion takes it from here). Architecturally unreachable at the
+    //     export boundary today (src/compile/index.js's jz:hostabi doc has
+    //     the reachability proof) — reserved, not guessed-into.
+    //   - tag: the plan proved the slot MAY be bigint — box via mem.BigInt,
+    //     wasm dispatches by tag (the one reachable evidenced state).
+    //   - neither: no BigInt evidence of any kind — the legacy decimal-
+    //     string accident only "worked" for typeof-guarded normalization
+    //     params and silently garbled every numeric one (the dyn-keys
+    //     zero-evidence pin) — refuses loudly with both remedies named
+    //     instead.
+    let w
+    if (typeof x === 'bigint' && !isBox(x)) {
+      if (hostAbi?.raw?.has(i)) w = x
+      else if (hostAbi?.tag?.has(i)) w = mem.BigInt(x)
+      else throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
+    } else {
+      w = wrapArgAt(ext, i, x, box)
+    }
     if (ie && ie.p.has(i)) {
       // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
       // atom, matching how the SAME slot already boxes null/undefined (via
@@ -994,7 +1029,7 @@ export const wrap = (memSrc, inst, state) => {
       if (typeof fn !== 'function') { exports[name] = fn; continue }
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
-      const bigintSlots = bigintBoxExp.get(name)
+      const hostAbi = hostAbiExp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
@@ -1005,7 +1040,7 @@ export const wrap = (memSrc, inst, state) => {
         // fresh call never starts with a stale marker from a PRIOR call.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn(...args.map(i64Arg(ie, ext, coerce, bigintSlots, name)))
+          const ret = fn(...args.map(i64Arg(ie, ext, coerce, hostAbi, name)))
           // A bigint-value result returns raw; the `s` lane (census-BIGINT sentinel) decodes
           // only its own fixed sentinel bit pattern; everything else (a boxed i64 result or an
           // f64/number result) takes the generic decode.
@@ -1020,16 +1055,31 @@ export const wrap = (memSrc, inst, state) => {
     return exports
   }
   const memWrapVal = mem.wrapVal.bind(mem)
+  // Rest-element policy (audit P0 #2: the rest path bypassed i64Arg entirely —
+  // `mem.Array(args.slice(fixed))` ran every element through mem.wrapVal, so a
+  // plain-bigint rest element tripped the SAME silent decimal-string accident
+  // wrapVal itself now refuses instead of committing). Applied BEFORE
+  // mem.Array, element-by-element: a jz-built NaN-box bigint (isBox) always
+  // passes through; a plain bigint VALUE dispatches on THIS export's
+  // jz:hostabi `rest` flag exactly like a fixed slot dispatches on raw/tag —
+  // tag it if the plan proved rest elements may be bigint, else refuse loudly
+  // (always today — no evidence source exists yet for host-populated rest
+  // elements, see jz:hostabi's doc above).
+  const restElemArg = (hostAbi, name) => (x) => {
+    if (typeof x !== 'bigint' || isBox(x)) return x
+    if (hostAbi?.rest) return mem.BigInt(x)
+    throw new TypeError(`jz: BigInt argument in the rest arguments of ${name}() has no BigInt evidence in the compiled program — give the rest parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string`)
+  }
   for (const [name, fn] of Object.entries(realInst.exports)) {
     if (restFuncs.has(name) && typeof fn === 'function') {
       const fixed = restFuncs.get(name)
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
-      const bigintSlots = bigintBoxExp.get(name)
+      const hostAbi = hostAbiExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, bigintSlots, name))
+        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name))
         while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
-        const restArr = mem.Array(args.slice(fixed))   // BigInt box (i64 carrier)
+        const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
         if (lastErrBitsWritable) lastErrBits.value = 0n
@@ -1047,14 +1097,14 @@ export const wrap = (memSrc, inst, state) => {
     } else if (typeof fn === 'function') {
       const ext = extExp.get(name)
       const ie = i64Exp.get(name)
-      const bigintSlots = bigintBoxExp.get(name)
+      const hostAbi = hostAbiExp.get(name)
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, bigintSlots, name)))
+          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name)))
           if (typeof ret === 'bigint') {
             if (ie && ie.s) return decodeBigintSentinel(ret, ie.s)
             if (!(ie && ie.r)) return ret
