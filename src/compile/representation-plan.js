@@ -712,6 +712,15 @@ const NON_BIGINT_OPS = new Set([
 export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
+// Funded-deletion item 4 sibling set: the legacy `_resultBigintSentinel`
+// lane's kind-4 (JOINT_BINARY) op universe — mirrors kind.js's own
+// (unexported) BIGINT_JOINT_BINARY_OPS/censusBigintSentinelKind exactly, on
+// purpose duplicated rather than imported (a 10-string-literal Set, cheap to
+// keep in sync by inspection, cheaper than a new cross-module export for one
+// caller). Unary siblings ('u-'/'~') need no analogous Set — only two ops,
+// checked by name at each call site.
+export const SENTINEL_JOINT_BINARY_OPS = new Set(['+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>'])
+
 function collectDefs(body) {
   const defs = new Map()
   const add = (name, rhs, owner, slot) => {
@@ -1229,6 +1238,36 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
   }
 
+  // Sentinel-shaped unary '-'/'~' and joint-binary result nodes (funded-
+  // deletion item 4, .work/todo.md WALL 2026-08-22 — the legacy
+  // `_resultBigintSentinel` lane's kinds 2-4: layout.js BIGINT_SENTINEL_KIND
+  // UNARY_NEG/UNARY_NOT/JOINT_BINARY, kind.js censusBigintSentinelKind's own
+  // exact shapes). Reuses the SAME `materializedJoins` set as the JOIN_OPS
+  // fixpoint above — every consumer (emittedCandidate, materializedNames'
+  // propagation pass, materializedResult, representationResultTagRequired's
+  // exprMayBox below) already asks that one Set, so admitting a new node
+  // shape into it is the whole wiring; no new consumer-side plumbing. NOT a
+  // fixpoint (single pass, no `while`, unlike JOIN_OPS above): a JOIN_OPS
+  // node's arms can be ARBITRARY sub-expressions (a name, a call, another
+  // join) whose OWN readiness may only settle on a later round — but
+  // bigIntUnary/bigIntJointDispatch (emit.js) always compute their "real
+  // bigint" branch fresh from the operand's raw i64 bits, unconditionally,
+  // regardless of any OTHER binding's materialization state. The only
+  // precondition is the node's OWN target being BOXED_BIGINT (already
+  // computed above by plannedOf's generic branch) — no arm-by-arm proof, so
+  // no iteration is needed.
+  for (const [node, target] of nodeTarget) {
+    if (materializedJoins.has(node) || target !== BOXED_BIGINT) continue
+    const op = node[0]
+    const sentinelUnary = (op === 'u-' || op === '~') && censusMaybeUndefinedKind(node[1]) === VAL.BIGINT
+    const sentinelJoint = SENTINEL_JOINT_BINARY_OPS.has(op) &&
+      censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT
+    if (!sentinelUnary && !sentinelJoint) continue
+    const sem = semanticOf(node)
+    if (semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0) continue
+    materializedJoins.add(node)
+  }
+
   // Propagate newly-materialized ternaries — and, closure-forwarding slice,
   // closureCallNeedsBox-proven closure calls (`let a = parse(v)`) — through
   // their immediate plain-write binding edges. Other producer dependencies
@@ -1504,6 +1543,21 @@ export function representationJoinArmAction(ctx, join, arm) {
   return edgeAction(activeEmittedRep(ctx, arm), activeRep(ctx, join, true))
 }
 
+/** Frozen action for one materialized sentinel-shaped unary '-'/'~' or
+ *  joint-binary result node (funded-deletion item 4 — the legacy
+ *  `_resultBigintSentinel` lane's kinds 2-4 sibling). Unlike a JOIN_OPS
+ *  node, there is no separate "arm" to ask about: the node's own single
+ *  computed value IS the thing that may need boxing (bigIntUnary/
+ *  bigIntJointDispatch in emit.js build the "real bigint" branch fresh from
+ *  the operand's raw i64 bits, not from some other already-typed operand),
+ *  so join and arm collapse to the same node. */
+export function representationSentinelExprAction(ctx, node) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body?.materializedJoins?.has(node)) return REP_EDGE_REJECT
+  return edgeAction(activeEmittedRep(ctx, node), activeRep(ctx, node, true))
+}
+
 /** Frozen action for one materialized return edge. */
 export function representationReturnAction(ctx, source) {
   const handle = ctx.plans.representations.get(ctx.func.current)
@@ -1613,6 +1667,12 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       // alone would never resolve — see C5b: `flag ? 1n : 0`'s arms are both
       // leaves with no name/call to recurse into).
       if (JOIN_OPS.has(op) && body?.materializedJoins?.has(e) === true) return true
+      // Sentinel-shaped unary '-'/'~'/joint-binary result node (funded-
+      // deletion item 4): same ground truth as the JOIN_OPS line above — the
+      // body fixpoint's sentinel-admission pass (buildBodyData, beside the
+      // JOIN_OPS materialization loop) already proved this exact node boxed.
+      if ((op === 'u-' || op === '~' || SENTINEL_JOINT_BINARY_OPS.has(op)) &&
+          body?.materializedJoins?.has(e) === true) return true
       // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
       // to false but false||null to null — arm ORDER changed the verdict):
       // TRUE dominates, else UNKNOWN (null) dominates, else FALSE.
