@@ -1860,14 +1860,13 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
   // fold (differing primitives, non-nullable vs sentinel, tagged-union
   // dispatch) must still evaluate effectful operands exactly once, in
   // order. Pure operands (names/literals) keep the zero-cost constant.
-  // O3 KNOWN-WRONG (C5 blocker, .work/phase-c-unification.md §inlined-union,
-  // SECOND manifestation): O3's select-folding erases the union local's
-  // branch writes, materialization never happens, and the runtime carrier is
-  // the RAW union — the zero-bits collision is inherent to that carrier
-  // until inline/select-shaped unions inherit materialization. Effects still
-  // run (the effect half of this pin holds at every level); the VALUE
-  // assertions run at O0/O2 where the box materializes.
-  for (const optimize of [false, 2]) {
+  // O3 runs the same value asserts since the C5 hoisted-temp fix: the O3
+  // inliner's expression-position hoist wrapped its temp as the boxed-literal
+  // shape `[null, tmp]`, which erased the temp's bigint kind (valTypeOf read
+  // it as a literal) and dodged the C3 tag dispatch — value === bump()
+  // compared raw carrier bits, colliding tagged Number 0 with 0n. The bare-
+  // name hoist restores kind + plan resolution for the temp like any local.
+  for (const optimize of [false, 2, 3]) {
     const e = jz(`
       let n = 0
       function bump() { n = n + 1; return 0n }
@@ -1896,13 +1895,28 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
     is(s.h(), false, `O${optimize || 0}: non-nullable vs null folds false`)
     is(s.kc(), 1, `O${optimize || 0}: sentinel fold still evaluated the call`)
   }
-  // O3: effects hold; value pinned KNOWN-WRONG per the header comment.
-  const o3 = jz(`
-    let n = 0
-    function bump() { n = n + 1; return 0n }
-    export let f = (flag) => { let value = flag ? 1n : 0; return value === bump() }
-    export let count = () => n
-  `, { optimize: 3 }).exports
-  is(o3.f(0), true, 'O3 KNOWN-WRONG: raw-union carrier bit-collides (flip to false when the C5 inlined-union slice lands)')
-  is(o3.count(), 1, 'O3: the effect still runs')
+})
+
+test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)', () => {
+  // The banked 2-export shape (.work/phase-c-unification.md §inlined-union):
+  // gnorm's result is a string|number-entry union with bigint via body write.
+  // With few exports the callee is an inline candidate — the union must keep
+  // its materialization (tag discipline) whether the call is kept or inlined,
+  // and the host boundary must decode a real lossless BigInt either way.
+  const gnorm = `export let gnorm = (n) => { if (typeof n === 'string') n = BigInt(n); return n }\n`
+  const two = gnorm + `export let geq = (x) => gnorm(x) === 9n`
+  const five = gnorm + `export let geq = (x) => gnorm(x) === 9n
+    export let ga = (x) => gnorm(x)
+    export let gb = (x) => gnorm(x)
+    export let gc = (x) => gnorm(x)`
+  for (const optimize of [false, 2, 3]) for (const [label, src] of [['2exp', two], ['5exp', five]]) {
+    const e = jz(src, { optimize }).exports
+    is(e.geq('9'), true, `O${optimize || 0} ${label}: string entry converts, 9n === 9n`)
+    is(e.geq(9), false, `O${optimize || 0} ${label}: number entry stays number, 9 !== 9n`)
+    const a = e.gnorm('7')
+    ok(typeof a === 'bigint' && a === 7n, `O${optimize || 0} ${label}: bigint crosses typed`)
+    is(e.gnorm(7), 7, `O${optimize || 0} ${label}: number path unboxed`)
+    const big = e.gnorm('9007199254740993')
+    ok(typeof big === 'bigint' && big === 9007199254740993n, `O${optimize || 0} ${label}: lossless past 2^53`)
+  }
 })
