@@ -11983,3 +11983,25 @@ landed, and the 4 GiB helper gate was not rerun because emitted dyn-shadow
 code was provably unchanged. Next honest prerequisite: scope-stable result/kind
 provenance for direct calls, member/element results and globals (preferably
 indexed HIR), then re-attempt points-to precision.
+
+## FIXED (2026-08-22): Date-only flat emitters on erased receivers
+
+Commit 204cf9cc closes the last Date KNOWN-WRONG pin and the whole adjacent
+flat-key class. tryGenericEmitter no longer invokes raw Date slot emitters on
+an unresolved/non-Date receiver. It stages receiver and arguments once,
+checks PTR.OBJECT+dateSid, calls the type-qualified Date emitter on that arm,
+dispatches PTR.EXTERNAL to the host, and throws TypeError otherwise. Nullish
+receivers throw before arguments; non-callable receivers evaluate arguments
+before throwing; ignored and zero-arg spread values still evaluate exactly
+once. Argument-taking Date methods preserve omitted versus explicit undefined
+through staged temps; dynamic setter spreads loud-reject rather than guessing
+runtime arity. Proven-Date no-arg handlers also evaluate ignored args. Product
+battery: date 37/37 (141), data 147/147, array-methods 144/145+1 skip, objects
+134/134, parser-bugs 23/23, webglobals 26/26, build/wat-strip 3/3,
+kernel-oracle 14/14, kernel-parity 3/3, full suite 3630/3628/0/2 (21,125),
+functional self-compile 21/21 and ratchet 10/10 (+0).
+
+Ledger correction discovered during the flip: test/data.js still contains an
+older ordinary passing assertion of the wrong nullish-assigned BigInt result
+(`value = null; value ??= 4n`). The prior "only getTime" handoff statement was
+therefore stale; that pin is now the only explicit KNOWN-WRONG and remains P0.

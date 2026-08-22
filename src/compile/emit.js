@@ -27,7 +27,7 @@ import {
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
-import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, setLinkDemand, getFactStore } from '../ctx.js'
+import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, emitArity, setLinkDemand, getFactStore } from '../ctx.js'
 import {
   i64Hex, encodePtrHi, STR_HCACHE_BIT, typedElemAux, oobNanIR,
   OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_NAMES, encodeTypedElemAux, TYPED_ELEM_VIEW_FLAG,
@@ -3708,6 +3708,16 @@ function emitMultiSpreadMethodCall(objArg, parsed, method, methodEmitter) {
 /** Method-emitter call: directly, or via one of the spread fast paths. */
 function emitMethodCallSpread(objArg, methodEmitter, parsed, method) {
   if (!parsed.hasSpread) return methodEmitter(objArg, ...parsed.normal)
+  // A zero-argument Date method ignores supplied values, but JS still
+  // evaluates and iterates every spread exactly once before the call.
+  if (ctx.core.emit[`.date:${method}`] === methodEmitter && emitArity(methodEmitter) <= 1) {
+    const recv = temp('dateSpreadRecv')
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    return block64(
+      ['local.set', `$${recv}`, asF64(emit(objArg))],
+      ['drop', asF64(buildArrayWithSpreads(combined))],
+      asF64(methodEmitter(recv)))
+  }
   if (method === 'push' && parsed.normal.length === 0 &&
       parsed.spreads.length === 1 && typeof objArg === 'string')
     return emitBulkPushSpread(objArg, parsed)
@@ -3886,16 +3896,9 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
   }
 }
 
-// Date discrimination for an UNRESOLVED-vt flat-key fallback
-// (.work/printer-trio.md residual, .work/todo.md Item 3). Two independent
-// dispatch forks — trySidecarToPrimitive (6) and tryRuntimePtrTypeFork (8)
-// below — both fall back to the flat `.${method}` key (string.js's generic
-// identity handler) whenever a receiver's static kind isn't proven; Date
-// shares PTR.OBJECT's coarse tag with every plain object/array/map/set/etc.,
-// so neither fork's own tag-only dispatch can tell an unresolved-but-
-// actually-Date receiver apart from a genuine unresolved object — pre-fix,
-// `unresolvedValueOf(someDate)` silently returned the Date itself (identity)
-// instead of its timestamp.
+// Date discrimination for flat-key fallbacks. ToPrimitive, runtime-type and
+// generic Date-only paths all need the same aux test when the static kind is
+// unresolved: Date shares PTR.OBJECT's coarse tag with ordinary objects.
 //
 // emitNewDate's OWN `aux` field (module/date.js emitNewDate: `{type:
 // PTR.OBJECT, aux: ctx.schema.dateSid, …}`) is always `ctx.schema.dateSid` —
@@ -3907,12 +3910,9 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
 // (`$__ptr_aux`, the same accessor `emitTypedInstanceof` above uses for its
 // own aux compare), no extra heap load.
 //
-// `recv` is the local name holding the receiver's raw f64 bits. Gated on
-// this method actually having a `.date:` handler (mirrors the
-// strEmitter/typedEmitter-shaped gates each caller already applies) —
-// returns `fallback` UNCHANGED (one Map lookup, no extra codegen) for any
-// method Date doesn't define, so a non-Date-shaped `.valueOf`/`.getTime`-
-// unrelated call never pays for the check. `ptrTypeLocal` lets a caller that
+// `recv` is the local holding the receiver's raw f64 bits. The helper is
+// gated on a `.date:` handler, so unrelated methods return their fallback
+// unchanged and pay no emitted check. `ptrTypeLocal` lets a caller that
 // already computed `$__ptr_type` into a local (tryRuntimePtrTypeFork does,
 // for its own STRING/TYPED cases) reuse it instead of a second call.
 function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
@@ -3927,6 +3927,50 @@ function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
       ['i32.eq', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], ['i32.const', ctx.schema.dateSid]]],
     ['then', callMethod(recv, dateEmitter)],
     ['else', fallback]], 'f64')
+}
+
+// Runtime discriminator for an unresolved/non-Date receiver of a Date-only
+// flat emitter. Receiver and arguments evaluate once, in JS order. Argument
+// temps let the Date emitter retain omitted-vs-explicit-undefined semantics;
+// a host external receives the same values as an args array; other values
+// throw after argument evaluation. Dynamic spreads are rejected because their
+// runtime arity cannot preserve Date setters' optional-argument defaults.
+function unresolvedDateMethod(obj, method, parsed) {
+  const dateEmitter = ctx.core.emit[`.date:${method}`]
+  if (!dateEmitter || method === 'valueOf') return null
+  const noArgs = emitArity(dateEmitter) <= 1
+  if (parsed.hasSpread && !noArgs)
+    err(`Spread arguments on Date method .${method}() with a non-Date or unresolved receiver are unsupported`)
+  const recv = temp('dateRecv'), argv = temp('dateArgs'), pt = tempI32('datePt')
+  const argTemps = parsed.hasSpread ? [] : parsed.normal.map(() => temp('dateArg'))
+  inc('__ptr_type')
+  let nonDate = throwTypeErrorIR('call')
+  if (ctx.transform.targetProfile.envImports) {
+    inc('__ext_call')
+    setLinkDemand('external')
+    nonDate = typed(['if', ['result', 'f64'],
+      ['i32.eq', ['local.get', `$${pt}`], ['i32.const', PTR.EXTERNAL]],
+      ['then', ['f64.reinterpret_i64', ['call', '$__ext_call',
+        ['i64.reinterpret_f64', ['local.get', `$${recv}`]],
+        ['i64.reinterpret_f64', asF64(emit(['str', method]))],
+        ['i64.reinterpret_f64', ['local.get', `$${argv}`]]]]],
+      ['else', nonDate]], 'f64')
+  }
+  const argNames = argTemps.map(name => name)
+  const arrayArgs = parsed.hasSpread
+    ? reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    : argNames
+  const dispatch = block64(
+    ...argTemps.map((name, i) => ['local.set', `$${name}`, asF64(storedValue(parsed.normal[i]))]),
+    ['local.set', `$${argv}`, asF64(buildArrayWithSpreads(arrayArgs))],
+    ['local.set', `$${pt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]]],
+    dateAuxFallback(recv, method,
+      (r, emitter) => emitArity(emitter) <= 1 ? emitter(r) : emitter(r, ...argNames), nonDate, pt))
+  return block64(
+    ['local.set', `$${recv}`, asF64(emit(obj))],
+    ['if', ['result', 'f64'], isNullish(['local.get', `$${recv}`]),
+      ['then', throwTypeErrorIR()],
+      ['else', dispatch]])
 }
 
 // 6. valueOf/toString are ToPrimitive hooks (ES2024 7.1.1) that an own data
@@ -4143,6 +4187,10 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   // correctly instead of being hijacked by `Array.prototype.{find,map,…}`.
   const objectShadow = vt === VAL.OBJECT || vt === VAL.HASH
   if (ctx.core.emit[`.${method}`] && !collectionMisfit && !strIndexMisfit && !objectShadow) {
+    const dateEmitter = method !== 'valueOf' ? ctx.core.emit[`.date:${method}`] : null
+    const callFlat = receiver => dateEmitter
+      ? unresolvedDateMethod(receiver, method, parsed)
+      : callMethod(receiver, ctx.core.emit[`.${method}`])
     // Statically-UNKNOWN receiver: an OWN property named like the builtin shadows it
     // (ES prototype semantics) — the runtime analogue of `objectShadow` above. Without
     // this fork, subscript's `d.map(a)` descriptor mapper (or any user method colliding
@@ -4175,7 +4223,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
         }
         return typed(['if', ['result', 'f64'], ['local.get', `$${ph.is}`],
           ['then', ctx.closure.call(typed(['local.get', `$${ph.ovr}`], 'f64'), parsed.normal)],
-          ['else', asF64(callMethod(obj, ctx.core.emit[`.${method}`]))]], 'f64')
+          ['else', asF64(callFlat(obj))]], 'f64')
       }
       // Fallback arm: a bare-name receiver re-references the ORIGINAL binding
       // (variable reads are pure) instead of the probe's spilled temp — so a
@@ -4184,9 +4232,9 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
       // parser `cur.charCodeAt(idx)` hot shape; a local temp would hide it).
       return sidecarOverride(emit(obj), asI64(emit(['str', method])),
         (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-        (o) => asF64(callMethod(typeof obj === 'string' ? obj : o, ctx.core.emit[`.${method}`])))
+        (o) => asF64(callFlat(typeof obj === 'string' ? obj : o)))
     }
-    return callMethod(obj, ctx.core.emit[`.${method}`])
+    return callFlat(obj)
   }
 }
 

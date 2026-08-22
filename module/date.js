@@ -613,10 +613,18 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
-  const emitDateGetTime = (dateExpr) => {
+  const dateLoadIR = d => typed(['f64.load', ['i32.wrap_i64', ['i64.reinterpret_f64', d]]], 'f64')
+  const withIgnoredDateArgs = (dateExpr, ignored, build) => {
     const d = asF64(emit(dateExpr))
-    return typed(['f64.load', ['i32.wrap_i64', ['i64.reinterpret_f64', d]]], 'f64')
+    if (!ignored.length) return build(d)
+    const t = temp('dateCall')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, d],
+      ...ignored.map(arg => ['drop', asF64(emit(arg))]),
+      build(['local.get', `$${t}`])], 'f64')
   }
+  const emitDateGetTime = (dateExpr, ...ignored) =>
+    withIgnoredDateArgs(dateExpr, ignored, dateLoadIR)
 
   const emitDateSetTime = (dateExpr, ms) => {
     inc('__date_time_clip')
@@ -631,6 +639,8 @@ export default (ctx) => {
       ['local.get', `$${t}`]], 'f64')
   }
 
+  // The flat key serves erased receivers; tryGenericEmitter guards it with
+  // PTR.OBJECT + dateSid before invoking this raw slot load.
   ctx.core.emit['.getTime'] = emitDateGetTime
   ctx.core.emit[`.${VAL.DATE}:getTime`] = emitDateGetTime
 
@@ -659,12 +669,12 @@ export default (ctx) => {
 
   // ── UTC getter emit handlers ──────────────────────────────────────────────
 
-  const emitDateLoad = (dateExpr) =>
-    typed(['f64.load', ['i32.wrap_i64', ['i64.reinterpret_f64', asF64(emit(dateExpr))]]], 'f64')
+  const emitDateLoad = (dateExpr) => dateLoadIR(asF64(emit(dateExpr)))
 
-  const dateGetter = (fn) => (dateExpr) => {
+  const dateGetter = (fn) => (dateExpr, ...ignored) => {
     inc(fn)
-    return typed(['call', `$${fn}`, emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', `$${fn}`, dateLoadIR(d)], 'f64'))
   }
 
   ctx.core.emit['.getUTCFullYear'] = dateGetter('__date_year_from_time')
@@ -810,34 +820,39 @@ export default (ctx) => {
 
   // ── Stringification ───────────────────────────────────────────────────────
 
-  ctx.core.emit['.toISOString'] = (dateExpr) => {
+  ctx.core.emit['.toISOString'] = (dateExpr, ...ignored) => {
     inc('__date_to_iso_string')
-    return typed(['call', '$__date_to_iso_string', emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_iso_string', dateLoadIR(d)], 'f64'))
   }
   ctx.core.emit[`.${VAL.DATE}:toISOString`] = ctx.core.emit['.toISOString']
 
-  ctx.core.emit['.toUTCString'] = (dateExpr) => {
+  ctx.core.emit['.toUTCString'] = (dateExpr, ...ignored) => {
     inc('__date_to_utc_string')
-    return typed(['call', '$__date_to_utc_string', emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_utc_string', dateLoadIR(d)], 'f64'))
   }
   ctx.core.emit[`.${VAL.DATE}:toUTCString`] = ctx.core.emit['.toUTCString']
 
-  ctx.core.emit['.toDateString'] = (dateExpr) => {
+  ctx.core.emit['.toDateString'] = (dateExpr, ...ignored) => {
     inc('__date_to_date_string')
-    return typed(['call', '$__date_to_date_string', emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_date_string', dateLoadIR(d)], 'f64'))
   }
   ctx.core.emit[`.${VAL.DATE}:toDateString`] = ctx.core.emit['.toDateString']
 
-  ctx.core.emit['.toTimeString'] = (dateExpr) => {
+  ctx.core.emit['.toTimeString'] = (dateExpr, ...ignored) => {
     inc('__date_to_time_string')
-    return typed(['call', '$__date_to_time_string', emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_time_string', dateLoadIR(d)], 'f64'))
   }
   ctx.core.emit[`.${VAL.DATE}:toTimeString`] = ctx.core.emit['.toTimeString']
 
   // Typed-key only: users legitimately define `toJSON` on plain objects, so the
   // bare generic key stays free — only a *proven* Date routes here.
-  ctx.core.emit[`.${VAL.DATE}:toJSON`] = (dateExpr) => {
+  ctx.core.emit[`.${VAL.DATE}:toJSON`] = (dateExpr, ...ignored) => {
     inc('__date_to_json')
-    return typed(['call', '$__date_to_json', emitDateLoad(dateExpr)], 'f64')
+    return withIgnoredDateArgs(dateExpr, ignored,
+      d => typed(['call', '$__date_to_json', dateLoadIR(d)], 'f64'))
   }
 }
