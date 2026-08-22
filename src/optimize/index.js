@@ -3609,7 +3609,10 @@ export function unswitchTypedParamLoop(fn) {
  * representation-level loop unswitch, not a source/benchmark special case.
  * Large or call-bearing parser loops fail closed to avoid I-cache growth. */
 function unswitchStringRepLoop(fn) {
-  const size = n => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
+  // Hand-rolled, not walkAst: walkAst's enter only sees array nodes (primitive
+  // operands are deliberately unvisited, see src/ast.js), which would undercount
+  // this I-cache guard against the original threshold's calibration below.
+  const size = n => !Array.isArray(n) ? 1 : 1 + n.slice(1).reduce((s, x) => s + size(x), 0)
   const containsName = (n, name) => {
     let found = false
     walkAst(n, { enter: x => {
