@@ -634,7 +634,24 @@ export default (ctx) => {
   ctx.core.emit['.getTime'] = emitDateGetTime
   ctx.core.emit[`.${VAL.DATE}:getTime`] = emitDateGetTime
 
-  ctx.core.emit['.valueOf'] = emitDateGetTime
+  // Type-qualified ONLY — unlike every other Date accessor above, `valueOf` is
+  // NOT a Date-exclusive name: module/string.js's `bind('.valueOf', (val) =>
+  // asF64(emit(val)))` registers the SAME flat `.valueOf` key as the generic
+  // Object.prototype.valueOf-returns-receiver fallback that unknown-type-
+  // receiver dispatch (emit.js tryRuntimePtrTypeFork's "generic (array-shaped)
+  // emitter" arm, tryGenericEmitter, trySidecarToPrimitive) reads for EVERY
+  // non-string/non-typed receiver whose static kind isn't proven — arrays,
+  // plain objects, maps, sets. A receiver PROVEN to be VAL.DATE already
+  // resolves through the type-qualified `.date:valueOf` entry below (see
+  // tryStaticDispatch) without ever touching the flat key, so overwriting it
+  // here bought Date nothing and broke every OTHER type's `.valueOf()` once
+  // this module loads alongside module/string.js (the self-compile kernel
+  // always links both) — `[1,2].valueOf()` silently returned `1` (element 0's
+  // bits, read via emitDateGetTime's `f64.load` at the receiver's own base
+  // address) instead of the array itself. Root-caused via kernel-parity's
+  // near-empty self-compiled WAT-printer collapse (watr's print.js:
+  // `node[i]?.valueOf?.() ?? node[i]` then `Array.isArray(sub)` — sub silently
+  // became the sub-node's own tag string, its first element).
   ctx.core.emit[`.${VAL.DATE}:valueOf`] = emitDateGetTime
 
   ctx.core.emit['.setTime'] = emitDateSetTime

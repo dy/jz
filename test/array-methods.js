@@ -1609,6 +1609,52 @@ test('Array.isArray: statically-known arrays (slice/rest results)', () => {
   is(jz(`export let f = () => Array.isArray(42) ? 1 : 0`).exports.f(), 0)
 })
 
+// `.valueOf()` on an unresolved-static-type receiver (a heterogeneous array's
+// element, or a plain parameter with no call-site type proof) must return the
+// receiver UNCHANGED (Object.prototype.valueOf, ES2024 20.1.3.7 — Array/plain
+// Object inherit it verbatim). Root cause (kernel-parity self-compile printer
+// collapse, watr's print.js `node[i]?.valueOf?.() ?? node[i]` then
+// `Array.isArray(sub)`): jz's unresolved-type `.valueOf()` dispatch
+// (emit.js tryRuntimePtrTypeFork's generic fallback arm) reads ONE shared,
+// flat-keyed `ctx.core.emit['.valueOf']` slot — module/string.js registers
+// the correct identity passthrough there, but module/date.js used to
+// OVERWRITE that SAME flat key with its own Date.prototype.valueOf
+// (`emitDateGetTime`: `f64.load` at the receiver's own base address) whenever
+// both modules were linked into the same compile (which autoload does
+// unconditionally for any unresolved `.valueOf()` call site, independent of
+// whether the program ever mentions Date). For an array, offset 0 IS
+// element 0, so `arr.valueOf()` silently returned `arr[0]` instead of `arr`.
+// Not a self-compile-only bug — reproduces with plain native compile(), zero
+// Date usage anywhere in this source.
+test('valueOf on unresolved-type receiver returns identity, not element 0 (date.js flat-key regression)', () => {
+  // Array element read through a computed index — the exact shape self-
+  // compile's WAT printer uses (node[i]?.valueOf?.() ?? node[i]).
+  is(jz(`export let f = () => {
+    let node = ['func', ['export', 'x'], ['param', 'n']]
+    let n = 0
+    for (let i = 1; i < node.length; i++) {
+      let raw = node[i].valueOf()
+      if (Array.isArray(raw)) n = n + 1
+    }
+    return n
+  }`).exports.f(), 2, 'both nested-array elements must still be seen as arrays after .valueOf()')
+  // Plain function parameter — no call-site type proof, the other common
+  // unresolved-receiver shape (needs closure infra live to reach the sidecar
+  // probe strategy; an unrelated closure elsewhere in the program supplies it,
+  // matching a real multi-function program rather than this one-liner).
+  is(jz(`let use = (fn) => fn(1)
+export let f = (x) => { let v = x.valueOf(); return Array.isArray(v) ? 1 : 0 }
+export let g = () => use(n => n + 1)`).exports.f(3), 0, 'a plain number parameter is unaffected (sanity)')
+  const r = jz(`let use = (fn) => fn(1)
+export let f = (x) => { let v = x.valueOf(); return typeof v }
+export let g = () => use(n => n + 1)`)
+  is(r.memory.read(r.exports.f(r.memory.Array([1, 2]))), 'object', 'an array parameter\'s .valueOf() must read back as object, not number')
+  // Date.prototype.valueOf itself must be unaffected by removing the flat
+  // override — a PROVEN Date receiver dispatches through the type-qualified
+  // `.date:valueOf` key (tryStaticDispatch), never the flat one.
+  is(jz(`export let f = () => { let d = new Date(12345); return d.valueOf() }`).exports.f(), 12345)
+})
+
 // ES2023 change-by-copy Array methods (2026-07-11, Ring 2) — port of the
 // TypedArray versions to plain arrays. toSorted/toReversed/with return a NEW
 // array (receiver untouched); copyWithin mutates in place and returns the
