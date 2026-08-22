@@ -11857,6 +11857,20 @@ be deleted without first closing item 2's gap. Not re-instrumented
 separately — item 2's evidence already answers item 3's question. No
 source changed; no commit needed beyond this note.
 
+## COVERED (2026-08-22): funded-deletion items 2+3 ordering prerequisite
+
+Merge product b00e68c3 removes all four RepresentationPlan reads of
+`bigintBoxed`. The boundary remains an immutable coarse first phase; once
+body materialization proves entry plus writes normalizable, the parameter
+query reads the body's target as the active entry carrier. The eight
+reassigned-param shapes no longer need `currentParamRep` to guess from the
+legacy field, and the three previously redundant provenance reads are gone
+with it. The producer/field deletion is now unblocked and follows as its own
+instrumented slice. Product battery: data 147/147, watr 37/37, closures
+114/114, inference 142/142, pointers 35/35, statements 202/202,
+session-reentrancy 20/20, build/wat-strip 3/3, kernel-oracle 14/14,
+kernel-parity 3/3 and full suite 3626/3624/0/2.
+
 ## WALL (2026-08-22): funded-deletion item 4 — _resultBigintSentinel lane
 ## (compile/index.js) still required. NOT a no-op deletion. Not deleted.
 
