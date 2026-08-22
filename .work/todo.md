@@ -11766,3 +11766,79 @@ extension (out of this deletion phase's scope — it is new plan coverage,
 not fallback deletion, per ADR-0001's own "completion is measured by
 deleting fallback authority, not adding planners"). No source changed; no
 commit needed beyond this note.
+
+## WALL (2026-08-22): funded-deletion item 2 — analyze.js markBigintSink/
+## narrow.js bigintBoxedVerdict still have a live consumer. Not deleted.
+## (item 3, reps.js bigintBoxed field, is BLOCKED TRANSITIVELY — see below)
+
+Same protocol as item 1, one layer deeper: instrumented BOTH legacy
+producers (analyze.js `markBigintSink`'s guard, narrow.js
+`bigintBoxedVerdict`'s call site) AND all four of representation-plan.js's
+`.bigintBoxed` READS (the C4a circularity note — `currentParamRep` :142,
+`solveBigintProvenance`'s pset loop :329, `deriveLocalProvenance`'s params
+loop :543 and names loop :549) with a differential check at each read site:
+does dropping the `bigintBoxed` disjunct change the outcome given every
+OTHER already-live evidence source (`val`/`presentVal`/possibleKinds
+census/`paramNeedsHostTag`/`observedParams`) at that exact call? Ran the
+same sweep as item 1: `npm run build` (self-host graph) → 0 fires of
+anything. `node test/self-compile.js` → 0 fires. `node test/index.js`
+(full suite, 3623/3621/2/0, unchanged) →
+- `SINK-FIRE` (markBigintSink actually marks something): 15 — all on two
+  mangled names (`nf2_0` ×10, `oldf1_1` ×5, both `func=(top)`) — closure-
+  dedup-generated identifiers, not hand-written source; not further
+  attributed (module-level init reps, low value to chase further).
+- `VERDICT-FIRE` (bigintBoxedVerdict resolves true): 8 — `kind`×3,
+  `isBigInt`×3 (test/data.js:79 "RepresentationPlan: covered reassigned
+  params use tagged typeof without magnitude guesses" — `function
+  kind(value, replace) { if (replace) value = 4n; return typeof value }`,
+  run at optimize false/2/3, exactly 3 legs each), `tag`×1, `tagged`×1
+  (unattributed, same shape class).
+- `CURRENT-LOADBEARING` (`currentParamRep` :142's `bigintBoxed` read
+  DECIDES the outcome, i.e. `onlyBigintKind(sem)` is false so the fallback
+  would differ): **8 — every single VERDICT-FIRE feeds a load-bearing
+  CURRENT read.** 0 `CURRENT-FIRE-BUT-SAME` (never a redundant fire).
+- `PSET-LOADBEARING` (`solveBigintProvenance` :329's read decides pset
+  membership): **0.** `DERIVE-PARAM-LOADBEARING` / `DERIVE-NAME-LOADBEARING`
+  (`deriveLocalProvenance`'s two loops, :543/:549): **0 each.**
+
+**Reading the result**: 3 of representation-plan.js's 4 `.bigintBoxed`
+reads (`solveBigintProvenance`'s pset loop, both `deriveLocalProvenance`
+loops) are PROVEN, whole-corpus-empirically, fully redundant with the
+other evidence already at each site — the task's own instruction ("check
+whether solveBigintProvenance still consumes them... migrate... then
+delete") is answered NO for that one by name. The 4th, `currentParamRep`,
+is NOT redundant: for a param that acquires BIGINT purely through a body
+REASSIGNMENT (`if (replace) value = 4n`), consumed via `typeof`, the
+`current` (pre-plan baseline) representation has no OTHER source of truth
+today — `onlyBigintKind(sem)` is false (the param's semantic is open/mixed,
+not closed-bigint-only, since it's Number-or-BigInt depending on the
+branch), so without the legacy read `current` falls through to
+`ANY_BIGINT` (open/unclosed) instead of `BOXED_BIGINT` (closed) —
+`edgeAction`'s closed-source requirement (representation-plan.js :603
+`!bigintRepIsClosed(source) → REP_EDGE_REJECT`) then REJECTs the edge
+instead of KEEPing an already-boxed value, and coerceArg's (item 1's)
+now-REJECT-only legacy arm is the ONLY thing left to catch it. This is
+architecturally a two-pass ordering gap, not a stale-field lookup:
+`solveRepresentationBoundaries`/`currentParamRep` run BEFORE
+`buildBodyData`'s materialization fixpoint (the thing that actually knows
+"does this body's `value = 4n` write materialize a box") even exists for
+this function — see phase-c-unification.md's own C5 recon note on this
+exact ordering constraint ("solveRepresentationBoundaries' stated
+precondition of seeing the final post-inline graph"). Giving
+`currentParamRep` a plan-internal answer means the boundary pass would need
+to either see body-write facts before they're computed, or the pipeline
+gets reordered/two-phased — that is new plan machinery (ADR-0001: "not
+adding planners"), out of this phase's scope.
+
+**Disposition**: reverted both instrumentation passes cleanly (`git
+checkout -- src/compile/analyze.js src/compile/narrow.js src/compile/
+representation-plan.js`; diff empty). markBigintSink/markBigintCapture/
+BIGINT_COLLECTION_METHODS (analyze.js) and bigintBoxedVerdict (narrow.js)
+stay — `currentParamRep` still needs their output for the reassigned-
+param/typeof-dispatch shape. **Item 3 (reps.js `bigintBoxed` field +
+REP_FIELDS row) is blocked transitively by the same finding**: the field
+has a live producer (markBigintSink) and a live consumer
+(`currentParamRep`) neither of which can move, so the field itself cannot
+be deleted without first closing item 2's gap. Not re-instrumented
+separately — item 2's evidence already answers item 3's question. No
+source changed; no commit needed beyond this note.
