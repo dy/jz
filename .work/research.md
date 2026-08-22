@@ -23762,3 +23762,183 @@ scheme. Side flag (unexplained, not asserted): the agent's minimal
 measurement harness diverged on bench/watr between baseline (fast
 unrelated trap) and floored build (12min flat-RSS spin) — worth eyes if
 watr-scale footprint work resumes.
+
+## §Fresh exhaustive site-ID attribution on tip 6fa3fd7e: $__map_set's shared
+## growth path = 97.69%; hash_set_local/map_from/str_concat fixes all confirmed
+## durable (2026-08-21, agent/footprint-attrib)
+
+Answers the retirement entry's own NEXT: a fresh per-site creator attribution
+on the CURRENT tip's goal-gate trap, using the 2026-08-18 exhaustive method
+(splice a site-ID `global.set` before every static `$__alloc`/`$__alloc_hdr`/
+`$__alloc_hdr_n` caller, accumulate `(count,bytes)` per site inside `$__alloc`
+itself for allocations ≥16 KB, histogram at the trap).
+
+**Method delta from 2026-08-18 (generalization, not a departure)**: the
+allocator family has grown a monomorphized specialization tier since that
+session — 43 `$__alloc_hdr_<len>_<cap>` / `$__alloc_hdr_n_<len>_<cap>_<stride>`
+wrapper functions now exist alongside the 2 generic ones (45 total), each a
+thin leaf that computes a constant-folded size and makes exactly one internal
+`call $__alloc` (verified programmatically for all 45 before tagging — no
+wrapper calls a different wrapper). Tagging generalizes cleanly: every
+function whose name starts `$__alloc_hdr` is a "wrapper," its own one
+internal `$__alloc` call is excluded, and every OTHER static call to `$__alloc`
+or any `$__alloc_hdr*` name gets a sequential site ID. Result: **46,952 tagged
+sites** (vs 19,657 on 2026-08-18 — the self-hosted compiler has grown
+substantially). Region-live build (`REGION_HOOKS_ACTIVE=true`, throwaway,
+never committed), O3, `names:true` (needed explicitly — off by default,
+unlike the 2026-08-18 session's build which apparently had it on some other
+way; production builds ship without it). Correctness gate before spending the
+long run: A/B compile of a non-trivial script through the pre-instrumented
+named kernel vs the fully site-tagged kernel — **byte-identical output**,
+confirming the wasm2wat/wat2wasm round-trip and the splice are both
+behavior-transparent.
+
+**Goal-gate run**: 8,154,316 ms wall (2h 15m 54s — one sibling agent's
+`build-dist.mjs`/`test/index.js` ran throughout, confirmed via `ps`; this
+machine's prior banked uncontended figure for the unmodified recipe is
+~35 min, so wall time here is contention-dominated, not a mechanism signal —
+per the task's own note, byte counts are load-independent). Trapped
+`unreachable` at `byteLength` exactly `4294967296` (4096.00 MB, the wasm32
+ceiling) — same signature as the immediately-prior `NOT REPRODUCED on tip`
+entry. No watchpoint was armed this run (attribution, not correctness), but
+zero anomalies surfaced in the histogram itself (no negative counts, no
+inconsistent site/kind pairs) — consistent with region-live staying sound on
+this tip.
+
+**Histogram**: 69 distinct sites hit (≥16 KB threshold), 7,216 events,
+19,919,533,307 bytes (18.55 GiB) cumulative tracked mass — this is a
+CUMULATIVE whole-run figure (allocations over time), not the 4 GiB retained
+figure; region-live reclaim is expected to make the two diverge (see below).
+
+TOP-10 by bytes:
+
+| site | callee | enclosing fn | count | bytes | % | cum% |
+|---|---|---|---|---|---|---|
+| 4 | `__alloc_hdr_n` | `$__map_set` | 1,636 | 19,458,590,272 | 97.69 | 97.69 |
+| 44490 | `__alloc_hdr_n` | `$___closure3402` | 9 | 150,601,872 | 0.76 | 98.44 |
+| 2938 | `__alloc_hdr_n` | `$__ihash_set_local` | 12 | 100,638,912 | 0.51 | 98.95 |
+| 5 | `__alloc_hdr_n` | `$__set_add` | 4,806 | 98,102,368 | 0.49 | 99.44 |
+| 1385 | `__alloc_hdr_n` | `$__region_copy_rec` | 244 | 61,730,624 | 0.31 | 99.75 |
+| 2 | `__alloc` | `$__coll_order` | 103 | 17,306,584 | 0.09 | 99.84 |
+| 2649 | `__alloc` | `$__jp` | 1 | 6,582,911 | 0.03 | 99.87 |
+| 7967 | `__alloc` | `$__jp_str` | 58 | 5,982,593 | 0.03 | 99.90 |
+| 690 | `__alloc_hdr` | `$__arr_grow_known` | 95 | 5,479,024 | 0.03 | 99.93 |
+| 8 | `__alloc_hdr` | `$__arr_grow` | 74 | 3,934,800 | 0.02 | 99.95 |
+
+**Mechanism per site**:
+- **#1 `$__map_set` (site 4, 97.69%)** — `genUpsertGrow`'s Map-entry-stride
+  specialization inside the shared set/map/hash grow routine
+  (collection.js:515-579 family). This exact call site is reached by TWO
+  structurally distinct callers, indistinguishable at this instrumentation
+  granularity: (a) any ordinary `Map`/dyn-collection growth anywhere in the
+  compiled program, and (b) `__region_memo_set` (core.js:1065-1090), the
+  per-`__region_exit` relocation-dedup memo, which reuses `$__map_set`
+  UNCHANGED but temporarily aliases the `$__heap` global to
+  `$__scratch_heap` around the call (read `local.set $savedHeap (global.get
+  $__heap)` / `global.set $__heap (global.get $__scratch_heap)` ... call ...
+  `global.set $__scratch_heap (global.get $__heap)` / restore — confirmed by
+  direct read of both functions' bodies). A memo table's grow therefore
+  executes literally the same `__alloc_hdr_n` instruction as a genuine Map's
+  grow; only the DESTINATION differs (scratch lane, reclaimed at every
+  `__region_exit` return, vs main arena, retained). **Evidenced hypothesis,
+  not yet runtime-proven**: the dominant contributor is still the memo, now
+  firing far more often than the 2026-08-18 baseline. That session decoded a
+  clean "~22-23 events per doubling tier = ~22-23 memos = ~22-23
+  real-compaction exits per run" signature. This run's 1,636 events is
+  ~71× that — plausible at face value, since a large fraction of this
+  campaign's intervening landings (Emission rounds RE-LANDED, analyze census
+  position-threading, plan-edge/walker retrofits — 13 merges in one day per
+  the immediately-preceding entries) made the AFE loop run in many more,
+  smaller rounds, which means many more `__region_exit` calls and thus many
+  more short-lived memo instances; the average event size here (11.3 MB) is
+  well below the old baseline's 2²²-entry ceiling (~100+ MB), consistent
+  with "more, smaller" memos rather than "the same few, even bigger" ones.
+  A single documented ESCAPE from the scratch lane exists and would NOT be
+  reclaimed: the lane-overflow guard (core.js:1077-1083) falls through to a
+  raw `$__map_set` on the real heap when a grow would not fit the reserved
+  lane — the ledger's own prior session named this "the single most
+  plausible remaining scratch-lane-collision candidate... unproven either
+  way without a live trap." This pass does not resolve it either — see
+  NEXT.
+- **#2 `$___closure3402` (site 44490, 0.76%)** — an auto-numbered compiled
+  closure from the self-hosted compiler's own source. Not identified further
+  this pass: closure numbering is confirmed NOT stable build-to-build
+  (§"defect 2" forensic entries, 2026-08-20), so naming it would require
+  decompiling this exact build's closure body, out of scope at 0.76%.
+- **#3 `$__ihash_set_local` (site 2938, 0.51%, 100.6 MB)** — the dyn-props
+  hash growth path that was **100% of the fatal call's large-alloc mass** on
+  2026-08-18 (§Unamortized-growth localization). At 0.51% now, this is
+  strong independent corroboration that b3b00361's dict-growth fix (named in
+  the immediately-prior RETIRED entry: "64,112 events/3.1GB → 1 event/24KB")
+  is durable on the current tip, not a build-profile artifact.
+- **#4 `$__set_add` (site 5, 0.49%, 4,806 events)** — `genUpsertGrow`'s
+  Set-stride sibling of #1. Unlike #1, `__region_memo_set`/`__region_memo_get`
+  only ever call `$__map_set`/`$__map_get` (core.js:126-127 comment: "these
+  two instead of raw __map_get/__map_set"), so `$__set_add`'s growth is NOT
+  memo traffic — this is genuine Set usage, diffuse (4,806 small-ish events,
+  avg ~20 KB, right at the tracking floor — many distinct Sets each crossing
+  16 KB once, not few-huge-tables), plausibly per-function visited/live-set
+  bookkeeping in the compiler's own analysis passes.
+- **#5 `$__region_copy_rec` (site 1385, 0.31%)** — the region-compaction
+  recursive value copier's own allocation when a compacted-forward slot needs
+  a fresh block. Legitimate region-arena mechanism overhead, not obviously a
+  defect — see the bench/watr tangent below for a context where this SAME
+  function is not diffuse at all.
+- **#6-10** — `$__coll_order` (iteration-order helper, used by any Map/Set/
+  dyn-props iteration or `__sclone_rec`/`__map_from`), `$__jp`/`$__jp_str`
+  (the kernel's own JSON.parse, used to decode the `modules`/`opts` JSON this
+  driver passes in — proportional to the 160-module source payload, not a
+  bug), `$__arr_grow_known`/`$__arr_grow` (ordinary Array growth). All
+  individually <0.1%, no action implied.
+
+**Tangential finding (not part of this attribution, flagged in passing)**:
+while building a scratch-vs-main disambiguation probe for #1, ran the same
+instrumented kernel against `bench/watr/watr.js` (a small multi-module
+program) as a cheap substitute — it trapped `unreachable` at the identical
+4 GiB ceiling in under 1 second. This is NOT a bug in this session's
+instrumentation: it independently reproduces the already-banked
+`§watr footprint probe — method artifact, not a regression (2026-08-19)`
+finding ("the heavier full-watr entry... traps region-live at 4 GiB at every
+tested commit — a pre-existing need-side condition in the same churn class").
+Site breakdown for THAT trap is a completely different shape from jz×jz's:
+**site 1383 (`$__region_copy_rec`, plain `__alloc_hdr`) alone = 3,951,203,216
+bytes in 4 events (~988 MB/event, 94% of that run's tracked mass)** — a sharp,
+few-call blowup in region-copy itself, not diffuse volume. Confirms the
+ledger's "same churn class" framing (region-arena copy-cost, distinct from
+jz×jz's #1) is the right family name; naming watr.js's specific trigger is
+its own attribution pass, out of scope here.
+
+**The single measured lever**: `$__map_set`'s shared growth path (site 4) is
+the only structurally significant node — the campaign's last three named
+"obvious suspects" (`hash_set_local`, `__map_from`, `str_concat`) are now ALL
+independently confirmed negligible on this tip (0.51%, absent from the
+top-69 entirely, and absent entirely, respectively). Whether the actionable
+form of that lever is "make the region-exit memo cheaper/rarer" or "harden
+the lane-overflow escape" is NOT resolved by this measurement and would be
+guessing to assert further — the honest next step, not a fix:
+
+**NEXT (tooled, ready to run)**: `kernel-attrib-instrumented2.wasm` (built
+this session, scratchpad `kernel-attrib-instrumented2.wasm` /
+`splice-attrib2.mjs`) adds two more globals (`__dbg_scratch_bytes`,
+`__dbg_main_bytes`, exported) that classify every ≥16 KB `$__alloc` by
+whether its returned pointer falls inside `[$__scratch_base,
+$__scratch_end)` at allocation time — the direct, decisive test for the
+open question above. It was validated (byte-identical smoke, sane split on
+a small compile) but NOT yet run against the full jz×jz self-compile (that
+needs the same ~2h+ contended budget this session's main run took, and this
+session's remaining time went to the write-up instead). Whoever picks this
+up next: point `goalgate-attrib.mjs`'s `KERNEL` at
+`kernel-attrib-instrumented2.wasm` and read `__dbg_scratch_bytes` /
+`__dbg_main_bytes` after the trap — no rebuild needed.
+
+**NO fixes this pass — attribution only**, per the task brief.
+`REGION_HOOKS_ACTIVE` stayed `true` only in the throwaway worktree, never
+committed (`scripts/self.js`/`src/compile/index.js` diffs are NOT part of
+this commit). Assets (not committed, scratchpad-local): worktree at
+`scratchpad/attrib` (branch `agent/footprint-attrib`, left in place);
+`kernel-attrib.wat` (named, pre-tag decompile), `kernel-attrib-instrumented
+{,2}.{wat,wasm}`, `attrib-sitemap.json` (46,952 entries), `attrib-result.json`
+(full top-30 + by-function grouping), `splice-attrib{,2}.mjs`,
+`goalgate-attrib.mjs`, `probe-scratch-vs-main.mjs` — all reproducible from
+this entry's method description if the scratchpad is gone by the time
+someone reads this.
