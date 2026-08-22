@@ -317,7 +317,7 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
 test('invariant: FunctionPlan clone is deep, order-preserving, dispatch-faithful', async () => {
   const { createFunctionPlan } = await import('../src/compile/function-plan.js')
   const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
-  const wideRep = { val: 3, ptrKind: null, ptrAux: undefined, schemaId: 7, intConst: 42, intCertain: true, notString: false, arrayElemSchema: { id: 1, elems: [1, 2] }, range: [0, 100], typedCtor: 'Float64Array', wasm: 'f64', nullable: false, bigintBoxed: false, mayBeUndefined: true, dictValueValType: new Set(['a']), inner: new Map([['k', { deep: [{ x: 1 }] }]]) }
+  const wideRep = { val: 3, ptrKind: null, ptrAux: undefined, schemaId: 7, intConst: 42, intCertain: true, notString: false, arrayElemSchema: { id: 1, elems: [1, 2] }, range: [0, 100], typedCtor: 'Float64Array', wasm: 'f64', nullable: false, mayBeUndefined: true, dictValueValType: new Set(['a']), inner: new Map([['k', { deep: [{ x: 1 }] }]]) }
   const facts = {
     block: false,
     locals: new Map([['w', wideRep], ['n', 5], ['nil', null]]),

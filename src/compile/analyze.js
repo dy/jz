@@ -682,86 +682,11 @@ export function analyzeBody(body) {
     for (const a of list) markEscapeValue(Array.isArray(a) && a[0] === '...' ? a[1] : a)
   }
 
-  // === Round-3/4 boxed-bigint intra-body W-sink walk ===
-  // (design .work/carrier-representation-design.md §3.2 — clone of the escapes precedent
-  // above: same single-pass walk, same "mark the binding, don't re-derive later"
-  // shape.) A bare-name value proven VAL.BIGINT that reaches one of these AST
-  // positions must round-trip through a real PTR.BIGINT box (ir.js boxBigInt/
-  // unboxBigInt, Step 2) — inline (non-name) BIGINT expressions at a sink are
-  // boxed at emission time directly from the AST shape, no rep needed. Call-arg/
-  // return to a KNOWN user function are the narrow.js/emit.js inter-function
-  // half (design §3.3) — skipped here to avoid a redundant, weaker verdict.
-  const markBigintSink = (expr) => {
-    if (typeof expr !== 'string' || valTypeOf(expr) !== VAL.BIGINT) return
-    updateRep(expr, { bigintBoxed: true })
-    // Three-store unification (ledger 2026-08-19 watr-slice core): marking a
-    // PARAM on the seeded local rep alone leaves the CALL SITES passing raw
-    // carriers (coerceArg reads sig.params' own bigintBoxed, stamped by
-    // narrow's boundary verdict) while body reads deref the slot — the
-    // boundary/local disagreement behind the uleb miscompile. Write the flip
-    // through to the shared sig so every call site boxes the argument; AFE
-    // completes before any call-site emission, so the stamp is always seen.
-    // ctx.func.current can be null here (top-level analysis passes) — resolve
-    // the owning function by the mangled name, which is globally unique.
-    let sp = ctx.func.current?.sig?.params?.find(pp => pp.name === expr)
-    if (!sp) for (const fo of ctx.funcs.list) {
-      const q = fo.sig?.params?.find(pp => pp.name === expr)
-      if (q) { sp = q; break }
-    }
-    if (sp) sp.bigintBoxed = true
-  }
-  // Whole-body outer-scope set (mirrors boxedCaptures' own `outerScope`,
-  // analyze-scans.js): every name THIS analyzeBody call's own `body` binds
-  // via let/const (not crossing a nested `=>`) plus its params. Computed
-  // once, upfront — deliberately NOT the incrementally-built `locals` map
-  // above, which would still be missing a later-declared outer local at an
-  // early arrow site (unsound: a genuine capture of a later-in-source outer
-  // local would silently go unflagged). Feeds markBigintCapture's
-  // findFreeVars call below as the real "is this actually one of my
-  // enclosing function's own bindings" filter.
-  const bigintOuterScope = new Set()
-  ;(function collectOuterDecls(node) {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
-    if (op === 'let' || op === 'const') collectParamNames(args, bigintOuterScope)
-    for (const a of args) collectOuterDecls(a)
-  })(body)
-  if (ctx.func.current?.params) for (const p of ctx.func.current.params) bigintOuterScope.add(p.name)
-  // BigInt retirement residual-site rule 2 (.work/bigint-retirement-
-  // design.md §5): reuse the SAME free-variable computation the real
-  // closure-conversion machinery trusts (boxedCaptures' findFreeVars,
-  // analyze-scans.js) instead of this walk's own former ad-hoc "every
-  // non-param name is a capture" pass. That cruder walk's `bound` held only
-  // the arrow's OWN params, so it misclassified TWO distinct non-capture
-  // shapes as "needs a box": (a) a name the arrow declares itself via its
-  // own `let`/`const` (found live: watr's `i64.parse`'s `bi` local — not a
-  // capture at all, bound within the very closure being scanned), and (b) a
-  // reference to a module-level global (found live: watr's `F64_SIGN`/
-  // `F64_NAN`/`F64_QUIET` consts, referenced from inside `f64` once `f64`
-  // itself undergoes closure conversion — a global is never placed in a
-  // closure's per-instance env, so there is nothing to box/unbox). findFreeVars
-  // already tracks (a) correctly (it grows `bound` as it walks a nested
-  // `let`/`const`, mirroring real lexical scoping) and `bigintOuterScope`
-  // closes (b) (a name not bound by THIS enclosing function is never added
-  // to `free`, matching boxedCaptures' own — already-verified-correct — capture
-  // set exactly, so a genuine outer-local capture, e.g. the original
-  // assemble.js shape Slice 0 fixed by hand, still triggers here precisely
-  // as before).
-  const markBigintCapture = (arrowNode) => {
-    const bound = collectParamNames(extractParams(arrowNode[1]))
-    const free = []
-    findFreeVars(arrowNode[2], bound, free, bigintOuterScope)
-    for (const n of free) markBigintSink(n)
-  }
-  const BIGINT_COLLECTION_METHODS = new Set(['push', 'unshift', 'add', 'set'])
-  const DATAVIEW_SETBIG_RE = /^setBig(Int|Uint)64$/
-
   // === Single walk ===
   function walk(node) {
     if (!Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>') { markBigintCapture(node); return }  // don't cross closure boundary
+    if (op === '=>') return  // don't cross closure boundary
 
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -872,70 +797,6 @@ export function analyzeBody(body) {
         } else if (Array.isArray(c) && c[0] === '...') {
           markEscapeValue(c[1])
         }
-      }
-    }
-
-    // Round-3/4 boxed-bigint W-sinks (design §2, rows 1-3/6/8) — dyn-prop/array-
-    // elem store, Set.add/Map.set/Array.push-family, DataView.setBig64, and the
-    // ternary-nullish BIGINT carry (kind.js VT['?:'] — the one kind with no
-    // runtime tag today; round-4 gives it a real one, so its merged value needs
-    // the same box-on-write treatment as any other kind-erased sink).
-    //
-    // Proven-TYPED-receiver exemption (BigInt retirement residual-site rule
-    // 3, .work/bigint-retirement-design.md §5): `recv[i] = bigintExpr` where
-    // `recv` is a PROVEN TYPED array (BigInt64Array/BigUint64Array — the only
-    // ctor a real BIGINT RHS can target without a runtime TypeError) is the
-    // design's own explicit kept-raw exemption, ALREADY implemented on the
-    // consuming side (emit-assign.js's `arrProvenTyped`, `lookupValType(arr)
-    // === 'typed'` — mirrored verbatim here). This producing side lacked the
-    // same exemption: every `[]`-headed write unconditionally boxed its
-    // BIGINT-kinded name, even when the receiver's own ctor already fixes
-    // the element kind with no ambiguity whatsoever (each element's kind is
-    // fixed by the array's ctor at every read — .work/bigint-retirement-
-    // design.md §4's "kept-raw contract"). Found live: watr's own `i64.parse`
-    // (`node_modules/watr/src/encode.js`) — `_i64[0] = bi` unconditionally
-    // boxed `bi` even though `_i64` is a `const _i64 = new BigInt64Array(...)`
-    // and `bi` is never used anywhere else ambiguously. `.`/`?.` stay
-    // unexempted — an OBJECT/schema-slot write is exactly the dynamic,
-    // kind-erasing sink this W-sink exists for; only a `[]`-headed TYPED
-    // receiver has a ctor-fixed element kind.
-    if (ASSIGN_OPS.has(op) && Array.isArray(node[1]) &&
-        (node[1][0] === '.' || node[1][0] === '[]' || node[1][0] === '?.')) {
-      const provenTypedRecv = node[1][0] === '[]' && typeof node[1][1] === 'string' &&
-        lookupValType(node[1][1]) === VAL.TYPED
-      if (!provenTypedRecv) markBigintSink(node[2])
-    }
-
-    if (op === '?:') {
-      const [, , a, b] = node
-      if (valTypeOf(node) === VAL.BIGINT) {
-        const nullish = (n) => n === 'undefined' || (Array.isArray(n) && ((n.length === 2 && n[0] == null && n[1] == null) || n.length === 0))
-        if (nullish(b)) markBigintSink(a)
-        else if (nullish(a)) markBigintSink(b)
-      }
-    }
-
-    if (op === '()') {
-      const callee = node[1]
-      const rawArgs = node[2]
-      const argList = Array.isArray(rawArgs) && rawArgs[0] === ',' ? rawArgs.slice(1) : (rawArgs != null ? [rawArgs] : [])
-      const method = Array.isArray(callee) && (callee[0] === '.' || callee[0] === '?.') && typeof callee[2] === 'string' ? callee[2] : null
-      if (method && DATAVIEW_SETBIG_RE.test(method)) {
-        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
-      } else if (method && BIGINT_COLLECTION_METHODS.has(method)) {
-        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
-      } else if (typeof callee === 'string' && (callee.startsWith('BigInt') || callee.startsWith('Atomics.'))) {
-        // Pure bigint-value transforms (BigInt.asIntN/asUintN) and Atomics ops
-        // (compile-time-proven receiver, design §2 W-sink 8 exemption) — not
-        // kind-erasing; leave the arithmetic-core raw path alone.
-      } else if (typeof callee !== 'string' || !ctx.funcs.map?.has(callee)) {
-        // Unresolvable target — external import, unclassified builtin, or
-        // computed/closure dispatch through a value — fail-closed per design
-        // §3.1: can't prove the callee's param treats this argument as
-        // BIGINT, so box it before the call. A string callee IN ctx.funcs.map
-        // (a known user function) is the narrow.js/emit.js call-site half
-        // (design §3.3) instead — not duplicated here.
-        for (const a of argList) markBigintSink(Array.isArray(a) && a[0] === '...' ? a[1] : a)
       }
     }
 

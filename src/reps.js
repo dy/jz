@@ -81,15 +81,6 @@ export const VAL = {
  * @property {boolean} [nullable]         binding can hold null/undefined on some path
  *   (init or an assignment was a nullish literal) — suppresses the `=== null` /
  *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
- * @property {boolean} [bigintBoxed]      VAL.BIGINT binding must materialize as a real
- *   PTR.BIGINT heap box (round-3/4 boundary boxing, .work/carrier-representation-design.md) —
- *   false (the default/absent case) means raw i64-as-f64 forever. true iff some
- *   reachable use is a kind-erasing W-sink: an intra-body sink (analyze.js walk —
- *   dyn-prop/array-elem store, Set/Map, ternary-nullish merge, closure capture,
- *   DataView.setBig/getBig64) OR an inter-function one (narrow.js fixpoint — a call
- *   site/return position not proven uniformly BIGINT, or a destructured param,
- *   fail-closed). Boxed at the point of write; every later read of the name unboxes
- *   explicitly before raw i64 ops (ir.js boxBigInt/unboxBigInt).
  * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
  *   at runtime despite a definite `val` kind claim — the container-read
  *   generalization of `nullable` (.work/todo.md §deletion-sweep
@@ -99,8 +90,8 @@ export const VAL = {
  *   already carries the flag (copy-through). Slice 2 (§3 remaining — narrow.js
  *   param/return join, flow-types.js closure return-kind join, module/
  *   function.js closure-capture seed): the SAME whole-program call-site
- *   fixpoint/return-tail unification `nullable`/`bigintBoxed` already run
- *   through, joined via kind.js's ctx-independent `censusShapedNode`/
+ *   fixpoint/return-tail unification for `nullable` already runs through,
+ *   joined via kind.js's ctx-independent `censusShapedNode`/
  *   `exprMayBeUndefinedIn` (real, ctx-aware census lookups would misread at
  *   plan time — same caveat narrow.js's BIGINT-nullable block documents for
  *   mayBeNullish). Fail-closed on a destructured param body (no per-call-site
@@ -285,7 +276,7 @@ export const VAL = {
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'bigintBoxed', 'recvArrTyped', 'dictValueValType',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'recvArrTyped', 'dictValueValType',
   'mapValueValType', 'mayBeUndefined', 'presentVal', 'presence',
 ])
 

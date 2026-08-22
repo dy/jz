@@ -1522,10 +1522,6 @@ function emitFunc(func, functionPlan, programFacts) {
       if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
       // recvArrTyped: mirrors the analyzeFuncForEmit seeding above (see its comment).
       if (r.recvArrTyped && !reassigned) updateRep(pname, { recvArrTyped: true })
-      // bigintBoxed: same unconditional-of-reassigned seeding as analyzeFuncForEmit
-      // (design .work/carrier-representation-design.md §3.3) — usually already present via
-      // the cloneRepMap above, but re-applied here for the same reason r.val is.
-      if (r.bigintBoxed && !ctx.func.localReps?.get(pname)?.bigintBoxed) updateRep(pname, { bigintBoxed: true })
       if (r.typedCtor && !reassigned) {
         if (!ctx.func.typedElem) ctx.func.typedElem = new Map()
         if (!ctx.func.typedElem.has(pname)) ctx.func.typedElem.set(pname, r.typedCtor)
@@ -2175,7 +2171,8 @@ function emitClosureBody(cb, functionPlan) {
     // in a BOOL∪NUMBER expression body before it collapses to raw 0.
     : [hasAmbiguousBoolMerge(cb.body)
       ? emitIdentitySafe(cb.body)
-      : carrierF64(cb.body, emit(cb.body))]
+      : carrierF64(cb.body,
+        applyBigintRepresentationAction(emit(cb.body), cb.body, representationReturnAction(ctx, cb.body)))]
 
   // Pre-allocate cache locals for env unpacking
   const envBase = cb.captures.length > 0 ? `${T}envBase${freshId(ctx)}` : null

@@ -1631,8 +1631,8 @@ function spreadMergeResolves(props) {
  *  reader back to the untyped/dynamic path — concretely, `layout.js`'s
  *  `LAYOUT.NAN_PREFIX_BITS` (a plain module-object BigInt-literal property)
  *  would be unprovable at its own read sites, poisoning `i64Hex`'s
- *  cross-call-site `val` consensus (narrow.js `hardParamVal`/
- *  `bigintBoxedVerdict`) into a residual boxed PARAM. General fix, not
+ *  cross-call-site `val` consensus and leaving RepresentationPlan without
+ *  a raw BigInt provenance proof. General fix, not
  *  layout.js-specific: ANY module-level object literal with a
  *  literal/statically-decidable scalar property now gets that property's
  *  kind recorded, the same way `shapeOfJsonValue` already does for a

@@ -58,7 +58,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, needsBigintBox, isProvenBoxedBigint, isCurrentlyBoxedBigint, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -71,11 +71,8 @@ import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
-  representationSentinelExprAction, representationProgramHasBigint,
+  representationSentinelExprAction, representationStorageWriteAction, representationProgramHasBigint,
 } from './representation-plan.js'
-
-// Raw-by-construction BIGINT producers (see the '=' emitter's durable-rebox arm).
-const RAW_BIGINT_OPS = new Set(['+', '-', '*', '/', '%', '**', '&', '|', '^', '<<', '>>', 'u-', '~'])
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
 // "should my own value be boxed" — JOIN_OPS (C5b precedent) plus, funded-
@@ -1456,39 +1453,26 @@ const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : e
 // carrierF64 here too would be a second, redundant application; harmless
 // since carrierF64 is idempotent on an already-boxed atom, but this file
 // keeps the two helpers distinct so each call site's contract stays legible).
-const storedValue = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64(node, emit(node))
+const storedValue = (node) => {
+  if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
+  const emitted = emit(node)
+  if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
+  const action = representationStorageWriteAction(ctx, node)
+  if (bigintStrict() && action === REP_EDGE_BOX)
+    bigintEraseErr('collection', typeof node === 'string' ? node : 'this expression')
+  return action === REP_EDGE_REJECT
+    ? carrierF64(node, emitted)
+    : asF64(applyBigintRepresentationAction(emitted, node, action))
+}
 // Narrow-admission twin — see carrierF64Narrow's own doc comment (ir.js) for
 // why the SRoA flat-object/array field locals below need THIS, not the plain
 // storedValue above: a flat field's reads/writes are all rewritten to plain
 // local access, with no registry-aware dynamic reader ever downstream of it.
 const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : carrierF64Narrow(node, emit(node))
 
-// carrier-representation-design.md §29: `coerceArg`'s box-direction branch
-// below used `isNullish(tGet)` — a RUNTIME BIT-PATTERN test — as its "is this
-// argument genuinely nullable" guard, deciding whether to skip `boxBigInt`
-// and pass the value through raw. That test can't distinguish "this node's
-// STATIC TYPE is really a BIGINT∪nullish union" (the ternary-merge shape
-// kind.js's own VT['?:'] nullishArm rule types VAL.BIGINT for, matching the
-// check just below — the ONLY place in the type system a node types BIGINT
-// while its runtime value can genuinely BE the NULL_NAN/UNDEF_NAN sentinel)
-// from "this node's VALUE happens to bit-collide with one of those two
-// reserved constants" — a plain, never-null BIGINT expression whose result
-// is occasionally, by construction, IDENTICAL to a reserved atom's own bit
-// pattern (found live: `layout.js` atomNanHex's own `LAYOUT.NAN_PREFIX_BITS
-// | (BigInt(atomId) << AUX_SHIFT)` — never nullable, but for atomId 1/2 its
-// VALUE is bit-for-bit NULL_NAN/UNDEF_NAN). The false-positive skipped
-// `boxBigInt` for that pure-BIGINT argument and passed it raw into `i64Hex`
-// — whose OWN `bits` param the whole-program `bigintBoxed` solver proved
-// "always arrives boxed" and unboxes with ZERO runtime tag check
-// (unboxBigInt, ir.js) — so `i64Hex` treated the raw sentinel's low 32 bits
-// (0 for both NULL_NAN and UNDEF_NAN — their id lives at bit 32+) as a heap
-// address and `i64.load`'d address 0, reading the formatter's own static
-// string table's opening bytes. Restricting the runtime nullish-guarded
-// passthrough to the ONE shape that can genuinely BE null (a `?:` node with
-// a nullish arm, mirroring the ternaryBoxedNames gate a few hundred lines
-// below verbatim) restores boxBigInt's unconditional call for every other
-// BIGINT-typed argument — exactly the invariant i64Hex's own bigintBoxed
-// proof already assumes.
+// A plan BOX/UNBOX must preserve the nullish member of a genuine
+// BigInt/nullish ternary. Use AST provenance, never a runtime bit-pattern
+// guess: a pure raw BigInt can legitimately equal a reserved atom's bits.
 const nodeIsNullishBigintMerge = (node) => Array.isArray(node) && node[0] === '?:' &&
   ((valTypeOf(node[2]) === VAL.BIGINT && nullishArm(node[3])) || (valTypeOf(node[3]) === VAL.BIGINT && nullishArm(node[2])))
 
@@ -5612,9 +5596,6 @@ export const emitter = {
     // the dynamic/tagged result ABI a box is correct for.
     const ir = pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted, 'return'))
-      : (repAction !== REP_EDGE_BOX && repAction !== REP_EDGE_UNBOX &&
-         !ctx.func.exported && rt === 'f64' && typeof expr === 'string' && isProvenBoxedBigint(expr))
-        ? (bigintStrict() ? bigintEraseErr('return', expr) : boxBigInt(asI64(emitted)))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt
     const tcoed = tcoTailRewrite(ir, ty)
@@ -5668,18 +5649,6 @@ export const emitter = {
     }, () => emit(val))
     const repAction = representationBindingWriteAction(ctx, name, val)
     ev = applyBigintRepresentationAction(ev, val, repAction)
-    // REJECT-only legacy fallback: a real plan action above is authoritative
-    // and must never be followed by this second box.
-    // Durable-boxed param reassignment must MAINTAIN the boxed-slot invariant
-    // (three-store unification, ledger 2026-08-19): reads deref this param's
-    // slot for the whole function extent, so a raw-producing BIGINT RHS must
-    // rebox before the store — the assignment-side mirror of the 'return'
-    // path's isProvenBoxedBigint arm. Scoped to arithmetic/shift/bitwise RHS
-    // (raw i64 carrier by construction — no double-box risk); bare names,
-    // calls and '?:' keep their established wiring.
-    if (repAction === REP_EDGE_REJECT && typeof name === 'string' && isCurrentlyBoxedBigint(name) &&
-        Array.isArray(val) && RAW_BIGINT_OPS.has(val[0]) && valTypeOf(val) === VAL.BIGINT)
-      ev = boxBigInt(asI64(ev))
     return writeVar(name, ev, void_)
   },
 
@@ -6237,10 +6206,8 @@ export const emitter = {
     const repB = representationJoinArmAction(ctx, self, b)
     const repC = representationJoinArmAction(ctx, self, c)
     if (!ctx.func._arrayLiteralNeverEscapes && repB !== REP_EDGE_REJECT && repC !== REP_EDGE_REJECT) {
-      const legacyBigintArm = valTypeOf(b) === VAL.BIGINT && nullishArm(c) ? b
-        : valTypeOf(c) === VAL.BIGINT && nullishArm(b) ? c : null
-      if (bigintStrict() && legacyBigintArm != null && needsBigintBox(legacyBigintArm))
-        bigintEraseErr('ternary-nullish', typeof legacyBigintArm === 'string' ? legacyBigintArm : 'this ternary\'s BigInt arm')
+      if (bigintStrict() && (repB === REP_EDGE_BOX || repC === REP_EDGE_BOX))
+        bigintEraseErr('ternary-nullish', 'this ternary\'s BigInt arm')
       const fb = asF64(applyBigintRepresentationAction(vb, b, repB))
       const fc = asF64(applyBigintRepresentationAction(vc, c, repC))
       return typed(['f64.reinterpret_i64',
@@ -6266,60 +6233,6 @@ export const emitter = {
         const bits = eagerSelectOK(fb, fc) && selectCondOK(cond)
           ? ['select', ib, ic, cond]
           : ['if', ['result', 'i64'], cond, ['then', ib], ['else', ic]]
-        return typed(['f64.reinterpret_i64', bits], 'f64')
-      }
-    }
-    // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
-    // ternary-nullish def-side wiring — OFF by default (CARRIER_BOX). Mirrors
-    // kind.js VT['?:']'s own BIGINT+nullish-literal rule exactly (same ta/tb,
-    // same nullishArm test) and analyze.js's markBigintSink call for the same
-    // op==='?:' shape: BigInt is "the one kind with no runtime tag" — a
-    // `cond ? bigVal : null` merge must box bigVal before crossing into the
-    // merged f64 slot, or a proven-raw BigInt elsewhere becomes bit-
-    // indistinguishable from this merge's own result once null/undefined mix
-    // in. Always the `if`/`else` control-flow form, never `select` — `select`
-    // eagerly evaluates BOTH arms, which would allocate the box on the branch
-    // NOT taken (wasteful, and a real double-eval hazard if the arm has its
-    // own side effects) — round-2's own "ternary-beside-nullish wrongly
-    // boxed" bug (.work/todo.md) is exactly this class of mistake.
-    // ctx.func._arrayLiteralNeverEscapes: skip the box for a compiler-
-    // synthesized decl-destructure array-literal element (see
-    // carrierF64Narrow's own doc comment, ir.js, and ctx.schema.arrayVars',
-    // kind.js). The box above exists to keep a raw bigint payload from
-    // coincidentally colliding with the NULL_NAN/UNDEF_NAN sentinel bit
-    // pattern for a consumer that inspects THIS merge's own bits to tell
-    // "was it the bigint arm or the nullish one" apart — but a destructure
-    // temp's element is read exactly once, by the synthesized extraction
-    // `expandDestruct` itself generates, and every downstream consumer
-    // (`c ? b * 2n : -1n`, the destructure's OWN nullability tracking) already
-    // disambiguates via the SAME condition the ternary itself branched on,
-    // never by inspecting the extracted binding's raw bits — so there is no
-    // sentinel-collision-observing reader here either, the same "no reader"
-    // guarantee the flag already established for module/array.js's element
-    // storage. Found live: `let [a, b] = [1, c ? BigInt(v) : null]; return c ?
-    // b * 2n : -1n` boxed the bigint arm unconditionally, then `b * 2n`'s own
-    // raw bigIntOperand arithmetic read the pointer's bits raw.
-    if (!ctx.func._arrayLiteralNeverEscapes) {
-      const taM = valTypeOf(b), tbM = valTypeOf(c)
-      const bigintArm = (taM === VAL.BIGINT && nullishArm(c)) ? 'b'
-        : (tbM === VAL.BIGINT && nullishArm(b)) ? 'c' : null
-      // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§9):
-      // this IS the design's "ternary-nullish" flow class — a `cond ? bigVal
-      // : null`-shaped merge is "the one kind with no runtime tag", so its
-      // kind can never be proven uniform past this point. Boxes the BigInt
-      // arm before merging with the null/undefined sentinel (pre-Slice-1
-      // default, restored here) UNLESS bigintStrict() is live, in which
-      // case it refuses to compile instead — same needsBigintBox proof.
-      if (bigintArm != null && needsBigintBox(bigintArm === 'b' ? b : c)) {
-        const armNode = bigintArm === 'b' ? b : c
-        if (bigintStrict()) bigintEraseErr('ternary-nullish', typeof armNode === 'string' ? armNode : 'this ternary\'s BigInt arm')
-        const armEmitted = bigintArm === 'b' ? vb : vc
-        const otherEmitted = bigintArm === 'b' ? vc : vb
-        const boxedIR = boxBigInt(asI64(armEmitted))
-        const otherIR = asF64(otherEmitted)
-        const ib = ['i64.reinterpret_f64', boxedIR], ic = ['i64.reinterpret_f64', otherIR]
-        const [thenI, elseI] = bigintArm === 'b' ? [ib, ic] : [ic, ib]
-        const bits = ['if', ['result', 'i64'], cond, ['then', thenI], ['else', elseI]]
         return typed(['f64.reinterpret_i64', bits], 'f64')
       }
     }

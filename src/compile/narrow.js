@@ -1824,7 +1824,7 @@ export default function narrowSignatures(programFacts, ast) {
 
   // Callee-indexed view of `callSites`, built ONCE per narrowSignatures call.
   // Several consumers below (hardParamVal, hardParamRecvArrTyped,
-  // hardParamPresentVal, bigintBoxedVerdict, the BIGINT-nullable join, the
+  // hardParamPresentVal, the BIGINT-nullable join, the
   // mayBeUndefined join, callerArgSelfConsistentI32 via applyI32ParamSpecialization)
   // each used to linear-scan the FULL `callSites` array filtering on
   // `cs.callee === funcName`, from an outer loop over every function × every
@@ -2700,28 +2700,7 @@ export default function narrowSignatures(programFacts, ast) {
       }
     }
   }
-  // bigintBoxed (round-3/4, design .work/carrier-representation-design.md §3.3): the
-  // CALL-SITE half of the invariant for params — box a BIGINT argument before
-  // a call whose target param can't be trusted to receive BIGINT uniformly.
-  // Consulted by the call-site emitter, not by the callee body: once boxed,
-  // the callee simply carries an opaque pointer through whatever generic/
-  // untyped path it already takes for an unproven param — destructured/
-  // unproven params never gain a BIGINT `val` fact from this (cross-boundary
-  // per-index kind inference is a larger, separate feature per the round-4
-  // prerequisite note, .work/todo.md), so their bodies never attempt raw i64
-  // ops on the value; only a caller-side typeof-refined narrow could, and a
-  // refinement consults the SAME rep (seeded onto ctx.func.localReps at
-  // function entry, same as r.val/r.typedCtor — compile/index.js).
-  //   destructured  → true unconditionally (fail-closed: no per-call-site
-  //     proof mechanism exists for what a destructured element ends up
-  //     holding, so assume the worst).
-  //   r.val === VAL.BIGINT (every live call site agrees, settled above) →
-  //     false: the callee receives BIGINT consistently and stays raw at the
-  //     boundary; a later intra-body sink use (analyze.js) ORs this to true
-  //     on the SAME rep, at which point the box happens at that sink instead.
-  //   else → true iff ANY call site can prove a BIGINT argument at this
-  //     position — a param that NEVER sees a bigint doesn't need the fact:
-  //     valTypeOf never claims BIGINT for it, so box/unbox is never consulted.
+  // Destructured-parameter default shared by the mayBeUndefined solver below.
   const isDestructuredParamBody = (func, pname) => {
     const b = func?.body
     const stmts = Array.isArray(b) && b[0] === '{}' && Array.isArray(b[1]) && b[1][0] === ';'
@@ -2733,41 +2712,10 @@ export default function narrowSignatures(programFacts, ast) {
     }
     return false
   }
-  const bigintBoxedVerdict = (fname, k, r) => {
-    const func = ctx.funcs.map?.get(fname)
-    if (!func?.sig?.params || k >= func.sig.params.length) return false
-    const pname = func.sig.params[k].name
-    if (isDestructuredParamBody(func, pname)) return true
-    if (r.val === VAL.BIGINT) return false
-    for (const cs of sitesByCallee.get(fname) ?? []) {
-      const state = siteState(cs)
-      if (!state || k >= state.argList.length) continue
-      if (inferValAtSite(state.argList[k], state) === VAL.BIGINT) return true
-    }
-    return false
-  }
-  for (const [fname, reps] of paramReps)
-    for (const [k, r] of reps) {
-      const v = bigintBoxedVerdict(fname, k, r)
-      if (v) r.bigintBoxed = true
-    }
-  // Fixpoint-completeness (design §4.4, assertBodyFactsFresh class): every
-  // input this verdict reads (r.val, callSites, func.body/sig) is already
-  // settled by this point in the pipeline (past the hard `val` merge above),
-  // so re-deriving it must reproduce the exact same true/false for every
-  // param — a flip would mean the verdict secretly depended on iteration
-  // order or partially-settled state.
-  if (DBG_INVARIANTS)
-    for (const [fname, reps] of paramReps)
-      for (const [k, r] of reps)
-        if (!!r.bigintBoxed !== bigintBoxedVerdict(fname, k, r))
-          throw new Error(`bigintBoxed fixpoint-completeness: ${fname} param ${k} verdict changed on re-derivation (${!!r.bigintBoxed} -> ${bigintBoxedVerdict(fname, k, r)})`)
-
   // mayBeUndefined param propagation (Slice 2, .work/todo.md
   // §deletion-sweep §3 "Param lattice") — the inter-procedural half of
   // the same fact Slice 1 (analyze.js analyzeValTypes) already seeds at decl
-  // time. Modeled on bigintBoxedVerdict just above: same fail-closed
-  // destructured-param default (isDestructuredParamBody, reused verbatim —
+  // time. Uses the shared fail-closed destructured-param default (isDestructuredParamBody, reused verbatim —
   // no per-call-site proof mechanism exists for what a destructured element
   // ends up holding, so assume the worst), same call-site OR-fold shape.
   //
@@ -2903,9 +2851,6 @@ export default function narrowSignatures(programFacts, ast) {
     for (const [k, r] of reps) {
       const p = func.sig.params[k]
       if (p && r.val != null && p.val == null) p.val = r.val
-      // bigintBoxed: same stamp, read by coerceArg (emit.js) to decide whether
-      // a BIGINT-proven argument must box before crossing into this param.
-      if (p && r.bigintBoxed) p.bigintBoxed = true
     }
   }
 

@@ -1531,13 +1531,13 @@ export function representationActiveMaterializedRep(ctx, name) {
 /** Frozen action for one ordinary tagged storage/value slot. */
 export function representationStorageWriteAction(ctx, source) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_REJECT
-  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
+  return edgeAction(activeStorageSourceRep(ctx, source), BOXED_BIGINT)
 }
 
 /** Frozen action for one generic closure/call_indirect argument slot. */
 export function representationClosureArgAction(ctx, source) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
-  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
+  return edgeAction(activeStorageSourceRep(ctx, source), BOXED_BIGINT)
 }
 
 /** True when JS interop must box an actual BigInt at this export slot. */
@@ -1595,6 +1595,15 @@ const activeEmittedRep = (ctx, node) => {
     if (materialized !== NO_BIGINT) return materialized
   }
   return activeRep(ctx, node, false)
+}
+
+// Some emit-time storage producers are nested below AST sites retained in
+// nodeFacts (array/object literal elements are the common case). Their own
+// syntax still proves a fresh raw BigInt carrier; NO_BIGINT here means "not
+// retained", not "this BigInt origin emits no BigInt".
+const activeStorageSourceRep = (ctx, node) => {
+  const rep = activeEmittedRep(ctx, node)
+  return rep === NO_BIGINT && isBigintOrigin(node) ? RAW_BIGINT : rep
 }
 
 /** Current source→callee target action for one direct-call argument. */
