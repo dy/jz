@@ -146,3 +146,95 @@ KNOWN-WRONG at O3 in test/data.js's effect-fold pin; O0/O2 box and stay
 correct). Same root as the few-callsite inlining manifestation: inline/
 select-shaped unions must inherit materialization. The C5 slice now has
 two acceptance flips banked (the 2-export inline probe and the O3 pin).
+
+## C5 landing plan (2026-08-21 recon, cites verified read-only)
+
+ONE fix point, not three. Recon falsified both "fix the inliner" and "fix
+the optimizer":
+
+- Inliner CANNOT consult the plan: `inlineHotInternalCalls` runs at
+  plan/index.js:190, but `solveRepresentationBoundaries` publishes at :237/
+  :332 and per-body plans mint later still (compile/index.js:882-887). At
+  splice time (`inline.js:232-234`, `:253`, `:265`, `:275` — where
+  `shape.value`, the callee's stripped return expression, becomes a bare
+  caller operand) NO plan exists for ANY function. Pre-minting per-callee
+  boundaries before inlining = two authorities (forbidden by ADR-0001) and
+  conflicts with solveRepresentationBoundaries' stated precondition of
+  seeing the final post-inline graph (plan/index.js:329-331).
+- Optimizer gating is redundant-or-masking: the if→select fold
+  (optimize/index.js:4407-4442) is already inert on boxed arms because
+  `isPureIR` (ir.js:982-990) excludes `call` and boxBigInt emits
+  `['call','$__alloc',…]`. When the fold fires on a raw union, emission had
+  ALREADY failed to materialize (emit.js:6148-6150 join-action gate found
+  no `materializedJoins` entry). A "refuse the fold" marker would keep the
+  wrong raw carrier in an unfolded `if` — symptom moved, bug intact.
+
+THE fix: `buildBodyData`'s materialization fixpoint
+(representation-plan.js:677-1128; `materializedNames` :987-1004,
+`materializedJoins` :1045-1060) must prove spliced/select-shaped unions —
+an inlined body's result expression and its inline temp local planned like
+any body's own locals/joins, so `flag ? 1n : 0` reaches materializedJoins
+regardless of whether it arrived by source text or by splice. Plan stays
+sole authority; no pipeline reorder; optimizer stays plan-blind.
+
+Acceptance: (1) flip test/data.js:1905 O3 pin KNOWN-WRONG→correct
+(`o3.f(0)` → false, matching O0/O2); (2) COMMIT the 2-export gnorm probe
+as a real pin (it exists only as prose here — never landed in test/); (3)
+O0/O2 legs stay green (materialization must not regress the call-kept
+5-export shape); (4) full battery. Hazard log: this file's own
+falsified-forms note — four wrong predicate shapes died in
+representationResultTagRequired's design; extend the fixpoint by the same
+discipline (per-expression, tri-state, no demand-keyed shortcuts).
+
+## C5 LANDED (2026-08-22, main 10b7d3c0) + C5b residual
+
+The landing plan's fixpoint suspicion was one layer too deep: live trace
+showed the plan HAD materialized both the named union local AND the
+hoisted temp (matNames = [inl0_h, value…]) — the loss was in the READERS.
+hoistNestedCalls (inline.js:381, from 7068ae8e) wrapped its temp as
+`[null, tmp]` — the boxed-literal shape, whose payload every reader
+treats as a VALUE: valTypeOf kind-erased the temp's bigint to number (so
+emitStrictEq's rawVt gate skipped the C3 dispatch → raw f64.eq → the
+0-bits collision), representationActiveMaterializedRep's name lookup
+missed (Set of strings), and stringLiteral would have read the temp NAME
+as a string literal (latent adjacent wrong-value class). Fix: the hoist
+returns the bare name — a name IS a bare string in this AST; every
+reader then resolves it like any local. One line + comment.
+Both banked flips landed: O3 pin asserts correct false at [O0,O2,O3];
+gnorm 2/5-export pin committed (30 assertions incl. lossless past 2^53
+— manifestation 1 was already healed on tip by C1-C4, now locked).
+Battery (quintuple integration product): data 145/145, array-methods
+143+1skip, optimizer 219/219, kernel-parity 3/3 (33 asserts — trio DEAD,
+see .work/printer-trio.md: date.js flat .valueOf overwrite, same root as
+the watr-regression trio), kernel-oracle 14/14, FULL SUITE 3603/0/2 —
+first zero-fail suite.
+
+C5b RESIDUAL (pre-existing, probed on the integration product): a
+DIRECT-return union expression — `export let g = (flag) => flag ? 1n : 0`
+— never materializes: g(1) crosses as 5e-324 (raw 1n bits as subnormal)
+at O2 and O3. The named-local shape (C5's pin) works; the anonymous
+direct-return join doesn't reach materializedJoins/the boxed return
+edge, and the result lane exports raw f64. Same class the c4b agent hit
+independently (its pin 2 rewrote around it). Slice: return-edge drives
+materialization for direct '?:'/'||'/'&&'/'??' return expressions +
+resultTagRequired routes the generic decode (C2 lane). Pin KNOWN-WRONG
+on landing the slice branch. Follow-up hardening in the same campaign:
+delete stringLiteral's [null,string] arm (no producer remains) + make
+valTypeOf throw-or-null on [null,string] rather than misclassify.
+
+## C4b state (2026-08-22): redesigned on branch, merge gated
+
+phase-c4b @ a74ae3eb: jz:hostabi descriptor replaces jz:bigintbox
+({tag, raw, rest} per export; raw PROVEN architecturally unreachable
+today — makeBoundaryData's `uncovered = isExported` forces ANY_BIGINT →
+BOXED for every export param — encoded + dispatched anyway, never
+guessed from absence); wrapVal decimal-string accident DEAD (typed
+throw naming mem.BigInt); rest elements policy-mapped before mem.Array;
+5 pins adapted to reachable states; differential battery zero-regression.
+MERGE GATE: 3 suite tests (types ×2, inference ×1) relied on the
+stringify accident via `BigInt(v)`-normalized dynamic params — the
+provenance slice must grant BigInt(v)'s argument position tag-ingress
+evidence (the correct crossing for those tests' real bigints), then
+merge on a fresh product battery. Also queued from its report:
+mem.Object's inline marshal stores plain-bigint property values as raw
+unmarked bits (silent-wrong, wrapVal-independent duplicate logic).
