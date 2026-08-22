@@ -283,7 +283,14 @@ export default function plan(ast, profiler, regionHooks) {
     // read as a world-poisoning keyed write), so recompute hazards with paramReps
     // and rebuild slotTypes/slotTypedCtors fresh BEFORE their consumers below
     // (inplace sweep, bimorphic split, typed-param speculation) and at emit.
-    t('refineSlotKindCensus', () => observeProgramSlots(ast, { fresh: true, paramReps: programFacts.paramReps }))
+    // callSites/valueUsed (union points-to, program-facts.js's own doc on
+    // collectSlotWriteHazards): the SAME stable call-site census
+    // narrowSignatures just fixpointed over, threaded through so a bare-name
+    // dyn-key receiver that's a function PARAMETER can resolve to the union of
+    // schemas its call sites actually pass instead of the whole-program 'ALL'.
+    t('refineSlotKindCensus', () => observeProgramSlots(ast, {
+      fresh: true, paramReps: programFacts.paramReps, callSites: programFacts.callSites, valueUsed: programFacts.valueUsed,
+    }))
     // Cross-function neverGrown for read-only array PARAMS (growth-free callee
     // closure + safeReads) — the raw-base element read skips __ptr_offset.
     if (optimizing()) t('analyzeParamNeverGrown', () => analyzeParamNeverGrown(programFacts.paramReps))
@@ -314,7 +321,13 @@ export default function plan(ast, profiler, regionHooks) {
     // Late slot-int census: rebuild FRESH with body-local element-alias sids
     // (`const p = ps[i]` through the param's arrayElemSchema — knowledge that
     // exists only after narrowing). Consumers read at emit, after this.
-    t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, { paramReps: programFacts.paramReps }))
+    // callSites/valueUsed: see refineSlotKindCensus's own comment above — kept
+    // in lockstep so this round's collectSlotWriteHazards rebuild (should the
+    // fact-store gen ever bump between the two rounds) doesn't silently fall
+    // back to the coarser no-callSites path.
+    t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, {
+      paramReps: programFacts.paramReps, callSites: programFacts.callSites, valueUsed: programFacts.valueUsed,
+    }))
   })
   // Plan-tail round 5: the plan() tail — invalidateAllBodyFacts drops the
   // now-stale analyzeBody cache entries the late upgrades above superseded

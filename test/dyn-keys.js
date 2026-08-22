@@ -296,6 +296,74 @@ test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema 
     'a shadows at both construction and its later write despite never itself appearing in a [] or for-in — the fail-closed ALL sentinel')
 })
 
+// union points-to (dyn-reach slice 2, .work/dyn-reach-slice.md's own NEXT):
+// a bare-name dyn-key receiver that's a function PARAMETER with no single sid
+// (sidOf's own fallbacks never bind a param name) used to fall straight to
+// the whole-program 'ALL' sentinel above. resolveParamUnion
+// (program-facts.js's collectSlotWriteHazards) resolves the UNION of schemas
+// the param's OWN call sites actually pass instead — a `{}`-literal argument
+// resolves via objLiteralSchemaId, a bare-name argument that is itself the
+// caller's own parameter recurses; anything else unions that param to 'ALL'.
+test('dyn-reach: union points-to — a polymorphic param dyn-shadows exactly its 2 call-site schemas; a third untouched schema keeps no mirror', () => {
+  // dispatch's `node` param has no single sid: callA passes a {tag,val}
+  // literal, callB passes a DIFFERENT {tag,other} literal — two distinct
+  // schemas, neither a single-sid answer. `c` is a third, sibling schema
+  // never itself a [] read/for-in receiver anywhere — it must escape
+  // (returned whole, not just a field) so it's a REAL heap object regardless
+  // of any unrelated flat-local optimization, making its zero __dyn_set
+  // contribution a meaningful proof that the union is scoped to {A, B}, not
+  // a coincidence of it never existing to shadow in the first place.
+  const src = `
+    function dispatch(node, k) { return node[k] | 0 }
+    function callA(k) { return dispatch({tag: 1, val: 10}, k) }
+    function callB(k) { return dispatch({tag: 2, other: 20}, k) }
+    export let f = (which, k) => {
+      let c = { cOnly: 1 }
+      let r = which === 1 ? callA(k) : callB(k)
+      c.cOnly = c.cOnly + r
+      return c
+    }
+  `
+  for (const optimize of [0, 2, 3]) {
+    is(jz(src, { optimize }).exports.f(1, 'val').cOnly, 11, `O${optimize}: schema A's field resolves through the polymorphic param`)
+    is(jz(src, { optimize }).exports.f(2, 'other').cOnly, 21, `O${optimize}: schema B's field resolves through the SAME polymorphic param`)
+    is(jz(src, { optimize }).exports.f(1, 'missing').cOnly, 1, `O${optimize}: an absent key still misses cleanly`)
+  }
+  // O0: no inlining to collapse call-site text, so a direct count is exact
+  // (mirrors the fail-closed pin above).
+  const wat = compile(src, { optimize: 0, wat: true })
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 4,
+    "exactly 4 __dyn_set calls: 2 fields x 2 reached schemas (A, B) — c (a 3rd, escaping-but-untouched sibling schema) contributes zero")
+})
+
+test('dyn-reach: union points-to — an unresolvable call-site argument degrades that param to ALL (fail closed)', () => {
+  // callC passes a plain LOCAL VARIABLE `x` — bound to a literal, but not
+  // itself a parameter of callC, so it's outside the two shapes
+  // resolveParamUnion resolves (a `{}` literal argument; a bare name that is
+  // itself the CALLER's own parameter). dispatch2's `node` param unions to
+  // 'ALL': every schema in the program — including `c`, never itself a []
+  // read/for-in receiver — keeps its mirror, exactly the pre-existing
+  // fail-closed behavior the previous test pins for a raw untyped param.
+  const src = `
+    function dispatch2(node, k) { return node[k] | 0 }
+    function callA(k) { return dispatch2({tag: 1, val: 10}, k) }
+    function callC(k) { let x = { flag: 3, third: 30 }; return dispatch2(x, k) }
+    export let f = (which, k) => {
+      let c = { cOnly: 1 }
+      let r = which === 1 ? callA(k) : callC(k)
+      c.cOnly = c.cOnly + r
+      return c
+    }
+  `
+  for (const optimize of [0, 2, 3]) {
+    is(jz(src, { optimize }).exports.f(1, 'val').cOnly, 11, `O${optimize}: schema A's field still resolves correctly under the ALL fallback`)
+    is(jz(src, { optimize }).exports.f(2, 'third').cOnly, 31, `O${optimize}: the unresolvable call site's own schema still resolves correctly under the ALL fallback`)
+  }
+  const wat = compile(src, { optimize: 0, wat: true })
+  is((wat.match(/\(call \$__dyn_set/g) || []).length, 6,
+    "every schema shadows once ANY call site is unresolvable: schema A (2 fields x 1 site) + x's schema (2 fields x 1 site) + c (1 field x 2 sites — construction AND its later plain write, mirror-sync) = 6")
+})
+
 // audit P0 (1db8e55e revert, external bisection): the Map value-census .get()
 // consumer promoted EVERY read on a proven-Map receiver to the exact VAL.*
 // kind of every observed .set() write. Unsound two ways: (1) an ABSENT key
