@@ -184,7 +184,10 @@ export default (ctx) => {
 
     // R: Static data segment for objects of pure-literal property values (own-memory only).
     // Even with shadow needed, we can skip alloc + N stores; just feed literal values to __dyn_set.
-    const shadow = needsDynShadow(target)
+    // schemaId (dyn-reach slice): this construction's OWN just-resolved sid —
+    // the SAME id the write-hazard scan resolves for this exact literal shape,
+    // so needsDynShadow's per-schema check agrees with dynPointsTo's granularity.
+    const shadow = needsDynShadow(target, schemaId)
     // When the literal adopts a superset/merged schema (schemaId !== litId), the
     // field order in `schema` can differ from the literal's `names`, so each value
     // must land at its named slot `schema.indexOf(name)` — a positional `slot = i`
@@ -731,7 +734,9 @@ export default (ctx) => {
     // the hash stale, so mirror each store into __dyn_set, exactly as the object
     // literal emit does (above). False unless a collection/dyn-key module is live,
     // so the common fixed-schema assign keeps its slot-only fast path.
-    const shadow = needsDynShadow(target)
+    // tSid (dyn-reach slice): already resolved just above for the extern-belt
+    // add — the target's own sid, same granularity the write-hazard scan uses.
+    const shadow = needsDynShadow(target, tSid)
     if (shadow) inc('__dyn_set')
     const body = [['local.set', `$${t}`, asF64(emit(target))],
       ['local.set', `$${tBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]
@@ -1260,7 +1265,9 @@ function emitObjectSpread(props, spreadTarget = takeLiteralTarget()) {
   }
 
   body.push(['local.set', `$${ptr}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${t}`])])
-  if (needsDynShadow(spreadTarget)) {
+  // schemaId (dyn-reach slice): this spread's OWN just-registered sid (above) —
+  // same granularity the write-hazard scan resolves for this merged shape.
+  if (needsDynShadow(spreadTarget, schemaId)) {
     inc('__dyn_set')
     for (let i = 0; i < schema.length; i++)
       body.push(['drop', ['call', '$__dyn_set', ['i64.reinterpret_f64', ['local.get', `$${ptr}`]], asI64(emit(['str', String(schema[i])])),

@@ -1856,22 +1856,35 @@ export function usesDynProps(vt) {
 }
 
 /** Does this object literal / property write need a `__dyn_props` shadow update?
- *  `target` is the var name receiving the literal (or null when escaping). */
-export function needsDynShadow(target) {
+ *  `target` is the var name receiving the literal (or null when escaping).
+ *  `sid` (dyn-reach slice) is the call site's OWN resolved schema id, when it
+ *  has one locally — passed explicitly rather than re-derived here because
+ *  every call site already resolves it for its own purposes (a construction's
+ *  litId/schemaId, an assign's tSid, a ptrAux, a chainSid walk) and the exact
+ *  SAME resolution the write-hazard scan used to build dynPointsTo must be
+ *  reused, not approximated afresh, or the two sides can silently diverge on
+ *  schema-merge/poisoned-binding edges (CARRIER PROGRAM §15/§16's granularity-
+ *  mismatch lesson, module/schema.js:441-453 — construction-time shadow and
+ *  every read-side dyn-props probe must agree at IDENTICAL schema granularity). */
+export function needsDynShadow(target, sid) {
   if (!ctx.module.modules.collection) return false
   // Functions/CLOSURE always need dynamic props so cross-module property
   // access (fn.parse, i32.parse aliases) sees the same value as schema slots.
   const vt = typeof target === 'string' ? (ctx.func.localReps?.get(target)?.val || ctx.scope.globalValTypes?.get(target)) : null
   if (vt === 'closure' || usesDynProps(vt)) return true
-  // A module-wide dynamic-key access (`obj[expr]`) means ANY object may later be
-  // read through the dyn-props hash (__dyn_get_any), so every object literal is
-  // built with a shadow. Mutation sites (Object.assign, `o.k = v`) must mirror
-  // into that same shadow or a subsequent hash read returns a stale slot value.
-  // Honor anyDynKey for NAMED targets too — not just anonymous (target == null)
-  // literals — so construct-time shadowing and mutate-time mirroring agree. They
-  // desynced before: a named literal shadowed via anyDynKey, but its assign saw
-  // only dynKeyVars (which holds the *dynamically-keyed* vars, not this binding).
-  if (ctx.types?.anyDynKey) return true
+  // A module-wide dynamic-key access (`obj[expr]`) means SOME object may later
+  // be read through the dyn-props hash (__dyn_get_any) or enumerated by
+  // `for-in` — but only objects of a schema a dyn-key read/for-in receiver can
+  // actually resolve to (schemaDynReach, module/schema.js, fed by
+  // collectSlotWriteHazards' hz.dynPointsTo — program-facts.js) need the
+  // shadow mirror those paths consult; a schema no such read can ever name
+  // needs none. Fail closed exactly like today's whole-program behavior on
+  // BOTH remaining uncertainties: this call site's own sid unresolvable (it
+  // can't ask schemaDynReach a specific question), and schemaDynReach's own
+  // 'ALL' sentinel (some dyn-key read/for-in receiver in the program was
+  // itself unresolvable) — either one shadows, matching what anyDynKey alone
+  // used to do unconditionally.
+  if (ctx.types?.anyDynKey) return sid == null || !ctx.schema.schemaDynReach || ctx.schema.schemaDynReach(sid)
   const dyn = ctx.types?.dynKeyVars
   return target != null && dyn ? dyn.has(target) : false
 }
