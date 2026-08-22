@@ -11909,3 +11909,16 @@ special-case kind 1 while leaving 2-4 routed through `s` exactly as now)
 — out of scope for a same-day deletion pass; recorded here as the one
 concrete opening this item leaves, not attempted. No source changed; no
 commit needed beyond this note.
+
+## COVERED (2026-08-22): funded-deletion item 4, sentinel kinds 2–4
+
+Merge product 6125e2ae makes RepresentationPlan materialize the fresh raw
+BigInt branch of unary-neg, unary-not and joint-binary may-BigInt results.
+The export wrapper therefore takes the generic tagged decode for these
+shapes. Present/absent, negative, lossless-past-2^53, plain-Number and WAT
+lane-fingerprint pins cover O0/O2/O3. The legacy sentinel lane remains in
+place as a fallback; delete it only after dedicated instrumentation records
+zero fires. Product battery: data 147/147, watr 37/37, build/wat-strip 3/3,
+kernel-oracle 14/14, kernel-parity 3/3, full suite 3626/3624/0/2,
+functional self-compile 21/21 and ratchet 10/10 (+0). The pre-existing warm
+performance pin remained separately red; fresh-instance performance passed.

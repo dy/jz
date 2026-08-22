@@ -1752,6 +1752,30 @@ function synthesizeBoundaryWrappers() {
     // `jz:i64exp` section emitted below. Non-JS hosts (WASI) read the same signature — i64 is
     // just int64 there, no BigInt.
     const resultPtr = sig.ptrKind != null
+    // Plan-tagged UNION result (phase-c C2): valResult can settle VAL.BIGINT
+    // for a result the plan carries as a tagged union (BigInt member BOXED,
+    // number raw, pointers self-tagged) — the raw-bigint passthrough lane
+    // would hand the host the union's BITS as one BigInt (a box pointer's
+    // own bits for the boxed member). Route it to resultDynamic's generic
+    // tag decode instead; interop's PTR.BIGINT arm derefs the box.
+    const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
+    // Funded-deletion item 4 (.work/todo.md WALL 2026-08-22): the STRICT
+    // verdict — every return tail UNIVERSALLY proven boxed, never the non-
+    // strict form's coarse open-current fallback (representationResultTagRequired's
+    // own doc comment: "an open operand may carry a raw BigInt whose bits the
+    // tag test cannot distinguish"). Deliberately a SEPARATE query from
+    // resultTaggedUnion above (which stays non-strict/existential for ITS
+    // OWN purpose two lines down — gating resultBigint): suppressing the
+    // sentinel lane needs the stronger, per-expression PROOF that this
+    // export's return edge actually materializes a box today (representation-
+    // plan.js's sentinel-admission pass in buildBodyData, mirrored at
+    // emission by bigIntUnary/bigIntJointDispatch's `box` param) — not merely
+    // "the boundary's coarse current-rep guess allows a box", which would
+    // also fire on kind-1 (BARE) exports this slice never re-verified (kind
+    // 1 stays correct today for an UNRELATED reason — the census container
+    // already stores its BigInt member as a box, not because any return-edge
+    // materialization was ever proven for it).
+    const resultSentinelCovered = !resultPtr && representationResultTagRequired(ctx, func, undefined, true)
     // Present-key BigInt through the census, sentinel lane (§6/§12 Slice 5,
     // `func._resultBigintSentinel` set in analyzeFuncForEmit while local reps were
     // live — see that comment). Checked BEFORE resultBool/resultBigint/resultDynamic
@@ -1767,15 +1791,16 @@ function synthesizeBoundaryWrappers() {
     // interop.js decodes them as a raw BigInt (or the sentinel's JS value —
     // `undefined`/NaN/-1) instead of taking the generic NaN-box/number decode path,
     // which misreads a small BigInt's raw i64 bits as a subnormal float.
-    const resultBigintSentinel = !resultPtr ? (func._resultBigintSentinel || 0) : 0
+    // `!resultSentinelCovered` (funded-deletion item 4): once the plan's own
+    // return-edge materialization proves THIS export already crosses boxed,
+    // the sentinel's census-only proof is a redundant second decode of a
+    // value the generic lane already decodes correctly — it steps aside
+    // (this flag goes to 0) rather than racing the generic lane for the
+    // dispatch below. ADR-0001: the plan is sole representation authority;
+    // once it covers an export's result, a second, independent authority
+    // for the SAME export must not also fire.
+    const resultBigintSentinel = !resultPtr && !resultSentinelCovered ? (func._resultBigintSentinel || 0) : 0
     const resultBool = func.valResult === VAL.BOOL && !resultPtr && !resultBigintSentinel
-    // Plan-tagged UNION result (phase-c C2): valResult can settle VAL.BIGINT
-    // for a result the plan carries as a tagged union (BigInt member BOXED,
-    // number raw, pointers self-tagged) — the raw-bigint passthrough lane
-    // would hand the host the union's BITS as one BigInt (a box pointer's
-    // own bits for the boxed member). Route it to resultDynamic's generic
-    // tag decode instead; interop's PTR.BIGINT arm derefs the box.
-    const resultTaggedUnion = !resultPtr && representationResultTagRequired(ctx, func)
     const resultBigint = func.valResult === VAL.BIGINT && !resultPtr && !resultBigintSentinel && !resultTaggedUnion
     // Dynamic f64 result: not pointer/bool/bigint(-sentinel) and not a proven number →
     // may be a NaN-box at runtime, so i64. (An i32-carrier result is numeric → stays f64 via

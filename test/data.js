@@ -2000,6 +2000,84 @@ test('bigint: ANONYMOUS direct-return union join materializes (C5b — was KNOWN
   }
 })
 
+test('bigint: unary "-"/"~" and joint-binary result expressions over a census-BIGINT operand materialize (funded-deletion item 4 — sentinel kinds 2-4 coverage)', () => {
+  // .work/todo.md WALL 2026-08-22 (funded-deletion item 4): the legacy
+  // `_resultBigintSentinel` export lane's kinds 2-4 (layout.js
+  // BIGINT_SENTINEL_KIND UNARY_NEG/UNARY_NOT/JOINT_BINARY) were NOT redundant
+  // with the generic tagged decode — forcing the sentinel off produced silent
+  // wrong values on the present-key case at every optimize level (`-m.get('x')`
+  // with x=5n present read back as `2.5e-323`, 5n's raw i64 bits misread as an
+  // f64 subnormal — the exact disease this whole mechanism exists to prevent).
+  // Fix: representation-plan.js's buildBodyData gained a sentinel-shaped
+  // admission (mirrors kind.js censusBigintSentinelKind's own kind 2-4 shapes
+  // exactly) into the SAME materializedJoins set C5b's join fixpoint populates
+  // — the return edge now boxes the "real bigint" branch, representation
+  // ResultTagRequired's exprMayBox sees it (STRICT proof), and compile/
+  // index.js's synthesizeBoundaryWrappers routes the generic decode lane
+  // instead of the sentinel lane for these covered exports (verified
+  // separately below — the sentinel lane itself stays in place, unused for
+  // these shapes, a dead-but-present fallback per this slice's own scope).
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+
+    // UNARY_NEG ('-'): present key → real (possibly negative) BigInt; absent
+    // key → Number NaN (ES2024 13.5.6 ToNumeric(undefined)); a plain-number
+    // Map is untouched (regression guard — non-bigint programs unaffected).
+    const neg = jz(`export let f = (present) => { const m = new Map(); if (present) m.set('x', 5n); return -m.get('x') }`, { optimize }).exports
+    ok(typeof neg.f(1) === 'bigint' && neg.f(1) === -5n, `${lbl}: -m.get('x') present crosses typed BigInt`)
+    ok(typeof neg.f(0) === 'number' && Number.isNaN(neg.f(0)), `${lbl}: -m.get('x') absent stays Number NaN`)
+    const negNeg = jz(`export let f = () => { const m = new Map(); m.set('x', -5n); return -m.get('x') }`, { optimize }).exports
+    is(negNeg.f(), 5n, `${lbl}: -m.get('x') on a stored-negative BigInt crosses correctly signed`)
+    const negNum = jz(`export let f = () => { const m = new Map(); m.set('x', 7); return -m.get('x') }`, { optimize }).exports
+    is(negNum.f(), -7, `${lbl}: -m.get('x') on a plain-number Map stays a plain Number (unaffected)`)
+
+    // UNARY_NOT ('~'): present key → real BigInt (bitwise complement, i64 xor
+    // -1); absent key → Number -1 (ES2024 13.5.9 ToNumeric(undefined)).
+    const not = jz(`export let f = (present) => { const m = new Map(); if (present) m.set('x', 5n); return ~m.get('x') }`, { optimize }).exports
+    ok(typeof not.f(1) === 'bigint' && not.f(1) === -6n, `${lbl}: ~m.get('x') present crosses typed BigInt`)
+    ok(typeof not.f(0) === 'number' && not.f(0) === -1, `${lbl}: ~m.get('x') absent stays Number -1`)
+    const notNum = jz(`export let f = () => { const m = new Map(); m.set('x', 7); return ~m.get('x') }`, { optimize }).exports
+    is(notNum.f(), ~7, `${lbl}: ~m.get('x') on a plain-number Map stays a plain Number (unaffected)`)
+
+    // JOINT_BINARY ('+'): BOTH operands independently census-BIGINT — present
+    // (both keys set) crosses a real BigInt sum; a plain-number Map (neither
+    // operand census-BIGINT) is untouched.
+    const joint = jz(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); return m.get('a') + m.get('b') }`, { optimize }).exports
+    is(joint.f(), 8n, `${lbl}: m.get('a') + m.get('b') (both present BigInt) crosses typed BigInt`)
+    const jointLossless = jz(`export let f = () => { const m = new Map(); m.set('a', 9007199254740993n); m.set('b', 1n); return m.get('a') + m.get('b') }`, { optimize }).exports
+    is(jointLossless.f(), 9007199254740994n, `${lbl}: joint-binary present-BigInt sum stays lossless past 2^53`)
+    const jointNum = jz(`export let f = () => { const m = new Map(); m.set('a', 5); m.set('b', 3); return m.get('a') + m.get('b') }`, { optimize }).exports
+    is(jointNum.f(), 8, `${lbl}: joint-binary on a plain-number Map stays a plain Number (unaffected)`)
+  }
+
+  // Sentinel-bypass WAT-shape proof (O0 only — deliberately, watr's own
+  // optimizer can inline the $__ptr_type stdlib call at O2/O3, which erases
+  // the LITERAL `call $__ptr_type` text this fingerprint greps for without
+  // changing which lane actually fired; O0 never inlines it, so the text is
+  // a faithful proxy there). The sentinel lane's own wasm body (compile/
+  // index.js resultBigintSentinel branch) is the ONLY $exp-wrapper emitter
+  // that calls `$__ptr_type` inline — its absence means synthesizeBoundary
+  // Wrappers took resultDynamic (the generic decode) instead, exactly the
+  // bypass this slice's task requires proving. A BARE (kind 1, uncovered by
+  // this slice) export is the positive control: its sentinel lane is
+  // unaffected by this change and must still show the fingerprint.
+  const wrapperBody = (src, fname) => {
+    const wat = compile(src, { optimize: false, wat: true })
+    const start = wat.indexOf(`(func $${fname}$exp`)
+    ok(start >= 0, `$${fname}$exp wrapper found in WAT`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return next >= 0 ? wat.slice(start, next) : wat.slice(start)
+  }
+  const bareBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return m.get('x') }`, 'f')
+  ok(/call \$__ptr_type/.test(bareBody), 'O0: BARE (kind 1, uncovered) export wrapper still takes the sentinel lane (positive control)')
+  const negBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return -m.get('x') }`, 'f')
+  ok(!/call \$__ptr_type/.test(negBody), 'O0: UNARY_NEG export wrapper no longer takes the sentinel lane (generic decode routes instead)')
+  const notBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('x', 5n); return ~m.get('x') }`, 'f')
+  ok(!/call \$__ptr_type/.test(notBody), 'O0: UNARY_NOT export wrapper no longer takes the sentinel lane')
+  const jointBody = wrapperBody(`export let f = () => { const m = new Map(); m.set('a', 5n); m.set('b', 3n); return m.get('a') + m.get('b') }`, 'f')
+  ok(!/call \$__ptr_type/.test(jointBody), 'O0: JOINT_BINARY export wrapper no longer takes the sentinel lane')
+})
+
 test('typeof folds preserve operand effects, in source order (audit P0: emitTypeofCmp erased calls)', () => {
   // emitTypeofCmp (src/compile/emit.js) emits its operand into `va` ONCE, up front —
   // but three fold sites (staticFold, shared by 'boolean'/'bigint', and the NUMBER-
