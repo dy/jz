@@ -378,7 +378,13 @@ const hoistNestedCalls = (body, blockNames) => {
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
       changed = true
-      return [null, tmp]
+      // Bare name, NOT the boxed-literal wrapper `[null, tmp]`: that shape means
+      // "literal with value tmp" to every reader (valTypeOf, stringLiteral, the
+      // representation plan's materializedNames lookup), so a hoisted temp dodged
+      // kind resolution AND plan-tag resolution — the O3 pin's raw-carrier
+      // collision (value === bump() comparing raw bits) was exactly this: the
+      // temp's bigint kind erased to number, the C3 tag dispatch skipped.
+      return tmp
     }
     if (OPTIONAL_CHAIN.has(n[0])) {
       const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, true, eff))]
