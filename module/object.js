@@ -11,6 +11,7 @@ import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-dat
 import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, isUndef, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
+import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
@@ -58,15 +59,20 @@ const heapResetIR = () => ctx.scope.globals.has('__heap_reset') ? ['global.get',
 // wrong in both directions for a schema mirror, whose final size
 // (schema.length) is a compile-time FACT, not a guess: too big for a 1-2-field
 // schema (wasted slots, paid on every construction) and too small for a
-// 7+-field schema (1-2 wasted grow generations under genUpsertGrow's 2x
-// doubling — module/collection.js's `size*4 >= cap*3` 75%-load rule — each
-// generation abandoned forever in the bump arena, never reclaimed). This
-// simulates that exact grow predicate (rather than a derived closed form) so
-// it can never drift out of sync with the real trigger it's sizing against.
+// 7+-field schema (1-2 wasted grow generations, each abandoned forever in the
+// bump arena, never reclaimed). This simulates genUpsertGrow's real grow
+// mechanics step by step (rather than a derived closed form) so it can never
+// drift out of sync with what it's sizing against: the 75%-load trigger
+// (`size*4 >= cap*3`, unchanged by the map-growth tiering) AND nextCapIR's
+// post-map-growth tiered RATE (2× below GROW_QUAD_CAP, 4× at/above it — both
+// module/collection.js). schema.length is a literal's own field count, never
+// remotely near GROW_QUAD_CAP (8192), so the 4× tier is dead code for every
+// real caller today — simulated anyway so this can't silently go stale the
+// day some generated/bundled literal schema ever does cross it.
 const hashCapFor = (n) => {
   let cap = 2, size = 0
   for (let i = 0; i < n; i++) {
-    if (size * 4 >= cap * 3) cap *= 2
+    if (size * 4 >= cap * 3) cap *= cap >= GROW_QUAD_CAP ? 4 : 2
     size++
   }
   return cap

@@ -1763,7 +1763,20 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // +64% rel, immutable +72% rel on the CI runner). Lane maintenance across the
 // 8 upsert/lookup/delete templates + the shared cold $__zomb_scan ride along
 // with every dyn pull; pure size on this object-only program.
-golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13009)
+// 13009→13689: nextCapIR's tiered grow-capacity policy (collection.js,
+// GROW_QUAD_CAP) — the shared genUpsert/genUpsertGrow/genSlotUpsert/
+// genEphemeralSlotUpsert doubling formula gained a runtime `select` that
+// switches from 2x to 4x growth once a table's capacity crosses 8192
+// entries, cutting the abandoned-generation bytes a large Map/Set/Hash
+// leaves behind under the shipped (no-reclaim) config from ~1.00x its final
+// size to ~0.33x. This program's dynamic key (`p[k]`) pulls BOTH
+// __hash_set_local and __ihash_set_local (string-key and pointer-key dyn-
+// props writes) — each embeds the wider comparison, ~340 bytes/function.
+// Correctness/behavior unchanged below the tier (every table this program
+// or the kernel-oracle/parity corpus builds stays far under 8192 entries);
+// a self-hosted compiler's own multi-hundred-thousand-entry tables are
+// exactly what the tier targets (.work/research.md, map-growth campaign).
+golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13689)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed
 // `s[i]` read skips the now-dead `__is_str_key` dispatch (module/array.js
