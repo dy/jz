@@ -1583,6 +1583,129 @@ test('.map: Float32Array keeps f32 store-rounding through the runtime decline pa
   ok(f(1) !== 0.1 + 0.2, 'must NOT equal plain f64 arithmetic')
 })
 
+// === .typed:map callback index + BigInt species (agent/typed-map-index,
+// external audit follow-up to agent/typed-map-width above) ===
+//
+// Two remaining defects the width fix didn't touch:
+//
+// (A) CALLBACK INDEX — both the static scalar path (module/typedarray.js,
+// the `elemType != null && !r.isBigInt` branch) and the runtime aux-dispatch
+// loop just above (the `!r` / BigInt fallback) invoked the callback with only
+// the element, dropping the index JS always passes as the 2nd arg. Every
+// OTHER typed-array iteration method in this file (forEach/find/findIndex/
+// findLast/findLastIndex/some/every — see the `ctx.closure.floor = 2`
+// comment near this file's top) already passes (item, idx); `.map` was the
+// one holdout. Fixed by adding a `f64.convert_i32_s` of the loop-counter
+// local as a 2nd closure-call arg on both paths — the SAME idiom the other
+// methods already use, needing no width bump (floor was already 2). The `arr`
+// 3rd arg real JS callbacks also receive stays a recorded gap: jz's callback
+// machinery never passes it to ANY iteration method anywhere in the compiler
+// (array.js's own `.map`/`.filter`/`.forEach` don't either — grep
+// `cb.call([item, idxArg` in module/array.js — only `.reduce`'s (acc, item,
+// idx) needs a 3-wide floor); adding a receiver-array arg just for typed
+// `.map` would be new, inconsistent surface, not a mirror of anything.
+//
+// (B) BIGINT SPECIES — a statically-known BigInt64Array/BigUint64Array
+// receiver used to short-circuit `.typed:map` straight to generic
+// `Array.prototype.map` (module/typedarray.js, the `if (r?.isBigInt)` branch
+// that used to sit right after `resolveElem`). The 8-byte payload survived
+// (bit-identical width), but the SPECIES didn't: the result was a plain
+// PTR.ARRAY, not a typed array — `ArrayBuffer.isView()` on it reports false,
+// and it carries none of a typed array's other behavior. Fixed by excluding
+// `r.isBigInt` from the SIMD and scalar branches instead, letting it fall
+// through to the SAME runtime aux-dispatch loop the `!r` (unresolved) case
+// already used — which was already proven BigInt-sound (its aux mask already
+// preserved TYPED_ELEM_BIGINT_FLAG; `__typed_get_idx`/`__typed_set_idx`
+// already roundtrip BigInt elements bit-exact via f64.reinterpret_i64) since
+// dynamically-unresolved-but-actually-BigInt receivers always reached it —
+// only the STATICALLY-known case was diverted away from it.
+
+test('.map: callback receives (item, idx) — static scalar path (Uint8Array)', () => {
+  // ECMA-262 23.2.3.20 ToIntegerOrInfinity / ToUint8 (7.1.10): element writes
+  // wrap mod 256. Differential against the real engine (not a hand-picked
+  // literal): [1,1].map((x,i)=>x+i) → [1,2] in real V8/Node.
+  const f = runHost(`export let f = () => {
+    let a = new Uint8Array([1, 1])
+    let m = a.map((x, i) => x + i)
+    return m[0] * 1000 + m[1]
+  }`).f
+  const expected = new Uint8Array([1, 1]).map((x, i) => x + i)
+  is(f(), expected[0] * 1000 + expected[1], 'JS: [1,1] → [1,2]')
+})
+
+test('.map: callback receives (item, idx) — runtime aux-dispatch path (opaque/polymorphic receiver)', () => {
+  // Same opaque-receiver idiom as the species/width pin above (`which` makes
+  // the element kind unprovable at compile time — resolveElem's `!r` case),
+  // now with an index-using callback to exercise the SECOND fixed call site.
+  const f = runHost(`export let f = (which) => {
+    let t = which ? new Uint8Array([1, 1]) : new Float32Array([1, 1])
+    let m = t.map((x, i) => x + i)
+    return m[0] * 1000 + m[1]
+  }`).f
+  const expected = new Uint8Array([1, 1]).map((x, i) => x + i)
+  is(f(1), expected[0] * 1000 + expected[1])
+})
+
+test('.map: BigInt64Array/BigUint64Array preserve species (was: silently rerouted to generic Array.prototype.map — PTR.ARRAY, wrong species)', () => {
+  const isView1 = runHost(`export let f = () => ArrayBuffer.isView(new BigInt64Array([1n]).map(x => x)) ? 1 : 0`).f
+  is(isView1(), 1, 'BigInt64Array: result is still a typed array, not a plain Array')
+
+  const isView2 = runHost(`export let f = () => ArrayBuffer.isView(new BigUint64Array([1n]).map(x => x)) ? 1 : 0`).f
+  is(isView2(), 1, 'BigUint64Array: same')
+
+  // Value pin: x => x + 1n over [1n] → [2n]. Reads the element straight off
+  // the map-call chain (not through an intermediate `let`) — resolveElem's
+  // TYPED_CHAIN_METHODS walk resolves `new BigInt64Array(…).map(…)[0]`
+  // statically; a `let m = …; m[0]` indirection would instead hit a SEPARATE,
+  // pre-existing, already-documented analyze.js gap (BigInt element-kind
+  // isn't propagated through a `.map()`/`.slice()` ASSIGNMENT's static type
+  // tracking — see the BigInt slice/filter pins' comment above), which this
+  // fix does not touch and is out of scope here.
+  //
+  // Block-body callback (`x => { return x + 1n }`), NOT the terser
+  // expression-body `x => x + 1n` — see the `test.todo` immediately below for
+  // why: an expression-bodied arrow's IMPLICIT return of `param + BigIntLiteral`
+  // hits a separate, pre-existing, general miscompile (confirmed with zero
+  // typed-array/map involvement — a captured-variable closure `() => x + 1n`
+  // alone reproduces it); the explicit block-bodied `return` of the identical
+  // expression is unaffected. This species/value pin only needs to prove
+  // THIS fix's routing is correct, so it sidesteps that separate bug rather
+  // than being blocked by it.
+  const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
+  is(val(), 1, '1n + 1n = 2n, correct species and bit-exact roundtrip')
+
+  const uval = runHost(`export let f = () => new BigUint64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
+  is(uval(), 1, 'BigUint64Array: same')
+})
+
+// NOT a defect of this fix (agent/typed-map-index) — recorded here because
+// the external audit's Part B pin was phrased with an expression-bodied
+// callback exactly like this. Root cause fully isolated, with zero
+// typed-array/array-method involvement at all:
+//   export function f(x) { let g = () => x + 1n; return g() }   // f(5n) → garbage
+//   export function f(x) { let g = () => { return x + 1n }; return g() }  // f(5n) → 6n, correct
+// An expression-bodied (implicit-return) arrow whose value is `ident + BigIntLiteral`
+// loses the BigInt census; the identical computation under an explicit block
+// `return` is fine. Reproduces identically on unmodified 6fa3fd7e (pre-dates
+// this branch). Flip to `test` once that separate miscompile is fixed.
+test.todo('.map: BigInt64Array — exact expression-bodied form from the audit pin (x => x + 1n)', () => {
+  const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => x + 1n)[0] === 2n ? 1 : 0`).f
+  is(val(), 1)
+})
+
+test('.map: BigInt64Array callback also receives the correct index (both fixes compose)', () => {
+  // Side-channel index capture (plain NUMBER arithmetic on `i`, callback
+  // returns `x` UNCHANGED) — deliberately avoids BigInt arithmetic inside the
+  // callback body so this test exercises ONLY index plumbing (this fix's
+  // scope), not the separate expression-body arithmetic gap documented above.
+  const f = runHost(`export let f = () => {
+    let seen = 0
+    new BigInt64Array([10n, 20n, 30n]).map((x, i) => { seen = seen * 10 + i; return x })
+    return seen
+  }`).f
+  is(f(), 12, 'indices 0,1,2 seen in order')
+})
+
 test('map: named constructor-fn callback reboxes (ptrKind through the inline wrapper)', () => {
   // `.map(s => mk(s))` with mk a NAMED fn returning an object: mk compiles with a
   // narrowed raw-pointer return; the callback inliner's block wrapper must carry the
