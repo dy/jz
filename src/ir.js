@@ -435,18 +435,8 @@ export const fromI64 = n => {
 // that needs it.
 export const bigintStrict = () => typeof process !== 'undefined' && process.env?.JZ_BIGINT_STRICT === '1'
 
-/** BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§9): the
- *  SAME fixpoint that used to decide "insert a box" here
- *  (markBigintSink/bigintBoxedVerdict/needsBigintBox/isProvenBoxedBigint —
- *  unchanged, still walk the identical six kind-erasing sink shapes) names
- *  the flow class instead of silently boxing. `kind` names one of the
- *  design's six flow classes (call-arg/return/closure-capture/collection/
- *  ternary-nullish/dataview — §4's table); `who` names the binding/callee/
- *  site the table asks for. `err()` (ctx.js) appends source location + the
- *  current AST node + enclosing function automatically, so the diagnostic
- *  is actionable without extra plumbing. Only reached when `bigintStrict()`
- *  is live (opt-in, see above) — the default path boxes instead, same as
- *  pre-Slice-1. */
+/** Strict-mode diagnostic for a RepresentationPlan edge that cannot stay
+ *  raw. `kind` names the edge class and `who` its binding or expression. */
 export function bigintEraseErr(kind, who) {
   err(`BigInt value at this ${kind} can't be proven a single, uniform kind (${who}) — give it one statically-provable BigInt path for its whole lifetime (arithmetic/comparison between two BigInt operands, a BigInt64Array/BigUint64Array element, or BigInt()/Number() conversion of a provably-typed source) instead of letting it cross through a dynamically-kinded slot.`)
 }
@@ -540,148 +530,19 @@ export const isSchemaSlotBigintPossible = (node) =>
   ctx.schema.slotBigintBoxedAt?.(node[1], node[2]) === true &&
   ctx.schema.slotBigintProvenAt?.(node[1], node[2]) !== true
 
-/** True iff `name`'s solver-settled rep (reps.js `bigintBoxed`, round-3/4
- *  fixpoint) proves this binding must materialize as a real PTR.BIGINT box
- *  AT A W-SINK INSIDE THIS FUNCTION — i.e. `name` currently holds RAW i64
- *  bits that still need boxing at the point of use. Never fail-closed toward
- *  true on a missing rep — an unproven/absent fact means "no evidence this
- *  name is ever ambiguous", the same default every other REP_FIELDS
- *  consumer treats absence as (reps.js's own contract); guessing "boxed"
- *  here would deref a value that was never actually boxed.
- *
- *  Excludes the CURRENT function's own params: narrow.js's bigintBoxedVerdict
- *  comment is explicit that a param's `bigintBoxed=true` is consulted "by
- *  the call-site emitter, not by the callee body: once boxed, the callee
- *  simply carries an opaque pointer through" — coerceArg (emit.js) already
- *  boxes the ARGUMENT at every call site that needs it, so inside THIS
- *  function such a param's f64 slot already holds the box (or genuinely
- *  raw bits, if the actual call passed a non-bigint value — either way,
- *  opaque here). Re-running boxBigInt on it at a further sink (return,
- *  another store, …) would box the pointer's OWN bits as if they were a
- *  fresh bigint payload — a box-of-a-box (`(x) => x` identity function is
- *  the minimal repro). INVARIANT: guarded
- *  at the single shared predicate rather than in each of carrierF64/
- *  'return'/'?:' separately. */
-export const isProvenBoxedBigint = (name) =>
-  repOf(name)?.bigintBoxed === true && !ctx.func.current?.params?.some(p => p.name === name)
-
-/** Slice-2 def-side predicate: does this AST node, flowing into a W-sink,
- *  need to cross as a real PTR.BIGINT box? A bare name defers to its
- *  solver-settled rep (the whole-program fact — may resolve raw-forever);
- *  any other BIGINT-kinded expression reaching a sink has no binding to
- *  carry a rep, so analyze.js's own W-sink walk (markBigintSink) never
- *  tracks it — box unconditionally, matching the design's "inline
- *  expressions box at emission time directly from the AST shape, no rep
- *  needed" (round-3/4 §3.2, analyze.js's own comment above markBigintSink).
- *
- *  Excludes `'?:'` nodes from that unconditional fallback: a ternary's own
- *  BIGINT-via-nullish-carry (kind.js VT['?:']) is exactly the shape
- *  emit.js's dedicated '?:' handler already owns end-to-end (it boxes only
- *  the non-nullish arm, `if`/`else`-gated, never the merged whole) — asking
- *  THIS predicate to independently re-decide "does the whole merged node
- *  need a box" and wrap `emit(node)`'s already-correct result a second time
- *  is a real box-of-a-box (`(cond, x) => cond ? x : null`-returning is the
- *  minimal repro: naive return-site wiring reboxes the ternary handler's own
- *  output). Every OTHER compound
- *  shape (`+`, `&&`, `||`, …) has no dedicated box-wiring of its own, so
- *  `emit(node)` never boxes internally there — the unconditional fallback
- *  stays correct for them. */
-export const needsBigintBox = (node) => {
-  if (typeof node === 'string') return isProvenBoxedBigint(node)
-  return Array.isArray(node) && node[0] !== '?:' && valTypeOf(node) === VAL.BIGINT
-}
-
-// === CARRIER PROGRAM Slice 3 (R-recovery, read side) ===
-
-/** True iff `name`'s f64 slot, INSIDE THIS FUNCTION, durably holds a real
- *  PTR.BIGINT box rather than raw i64-as-f64 bits — the exact inverse
- *  question isProvenBoxedBigint answers (that predicate is "still raw,
- *  needs boxing at a further sink"; this one is "already boxed, needs
- *  UNBOXING before raw i64 arithmetic touches it"). Per isProvenBoxedBigint's
- *  own doc comment, only a PARAM can be durably boxed on entry: coerceArg
- *  (emit.js) boxes the ARGUMENT at every call site whose callee param
- *  settled bigintBoxed=true (Slice 2), so the callee's param slot holds
- *  the caller's box from function entry onward — unlike a plain local,
- *  whose OWN slot always stays raw (Slice 2's W-sink wiring boxes a FRESH
- *  COPY at each qualifying use site — carrierF64/`return`/`'?:'` — never
- *  the local's own storage; reps.js's bigintBoxed doc comment states the
- *  DESIGN'S full intent as "boxed at the point of write, unboxed at every
- *  later read" — this predicate + readI64 below is that read-side half,
- *  scoped to the one case Slice 2 actually materializes a persistent box:
- *  params crossing the call ABI). */
-export const isCurrentlyBoxedBigint = (name) =>
-  repOf(name)?.bigintBoxed === true && !!ctx.func.current?.params?.some(p => p.name === name)
-
-/** True iff `name` was declared directly from a ternary-nullish BIGINT merge
- *  (`let r = cond ? BigInt(x) : null`) — the ONE OTHER shape (besides a
- *  boxed param, isCurrentlyBoxedBigint above) whose "always stays raw" claim
- *  is false. That predicate's own doc comment is explicit that carrierF64/
- *  'return'/'?:' box a FRESH COPY "never the local's own storage" — true for
- *  carrierF64/'return' (the box exists only at the point of USE, e.g.
- *  storing `r` into an object property boxes a copy, `r` itself stays raw)
- *  but NOT for '?:': when a ternary-nullish BIGINT merge is a decl's own
- *  init, the merge's result — a real box on the bigint arm, the null/undef
- *  sentinel on the other — becomes the declared name's ENTIRE, PERMANENT
- *  storage from that point on; there never was a separate "raw bits" form of
- *  `r` to begin with. `bigintBoxed` (analyze.js markBigintSink) can't record
- *  this fact itself — it only fires for a BARE-NAME arm reaching a sink, and
- *  a ternary's own arm is almost always an inline expression (`BigInt(x)`,
- *  not a name) — so this is a SEPARATE fact, in a SEPARATE channel:
- *  ctx.func.ternaryBoxedNames, an emission-tier TRANSIENT Set (compile/
- *  index.js enterFunc, reset per function — NOT updateRep/the rep system;
- *  passes.js's own "emission tier never writes durable analysis state" exit
- *  grep is a real, checked invariant), populated by emitDecl (emit.js) at
- *  the one point it's cheaply and soundly knowable: right after compiling a
- *  decl whose init matches the '?:' handler's OWN (narrower) box condition —
- *  exactly one arm BIGINT, the other a nullish literal — NOT the broader
- *  kind.js VT['?:'] "both arms same kind" rule, which also types BIGINT for
- *  two non-nullish BIGINT arms (`neg ? -BigInt(mag) : BigInt(mag)`) that the
- *  '?:' handler leaves raw. INVARIANT: the broad test must NOT be used here
- *  (.work/carrier-representation-design.md §13/§14) — it wrongly registers
- *  watr/src/optimize.js's `_i64Canon` inline-argument temp as ternary-boxed
- *  though nothing was boxed, so readI64 below would unbox a raw value as a
- *  bogus pointer. This predicate exists for exactly this shape:
- *  watr-adjacent `let r = a > 0 ? BigInt(a) : null; return r == null ? 'x' :
- *  r.toString(16)` —
- *  `.bigint:toString`'s own readI64(n, emit(n)) call (module/number.js) is
- *  correctly wired, but can't see the box without this fact: `r` is a
- *  LOCAL, not a param, so isCurrentlyBoxedBigint alone misses it. */
+/** Emission-tier fact for a local initialized from a BigInt/nullish ternary.
+ *  RepresentationPlan owns general carriers; this retained transient marks
+ *  the one local shape whose initializer itself emits the boxed arm. */
 export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(name) === true
 
-/** Read-side twin of carrierF64: extract raw i64 bits from a BIGINT-typed
- *  operand, unboxing FIRST when the bare name's current representation is a
- *  real PTR.BIGINT box (isCurrentlyBoxedBigint or isTernaryBoxedBigint).
- *  Byte-identical to a plain asI64(emitted) call for every other shape —
- *  inline expressions, non-boxed locals, and (by construction) every param
- *  isProvenBoxedBigint would have boxed instead. The chokepoint the
- *  arithmetic core's ~10 VAL.BIGINT-gated `asI64(emit(x))` call sites route
- *  through (bigIntOperand/bigIntUnary and the postfix/compound-assign
- *  shortcuts that bypass them), plus method-dispatch consumers like
- *  `.bigint:toString` (module/number.js), so a boxed param OR ternary-boxed
- *  local never has its pointer bits misread as a bigint payload.
- *
- *  CONSERVATIVE PAIRING's own class (isSchemaSlotBigintPossible, above) is
- *  a THIRD, narrower shape this same chokepoint now also covers: a `.prop`
- *  read of a schema field this program can't PROVE uniformly BIGINT (so
- *  `emitted` stays the box-preserving f64 emitSchemaSlotRead's default arm
- *  always returned, unlike the two name-based predicates above, which
- *  select an ALREADY-i64-typed `emitted` at the read site itself). Checked
- *  last — after the two proven, static, zero-runtime-cost predicates — so
- *  a name that's ALSO a boxed param never pays the extra tag check its own
- *  static proof already made unnecessary. */
+/** Extract raw i64 bits, unboxing when the plan, ternary-local fact, or
+ *  schema-slot census says the emitted value is a PTR.BIGINT box. */
 export const isPlanTaggedBigint = node =>
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
 
 export function readI64(node, emitted) {
-  // CARRIER_BOX (frozen import, not bigintStrict()): must agree with
-  // carrierF64/carrierF64Narrow's own write-side gate below — whether a box
-  // was actually materialized tracks CARRIER_BOX (whole-process, same as
-  // every other CARRIER_BOX consumer), never the strict-mode diagnostic
-  // toggle, which only decides refuse-vs-box at the WRITE site and never
-  // reaches this read at all when it fires (the compile already aborted).
   if (
-      ((typeof node === 'string' && (isCurrentlyBoxedBigint(node) || isTernaryBoxedBigint(node))) ||
-       isPlanTaggedBigint(node)))
+      ((typeof node === 'string' && isTernaryBoxedBigint(node)) || isPlanTaggedBigint(node)))
     return unboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
@@ -755,77 +616,19 @@ export function boolBoxIR(e) {
  *  by different coercions is the self-host-fragile shape — see emit.js 'return'). */
 export function carrierF64(node, emitted, kind = 'collection') {
   if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
-  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§9) —
-  // carrierF64 is the design's own single W-sink choke-point for
-  // dynamically-kinded storage positions (bridge.js storedValue's whole
-  // reason to exist — object/dyn-prop store, array-elem store, Set/Map,
-  // closure capture, DataView-argument all route their stored value
-  // through here). Boxes a proven-ambiguous BigInt value before it crosses
-  // into that slot (CARRIER_BOX, the pre-Slice-1 default) UNLESS
-  // bigintStrict() is live, in which case it refuses to compile instead
-  // (bigintEraseErr) — same needsBigintBox proof either way. `kind`
-  // defaults to 'collection' (the overwhelming majority of this
-  // chokepoint's callers); callers with a more specific flow-class name
-  // (return) pass it explicitly.
-  if (needsBigintBox(node)) {
-    if (bigintStrict()) bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
-    return boxBigInt(asI64(emitted))
-  }
+  // BigInt normalization is owned by RepresentationPlan at the caller's
+  // concrete edge. Strict mode remains a diagnostic for an unresolved
+  // generic slot; it does not choose the default representation.
+  if (bigintStrict() && valTypeOf(node) === VAL.BIGINT &&
+      !(Array.isArray(node) && node[0] === '?:'))
+    bigintEraseErr(kind, typeof node === 'string' ? node : 'this expression')
   return asF64(emitted)
 }
 
-/** Narrow-admission twin of carrierF64 — same BOOL-atom-boxing contract
- *  (unconditional, unchanged), but for BIGINT admits ONLY the bare-name case
- *  independently proven by isProvenBoxedBigint — never carrierF64's OTHER
- *  (unconditional inline-expression) fallback. That fallback is sound at
- *  carrierF64's REAL W-sinks (a genuine heap object/array/Set/Map's dyn-prop
- *  or element store, closure-capture): storage a later, independently-
- *  compiled reader can only observe through registry-aware dynamic dispatch
- *  ($__dyn_get, iteration, …), which correctly recognizes a PTR.BIGINT box.
- *  Two call sites need this narrower admission instead
- *  (.work/carrier-representation-design.md §11/§12):
- *
- *  1. emit.js 'return', when `ctx.func.boxedResult`/`mixedAtomReturn`
- *     ("boxes") is true. Neither flag is an interprocedural proof that any
- *     CALLER of the result expects a BigInt box (unlike params, where
- *     coerceArg/isCurrentlyBoxedBigint pair a call-site box with a
- *     callee-body unbox) — `boxedResult` is set unconditionally for EVERY
- *     closure-convention body regardless of whether THIS closure's own
- *     return is uniformly BIGINT, and `mixedAtomReturn` is a parallel,
- *     BOOL-only heuristic (its own doc comment at compile/index.js states
- *     plainly "every non-bool-mixed function... [is] untouched either way"
- *     as the pre-carrier-box contract). Minimal repro: watr's own `compile.js`
- *     `limits()` — `is64 ? v => { if (typeof v === 'bigint') return v;
- *     return BigInt(v) } : parseUint` — the closure's `return BigInt(v)`
- *     boxes unconditionally (an inline expression, `boxes` true only because
- *     it's a closure body), then `uleb(parse(minVal), out)` calls the box
- *     through `call_indirect` with NO statically-provable-BIGINT call site
- *     for narrow.js to seed `uleb`'s own param as bigintBoxed — without this
- *     admission `uleb`'s `n & 0x7Fn` would read the pointer's own bits raw.
- *  2. emit.js's SRoA flat-object/array field init (`let o = {a: 1n}` — no
- *     heap alloc; every read/write rewrites to a plain `o#i` local, per its
- *     own comment). A flat field's value is emitted via storedValue for BOOL
- *     identity's sake (an untyped slot ANY dynamic dyn-shadow fallback might
- *     still observe) — but there is no such fallback for a name that never
- *     needed one to become flat in the first place, and the flat-field READ
- *     side (the `.`/`[]` flat hooks) reads the local's bits raw, with no
- *     unboxing. Minimal repro: `let o = {n: 4611686018427387903n}; o.n++` —
- *     the object literal's OWN field initializer (a bare BIGINT LITERAL, no
- *     ambiguity whatsoever) gets boxed on write into the flat local, so
- *     `o.n++`'s arithmetic (bigIntOperand/readI64, sound in isolation) would
- *     read that local's bits raw without this admission, misreinterpreting
- *     the pointer as a payload.
- *
- *  Both are the SAME class of bug as needsBigintBox's own doc comment warns
- *  against generalizing beyond its verified sinks: a def-side box fired at a
- *  W-sink shape whose actual consumer isn't the registry-aware dynamic
- *  reader the unconditional fallback assumes. */
+/** BOOL-preserving carrier for statically narrow slots. BigInt edges are
+ *  normalized by RepresentationPlan before reaching this helper. */
 export function carrierF64Narrow(node, emitted, kind = 'collection') {
   if (valTypeOf(node) === VAL.BOOL) return boolBoxIR(emitted)
-  if (typeof node === 'string' && isProvenBoxedBigint(node)) {
-    if (bigintStrict()) bigintEraseErr(kind, node)
-    return boxBigInt(asI64(emitted))
-  }
   return asF64(emitted)
 }
 

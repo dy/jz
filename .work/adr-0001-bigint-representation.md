@@ -63,20 +63,16 @@ Therefore:
 Completion is measured by deleting fallback authority, not adding planners (v2 design §8).
 In order:
 
-1. Legacy `bigintBoxed` authorities (analyze.js sink fixpoints, narrow.js verdict,
-   reps.js field + REP_FIELDS row, coerceArg legacy arms) — each consumer migrates to the
-   plan, then its fallback dies in the same campaign.
-2. The unconditional joint-dispatch tax (bigIntDomain wiring in every `+ - * / %` emission)
-  becomes plan-driven: joint arms emit only where the plan says mixing is possible; a
-  zero-bigint program gets zero arms at compile time as well as zero bytes.
-3. The legacy `_resultBigintSentinel` export lane dies once the unified host descriptor
-   covers results as well as params.
-4. Duplicate semantic-kind lattice inside representation-plan.js collapses onto canonical
-   kind facts once consumable; `programFacts.paramReps` moves to the signature solution and
-   stops being mutated in place.
-5. Debug instruments (erasure-diag.js, bigint-boxed-stats.js) delete as blocks.
-6. Obsolete direction documents get superseded headers pointing here (done for
-   compat-handoff §BigInt; bigint-retirement-design.md is historical evidence of the wall).
+1. **Done (443dfc60):** legacy `bigintBoxed` authorities, field, clone row and
+   consumers are deleted; storage/call/return/join edges read RepresentationPlan.
+2. **Done:** joint dispatch is feature- and plan-gated; zero-BigInt programs emit no arms.
+3. **Done (20fe3b22):** the result sentinel custom-section field, layout tables,
+   interop decoder and hand-built wrapper lane are deleted.
+4. **Remaining architectural follow-up:** collapse the duplicate semantic-kind lattice
+   onto canonical kind facts; move `programFacts.paramReps` to SignatureSolution.
+5. **Done:** erasure-diag.js and bigint-boxed-stats.js deleted as blocks.
+6. **Done:** obsolete direction documents point here; bigint-retirement-design.md remains
+   historical evidence of the wall.
 
 Not in scope: `.work/compat-handoff.md`'s HASH dict-mode workstream (unrelated, still live)
 and the jzify desugar-to-core direction (compatible: BigInt is core, not sugar — nothing

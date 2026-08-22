@@ -9,7 +9,8 @@
  */
 
 import { ctx, emitter, registerName } from './ctx.js'
-import { typed, asF64, asI32, asI64, applyBigintRepresentationAction, bigintStrict, carrierF64, carrierF64Narrow } from './ir.js'
+import { typed, asF64, asI32, asI64, applyBigintRepresentationAction, bigintEraseErr, bigintStrict, carrierF64, carrierF64Narrow } from './ir.js'
+import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from './compile/representation-plan.js'
 import { hasAmbiguousBoolMerge, valTypeOf } from './kind.js'
 import { VAL } from './reps.js'
 
@@ -44,14 +45,18 @@ const storedValueLegacy = node => hasAmbiguousBoolMerge(node) ? emitIdentitySafe
 /** Plan-driven BigInt twin for tagged ABI slots; BOOL handling stays exactly
  * on storedValue's established path when no BigInt transform is selected. */
 export const storedValuePlanned = (node, action) => {
-  if (bigintStrict()) return storedValueLegacy(node)
+  if (bigintStrict() && action === REP_EDGE_BOX)
+    bigintEraseErr('collection', typeof node === 'string' ? node : 'this expression')
   if (hasAmbiguousBoolMerge(node)) return emitIdentitySafe(node)
   const emitted = emit(node)
   if (valTypeOf(node) === VAL.BOOL) return carrierF64(node, emitted)
   return asF64(applyBigintRepresentationAction(emitted, node, action))
 }
 
-export const storedValue = node => storedValueLegacy(node)
+export const storedValue = node => {
+  const action = representationStorageWriteAction(ctx, node)
+  return action === REP_EDGE_REJECT ? storedValueLegacy(node) : storedValuePlanned(node, action)
+}
 
 // Narrow-admission twin of storedValue — same single-emission/BOOL-identity
 // discipline, but routes the non-ambiguous fallback through carrierF64Narrow

@@ -11950,3 +11950,19 @@ zero fires. Product battery: data 147/147, watr 37/37, build/wat-strip 3/3,
 kernel-oracle 14/14, kernel-parity 3/3, full suite 3626/3624/0/2,
 functional self-compile 21/21 and ratchet 10/10 (+0). The pre-existing warm
 performance pin remained separately red; fresh-instance performance passed.
+
+## COMPLETED (2026-08-22): funded deletion items 1–4, one authority
+
+Commits 443dfc60 and 20fe3b22 complete ADR-0001's representation-authority
+deletions. `bigintBoxed` is absent from production source: its ValueRep field,
+clone row, analyze sink/capture walk, narrow verdict/stamps and every emission
+fallback are gone. Generic stored-value edges query RepresentationPlan; nested
+literal BigInt origins explicitly recover their raw producer rep when no node
+fact is retained. The result sentinel ABI is also gone end to end: no `s`
+custom-section field, layout bit/value tables, interop decoder, census wrapper
+branch or private function flag. Bare, unary and joint census results all cross
+the generic tagged decode. The two source commits remove 755 net lines;
+dist/jz.wasm falls 17,115.3→17,082.8 kB. Product battery: data 147/147, watr
+37/37, types 178/178, ABI 5/5, interop 18/18, dyn-keys 69/69, passes 9/9,
+session 20/20, build/wat-strip 3/3, kernel-oracle 14/14, kernel-parity 3/3,
+full suite 3626/3624/0/2, functional self-compile 21/21 and ratchet 10/10.

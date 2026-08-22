@@ -1233,11 +1233,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
   }
 
-  // Sentinel-shaped unary '-'/'~' and joint-binary result nodes (funded-
-  // deletion item 4, .work/todo.md WALL 2026-08-22 — the legacy
-  // `_resultBigintSentinel` lane's kinds 2-4: layout.js BIGINT_SENTINEL_KIND
-  // UNARY_NEG/UNARY_NOT/JOINT_BINARY, kind.js censusBigintSentinelKind's own
-  // exact shapes). Reuses the SAME `materializedJoins` set as the JOIN_OPS
+  // Census-shaped unary '-'/'~' and joint-binary result nodes. Reuses the
+  // SAME `materializedJoins` set as the JOIN_OPS
   // fixpoint above — every consumer (emittedCandidate, materializedNames'
   // propagation pass, materializedResult, representationResultTagRequired's
   // exprMayBox below) already asks that one Set, so admitting a new node
@@ -1531,13 +1528,13 @@ export function representationActiveMaterializedRep(ctx, name) {
 /** Frozen action for one ordinary tagged storage/value slot. */
 export function representationStorageWriteAction(ctx, source) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_REJECT
-  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
+  return edgeAction(activeStorageSourceRep(ctx, source), BOXED_BIGINT)
 }
 
 /** Frozen action for one generic closure/call_indirect argument slot. */
 export function representationClosureArgAction(ctx, source) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
-  return edgeAction(activeEmittedRep(ctx, source), BOXED_BIGINT)
+  return edgeAction(activeStorageSourceRep(ctx, source), BOXED_BIGINT)
 }
 
 /** True when JS interop must box an actual BigInt at this export slot. */
@@ -1554,15 +1551,14 @@ export function representationJoinArmAction(ctx, join, arm) {
   return edgeAction(activeEmittedRep(ctx, arm), activeRep(ctx, join, true))
 }
 
-/** Frozen action for one materialized sentinel-shaped unary '-'/'~' or
- *  joint-binary result node (funded-deletion item 4 — the legacy
- *  `_resultBigintSentinel` lane's kinds 2-4 sibling). Unlike a JOIN_OPS
- *  node, there is no separate "arm" to ask about: the node's own single
+/** Frozen action for one materialized census-shaped unary '-'/'~' or
+ *  joint-binary result node. Unlike a JOIN_OPS node, there is no separate
+ *  "arm" to ask about: the node's own single
  *  computed value IS the thing that may need boxing (bigIntUnary/
  *  bigIntJointDispatch in emit.js build the "real bigint" branch fresh from
  *  the operand's raw i64 bits, not from some other already-typed operand),
  *  so join and arm collapse to the same node. */
-export function representationSentinelExprAction(ctx, node) {
+export function representationComputedExprAction(ctx, node) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const body = handle && ctx.plans.representationData.get(handle)?.body
   if (!body?.materializedJoins?.has(node)) return REP_EDGE_REJECT
@@ -1595,6 +1591,15 @@ const activeEmittedRep = (ctx, node) => {
     if (materialized !== NO_BIGINT) return materialized
   }
   return activeRep(ctx, node, false)
+}
+
+// Some emit-time storage producers are nested below AST sites retained in
+// nodeFacts (array/object literal elements are the common case). Their own
+// syntax still proves a fresh raw BigInt carrier; NO_BIGINT here means "not
+// retained", not "this BigInt origin emits no BigInt".
+const activeStorageSourceRep = (ctx, node) => {
+  const rep = activeEmittedRep(ctx, node)
+  return rep === NO_BIGINT && isBigintOrigin(node) ? RAW_BIGINT : rep
 }
 
 /** Current source→callee target action for one direct-call argument. */
@@ -1682,9 +1687,8 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       // alone would never resolve — see C5b: `flag ? 1n : 0`'s arms are both
       // leaves with no name/call to recurse into).
       if (JOIN_OPS.has(op) && body?.materializedJoins?.has(e) === true) return true
-      // Sentinel-shaped unary '-'/'~'/joint-binary result node (funded-
-      // deletion item 4): same ground truth as the JOIN_OPS line above — the
-      // body fixpoint's sentinel-admission pass (buildBodyData, beside the
+      // Census-shaped unary '-'/'~'/joint-binary result: same ground truth
+      // as the JOIN_OPS line above — the body fixpoint's computed-expression pass (buildBodyData, beside the
       // JOIN_OPS materialization loop) already proved this exact node boxed.
       if ((op === 'u-' || op === '~' || BIGINT_JOINT_BINARY_OPS.has(op)) &&
           body?.materializedJoins?.has(e) === true) return true
