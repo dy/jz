@@ -508,16 +508,24 @@ export function emitTypeofCmp(a, b, cmpOp) {
   // Static fold for known-VAL operands of "boolean"/"bigint" — saves a runtime branch.
   // Never trusted for an ambiguous merge: its collapsed NUMBER kind is exactly
   // the unsound fact this whole design routes around.
+  // Effect-preserving constant fold (re-audit P0, twin of effectFoldSeq below):
+  // JS evaluates the typeof operand before comparing, so a statically-decided
+  // fold must still run that evaluation once. `va` is ALREADY emitted above —
+  // re-emitting via emit(typeofExpr)/effectFoldSeq would run it a SECOND time —
+  // so an impure operand sequences the existing `va` instead of re-emitting.
+  const foldConst = (k) => foldOperandPure(typeofExpr)
+    ? typed(['i32.const', k], 'i32')
+    : typed(['block', ['result', 'i32'], ['drop', va], ['i32.const', k]], 'i32')
   const staticFold = (target) => {
     if (ambiguous || planTaggedBigint) return null
     const vt = resolveValType(typeofExpr, valTypeOf, lookupValType)
-    if (vt) return typed(['i32.const', (vt === target) === eq ? 1 : 0], 'i32')
+    if (vt) return foldConst((vt === target) === eq ? 1 : 0)
     return null
   }
 
   if (code === TYPEOF.number) {
     // typeof "number": v===v rejects NaN-box pointers; BOOL carrier is 0/1 → still typeof "boolean".
-    if (!planTaggedBigint && resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return typed(['i32.const', eq ? 0 : 1], 'i32')
+    if (!planTaggedBigint && resolveValType(typeofExpr, valTypeOf, lookupValType) === VAL.BOOL) return foldConst(eq ? 0 : 1)
     // v===v alone is WRONG for the one payload that legitimately means "the number
     // NaN": the canonical box prefix (tag=ATOM aux=0) that $__typeof (module/core.js)
     // also carves out, plus any sign-bit-set NaN (pointers are always emitted
@@ -783,7 +791,10 @@ function emitSingleCharIndexCmp(a, b, negate = false) {
   const finish = expr => negate ? ['i32.eqz', expr] : expr
 
   // Known STRING: s[i] always returns 1-char SSO. Multi-char literal → always false.
-  if (vt === VAL.STRING && lit.length > 1) return emitNum(negate ? 1 : 0)
+  // `obj` hasn't been emitted yet at this point — sequence it (effectFoldSeq) so a
+  // receiver with runtime effects (`getStr()[i] === 'ab'`) still runs once (re-audit
+  // P0, sweep of emitTypeofCmp's static-kind-fold class — see effectFoldSeq's doc).
+  if (vt === VAL.STRING && lit.length > 1) return effectFoldSeq([obj], emitNum(negate ? 1 : 0))
 
   // Single-char literal: compare byte directly, skipping __str_idx allocation.
   if (lit.length !== 1 || !ctx.core.stdlib['__char_at'] || !ctx.core.stdlib['__str_byteLen']) return null
@@ -6070,7 +6081,13 @@ export const emitter = {
     if (_f) return _f
     // ES remainder by zero is NaN; only the f64 path yields that (a - trunc(a/0)*0).
     // The i32.rem_s fast path traps on a zero divisor, so divert a literal-zero divisor.
-    if (isLit(vb) && litVal(vb) === 0) return emitNum(NaN)
+    // `va` is ALREADY emitted (above) — an impure dividend (`bump() % 0`) must still run
+    // once, in source order, before the NaN fold (re-audit P0, sweep of emitTypeofCmp's
+    // static-kind-fold class: this branch used to discard `va` unconditionally).
+    if (isLit(vb) && litVal(vb) === 0) {
+      const nan = emitNum(NaN)
+      return foldOperandPure(a) ? nan : typed(['block', ['result', 'f64'], ['drop', va], nan], 'f64')
+    }
     // i32.rem_s is exact for integer operands AND fast, but it TRAPS on a zero
     // divisor where JS yields NaN. Only take it when the divisor is a literal
     // integer (necessarily nonzero — literal 0 is handled above); a runtime i32

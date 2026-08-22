@@ -1920,3 +1920,43 @@ test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)',
     ok(typeof big === 'bigint' && big === 9007199254740993n, `O${optimize || 0} ${label}: lossless past 2^53`)
   }
 })
+
+test('typeof folds preserve operand effects, in source order (audit P0: emitTypeofCmp erased calls)', () => {
+  // emitTypeofCmp (src/compile/emit.js) emits its operand into `va` ONCE, up front —
+  // but three fold sites (staticFold, shared by 'boolean'/'bigint', and the NUMBER-
+  // vs-BOOL-carrier fold) used to return a bare i32.const without ever placing `va`
+  // in the returned tree: `typeof bump() === 'boolean'` skipped bump() entirely
+  // whenever its return kind was statically known. JS evaluates the typeof operand
+  // before comparing — the call must still run, exactly once, on every fold path.
+  for (const optimize of [false, 2, 3]) {
+    const bo = jz(`
+      let n = 0
+      function bump() { n = n + 1; return true }
+      export let isBool = () => typeof bump() === 'boolean'
+      export let notBool = () => typeof bump() !== 'boolean'
+      export let isNum = () => typeof bump() === 'number'
+      export let notNum = () => typeof bump() !== 'number'
+      export let count = () => n
+    `, { optimize }).exports
+    is(bo.isBool(), true, `O${optimize || 0}: typeof boolean-return === 'boolean' (staticFold)`)
+    is(bo.count(), 1, `O${optimize || 0}: staticFold still ran bump()`)
+    is(bo.notBool(), false, `O${optimize || 0}: negated staticFold`)
+    is(bo.count(), 2, `O${optimize || 0}: negated staticFold still ran bump()`)
+    is(bo.isNum(), false, `O${optimize || 0}: typeof boolean-return === 'number' folds false (BOOL-carrier fold)`)
+    is(bo.count(), 3, `O${optimize || 0}: BOOL-carrier fold still ran bump()`)
+    is(bo.notNum(), true, `O${optimize || 0}: negated BOOL-carrier fold`)
+    is(bo.count(), 4, `O${optimize || 0}: negated BOOL-carrier fold still ran bump()`)
+
+    const bi = jz(`
+      let m = 0
+      function g() { m = m + 1; return 5n }
+      export let isBig = () => typeof g() === 'bigint'
+      export let notBig = () => typeof g() !== 'bigint'
+      export let count = () => m
+    `, { optimize }).exports
+    is(bi.isBig(), true, `O${optimize || 0}: typeof bigint-return === 'bigint' (staticFold)`)
+    is(bi.count(), 1, `O${optimize || 0}: bigint staticFold still ran g()`)
+    is(bi.notBig(), false, `O${optimize || 0}: negated bigint staticFold`)
+    is(bi.count(), 2, `O${optimize || 0}: negated bigint staticFold still ran g()`)
+  }
+})
