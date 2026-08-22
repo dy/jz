@@ -2,6 +2,7 @@ import { ASSIGN_OPS, commaList, isReassigned, returnExprs } from '../ast.js'
 import { censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../kind.js'
 import { DBG_INVARIANTS } from '../ctx.js'
 import { KIND_UNIVERSE, VAL } from '../reps.js'
+import { closureBodyReturnKind } from './flow-types.js'
 
 // RepresentationPlan v2 uses compact scalar facts. The low two bits describe
 // the representation of the BigInt member (if one is semantically possible);
@@ -199,6 +200,46 @@ const isBigintOrigin = node => Array.isArray(node) && (
   (node[0] === '()' && Array.isArray(node[1]) && BIGINT_READ_METHODS.has(node[1][2]))
 )
 
+const EMPTY_SEEN = new Set()
+const EMPTY_KIND_MAP = new Map()
+
+/** name → { params: [string], body } for every `let/const NAME = (…) => BODY`
+ *  declared anywhere in `body` (including nested control-flow blocks, not
+ *  nested arrows — a closure declared INSIDE another closure isn't a
+ *  same-body forwarding target for the outer scope). Same construction as
+ *  paramAllUsesNumeric's own `closures` map (compile/index.js) — kept as a
+ *  fresh per-call scan rather than a cached cross-cutting fact, matching that
+ *  precedent (called once per exported function here, not per-param). First
+ *  declaration of a name wins, mirroring paramAllUsesNumeric's `!closures.has`
+ *  guard — a rare shadow-name imprecision, not new to this pass. */
+function collectLocalClosures(body) {
+  const closures = new Map()
+  const collect = node => {
+    if (!Array.isArray(node)) return
+    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
+        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
+      const init = node[1][2]
+      if (Array.isArray(init) && init[0] === '=>' && !closures.has(node[1][1])) {
+        const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
+        if (ps.every(p => typeof p === 'string')) closures.set(node[1][1], { params: ps, body: init[2] })
+      }
+    }
+    for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  collect(body)
+  return closures
+}
+
+/** True iff SOME return tail of `body` is the bare name `paramName`, verbatim
+ *  — a genuine passthrough (`if (…) return x`), not a freshly-computed
+ *  expression (`return BigInt(x)` doesn't count: its OWN carrier is always a
+ *  fresh conversion, independent of x's). This is the ONE shape whose result
+ *  carrier is inherited, unchanged, from the param's own entry — reuses
+ *  returnExprs (ast.js), the same return-tail set buildBodyData's own
+ *  resultExprs/materializedResult already fold over, so this asks the
+ *  identical question a closure's own plan will ask of itself. */
+const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e === paramName)
+
 /**
  * Forward existential provenance from real BigInt origins through bindings,
  * calls, returns, and named storage. Unknown semantic kind is not itself an
@@ -231,7 +272,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     return true
   }
 
-  const paramNeedsHostTag = (node, name, root = true) => {
+  const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
     if (!Array.isArray(node)) return false
     if (!root && node[0] === '=>') return false
     if (node[0] === 'typeof' && node[1] === name) return true
@@ -243,7 +284,29 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     // host bigint there should box and pass through BigInt()'s identity
     // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
     if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
-    for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, false)) return true
+    // Local-closure forwarding (closure-forwarding slice, .work/phase-c-
+    // unification.md §C4b queue): `name` passed positionally into a SAME-BODY
+    // closure (`let parse = (x) => …`) whose own param needs the tag —
+    // watr's own uleb/limits shape, `f(v){ let parse = x => typeof x ===
+    // 'bigint' ? x : BigInt(x); return parse(v)+1n }`. Mirrors
+    // paramAllUsesNumeric's identical closure-forwarding judgement (compile/
+    // index.js) for the numeric/pointer-proof lattice — same AST shape (a
+    // `let NAME = (…) => BODY` local, found via localClosures below), same
+    // cycle guard (`seen`, closure names visited on this recursion path) —
+    // a different question (host-tag ingress) over the same forwarding
+    // structure. Position-exact only (arg K proves param K, no textual
+    // `.includes` — unlike Number()/BigInt() above, which are order-
+    // insensitive single-arg builtins): `parse(other, name)` must not credit
+    // `name` with whatever param 0 needs.
+    if (node[0] === '()' && typeof node[1] === 'string' && localClosures?.has(node[1]) && !seen.has(node[1])) {
+      const callee = localClosures.get(node[1])
+      const args = commaList(node[2])
+      const nextSeen = new Set(seen).add(node[1])
+      for (let k = 0; k < args.length && k < callee.params.length; k++)
+        if (args[k] === name && paramNeedsHostTag(callee.body, callee.params[k], localClosures, nextSeen, true))
+          return true
+    }
+    for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, localClosures, seen, false)) return true
     return false
   }
 
@@ -251,6 +314,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (func.raw || !func.sig) continue
     const row = programFacts.paramReps.get(func.name)
     const pset = paramsFor(func)
+    const localClosures = isExported(ctx, func) ? collectLocalClosures(func.body) : null
     for (let k = 0; k < func.sig.params.length; k++) {
       const rep = row?.get(k)
       const observed = rep?.possibleKinds
@@ -258,7 +322,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
         bigintTyped.add(func.sig.params[k].name)
       if (rep?.val === VAL.BIGINT || rep?.presentVal === VAL.BIGINT || rep?.bigintBoxed === true ||
           (observed instanceof Set && observed.size < KIND_UNIVERSE.length && observed.has(VAL.BIGINT)) ||
-          (isExported(ctx, func) && paramNeedsHostTag(func.body, func.sig.params[k].name)))
+          (isExported(ctx, func) && paramNeedsHostTag(func.body, func.sig.params[k].name, localClosures, EMPTY_SEEN)))
         pset.add(k)
     }
     for (const k of pset) namesFor(func).add(func.sig.params[k].name)
@@ -692,6 +756,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const taintedNames = options.localProvenance?.names || provenance?.namesByFunc.get(identity)
   const mayCarryBigint = node => !provenance || provenance.exprMay(node, identity, taintedNames)
   const params = new Map((sig?.params || []).map((p, i) => [p.name, i]))
+  // Closure-forwarding slice (.work/phase-c-unification.md §C4b queue):
+  // same-body local closures, structurally (name → {params, body}) — a call
+  // to one of these is invisible to directCallBoundary (closures never enter
+  // ctx.funcs.map), so currentOf/plannedOf's ordinary callee lookup always
+  // misses it. Used below to recognize the specific shape that needs a
+  // representation verdict OTHER than the generic unresolved-call fallback.
+  const localClosures = collectLocalClosures(body)
   const semanticNames = new Map()
   const currentNames = new Map()
   const targetNames = new Map()
@@ -720,6 +791,27 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else currentNames.set(name, ANY_BIGINT)
   }
 
+  // Closure-forwarding slice: valTypeOf's own closure lookup (calleeValType,
+  // kind-traits.js) reads ctx.closure.valResult — populated at ctx.closure
+  // .make time, i.e. when THIS body's emission first processes the closure
+  // literal's own decl statement. buildBodyData runs at analysis time,
+  // strictly before this body ever emits (mintRepresentationPlan's own call
+  // site, compile/index.js, precedes emitFunc's body walk) — so for a
+  // same-body local closure, ctx.closure.valResult is always empty here,
+  // and valTypeOf(callNode) always answers null, regardless of how
+  // provably-uniform the closure's own return kind is. closureBodyReturnKind
+  // (flow-types.js) is the identical proof through a channel with no such
+  // dependency — its own doc comment: "derives a closure's kind directly
+  // from its raw AST... so it can run BEFORE the closure itself compiles" —
+  // reused here (not re-derived) for exactly the case it names. An empty
+  // capturedKinds map is correct: the one shape this slice targets narrows
+  // its own param via a same-tail typeof guard (crkBranchRefine), which
+  // needs no external seeding.
+  const closureCalleeKind = node =>
+    Array.isArray(node) && node[0] === '()' && typeof node[1] === 'string' && localClosures.has(node[1])
+      ? closureBodyReturnKind(localClosures.get(node[1]).body, EMPTY_KIND_MAP)
+      : null
+
   const semanticOf = node => {
     if (typeof node === 'number') return semKind(VAL.NUMBER)
     if (node == null) return packSemantic(0, true, true)
@@ -738,7 +830,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached) return cached
     let out
     if (!mayCarryBigint(node)) {
-      const vt = valTypeOf(node)
+      const vt = valTypeOf(node) ?? closureCalleeKind(node)
       out = nullishArm(node) ? packSemantic(0, true, true)
         : vt ? semKind(vt) : noBigintSemantic()
     }
@@ -774,7 +866,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       out = semKind(vt || (node[0] === 'typeof' ? VAL.STRING : VAL.BOOL))
     } else {
       const census = censusMaybeUndefinedKind(node)
-      const vt = valTypeOf(node)
+      const vt = valTypeOf(node) ?? closureCalleeKind(node)
       if (census) out = semKind(census, true)
       else if (vt) out = semKind(vt)
       else out = semAll()
@@ -807,6 +899,44 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
   nodeSemantic.clear()
 
+  // Closure-forwarding slice (.work/phase-c-unification.md §C4b queue): a
+  // call to a SAME-BODY local closure whose callee has a return tail that's
+  // the bare forwarded param (paramForwardsToReturn), fed here by an
+  // argument that isn't itself provably bigint-free. The value flowing back
+  // is EITHER the closure's own fresh (raw) computation on some OTHER tail
+  // OR this argument's own carrier forwarded unchanged — when the argument
+  // may itself be a host-tag-ingress box (C4b: paramNeedsHostTag's own
+  // closure-forwarding case, below, is what granted it that evidence in the
+  // first place), the ordinary unresolved-call default just below (assume
+  // RAW) would misread a forwarded box's pointer bits as a raw i64 payload —
+  // the exact silent-wrong this slice exists to close (see the pin's own
+  // comment, test/inference.js: `f(5n)` → box bits + 1n). BOXED is the
+  // ADR-0001 default for an edge the plan cannot prove single-representation
+  // end-to-end. Paired with the closure's OWN return-edge materialization
+  // (closureAbiIdentity's relaxed covered gate, below) — that side boxes the
+  // SAME tail for the identical reason (the callee's own x is
+  // closureBoxParams-tagged whenever its ingress is ambiguous), so caller
+  // and callee agree by construction: not a guess replicated on both sides,
+  // but the one condition (a forwarded, non-excluded argument reaching a
+  // passthrough tail) that both queries ask independently of each other.
+  // Literal/provably-raw arguments (`parse(3)`) never reach this — their
+  // OWN currentOf is excludesBigint-short-circuited to NO_BIGINT — so a
+  // closure with no ambiguous callers keeps the ordinary RAW default
+  // (unaffected; see e.g. a pure `(x) => BigInt(x) * 2n` fresh-conversion
+  // closure, which has NO passthrough tail at all and never matches here).
+  const closureCallNeedsBox = node => {
+    if (node[0] !== '()' || typeof node[1] !== 'string') return false
+    const callee = localClosures.get(node[1])
+    if (!callee) return false
+    const args = commaList(node[2])
+    for (let k = 0; k < args.length && k < callee.params.length; k++) {
+      if (typeof args[k] !== 'string') continue
+      if (!paramForwardsToReturn(callee.body, callee.params[k])) continue
+      if (bigintRepBits(currentOf(args[k])) !== BIGINT_REP_NONE) return true
+    }
+    return false
+  }
+
   const currentOf = node => {
     const sem = semanticOf(node)
     if (excludesBigint(sem)) return NO_BIGINT
@@ -837,6 +967,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         else out = joinRep(currentOf(a), currentOf(b))
       } else if (node[0] === '&&' || node[0] === '||' || node[0] === '??')
         out = joinRep(currentOf(node[1]), currentOf(node[2]))
+      else if (closureCallNeedsBox(node)) out = BOXED_BIGINT
       else if (NUMERIC_VALUE_OPS.has(node[0]) && canBeBigint(sem)) out = RAW_BIGINT
       else if (definiteBigint(sem)) out = RAW_BIGINT
       else out = ANY_BIGINT
@@ -1038,8 +1169,22 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (typeof node === 'string') {
       if (materializedNames.has(node)) return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
       const k = params.get(node)
-      if (k != null && boundary.covered === true && boundary.params[k]?.stable === true)
-        return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+      if (k != null) {
+        // Closure-forwarding slice: a param's boundary-level readiness is
+        // `covered && stable` for an ordinary (named-function) boundary, but
+        // a closure's boundary is ALWAYS `uncovered` (buildBodyData's own
+        // `generic ⟹ uncovered` — the ABI is call_indirect-shaped regardless
+        // of how many call sites are actually enumerable) — hostBoxParams/
+        // closureBoxParams ARE that boundary's own readiness signal (the
+        // SAME "boundaryReady" concept representationActiveMaterializedRep
+        // already reads, just not yet threaded through this join/result
+        // fixpoint), so a stable param the export/closure ingress already
+        // proved tag-required is exactly as trustworthy as a covered+stable
+        // one — same fact, different boundary shape.
+        const boundaryReady = hostBoxParams.has(k) || closureBoxParams.has(k)
+        if ((boundary.covered === true && boundary.params[k]?.stable === true) || boundaryReady)
+          return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
+      }
     }
     if (Array.isArray(node)) {
       if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
@@ -1049,6 +1194,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
         if (calleeBody?.materializedResult === true)
           return { rep: calleeBody.resultTarget ?? ANY_BIGINT, ready: true }
+        // Closure-forwarding slice: a same-body local closure's plan doesn't
+        // exist yet at THIS body's build time (closures compile at module
+        // end, after their callers — the ctx.funcs.map lookup above always
+        // misses), so closureCallNeedsBox's own structural proof (a
+        // passthrough tail fed a non-excluded argument) stands in for the
+        // callee-plan lookup this branch ordinarily uses.
+        if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }
       }
     }
     return { rep: currentOf(node), ready: false }
@@ -1077,13 +1229,18 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
   }
 
-  // Propagate newly-materialized ternaries through their immediate plain-write
-  // binding edges. Other producer dependencies stay deferred to their own
-  // slices; this pass cannot accidentally admit an unrelated raw expression.
+  // Propagate newly-materialized ternaries — and, closure-forwarding slice,
+  // closureCallNeedsBox-proven closure calls (`let a = parse(v)`) — through
+  // their immediate plain-write binding edges. Other producer dependencies
+  // stay deferred to their own slices; this pass cannot accidentally admit
+  // an unrelated raw expression. emittedCandidate already resolves BOTH
+  // proofs to `ready: true`, so one shared gate/body covers both — the gate
+  // only widens which defs are worth re-checking, the check itself is
+  // unchanged.
   for (const [name, list] of defs) {
     if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
     if (params.has(name) && boundary.covered !== true) continue
-    if (!list.some(def => Array.isArray(def.rhs) && materializedJoins.has(def.rhs))) continue
+    if (!list.some(def => Array.isArray(def.rhs) && (materializedJoins.has(def.rhs) || closureCallNeedsBox(def.rhs)))) continue
     const nameSemantic = semanticNames.get(name) ?? semAll()
     if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
@@ -1097,10 +1254,37 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
 
   const resultHasClosedBool = semanticClosed(bodyResultSemantic) &&
     (semanticKinds(bodyResultSemantic) & bitOfKind(VAL.BOOL)) !== 0
-  const materializedResult = boundary.covered === true && !resultHasClosedBool &&
+  // Closure-forwarding slice: a closure's boundary is ALWAYS uncovered
+  // (options.generic forces it, independent of how enumerable its call sites
+  // actually are — see the emittedCandidate param-branch comment above), so
+  // `covered` alone would keep materializedResult permanently unreachable
+  // for every closure. closureAbiIdentity ALONE is too broad an admission,
+  // though (found live: array-methods.js's `.map(x => { return x + 1n })`
+  // BigInt64Array callback) — `.map()`'s own internal call site has a FIXED,
+  // unboxed calling convention baked into $__typed_set_idx (the callback's
+  // return is stored as the raw target-array element, never a box; that
+  // codegen is generic-array-method machinery, plan-blind, and unrelated to
+  // representation-plan entirely), so boxing a result on the strength of the
+  // ordinary "mixed-semantic result → BOXED" default (targetRepFor's own
+  // fallback — x's OWN param provenance is unproven here, so `x + 1n`'s
+  // semantic reads {number, bigint} mixed, same shape ANY export boundary
+  // would legitimately box) corrupts that store. The closure-forwarding
+  // slice's own proof is narrower and is exactly what distinguishes the two:
+  // closureBoxParams is non-empty only when SOME param carries genuine,
+  // plan-proven tag-required evidence (paramNeedsHostTag's closure-
+  // forwarding case, or any other closureBoxParams producer) — requiring
+  // that here scopes the admission to closures this slice actually reasons
+  // about, leaving a closure with no tag-required param (the .map callback:
+  // x's own boundary semantic excludes bigint entirely, closureBoxParams
+  // stays empty) on its pre-existing REJECT path, unchanged.
+  const materializedResult = (boundary.covered === true || (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
+    !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
-    resultExprs.every(expr => expr == null ||
-      edgeMaterializable(currentOf(expr), bodyResultTarget, expr))
+    resultExprs.every(expr => {
+      if (expr == null) return true
+      const source = emittedCandidate(expr)
+      return edgeMaterializable(source.rep, bodyResultTarget, expr, source.ready)
+    })
 
   // Compact canonical node facts into one primitive-valued Map. The three
   // temporary caches above are build-time solver state and do not remain
@@ -1167,6 +1351,28 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
     ctx.plans.representations.set(sig, handle)
     if (sig.params) ctx.plans.representations.set(sig.params, handle)
   }
+  // Closure-forwarding slice: the ACTIVE lookup key every ctx.func.current-
+  // implicit accessor uses (representationReturnAction, representation
+  // ActiveMaterializedRep, …) is whatever `ctx.func.current` actually holds
+  // at emission time — for an ordinary function that IS `sig` (the same
+  // object passed in above, verified: `sig === ctx.func.current` here,
+  // since analyzeFuncForEmit mints while its own frame is active). A
+  // closure's uniform call_indirect ABI shape (`closureSig(cb)`, module/
+  // function.js) is a SEPARATE object from `repSig` (this call's own `sig`,
+  // built to describe the closure's REAL params for the plan) — `sig`'s own
+  // registration above therefore never matches `ctx.func.current` for a
+  // closure, and representationReturnAction/representationActiveMaterialized
+  // Rep have silently missed on every closure's own body ever since
+  // hostBoxParams/closureBoxParams existed (dormant: nothing ever made a
+  // closure's OWN result or a closureBoxParams-tagged param's consumer path
+  // reachable before this slice — the closure-forwarding pin is the first
+  // shape that exercises it). enterPreparedFunction restores the identical
+  // ctx.func frame object this mint call runs inside (function-plan.js:
+  // publishPreparedFunctionPlan captures `ctx.func` itself as the working
+  // frame), so `ctx.func.current` at THIS instant is the exact object
+  // identity emission will see later too — the missing key, added once,
+  // covers every accessor uniformly instead of patching each one.
+  if (ctx.func.current && ctx.func.current !== sig) ctx.plans.representations.set(ctx.func.current, handle)
   record.body = buildBodyData(ctx, identity, sig, body, localReps, record.boundary, planOptions)
   if (DBG_INVARIANTS) assertRepresentationPlan(ctx, handle)
   return handle
