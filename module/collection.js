@@ -412,6 +412,48 @@ export const LANE = 4
 export const collectionLaneBytes = () => ctx.transform.compactCollections ? 0 : LANE
 export const collectionStride = (entrySize) => entrySize + collectionLaneBytes()
 const hasProbeLane = () => collectionLaneBytes() !== 0
+
+// Shared grow-capacity policy for every open-addressing Set/Map/Hash table
+// (genUpsert, genUpsertGrow, genSlotUpsert, genEphemeralSlotUpsert — four
+// otherwise-independent grow blocks, all doubling `cap` at 75% load; this is
+// the ONE place that decides the next capacity, so all four move together).
+//
+// Why tiered, not a flat factor bump: nothing in a compiled program's own
+// runtime ever reclaims a grow's abandoned OLD table (its header is forward-
+// marked and the caller's pointer chases through it, per genUpsert's own
+// header comment — that is a permanent, not a transient, cost whenever
+// region-arena compaction is inactive, which is the shipped default;
+// REGION_HOOKS_ACTIVE, scripts/self.js). For a table settling at final
+// capacity C after growing by a constant factor f, the total bytes EVER
+// allocated across its whole chain (every abandoned generation plus the
+// live one) is C·f/(f−1): 2× ⇒ 2.00C (1.00C of that is dead, abandoned
+// generations), 4× ⇒ 1.33C (0.33C dead) — quadrupling cuts the dead-
+// generation tax by two thirds. The cost is coarser post-grow load factor
+// (more headroom sits briefly unused right after a jump: 4× lands a table
+// at 18.75% full instead of 2×'s 37.5%), which only matters for the FINAL
+// grow a table ever does — bounded, and only paid by tables that actually
+// reach GROW_QUAD_CAP.
+//
+// Measured (2026-08-22, fresh site attribution on the jz×jz goal-gate,
+// dormant/shipped config, .work/research.md): the overwhelming majority of
+// tables — every per-object dyn-props hash chief among them — never grow
+// past a handful of entries at all (≈94% of one run's __hash_new_small
+// tables never triggered a single subsequent grow). Doubling stays exactly
+// as it was for all of those — this policy only changes behavior once a
+// table has already grown past GROW_QUAD_CAP, which is precisely where a
+// self-hosted compiler's own large, long-lived tables (symbol/intern
+// tables, ctx-level maps) concentrate.
+//
+// cap MUST stay a power of 2 either way — every probe's index wraparound is
+// an `(i32.and idx (cap-1))` mask, not a modulo — and ×4 (shl by 2) preserves
+// that identically to ×2 (shl by 1), so this is a pure capacity-growth-rate
+// change: same open addressing, same probe sequence shape, same $__seq-
+// ordered iteration (capacity is never observable from JS), just fewer
+// generations for a table large enough to reach the tier.
+export const GROW_QUAD_CAP = 8192
+const nextCapIR = (capLocal = '$cap', newcapLocal = '$newcap') =>
+  `(local.set ${newcapLocal} (i32.shl (local.get ${capLocal})
+    (select (i32.const 2) (i32.const 1) (i32.ge_u (local.get ${capLocal}) (i32.const ${GROW_QUAD_CAP})))))`
 const probeStart = (entrySize, idxExpr = '(i32.and (local.get $h) (i32.sub (local.get $cap) (i32.const 1)))') => hasProbeLane()
   ? `(local.set $lb (i32.add (local.get $off) (i32.mul (local.get $cap) (i32.const ${entrySize}))))
     (local.set $end (i32.add (local.get $lb) (i32.shl (local.get $cap) (i32.const 2))))
@@ -506,8 +548,9 @@ const seqStore = `(i64.store (local.get $slot)
  *  value at slot+16. hasExt: emit EXTERNAL fallthrough (call $__ext_set on non-matching
  *  type). Gated off → type mismatch just returns coll unchanged.
  *
- *  The table grows at 75% load by allocating a 2× table, rehashing, and forward-marking
- *  the old header (cap=-1 sentinel, new offset at -8) — the array growth idiom. The boxed
+ *  The table grows at 75% load by allocating a 2×/4× table (nextCapIR — tiered past
+ *  GROW_QUAD_CAP), rehashing, and forward-marking the old header (cap=-1 sentinel, new
+ *  offset at -8) — the array growth idiom. The boxed
  *  pointer the caller holds is returned UNCHANGED; future ops resolve it through
  *  __ptr_offset, which follows the chain. This is why Set/Map (held in caller locals, and
  *  possibly aliased) forward rather than remint like HASH (whose pointer lives in a single
@@ -545,10 +588,10 @@ function genUpsert(name, entrySize, hashFn, eqExpr, expectedType, hasVal, hasExt
         (local.set $off (call $__ptr_offset_fwd (local.get $off)))
         (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
-    ;; Grow at 75% load (size*4 >= cap*3): 2× table, rehash, forward-mark old header.
+    ;; Grow at 75% load (size*4 >= cap*3): 2×/4× table (nextCapIR), rehash, forward-mark old header.
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
-        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${laneBaseInit('nlb', 'newcap', entrySize)}
         (i64.store (i32.sub (local.get $newptr) (i32.const 16)) (i64.load (i32.sub (local.get $off) (i32.const 16))))
@@ -786,7 +829,7 @@ function genUpsertGrow(name, entrySize, hashFn, eqExpr, typeConst, strict = fals
     ;; Grow if load factor > 75%: size * 4 >= cap * 3
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
-        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${laneBaseInit('nlb', 'newcap', entrySize)}
         (local.set $i (i32.const 0))
@@ -904,7 +947,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (if (i32.ge_s (i32.mul (local.get $size) (i32.const 4)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
-        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        ${nextCapIR()}
         (local.set $newptr (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${collectionStride(entrySize)})))
         ${laneBaseInit('nlb', 'newcap', entrySize)}
         (local.set $i (i32.const 0))
@@ -1060,7 +1103,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
     (local.set $size (i32.load (i32.sub (local.get $off) (i32.const 8))))
     (if (i32.ge_s (i32.shl (local.get $size) (i32.const 2)) (i32.mul (local.get $cap) (i32.const 3)))
       (then
-        (local.set $newcap (i32.shl (local.get $cap) (i32.const 1)))
+        ${nextCapIR()}
         (local.set $newptr (call $__alloc_hash_eph (i32.const 0) (local.get $newcap)))
         ${growBases}
         (local.set $i (i32.const 0))
