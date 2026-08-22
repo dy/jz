@@ -331,25 +331,14 @@ test('P0-2: bigint literals at the 64-bit signed/unsigned boundaries', () => {
   is(run('export let f = () => 18446744073709551615n').f(), -1n)
 })
 
-test('audit-#11 P0-1: bigint-using-program carrier divergence — DOCUMENTED, still open by design (not a regression)', () => {
-  // The runtime half of the fix (module/number.js `__to_num`'s subnormal-as-
-  // BigInt-carrier arm) is gated on `ctx.features.bigint` — OFF (closed) for a
-  // program that never constructs a BigInt anywhere (every case above), ON
-  // (unchanged from before this fix) for one that does. This is the documented,
-  // PERMANENT remainder the carrier design accepts: once a program can
-  // construct a BigInt, `__to_num` genuinely cannot distinguish "a real
-  // subnormal Number reaching an unproven-kind coercion" from "a real BigInt's
-  // raw i64-as-f64 carrier reaching that same coercion" — both are the
-  // identical 64 bits, and nothing short of the boxed-bigint carrier redesign
-  // (ledgered, deliberately not adopted — see README "One known divergence
-  // class") removes the ambiguity. Only fires when the value's STATIC kind is
-  // truly unproven (a dict-shaped property / mixed-type array element here —
-  // a plain local or parameter gets proven NUMBER by narrower inference and
-  // never reaches this arm, which is why the bare-parameter shape stays exact
-  // even in a bigint-using program). Native and kernel agree (both wrong the
-  // same documented way) — JS: both `+o.a`/`+a[0]` are `5e-324`.
-  is(run('let big = 1n; export function f() { let o = {}; o.a = 5e-324; o.b = 1; return +o.a }').f(), 1)
-  is(run('let big = 1n; export function f() { const a = []; a.push(5e-324); a.push("s"); return +a[0] }').f(), 1)
+test('audit-#11 P0-1: tagged dynamic BigInt retires the subnormal carrier guess', () => {
+  is(run('let big = 1n; export function f() { let o = {}; o.a = 5e-324; o.b = 1; return +o.a }').f(), 5e-324)
+  is(run('let big = 1n; export function f() { const a = []; a.push(5e-324); a.push("s"); return +a[0] }').f(), 5e-324)
+  for (const optimize of [false, 2, 3]) {
+    const { f } = jz(`export let f = flag => { let v = flag ? 1n : 5e-324; return Number(v) }`, { optimize }).exports
+    is(f(0), 5e-324, `O${optimize || 0}: dynamic subnormal stays Number`)
+    is(f(1), 1, `O${optimize || 0}: tagged BigInt converts by payload`)
+  }
 })
 
 test('bigint: internal calls keep the i64 carrier (only the JS boundary surfaces it)', () => {

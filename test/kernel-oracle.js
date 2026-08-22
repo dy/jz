@@ -719,29 +719,15 @@ export let f = (s) => g(s) === false`
 // reverted self-compile miscompiles touching just ONE — out of this pass's
 // bounded scope. Pinned below ('direct-closure inlined bare-return'), not
 // fixed.
-const PENDING_FIX = [
-  { name: 'direct-closure inlined bare-return (decl-storage WALL sibling, see comment block above)',
-    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
-    wrong: 0 },
-  { name: 'direct-closure inlined bare-return, typeof observation (same WALL sibling)',
-    src: `export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`,
-    wrong: 'number' },
-]
-
-if (PENDING_FIX.length) test('kernel oracle: PENDING-FIX — research.md §Carrier invariant (not yet fixed; formatter/ToPropertyKey/closure-capture rows CLOSED, see .work/todo.md §deletion-sweep)', async () => {
+test('kernel oracle: ambiguous BOOL|NUMBER local storage rejects instead of erasing identity', () => {
   if (onWasi()) return
-  for (const { name, src, wrong, opts = [0, 2, 3] } of PENDING_FIX) {
-    const mod = await oracle(src)
-    const want = mod.f(-1)
-    not(wrong, want, `${name}: TODO-flip guard — wrong !== want (else this row is stale, delete it)`)
-    for (const opt of opts) {
-      const nat = runNative(src, opt).f(-1)
-      const ker = runKernel(src, opt).f(-1)
-      is(nat, wrong, `${name} O${opt}: native currently WRONG (${JSON.stringify(wrong)}) — TODO flip to AGREE once fixed`)
-      is(ker, wrong, `${name} O${opt}: kernel currently WRONG (${JSON.stringify(wrong)}) — same bug, same leg`)
-      not(nat, want, `${name} O${opt}: tripwire — native must start disagreeing with JS oracle the moment this is fixed`)
-      not(ker, want, `${name} O${opt}: tripwire — kernel must start disagreeing with JS oracle the moment this is fixed`)
-    }
+  const rows = [
+    `export let f = (x) => { let v = x > 0 && 1; const g = () => v; return g() }`,
+    `export let f = (x) => { let v = x > 0 && 1; const g = () => typeof v; return g() }`,
+  ]
+  for (const src of rows) for (const opt of [0, 2, 3]) {
+    throws(() => runNative(src, opt), /can be both Boolean and Number/, `native O${opt}: correct-or-reject`)
+    throws(() => runKernel(src, opt), /can be both Boolean and Number/, `kernel O${opt}: same rejection`)
   }
 })
 

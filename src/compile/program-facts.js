@@ -133,7 +133,14 @@ export function observeNodeFacts(node, f) {
     if (!s) f.literalWriteKeys.set(args[0][1], s = new Set())
     s.add(args[0][2][1])
   }
-  // Computed-key WRITES (`o[k]=v`, `o[k]+=v`, `o[k]++`) are the ONLY operations
+  // Object.assign may copy runtime-enumerated keys outside a target's static
+  // schema. Mark a named target like a computed write so later enumeration
+  // uses schema+sidecar rather than a stale static key pool.
+  if (op === '()' && args[0] === 'Object.assign') {
+    const target = commaList(args[1])[0]
+    if (typeof target === 'string') f.dynWriteVars?.add(target)
+  }
+  // Computed-key WRITES (`o[k]=v`, `o[k]+=v`, `o[k]++`) are the ONLY other operations
   // that add ENUMERABLE keys beyond the static schema — computed reads and dot-adds
   // (`o.b=2`) do not enumerate in jz. Tracked separately from `dynVars` (which also
   // counts reads) so for-in / Object.keys key pooling can trust the static schema

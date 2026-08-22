@@ -1573,32 +1573,13 @@ function spreadSchema(obj) {
 // emit builds a HASH and reads misdispatch (the exact class of bug this
 // mirror exists to prevent — see spreadSchema's own doc above).
 function spreadMergeResolves(props) {
-  const seen = new Set(), condSeen = new Set()
   for (const p of props) {
     if (Array.isArray(p) && p[0] === '...') {
       const group = conditionalSpreadGroup(p[1])
-      if (group) {
-        for (const n of group) {
-          if (seen.has(n)) return false
-          seen.add(n); condSeen.add(n)
-        }
-        continue
-      }
-      const s = spreadSchema(p[1])
-      if (!s) return false
-      // An ORDINARY spread source whose OWN schema already carries
-      // conditional slots — module/object.js mergeSpreadNames' identical
-      // bail (re-spreading an already-conditional binding propagates no
-      // further; see conditionalSpreadGroup's own doc). Precise-sid only,
-      // same documented boundary as the collection.js `in` operator guard.
-      if (typeof p[1] === 'string' && ctx.schema?.hasCondAbsent?.(ctx.schema.idOf(p[1]))) return false
-      for (const n of s) {
-        if (condSeen.has(n)) return false
-        seen.add(n)
-      }
-    } else if (Array.isArray(p) && p[0] === ':') {
-      if (condSeen.has(p[1])) return false
-      seen.add(p[1])
+      // Conditional presence requires the HASH representation; a fixed slot
+      // cannot distinguish absent from present-with-undefined.
+      if (group) return false
+      if (!spreadSchema(p[1])) return false
     }
   }
   return true

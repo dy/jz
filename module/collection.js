@@ -3538,20 +3538,10 @@ export default (ctx) => {
       compareCost += ctx.features.sso && ssoEncode(String(prop)) ? 1 : 3
       if (compareCost > IN_SCHEMA_COMPARE_BUDGET) break
     }
-    // Conditional-spread schema (ctx.schema.condAbsentProps — module/object.js
-    // conditionalSpreadGroup): "in schema" no longer proves membership for
-    // AT LEAST one of this schema's props, so the value-blind fold below
-    // (every prop, by name comparison, never reads the actual slot) would
-    // answer `true` for a key whose owning group was absent at THIS
-    // construction. Schema-wide gate (simpler and safe — the handful of
-    // ordinary props sharing the schema pay one extra runtime probe rather
-    // than threading a per-prop exception through the literal/dynamic-key
-    // branches below).
     const schemaClosed = schemaBound && compareCost <= IN_SCHEMA_COMPARE_BUDGET &&
       ctx.types.nameEscapes != null && ctx.types.dynWriteVars != null &&
       ctx.types.literalWriteKeys != null && !ctx.types.nameEscapes.has(obj) &&
-      !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite &&
-      !ctx.schema.hasCondAbsent?.(schemaId)
+      !ctx.types.dynWriteVars.has(obj) && !hasOutOfSchemaWrite
     if (schemaClosed) {
       if (Array.isArray(key) && key[0] === 'str')
         return typed(['i32.const', schema.includes(key[1]) ? 1 : 0], 'i32')
@@ -3588,12 +3578,7 @@ export default (ctx) => {
         return typed(['i32.const', 1], 'i32')
 
       const schemaIdx = typeof obj === 'string' ? ctx.schema.slotOf(obj, prop) : ctx.schema.slotOf(null, prop)
-      // Conditional-spread slot (see schemaClosed's own doc above): a schema
-      // HIT here still isn't proof of presence for this one prop — precise
-      // sid resolution only (the closed-union/structural slotOf fallbacks
-      // are narrower, unsalted-schema-sharing edges this doesn't chase;
-      // documented boundary, not a silent gap — see conditionalSpreadGroup).
-      if (schemaIdx >= 0 && !(typeof obj === 'string' && ctx.schema.condAbsentAt?.(ctx.schema.idOf(obj), prop)))
+      if (schemaIdx >= 0)
         return typed(['i32.const', 1], 'i32')
       // A schema MISS does not prove absence: an OBJECT can carry off-schema
       // dynamic props (`o.z = …` → __dyn_set's propsPtr), and under the self-compile
