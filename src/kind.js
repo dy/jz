@@ -1231,6 +1231,14 @@ export function valTypeOf(expr) {
     if (args[0] == null) return null                // null literal
     if (typeof args[0] === 'boolean') return VAL.BOOL
     if (typeof args[0] === 'symbol') return null    // prepared null sentinel
+    // C5b hardening: a string payload here is never a real string LITERAL
+    // (prepare/index.js converts every one to ['str', x] before this runs —
+    // this shape is the parser's own pre-conversion encoding, and the one
+    // OTHER known producer, inline.js's hoisted-temp wrapper, was C5's own
+    // fix). It would mean some NEW producer reintroduced the ambiguity a
+    // name and a string share through this shape — fail to null rather than
+    // fall through to the NUMBER default below and misclassify it.
+    if (typeof args[0] === 'string') return null
     return VAL.NUMBER
   }
   return VT[op]?.(args) ?? null
@@ -1385,7 +1393,8 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
 
 export function jsonConstString(expr) {
   if (Array.isArray(expr) && expr[0] === 'str' && typeof expr[1] === 'string') return expr[1]
-  if (Array.isArray(expr) && expr[0] == null && typeof expr[1] === 'string') return expr[1]
+  // C5b hardening: see stringLiteral's (emit.js) identical arm removal —
+  // `[null, string]` has no producer past prepare/index.js's normalization.
   if (typeof expr === 'string') {
     return ctx.scope.shapeStrs?.get(expr) ?? ctx.scope.constStrs?.get(expr) ?? null
   }

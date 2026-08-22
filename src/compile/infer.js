@@ -222,8 +222,9 @@ const isLengthAccess = (n) =>
 const isIndexAccess = (n) =>
   Array.isArray(n) && n[0] === '[]' && typeof n[1] === 'string'
 
-const isStringLiteralRhs = (rhs) =>
-  Array.isArray(rhs) && (rhs[0] === 'str' || (rhs[0] == null && typeof rhs[1] === 'string'))
+// C5b hardening: no producer emits `[null, string]` past prepare/index.js's
+// normalization — see stringLiteral's (emit.js) identical arm removal.
+const isStringLiteralRhs = (rhs) => Array.isArray(rhs) && rhs[0] === 'str'
 
 const notStringEvidence = (body, names) => {
   const scope0 = new Set(names)

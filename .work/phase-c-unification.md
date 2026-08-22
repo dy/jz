@@ -222,7 +222,97 @@ on landing the slice branch. Follow-up hardening in the same campaign:
 delete stringLiteral's [null,string] arm (no producer remains) + make
 valTypeOf throw-or-null on [null,string] rather than misclassify.
 
-## C4b state (2026-08-22): redesigned on branch, merge gated
+## C5b LANDED (2026-08-22, branch phase-c5b)
+
+Root cause was exactly the layer C5's own note flagged as the risk: the
+join fixpoint (buildBodyData, representation-plan.js) computes a node's
+BOXED_BIGINT target and its join-arm edges the same regardless of where
+the join's value flows — but a SEPARATE WeakSet, `directResultNodes`,
+unconditionally barred any join that IS itself a return/expression-body
+result from ever entering `materializedJoins`. A named local's ternary
+sits at a binding-write site (never a result node) so C5's fix let it
+through; the textually-identical anonymous direct return IS a result
+node, so it hit the exclusion on every optimization level alike (a plan-
+time gate, not an optimizer artifact — the "O2/O3 only" prose guess in
+the residual note above didn't survive a live O0 check).
+
+Fix landed in two parts, no pipeline reorder, plan stays sole authority:
+- representation-plan.js: `directResultNodes` deleted outright — a join's
+  position was never a real precondition, only an accident of how the
+  fixpoint was first written for named locals (slice 3e, 5468977f). The
+  fixpoint, `representationActiveMaterializedRep`'s node dispatch, and
+  `representationResultTagRequired`'s `exprMayBox` all generalized from
+  '?:'-only to all four join ops (`JOIN_OPS`, `joinArms` — arm indices
+  differ: [2]/[3] for '?:', [1]/[2] for the three short-circuit ops).
+  exprMayBox additionally asks `materializedJoins` directly before
+  recursing into arms — ground truth beats guessing, and a leaf-only join
+  like `1n : 0` has no name/call for the recursion to ever resolve.
+- emit.js: '?:' already had a materialized fast path (from C5's own
+  '?:'-only wiring) gated on `representationJoinArmAction` — the plan fix
+  alone was sufficient for it. '&&'/'||'/'??' had ZERO box-application
+  wiring, named-local or direct — a bigger pre-existing gap than '?:'s
+  alone, only surfaced by generalizing the plan side. Each gained its own
+  early guarded-return branch (tee the condition/first-arm, test truthi-
+  ness or nullishness on the RAW value, box only whichever arm actually
+  surfaces), REP_EDGE_REJECT (not materialized) leaving every branch below
+  byte-for-byte untouched. The emit dispatch's `self`-node passthrough
+  (needed so a handler can ask the plan about itself) generalized from a
+  `op === '?:'` special case to `JOIN_OPS.has(op)`.
+
+Acceptance: pin flipped for '?:' (incl. lossless past 2^53), '||', '&&',
+'??', all four crossing typed at O0/O2/O3 for a literal-arm direct-return
+shape. '&&'/'||'/'??' reuse their condition slot as a surfacing arm (no
+separate condition slot like '?:'), so a bare OPEN PARAM arm still can't
+prove its own carrier through this fixpoint — verified this limitation is
+symmetric with '?:' (`flag ? 1n : n` fails identically) and is the C1
+mixed-entry-param boundary-semantic gap, not this slice's scope; the
+pinned/flipped shapes use a literal-producing sub-expression on the non-
+bigint side instead. A nullish-vs-typed nested ternary
+(`(flag?null:5)??1n` specifically) hits a SEPARATE, pre-existing
+imprecision — `semanticOf`'s `!mayCarryBigint` fallback returns the coarse
+`noBigintSemantic()` (ALL kinds incl. BOOL) for a sub-ternary whose
+`valTypeOf` can't agree across a null arm and a typed arm, tripping the
+BOOL-veto — banked, not touched (found via probing, confirmed unrelated
+to the materialization fixpoint itself: the same sub-shape with BOTH
+ternary arms real values, e.g. `(flag?1n:0n)||5`, materializes cleanly).
+
+Hardening (separate commit, same campaign): audited every `[null, X]`
+producer in the tree for a STRING payload. prepare/index.js's generic
+op==null handler normalizes every raw-parser string (including template-
+literal segments, which use this exact shape pre-normalization) to
+`['str', x]`; every post-prepare producer found constructs `[null, NUMBER]`
+(array indices, loop counters, bit constants) only. Zero remaining STRING
+producers — inline.js's hoisted-temp wrapper (C5's own fix) was the only
+one. Deleted the dead arm in emit.js's `stringLiteral`, kind.js's
+`jsonConstString`, and compile/infer.js's `isStringLiteralRhs`; added an
+explicit `typeof === 'string' → null` guard in kind.js's `valTypeOf` ahead
+of its NUMBER fallback (the one place removal alone would have changed
+behavior — from silent misclassification to a fallthrough default, both
+wrong, so the guard fails to null explicitly instead). ast.js's
+`literalString` carries the identical arm but has zero callers — left
+alone, not a live reader, not this hardening's concern.
+
+Battery: kernel-parity 3/3 (33/33 byte-identical), kernel-oracle 14/14
+(619 assertions), FULL SUITE 3606/0/2 (0 fail, 2 pre-existing skips —
+same skip count as C5's own landing, total assertion count grew with the
+intervening commits between 10b7d3c0 and this branch's base 153bb9ff).
+
+## C4b LANDED (2026-08-22, main ef444bfc)
+
+Merged with the BigInt(v) provenance producer (paramNeedsHostTag, symmetric
+with Number(name)) + a second necessary fix it surfaced: module/number.js
+`__to_bigint` fell through to hardcoded 0 for a PTR.BIGINT box — identity
+arm added (mirrors `__to_num`). types.js both compute 6n via the tag path.
+ONE corner regressed loud-on-purpose and is PINNED as specified behavior
+(test/inference.js): a CLOSURE-mediated typeof-normalizer param rejects
+host BigInt — the local closure is invisible to solveBigintProvenance, and
+force-granting evidence was PROVEN silent-wrong (f(5n) → box bits + 1n =
+9221823924482868225n). Flip condition named in the pin. QUEUED: the
+closure-forwarding slice — extend plan RAW/BOXED edge tracking through
+closure call-argument/return flow (closureBoxParams machinery partially
+exists). Battery at merge: suite 3609 total, the pin green, 0 fail.
+
+## C4b original state (2026-08-22): redesigned on branch, merge gated
 
 phase-c4b @ a74ae3eb: jz:hostabi descriptor replaces jz:bigintbox
 ({tag, raw, rest} per export; raw PROVEN architecturally unreachable

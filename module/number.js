@@ -1716,6 +1716,16 @@ export default (ctx) => {
     (if (f64.eq (local.get $f) (local.get $f))
       (then (return (call $__num_to_bigint (local.get $f)))))
     (local.set $t (call $__ptr_type (local.get $v)))
+    ;; ToBigInt(bigint) is the identity (ES2024 21.2.1.1 step 2b via BigInt()'s
+    ;; own ToPrimitive+dispatch) — mirrors __to_num's identical PTR.BIGINT arm
+    ;; a few lines above it in this same file: a genuine boxed BigInt crossing
+    ;; here (phase-c C4b: an exported param feeding BigInt(x) now gets
+    ;; host-tag ingress evidence, so a plain host bigint arrives boxed)
+    ;; dereferences its own payload cell directly instead of falling through
+    ;; to the "not a string" zero fallback below, which pre-dates any caller
+    ;; ever being able to deliver a boxed BigInt here.
+    (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+      (then (return (f64.reinterpret_i64 (i64.load (call $__ptr_offset (local.get $v)))))))
     (if (i32.ne (local.get $t) (i32.const ${PTR.STRING}))
       (then (return (f64.reinterpret_i64 (i64.const 0)))))
     (local.set $len (call $__str_byteLen (local.get $v)))

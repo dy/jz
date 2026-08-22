@@ -237,6 +237,12 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (node[0] === 'typeof' && node[1] === name) return true
     if (node[0] === 'u+' && node[1] === name) return true
     if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
+    // BigInt(name) — same producer as Number(name): BigInt() is a total
+    // normalizer over string/number/boolean/bigint (ES2024 21.2.1.1), so a
+    // param feeding it is well-equipped for the tagged ingress — a plain
+    // host bigint there should box and pass through BigInt()'s identity
+    // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
+    if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
     for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, false)) return true
     return false
   }
@@ -635,6 +641,12 @@ const NON_BIGINT_OPS = new Set([
   'typeof', '!', '>', '<', '>=', '<=', '==', '!=', '===', '!==', 'u+', '>>>',
   'str', 'bool', 'new', 'delete', 'in', 'instanceof',
 ])
+// The four join-shaped ops: two arms merge into one value at runtime, each a
+// candidate BigInt producer. '?:' carries its arms at [2]/[3] (a condition
+// sits at [1]); the three short-circuit ops carry theirs at [1]/[2] (no
+// separate condition slot — the left operand IS the first arm).
+export const JOIN_OPS = new Set(['?:', '&&', '||', '??'])
+const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
 function collectDefs(body) {
   const defs = new Map()
@@ -1022,7 +1034,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
 
   const materializedJoins = new WeakSet()
-  const directResultNodes = new WeakSet(resultExprs.filter(Array.isArray))
   const emittedCandidate = node => {
     if (typeof node === 'string') {
       if (materializedNames.has(node)) return { rep: targetNames.get(node) ?? ANY_BIGINT, ready: true }
@@ -1042,17 +1053,24 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
     return { rep: currentOf(node), ready: false }
   }
+  // A join's own position — direct result expression, named-local RHS, or
+  // any other operand — is irrelevant to whether it materializes: the plan
+  // owns the join's carrier independent of where its value flows next (the
+  // return/binding-write EDGE consumes whatever this fixpoint decides, it
+  // does not gate it). Admitting resultExprs here is what lets a direct
+  // `export let g = (flag) => flag ? 1n : 0` materialize the same way a
+  // named-local `let value = flag ? 1n : 0; return value` already does.
   let joinChanged = true
   while (joinChanged) {
     joinChanged = false
     for (const [node, target] of nodeTarget) {
-      if (materializedJoins.has(node) || directResultNodes.has(node) ||
-          node[0] !== '?:' || target !== BOXED_BIGINT) continue
+      if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || target !== BOXED_BIGINT) continue
       const sem = semanticOf(node)
       if (semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0) continue
-      const left = emittedCandidate(node[2]), right = emittedCandidate(node[3])
-      if (edgeMaterializable(left.rep, target, node[2], left.ready) &&
-          edgeMaterializable(right.rep, target, node[3], right.ready)) {
+      const [armA, armB] = joinArms(node)
+      const left = emittedCandidate(armA), right = emittedCandidate(armB)
+      if (edgeMaterializable(left.rep, target, armA, left.ready) &&
+          edgeMaterializable(right.rep, target, armB, right.ready)) {
         materializedJoins.add(node)
         joinChanged = true
       }
@@ -1230,7 +1248,7 @@ const activeRep = (ctx, node, target) => {
 
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
-  if (Array.isArray(name) && name[0] === '?:') {
+  if (Array.isArray(name) && JOIN_OPS.has(name[0])) {
     const activeHandle = ctx.plans.representations.get(ctx.func.current)
     const activeBody = activeHandle && ctx.plans.representationData.get(activeHandle)?.body
     if (activeBody?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
@@ -1383,6 +1401,12 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
       if ((op === '.' || op === '?.') && typeof e[1] === 'string' && typeof e[2] === 'string')
         return ctx.schema.slotBigintProvenAt?.(e[1], e[2]) ? false
           : ctx.schema.slotBigintBoxedAt?.(e[1], e[2]) === true
+      // A join the body fixpoint already proved materialized IS boxed —
+      // ground truth, more precise than guessing from its arms (an arm can
+      // be an unresolved literal, like a bare bigint origin, that recursion
+      // alone would never resolve — see C5b: `flag ? 1n : 0`'s arms are both
+      // leaves with no name/call to recurse into).
+      if (JOIN_OPS.has(op) && body?.materializedJoins?.has(e) === true) return true
       // Symmetric tri-state join (re-audit: bare `||` collapsed null||false
       // to false but false||null to null — arm ORDER changed the verdict):
       // TRUE dominates, else UNKNOWN (null) dominates, else FALSE.
