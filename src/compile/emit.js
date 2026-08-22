@@ -71,6 +71,7 @@ import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit
 import {
   REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
+  representationProgramHasBigint,
 } from './representation-plan.js'
 
 // Raw-by-construction BIGINT producers (see the '=' emitter's durable-rebox arm).
@@ -4906,7 +4907,29 @@ const isBigIntCarrierBits = (get) => ['i32.and',
 // — not this BigInt-only one. Every other op ToNumeric()s unconditionally
 // (no STRING branch exists for them), so a `null` domain is a safe
 // runtime-heuristic target.
+//
+// ADR-0001 consequence #2 (.work/adr-0001-bigint-representation.md): plan-driven
+// gating — a program that can never produce a BigInt value anywhere makes EVERY
+// `bigIntDomain(node)` call below resolve to 'number'/null/'skip' (never
+// 'bigint'/'census', both of which require an actual VAL.BIGINT-kinded node or a
+// dict/Map census proving one), so the two `!== 'bigint' && !== 'census'` checks
+// two lines down would ALWAYS force `false` anyway — this is a pure compile-time-
+// cost skip, not a behavior change (kernel-parity's byte-identity gate is the
+// proof). `representationProgramHasBigint`, not `ctx.features.bigint`: the latter
+// is prep()'s narrower "literal or bare `BigInt(x)` call" scan (ir.js's own
+// inlineToNum-only carrier-heuristic gate) and misses `new BigInt64Array`/
+// `BigUint64Array`, `DataView#getBigInt64`/`getBigUint64`, and `BigInt.asIntN`/
+// `asUintN` — every one of which kind-traits.js's calleeValType/typedCtorElemValType
+// resolves straight to VAL.BIGINT with no literal or bare `BigInt(` call in sight
+// (test/session-reentrancy.js:326 `new BigInt64Array(1); return a[0]` is exactly
+// this shape, live and tested). `representationProgramHasBigint` reads
+// programFacts.hasBigint (program-facts.js's observeNodeFacts, folded into the
+// existing universal per-node walk — "costs no second AST traversal" by its own
+// doc comment), which DOES cover all of those origins — the same comprehensive
+// flag RepresentationPlan itself already trusts for this exact class of gate
+// (mintRepresentationPlan's own three call sites, representation-plan.js).
 function bigIntDomainsCanMix(a, b, allowUnresolved) {
+  if (!representationProgramHasBigint(ctx)) return false
   const domA = bigIntDomain(a), domB = bigIntDomain(b)
   // 'skip' (bigIntDomain's own doc comment): never eligible for the runtime
   // heuristic — falls through to whatever the pre-existing code path already
