@@ -56,8 +56,11 @@ materializer: `try { x.length } catch (e) { e.name }` planned its catch before
 the helper's pull-time factory minted the TypeError schema, leaving O0 schema
 metadata absent (false result or OOB in the larger fixture). Commit 8954dac2
 registers the brand at both length emission seams while keeping allocation and
-strings shared. Minimal O0/O1/O2/O3 and full O0 3639/3637/0/2 pass. Next:
-final battery, user push.
+strings shared. Minimal O0/O1/O2/O3 and full O0 3639/3637/0/2 pass. The WASI
+continuation then exposed seven JS-host-only assertions (host objects/Date,
+EXTERNAL import shape, callable `run` returns) that violated `_matrix.js`'s
+standing scope contract; d1a6276b guards those only, leaving internal semantics
+live. Full WASI 3638/3636/0/2. Next: final battery, user push.
 
 ## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
 ## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
