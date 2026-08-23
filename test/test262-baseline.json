@@ -1,7 +1,7 @@
 {
   "_comment": "audit-#12 item 3: committed lock for both test262 runners (test/test262.js language suite, test/test262-builtins.js). corpus is the tc39/test262 SHA (must match PINNED_COMMIT in both runner files — a mismatch means the floors below were measured against a different corpus and the runner refuses to trust them). language/builtins are pass-count floors (ratchet upward-only: a real fix bumps the number, a regression fails the run). negAcceptCeiling is test262.js's negative-parse-wrongly-accepted count (ratchet DOWNWARD-only: more invalid-JS-that-jz-compiles is a regression, fewer is a fix — never raise this number to paper over one). Refresh together with a PINNED_COMMIT bump or a real jz change that moves a count; JZ_TEST262_BASELINE, if set, overrides language/builtins for a one-off diagnostic run (not the source of truth).",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "language": 3000,
-  "builtins": 852,
-  "negAcceptCeiling": 1889
+  "language": 3003,
+  "builtins": 853,
+  "negAcceptCeiling": 1538
 }

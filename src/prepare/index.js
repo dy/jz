@@ -3332,9 +3332,10 @@ const handlers = {
     // source order. Collapsing directly to the last value loses effects; folding
     // old values into the winning property's expression reorders them across
     // intervening properties. Lower the simple data-property case to an arrow
-    // whose arguments stage all values left-to-right, then build the final
-    // first-position/last-value object from those temps. Spreads/computed keys
-    // need a full ordered property-definition IR and are handled separately.
+    // whose ONE object argument stages all values left-to-right, then build the
+    // final first-position/last-value object from unique temporary fields. One
+    // aggregate argument avoids tying legal object size to MAX_CLOSURE_ARITY.
+    // Spreads/computed keys need ordered property-definition IR and follow below.
     const rawKey = p => typeof p === 'string' ? p
       : Array.isArray(p) && p[0] === ':'
         ? (typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1]))
@@ -3347,18 +3348,18 @@ const handlers = {
     if ([...keyCounts.values()].some(n => n > 1)) {
       if (items.some(p => rawKey(p) == null))
         err('duplicate object keys mixed with spread/computed properties are unsupported — jz can\'t reorder the duplicate\'s side effects around a spread/computed key; keep one static occurrence per key, or move the repeated writes to explicit assignments after the literal')
-      const params = items.map(() => `${T}od${freshPrepareId()}`)
+      const staged = `${T}od${freshPrepareId()}`
       const last = new Map(), order = []
       for (let i = 0; i < items.length; i++) {
         const key = rawKey(items[i])
         if (!last.has(key)) order.push(key)
         last.set(key, i)
       }
-      const props = order.map(key => [':', key, params[last.get(key)]])
-      const values = items.map(p => typeof p === 'string' ? p : p[2])
-      const paramNode = ['()', params.length === 1 ? params[0] : [',', ...params]]
-      const argNode = values.length === 1 ? values[0] : [',', ...values]
-      return prep(['()', ['=>', paramNode, ['{}', [',', ...props]]], argNode])
+      const valueNames = items.map((_, i) => `${T}odv${i}`)
+      const props = order.map(key => [':', key, ['.', staged, valueNames[last.get(key)]]])
+      const values = items.map((p, i) => [':', valueNames[i], typeof p === 'string' ? p : p[2]])
+      const valuesNode = ['{}', [',', ...values]]
+      return prep(['()', ['=>', ['()', staged], ['{}', [',', ...props]]], valuesNode])
     }
 
     // Computed keys: fixed schemas cannot name them, so build one empty object

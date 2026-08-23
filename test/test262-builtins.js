@@ -826,7 +826,6 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/String/prototype/slice/S15.5.4.13_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
   ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'String(object) is JSON-ish, not "[object Object]" — documented divergence (boolean/number/null/undefined/array needles all coerce correctly)'],
   // Array
-  ['built-ins/Array/from/elements-added-after.js', 'live iterator protocol — out of scope'],
   ['built-ins/Array/isArray/15.4.3.2-0-2.js', 'builtin function .length reflection — out of scope (function-object property semantics)'],
   // Object — function objects, array-likes, dynamic schema, iterable coercion
   ['built-ins/Object/keys/15.2.3.14-3-2.js', 'Object.keys on function object — out of scope'],

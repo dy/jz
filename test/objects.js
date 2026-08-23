@@ -48,7 +48,7 @@ test('opaque .length host provenance survives aliases and internal call hops', (
 })
 
 test('object literal preserves duplicate and computed-key initializer order', () => {
-  const { duplicate, computed } = jz(`
+  const { duplicate, computed, wide } = jz(`
     export let duplicate = () => {
       let n = 0
       let o = {a: (n = n * 10 + 1), b: (n = n * 10 + 2), a: (n = n * 10 + 3)}
@@ -59,9 +59,12 @@ test('object literal preserves duplicate and computed-key initializer order', ()
       let o = {[k]: (n = n * 10 + 1), ...{y: (n = n * 10 + 2)}, z: (n = n * 10 + 3)}
       return n * 1000 + o.x * 100 + o.y * 10 + o.z
     }
+    export let wide = () => ({a: 0, b: 1, c: 2, d: 3, e: 4, f: 5,
+      g: 6, h: 7, i: 8, j: 9, k: 10, a: 11}).a
   `).exports
   is(duplicate(), 124242, 'all duplicate initializers run; first key position keeps last value')
   is(computed(), 123343, 'computed, spread, and static properties stay source-ordered')
+  is(wide(), 11, 'duplicate staging is independent of MAX_CLOSURE_ARITY')
 })
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {

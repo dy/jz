@@ -853,7 +853,10 @@ function runTest(src, options = {}) {
     .replace(/\/\*---[\s\S]*?---\*\//, '') // strip YAML frontmatter
     .replace(/^#![^\n]*(?:\n|$)/, '')
     .replace(/\.create\.js\b/g, '')  // non-existent files
-    .replace(/\$DONOTEVALUATE\(\)/g, 'return')  // skip markers
+    // Negative parse tests are compile-only: remove the execution sentinel but
+    // do NOT turn it into `return`, because prepare's sound dead-tail DCE would
+    // then hide the very invalid syntax this runner is asking jz to reject.
+    .replace(/\$DONOTEVALUATE\(\)/g, options.compileOnly ? '0' : 'return')
 
   // Wrap bare statements into a module export for jz
   // test262 tests are typically bare scripts with assert() calls
