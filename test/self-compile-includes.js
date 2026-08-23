@@ -134,4 +134,6 @@ test('RESOLVED_PROP_MODULES consults derived-only rows (re-audit finding 5)', as
   // hand keys silently dropped every such row from includeForProperty.
   ok(Array.isArray(RESOLVED_PROP_MODULES.getDate) && RESOLVED_PROP_MODULES.getDate.includes('date'),
     'derived-only method rows reach the resolved table')
+  is([...RESOLVED_PROP_MODULES.getDate].sort().join(','), [...DERIVED_PROP_MODULES.getDate].sort().join(','),
+    'derived-only rows no longer inherit the broad object/array/string/collection catch-all')
 })

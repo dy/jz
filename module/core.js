@@ -2456,6 +2456,8 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access.
     if (typeof prop === 'string') {
+      ctx.module.include('collection')
+      ctx.module.include('array')
       inc('__dyn_get_expr_t_h')
       maybeIncErrProp(prop)
       const call = ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
@@ -2594,6 +2596,9 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         if (i >= 0) schemaIdx = i
       }
     }
+    // Dynamic/schema fallback synthesizes a string-key AST independently of
+    // source autoload; own that emitter dependency here.
+    ctx.module.include('string')
     const key = asI64(emit(['str', prop]))
     if (schemaIdx >= 0) {
       // A precise schema id proves this is a fixed-size OBJECT allocation, not
@@ -2919,6 +2924,8 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         (ptVt === VAL.ARRAY || ptVt === VAL.TYPED || ptVt === VAL.OBJECT)) {
       const builtin = ctx.core.emit[`.${ptVt}:${prop}`] || ctx.core.emit[`.${prop}`]
       if (builtin && emitArity(builtin) <= 1) {
+        ctx.module.include('collection')
+        ctx.module.include('array')
         return sidecarOverride(emit(obj), asI64(emit(['str', prop])),
           (p) => ['local.get', `$${p}`],          // READ: yield the override closure value
           (o) => asF64(builtin(o)))               // else the arity-≤1 builtin's value

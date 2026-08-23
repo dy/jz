@@ -96,19 +96,9 @@ export const PROP_MODULES = Object.assign(Object.create(null), {
 // helper, never a `.length`/`.kind:length` ctx.core.emit key — so it stays
 // exactly the hand-audited row (union with `undefined` is a no-op).
 //
-// byteLength/byteOffset/buffer are DELIBERATELY NOT folded in here (tried it —
-// reverted, see test/objects.js's own extensive comment on "fields named like
-// TypedArray accessors resolve like any other field"): they're kept OUT of
-// this table on purpose so a property read that ISN'T actually a typed array
-// (a plain-object field that merely happens to be spelled `buffer`) still
-// falls through to includeForProperty's generic catch-all below and gets
-// `string`/`collection` — needed for the dyn-prop fallback path's
-// `__dyn_get_expr_t_h`/string-literal-key machinery, NOT for any
-// typedarray-specific dispatch. Folding them into a precise `['typedarray']`
-// row (this table's normal shape) silently dropped that — confirmed by
-// re-running this exact test, not assumed. includeForProperty's own hardcoded
-// `if` for these three stays, unmodified, ADDITIONAL to (not instead of) the
-// catch-all — that non-obvious redundancy is load-bearing, not dead weight.
+// byteLength/byteOffset/buffer keep their explicit typedarray demand below.
+// Plain-object fields with those names are still sound because the dynamic
+// property emitter now owns its string/collection/array dependencies.
 const unionMods = (a, b) => [...new Set([...(a || []), ...(b || [])])]
 export const RESOLVED_PROP_MODULES = (() => {
   const out = Object.create(null)
@@ -117,22 +107,13 @@ export const RESOLVED_PROP_MODULES = (() => {
   // DataView/TypedArray methods the generator attributes but no hand row
   // names (e.g. getDate) never reached includeForProperty at all.
   //
-  // DERIVED-ONLY rows additionally keep the CATCH-ALL set (regression
-  // 3085bba6, bisected): before the union landed, these 86 names fell
-  // through to includeForProperty's generic catch-all, and emit-time
-  // hand-built IR sites (buildArrayWithSpreads' '[' node, object.js's 'in'
-  // node, 'str' nodes, ...) depended on the catch-all's modules BY
-  // ACCIDENT — narrowing to the derived row alone broke them (`m.get(k)
-  // .toFixed(2)` → "Unknown op: [", 25-fail blast radius). Superset-of-old
-  // semantics restores main to green; the SIZE narrowing returns
-  // site-by-site as each hand-built-IR emitter gains its own
-  // includeFor*() self-demand (the emitter-owns-dependencies doctrine —
-  // buildArrayWithSpreads is the first, 57fa6989).
-  const CATCH_ALL = ['object', 'array', 'string', 'collection']
+  // Derived-only names use their registration owners directly. Hand-built
+  // AST and stdlib-helper emitters own their dependencies at the emission
+  // seam, so these rows no longer need the historical broad catch-all.
   for (const name of new Set([...Object.keys(PROP_MODULES), ...Object.keys(DERIVED_PROP_MODULES)]))
     out[name] = PROP_MODULES[name] != null
       ? unionMods(PROP_MODULES[name].filter(m => m !== 'core'), DERIVED_PROP_MODULES[name])
-      : unionMods(CATCH_ALL, DERIVED_PROP_MODULES[name])
+      : DERIVED_PROP_MODULES[name]
   return out
 })()
 
@@ -344,7 +325,7 @@ export const includeForArrayPattern = includeForArrayAccess
 export const includeForObjectLiteral = () => includeMods('core', 'object')
 export const includeForObjectPattern = () => includeMods('core', 'object', 'string', 'collection')
 export const includeForKnownKeyIteration = includeForStringOnly
-export const includeForRuntimeKeyIteration = () => includeMods('core', 'string', 'collection')
+export const includeForRuntimeKeyIteration = () => includeMods('core', 'string', 'array', 'collection')
 export const includeForTimerRuntime = () => {
   setFeature('timers', true)
   includeModule('timer')
@@ -366,8 +347,7 @@ export const includeForGenericMethod = prop => {
 }
 
 export const includeForProperty = prop => {
-  // Deliberately NOT part of RESOLVED_PROP_MODULES — see that table's own
-  // comment. Additional to, not instead of, the catch-all below.
+  // Deliberately additional to the registration-derived owner row.
   if (prop === 'byteLength' || prop === 'byteOffset' || prop === 'buffer') includeMods('core', 'typedarray')
   if (typeof prop === 'string' && RESOLVED_PROP_MODULES[prop]) includeMods(...RESOLVED_PROP_MODULES[prop])
   else includeMods('core', 'object', 'array', 'string', 'collection')

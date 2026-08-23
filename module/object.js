@@ -442,6 +442,9 @@ export default (ctx) => {
       if (typeof obj === 'string' && ctx.schema.slotOf?.(obj, litKey) >= 0)
         return typed(['f64.const', 1], 'f64')
     }
+    // This fallback is emitted as an `in` AST node; own the operator module
+    // even when no source-level `in` triggered prepare-time autoload.
+    ctx.module.include('collection')
     return typed(['f64.convert_i32_s', emit(['in', key, obj])], 'f64')
   }
   ctx.core.emit[`.${VAL.HASH}:hasOwnProperty`] = ctx.core.emit['.hasOwnProperty']
