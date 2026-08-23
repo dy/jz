@@ -278,7 +278,7 @@ export const FIRST_CLASS_BUILTIN_NAMES = new Set([...Object.keys(FIRST_CLASS_UNA
 function builtinFunctionValue(name) {
   const op = FIRST_CLASS_UNARY_MATH[name]
   const bodyGen = FIRST_CLASS_BUILTIN_BODY[name]
-  if (!op && !bodyGen) err(`Builtin function '${name}' cannot be used as a first-class value`)
+  if (!op && !bodyGen) err(`Builtin function '${name}' cannot be used as a first-class value (no closure form registered for it) — call it directly, or wrap it: (...a) => ${name}(...a)`)
   if (!ctx.closure.table) err(`Builtin function '${name}' used as value requires closure support`)
   const fn = `${T}builtin_${name.replace(/\W/g, '_')}`
   if (!ctx.core.stdlib[fn]) {
@@ -3955,7 +3955,7 @@ function unresolvedDateMethod(obj, method, parsed) {
   if (!dateEmitter || method === 'valueOf') return null
   const noArgs = emitArity(dateEmitter) <= 1
   if (parsed.hasSpread && !noArgs)
-    err(`Spread arguments on Date method .${method}() with a non-Date or unresolved receiver are unsupported`)
+    err(`Spread arguments on Date method .${method}() with a non-Date or unresolved receiver are unsupported — spread's runtime-determined argument count can't preserve .${method}()'s optional-argument defaults; call with explicit positional arguments, or narrow the receiver to a provably-Date value first`)
   const recv = temp('dateRecv'), argv = temp('dateArgs'), pt = tempI32('datePt')
   const argTemps = parsed.hasSpread ? [] : parsed.normal.map(() => temp('dateArg'))
   inc('__ptr_type')
@@ -4491,7 +4491,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   }
 
   // Regular function call without rest params
-  if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee}`)
+  if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee} — pass arguments individually, or give ${callee} a rest parameter (...args)`)
   // Speculative typed dispatch (narrow's speculateTypedParams): route the call
   // through a per-arg tag guard to the typed clone; a miss takes the original
   // call unchanged. Guard positions must be covered by real args — a site
@@ -4753,7 +4753,7 @@ const I64_ARITH_OP = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div_s', '%': 'r
  *  omit it for ops that only exist elsewhere for BigInt (this fn is never called
  *  for '&='/etc — those have their own i64 gate right below in the dispatch table). */
 function compoundAssign(name, val, f64op, i32op, arithOp) {
-  if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+  if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
   const void_ = ctx.func._expect === 'void'
   // BigInt target/operand: route through the SAME i64 arithmetic the spelled-out
   // binary form uses (asI64 both sides, i64.<op>, fromI64) — see e.g. binary '+'
@@ -5675,10 +5675,10 @@ export const emitter = {
   // === Assignment ===
 
   '=': (name, val) => {
-    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
-    if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)}`)
+    if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)} — jz assigns to a plain variable, obj.prop, or arr[i] only`)
     if (isNullishLit(val)) ctx.func.maybeNullish?.add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
@@ -5754,7 +5754,7 @@ export const emitter = {
       // `>>>=` has no BigInt arm at all (see the binary '>>>' handler above) —
       // unlike the other bitwise compounds, which fall to i64.<op>, this one
       // must throw unconditionally rather than take fn='shr_u' on i64 bits.
-      if (fn === 'shr_u') err('BigInt has no unsigned right shift (>>>) — TypeError in JS')
+      if (fn === 'shr_u') err('BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
       bigintMixReject(sym, name, val)
       const void_ = ctx.func._expect === 'void'
       // See compoundAssign's identical comment: `name` is always a bare identifier,
@@ -5780,7 +5780,7 @@ export const emitter = {
       const baseOp = op.slice(0, -1) // '||', '&&', '??'
       return emit([baseOp, name, ['=', name, val]])
     }
-    if (isConst(name)) err(`Assignment to const '${name}'`)
+    if (isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'
     const t = temp()
     const va = readVar(name)
@@ -5803,7 +5803,7 @@ export const emitter = {
   // Postfix resolved in prepare: i++ → (++i) - 1
 
   ...Object.fromEntries([['++', 'add'], ['--', 'sub']].map(([op, fn]) => [op, name => {
-    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}'`)
+    if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     const void_ = ctx.func._expect === 'void'
     const v = readVar(name)
     // BigInt local: readVar's carrier type is 'f64' (a bigint local's f64.reinterpret_i64
@@ -6742,7 +6742,7 @@ export const emitter = {
     // to fall to). Checked before either side emits, so no side effect runs
     // ahead of the throw.
     if (valTypeOf(a) === VAL.BIGINT || valTypeOf(b) === VAL.BIGINT)
-      err('BigInt has no unsigned right shift (>>>) — TypeError in JS')
+      err('BigInt has no unsigned right shift (>>>) — TypeError in JS; convert with Number(x) first if you need an unsigned shift')
     const va = emit(a), vb = emit(b)
     if (isLit(va) && isLit(vb)) {
       const r = litVal(va) >>> litVal(vb) // JS uint32 result ∈ [0, 2^32)
@@ -7428,7 +7428,7 @@ export const emitter = {
     const idx = label == null
       ? ctx.func.stack.length - 1
       : ctx.func.stack.findLastIndex(frame => frame.label === label)
-    if (label != null && idx < 0) err(`break label '${label}' is not in scope`)
+    if (label != null && idx < 0) err(`break label '${label}' is not in scope — check the spelling, or add a matching \`${label}:\` around an enclosing loop/block`)
     const target = (idx >= 0 ? ctx.func.stack[idx] : loopTop()).brk
     if (!target) err(`break label '${label}' is not in scope`)
     return [...emitFinalizers(idx + 1), ['br', target]]
@@ -7437,7 +7437,7 @@ export const emitter = {
     if (label == null) return [...emitFinalizers(ctx.func.stack.length), ['br', loopTop().loop]]
     // Labeled continue: target the continue point of the loop that adopted this label.
     const idx = ctx.func.stack.findLastIndex(f => f.contLabel === label)
-    if (idx < 0) err(`continue label '${label}' is not in scope`)
+    if (idx < 0) err(`continue label '${label}' is not in scope — check the spelling, or add a matching \`${label}:\` around an enclosing loop`)
     return [...emitFinalizers(idx + 1), ['br', ctx.func.stack[idx].loop]]
   },
 
@@ -7605,7 +7605,7 @@ export function emit(node, expect) {
       // Forwards the first N inline slots to $func where N = func's fixed param count.
       const func = ctx.funcs.map.get(node)
       const sigParams = func?.sig.params || []
-      if (sigParams.length > MAX_CLOSURE_ARITY) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY}`)
+      if (sigParams.length > MAX_CLOSURE_ARITY) err(`Function ${node} used as closure value has ${sigParams.length} params, exceeds MAX_CLOSURE_ARITY=${MAX_CLOSURE_ARITY} — bundle the extra parameters into one array/object argument`)
       const trampolineName = `${T}tramp_${node}`
       if (!ctx.core.stdlib[trampolineName]) {
         const W = ctx.closure.width ?? MAX_CLOSURE_ARITY

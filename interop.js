@@ -489,7 +489,7 @@ export const memory = (src) => {
       const matches = schemas.reduce((a, s, i) =>
         (s.length === objKeys.length && objKeys.every(k => s.includes(k)) ? a.concat(i) : a), [])
       if (matches.length === 1) sid = matches[0]
-      else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — pass keys in schema order`)
+      else if (matches.length > 1) throw Error(`Ambiguous schema for {${key}} — ${matches.length} compiled shapes match this key set; pass keys in one of these orders: ${matches.map(i => schemas[i].join(',')).join(' | ')}`)
       else return mem.Hash(obj)   // no compiled schema: first-class hash (External loses nested-mutation identity)
     }
     const schema = schemas[sid], n = schema.length, raw = alloc(n * 8)
@@ -600,7 +600,7 @@ export const memory = (src) => {
     const t = type(p), off = offset(p), m = dv()
     if (t === 1) {
       const cap = m.getInt32(off - 4, true)
-      if (data.length > cap) throw Error(`write: ${data.length} exceeds capacity ${cap}`)
+      if (data.length > cap) throw Error(`mem.write: ${data.length} elements exceeds this array's capacity of ${cap} — allocate it with a larger capacity, or write ${cap} or fewer elements`)
       m.setInt32(off - 8, data.length, true)
       // mem.wrapVal, not bare bits(coerce(…)): an in-place array write accepts
       // the same value shapes the mem.Array constructor does (string/bigint/
@@ -614,23 +614,23 @@ export const memory = (src) => {
       const byteLen = data.length * stride
       if (a2 & 8) {
         const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
-        if (byteLen > viewByteLen) throw Error(`write: ${byteLen} bytes exceeds view size ${viewByteLen}`)
+        if (byteLen > viewByteLen) throw Error(`mem.write: ${byteLen} bytes exceeds this typed array view's size of ${viewByteLen} bytes — allocate a larger view, or write fewer elements`)
         for (let i = 0; i < data.length; i++) m[setter](dataOff + i * stride, data[i], true)
       } else {
         const byteCap = m.getInt32(off - 4, true)
-        if (byteLen > byteCap) throw Error(`write: ${byteLen} bytes exceeds capacity ${byteCap}`)
+        if (byteLen > byteCap) throw Error(`mem.write: ${byteLen} bytes exceeds this typed array's capacity of ${byteCap} bytes — allocate it with a larger capacity, or write fewer elements`)
         m.setInt32(off - 8, byteLen, true)
         for (let i = 0; i < data.length; i++) m[setter](off + i * stride, data[i], true)
       }
     } else if (t === 6) {
       const schema = mem.schemas[aux(p)]
-      if (!schema) throw Error(`write: unknown schema`)
+      if (!schema) throw Error(`mem.write: this pointer's schema id (${aux(p)}) has no compiled OBJECT schema — write to a pointer returned by mem.Object() for a schema this program compiled`)
       for (const k of Object.keys(data)) {
         const i = schema.indexOf(k)
         if (i >= 0) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[k])), true)  // mem.wrapVal — see the t===1 branch above
       }
     } else {
-      throw Error(`write: unsupported type ${t}`)
+      throw Error(`mem.write only supports ARRAY, TYPED array, and OBJECT pointers — this pointer is a different kind (type tag ${t})`)
     }
   }
 
@@ -678,7 +678,7 @@ export const memory = (src) => {
   // keep views valid across grow and to hand them to a worker/AudioWorklet.
   mem.allocTyped = (Ctor, n) => {
     const meta = ELEMS[Ctor?.name]
-    if (!meta) throw Error(`allocTyped: unsupported type ${Ctor?.name ?? Ctor}`)
+    if (!meta) throw Error(`mem.allocTyped: ${Ctor?.name ?? Ctor} is not a supported typed array constructor — pass one of ${Object.keys(ELEMS).join(', ')}`)
     const [elemId, stride] = meta
     const bytes = n * stride, off = hdr(bytes, bytes, bytes)
     return { view: new Ctor(mem.buffer, off, n), box: ptr(3, elemId, off) }

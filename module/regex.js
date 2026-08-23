@@ -214,7 +214,7 @@ const parseClassChar = () => {
   if (cur() === BSLASH) {
     skip(); const c = peek()
     if ('dDwWsS'.includes(c)) { skip(); return ['\\' + c] }
-    if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…} unsupported')
+    if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…}/\\P{…} not supported (no Unicode property tables shipped) — use an explicit character class instead')
     return parseEscapeChar()
   }
   return skip()
@@ -230,7 +230,7 @@ const parseEscape = () => {
   if (c === 'k' && src.charCodeAt(idx + 1) === LT) { skip(); skip(); return ['\\k', parseGroupName()] }
   // \p{…}/\P{…} need the Unicode property tables (multi-KB) — out of scope.
   // Falling through would match the LITERAL text "p{…}" — silently wrong.
-  if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…} unsupported')
+  if (c === 'p' || c === 'P') perr('Unicode property escape \\p{…}/\\P{…} not supported (no Unicode property tables shipped) — use an explicit character class instead')
   if ('dDwWsS'.includes(c)) { skip(); return ['\\' + c] }
   if (c === 'b' || c === 'B') { skip(); return ['\\' + c] }
   return parseEscapeChar()
@@ -260,7 +260,7 @@ const parseGroup = () => {
       if (c2 === EQUAL) { skip(); type = '(?<=)' }
       else if (c2 === EXCL) { skip(); type = '(?<!)' }
       else { groupName = parseGroupName(); groupId = ++groupNum }
-    } else perr('Invalid group syntax')
+    } else perr('Invalid group syntax — supported forms: (?:…) (?=…) (?!…) (?<=…) (?<!…) (?<name>…)')
   } else groupId = ++groupNum
   const inner = parseAlt()
   cur() === RPAREN || perr('Unclosed ('); skip()
@@ -290,10 +290,10 @@ const isGroupNameContinue = c => isGroupNameStart(c) || (c >= 48 && c <= 57)
 
 const parseGroupName = () => {
   const start = idx
-  isGroupNameStart(cur()) || perr('Invalid group name')
+  isGroupNameStart(cur()) || perr('Invalid group name — must start with a letter, $, or _')
   skip()
   while (!eof() && cur() !== GT) {
-    isGroupNameContinue(cur()) || perr('Invalid group name')
+    isGroupNameContinue(cur()) || perr('Invalid group name — only letters, digits, $, or _ after the first character')
     skip()
   }
   cur() === GT || perr('Unclosed group name')
@@ -1018,7 +1018,7 @@ export default (ctx) => {
   // regex.test(str) → search, return 1/0
   ctx.core.emit['.regex:test'] = (obj, str) => {
     const id = resolveRegex(obj)
-    if (id == null) err('regex.test requires a known regex')
+    if (id == null) err('regex.test: argument must be a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
     const s = temp('rt'), mstart = tempI32('rms'), mend = tempI32('rme')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${s}`, asF64(emit(str))],
@@ -1035,7 +1035,7 @@ export default (ctx) => {
   // For /g (and /y) regexes: stateful — reads lastIndex, advances on match, resets on miss.
   ctx.core.emit['.regex:exec'] = (obj, str) => {
     const id = resolveRegex(obj)
-    if (id == null) err('regex.exec requires a known regex')
+    if (id == null) err('regex.exec: argument must be a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []
     const flags = flagsOf(obj)
@@ -1319,7 +1319,7 @@ export default (ctx) => {
   // Two-pass over the same anchored matcher: count, then fill a sized array.
   ctx.core.emit['.string:matchAll'] = (str, search) => {
     const id = resolveRegex(search)
-    if (id == null) err('matchAll requires a regex argument')
+    if (id == null) err('matchAll: argument must be a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
     // ES 22.1.3.14: matchAll throws TypeError without /g — flags are static here,
     // so fail at compile instead of scanning once like /g anyway (silent-wrong).
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
@@ -1339,7 +1339,7 @@ export default (ctx) => {
   // pinned in test/regex.js).
   ctx.core.emit['.matchAll'] = (str, search) => {
     const id = resolveRegex(search)
-    if (id == null) err('matchAll requires a regex argument')
+    if (id == null) err('matchAll: argument must be a literal /pattern/flags or a variable assigned one directly — jz resolves regexes at compile time')
     if (!flagsOf(search).includes('g')) err('matchAll requires the /g flag (TypeError in JS)')
     const nGroups = ctx.runtime.regex.groups.get(id) || 0
     const groupNames = ctx.runtime.regex.groupNames.get(id) || []

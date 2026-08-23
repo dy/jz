@@ -824,7 +824,7 @@ export function emitPropertyAssign(obj, prop, val) {
   // `.length =` as a plain property write below. The expression value is N.
   if (prop === 'length') {
     const recvVt = valTypeOf(obj)
-    if (recvVt === VAL.TYPED) err(`Typed arrays are fixed-size — cannot assign to \`${typeof obj === 'string' ? obj : '<expr>'}.length\``)
+    if (recvVt === VAL.TYPED) err(`Typed arrays are fixed-size — cannot assign to \`${typeof obj === 'string' ? obj : '<expr>'}.length\` — allocate a new typed array of the desired length instead`)
     if (recvVt === VAL.ARRAY || recvVt == null) {
       inc('__arr_set_length')
       const arrTmp = `${T}aln${freshId(ctx)}`

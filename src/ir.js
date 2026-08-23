@@ -2142,7 +2142,7 @@ export function multiCount(callNode) {
 /** Get current loop labels or throw. */
 export function loopTop() {
   const top = ctx.func.stack.at(-1)
-  if (!top) err('break/continue outside loop')
+  if (!top) err('break/continue outside loop — move it inside a for/while/do loop')
   return top
 }
 

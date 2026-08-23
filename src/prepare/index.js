@@ -671,7 +671,7 @@ function staticStringExpr(node) {
 }
 
 function importMetaUrl() {
-  if (!ctx.transform.importMetaUrl) err('`import.meta.url` requires compile option `importMetaUrl`')
+  if (!ctx.transform.importMetaUrl) err('`import.meta.url` requires compile option `importMetaUrl` — jz resolves it to a fixed URL at compile time and has no runtime URL source without one')
   return ctx.transform.importMetaUrl
 }
 
@@ -683,7 +683,7 @@ function resolveImportMeta(spec) {
   // its module graph and never resolves import.meta at runtime) free of `URL`.
   if (!ctx.transform.resolveUrl) err('import.meta resolution requires ctx.transform.resolveUrl (injected by the jz pipeline)')
   try { return ctx.transform.resolveUrl(spec, base) }
-  catch { err(`Cannot resolve import.meta specifier '${spec}' from '${base}'`) }
+  catch { err(`Cannot resolve import.meta specifier '${spec}' from '${base}' — pass a valid relative or absolute URL string`) }
 }
 
 function recordModuleInitFacts(root) {
@@ -1309,7 +1309,7 @@ function prep(node) {
       if (REJECT_IDENTS[node]) err(REJECT_IDENTS[node])
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
-      if (node[0] === '#') err(`private name '${node}' — \`#field in obj\` brand checks are not supported`)
+      if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
@@ -1345,7 +1345,7 @@ function prep(node) {
   // of per-op handlers, so none of them need their own copy of this check.
   if (MUTATE_OPS.has(op) && typeof args[0] === 'string') {
     const aliasKey = builtinAliasKeyOf(args[0])
-    if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage`)
+    if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage. Declare a fresh local instead, or reference '${aliasKey}' directly`)
     // Assignment to a const binding is a compile error (ES: runtime TypeError).
     // Resolve through the live block scopes so a shadowing `let` of the same
     // name stays writable; module-level consts are guarded by emit's isConst.
@@ -1935,7 +1935,7 @@ function prepDecl(op, ...inits) {
   for (const i of inits) {
     if (Array.isArray(i) && i[0] === '()' && typeof i[1] === 'string' && Array.isArray(i[2]) && i[2][0] === '=' && isDestructPattern(i[2][1])) {
       if (rest.length === 0 && inits.length === 1) return [';', [op, i[1]], prep(i[2])]
-      err('destructuring assignment after declaration must be a separate statement')
+      err('destructuring assignment after declaration must be a separate statement — e.g. write `let x = f(); ({a, b} = x)` as two statements, not one declarator')
     }
 
     if (!Array.isArray(i) || i[0] !== '=') {
@@ -2279,9 +2279,9 @@ function prepDecl(op, ...inits) {
 function foldImportMetaResolve(callee, args) {
   if (!isImportMetaProp(callee, 'resolve')) return undefined
   const callArgs = handlerArgs(args)
-  if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument')
+  if (callArgs.length !== 1) err('`import.meta.resolve` requires one string literal argument — resolution happens at compile time against a literal specifier')
   const spec = stringValue(callArgs[0])
-  if (spec == null) err('`import.meta.resolve` supports only string literal arguments')
+  if (spec == null) err('`import.meta.resolve` supports only string literal arguments — resolution happens at compile time against a literal specifier')
   return staticString(resolveImportMeta(spec))
 }
 
@@ -2523,7 +2523,7 @@ const handlers = {
       const isLiteralKey = Array.isArray(key) && key[0] == null && key.length === 2
       if (!isLiteralKey) return ['delete', t[1], key]
     }
-    err('delete not supported: object shape is fixed')
+    err('delete not supported on a static key: object shape is fixed — use a computed key with a variable (`delete obj[k]`) if the key must vary at runtime')
   },
   'in'(key, obj) { return ['in', prep(key), prep(obj)] },
   'label'(name, body) { return ['label', name, prep(body)] },
@@ -2720,7 +2720,7 @@ const handlers = {
     // for any template containing an escape. Reject until the parser keeps
     // raw slices (upstream subscript; same for `.raw` inside custom tags).
     if (Array.isArray(tag) && tag[0] === '.' && tag[1] === 'String' && tag[2] === 'raw')
-      err('String.raw not supported: the parser keeps only cooked template strings')
+      err('String.raw not supported: the parser keeps only cooked template strings — write the raw characters out manually (double the backslashes) instead of using String.raw')
     const raw = staticStringExpr(['``', tag, ...parts])
     if (raw != null) return staticString(raw)
     const strs = [], exprs = []
@@ -2739,7 +2739,7 @@ const handlers = {
     if (Array.isArray(fromNode) && fromNode[0] == null && typeof fromNode[1] === 'string')
       return handlers['from'](null, fromNode)
     if (!Array.isArray(fromNode) || fromNode[0] !== 'from')
-      return err('Dynamic import() not supported')
+      return err('Dynamic import() not supported: jz resolves the module graph at compile time — use a static top-level import statement instead')
     return handlers['from'](fromNode[1], fromNode[2])
   },
 
@@ -2763,7 +2763,7 @@ const handlers = {
 
   'from'(specifiers, source) {
     const mod = source?.[1]
-    if (!mod || typeof mod !== 'string') return err('Invalid import source')
+    if (!mod || typeof mod !== 'string') return err(`Invalid import source ${JSON.stringify(source)} — the module specifier after \`from\` must be a string literal`)
 
     // Host imports override built-ins for named imports
     const hostMod = ctx.module.hostImports?.[mod]
@@ -2786,7 +2786,7 @@ const handlers = {
         if (builtinItems.length === 0) return null
         if (!hasModule(mod)) {
           const name = typeof builtinItems[0] === 'string' ? builtinItems[0] : builtinItems[0][1]
-          err(`'${name}' not declared in host module '${mod}'`)
+          err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
         }
         remaining = ['{}', builtinItems.length === 1 ? builtinItems[0] : [',', ...builtinItems]]
       } else {
@@ -2799,7 +2799,7 @@ const handlers = {
       includeModule(mod)
       const bind = (name, alias) => {
         const key = mod + '.' + name
-        if (!ctx.core.emit[key]) err(`Unknown import: ${name} from '${mod}'`)
+        if (!ctx.core.emit[key]) err(`'${name}' is not exported from built-in module '${mod}' — check the spelling, or see the module's documented exports`)
         ctx.scope.chain[alias || name] = key
       }
 
@@ -2813,7 +2813,7 @@ const handlers = {
         for (const item of items)
           if (typeof item === 'string') bind(item)
           else if (Array.isArray(item) && item[0] === 'as') bind(item[1], item[2])
-          else err(`Invalid import specifier: ${JSON.stringify(item)}`)
+          else err(`Invalid import specifier: ${JSON.stringify(item)} — each named import must be a plain identifier or an \`x as y\` rename`)
       }
       return null
     }
@@ -2824,7 +2824,7 @@ const handlers = {
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
-        if (!mangled) err(`'${mod}' has no default export`)
+        if (!mangled) err(`'${mod}' has no default export — use a named import instead: import { name } from '${mod}'`)
         ctx.scope.chain[specifiers] = mangled
         return null
       }
@@ -2845,7 +2845,7 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const mangled = resolved.exports.get(name)
-          if (!mangled) err(`'${name}' is not exported from '${mod}'`)
+          if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
           ctx.scope.chain[alias] = mangled
         }
       }
@@ -2862,14 +2862,14 @@ const handlers = {
           const name = typeof item === 'string' ? item : item[1]
           const alias = typeof item === 'string' ? item : item[2]
           const spec = hostMod[name]
-          if (!spec) err(`'${name}' not declared in host module '${mod}'`)
+          if (!spec) err(`'${name}' not declared in host module '${mod}' — add it to { imports: { '${mod}': {...} } }`)
           addHostImport(mod, name, alias, spec)
         }
       }
       return null
     }
 
-    err(`Unknown module '${mod}'. Provide it via { modules: { '${mod}': source } } or { imports: { '${mod}': {...} } }`)
+    err(`Unknown module '${mod}': not a built-in and not registered — provide it via { modules: { '${mod}': source } } or { imports: { '${mod}': {...} } }`)
   },
 
   // `===`/`!==` keep strict semantics (no coercion); emit folds a statically-known
@@ -2969,7 +2969,7 @@ const handlers = {
             const name = typeof item === 'string' ? item : item[1]
             const alias = typeof item === 'string' ? item : item[2]
             const mangled = resolved.exports.get(name)
-            if (!mangled) err(`'${name}' is not exported from '${mod}'`)
+            if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
             ctx.funcs.exports[alias] = mangled
           }
         }
@@ -3347,7 +3347,7 @@ const handlers = {
     }
     if ([...keyCounts.values()].some(n => n > 1)) {
       if (items.some(p => rawKey(p) == null))
-        err('duplicate object keys mixed with spread/computed properties are unsupported')
+        err('duplicate object keys mixed with spread/computed properties are unsupported — jz can\'t reorder the duplicate\'s side effects around a spread/computed key; keep one static occurrence per key, or move the repeated writes to explicit assignments after the literal')
       const staged = `${T}od${freshPrepareId()}`
       const last = new Map(), order = []
       for (let i = 0; i < items.length; i++) {
@@ -3384,8 +3384,8 @@ const handlers = {
           return ['=', ['[]', tmp, keyExpr], p[2]]
         }
         if (Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))
-          err('object getter/setter not supported — jz objects have no accessors')
-        err('unsupported property in computed-key object literal')
+          err('object getter/setter not supported — jz objects have no accessors; use a method or a plain property + function')
+        err(`unsupported property in computed-key object literal: ${JSON.stringify(p)} — use a \`key: value\` pair, a spread, or a getter/setter only`)
       })
       return prep(['()', ['=>', ['()', tmp], [',', ...assigns, tmp]], ['{}']])
     }
@@ -3646,7 +3646,7 @@ const handlers = {
     // receiver spelling through scopes before the membership check.
     const objKey = typeof obj === 'string' && scopes.length && isDeclared(obj) ? resolveScope(obj) : obj
     if ((obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey)) && (prop === 'caller' || prop === 'callee'))
-      err('`.caller`/`.callee` are prohibited: deprecated function stack introspection')
+      err('`.caller`/`.callee` are prohibited: deprecated function stack introspection — jz has no equivalent; pass what you need as an explicit argument instead')
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
     // — read the property off the local value, not the builtin namespace table.
@@ -3696,7 +3696,7 @@ const handlers = {
       const literalArgs = ctorArgs.filter(a => a != null)
       if (literalArgs.length === 2 && isImportMetaProp(literalArgs[1], 'url')) {
         const spec = stringValue(literalArgs[0])
-        if (spec == null) err('`new URL(relative, import.meta.url)` supports only string literal relatives')
+        if (spec == null) err('`new URL(relative, import.meta.url)` supports only string literal relatives — jz resolves the URL at compile time, so the relative part must be statically known')
         return staticString(resolveImportMeta(spec))
       }
     }
@@ -3708,10 +3708,10 @@ const handlers = {
       const literalArgs = ctorArgs.filter(a => a != null)
       const pattern = staticStringExpr(literalArgs[0])
       if (pattern == null)
-        err('new RegExp() requires a string-literal pattern; dynamic regex construction is not supported')
+        err('new RegExp() requires a string-literal pattern; dynamic regex construction is not supported — jz compiles regexes at compile time and has no runtime regex interpreter to fall back on')
       const flags = literalArgs.length > 1 ? staticStringExpr(literalArgs[1]) : ''
       if (flags == null)
-        err('new RegExp() flags must be a string literal')
+        err('new RegExp() flags must be a string literal — same compile-time-only rule as the pattern argument')
       return prep(['//', pattern, flags || undefined])
     }
 
@@ -3910,7 +3910,7 @@ function prepareModule(specifier, source) {
   includeModule('core')
   // Cycle detection
   if (ctx.module.moduleStack.includes(specifier))
-    err(`Circular import: ${ctx.module.moduleStack.join(' -> ')} -> ${specifier}`)
+    err(`Circular import: ${ctx.module.moduleStack.join(' -> ')} -> ${specifier} — break the cycle by moving the shared code into a third module both sides import`)
   // Already resolved
   if (ctx.module.resolvedModules.has(specifier)) return ctx.module.resolvedModules.get(specifier)
 

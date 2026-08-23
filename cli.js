@@ -137,7 +137,7 @@ async function handleJzify(args) {
     if (args[i] === '--output' || args[i] === '-o') outputFile = args[++i]
     else if (!inputFile) inputFile = args[i]
   }
-  if (!inputFile) throw new Error('No input file specified')
+  if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
   if (!outputFile) outputFile = inputFile.replace(/\.js$/, '.jz')
   const code = readFileSync(inputFile, 'utf8')
   const warnings = { entries: [] }
@@ -220,7 +220,7 @@ async function handleCompile(args) {
     else if (!inputFile) inputFile = a
   }
 
-  if (!inputFile) throw new Error('No input file specified')
+  if (!inputFile) throw new Error('No input file specified — usage: jz <file.js> (jz --help for options)')
   if (!outputFile) outputFile = inputFile.replace(/\.(js|jz)$/, wat ? '.wat' : '.wasm')
   if (outputFile.endsWith('.wat')) wat = true
 

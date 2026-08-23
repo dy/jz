@@ -3078,7 +3078,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         })
       }
     }
-    if (!ctx.closure.call) err('Optional call requires fn module')
+    if (!ctx.closure.call) err('`fn?.()` optional call on a closure value needs jz\'s closure-call runtime, which this program never linked in — call a closure unconditionally at least once elsewhere in the file')
     return evalOnce(callee, (t) => {
       // Spread args: mirror the regular `()` emitter — reconstruct the args array
       // and route through `closure.call(_, [arrayIR], prebuiltArray=true)`. Without

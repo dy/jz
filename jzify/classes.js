@@ -254,7 +254,7 @@ function lowerClass(name, heritage, body) {
     }
     if (it[0] === 'get' || it[0] === 'set') jzifyError(JC.accessor)
     if (it[0] === 'static') jzifyError(JC.staticMember)
-    jzifyError(`unsupported class member ${JSON.stringify(it).slice(0, 60)}`)
+    jzifyError(`unsupported class member shape (jz recognizes fields, methods, and static fields/methods/blocks only): ${JSON.stringify(it).slice(0, 60)}`)
   }
   const superMethods = heritage == null ? new Set() : new Set([
     ...collectSuperMethodCalls(ctorBody),
