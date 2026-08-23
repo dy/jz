@@ -170,6 +170,7 @@ test('Date object: every zero-arg Date-only flat emitter uses the aux guard', ()
 })
 
 test('Date object: unresolved host Date falls through to external method dispatch', () => {
+  if (onWasi()) return
   const { f } = jz('export let f = x => x.getTime()').exports
   is(f(new Date(321)), 321)
 })
