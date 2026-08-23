@@ -605,7 +605,7 @@ export default (ctx) => {
     const checkExternalIterable = sourceVt == null && ctx.transform.targetProfile.envImports
     if (checkExternalIterable) { setLinkDemand('external'); inc('__ext_has_iterator') }
     setLinkDemand('typedarray')
-    inc('__length', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
+    inc('__length.value', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
 
     const s = temp('afsrc'), t = tempI32('aft'), rawLen = temp('afrawlen')
     const num = temp('afnum'), len = tempI32('aflen'), i = tempI32('afi')
@@ -640,7 +640,7 @@ export default (ctx) => {
           ['call', '$__ext_has_iterator', ['i64.reinterpret_f64', ['local.get', `$${s}`]]],
           ['then', ...arrayFromThrow(ERR.ARRAY_FROM_ITERABLE)]]],
       ]] : []),
-      ['local.set', `$${rawLen}`, ['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['local.set', `$${rawLen}`, ['call', '$__length.value', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
       ['if', nanPtrTypeEq(typed(['local.get', `$${rawLen}`], 'f64'), PTR.BIGINT),
         ['then', ['drop', throwTypeErrorIR()]]],
       ...toLengthIR(rawLen, num, len),

@@ -53,9 +53,11 @@ export default (ctx) => {
     // receivers) needs the dyn dispatcher — but only when the program can even
     // HOLD such a property (a schema'd object or dyn/hash machinery exists);
     // string/array-only programs keep the lean undefined arm.
-    __length: () => ['__ptr_type', '__str_len', '__len', '__throw_property_nullish',
+    '__length.value': () => ['__str_len', '__len', '__throw_property_nullish',
       ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
-    __length_num: ['__length', '__to_num'],
+    __length: ['__str_len', '__len', '__throw_property_nullish', '__length_prop_num'],
+    __length_prop_num: () => ['__to_num',
+      ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
     __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
@@ -2179,10 +2181,10 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     ctx.module.include('array')
     ctx.runtime.schemaTblConsumed = true
     if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
-    inc('__length')
+    inc('__length.value')
     setLinkDemand('typedarray')
     ctx.runtime.throws = true
-    return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
+    return typed(['call', '$__length.value', ['i64.reinterpret_f64', va]], 'f64')
   }
 
   // Known-schema fields live in the object payload. Dynamic sidecars are only
@@ -2721,11 +2723,19 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     (ctx.linkDemand.external || ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
      ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
 
-  // Numeric consumers of an unresolved `.length` use one compact call site
-  // rather than spelling `__to_num(__length(v))` at every read. Property access
-  // itself still calls raw __length and preserves arbitrary JS values.
-  ctx.core.stdlib['__length_num'] = `(func $__length_num (param $v i64) (result f64)
-    (call $__to_num (i64.reinterpret_f64 (call $__length (local.get $v)))))`
+  const lengthTagIR = `(i32.wrap_i64 (i64.and (i64.shr_u (local.get $bits) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK})))`
+  const arrayLengthIR = `(block (result f64)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
+      (then
+        ${followForwardingWat('$off', { lowGuard: false })}
+        (f64.convert_i32_s (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+      (else (f64.const nan:${UNDEF_NAN}))))`
+  const typedLengthIR = `(block (result f64)
+    (local.set $off (i32.wrap_i64 (i64.and (local.get $bits) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
+      (then (f64.convert_i32_s (call $__len (local.get $v))))
+      (else (f64.const nan:${UNDEF_NAN}))))`
 
   // One shared materializer for nullish ordinary-property reads. The former
   // per-site throwTypeErrorIR block duplicated allocation, two stores and two
@@ -2751,47 +2761,45 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       (throw $__jz_err (local.get $e)))`
   }
 
-  ctx.core.stdlib['__length'] = () => {
-    const types = [PTR.ARRAY]
-    if (ctx.linkDemand.typedarray) types.push(PTR.TYPED)
-    const eqT = (n) => `(i32.eq (local.get $t) (i32.const ${n}))`
-    let disj = eqT(types[0])
-    for (let i = 1; i < types.length; i++) disj = `(i32.or ${disj} ${eqT(types[i])})`
+  const rawLengthPropArm = () => lengthNeedsDynArm()
+    ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
+    : `(f64.const nan:${UNDEF_NAN})`
+  ctx.core.stdlib['__length_prop_num'] = () => `(func $__length_prop_num (param $v i64) (param $t i32) (result f64)
+    (call $__to_num (i64.reinterpret_f64 ${rawLengthPropArm()})))`
+
+  const buildLengthHelper = (name, numeric) => {
     // Everything that is not a string/array/typed reads `length` as an ordinary
-    // property: OBJECT schema slot, HASH key, sidecar — or undefined. (Set/Map
-    // have NO .length in JS — their count is `.size`; the old HASH/SET/MAP
-    // __len arms returned the entry count, which no JS engine does.) The dyn
-    // dispatcher guards real-number receivers itself; gated to keep the lean
-    // undefined arm in programs that can't hold such a property at all.
-    const propArm = lengthNeedsDynArm()
-      ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
-      : `(f64.const nan:${UNDEF_NAN})`
-    const lenArm = `(block (result f64)
-            (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
-            (if (result f64) ${disj}
-              (then
-                (if (result f64) (i32.ge_u (local.get $off) (i32.const 8))
-                  (then (f64.convert_i32_s (call $__len (local.get $v))))
-                  (else (f64.const nan:${UNDEF_NAN}))))
-              (else ${propArm})))`
-    const stringArm = `(if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.STRING}))
-            (then (f64.convert_i32_s (call $__str_len (local.get $v))))
-            (else ${lenArm}))`
-    return `(func $__length (param $v i64) (result f64)
-    (local $f f64) (local $t i32) (local $off i32)
-    ;; Ordinary property Get throws on null/undefined. Keep the check here,
-    ;; once, rather than inlining a guard at every unresolved .length site.
+    // property: OBJECT schema slot, HASH key, sidecar — or undefined. Set/Map
+    // have no `.length`; their count is `.size`. Keep numeric coercion outlined
+    // so it cannot inflate the dominant ARRAY helper body.
+    const propArm = numeric
+      ? `(call $__length_prop_num (local.get $v) (local.get $t))`
+      : rawLengthPropArm()
+    return `(func $${name} (param $v i64) (result f64)
+    (local $f f64) (local $bits i64) (local $t i32) (local $off i32)
+    (local.set $f (f64.reinterpret_i64 (local.get $v)))
+    (local.set $bits (local.get $v))
+    (local.set $t ${lengthTagIR})
+    ;; ARRAY dominates compiler-runtime traffic. The boxed guard makes tag
+    ;; extraction safe on arbitrary finite-number bits without putting the two
+    ;; nullish compares on this hot path.
+    (if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.ARRAY})))
+      (then (return ${arrayLengthIR})))
+    ${ctx.linkDemand.typedarray ? `(if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
+      (then (return ${typedLengthIR})))` : ''}
+    (if (i32.and (f64.ne (local.get $f) (local.get $f)) (i32.eq (local.get $t) (i32.const ${PTR.STRING})))
+      (then (return (f64.convert_i32_s (call $__str_len (local.get $v))))))
+    (if (f64.eq (local.get $f) (local.get $f))
+      (then (return (f64.const ${numeric ? 'nan' : `nan:${UNDEF_NAN}`}))))
+    ;; Ordinary property Get throws on null/undefined. Cold after fast kinds.
     (if (i32.or
           (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
           (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
       (then (call $__throw_property_nullish)))
-    (local.set $f (f64.reinterpret_i64 (local.get $v)))
-    (if (result f64) (f64.eq (local.get $f) (local.get $f))
-      (then (f64.const nan:${UNDEF_NAN}))
-      (else
-        (local.set $t (call $__ptr_type (local.get $v)))
-        ${stringArm})))`
+    ${propArm})`
   }
+  ctx.core.stdlib['__length.value'] = () => buildLengthHelper('__length.value', false)
+  ctx.core.stdlib['__length'] = () => buildLengthHelper('__length', true)
 
   // === Property dispatch (.length, .prop) ===
 
@@ -2889,7 +2897,10 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         return typed(['f64.convert_i32_s', cpe > 1 ? ['i32.div_s', physLen, ['i32.const', cpe]] : physLen], 'f64')
       }
       const rep = typeof obj === 'string' ? repOf(obj) : null
-      const vt = rep ? rep.val : valTypeOf(obj)
+      // lookupValType honors flow refinements before the durable rep. Reading
+      // rep.val directly made `if (!Array.isArray(node)) return; node.length`
+      // stay polymorphic whenever node had any unrelated rep fields.
+      const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
       // Proven OBJECT/HASH receiver: `.length` is an ordinary own property
       // (schema slot / hash key), never a builtin length — resolve statically
       // instead of paying __length's runtime dispatch.
@@ -2989,7 +3000,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // (a self-compile miscompile — `o?.x` returned undefined under the kernel).
   ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
     const rep = typeof obj === 'string' ? repOf(obj) : null
-    const vt = rep ? rep.val : valTypeOf(obj)
+    const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
     if (prop === 'length')
       return emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
     // Type-specific + module-registered property getters (`.size`, `.byteLength`,
