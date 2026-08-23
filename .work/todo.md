@@ -33,7 +33,23 @@ outlines ToNumber to the ordinary-property tail. Repaired=1.011x versus
 b028ea65 in an immediately paired run, recovering ~3 points; artifact shrinks
 16,956.2→16,949.1 kB. Full native 3638/3636/0/2, test:wasm
 2891/2889/0/2, self 21/21, parity 3/3, oracle 14/14, ratchet 10/10. The cap
-was not loosened; fresh remains green. Next: test262, final battery, user push.
+was not loosened; fresh remains green.
+
+## CLOSED (2026-08-23): test262 language and builtins gates
+Initial language run found two real failures: duplicate-key staging minted one
+closure parameter per property, so valid 12-field class fixtures exceeded
+MAX_CLOSURE_ARITY=8. Commit ec4e1b22 stages every initializer in one unique-key
+object argument, preserving source order without an arity ceiling. The same run
+showed negAccept 2470 versus the 1889 ceiling. Bisection named 59c23e90, but
+its DCE was sound: the runner had rewritten `$DONOTEVALUATE()` to `return`,
+hiding invalid syntax in dead tails. Compile-only negatives now use inert `0`;
+negAccept falls to 1538 (10.7.0 gives 1537), and the ceiling ratchets downward.
+Array.from/elements-added-after is pruned from xfails. Final language:
+3003 pass / 0 fail / 54 xfail / 2507 neg-reject / 1538 neg-accept. Builtins:
+853 pass / 0 fail / 86 xfail. Floors rise 3000→3003 and 852→853. Companion
+battery: native 3638/3636/0/2, wasm 2891/2889/0/2, self 21/21, parity 3/3,
+oracle 14/14, ratchet 10/10; artifact 16,948.0 kB. Next: final battery, user
+push.
 
 ## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
 ## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
