@@ -285,6 +285,9 @@ export default (ctx) => {
   const bufAccessorDyn = (prop, helper, direct) => (obj) => {
     const vt = valTypeOf(obj)
     if (vt === VAL.BUFFER || vt === VAL.TYPED) return direct(obj)
+    // Dynamic fallback emits a string key and collection-owned dyn-get helper.
+    ctx.module.include('collection')
+    ctx.module.include('array')
     inc('__ptr_type', '__dyn_get_expr_t_h', helper)
     const o = temp('bad'), t = tempI32('badt')
     const og = ['local.get', `$${o}`]

@@ -34,7 +34,7 @@ import {
 } from '../../layout.js'
 import { ERR, ERR_CLASS_NAMES } from '../../err-codes.js'
 import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
-import { includeForStringOnly, includeForArrayLiteral } from '../autoload.js'
+import { includeForStringOnly, includeForArrayLiteral, includeForRuntimeKeyIteration } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, constIntExpr, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
 import { findFreeVars } from './analyze.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
@@ -3955,6 +3955,7 @@ function unresolvedDateMethod(obj, method, parsed) {
   inc('__ptr_type')
   let nonDate = throwTypeErrorIR('call')
   if (ctx.transform.targetProfile.envImports) {
+    includeForRuntimeKeyIteration()
     inc('__ext_call')
     setLinkDemand('external')
     nonDate = typed(['if', ['result', 'f64'],
@@ -3999,6 +4000,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
       && (vt === VAL.ARRAY || vt === VAL.TYPED || vt === VAL.OBJECT || !vt)) {
     const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
     if (builtin) {
+      includeForRuntimeKeyIteration()
       // Date carve-out, unresolved receivers only (.work/printer-trio.md
       // residual): a PROVEN vt reaching this arm is ARRAY/TYPED/OBJECT,
       // never DATE — strategy 7's tryStaticDispatch already owns any
@@ -4253,6 +4255,7 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 //     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
 function tryDynamicPropCall({ obj, method, parsed, vt }) {
   if (ctx.closure.call) {
+    includeForRuntimeKeyIteration()
     if (ctx.transform.strict)
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
     const objTmp = temp('mobj')
@@ -4328,6 +4331,7 @@ function externalMethodFallback({ obj, method, parsed }) {
     // pass `strict: true` (handled above).
     if (!ctx.transform.targetProfile.envImports) return undefExpr()
     warnDeopt('deopt-method', `method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(…)\` on a value whose type couldn't be resolved dispatches through the JS host (\`__ext_call\`) — a wasm→JS round-trip per call, orders of magnitude slower than a direct call. Restructure so the receiver's type is provable, or keep it off the hot path.`)
+    includeForRuntimeKeyIteration()
     inc('__ext_call')
     setLinkDemand('external')
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
