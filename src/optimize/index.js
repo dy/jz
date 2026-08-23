@@ -2904,6 +2904,10 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
     }
   }
   for (let i = insertIdx; i < fn.length; i++) walkAst(fn[i], { enter: replace })
+  // Promotion can expose `i32.ne(local.get, 0)` conditions after the ordinary
+  // function peephole already ran. Canonicalize now so native and self-hosted
+  // module pipelines converge on the same boolean IR.
+  simplifyBoolContexts(fn)
 }
 
 /**
@@ -3981,8 +3985,8 @@ const boolSimp = (n) => {
   for (;;) {
     if (!Array.isArray(n)) return n
     if (n[0] === 'i32.ne' && n.length === 3) {
-      if (Array.isArray(n[2]) && n[2][0] === 'i32.const' && n[2][1] === 0) { n = n[1]; continue }
-      if (Array.isArray(n[1]) && n[1][0] === 'i32.const' && n[1][1] === 0) { n = n[2]; continue }
+      if (Array.isArray(n[2]) && n[2][0] === 'i32.const' && (n[2][1] === 0 || n[2][1] === '0')) { n = n[1]; continue }
+      if (Array.isArray(n[1]) && n[1][0] === 'i32.const' && (n[1][1] === 0 || n[1][1] === '0')) { n = n[2]; continue }
     }
     if (n[0] === 'i32.eqz' && Array.isArray(n[1]) && n[1][0] === 'i32.eqz' && n[1].length === 2) { n = n[1][1]; continue }
     return n

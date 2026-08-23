@@ -3328,30 +3328,65 @@ const handlers = {
       ? (Array.isArray(inner) && inner[0] === ',' ? inner.slice(1) : [inner])
       : args
 
-    // Computed keys: `{[k]: v}` where `k` isn't compile-time foldable. jz's
-    // object layout is slot-based (fixed schema at the literal site), so a
-    // truly-dynamic key can't slot in. Lower to the existing dict path:
-    //   {a:1, [k]:v, b:2}  →  ((__t) => (__t[k]=v, __t))({a:1, b:2})
-    // Static-but-non-string keys still fold via `staticPropertyKey` below.
+    // Duplicate data keys must still evaluate EVERY overwritten initializer in
+    // source order. Collapsing directly to the last value loses effects; folding
+    // old values into the winning property's expression reorders them across
+    // intervening properties. Lower the simple data-property case to an arrow
+    // whose arguments stage all values left-to-right, then build the final
+    // first-position/last-value object from those temps. Spreads/computed keys
+    // need a full ordered property-definition IR and are handled separately.
+    const rawKey = p => typeof p === 'string' ? p
+      : Array.isArray(p) && p[0] === ':'
+        ? (typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1]))
+        : null
+    const keyCounts = new Map()
+    for (const p of items) {
+      const key = rawKey(p)
+      if (key != null) keyCounts.set(key, (keyCounts.get(key) || 0) + 1)
+    }
+    if ([...keyCounts.values()].some(n => n > 1)) {
+      if (items.some(p => rawKey(p) == null))
+        err('duplicate object keys mixed with spread/computed properties are unsupported')
+      const params = items.map(() => `${T}od${freshPrepareId()}`)
+      const last = new Map(), order = []
+      for (let i = 0; i < items.length; i++) {
+        const key = rawKey(items[i])
+        if (!last.has(key)) order.push(key)
+        last.set(key, i)
+      }
+      const props = order.map(key => [':', key, params[last.get(key)]])
+      const values = items.map(p => typeof p === 'string' ? p : p[2])
+      const paramNode = ['()', params.length === 1 ? params[0] : [',', ...params]]
+      const argNode = values.length === 1 ? values[0] : [',', ...values]
+      return prep(['()', ['=>', paramNode, ['{}', [',', ...props]]], argNode])
+    }
+
+    // Computed keys: fixed schemas cannot name them, so build one empty object
+    // and perform EVERY property definition in original source order. The old
+    // lowering constructed all static properties first and appended computed
+    // assignments afterwards, reordering both effects and key insertion:
+    // `{[key()]: value(), a: later()}` ran later() before key()/value().
+    // Spread positions use Object.assign on that same accumulator, preserving
+    // CopyDataProperties' ordering relative to adjacent computed/static writes.
     const isComputed = p => Array.isArray(p) && p[0] === ':'
       && typeof p[1] !== 'string' && staticPropertyKey(p[1]) == null
     if (items.some(isComputed)) {
-      const staticItems = items.filter(p => !isComputed(p))
-      const computedItems = items.filter(isComputed)
       const tmp = `${T}o${freshPrepareId()}`
-      // Body: comma sequence of dict-sets, terminated with the tmp itself.
-      // Computed key shape from parser is `[':', ['[]', keyExpr], valExpr]` —
-      // unwrap the `['[]', keyExpr]` to grab keyExpr directly.
-      const assigns = computedItems.map(p => {
-        const keyExpr = Array.isArray(p[1]) && p[1][0] === '[]' ? p[1][1] : p[1]
-        return ['=', ['[]', tmp, keyExpr], p[2]]
+      const assigns = items.map(p => {
+        if (Array.isArray(p) && p[0] === '...')
+          return ['()', ['.', 'Object', 'assign'], [',', tmp, p[1]]]
+        if (typeof p === 'string') return ['=', ['[]', tmp, ['str', p]], p]
+        if (Array.isArray(p) && p[0] === ':') {
+          const staticKey = typeof p[1] === 'string' ? p[1] : staticPropertyKey(p[1])
+          if (staticKey != null) return ['=', ['[]', tmp, ['str', staticKey]], p[2]]
+          const keyExpr = Array.isArray(p[1]) && p[1][0] === '[]' ? p[1][1] : p[1]
+          return ['=', ['[]', tmp, keyExpr], p[2]]
+        }
+        if (Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))
+          err('object getter/setter not supported — jz objects have no accessors')
+        err('unsupported property in computed-key object literal')
       })
-      const body = [',', ...assigns, tmp]
-      const arrow = ['=>', ['()', tmp], body]
-      const arg = staticItems.length === 1 ? ['{}', staticItems[0]]
-        : staticItems.length ? ['{}', [',', ...staticItems]]
-        : ['{}']
-      return prep(['()', arrow, arg])
+      return prep(['()', ['=>', ['()', tmp], [',', ...assigns, tmp]], ['{}']])
     }
 
     // Process properties: shorthand 'x' → [':', 'x', 'x'], or [':', key, val] → prep val only
@@ -3371,19 +3406,6 @@ const handlers = {
       return prep(p)
     }
     let prepped = items.map(prop)
-    // ES spec: duplicate keys allowed; key takes first-seen position, last-seen value.
-    const lastValue = new Map()
-    for (const p of prepped) if (Array.isArray(p) && p[0] === ':') lastValue.set(p[1], p[2])
-    if (lastValue.size < prepped.filter(p => Array.isArray(p) && p[0] === ':').length) {
-      const seen = new Set()
-      prepped = prepped.filter(p => {
-        if (!Array.isArray(p) || p[0] !== ':') return true
-        if (seen.has(p[1])) return false
-        seen.add(p[1])
-        p[2] = lastValue.get(p[1])
-        return true
-      })
-    }
     const result = ['{}', ...prepped]
     // Register schema so property access works for function params (duck typing)
     const props = result.slice(1).filter(p => Array.isArray(p) && p[0] === ':').map(p => p[1])

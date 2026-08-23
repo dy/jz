@@ -13,11 +13,11 @@ import { OPTF } from '../src/ctx.js'
 import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, TRUE_NAN, temp, tempI32, mkPtrIR, usesDynProps, ptrOffsetIR, isNullish, isUndef, truthyIR, valKindToPtr, sidecarOverride, undefExpr, cloneIR, toStrI64, throwTypeErrorIR, boxBigInt, unboxBigInt, isPlanTaggedBigint } from '../src/ir.js'
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
-import { valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
+import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
 import { T } from '../src/ast.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
-import { VAL, lookupValType, lookupNotString, repOf, updateRep } from '../src/reps.js'
+import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
@@ -53,8 +53,10 @@ export default (ctx) => {
     // receivers) needs the dyn dispatcher — but only when the program can even
     // HOLD such a property (a schema'd object or dyn/hash machinery exists);
     // string/array-only programs keep the lean undefined arm.
-    __length: () => ['__ptr_type', '__str_len', '__len',
-      ...(lengthNeedsDynArm() ? ['__dyn_get_expr_t_h'] : [])],
+    __length: () => ['__ptr_type', '__str_len', '__len', '__throw_property_nullish',
+      ...(lengthNeedsDynArm() ? [ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] : [])],
+    __length_num: ['__length', '__to_num'],
+    __throw_property_nullish: ['__alloc_hdr', '__mkptr'],
     __alloc: ['__memgrow'],
     __alloc_hdr: ['__alloc'],
     __alloc_hdr_n: ['__alloc'],
@@ -2129,12 +2131,9 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
    *  __len which re-dispatches on type. ptrOffsetIR handles
    *  ARRAY forwarding (non-ARRAY skips the forwarding loop). TYPED has a variable-width
    *  layout depending on the aux typed-element shift, so it still routes through __len.
-   *  `notString` (from rep.notString — write-shape evidence rules out primitive string)
-   *  routes the otherwise-unknown case through __len directly, eliding the STRING arm
-   *  of __length. __len returns 0 on tags it doesn't recognize, matching JS's
-   *  `undefined` semantics on non-pointer .length (the binding writes through xs[i]
-   *  / xs.length, so reaching .length with a non-pointer is unreachable in practice). */
-  function emitLengthAccess(va, vt, notString = false, mayBeUndef = false) {
+   *  A proven ARRAY|TYPED union keeps the lean __len path; every other
+   *  unresolved value uses real property dispatch. */
+  function emitLengthAccess(va, vt, arrayOrTyped = false) {
     // jsstring carrier: receiver is an externref slot (boundary param tagged
     // `jsstring` by narrow.js phase J). Route to the `wasm:js-string` length
     // builtin directly — no SSO unbox, zero copy.
@@ -2159,8 +2158,10 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       const f64Va = va?.type === 'f64' ? va : typed(va, 'f64')
       return typed(['f64.convert_i32_s', ctx.abi.string.ops.byteLen(f64Va, ctx)], 'f64')
     }
-    // Unknown but proven not-string → __len directly (skips the STRING arm of __length).
-    if (notString) {
+    // A closed ARRAY|TYPED union has no ordinary property arm and can keep
+    // the lean length helper. `notString` alone is insufficient: OBJECT/HASH/
+    // EXTERNAL values also satisfy it and need a real property Get.
+    if (arrayOrTyped) {
       inc('__len')
       setLinkDemand('typedarray')
       return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', va]]], 'f64')
@@ -2171,44 +2172,16 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // to ARRAY/STRING/TYPED. typedarray stays on because typed arrays are
     // commonly passed from JS via jz.memory.* without an in-program constructor.
     //
-    // mayBeUndefined receiver ONLY (audit-#10 kind-specific table): `va` may
-    // genuinely BE the nullish sentinel here — a census-shaped dict/Map
-    // absent-key read (or a propagated-mayBeUndefined param/return/closure
-    // hop, `censusMaybeUndefined`'s own reach) has no proven vt (§14's
-    // opt-in model — a census read never sets `val`), so it lands in exactly
-    // this arm, unlike a proven ARRAY/STRING/TYPED receiver which returns
-    // above and pays nothing extra. Real JS throws TypeError for `.length`
-    // off null/undefined — distinct from an ordinary object simply lacking
-    // an own `.length` property, which still correctly reads `undefined`
-    // via `__length`'s property-fallback arm below, unaffected by this
-    // check. Gated on `mayBeUndef` — NOT merely "vt is unknown" — found
-    // live, not assumed: `vt == null` alone is FAR broader than "might be
-    // undefined" (a plain polymorphic-kind parameter passed a Float64Array
-    // at one call site and an Int32Array at another has no single proven
-    // `vt` either, but is never actually nullish — e.g. bench/poly.js's
-    // `sum(arr)`), and gating on vt-null alone taxed EVERY such site with a
-    // guard that could never fire, a real +0.069 SIZE-geomean regression
-    // across the size-sweep corpus (49/49 cases, all vt-null-but-never-null
-    // `.length` receivers) caught by the mandated gate before landing, not
-    // shipped. `censusMaybeUndefined` (kind.js) is the EXISTING, narrower,
-    // load-bearing "genuinely might be undefined" predicate this whole
-    // design (§9-§16) already built and propagates through param/return/
-    // closure hops — reused verbatim, not reinvented. `va` is captured once
-    // (it may be a side-effecting expression, e.g. a `m.get(k)` call) so the
-    // nullish test and the dispatch both read the SAME evaluation.
-    if (mayBeUndef) {
-      inc('__length')
-      setLinkDemand('typedarray')
-      const lt = temp('lnva')
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${lt}`, va],
-        ['if', ['result', 'f64'],
-          isNullish(typed(['local.get', `$${lt}`], 'f64')),
-          ['then', throwTypeErrorIR()],
-          ['else', typed(['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${lt}`]]], 'f64')]]], 'f64')
-    }
+    // An unresolved receiver may be an internal object/HASH, host EXTERNAL,
+    // array/typed/string, primitive, or nullish. __length owns that complete
+    // runtime dispatch, including the shared nullish TypeError materializer.
+    ctx.module.include('collection')
+    ctx.module.include('array')
+    ctx.runtime.schemaTblConsumed = true
+    if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
     inc('__length')
     setLinkDemand('typedarray')
+    ctx.runtime.throws = true
     return typed(['call', '$__length', ['i64.reinterpret_f64', va]], 'f64')
   }
 
@@ -2744,9 +2717,39 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // deps thunk), when schemas, includes, and module set are final — same
   // pattern as the old HASH-arm includes probe.
   const lengthNeedsDynArm = () =>
-    ctx.core.stdlib['__dyn_get_expr_t_h'] != null &&
-    (ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
+    ctx.core.stdlib[ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'] != null &&
+    (ctx.linkDemand.external || ctx.schema?.list?.length > 0 || ctx.core.includes.has('__hash_new') ||
      ctx.core.includes.has('__dyn_set') || ctx.core.includes.has('__hash_set'))
+
+  // Numeric consumers of an unresolved `.length` use one compact call site
+  // rather than spelling `__to_num(__length(v))` at every read. Property access
+  // itself still calls raw __length and preserves arbitrary JS values.
+  ctx.core.stdlib['__length_num'] = `(func $__length_num (param $v i64) (result f64)
+    (call $__to_num (i64.reinterpret_f64 (call $__length (local.get $v)))))`
+
+  // One shared materializer for nullish ordinary-property reads. The former
+  // per-site throwTypeErrorIR block duplicated allocation, two stores and two
+  // interned-string constants at every unresolved `.length`; this emits the
+  // same branded two-slot TypeError once while preserving in-wasm instanceof,
+  // .name/.message and host decoding.
+  ctx.core.stdlib['__throw_property_nullish'] = () => {
+    const strBits = text => {
+      const ir = ctx.core.emit['str'](text)
+      if (!Array.isArray(ir) || ir[0] !== 'f64.const')
+        throw new Error('__throw_property_nullish requires a static string literal')
+      return ir[1]
+    }
+    const sid = ctx.schema.errorSid('TypeError')
+    const slots = ctx.abi.object.ops.allocSlots(2)
+    return `(func $__throw_property_nullish
+      (local $p i32) (local $e f64)
+      (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
+      (f64.store (local.get $p) (f64.const ${strBits('Cannot read properties of undefined')}))
+      (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${strBits('TypeError')}))
+      (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
+      (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
+      (throw $__jz_err (local.get $e)))`
+  }
 
   ctx.core.stdlib['__length'] = () => {
     const types = [PTR.ARRAY]
@@ -2761,7 +2764,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // dispatcher guards real-number receivers itself; gated to keep the lean
     // undefined arm in programs that can't hold such a property at all.
     const propArm = lengthNeedsDynArm()
-      ? `(f64.reinterpret_i64 (call $__dyn_get_expr_t_h (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
+      ? `(f64.reinterpret_i64 (call $${ctx.linkDemand.external ? '__dyn_get_any_t_h' : '__dyn_get_expr_t_h'} (local.get $v) (i64.const ${LENGTH_SSO_I64}) (local.get $t) (i32.const ${strHashLiteral('length')})))`
       : `(f64.const nan:${UNDEF_NAN})`
     const lenArm = `(block (result f64)
             (local.set $off (i32.wrap_i64 (i64.and (local.get $v) (i64.const ${LAYOUT.OFFSET_MASK}))))
@@ -2776,6 +2779,12 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
             (else ${lenArm}))`
     return `(func $__length (param $v i64) (result f64)
     (local $f f64) (local $t i32) (local $off i32)
+    ;; Ordinary property Get throws on null/undefined. Keep the check here,
+    ;; once, rather than inlining a guard at every unresolved .length site.
+    (if (i32.or
+          (i64.eq (local.get $v) (i64.const ${NULL_NAN}))
+          (i64.eq (local.get $v) (i64.const ${UNDEF_NAN})))
+      (then (call $__throw_property_nullish)))
     (local.set $f (f64.reinterpret_i64 (local.get $v)))
     (if (result f64) (f64.eq (local.get $f) (local.get $f))
       (then (f64.const nan:${UNDEF_NAN}))
@@ -2885,17 +2894,12 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       // (schema slot / hash key), never a builtin length — resolve statically
       // instead of paying __length's runtime dispatch.
       if (vt === VAL.OBJECT || vt === VAL.HASH) return emitPropAccess(emit(obj), obj, 'length')
-      const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
-      // audit-#10: only a genuinely mayBeUndefined receiver pays for the
-      // nullish-receiver guard (see emitLengthAccess's own comment) — a
-      // plain kind-unresolved-but-never-null receiver (e.g. a polymorphic
-      // ARRAY/TYPED parameter) is unaffected.
-      const mayBeUndef = vt == null && censusMaybeUndefined(obj)
+      const arrayOrTyped = vt == null && rep?.recvArrTyped === true
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.
       const recv = emit(obj)
-      if (recv?.type === 'externref') return emitLengthAccess(recv, vt, notString, mayBeUndef)
-      return emitLengthAccess(asF64(recv), vt, notString, mayBeUndef)
+      if (recv?.type === 'externref') return emitLengthAccess(recv, vt, arrayOrTyped)
+      return emitLengthAccess(asF64(recv), vt, arrayOrTyped)
     }
 
     // Type-specific property emitter (`.regex:source`, …) — the property-read
@@ -2986,10 +2990,8 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   ctx.core.emit['?.'] = (obj, prop) => evalOnce(obj, (t) => {
     const rep = typeof obj === 'string' ? repOf(obj) : null
     const vt = rep ? rep.val : valTypeOf(obj)
-    if (prop === 'length') {
-      const notString = vt == null && typeof obj === 'string' && lookupNotString(obj)
-      return emitLengthAccess(['local.get', `$${t}`], vt, notString)
-    }
+    if (prop === 'length')
+      return emitLengthAccess(['local.get', `$${t}`], vt, vt == null && rep?.recvArrTyped === true)
     // Type-specific + module-registered property getters (`.size`, `.byteLength`,
     // `.regex:source`, …) — the SAME getter dispatch the plain `.` emitter runs
     // (only entries tagged via `getter()` fire; untagged `.values`/`.pop` stay a

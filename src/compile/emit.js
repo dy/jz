@@ -1267,6 +1267,12 @@ function canThrow(body, seen = new Set()) {
   if (!Array.isArray(body)) return false
   const op = body[0]
   if (op === 'throw') return true
+  // Unresolved ordinary `.length` now performs a real property Get, including
+  // the nullish TypeError. Keep a surrounding source try/catch live even when
+  // there is no explicit `throw` node in the AST. Optional chaining does not
+  // throw and stays excluded.
+  if (op === '.' && body[2] === 'length' && valTypeOf(body[1]) == null) return true
+  if (op === '[]' && staticPropertyKey(body[2]) === 'length' && valTypeOf(body[1]) == null) return true
   if (op === '=>') return false
   if (op === '()') {
     const callee = body[1]

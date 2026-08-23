@@ -40,18 +40,16 @@ const count = (wat, re) => (wat.match(re) || []).length
 
 // ───────────────────────────────────────────────────────────── body-walk evidence
 
-test('notStringEvidence: index-write + length read drops __length poly', () => {
-  // `xs[i] = v` is silently dropped on a primitive string, so an index-write
-  // proves xs is not a string. The `.length` read then routes through `__len`
-  // (direct typed/array header) instead of `__length` (poly STRING-aware).
+test('notStringEvidence: index-write does not erase ordinary object .length', () => {
+  // An index write excludes primitive String, but not OBJECT/HASH/EXTERNAL
+  // array-likes. The general property Get must remain.
   const wat = jz.compile(`
     export const fill = (xs, v) => {
       for (let i = 0; i < xs.length; i++) xs[i] = v
       return xs.length
     }
   `, { wat: true })
-  is(count(wat, /\$__length\b/g), 0)
-  ok(count(wat, /\$__len\b/g) >= 1, 'expected direct __len for length read')
+  ok(count(wat, /\$__length\b/g) >= 1, 'expected general __length property dispatch')
 })
 
 test('notStringEvidence: pure-read (no write) keeps __length poly', () => {
@@ -117,17 +115,15 @@ test('methodEvidence ARRAY: .push induces VAL.ARRAY (no STRING branch)', () => {
   is(count(wat, /\$__str_idx\b/g), 0, 'no __str_idx for ARRAY-typed receiver')
 })
 
-test('extractRefinements: post-typeof-string early-return narrows notString', () => {
-  // Flow-sensitive refinement: after the early return, xs cannot be a string.
-  // notString suffix on the rep makes the subsequent .length skip __length.
-  // (B3 in todo.md — already wired; this test pins the win in place.)
+test('extractRefinements: post-typeof-string still permits object .length', () => {
+  // Excluding String does not exclude OBJECT/HASH/EXTERNAL array-likes.
   const wat = jz.compile(`
     export const tailLen = (xs) => {
       if (typeof xs === 'string') return 0
       return xs.length
     }
   `, { wat: true })
-  if (!onKernel()) is(count(wat, /\$__length\b/g), 0, 'flow-narrowing should drop __length')  // self-compile kernel codegen differs; in-process leg owns the shape check
+  if (!onKernel()) ok(count(wat, /\$__length\b/g) >= 1, 'flow narrowing keeps general property dispatch')
 })
 
 // ──────────────────────────────────────────── soundness boundary: non-exclusive use ≠ type

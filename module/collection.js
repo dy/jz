@@ -1561,6 +1561,7 @@ export default (ctx) => {
   // same hazard as env.print / env.setTimeout (see module/console.js header).
   // i32 returns (has/set) and arg shapes stay; only boxed-pointer carriers move.
   ctx.core.stdlib['__ext_prop'] = '(import "env" "__ext_prop" (func $__ext_prop (param i64 i64) (result i64)))'
+  ctx.core.stdlib['__ext_has_iterator'] = '(import "env" "__ext_has_iterator" (func $__ext_has_iterator (param i64) (result i32)))'
   ctx.core.stdlib['__ext_has'] = '(import "env" "__ext_has" (func $__ext_has (param i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_set'] = '(import "env" "__ext_set" (func $__ext_set (param i64 i64 i64) (result i32)))'
   ctx.core.stdlib['__ext_call'] = '(import "env" "__ext_call" (func $__ext_call (param i64 i64 i64) (result i64)))'

@@ -35,13 +35,13 @@ test('features.external OFF: schema object — no __ext_* imports', () => {
   is(hasImport(w, '__ext_set'), false)
 })
 
-test('features.external OFF: typed array sum — no __ext_* imports', () => {
+test('features.external ON: erased indexable .length may be an external array-like', () => {
   const w = wat(`export let s = (a) => {
     let t = 0
     for (let i = 0; i < a.length; i++) t += a[i]
     return t
   }`)
-  is(hasImport(w, '__ext_prop'), false)
+  is(hasImport(w, '__ext_prop'), true)
   is(hasImport(w, '__ext_has'), false)
 })
 

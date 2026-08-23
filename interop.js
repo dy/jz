@@ -1130,13 +1130,19 @@ const prepareInterop = (opts) => {
   // properties of null") — a mystery. Name the actual failure instead.
   const extRecv = (objBig, prop, what) => {
     const obj = state.extMap[offset(objBig)]
-    if (obj == null) throw new Error(`'${prop}' — jz dispatched this ${what} to the host, but the receiver is not a host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`)
+    if (obj == null) throw new Error(`'${String(prop)}' — jz dispatched this ${what} to the host, but the receiver is not a host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`)
     return obj
   }
   opts._interp.__ext_prop = (objBig, propBig) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'property read')
-    return bits(state.mem.wrapVal(typeof obj[prop] === 'function' ? obj[prop].bind(obj) : obj[prop]))
+    const value = obj[prop]
+    return bits(state.mem.wrapVal(typeof value === 'function' ? value.bind(obj) : value))
+  }
+  opts._interp.__ext_has_iterator = objBig => {
+    const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
+    const method = obj[Symbol.iterator]
+    return method == null ? 0 : 1
   }
   opts._interp.__ext_has = (objBig, propBig) => {
     const prop = state.mem.read(propBig)

@@ -9,7 +9,7 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, throwTypeErrorIR, cloneIR } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
@@ -17,7 +17,7 @@ import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
-import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIANTS, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
@@ -170,6 +170,8 @@ function makeCallback(fn, argReps) {
   const cb = temp('af')
   return {
     setup: ['local.set', `$${cb}`, asF64(emit(fn))],
+    value: typed(['local.get', `$${cb}`], 'f64'),
+    dynamic: true,
     call: (argExprs) => ctx.closure.call(typed(['local.get', `$${cb}`], 'f64'), argExprs),
   }
 }
@@ -447,54 +449,6 @@ export default (ctx) => {
           (br $loop)))))
     (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $dst)))`
 
-  function arrayLikeLength(src) {
-    if (!Array.isArray(src) || src[0] !== '{}') return null
-    for (let i = 1; i < src.length; i++) {
-      const prop = src[i]
-      if (!Array.isArray(prop) || prop[0] !== ':') continue
-      const key = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
-      if (key === 'length') return prop[2]
-    }
-    return null
-  }
-
-  // Value node for a literal-index property (key "0","1",…) of the SAME static
-  // array-like object literal `arrayLikeLength` walked. Absent index → undefined
-  // (Array.from's per-index Get on a missing array-like property).
-  function arrayLikeProp(src, key) {
-    for (let i = 1; i < src.length; i++) {
-      const prop = src[i]
-      if (!Array.isArray(prop) || prop[0] !== ':') continue
-      const k = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
-      if (k === key) return prop[2]
-    }
-    return undefined
-  }
-
-  // Cap on the compile-time unroll below — bounded by desired output size, not by
-  // how many literal-index properties the object actually has, so a legal-but-
-  // absurd `{length: 1e9}` (no matching indices) can't blow the module up.
-  const ARRAY_LIKE_STATIC_CAP = 1 << 16
-
-  // Highest literal canonical-index key ("0","1",…) present on the SAME static
-  // array-like object literal arrayLikeLength/arrayLikeProp walk — bounds the
-  // runtime index-dispatch a dynamic-length literal (below) needs: any index
-  // beyond it can only read `undefined`, matching a missing array-like property,
-  // so there is nothing further to unroll. -1 when no literal index exists at all.
-  function arrayLikeMaxIndex(src) {
-    let max = -1
-    for (let i = 1; i < src.length; i++) {
-      const prop = src[i]
-      if (!Array.isArray(prop) || prop[0] !== ':') continue
-      const key = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
-      if (typeof key !== 'string') continue
-      const n = Number(key)
-      // Canonical array-index string only ("0","1",…, not "01"/"-1"/"1.5"/"").
-      if (Number.isInteger(n) && n >= 0 && n <= ARRAY_LIKE_STATIC_CAP && String(n) === key && n > max) max = n
-    }
-    return max
-  }
-
   // Array.from(items, mapfn): spec step 2 — if mapfn is not undefined and
   // IsCallable(mapfn) is false, throw a TypeError before iterating items.
   // An explicit `undefined` arrives as the literal node [null, undefined];
@@ -512,29 +466,94 @@ export default (ctx) => {
     return false                               // calls / member access — unknown
   }
 
+  const arrayFromThrow = code => {
+    ctx.runtime.throws = true
+    return [
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', code]]],
+      ['throw', '$__jz_err', ['f64.const', code]],
+    ]
+  }
+
+  const nanPtrTypeEq = (value, type) => ['i32.and',
+    ['f64.ne', cloneIR(value), cloneIR(value)],
+    ptrTypeEq(cloneIR(value), type)]
+
+  // Dynamic callback values must be rejected before reading items.length, even
+  // for a zero-length source. Literal arrows are callable by construction.
+  const callbackSetup = cb => cb ? [
+    cb.setup,
+    ...(cb.dynamic ? [[
+      'if', ['i32.eqz', nanPtrTypeEq(cb.value, PTR.CLOSURE)],
+      ['then', ...arrayFromThrow(ERR.ARRAY_FROM_MAPFN)],
+    ]] : []),
+  ] : []
+
+  const staticArrayLikeLength = src => {
+    if (!Array.isArray(src) || src[0] !== '{}') return null
+    const props = src.length === 2 && Array.isArray(src[1]) && src[1][0] === ','
+      ? src[1].slice(1) : src.slice(1)
+    for (const prop of props) {
+      if (!Array.isArray(prop) || prop[0] !== ':') continue
+      const key = typeof prop[1] === 'string' ? prop[1] : staticPropertyKey(prop[1])
+      if (key === 'length') return prop[2]
+    }
+    return null
+  }
+
+  // __alloc_hdr reserves 16 + len*8 bytes in a wasm32 i32 size. Keep that
+  // computation non-wrapping; larger legal JS lengths reject as unsupported.
+  const ARRAY_FROM_MAX_LENGTH = 0x1ffffffd
+  const toLengthIR = (raw, num, len) => [
+    ['local.set', `$${num}`, ['call', '$__to_num', ['i64.reinterpret_f64', ['local.get', `$${raw}`]]]],
+    ['if', ['f64.gt', ['local.get', `$${num}`], ['f64.const', ARRAY_FROM_MAX_LENGTH]],
+      ['then', ...arrayFromThrow(ERR.ARRAY_FROM_LENGTH)]],
+    ['local.set', `$${len}`, ['select',
+      ['i32.trunc_sat_f64_s', ['local.get', `$${num}`]],
+      ['i32.const', 0],
+      ['f64.gt', ['local.get', `$${num}`], ['f64.const', 0]]]],
+  ]
+
   ctx.core.emit['Array.from'] = (src, mapFn) => {
     if (isUndefinedNode(mapFn)) mapFn = undefined
-    else if (isNonCallableMapFn(mapFn)) {
-      ctx.runtime.throws = true
-      return typed(['block', ['result', 'f64'], ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ARRAY_FROM_MAPFN]]], ['throw', '$__jz_err', ['f64.const', ERR.ARRAY_FROM_MAPFN]]], 'f64')
+
+    // Call arguments evaluate left-to-right before Array.from performs its
+    // IsCallable check or reads items.length. Even an obviously invalid mapfn
+    // must not erase effects from constructing/evaluating the source argument.
+    if (mapFn && isNonCallableMapFn(mapFn)) {
+      const s = temp('afbadsrc'), m = temp('afbadmap')
+      const srcIR = asF64(emit(src)), mapIR = asF64(emit(mapFn))
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, srcIR],
+        ['local.set', `$${m}`, mapIR],
+        ...arrayFromThrow(ERR.ARRAY_FROM_MAPFN)], 'f64')
     }
+
+    const sourceVt = resolveValType(src, valTypeOf, lookupValType)
+    if (mapFn && !ctx.closure.call) ctx.module.include('fn')
+    if (sourceVt === VAL.SET || sourceVt === VAL.MAP || sourceVt === VAL.CLOSURE)
+      err('Array.from: iterable Set/Map/function sources are not supported')
+    const staticLength = staticArrayLikeLength(src)
+    if ((staticLength != null && valTypeOf(staticLength) === VAL.BIGINT) ||
+        ((sourceVt === VAL.OBJECT || sourceVt === VAL.HASH) && valTypeOf(['.', src, 'length']) === VAL.BIGINT))
+      err('Array.from: BigInt array-like length is unsupported (ToLength must throw)')
+
     // Array.from(string) → array of single-char strings. The generic __arr_from
-    // path memory.copies len*8 bytes from the string's byte storage (1 byte/char),
-    // reading far past its end → OOB trap. Iterate __str_idx per char instead.
-    if (resolveValType(src, valTypeOf, lookupValType) === VAL.STRING) {
+    // path memory-copies f64 slots and is invalid for byte-backed strings.
+    if (sourceVt === VAL.STRING) {
       inc('__str_idx', '__str_len')
-      const len = tempI32('sfl'), i = tempI32('sfi'), s = temp('sfs')
+      const s = temp('sfs'), len = tempI32('sfl'), i = tempI32('sfi')
+      const srcIR = asF64(emit(src))
+      const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
       const lenIR = ['local.get', `$${len}`]
       const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'sfr' })
-      const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
       const ch = typed(['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]], 'f64')
       const item = cb ? cb.call([ch, idxArg(cb, i)]) : ch
       const id = freshId(ctx)
       return typed(['block', ['result', 'f64'],
-        ['local.set', `$${s}`, asF64(emit(src))],
+        ['local.set', `$${s}`, srcIR],
+        ...callbackSetup(cb),
         ['local.set', `$${len}`, ['call', '$__str_len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
         out.init,
-        ...(cb ? [cb.setup] : []),
         ['local.set', `$${i}`, ['i32.const', 0]],
         ['block', `$brk${id}`, ['loop', `$loop${id}`,
           ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
@@ -543,107 +562,93 @@ export default (ctx) => {
           ['br', `$loop${id}`]]],
         out.ptr], 'f64')
     }
-    const lengthExpr = arrayLikeLength(src)
-    if (lengthExpr) {
-      const staticLen = intLiteralValue(lengthExpr)
-      // Fully-static array-like literal ({0:'a', length:1}): every element is
-      // itself a literal-index property of the SAME object literal, so each
-      // Get(k) resolves at compile time — read the value nodes directly in
-      // ascending index order (the same order the spec loop performs Get(0),
-      // Get(1), … and calls mapfn), no runtime object construction needed.
-      if (staticLen != null && staticLen >= 0 && staticLen <= ARRAY_LIKE_STATIC_CAP) {
-        const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
-        const out = allocPtr({ type: PTR.ARRAY, len: staticLen, tag: 'fr' })
-        const body = [out.init, ...(cb ? [cb.setup] : [])]
-        for (let i = 0; i < staticLen; i++) {
-          const valNode = arrayLikeProp(src, String(i))
-          const raw = valNode === undefined ? undefExpr() : taggedStoredValue(valNode)
-          const idxV = cb && (!cb.usedParams || cb.usedParams[1]) ? typed(['f64.const', i], 'f64') : null
-          const item = cb ? cb.call([raw, idxV]) : raw
-          body.push(['f64.store', slotAddr(out.local, i), asF64(item)])
-        }
-        body.push(out.ptr)
-        return typed(['block', ['result', 'f64'], ...body], 'f64')
-      }
-      // Gap CLOSED: `length` isn't a compile-time-int literal (e.g. arriving
-      // through a function parameter), but `src` IS a static object literal —
-      // its indexed properties are still fully known at compile time, only the
-      // LOOP BOUND is dynamic. ECMA-262 Array.from (22.1.2.1): LengthOfArrayLike
-      // reads `length` once, then Get(arrayLike, ToString(k)) runs for every k
-      // in [0, len). For a literal source, Get(k) resolves at compile time to
-      // arrayLikeProp's value node (same lookup the fully-static branch above
-      // uses) or `undefined` when no literal property matches. Every present
-      // index's value expression evaluates EXACTLY ONCE, unconditionally, up
-      // front (ascending-index order — same convention the fully-static branch
-      // above already uses, not necessarily left-to-right source order) —
-      // matching real JS's own object-literal construction, where a property's
-      // value is computed once when the literal is built, never re-evaluated by
-      // a later Get(); reading it LAZILY only if the runtime loop happens to
-      // reach that index would silently DROP the side effect whenever `length`
-      // turns out smaller than the index's position. The runtime loop then only
-      // SELECTS among the pre-evaluated temps by index — a plain `local.get`,
-      // no re-evaluation either way.
-      const maxIdx = arrayLikeMaxIndex(src)
-      const len = tempI32('fl'), i = tempI32('fi')
-      const lenIR = ['local.get', `$${len}`]
-      const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'fr' })
-      const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
-      const idxSetup = [], idxTemp = new Map()
-      for (let k = 0; k <= maxIdx; k++) {
-        const valNode = arrayLikeProp(src, String(k))
-        if (valNode === undefined) continue  // a real gap (e.g. {0:'a', 2:'c'}) — undefined at read time, nothing to evaluate
-        const t = temp('flv')
-        idxTemp.set(k, t)
-        idxSetup.push(['local.set', `$${t}`, taggedStoredValue(valNode)])
-      }
-      let dyn = undefExpr()
-      for (let k = maxIdx; k >= 0; k--) {
-        const t = idxTemp.get(k)
-        if (t === undefined) continue
-        dyn = typed(['if', ['result', 'f64'], ['i32.eq', ['local.get', `$${i}`], ['i32.const', k]],
-          ['then', ['local.get', `$${t}`]],
-          ['else', dyn]], 'f64')
-      }
-      const item = cb ? cb.call([dyn, idxArg(cb, i)]) : dyn
-      const id = freshId(ctx)
-      return typed(['block', ['result', 'f64'],
-        ['local.set', `$${len}`, asI32(emit(lengthExpr))],
-        ...idxSetup,
-        out.init,
-        ...(cb ? [cb.setup] : []),
-        ['local.set', `$${i}`, ['i32.const', 0]],
-        ['block', `$brk${id}`, ['loop', `$loop${id}`,
-          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
-          elemStore(out.local, i, asF64(item)),
-          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
-          ['br', `$loop${id}`]]],
-        out.ptr], 'f64')
-    }
-    if (!mapFn) {
+
+    // Preserve the raw-copy fast path for statically-known Array/TypedArray
+    // sources without a mapper.
+    if (!mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
       inc('__arr_from')
       return typed(['call', '$__arr_from', asI64(emit(src))], 'f64')
     }
-    // mapfn present: iterate the source array element by element, reading each
-    // slot fresh inside the loop so a callback that mutates a not-yet-visited
-    // source element sees its update (spec reads source[k] per step). Reads via
-    // the polymorphic $__typed_idx, not arrayLoop's f64-stride elemLoad — arrayLoop
-    // is ARRAY-only (ir.js: "elemLoad assumes f64-stride data layout"), so a typed
-    // source (Int32Array, Float32Array, …) read raw f64-stride garbage through it.
-    inc('__len', '__typed_idx')
-    const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
-    const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
-    const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
+
+    // Known Array/TypedArray + mapper: fixed integer length, but each element
+    // is read afresh so callback mutations of not-yet-visited slots are visible.
+    if (mapFn && (sourceVt === VAL.ARRAY || sourceVt === VAL.TYPED)) {
+      inc('__len', '__typed_idx')
+      const s = temp('afs'), len = tempI32('afl'), i = tempI32('afi'), item = temp('afv')
+      const srcIR = asF64(emit(src))
+      const cb = makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+      const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${len}`], tag: 'aff' })
+      const id = freshId(ctx)
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${s}`, srcIR],
+        ...callbackSetup(cb),
+        ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+        out.init,
+        ['local.set', `$${i}`, ['i32.const', 0]],
+        ['block', `$brk${id}`, ['loop', `$loop${id}`,
+          ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
+          ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+          elemStore(out.local, i, asF64(cb.call([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
+          ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
+          ['br', `$loop${id}`]]],
+        out.ptr], 'f64')
+    }
+
+    // General array-like path. Construct/evaluate the source once, evaluate the
+    // mapper next, then perform Get(items, "length") exactly once followed by
+    // ToLength. Each iteration performs a fresh indexed Get. This replaces the
+    // old literal shortcut, which reordered object-property effects, ignored
+    // duplicate/computed keys, and silently omitted indices past a fixed cap.
+    ctx.module.include('collection')
+    ctx.module.include('array')
+    ctx.runtime.schemaTblConsumed = true
+    const checkExternalIterable = sourceVt == null && ctx.transform.targetProfile.envImports
+    if (checkExternalIterable) { setLinkDemand('external'); inc('__ext_has_iterator') }
+    setLinkDemand('typedarray')
+    inc('__length', '__ptr_type', '__typed_idx', '__str_idx', '__dyn_get_any_t', '__to_num')
+
+    const s = temp('afsrc'), t = tempI32('aft'), rawLen = temp('afrawlen')
+    const num = temp('afnum'), len = tempI32('aflen'), i = tempI32('afi')
+    const srcIR = asF64(emit(src))
+    const cb = mapFn && makeCallback(mapFn, [null, { val: VAL.NUMBER }])
+    const lenIR = ['local.get', `$${len}`]
+    const out = allocPtr({ type: PTR.ARRAY, len: lenIR, tag: 'afobj' })
+    const idxF64 = typed(['f64.convert_i32_s', ['local.get', `$${i}`]], 'f64')
+    const objectIndex = ['f64.reinterpret_i64', ['call', '$__dyn_get_any_t',
+      ['i64.reinterpret_f64', ['local.get', `$${s}`]],
+      ['i64.reinterpret_f64', idxF64],
+      ['local.get', `$${t}`]]]
+    const indexed = typed(['if', ['result', 'f64'],
+      ['i32.or',
+        ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.ARRAY]],
+        ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.TYPED]]],
+      ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+      ['else', ['if', ['result', 'f64'],
+        ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.STRING]],
+        ['then', ['call', '$__str_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
+        ['else', objectIndex]]]], 'f64')
+    const item = cb ? cb.call([indexed, idxArg(cb, i)]) : indexed
     const id = freshId(ctx)
+    ctx.runtime.throws = true
     return typed(['block', ['result', 'f64'],
-      ['local.set', `$${s}`, asF64(emit(src))],
-      ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['local.set', `$${s}`, srcIR],
+      ...callbackSetup(cb),
+      ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ...(checkExternalIterable ? [[
+        'if', ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.EXTERNAL]],
+        ['then', ['if',
+          ['call', '$__ext_has_iterator', ['i64.reinterpret_f64', ['local.get', `$${s}`]]],
+          ['then', ...arrayFromThrow(ERR.ARRAY_FROM_ITERABLE)]]],
+      ]] : []),
+      ['local.set', `$${rawLen}`, ['call', '$__length', ['i64.reinterpret_f64', ['local.get', `$${s}`]]]],
+      ['if', nanPtrTypeEq(typed(['local.get', `$${rawLen}`], 'f64'), PTR.BIGINT),
+        ['then', ['drop', throwTypeErrorIR()]]],
+      ...toLengthIR(rawLen, num, len),
       out.init,
-      cb.setup,
       ['local.set', `$${i}`, ['i32.const', 0]],
       ['block', `$brk${id}`, ['loop', `$loop${id}`,
-        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], ['local.get', `$${len}`]]],
-        ['local.set', `$${item}`, ['call', '$__typed_idx', ['i64.reinterpret_f64', ['local.get', `$${s}`]], ['local.get', `$${i}`]]],
-        elemStore(out.local, i, asF64(cb.call([typed(['local.get', `$${item}`], 'f64'), idxArg(cb, i)]))),
+        ['br_if', `$brk${id}`, ['i32.ge_s', ['local.get', `$${i}`], lenIR]],
+        elemStore(out.local, i, asF64(item)),
         ['local.set', `$${i}`, ['i32.add', ['local.get', `$${i}`], ['i32.const', 1]]],
         ['br', `$loop${id}`]]],
       out.ptr], 'f64')
