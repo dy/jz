@@ -12055,3 +12055,24 @@ build/wat-strip 3/3, kernel-parity 3/3, full suite 3632/3630/0/2 (21,156),
 functional self-compile 21/21 and ratchet 10/10 (+0). Static grep now finds no
 test that intentionally asserts a current wrong value; historical "was wrong"
 comments remain evidence, not ledger entries.
+
+## FIXED (2026-08-22): full test:wasm loop-hoist trio
+
+Commit 5104b467 closes all three kernel-leg failures. The handoff's
+"full-suite order/state leak" diagnosis was falsified: `test/index.js perf`
+and `wat-invariants` reproduced in a fresh process, while running the files
+directly never installed the kernel compile target and was not a valid cold
+control. The kernel compileWat path exposed `(local.get undefined)` and the
+bytes path rejected it; the string-global ablation emitted no hoist.
+
+Root was self-compiled execution of hoistLoopGlobalPtrOffset's mutation phase:
+a chosen Map captured by a walkAst callback lost its value/iteration mapping,
+then parallel arrays still disappeared through the same callback boundary;
+spread-form `splice(i,0,...preheader)` failed to insert the declarations and
+sets reliably. Direct recursive scan/replacement, tiny parallel arrays, numeric
+indirect count, precomputed callee-write sets, and one-at-a-time reverse splice
+preserve identical native ordering while surviving self-compilation. Gates:
+kernel perf 55/55, kernel wat-invariants 24/24, full test:wasm
+2885/2883/0/2 (13,813), build/wat-strip 3/3, native full suite
+3632/3630/0/2 (21,156), kernel-oracle 14/14, kernel-parity 3/3,
+functional self-compile 21/21, ratchet 10/10.

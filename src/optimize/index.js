@@ -2719,7 +2719,7 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
   const processLoop = (loopNode) => {
     const alias = buildLocalGlobalAlias(loopNode)
     const sites = new Map(), ownWrites = new Set(), ownCallees = new Set(), ptrOffsetForm = new Set()
-    let hasIndirect = false
+    let indirectCount = 0
     const inspect = n => {
       if (!Array.isArray(n)) return
       const g = siteGlobal(n, alias)
@@ -2727,33 +2727,48 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
         let arr = sites.get(g); if (!arr) { arr = []; sites.set(g, arr) }
         arr.push(n)
         if (n[0] === 'call') ptrOffsetForm.add(g)
-        return false
+        return
       }
       if (n[0] === 'global.set' && typeof n[1] === 'string') ownWrites.add(n[1])
       else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') ownCallees.add(n[1])
-      else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') hasIndirect = true
+      else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') indirectCount++
+      for (let i = 1; i < n.length; i++) inspect(n[i])
     }
-    for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: inspect })
+    for (let i = 1; i < loopNode.length; i++) inspect(loopNode[i])
 
     const preheader = []
-    if (sites.size && !hasIndirect) {
-      const calleeWrites = (g) => {
-        for (const c of ownCallees) if (reachableWrites?.get(c)?.has(g)) return true
-        return false
+    if (sites.size && indirectCount === 0) {
+      const calleeWriteSets = []
+      for (const c of ownCallees) {
+        const writes = reachableWrites?.get(c)
+        if (writes) calleeWriteSets.push(writes)
       }
-      const chosen = new Map()
+      // The candidate set is tiny (module pointer globals per loop). Keep the
+      // mapping in parallel arrays while the IR subtree is rewritten in place;
+      // this is stable in both native and self-compiled executions.
+      const chosenGlobals = [], chosenNames = []
       for (const g of sites.keys()) {
-        if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites(g)) continue
-        chosen.set(g, freshId())
+        let calleeWrites = false
+        for (const writes of calleeWriteSets) if (writes.has(g)) { calleeWrites = true; break }
+        if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites) continue
+        chosenGlobals.push(g)
+        chosenNames.push(freshId())
       }
-      if (chosen.size) {
-        const replace = (node, parent, idx) => {
-          if (!parent) return
+      if (chosenGlobals.length) {
+        const replace = (parent, idx) => {
+          const node = parent[idx]
+          if (!Array.isArray(node)) return
           const g = siteGlobal(node, alias)
-          if (g != null && chosen.has(g)) { parent[idx] = ['local.get', chosen.get(g)]; return false }
+          if (g != null) {
+            let chosenIdx = -1
+            for (let i = 0; i < chosenGlobals.length; i++) if (chosenGlobals[i] === g) { chosenIdx = i; break }
+            if (chosenIdx >= 0) { parent[idx] = ['local.get', chosenNames[chosenIdx]]; return }
+          }
+          for (let i = 1; i < node.length; i++) replace(node, i)
         }
-        for (let i = 1; i < loopNode.length; i++) walkAst(loopNode[i], { enter: replace })
-        for (const [g, name] of chosen) {
+        for (let i = 1; i < loopNode.length; i++) replace(loopNode, i)
+        for (let i = 0; i < chosenGlobals.length; i++) {
+          const g = chosenGlobals[i], name = chosenNames[i]
           newDecls.push(['local', name, 'i32'])
           const snap = ptrOffsetForm.has(g)
             ? ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['global.get', g]]]
@@ -2774,7 +2789,10 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
       const c = node[i]
       if (Array.isArray(c) && c[0] === 'loop') {
         const pre = processLoop(c)
-        if (pre.length) { node.splice(i, 0, ...pre); i += pre.length }
+        if (pre.length) {
+          for (let j = pre.length - 1; j >= 0; j--) node.splice(i, 0, pre[j])
+          i += pre.length
+        }
         walk(c)
       } else {
         walk(c)
@@ -2782,7 +2800,7 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
     }
   }
   walk(fn)
-  if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
+  for (let i = newDecls.length - 1; i >= 0; i--) fn.splice(bodyStart, 0, newDecls[i])
 }
 
 /**
