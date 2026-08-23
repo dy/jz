@@ -16,9 +16,24 @@ shortcut is deleted. Unsupported iterators, BigInt lengths and wasm32-overflow
 lengths reject. Duplicate and computed/spread object-property initialization
 now preserves source order. Final rebuilt gates: native 3637/3635/0/2,
 test:wasm 2890/2888/0/2, self 21/21, parity 3/3, oracle 14/14, ratchet
-10/10. dist/jz.wasm 16,956.2 kB (+38.1 kB versus the prior merge; the first
-correct draft's +360.1 kB was reduced before landing). Next: standing warm-pin
-bisect, then test262 and the final battery; user alone pushes.
+10/10. The warm repair below brings dist/jz.wasm to 16,949.1 kB; the first
+correct draft's +360.1 kB was reduced before landing.
+
+## CLOSED (2026-08-23): warm-pin source bisect and length-dispatch recovery
+Four orphaned strbuild benchmark children had occupied four cores for 8–11
+days; after terminating them, the V8-referenced stopwatch remained strongly
+thermal/JIT-sensitive (the identical 6adde429 artifact swung 1.025x→1.16x).
+No commit was classified from that denominator. Same-process alternating Wasm
+artifacts showed 11588771=0.987x and pre-opaque b028ea65=0.994x versus the
+Aug-16 artifact, but merged opaque=1.041x versus b028ea65. Root: numeric length
+re-dispatched through __length_num→__length→__to_num, while direct rep.val reads
+hid higher-priority Array.isArray flow refinements. Commit 8616e2b2 uses
+lookupValType, generates raw/numeric length helpers from one source, and
+outlines ToNumber to the ordinary-property tail. Repaired=1.011x versus
+b028ea65 in an immediately paired run, recovering ~3 points; artifact shrinks
+16,956.2→16,949.1 kB. Full native 3638/3636/0/2, test:wasm
+2891/2889/0/2, self 21/21, parity 3/3, oracle 14/14, ratchet 10/10. The cap
+was not loosened; fresh remains green. Next: test262, final battery, user push.
 
 ## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
 ## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
