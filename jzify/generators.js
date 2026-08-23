@@ -419,7 +419,7 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
           err('generators v1: yield inside for-of/for-in is not supported yet — use an indexed for')
         // C-style [';', init, cond, step] (subscript head shape)
         const [, init, cond, step] = Array.isArray(head) && head[0] === ';' ? head : [';', head, undefined, undefined]
-        if (init != null) flattenStmt(init, cur, null) === cur || err('generators v1: yield in a for-init is not supported')
+        if (init != null) flattenStmt(init, cur, null) === cur || err('generators v1: yield in a for-init is not supported — move the initializer before the loop')
         const test = newState(), bodyS = newState(), stepS = newState(), exit = newState()
         stmtsOf(cur).push(...gotoIR(test))
         stmtsOf(test).push(['if', cond == null ? [null, true] : transform(cond), [';', ...gotoIR(bodyS)], [';', ...gotoIR(exit)]], [';;continue'])
@@ -431,7 +431,7 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       }
       if (op === '{}' || op === ';') return flattenList(blockStmts(st), cur, loopCtx)
       if (op === 'try' || op === 'catch' || op === 'finally')
-        err('generators v1: try/catch across a yield is not supported yet')
+        err('generators v1: try/catch across a yield is not supported yet — let the exception propagate out of the generator, or move the try into a non-yielding helper')
       err(`generators v1: yield inside \`${op}\` is not supported yet — hoist the yield to statement position`)
     }
 

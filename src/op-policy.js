@@ -11,14 +11,14 @@
 /** Ops prepare rejects when they appear in the AST (handler or identifier). */
 export const REJECT_OPS = {
   async: 'this `async` shape needs the jzify lowering (async fns/arrows are supported in default mode; async methods are not yet)',
-  await: '`await` outside an async function (or in a shape the jzify lowering does not cover)',
+  await: '`await` outside an async function (or in a shape the jzify lowering does not cover) — move it inside an `async` function',
   class: 'class not supported: use object literals',
-  yield: 'yield outside a generator body (or in an unsupported position — see jzify/generators.js v1 surface)',
+  yield: 'yield outside a generator body, or in a position the generator lowering does not reach (nested inside another function/callback) — move it to the generator function\'s own top level',
   'yield*': 'yield* not supported yet: loop over the inner iterator and yield each value',
   'new.target': '`new.target` not supported: no constructor reflection',
   using: '`using` declarations need the jzify lowering (try/finally + [Symbol.dispose]) — not in the strict canonical subset',
   with: '`with` not supported: deprecated',
-  ':': 'labeled statements not supported',
+  ':': 'labeled statements not supported — a real labeled loop needs non-strict mode (jzify lowers it there before this check runs); otherwise check for a missing `;` before this line (a common ASI misparse)',
   var: '`var` not supported: use let/const',
   function: '`function` not supported: use arrow functions',
 }
@@ -28,13 +28,13 @@ export const REJECT_OPS = {
 // `REJECT_IDENTS['valueOf']` would return the inherited method (truthy) and wrongly reject
 // a user identifier named like an Object method. Kernel objects are already prototype-less.
 export const REJECT_IDENTS = Object.assign(Object.create(null), {
-  with: '`with` not supported',
-  class: '`class` not supported',
-  yield: '`yield` not supported',
+  with: '`with` not supported: deprecated',
+  class: '`class` not supported: use object literals',
+  yield: '`yield` is reserved for generator functions, not a valid identifier — rename it',
   this: '`this` not supported: use explicit parameter',
   super: '`super` not supported: no class inheritance',
   arguments: '`arguments` not supported: use rest params',
-  eval: '`eval` not supported',
+  eval: '`eval` not supported: jz compiles ahead-of-time, no dynamic code evaluation',
   // `const` is an always-reserved word (like `class`/`with` above) — never a valid
   // binding/identifier name in any mode; subscript parses it as a plain identifier,
   // so reject it. NOT `let`: `let` is only *strict-mode* reserved and is a legal
@@ -45,13 +45,13 @@ export const REJECT_IDENTS = Object.assign(Object.create(null), {
 
 /** jzify-only errors for class lowering (no prepare counterpart). */
 export const JZIFY_CLASS_ERRORS = {
-  computedMember: 'non-constant computed class member names are not supported',
-  computedStaticField: 'non-constant computed static class fields are not supported',
-  computedField: 'non-constant computed/destructured class fields are not supported',
-  computedStaticMember: 'non-constant computed static class member names are not supported',
+  computedMember: 'non-constant computed class member names are not supported — use a literal name',
+  computedStaticField: 'non-constant computed static class fields are not supported — use a literal name',
+  computedField: 'non-constant computed/destructured class fields are not supported — use a literal field name',
+  computedStaticMember: 'non-constant computed static class member names are not supported — use a literal name',
   accessor: 'class getters/setters are not supported — jz objects have no accessors',
   staticMember: 'this `static` member shape is not supported (static fields, methods and blocks are)',
-  superProp: '`super` property access is not supported yet',
+  superProp: '`super` property access is not supported: no class inheritance',
 }
 
 /** Build prepare handler map from shared reject messages. */

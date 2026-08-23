@@ -531,7 +531,9 @@ export default (ctx) => {
     const sourceVt = resolveValType(src, valTypeOf, lookupValType)
     if (mapFn && !ctx.closure.call) ctx.module.include('fn')
     if (sourceVt === VAL.SET || sourceVt === VAL.MAP || sourceVt === VAL.CLOSURE)
-      err('Array.from: iterable Set/Map/function sources are not supported')
+      err(sourceVt === VAL.CLOSURE
+        ? 'Array.from: a function/generator source is not supported — jz has no iterator-protocol dispatch for a callable'
+        : 'Array.from: Set/Map sources are not supported here — spread it instead: [...source]')
     const staticLength = staticArrayLikeLength(src)
     if ((staticLength != null && valTypeOf(staticLength) === VAL.BIGINT) ||
         ((sourceVt === VAL.OBJECT || sourceVt === VAL.HASH) && valTypeOf(['.', src, 'length']) === VAL.BIGINT))
@@ -1414,7 +1416,7 @@ export default (ctx) => {
         const parsed = Array.isArray(v) && v[0] === '{}' ? staticObjectProps(v.slice(1)) : null
         const msid = parsed ? ctx.schema.register(parsed.names) : null
         if (msid == null || !inlUnion.sids.includes(msid))
-          err('union structInline Array.push expects a member-schema literal')
+          err(`Array.push on this union-typed array expects a literal matching one of: ${inlUnion.sids.map(sid => `{ ${ctx.schema.list[sid].join(', ')} }`).join(' or ')}`)
         const fields = structLiteralFields(v, msid)
         flat.push(...fields)
         for (let z = fields.length; z < inlUnion.stride; z++) flat.push([, 0])

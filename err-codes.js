@@ -140,7 +140,7 @@ export const ERR_INFO = {
   [ERR.ATOMICS_INDEX64]: { name: 'RangeError', message: 'index out of range' },
   [ERR.CRYPTO_QUOTA]: { name: 'RangeError', message: 'byteLength exceeds the maximum of 65536' },
   [ERR.JSON_TOO_DEEP]: { name: 'RangeError', message: 'JSON structure nesting too deep' },
-  [ERR.NUMBER_RADIX]: { name: 'RangeError', message: 'toString() radix must be between 2 and 36' },
+  [ERR.NUMBER_RADIX]: { name: 'RangeError', message: 'toString() radix argument must be between 2 and 36' },
   [ERR.NUMBER_TO_BIGINT_RANGE]: { name: 'RangeError', message: 'The number is not a finite integer, cannot convert to a BigInt' },
   [ERR.FROM_CODE_POINT_RANGE]: { name: 'RangeError', message: 'Invalid code point' },
   [ERR.ARRAY_BUFFER_LENGTH]: { name: 'RangeError', message: 'Invalid array buffer length' },

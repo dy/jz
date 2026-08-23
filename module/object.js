@@ -638,7 +638,7 @@ export default (ctx) => {
         const allProps = []
         for (const src of sources) {
           const s = knownSchema(src)
-          if (!s) err('Object.assign: source needs known schema')
+          if (!s) err('Object.assign: source\'s shape isn\'t known at compile time — pass an object literal, or a variable with one consistent shape')
           for (const p of s) if (!allProps.includes(p)) allProps.push(p)
         }
         const boxedSchema = ['__inner__', ...allProps]
@@ -713,7 +713,7 @@ export default (ctx) => {
   }
 
   ctx.core.emit['Object.defineProperty'] = () => {
-    err('Object.defineProperty descriptor semantics are outside jz scope; jzify only folds static bundler export helpers')
+    err('Object.defineProperty descriptor semantics are outside jz scope; jzify only folds static bundler export helpers — for a plain data property, use `obj.prop = value` instead')
   }
 
   // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs.
@@ -809,7 +809,7 @@ export default (ctx) => {
               ['local.get', `$${dst2}`]]],
             ['else', ['local.get', `$${value}`]]]] , 'f64')
       }
-      err('Object.create requires object with known schema')
+      err('Object.create requires object with known schema — pass an object literal, or a variable with one consistent shape')
     }
     const n = schema.length
     const schemaId = ctx.schema.register(schema)
