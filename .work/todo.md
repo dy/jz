@@ -6,6 +6,20 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## CLOSED (2026-08-22): opaque `.length` + `Array.from` property semantics
+Source commit e867c3af. Unresolved `.length` now remains an ordinary f64
+property Get across internal OBJECT/HASH and host EXTERNAL receivers, with one
+shared branded nullish TypeError and exact single-Get behavior. `Array.from`'s
+array-like path performs ordered argument evaluation, callable validation,
+one ToLength conversion and per-index Get; the effect-reordering 2^16 static
+shortcut is deleted. Unsupported iterators, BigInt lengths and wasm32-overflow
+lengths reject. Duplicate and computed/spread object-property initialization
+now preserves source order. Final rebuilt gates: native 3637/3635/0/2,
+test:wasm 2890/2888/0/2, self 21/21, parity 3/3, oracle 14/14, ratchet
+10/10. dist/jz.wasm 16,956.2 kB (+38.1 kB versus the prior merge; the first
+correct draft's +360.1 kB was reduced before landing). Next: standing warm-pin
+bisect, then test262 and the final battery; user alone pushes.
+
 ## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
 ## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
 The 2026-08-19 banked entry below is superseded — the defect is a GENERAL
