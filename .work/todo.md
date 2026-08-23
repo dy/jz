@@ -60,7 +60,20 @@ strings shared. Minimal O0/O1/O2/O3 and full O0 3639/3637/0/2 pass. The WASI
 continuation then exposed seven JS-host-only assertions (host objects/Date,
 EXTERNAL import shape, callable `run` returns) that violated `_matrix.js`'s
 standing scope contract; d1a6276b guards those only, leaving internal semantics
-live. Full WASI 3638/3636/0/2. Next: final battery, user push.
+live. Full WASI 3638/3636/0/2.
+
+## CLOSED (2026-08-23): final certification — user push point
+Final main `e405de06`: build/wat-strip 3/3, matrix default/O0/O3 all
+3639/3637/0/2 and WASI 3638/3636/0/2, test:wasm 2892/2890/0/2, self
+21/21, parity 3/3, oracle 14/14, ratchet 10/10, optimizer fixpoint 10/10,
+test262 language 3003/0/54 xfail (2507/1538 negative split), builtins
+853/0/86 xfail. dist/jz.wasm 16,963.2 kB after the concurrent reject-message
+wording merge. Warm stopwatch remains load-sensitive red at
+1.039/1.057/1.052 versus 1.03; fresh passes 0.851; cap unchanged. Dormant
+158-module jz×jz probe traps `unreachable` after 8.596 s at exactly 2^32
+memory bytes (heap i32 -80), the expected deferred volume wall, no corruption.
+Only remaining action: USER pushes; agent never pushes. CI then refreshes the
+270+ source-commit-stale bench evidence.
 
 ## CLOSED (2026-08-20): self-compile closure-capture defect — deep-captured
 ## const loses declaration — ROOT-CAUSED, FIXED, no longer self-compile-only
