@@ -12076,3 +12076,21 @@ kernel perf 55/55, kernel wat-invariants 24/24, full test:wasm
 2885/2883/0/2 (13,813), build/wat-strip 3/3, native full suite
 3632/3630/0/2 (21,156), kernel-oracle 14/14, kernel-parity 3/3,
 functional self-compile 21/21, ratchet 10/10.
+
+## COMPLETED (2026-08-22): emitter-owned autoload dependencies
+
+Commit 1b4c28ae removes the broad catch-all from generated-only property rows.
+The narrow table initially reproduced 18 failures and identified every hidden
+edge: object.hasOwnProperty's synthesized `in`; core/typedarray synthesized
+`str` keys; sidecar and external method dispatch's collection-owned helpers;
+and dynamic typed-buffer reads' array helper dependency. Those emitters now
+include string/array/collection at the exact branch that emits the IR. The
+`getDate` integration pin asserts a derived-only row equals its generated
+owners and carries no catch-all. Full suite is zero-fail, self-compile helper
+edge audit is fresh, and dist/jz.wasm shrank 16,970.1→16,918.1 kB (−52.0 kB;
+the handoff's −737 kB figure was stale after 100+ intervening changes).
+
+Gates: full suite 3632/3630/0/2 (21,156), self-compile-includes 3/3 (5),
+feature-gating 34/34, array-methods 144/145+1 skip, objects 134/134, buffer
+58/58, build/wat-strip 3/3, kernel-oracle 14/14, kernel-parity 3/3,
+functional self-compile 21/21 and ratchet 10/10 (+0).
