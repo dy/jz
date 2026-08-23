@@ -10,8 +10,9 @@ import { onWasi, belowOpt } from './_matrix.js'
 import { run } from './util.js'
 
 test('opaque .length uses ordinary property Get without i32 truncation', () => {
-  const { f, optional, alias, nested, caught, union } = jz(`
+  const { f, numeric, optional, alias, nested, caught, union } = jz(`
     export let f = x => x.length
+    export let numeric = x => x.length * 2
     export let optional = x => x?.length
     export let alias = x => { let y = x; return y.length }
     export let nested = x => x.child.length
@@ -20,6 +21,8 @@ test('opaque .length uses ordinary property Get without i32 truncation', () => {
   `).exports
   is(f([1, 2, 3]), 3)
   is(f({ length: 2.5 }), 2.5)
+  is(f({ length: '2.5' }), '2.5', 'ordinary property Get preserves a non-number value')
+  is(numeric({ length: '2.5' }), 5, 'numeric consumer applies ToNumber only at its edge')
   is(union(0), 2.5)
   is(union(1), 2)
   throws(() => f(null), err => err instanceof TypeError)

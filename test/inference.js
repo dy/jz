@@ -101,6 +101,23 @@ test('methodEvidence STRING: expression-bodied arrow narrows too', () => {
   is(count(wat, /\$__len\b/g), 0, 'no array-element __len for STRING receiver')
 })
 
+test('Array.isArray flow refinement outranks an unrelated durable rep for .length', () => {
+  const suffix = jz.compile(`
+    export const len = node => {
+      if (!Array.isArray(node)) return 0
+      return node.length
+    }
+  `, { wat: true, optimize: 0 })
+  const branch = jz.compile(`
+    export const len = node => {
+      if (Array.isArray(node)) return node.length
+      return 0
+    }
+  `, { wat: true, optimize: 0 })
+  is(count(suffix, /\$__length\b/g), 0, 'early-return suffix uses the proven ARRAY header')
+  is(count(branch, /\$__length\b/g), 0, 'positive branch uses the proven ARRAY header')
+})
+
 test('methodEvidence ARRAY: .push induces VAL.ARRAY (no STRING branch)', () => {
   // `.push` is in ARRAY_INDUCERS → method source emits {val: ARRAY}. ARRAY
   // tagging removes the STRING-vs-TYPED dispatch from `xs[i]` reads.
