@@ -604,6 +604,7 @@ export default (ctx) => {
     ctx.module.include('collection')
     ctx.module.include('array')
     ctx.runtime.schemaTblConsumed = true
+    ctx.schema.errorSid('TypeError')
     const checkExternalIterable = sourceVt == null && ctx.transform.targetProfile.envImports
     if (checkExternalIterable) { setLinkDemand('external'); inc('__ext_has_iterator') }
     setLinkDemand('typedarray')

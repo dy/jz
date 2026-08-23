@@ -36,6 +36,7 @@ test('features.external OFF: schema object — no __ext_* imports', () => {
 })
 
 test('features.external ON: erased indexable .length may be an external array-like', () => {
+  if (onWasi()) return
   const w = wat(`export let s = (a) => {
     let t = 0
     for (let i = 0; i < a.length; i++) t += a[i]

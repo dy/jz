@@ -825,7 +825,7 @@ test('Array.from: argument effects precede map validation and length access', ()
 })
 
 test('Array.from: opaque runtime sources support indexed host array-likes', () => {
-  if (onKernel()) return
+  if (onKernel() || onWasi()) return
   const { f, first, mapped } = runHost(`
     export let f = x => Array.from(x).length
     export let first = x => Array.from(x)[0]

@@ -301,6 +301,7 @@ test('jz: f64rem does not duplicate side effects in operands', () => {
 // Regressed as a live miscompile — `i64Hex(LAYOUT.NAN_PREFIX_BITS)` printed
 // the NaN-box carrier's own bits (0x7ffa8000…) instead of the value.
 test('jz: const-table bigint prop read survives whole-program write hazard', () => {
+  if (onWasi()) return  // callable `run` returns are JS-host ABI, not WASI command exports
   const layout = `
     export const LAYOUT = { NAN_PREFIX_BITS: 0x7FF8000000000000n, TAG_SHIFT: 47 }
     const _hx8 = (n) => n.toString(16).padStart(8, "0")
@@ -322,6 +323,7 @@ test('jz: const-table bigint prop read survives whole-program write hazard', () 
 // three stores, one verdict. Regressed as: f(300n) returned 0 (boxed reads
 // deref'd a raw carrier), OOB with arrays in scope.
 test('jz: bigint param loop-reassigned through a sink keeps one representation', () => {
+  if (onWasi()) return  // callable `run` returns are JS-host ABI, not WASI command exports
   const src = `
     let push8 = (out, b) => { out.push(b); return out }
     let uleb = (n, out) => { while (n > 127n) { push8(out, Number(n & 127n)); n = n >> 7n } push8(out, Number(n)); return out }
