@@ -2180,6 +2180,9 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     ctx.module.include('collection')
     ctx.module.include('array')
     ctx.runtime.schemaTblConsumed = true
+    // The shared throw helper materializes at stdlib-pull time, but its branded
+    // schema must exist before catch/property planning freezes schema tables.
+    ctx.schema.errorSid('TypeError')
     if (ctx.transform.targetProfile.envImports) setLinkDemand('external')
     inc('__length.value')
     setLinkDemand('typedarray')

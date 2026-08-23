@@ -37,6 +37,15 @@ test('opaque .length uses ordinary property Get without i32 truncation', () => {
   is(gets, 1, 'external property Get runs once')
 })
 
+test('opaque .length nullish TypeError schema is catchable at every tier', () => {
+  const src = `export let f = x => {
+    try { return x['length'] }
+    catch (e) { return e.name === 'TypeError' ? 1 : 0 }
+  }`
+  for (const optimize of [0, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f(null), 1, `O${optimize}`)
+})
+
 test('opaque .length host provenance survives aliases and internal call hops', () => {
   const src = `
     function relay(x) { let y = x; return y }
