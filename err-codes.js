@@ -73,6 +73,7 @@ export const ERR = {
                                 // operand is a dict/Map absent-key read: ToNumeric
                                 // reads real JS `undefined` as Number NaN, mismatching
                                 // the BigInt operand's type (ES2024 13.15.3 step 6)
+  ARRAY_FROM_ITERABLE: 117,    // Array.from — iterable protocol unsupported for this source
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -88,6 +89,7 @@ export const ERR = {
   DATAVIEW_OFFSET_OOB_FAST: 210, // DataView get/set (proven-i32 offset) — outside view bounds
   DATAVIEW_OFFSET_OOB: 211,    // DataView get/set (dynamic offset) — outside view bounds
   TYPED_WITH_INDEX: 212,       // TypedArray.prototype.with — index out of range
+  ARRAY_FROM_LENGTH: 213,      // Array.from array-like length exceeds wasm32 array range
 
   // ── 3xx SyntaxError/URIError-class ───────────────────────────────────────
   JSON_PARSE_SYNTAX: 300,      // JSON.parse — malformed input
@@ -127,6 +129,7 @@ export const ERR_INFO = {
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },
+  [ERR.ARRAY_FROM_ITERABLE]: { name: 'TypeError', message: 'Array.from iterable sources are unsupported; pass an array-like value' },
   [ERR.U8_RECEIVER]: { name: 'TypeError', message: 'receiver must be a Uint8Array' },
   [ERR.ATOMICS_RECEIVER32]: { name: 'TypeError', message: 'Atomics: receiver must be an Int32Array' },
   [ERR.ATOMICS_RECEIVER64]: { name: 'TypeError', message: 'Atomics: receiver must be a BigInt64Array' },
@@ -145,6 +148,7 @@ export const ERR_INFO = {
   [ERR.DATAVIEW_OFFSET_OOB_FAST]: { name: 'RangeError', message: 'Offset is outside the bounds of the DataView' },
   [ERR.DATAVIEW_OFFSET_OOB]: { name: 'RangeError', message: 'Offset is outside the bounds of the DataView' },
   [ERR.TYPED_WITH_INDEX]: { name: 'RangeError', message: 'Invalid typed array index' },
+  [ERR.ARRAY_FROM_LENGTH]: { name: 'RangeError', message: 'Array.from length exceeds the supported array range' },
 
   [ERR.JSON_PARSE_SYNTAX]: { name: 'SyntaxError', message: 'Unexpected token in JSON' },
   [ERR.BIGINT_PARSE_DIGIT]: { name: 'SyntaxError', message: 'Cannot convert string to a BigInt' },

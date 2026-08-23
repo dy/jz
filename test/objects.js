@@ -3,11 +3,63 @@
 // entries/getOwnPropertyNames/hasOwnProperty/create), polymorphic receivers
 // through `?:`, dynamic key writes against fixed-shape slots.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt } from './_matrix.js'
 import { run } from './util.js'
+
+test('opaque .length uses ordinary property Get without i32 truncation', () => {
+  const { f, optional, alias, nested, caught, union } = jz(`
+    export let f = x => x.length
+    export let optional = x => x?.length
+    export let alias = x => { let y = x; return y.length }
+    export let nested = x => x.child.length
+    export let caught = x => { try { return x['length'] } catch (e) { return e.name === 'TypeError' ? 1 : 0 } }
+    export let union = which => { let x = which ? [1, 2] : { length: 2.5 }; return x.length }
+  `).exports
+  is(f([1, 2, 3]), 3)
+  is(f({ length: 2.5 }), 2.5)
+  is(union(0), 2.5)
+  is(union(1), 2)
+  throws(() => f(null), err => err instanceof TypeError)
+  throws(() => f(undefined), err => err instanceof TypeError)
+  is(optional(null), undefined)
+  is(alias({ length: 4.5 }), 4.5)
+  is(nested({ child: { length: 6.25 } }), 6.25)
+  throws(() => alias(null), err => err instanceof TypeError)
+  is(caught(null), 1, 'source try/catch sees the nullish property Get')
+  let gets = 0
+  is(f({ get length() { gets++; return 7.25 } }), 7.25)
+  is(gets, 1, 'external property Get runs once')
+})
+
+test('opaque .length host provenance survives aliases and internal call hops', () => {
+  const src = `
+    function relay(x) { let y = x; return y }
+    function read(x) { return x.length }
+    export let f = x => read(relay(x))
+  `
+  for (const optimize of [0, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f({ length: 8.75 }), 8.75, `O${optimize}`)
+})
+
+test('object literal preserves duplicate and computed-key initializer order', () => {
+  const { duplicate, computed } = jz(`
+    export let duplicate = () => {
+      let n = 0
+      let o = {a: (n = n * 10 + 1), b: (n = n * 10 + 2), a: (n = n * 10 + 3)}
+      return n * 1000 + o.a * 10 + o.b
+    }
+    export let computed = () => {
+      let n = 0, k = 'x'
+      let o = {[k]: (n = n * 10 + 1), ...{y: (n = n * 10 + 2)}, z: (n = n * 10 + 3)}
+      return n * 1000 + o.x * 100 + o.y * 10 + o.z
+    }
+  `).exports
+  is(duplicate(), 124242, 'all duplicate initializers run; first key position keeps last value')
+  is(computed(), 123343, 'computed, spread, and static properties stay source-ordered')
+})
 
 test('Regression: Object.assign overwrites existing field from subset schema', () => {
   const { f } = run(`export let f = () => {

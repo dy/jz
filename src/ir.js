@@ -1280,8 +1280,14 @@ export function toNumF64(node, v) {
   if (Array.isArray(v)) {
     if (v[0] === 'f64.convert_i32_s' || v[0] === 'f64.convert_i32_u') return v
     if (v[0] === 'call' && v[1] === '$__time_ms') return v
-    // __length, __str_len return f64.convert_i32_s of an i32 — never a boxed pointer.
-    if (v[0] === 'call' && (v[1] === '$__length' || v[1] === '$__len' || v[1] === '$__str_len')) return v
+    // __len/__str_len return numeric lengths. Raw __length is ordinary
+    // property Get and may return any JS value; fuse its ToNumber through one
+    // shared helper instead of emitting two calls at every numeric consumer.
+    if (v[0] === 'call' && (v[1] === '$__len' || v[1] === '$__str_len')) return v
+    if (v[0] === 'call' && v[1] === '$__length') {
+      inc('__length_num')
+      return typed(['call', '$__length_num', v[2]], 'f64')
+    }
     // __ptr_type returns i32 tag, __ptr_offset returns i32 offset — both numeric.
     if (v[0] === 'call' && (v[1] === '$__ptr_type' || v[1] === '$__ptr_offset')) return v
   }

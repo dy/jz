@@ -788,41 +788,76 @@ test('Array.from: BigInt64Array/BigUint64Array — bracket-read equivalence (car
   }`).f(), 1)
 })
 
-test('Array.from: static array-like object literal reads real per-index values', () => {
-  // arrayLikeLength already found the literal `length:` property; the per-index
-  // VALUES were never read — every slot silently stored `undefined`. Fixed: a fully
-  // static `{}` literal with a compile-time-int `length` unrolls, reading each
-  // literal-index property directly (spec order: Get(0), Get(1), … ascending).
-  is(run(`export let f = () => { let r = Array.from({0: 'a', length: 1}); return r[0] === 'a' ? 1 : 0 }`).f(), 1)
-  is(run(`export let f = () => { let r = Array.from({0: 'a', 1: 'b', length: 2}); return (r[0] === 'a' && r[1] === 'b') ? 1 : 0 }`).f(), 1)
-  // a literal-index gap (no "1" property) reads undefined, matching a real missing
-  // array-like property — not a compile error, not the previous element's value.
-  is(run(`export let f = () => { let r = Array.from({0: 'a', length: 2}); return r[1] === undefined ? 1 : 0 }`).f(), 1)
-  is(run(`export let f = () => { let r = Array.from({0: 5, length: 1}, x => x * 2); return r[0] }`).f(), 10)
+test('Array.from: length-only builder objects preserve ToLength and callback order', () => {
+  is(run(`export let f = () => Array.from({length: 3}).length`).f(), 3)
+  is(run(`export let f = () => { let a = Array.from({length: 3}, (_, i) => i + 1); return a[0] * 100 + a[1] * 10 + a[2] }`).f(), 123)
+  is(run(`export let f = n => Array.from({length: n}).length`).f(2.9), 2)
+  is(run(`export let f = n => Array.from({length: n}).length`).f(-3), 0)
+  is(run(`export let f = n => Array.from({length: n}).length`).f(NaN), 0)
+  is(run(`export let f = () => Array.from({length: '2.9'}).length`).f(), 2)
+  throws(() => compile(`export let f = () => Array.from({length: 1n})`), /BigInt array-like length/)
+  throws(() => runHost(`export let f = () => Array.from({length: 536870910})`).f(), err => err instanceof RangeError)
+  throws(() => runHost(`export let f = () => Array.from({length: 2147483648})`).f(), err => err instanceof RangeError)
 })
 
-test('Array.from: dynamic array-like length reads real per-index values (was: documented gap, silently undefined)', () => {
-  // Was the documented gap: arrayLikeLength found the literal `length:` property,
-  // but a `length` that isn't a compile-time-int literal (e.g. arriving through a
-  // function parameter) left every slot `undefined` — the loop knew the LENGTH,
-  // never the indexed properties. Closed: `src`'s literal indices are still fully
-  // known at compile time (only the loop bound is dynamic) — arrayLikeMaxIndex
-  // finds the highest literal index, each present index's value evaluates once
-  // up front, and the runtime loop dispatches by index instead of hardcoding
-  // undefined (module/array.js, the `if (lengthExpr)` gap branch). ECMA-262
-  // Array.from (22.1.2.1): LengthOfArrayLike reads `length` once, then
-  // Get(arrayLike, ToString(k)) for k in [0, len) — real JS gives
-  // `Array.from({0: 'a', length: 1})[0] === 'a'`.
-  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[0] === 'a' ? 1 : 0 }`).f(1), 1)
-  // A missing property (a real gap, or any index beyond the highest literal one)
-  // reads undefined, same as a real array-like — not a compile error, not garbage.
-  is(run(`export let f = (n) => { let r = Array.from({0: 'a', 2: 'c', length: n}); return r[1] === undefined ? 1 : 0 }`).f(3), 1)
-  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r[4] === undefined ? 1 : 0 }`).f(5), 1)
-  // mapfn still runs per index against the real (or undefined-gap) element.
-  is(run(`export let f = (n) => { let r = Array.from({0: 5, length: n}, x => x * 2); return r[0] }`).f(1), 10)
-  // n = 0: an empty result, not a crash — the literal is still built, Array.from
-  // just never iterates any index.
-  is(run(`export let f = (n) => { let r = Array.from({0: 'a', length: n}); return r.length }`).f(0), 0)
+test('Array.from: object array-likes use source-order construction and indexed Get', () => {
+  is(runHost(`export let f = () => { let r = Array.from({0: 'a', 1: 'b', length: 2}); return r[0] + r[1] }`).f(), 'ab')
+  is(run(`export let f = n => { let r = Array.from({0: 5, 1: 7, length: n}, x => x * 2); return r[0] + r[1] }`).f(2), 24)
+  is(run(`export let f = () => { let r = Array.from({0: 'a', length: 2}); return r[1] === undefined ? 1 : 0 }`).f(), 1)
+  // Object construction is source-order. The retired shortcut evaluated length
+  // separately and indexed properties in ascending-key order.
+  is(run(`export let f = () => { let n = 0; Array.from({1: (n = n * 10 + 2), 0: (n = n * 10 + 1), length: (n = n * 10 + 3)}); return n }`).f(), 213)
+  // Duplicate definitions both evaluate; the last value is what indexed Get sees.
+  is(run(`export let f = () => { let n = 0; let r = Array.from({0: (n = n * 10 + 1), 0: (n = n * 10 + 2), length: 1}); return n * 100 + r[0] }`).f(), 1212)
+  // Computed/static property effects remain interleaved in source order.
+  is(run(`export let f = () => { let n = 0, k = '0'; let r = Array.from({[k]: (n = n * 10 + 1), length: (n = n * 10 + 2)}); return n * 100 + r[0] }`).f(), 1201)
+  // No compile-time cap: a legal index beyond the retired 2^16 shortcut cap is copied.
+  is(run(`export let f = () => Array.from({65536: 9, length: 65537})[65536]`).f(), 9)
+})
+
+test('Array.from: argument effects precede map validation and length access', () => {
+  is(runHost(`export let f = () => { let n = 0; const make = () => { n = n * 10 + 2; return v => v }; Array.from({length: (n = n * 10 + 1)}, make()); return n }`).f(), 12)
+  is(runHost(`export let f = () => { let n = 0; try { Array.from((n = 1, {length: 0}), 1) } catch (e) {} return n }`).f(), 1)
+  const dynamic = runHost(`export let f = (x, mapfn) => Array.from(x, mapfn).length`).f
+  let gets = 0
+  throws(() => dynamic({ get length() { gets++; return 0 } }, 3), err => err instanceof TypeError)
+  is(gets, 0, 'IsCallable runs before Get(items, length)')
+})
+
+test('Array.from: opaque runtime sources support indexed host array-likes', () => {
+  if (onKernel()) return
+  const { f, first, mapped } = runHost(`
+    export let f = x => Array.from(x).length
+    export let first = x => Array.from(x)[0]
+    export let mapped = x => Array.from(x, (v, i) => v * 2 + i)[1]
+  `)
+  is(f([1, 2, 3]), 3)
+  is(f(new Int16Array([1, 2])), 2)
+  is(mapped([3, 4]), 9)
+  is(mapped(new Uint8Array([3, 4])), 9)
+  is(first({ 0: 'a', length: 1 }), 'a')
+  is(mapped({ 0: 3, 1: 4, length: 2 }), 9)
+  is(f({ length: '2.9' }), 2)
+  const order = []
+  const source = {
+    get length() { order.push('l'); return 2 },
+    get 0() { order.push('0'); return 4 },
+    get 1() { order.push('1'); return 5 },
+  }
+  is(mapped(source), 11)
+  is(order.join(''), 'l01', 'length and indexed getters each run once in spec order')
+  throws(() => f(new Set([1, 2])), err => err instanceof TypeError)
+  let iteratorGets = 0
+  const iterable = { get [Symbol.iterator]() { iteratorGets++; return function * () { yield 1 } } }
+  throws(() => f(iterable), err => err instanceof TypeError)
+  is(iteratorGets, 1, 'unsupported iterator lookup preserves its single observable Get')
+  throws(() => f({ length: 1, [Symbol.iterator]: 3 }), err => err instanceof TypeError)
+  const fallbackOrder = []
+  is(f({
+    get [Symbol.iterator]() { fallbackOrder.push('i'); return null },
+    get length() { fallbackOrder.push('l'); return 0 },
+  }), 0)
+  is(fallbackOrder.join(''), 'il', 'GetMethod precedes array-like length Get')
 })
 
 test('Array.from(string): pin current per-char behavior (unaffected by the typed-source fix)', () => {
