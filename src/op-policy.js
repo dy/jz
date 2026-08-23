@@ -30,7 +30,7 @@ export const REJECT_OPS = {
 export const REJECT_IDENTS = Object.assign(Object.create(null), {
   with: '`with` not supported: deprecated',
   class: '`class` not supported: use object literals',
-  yield: '`yield` is reserved for generator functions, not a valid identifier — rename it',
+  yield: '`yield` not supported as an identifier — it\'s reserved for generator functions; rename it',
   this: '`this` not supported: use explicit parameter',
   super: '`super` not supported: no class inheritance',
   arguments: '`arguments` not supported: use rest params',

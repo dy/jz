@@ -1309,7 +1309,7 @@ function prep(node) {
       if (REJECT_IDENTS[node]) err(REJECT_IDENTS[node])
       // A bare #name ident outside its class body: the `#field in obj` brand check
       // (or a leaked private name). Reject with intent, not "not in scope".
-      if (node[0] === '#') err(`private name '${node}' — jz has no class-based private fields (no #field declarations, no #field in obj brand checks) — use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
+      if (node[0] === '#') err(`private name '${node}' not supported — jz has no class-based private fields (no #field declarations, no #field in obj brand checks); use a plain property with a naming convention instead, e.g. this._${node.slice(1)}`)
       // Boolean/Number as value → identity arrow (for .filter(Boolean), .map(Number) etc.)
       if (node === 'Boolean' || node === 'Number') { includeForCallableValue(); return ['=>', 'x', 'x'] }
       // Block locals shadow module imports/globals, even when the local keeps the same name.
