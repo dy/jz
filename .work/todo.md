@@ -6,6 +6,21 @@ archived in .work/archive-todo-2026-07.md (through 2026-07-25) and
 before re-deriving anything; every kernel bug class and perf frontier has a
 banked dissection in one of them.
 
+## ACTIVE (2026-08-24): v1 architecture + performance campaign
+The seven-part release program and acceptance gates live in
+`.work/v1-architecture-campaign.md`. Slice 1 closes the audited typed
+value/storage provenance wrong-value class: erased host widths, method-result
+ctor flow, Number/BigInt runtime unions, matched/mismatched indirect stores,
+BigInt `.at()` conversion, and open Error-message object coercion. Unknown
+indexed stores are outlined; the Float64 unswitch consumes that canonical form,
+so ratchet/golden-size caps were not loosened. Concurrent Shape #6 merged into
+the validated product; its self-compiled optional-chain instability was replaced
+with explicit checks. Final slice gates are recorded in the campaign doc. The
+next soundness pair is Shape #6's provenance-only ++/-- and closure-dispatch
+residual. Then: public types/contract, indexed analysis and
+plan authority, test262 early errors, 4 GiB closure, fresh perf claims, generic
+native target. No push by the agent.
+
 ## CLOSED (2026-08-22): opaque `.length` + `Array.from` property semantics
 Source commit e867c3af. Unresolved `.length` now remains an ordinary f64
 property Get across internal OBJECT/HASH and host EXTERNAL receivers, with one

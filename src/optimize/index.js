@@ -3525,9 +3525,30 @@ export function unswitchTypedParamLoop(fn) {
 
     // Find the polymorphic-store `if` by scanning (it's followed by a `drop` of its
     // f64 result; in the IR the two are separate statements, not (drop (if …))).
-    let storeIdx = -1, paramName = null, elseStore = null
+    let storeIdx = -1, storeEndIdx = -1, paramName = null, elseStore = null, helperStore = null
     for (let i = 0; i < body.length; i++) {
       const c = body[i]
+      // Outlined ARRAY/TYPED store: the helper owns the runtime width fork and
+      // returns the possibly-relocated pointer. Emission materializes that
+      // pointer in a temp, then persists it to the receiver binding.
+      if (Array.isArray(c) && c[0] === 'local.set' &&
+          Array.isArray(c[2]) && c[2][0] === 'call' && c[2][1] === '$__arr_typed_set_idx') {
+        const next = body[i + 1], ptrTmp = c[1], call = c[2]
+        const p = Array.isArray(next) && next[0] === 'local.set' && f64Params.has(next[1]) &&
+          Array.isArray(next[2]) && next[2][0] === 'local.get' && next[2][1] === ptrTmp ? next[1] : null
+        const objGet = Array.isArray(call[2]) && call[2][0] === 'i64.reinterpret_f64' ? call[2][1] : null
+        const objTmp = Array.isArray(objGet) && objGet[0] === 'local.get' ? objGet[1] : null
+        const seeded = p && objTmp && body.slice(0, i).some(st => Array.isArray(st) && st[0] === 'local.set' &&
+          st[1] === objTmp && Array.isArray(st[2]) && st[2][0] === 'local.get' && st[2][1] === p)
+        if (seeded) {
+          let end = i + 1
+          const resultGet = body[i + 2], resultDrop = body[i + 3]
+          if (Array.isArray(resultGet) && resultGet[0] === 'local.get' &&
+              Array.isArray(call[4]) && call[4][0] === 'local.get' && resultGet[1] === call[4][1] &&
+              (resultDrop === 'drop' || (Array.isArray(resultDrop) && resultDrop[0] === 'drop'))) end = i + 3
+          storeIdx = i; storeEndIdx = end; paramName = p; helperStore = call; break
+        }
+      }
       if (!Array.isArray(c) || c[0] !== 'if' || !Array.isArray(c[1]) || c[1][0] !== 'result' || c[1][1] !== 'f64') continue
       let thenArm = null, elseArm = null
       for (let k = 2; k < c.length; k++) { const a = c[k]; if (Array.isArray(a)) { if (a[0] === 'then') thenArm = a; else if (a[0] === 'else') elseArm = a } }
@@ -3543,8 +3564,9 @@ export function unswitchTypedParamLoop(fn) {
       // nested under an OBJECT/HASH → __dyn_set guard (emitPolymorphicElementStore's
       // dyn-prop safety fork) — descend to find it; the fast path replaces the whole
       // store with a direct f64.load/store anyway (a proven Float64Array is never an
-      // OBJECT, so its dyn arm is dead there). Still bail on the 3-way __typed_set_idx
-      // form (mixed element widths — the f64.store fallback isn't the sole non-ARRAY case).
+      // OBJECT, so its dyn arm is dead there). A plain __typed_set_idx arm is also
+      // dead-width-specialized by this outer Float64 gate and may be replaced; only
+      // the tagged BigInt-capable writer remains ineligible.
       const findRawStore = (n) => {
         let result = null
         walkAst(n, { enter: x => {
@@ -3555,13 +3577,14 @@ export function unswitchTypedParamLoop(fn) {
         } })
         return result
       }
-      if (has(elseArm, (x) => x[0] === 'call' && x[1] === '$__typed_set_idx')) continue
+      if (has(elseArm, (x) => x[0] === 'call' && x[1] === '$__typed_set_idx_tagged')) continue
       const es = findRawStore(elseArm)
       if (!es) continue
-      storeIdx = i; paramName = p; elseStore = es; break
+      storeIdx = i; storeEndIdx = i; paramName = p; elseStore = es; break
     }
     if (storeIdx < 0) return
-    const shiftIdx = elseStore[1][2][1]  // the index from the store's (i32.shl IDX 3)
+    const shiftIdx = helperStore ? helperStore[3]
+      : elseStore[1][2][1]  // the index from the store's (i32.shl IDX 3)
     // The read uses the IV directly; the store uses a snapshot `$asi = $iv`. Emit the
     // store against the IV too so the vectorizer unifies the load/store lanes — bit-exact
     // ($asi == $iv). Bail if the store index isn't the IV or a snapshot of it.
@@ -3574,14 +3597,13 @@ export function unswitchTypedParamLoop(fn) {
     const isDrop = (s) => s === 'drop' || (Array.isArray(s) && s[0] === 'drop')
     const hasDrop = storeIdx + 1 < body.length && isDrop(body[storeIdx + 1])
 
-    // The stored value is the else-store's operand (a local the body computed); take it
-    // from the store itself, not by guessing which local reads buf — the read may be
-    // nested in a split computation (`$t = buf[i]; $v = $t*2`) whose result is a DIFFERENT
-    // local. cloneRead rewrites any buf reads in that computation to f64.load.
-    if (!(Array.isArray(elseStore[2]) && elseStore[2][0] === 'local.get')) return
-    const valName = elseStore[2][1]
+    // Take the stored value from the matched store itself, not by guessing
+    // which local reads buf. The outlined helper may carry the whole value
+    // expression as its argument; cloneRead rewrites any nested buf reads.
+    const storedValue = helperStore ? helperStore[4] : elseStore[2]
+    if (!Array.isArray(storedValue)) return
     // GUARD: param reassigned ONLY inside the matched store-if (else the hoisted base goes stale).
-    for (let i = 0; i < body.length; i++) { if (i === storeIdx) continue; if (writes(body[i], paramName)) return }
+    for (let i = 0; i < body.length; i++) { if (i >= storeIdx && i <= storeEndIdx) continue; if (writes(body[i], paramName)) return }
     for (const s of preamble) { if (writes(s, paramName)) return }
 
     const base = `$__utb${baseId++}`
@@ -3592,14 +3614,17 @@ export function unswitchTypedParamLoop(fn) {
     const gate = ['i32.and', ['i32.eq', tag, ['i32.const', PTR.TYPED]],
       ['i32.or', ['i32.eq', auxOf(), ['i32.const', F64]], ['i32.eq', auxOf(), ['i32.const', F64V]]]]
     const baseSnap = ['local.set', base, ['call', '$__ptr_offset', reint()]]
-    const fastStore = ['f64.store', ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]], ['local.get', valName]]
+    const fastStore = ['f64.store',
+      ['i32.add', ['local.get', base], ['i32.shl', ['local.get', incVar], ['i32.const', 3]]],
+      cloneRead(storedValue, paramName, base, new Map())]
     // Fast body: keep every statement except the store-if (→ fastStore) and its trailing
     // drop (the fast store pushes nothing), with the typed-array read collapsed to f64.load.
     const hoistedGuards = new Map()
     const fastStmts = []
     for (let i = 0; i < body.length; i++) {
       if (i === storeIdx) { fastStmts.push(fastStore); continue }
-      if (hasDrop && i === storeIdx + 1) continue
+      if (i > storeIdx && i <= storeEndIdx) continue
+      if (hasDrop && i === storeEndIdx + 1) continue
       fastStmts.push(cloneRead(body[i], paramName, base, hoistedGuards))
     }
     // Any receiver-guard conditions cloneRead found (see its doc comment) are

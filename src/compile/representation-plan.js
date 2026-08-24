@@ -583,7 +583,12 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     let mixedSet = paramMixed.get(calleeName)
     if (!mixedSet) { mixedSet = new Set(); paramMixed.set(calleeName, mixedSet) }
     if (mixedSet.has(k)) return // already proven mixed elsewhere; sticky
-    if (!pure) { mixedSet.add(k); paramBigintOnly.get(calleeName)?.delete(k); return }
+    if (!pure) {
+      mixedSet.add(k)
+      const priorPure = paramBigintOnly.get(calleeName)
+      if (priorPure) priorPure.delete(k)
+      return
+    }
     let pureSet = paramBigintOnly.get(calleeName)
     if (!pureSet) { pureSet = new Set(); paramBigintOnly.set(calleeName, pureSet) }
     pureSet.add(k)
@@ -595,7 +600,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (op === '=>') return // closures scan under their own frame elsewhere; mirrors scan()'s own boundary
     if (op === '()' && typeof node[1] === 'string') {
       const callee = ctx.funcs.map.get(node[1])
-      if (callee?.sig?.params) {
+      if (callee && callee.sig && callee.sig.params) {
         const args = commaList(node[2])
         for (let k = 0; k < callee.sig.params.length; k++) {
           const rep = k < args.length ? exprRep(args[k], func, localNames) : NO_BIGINT
@@ -659,8 +664,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // strictly more precise than `rep` for this one purpose (the BOOL-veto
     // in buildBodyData's materializedNames fixpoint) since it is derived
     // from literally every real caller, not a per-function kind census.
-    const provenBigintOnly = !generic && !uncovered &&
-      options.provenance?.paramBigintOnly?.get(func.name)?.has(k) === true
+    const bigintOnlyRow = options.provenance && options.provenance.paramBigintOnly
+      ? options.provenance.paramBigintOnly.get(func.name) : null
+    const provenBigintOnly = !generic && !uncovered && bigintOnlyRow != null && bigintOnlyRow.has(k)
     // `current` deliberately keeps deriving from the LEGACY (rep-based)
     // semantic even when provenBigintOnly overrides `semantic` itself —
     // regression found live (test/watr.js's uleb-loop pin): currentParamRep's
@@ -709,6 +715,11 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const current = resultMayBigint
     ? (generic ? currentResultRep(func, semantic, true) : options.provenance?.resultReps.get(func.name) ?? currentResultRep(func, semantic, false))
     : NO_BIGINT
+  // A mixed-result closure table explicitly marks its member bodies: raw i64
+  // BigInt bits cannot share the uniform closure result lane with Number.
+  // Named top-level function values use their dedicated trampoline producer
+  // boundary (emit.js) instead.
+  const forceTaggedResult = resultMayBigint && options.forceTaggedResult === true
   return {
     kind: 'boundary',
     func,
@@ -717,8 +728,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     result: {
       semantic,
       current,
-      target: targetRepFor(semantic, current),
+      target: forceTaggedResult ? BOXED_BIGINT : targetRepFor(semantic, current),
       demand: demandFor(semantic),
+      forceTagged: forceTaggedResult,
     },
     edges: [],
   }
@@ -1202,7 +1214,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (!semanticObserved(bodyResultSemantic) || definiteBigint(boundary.result.semantic))
     bodyResultSemantic = boundary.result.semantic
   bodyResultCurrent ??= boundary.result.current
-  const bodyResultTarget = targetRepFor(bodyResultSemantic, bodyResultCurrent)
+  const bodyResultTarget = (options.forceTaggedResult || boundary.result.forceTagged) && canBeBigint(bodyResultSemantic)
+    ? BOXED_BIGINT : targetRepFor(bodyResultSemantic, bodyResultCurrent)
 
   const walkEdges = (node, root = false) => {
     if (!Array.isArray(node)) return
@@ -1507,7 +1520,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // about, leaving a closure with no tag-required param (the .map callback:
   // x's own boundary semantic excludes bigint entirely, closureBoxParams
   // stays empty) on its pre-existing REJECT path, unchanged.
-  const materializedResult = (boundary.covered === true || (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
+  const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
+      (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
     !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
     resultExprs.every(expr => {
@@ -1997,6 +2011,7 @@ export function recordClosureCallRepresentations(ctx, bodyName, args) {
 }
 
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true
+
 export const representationProgramRejectCount = ctx => programPlanRecord(ctx)?.rejects || 0
 
 /** Debug invariant: every non-reject action maps into the target's allowed set. */

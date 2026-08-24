@@ -881,7 +881,7 @@ test('inferModuleLetTypes: swap-temp name colliding with a numeric local stays t
 // failing closed. The `[]`-index read is the cleanest probe — a receiver with a
 // proven kind drops straight to `$__str_idx` with no runtime dispatch; an unclaimed
 // one forks between `$__str_idx` and `$__typed_idx` on a runtime tag test.
-const TYPE_FORK = /\$__typed_idx\b/g
+const TYPE_FORK = /\$__typed_idx(?:_tagged)?\b/g
 const noTypeFork = (wat, msg) => is(count(wat, TYPE_FORK), 0, msg)
 const keepsTypeFork = (wat, msg) => ok(count(wat, TYPE_FORK) > 0, msg)
 
@@ -1061,7 +1061,7 @@ test('plain-array index with a literal term stays pure i32 (sibling of marble)',
   // f64.convert_i32_s per read (`j` and `x`, or `j+1` and `x`), not one — the
   // index ARITHMETIC itself (j*W+x) never round-trips through f64; only the
   // unproven-receiver guard's cold key does.
-  const dynGetCalls = count(fn, /call \$__dyn_get_expr\b/g)
+  const dynGetCalls = count(fn, /call \$__dyn_get_(?:expr|any)\b/g)
   is(count(fn, /f64\.convert_i32_s/g), dynGetCalls * 2,
     'plain-array index terms stay i32 (f64.convert_i32_s appears 2:1 — one per key leaf — with the unproven-receiver dyn-props guard)')
 })
@@ -1603,7 +1603,7 @@ test('extractRefinements: instanceof Float64Array → __typed_idx dispatch', () 
     }
   `, { wat: true, jzify: true })
   const probe = wat.match(/\(func \$probe[\s\S]+?\n  \)/)?.[0] || ''
-  ok(/\$__typed_idx\b/.test(probe), 'expected __typed_idx dispatch under TYPED refinement')
+  ok(/\$__typed_idx(?:_tagged)?\b/.test(probe), 'expected typed index dispatch under TYPED refinement')
   ok(!/\$__arr_idx\b/.test(probe), 'should not fall back to __arr_idx')
 })
 

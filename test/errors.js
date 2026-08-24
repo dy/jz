@@ -956,37 +956,31 @@ test('errors: Error ctor message coercion — bound closed-schema object (audit-
   is(j(`export let f = () => { let o = {x: 1}; return new Error(o).message }`), '[object Object]', 'bound non-empty closed-schema object now gets the same short-circuit as the literal')
   is(j(`export let f = () => { let o = {x: 1, y: 2}; return new Error(o).message }`), '[object Object]', 'multi-prop bound object, still closed')
   is(j(`export let f = () => { let o = {toString: () => 'custom'}; return new Error(o).message }`), 'custom', 'a real toString method is NOT short-circuited — the real method runs')
-  // An out-of-schema write (`o.y = 2` where `y` isn't in o's declared schema)
-  // makes the object NOT provably closed at compile time — a dynamically
-  // added key COULD be 'toString'/'valueOf'. Falls to the pre-existing
-  // generic toStrI64 OBJECT path, unaffected by this fix either direction —
-  // asserting only that it does NOT wrongly claim '[object Object]'.
-  is(j(`export let f = () => { let o = {x: 1}; o.y = 2; return new Error(o).message === '[object Object]' }`), false,
-    'an out-of-schema write is conservatively NOT short-circuited (unproven closed-world)')
+  // An out-of-schema write leaves the OrdinaryToPrimitive hook set open.
+  // Until dynamic callable-property invocation is supported, fail closed.
+  throws(`export let f = () => { let o = {x: 1}; o.y = 2; return new Error(o).message }`,
+    'not supported', 'out-of-schema Error message object rejects')
 })
 
-// FIXED (audit-#11 gap-1): a genuinely EMPTY `let o = {}` declaration used to
-// get NO schema id bound at all (src/prepare/index.js's decl-schema-binding
-// guarded on `props.length`, and even module/core.js's own
-// `isClosedObjNoStringMethod` gated on `valTypeOf(node) === VAL.OBJECT` — a
-// fact that, for THIS one binding shape, a second independent non-schema-
-// aware body-fact pass could race and clear). Root-caused to two guards:
-// prepare/index.js's decl-schema binding now accepts a 0-prop schema for a
-// bare `{}` (module/object.js's own literal emitter already unconditionally
-// mints one — this just binds the SAME sid to the declared name, same as any
-// non-empty literal already did); isClosedObjNoStringMethod now gates on
-// `ctx.schema.idOf` directly (a durable, single-writer fact) instead of the
-// racy `.val`. A genuinely DYNAMIC dict (no schema even in principle — a
-// computed-key-grown object, an unknown-source spread merge) is a separate,
-// still-real gap this task ALSO closed: errorMessageIR now treats a
-// VAL.HASH-kind message the same as a proven-closed OBJECT (no schema is
-// EVER possible for a HASH, so "unprovable" is approximated as "absent",
-// same discipline isClosedObjNoStringMethod itself already applies).
-test('errors: Error ctor message coercion — bound TRULY EMPTY object and dynamic dicts (audit-#11 gap-1)', () => {
+test('errors: Error ctor message coercion — closed empty object and open dicts', () => {
   const j = (code) => jz(code, { jzify: true }).exports.f
   is(j(`export let f = () => { let o = {}; return new Error(o).message }`)(), '[object Object]', 'bound empty object, no growth')
-  is(j(`export let f = (k) => { let o = {}; o[k] = 1; return new Error(o).message }`)('k'), '[object Object]', 'empty object grown via a computed key — genuine dictionary mode (VAL.HASH), no schema even in principle')
-  is(j(`export let f = (a, b) => { let o = {...a, ...b}; return new Error(o).message }`)({ x: 1 }, { y: 2 }), '[object Object]', 'unknown-source spread merge — VAL.HASH')
+  throws(`export let f = (k) => { let o = {}; o[k] = 1; return new Error(o).message }`,
+    'not supported', 'computed-key dictionary cannot prove ToPrimitive hooks')
+  throws(`export let f = (a, b) => { let o = {...a, ...b}; return new Error(o).message }`,
+    'not supported', 'unknown-source spread cannot prove ToPrimitive hooks')
+})
+
+test('errors: dynamically-kinded object messages reject instead of returning an object value', () => {
+  const f = jz(`export let f = x => new Error(x).message`).exports.f
+  is(f(3), '3')
+  is(f(false), 'false')
+  is(f([1, 2]), '1,2')
+  for (const value of [{}, { toString() { return 'x' } }, new Int8Array([1]), new Map(), new Set()]) {
+    let error
+    try { f(value) } catch (e) { error = e }
+    ok(error instanceof TypeError, `${value.constructor.name}: expected fail-closed TypeError`)
+  }
 })
 
 // §3(c): a non-Error throw is completely unaffected by the object model —

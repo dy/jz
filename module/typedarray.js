@@ -13,12 +13,13 @@ import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { typedIdxProven, typedElemCtor, idxKey } from '../src/type.js'
+import { typedIdxProven, typedResultCtor, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
+import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -241,8 +242,9 @@ export default (ctx) => {
     __byte_length: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __byte_offset: ['__ptr_type', '__ptr_offset', '__ptr_aux'],
     __to_buffer: ['__ptr_type', '__ptr_offset', '__ptr_aux', '__mkptr'],
-    __typed_set_idx: () => ['__ptr_aux', '__ptr_offset',
+    __typed_set_idx: () => ['__ptr_aux', '__ptr_offset', '__ptr_type',
       ...(ctx.linkDemand.f16 ? ['__f64_to_f16'] : []), ...(ctx.linkDemand.clamped ? ['__u8_clamp'] : [])],
+    __typed_set_idx_tagged: ['__typed_set_idx', '__ptr_aux', '__ptr_type', '__ptr_offset'],
     __typed_get_idx: () => ['__ptr_aux', '__ptr_offset', ...(ctx.linkDemand.f16 ? ['__f16_to_f64'] : [])],
     // __clamp_idx is body-called by every range op (fill/copyWithin/subarray/slice). It has NO
     // other manual-dep edge in the whole stdlib, so it's reachable ONLY via resolveIncludes'
@@ -1223,41 +1225,20 @@ export default (ctx) => {
   // .length handled by ptr.js's __len (reads from memory header [-8:len])
 
   /** Resolve element type + view-ness for a known TypedArray expression.
-   *  Returns { et, isView, isBigInt } or null. Handles:
-   *    - bare binding: `xs` (in typedElem)
-   *    - element-preserving method chain: `xs.filter(...)` / `xs.map(...)` /
-   *      `xs.slice(...)` — walks back to the root binding. View-ness clears
-   *      at the chain output (the result is always an owned typed array). */
-  const TYPED_CHAIN_METHODS = new Set(['map', 'filter', 'slice'])
+   *  Returns { et, isView, isBigInt } or null. Delegates constructors,
+   *  aliases, copy-producing chains, receiver-returning mutators, and
+   *  subarray views to the shared typedResultCtor provenance authority. */
   const resolveElem = (arr) => {
-    let receiver = arr, chainOutput = false, viewOutput = false
-    // Walk method-call chain inward. `arr.method(...)` parses as
-    // ['()', ['.', recv, 'method'], ...args] — peel until we hit a name. The OUTERMOST
-    // op decides view-ness: `.subarray(...)` yields a zero-copy VIEW (reads must indirect
-    // through the descriptor), whereas `.map`/`.slice`/… yield a fresh non-view copy.
-    while (Array.isArray(receiver) && receiver[0] === '()' &&
-        Array.isArray(receiver[1]) && receiver[1][0] === '.' &&
-        (TYPED_CHAIN_METHODS.has(receiver[1][2]) || receiver[1][2] === 'subarray')) {
-      if (!chainOutput) viewOutput = receiver[1][2] === 'subarray'
-      receiver = receiver[1][1]
-      chainOutput = true
-    }
     // Nested receiver `arr[i]` where `arr`'s elements are typed arrays of a known
     // ctor (`Array.from(n, () => new Float32Array())` — codec channelData). The i-th
-    // element IS that owned typed array; emit(receiver) already loads its pointer, so
-    // the standard typedDataAddr path inlines `arr[i][j]` to a direct load/store.
-    const ctor = (Array.isArray(receiver) && receiver[0] === '[]' && receiver.length === 3 && typeof receiver[1] === 'string'
-        ? ctx.func.localReps?.get(receiver[1])?.arrayElemTypedCtor
-        : null)
-      || (typeof receiver === 'string' && ctx.func.typedElem?.get(receiver))
-      // Direct fresh-ctor receiver: `new Int32Array([…]).map(f)` — the ctor call
-      // node IS the receiver, no binding to look up. Without this the chain fell
-      // to the plain-array emitters, which read f64 slots — silently wrong for
-      // every element kind except Float64Array.
-      || typedElemCtor(receiver)
+    // element IS that owned typed array; emit(arr) already loads its pointer.
+    const nestedCtor = Array.isArray(arr) && arr[0] === '[]' && arr.length === 3 && typeof arr[1] === 'string'
+      ? ctx.func.localReps?.get(arr[1])?.arrayElemTypedCtor : null
+    const ctor = nestedCtor || typedResultCtor(arr, name =>
+      ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null)
     if (!ctor) return null
-    const isView = viewOutput || (!chainOutput && ctor.endsWith('.view'))
-    const name = ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
+    const isView = ctor.endsWith('.view')
+    const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
     const et = TYPED_ELEM_CODE[name]
     if (name === 'Float16Array') setLinkDemand('f16')
     if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
@@ -1321,6 +1302,15 @@ export default (ctx) => {
     (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
       (then (i64.store (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))) (i64.reinterpret_f64 (local.get $v))))
       (else
+        ;; Numeric TypedArrays reject a BigInt value. Unknown-receiver stores
+        ;; box a statically BigInt RHS before this generic helper; silently
+        ;; ToNumber-ing that pointer used to store 0 instead of throwing.
+        (if (i32.and
+              (f64.ne (local.get $v) (local.get $v))
+              (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $v))) (i32.const ${PTR.BIGINT})))
+          (then
+            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
+            (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
         ;; ToNumber for NaN-boxed values (spec: typed element writes coerce).
         ;; true/false/null atoms store 1/0/0; other boxes (undefined, string,
         ;; object) store canonical NaN. Skipped on the BigInt arm above — raw
@@ -1364,6 +1354,40 @@ export default (ctx) => {
                     (then (i32.store16 (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 1))) (local.get $bits)))
                     (else (i32.store8 (i32.add (local.get $off) (local.get $i)) (local.get $bits))))))))))))
     (local.get $v))`
+
+  // Representation-safe writer for a receiver whose concrete typed ctor is
+  // unknown. Its value channel is generic/tagged: BigInt must arrive as a
+  // PTR.BIGINT box, while every other value follows numeric TypedArray
+  // coercion. The raw helper above remains for same-typed get→set algorithms
+  // (reverse/sort/copyWithin), where raw i64 transport is intentional.
+  ctx.core.stdlib['__typed_set_idx_tagged'] = `(func $__typed_set_idx_tagged (param $ptr i64) (param $i i32) (param $v f64) (param $domain i32) (result f64)
+    (local $aux i32) (local $t i32) (local $raw f64)
+    (local.set $aux (call $__ptr_aux (local.get $ptr)))
+    (local.set $t
+      (if (result i32) (f64.ne (local.get $v) (local.get $v))
+        (then (call $__ptr_type (i64.reinterpret_f64 (local.get $v))))
+        (else (i32.const 0))))
+    (if (i32.and (local.get $aux) (i32.const ${TYPED_ELEM_BIGINT_FLAG}))
+      (then
+        (if (i32.eq (local.get $t) (i32.const ${PTR.BIGINT}))
+          (then
+            (local.set $raw (f64.reinterpret_i64 (i64.load (call $__ptr_offset (i64.reinterpret_f64 (local.get $v))))))
+            (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $raw)))
+            (return (local.get $v))))
+        ;; domain=0 is proven non-BigInt; domain=-1 is an ordinary unknown
+        ;; whose BigInt producer is required to be tagged. domain=1 is proven
+        ;; raw BigInt.
+        (if (i32.ne (local.get $domain) (i32.const 1))
+          (then
+            (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
+            (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
+        (drop (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $v)))
+        (return (local.get $v))))
+    (if (i32.eq (local.get $domain) (i32.const 1))
+      (then
+        (global.set $__jz_last_err_bits (i64.reinterpret_f64 (f64.const ${ERR.BIGINT_UNDEF_MIX})))
+        (throw $__jz_err (f64.const ${ERR.BIGINT_UNDEF_MIX}))))
+    (call $__typed_set_idx (local.get $ptr) (local.get $i) (local.get $v)))`
 
   // .fill(value, start?, end?) for typed arrays. The plain-array __arr_fill gates
   // on PTR.ARRAY and silently no-ops a typed receiver (the storage layout and
@@ -1736,7 +1760,7 @@ export default (ctx) => {
 
   ctx.core.emit['.typed:[]'] = (arr, i) => {
     const r = resolveElem(arr)
-    if (r == null) return null // unknown type, fallback to generic
+    if (r == null) return null // open ctor: array.js uses the tagged runtime reader
     const { et, isView, isBigInt } = r
     // idxKey builds a string (JSON.stringify for expression indices) — price
     // it only when an RMW map is actually populated; the maps are empty on
@@ -1887,15 +1911,19 @@ export default (ctx) => {
     }
     // Element kind not provable statically (opaque flow) — same runtime aux-tag
     // dispatch as typedLoop's dynamic fallback, correct for any concrete kind
-    // including BigInt.
-    inc('__typed_get_idx', '__len')
+    // including BigInt. The source may name no ctor at all (host-provided
+    // receiver), so emission itself must retain the full width/f16 helper.
+    setLinkDemand('typedarray')
+    setLinkDemand('typedRuntime')
+    const runtimeRead = representationProgramHasBigint(ctx) ? '__typed_idx_tagged' : '__typed_idx'
+    inc(runtimeRead, '__len')
     const av = temp('taa')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${av}`, asF64(emit(arr))],
       ['local.set', `$${len}`, ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${av}`]]]],
       ...relIdxSetup,
       ['if', ['result', 'f64'], oob, ['then', undefExpr()],
-        ['else', ['call', '$__typed_get_idx', ['i64.reinterpret_f64', ['local.get', `$${av}`]], ['local.get', `$${t}`]]]]], 'f64')
+        ['else', ['call', `$${runtimeRead}`, ['i64.reinterpret_f64', ['local.get', `$${av}`]], ['local.get', `$${t}`]]]]], 'f64')
   }
 
   // A store value that can evaluate INSIDE the bounds guard when the assignment

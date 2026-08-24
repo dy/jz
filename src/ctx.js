@@ -961,6 +961,7 @@ export function reset(proto, globals, bridge) {
   ctx.linkDemand = {
     external: false,  // PTR.EXTERNAL possible — opts.imports, HOST_GLOBALS, or __ext_call site.
     typedarray: false,// Float64Array/Int32Array/etc. Set on typed-array construction; gates PTR.TYPED dispatch.
+    typedRuntime: false, // an open-ctor indexed read/write uses the polymorphic typed helpers; pins them against hot-loop inlining.
     set: false,       // Set. Set on Set construction; gates PTR.SET dispatch.
     map: false,       // Map. Set on Map construction; gates PTR.MAP dispatch.
     closure: false,   // First-class functions. Set when ctx.closure.table is populated.
