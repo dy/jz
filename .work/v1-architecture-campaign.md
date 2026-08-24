@@ -70,12 +70,12 @@ Number/BigInt conditional reads, matched and mismatched closure-table and
 computed-method stores, BigInt map/slice/filter assignment,
 `Number(BigInt64Array#at)`, and dynamic Error-message objects.
 
-Validation on the final slice tree: native 3648/3647/0/1; matrix default/O0/O3
-3648/3647/0/1 and WASI 3647/3646/0/1; wasm-hosted 2901/2900/0/1;
+Validation on the final merge product: native 3652/3651/0/1; matrix default/O0/O3
+3652/3651/0/1 and WASI 3651/3650/0/1; wasm-hosted 2905/2904/0/1;
 functional self-compile 21/21; kernel parity 3/3 (33 byte-identical rows);
 kernel oracle 14/14 (605); ratchet 10/10; optimizer fixpoint 10/10; test262
 language 3003/0/54 xfail with the 2507/1538 negative split; builtins
-853/0/86 xfail. `dist/jz.wasm` is 16,982.3 kB versus 16,963.2 kB at campaign
+853/0/86 xfail. `dist/jz.wasm` is 16,993.8 kB versus 16,963.2 kB at campaign
 start. The 159-module full jz×jz goal still reaches the exact 2^32 wall; Slice
 1 is a soundness/authority close, not a claim that the memory goal moved.
 
