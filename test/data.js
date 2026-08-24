@@ -2150,15 +2150,22 @@ test('bigint: KNOWN-WRONG — ++/-- on a covered-function param whose only bigin
   // plan.js's): give valTypeOf's own '++'/'--' resolution — or this
   // handler's own guard — the same OR-fallback onto RepresentationPlan's
   // proof that compoundAssign's val-side check already has.
+  // Wrong-value note: the layer-5 regression fix (nullish-preservation,
+  // same commit) changed `n`'s target back to BOXED for this shape — the
+  // '++' handler's WRONG (non-bigint) fallback arm now writes its bad
+  // f64.add result into a slot the REST of the body correctly reads as
+  // boxed, so the botched write is masked and `n` reads back unchanged
+  // (900n, not incremented) rather than surfacing as raw box-pointer bits.
+  // Different WRONG value, same root cause and same fix scope.
   // FLIP CONDITION: once fixed, f() below returns 901n like every other
-  // compound-reassign shape in the sweep above, not 1.0's bit pattern.
+  // compound-reassign shape in the sweep above, not the pre-increment value.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function g(n) { n++; return n }
       export let f = () => { let arr = []; arr.push(900n); return g(arr.pop()) }
     `, { optimize }).exports
-    is(e.f(), 4607182418800017408n, `${lbl}: KNOWN-WRONG — ++ on a provenance-only covered param reads back as 1.0's bit pattern, not 901n`)
+    is(e.f(), 900n, `${lbl}: KNOWN-WRONG — ++ on a provenance-only covered param silently no-ops, reads back 900n not 901n`)
   }
 })
 

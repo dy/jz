@@ -661,10 +661,38 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // from literally every real caller, not a per-function kind census.
     const provenBigintOnly = !generic && !uncovered &&
       options.provenance?.paramBigintOnly?.get(func.name)?.has(k) === true
+    // `current` deliberately keeps deriving from the LEGACY (rep-based)
+    // semantic even when provenBigintOnly overrides `semantic` itself —
+    // regression found live (test/watr.js's uleb-loop pin): currentParamRep's
+    // onlyBigintKind(sem) branch reads "kind-pure bigint" as license to
+    // choose the RAW carrier over BOXED, an optimization that is only sound
+    // once EVERY consumer downstream understands a plan-materialized RAW
+    // param — not yet universally true across emit.js (found live: Number(n)
+    // on such a param reinterpreted its raw i64 bits as an already-numeric
+    // f64 — no int->float conversion, no unbox — silently wrong). Layer 5's
+    // OWN job is narrower than "pick the optimal carrier": it exists to
+    // supply buildBodyData's BOOL-veto a precise, informative kind set
+    // (`semantic`) so a covered param the legacy census under-proves isn't
+    // permanently excluded from materializedNames. `current`/`target`
+    // staying on the legacy derivation preserves the exact BOXED default
+    // this shape already used, correctly, before shape #6 touched anything.
+    const legacySemantic = mayBigint ? (generic ? observed : boundaryParamSemantic(rep, uncovered)) : noBigintSemantic()
+    // SECOND regression layer, same root class: even with `current` pinned
+    // to the legacy derivation above, `target = targetRepFor(semantic,
+    // current)` still reads `semantic` — and semKind's own `nullish=false`
+    // default silently upgraded a genuinely-nullable param (uleb's own
+    // `rep.nullable === true`, from the legacy census — this proof is
+    // SILENT on nullability, never having claimed it either way) to
+    // "definitely present", which flips targetRepFor's own definiteBigint
+    // gate open and lets its RAW-preserving branch fire off of the
+    // (nullish-blind) `current` computed above. Preserving the legacy
+    // semantic's own nullish bit closes both regression layers with the
+    // one shared cause: this proof's precision is scoped to KIND purity
+    // only, never presence.
     const semantic = mayBigint
-      ? (generic ? observed : provenBigintOnly ? semKind(VAL.BIGINT) : boundaryParamSemantic(rep, uncovered))
+      ? (generic ? observed : provenBigintOnly ? semKind(VAL.BIGINT, semanticNullish(legacySemantic)) : legacySemantic)
       : noBigintSemantic()
-    const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, semantic, uncovered)) : NO_BIGINT
+    const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, legacySemantic, uncovered)) : NO_BIGINT
     return {
       semantic,
       observed,
@@ -1255,11 +1283,28 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // (`.get/.pop/.shift/.at`, currentOf/plannedOf's `cm` branch above); layer
   // 3 is the plain `[]`/`.member` read (currentOf/plannedOf's `recv` branch)
   // — both producers, same physical guarantee, one predicate.
+  //
+  // NARROWED to a genuinely storage-TRACKED receiver (regression found live,
+  // FULL suite: array-destructure's `let [a, b] = [1, BigInt(v)]` desugars
+  // to `let d0 = [1, BigInt(v)]; let a = d0[0]; let b = d0[1]` — `d0[1]` IS
+  // a `[]` member read, but `d0` is an ARRAY-LITERAL temp, never `.push`/
+  // `.set`-mutated, so the "write side always boxes" physical guarantee this
+  // predicate exists to name was never actually established for it — a
+  // literal's own construction path is free to choose a different internal
+  // layout (unboxed, when every element's kind is statically known) with no
+  // obligation to box uniformly. `provenance.storage`/`.bigintTyped` (this
+  // file's own solveBigintProvenance, already the authority exprMay's
+  // identical STORAGE_READ_METHODS/`[]` branches consult) is the precise,
+  // already-computed signal for "this receiver is real, mutation-tracked
+  // storage" — reusing it here closes the gap with no new analysis.
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
-    if (memberReceiver(node) != null) return true
+    const isTrackedStorage = recv => typeof recv === 'string' &&
+      (provenance?.storage.has(recv) === true || provenance?.bigintTyped.has(recv) === true)
+    const recv = memberReceiver(node)
+    if (recv != null) return isTrackedStorage(recv)
     const cm = callMember(node)
-    return !!cm && STORAGE_READ_METHODS.has(cm[2])
+    return !!cm && STORAGE_READ_METHODS.has(cm[2]) && isTrackedStorage(cm[1])
   }
 
   const materializedNames = new Set()
