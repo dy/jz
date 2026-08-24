@@ -2129,80 +2129,30 @@ test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member c
   }
 })
 
-test('bigint: KNOWN-WRONG — ++/-- on a covered-function param whose only bigint evidence is provenance, not valTypeOf (shape #6 adjacent gap)', () => {
-  // Found sweeping shape #6's method family, NOT one of its five layers:
-  // '+='/'-='/etc.'s BigInt guard is `valTypeOf(name) === BIGINT ||
-  // valTypeOf(val) === BIGINT` — an OR, so a proven-BigInt RHS OPERAND
-  // (`n += 1n`) enters the correct i64 arm even when valTypeOf(name) alone
-  // can't resolve. '++'/'--' have no separate operand — their ONLY guard is
-  // valTypeOf(name) (kind.js) — and for a covered (non-exported) function's
-  // REASSIGNED param whose sole bigint evidence is whole-program provenance
-  // (representation-plan.js's own solveBigintProvenance/paramBigintOnly,
-  // never a directly valTypeOf-provable local fact), that guard stays null:
-  // the handler falls to the GENERIC (non-bigint) numeric path, f64.add-ing
-  // the raw i64-reinterpreted bits to 1.0 — silent-wrong, not a REJECT.
-  // Pre-existing in kind.js's valTypeOf; this campaign's shape #6 fix never
-  // touches it and does not create it — layer 4 (representation-plan.js)
-  // merely made the surrounding pathway reachable enough for this sweep to
-  // discover it (confirmed independent of storage reads: reproduces
-  // identically with a bare `g(5n)` literal call site). Root fix (not
-  // attempted here, a kind.js/narrow.js undertaking, not representation-
-  // plan.js's): give valTypeOf's own '++'/'--' resolution — or this
-  // handler's own guard — the same OR-fallback onto RepresentationPlan's
-  // proof that compoundAssign's val-side check already has.
-  // Wrong-value note: the layer-5 regression fix (nullish-preservation,
-  // same commit) changed `n`'s target back to BOXED for this shape — the
-  // '++' handler's WRONG (non-bigint) fallback arm now writes its bad
-  // f64.add result into a slot the REST of the body correctly reads as
-  // boxed, so the botched write is masked and `n` reads back unchanged
-  // (900n, not incremented) rather than surfacing as raw box-pointer bits.
-  // Different WRONG value, same root cause and same fix scope.
-  // FLIP CONDITION: once fixed, f() below returns 901n like every other
-  // compound-reassign shape in the sweep above, not the pre-increment value.
+test('bigint: ++/-- on a covered-function param uses RepresentationPlan provenance (shape #6)', () => {
+  // valTypeOf(name) is deliberately local and can stay unknown for a covered,
+  // reassigned param. representationCompoundAssignAction is the frozen
+  // whole-program proof that the binding is materialized BigInt; ++/-- must
+  // consult it just like the other compound assignments.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
       function g(n) { n++; return n }
+      function h(n) { n--; return n }
       export let f = () => { let arr = []; arr.push(900n); return g(arr.pop()) }
+      export let d = () => { let arr = []; arr.push(900n); return h(arr.pop()) }
     `, { optimize }).exports
-    is(e.f(), 900n, `${lbl}: KNOWN-WRONG — ++ on a provenance-only covered param silently no-ops, reads back 900n not 901n`)
+    is(e.f(), 901n, `${lbl}: provenance-only ++`)
+    is(e.d(), 899n, `${lbl}: provenance-only --`)
   }
 })
 
-test('bigint: KNOWN-WRONG — storage-read forwarded through a closure/dispatch-table call, watr\'s ACTUAL shape #6 manifestation (shape #6 residual, root not yet closed)', () => {
-  // The REAL CI signature (test/official/memory64.wast data-segment offset
-  // garbage, dy/watr's compile.js) does not match the named-function-call
-  // shape this fixpoint's other pins cover. watr's actual chain: `instr()`
-  // dispatches per-opcode encoders through a DISPATCH TABLE — `HANDLER[imm]
-  // (nodes, ctx, op, out)` (compile.js) — a computed/dynamic call, never a
-  // bare function name. The `i64:` entry is an ARROW FUNCTION VALUE stored
-  // in that table (never registered in ctx.funcs.map), whose body reads
-  // `nodes.shift()` (a storage read on its OWN first param) before calling
-  // `encode.i64(...)` (encode.js, a SECOND namespace-property call). This
-  // reproduces the identical box-pointer-bits disease (confirmed: the
-  // watr-leg failure's exact corrupt offset, 9221823924769217936, decodes
-  // to 0x7ffa800011115d90 — a PTR.BIGINT NaN-box tag over a heap offset,
-  // byte-for-byte the same corruption class every OTHER pin in this
-  // fixpoint fixes) but through representation-plan.js's SEPARATE closure-
-  // materialization machinery (closureBoxParams/closureCallNeedsBox/
-  // mintRepresentationPlan(...,{generic:true}) — a parallel authority to
-  // paramBigintOnly/representationCallArgAction, built for the closure-
-  // forwarding slice, .work/phase-c-unification.md's own §"Closure-
-  // forwarding slice LANDED"). This fixpoint's five layers plus the
-  // forward-storage-propagation gap (both fixed and pinned above) are
-  // NAMED-FUNCTION-call mechanisms; extending closureBoxParams to ALSO
-  // prove "a closure param's OWN storage-read is boxed by construction" is
-  // a comparably-sized, SEPARATE undertaking (its own designed subsystem,
-  // own history, own soundness constraints — the closure-forwarding slice's
-  // own three-part landing is the precedent for how much care it needs),
-  // not a slice of this one. Root-caused, reproduced in isolation, and
-  // stopped here per this fixpoint's own discipline: documented wall, not a
-  // rushed partial fix into unfamiliar territory. FLIP CONDITION: once
-  // closure-materialization proves a table-dispatched closure's own
-  // storage-read param, f() below returns 7n like every named-function
-  // shape in the sweep above, at every optimize level (this reproduces
-  // identically at O0, unlike the O3-only tail-call nuance noted inline —
-  // it is wrong from the start, no optimizer interaction needed).
+test('bigint: storage-read forwarded through a closure/dispatch-table call (shape #6 closure close)', () => {
+  // Closure bodies are outside the named-function provenance scan. Their own
+  // local storage census now marks `nodes.shift()` as a boxed-by-construction
+  // producer; the materialization fixpoint may therefore normalize the local
+  // before its BigInt compound update. This is the actual watr HANDLER[key]
+  // dispatch shape, not a direct-call approximation.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -2218,8 +2168,7 @@ test('bigint: KNOWN-WRONG — storage-read forwarded through a closure/dispatch-
         return encode("i64", nodes)
       }
     `, { optimize }).exports
-    const wrong = e.f()
-    ok(typeof wrong === 'number' && wrong !== 7, `${lbl}: KNOWN-WRONG — closure/dispatch-table storage-read forwarding does not compute 7n`)
+    is(e.f(), 7n, `${lbl}: closure/dispatch-table storage-read forwarding`)
   }
 })
 

@@ -620,7 +620,24 @@ function solveBigintProvenance(ctx, programFacts, ast) {
 }
 
 function deriveLocalProvenance(sig, body, localReps, program) {
-  const names = new Set(), params = new Set()
+  const names = new Set(), params = new Set(), storage = new Set()
+  const scanStorage = (node, root = false) => {
+    if (!Array.isArray(node)) return
+    if (!root && node[0] === '=>') return
+    const cm = callMember(node)
+    if (cm && typeof cm[1] === 'string' &&
+        (STORAGE_READ_METHODS.has(cm[2]) || STORAGE_WRITE_METHODS.has(cm[2]))) storage.add(cm[1])
+    if (ASSIGN_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string')
+      storage.add(node[1][1])
+    for (let i = 1; i < node.length; i++) scanStorage(node[i])
+  }
+  scanStorage(body, true)
+  const localExprMay = expr => {
+    const recv = memberReceiver(expr), cm = callMember(expr)
+    if (recv != null && storage.has(recv)) return true
+    if (cm && STORAGE_READ_METHODS.has(cm[2]) && storage.has(cm[1])) return true
+    return program.exprMay(expr, null, names)
+  }
   const observedParams = program?.closureParams.get(sig?.name)
   for (let k = 0; k < (sig?.params?.length || 0); k++) {
     const name = sig.params[k].name, rep = localReps?.get(name)
@@ -636,13 +653,13 @@ function deriveLocalProvenance(sig, body, localReps, program) {
   while (changed) {
     changed = false
     for (const [name, entries] of defs)
-      if (!names.has(name) && entries.some(entry => entry.rhs != null && program.exprMay(entry.rhs, null, names))) {
+      if (!names.has(name) && entries.some(entry => entry.rhs != null && localExprMay(entry.rhs))) {
         names.add(name)
         changed = true
       }
   }
   const tails = Array.isArray(body) && body[0] === '{}' ? returnExprs(body) : [body]
-  return { names, params, result: tails.some(expr => program.exprMay(expr, null, names)) }
+  return { names, params, storage, result: tails.some(localExprMay) }
 }
 
 const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
@@ -896,7 +913,14 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const defs = collectDefs(body)
   const provenance = options.provenance
   const taintedNames = options.localProvenance?.names || provenance?.namesByFunc.get(identity)
-  const mayCarryBigint = node => !provenance || provenance.exprMay(node, identity, taintedNames)
+  const localStorage = options.localProvenance ? options.localProvenance.storage : null
+  const localStorageRead = node => {
+    if (!localStorage || !Array.isArray(node)) return false
+    const recv = memberReceiver(node), cm = callMember(node)
+    if (recv != null && localStorage.has(recv)) return true
+    return !!cm && STORAGE_READ_METHODS.has(cm[2]) && localStorage.has(cm[1])
+  }
+  const mayCarryBigint = node => localStorageRead(node) || !provenance || provenance.exprMay(node, identity, taintedNames)
   const params = new Map((sig?.params || []).map((p, i) => [p.name, i]))
   // Closure-forwarding slice (.work/phase-c-unification.md §C4b queue):
   // same-body local closures, structurally (name → {params, body}) — a call
@@ -1313,7 +1337,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const isStorageReadProducer = node => {
     if (!Array.isArray(node)) return false
     const isTrackedStorage = recv => typeof recv === 'string' &&
-      (provenance?.storage.has(recv) === true || provenance?.bigintTyped.has(recv) === true)
+      ((localStorage && localStorage.has(recv)) || (provenance && provenance.storage.has(recv)) ||
+       (provenance && provenance.bigintTyped.has(recv)))
     const recv = memberReceiver(node)
     if (recv != null) return isTrackedStorage(recv)
     const cm = callMember(node)
@@ -1326,10 +1351,20 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (ctx.scope.globals?.has(name)) continue
     if (params.has(name) && boundary.covered !== true && !exportedIdentity) continue
     // RepresentationPlan only normalizes the BigInt member. A BOOL member in
-    // an otherwise dynamic scalar still needs the separate BOOL-atom producer;
-    // do not claim the whole binding materialized before that project lands.
+    // an ordinary dynamic scalar still needs the separate BOOL-atom producer.
+    // A storage read is different: it is already fully tagged for every kind,
+    // and a following numeric compound update throws before writing on a
+    // non-numeric member, so materializing BigInt cannot erase BOOL identity.
     const nameSemantic = semanticNames.get(name) ?? semAll()
-    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
+    let hasStorageSeed = false, identitySafeStorageFlow = true
+    for (const def of list) {
+      if (def.rhs == null) continue
+      if (isStorageReadProducer(def.rhs)) { hasStorageSeed = true; continue }
+      if (!NUMERIC_VALUE_OPS.has(def.owner && def.owner[0])) { identitySafeStorageFlow = false; break }
+    }
+    identitySafeStorageFlow = identitySafeStorageFlow && hasStorageSeed
+    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0 &&
+        !identitySafeStorageFlow) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def.rhs == null) return true
@@ -1338,16 +1373,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       // NUMERIC_VALUE_OPS already covers the full arithmetic/bitwise compound
       // family (+=, -=, ..., >>=, ++, --) and currentOf already resolves
       // their BigInt-ness correctly (the RAW-result NUMERIC_VALUE_OPS branch,
-      // above); only this readiness gate lagged behind. NOTE: this plan-side
-      // admission is necessary but not sufficient for '++'/'--' specifically
-      // — see the emission companion's own KNOWN-WRONG pin (test/data.js):
-      // valTypeOf(name)'s OWN resolution (kind.js, unrelated to this plan)
-      // has a separate, pre-existing gap for a covered-function param whose
-      // only bigint evidence is whole-program provenance, not a directly
-      // valTypeOf-provable local fact — '+='/'-='/etc. sidestep it via their
-      // own `valTypeOf(val)` OR-fallback (a literal/proven RHS operand),
-      // but '++'/'--' have no separate operand to fall back on.
-      const ownerOp = def.owner?.[0]
+      // above); only this readiness gate lagged behind. ++/-- now consult the
+      // dedicated representationUnaryUpdateAction when local valTypeOf cannot
+      // see a covered param's whole-program proof.
+      const ownerOp = def.owner && def.owner[0]
       if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
       // Readiness is about the carrier the emitter produces before this
       // binding-write edge, not the expression's eventual planned target.
@@ -1821,6 +1850,29 @@ export function representationCompoundAssignAction(ctx, name) {
   const body = handle && ctx.plans.representationData.get(handle)?.body
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(RAW_BIGINT, activeRep(ctx, name, true))
+}
+
+/** ++/-- have no RHS operand whose local valType can select the BigInt path.
+ * Admit a covered binding only when its frozen semantic is definitely BigInt;
+ * return the raw-result write action for that binding's planned target. */
+export function representationUnaryUpdateAction(ctx, name) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const record = handle && ctx.plans.representationData.get(handle)
+  const body = record && record.body, boundary = record && record.boundary
+  if (!body || !boundary) return REP_EDGE_REJECT
+  let semantic = body.semanticNames ? body.semanticNames.get(name) : null
+  let target = body.targetNames ? body.targetNames.get(name) : null
+  if (semantic == null || target == null) {
+    const func = boundary.func
+    const params = func && func.sig ? func.sig.params : null
+    const k = params ? params.findIndex(p => p.name === name) : -1
+    if (k >= 0) {
+      if (semantic == null) semantic = boundary.params[k] ? boundary.params[k].semantic : null
+      if (target == null) target = boundary.params[k] ? boundary.params[k].target : null
+    }
+  }
+  if (semantic == null || !definiteBigint(semantic) || target == null) return REP_EDGE_REJECT
+  return edgeAction(RAW_BIGINT, target)
 }
 
 const activeEmittedRep = (ctx, node) => {
