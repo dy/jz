@@ -592,3 +592,32 @@ the closure-dispatch residual above; STABLE (byte-identical failure set
 and identical corrupt offset) across all three fix iterations in this
 branch, confirming neither regression fix touched that residual and no
 new regression was introduced downstream of it.
+## Shape #6 residuals CLOSED (2026-08-24, v1 campaign Slice 2)
+
+Both residuals named above are now ordinary correct-value tests at O0/O2/O3.
+
+1. **Provenance-only `++`/`--`.** `valTypeOf(name)` remains intentionally
+   local and may not see a covered reassigned param's whole-program BigInt
+   proof. `representationUnaryUpdateAction` reads the active frozen plan,
+   requires a definitely-BigInt semantic, and returns the raw-result write
+   action for the binding's target. The emitter runtime-unboxes the current
+   carrier, performs i64 add/sub, then applies KEEP/BOX. No broader kind
+   inference or heuristic was added.
+2. **Closure/dispatch-table storage read.** Generic closure planning now builds
+   a closure-local storage set from get/pop/shift/at and indexed mutation. A
+   local initialized from that storage is BigInt-tainted even though closure
+   bodies are outside the named-function whole-program scan. The BOOL veto is
+   relaxed only for a flow seeded by a boxed-by-construction storage read whose
+   remaining defs are numeric compounds (non-numeric members throw before
+   writing, so atom identity cannot be erased). This closes the real
+   `HANDLER[key](nodes)` / `nodes.shift()` watr shape, not a direct-call proxy.
+
+The merged Shape #6 pass also exposed a wasm-host-only instability in three
+optional-chain expressions inside `paramBigintOnly`; explicit Map/record checks
+preserve the same native plan and restore all shape #6 tests under
+`JZ_TEST_TARGET=jz.wasm`.
+
+Validation: native suite 3652/3651/0/1 (21,349 assertions); test:wasm
+2905/2904/0/1 (13,990); data native 153/153 (780), kernel 153/153 (771);
+watr 37/37 (113); parity 3/3 (33); oracle 14/14 (605); ratchet 10/10;
+optimizer fixpoint 10/10. No accepted-wrong Shape #6 assertion remains.
