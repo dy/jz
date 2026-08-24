@@ -79,6 +79,14 @@ language 3003/0/54 xfail with the 2507/1538 negative split; builtins
 start. The 159-module full jz×jz goal still reaches the exact 2^32 wall; Slice
 1 is a soundness/authority close, not a claim that the memory goal moved.
 
+Concurrent main's Shape #6 named-function storage-read provenance was merged
+before landing. Its first wasm-hosted validation exposed three optional-chain
+expressions in `paramBigintOnly` that the self-compiled compiler did not execute
+stably; explicit Map/record checks restore the full shape #6 family under
+`test:wasm` without changing the native plan. Two Shape #6 residuals are now
+the immediate next soundness work: provenance-only `++/--`, and a storage read
+inside an object/dispatch-table closure (`HANDLER[key](...)`).
+
 ## Remaining order
 
 After Slice 1 merges: public types/contract (small, release-facing), indexed
