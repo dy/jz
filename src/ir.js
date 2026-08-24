@@ -872,7 +872,19 @@ export const emitNum = v => isI32(v)
   // the IR loses its quiet-mantissa bit (0x7FF8→0x7FF0, i.e. becomes Infinity) when
   // the self-host kernel marshals the IR back across the wasm→host boundary. The
   // `nan` token assembles to the canonical 0x7FF8 number-NaN unambiguously.
-  : typed(['f64.const', v !== v ? 'nan' : v], 'f64')
+  // Number.isNaN, NOT `v !== v`: `v`'s static kind is ambiguous across emitNum's
+  // whole call graph (any NaN-minting fold — pre-eval's constant division included —
+  // can reach here), so in-kernel `!==` takes jz's own bit-equality `!==` dispatch,
+  // where a sign-set qNaN (x86 wasm arithmetic's uncanonicalized 0/0, ∞−∞, 0·∞) reads
+  // bit-equal to itself and the guard silently misses it — the raw negative-signed
+  // NaN value then rides `node[1]` as an ambiguous-typed IR array element, which a
+  // downstream self-hosted AST walk (watr's own `fold`) reads as a boxed pointer and
+  // dereferences OOB (linux-x64-only self-compile CI failure). Number.isNaN unboxes
+  // to f64 and uses f64.ne, which is sign-agnostic by IEEE754 — catches every
+  // payload. Native no-op (v !== v and Number.isNaN(v) agree off-kernel). Mirrors the
+  // identical fix watr's own optimize.js (getConst/makeConst) already carries for the
+  // same root cause.
+  : typed(['f64.const', Number.isNaN(v) ? 'nan' : v], 'f64')
 
 // === Fresh ids / temp locals ===
 
