@@ -432,3 +432,163 @@ codegen), kernel-oracle 14/14 (619), FULL SUITE 3610 total / 3608 pass /
 byte-for-byte behavior-identical to native for the flipped pin and its
 companion shapes — no divergence (the specific risk flow-types.js's own
 closureBodyReturnKind doc flags for a similar-looking prior attempt).
+
+## Shape #6 (2026-08-24, from CI memory64 red — fix/bigint-boundary-ci recon)
+
+Storage-read → reassigned-param → cross-function consumption uses BOX
+POINTER BITS as the value (LEB-encodes 0x7ffa800000000430 = the PTR.BIGINT
+box pointer itself, heap offset 1072 — watr encode.js i64() shape; minimal
+jz-only repro confirmed corrupt INSIDE wasm, no interop involved). Five
+layers, 1–4 fixed-and-probe-verified then REVERTED (no partial commits into
+this fixpoint), exact seams (representation-plan.js @ 899d6783):
+1. currentOf (~:974) + plannedOf (~:1041): recognize the full
+   STORAGE_READ_METHODS {get,pop,shift,at} (exprRep :398 already does),
+   not just 'get'.
+2. edgeMaterializable sourceReady (~:1156): a BOXED→BOXED storage-read
+   edge is ready by construction (write side always boxes via
+   taggedStoredValue) — say so.
+3. Same recognition for plain []/.member reads (memberReceiver shape).
+4. Materializable-def gate (~:1158): admit compound assignments
+   (NUMERIC_VALUE_OPS already imported :703 and resolves >>= correctly).
+5. OPEN ROOT: representationCallArgAction cross-function readiness
+   (~:1648) still rejects — callee's materializedNames never contains the
+   reassigned param; plan-minting/visibility ordering between caller
+   call-site check and callee body materialization
+   (mintRepresentationPlan/buildBodyData order). This is the layer that
+   keeps the encode wrong; find it before applying 1–4.
+Probe evidence trail: each of 1–4 moved edgeAction KEEP→REJECT→KEEP as
+gaps closed. CI signature: /test/official/memory64.wast data-segment
+offset 9221823924767627208. Sibling note: watr polyfill reject (CI
+failure 1) is a dy/watr runner gap (raw BigInt AST leaves → generic
+marshaler; box via memory().BigInt before exports.compile) — no jz change.
+
+## Shape #6 LANDED (2026-08-24, branch fix/shape6-storage-read)
+
+Layers 1–4 landed as specified (exact seams above, offsets unchanged —
+representation-plan.js had zero commits between 899d6783 and this branch's
+base). Layer 5's OPEN ROOT was live-probed and turned out to be A LAYER
+DEEPER than the brief's own ordering hypothesis — same lesson C5's own
+landing note already recorded ("the landing plan's fixpoint suspicion was
+one layer too deep"). Live trace (JZ_SHAPE6_TRACE-style console.error at
+buildBodyData's materializedNames loop) showed mintRepresentationPlan/
+buildBodyData order is NOT the problem: analyzeFuncs is a complete pass
+over ctx.funcs.list before emitFuncs starts (compile/index.js), so a
+callee's body plan is always minted before any caller's call-site check
+runs — verified directly, callee-before-caller ordering already holds.
+The REAL root: a covered callee's boundary param semantic
+(makeBoundaryData, !uncovered branch) trusts the legacy whole-program
+paramReps census (`rep`) whenever it reports `kindsCoverage: 'closed'` —
+but for a storage-read call argument (`g(arr.at(i))`), that census has no
+notion of `.at()`/`.get()`/etc. and reports the maximal "any of the 14
+kinds, closed" answer (a confident-looking but uninformative default, not
+real evidence). buildBodyData's materializedNames fixpoint reads that
+closed-ALL semantic, sees the synthetic BOOL member it necessarily
+carries, and vetoes materialization permanently — the reassigned param
+never enters its OWN callee body's materializedNames, so every caller's
+representationCallArgAction sees an empty set forever after, deterministic
+not racy.
+
+Fix (representation-plan.js): solveBigintProvenance gains `paramBigintOnly`
+— a final pass (after the provenance fixpoint fully settles, avoiding
+staleness) that walks every direct call site in the program and asks
+exprRep's own STORAGE_READ_METHODS-aware proof of each argument; a
+COVERED function's param earns the mark when EVERY call-site argument at
+that index is a provably CLOSED bigint (arity gaps and any non-closed-
+bigint argument mark it impure, permanently). makeBoundaryData prefers this
+proof's KIND set (semKind(VAL.BIGINT), nullish preserved from the legacy
+semantic — see regression note below) over the coarse census when present,
+for the semantic used by the BOOL-veto specifically.
+
+LAYER 6, found only once validating against the ACTUAL watr CI shape (not
+the brief's own repro shape): solveBigintProvenance's `storage` set
+propagates provenance BACKWARD (a callee that mutates a storage-bearing
+param propagates that back to the caller's bare argument — pre-existing
+rule) but never FORWARD. watr's real chain is
+`compile.js`'s `i64:` handler doing `n.shift()` on ITS OWN first param,
+called as `encode.i64(n.shift(), out)` — a plain array PASS-THROUGH
+(`function handle(arr){ return i64(arr.shift()) }`) leaves the callee's
+OWN param invisible to exprMay's STORAGE_READ_METHODS branch (which only
+ever consults `storage.has(name)` for the read's own receiver name — never
+seeded for a param that only ever RECEIVES a storage-tainted argument).
+Fix: mirror the backward rule — a caller passing its own storage-tainted
+bare-name argument hands the callee the SAME object by reference (Array/
+Map are reference types), so the callee's corresponding param inherits
+storage-taint too. Sound by the identical argument the backward rule
+already relies on.
+
+TWO REGRESSIONS found only by the FULL suite (neither the brief's own
+repro nor this fixpoint's own targeted sweep exercised either shape —
+recorded here as the reason the full battery is load-bearing, not a
+formality):
+1. `provenBigintOnly`'s `semKind(VAL.BIGINT)` call defaulted nullish=false,
+   silently upgrading a genuinely-nullable param (test/watr.js's
+   pre-existing uleb-loop pin: legacy `rep.nullable === true`) to
+   "definitely present" — flipping targetRepFor's definiteBigint gate open,
+   which combined with currentParamRep's own (pre-existing, nullish-blind)
+   RAW-preferring `onlyBigintKind` branch to choose the RAW carrier over
+   BOXED for a param whose OTHER consumers (`Number(n)`, found live: raw
+   i64 bits reinterpreted as an already-numeric f64, no int→float
+   conversion, no unbox) don't yet handle a plan-materialized RAW carrier.
+   Fix: `current`/`target` derive from the legacy (rep-based) semantic
+   unconditionally now; the override's own job stays scoped to what it
+   actually proved (kind purity for the BOOL-veto), never presence or
+   carrier choice.
+2. `isStorageReadProducer`'s memberReceiver branch matched ANY `[]`/
+   `.member` read, not just genuine mutation-tracked storage — found live
+   via the FULL suite's array-destructure trio (test/types.js):
+   `let [a,b] = [1, BigInt(v)]` desugars to `let d0=[...]; let b=d0[1]`,
+   and `d0` is an array-LITERAL temp, never `.push`/`.set`-mutated, so the
+   "write side always boxes" physical guarantee this predicate names was
+   never established for it. Fix: require the receiver be present in
+   solveBigintProvenance's own storage/bigintTyped sets — the exact signal
+   exprMay's identical branches already consult, reused rather than
+   guessed at a coarser AST-shape level.
+
+RESIDUAL, root-caused and pinned KNOWN-WRONG, NOT fixed (a documented
+wall, not a rushed extension into unfamiliar territory):
+- `++`/`--` on a covered-function param whose only bigint evidence is
+  whole-program provenance (not a directly valTypeOf-provable local fact):
+  pre-existing kind.js gap (valTypeOf's own '++'/'--' resolution has no
+  OR-fallback the way compoundAssign's val-side check does) — layer 4
+  merely made the surrounding pathway reachable enough to discover it.
+  Reproduces identically with a bare `g(5n)` literal call site (confirmed
+  independent of storage reads). Root fix needs kind.js/narrow.js, not
+  representation-plan.js.
+- watr's ACTUAL memory64.wast failure is NOT the named-function shape any
+  pin in this fixpoint covers: the real chain goes through a DISPATCH
+  TABLE / closure call — `instr()` (compile.js) dispatches per-opcode
+  encoders via `HANDLER[imm](nodes, ctx, op, out)`, a computed property
+  call, never a bare function name; the `i64:` entry is an ARROW FUNCTION
+  VALUE stored in that table (never registered in ctx.funcs.map), whose
+  body reads `nodes.shift()` on its OWN first param before calling
+  `encode.i64(...)` (a second namespace-property call). Reproduced in
+  isolation (test/data.js pin) — fails identically at EVERY optimize
+  level, box-pointer-bits confirmed (the exact watr-leg corrupt offset,
+  9221823924769217936, decodes to 0x7ffa800011115d90 — a PTR.BIGINT
+  NaN-box tag over a heap offset, the same corruption class every other
+  pin in this fixpoint fixes). Requires representation-plan.js's SEPARATE
+  closure-materialization subsystem (closureBoxParams/closureCallNeedsBox/
+  mintRepresentationPlan(...,{generic:true}) — built for the closure-
+  forwarding slice, own history, own three-part landing precedent for how
+  much care it needs) to ALSO prove "a closure param's own storage-read is
+  boxed by construction" — a comparably-sized, separate undertaking, not a
+  slice of this one.
+
+Battery (final, both regressions fixed): test/data.js 153/153 (777
+assertions, incl. the shape #6 minimal repro, the full get/pop/shift/at/
+[]/.member × single-function/cross-function sweep, and the two KNOWN-WRONG
+residual pins above); test/dyn-keys.js 69/69 (319); test/kernel-parity.js
+3/3 (33/33 byte-identical O0/O2/O3); test/kernel-oracle.js 14/14 (605);
+test/watr.js (jz's own, includes the uleb-loop regression pin) 37/37 (113);
+test/types.js array-destructure trio restored. FULL SUITE (node
+test/index.js): 3643 total / 3641 pass / 0 fail / 2 skip (21258
+assertions, same pre-existing skip count as prior campaign landings) —
+first zero-fail suite for this fixpoint. External watr leg (throwaway
+local clone of /Users/div/projects/watr, node_modules/jz symlinked to this
+branch, `npm run build:wasm` then `WATR_WASM=1 node test`, mirroring
+.github/workflows/watr.yml): 596/626 pass, 8 fail — 7 are the pre-existing,
+documented polyfill/runner gap (sibling note above, no jz change), 1 is
+the closure-dispatch residual above; STABLE (byte-identical failure set
+and identical corrupt offset) across all three fix iterations in this
+branch, confirming neither regression fix touched that residual and no
+new regression was introduced downstream of it.

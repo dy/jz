@@ -2033,6 +2033,196 @@ test('bigint: C5b adjacent join gaps — bare params, nested nullish unions, and
   }
 })
 
+test('bigint: storage-read box-pointer-bits leak through a reassigned param across a call (shape #6 — was corrupt)', () => {
+  // .work/phase-c-unification.md §"Shape #6": a storage-read BigInt (array
+  // .at()/.get()/.pop()/.shift()) feeding a PARAM that's then REASSIGNED via
+  // a compound op (`n >>= 7n`) and passed to a SECOND function doing
+  // LEB128-style bitwise consumption — the exact shape CI's watr leg hit
+  // (test/official/memory64.wast data-segment offset garbage; watr's own
+  // encode.js i64() does this same read->param->shift->consume chain).
+  // Pre-fix, the callee's reassigned param never entered its OWN
+  // materializedNames (five compounding gaps in representation-plan.js: 1-2
+  // currentOf/plannedOf/edgeMaterializable didn't recognize the full
+  // STORAGE_READ_METHODS set as boxed-by-construction; 3 same gap for plain
+  // []/.member reads; 4 the readiness gate rejected every compound-assign
+  // def outright; 5 a covered callee's OWN boundary semantic inherited an
+  // uninformative "any of 14 kinds, closed" legacy census answer for a
+  // storage-read call argument, tripping the BOOL-member veto permanently —
+  // plus two emission-side companions: the bitwise/arithmetic compound-
+  // assign write-back never boxed a materialized target, and coerceArg
+  // gated its UNBOX/BOX application behind valTypeOf(node), which is
+  // deliberately blind to storage-read call-member nodes). Silent result:
+  // the BOX POINTER BITS (a small heap offset under a PTR.BIGINT NaN-box
+  // tag, not the unboxed i64 payload) got shifted/masked as if they were
+  // the raw value.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function leb(n) {
+        let bytes = []
+        while (true) {
+          let byte = Number(n & 0x7Fn)
+          n >>= 7n
+          if (n === 0n) { bytes.push(byte); break }
+          bytes.push(byte | 0x80)
+        }
+        return bytes.length
+      }
+      export let f = (i) => {
+        let arr = []
+        arr.push(0n)
+        arr.push(624485n)
+        return leb(arr.at(i))
+      }
+      export let g = (i) => {
+        let arr = []
+        arr.push(0n)
+        arr.push(900n)
+        let n = arr.at(i)
+        n >>= 7n
+        return n
+      }
+    `, { optimize }).exports
+    is(e.f(1), 3, `${lbl}: LEB128 byte count through storage-read -> reassigned param -> cross-function bitwise consumption (was: box-pointer-bits garbage)`)
+    ok(typeof e.g(1) === 'bigint' && e.g(1) === 7n, `${lbl}: single-function storage-read + reassign crosses as real 7n, never box-pointer bits`)
+  }
+})
+
+test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member compound-reassign across a call (shape #6)', () => {
+  // Every STORAGE_READ_METHODS member plus the plain []/.member producer
+  // (representation-plan.js's memberReceiver shape) x a compound
+  // reassignment (`n >>= 7n`) x both a same-function local and a
+  // cross-function (covered, reassigned) param. 900n >> 7n === 7n for every
+  // cell. Pinned as one family so a regression in any single producer shape
+  // shows up immediately, matching this fixpoint's own discipline
+  // (.work/phase-c-unification.md's falsified-predicate-forms note).
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const single = (setup, read) => `export let f = (i) => { ${setup}; let n = ${read}; n >>= 7n; return n }`
+    const cross = (setup, read) => `
+      export let leb = (n) => n
+      function g(n) { n >>= 7n; return leb(n) }
+      export let f = (i) => { ${setup}; return g(${read}) }`
+    const bigOk = (v) => typeof v === 'bigint' && v === 7n
+
+    const setupM = `let m = new Map(); m.set(0, 0n); m.set(1, 900n)`
+    ok(bigOk(jz(single(setupM, 'm.get(i)'), { optimize }).exports.f(1)), `${lbl}: get() single-function`)
+    ok(bigOk(jz(cross(setupM, 'm.get(i)'), { optimize }).exports.f(1)), `${lbl}: get() cross-function`)
+
+    const setupPop = `let arr = []; arr.push(0n); arr.push(900n)`
+    ok(bigOk(jz(single(setupPop, 'arr.pop()'), { optimize }).exports.f(0)), `${lbl}: pop() single-function`)
+    ok(bigOk(jz(cross(setupPop, 'arr.pop()'), { optimize }).exports.f(0)), `${lbl}: pop() cross-function`)
+
+    const setupShift = `let arr = []; arr.push(900n); arr.push(0n)`
+    ok(bigOk(jz(single(setupShift, 'arr.shift()'), { optimize }).exports.f(0)), `${lbl}: shift() single-function`)
+    ok(bigOk(jz(cross(setupShift, 'arr.shift()'), { optimize }).exports.f(0)), `${lbl}: shift() cross-function`)
+
+    const setupAt = `let arr = []; arr.push(0n); arr.push(900n)`
+    ok(bigOk(jz(single(setupAt, 'arr.at(i)'), { optimize }).exports.f(1)), `${lbl}: at() single-function`)
+    ok(bigOk(jz(cross(setupAt, 'arr.at(i)'), { optimize }).exports.f(1)), `${lbl}: at() cross-function`)
+    ok(bigOk(jz(single(setupAt, 'arr[i]'), { optimize }).exports.f(1)), `${lbl}: [] single-function`)
+    ok(bigOk(jz(cross(setupAt, 'arr[i]'), { optimize }).exports.f(1)), `${lbl}: [] cross-function`)
+
+    const setupObj = `let obj = {}; obj.v = 900n`
+    ok(bigOk(jz(single(setupObj, 'obj.v'), { optimize }).exports.f(0)), `${lbl}: .member single-function`)
+    ok(bigOk(jz(cross(setupObj, 'obj.v'), { optimize }).exports.f(0)), `${lbl}: .member cross-function`)
+  }
+})
+
+test('bigint: KNOWN-WRONG — ++/-- on a covered-function param whose only bigint evidence is provenance, not valTypeOf (shape #6 adjacent gap)', () => {
+  // Found sweeping shape #6's method family, NOT one of its five layers:
+  // '+='/'-='/etc.'s BigInt guard is `valTypeOf(name) === BIGINT ||
+  // valTypeOf(val) === BIGINT` — an OR, so a proven-BigInt RHS OPERAND
+  // (`n += 1n`) enters the correct i64 arm even when valTypeOf(name) alone
+  // can't resolve. '++'/'--' have no separate operand — their ONLY guard is
+  // valTypeOf(name) (kind.js) — and for a covered (non-exported) function's
+  // REASSIGNED param whose sole bigint evidence is whole-program provenance
+  // (representation-plan.js's own solveBigintProvenance/paramBigintOnly,
+  // never a directly valTypeOf-provable local fact), that guard stays null:
+  // the handler falls to the GENERIC (non-bigint) numeric path, f64.add-ing
+  // the raw i64-reinterpreted bits to 1.0 — silent-wrong, not a REJECT.
+  // Pre-existing in kind.js's valTypeOf; this campaign's shape #6 fix never
+  // touches it and does not create it — layer 4 (representation-plan.js)
+  // merely made the surrounding pathway reachable enough for this sweep to
+  // discover it (confirmed independent of storage reads: reproduces
+  // identically with a bare `g(5n)` literal call site). Root fix (not
+  // attempted here, a kind.js/narrow.js undertaking, not representation-
+  // plan.js's): give valTypeOf's own '++'/'--' resolution — or this
+  // handler's own guard — the same OR-fallback onto RepresentationPlan's
+  // proof that compoundAssign's val-side check already has.
+  // Wrong-value note: the layer-5 regression fix (nullish-preservation,
+  // same commit) changed `n`'s target back to BOXED for this shape — the
+  // '++' handler's WRONG (non-bigint) fallback arm now writes its bad
+  // f64.add result into a slot the REST of the body correctly reads as
+  // boxed, so the botched write is masked and `n` reads back unchanged
+  // (900n, not incremented) rather than surfacing as raw box-pointer bits.
+  // Different WRONG value, same root cause and same fix scope.
+  // FLIP CONDITION: once fixed, f() below returns 901n like every other
+  // compound-reassign shape in the sweep above, not the pre-increment value.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function g(n) { n++; return n }
+      export let f = () => { let arr = []; arr.push(900n); return g(arr.pop()) }
+    `, { optimize }).exports
+    is(e.f(), 900n, `${lbl}: KNOWN-WRONG — ++ on a provenance-only covered param silently no-ops, reads back 900n not 901n`)
+  }
+})
+
+test('bigint: KNOWN-WRONG — storage-read forwarded through a closure/dispatch-table call, watr\'s ACTUAL shape #6 manifestation (shape #6 residual, root not yet closed)', () => {
+  // The REAL CI signature (test/official/memory64.wast data-segment offset
+  // garbage, dy/watr's compile.js) does not match the named-function-call
+  // shape this fixpoint's other pins cover. watr's actual chain: `instr()`
+  // dispatches per-opcode encoders through a DISPATCH TABLE — `HANDLER[imm]
+  // (nodes, ctx, op, out)` (compile.js) — a computed/dynamic call, never a
+  // bare function name. The `i64:` entry is an ARROW FUNCTION VALUE stored
+  // in that table (never registered in ctx.funcs.map), whose body reads
+  // `nodes.shift()` (a storage read on its OWN first param) before calling
+  // `encode.i64(...)` (encode.js, a SECOND namespace-property call). This
+  // reproduces the identical box-pointer-bits disease (confirmed: the
+  // watr-leg failure's exact corrupt offset, 9221823924769217936, decodes
+  // to 0x7ffa800011115d90 — a PTR.BIGINT NaN-box tag over a heap offset,
+  // byte-for-byte the same corruption class every OTHER pin in this
+  // fixpoint fixes) but through representation-plan.js's SEPARATE closure-
+  // materialization machinery (closureBoxParams/closureCallNeedsBox/
+  // mintRepresentationPlan(...,{generic:true}) — a parallel authority to
+  // paramBigintOnly/representationCallArgAction, built for the closure-
+  // forwarding slice, .work/phase-c-unification.md's own §"Closure-
+  // forwarding slice LANDED"). This fixpoint's five layers plus the
+  // forward-storage-propagation gap (both fixed and pinned above) are
+  // NAMED-FUNCTION-call mechanisms; extending closureBoxParams to ALSO
+  // prove "a closure param's OWN storage-read is boxed by construction" is
+  // a comparably-sized, SEPARATE undertaking (its own designed subsystem,
+  // own history, own soundness constraints — the closure-forwarding slice's
+  // own three-part landing is the precedent for how much care it needs),
+  // not a slice of this one. Root-caused, reproduced in isolation, and
+  // stopped here per this fixpoint's own discipline: documented wall, not a
+  // rushed partial fix into unfamiliar territory. FLIP CONDITION: once
+  // closure-materialization proves a table-dispatched closure's own
+  // storage-read param, f() below returns 7n like every named-function
+  // shape in the sweep above, at every optimize level (this reproduces
+  // identically at O0, unlike the O3-only tail-call nuance noted inline —
+  // it is wrong from the start, no optimizer interaction needed).
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      const HANDLER = {
+        i64: (nodes) => { let n = nodes.shift(); n >>= 7n; return n },
+      }
+      function encode(imm, nodes) {
+        return HANDLER[imm](nodes)
+      }
+      export let f = () => {
+        let nodes = []
+        nodes.push(900n)
+        return encode("i64", nodes)
+      }
+    `, { optimize }).exports
+    const wrong = e.f()
+    ok(typeof wrong === 'number' && wrong !== 7, `${lbl}: KNOWN-WRONG — closure/dispatch-table storage-read forwarding does not compute 7n`)
+  }
+})
+
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
   // The retired sentinel export lane could not be disabled until these
   // producer shapes materialized through the generic tagged decode; doing so

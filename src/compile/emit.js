@@ -71,7 +71,7 @@ import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
-  representationComputedExprAction, representationStorageWriteAction, representationProgramHasBigint,
+  representationComputedExprAction, representationCompoundAssignAction, representationStorageWriteAction, representationProgramHasBigint,
 } from './representation-plan.js'
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -1504,7 +1504,20 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   // RepresentationPlan is the sole call-edge carrier authority. A nullable
   // BigInt merge can still carry its nullish sentinel, so normalization must
   // preserve that member instead of treating it as a box or raw i64 payload.
-  if (node !== undefined && valTypeOf(node) === VAL.BIGINT) {
+  // Shape #6: valTypeOf(node) is NOT the gate for whether repAction applies —
+  // it's DELIBERATELY incomplete for a storage-read call-member node
+  // (`arr.at(i)`/`.get`/`.pop`/`.shift`; see VT['()']'s own "NO `.get`
+  // short-circuit" doc comment above — an absent-key/out-of-bounds read can
+  // legitimately be `undefined`, so valTypeOf soundly declines to commit to
+  // an exact kind there). representationCallArgAction only ever returns
+  // UNBOX/BOX when its OWN edgeAction proof already found BOTH the source
+  // and target CLOSED bigint representations (materializedNames/
+  // hostBoxParams-gated) — a strictly stronger, presence-aware proof than
+  // valTypeOf's conservative default, so trusting repAction directly here
+  // (instead of requiring valTypeOf's agreement first) is exactly the "sole
+  // authority" contract this comment already claims, now honored for this
+  // shape too.
+  if (node !== undefined && (valTypeOf(node) === VAL.BIGINT || repAction === REP_EDGE_UNBOX || repAction === REP_EDGE_BOX)) {
     if (repAction === REP_EDGE_UNBOX) {
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
@@ -4814,7 +4827,25 @@ function compoundAssign(name, val, f64op, i32op, arithOp) {
     // true for it (that predicate only matches `.`/`[]`/`.get()` AST shapes), so
     // readVar(name) stays the plain raw path; only `val` (the RHS, which CAN be a
     // dict/Map maybeUndefined read) needs bigIntOperand's runtime guard.
-    return writeVar(name, fromI64([`i64.${I64_ARITH_OP[arithOp]}`, readI64(name, readVar(name)), bigIntOperand(val)]), void_)
+    const rawBits = [`i64.${I64_ARITH_OP[arithOp]}`, readI64(name, readVar(name)), bigIntOperand(val)]
+    // Shape #6 emission companion: this op always computes a FRESH raw i64
+    // result (readI64 unboxed the input, i64.<op> ran) — when `name` is
+    // plan-materialized BOXED, that raw result must be boxed before it lands
+    // back in name's storage slot, or the next plan-aware read (readI64's
+    // own isPlanTaggedBigint arm) misreads its raw i64 bits as a box
+    // pointer. representationBindingWriteAction can't be reused here: it
+    // keys off the AST node collectDefs recorded as this def's rhs (the
+    // whole compound node), which this handler never receives — only
+    // `name`/`val`. representationCompoundAssignAction is the name-keyed
+    // twin (source is always RAW_BIGINT here, by construction — so the
+    // action is only ever KEEP/BOX/REJECT, never UNBOX; applied directly
+    // rather than through applyBigintRepresentationAction's valTypeOf(node)
+    // gate, which would wrongly veto on a proven-bigint LITERAL operand
+    // paired with a not-yet-proven `name`, per bigintMixReject's own
+    // asymmetric OR guard just above).
+    return writeVar(name,
+      representationCompoundAssignAction(ctx, name) === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits),
+      void_)
   }
   const va = readVar(name), vb = emit(val)
   // Peel f64.convert_i32_s/u when va is i32 — typed-array integer reads wrap their
@@ -5806,10 +5837,15 @@ export const emitter = {
       // See compoundAssign's identical comment: `name` is always a bare identifier,
       // so only `val` can be a maybeUndefined dict/Map read. `<<=`/`>>=` share the
       // binary `<<`/`>>` handler's sign-aware direction flip — see bigIntShiftIR.
-      const result = fromI64((sym === '<<' || sym === '>>')
+      const rawBits = (sym === '<<' || sym === '>>')
         ? bigIntShiftIR(sym, readI64(name, readVar(name)), bigIntOperand(val))
-        : [`i64.${fn}`, readI64(name, readVar(name)), bigIntOperand(val)])
-      return writeVar(name, result, void_)
+        : [`i64.${fn}`, readI64(name, readVar(name)), bigIntOperand(val)]
+      // Shape #6 emission companion — see compoundAssign's identical comment
+      // just above (this dispatch's bigint arm has the exact same
+      // fresh-raw-i64-result / box-before-write-back gap).
+      return writeVar(name,
+        representationCompoundAssignAction(ctx, name) === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits),
+        void_)
     }
     return compoundAssign(name, val,
       (a, b) => asF64(typed([`i32.${fn}`, toI32(a), toI32(b)], 'i32')),
@@ -5859,8 +5895,18 @@ export const emitter = {
     // Same shape as the binary '+'/'-' BIGINT arm: asI64, i64.add/sub by the i64 constant
     // 1, fromI64. `name` is always a bare identifier here (prepare only routes '.'/'[]'
     // targets through '=' + '+'/'-', never through this table entry).
-    if (valTypeOf(name) === VAL.BIGINT)
-      return writeVar(name, fromI64([`i64.${fn}`, readI64(name, v), ['i64.const', 1]]), void_)
+    // KNOWN-WRONG (test/data.js, shape #6 sweep): this guard's valTypeOf(name)
+    // has a pre-existing gap, unrelated to shape #6's own layers, for a
+    // covered-function param whose only bigint evidence is whole-program
+    // provenance rather than a directly valTypeOf-provable local fact — see
+    // the plan-side readiness gate's own comment on this above (buildBodyData).
+    if (valTypeOf(name) === VAL.BIGINT) {
+      const rawBits = [`i64.${fn}`, readI64(name, v), ['i64.const', 1]]
+      // Shape #6 emission companion — see compoundAssign's identical comment.
+      return writeVar(name,
+        representationCompoundAssignAction(ctx, name) === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits),
+        void_)
+    }
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)
   }])),

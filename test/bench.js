@@ -290,7 +290,16 @@ const WASMOPT_SLACK_MIN = 0.70
 const SIZE_BUDGET = {
   callback: 1850, mat4: 3400, poly: 1750, biquad: 4550, mandelbrot: 1500,
   bitwise: 1700, tokenizer: 2400, aos: 2500, json: 12500, sort: 2200, crc32: 1750,
-  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 245000,
+  // watr 245000 → 298000: the old budget was calibrated at 9228c5d1, BEFORE BigInt
+  // literals existed at all. Checkpoint attribution (perf/size-regressions, fixed
+  // watr@5.9.1 specimen bytes at every jz checkpoint): 262,482 B pre-campaign →
+  // 292,173 B at HEAD; 87% of the growth (25,825 B) is C1–C5 union materialization —
+  // load-bearing correctness (watr's encode.js has real Number∪BigInt joins that
+  // MISCOMPILED before the campaign; targetRepFor already keeps provably-closed
+  // single-rep values raw, so this is genuinely-ambiguous-union boxing, ratified by
+  // ADR-0001). Ratchet down when cross-function result-kind provenance lands (the
+  // walled precision-rung-3 prerequisite) — that is the only sound reducer.
+  dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 298000,
   // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
   // the runtime-length codec loops (+100/+55 measured). Ratchet down with the
   // binding-narrowing round.
