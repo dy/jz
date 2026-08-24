@@ -96,7 +96,7 @@ int main(void) {
   build_words();
   fill_tokens();
   // Probe every 8th word plus 8 absent keys — a missing count reads 0.
-  for (int j = 0; j < NPROBES - 8; j++) strcpy(probes[j], words[(j * 8) & (NWORDS - 1)]);
+  for (int j = 0; j < NPROBES - 8; j++) memcpy(probes[j], words[(j * 8) & (NWORDS - 1)], sizeof(probes[j]));
   for (int j = 0; j < 8; j++) { probes[NPROBES - 8 + j][0] = 'z'; probes[NPROBES - 8 + j][1] = 'z'; probes[NPROBES - 8 + j][2] = (char)('0' + j); probes[NPROBES - 8 + j][3] = 0; }
 
   uint32_t cs = 0;
