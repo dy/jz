@@ -582,6 +582,11 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const current = resultMayBigint
     ? (generic ? currentResultRep(func, semantic, true) : options.provenance?.resultReps.get(func.name) ?? currentResultRep(func, semantic, false))
     : NO_BIGINT
+  // A mixed-result closure table explicitly marks its member bodies: raw i64
+  // BigInt bits cannot share the uniform closure result lane with Number.
+  // Named top-level function values use their dedicated trampoline producer
+  // boundary (emit.js) instead.
+  const forceTaggedResult = resultMayBigint && options.forceTaggedResult === true
   return {
     kind: 'boundary',
     func,
@@ -590,8 +595,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     result: {
       semantic,
       current,
-      target: targetRepFor(semantic, current),
+      target: forceTaggedResult ? BOXED_BIGINT : targetRepFor(semantic, current),
       demand: demandFor(semantic),
+      forceTagged: forceTaggedResult,
     },
     edges: [],
   }
@@ -1070,7 +1076,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (!semanticObserved(bodyResultSemantic) || definiteBigint(boundary.result.semantic))
     bodyResultSemantic = boundary.result.semantic
   bodyResultCurrent ??= boundary.result.current
-  const bodyResultTarget = targetRepFor(bodyResultSemantic, bodyResultCurrent)
+  const bodyResultTarget = (options.forceTaggedResult || boundary.result.forceTagged) && canBeBigint(bodyResultSemantic)
+    ? BOXED_BIGINT : targetRepFor(bodyResultSemantic, bodyResultCurrent)
 
   const walkEdges = (node, root = false) => {
     if (!Array.isArray(node)) return
@@ -1323,7 +1330,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // about, leaving a closure with no tag-required param (the .map callback:
   // x's own boundary semantic excludes bigint entirely, closureBoxParams
   // stays empty) on its pre-existing REJECT path, unchanged.
-  const materializedResult = (boundary.covered === true || (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
+  const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
+      (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
     !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
     resultExprs.every(expr => {
@@ -1788,6 +1796,7 @@ export function recordClosureCallRepresentations(ctx, bodyName, args) {
 }
 
 export const representationProgramHasBigint = ctx => programPlanRecord(ctx)?.bigint === true
+
 export const representationProgramRejectCount = ctx => programPlanRecord(ctx)?.rejects || 0
 
 /** Debug invariant: every non-reject action maps into the target's allowed set. */

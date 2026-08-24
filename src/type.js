@@ -47,28 +47,8 @@ import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange, constIntExpr } from './static.js'
 import { typedElemAux } from '../layout.js'
-
-/** Byte-backed constructors whose `new X()` yields a PTR.TYPED / PTR.BUFFER value:
- *  the typed-array views + ArrayBuffer + DataView. Mirrors autoload's TYPED_CTORS
- *  (kept local to avoid a type↔module import cycle). Every other ctor — Map, Set,
- *  Date, Array, RegExp, user classes — has its own VAL kind via CALLEE_VAL and must
- *  NOT be mistaken for a typed-array construction (else its global misdispatches as
- *  a TypedArray, e.g. `map.set(k,v)` lowering to `arr.set(src,offset)`). */
-const TYPED_FAMILY_CTORS = new Set([
-  'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
-  'Float16Array', 'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array', 'ArrayBuffer', 'DataView',
-])
-
-/** Extract typed-array ctor name ('new.Float32Array', 'new.Int8Array.view', etc) from RHS,
- *  or null if RHS isn't a typed-array/ArrayBuffer/DataView constructor. */
-export function typedElemCtor(rhs) {
-  if (!Array.isArray(rhs) || rhs[0] !== '()' || typeof rhs[1] !== 'string' || !rhs[1].startsWith('new.')) return null
-  if (!TYPED_FAMILY_CTORS.has(rhs[1].slice(4))) return null
-  const args = rhs[2]
-  const isView = rhs[1].endsWith('Array') && rhs[1] !== 'new.ArrayBuffer'
-    && Array.isArray(args) && args[0] === ',' && args.length >= 4
-  return isView ? rhs[1] + '.view' : rhs[1]
-}
+import { typedElemCtor, typedResultCtor } from './typed-provenance.js'
+export { typedElemCtor, typedResultCtor } from './typed-provenance.js'
 
 /** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
  *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.

@@ -26,7 +26,7 @@ import { forEachFunctionPlanRep, functionPlanRepField } from './function-plan.js
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
-import { typedElemCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
+import { typedElemCtor, typedResultCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -174,27 +174,13 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
         }
       }
     }
-    const ctor = typedElemCtor(rhs)
+    // One expression-provenance authority covers direct constructors, aliases,
+    // nested method chains, fresh species-preserving copies, and subarray views.
+    // This is what keeps BigInt64Array map/slice/filter results typed after a
+    // local assignment instead of decaying to a raw f64 element read.
+    const ctor = typedResultCtor(rhs, resolveName)
     if (ctor) return setOrInvalidate(ctor)
-    // Bare name alias (`let x = a` — the inliner's param-alias splice): the
-    // source's settled ctor and static length copy to the alias — typed arrays
-    // never resize, and a buffer-sharing VIEW arrives via the subarray arm
-    // below, never as a bare name. A name with no typed fact stays untracked
-    // (same silence as today).
-    if (typeof rhs === 'string') {
-      const c = resolveName(rhs)
-      if (c) return setOrInvalidate(c)
-      return
-    }
-    // `recv.subarray(...)` is a zero-copy VIEW aliasing the receiver's buffer — its elem
-    // ctor is the receiver's type with the `.view` flag, so the binding unboxes to a typed
-    // pointer and element writes take the descriptor-indirected path (not desc-as-data).
-    if (Array.isArray(rhs) && rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.'
-        && rhs[1][2] === 'subarray' && typeof rhs[1][1] === 'string') {
-      const recvCtor = resolveName(rhs[1][1])
-      if (recvCtor) return setOrInvalidate((recvCtor.endsWith('.view') ? recvCtor.slice(0, -5) : recvCtor) + '.view')
-      return
-    }
+    if (typeof rhs === 'string') return
     // TYPED-narrowed call result carries its elem aux on f.sig.ptrAux — reverse-map
     // to a canonical ctor so the unboxed local's rep restores the same aux.
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
@@ -363,9 +349,10 @@ export function analyzeBody(body) {
     if (!arrElemTypedCtors.has(arr)) arrElemTypedCtors.set(arr, ctor)
     else if (arrElemTypedCtors.get(arr) !== ctor) arrElemTypedCtors.set(arr, null)
   }
-  // The ctor a `new XxxArray(...)` element expr produces ('new.Float32Array'), if any.
+  // The concrete typed storage an element expression produces, including
+  // species-preserving method chains, if any.
   const elemTypedCtorOf = (expr) => {
-    const c = typedElemCtor(expr)
+    const c = typedResultCtor(expr, n => typedElems.get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null)
     // typed-array views/buffers only — exclude ArrayBuffer/DataView (no element index).
     return c && !c.includes('ArrayBuffer') && !c.includes('DataView') ? c : null
   }
@@ -478,7 +465,21 @@ export function analyzeBody(body) {
     const shr = Array.isArray(rhs) && rhs[0] === '>>>'
     const shrFitsI32 = shr && Array.isArray(rhs[2]) && rhs[2][0] == null
       && typeof rhs[2][1] === 'number' && (rhs[2][1] & 31) >= 1
-    const wt = (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
+    // An integer TypedArray read is i32 only as a value-domain fact. A literal
+    // index with no static in-bounds proof can legally yield `undefined`; storing
+    // it in i32 would turn that into 0 before identity/JSON observes it. Variable
+    // indices retain the existing loop/range proof pipeline.
+    const typedRead = Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string'
+    const readCtor = typedRead
+      ? (typedElems.get(rhs[1]) ?? ctx.func.typedElem?.get(rhs[1]) ?? ctx.scope.globalTypedElem?.get(rhs[1]))
+      : null
+    const readLen = typedRead
+      ? (typedLens.get(rhs[1]) ?? ctx.func.typedLen?.get(rhs[1]) ?? ctx.scope.globalTypedLen?.get(rhs[1]))
+      : null
+    const readIdx = typedRead ? intLiteralValue(rhs[2]) : null
+    const typedReadMayMiss = readCtor != null && readIdx != null &&
+      (readLen == null || readIdx < 0 || readIdx >= readLen)
+    const wt = typedReadMayMiss ? 'f64' : (shr && !shrFitsI32) ? 'f64' : exprType(rhs, locals)
     if (!locals.has(name)) locals.set(name, wt)
     else if (locals.get(name) === 'i32' && wt === 'f64') locals.set(name, 'f64')
     // Stamp the closed integer hull EARLY (mirrors analyzeValTypes's own later
@@ -1608,20 +1609,6 @@ export function analyzeValTypes(body) {
       if (typeof aa[0] === 'string' && aa.length > 1)
         objAssignSites.push({ target: aa[0], sources: aa.slice(1) })
     }
-    // Propagate typed array type through method calls (e.g. buf.map → typed)
-    function propagateTyped(name, rhs) {
-      if (!Array.isArray(rhs) || rhs[0] !== '()') return
-      const callee = rhs[1]
-      if (!Array.isArray(callee) || callee[0] !== '.') return
-      const src = callee[1], method = callee[2]
-      if (typeof src === 'string' && getVal(src) === VAL.TYPED && method === 'map') {
-        setVal(name, VAL.TYPED)
-        if (ctx.func.typedElem?.has(src)) {
-          const srcCtor = ctx.func.typedElem.get(src)
-          ctx.func.typedElem.set(name, srcCtor.endsWith('.view') ? srcCtor.slice(0, -5) : srcCtor)
-        }
-      }
-    }
     if (op === 'let' || op === 'const') {
       for (const a of args) {
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
@@ -1730,7 +1717,6 @@ export function analyzeValTypes(body) {
         // returning null but may still need ctor unification (or poisoning when
         // branches disagree, since jz hoists `let` to function scope).
         if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(a[2])) trackTyped(a[1], a[2])
-        propagateTyped(a[1], a[2])
         // JSON-shape propagation. When the RHS resolves to a known JSON shape
         // (root: `JSON.parse(literal)`; nested: `o.meta`, `items[j]` from a known
         // root), record it on the binding so subsequent `.prop`/`[i]` accesses
@@ -1844,7 +1830,6 @@ export function analyzeValTypes(body) {
       setPresentVal(args[0], censusMaybeUndefinedKind(args[1]))
       if (vt === VAL.REGEX) trackRegex(args[0], args[1])
       if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
-      propagateTyped(args[0], args[1])
       if (vt === VAL.OBJECT) bindObjSchema(args[0], args[1])
       return
     }
@@ -2014,18 +1999,11 @@ export function unboxablePtrs(body, locals, boxed) {
       const f = ctx.funcs.map?.get(callee)
       if (f?.sig?.ptrKind === kind) return true
     }
-    // Method call returning TYPED: `arr.map(fn)` where `arr` is in typedElem
-    // (locally TYPED with a known elem ctor). Only `.typed:map` is registered
-    // as TYPED-returning — `.filter`/`.slice` fall back to ARRAY emit. The
-    // typedElem.has(src) gate ensures we don't accept the polymorphic-receiver
-    // path that emits a plain ARRAY result. propagateTyped already mirrored
-    // the src ctor onto the receiver, so the unbox path picks up its aux.
-    if (kind === VAL.TYPED && expr[0] === '()' &&
-        Array.isArray(expr[1]) && expr[1][0] === '.' &&
-        typeof expr[1][1] === 'string' && expr[1][2] === 'map' &&
-        ctx.func.typedElem?.has(expr[1][1])) {
-      return true
-    }
+    // Every concrete typed-result chain (map/filter/slice/change-by-copy,
+    // subarray views, and receiver-returning mutators) is a fresh/non-null
+    // typed pointer. The shared provenance helper owns method semantics.
+    if (kind === VAL.TYPED && typedResultCtor(expr, name =>
+      ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null)) return true
     return false
   }
   // A policy over `scanBindingUses`: an UNBOXABLE-kind `let/const` local with a

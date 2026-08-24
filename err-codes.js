@@ -74,6 +74,7 @@ export const ERR = {
                                 // reads real JS `undefined` as Number NaN, mismatching
                                 // the BigInt operand's type (ES2024 13.15.3 step 6)
   ARRAY_FROM_ITERABLE: 117,    // Array.from — iterable protocol unsupported for this source
+  ERROR_MESSAGE_OBJECT: 118,   // Error(message) — runtime object ToPrimitive path is unsupported
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -134,6 +135,7 @@ export const ERR_INFO = {
   [ERR.ATOMICS_RECEIVER32]: { name: 'TypeError', message: 'Atomics: receiver must be an Int32Array' },
   [ERR.ATOMICS_RECEIVER64]: { name: 'TypeError', message: 'Atomics: receiver must be a BigInt64Array' },
   [ERR.BIGINT_UNDEF_MIX]: { name: 'TypeError', message: 'Cannot mix BigInt and other types, use explicit conversions' },
+  [ERR.ERROR_MESSAGE_OBJECT]: { name: 'TypeError', message: 'Error message object coercion is not supported; convert it explicitly with String(...)' },
 
   [ERR.ARRAY_WITH_INDEX]: { name: 'RangeError', message: 'Invalid index' },
   [ERR.ATOMICS_INDEX32]: { name: 'RangeError', message: 'index out of range' },

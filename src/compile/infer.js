@@ -48,7 +48,7 @@ import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
-import { typedElemCtor, typedStaticLen } from '../type.js'
+import { typedElemCtor, typedResultCtor, typedStaticLen } from '../type.js'
 import { ctorFromElemAux } from '../../layout.js'
 import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
@@ -336,7 +336,7 @@ export function recordGlobalRep(name, expr) {
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
     if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
   }
-  const ctor = typedElemCtor(expr)
+  const ctor = typedResultCtor(expr, n => ctx.scope.globalTypedElem?.get(n) ?? null)
   if (ctor) {
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
     const len = typedStaticLen(expr)
@@ -606,12 +606,11 @@ export function inferArrElemValType(expr, cx) {
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
 export function inferTypedCtor(expr, cx) {
   const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
-  if (typeof expr === 'string') {
-    if (callerElems?.has(expr)) return callerElems.get(expr)
-    if (paramFacts?.has(expr)) return paramFacts.get(expr)
+  const ctor = typedResultCtor(expr, name => {
+    if (callerElems?.has(name)) return callerElems.get(name)
+    if (paramFacts?.has(name)) return paramFacts.get(name)
     return null
-  }
-  const ctor = typedElemCtor(expr)
+  })
   if (ctor) return ctor
   if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
     const f = ctx.funcs.map?.get(expr[1])

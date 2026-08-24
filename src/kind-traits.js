@@ -5,6 +5,7 @@
 
 import { VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
+import { typedResultCtor } from './typed-provenance.js'
 
 // Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
 // source of truth for "this operator yields a boolean": valTypeOf reads it as
@@ -159,6 +160,17 @@ export function calleeValType(callee, _args, ctx) {
 }
 
 export function methodValType(method, obj, objType, ctx) {
+  // Element-returning typed methods inherit the receiver's storage domain.
+  // In particular BigInt64Array#at yields raw i64 BigInt bits; classifying it
+  // as unknown/Number sends Number(at(...)) through the NaN-box decoder and
+  // turns 7n into the denormal 3.5e-323. Use the same constructor provenance
+  // analysis and emission consume, including direct/chained expressions.
+  if (method === 'at' && objType === VAL.TYPED) {
+    const ctor = typedResultCtor(obj, name =>
+      ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.func?.typedElem?.get(name) ??
+      ctx.func?.localReps?.get(name)?.typedCtor ?? ctx.scope?.globalTypedElem?.get(name) ?? null)
+    return typedCtorElemValType(ctor)
+  }
   if (method === 'map' || method === 'filter') {
     if (objType === VAL.TYPED) return VAL.TYPED
     if (objType === VAL.ARRAY) return VAL.ARRAY

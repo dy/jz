@@ -10,7 +10,7 @@
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, throwTypeErrorIR, cloneIR } from '../src/ir.js'
-import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
+import { inBoundsArrIdx, typedIdxProven, typedResultCtor } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
@@ -21,7 +21,7 @@ import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, DBG_INVARIA
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
 import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
-import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
+import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -330,6 +330,10 @@ export default (ctx) => {
     __arr_fill: () => ['__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],  // body-calls __clamp_idx; declare it (self-compile auto-scan can't be relied on — see test/self-compile-includes.js)
     __arr_copyWithin: () => ['__ptr_type', '__ptr_offset', '__clamp_idx', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_idx_ptr: ['__arr_grow', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_typed_set_idx: () => ['__ptr_type', '__len', '__arr_set_idx_ptr',
+      representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'],
+    __arr_typed_obj_set_idx: () => ['__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
+      ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -738,6 +742,54 @@ export default (ctx) => {
       (local.get $val))
     (local.get $p))`
 
+  // Compact runtime store for an index-only receiver proven not to be an
+  // object/string. Keep the ARRAY/TYPED width fork out of hot loop bodies;
+  // the speed-tier Float64 unswitch then removes this call from its fast arm.
+  ctx.core.stdlib['__arr_typed_set_idx'] = () => {
+    const tagged = representationProgramHasBigint(ctx)
+    const typedSet = tagged ? '__typed_set_idx_tagged' : '__typed_set_idx'
+    const domainParam = tagged ? ' (param $domain i32)' : ''
+    const domainArg = tagged ? ' (local.get $domain)' : ''
+    return `(func $__arr_typed_set_idx (param $ptr i64) (param $i i32) (param $val f64)${domainParam} (result f64)
+      (local $t i32)
+      (local.set $t (call $__ptr_type (local.get $ptr)))
+      (if (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+        (then (return (call $__arr_set_idx_ptr (local.get $ptr) (local.get $i) (local.get $val)))))
+      (if (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
+        (then
+          (if (i32.lt_u (local.get $i) (call $__len (local.get $ptr)))
+            (then (drop (call $${typedSet} (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
+          (return (f64.reinterpret_i64 (local.get $ptr)))))
+      (f64.reinterpret_i64 (local.get $ptr)))`
+  }
+
+  // Object-capable sibling, pulled only when receiver analysis cannot exclude
+  // OBJECT/HASH. The expensive key/string helpers were already required by
+  // that fallback; outlining keeps their dispatch out of the hot loop body.
+  ctx.core.stdlib['__arr_typed_obj_set_idx'] = () => {
+    const tagged = representationProgramHasBigint(ctx)
+    const domainParam = tagged ? ' (param $domain i32)' : ''
+    const domainArg = tagged ? ' (local.get $domain)' : ''
+    return `(func $__arr_typed_obj_set_idx (param $ptr i64) (param $i i32) (param $val f64)${domainParam} (result f64)
+    (local $t i32)
+    (local.set $t (call $__ptr_type (local.get $ptr)))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.ARRAY}))
+                (i32.eq (local.get $t) (i32.const ${PTR.TYPED})))
+      (then (return (call $__arr_typed_set_idx (local.get $ptr) (local.get $i) (local.get $val)${domainArg}))))
+    (if (i32.or (i32.eq (local.get $t) (i32.const ${PTR.OBJECT}))
+                (i32.eq (local.get $t) (i32.const ${PTR.HASH})))
+      (then
+        (drop (call $__dyn_set (local.get $ptr)
+          (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
+          (i64.reinterpret_f64 (local.get $val))))
+        (return (f64.reinterpret_i64 (local.get $ptr)))))
+    ${ctx.linkDemand.external ? `(if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL}))
+      (then (drop (call $__ext_set (local.get $ptr)
+        (i64.reinterpret_f64 (call $__i32_to_str (local.get $i)))
+        (i64.reinterpret_f64 (local.get $val))))))` : ''}
+    (f64.reinterpret_i64 (local.get $ptr)))`
+  }
+
   // Out-of-line .push(val) for known-ARRAY receivers — keeps each call site to a
   // single call + var update instead of ~30 inlined instructions. Returns the
   // (possibly relocated) array pointer; caller derives the new length if needed.
@@ -905,6 +957,9 @@ export default (ctx) => {
       // Transient seed on the fresh hoist-temp `h` (slice 3c-a): overlay, not
       // durable reps — the temp lives one expression.
       if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
+      const typedCtor = vtArr === VAL.TYPED ? typedResultCtor(arr, name =>
+        ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null) : null
+      if (typedCtor) (ctx.func.typedElem ||= new Map()).set(h, typedCtor)
       // Inline field-read receiver (`plan.tw[i]`): carry the schema slot's
       // program-wide typed kind onto the temp — VAL.TYPED alone has no element
       // width, so without the ctor the read decays to the dynamic path.
@@ -977,6 +1032,17 @@ export default (ctx) => {
     // Multi-value calls are materialized at call site (see '()' handler), so
     // func()[i] works naturally — func() returns a heap array pointer, [i] indexes it.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
+    // An unresolved receiver may be any host-provided TypedArray even when the
+    // source names no typed constructor. Keep __typed_idx's runtime aux-width
+    // dispatch live; otherwise its reachability factory collapses to the
+    // ARRAY-only f64.load body and valid Int8/Int16/Int32/f32 reads decode
+    // adjacent bytes as denormal garbage. Host f16/clamped/BigInt storage is
+    // rejected at an evidence-free boundary; internal constructors set their
+    // own specialized demand flags.
+    if (vt == null) {
+      setLinkDemand('typedarray')
+      setLinkDemand('typedRuntime')
+    }
     // Literal string key on a receiver that isn't a known array/typed/string:
     // `x['a']` IS `x.a` — delegate to the dot emitter so an untyped/OBJECT/external
     // receiver gets the same polymorphic dispatch (__dyn_get_any_t_h, host-external
@@ -992,11 +1058,29 @@ export default (ctx) => {
     // asI32(emit) inside emitIndex, so this is a strict improvement for every branch.
     const va = emit(arr), vi = emitIndex(idx)
     const ptrExpr = asF64(va)
+    // Preserve host fallback only when another explicit external producer in
+    // this program already established the capability. A bare exported param
+    // alone marshals supported arrays/typed arrays into linear memory; making
+    // every such hot index pull env.__ext_prop regresses standalone modules.
+    const hostOpaque = vt == null && ctx.transform.targetProfile.envImports && ctx.linkDemand.external
+    const ensureHostOpaqueGet = () => {
+      if (!hostOpaque) return false
+      ctx.module.include('collection')
+      inc('__dyn_get_any')
+      return true
+    }
     const dynLoad = (objExpr, keyExpr) => {
       if (ctx.transform.strict) err(`strict mode: dynamic property access \`${typeof arr === 'string' ? arr : '<expr>'}[<expr>]\` falls back to __dyn_get. Use a literal key or known typed-array receiver, or pass { strict: false }.`)
       warnDeopt('deopt-dyn-read', `dynamic property read \`${typeof arr === 'string' ? arr : '<expr>'}[…]\` couldn't resolve a static type — it falls back to a runtime hash lookup (~1.5–2× slower than a typed/slot read, far worse in a hot loop). Use a literal key, a typed-array receiver, or a Map for genuinely dynamic keys.`)
-      inc('__dyn_get')
-      return ['f64.reinterpret_i64', ['call', '$__dyn_get', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
+      const fn = ensureHostOpaqueGet() ? '__dyn_get_any' : '__dyn_get'
+      if (fn === '__dyn_get') inc(fn)
+      return ['f64.reinterpret_i64', ['call', `$${fn}`, ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
+    }
+    const opaqueDynExprLoad = (objExpr, keyExpr) => {
+      if (ensureHostOpaqueGet())
+        return ['f64.reinterpret_i64', ['call', '$__dyn_get_any', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
+      inc('__dyn_get_expr')
+      return ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', objExpr], ['i64.reinterpret_f64', keyExpr]]]
     }
     const stringLoad = () => (inc('__str_idx'), ['call', '$__str_idx', ['i64.reinterpret_f64', ptrExpr], vi])
     // A numeric index on an unknown receiver is array/typed access by design — kept
@@ -1005,7 +1089,11 @@ export default (ctx) => {
     // The WRITE path still routes a numeric `o[i]=v` on an OBJECT to __dyn_set for
     // SAFETY (no schema-slot corruption / OOB), so such a read returns undefined
     // rather than corrupting — matching JS for an out-of-range typed/array index.
-    const arrayLoad = (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi])
+    const runtimeElemRead = (vt == null || vt === VAL.TYPED) && representationProgramHasBigint(ctx)
+      ? '__typed_idx_tagged' : '__typed_idx'
+    if (vt === VAL.TYPED || vt == null) setLinkDemand('typedRuntime')
+    if (runtimeElemRead === '__typed_idx_tagged') inc(runtimeElemRead)
+    const arrayLoad = (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi])
     const emitDynamicKeyDispatch = (objExpr, numericLoad) => {
       const keyTmp = temp()
       inc('__is_str_key', '__to_str')
@@ -1252,9 +1340,9 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch && !keyIsNum)
         return emitDynamicKeyDispatch(ptrExpr, keyExpr => {
           const keyI32 = asI32(typed(keyExpr, 'f64'))
-          return (['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32])
+          return (['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32])
         })
-      return typed((['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
+      return typed((['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]), 'f64')
     }
     // Pure-write narrowing: an `xs[i] = v` / `xs.length = n` site in this
     // body, with no offsetting string-shape evidence (typeof string check,
@@ -1288,7 +1376,7 @@ export default (ctx) => {
         // recvArrTyped: the receiver-CLASS proof above rules out OBJECT/HASH/
         // STRING at every call site, so neither runtime tag test below can ever
         // take its other arm — collapse straight to the bare __typed_idx call.
-        if (recvArrTyped) return ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32]
+        if (recvArrTyped) return ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]
         // Receiver AND key kind are both statically unproven here (the runtime
         // is_str_key dispatch above already ruled out string/atom — this arm is
         // the "real number, unknown receiver" case). ARRAY/TYPED keep the lean
@@ -1299,11 +1387,10 @@ export default (ctx) => {
         // the gap where this fallback silently read undefined through __typed_idx's
         // unrelated __len-bounds-check arm. Mirrored below for the sibling
         // proven-NUMBER-key case (receiver kind, not key kind, decides the fork).
-        inc('__dyn_get_expr')
         const typedOrDyn = ['if', ['result', 'f64'],
           ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
-          ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], keyI32]],
-          ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', keyExpr]]]]]
+          ['then', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], keyI32]],
+          ['else', opaqueDynExprLoad(ptrExpr, keyExpr)] ]
         if (ctx.module.modules['string'] && !notString) {
           return ['if', ['result', 'f64'],
             ptrTypeEq(ptrExpr, PTR.STRING),
@@ -1356,16 +1443,15 @@ export default (ctx) => {
       // the cost of a second (unreachable-together) codegen of `idx`, same
       // discipline `emitDynamicKeyDispatch`'s sibling arm above already uses
       // for its own single `emit(idx)`.
-      inc('__dyn_get_expr')
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
       // (.work/todo.md §deletion-sweep Finding #2) — this arm fires exactly
       // when keyType === VAL.NUMBER, which is what an ambiguous BOOL∪NUMBER
-      // merge key statically collapses to; the __dyn_get_expr cold arm must
-      // see the boxed atom, not the raw collapsed bits.
+      // merge key statically collapses to; the cold arm must see the boxed
+      // atom, not the raw collapsed bits.
       const guarded = ['if', ['result', 'f64'],
         ['i32.or', ptrTypeEq(ptrExpr, PTR.ARRAY), ptrTypeEq(ptrExpr, PTR.TYPED)],
-        ['then', ['call', '$__typed_idx', ['i64.reinterpret_f64', ptrExpr], vi]],
-        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], ['i64.reinterpret_f64', storedValue(idx)]]]]]
+        ['then', ['call', `$${runtimeElemRead}`, ['i64.reinterpret_f64', ptrExpr], vi]],
+        ['else', opaqueDynExprLoad(ptrExpr, storedValue(idx))] ]
       if (ctx.module.modules['string'] && !notString)
         return typed(['if', ['result', 'f64'],
           ptrTypeEq(ptrExpr, PTR.STRING),

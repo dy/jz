@@ -606,9 +606,14 @@ const jzCompileInner = (code, opts = {}) => {
   // SIMD). Shared VERBATIM with scripts/self.js so kernel output cannot drift.
   const optimized = watrTail(module, cfg, {
     funcCount: ctx.funcs.list.length,
-    boundaryPins: cfg._vectorizedFnNames?.size
-      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
-      : [],
+    boundaryPins: [
+      ...(cfg._vectorizedFnNames?.size
+        ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
+        : []),
+      ...(ctx.linkDemand.typedRuntime
+        ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
+          .filter(name => ctx.core.includes.has(name.slice(1))) : []),
+    ],
     time,
     targetProfile: ctx.transform.targetProfile,
   })

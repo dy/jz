@@ -952,16 +952,6 @@ test('.at: out-of-range (positive, negative, Infinity, -Infinity, huge) → unde
   }
 })
 
-// Compared via BigInt `===`/arithmetic (both correctly recognize .at()'s bigint result),
-// not Number(...) — Number() has its OWN unrelated, pre-existing gap on this shape: kind.js
-// (~line 838) special-cases the BRACKET-index node `a[i]` on a BigInt64/BigUint64Array
-// receiver to statically claim VAL.BIGINT (steering Number()/bigIntDomain off the generic
-// NaN-boxed decode path); no equivalent case exists for a `.at(i)` METHOD-CALL node, method
-// or typed-array agnostic — grepped, zero hits for 'at' in kind.js/type.js/kind-traits.js.
-// So `Number(bigTypedArr.at(i))` decodes the raw i64 bits as if NaN-boxed-tagged (wrong —
-// they're untagged native bits) and returns garbage — confirmed live pre-existing (same
-// under the old un-fixed .at() path, which also returned a bare untagged 'f64' node), out
-// of scope for the width/offset bug this block fixes.
 test('.at: BigInt64Array/BigUint64Array', () => {
   const f = runHost(`export let f = () => { let a = new BigInt64Array(3); a[0]=1n;a[1]=2n;a[2]=3n; return a.at(-1) === 3n ? 1 : 0 }`).f
   const u = runHost(`export let f = () => { let a = new BigUint64Array(3); a[0]=1n;a[1]=2n;a[2]=3n; return a.at(1) === 2n ? 1 : 0 }`).f
@@ -969,6 +959,27 @@ test('.at: BigInt64Array/BigUint64Array', () => {
   is(f(), 1)
   is(u(), 1)
   is(arith(), 1)
+  for (const optimize of [0, 2, 3]) {
+    const n = jz(`export let f = () => Number(new BigInt64Array([7n]).at(0))`, { optimize }).exports.f
+    is(n(), 7, `Number(BigInt64Array#at), O${optimize}`)
+  }
+})
+
+test('.at: erased and polymorphic TypedArray preserves Number versus BigInt identity', () => {
+  const host = jz(`export let f = value => value.at(0)`).exports.f
+  is(host(new Int8Array([7])), 7)
+  throws(() => host(new BigInt64Array([7n])), /not supported/)
+  throws(() => host(new BigUint64Array([7n])), /not supported/)
+
+  const src = `export let f = which => {
+    let value = which ? new BigInt64Array([7n]) : new Int8Array([7])
+    return value.at(0)
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const f = jz(src, { optimize }).exports.f
+    is(f(0), 7, `numeric arm, O${optimize}`)
+    is(f(1), 7n, `BigInt arm, O${optimize}`)
+  }
 })
 
 test('.at: view (subarray) receiver reads through the descriptor, kind-aware', () => {
@@ -1412,44 +1423,9 @@ test('every: typed-array field of heap-returned object', () => {
 // use), and Float32Array f32 store-rounding (distinct from f64 arithmetic),
 // at optimize 0/2/3.
 //
-// A SEPARATE, narrower, pre-existing gap surfaced while probing the
-// host-receiver shape with `Uint8ClampedArray` specifically (not one of this
-// fix's required pins — left unfixed, noted here so it isn't lost): a program
-// whose source names NO `Uint8ClampedArray`/`Float16Array` ctor anywhere (the
-// host-receiver shape's whole premise) never calls `setLinkDemand('clamped'/
-// 'f16')` — that only fires from inside a resolved `resolveElem` or a literal
-// `new Uint8ClampedArray(...)`/`new Float16Array(...)` node — so
-// `__typed_set_idx`'s clamped/f16 branches (module/typedarray.js, gated
-// behind `ctx.linkDemand.clamped`/`.f16` template conditionals) compile OUT
-// entirely; a REAL clamped/f16 value flowing in from the host at runtime then
-// falls through to the plain-integer wrap path instead of clamping/f16-
-// converting. Reproduces with `.filter`'s existing `!r` branch too (shared
-// stdlib fns) given an out-of-range value — `.filter` just never surfaced it
-// (it only ever stores back an already-in-range LOADED value, no arithmetic).
-// Infra-level (`setLinkDemand`/autoload conservativeness for the
-// zero-ctor-syntax host-receiver shape), not `.typed:map`-specific; out of
-// this fix's scope.
-//
-// A SECOND separate, pre-existing gap surfaced the same way, fully
-// independent of `.map()`: bracket-index reads (`dst[i]`) on an erased-vt
-// HOST-PROVIDED receiver read garbage for any element width narrower than
-// 8 bytes — reproduces on a bare `let m = dst; return m[0]` with zero method
-// calls involved. `.set`'s own host-receiver pin above only ever exercises
-// Float64Array (8-byte stride), which happens to read correctly BY
-// COINCIDENCE (same class this file's `.at` fix note already documents for a
-// different site: "Float64Array/BigInt64Array/BigUint64Array (also 8-byte)
-// happened to read the right bytes by coincidence of matching stride, not by
-// correctness"). Matches this file's own prior note two paragraphs up:
-// "`.typed:[]`/`.typed:[]=` (index ops, not method calls) stay out of scope:
-// a different, pre-existing, already-guarded compile-time-only call path
-// (module/array.js / src/compile/emit-assign.js) never reached through this
-// fork" — confirmed here to be live, not hypothetical. The host-receiver pin
-// below reads back via `.forEach` (a proven-correct dispatch) specifically to
-// route around this independent gap rather than accidentally re-test it.
-// Flip `test.todo` → `test` once a build run holds clean across a real repeat
-// count (10+) AND kernel-oracle/kernel-parity both hold at 13/13 and 33/33 —
-// not just the build exit code. (Both held clean on this branch — see its
-// commits for the exact tallies.)
+// The v1 provenance pass closes the two formerly-adjacent holes too: an
+// erased host receiver now retains f16/clamped storage policy, and bracket
+// reads/writes dispatch by runtime element aux instead of assuming 8-byte f64.
 test('set: into typed-array field added dynamically to an empty object', () => {
   const { f } = runHost(`export let f = () => {
     const s = {}
@@ -1472,6 +1448,41 @@ test('set: into typed-array field added dynamically to an empty object', () => {
 test('set: host-provided typed receiver (source names no typed ctor at all)', () => {
   const r = jz(`export function setIt(dst, src) { dst.set(src); return dst[0] * 1000 + dst[3] }`)
   is(Number(r.exports.setIt(r.memory.Float64Array([0, 0, 0, 0]), r.memory.Float64Array([1, 2, 3, 4]))), 1004)
+})
+
+test('indexed read: erased host TypedArray dispatches by runtime element width', () => {
+  const r = jz(`export let read = dst => { let alias = dst; return alias[0] }`)
+  const cases = [
+    [Int8Array, -7], [Uint8Array, 250],
+    [Int16Array, -1234], [Uint16Array, 60000],
+    [Int32Array, -1234567], [Uint32Array, 4000000000],
+    [Float32Array, 1.5], [Float64Array, -2.25],
+  ]
+  for (const [Ctor, value] of cases)
+    is(r.exports.read(new Ctor([value])), value, Ctor.name)
+  throws(() => r.exports.read(new Uint8ClampedArray([7])), /not supported/)
+  if (typeof Float16Array !== 'undefined')
+    throws(() => r.exports.read(new Float16Array([7])), /not supported/)
+  throws(() => r.exports.read(new BigInt64Array([7n])), /not supported/)
+  throws(() => r.exports.read(new BigUint64Array([7n])), /not supported/)
+})
+
+test('indexed write: erased host TypedArray dispatches by runtime storage policy', () => {
+  const r = jz(`export let write = (dst, value) => { dst[0] = value; return dst[0] }`)
+  const cases = [
+    [Int8Array, 300, 44], [Uint8Array, 300, 44], [Int16Array, 300, 300],
+    [Float32Array, 1.5, 1.5], [Float64Array, -2.25, -2.25],
+  ]
+  for (const [Ctor, value, expected] of cases)
+    is(r.exports.write(new Ctor([0]), value), expected, Ctor.name)
+  throws(() => r.exports.write(new Uint8ClampedArray([0]), 300), /not supported/)
+  if (typeof Float16Array !== 'undefined')
+    throws(() => r.exports.write(new Float16Array([0]), 1.5), /not supported/)
+
+  const big = jz(`export let write = dst => { dst[0] = 7n; return dst[0] }`).exports.write
+  throws(() => big(new BigInt64Array([0n])), /not supported/)
+  throws(() => big(new BigUint64Array([0n])), /not supported/)
+  throws(() => big(new Int8Array([0])), err => err instanceof TypeError)
 })
 
 // .fill sibling probe — same dyn-field shape as the .set pin above, the other
@@ -1519,13 +1530,8 @@ test('filter: into typed-array field added dynamically to an empty object (narro
 // .typed:slice / .typed:filter BigInt pins — the OTHER decline condition this
 // branch closed (`r.isBigInt`, alongside `!r` above). Both now route through a
 // runtime aux-byte dispatch instead of a bare `return null`; asserted via
-// `.length` (the runtime structure `__typed_slice_rt`/the new filter loop
-// produce is correct) rather than further element indexing — re-indexing a
-// BigInt slice/filter RESULT held in a variable hits a separate, pre-existing
-// analyze.js gap (BigInt element-kind isn't propagated through a `.slice()`/
-// `.map()` assignment's static type tracking, same as this file's existing
-// accepted `.typed:map` BigInt-fallback rows already exhibit) — out of the
-// `.typed:*` emitter-decline scope this branch audits.
+// `.length` exercises the runtime structure; the provenance-through-local
+// indexed-value cases are pinned separately below.
 test('slice: BigInt64Array (isBigInt no longer bails to a bare decline)', () => {
   const { f } = runHost(`export let f = () => {
     let b = new BigInt64Array(4)
@@ -1688,24 +1694,9 @@ test('.map: BigInt64Array/BigUint64Array preserve species (was: silently reroute
   const isView2 = runHost(`export let f = () => ArrayBuffer.isView(new BigUint64Array([1n]).map(x => x)) ? 1 : 0`).f
   is(isView2(), 1, 'BigUint64Array: same')
 
-  // Value pin: x => x + 1n over [1n] → [2n]. Reads the element straight off
-  // the map-call chain (not through an intermediate `let`) — resolveElem's
-  // TYPED_CHAIN_METHODS walk resolves `new BigInt64Array(…).map(…)[0]`
-  // statically; a `let m = …; m[0]` indirection would instead hit a SEPARATE,
-  // pre-existing, already-documented analyze.js gap (BigInt element-kind
-  // isn't propagated through a `.map()`/`.slice()` ASSIGNMENT's static type
-  // tracking — see the BigInt slice/filter pins' comment above), which this
-  // fix does not touch and is out of scope here.
-  //
-  // Block-body callback (`x => { return x + 1n }`), NOT the terser
-  // expression-body `x => x + 1n` — see the `test.todo` immediately below for
-  // why: an expression-bodied arrow's IMPLICIT return of `param + BigIntLiteral`
-  // hits a separate, pre-existing, general miscompile (confirmed with zero
-  // typed-array/map involvement — a captured-variable closure `() => x + 1n`
-  // alone reproduces it); the explicit block-bodied `return` of the identical
-  // expression is unaffected. This species/value pin only needs to prove
-  // THIS fix's routing is correct, so it sidesteps that separate bug rather
-  // than being blocked by it.
+  // Value pin: x => x + 1n over [1n] → [2n]. Constructor provenance now
+  // survives direct chains, concise callbacks, and local assignments through
+  // one typedResultCtor authority.
   const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
   is(val(), 1, '1n + 1n = 2n, correct species and bit-exact roundtrip')
 
@@ -1713,19 +1704,79 @@ test('.map: BigInt64Array/BigUint64Array preserve species (was: silently reroute
   is(uval(), 1, 'BigUint64Array: same')
 })
 
-// NOT a defect of this fix (agent/typed-map-index) — recorded here because
-// the external audit's Part B pin was phrased with an expression-bodied
-// callback exactly like this. Root cause fully isolated, with zero
-// typed-array/array-method involvement at all:
-//   export function f(x) { let g = () => x + 1n; return g() }   // f(5n) → garbage
-//   export function f(x) { let g = () => { return x + 1n }; return g() }  // f(5n) → 6n, correct
-// An expression-bodied (implicit-return) arrow whose value is `ident + BigIntLiteral`
-// loses the BigInt census; the identical computation under an explicit block
-// `return` is fine. Reproduces identically on unmodified 6fa3fd7e (pre-dates
-// this branch). Flip to `test` once that separate miscompile is fixed.
-test.todo('.map: BigInt64Array — exact expression-bodied form from the audit pin (x => x + 1n)', () => {
+test('.map: BigInt64Array — expression-bodied callback (x => x + 1n)', () => {
   const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => x + 1n)[0] === 2n ? 1 : 0`).f
   is(val(), 1)
+})
+
+test('runtime-polymorphic TypedArray elements preserve Number versus BigInt identity', () => {
+  const src = `export let read = which => {
+    let value = which ? new BigInt64Array([7n]) : new Int8Array([7])
+    return value[0]
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const read = jz(src, { optimize }).exports.read
+    is(read(0), 7, `numeric arm, O${optimize}`)
+    is(read(1), 7n, `BigInt arm, O${optimize}`)
+  }
+})
+
+test('runtime-polymorphic TypedArray writes validate the destination domain', () => {
+  const src = `export let write = which => {
+    let value = which ? new BigInt64Array([0n]) : new Int8Array([0])
+    value[0] = which ? 7n : 300
+    return value[0]
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const write = jz(src, { optimize }).exports.write
+    is(write(0), 44, `numeric arm, O${optimize}`)
+    is(write(1), 7n, `BigInt arm, O${optimize}`)
+  }
+})
+
+test('runtime-polymorphic TypedArray writes reject mismatched indirect result domains', () => {
+  const src = `const producers = [() => 7, () => 7n]
+  export let write = (bigDestination, bigValue) => {
+    let value = bigDestination ? new BigInt64Array(1) : new Int8Array(1)
+    value[0] = producers[bigValue]()
+    return value[0]
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const write = jz(src, { optimize }).exports.write
+    is(write(0, 0), 7, `Number → numeric, O${optimize}`)
+    is(write(1, 1), 7n, `BigInt → BigInt, O${optimize}`)
+    throws(() => write(0, 1), err => err instanceof TypeError)
+    throws(() => write(1, 0), err => err instanceof TypeError)
+  }
+})
+
+test('runtime-polymorphic TypedArray writes tag computed named-method results', () => {
+  const src = `function i32() {} function i64() {}
+  i32.parse = () => 7; i64.parse = () => 7n
+  export let write = (bigDestination, bigValue) => {
+    let value = bigDestination ? new BigInt64Array(1) : new Int8Array(1)
+    value[0] = (bigValue ? i64 : i32).parse()
+    return value[0]
+  }`
+  for (const optimize of [0, 2, 3]) {
+    const write = jz(src, { optimize }).exports.write
+    is(write(0, 0), 7, `Number → numeric, O${optimize}`)
+    is(write(1, 1), 7n, `BigInt → BigInt, O${optimize}`)
+    throws(() => write(0, 1), err => err instanceof TypeError)
+    throws(() => write(1, 0), err => err instanceof TypeError)
+  }
+})
+
+test('BigInt TypedArray copy methods retain element provenance through local assignment', () => {
+  const methods = [
+    ['map', `new BigInt64Array([1n]).map(x => x)`],
+    ['slice', `new BigInt64Array([1n]).slice()`],
+    ['filter', `new BigInt64Array([1n]).filter(x => true)`],
+  ]
+  for (const optimize of [0, 2, 3]) for (const [name, expr] of methods) {
+    const f = jz(`export let f = () => { let result = ${expr}; return result[0] === 1n ? 1 : 0 }`, { optimize }).exports.f
+    is(f(), 1, `${name}, O${optimize}`)
+  }
 })
 
 test('.map: BigInt64Array callback also receives the correct index (both fixes compose)', () => {

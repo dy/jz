@@ -871,15 +871,24 @@ VT['[]'] = (args) => {
       }
     }
   }
-  // Indexed read on a known typed-array receiver yields Number except for
-  // BigInt64Array/BigUint64Array, whose i64 carriers must stay BigInt-typed.
+  // Indexed read on a known typed-array receiver follows its concrete ctor.
+  // If the ctor itself is open (runtime-polymorphic Number vs BigInt storage),
+  // retain an unknown kind and let the tagged runtime reader decide.
   // An UNPROVEN index can read past the end (= undefined per spec), but the undef
   // box is a NaN bit-pattern, so it COINCIDES with ToNumber(undefined) through
   // every numeric path — the NUMBER claim stays sound for dispatch (numeric arms,
   // the vectorizer). Only identity observations diverge; those folds consult
   // typedReadMaybeOob below and keep the runtime compare.
-  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED)
-    return typedCtorElemValType(ctx.func.typedElem?.get(args[0])) || VAL.NUMBER
+  if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) {
+    const elem = typedCtorElemValType(
+      ctx.func.typedElem?.get(args[0]) ?? ctx.scope.globalTypedElem?.get(args[0]) ?? repOf(args[0])?.typedCtor)
+    // With no BigInt syntax in the whole program, every accepted host typed
+    // ingress is numeric (interop rejects evidence-free BigInt typed arrays),
+    // so an open ctor still has a closed NUMBER element domain. Preserve the
+    // numeric hot-path proof; BigInt-capable programs keep the kind open and
+    // use the tagged runtime reader.
+    return elem || (!ctx.features.bigint ? VAL.NUMBER : null)
+  }
   // Indexed read on a STRING returns a 1-char string (SSO at runtime).
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.STRING) return VAL.STRING
   if (Array.isArray(args[0]) && valTypeOf(args[0]) === VAL.STRING) return VAL.STRING

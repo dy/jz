@@ -47,6 +47,7 @@ import { ctx } from '../ctx.js'
 import { isReassigned } from '../ast.js'
 import { scanBindingUses, USE } from './analyze-scans.js'
 import { closureBodyReturnKind } from './flow-types.js'
+import { VAL } from '../reps.js'
 
 // A candidate table may safely appear as: a `V[idx]` READ (any key — call
 // sites read-then-call, `.length`, comparisons, whatever) or a PLAIN
@@ -217,13 +218,27 @@ export function scanClosureTableLatticeCandidates(ast) {
     if (!bodies.every(b => everyUseIsIndexedCall(b, name))) candidates.delete(name)
 
   for (const name of candidates) {
-    let kind = null
-    for (const el of initRhsOf.get(name).slice(1)) {
+    let kind = null, uniform = true
+    const kinds = new Set(), elems = initRhsOf.get(name).slice(1)
+    for (const el of elems) {
       const k = closureBodyReturnKind(el[2], NO_CAPTURES)
-      if (!k || (kind != null && kind !== k)) { kind = null; break }
-      kind = k
+      if (k) kinds.add(k)
+      if (!k) uniform = false
+      else if (kind == null) kind = k
+      else if (kind !== k) uniform = false
     }
-    if (kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
+    if (uniform && kind) (ctx.scope.closureTableValResult ||= new Map()).set(name, kind)
+    // A mixed Number/BigInt indirect result needs a self-describing carrier.
+    // Mark the producer bodies now, before any closure is emitted; their
+    // RepresentationPlans box only the BigInt-returning members.
+    if (kinds.has(VAL.BIGINT) && kinds.size > 1) {
+      const tagged = (ctx.scope.taggedClosureResultBodies ||= new WeakSet())
+      const shapes = (ctx.scope.taggedClosureResultShapes ||= new Set())
+      for (const el of elems) {
+        tagged.add(el[2])
+        shapes.add(JSON.stringify(el[2]))
+      }
+    }
   }
   return candidates
 }

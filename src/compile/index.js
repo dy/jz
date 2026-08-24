@@ -1978,7 +1978,12 @@ function analyzeClosureBodyForEmit(cb) {
         params: cb.params.map(name => ({ name, type: 'f64' })),
         results: ['f64'],
       }
-      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, { generic: true })
+      const forceTaggedResult = ctx.scope.taggedClosureResultBodies?.has(cb.body) === true ||
+        ctx.scope.taggedClosureResultShapes?.has(JSON.stringify(cb.body)) === true
+      mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, {
+        generic: true,
+        forceTaggedResult,
+      })
     }
     return publishPreparedFunctionPlan(ctx, cb, ctx.func)
   } finally {

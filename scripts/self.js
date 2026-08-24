@@ -85,9 +85,14 @@ export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   return watrTail(module, cfg, {
     funcCount: ctx.funcs.list.length,
-    boundaryPins: cfg._vectorizedFnNames?.size
-      ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
-      : [],
+    boundaryPins: [
+      ...(cfg._vectorizedFnNames?.size
+        ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
+        : []),
+      ...(ctx.linkDemand.typedRuntime
+        ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
+          .filter(name => ctx.core.includes.has(name.slice(1))) : []),
+    ],
     targetProfile: ctx.transform.targetProfile,
     // This call site must stay gated on REGION_HOOKS_ACTIVE — same ternary
     // shape as front()'s regionHooks below. If the two call sites' gates

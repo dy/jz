@@ -20,10 +20,10 @@ import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
-import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
+import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, SET_ENTRY, MAP_ENTRY, INIT_CAP, collectionLaneBytes } from './collection.js'
-import { ERR_CLASS_NAMES } from '../err-codes.js'
+import { ERR, ERR_CLASS_NAMES } from '../err-codes.js'
 import { eqIdentityChain, regionCopyRecBody } from '../layout-kinds.js'
 
 const NAN_BITS = nanPrefixHex()
@@ -38,6 +38,7 @@ export default (ctx) => {
     __cap: ['__typed_shift', '__ptr_type', '__ptr_offset', '__ptr_aux'],
     __typed_data: ['__ptr_offset', '__ptr_aux'],
     __typed_idx: () => (ctx.linkDemand.f16 ? ['__f16_to_f64'] : []),
+    __typed_idx_tagged: ['__typed_idx', '__len', '__ptr_type', '__ptr_aux', '__alloc', '__mkptr'],
     __ptr_offset: ['__ptr_offset_fwd'],
     __ptr_offset_fwd: [],
     __is_str_key: ['__ptr_type'],
@@ -319,15 +320,13 @@ export default (ctx) => {
     (local $len i32)
     (local.set $len (call $__len (local.get $ptr)))
     (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.ge_u (local.get $i) (local.get $len))
       (then (f64.const nan:${UNDEF_NAN}))
       (else (f64.load (i32.add (call $__ptr_offset (local.get $ptr)) (i32.shl (local.get $i) (i32.const 3)))))))`
     }
     // Hot (~37M calls in watr self-compile). Type/aux/offset extracted once from $ptr.
     return `(func $__typed_idx (param $ptr i64) (param $i i32) (result f64)
-    (local $t i32) (local $off i32) (local $et i32) (local $len i32) (local $aux i32)
+    (local $t i32) (local $off i32) (local $et i32) (local $aux i32)
     (local.set $t (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))))
     (local.set $off (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
     ;; ARRAY fast path: follow forwarding inline, bounds-check against header len, f64.load — no $__len call.
@@ -335,20 +334,18 @@ export default (ctx) => {
       (then
         ${followForwardingWat('$off', { lowGuard: false })}
         (return (if (result f64)
-          (i32.and (i32.ge_s (local.get $i) (i32.const 0)) (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8)))))
+          (i32.lt_u (local.get $i) (i32.load (i32.sub (local.get $off) (i32.const 8))))
           (then (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))
           (else (f64.const nan:${UNDEF_NAN}))))))
-    (local.set $aux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-    (if
+    ;; Every consumer below masks aux low bits; high tag/prefix bits are inert.
+    (local.set $aux (i32.wrap_i64 (i64.shr_u (local.get $ptr) (i64.const ${LAYOUT.AUX_SHIFT}))))
+    ${ctx.linkDemand.typedView ? `(if
       (i32.and
         (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
         (i32.ne (i32.and (local.get $aux) (i32.const 8)) (i32.const 0)))
-      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))
-    (local.set $len (call $__len (local.get $ptr)))
+      (then (local.set $off (i32.load (i32.add (local.get $off) (i32.const 4))))))` : ''}
     (if (result f64)
-      (i32.or
-        (i32.lt_s (local.get $i) (i32.const 0))
-        (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
       (then (f64.const nan:${UNDEF_NAN}))
       (else
         (if (result f64) (i32.eq (local.get $t) (i32.const ${PTR.TYPED}))
@@ -356,9 +353,9 @@ export default (ctx) => {
             (local.set $et (i32.and (local.get $aux) (i32.const 7)))
             (if (result f64) (i32.ge_u (local.get $et) (i32.const 6))
               (then (if (result f64) (i32.eq (local.get $et) (i32.const 7))
-                (then (if (result f64) (i32.and (local.get $aux) (i32.const 16))
+                (then ${ctx.features.bigint ? `(if (result f64) (i32.and (local.get $aux) (i32.const 16))
                   (then (f64.reinterpret_i64 (i64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))
-                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))
+                  (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))))` : `(f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3))))`})
                 (else (f64.promote_f32 (f32.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 2))))))))
               (else (if (result f64) (i32.ge_u (local.get $et) (i32.const 4))
                 (then (if (result f64) (i32.and (local.get $et) (i32.const 1))
@@ -373,8 +370,31 @@ export default (ctx) => {
                   (else (if (result f64) (i32.and (local.get $et) (i32.const 1))
                     (then (f64.convert_i32_u (i32.load8_u (i32.add (local.get $off) (local.get $i)))))
                     (else (f64.convert_i32_s (i32.load8_s (i32.add (local.get $off) (local.get $i)))))))))))))
-          (else (f64.load (i32.add (local.get $off) (i32.shl (local.get $i) (i32.const 3)))))))))`
+          (else (f64.const nan:${UNDEF_NAN})))))))`
   }
+
+  // Representation-safe sibling for an element read whose concrete typed
+  // constructor is not closed at compile time. Numeric arrays retain the
+  // plain f64 result. A BigInt64/BigUint64 element is boxed so a downstream
+  // generic value can distinguish its i64 payload from an arbitrary Number
+  // bit pattern. The explicit bounds test is necessary: UNDEF_NAN itself is a
+  // valid i64 BigInt payload, so inspecting the returned bits cannot tell an
+  // OOB miss from an in-range value.
+  ctx.core.stdlib['__typed_idx_tagged'] = `(func $__typed_idx_tagged (param $ptr i64) (param $i i32) (result f64)
+    (local $v f64) (local $off i32)
+    (if
+      (i32.ge_u (local.get $i) (call $__len (local.get $ptr)))
+      (then (return (f64.const nan:${UNDEF_NAN}))))
+    (local.set $v (call $__typed_idx (local.get $ptr) (local.get $i)))
+    (if
+      (i32.and
+        (i32.eq (call $__ptr_type (local.get $ptr)) (i32.const ${PTR.TYPED}))
+        (i32.ne (i32.and (call $__ptr_aux (local.get $ptr)) (i32.const ${TYPED_ELEM_BIGINT_FLAG})) (i32.const 0)))
+      (then
+        (local.set $off (call $__alloc (i32.const 8)))
+        (i64.store (local.get $off) (i64.reinterpret_f64 (local.get $v)))
+        (return (call $__mkptr (i32.const ${PTR.BIGINT}) (i32.const 0) (local.get $off)))))
+    (local.get $v))`
 
   ctx.core.stdlib['__ptr_offset_fwd'] = ptrOffsetFwdWat()
 
@@ -3284,14 +3304,39 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     return true
   }
 
+  const hasKnownObjPrimitiveHook = (node) => {
+    if (Array.isArray(node) && node[0] === '{}') {
+      const items = node.length === 2 && Array.isArray(node[1]) && node[1][0] === ','
+        ? node[1].slice(1) : node.slice(1)
+      return items.some(p => {
+        const key = Array.isArray(p) && p[0] === ':' ? p[1] : (typeof p === 'string' ? p : null)
+        return key === 'toString' || key === 'valueOf'
+      })
+    }
+    if (typeof node !== 'string' || ctx.types.dynKeyVars?.has(node)) return false
+    const sid = ctx.schema.idOf?.(node), schema = sid == null ? null : ctx.schema.list[sid]
+    if (!schema || (!schema.includes('toString') && !schema.includes('valueOf'))) return false
+    const writes = ctx.types.literalWriteKeys?.get(node)
+    if (writes) for (const key of writes) if (!schema.includes(key)) return false
+    return true
+  }
+
+  const unsupportedErrorMessage = () => {
+    ctx.module.include('collection')
+    ctx.runtime.throws = true
+    return ['block',
+      ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ERROR_MESSAGE_OBJECT]]],
+      ['throw', '$__jz_err', ['f64.const', ERR.ERROR_MESSAGE_OBJECT]]]
+  }
+
   // Error constructor message coercion — ES 20.5.1.1: argument absent OR its
   // VALUE is `undefined` → '' ; otherwise ToString(message). Routes through
   // toStrI64 (the same chokepoint String()/template literals use) for every
   // kind it already proves correctly (STRING identity, NUMBER, our own
   // Error-schema arm, the generic __to_str dispatch for atoms it special-
   // cases — NULL_NAN/UNDEF_NAN/TRUE_NAN/FALSE_NAN all format correctly
-  // PROVIDED the operand reaches it already boxed). Two gaps toStrI64 does
-  // NOT close by itself, both fixed here at the call site — matching every
+  // PROVIDED the operand reaches it already boxed). Three gaps toStrI64 does
+  // NOT close by itself, all handled here at the call site — matching every
   // other direct toStrI64 caller's own established convention (module/
   // string.js's per-leaf template formatter, src/compile/emit.js's `+`-concat
   // strOperand at ~4796-4797), not a toStrI64-internal change:
@@ -3308,40 +3353,53 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   //       to __to_str's raw-pointer-bits fallback (.work/todo.md §deletion-sweep's
   //       "Consequence" section, a PRE-EXISTING gap for any dynamic object,
   //       left as-is). The literal shape alone is enough to prove it here.
-  //   (3) audit-#11: a genuinely DYNAMIC dict (VAL.HASH — JSON.parse, a
-  //       computed-key-grown object; no fixed schema EVER exists for this
-  //       kind, so isClosedObjNoStringMethod's schema lookup can never prove
-  //       it either way) fell through to the same broken __to_str raw-bits
-  //       fallback as (2) — worse, decoded as garbage at the host boundary
-  //       (observed: a bogus BigInt), not even a wrong-looking object. A HASH
-  //       is schema-less BY CONSTRUCTION: no closed-world proof is possible,
-  //       ever, for whether it carries a runtime 'toString'/'valueOf' key
-  //       (unlike (2), where non-closedness is merely unproven, not
-  //       unprovable). Approximating "unprovable" as "absent" here — same
-  //       discipline isClosedObjNoStringMethod itself already applies to
-  //       every OTHER uncertain case — trades perfect ES fidelity (the rare
-  //       dict that legitimately carries a runtime toString/valueOf) for a
-  //       real string on the overwhelmingly common plain-data-dict case,
-  //       strictly better than today's guaranteed-wrong fallback either way.
+  //   (3) A genuinely dynamic dict (VAL.HASH — JSON.parse or a computed-key
+  //       object) has no closed schema, so the compiler cannot prove whether
+  //       runtime `valueOf`/`toString` hooks exist. Treating them as absent
+  //       silently returned "[object Object]" for an accepted object whose own
+  //       hook returned something else. Until dynamic callable-property
+  //       invocation is represented here, reject this unprovable conversion;
+  //       correct-or-reject outranks a plausible default string.
   const errorMessageIR = (msg) => {
     if (msg == null) return asF64(emit(['str', '']))
     const vt = valTypeOf(msg)
     if (vt === VAL.BOOL)
       return typed(['select', asF64(emit(['str', 'true'])), asF64(emit(['str', 'false'])), truthyIR(emit(msg))], 'f64')
-    if (isClosedObjNoStringMethod(msg) || vt === VAL.HASH) return asF64(emit(['str', '[object Object]']))
+    if (vt === VAL.HASH)
+      err('Error message conversion from a dynamic-key object is not supported because valueOf/toString hooks cannot be proven; convert the message explicitly with String(...) before constructing the Error')
+    if (isClosedObjNoStringMethod(msg)) return asF64(emit(['str', '[object Object]']))
+    if (vt === VAL.OBJECT) {
+      if (!hasKnownObjPrimitiveHook(msg))
+        err('Error message conversion from an open object is not supported because valueOf/toString hooks cannot be proven; convert the message explicitly with String(...) before constructing the Error')
+    }
+    if (vt === VAL.TYPED || vt === VAL.BUFFER || vt === VAL.SET || vt === VAL.MAP ||
+        vt === VAL.CLOSURE || vt === VAL.DATE)
+      err('Error message conversion from this object kind is not supported; convert the message explicitly with String(...) before constructing the Error')
+
     const boxed = asF64(emit(msg))
-    // isUndef folds to a compile-time constant for any statically-provable
-    // operand (a literal, or anything else valTypeOf/matchF64Bits can already
-    // fold) — the common `new Error("literal")`/`new Error(x)` (x provably a
-    // string/number) case pays no runtime branch. Only a genuinely dynamic
-    // operand that MIGHT be undefined at runtime gets the block+local+if.
     const probe = isUndef(boxed)
-    if (Array.isArray(probe) && probe[0] === 'i32.const')
+    if (vt != null && Array.isArray(probe) && probe[0] === 'i32.const')
       return probe[1] ? asF64(emit(['str', ''])) : typed(['f64.reinterpret_i64', toStrI64(msg, boxed)], 'f64')
-    const mt = temp('emsgv')
+
+    const mt = temp('emsgv'), tt = tempI32('emsgt')
     const mtGet = () => typed(['local.get', `$${mt}`], 'f64')
+    // A fully dynamic value may still be a primitive or ARRAY (all supported
+    // by __to_str), but every other pointer family requires object
+    // ToPrimitive hooks this runtime path cannot invoke. Reject those tags at
+    // runtime rather than returning the decoded object/pointer as `.message`.
+    const objectish = vt == null
+      ? ['block', ['result', 'i32'],
+          ['local.set', `$${tt}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', mtGet()]]],
+          ['i32.and', ['f64.ne', mtGet(), mtGet()],
+            ['i32.and', ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ATOM]],
+              ['i32.and', ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.ARRAY]],
+                ['i32.and', ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.STRING]],
+                  ['i32.ne', ['local.get', `$${tt}`], ['i32.const', PTR.BIGINT]]]]]]]
+      : ['i32.const', 0]
+    if (vt == null) inc('__ptr_type')
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${mt}`, boxed],
+      ['if', objectish, ['then', unsupportedErrorMessage()]],
       ['if', ['result', 'f64'], isUndef(mtGet()),
         ['then', asF64(emit(['str', '']))],
         ['else', ['f64.reinterpret_i64', toStrI64(msg, mtGet())]]]], 'f64')

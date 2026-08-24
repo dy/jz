@@ -23,9 +23,10 @@ import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
   ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
   usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR, undefExpr,
-  freshId,
+  freshId, boxBigInt,
 } from '../ir.js'
 import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
+import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -125,68 +126,28 @@ function dispatchByKeyKind(arr, keyExpr, valueExpr, numericIR) {
       ['else', numericIR(['local.get', `$${keyTmp}`])]])
 }
 
-/** Raw indexed f64.store at `ptrOffset(o)+idx*8` — the lean fallback for a receiver
- *  proven to be ARRAY/TYPED at runtime (the ARRAY/TYPED forks are taken first).
- *  Operands are pre-set locals: `$obj` f64, `$idx` i32, `$val` f64. */
-const rawIndexedStore = (obj, idx, val, arrVT) => ['block', ['result', 'f64'],
-  ['f64.store', ['i32.add', ptrOffsetIR(['local.get', `$${obj}`], arrVT), ['i32.shl', ['local.get', `$${idx}`], ['i32.const', 3]]], ['local.get', `$${val}`]],
-  ['local.get', `$${val}`]]
-
-/** Numeric element store for a receiver that may be OBJECT/HASH at runtime: those
- *  keep dynamic indexed props in the propsPtr HASH sidecar at off-16 (paired with
- *  __dyn_get); a raw store at ptrOffset(o)+i*8 lands in the schema-slot region —
- *  silent corruption at small i, an OOB trap at large i (the self-compile `blur`
- *  crash). The propsPtr hash is STRING-keyed (object keys are strings: `o[3]` ≡
- *  `o["3"]`), so the index is rendered to its string form — the same string the
- *  __dyn_get read produces, content-compared by the hash. ARRAY/TYPED fall to the
- *  raw store. Caller must `inc('__dyn_set','__i32_to_str')`. Gated by `mayBeObject`
- *  so pure typed-array programs (an f64 param indexed in a hot loop) keep the lean
- *  raw store and never drag in __dyn_set / __i32_to_str. */
-const objHashOrRawStore = (obj, idx, val, arrVT) => ['if', ['result', 'f64'],
-  ['i32.or', ptrTypeEq(['local.get', `$${obj}`], PTR.OBJECT), ptrTypeEq(['local.get', `$${obj}`], PTR.HASH)],
-  ['then', ['block', ['result', 'f64'],
-    ['drop', ['call', '$__dyn_set',
-      ['i64.reinterpret_f64', ['local.get', `$${obj}`]],
-      ['i64.reinterpret_f64', ['call', '$__i32_to_str', ['local.get', `$${idx}`]]],
-      ['i64.reinterpret_f64', ['local.get', `$${val}`]]]],
-    ['local.get', `$${val}`]]],
-  ['else', rawIndexedStore(obj, idx, val, arrVT)]]
-
-/** Build a `__ptr_type`-fork IR for `arr[idx] = val` when receiver is opaque
- *  (non-string expr, or string-named binding of unknown VAL). Forks on
- *  ARRAY → `__arr_set_idx_ptr` (+ optional persist), TYPED → `__typed_set_idx`,
- *  OBJECT/HASH → `__dyn_set` (only when `mayBeObject`), else → raw f64.store. */
-function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, arrVT, persist, mayBeObject) {
-  const objTmp = temp('asu')
-  const idxTmp = tempI32('asi')
-  const ptrTmp = temp('asp')
-  const valTmp = temp()
-  const hasTypedSet = !!ctx.core.stdlib['__typed_set_idx']
-  inc('__ptr_type', '__arr_set_idx_ptr')
-  if (mayBeObject) inc('__dyn_set', '__i32_to_str')
-  if (hasTypedSet) inc('__typed_set_idx')
-  const arrSetCall = ['call', '$__arr_set_idx_ptr', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]
-  const arrayBranch = ['block', ['result', 'f64'],
-    ['local.set', `$${ptrTmp}`, arrSetCall],
-    ...(persist ? [persist(['local.get', `$${ptrTmp}`])] : []),
-    ['local.get', `$${valTmp}`]]
-  const fallbackStore = mayBeObject
-    ? objHashOrRawStore(objTmp, idxTmp, valTmp, arrVT)
-    : rawIndexedStore(objTmp, idxTmp, valTmp, arrVT)
-  const elseBranch = hasTypedSet
-    ? ['if', ['result', 'f64'],
-        ptrTypeEq(['local.get', `$${objTmp}`], PTR.TYPED),
-        ['then', ['call', '$__typed_set_idx', ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]], ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`]]],
-        ['else', fallbackStore]]
-    : fallbackStore
+/** Outlined runtime element store for an opaque receiver. The helper owns the
+ * ARRAY relocation, packed TypedArray width, OBJECT/HASH sidecar, and optional
+ * EXTERNAL branches; keeping that fork out of a hot loop also gives the
+ * Float64 unswitch one canonical call shape to eliminate. */
+function emitPolymorphicElementStore(arrExpr, idxI32, valueExpr, valueDomain, persist, mayBeObject) {
+  ctx.module.include('typedarray')
+  setLinkDemand('typedarray')
+  setLinkDemand('typedRuntime')
+  const runtimeStore = mayBeObject ? '__arr_typed_obj_set_idx' : '__arr_typed_set_idx'
+  if (mayBeObject) ctx.module.include('collection')
+  inc(runtimeStore)
+  const objTmp = temp('asu'), idxTmp = tempI32('asi'), ptrTmp = temp('asp'), valTmp = temp()
   return block64(
     ['local.set', `$${objTmp}`, asF64(arrExpr)],
     ['local.set', `$${idxTmp}`, idxI32],
     ['local.set', `$${valTmp}`, valueExpr],
-    ['if', ['result', 'f64'],
-      ptrTypeEq(['local.get', `$${objTmp}`], PTR.ARRAY),
-      ['then', arrayBranch],
-      ['else', elseBranch]])
+    ['local.set', `$${ptrTmp}`, ['call', `$${runtimeStore}`,
+      ['i64.reinterpret_f64', ['local.get', `$${objTmp}`]],
+      ['local.get', `$${idxTmp}`], ['local.get', `$${valTmp}`],
+      ...(representationProgramHasBigint(ctx) ? [['i32.const', valueDomain]] : [])]],
+    ...(persist ? [persist(['local.get', `$${ptrTmp}`])] : []),
+    ['local.get', `$${valTmp}`])
 }
 
 /** Element assignment: `arr[idx] = val`. Linear strategy chain — first match wins.
@@ -658,8 +619,19 @@ export function emitElementAssign(arr, idx, val) {
   // happening. `storedValueNarrow` is the same safe default
   // arrProvenBigintElems already established: never fires for an inline
   // expression, only for a bare name independently proven boxed elsewhere.
-  const arrProvenTyped = typeof arr === 'string' && lookupValType(arr) === 'typed'
+  const arrProvenTyped = typeof arr === 'string' && lookupValType(arr) === 'typed' &&
+    ctx.func.typedElem?.has(arr)
   const valueExpr = (arrProvenBigintElems || arrProvenTyped) ? storedValueNarrow(val) : storedValue(val)
+  // A runtime-typed destination needs a self-describing value. A definite
+  // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
+  // edge, so materialize the PTR.BIGINT tag specifically for the polymorphic
+  // typed writer. Mixed sources already arrive tagged through storedValue.
+  const valueVT = valTypeOf(val)
+  const valueDomain = valueVT === VAL.BIGINT ? 1 : valueVT != null ? 0 : -1
+  const taggedValueExpr = () => valueVT === VAL.BIGINT &&
+      representationStorageWriteAction(ctx, val) !== REP_EDGE_BOX
+    ? boxBigInt(asI64(valueExpr)) : valueExpr
+  const runtimeTypedValueExpr = () => representationProgramHasBigint(ctx) ? taggedValueExpr() : valueExpr
   // dyn-closure-tables.js: `arr[idx] = val` into a proven-safe candidate closure
   // table — record this write's provenance (direct closure literal, or a call
   // to a function resolveDynFnTables can later prove is a closure factory) for
@@ -718,11 +690,14 @@ export function emitElementAssign(arr, idx, val) {
       ((typeof arr === 'string' && lookupValType(arr) === 'typed') || nestedElemTypedCtor)) {
     const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
     if (r) return r
-    // Element ctor unknown — runtime aux-byte dispatch. __typed_set_idx
-    // returns the stored value as f64, used directly as the expr result.
-    inc('__typed_set_idx')
-    return typed(['call', '$__typed_set_idx',
-      asI64(emit(arr)), asI32(emit(idx)), valueExpr], 'f64')
+    // Element ctor unknown — runtime aux-byte dispatch over the generic tagged
+    // value channel. Numeric and BigInt destinations validate/coerce without
+    // guessing from raw payload magnitude.
+    const runtimeSet = representationProgramHasBigint(ctx) ? '__typed_set_idx_tagged' : '__typed_set_idx'
+    inc(runtimeSet)
+    return typed(['call', `$${runtimeSet}`,
+      asI64(emit(arr)), asI32(emit(idx)), runtimeTypedValueExpr(),
+      ...(runtimeSet === '__typed_set_idx_tagged' ? [['i32.const', valueDomain]] : [])], 'f64')
   }
 
   // 6. Boxed schema array — payload pointer is stored at the receiver's payload offset.
@@ -793,15 +768,15 @@ export function emitElementAssign(arr, idx, val) {
     inc('__dyn_set', '__is_str_key')
     const persist = typeof arr === 'string' ? persistBinding(arr) : null
     return dispatchByKeyKind(arr, keyExpr, valueExpr, keyNode =>
-      emitPolymorphicElementStore(emit(arr), asI32(typed(keyNode, 'f64')), valueExpr, arrVT, persist, mayBeObject))
+      emitPolymorphicElementStore(emit(arr), asI32(typed(keyNode, 'f64')), runtimeTypedValueExpr(), valueDomain, persist, mayBeObject))
   }
 
   // 9. Opaque receiver (non-string expr) or string-named with unknown VT — pure
   //    __ptr_type dispatch (no key-kind fork: key is provably numeric here).
   if (typeof arr !== 'string')
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, null, mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, null, mayBeObject)
   if (knownArrVT == null)
-    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), valueExpr, arrVT, persistBinding(arr), mayBeObject)
+    return emitPolymorphicElementStore(emit(arr), asI32(emit(idx)), runtimeTypedValueExpr(), valueDomain, persistBinding(arr), mayBeObject)
 
   // Default: known-VT receiver that isn't ARRAY/TYPED/OBJECT special — raw f64.store.
   return withTemp(valueExpr, t => [

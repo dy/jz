@@ -224,7 +224,12 @@ const ELEMS = {
   Uint32Array: [5, 4, 'getUint32', 'setUint32'],
   Float32Array: [6, 4, 'getFloat32', 'setFloat32'],
   Float64Array: [7, 8, 'getFloat64', 'setFloat64'],
-  // flag-carrying kinds: elemId = base code | flag (32 = f16, 64 = clamped)
+  // flag-carrying kinds: elemId = base code | flag (16 = BigInt,
+  // 32 = f16, 64 = clamped). BigInt64/BigUint64 share the compiler's raw
+  // two's-complement storage tag; decoding follows JZ's documented signed-i64
+  // BigInt contract.
+  BigInt64Array: [23, 8, 'getBigInt64', 'setBigInt64'],
+  BigUint64Array: [23, 8, 'getBigUint64', 'setBigUint64'],
   Float16Array: [35, 2, 'getFloat16', 'setFloat16'],
   Uint8ClampedArray: [65, 1, 'getUint8', 'setUint8'],
 }
@@ -414,6 +419,14 @@ export const memory = (src) => {
     if (v instanceof ArrayBuffer) return mem.Buffer(v)
     if (v instanceof DataView) return mem.Buffer(v.buffer)
     const typedName = v?.constructor?.name
+    // An erased host slot has no source-level proof that downstream code uses
+    // the BigInt element domain. Keep ordinary numeric TypedArrays zero-copy-
+    // compatible, but reject evidence-free BigInt typed ingress rather than
+    // forcing every numeric hot loop onto the tagged/boxing path. Programs
+    // that construct BigInt typed storage internally retain full support.
+    if (typedName === 'BigInt64Array' || typedName === 'BigUint64Array' ||
+        typedName === 'Float16Array' || typedName === 'Uint8ClampedArray')
+      throw new TypeError(`jz: host ${typedName} at an untyped boundary is not supported — construct it inside the compiled source so its element storage policy is provable`)
     if (typedName && ELEMS[typedName]) return mem[typedName](v)
     if (typeof v === 'object' || typeof v === 'function') return mem.External(v)
     return UNDEF_NAN
@@ -539,10 +552,11 @@ export const memory = (src) => {
     if (t === 3) {  // TYPED
       const elem = a & 7
       const [, stride] = ELEM_BY_ID[elem]
-      const Ctor = (a & 32)
-        ? (globalThis.Float16Array ?? (() => { throw new Error('decoding a Float16Array result needs a host with Float16Array (Node ≥ 24 / modern browsers)') })())
-        : (a & 64) ? Uint8ClampedArray
-        : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
+      const Ctor = (a & 16) ? BigInt64Array
+        : (a & 32)
+          ? (globalThis.Float16Array ?? (() => { throw new Error('decoding a Float16Array result needs a host with Float16Array (Node ≥ 24 / modern browsers)') })())
+          : (a & 64) ? Uint8ClampedArray
+          : [Int8Array, Uint8Array, Int16Array, Uint16Array, Int32Array, Uint32Array, Float32Array, Float64Array][elem]
       if (a & 8) {
         const byteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
         return new Ctor(mem.buffer, dataOff, byteLen / stride)
@@ -610,7 +624,7 @@ export const memory = (src) => {
       for (let i = 0; i < data.length; i++) m.setBigInt64(off + i * 8, bits(mem.wrapVal(data[i])), true)
     } else if (t === 3) {
       const a2 = aux(p), elem = a2 & 7
-      const [, stride, , setter] = ELEM_BY_ID[elem]
+      const [, stride, , setter] = (a2 & 16) ? ELEMS.BigInt64Array : ELEM_BY_ID[elem]
       const byteLen = data.length * stride
       if (a2 & 8) {
         const viewByteLen = m.getInt32(off, true), dataOff = m.getInt32(off + 4, true)
@@ -1099,17 +1113,21 @@ export const wrap = (memSrc, inst, state) => {
 // Host-call return marshalling shared by opts.imports wrappers, __ext_call and
 // the auto-wired web globals: a thenable becomes a jz promise (awaitable in
 // the module — settled via the async runtime's exports, then drain + sweep);
-// everything else boxes through wrapVal.
-const hostRet = (state, ret) => {
+// everything else boxes through wrapVal. `bigintEvidence` is reserved for a
+// host operation whose receiver proves a BigInt result domain.
+const hostRet = (state, ret, bigintEvidence = false) => {
+  const wrap = v => state.mem
+    ? (bigintEvidence && typeof v === 'bigint' ? state.mem.BigInt(v) : state.mem.wrapVal(v))
+    : coerce(v)
   if (ret != null && typeof ret.then === 'function' && state.pmake) {
     const praw = state.pmake()
-    const box = (v) => bits(state.mem ? state.mem.wrapVal(v) : coerce(v))
+    const box = (v) => bits(wrap(v))
     ret.then(
       (v) => { state.pfinish(praw, 1, box(v)); state.afterTick?.() },
       (e) => { state.pfinish(praw, 2, box(e instanceof Error ? e.message : e)); state.afterTick?.() })
     return typeof praw === 'bigint' ? praw : bits(praw)
   }
-  return bits(state.mem ? state.mem.wrapVal(ret) : coerce(ret))
+  return bits(wrap(ret))
 }
 
 // Callable web globals auto-wired from globalThis when the module imports them
@@ -1137,7 +1155,15 @@ const prepareInterop = (opts) => {
     const prop = state.mem.read(propBig)
     const obj = extRecv(objBig, prop, 'property read')
     const value = obj[prop]
-    return bits(state.mem.wrapVal(typeof value === 'function' ? value.bind(obj) : value))
+    // An explicitly-external BigInt64Array/BigUint64Array still carries exact
+    // runtime BigInt evidence (ordinary host values use the typed-memory codec).
+    // Box it instead of routing a plain bigint through evidence-free wrapVal.
+    // `value` is cached above, so a getter executes exactly once.
+    const bigTyped = typeof value === 'bigint' &&
+      (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
+    const wrapped = bigTyped ? state.mem.BigInt(value)
+      : state.mem.wrapVal(typeof value === 'function' ? value.bind(obj) : value)
+    return bits(wrapped)
   }
   opts._interp.__ext_has_iterator = objBig => {
     const obj = extRecv(objBig, Symbol.iterator, 'iterator-method test')
@@ -1173,7 +1199,10 @@ const prepareInterop = (opts) => {
     const args = state.mem.read(argsBig)
     if (typeof obj[prop] !== 'function')
       throw new Error(`'${prop}' is not a function on this host ${obj?.constructor?.name ?? 'object'}`)
-    return hostRet(state, obj[prop].apply(obj, args))
+    const value = obj[prop].apply(obj, args)
+    const bigTyped = typeof value === 'bigint' &&
+      (obj instanceof BigInt64Array || obj instanceof BigUint64Array)
+    return hostRet(state, value, bigTyped)
   }
   return state
 }

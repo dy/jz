@@ -71,7 +71,7 @@ export let main = () => {
 }`
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const body = wat.split('(func ').find(c => /^\$kernel\b/.test(c)) || ''
-  ok(/call \$__ptr_offset\b|__inl\d|__poff\d/.test(body), 'forwarding-aware base resolution kept')
+  ok(/call \$__(?:ptr_offset|arr_typed_(?:obj_)?set_idx)\b|__inl\d|__poff\d/.test(body), 'forwarding-aware base resolution kept')
   is(run(src, { optimize: 'speed' }).main(), jsEval(src).main(), 'value exact')
 })
 

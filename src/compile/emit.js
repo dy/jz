@@ -4255,6 +4255,50 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   }
 }
 
+function bigintMethodTargets(obj, method) {
+  const out = new Set()
+  const scan = expr => {
+    if (typeof expr === 'string') {
+      for (const name of [`${expr}$${method}`, `${expr}${T}${method}`])
+        if (ctx.funcs.map.get(name)?.valResult === VAL.BIGINT) out.add(name)
+      return
+    }
+    if (!Array.isArray(expr)) return
+    for (let i = 1; i < expr.length; i++) scan(expr[i])
+  }
+  scan(obj)
+  return out
+}
+
+function tagDynamicMethodResult(propLocal, result, targets) {
+  if (!targets.size) return result
+  const indices = []
+  for (const name of targets) {
+    // Mint the ordinary function-value trampoline now if the property-init
+    // path has not reached it yet; the ignored IR has no runtime effect.
+    const errorNode = ctx.error.node, errorLoc = ctx.error.loc
+    emit(name)
+    ctx.error.node = errorNode; ctx.error.loc = errorLoc
+    const idx = ctx.closure.table.indexOf(`${T}tramp_${name}`)
+    if (idx >= 0) indices.push(idx)
+  }
+  if (!indices.length) return result
+  const r = temp('mresult')
+  const aux = () => ['i32.wrap_i64', ['i64.and',
+    ['i64.shr_u', ['i64.reinterpret_f64', ['local.get', `$${propLocal}`]], ['i64.const', LAYOUT.AUX_SHIFT]],
+    ['i64.const', LAYOUT.AUX_MASK]]]
+  let isBig = null
+  for (const idx of indices) {
+    const eq = ['i32.eq', aux(), ['i32.const', idx]]
+    isBig = isBig ? ['i32.or', isBig, eq] : eq
+  }
+  return typed(['block', ['result', 'f64'],
+    ['local.set', `$${r}`, asF64(result)],
+    ['if', ['result', 'f64'], isBig,
+      ['then', boxBigInt(['i64.reinterpret_f64', ['local.get', `$${r}`]])],
+      ['else', ['local.get', `$${r}`]]]], 'f64')
+}
+
 // 11. Dynamic property function call on non-external values. Two emission shapes:
 // (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
 //     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
@@ -4288,12 +4332,14 @@ function tryDynamicPropCall({ obj, method, parsed, vt }) {
             ['i64.reinterpret_f64', asF64(emit(['str', method]))],
             ['i64.reinterpret_f64', arrayIR]]]],
           ['else', undefExpr()]]
+    const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)
+    const taggedCall = tagDynamicMethodResult(propTmp, nativeCall, bigintMethodTargets(obj, method))
     return block64(
       ['local.set', `$${objTmp}`, asF64(emit(obj))],
       ['local.set', `$${propTmp}`, propRead],
       ['if', ['result', 'f64'],
         ptrTypeEq(['local.get', `$${propTmp}`], PTR.CLOSURE),
-        ['then', ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), [arrayIR], true)],
+        ['then', taggedCall],
         ['else', extFallback]])
   }
 }
