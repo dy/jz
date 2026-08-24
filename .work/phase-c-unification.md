@@ -432,3 +432,32 @@ codegen), kernel-oracle 14/14 (619), FULL SUITE 3610 total / 3608 pass /
 byte-for-byte behavior-identical to native for the flipped pin and its
 companion shapes — no divergence (the specific risk flow-types.js's own
 closureBodyReturnKind doc flags for a similar-looking prior attempt).
+
+## Shape #6 (2026-08-24, from CI memory64 red — fix/bigint-boundary-ci recon)
+
+Storage-read → reassigned-param → cross-function consumption uses BOX
+POINTER BITS as the value (LEB-encodes 0x7ffa800000000430 = the PTR.BIGINT
+box pointer itself, heap offset 1072 — watr encode.js i64() shape; minimal
+jz-only repro confirmed corrupt INSIDE wasm, no interop involved). Five
+layers, 1–4 fixed-and-probe-verified then REVERTED (no partial commits into
+this fixpoint), exact seams (representation-plan.js @ 899d6783):
+1. currentOf (~:974) + plannedOf (~:1041): recognize the full
+   STORAGE_READ_METHODS {get,pop,shift,at} (exprRep :398 already does),
+   not just 'get'.
+2. edgeMaterializable sourceReady (~:1156): a BOXED→BOXED storage-read
+   edge is ready by construction (write side always boxes via
+   taggedStoredValue) — say so.
+3. Same recognition for plain []/.member reads (memberReceiver shape).
+4. Materializable-def gate (~:1158): admit compound assignments
+   (NUMERIC_VALUE_OPS already imported :703 and resolves >>= correctly).
+5. OPEN ROOT: representationCallArgAction cross-function readiness
+   (~:1648) still rejects — callee's materializedNames never contains the
+   reassigned param; plan-minting/visibility ordering between caller
+   call-site check and callee body materialization
+   (mintRepresentationPlan/buildBodyData order). This is the layer that
+   keeps the encode wrong; find it before applying 1–4.
+Probe evidence trail: each of 1–4 moved edgeAction KEEP→REJECT→KEEP as
+gaps closed. CI signature: /test/official/memory64.wast data-segment
+offset 9221823924767627208. Sibling note: watr polyfill reject (CI
+failure 1) is a dy/watr runner gap (raw BigInt AST leaves → generic
+marshaler; box via memory().BigInt before exports.compile) — no jz change.
