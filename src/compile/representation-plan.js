@@ -583,7 +583,12 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     let mixedSet = paramMixed.get(calleeName)
     if (!mixedSet) { mixedSet = new Set(); paramMixed.set(calleeName, mixedSet) }
     if (mixedSet.has(k)) return // already proven mixed elsewhere; sticky
-    if (!pure) { mixedSet.add(k); paramBigintOnly.get(calleeName)?.delete(k); return }
+    if (!pure) {
+      mixedSet.add(k)
+      const priorPure = paramBigintOnly.get(calleeName)
+      if (priorPure) priorPure.delete(k)
+      return
+    }
     let pureSet = paramBigintOnly.get(calleeName)
     if (!pureSet) { pureSet = new Set(); paramBigintOnly.set(calleeName, pureSet) }
     pureSet.add(k)
@@ -595,7 +600,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (op === '=>') return // closures scan under their own frame elsewhere; mirrors scan()'s own boundary
     if (op === '()' && typeof node[1] === 'string') {
       const callee = ctx.funcs.map.get(node[1])
-      if (callee?.sig?.params) {
+      if (callee && callee.sig && callee.sig.params) {
         const args = commaList(node[2])
         for (let k = 0; k < callee.sig.params.length; k++) {
           const rep = k < args.length ? exprRep(args[k], func, localNames) : NO_BIGINT
@@ -659,8 +664,9 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // strictly more precise than `rep` for this one purpose (the BOOL-veto
     // in buildBodyData's materializedNames fixpoint) since it is derived
     // from literally every real caller, not a per-function kind census.
-    const provenBigintOnly = !generic && !uncovered &&
-      options.provenance?.paramBigintOnly?.get(func.name)?.has(k) === true
+    const bigintOnlyRow = options.provenance && options.provenance.paramBigintOnly
+      ? options.provenance.paramBigintOnly.get(func.name) : null
+    const provenBigintOnly = !generic && !uncovered && bigintOnlyRow != null && bigintOnlyRow.has(k)
     // `current` deliberately keeps deriving from the LEGACY (rep-based)
     // semantic even when provenBigintOnly overrides `semantic` itself —
     // regression found live (test/watr.js's uleb-loop pin): currentParamRep's
