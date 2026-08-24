@@ -31,13 +31,13 @@ native/optimization/WASI/wasm-hosted matrix. The agent never pushes.
    - no emitter fallback silently re-derives a missing frozen plan.
 6. **Public API / ABI**
    - root and subpath declarations match runtime carriers;
-   - only intentionally stable raw ABI is frozen and versioned;
+   - no raw ABI is accidentally frozen; any future stable raw ABI is explicitly versioned;
    - README links the contract and a clean pack/publish rehearsal passes.
 7. **Native target**
    - target capabilities are explicit and generic programs can use the native
      lane without the watr-only hard-coded build assumptions.
 
-## Slice 1 — typed value/storage provenance (in validation)
+## Slice 1 — typed value/storage provenance (closed)
 
 General class closed: a value whose concrete TypedArray ctor is erased by a
 host boundary, local assignment, method result, conditional, or indirect call.
@@ -89,10 +89,36 @@ closure planning carries its own storage-read provenance through
 `HANDLER[key](...)`. Their former KNOWN-WRONG assertions now require 901n/899n
 and 7n at O0/O2/O3.
 
+## Slice 3 — public contract and declarations
+
+The v1 language statement is now one finite rule: JZ preserves JavaScript
+answers, exceptions, order, and effects except for the machine semantics
+explicitly enumerated in README; everything else is exact or rejects. Invalid
+programs accidentally accepted through missing early-error checks receive no
+compatibility promise and remain a v1 gate. README and CONTRIBUTING point to
+that same contract rather than granting an open-ended “native could do it”
+escape hatch.
+
+Every package export now has a declaration selected by its `exports.types`
+condition. Public memory allocators return the real opaque `bigint` carrier,
+not `number`; root declarations cover inspection, transform, pool, warnings,
+and import-meta options; interop, WASI, and transform subpaths are type-checked
+in CI and prepublish. The stable embedder surface is the wrapper API. Raw
+NaN-box helpers, allocator exports, and custom sections remain explicitly
+experimental until they gain an independent ABI version marker, avoiding an
+accidental wasm32 layout freeze.
+
+Slice validation: TypeScript 5.8 strict/NodeNext passes; matrix default/O0/O3
+3653/3652/0/1 and WASI 3652/3651/0/1; wasm-hosted 2906/2905/0/1;
+functional self-compile 21/21; parity 3/3; oracle 14/14; ratchet and fixpoint
+10/10. The built npm rehearsal contains 123 files including all four
+declaration files (2,430,009 bytes packed, 8,269,220 unpacked). Full publish
+remains correctly blocked by stale claims evidence; this slice does not pretend
+to close that later gate.
+
 ## Remaining order
 
-After the soundness slices merge: public types/contract (small, release-facing),
-indexed ProgramIndex/result provenance consolidation, test262 early-error contract,
+Next: indexed ProgramIndex/result provenance consolidation, test262 early-error contract,
 4 GiB attribution/closure, fresh performance evidence + general loss fixes,
 then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
