@@ -592,8 +592,13 @@ export function cloneNode(node) {
 export function stableNodeKey(v) {
   if (Array.isArray(v)) { let s = '['; for (let i = 0; i < v.length; i++) s += (i ? ',' : '') + stableNodeKey(v[i]); return s + ']' }
   if (typeof v === 'bigint') return `${v}n`
-  if (typeof v === 'number' && (v !== v || v === Infinity || v === -Infinity || Object.is(v, -0)))
-    return v !== v ? '#NaN' : v === Infinity ? '#Inf' : v === -Infinity ? '#-Inf' : '#-0'
+  // Number.isNaN, not `v !== v`: `v` is a generic AST-leaf value here (the whole
+  // point of this function), so in-kernel its kind is ambiguous and `!==` takes
+  // jz's own bit-equality dispatch — a sign-set qNaN (x86 wasm arithmetic's
+  // uncanonicalized 0/0 etc.) then reads bit-equal to itself and this guard misses
+  // it (same root cause/fix as emitNum in ir.js — see that comment). Native no-op.
+  if (typeof v === 'number' && (Number.isNaN(v) || v === Infinity || v === -Infinity || Object.is(v, -0)))
+    return Number.isNaN(v) ? '#NaN' : v === Infinity ? '#Inf' : v === -Infinity ? '#-Inf' : '#-0'
   if (typeof v === 'string') return JSON.stringify(v)
   return String(v)  // numbers, booleans, null, undefined — all distinct spellings
 }
