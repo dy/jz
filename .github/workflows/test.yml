@@ -49,6 +49,9 @@ jobs:
       # pages.yml (not committed), so there's no drift gate — just confirm they build.
       - run: npm run build:examples
         if: matrix.variant == 'default'
+      # Public declarations are release code: type-check every exported subpath.
+      - run: npm run test:types
+        if: matrix.variant == 'default'
 
   # Extended differential fuzz: `npm test`'s in-suite `fuzz` test gates only seeds
   # 1..200; this runs the full 5000-seed pass (jz-wasm vs JS at opt {0,1,2,3},

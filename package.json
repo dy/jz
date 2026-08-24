@@ -10,13 +10,25 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
-    "./wasi": "./wasi.js",
-    "./interop": "./interop.js",
-    "./transform": "./transform.js"
+    "./wasi": {
+      "types": "./wasi.d.ts",
+      "default": "./wasi.js"
+    },
+    "./interop": {
+      "types": "./interop.d.ts",
+      "default": "./interop.js"
+    },
+    "./transform": {
+      "types": "./transform.d.ts",
+      "default": "./transform.js"
+    }
   },
   "files": [
     "index.js",
     "index.d.ts",
+    "interop.d.ts",
+    "wasi.d.ts",
+    "transform.d.ts",
     "cli.js",
     "wasi.js",
     "interop.js",
@@ -42,6 +54,7 @@
     "test:opt3": "JZ_TEST_OPTIMIZE=3 node test/index.js",
     "test:wasi": "JZ_TEST_HOST=wasi node test/index.js",
     "test:wasm": "JZ_TEST_TARGET=jz.wasm node test/index.js",
+    "test:types": "tsc test/public-types.ts --noEmit --strict --module NodeNext --moduleResolution NodeNext --target ES2022 --lib ES2022,DOM --skipLibCheck false",
     "test:matrix": "npm test && npm run test:opt0 && npm run test:opt3 && npm run test:wasi",
     "test:bench": "node test/bench.js",
     "test:claims": "node test/bench-claims.js",
@@ -61,7 +74,7 @@
     "audit:as": "node scripts/audit-assemblyscript.mjs",
     "build": "node scripts/build-dist.mjs",
     "build:examples": "node examples/build.mjs all",
-    "prepublishOnly": "npm test && npm run test:self && npm run test:claims",
+    "prepublishOnly": "npm test && npm run test:types && npm run test:self && npm run test:claims",
     "prepare": "npm run build",
     "audit:fixpoint": "node scripts/audit-fixpoint.mjs"
   },
@@ -105,6 +118,7 @@
   "devDependencies": {
     "esbuild": "^0.28.0",
     "sprae": "^13.3.8",
-    "tst": "^9.4.0"
+    "tst": "^9.4.0",
+    "typescript": "^5.8.2"
   }
 }

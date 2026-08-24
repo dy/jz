@@ -17,7 +17,7 @@ import { onWasi, onKernel } from './_matrix.js'
 // ── subpath surface ─────────────────────────────────────────────────────────
 
 test('interop: subpath surface matches expected exports', () => {
-  for (const name of ['instantiate', 'memory', 'wrap', 'ptr', 'offset', 'type', 'aux',
+  for (const name of ['instantiate', 'toModule', 'memory', 'wrap', 'ptr', 'offset', 'type', 'aux',
                       'i64ToF64', 'f64ToI64', 'coerce', 'NULL_NAN', 'UNDEF_NAN']) {
     ok(name in interop, `jz/interop missing export: ${name}`)
   }
@@ -27,6 +27,23 @@ test('interop: instantiate works on baseline wasm', () => {
   const wasm = compile(`export let f = (x) => x + 1`)
   const { exports } = interop.instantiate(wasm)
   is(exports.f(41), 42)
+})
+
+test('package: root and every public subpath ship declarations; pointer carriers are bigint', async () => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const root = new URL('../', import.meta.url)
+  const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
+  for (const subpath of ['.', './interop', './wasi', './transform']) {
+    const entry = pkg.exports[subpath]
+    ok(entry && typeof entry === 'object' && entry.types, `${subpath} has a types export`)
+    ok(existsSync(new URL(entry.types.replace(/^\.\//, ''), root)), `${entry.types} exists`)
+    ok(pkg.files.includes(entry.types.replace(/^\.\//, '')), `${entry.types} ships in npm files`)
+  }
+  const rootTypes = readFileSync(new URL('index.d.ts', root), 'utf8')
+  ok(rootTypes.includes('export type JzPointer = bigint'), 'public pointer carrier is bigint')
+  ok(!/String\(str: string\): number/.test(rootTypes), 'string allocator is not mistyped as number')
+  for (const name of ['interop.d.ts', 'wasi.d.ts', 'transform.d.ts'])
+    ok(readFileSync(new URL(name, root), 'utf8').length > 0, `${name} is non-empty`)
 })
 
 test('interop: subpath stays compiler-free — only wasi.js and layout.js outside its file', async () => {

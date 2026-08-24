@@ -14,7 +14,7 @@
 | Hashing, checksums, RNG | Tiny calls where the JS/WASM boundary dominates |
 
 
-**[site](https://dy.github.io/jz/)**  /  **[try it](https://dy.github.io/jz/repl/)**  /  **[examples](https://dy.github.io/jz/examples/)**  /  **[benchmarks](https://dy.github.io/jz/bench/)**
+**[site](https://dy.github.io/jz/)**  /  **[try it](https://dy.github.io/jz/repl/)**  /  **[examples](https://dy.github.io/jz/examples/)**  /  **[benchmarks](https://dy.github.io/jz/bench/)**  /  **[stability contract](STABILITY.md)**
 
 <sup>Used by: [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/audiojs/)</sup>
 
@@ -227,7 +227,7 @@ not supported
 </details>
 
 <details>
-<summary><strong>Why no types?</strong></summary>
+<summary><strong>Why no source type annotations?</strong></summary>
 
 Ordinary code already carries useful type evidence: `let x = 0.5`,
 `Float32Array`, an array index, a loop counter. JZ infers it instead of
@@ -316,10 +316,12 @@ Interpolated functions become host calls. Non-serializable values such as host o
 Numbers cross as `f64` or `i32`. Heap values use tagged pointers; `null`,
 `undefined`, and booleans use atom tags. Both use the same i64 NaN-box carrier,
 represented as `BigInt` in JavaScript; i64 preserves the NaN payload in JSC and
-Safari, which canonicalize f64 NaNs at the boundary. The carrier and the
-`_alloc`/`_clear` exports form the ABI, documented in [`layout.js`](layout.js)
-and [`test/abi.js`](test/abi.js); the [`jz:i64exp`](interop.js) custom section
-marks i64 parameters and results.
+Safari, which canonicalize f64 NaNs at the boundary. The carrier,
+`_alloc`/`_clear`, and the [`jz:i64exp`](interop.js) custom section form the
+current raw ABI; they are regression-tested in [`test/abi.js`](test/abi.js)
+but are not cross-release-stable yet. Pin the exact JZ version when persisting
+prebuilt binaries or writing a raw host; use the wrapper API for values and
+live compile/instantiate flows. See the [stability contract](STABILITY.md).
 
 The wrapped `exports` returned by `jz()` or `jz/interop`'s `instantiate()`
 marshal arguments, decode results, and convert WASM throws to `Error` objects:
@@ -521,8 +523,10 @@ a one-command JZ target. See the [native pipeline](scripts/native/README.md).
 <summary><strong>Is JZ production-ready?</strong></summary>
 
 JZ is experimental and pre-1.0. The supported language and WASM ABI may change;
-pin a version and re-test upgrades. CI runs the core suite, selected test262
-language and built-in tests, benchmark checks, and a self-host build.
+pin a version and re-test upgrades. The exact v1 commitments and deliberately
+non-JavaScript machine semantics are listed in the [stability contract](STABILITY.md).
+CI runs the core suite, selected test262 language and built-in tests, benchmark
+checks, and a self-host build.
 
 Adoption is ejectable: remove the JZ build step and the source remains JavaScript.
 

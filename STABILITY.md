@@ -1,37 +1,48 @@
 # Stability — the v1 public surface
 
-What v1 commits to, verified against this tree. Anything not listed here is
-internal and may change without notice. Within a major version: stable items
-change only additively; removals or meaning-changes require a major bump.
+What the first stable major will commit to. Anything not listed here is
+internal or experimental and may change without notice before v1. Within a
+stable major, listed items change only additively; removals or meaning changes
+require a major bump.
 
 ## The semantics contract
 
-**Correct or reject.** Valid jz is valid JavaScript: an accepted program
-computes the same answers JavaScript computes — including operand evaluation
-order and effects — at every optimization level. Where the compiler cannot
-guarantee that, it rejects loudly (compile-time error, or a typed runtime
-`TypeError` naming the construct, the reason, and a remedy) rather than
-returning a wrong value. Silent wrong values are release-blocking defects,
-never accepted behavior. `JZ_BIGINT_STRICT=1` (reject-unprovable BigInt
-flows) is an opt-in lint/deploy mode, never the default semantics.
+**Correct within the documented dialect, or reject.** JZ accepts ordinary
+JavaScript source but deliberately gives a finite set of constructs native,
+machine-level semantics: wrapping i32 and i64 arithmetic, UTF-8 string
+positions, fixed object shapes, byte-oriented dynamic keys and indices, manual
+memory lifetime, host-boundary job scheduling, and the other cases enumerated
+under [“What differs from JS?”](README.md#what-differs-from-js). Those listed
+differences are part of the language contract; they are not claims of exact
+ECMAScript behavior.
+
+Outside that explicit list, an accepted program must preserve JavaScript's
+answers, exceptions, operand order, and effects at every optimization level.
+Where the compiler cannot do so, it must reject rather than silently choose a
+representation or value. Any unlisted silent wrong value is release-blocking.
+
+The parser may currently accept programs that ECMAScript early-error rules
+would reject. Invalid source has no compatibility guarantee and may begin
+rejecting in any release; closing those parser holes is a v1 release gate, not
+a supported extension.
 
 ## Package surface (`jz` on npm)
 
 Entry points (package.json `exports`):
 
 - `jz` — `jz(code, opts?)` default export → `{ exports, memory, instance,
-  module }`; tagged-template form supported. Named: `compile(code, opts?)`
-  → `Uint8Array` (or WAT `string` with `{wat: true}`; `{inspect: true}`
-  wraps either as `{wasm|wat, inspect}` — the `inspect` payload shape is
-  NOT stable), `compileModule`, `instantiate`, `transform`,
-  `resolveWatrOpts`.
-- `jz/interop` — the host bridge: `wrap`, `instantiate`, `memory` (its
-  object exposes `String`, `Array`, `Object`, `Hash`, `Buffer`, `BigInt`,
-  `External`, `read`, `wrapVal`, `write`, `alloc`, `allocTyped`), `coerce`,
-  the NaN-box constants (`TRUE_NAN`, `FALSE_NAN`, `NULL_NAN`, `UNDEF_NAN`)
-  and the `ptr`/`aux`/`type`/`offset` bit helpers.
+  module }`; tagged-template form supported. `jz.pool` is the shared-memory
+  worker pool. Named: `compile(code, opts?)` → `Uint8Array` (or WAT `string`
+  with `{wat: true}`; `{inspect: true}` wraps either as `{wasm|wat, inspect}`),
+  `compileModule`, `instantiate`, `transform`, `resolveWatrOpts`. The inspect
+  payload and the object returned by `resolveWatrOpts` are not stable.
+- `jz/interop` — the supported host bridge: `instantiate`, `toModule`, and
+  `memory`. Enhanced memory exposes `String`, `Array`, `Object`, `Hash`,
+  `Buffer`, `BigInt`, `External`, typed-array allocators, `read`, `wrapVal`,
+  `write`, `alloc`, `allocTyped`, and `reset`. Lower-level exports remain
+  available for expert use but are experimental as described below.
 - `jz/wasi`, `jz/transform` — as documented in README.
-- TypeScript types via `index.d.ts`.
+- TypeScript declarations for the root and every exported subpath.
 
 Marshalling policy at the host boundary: plain BigInt values cross only at
 slots with compiler-emitted evidence (see ABI below); everywhere else they
@@ -48,24 +59,21 @@ Stable commands and flags: `jz <file.js>`, `--strict`, `--jzify`, `-e`,
 `--no-eh-abort`, `--names`, `--stats`, `--help/-h`. New flags may be added;
 listed flags keep their meaning.
 
-## Custom-section ABI (embedder contract)
+## Experimental raw Wasm ABI
 
-Emitted wasm modules carry two jz custom sections. Both are versioned ABI:
-additive evolution only within a major version.
+The high-level wrapper API is the v1 embedder contract, but prebuilt binaries
+must currently be consumed by the same JZ version that produced them. Direct
+consumption of raw Wasm is intentionally not frozen yet: emitted binaries carry
+no independent ABI version marker, and a future carrier/layout redesign
+(including wasm64) must not be trapped by an accidental pre-v1 promise.
 
-- **`jz:hostabi`** — JSON array, one entry per export needing host-BigInt
-  policy: `{ name, tag: [paramIdx...], raw: [paramIdx...], rest?: 1 }`.
-  `tag` = slots with proven may-BigInt evidence (host boxes a plain BigInt
-  via `memory.BigInt`; wasm dispatches by tag). `raw` = slots proven
-  always-BigInt crossing as bare i64 — real and dispatched but **always
-  empty today** (reserved: exported params are host-callable with any
-  value, so the plan can never close them; a future closed-world analysis
-  fills it without an interop redesign). `rest` = tagged rest-element
-  policy — omitted today (reserved). Absence from both lists means
-  no evidence: a plain BigInt at that slot rejects.
-- **`jz:i64exp`** — the i64 carrier map for the host wrapper: `p` = param
-  indices carried as i64, `r` = results the host must reinterpret and
-  `memory.read`.
+For current-toolchain integrations, `jz:hostabi` records per-export BigInt
+argument policy and `jz:i64exp` records i64-carried parameters/results. The
+NaN-box helpers in `jz/interop`, `_alloc`/`_clear`, schema ids, custom-section
+payloads, and carrier bit layout are internally consistent and regression-tested
+for each build, but are not cross-release compatibility interfaces. Use
+`jz/interop.instantiate()` unless the consumer pins the exact JZ version. A
+future stable raw ABI requires an explicit version marker and decoder contract.
 
 ## Error contract
 
@@ -77,7 +85,10 @@ miscompile.
 
 ## Explicitly not stable
 
-`_setCompileTarget` and any `_`-prefixed export; the `inspect` payload;
+`_setCompileTarget` and any `_`-prefixed export; the `inspect` payload and
+`resolveWatrOpts` result shape; the low-level `jz/interop` exports `wrap`,
+`coerce`, `f64ToI64`, `i64ToF64`, `ptr`, `offset`, `type`, `aux`, and the four
+`*_NAN` constants; raw Wasm custom sections and allocator exports;
 compiled-module internal layout (NaN-box bit patterns, schema ids, function
 names beyond exported ones — the name section is opt-in via `--names`);
 `.work/` documents; kernel (`dist/jz.wasm`) byte identity between releases.

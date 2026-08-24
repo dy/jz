@@ -96,9 +96,9 @@ gather/scatter loops (dla/sand/voronoi) are not — WASM-SIMD has no gather/scat
 
 ## Principles
 
-- **Don't optimize the compiler source itself.** Readability > cleverness in `src/`. The compiler doesn't need to be fast — the output does.
-- **Valid JZ = valid JS.** Any JZ program must parse and run as standard JavaScript.
-- **WASM conventions, not JS edge-cases (the speed dialect).** The *source* is valid JS, but the *compiled output* targets WASM/native semantics. Where a native language (C, Rust, Zig) may assume something JS can't, JZ's output may take that convention too — **provided the f64 value-precision of real computation is preserved.** Integer wrap at ±2³¹, unchecked typed-array reads, raw UTF-8, NaN bit-patterns and signed-zero follow the machine, not the spec. What JZ will **not** do is trade away a meaningful result's accuracy (no mantissa-trimming, no brutal precision loss). Litmus: *if another native language can presume it here, JZ may too.* Any new speed-mode lowering must stay inside this contract and be added to the [FAQ divergence list](README.md#faq).
+- **Don't contort compiler source for microbenchmarks.** Readability wins in `src/`; optimize compiler time and retained memory only from measured, general evidence. Output speed and size remain the primary product budgets.
+- **JZ source is JavaScript source.** Supported programs must parse and run as standard JavaScript. Parser acceptance of an ECMAScript early-error-invalid program is a bug/temporary hole, never a language extension or compatibility promise.
+- **A finite speed dialect, not an open-ended escape hatch.** Compiled output follows the machine semantics explicitly listed under [“What differs from JS?”](README.md#what-differs-from-js): i32/i64 wrapping, unchecked typed-array access, UTF-8 positions, and the other enumerated cases. Outside that list, preserve JavaScript answers, exceptions, evaluation order, and effects or reject. “A native compiler could do it” is not sufficient authority for a new divergence: update the public contract and add cross-tier exact tests before landing one. Never trade away a meaningful result's f64 accuracy (no mantissa trimming or arbitrary precision loss).
 - **Minimal surface.** Every feature must justify its weight. If it can be a library, it should be.
 - **No runtime.** Compiled WASM has no jz-specific runtime — just WASM + WASI.
 

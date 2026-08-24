@@ -1,4 +1,7 @@
-// Non-JS consumer ABI — the "consumable by anything" contract, locked.
+// Raw non-JS consumer ABI — internally locked for each emitted binary.
+// This guards compiler/host agreement, not cross-release stability: until a raw
+// ABI version marker exists, STABILITY.md requires exact-version pinning and keeps
+// the high-level wrapper as the public embedder contract.
 //
 // A wasmtime/Rust/Go/Zig host runs prebuilt jz wasm with (a) the exported allocator,
 // (b) the documented NaN-box layout (layout.js), and (c) the wasm function SIGNATURE,
@@ -8,7 +11,7 @@
 // engine preserving f64 NaN payloads across the boundary (JSC/Safari does NOT). A JS
 // host reads the carrier map from the `jz:i64exp` custom section; a typed host (Rust/Go)
 // reads it straight off the function type. Same binary, same contract, every host.
-// These tests reconstruct a raw host by hand. If they break, the cross-language promise broke.
+// These tests reconstruct a raw host by hand. If they break, that binary is internally inconsistent.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
