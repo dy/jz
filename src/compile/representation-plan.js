@@ -449,6 +449,25 @@ function solveBigintProvenance(ctx, programFacts, ast) {
         // storage provenance back to the caller's bare receiver argument.
         for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
           if (storage.has(callee.sig.params[k].name) && typeof args[k] === 'string' && mark(storage, args[k])) changed = true
+        // Shape #6 (.work/phase-c-unification.md, watr's actual manifestation
+        // — compile.js's `i64: (n,…) => encode.i64(n.shift(), out)` handler
+        // passing its OWN array param one level further before any read):
+        // the MIRROR of the backward rule just above. A caller passing its
+        // OWN storage-tainted bare-name receiver AS AN ARGUMENT hands the
+        // callee the identical object (Array/Map/etc. are reference types —
+        // no copy crosses the call), so the callee's corresponding param
+        // holds that SAME storage-tainted receiver too. Without this, a
+        // storage-read INSIDE the callee (`arr.shift()` where `arr` is the
+        // callee's OWN param, never itself directly pushed/set) is invisible
+        // to exprMay's STORAGE_READ_METHODS branch (which only consults
+        // `storage.has(name)` for the read's OWN receiver name) — the callee
+        // param's storage status was NEVER seeded, only ever inherited
+        // backward from ITS OWN callees' mutations, never forward from ITS
+        // OWN callers' arguments. Same soundness argument as the backward
+        // rule: a receiver name (not a value) crossing a call boundary by
+        // reference, not by copy.
+        for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
+          if (typeof args[k] === 'string' && storage.has(args[k]) && mark(storage, callee.sig.params[k].name)) changed = true
       }
     }
     if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
@@ -522,7 +541,77 @@ function solveBigintProvenance(ctx, programFacts, ast) {
       if (scan(init, null, globals)) graphChanged = true
   }
 
-  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay }
+  // Shape #6 layer 5 (.work/phase-c-unification.md): a COVERED function's
+  // param semantic (makeBoundaryData's boundaryParamSemantic) trusts the
+  // legacy whole-program paramReps census's `possibleKinds` as-is whenever
+  // it's closed — but that census has no notion of a storage-read call
+  // argument (`g(arr.at(i))`): unable to narrow, it reports the maximal
+  // "could be any of the 14 kinds" set, itself marked closed (a confident-
+  // looking but uninformative answer). buildBodyData's materializedNames
+  // fixpoint reads that closed-ALL semantic, sees the BOOL member it
+  // necessarily carries, and vetoes materialization outright — permanently,
+  // since a param's semantic only WIDENS from its boundary seed (joinSem
+  // is a union, never a narrowing). The reassigned param then never enters
+  // its OWN callee body's materializedNames, so every caller's
+  // representationCallArgAction sees an empty set — not an ordering race
+  // (mintRepresentationPlan/buildBodyData already run callee-before-caller,
+  // verified live), a deterministic precision gap.
+  //
+  // A COVERED boundary enumerates every possible caller by construction —
+  // uncovered is exactly generic/exported/value-used (makeBoundaryData), so
+  // anything else is unreachable except through its literal, enumerable
+  // call sites. This final pass (after the fixpoint above has fully
+  // settled — storage/bigintTyped/namesByFunc must already be at their
+  // final widened sets, or an early round's exprMay/exprRep verdict would
+  // stamp a stale false negative) re-visits every direct call site in the
+  // program and asks exprRep's own STORAGE_READ_METHODS-aware proof of each
+  // argument. A param earns paramBigintOnly when EVERY call site's argument
+  // at that index is a provably CLOSED bigint (RAW or BOXED — representation
+  // doesn't matter, only kind purity) — an arity gap (fewer args than the
+  // param needs, defaulting to `undefined`) or any non-closed-bigint
+  // argument marks it impure, permanently (a genuine union stays a union;
+  // this proof fires only when NOTHING else can ever reach the param).
+  // Mirrors resultReps' own exprRep-based precision for RESULTS, now giving
+  // PARAMS the equivalent it never had. A bare-name argument (`h(n)`, not a
+  // direct storage-read/literal/call expression) resolves through exprRep
+  // as ANY_BIGINT — open, not closed — so this proof conservatively misses
+  // (never wrongly admits) the chained-forwarding case; that is a missed
+  // opportunity, not a soundness gap, and stays out of this slice's scope.
+  const paramBigintOnly = new Map()
+  const paramMixed = new Map()
+  const markCallArg = (calleeName, k, pure) => {
+    let mixedSet = paramMixed.get(calleeName)
+    if (!mixedSet) { mixedSet = new Set(); paramMixed.set(calleeName, mixedSet) }
+    if (mixedSet.has(k)) return // already proven mixed elsewhere; sticky
+    if (!pure) { mixedSet.add(k); paramBigintOnly.get(calleeName)?.delete(k); return }
+    let pureSet = paramBigintOnly.get(calleeName)
+    if (!pureSet) { pureSet = new Set(); paramBigintOnly.set(calleeName, pureSet) }
+    pureSet.add(k)
+  }
+  const visitCallSites = (node, func, localNames) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) visitCallSites(node[i], func, localNames); return }
+    if (op === '=>') return // closures scan under their own frame elsewhere; mirrors scan()'s own boundary
+    if (op === '()' && typeof node[1] === 'string') {
+      const callee = ctx.funcs.map.get(node[1])
+      if (callee?.sig?.params) {
+        const args = commaList(node[2])
+        for (let k = 0; k < callee.sig.params.length; k++) {
+          const rep = k < args.length ? exprRep(args[k], func, localNames) : NO_BIGINT
+          const closedBigint = bigintRepIsClosed(rep) &&
+            bigintRepBits(rep) !== BIGINT_REP_NONE && bigintRepBits(rep) !== BIGINT_REP_TOP
+          markCallArg(callee.name, k, closedBigint)
+        }
+      }
+    }
+    for (let i = 1; i < node.length; i++) visitCallSites(node[i], func, localNames)
+  }
+  for (const func of ctx.funcs.list) if (!func.raw && func.body) visitCallSites(func.body, func, namesFor(func))
+  visitCallSites(ast, null, globals)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
+
+  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly }
 }
 
 function deriveLocalProvenance(sig, body, localReps, program) {
@@ -562,8 +651,18 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
       ? options.localProvenance?.params.has(k)
       : options.provenance?.paramsByFunc.get(func.name)?.has(k)
     const observed = rep ? semanticFromRep(rep) : semAll()
+    // Shape #6 layer 5: a COVERED boundary's complete call-site enumeration
+    // can PROVE a param's runtime domain is bigint-only even when the
+    // legacy paramReps census (feeding `rep` above) can't narrow past "any
+    // of the 14 kinds, closed" for a storage-read call argument — see
+    // solveBigintProvenance's paramBigintOnly (this file). That proof is
+    // strictly more precise than `rep` for this one purpose (the BOOL-veto
+    // in buildBodyData's materializedNames fixpoint) since it is derived
+    // from literally every real caller, not a per-function kind census.
+    const provenBigintOnly = !generic && !uncovered &&
+      options.provenance?.paramBigintOnly?.get(func.name)?.has(k) === true
     const semantic = mayBigint
-      ? (generic ? observed : boundaryParamSemantic(rep, uncovered))
+      ? (generic ? observed : provenBigintOnly ? semKind(VAL.BIGINT) : boundaryParamSemantic(rep, uncovered))
       : noBigintSemantic()
     const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, semantic, uncovered)) : NO_BIGINT
     return {
@@ -974,7 +1073,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         else if (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
                  ctx.schema.slotBigintProvenAt?.(recv, node[2])) out = RAW_BIGINT
         else out = BOXED_BIGINT
-      } else if (cm && cm[2] === 'get') out = BOXED_BIGINT
+      // Shape #6 layer 1: every STORAGE_READ_METHODS call (get/pop/shift/at),
+      // not just 'get' — exprRep (solveBigintProvenance, above) already
+      // recognizes the full set; this local carrier proof lagged behind it.
+      } else if (cm && STORAGE_READ_METHODS.has(cm[2])) out = BOXED_BIGINT
       else if (node[0] === '?:') {
         const a = node[2], b = node[3]
         if ((valTypeOf(a) === VAL.BIGINT && nullishArm(b)) || (valTypeOf(b) === VAL.BIGINT && nullishArm(a)))
@@ -1038,7 +1140,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
           (node[0] === '.' && typeof recv === 'string' && typeof node[2] === 'string' &&
            ctx.schema.slotBigintProvenAt?.(recv, node[2]) ? RAW_BIGINT : BOXED_BIGINT)
         normalizedElsewhere = true // storage's write edge owns the carrier
-      } else if (cm && cm[2] === 'get') {
+      // Shape #6 layer 1 (mirrors currentOf's identical fix above): the full
+      // STORAGE_READ_METHODS set, not just 'get'.
+      } else if (cm && STORAGE_READ_METHODS.has(cm[2])) {
         target = BOXED_BIGINT
         normalizedElsewhere = true
       } else target = targetRepFor(sem, currentOf(node))
@@ -1142,6 +1246,22 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       (source === BOXED_BIGINT && target === BOXED_BIGINT && sourceReady)
   }
 
+  // Shape #6 layers 2+3: a storage READ always crosses the storage boundary
+  // already boxed — the write side boxes unconditionally via
+  // taggedStoredValue, a physical fact of the wire format, not a plan
+  // decision — so a BOXED→BOXED edge sourced from one is ready BY
+  // CONSTRUCTION, independent of whether any OTHER producer for this name
+  // has materialized. Layer 2 is the STORAGE_READ_METHODS call shape
+  // (`.get/.pop/.shift/.at`, currentOf/plannedOf's `cm` branch above); layer
+  // 3 is the plain `[]`/`.member` read (currentOf/plannedOf's `recv` branch)
+  // — both producers, same physical guarantee, one predicate.
+  const isStorageReadProducer = node => {
+    if (!Array.isArray(node)) return false
+    if (memberReceiver(node) != null) return true
+    const cm = callMember(node)
+    return !!cm && STORAGE_READ_METHODS.has(cm[2])
+  }
+
   const materializedNames = new Set()
   const exportedIdentity = isExported(ctx, identity)
   for (const [name, list] of defs) {
@@ -1155,12 +1275,31 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def.rhs == null) return true
-      if (def.owner?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def.owner?.[0])) return false
+      // Shape #6 layer 4: a compound-assignment def (`n >>= 7n`) is a valid
+      // ready shape too, not just plain '=' and the conditional compounds —
+      // NUMERIC_VALUE_OPS already covers the full arithmetic/bitwise compound
+      // family (+=, -=, ..., >>=, ++, --) and currentOf already resolves
+      // their BigInt-ness correctly (the RAW-result NUMERIC_VALUE_OPS branch,
+      // above); only this readiness gate lagged behind. NOTE: this plan-side
+      // admission is necessary but not sufficient for '++'/'--' specifically
+      // — see the emission companion's own KNOWN-WRONG pin (test/data.js):
+      // valTypeOf(name)'s OWN resolution (kind.js, unrelated to this plan)
+      // has a separate, pre-existing gap for a covered-function param whose
+      // only bigint evidence is whole-program provenance, not a directly
+      // valTypeOf-provable local fact — '+='/'-='/etc. sidestep it via their
+      // own `valTypeOf(val)` OR-fallback (a literal/proven RHS operand),
+      // but '++'/'--' have no separate operand to fall back on.
+      const ownerOp = def.owner?.[0]
+      if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
       // Readiness is about the carrier the emitter produces before this
       // binding-write edge, not the expression's eventual planned target.
       // A fresh BigInt computation can target BOXED while still emitting raw
       // i64 bits; this edge is precisely where that RAW→BOX transition lives.
-      return edgeMaterializable(currentOf(def.rhs), target, def.rhs)
+      // Shape #6 layers 2+3: a storage-read producer boxes on the wire by
+      // physical construction (taggedStoredValue) — sourceReady lets a
+      // BOXED→BOXED KEEP through without waiting on some OTHER producer's
+      // own materialization to prove the same physical fact twice.
+      return edgeMaterializable(currentOf(def.rhs), target, def.rhs, isStorageReadProducer(def.rhs))
     })
     if (ready) materializedNames.add(name)
   }
@@ -1598,6 +1737,31 @@ export function representationBindingWriteAction(ctx, name, source) {
   const body = handle && ctx.plans.representationData.get(handle)?.body
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(activeEmittedRep(ctx, source), activeRep(ctx, name, true))
+}
+
+/** Frozen action for one materialized COMPOUND-ASSIGNMENT write (`n >>= v`,
+ *  `n += v`, `n++`, …) — shape #6's emission-side companion to layer 4's
+ *  plan-side readiness gate. Mirrors representationComputedExprAction's own
+ *  reasoning for JOIN_OPS/census-unary nodes, applied to a NAME: emit.js's
+ *  compound-assign families (compoundAssign's bigint arm, the bitwise
+ *  '&='/'|='/'^='/'<<='/'>>='/'>>>=' dispatch, '++'/'--') all unbox the
+ *  CURRENT value via readI64 (already plan-aware — isPlanTaggedBigint), run
+ *  ONE i64 op, and re-wrap with fromI64 — the result is RAW_BIGINT by
+ *  construction, never anything else, so (unlike representationBindingWriteAction,
+ *  whose source can be any expression shape) there is no per-node fact to
+ *  look up: no AST node to key nodeFacts by even exists inside these
+ *  handlers (they receive `name`/`val`, never the wrapping compound node
+ *  collectDefs recorded as `def.rhs`). Without this action, layer 4 letting
+ *  such a def into materializedNames just moves the corruption: the WRITE
+ *  back into a now-BOXED-target binding stored the raw i64 bits unboxed
+ *  (readVar's next isPlanTaggedBigint-gated read would then unbox THOSE
+ *  bits again, misreading a raw payload as a box pointer — the exact
+ *  box-pointer-bits-as-value disease this fixpoint exists to close). */
+export function representationCompoundAssignAction(ctx, name) {
+  const handle = ctx.plans.representations.get(ctx.func.current)
+  const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
+  return edgeAction(RAW_BIGINT, activeRep(ctx, name, true))
 }
 
 const activeEmittedRep = (ctx, node) => {
