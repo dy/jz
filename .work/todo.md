@@ -15,10 +15,11 @@ BigInt `.at()` conversion, and open Error-message object coercion. Unknown
 indexed stores are outlined; the Float64 unswitch consumes that canonical form,
 so ratchet/golden-size caps were not loosened. Concurrent Shape #6 merged into
 the validated product; its self-compiled optional-chain instability was replaced
-with explicit checks. Final slice gates are recorded in the campaign doc. The
-next soundness pair is Shape #6's provenance-only ++/-- and closure-dispatch
-residual. Then: public types/contract, indexed analysis and
-plan authority, test262 early errors, 4 GiB closure, fresh perf claims, generic
+with explicit checks. Slice 2 closes Shape #6's provenance-only ++/-- and
+closure-dispatch residuals; their KNOWN-WRONG pins now require exact values at
+all tiers. Final gates are recorded in the campaign doc. Next: public
+types/contract, indexed analysis and plan authority, test262 early errors,
+4 GiB closure, fresh perf claims, generic
 native target. No push by the agent.
 
 ## CLOSED (2026-08-22): opaque `.length` + `Array.from` property semantics

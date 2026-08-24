@@ -71,7 +71,7 @@ import { emitElementAssign, emitPropertyAssign, persistBindingPtr } from './emit
 import {
   JOIN_OPS, REP_EDGE_BOX, REP_EDGE_REJECT, REP_EDGE_UNBOX,
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
-  representationComputedExprAction, representationCompoundAssignAction, representationStorageWriteAction, representationProgramHasBigint,
+  representationComputedExprAction, representationCompoundAssignAction, representationUnaryUpdateAction, representationStorageWriteAction, representationProgramHasBigint,
 } from './representation-plan.js'
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
@@ -5895,17 +5895,16 @@ export const emitter = {
     // Same shape as the binary '+'/'-' BIGINT arm: asI64, i64.add/sub by the i64 constant
     // 1, fromI64. `name` is always a bare identifier here (prepare only routes '.'/'[]'
     // targets through '=' + '+'/'-', never through this table entry).
-    // KNOWN-WRONG (test/data.js, shape #6 sweep): this guard's valTypeOf(name)
-    // has a pre-existing gap, unrelated to shape #6's own layers, for a
-    // covered-function param whose only bigint evidence is whole-program
-    // provenance rather than a directly valTypeOf-provable local fact — see
-    // the plan-side readiness gate's own comment on this above (buildBodyData).
-    if (valTypeOf(name) === VAL.BIGINT) {
-      const rawBits = [`i64.${fn}`, readI64(name, v), ['i64.const', 1]]
-      // Shape #6 emission companion — see compoundAssign's identical comment.
-      return writeVar(name,
-        representationCompoundAssignAction(ctx, name) === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits),
-        void_)
+    // A covered reassigned param may have no local valType even though its
+    // frozen RepresentationPlan proved every incoming value BigInt and
+    // materialized the binding. The compound-action query is that proof; a
+    // non-REJECT action puts ++/-- on the same i64 path as +=/>>= instead of
+    // silently f64-adding the box pointer bits.
+    const repAction = representationUnaryUpdateAction(ctx, name)
+    if (valTypeOf(name) === VAL.BIGINT || repAction !== REP_EDGE_REJECT) {
+      const current = repAction !== REP_EDGE_REJECT ? maybeUnboxBigInt(asF64(v)) : readI64(name, v)
+      const rawBits = [`i64.${fn}`, current, ['i64.const', 1]]
+      return writeVar(name, repAction === REP_EDGE_BOX ? boxBigInt(rawBits) : fromI64(rawBits), void_)
     }
     const one = v.type === 'i32' ? ['i32.const', 1] : ['f64.const', 1]
     return writeVar(name, typed([`${v.type}.${fn}`, v, one], v.type), void_)

@@ -70,12 +70,12 @@ Number/BigInt conditional reads, matched and mismatched closure-table and
 computed-method stores, BigInt map/slice/filter assignment,
 `Number(BigInt64Array#at)`, and dynamic Error-message objects.
 
-Validation on the final merge product: native 3652/3651/0/1; matrix default/O0/O3
-3652/3651/0/1 and WASI 3651/3650/0/1; wasm-hosted 2905/2904/0/1;
+Validation after Slice 2: native 3652/3651/0/1 (21,349 assertions); matrix default/O0/O3
+3652/3651/0/1 and WASI 3651/3650/0/1; wasm-hosted 2905/2904/0/1 (13,990);
 functional self-compile 21/21; kernel parity 3/3 (33 byte-identical rows);
 kernel oracle 14/14 (605); ratchet 10/10; optimizer fixpoint 10/10; test262
 language 3003/0/54 xfail with the 2507/1538 negative split; builtins
-853/0/86 xfail. `dist/jz.wasm` is 16,993.8 kB versus 16,963.2 kB at campaign
+853/0/86 xfail. After Slice 2, `dist/jz.wasm` is 17,001.8 kB versus 16,963.2 kB at campaign
 start. The 159-module full jz×jz goal still reaches the exact 2^32 wall; Slice
 1 is a soundness/authority close, not a claim that the memory goal moved.
 
@@ -83,14 +83,16 @@ Concurrent main's Shape #6 named-function storage-read provenance was merged
 before landing. Its first wasm-hosted validation exposed three optional-chain
 expressions in `paramBigintOnly` that the self-compiled compiler did not execute
 stably; explicit Map/record checks restore the full shape #6 family under
-`test:wasm` without changing the native plan. Two Shape #6 residuals are now
-the immediate next soundness work: provenance-only `++/--`, and a storage read
-inside an object/dispatch-table closure (`HANDLER[key](...)`).
+`test:wasm` without changing the native plan. Slice 2 then closes both named
+residuals: ++/-- asks the active plan when local valType is absent, and generic
+closure planning carries its own storage-read provenance through
+`HANDLER[key](...)`. Their former KNOWN-WRONG assertions now require 901n/899n
+and 7n at O0/O2/O3.
 
 ## Remaining order
 
-After Slice 1 merges: public types/contract (small, release-facing), indexed
-ProgramIndex/result provenance consolidation, test262 early-error contract,
+After the soundness slices merge: public types/contract (small, release-facing),
+indexed ProgramIndex/result provenance consolidation, test262 early-error contract,
 4 GiB attribution/closure, fresh performance evidence + general loss fixes,
 then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
