@@ -17,7 +17,7 @@
  * out round-robin to a pool of worker_threads (each with its own jz instance).
  * Worker count: --jobs=N or JZ_TEST262_JOBS env, default availableParallelism().
  */
-import { readdirSync, statSync, readFileSync, existsSync } from 'fs'
+import { readdirSync, statSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { AUDITED_OUT } from './test262-out.js'
 import { join, relative } from 'path'
 import { execSync } from 'child_process'
@@ -36,7 +36,7 @@ const TEST262 = join(import.meta.dirname, 'test262')
 // npm run test:262:builtins`, and reconcile: prune any EXPECTED_FAIL_FILES/
 // LEGACY_LANG_LIMITATIONS entries reported as xpass, add any genuinely new
 // out-of-scope fails as xfail with a reason, and update test262-baseline.json
-// (corpus SHA + language/builtins floors + negAcceptCeiling, audit-#12 item 3
+// (corpus SHA + language/builtins floors + exact accepted-negative ledger, audit-#12 item 3
 // — the one committed lock both runners read) together with this commit.
 const PINNED_COMMIT = 'b363f29d3c43c626dc852744ad64a0b48a003693' // 2026-07-31, tc39/test262 main
 
@@ -165,7 +165,7 @@ let __sameValue = (a, b) => {
   if (a === b) return a !== 0 || 1 / a === 1 / b
   return a !== a && b !== b
 }
-let assert = (cond, msg) => { if (!cond) throw msg }
+var assert = (cond, msg) => { if (!cond) throw msg }
 assert.sameValue = (a, b, msg) => { if (!__sameValue(a, b)) throw msg }
 assert.notSameValue = (a, b, msg) => { if (__sameValue(a, b)) throw msg }
 assert.compareArray = (a, b, msg) => {
@@ -789,18 +789,10 @@ function shouldSkipBase(content, rel = '') {
   } else
   // Skip tests with unsupported features
   if (EXCLUDED_PATTERNS.some(p => p.test(codeContent))) return 'unsupported feature'
-  // Skip negative PARSE tests. Audited 2026-05-29 (after the PARSE-2 unary-base-of-`**`
-  // guard): jz REJECTS all 4389 of them — 0 silent-accepts, so this skip hides no
-  // accepts-invalid-JS miscompile (PARSE-2 was the last such class). They stay skipped
-  // only because jz rejects with its own err() (not a typed SyntaxError at the parse
-  // phase), so they can't satisfy test262's negative-parse criteria — jz is a subset
-  // compiler, not a JS syntax validator. Re-run scripts/neg-parse-audit if adding parse
-  // surface, to confirm the 0-accepts invariant holds.
-  // negative: phase: parse tests run in INVERTED mode (see runChunk) — jz must
-  // reject them; a clean compile is a silent-accept FAIL. (Audited 2026-05-29:
-  // jz rejects all 4389 — that correctness now COUNTS instead of hiding as
-  // skips. Runtime-phase negatives stay skipped: jz's permissive model doesn't
-  // synthesize most runtime TypeErrors — the documented divergence family.)
+  // negative: phase: parse tests run in INVERTED mode (see runChunk): any JZ
+  // rejection counts, while a clean compile enters the exact accepted-negative
+  // ledger. Runtime-phase negatives stay skipped because many exercise runtime
+  // TypeErrors outside JZ's documented machine dialect.
   if (/negative:\s*\n\s+phase:\s+runtime/.test(content)) return 'negative runtime test'
   // (Legacy Sputnik tests `throw new Test262Error(...)` directly — jz compiles
   // and runs that fine via ASSERT_HARNESS, so no skip is needed for them.)
@@ -851,12 +843,27 @@ function runTest(src, options = {}) {
   // Strip test262 harness directives and includes
   let code = src
     .replace(/\/\*---[\s\S]*?---\*\//, '') // strip YAML frontmatter
-    .replace(/^#![^\n]*(?:\n|$)/, '')
     .replace(/\.create\.js\b/g, '')  // non-existent files
     // Negative parse tests are compile-only: remove the execution sentinel but
     // do NOT turn it into `return`, because prepare's sound dead-tail DCE would
     // then hide the very invalid syntax this runner is asking jz to reject.
     .replace(/\$DONOTEVALUATE\(\)/g, options.compileOnly ? '0' : 'return')
+  let shebang = ''
+  if (code.startsWith('#!')) {
+    const end = code.indexOf('\n')
+    shebang = end < 0 ? code : code.slice(0, end + 1)
+    code = end < 0 ? '' : code.slice(end + 1)
+  }
+  if (options.strictMode) code = `'use strict';\n${code}`
+
+  // Negative parse tests must preserve the source's original syntactic
+  // context. Wrapping in `_run` turns an invalid top-level `return` into a
+  // valid function return and changes declaration/strict-directive scopes.
+  // Compile the stripped source directly; no execution export is needed.
+  if (options.compileOnly) {
+    try { compile(shebang + code, { jzify: true }); return { status: 'pass' } }
+    catch (e) { return { status: 'reject', error: (e.message || '').slice(0, 80) } }
+  }
 
   // Wrap bare statements into a module export for jz
   // test262 tests are typically bare scripts with assert() calls
@@ -876,13 +883,7 @@ function runTest(src, options = {}) {
   // doneprintHandle.js; the host polls __t262_check (each call drains the
   // module's microtask queue at the boundary; timers ride real setTimeout).
   if (options.asyncDone) code = `${ASYNC_DONE_SHIM}\n${options.assertHarness ? ASSERT_HARNESS : ''}\n${code}`
-
-  // Inverted mode for negative-parse tests: report whether jz REJECTS the
-  // source ('reject') or silently accepts it ('pass' — the caller fails it).
-  if (options.compileOnly) {
-    try { jz(code, { jzify: true }); return { status: 'pass' } }
-    catch (e) { return { status: 'reject', error: (e.message || '').slice(0, 80) } }
-  }
+  code = shebang + code
 
   try {
     const result = jz(code, { jzify: true })
@@ -1150,7 +1151,7 @@ function expectedFailReason(rel) {
 // are identical to running the same files sequentially.
 async function runChunk(items) {
   const perDir = Object.create(null)
-  const fails = [], xfails = [], xpasses = [], negaccepts = []
+  const fails = [], xfails = [], xpasses = [], negaccepts = [], skipruns = []
   const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 })
   for (const { file, rel, subdir } of items) {
     const d = dirOf(subdir)
@@ -1160,13 +1161,12 @@ async function runChunk(items) {
       // rejection counts (jz is a subset compiler, not a syntax validator —
       // its own curated error stands in for the spec's SyntaxError class).
       // A clean compile is a SILENT ACCEPT: invalid JS that jz runs anyway —
-      // a real (measured, tracked) dent in "valid jz is valid JS", but NOT a
-      // miscompile, so it rides its own class instead of gating `fail`.
-      // (Early-error grammar rules — duplicate params, invalid assignment
-      // targets, reserved-word edges — are exactly what a subset compiler
-      // does not enforce.)
+      // a release-blocker inventory, separate from wrong-value `fail`. The
+      // exact accepted paths and their parser-context families are gated by
+      // test262-neg-accepts.json; one-for-one swaps cannot hide.
       if (/negative:\s*\n\s+phase:\s+parse/.test(src)) {
-        const { status } = runTest(src, { compileOnly: true })
+        const strictMode = /flags:\s*\[[^\]]*\b(onlyStrict|module)\b/.test(src)
+        const { status } = runTest(src, { compileOnly: true, strictMode })
         if (status === 'reject') d.negpass++
         else { d.negaccept++; negaccepts.push(rel) }
         continue
@@ -1175,8 +1175,12 @@ async function runChunk(items) {
       if (__skipR) { d.skip++; if (process.env.JZ_SKIP_DEBUG && rel.includes(process.env.JZ_SKIP_DEBUG)) console.log('SKIP', rel.split('/').pop(), '→', __skipR); continue }
       const { status, error } = await runTest(src, {
         assertHarness: needsAssertHarness(src, rel),
+        strictMode: /flags:\s*\[[^\]]*\b(onlyStrict|module)\b/.test(src),
         asyncDone: isAsyncFnTest(rel) && /Test262:Async|\$DONE/.test(src),
       })
+      if (status === 'skip') skipruns.push(`${rel}: ${error}`)
+      if (status === 'skip' && process.env.JZ_SKIP_DEBUG && rel.includes(process.env.JZ_SKIP_DEBUG))
+        console.log('SKIP-RUN', rel, '→', error)
       if (status === 'fail') {
         const reason = expectedFailReason(rel)
         if (reason) { d.xfail++; xfails.push(`${rel} — ${reason}`) }
@@ -1189,7 +1193,7 @@ async function runChunk(items) {
       d.skip++
     }
   }
-  return { perDir, fails, xfails, xpasses, negaccepts }
+  return { perDir, fails, xfails, xpasses, negaccepts, skipruns }
 }
 
 if (!isMainThread) {
@@ -1225,8 +1229,8 @@ if (!isMainThread) {
   const perDir = Object.create(null)
   const dirOf = (subdir) => perDir[subdir] || (perDir[subdir] = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 })
   for (const subdir in dirSkip) dirOf(subdir).skip += dirSkip[subdir]
-  const fails = [], xfails = [], xpasses = [], negaccepts = []
-  for (const { perDir: wd, fails: wf, xfails: wxf, xpasses: wxp, negaccepts: wna } of chunkResults) {
+  const fails = [], xfails = [], xpasses = [], negaccepts = [], skipruns = []
+  for (const { perDir: wd, fails: wf, xfails: wxf, xpasses: wxp, negaccepts: wna, skipruns: wsr } of chunkResults) {
     for (const subdir in wd) {
       const d = dirOf(subdir)
       d.pass += wd[subdir].pass
@@ -1240,7 +1244,13 @@ if (!isMainThread) {
     xfails.push(...(wxf || []))
     xpasses.push(...(wxp || []))
     negaccepts.push(...(wna || []))
+    skipruns.push(...(wsr || []))
   }
+
+  if (process.env.JZ_TEST262_SKIP_FILE)
+    writeFileSync(process.env.JZ_TEST262_SKIP_FILE, JSON.stringify(skipruns.sort(), null, 2) + '\n')
+  if (process.env.JZ_TEST262_NEG_ACCEPTS_FILE)
+    writeFileSync(process.env.JZ_TEST262_NEG_ACCEPTS_FILE, JSON.stringify(negaccepts.sort(), null, 2) + '\n')
 
   const results = { pass: 0, fail: 0, skip: 0, xfail: 0, negpass: 0, negaccept: 0 }
   for (const subdir of DIRS) {
@@ -1259,7 +1269,7 @@ if (!isMainThread) {
   console.log(`\n── Results ── (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
   console.log(`  Pass:          ${results.pass}`)
   console.log(`  Neg-reject:    ${results.negpass} (negative-parse tests jz correctly REFUSES — the curated error stands in for SyntaxError)`)
-  console.log(`  Neg-accept:    ${results.negaccept} (invalid JS jz COMPILES — early-error grammar a subset compiler doesn't enforce; tracked, not gated — the honest dent in "valid jz is valid JS")`)
+  console.log(`  Neg-accept:    ${results.negaccept} (invalid JS jz still compiles — exact paths are release-gated by test262-neg-accepts.json)`)
   console.log(`  Fail:          ${results.fail}`)
   console.log(`  Skip:          ${results.skip}`)
   console.log(`  Xfail:         ${results.xfail} (out-of-scope / upstream parser gaps — see below)`)
@@ -1301,10 +1311,9 @@ if (!isMainThread) {
   //      JZ_TEST262_BASELINE env value, 2975, while local runs were
   //      floorless). JZ_TEST262_BASELINE, if set, still overrides the file —
   //      a one-off diagnostic escape hatch, not the source of truth.
-  //   4. negAccept ceiling — invalid-JS-jz-wrongly-compiles must not GROW past
-  //      the lock's `negAcceptCeiling` (ratcheted downward-only: a real early-
-  //      error fix lowers the count and the lock should be refreshed to match;
-  //      raising the ceiling to paper over a regression defeats the point).
+  //   4. exact accepted-negative ledger — both the count and every path must
+  //      equal test262-neg-accepts.json. Additions, removals, and one-for-one
+  //      swaps all require an explicit reviewed ledger update.
   if (!QUICK && results.fail > 0) {
     console.error(`\nFAIL: ${results.fail} in-scope language failure(s) — a miscompile. ` +
       `Pass-count gating alone would miss this. See the in-scope failures above.`)
@@ -1329,8 +1338,21 @@ if (!isMainThread) {
       console.error(`\nFAIL: pass count ${results.pass} below baseline ${baseline}`)
       process.exit(1)
     }
-    if (results.negaccept > lock.negAcceptCeiling) {
-      console.error(`\nFAIL: negAccept count ${results.negaccept} exceeds ceiling ${lock.negAcceptCeiling} (test/test262-baseline.json) — a subset compiler now wrongly accepts MORE invalid JS than before.`)
+    const negLock = JSON.parse(readFileSync(join(import.meta.dirname, 'test262-neg-accepts.json'), 'utf8'))
+    if (negLock.corpus !== PINNED_COMMIT) {
+      console.error(`\nFAIL: test262-neg-accepts.json corpus ${negLock.corpus} != PINNED_COMMIT ${PINNED_COMMIT}`)
+      process.exit(1)
+    }
+    const expectedNeg = Object.values(negLock.families).flat().sort()
+    const actualNeg = [...negaccepts].sort()
+    const expectedSet = new Set(expectedNeg), actualSet = new Set(actualNeg)
+    const added = actualNeg.filter(path => !expectedSet.has(path))
+    const removed = expectedNeg.filter(path => !actualSet.has(path))
+    if (negLock.count !== expectedNeg.length || lock.negAcceptExact !== expectedNeg.length ||
+        actualNeg.length !== expectedNeg.length || added.length || removed.length) {
+      console.error(`\nFAIL: accepted-negative ledger drift: actual=${actualNeg.length}, expected=${expectedNeg.length}, added=${added.length}, removed=${removed.length}`)
+      for (const path of added.slice(0, 20)) console.error(`  + ${path}`)
+      for (const path of removed.slice(0, 20)) console.error(`  - ${path}`)
       process.exit(1)
     }
   }
