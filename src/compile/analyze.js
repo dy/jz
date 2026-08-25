@@ -26,7 +26,9 @@ import { forEachFunctionPlanRep, functionPlanRepField } from './function-plan.js
 import { VAL, repOf, repOfGlobal, updateRep, updateGlobalRep, lookupValType, lookupNotString, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMaybeUndefinedKind } from '../kind.js'
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
-import { typedElemCtor, typedResultCtor, typedStaticLen, MIXED_CTORS, isCondExpr, ternaryCtorOfRhs, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
+import { typedElemCtor, typedStaticLen, isCondExpr, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
+import { TYPED_CTOR_CONFLICT } from '../typed-provenance.js'
+import { typedStorageCtorFromContext } from '../typed-context.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -144,7 +146,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
   return (name, rhs) => {
     if (poison.has(name)) return
     const setOrInvalidate = (c) => {
-      if (c === MIXED_CTORS) return invalidate(name)
+      if (c === TYPED_CTOR_CONFLICT) return invalidate(name)
       // Module-level alias fact: a `.view` ctor (subarray / buffer-backed) is the ONLY
       // way two typed-array bindings can overlap. Recording that the program creates
       // ANY view lets memory-reordering passes (SLP) stay sound by bailing when set —
@@ -178,33 +180,9 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
     // nested method chains, fresh species-preserving copies, and subarray views.
     // This is what keeps BigInt64Array map/slice/filter results typed after a
     // local assignment instead of decaying to a raw f64 element read.
-    const ctor = typedResultCtor(rhs, resolveName)
+    const ctor = typedStorageCtorFromContext(ctx, rhs, { resolveName, detailed: true })
     if (ctor) return setOrInvalidate(ctor)
     if (typeof rhs === 'string') return
-    // TYPED-narrowed call result carries its elem aux on f.sig.ptrAux — reverse-map
-    // to a canonical ctor so the unboxed local's rep restores the same aux.
-    if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string') {
-      const f = ctx.funcs.map?.get(rhs[1])
-      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) {
-        const c = ctorFromElemAux(f.sig.ptrAux)
-        if (c) setOrInvalidate(c)
-      }
-      return
-    }
-    // Field provenance: `const tw = plan.twRe` where the receiver's schema slot
-    // holds one typed-array kind program-wide and the prop is never written
-    // (gate inside slotTypedCtorAt) — the binding keeps the concrete kind, so
-    // hot-loop reads stay on the typed path (bench: provenance, fftplan).
-    if (Array.isArray(rhs) && (rhs[0] === '.' || rhs[0] === '?.') &&
-        typeof rhs[1] === 'string' && typeof rhs[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
-      const fc = ctx.schema.slotTypedCtorAt(rhs[1], rhs[2])
-      if (fc) return setOrInvalidate(fc)
-    }
-    // Heterogeneous ternary (`n===16 ? new Uint8Array(16) : new Uint16Array(8)`):
-    // ctors that don't unify must invalidate so a sibling-scope decl can't lock in
-    // the wrong store width.
-    const tc = ternaryCtorOfRhs(rhs, resolveName)
-    if (tc) setOrInvalidate(tc)
   }
 }
 
@@ -352,7 +330,9 @@ export function analyzeBody(body) {
   // The concrete typed storage an element expression produces, including
   // species-preserving method chains, if any.
   const elemTypedCtorOf = (expr) => {
-    const c = typedResultCtor(expr, n => typedElems.get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null)
+    const c = typedStorageCtorFromContext(ctx, expr, {
+      resolveName: n => typedElems.get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null,
+    })
     // typed-array views/buffers only — exclude ArrayBuffer/DataView (no element index).
     return c && !c.includes('ArrayBuffer') && !c.includes('DataView') ? c : null
   }
@@ -2002,8 +1982,7 @@ export function unboxablePtrs(body, locals, boxed) {
     // Every concrete typed-result chain (map/filter/slice/change-by-copy,
     // subarray views, and receiver-returning mutators) is a fresh/non-null
     // typed pointer. The shared provenance helper owns method semantics.
-    if (kind === VAL.TYPED && typedResultCtor(expr, name =>
-      ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null)) return true
+    if (kind === VAL.TYPED && typedStorageCtorFromContext(ctx, expr)) return true
     return false
   }
   // A policy over `scanBindingUses`: an UNBOXABLE-kind `let/const` local with a

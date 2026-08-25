@@ -1696,7 +1696,7 @@ test('.map: BigInt64Array/BigUint64Array preserve species (was: silently reroute
 
   // Value pin: x => x + 1n over [1n] → [2n]. Constructor provenance now
   // survives direct chains, concise callbacks, and local assignments through
-  // one typedResultCtor authority.
+  // one typed-storage provenance authority.
   const val = runHost(`export let f = () => new BigInt64Array([1n]).map(x => { return x + 1n })[0] === 2n ? 1 : 0`).f
   is(val(), 1, '1n + 1n = 2n, correct species and bit-exact roundtrip')
 

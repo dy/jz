@@ -636,6 +636,7 @@ export function reset(proto, globals, bridge) {
     // FINDING-10 pass-sharing question to the storage-representation
     // question it structurally implies.
     slotFacts: new Map(),
+    hasTypedSlots: false, // cheap TypedStoragePlan gate; set by the slot ctor census
     slotConstInts: new Map(), // schemaId → Array<int | null | undefined>
                               //   integer discriminants observed at every source
                               //   literal construction of a schema. null means
@@ -996,6 +997,9 @@ export function reset(proto, globals, bridge) {
     functionWorking: new WeakMap(), // handle → detached one-shot analysis frame awaiting emission
     representations: new WeakMap(), // function/start/closure identity → opaque RepresentationPlan handle
     representationData: new WeakMap(), // handle → private boundary/body facts (representation-plan.js only)
+    typedStorage: new WeakMap(), // function/start/closure identity → opaque TypedStoragePlan handle
+    typedStorageData: new WeakMap(), // handle → frozen typed receiver/result facts (typed-storage-plan.js only)
+    typedStorageProgram: { initialized: false, calls: new Map(), info: new Map(), hasTypedFields: false },
     start: null,                  // synthetic __start identity, planned before body emission
     closures: new WeakMap(),      // src/compile/closure-plan.js mintClosureEnvPlans, keyed on closure body node
     loops: new WeakMap(),         // src/compile/loop-model.js mintLoopPlans, keyed on loop body node

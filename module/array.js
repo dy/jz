@@ -10,7 +10,7 @@
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
 import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI32, allocPtr, multiCount, arrayLoop, elemLoad, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, throwTypeErrorIR, cloneIR } from '../src/ir.js'
-import { inBoundsArrIdx, typedIdxProven, typedResultCtor } from '../src/type.js'
+import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
 import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
@@ -22,6 +22,7 @@ import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR,
 import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
+import { plannedTypedStorageCtor } from '../src/compile/typed-storage-plan.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
@@ -957,17 +958,8 @@ export default (ctx) => {
       // Transient seed on the fresh hoist-temp `h` (slice 3c-a): overlay, not
       // durable reps — the temp lives one expression.
       if (vtArr) ctx.func.localValTypesOverlay.set(h, vtArr)
-      const typedCtor = vtArr === VAL.TYPED ? typedResultCtor(arr, name =>
-        ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null) : null
-      if (typedCtor) (ctx.func.typedElem ||= new Map()).set(h, typedCtor)
-      // Inline field-read receiver (`plan.tw[i]`): carry the schema slot's
-      // program-wide typed kind onto the temp — VAL.TYPED alone has no element
-      // width, so without the ctor the read decays to the dynamic path.
-      if (vtArr === VAL.TYPED && Array.isArray(arr) && (arr[0] === '.' || arr[0] === '?.') &&
-          typeof arr[1] === 'string' && typeof arr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
-        const fc = ctx.schema.slotTypedCtorAt(arr[1], arr[2])
-        if (fc) (ctx.func.typedElem ||= new Map()).set(h, fc)
-      }
+      const typedCtor = vtArr === VAL.TYPED ? plannedTypedStorageCtor(ctx, arr) : null
+      if (typedCtor) (ctx.func.localTypedElemsOverlay ||= new Map()).set(h, typedCtor)
       const setup = ['local.set', `$${h}`, asF64(emit(arr))]
       const result = ctx.core.emit['[]'](h, idx)
       return typed(['block', ['result', 'f64'], setup, asF64(result)], 'f64')

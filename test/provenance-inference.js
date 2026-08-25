@@ -9,6 +9,23 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
+import { TYPED_CTOR_CONFLICT, typedStorageFact } from '../src/typed-provenance.js'
+
+test('typed provenance: one grammar authority joins and chains every storage source', () => {
+  const names = new Map([['a', 'new.Int16Array'], ['b', 'new.Int16Array'], ['c', 'new.Float64Array']])
+  const sources = {
+    name: name => names.get(name) ?? null,
+    call: name => name === 'make' ? 'new.BigInt64Array' : null,
+    field: (_obj, prop) => prop === 'lane' ? 'new.Uint32Array' : null,
+    index: obj => obj === 'rows' ? 'new.Float32Array' : null,
+  }
+  is(typedStorageFact(['?:', 'flag', 'a', 'b'], sources), 'new.Int16Array', 'same-ctor join closes')
+  is(typedStorageFact(['?:', 'flag', 'a', 'c'], sources), TYPED_CTOR_CONFLICT, 'mixed join conflicts')
+  is(typedStorageFact(['??', 'a', 'b'], sources), 'new.Int16Array', 'nullish join uses same meet')
+  is(typedStorageFact(['()', ['.', ['()', 'make'], 'slice'], null], sources), 'new.BigInt64Array', 'call → copy')
+  is(typedStorageFact(['()', ['.', ['.', 'plan', 'lane'], 'subarray'], null], sources), 'new.Uint32Array.view', 'field → view')
+  is(typedStorageFact(['()', ['.', ['[]', 'rows', 'i'], 'map'], null], sources), 'new.Float32Array', 'indexed storage → copy')
+})
 
 const KERNEL = `export let go = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 1023]; return s }`
 const EDGES = {
@@ -98,6 +115,20 @@ export let go = () => {
   is(exports.go(), 1512)
   // Same value across every optimize tier (the guard must not change behavior).
   for (const optimize of [false, 2, 3]) is(jz(src, { optimize }).exports.go(), 1512, `O${optimize || 0}`)
+})
+
+test('provenance: indexed TypedArray → copy chain preserves BigInt storage at every tier', () => {
+  const src = `const mk = x => new BigInt64Array([x])
+const rows = [mk(7n), mk(9n)]
+export let read = flag => {
+  const out = rows[flag].slice().map(x => x)
+  return Number(out.at(0))
+}`
+  for (const optimize of [false, 2, 3]) {
+    const { exports } = jz(src, { optimize })
+    is(exports.read(0), 7, `O${optimize || 0}: row 0`)
+    is(exports.read(1), 9, `O${optimize || 0}: row 1`)
+  }
 })
 
 // the write gate: a single prop write anywhere keeps the dynamic path (soundness)

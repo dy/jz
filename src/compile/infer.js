@@ -48,8 +48,8 @@ import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
-import { typedElemCtor, typedResultCtor, typedStaticLen } from '../type.js'
-import { ctorFromElemAux } from '../../layout.js'
+import { typedElemCtor, typedStaticLen } from '../type.js'
+import { typedStorageCtorFromContext } from '../typed-context.js'
 import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
 import { VAL, updateRep, updateGlobalRep } from '../reps.js'
@@ -336,7 +336,10 @@ export function recordGlobalRep(name, expr) {
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, vt)
     if (vt === VAL.REGEX && ctx.runtime.regex) ctx.runtime.regex.vars.set(name, expr)
   }
-  const ctor = typedResultCtor(expr, n => ctx.scope.globalTypedElem?.get(n) ?? null)
+  const ctor = typedStorageCtorFromContext(ctx, expr, {
+    resolveName: n => ctx.scope.globalTypedElem?.get(n) ?? null,
+    calls: false, fields: false, indices: false,
+  })
   if (ctor) {
     ;(ctx.scope.globalTypedElem ||= new Map()).set(name, ctor)
     const len = typedStaticLen(expr)
@@ -606,26 +609,9 @@ export function inferArrElemValType(expr, cx) {
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
 export function inferTypedCtor(expr, cx) {
   const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
-  const ctor = typedResultCtor(expr, name => {
-    if (callerElems?.has(name)) return callerElems.get(name)
-    if (paramFacts?.has(name)) return paramFacts.get(name)
-    return null
+  return typedStorageCtorFromContext(ctx, expr, {
+    nameMaps: [callerElems, paramFacts],
+    ambientNames: false,
+    fieldSids: cx.callerSids,
   })
-  if (ctor) return ctor
-  if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-    const f = ctx.funcs.map?.get(expr[1])
-    if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
-  }
-  // Field provenance: `plan.twRe` where the receiver's schema slot holds one
-  // typed-array kind program-wide (observeProgramSlots) and the prop is never
-  // written — the write gate lives inside slotTypedCtorBySid. The receiver's
-  // schema comes from the caller's per-body localSids when provided (narrow's
-  // arg lattice — live reps aren't trustworthy there), else the idOf chain.
-  if (Array.isArray(expr) && (expr[0] === '.' || expr[0] === '?.') &&
-      typeof expr[1] === 'string' && typeof expr[2] === 'string' && ctx.schema?.slotTypedCtorAt) {
-    const sid = cx.callerSids?.get(expr[1])
-    if (sid != null) return ctx.schema.slotTypedCtorBySid(sid, expr[2])
-    return ctx.schema.slotTypedCtorAt(expr[1], expr[2])
-  }
-  return null
 }

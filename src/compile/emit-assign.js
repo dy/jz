@@ -27,6 +27,7 @@ import {
 } from '../ir.js'
 import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
+import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -619,8 +620,7 @@ export function emitElementAssign(arr, idx, val) {
   // happening. `storedValueNarrow` is the same safe default
   // arrProvenBigintElems already established: never fires for an inline
   // expression, only for a bare name independently proven boxed elsewhere.
-  const arrProvenTyped = typeof arr === 'string' && lookupValType(arr) === 'typed' &&
-    ctx.func.typedElem?.has(arr)
+  const arrProvenTyped = valTypeOf(arr) === VAL.TYPED && plannedTypedStorageInfo(ctx, arr) != null
   const valueExpr = (arrProvenBigintElems || arrProvenTyped) ? storedValueNarrow(val) : storedValue(val)
   // A runtime-typed destination needs a self-describing value. A definite
   // BigInt source may lawfully stay raw under its ordinary RepresentationPlan
@@ -684,10 +684,9 @@ export function emitElementAssign(arr, idx, val) {
   //    Also fires for a nested `arr[c]` receiver whose array's elements are typed
   //    arrays of a known ctor (codec `ch[c][i] = …` channelData scatter) — the
   //    `.typed:[]=` emitter resolves the element ctor and inlines the store.
-  const nestedElemTypedCtor = Array.isArray(arr) && arr[0] === '[]' && arr.length === 3 &&
-    typeof arr[1] === 'string' ? repOf(arr[1])?.arrayElemTypedCtor : null
+  const plannedTypedReceiver = plannedTypedStorageInfo(ctx, arr)
   if (ctx.core.emit['.typed:[]='] &&
-      ((typeof arr === 'string' && lookupValType(arr) === 'typed') || nestedElemTypedCtor)) {
+      (valTypeOf(arr) === VAL.TYPED || plannedTypedReceiver)) {
     const r = ctx.core.emit['.typed:[]=']?.(arr, idx, val, void_)
     if (r) return r
     // Element ctor unknown — runtime aux-byte dispatch over the generic tagged

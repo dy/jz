@@ -54,6 +54,7 @@ import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
 import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan } from '../compile/function-plan.js'
 import { mintRepresentationPlan, representationProgramHasBigint } from '../compile/representation-plan.js'
+import { mintTypedStoragePlan } from '../compile/typed-storage-plan.js'
 import { VAL } from '../reps.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
@@ -193,6 +194,9 @@ function analyzeStartForEmit(ast) {
       seedStartGeneratedLocals(mi)
     }
     seedStartGeneratedLocals(ast)
+    mintTypedStoragePlan(ctx, start, ctx.func.current, ast, ctx.func.localReps, {
+      extraBodies: ctx.module.moduleInits || [],
+    })
     if (representationProgramHasBigint(ctx))
       mintRepresentationPlan(ctx, start, ctx.func.current, ast, ctx.func.localReps)
     publishPreparedFunctionPlan(ctx, start, ctx.func)

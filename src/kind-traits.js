@@ -5,7 +5,7 @@
 
 import { VAL } from './reps.js'
 import { TYPED_ELEM_CODE } from '../layout.js'
-import { typedResultCtor } from './typed-provenance.js'
+import { typedStorageCtorFromContext } from './typed-context.js'
 
 // Comparison / logical-not ops — result is a 0|1 boolean carried as i32. The one
 // source of truth for "this operator yields a boolean": valTypeOf reads it as
@@ -121,11 +121,7 @@ export function calleeValType(callee, _args, ctx) {
     // first real argument (unwrap a ','-group).
     const a1 = _args?.[1]
     const arr = Array.isArray(a1) && a1[0] === ',' ? a1[1] : a1
-    const ctor = Array.isArray(arr) && arr[0] === 'new' ? 'new.' + arr[1]
-      : typeof arr === 'string'
-        ? (ctx.func?.localTypedElemsOverlay?.get(arr) ?? ctx.func?.typedElem?.get(arr)
-          ?? ctx.func?.localReps?.get(arr)?.typedCtor ?? ctx.scope?.globalTypedElem?.get(arr))
-        : null
+    const ctor = typedStorageCtorFromContext(ctx, arr)
     return ctor === 'new.BigInt64Array' || ctor === 'new.BigInt64Array.view' ? VAL.BIGINT : VAL.NUMBER
   }
   if (callee.startsWith('new.')) return VAL.TYPED
@@ -166,9 +162,7 @@ export function methodValType(method, obj, objType, ctx) {
   // turns 7n into the denormal 3.5e-323. Use the same constructor provenance
   // analysis and emission consume, including direct/chained expressions.
   if (method === 'at' && objType === VAL.TYPED) {
-    const ctor = typedResultCtor(obj, name =>
-      ctx.func?.localTypedElemsOverlay?.get(name) ?? ctx.func?.typedElem?.get(name) ??
-      ctx.func?.localReps?.get(name)?.typedCtor ?? ctx.scope?.globalTypedElem?.get(name) ?? null)
+    const ctor = typedStorageCtorFromContext(ctx, obj)
     return typedCtorElemValType(ctor)
   }
   if (method === 'map' || method === 'filter') {
