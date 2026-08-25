@@ -32,7 +32,7 @@ import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvar
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
-import { i64Hex } from '../../layout.js'
+import { i64Hex, decodePtrAux, decodePtrType } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintResultShape } from '../kind.js'
 import { intLiteralValue } from '../static.js'
@@ -2877,46 +2877,10 @@ export default function compile(ast, profiler, regionHooks) {
   if (strPoolLen())
     sec.data.push(['data', '$__strPool', '"' + escBytes(strPoolString()) + '"'])
 
-  // Custom section: embed object schemas for JS-side interop.
-  // Compact binary format: varint(nSchemas); per schema: varint(nProps); per prop:
-  //   0x00=null, 0x01=[null, <prop>], 0x02=<varint len><utf8 bytes>. Runtime decodes.
-  if (ctx.schema.list.length) {
-    const bytes = []
-    const utf8 = new TextEncoder()
-    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
-    const enc = (p) => {
-      if (p === null) bytes.push(0)
-      else if (Array.isArray(p)) { bytes.push(1); enc(p[1]) }
-      else { bytes.push(2); const b = utf8.encode(p); varint(b.length); for (const x of b) bytes.push(x) }
-    }
-    varint(ctx.schema.list.length)
-    for (const s of ctx.schema.list) { varint(s.length); for (const p of s) enc(p) }
-    sec.customs.push(['@custom', '"jz:schema"', bytes])
-  }
-
-  // Custom section: Error-class sid → class-name map. Class identity lives
-  // entirely in the schema id (module/schema.js's ctx.schema.errorSid — one
-  // distinct id per class, minted with
-  // the class name as an internal dedupe salt that never becomes a property),
-  // not in any decodable slot — so interop.js's decodeThrown, which runs on
-  // already-compiled bytes with no access to this compile's ctx.schema state,
-  // has no other way to recover "which ECMAScript class did this sid come
-  // from" than a small table shipped alongside the module. Compact format:
-  // varint(nEntries); per entry: varint(sid), varint(len), utf8 bytes(name).
-  if (ctx.schema.errorSidEntries?.().size) {
-    const bytes = []
-    const utf8 = new TextEncoder()
-    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
-    const entries = ctx.schema.errorSidEntries()
-    varint(entries.size)
-    for (const [sid, name] of entries) {
-      varint(sid)
-      const b = utf8.encode(name)
-      varint(b.length)
-      for (const x of b) bytes.push(x)
-    }
-    sec.customs.push(['@custom', '"jz:errcls"', bytes])
-  }
+  // Custom sections "jz:schema" / "jz:errcls" (object schemas + Error-class
+  // sid→name map for JS-side interop) are built further down, AFTER the
+  // treeshake() call — see the usedSchemaIds block just below it for why
+  // (mint-vs-treeshake reconciliation, audit-evidenced size-gate fix).
 
   // Custom section: rest params for exported functions (JS-side wrapping).
   // Entry per JS-visible export name (not per internal func name) — host's
@@ -3060,6 +3024,155 @@ export default function compile(ast, profiler, regionHooks) {
     { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals,
       userFuncs: new Set(ctx.funcs.list.map(f => `$${f.name}`)) }
   )
+
+  // Custom sections "jz:schema" / "jz:errcls": object schemas + Error-class
+  // sid→name map, for JS-side interop (interop.js). Built HERE — after
+  // treeshake, not before — because the MINT (module/schema.js's
+  // ctx.schema.register/errorSid) and the SERIALIZE step can now legitimately
+  // disagree: emitLengthAccess (module/core.js) and Array.from's general path
+  // (module/array.js) mint 'TypeError' eagerly and unconditionally the moment
+  // either is visited during emission (commit 8954dac2 — load-bearing, keeps
+  // the schema minted before O0 catch/property planning freezes schema
+  // tables; do not make this conditional). But a later pass can still
+  // constant-fold away the one call that would have used it, or treeshake
+  // above can remove the whole function around it — so by this point some
+  // minted schema ids may have zero surviving constructors. Serializing
+  // straight from ctx.schema.list/errorSidEntries (as before) shipped every
+  // schema ever minted, dead or not — the audited size-gate regression
+  // (aos/dotprod/wav/callback, e867c3af's opaque-length TypeError).
+  //
+  // A schema id is reconciled as LIVE iff some surviving `$__mkptr` call still
+  // carries it as the AUX (2nd) literal argument — mkPtrIR's (src/ir.js) only
+  // construction path for a PTR.OBJECT pointer, and thus the only way any
+  // value tagged with that schema id can ever come to exist, be observed by
+  // an in-wasm `instanceof`/catch dispatch, or cross the host boundary for
+  // interop.js to decode. optimizeModule's specializeMkptr
+  // (src/optimize/index.js), which runs earlier in this same compile, may
+  // already have rewritten a literal-aux call site from
+  // `(call $__mkptr (i32.const T) (i32.const A) dyn)` into a named variant
+  // `$__mkptr_T_A_d` — both shapes are scanned. A call whose aux is NOT a
+  // literal (a dynamic clone/copy helper forwarding some other value's
+  // already-tagged type+aux) needs no separate accounting: it can only ever
+  // reproduce a sid some OTHER, literal-bearing site already established for
+  // a value that must already exist, so that other site is what makes it
+  // live. Over-approximating (treating a schema as live when the strict
+  // answer is dead) is always safe — it only costs bytes; under-approximating
+  // would silently corrupt a live interop decode, so every literal-aux
+  // `$__mkptr`/`$__mkptr_*` call site found here counts, unconditionally.
+  const usedSchemaIds = new Set()
+  {
+    // i32.const operands are JS numbers when built directly by IR-construction
+    // code (mkPtrIR) but plain numeric STRINGS when a hand-written WAT-text
+    // stdlib template (e.g. module/core.js's __throw_property_nullish) comes
+    // back through the WAT parser untouched by any literal-normalizing pass —
+    // accept either.
+    const litI32 = (n) => Array.isArray(n) && n[0] === 'i32.const' &&
+      (typeof n[1] === 'number' ? n[1] : typeof n[1] === 'string' && /^-?\d+$/.test(n[1]) ? +n[1] : null)
+    const MKPTR_VARIANT = /^\$__mkptr_(\d+|d)_(\d+|d)_(\d+|d)$/
+    // mkPtrIR (src/ir.js) folds a construction straight to `(f64.const nan:HHHHHHHHLLLLLLLL)`
+    // — 8 hex digits of type+aux (hi word) + 8 of offset (lo word), see layout.js's
+    // i64Hex/ptrBits — whenever ALL THREE args are compile-time literals. That is
+    // NOT rare for PTR.OBJECT the way a heap `$__alloc_hdr` offset would suggest:
+    // an object literal whose every slot is itself a literal (`mk = () => ({a:111,
+    // b:222,c:333})` — this exact test's shape) gets its whole allocation constant-
+    // folded away by an earlier pass, and mkPtrIR then folds the now-literal offset
+    // too. specializeMkptr's own pass-3 (src/optimize/index.js) produces the
+    // identical `f64.const nan:...` shape for the same reason, and its inline
+    // fast path (and narrow.js's devirt re-boxing of an already-unboxed offset —
+    // this test's `chase`) OR a bare `i64.const 0xHHHHHHHH00000000` "box prefix"
+    // against a dynamic offset instead — same hi word, no `nan:` text wrapper.
+    // decodePtrAux (layout.js) is the ONE place this hi-word aux extraction is
+    // already defined — reused here rather than re-deriving the bit math.
+    // Anchored to the exact node shapes that carry the literal (not "any string
+    // leaf anywhere" — an unrelated i64 bit-mask constant elsewhere in the
+    // module, coincidentally 16 hex digits, would over-match and cost real
+    // bytes on a strict win-limit gate like dotprod/wav; false-KEEPS are safe
+    // for correctness but not for the size gate this fix exists to close). A
+    // constant-pooling pass (optimizeModule's hoistConstantPool, which — like
+    // specializeMkptr — runs before treeshake) can lift a repeated packed
+    // pointer literal out of its call site into a `(global $g ...)` init or a
+    // `global.set` inside `$__start`'s body, leaving only `global.get $g`
+    // where the literal used to be — scanning sec.globals/sec.elem below
+    // (their init/offset exprs use these SAME `f64.const`/`i64.const` shapes)
+    // catches that relocation without widening the match itself.
+    // PTR.OBJECT-gated: `aux` is only ever a schema id for that one ptr type —
+    // every other PTR.* (STRING's SSO/intern bits, TYPED's element code, …)
+    // packs something else entirely into the identical bit position, and a
+    // hoisted/pooled literal of THEIRS would otherwise false-match the same
+    // 16-hex-digit shape and cost bytes on dotprod/wav's strict win gate.
+    const NAN_PTR_LIT = /^(?:nan:)?0x([0-9A-Fa-f]{8})[0-9A-Fa-f]{8}$/
+    const scanMkptrAux = (n) => {
+      if (!Array.isArray(n)) return
+      if ((n[0] === 'f64.const' || n[0] === 'i64.const') && typeof n[1] === 'string') {
+        const m = NAN_PTR_LIT.exec(n[1])
+        if (m) {
+          const hi = parseInt(m[1], 16)
+          if (decodePtrType(hi) === PTR.OBJECT) usedSchemaIds.add(decodePtrAux(hi))
+        }
+      } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
+        // `return_call` (tail-call form — treeshake's own CALL_OPS set above
+        // treats it identically to `call`): a single-expression arrow whose
+        // whole body is the construction, `x => new TypeError(x)`, compiles
+        // the final mkptr as a tail call, not an ordinary one — missing this
+        // dropped a genuinely-returned (not even thrown) TypeError's schema.
+        if (n[1] === '$__mkptr') {
+          const type = litI32(n[2]), aux = litI32(n[3])
+          if (type === PTR.OBJECT && aux != null) usedSchemaIds.add(aux)
+        } else {
+          const m = MKPTR_VARIANT.exec(n[1])
+          if (m && m[1] === String(PTR.OBJECT) && m[2] !== 'd') usedSchemaIds.add(+m[2])
+        }
+      }
+      for (const c of n) scanMkptrAux(c)
+    }
+    // Exactly the arrays treeshake() above just pruned to their final surviving
+    // shape, PLUS sec.globals (a hoisted constant's init lives there, and
+    // treeshake's own dead-global elimination — the `globals:` opt above —
+    // already dropped any global nothing references) and sec.elem (function
+    // table entries can't relocate a pointer literal but cost nothing to
+    // include). sec.extStdlib/imports are import declarations only, never a
+    // construction site.
+    for (const arr of [sec.stdlib, sec.funcs, sec.start, sec.globals, sec.elem]) for (const f of arr) scanMkptrAux(f)
+  }
+  if (usedSchemaIds.size) {
+    // Positional format (entry index === schema id, no key per entry — see
+    // STABILITY.md's "raw custom sections stay experimental": the byte FORMAT
+    // is unchanged here, only which entries carry real content). A dead id's
+    // slot must still be emitted, empty, to keep every live id's position
+    // correct — varint(nSchemas) below stays ctx.schema.list.length either way.
+    const bytes = []
+    const utf8 = new TextEncoder()
+    const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
+    const enc = (p) => {
+      if (p === null) bytes.push(0)
+      else if (Array.isArray(p)) { bytes.push(1); enc(p[1]) }
+      else { bytes.push(2); const b = utf8.encode(p); varint(b.length); for (const x of b) bytes.push(x) }
+    }
+    varint(ctx.schema.list.length)
+    ctx.schema.list.forEach((props, id) => {
+      const live = usedSchemaIds.has(id) ? props : []
+      varint(live.length); for (const p of live) enc(p)
+    })
+    sec.customs.push(['@custom', '"jz:schema"', bytes])
+  }
+  // jz:errcls has an explicit sid per entry (unlike jz:schema above), so a
+  // dead class is simply omitted rather than zeroed.
+  if (ctx.schema.errorSidEntries?.().size) {
+    const entries = [...ctx.schema.errorSidEntries()].filter(([sid]) => usedSchemaIds.has(sid))
+    if (entries.length) {
+      const bytes = []
+      const utf8 = new TextEncoder()
+      const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
+      varint(entries.length)
+      for (const [sid, name] of entries) {
+        varint(sid)
+        const b = utf8.encode(name)
+        varint(b.length)
+        for (const x of b) bytes.push(x)
+      }
+      sec.customs.push(['@custom', '"jz:errcls"', bytes])
+    }
+  }
 
   pruneUnusedThrowRuntime(sec)
 
