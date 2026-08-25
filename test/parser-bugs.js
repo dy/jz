@@ -72,11 +72,38 @@ test('?? mixed with ||/&& without parens rejected (PARSE-4, ES2020)', () => {
     is(jz('export let f = (b, c) => { let [a = b || c] = []; return a }').exports.f(0, 9), 9)
 })
 
+test('early errors: scopes, parameters, targets, and control flow reject before jzify', () => {
+    rejects('let x; let x;', 'duplicate lexical')
+    rejects(`'use strict'; function f(a, a) {}`, 'duplicate parameter')
+    rejects('const f = ([a]) => { "use strict"; return a }', 'non-simple')
+    rejects('1 = 2', 'assignment target')
+    rejects('const x;', 'requires an initializer')
+    rejects('break;', 'outside loop')
+    rejects('class C { constructor(){} constructor(){} }', 'constructor')
+    rejects('class C { #x; m(){ return this.#y } }', 'not declared')
+    // Deliberately valid counterexamples: sloppy simple duplicate parameters,
+    // nested rest binding patterns, and ordinary for-of declarations.
+    ok(compile('function f(a, a){ return a }') instanceof Uint8Array, 'sloppy Script permits simple duplicate params')
+    is(jz('let f = ([...{0:x}]) => x; export let g = () => f([7])').exports.g(), 7)
+    is(jz('export let g = () => { let s=0; for (const x of [1,2]) s+=x; return s }').exports.g(), 3)
+})
+
+test('early errors: erased lexical spellings are validated from source text', () => {
+    rejects('export let f = () => 1__0', 'separator')
+    rejects('export let f = () => 01n', 'leading zero')
+    rejects('export let f = () => /a/gg', 'duplicate regular expression flag')
+    rejects('export let f = () => /(?<x>a)(?<x>b)/', 'duplicate regular expression group')
+    rejects('export let f = () => `\\xZ`', 'template escape')
+    rejects('export let f = a => a?.x`tag`', 'optional chain')
+    is(jz('export let f = () => 1_000 + 0xFF').exports.f(), 1255)
+    is(jz('export let f = () => `line 1\nline 2`.length').exports.f(), 13)
+})
+
 test('always-reserved `const` rejected as a binding name (PARSE-6)', () => {
     rejects('export let f = () => { let const = 5; return const }', 'reserved')
-    // `let` is only *strict-mode* reserved — a valid identifier in sloppy JS, so jz
-    // must accept it (test262 let-non-strict-*); only the always-reserved `const` is rejected.
-    is(jz('export let f = () => { let let = 5; return let }').exports.f(), 5)
+    // `let` remains valid as a sloppy IdentifierReference (`for (let in o)`),
+    // but it is never a legal LexicalBinding name.
+    rejects('export let f = () => { let let = 5; return let }', 'lexical')
     // `const` stays usable as a property name; normal let/const declarations unaffected.
     is(jz('export let f = () => { let o = { const: 7 }; return o.const }').exports.f(), 7)
     is(jz('export let f = () => { let x = 5; const y = 7; return x + y }').exports.f(), 12)

@@ -78,6 +78,24 @@ function prependParamDecls(decl, body) {
 /** @param {ReturnType<import('./names.js').createNames>} names */
 export function createArgumentsLowering(names) {
   function lowerArguments(params, body) {
+    // Sloppy simple parameter lists may repeat a name. ECMAScript binds the
+    // LAST slot; earlier slots are still ABI positions but are unreachable by
+    // name. Rename only those earlier duplicates to fresh ignored bindings so
+    // WAT never receives duplicate `$param` declarations at O0.
+    const simple = paramList(params)
+    if (simple.length > 1 && simple.every(p => typeof p === 'string')) {
+      const seen = new Set(), next = simple.slice()
+      let changed = false
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (seen.has(next[i])) { next[i] = names.arg(); changed = true }
+        else seen.add(next[i])
+      }
+      if (changed) {
+        const payload = next.length > 1 ? [',', ...next] : next[0]
+        params = Array.isArray(params) && params[0] === '()' ? ['()', payload]
+          : Array.isArray(params) && params[0] === ',' ? payload : next[0]
+      }
+    }
     // A param named `arguments` shadows the implicit args object: rename it (and its
     // in-scope body refs — renameArguments stops at nested `function`s, and arrows
     // legitimately inherit the param) to a fresh binding, so it becomes an ordinary

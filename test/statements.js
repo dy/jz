@@ -100,7 +100,7 @@ test('assignment: ||= on truthy', () => {
 })
 
 test('assignment: ||= keeps truthy strings', () => {
-  is(run(`export let f = () => { let a = '\n'; a ||= ''; return (a + '(').length }`).f(), 2)
+  is(run(`export let f = () => { let a = '\\n'; a ||= ''; return (a + '(').length }`).f(), 2)
 })
 
 test('assignment: &&= on truthy', () => {

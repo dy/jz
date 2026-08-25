@@ -15,6 +15,7 @@
 import { parse as jessieParse, token } from 'subscript/feature/jessie'
 import { lookup, idx, cur, skip, err } from 'subscript/parse'
 import { fromRadixDigits, toDecimalString, truncateLimbs } from './bignum.js'
+import { validateEarlyErrors } from './early-errors.js'
 
 // Strip a leading `#!` shebang line before subscript sees it. subscript registers the
 // shebang via `parse.comment['#!']='\n'` (feature/shebang.js) on a literal-seeded object,
@@ -27,7 +28,9 @@ const parse = (src) => {
     const nl = src.indexOf('\n')
     src = nl < 0 ? '' : src.slice(nl)
   }
-  return jessieParse(src)
+  const ast = jessieParse(src)
+  validateEarlyErrors(ast, src)
+  return ast
 }
 
 token('NaN', 200, a => !a && ['nan'])
