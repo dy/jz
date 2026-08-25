@@ -621,3 +621,24 @@ Validation: native suite 3652/3651/0/1 (21,349 assertions); test:wasm
 2905/2904/0/1 (13,990); data native 153/153 (780), kernel 153/153 (771);
 watr 37/37 (113); parity 3/3 (33); oracle 14/14 (605); ratchet 10/10;
 optimizer fixpoint 10/10. No accepted-wrong Shape #6 assertion remains.
+
+## Typed-storage plan authority follow-up (2026-08-24)
+
+Typed constructor provenance is no longer an emitter-side sibling authority.
+`typed-provenance.js` owns one three-state expression grammar: constructor,
+open, or conflicting. Analysis supplies its phase-specific maps through
+`typed-context.js`; after facts settle, every function/start/closure publishes
+a sparse TypedStoragePlan. Typed reads, writes, getters, result chains,
+`instanceof`, closure argument lattices, and typed loop guards consume that
+plan. A structural invariant forbids direct emit-time ctor-map reads.
+
+The conflict state is load-bearing. Watr's v128 i64x2 encoder selects among
+four different integer TypedArray ctors in one nested conditional. Treating
+that closed disagreement as merely unknown allowed an earlier width to survive
+and turned valid BigInt lanes into `BIGINT_UNDEF_MIX`; the dedicated conflict
+poisons the stale fact and preserves all 37 watr tests natively and in-kernel.
+
+RepresentationPlan now applies the same authority discipline at emission: in
+a BigInt-capable program, an absent active body plan throws an internal
+invariant error. It no longer silently substitutes NO_BIGINT, which could turn
+a lifecycle bug into an accepted wrong carrier.

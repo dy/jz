@@ -1727,9 +1727,18 @@ export function representationBoundaryActionCount(ctx, identity, action) {
   return n
 }
 
-const activeRep = (ctx, node, target) => {
+const activeBody = (ctx, consumer) => {
+  const program = programPlanRecord(ctx)
+  if (program?.bigint !== true) return null
   const handle = ctx.plans.representations.get(ctx.func.current)
   const body = handle && ctx.plans.representationData.get(handle)?.body
+  if (!body)
+    throw new Error(`RepresentationPlan active body missing in ${consumer} for ${ctx.func.current?.name || '<anonymous>'}`)
+  return body
+}
+
+const activeRep = (ctx, node, target) => {
+  const body = activeBody(ctx, 'activeRep')
   if (!body) return NO_BIGINT
   if (typeof node === 'string')
     return (target ? body.targetNames : body.currentNames)?.get(node) ?? NO_BIGINT
@@ -1743,10 +1752,10 @@ const activeRep = (ctx, node, target) => {
 
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
+  const active = activeBody(ctx, 'representationActiveMaterializedRep')
   if (Array.isArray(name) && JOIN_OPS.has(name[0])) {
-    const activeHandle = ctx.plans.representations.get(ctx.func.current)
-    const activeBody = activeHandle && ctx.plans.representationData.get(activeHandle)?.body
-    if (activeBody?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
+    const body = active
+    if (body?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
     return NO_BIGINT
   }
   if (Array.isArray(name) && name[0] === '()' && typeof name[1] === 'string') {
@@ -1756,6 +1765,8 @@ export function representationActiveMaterializedRep(ctx, name) {
     return calleeRecord?.body?.materializedResult === true
       ? calleeRecord.body.resultTarget ?? NO_BIGINT : NO_BIGINT
   }
+  const body = active
+  if (!body) return NO_BIGINT
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
@@ -1782,13 +1793,15 @@ export function representationClosureArgAction(ctx, source) {
 /** True when JS interop must box an actual BigInt at this export slot. */
 export function representationHostBoxesParam(ctx, identity, index) {
   const handle = ctx.plans.representations.get(identity)
-  return ctx.plans.representationData.get(handle)?.body?.hostBoxParams?.has(index) === true
+  const record = handle && ctx.plans.representationData.get(handle)
+  if (programPlanRecord(ctx)?.bigint === true && !record?.body)
+    throw new Error(`RepresentationPlan host boundary missing for ${identity?.name || '<anonymous>'}`)
+  return record?.body?.hostBoxParams?.has(index) === true
 }
 
 /** Frozen action for one materialized ternary arm. */
 export function representationJoinArmAction(ctx, join, arm) {
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const body = handle && ctx.plans.representationData.get(handle)?.body
+  const body = activeBody(ctx, 'representationJoinArmAction')
   if (!body?.materializedJoins?.has(join)) return REP_EDGE_REJECT
   return edgeAction(activeEmittedRep(ctx, arm), activeRep(ctx, join, true))
 }
@@ -1801,8 +1814,7 @@ export function representationJoinArmAction(ctx, join, arm) {
  *  the operand's raw i64 bits, not from some other already-typed operand),
  *  so join and arm collapse to the same node. */
 export function representationComputedExprAction(ctx, node) {
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const body = handle && ctx.plans.representationData.get(handle)?.body
+  const body = activeBody(ctx, 'representationComputedExprAction')
   if (!body?.materializedJoins?.has(node)) return REP_EDGE_REJECT
   // This emitter branch computes a fresh raw i64 result even though the
   // expression's planned value is materialized. Name the actual producer
@@ -1813,6 +1825,7 @@ export function representationComputedExprAction(ctx, node) {
 
 /** Frozen action for one materialized return edge. */
 export function representationReturnAction(ctx, source) {
+  activeBody(ctx, 'representationReturnAction')
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   if (record?.body?.materializedResult !== true) return REP_EDGE_REJECT
@@ -1821,8 +1834,7 @@ export function representationReturnAction(ctx, source) {
 
 /** Frozen action for one plain declaration/assignment write. */
 export function representationBindingWriteAction(ctx, name, source) {
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const body = handle && ctx.plans.representationData.get(handle)?.body
+  const body = activeBody(ctx, 'representationBindingWriteAction')
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(activeEmittedRep(ctx, source), activeRep(ctx, name, true))
 }
@@ -1846,8 +1858,7 @@ export function representationBindingWriteAction(ctx, name, source) {
  *  bits again, misreading a raw payload as a box pointer — the exact
  *  box-pointer-bits-as-value disease this fixpoint exists to close). */
 export function representationCompoundAssignAction(ctx, name) {
-  const handle = ctx.plans.representations.get(ctx.func.current)
-  const body = handle && ctx.plans.representationData.get(handle)?.body
+  const body = activeBody(ctx, 'representationCompoundAssignAction')
   if (!body?.materializedNames?.has(name)) return REP_EDGE_REJECT
   return edgeAction(RAW_BIGINT, activeRep(ctx, name, true))
 }
@@ -1856,6 +1867,7 @@ export function representationCompoundAssignAction(ctx, name) {
  * Admit a covered binding only when its frozen semantic is definitely BigInt;
  * return the raw-result write action for that binding's planned target. */
 export function representationUnaryUpdateAction(ctx, name) {
+  activeBody(ctx, 'representationUnaryUpdateAction')
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   const body = record && record.body, boundary = record && record.boundary

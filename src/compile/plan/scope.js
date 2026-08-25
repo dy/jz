@@ -25,7 +25,8 @@ import { withValueOverlay } from '../flow-state.js'
 import { warningsView } from '../../session-views.js'
 import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
-import { typedElemCtor, ternaryCtorOfRhs, MIXED_CTORS, intLevelMap } from '../../type.js'
+import { intLevelMap } from '../../type.js'
+import { TYPED_CTOR_CONFLICT, typedStorageFact } from '../../typed-provenance.js'
 import { inferSchemaId } from '../infer.js'
 import { valTypeOf } from '../../kind.js'
 import { typedElemAux } from '../../../layout.js'
@@ -65,7 +66,7 @@ export const inferModuleLetTypes = (ast) => {
   // straight to MIXED; conflicting ctors join to MIXED. We promote a global only
   // when its fixed point is a single concrete ctor — sound: every assignment then
   // provably yields that typed-array kind or nullish.
-  const MIXED = MIXED_CTORS
+  const MIXED = TYPED_CTOR_CONFLICT
   const defs = new Map()  // name → { ctors:Set<string>, refs:Set<string>, bad:bool }
   const getDef = (name) => {
     let d = defs.get(name)
@@ -104,7 +105,7 @@ export const inferModuleLetTypes = (ast) => {
   const observe = (name, rhs, sid) => {
     const d = getDef(key(name, sid))
     if (isNullishLit(rhs)) return
-    const ctor = typedElemCtor(rhs) ?? ternaryCtorOfRhs(rhs)
+    const ctor = typedStorageFact(rhs)
     if (ctor === MIXED) { d.bad = true; return }
     if (ctor) { d.ctors.add(ctor); return }
     if (typeof rhs === 'string') { d.refs.add(key(rhs, sid)); return }

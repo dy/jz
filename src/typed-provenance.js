@@ -20,6 +20,10 @@ const RECEIVER_TYPED_RESULT_METHODS = new Set([
   'fill', 'reverse', 'copyWithin', 'sort',
 ])
 
+/** Sticky disagreement. Public ctor readers collapse it to null; meet-style
+ * trackers consume it to poison a binding instead of retaining stale width. */
+export const TYPED_CTOR_CONFLICT = Symbol('typed ctor conflict')
+
 export const stripTypedView = ctor =>
   typeof ctor === 'string' && ctor.endsWith('.view') ? ctor.slice(0, -5) : ctor
 
@@ -44,33 +48,61 @@ export function typedElemCtor(rhs) {
   return isView ? rhs[1] + '.view' : rhs[1]
 }
 
+const joinCtor = (a, b) => {
+  if (a === TYPED_CTOR_CONFLICT || b === TYPED_CTOR_CONFLICT) return TYPED_CTOR_CONFLICT
+  if (a == null || b == null) return null
+  return a === b ? a : TYPED_CTOR_CONFLICT
+}
+
 /**
- * Concrete typed-storage result of `expr`, or null when it is not closed.
- * `resolveName(name)` supplies body/global binding facts and is deliberately
- * injected so this leaf has no dependency on ambient compiler state.
+ * Detailed typed-storage result of `expr`: canonical ctor string, null (open),
+ * or TYPED_CTOR_CONFLICT (closed disagreement).
  *
- * Copy-producing methods preserve species but clear view-ness; subarray makes
- * a view; mutating chain methods return the receiver and retain view-ness.
+ * `sources` is the complete provenance boundary for this cycle-free leaf:
+ * `{ name, call, field, index }`. Callers provide facts; this function owns
+ * expression traversal and method/join semantics.
  */
-export function typedResultCtor(expr, resolveName) {
-  if (typeof expr === 'string') return resolveName?.(expr) ?? null
+export function typedStorageFact(expr, sources = {}) {
+  if (typeof expr === 'string') return sources.name?.(expr) ?? null
   const direct = typedElemCtor(expr)
   if (direct) return direct
-  if (!Array.isArray(expr) || expr[0] !== '()') return null
+  if (!Array.isArray(expr)) return null
+
+  const op = expr[0]
+  if (op === '=') return typedStorageFact(expr[2], sources)
+  if (op === ',') return typedStorageFact(expr[expr.length - 1], sources)
+  if (op === '?:') return joinCtor(
+    typedStorageFact(expr[2], sources), typedStorageFact(expr[3], sources))
+  if (op === '&&' || op === '||' || op === '??') return joinCtor(
+    typedStorageFact(expr[1], sources), typedStorageFact(expr[2], sources))
+  if (op === '.' || op === '?.') return sources.field?.(expr[1], expr[2], expr) ?? null
+  if (op === '[]' || op === '?.[]') return sources.index?.(expr[1], expr[2], expr) ?? null
+  if (op !== '()') return null
 
   const callee = expr[1]
-  if (typeof callee === 'string' && callee.endsWith('.from')) {
-    const name = callee.slice(0, -5)
-    return TYPED_FAMILY_CTORS.has(name) && name.endsWith('Array') && name !== 'ArrayBuffer'
-      ? 'new.' + name : null
+  if (typeof callee === 'string') {
+    if (callee.endsWith('.from')) {
+      const name = callee.slice(0, -5)
+      if (TYPED_FAMILY_CTORS.has(name) && name.endsWith('Array') && name !== 'ArrayBuffer')
+        return 'new.' + name
+    }
+    return sources.call?.(callee, expr) ?? null
   }
-  if (!Array.isArray(callee) || callee[0] !== '.' || typeof callee[2] !== 'string') return null
+  if (!Array.isArray(callee) || (callee[0] !== '.' && callee[0] !== '?.') || typeof callee[2] !== 'string') return null
 
   const method = callee[2]
-  if (method !== 'subarray' && !FRESH_TYPED_RESULT_METHODS.has(method) && !RECEIVER_TYPED_RESULT_METHODS.has(method)) return null
-  const source = typedResultCtor(callee[1], resolveName)
+  if (method !== 'subarray' && !FRESH_TYPED_RESULT_METHODS.has(method) && !RECEIVER_TYPED_RESULT_METHODS.has(method))
+    return sources.call?.(callee, expr) ?? null
+  const source = typedStorageFact(callee[1], sources)
+  if (source === TYPED_CTOR_CONFLICT) return source
   if (!isTypedArrayCtor(source)) return null
   if (method === 'subarray') return stripTypedView(source) + '.view'
   if (FRESH_TYPED_RESULT_METHODS.has(method)) return stripTypedView(source)
   return source
+}
+
+/** Concrete ctor only; open/conflicting results both fail closed to null. */
+export function typedStorageCtor(expr, sources = {}) {
+  const fact = typedStorageFact(expr, sources)
+  return typeof fact === 'string' ? fact : null
 }

@@ -15,6 +15,7 @@ import {
 } from './kind-traits.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 import { isBlockBody, returnExprs, alwaysReturns } from './ast.js'
+import { typedStorageCtorFromContext } from './typed-context.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
 
@@ -880,8 +881,13 @@ VT['[]'] = (args) => {
   // the vectorizer). Only identity observations diverge; those folds consult
   // typedReadMaybeOob below and keep the runtime compare.
   if (typeof args[0] === 'string' && lookupValType(args[0]) === VAL.TYPED) {
-    const elem = typedCtorElemValType(
-      ctx.func.typedElem?.get(args[0]) ?? ctx.scope.globalTypedElem?.get(args[0]) ?? repOf(args[0])?.typedCtor)
+    const elem = typedCtorElemValType(typedStorageCtorFromContext(ctx, args[0], {
+      // Preserve this early value-kind phase's established source order. In
+      // particular it intentionally ignores analyzeBody's transient overlay;
+      // storage narrowing applies its own OOB veto later.
+      resolveName: name => ctx.func.typedElem?.get(name) ??
+        ctx.scope.globalTypedElem?.get(name) ?? repOf(name)?.typedCtor ?? null,
+    }))
     // With no BigInt syntax in the whole program, every accepted host typed
     // ingress is numeric (interop rejects evidence-free BigInt typed arrays),
     // so an open ctor still has a closed NUMBER element domain. Preserve the

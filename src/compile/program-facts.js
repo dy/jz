@@ -8,8 +8,8 @@ import { VAL, lookupValType, repOf, updateGlobalRep, KIND_UNIVERSE } from '../re
 import { valTypeOf, nullishArm } from '../kind.js'
 import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
 import { staticObjectProps, objLiteralSchemaId } from '../static.js'
-import { intLevelChecker, typedElemCtor } from '../type.js'
-import { ctorFromElemAux } from '../../layout.js'
+import { intLevelChecker } from '../type.js'
+import { typedStorageCtorFromContext } from '../typed-context.js'
 import { analyzeBody } from './analyze.js'
 import { withValueOverlay } from './flow-state.js'
 import { safeReads } from './analyze-scans.js'
@@ -801,6 +801,7 @@ export function observeProgramSlots(ast, opts) {
   // being written program-wide — see schema.slotTypedCtorAt).
   const observeCtor = (sid, idx, ctor) => {
     if (!ctor) return
+    ctx.schema.hasTypedSlots = true
     const f = slotFact(sid, idx)
     if (f.typedCtor === null) return
     if (f.typedCtor === undefined) f.typedCtor = ctor
@@ -897,17 +898,9 @@ export function observeProgramSlots(ast, opts) {
     return out
   }
   let teOverlay = null
-  const ctorOfValue = (expr) => {
-    if (typeof expr === 'string')
-      return teOverlay?.get(expr) ?? ctx.scope.globalTypedElem?.get(expr) ?? null
-    const c = typedElemCtor(expr)
-    if (c) return c
-    if (Array.isArray(expr) && expr[0] === '()' && typeof expr[1] === 'string') {
-      const f = ctx.funcs.map?.get(expr[1])
-      if (f?.sig?.ptrKind === VAL.TYPED && f.sig.ptrAux != null) return ctorFromElemAux(f.sig.ptrAux)
-    }
-    return null
-  }
+  const ctorOfValue = expr => typedStorageCtorFromContext(ctx, expr, {
+    resolveName: name => teOverlay?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null,
+  })
   // Census continues INTO a nested closure for the dict-`[]=` / Map-`.set()`
   // write shapes ONLY — a write inside a closure body (e.g.
   // `[0].forEach(() => m.set('y','oops'))`) is otherwise invisible to the

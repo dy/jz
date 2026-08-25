@@ -73,6 +73,7 @@ import {
   recordClosureCallRepresentations, representationBindingWriteAction, representationCallArgAction, representationJoinArmAction, representationResultTagRequired, representationReturnAction,
   representationComputedExprAction, representationCompoundAssignAction, representationUnaryUpdateAction, representationStorageWriteAction, representationProgramHasBigint,
 } from './representation-plan.js'
+import { plannedTypedStorageCtor, plannedTypedStorageInfo } from './typed-storage-plan.js'
 
 // Ops whose own table handler needs its OUTER node (`self`) to ask the plan
 // "should my own value be boxed" — JOIN_OPS (C5b precedent) plus, funded-
@@ -4608,7 +4609,7 @@ function tryDirectClosureCall(callee, parsed) {
     const numeric = valTypeOf(parsed.normal[i]) === VAL.NUMBER
     row[i] = row[i] === undefined ? numeric : (row[i] && numeric)
     const arg = parsed.normal[i]
-    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.func.typedElem?.get(arg) ?? null) : null
+    const ctor = valTypeOf(arg) === VAL.TYPED ? plannedTypedStorageCtor(ctx, arg) : null
     if (tcRow[i] === undefined) tcRow[i] = ctor
     else if (tcRow[i] !== ctor) tcRow[i] = null
   }
@@ -4674,7 +4675,7 @@ function recordClosureTableCallSite(arrName, argNodes) {
     const arg = argNodes[i]
     const numeric = valTypeOf(arg) === VAL.NUMBER
     e.numRow[i] = e.numRow[i] === undefined ? numeric : (e.numRow[i] && numeric)
-    const ctor = typeof arg === 'string' && valTypeOf(arg) === VAL.TYPED ? (ctx.func.typedElem?.get(arg) ?? null) : null
+    const ctor = valTypeOf(arg) === VAL.TYPED ? plannedTypedStorageCtor(ctx, arg) : null
     e.tcRow[i] = e.tcRow[i] === undefined ? ctor : (e.tcRow[i] !== ctor ? null : e.tcRow[i])
   }
   e.minArgc = e.minArgc === undefined ? n : Math.min(e.minArgc, n)
@@ -5357,10 +5358,7 @@ function emitTagInstanceof(a, rhs) {
  *  carry the SAME 'new.X' / 'new.X.view' string shape (layout.js's typedElemAux
  *  convention), so one extractor covers both. */
 function typedCtorNameOf(a) {
-  const ctor = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && a[1].startsWith('new.') ? a[1]
-    : typeof a === 'string' ? (repOf(a)?.typedCtor ?? null) : null
-  if (ctor == null) return null
-  return ctor.endsWith('.view') ? ctor.slice(4, -5) : ctor.slice(4)
+  return plannedTypedStorageInfo(ctx, a)?.name ?? null
 }
 
 // Element ctors whose spec [[Set]] numeric conversion is a MODULAR reduction
@@ -5387,10 +5385,8 @@ const WRAP_TRUNCATING_TYPED_CTORS = new Set([
 // true iff the receiver is PROVEN a wrap-truncating (non-float, non-
 // clamped, non-BigInt) typed-array element kind.
 function wrapTruncatingTypedElemName(name) {
-  const raw = ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null
-  if (raw == null) return false
-  const stripped = raw.endsWith('.view') ? raw.slice(4, -5) : raw.slice(4)
-  return WRAP_TRUNCATING_TYPED_CTORS.has(stripped)
+  const info = plannedTypedStorageInfo(ctx, name)
+  return info != null && WRAP_TRUNCATING_TYPED_CTORS.has(info.name)
 }
 
 function emitTypedInstanceof(a, rhs) {
@@ -7060,7 +7056,7 @@ export const emitter = {
         // the guard costs per LOOP ENTRY on re-entered inner nests (fft measured
         // 1.35x with calls, parity without); unresolved receivers keep $__len.
         const len64Of = (recv) => {
-          const aux = typedElemAux(ctx.func.typedElem?.get(recv))
+          const aux = plannedTypedStorageInfo(ctx, recv)?.aux
           if (aux == null) {
             inc('__len')
             return ['i64.extend_i32_u', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(recv))]]]

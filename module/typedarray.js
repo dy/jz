@@ -13,13 +13,14 @@ import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
-import { typedIdxProven, typedResultCtor, idxKey } from '../src/type.js'
+import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
+import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
 
 const _NAN_BITS = nanPrefixHex()
 
@@ -634,8 +635,8 @@ export default (ctx) => {
   // Owned TYPED: retag as BUFFER at same offset — the byteLen header is shared.
   // TYPED view (incl. DataView): BUFFER at descriptor[8] (root parent data offset).
   registerGetter('.buffer', (obj) => {
-    if (typeof obj === 'string') {
-      const ctor = ctx.func.typedElem?.get(obj)
+    {
+      const ctor = plannedTypedStorageCtor(ctx, obj)
       if (ctor === 'new.ArrayBuffer') return asF64(emit(obj))
       if (ctor?.startsWith('new.')) {
         const isView = ctor.endsWith('.view')
@@ -654,8 +655,8 @@ export default (ctx) => {
   // .byteLength — BUFFER: raw __len. Owned TYPED: elemCount * stride.
   // View TYPED (incl. DataView): descriptor[0], via the __byte_length fallback.
   registerGetter('.byteLength', (obj) => {
-    if (typeof obj === 'string') {
-      const ctor = ctx.func.typedElem?.get(obj)
+    {
+      const ctor = plannedTypedStorageCtor(ctx, obj)
       if (ctor === 'new.ArrayBuffer') {
         return typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]]], 'f64')
       }
@@ -678,8 +679,8 @@ export default (ctx) => {
 
   // .byteOffset — owned: 0. View: descriptor[4] - descriptor[8].
   registerGetter('.byteOffset', (obj) => {
-    if (typeof obj === 'string') {
-      const ctor = ctx.func.typedElem?.get(obj)
+    {
+      const ctor = plannedTypedStorageCtor(ctx, obj)
       if (ctor?.endsWith('.view')) {
         const t = tempI32('bo')
         return typed(['block', ['result', 'f64'],
@@ -1227,24 +1228,14 @@ export default (ctx) => {
   /** Resolve element type + view-ness for a known TypedArray expression.
    *  Returns { et, isView, isBigInt } or null. Delegates constructors,
    *  aliases, copy-producing chains, receiver-returning mutators, and
-   *  subarray views to the shared typedResultCtor provenance authority. */
+   *  subarray views to the frozen TypedStoragePlan authority. */
   const resolveElem = (arr) => {
-    // Nested receiver `arr[i]` where `arr`'s elements are typed arrays of a known
-    // ctor (`Array.from(n, () => new Float32Array())` — codec channelData). The i-th
-    // element IS that owned typed array; emit(arr) already loads its pointer.
-    const nestedCtor = Array.isArray(arr) && arr[0] === '[]' && arr.length === 3 && typeof arr[1] === 'string'
-      ? ctx.func.localReps?.get(arr[1])?.arrayElemTypedCtor : null
-    const ctor = nestedCtor || typedResultCtor(arr, name =>
-      ctx.func.typedElem?.get(name) ?? ctx.scope.globalTypedElem?.get(name) ?? null)
-    if (!ctor) return null
-    const isView = ctor.endsWith('.view')
-    const name = isView ? ctor.slice(4, -5) : ctor.slice(4)
-    const et = TYPED_ELEM_CODE[name]
-    if (name === 'Float16Array') setLinkDemand('f16')
-    if (name === 'Uint8ClampedArray') setLinkDemand('clamped')
-    return et == null ? null : { et, isView, name,
-      isBigInt: name === 'BigInt64Array' || name === 'BigUint64Array',
-      isF16: name === 'Float16Array', isClamped: name === 'Uint8ClampedArray' }
+    const info = plannedTypedStorageInfo(ctx, arr)
+    if (!info) return null
+    if (info.isF16) setLinkDemand('f16')
+    if (info.isClamped) setLinkDemand('clamped')
+    return { et: info.elem, isView: info.isView, name: info.name,
+      isBigInt: info.isBigInt, isF16: info.isF16, isClamped: info.isClamped }
   }
 
   // Canonical element accessors — the ONE home for kind-aware load/store IR.

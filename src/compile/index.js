@@ -49,6 +49,7 @@ import { strengthReduceLoopDivMod } from './loop-divmod.js'
 import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
 import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationResultRawBigint, representationResultTagRequired, representationReturnAction } from './representation-plan.js'
+import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep } from '../param-reps.js'
@@ -846,9 +847,12 @@ function analyzeFuncForEmit(func, programFacts) {
   // guarantee; ctx.closure.make reads astClosurePlan back at each closure
   // literal's own emission.
   mintClosureEnvPlans(body)
+  // TypedStoragePlan snapshots the settled receiver/result/storage ctor facts.
+  // Every typed emitter consumes this frozen plan rather than re-reading the
+  // mutable inference maps with its own priority chain.
+  mintTypedStoragePlan(ctx, func, sig, body, ctx.func.localReps)
   // RepresentationPlan v2 Slice 1: freeze semantic kinds, current carriers,
   // normalized targets, and edge actions after every local fact settles.
-  // Emission does not consume it in this shadow slice.
   if (representationProgramHasBigint(ctx))
     mintRepresentationPlan(ctx, func, sig, body, ctx.func.localReps, {
       exported: isExported(func),
@@ -1972,12 +1976,13 @@ function analyzeClosureBodyForEmit(cb) {
     // loop/closure plans here under this body's final reps.
     mintLoopPlans(cb.body)
     mintClosureEnvPlans(cb.body)
+    const repSig = {
+      name: cb.name,
+      params: cb.params.map(name => ({ name, type: 'f64' })),
+      results: ['f64'],
+    }
+    mintTypedStoragePlan(ctx, cb, repSig, cb.body, ctx.func.localReps)
     if (representationProgramHasBigint(ctx)) {
-      const repSig = {
-        name: cb.name,
-        params: cb.params.map(name => ({ name, type: 'f64' })),
-        results: ['f64'],
-      }
       const forceTaggedResult = ctx.scope.taggedClosureResultBodies?.has(cb.body) === true ||
         ctx.scope.taggedClosureResultShapes?.has(JSON.stringify(cb.body)) === true
       mintRepresentationPlan(ctx, cb, repSig, cb.body, ctx.func.localReps, {

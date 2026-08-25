@@ -2,8 +2,8 @@
  * WASM local typing + typed-array metadata + integer proofs.
  *
  * - exprType: i32 vs f64 for locals/params
- * - typedElemCtor / ternaryCtorOfRhs: detect typed-array ctor from an AST rhs
- *   (the pure PTR.TYPED aux codec lives in layout.js)
+ * - typedElemCtor: direct typed-array construction (composite provenance lives
+ *   in typed-provenance.js; the pure PTR.TYPED aux codec lives in layout.js)
  * - scanBoundedLoops / inBoundsCharCodeAt: charCodeAt i32 contract proof
  * - loop unroll helpers: smallConstForTripCount, cloneWithSubst, …
  * - intCertainMap / intExprChecker: integer-shaped binding analysis
@@ -47,8 +47,9 @@ import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode
 import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange, constIntExpr } from './static.js'
 import { typedElemAux } from '../layout.js'
-import { typedElemCtor, typedResultCtor } from './typed-provenance.js'
-export { typedElemCtor, typedResultCtor } from './typed-provenance.js'
+import { typedElemCtor } from './typed-provenance.js'
+import { typedStorageCtorFromContext } from './typed-context.js'
+export { typedElemCtor } from './typed-provenance.js'
 
 /** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
  *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.
@@ -761,36 +762,10 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   return keep
 }
 
-/** Sentinel returned by `ternaryCtorOfRhs` when ternary branches resolve to
- *  different typed-array ctors — caller should drop any cached entry rather
- *  than leave a stale ctor (which would lock the wrong store width). */
-export const MIXED_CTORS = Symbol('MIXED_CTORS')
-
-
-/** A `?:`/`&&`/`||` expression — value depends on a condition, so its ctor
- *  must be derived by walking branches (handled by `ternaryCtorOfRhs`). */
-export const isCondExpr = e => Array.isArray(e) && (e[0] === '?:' || e[0] === '&&' || e[0] === '||')
-
-/** Walk a `?:`/`&&`/`||` expression and return:
- *  - a single ctor string when every branch resolves to the same ctor,
- *  - MIXED_CTORS when branches resolve to different ctors,
- *  - null when no branch resolves (caller's behavior unchanged).
- *
- *  `resolveName(name)` (optional) maps a *variable-name* branch to its known
- *  typed-array ctor — without it a branch like `cond ? bufA : bufB` (two typed
- *  bindings rather than two `new` literals) resolves to null and the binding
- *  falls back to the dynamic `$__typed_idx` read path. The classic ping-pong
- *  `let cur = flip ? a : b; cur[i]` needs this to keep fast typed loads. */
-export function ternaryCtorOfRhs(rhs, resolveName) {
-  if (typeof rhs === 'string') return resolveName?.(rhs) ?? null
-  if (!Array.isArray(rhs)) return null
-  const op = rhs[0]
-  const lo = op === '?:' ? 2 : (op === '&&' || op === '||') ? 1 : 0
-  if (!lo) return null
-  const a = ternaryCtorOfRhs(rhs[lo], resolveName) ?? typedElemCtor(rhs[lo])
-  const b = ternaryCtorOfRhs(rhs[lo + 1], resolveName) ?? typedElemCtor(rhs[lo + 1])
-  return a && b ? (a === b ? a : MIXED_CTORS) : (a || b || null)
-}
+/** A value join whose typed-storage fact must be met across arms by the
+ * shared typed-provenance authority. */
+export const isCondExpr = e => Array.isArray(e) &&
+  (e[0] === '?:' || e[0] === '&&' || e[0] === '||' || e[0] === '??')
 
 // =============================================================================
 // charCodeAt in-bounds proof
@@ -2152,9 +2127,7 @@ export function isTerminator(body) {
 // (`DX[i]` with `let DX = new Int32Array(...)` at module scope) resolves its element type
 // instead of defaulting to f64. Guard against local shadows / dynamic rewrites (cf. kind.js).
 const typedElemCtorOf = (name, locals) =>
-  ctx.func.localTypedElemsOverlay?.get(name) ?? ctx.func.typedElem?.get(name)
-    ?? (!locals?.has?.(name) && !ctx.types?.dynWriteVars?.has?.(name)
-      ? ctx.scope?.globalTypedElem?.get(name) : undefined)
+  typedStorageCtorFromContext(ctx, name, { localNames: locals })
 
 // An expression whose i32 value carries the unsigned [0, 2^32) magnitude (not a signed i32):
 // `>>>`, an unsigned-result call, or a Uint32Array read (aux 5 — the only typed array whose

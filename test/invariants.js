@@ -8,7 +8,7 @@
  *     templates — no hand-rolled discriminator literals in src/ or module/.
  */
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
 import { compile } from '../index.js'
@@ -18,6 +18,7 @@ import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as 
 import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
 import { onKernel } from './_matrix.js'
+import { representationStorageWriteAction } from '../src/compile/representation-plan.js'
 
 // === Helper: compile with WAT output for structural inspection ===
 const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
@@ -236,6 +237,27 @@ test('layout: NaN-box carrier i64 hex only via layout.js helpers', () => {
   ok(violations.length === 0, violations.length
     ? `use layout.js helpers (nanPrefixHex, ssoBitI64Hex, sliceBitI64Hex, …):\n${violations.join('\n')}`
     : 'no hand-rolled layout hex')
+})
+
+test('architecture: missing active BigInt RepresentationPlan fails closed', () => {
+  const plans = { representations: new WeakMap(), representationData: new WeakMap() }
+  plans.representationData.set(plans, { bigint: true })
+  const fake = { plans, func: { current: { name: 'missing-plan' } } }
+  throws(() => representationStorageWriteAction(fake, 1), /RepresentationPlan active body missing/)
+})
+
+test('architecture: typed emitters consume TypedStoragePlan, not live ctor maps', () => {
+  const files = [
+    'module/array.js', 'module/typedarray.js',
+    'src/compile/emit.js', 'src/compile/emit-assign.js',
+  ]
+  const violations = []
+  for (const rel of files) {
+    const src = readFileSync(join(ROOT, rel), 'utf8')
+    if (/ctx\.func\.typedElem[^\n]*\.get\(|ctx\.scope\.globalTypedElem[^\n]*\.get\(/.test(src))
+      violations.push(rel)
+  }
+  is(violations.join(','), '', 'emit-time ctor decisions must route through TypedStoragePlan')
 })
 
 test('layout: i64Hex is self-compile-safe across the full 64-bit range', async () => {
