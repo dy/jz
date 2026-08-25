@@ -116,6 +116,12 @@ Run one file:
 node test/strings.js
 ```
 
+Release semantics also run `npm run test:262` and
+`npm run test:262:builtins`. Negative-parse acceptance is an exact path set,
+not a count ceiling: any change must update and explain
+`test/test262-neg-accepts.json`; residual entries are blockers/inventory, not
+language extensions.
+
 ## Performance & size invariant
 
 JZ makes a load-bearing promise: **on the bench corpus, JZ wasm is at least as

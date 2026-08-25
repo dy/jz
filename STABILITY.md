@@ -21,10 +21,13 @@ answers, exceptions, operand order, and effects at every optimization level.
 Where the compiler cannot do so, it must reject rather than silently choose a
 representation or value. Any unlisted silent wrong value is release-blocking.
 
-The parser may currently accept programs that ECMAScript early-error rules
-would reject. Invalid source has no compatibility guarantee and may begin
-rejecting in any release; closing those parser holes is a v1 release gate, not
-a supported extension.
+The parser now validates structural scopes/targets/control flow plus lexical
+numeric, string, template, RegExp, identifier, class, and module errors before
+jzify, natively and in `jz.wasm`. On the pinned test262 language corpus it
+rejects 3,858 applicable negative-parse files and still accepts exactly 187;
+every residual path is family-classified and exact-set-gated in
+`test/test262-neg-accepts.json`. Those residuals have no compatibility guarantee
+and remain a v1 release gate, never a supported extension.
 
 ## Package surface (`jz` on npm)
 
