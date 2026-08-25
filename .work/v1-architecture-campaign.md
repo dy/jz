@@ -116,9 +116,40 @@ declaration files (2,430,009 bytes packed, 8,269,220 unpacked). Full publish
 remains correctly blocked by stale claims evidence; this slice does not pretend
 to close that later gate.
 
+## Slice 4 — indexed typed-storage plan authority
+
+Typed receiver/result/storage provenance now has one expression grammar.
+`typedStorageFact` handles constructors, aliases, calls, fields, nested indexed
+storage, value-preserving assignments, copy/view/mutator method chains, and
+`?:`/`&&`/`||`/`??` joins. Its result is deliberately three-state: one ctor,
+open, or sticky conflict. Keeping conflict distinct caught and preserved watr's
+heterogeneous `Uint8/16/32/BigUint64Array` lane builder; collapsing conflict to
+“unknown” retained stale width and made i64x2 encoding throw.
+
+Analysis supplies phase-appropriate facts through `typed-context.js`. Before
+emission, every ordinary function, closure, and `__start` publishes a sparse
+TypedStoragePlan. It retains the already-detached analysis views, shares call
+and ctor metadata once per program, and snapshots only typed field keys when
+the slot census says such fields exist; it does not duplicate every AST node or
+all names. Array/TypedArray reads, writes, getters, `instanceof`, closure-call
+lattices, and loop length guards consume the plan. A structural test forbids
+those emitters from returning to live `typedElem`/`globalTypedElem` lookup
+chains. RepresentationPlan's active emit accessors now throw on a missing
+BigInt body plan instead of silently answering NO_BIGINT.
+
+Validation: matrix default/O0/O3 3657/3656/0/1 and WASI
+3656/3655/0/1; wasm-hosted 2910/2909/0/1; functional self-compile 21/21;
+parity 3/3; oracle 14/14; ratchet and fixpoint 10/10; watr 37/37. test262 is
+unchanged at language 3003 pass / 0 fail / 54 xfail / 2507 neg-reject / 1538
+neg-accept and builtins 853 / 0 / 86 xfail. Paired compile trials showed no
+stable slowdown (run-to-run noise crossed parity); machine-independent output
+ratchets stayed green. `dist/jz.wasm` is 17,010.0 kB (+8.2 kB from Slice 2).
+The 161-module full jz×jz probe still reaches exactly 2^32 bytes and traps
+(heap i32 -32); this is architecture authority, not the memory close.
+
 ## Remaining order
 
-Next: indexed ProgramIndex/result provenance consolidation, test262 early-error contract,
-4 GiB attribution/closure, fresh performance evidence + general loss fixes,
+Next: test262 early-error contract, 4 GiB attribution/closure,
+fresh performance evidence + general loss fixes,
 then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
