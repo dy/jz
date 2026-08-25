@@ -642,3 +642,70 @@ RepresentationPlan now applies the same authority discipline at emission: in
 a BigInt-capable program, an absent active body plan throws an internal
 invariant error. It no longer silently substitutes NO_BIGINT, which could turn
 a lifecycle bug into an accepted wrong carrier.
+
+## Shape #7 candidate (2026-08-25, watr memory64 CI still red past Shape #6 residuals CLOSED)
+
+Re-verified against current main (post 5bd75ce4, `fix/v1-shape6-residuals`
+merged): a throwaway `/Users/div/projects/watr` clone, `dist/watr.wasm` built
+fresh via `node cli.js watr.js -O3 --memory 4096 -o dist/watr.wasm`,
+`WATR_WASM=1 npm test` — 626 total, 600 pass, 4 fail. One fail
+("error on unknown instruction: should throw") is an unrelated case-level
+assertion. The other three are the box-pointer-bits signature: `memory64.wast`
+(data segment 0 offset 9221823924769379472 = 0x7ffa80001113d490),
+`float_memory64.wast` (offset 9221823924662201080 = 0x7ffa80000ab06af8, both
+exact CI offsets this fixpoint already names) and `call_indirect64.wast`
+("table index is out of bounds" — same corruption class, a table64 index
+instead of a data offset). So Shape #6's residual-2 fix (closure/dispatch-
+table storage read, CLOSED above) did not close watr's own CI shape; a
+VARIANT survives it.
+
+Minimal repro (jz-only, no watr; verified FAIL at O0/O2/O3, pinned KNOWN-WRONG
+in test/data.js immediately after the "shape #6 closure close" pin):
+
+```js
+function leb(n) { n >>= 7n; return n }
+const HANDLER = { i64: (nodes) => leb(nodes.shift()) }
+function encode(imm, nodes) { return HANDLER[imm](nodes) }
+export let f = () => {
+  let nodes = []
+  nodes.push(900n)
+  return encode("i64", nodes)
+}
+```
+
+`f()` should return `7n` (900n >> 7n). It returns a plain `Number` instead —
+the reassigned param never round-trips as BigInt at all. Decoded against
+layout.js's own NaN-box fields (undo the one `>>= 7n` to recover every bit but
+the low 7): O0/O2 leak `0x7ffa800000000480`, O3 leaks `0x7ffa800000000500` —
+both `(bits >> TAG_SHIFT) & TAG_MASK === 5 === PTR.BIGINT` exactly, aux 0, a
+small heap byte offset (~1152/1280) — the box POINTER used as the i64 PAYLOAD,
+un-unboxed, the same disease every Shape #6 pin fixes.
+
+**Miss analysis.** The closest landed layer is Shape #6 residual 2 ("Closure/
+dispatch-table storage read", CLOSED 2026-08-24, this file above): generic
+closure planning builds a closure-LOCAL storage census so that `let n =
+nodes.shift(); n >>= 7n; return n` — read, bind, reassign, all inside ONE
+closure body — materializes. Real watr never takes that shape. `compile.js`'s
+`i64:` HANDLER entry (~1050, reached via `HANDLER[imm](nodes, ctx, op, out)`
+computed dispatch) is `(n, c, op, out) => { encode.i64(n.shift(), out) }` —
+the storage-read is forwarded INLINE, unbound, straight into a SEPARATE named
+function (`encode.js`'s `i64()`, ~118-136) whose OWN LEB128 loop reassigns ITS
+OWN param (`n >>= 7n`). No local ever exists for the closure census to mark,
+because the value never stops inside the closure at all. Differential
+probing (verbatim CLOSED pin passes; changing only "reassign inside the
+closure" → "forward inline into a second function that reassigns its own
+param" flips it to FAIL at every level) isolates this cleanly. It goes one
+step further: even a bare BigInt LITERAL forwarded the identical way (closure
+receives it as its own param, forwards to a second function via the same
+computed-key dispatch, no storage involved anywhere) fails identically — so
+"storage-read" is only one producer of the real gap, which is closure-
+PARAMETER materialization not surviving a FORWARDED call across a computed-
+dispatch boundary. (Secondary, not this pin: the same inline-forward through
+one plain NAMED function, no closure at all, passes at O0/O2 but fails at O3
+— an adjacent, narrower optimizer-only gap the closure shape doesn't need to
+hit, since the closure shape is wrong at every level unconditionally.) Root
+fix needs representation-plan.js's closure-materialization subsystem
+(closureBoxParams/closureCallNeedsBox/mintRepresentationPlan(...,{generic:
+true})) to prove a closure's OWN param is boxed-by-construction across a
+FORWARDED call argument, not only across its own local's storage-read —
+comparably sized to residual-2's own fix, not a one-line extension of it.

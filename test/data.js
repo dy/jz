@@ -2172,6 +2172,63 @@ test('bigint: storage-read forwarded through a closure/dispatch-table call (shap
   }
 })
 
+test('bigint: storage-read forwarded OUT of a dispatch-table closure into a second function\'s reassigned param (shape #7 candidate — KNOWN-WRONG)', () => {
+  // Sibling of the pin above, NOT covered by its fix. That fix (generic closure
+  // planning's closure-local storage census) recognizes `let n = nodes.shift();
+  // n >>= 7n` when the storage-read, the LOCAL BINDING, and the compound
+  // reassignment all live in the SAME closure body. Real watr never does this:
+  // compile.js's `i64:` HANDLER entry (compile.js ~1050, `HANDLER[imm](nodes,
+  // ctx, op, out)` computed dispatch) reads `encode.i64(n.shift(), out)` --
+  // the storage-read is forwarded INLINE, unbound, straight into a SEPARATE
+  // named function (encode.js's `i64()`, ~118-136), which reassigns its OWN
+  // param in its LEB128 loop (`n >>= 7n`). No local ever exists inside the
+  // closure for the storage census to mark. Isolated further (differential
+  // probing, not yet landed anywhere): the storage-read isn't even essential --
+  // a bare BigInt LITERAL forwarded the identical way (closure forwards its
+  // OWN param to a second function through a computed-key dispatch call) fails
+  // identically, so the real gap is closure-PARAMETER materialization across a
+  // forwarded call, of which storage-read-sourced values are one producer.
+  // Wrong at EVERY optimization level (checked live, O0 included -- a plan-time
+  // gap, not an optimizer artifact), and the wrong TYPE itself is the tell:
+  // leb's reassigned param never round-trips as a BigInt at all, it comes back
+  // a plain Number (raw i64 bits reinterpreted as f64 at the boundary). Decoded
+  // against layout.js's own NaN-box fields (undoing the one `>>= 7n` exactly
+  // recovers every bit except the low 7, harmless for identifying the tag):
+  // O0/O2 leak 0x7ffa800000000480, O3 leaks 0x7ffa800000000500 -- both decode
+  // to TAG_SHIFT=47 tag 5 (PTR.BIGINT exactly, layout.js's own PTR.BIGINT=5),
+  // aux 0, a heap byte offset near 1152/1280: the box POINTER used as the i64
+  // PAYLOAD, the identical corruption class the whole Shape #6 fixpoint fixes,
+  // never unboxed at this one forwarded-call-argument boundary. This is the
+  // watr memory64 CI signature that survives current main: /test/official/
+  // memory64.wast data-segment offset 9221823924769379472 (0x7ffa80001113d490)
+  // and /test/official/float_memory64.wast offset 9221823924662201080
+  // (0x7ffa80000ab06af8) -- both from watr's `(memory (data ...))` desugar and
+  // its explicit `(data (i64.const N) ...)` encode path, both routing through
+  // this exact HANDLER[imm] -> encode.i64 forwarding seam; a third official
+  // test, call_indirect64.wast, fails alongside them ("table index is out of
+  // bounds") -- same seam, a table64 index instead of a data offset.
+  // FLIP CONDITION: once closure-forwarded param materialization lands (the
+  // plan proves a closure's OWN param is boxed-by-construction when every
+  // call site's argument is a provably-closed BigInt, THROUGH a computed-key
+  // dispatch call, and carries that proof into a forwarded call argument's
+  // callee-side param decision), replace the `typeof` reject below with
+  // `is(e.f(), 7n, ...)` matching the pin above.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function leb(n) { n >>= 7n; return n }
+      const HANDLER = { i64: (nodes) => leb(nodes.shift()) }
+      function encode(imm, nodes) { return HANDLER[imm](nodes) }
+      export let f = () => {
+        let nodes = []
+        nodes.push(900n)
+        return encode("i64", nodes)
+      }
+    `, { optimize }).exports
+    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: closure-forwarded storage-read into a second function's reassigned param crosses as raw box-pointer bits (Number), never a BigInt`)
+  }
+})
+
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
   // The retired sentinel export lane could not be disabled until these
   // producer shapes materialized through the generic tagged decode; doing so
