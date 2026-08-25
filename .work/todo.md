@@ -22,8 +22,11 @@ carrier types, adds declarations for every subpath, and keeps the unversioned
 raw Wasm ABI explicitly experimental. Slice 4 makes typed storage one
 three-state provenance grammar plus a sparse frozen per-body plan; emitters no
 longer read live ctor maps, and missing active BigInt plans are invariant
-failures. Final gates are recorded in the campaign doc. Next: test262 early
-errors, 4 GiB closure, fresh perf claims, generic native target. No push by the agent.
+failures. Slice 5 adds native/kernel early-error validation and reduces
+accepted-invalid test262 parses 1538→187; the residual set is now path-exact,
+family-classified, and still a v1 blocker. Final gates are recorded in the
+campaign doc. Next: close/defer those 187 explicitly, 4 GiB closure, fresh perf
+claims, generic native target. No push by the agent.
 
 ## CLOSED (2026-08-22): opaque `.length` + `Array.from` property semantics
 Source commit e867c3af. Unresolved `.length` now remains an ordinary f64

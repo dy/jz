@@ -147,9 +147,40 @@ ratchets stayed green. `dist/jz.wasm` is 17,010.0 kB (+8.2 kB from Slice 2).
 The 161-module full jz×jz probe still reaches exactly 2^32 bytes and traps
 (heap i32 -32); this is architecture authority, not the memory close.
 
+## Slice 5 — early-error validation and exact negative ledger
+
+Raw parse negatives now compile in their original Script/Module context rather
+than under the runner's synthetic `_run` wrapper. `src/early-errors.js` validates
+scope/redeclaration, parameters and patterns, assignment/update targets,
+control flow and labels, class/private environments, exports, and the lexical
+spellings jessie's value AST erases (numeric/BigInt separators, escapes,
+templates, RegExp, Unicode identifiers, hashbangs, and contextual tokens).
+Validation is part of `parse()`, so bundled modules, native compilation, and
+`jz.wasm` cannot drift. Sloppy duplicate simple parameters are normalized with
+the last binding authoritative, including O0, instead of leaking duplicate WAT
+params.
+
+Applicable test262 negative parses moved from 2507 reject / 1538 accept to
+3858 reject / 187 accept while retaining 3003 language passes and zero failures
+(an 88% reduction in accepted-invalid source). The remaining 187 are exact
+path-gated and grouped by parser-context loss in
+`test/test262-neg-accepts.json`; a one-for-one swap now fails, unlike the old
+one-way count ceiling. They remain explicit v1 blockers, not a claimed zero.
+
+Validation: matrix default/O0/O3 3659/3658/0/1 and WASI
+3658/3657/0/1; wasm-hosted 2912/2911/0/1; functional self-compile 21/21;
+parity 3/3; oracle 14/14; ratchet/fixpoint 10/10; language test262
+3003/0/54 xfail with the 3858/187 negative split; builtins 853/0/86 xfail.
+The parser scan raises parse-only time on small sources but paired total compile
+trials stayed near parity; the fresh self compiler remains a strict win
+(0.888x locally). The machine-sensitive warm pin is still red at 1.06–1.09x
+against its unchanged 1.03 cap, so no performance claim is made or cap loosened.
+`dist/jz.wasm` is 17,258.9 kB. The 162-module full jz×jz probe remains at
+exactly 2^32 bytes and traps (heap i32 -24).
+
 ## Remaining order
 
-Next: test262 early-error contract, 4 GiB attribution/closure,
-fresh performance evidence + general loss fixes,
+Next: close or explicitly defer the 187 parser-context residuals, then 4 GiB
+attribution/closure, fresh performance evidence + general loss fixes,
 then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
