@@ -32,7 +32,7 @@ import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvar
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
-import { i64Hex, decodePtrAux, decodePtrType } from '../../layout.js'
+import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintResultShape } from '../kind.js'
 import { intLiteralValue } from '../static.js'
@@ -3061,14 +3061,33 @@ export default function compile(ast, profiler, regionHooks) {
   // `$__mkptr`/`$__mkptr_*` call site found here counts, unconditionally.
   const usedSchemaIds = new Set()
   {
+    // No RegExp anywhere in this scan — deliberately. This code is compiler-
+    // internal (src/compile/index.js), and the KERNEL (dist/jz.wasm) is jz's
+    // own compiler self-compiled — so THIS scan is itself self-hosted and
+    // runs INSIDE the kernel every time it compiles ANY program. A regex-
+    // literal version of this exact scan passed every native/JS-hosted check
+    // but broke kernel-only ('kernel O0') behavior — some self-hosted-vs-V8
+    // regex discrepancy this file had never exercised before (grep confirms
+    // zero prior RegExp use in this file). Plain charCodeAt scanning is the
+    // same idiom src/wat/assemble.js's stripRenameRuns and src/early-errors.js/
+    // src/static-data.js's own hex decoding already rely on inside the
+    // self-hosted kernel — proven safe, not a new risk.
+    const isDigit = (c) => c >= 48 && c <= 57  // '0'-'9'
+    const isHexDigit = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)  // 0-9 A-F a-f
+    const allDigits = (s, i, end) => { if (i >= end) return false; for (; i < end; i++) if (!isDigit(s.charCodeAt(i))) return false; return true }
+    const allHexDigits = (s, i, end) => { if (i >= end) return false; for (; i < end; i++) if (!isHexDigit(s.charCodeAt(i))) return false; return true }
     // i32.const operands are JS numbers when built directly by IR-construction
     // code (mkPtrIR) but plain numeric STRINGS when a hand-written WAT-text
     // stdlib template (e.g. module/core.js's __throw_property_nullish) comes
     // back through the WAT parser untouched by any literal-normalizing pass —
     // accept either.
-    const litI32 = (n) => Array.isArray(n) && n[0] === 'i32.const' &&
-      (typeof n[1] === 'number' ? n[1] : typeof n[1] === 'string' && /^-?\d+$/.test(n[1]) ? +n[1] : null)
-    const MKPTR_VARIANT = /^\$__mkptr_(\d+|d)_(\d+|d)_(\d+|d)$/
+    const litI32 = (n) => {
+      if (!Array.isArray(n) || n[0] !== 'i32.const') return null
+      if (typeof n[1] === 'number') return n[1]
+      if (typeof n[1] !== 'string' || !n[1].length) return null
+      const neg = n[1].charCodeAt(0) === 45  // '-'
+      return allDigits(n[1], neg ? 1 : 0, n[1].length) ? +n[1] : null
+    }
     // mkPtrIR (src/ir.js) folds a construction straight to `(f64.const nan:HHHHHHHHLLLLLLLL)`
     // — 8 hex digits of type+aux (hi word) + 8 of offset (lo word), see layout.js's
     // i64Hex/ptrBits — whenever ALL THREE args are compile-time literals. That is
@@ -3081,8 +3100,6 @@ export default function compile(ast, profiler, regionHooks) {
     // fast path (and narrow.js's devirt re-boxing of an already-unboxed offset —
     // this test's `chase`) OR a bare `i64.const 0xHHHHHHHH00000000` "box prefix"
     // against a dynamic offset instead — same hi word, no `nan:` text wrapper.
-    // decodePtrAux (layout.js) is the ONE place this hi-word aux extraction is
-    // already defined — reused here rather than re-deriving the bit math.
     // Anchored to the exact node shapes that carry the literal (not "any string
     // leaf anywhere" — an unrelated i64 bit-mask constant elsewhere in the
     // module, coincidentally 16 hex digits, would over-match and cost real
@@ -3100,15 +3117,36 @@ export default function compile(ast, profiler, regionHooks) {
     // packs something else entirely into the identical bit position, and a
     // hoisted/pooled literal of THEIRS would otherwise false-match the same
     // 16-hex-digit shape and cost bytes on dotprod/wav's strict win gate.
-    const NAN_PTR_LIT = /^(?:nan:)?0x([0-9A-Fa-f]{8})[0-9A-Fa-f]{8}$/
+    // Optional "nan:" prefix, then "0x", then exactly 16 hex digits (8 hi + 8
+    // lo — layout.js's i64Hex format), nothing else. Returns the FULL 64-bit
+    // value as a BigInt, or null. BigInt, not a JS number split into a "hi
+    // word": layout.js's own comment ("BigInt views of the NaN-box fields —
+    // the carrier is 64-bit, JS bit-ops are 32-bit") is exactly the trap
+    // decodePtrType/decodePtrAux (also layout.js, but the plain-number-typed
+    // decode side, never previously self-hosted) fell into here — this file's
+    // hi word can legitimately exceed 2^31 (PTR.OBJECT's own tag bits push it
+    // past the sign boundary), and self-hosted `>>>`/`&` on such a value
+    // decoded the wrong type/aux, silently dropping a live schema INSIDE the
+    // kernel's own compiles (never reproduced natively — this is why
+    // `runNative` always agreed and only `runKernel` broke). Extracting type/
+    // aux with the identical BigInt shift+mask ptrBits uses to ENCODE them
+    // sidesteps the 32-bit boundary entirely, in the one representation
+    // already proven correct under self-compilation.
+    const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK_BIG = BigInt(LAYOUT.TAG_MASK)
+    const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK_BIG = BigInt(LAYOUT.AUX_MASK)
+    const parsePackedBits = (s) => {
+      let i = 0
+      if (s.startsWith('nan:')) i = 4
+      if (s.charCodeAt(i) !== 48 || s.charCodeAt(i + 1) !== 120) return null  // "0x"
+      i += 2
+      return s.length === i + 16 && allHexDigits(s, i, i + 16) ? BigInt('0x' + s.slice(i)) : null
+    }
     const scanMkptrAux = (n) => {
       if (!Array.isArray(n)) return
       if ((n[0] === 'f64.const' || n[0] === 'i64.const') && typeof n[1] === 'string') {
-        const m = NAN_PTR_LIT.exec(n[1])
-        if (m) {
-          const hi = parseInt(m[1], 16)
-          if (decodePtrType(hi) === PTR.OBJECT) usedSchemaIds.add(decodePtrAux(hi))
-        }
+        const bits = parsePackedBits(n[1])
+        if (bits != null && (bits >> TAG_SHIFT_BIG & TAG_MASK_BIG) === BigInt(PTR.OBJECT))
+          usedSchemaIds.add(Number(bits >> AUX_SHIFT_BIG & AUX_MASK_BIG))
       } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
         // `return_call` (tail-call form — treeshake's own CALL_OPS set above
         // treats it identically to `call`): a single-expression arrow whose
@@ -3118,9 +3156,13 @@ export default function compile(ast, profiler, regionHooks) {
         if (n[1] === '$__mkptr') {
           const type = litI32(n[2]), aux = litI32(n[3])
           if (type === PTR.OBJECT && aux != null) usedSchemaIds.add(aux)
-        } else {
-          const m = MKPTR_VARIANT.exec(n[1])
-          if (m && m[1] === String(PTR.OBJECT) && m[2] !== 'd') usedSchemaIds.add(+m[2])
+        } else if (n[1].startsWith('$__mkptr_')) {
+          // specializeMkptr's variantName: '__mkptr_' + 3 underscore-joined
+          // parts, each either 'd' (dynamic) or a decimal literal — see its
+          // own definition (src/optimize/index.js) for the exact join.
+          const parts = n[1].slice(9).split('_')
+          if (parts.length === 3 && parts[0] === String(PTR.OBJECT) &&
+              parts[1] !== 'd' && allDigits(parts[1], 0, parts[1].length)) usedSchemaIds.add(+parts[1])
         }
       }
       for (const c of n) scanMkptrAux(c)
@@ -3138,8 +3180,28 @@ export default function compile(ast, profiler, regionHooks) {
     // Positional format (entry index === schema id, no key per entry — see
     // STABILITY.md's "raw custom sections stay experimental": the byte FORMAT
     // is unchanged here, only which entries carry real content). A dead id's
-    // slot must still be emitted, empty, to keep every live id's position
-    // correct — varint(nSchemas) below stays ctx.schema.list.length either way.
+    // slot must still be emitted, to keep every live id's position correct —
+    // varint(nSchemas) below stays ctx.schema.list.length either way.
+    //
+    // NOT emitted empty (`[]`) — interop.js's own ingestion (enhance(), the
+    // `newSchemas`/`schemas` merge loop) deduplicates incoming entries by
+    // CONTENT (`s.join(',')`) before appending, then indexes the merged array
+    // directly BY SID (`mem.schemas[aux(p)]`, decodeThrown's schema lookup).
+    // `[].join(',')` is `''` for every dead entry alike, so two-plus zeroed
+    // entries collide on that one key, the dedupe silently keeps only the
+    // first and drops the rest, and EVERY live sid positioned after the first
+    // collision then indexes the wrong (shifted) array slot — reproduced
+    // exactly this way: the self-hosted kernel's own `Error`/`TypeError`/
+    // `SyntaxError` schemas decoded fine in isolation (verified byte-for-byte
+    // correct in the built jz:schema section) but the kernel oracle's
+    // ambiguous-BOOL|NUMBER reject still lost its message, because some
+    // OTHER dead schema earlier in its (825-entry) list collided with
+    // another and shifted every later sid's runtime array position. A
+    // one-element placeholder keyed by the id itself (`[String(id)]`) is
+    // unique per dead entry — collides with nothing else dead, and
+    // collision with a live entry is no more likely than any other
+    // pre-existing content collision this dedupe already tolerates — while
+    // still costing far fewer bytes than the real prop list it replaces.
     const bytes = []
     const utf8 = new TextEncoder()
     const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
@@ -3150,7 +3212,7 @@ export default function compile(ast, profiler, regionHooks) {
     }
     varint(ctx.schema.list.length)
     ctx.schema.list.forEach((props, id) => {
-      const live = usedSchemaIds.has(id) ? props : []
+      const live = usedSchemaIds.has(id) ? props : [String(id)]
       varint(live.length); for (const p of live) enc(p)
     })
     sec.customs.push(['@custom', '"jz:schema"', bytes])
