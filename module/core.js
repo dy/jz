@@ -2785,7 +2785,12 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         throw new Error('__throw_property_nullish requires a static string literal')
       return ir[1]
     }
+    // This template's $__mkptr call is raw WAT text below, not routed through
+    // mkPtrIR's node-tagging (see ctx.js's ctx.schema.namedUses doc) — name
+    // this function as TypeError's schema's construction site instead; live
+    // iff $__throw_property_nullish itself survives treeshake.
     const sid = ctx.schema.errorSid('TypeError')
+    ctx.schema.namedUses.push({ sid, funcName: '__throw_property_nullish' })
     const slots = ctx.abi.object.ops.allocSlots(2)
     return `(func $__throw_property_nullish
       (local $p i32) (local $e f64)

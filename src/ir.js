@@ -46,13 +46,18 @@ function ptrBoxPrefix(ptrType, aux = 0) {
 }
 
 /** Build f64 NaN-boxed pointer IR from an i32 offset node of known kind.
- *  `aux` is the 15-bit secondary tag (schema ID for OBJECT, element type for TYPED, etc.). */
+ *  `aux` is the 15-bit secondary tag (schema ID for OBJECT, element type for TYPED, etc.).
+ *  Second PTR.OBJECT construction site (mkPtrIR's own doc names both, including the
+ *  `.schemaSid` node-tag contract) — reboxing an already-unboxed pointer (narrow.js's
+ *  applyPointerParamAbi devirt, e.g. a recursive OBJECT param) mints no NEW mkptr call,
+ *  so it must tag the schema-liveness fact onto ITS OWN result node. */
 function boxPtrIR(i32node, ptrType, aux = 0) {
   const prefix = ptrBoxPrefix(ptrType, aux)
   const result = typed(['f64.reinterpret_i64',
     ['i64.or',
       ['i64.const', '0x' + prefix.toString(16).toUpperCase()],
       ['i64.extend_i32_u', i32node]]], 'f64')
+  if (ptrType === PTR.OBJECT) result.schemaSid = aux
   // TAG-PRESERVING REBOX (.work/research.md §Carrier invariant, "DECL-INIT
   // WALL"): typed() above sets only .type on the fresh wrapper node —
   // the source i32node's .ptrKind/.ptrAux (set by readVar-style construction)
@@ -674,16 +679,34 @@ const packPtrBits = (type, aux, offset) => i64Hex(ptrBits(type, aux, offset))
 
 /** Build `__mkptr(type, aux, offset)` IR. Folds to `(f64.const nan:0x...)` — 9 bytes
  *  vs 12 for `f64.reinterpret_i64 (i64.const ...)` — when all args are i32 literals.
- *  Args may be raw IR nodes or numbers (numbers are wrapped as i32.const). */
+ *  Args may be raw IR nodes or numbers (numbers are wrapped as i32.const).
+ *
+ *  EMISSION-TIME SCHEMA-LIVENESS TAG (replaces the former post-treeshake WAT
+ *  scan — see src/compile/index.js's jz:schema comment for the full account):
+ *  a `.schemaSid` property on the RETURNED node, additive metadata in the same
+ *  family as `.type`/`.ptrKind`/`.ptrAux` (boxPtrIR below stamps the identical
+ *  tag). mkPtrIR/boxPtrIR are the only two places a PTR.OBJECT pointer is ever
+ *  IR-constructed; `aL` is a schema id here or nowhere, still a plain JS
+ *  number, never a string a later pass could reformat. Tagging the NODE
+ *  instead of recording into a flat set keeps the fact post-treeshake
+ *  accurate for free: src/compile/index.js's collection walk runs over the
+ *  already-pruned sec.stdlib/funcs/start/globals/elem, so a construction
+ *  whose sole containing function treeshake later removed entirely is never
+ *  visited — no separate reachability accounting needed here. */
 export function mkPtrIR(type, aux, offset) {
   const tIR = typeof type === 'number' ? ['i32.const', type] : type
   const aIR = typeof aux === 'number' ? ['i32.const', aux] : aux
   const oIR = typeof offset === 'number' ? ['i32.const', offset] : offset
   const tL = litI32(tIR), aL = litI32(aIR), oL = litI32(oIR)
-  if (tL != null && aL != null && oL != null)
-    return typed(['f64.const', 'nan:' + packPtrBits(tL, aL, oL)], 'f64')
+  if (tL != null && aL != null && oL != null) {
+    const node = typed(['f64.const', 'nan:' + packPtrBits(tL, aL, oL)], 'f64')
+    if (tL === PTR.OBJECT) node.schemaSid = aL
+    return node
+  }
   inc('__mkptr')
-  return typed(['call', '$__mkptr', tIR, aIR, oIR], 'f64')
+  const node = typed(['call', '$__mkptr', tIR, aIR, oIR], 'f64')
+  if (tL === PTR.OBJECT && aL != null) node.schemaSid = aL
+  return node
 }
 
 /** Offset extraction for a NaN-boxed pointer.
@@ -2309,7 +2332,14 @@ export const tcoTailRewrite = (ir, resultType) => {
       const calleeRT = callee.sig?.results?.[0] ?? 'f64'
       if (calleeRT !== resultType) return ir
     }
-    return typed(['return_call', ...ir.slice(1)], resultType)
+    const rc = typed(['return_call', ...ir.slice(1)], resultType)
+    // Carry `.schemaSid` forward (ctx.js's ctx.schema doc): a single-expression
+    // arrow whose whole body is `new TypeError(x)`-shaped (mkPtrIR's `call
+    // $__mkptr` at the function's tail) lands exactly here — `ir`, the node
+    // src/compile/index.js's post-treeshake collector would have found the tag
+    // on, is being replaced wholesale, never visited again.
+    if (ir.schemaSid != null) rc.schemaSid = ir.schemaSid
+    return rc
   }
   if (op === 'if' && Array.isArray(ir[1]) && ir[1][0] === 'result') {
     let changed = false

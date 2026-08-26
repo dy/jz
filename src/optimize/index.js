@@ -3081,7 +3081,13 @@ export function hoistConstantPool(funcs, addGlobal) {
     if (!g) continue
     const c = parent[idx]
     if (!Array.isArray(c) || c[0] !== 'f64.const') continue
-    parent[idx] = ['global.get', `$${g}`]
+    const gn = ['global.get', `$${g}`]
+    // Carry `.schemaSid` (mkPtrIR/specializeMkptr's fold, src/ir.js's doc)
+    // forward onto the replacement — this rewrite discards `c`, the only
+    // place the tag lived; src/compile/index.js's post-treeshake collector
+    // never sees the pre-hoist site again.
+    if (c.schemaSid != null) gn.schemaSid = c.schemaSid
+    parent[idx] = gn
   }
 }
 
@@ -3250,6 +3256,12 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
       const type = +parts[0].slice(2), aux = +parts[1].slice(2), off = +parts[2].slice(2)
       const n = ['f64.const', 'nan:' + i64Hex(ptrBits(type, aux, off))]
       n.type = 'f64'
+      // This node REPLACES c (the original call), which mkPtrIR's own fold
+      // would already have tagged `.schemaSid` on had it reached the fold
+      // check first — carry that fact forward onto the replacement (src/
+      // compile/index.js's post-treeshake collector walks THIS node, never
+      // sees `c` again after this assignment).
+      if (type === PTR.OBJECT) n.schemaSid = aux
       parent[idx] = n
       return
     }
@@ -3259,6 +3271,13 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
     for (let j = 0; j < parts.length; j++) if (parts[j] === 'D') dynArgs.push(c[2 + j])
     const newCall = ['call', '$' + name, ...dynArgs]
     newCall.type = spec.result
+    // Same carry-forward as the fully-literal fold above, for the
+    // $__mkptr_T_A_d named-variant case (type+aux literal, offset dynamic —
+    // narrow.js's devirt re-box of a recursive OBJECT param takes exactly
+    // this path): `c` (the original `call $__mkptr`) is about to become
+    // unreachable from the tree; nothing else will ever tag `newCall`.
+    if (target === '$__mkptr' && parts[0].startsWith('L:') && +parts[0].slice(2) === PTR.OBJECT && parts[1].startsWith('L:'))
+      newCall.schemaSid = +parts[1].slice(2)
     parent[idx] = newCall
   }
   let rewriteMark = null, batch = []
