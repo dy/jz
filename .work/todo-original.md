@@ -6,7 +6,7 @@ kernel/perf ledger and dropped every forward-looking section below — recovered
 here. Verdict/status prose and completed `[x]` items stripped; grep the archive
 for the full dissection of anything that needs it.
 
-## V1 (pinned)
+## v1 (pinned)
 
 * [x] rename self-host to self-compile
 * [ ] Beat all bench cases, all examples — the standing mandate (residual V2-class
@@ -19,6 +19,12 @@ for the full dissection of anything that needs it.
 * [ ] unplugin
 * [ ] hsluv wasm — https://www.hsluv.org/implementations/
 * [ ] jz-strict minimal exported subset (less than 100-200kb if possible)
+
+## Post v1
+
+* [ ] Streaming encoder
+* [ ] Native lowering
+* [ ]
 
 ## Floatbeat (name TBD)
 
