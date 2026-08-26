@@ -1329,6 +1329,12 @@ export default (ctx) => {
       const obj = local('obj', 'i32')
       const val = local('val', 'f64')
       const sid = ctx.schema.register(keys)
+      // This template's $__mkptr call is raw WAT text below, not routed
+      // through mkPtrIR's node-tagging (ctx.js's ctx.schema.namedUses doc) —
+      // `name` (closed over from emitJsonShapeParser) is the ONE stdlib
+      // function every nested parseObject call for THIS shape ends up inside;
+      // live iff $${name} itself survives treeshake.
+      ctx.schema.namedUses.push({ sid, funcName: name })
       // Extern-write belt (see emitJsonConstValue): a shaped-parser sid the
       // plan hook missed fails closed via a null-kinds entry.
       const hzLive = ctx.schema.slotWriteHazards

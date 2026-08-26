@@ -92,7 +92,7 @@ import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
-  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables,
+  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
   stripLocalRenameSuffixes,
   stdlibParseCacheMap, setStdlibParseCacheMap,
 } from '../wat/assemble.js'
@@ -203,7 +203,21 @@ function buildInternTable() {
   if (ctx.memory.shared || !ctx.runtime.dataDedup?.size) return
   const enc = new TextEncoder()
   const entries = []
+  // buildStartFn's schema-table construction (the only reclaimSpans producer that
+  // can have already run by this point — __throw_property_nullish/__err_prop's
+  // spans are pushed later, inside pullStdlib, well after this function returns)
+  // may have interned strings that stripDeadInternedSpans later truncates off the
+  // data-segment tail once real reachability is known. This probe table is raw
+  // bytes baked straight into the data segment — there is no going back to edit a
+  // slot out of it once written — so a reclaimable string must never earn one: a
+  // stale slot's candidate offset would sit past the (now correspondingly
+  // shrunk) memory bound, and the in-wasm probe (module/string.js's
+  // internProbeWat) reads the candidate's length header before it ever compares
+  // bytes, so a hash COLLISION alone — no matching runtime string required —
+  // would be a genuine out-of-bounds trap, not just a wasted probe.
+  const inReclaimSpan = (off) => (ctx.runtime.reclaimSpans || []).some(s => off >= s.start && off < s.end)
   for (const [str, off] of ctx.runtime.dataDedup) {
+    if (inReclaimSpan(off)) continue
     const b = enc.encode(str)
     if (b.length < 5 || b.length > 32) continue
     let h = 0x811c9dc5 | 0
@@ -2988,6 +3002,13 @@ export default function compile(ast, profiler, regionHooks) {
   // reachability) and before the data segment below serializes ctx.runtime.data.
   stripDeadLazyTables(sec)
 
+  // Reclaim the trailing run of any OTHER coarsely-interned data (buildStartFn's
+  // whole-schema-list table, a stdlib thunk's own string constants — see
+  // stripDeadInternedSpans' own doc) that the same exact, final reachability
+  // proves dead. Runs after stripDeadLazyTables so a dead lazy table doesn't
+  // masquerade as the "true tail" this pass's contiguity check relies on.
+  stripDeadInternedSpans(sec)
+
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)
   const escBytes = (s) => {
@@ -3137,140 +3158,87 @@ export default function compile(ast, profiler, regionHooks) {
   // schema ever minted, dead or not — the audited size-gate regression
   // (aos/dotprod/wav/callback, e867c3af's opaque-length TypeError).
   //
-  // A schema id is reconciled as LIVE iff some surviving `$__mkptr` call still
-  // carries it as the AUX (2nd) literal argument — mkPtrIR's (src/ir.js) only
-  // construction path for a PTR.OBJECT pointer, and thus the only way any
-  // value tagged with that schema id can ever come to exist, be observed by
-  // an in-wasm `instanceof`/catch dispatch, or cross the host boundary for
-  // interop.js to decode. optimizeModule's specializeMkptr
-  // (src/optimize/index.js), which runs earlier in this same compile, may
-  // already have rewritten a literal-aux call site from
-  // `(call $__mkptr (i32.const T) (i32.const A) dyn)` into a named variant
-  // `$__mkptr_T_A_d` — both shapes are scanned. A call whose aux is NOT a
-  // literal (a dynamic clone/copy helper forwarding some other value's
-  // already-tagged type+aux) needs no separate accounting: it can only ever
-  // reproduce a sid some OTHER, literal-bearing site already established for
-  // a value that must already exist, so that other site is what makes it
-  // live. Over-approximating (treating a schema as live when the strict
-  // answer is dead) is always safe — it only costs bytes; under-approximating
-  // would silently corrupt a live interop decode, so every literal-aux
-  // `$__mkptr`/`$__mkptr_*` call site found here counts, unconditionally.
+  // A schema id is LIVE iff a surviving PTR.OBJECT construction still carries
+  // it — determined from two EMISSION-TIME facts (ctx.js's ctx.schema doc),
+  // not a post-hoc re-derivation:
+  //
+  //  1. mkPtrIR/boxPtrIR (src/ir.js), the only two places a PTR.OBJECT
+  //     pointer is ever IR-constructed, stamp a `.schemaSid` property
+  //     directly onto the node they return — additive metadata in the same
+  //     family as `.type`/`.ptrKind`/`.ptrAux`, still a plain JS number, not
+  //     yet a WAT string for anything downstream to reformat. Collected below
+  //     by walking sec.stdlib/funcs/start/globals/elem — the SAME arrays,
+  //     already treeshaken — checking one plain property per node. A
+  //     construction whose sole containing function treeshake removed
+  //     entirely is simply never visited; no separate reachability check
+  //     needed for this, the overwhelming majority of PTR.OBJECT sites.
+  //  2. ctx.schema.namedUses: the few hand-written WAT-text templates that
+  //     build a `$__mkptr` call as a raw string instead of through mkPtrIR
+  //     (module/core.js's __throw_property_nullish, module/json.js's
+  //     per-shape __jp_shape_N parser) — no IR node exists to tag before
+  //     that text is parsed, so each instead names the ONE stdlib function
+  //     its construction lives inside; live iff that function, BY NAME,
+  //     survived treeshake (checked below against the same surviving-name
+  //     set the funcidx sort just below already needs).
+  //
+  // This replaced a WAT-AST scan (`scanMkptrAux`, audit-flagged wrong-level
+  // architecture: "re-derives schema liveness by parsing WAT helper names and
+  // packed hex literals") that walked the identical arrays POST-treeshake,
+  // pattern-matching `f64.const`/`i64.const` operand STRINGS and
+  // `$__mkptr`/`$__mkptr_*` call names to recover the SAME fact from OUTSIDE
+  // — every one of those shapes existed only because mkPtrIR/boxPtrIR had
+  // already built it from a number the scan then had to re-parse back out of
+  // text. A recursive OBJECT param's re-box (narrow.js's applyPointerParamAbi
+  // devirt — `chase`-shaped self-recursion) produced a fully-folded
+  // `f64.const nan:...` literal the scan's own strict 16-hex-digit parser
+  // rejected once self-hosted (dist/jz.wasm compiling this exact scan's own
+  // source): correct natively, silently dead-marked a live schema self-
+  // hosted-only. Tagging the node (or naming the function) where the id is
+  // still a number sidesteps that whole class, and any WAT-text-string-shape
+  // class after it, while staying exactly as post-treeshake-precise as the
+  // scan it replaces — including the ORIGINAL size-gate case it was built for
+  // (a schema whose sole constructor's containing function treeshakes away
+  // entirely; test/objects.js's "dead opaque-length TypeError schema" pin).
+  //
+  // A dynamic clone/copy helper forwarding some OTHER value's already-tagged
+  // type+aux (`local.get $sid`, not a literal — module/core.js's __obj_clone)
+  // needs no separate accounting: it can only ever reproduce a sid some
+  // OTHER, literal-bearing site already recorded for a value that must
+  // already exist, so that other site is what makes it live. The generic
+  // (non-shaped) JSON.parse path (module/json.js's __jp_obj/__jp_schema_get)
+  // is a DIFFERENT case, not merely a dynamic forward: its `$sid` is a
+  // wholly runtime-discovered schema number in its own runtime-only table
+  // ($__schema_tbl/$__schema_next, keyed by the actual JSON text's key set),
+  // never one of ctx.schema.list's compile-time ids — the old scan's own
+  // litI32 aux check already fell through it identically (a `local.get`, not
+  // a literal), so this is pre-existing, unchanged behavior, not a new gap.
+  // specializeMkptr (src/optimize/index.js), which runs earlier in this same
+  // compile, only ever REWRITES an existing literal-aux `call $__mkptr` (one
+  // mkPtrIR already tagged) into a folded literal or a named `$__mkptr_T_A_d`
+  // variant — it copies `.schemaSid` onto its replacement (see there), so it
+  // mints no schema reference mkPtrIR didn't already tag, never a NEW one.
+  // hoistConstantPool similarly replaces a repeated literal's call site with
+  // a `global.get` — it too copies `.schemaSid` onto that replacement (see
+  // there), so a hoisted schema-carrying literal stays visible to the walk
+  // above even though its original node is gone. Over-approximating (treating
+  // a schema as live when its only construction site later got treeshaken
+  // out entirely) is always safe — it only costs bytes; under-approximating
+  // would silently corrupt a live interop decode.
   const usedSchemaIds = new Set()
   {
-    // No RegExp anywhere in this scan — deliberately. This code is compiler-
-    // internal (src/compile/index.js), and the KERNEL (dist/jz.wasm) is jz's
-    // own compiler self-compiled — so THIS scan is itself self-hosted and
-    // runs INSIDE the kernel every time it compiles ANY program. A regex-
-    // literal version of this exact scan passed every native/JS-hosted check
-    // but broke kernel-only ('kernel O0') behavior — some self-hosted-vs-V8
-    // regex discrepancy this file had never exercised before (grep confirms
-    // zero prior RegExp use in this file). Plain charCodeAt scanning is the
-    // same idiom src/wat/assemble.js's stripRenameRuns and src/early-errors.js/
-    // src/static-data.js's own hex decoding already rely on inside the
-    // self-hosted kernel — proven safe, not a new risk.
-    const isDigit = (c) => c >= 48 && c <= 57  // '0'-'9'
-    const isHexDigit = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)  // 0-9 A-F a-f
-    const allDigits = (s, i, end) => { if (i >= end) return false; for (; i < end; i++) if (!isDigit(s.charCodeAt(i))) return false; return true }
-    const allHexDigits = (s, i, end) => { if (i >= end) return false; for (; i < end; i++) if (!isHexDigit(s.charCodeAt(i))) return false; return true }
-    // i32.const operands are JS numbers when built directly by IR-construction
-    // code (mkPtrIR) but plain numeric STRINGS when a hand-written WAT-text
-    // stdlib template (e.g. module/core.js's __throw_property_nullish) comes
-    // back through the WAT parser untouched by any literal-normalizing pass —
-    // accept either.
-    const litI32 = (n) => {
-      if (!Array.isArray(n) || n[0] !== 'i32.const') return null
-      if (typeof n[1] === 'number') return n[1]
-      if (typeof n[1] !== 'string' || !n[1].length) return null
-      const neg = n[1].charCodeAt(0) === 45  // '-'
-      return allDigits(n[1], neg ? 1 : 0, n[1].length) ? +n[1] : null
-    }
-    // mkPtrIR (src/ir.js) folds a construction straight to `(f64.const nan:HHHHHHHHLLLLLLLL)`
-    // — 8 hex digits of type+aux (hi word) + 8 of offset (lo word), see layout.js's
-    // i64Hex/ptrBits — whenever ALL THREE args are compile-time literals. That is
-    // NOT rare for PTR.OBJECT the way a heap `$__alloc_hdr` offset would suggest:
-    // an object literal whose every slot is itself a literal (`mk = () => ({a:111,
-    // b:222,c:333})` — this exact test's shape) gets its whole allocation constant-
-    // folded away by an earlier pass, and mkPtrIR then folds the now-literal offset
-    // too. specializeMkptr's own pass-3 (src/optimize/index.js) produces the
-    // identical `f64.const nan:...` shape for the same reason, and its inline
-    // fast path (and narrow.js's devirt re-boxing of an already-unboxed offset —
-    // this test's `chase`) OR a bare `i64.const 0xHHHHHHHH00000000` "box prefix"
-    // against a dynamic offset instead — same hi word, no `nan:` text wrapper.
-    // Anchored to the exact node shapes that carry the literal (not "any string
-    // leaf anywhere" — an unrelated i64 bit-mask constant elsewhere in the
-    // module, coincidentally 16 hex digits, would over-match and cost real
-    // bytes on a strict win-limit gate like dotprod/wav; false-KEEPS are safe
-    // for correctness but not for the size gate this fix exists to close). A
-    // constant-pooling pass (optimizeModule's hoistConstantPool, which — like
-    // specializeMkptr — runs before treeshake) can lift a repeated packed
-    // pointer literal out of its call site into a `(global $g ...)` init or a
-    // `global.set` inside `$__start`'s body, leaving only `global.get $g`
-    // where the literal used to be — scanning sec.globals/sec.elem below
-    // (their init/offset exprs use these SAME `f64.const`/`i64.const` shapes)
-    // catches that relocation without widening the match itself.
-    // PTR.OBJECT-gated: `aux` is only ever a schema id for that one ptr type —
-    // every other PTR.* (STRING's SSO/intern bits, TYPED's element code, …)
-    // packs something else entirely into the identical bit position, and a
-    // hoisted/pooled literal of THEIRS would otherwise false-match the same
-    // 16-hex-digit shape and cost bytes on dotprod/wav's strict win gate.
-    // Optional "nan:" prefix, then "0x", then exactly 16 hex digits (8 hi + 8
-    // lo — layout.js's i64Hex format), nothing else. Returns the FULL 64-bit
-    // value as a BigInt, or null. BigInt, not a JS number split into a "hi
-    // word": layout.js's own comment ("BigInt views of the NaN-box fields —
-    // the carrier is 64-bit, JS bit-ops are 32-bit") is exactly the trap
-    // decodePtrType/decodePtrAux (also layout.js, but the plain-number-typed
-    // decode side, never previously self-hosted) fell into here — this file's
-    // hi word can legitimately exceed 2^31 (PTR.OBJECT's own tag bits push it
-    // past the sign boundary), and self-hosted `>>>`/`&` on such a value
-    // decoded the wrong type/aux, silently dropping a live schema INSIDE the
-    // kernel's own compiles (never reproduced natively — this is why
-    // `runNative` always agreed and only `runKernel` broke). Extracting type/
-    // aux with the identical BigInt shift+mask ptrBits uses to ENCODE them
-    // sidesteps the 32-bit boundary entirely, in the one representation
-    // already proven correct under self-compilation.
-    const TAG_SHIFT_BIG = BigInt(LAYOUT.TAG_SHIFT), TAG_MASK_BIG = BigInt(LAYOUT.TAG_MASK)
-    const AUX_SHIFT_BIG = BigInt(LAYOUT.AUX_SHIFT), AUX_MASK_BIG = BigInt(LAYOUT.AUX_MASK)
-    const parsePackedBits = (s) => {
-      let i = 0
-      if (s.startsWith('nan:')) i = 4
-      if (s.charCodeAt(i) !== 48 || s.charCodeAt(i + 1) !== 120) return null  // "0x"
-      i += 2
-      return s.length === i + 16 && allHexDigits(s, i, i + 16) ? BigInt('0x' + s.slice(i)) : null
-    }
-    const scanMkptrAux = (n) => {
+    const collectSchemaTags = (n) => {
       if (!Array.isArray(n)) return
-      if ((n[0] === 'f64.const' || n[0] === 'i64.const') && typeof n[1] === 'string') {
-        const bits = parsePackedBits(n[1])
-        if (bits != null && (bits >> TAG_SHIFT_BIG & TAG_MASK_BIG) === BigInt(PTR.OBJECT))
-          usedSchemaIds.add(Number(bits >> AUX_SHIFT_BIG & AUX_MASK_BIG))
-      } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
-        // `return_call` (tail-call form — treeshake's own CALL_OPS set above
-        // treats it identically to `call`): a single-expression arrow whose
-        // whole body is the construction, `x => new TypeError(x)`, compiles
-        // the final mkptr as a tail call, not an ordinary one — missing this
-        // dropped a genuinely-returned (not even thrown) TypeError's schema.
-        if (n[1] === '$__mkptr') {
-          const type = litI32(n[2]), aux = litI32(n[3])
-          if (type === PTR.OBJECT && aux != null) usedSchemaIds.add(aux)
-        } else if (n[1].startsWith('$__mkptr_')) {
-          // specializeMkptr's variantName: '__mkptr_' + 3 underscore-joined
-          // parts, each either 'd' (dynamic) or a decimal literal — see its
-          // own definition (src/optimize/index.js) for the exact join.
-          const parts = n[1].slice(9).split('_')
-          if (parts.length === 3 && parts[0] === String(PTR.OBJECT) &&
-              parts[1] !== 'd' && allDigits(parts[1], 0, parts[1].length)) usedSchemaIds.add(+parts[1])
-        }
-      }
-      for (const c of n) scanMkptrAux(c)
+      if (n.schemaSid != null) usedSchemaIds.add(n.schemaSid)
+      for (const c of n) collectSchemaTags(c)
     }
-    // Exactly the arrays treeshake() above just pruned to their final surviving
-    // shape, PLUS sec.globals (a hoisted constant's init lives there, and
-    // treeshake's own dead-global elimination — the `globals:` opt above —
-    // already dropped any global nothing references) and sec.elem (function
-    // table entries can't relocate a pointer literal but cost nothing to
-    // include). sec.extStdlib/imports are import declarations only, never a
-    // construction site.
-    for (const arr of [sec.stdlib, sec.funcs, sec.start, sec.globals, sec.elem]) for (const f of arr) scanMkptrAux(f)
+    for (const arr of [sec.stdlib, sec.funcs, sec.start, sec.globals, sec.elem]) for (const f of arr) collectSchemaTags(f)
+    if (ctx.schema.namedUses.length) {
+      const survivingNames = new Set()
+      for (const arr of [sec.stdlib, sec.funcs, sec.start])
+        for (const f of arr) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') survivingNames.add(f[1])
+      for (const { sid, funcName } of ctx.schema.namedUses)
+        if (survivingNames.has('$' + funcName)) usedSchemaIds.add(sid)
+    }
   }
   if (usedSchemaIds.size) {
     // Positional format (entry index === schema id, no key per entry — see

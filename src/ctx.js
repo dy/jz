@@ -538,6 +538,27 @@ export function reset(proto, globals, bridge) {
 
   ctx.schema = {
     list: [],
+    // Emission-time PTR.OBJECT schema-liveness facts, replacing the former
+    // post-treeshake WAT-text scan (src/compile/index.js's jz:schema comment
+    // has the full account). Two complementary forms, both populated the
+    // instant a schema id is still a plain JS number, never a string a later
+    // pass could reformat:
+    //  - mkPtrIR/boxPtrIR (src/ir.js) stamp a `.schemaSid` property directly
+    //    onto the IR node they return — additive metadata in the same family
+    //    as `.type`/`.ptrKind`/`.ptrAux`. src/compile/index.js collects these
+    //    by walking the ALREADY-treeshaken sec.stdlib/funcs/start/globals/elem,
+    //    so a construction whose sole containing function got treeshaken
+    //    away entirely is never visited — no separate reachability check
+    //    needed for the overwhelming majority of PTR.OBJECT constructions.
+    //  - namedUses: {sid, funcName}[] for the few hand-written WAT-text
+    //    templates that build a `$__mkptr` call as a raw string instead of
+    //    through mkPtrIR (module/core.js's __throw_property_nullish,
+    //    module/json.js's per-shape __jp_shape_N parser) — there is no IR
+    //    node to tag before that text is parsed, so these instead name the
+    //    ONE stdlib function their construction lives inside; live iff that
+    //    function survives treeshake (checked by name post-treeshake,
+    //    src/compile/index.js — a plain equality check, not a re-parse).
+    namedUses: [],
     vars: new Map(),
     poisoned: new Set(),   // names whose assignments disagree on shape (literal +
                            //   non-literal, or two different literals). A poisoned
@@ -793,6 +814,16 @@ export function reset(proto, globals, bridge) {
     staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
     staticDataLen: 0,      // byte length of the address-0 static string block (seeded by module/number staticStr)
     typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`
+    // Trailing-reclaim spans — {start,end,fn?,global?} per byte range a COARSE
+    // pre-treeshake step interned speculatively (buildStartFn's whole-schema-list
+    // table, a stdlib thunk's own strBits calls). src/wat/assemble.js's
+    // stripDeadInternedSpans reads this at the SAME pipeline point as
+    // stripDeadLazyTables (after optimizeModule, before the data segment freezes)
+    // and truncates a dead run off the TRUE TAIL only — see that function's own
+    // doc for why trailing-only (never repositioning a kept span) is what makes
+    // this safe for content addressed by literal NaN-boxed bit patterns baked
+    // directly into a function body, not just global-indirected tables.
+    reclaimSpans: [],
   }
 
   ctx.memory = {
