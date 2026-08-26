@@ -229,6 +229,62 @@ function collectLocalClosures(body) {
   return closures
 }
 
+/** baseName → [{params, body}] for every closure literal assigned as a
+ *  property VALUE of a `let/const NAME = { … }` object literal declared
+ *  anywhere in `roots` — Shape #7's actual watr dispatch-table pattern,
+ *  `const HANDLER = { i64: (nodes) => encode.i64(nodes.shift()) }`, called
+ *  through a computed member `HANDLER[imm](…)`. A computed-key call can't
+ *  name its callee statically, but every closure that could possibly BE
+ *  that callee is still syntactically enumerable right here — the same move
+ *  collectLocalClosures already makes for a single bound name (`let parse =
+ *  (x) => …`), promoted to every property of an object-literal table.
+ *  Object-literal-inline only (mirrors collectLocalClosures' own single-
+ *  shape scope, and dyn-closure-tables.js's explicit precedent for scoping
+ *  a dispatch-table proof to one concrete construction shape): a table
+ *  built up imperatively (`HANDLER.foo = (x) => …` after the fact) is a
+ *  distinct, rarer shape — not watr's own encode-table pattern — left
+ *  uncovered rather than guessed at. */
+function collectDispatchTableClosures(roots) {
+  const tables = new Map()
+  const collect = node => {
+    if (!Array.isArray(node)) return
+    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
+        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
+      const init = node[1][2]
+      // Match module/object.js's own ctx.core.emit['{}'] flattening EXACTLY
+      // (not ast.js's descriptorProps, which assumes a different, pre-
+      // compile bundler-stage shape): at THIS stage a multi-property
+      // literal is a FLAT list of sibling `[':', key, value]` children
+      // (`['{}', p1, p2, p3]`), only ever comma-wrapped into ONE child when
+      // there's a single such wrapper node already — object.js's emitter
+      // itself special-cases exactly that one shape and nothing else.
+      const rawProps = Array.isArray(init) && init[0] === '{}' ? init.slice(1) : null
+      const props = rawProps == null ? null
+        : rawProps.length === 1 && Array.isArray(rawProps[0]) && rawProps[0][0] === ','
+          ? rawProps[0].slice(1) : rawProps
+      if (props) for (const prop of props) {
+        if (!Array.isArray(prop) || prop[0] !== ':') continue
+        const value = prop[2]
+        if (!Array.isArray(value) || value[0] !== '=>') continue
+        // A single param is a bare name directly under '()' (`['()', 'n']`);
+        // more than one arrives comma-wrapped as ONE child (`['()', [',',
+        // 'n', 'c', 'op', 'out']]`, watr's own real HANDLER.i64 shape) —
+        // commaList (ast.js) already normalizes exactly this either/or,
+        // the same helper this file's own call-argument sites use.
+        const ps = commaList(value[1]?.[1])
+        if (!ps.every(p => typeof p === 'string')) continue
+        const name = node[1][1]
+        let list = tables.get(name)
+        if (!list) { list = []; tables.set(name, list) }
+        list.push({ params: ps, body: value[2] })
+      }
+    }
+    for (let i = 1; i < node.length; i++) collect(node[i])
+  }
+  for (const root of roots) collect(root)
+  return tables
+}
+
 /** True iff SOME return tail of `body` is the bare name `paramName`, verbatim
  *  — a genuine passthrough (`if (…) return x`), not a freshly-computed
  *  expression (`return BigInt(x)` doesn't count: its OWN carrier is always a
@@ -254,6 +310,11 @@ function solveBigintProvenance(ctx, programFacts, ast) {
   const globals = new Set()
   const globalReps = new Map()
   let indirectResult = false
+  // Shape #7: every candidate callee a computed-key dispatch call
+  // (`HANDLER[imm](nodes)`) could possibly reach, statically enumerated —
+  // see collectDispatchTableClosures. Computed once; the AST this pass
+  // walks is fixed for the whole fixpoint below.
+  const dispatchTables = collectDispatchTableClosures([ast, ...(ctx.module.moduleInits || [])])
 
   const namesFor = func => {
     let names = namesByFunc.get(func)
@@ -365,6 +426,17 @@ function solveBigintProvenance(ctx, programFacts, ast) {
           return storage.has(node[1][1]) || bigintTyped.has(node[1][1])
         return false
       }
+      // Shape #7: a computed-key dispatch call (`HANDLER[imm](nodes)`) can't
+      // name its callee statically, but when the base is a KNOWN dispatch
+      // table (collectDispatchTableClosures), every closure that could
+      // possibly BE that callee is enumerable — if ANY candidate's own
+      // result may carry bigint, so may this call's. Additive only: an
+      // unknown/untracked base (not in dispatchTables) falls through to the
+      // existing indirectResult default, unchanged.
+      if (Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string') {
+        const candidates = dispatchTables.get(node[1][1])
+        if (candidates && candidates.some(dispatchClosureMayBigint)) return true
+      }
       return indirectResult
     }
     // Arithmetic preserves a BigInt member from a BigInt operand. Object/
@@ -399,6 +471,25 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     }
     if (NUMERIC_VALUE_OPS.has(node[0])) return RAW_BIGINT
     return ANY_BIGINT
+  }
+
+  // Shape #7: does ANY return tail of this dispatch-table closure candidate
+  // itself carry bigint? A closure's OWN param-local names are unknown at
+  // this vantage point (deriveLocalProvenance, a separate per-closure pass,
+  // owns that later, once the closure actually mints its own plan) — so
+  // this asks only what exprMay can prove without them: a bare BigInt
+  // origin, a proven storage read, or (this pin's own shape) a call to an
+  // already-provably-bigint NAMED function. Cycle-guarded (false while in
+  // progress, mirroring representationResultTagRequired's seen-set idiom)
+  // for a dispatch table whose own candidates call back into another one.
+  const dispatchResultCache = new Map()
+  const dispatchClosureMayBigint = c => {
+    if (dispatchResultCache.has(c)) return dispatchResultCache.get(c)
+    dispatchResultCache.set(c, false)
+    const tails = Array.isArray(c.body) && c.body[0] === '{}' ? returnExprs(c.body) : [c.body]
+    const result = tails.some(t => t != null && exprMay(t, null, EMPTY_SEEN))
+    dispatchResultCache.set(c, result)
+    return result
   }
 
   const noteResult = (func, expr) => {
@@ -470,6 +561,26 @@ function solveBigintProvenance(ctx, programFacts, ast) {
           if (typeof args[k] === 'string' && storage.has(args[k]) && mark(storage, callee.sig.params[k].name)) changed = true
       }
     }
+    // Shape #7: the SAME forward+backward by-reference storage rules just
+    // above, mirrored across EVERY candidate closure a computed-key
+    // dispatch call could reach (dispatchTables) instead of one statically-
+    // named callee. The call site can't narrow which candidate actually
+    // fires, so — conservatively, matching how every other computed-arg
+    // edge in this file already defaults to the safer/wider answer rather
+    // than guessing — each candidate's correspondingly-positioned param
+    // inherits the fact independently.
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string') {
+      const candidates = dispatchTables.get(node[1][1])
+      if (candidates) {
+        const args = commaList(node[2])
+        for (const callee of candidates) {
+          for (let k = 0; k < args.length && k < callee.params.length; k++) {
+            if (typeof args[k] === 'string' && storage.has(args[k]) && mark(storage, callee.params[k])) changed = true
+            if (storage.has(callee.params[k]) && typeof args[k] === 'string' && mark(storage, args[k])) changed = true
+          }
+        }
+      }
+    }
     if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) {
       const recv = node[1][1], method = node[1][2], args = commaList(node[2])
       if (STORAGE_WRITE_METHODS.has(method)) {
@@ -508,6 +619,43 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     for (let i = 1; i < node.length; i++) if (scan(node[i], func, localNames)) changed = true
     return changed
   }
+
+  // Shape #7 (i64.parse's own real watr shape, sibling gap): bigintTyped's
+  // `const _i64 = new BigInt64Array(_buf)`-shaped match is a PURE SYNTACTIC
+  // fact — it depends on nothing else in this fixpoint — but scan()'s own
+  // discovery of it is still fixpoint-ROUND-timed: a function's OWN body is
+  // walked (ctx.funcs.list order) before module-level declarations are
+  // (scan(ast,…)/moduleInits run after every function, same round). A
+  // typed-array element READ inside that SAME function, textually AFTER a
+  // WRITE to it (`_i64[0] = bi; return _i64[0]`), sees `storage` already
+  // seeded (the write itself marks it, same scan() call) but `bigintTyped`
+  // still unset — exprRep's [] branch checks bigintTyped FIRST, falls
+  // through to storage, and answers BOXED_BIGINT for one round. resultReps'
+  // own accumulation (noteResult) is a MONOTONE JOIN across every round,
+  // never a fresh recompute — that one transient wrong-for-a-round BOXED
+  // answer joins permanently against the later, correct RAW_BIGINT answer
+  // once bigintTyped catches up, producing a permanently AMBIGUOUS
+  // (raw-or-boxed, closed) result the plan can never resolve to one
+  // carrier. Fix at the root: seed bigintTyped from every BIGINT_TYPED_CTORS
+  // declaration, program-wide, in ONE pass BEFORE the fixpoint's first round
+  // — a purely syntactic fact needs no round-by-round discovery at all.
+  const seedBigintTyped = node => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) seedBigintTyped(node[i]); return }
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
+            Array.isArray(decl[2]) && decl[2][0] === '()' && BIGINT_TYPED_CTORS.has(decl[2][1]))
+          bigintTyped.add(decl[1])
+      }
+    }
+    for (let i = 1; i < node.length; i++) seedBigintTyped(node[i])
+  }
+  for (const func of ctx.funcs.list) if (!func.raw && func.body) seedBigintTyped(func.body)
+  seedBigintTyped(ast)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) seedBigintTyped(init)
 
   let graphChanged = true
   while (graphChanged) {
@@ -593,11 +741,76 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     if (!pureSet) { pureSet = new Set(); paramBigintOnly.set(calleeName, pureSet) }
     pureSet.add(k)
   }
+  // Shape #7 (encode.i64's real watr shape): a param can be BODY-WRITE
+  // provenant for BigInt (`if (typeof n==='string') n = BigInt(n)`, a
+  // genuine mixed string/number/bigint entry) while its ONLY call-site
+  // argument is a storage read on an array that is NOT bigint-pure (watr's
+  // `nodes` holds parsed WAT syntax — strings, nested arrays — the actual
+  // i64 immediate arrives as text, normalized to BigInt only inside the
+  // callee). paramBigintOnly (above) correctly, conservatively answers NO
+  // for this shape (the argument truly isn't closed-bigint) — but the
+  // boundary semantic that answer feeds still carries the coarse
+  // closed-ALL-14-kinds legacy census (the same "confident but
+  // uninformative" answer layer 5 names, here for a genuinely mixed
+  // receiver rather than an unnarrowable bigint-pure one), whose synthetic
+  // BOOL member vetoes materialization outright — even though the value
+  // can never actually be a JS boolean at this call site: it comes from a
+  // storage READ, which — the SAME invariant the existing identitySafeStorage
+  // Flow carve-out already relies on (buildBodyData) — is individually
+  // self-tagged per element at the wire, so any bigint-specific edge this
+  // plan wires up (a bigint-origin WRITE boxes, a definite-bigint READ
+  // unboxes) is gated per-expression by valTypeOf/isBigintOrigin
+  // (ir.js's applyBigintRepresentationAction) and simply never fires for
+  // whatever OTHER kind actually flows through on a given call — narrowing
+  // the SEMANTIC to exclude BOOL specifically (not claiming bigint purity,
+  // only boolean-impossibility) cannot misinterpret a real bool the way
+  // forcing a raw-carrier guess would. `paramNeverBool` earns the mark when
+  // EVERY call-site argument at that index is STRUCTURALLY a storage read
+  // (any receiver, any content-kind — a strictly weaker bar than
+  // paramBigintOnly's kind-purity one) — an arity gap or any non-storage-
+  // read argument marks it impure, permanently, same sticky discipline.
+  const paramNeverBool = new Map()
+  const paramBoolPossible = new Map()
+  const markNeverBoolArg = (calleeName, k, neverBool) => {
+    let poss = paramBoolPossible.get(calleeName)
+    if (!poss) { poss = new Set(); paramBoolPossible.set(calleeName, poss) }
+    if (poss.has(k)) return
+    if (!neverBool) {
+      poss.add(k)
+      const prior = paramNeverBool.get(calleeName)
+      if (prior) prior.delete(k)
+      return
+    }
+    let set = paramNeverBool.get(calleeName)
+    if (!set) { set = new Set(); paramNeverBool.set(calleeName, set) }
+    set.add(k)
+  }
+  const isStorageReadArgShape = node => {
+    if (!Array.isArray(node)) return false
+    const recv = memberReceiver(node)
+    if (recv != null) return true
+    const cm = callMember(node)
+    return !!cm && STORAGE_READ_METHODS.has(cm[2])
+  }
   const visitCallSites = (node, func, localNames) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) visitCallSites(node[i], func, localNames); return }
-    if (op === '=>') return // closures scan under their own frame elsewhere; mirrors scan()'s own boundary
+    // Shape #7: a closure body's call to a NAMED function (watr's dispatch-
+    // table shape, `const HANDLER = { i64: (nodes) => leb(nodes.shift()) }`)
+    // is a real, enumerable call site for THAT function's param evidence —
+    // unlike scan()'s local-name/storage fixpoint (which closures correctly
+    // re-derive on their own via deriveLocalProvenance, a different
+    // question), this pass only asks "what does every direct call site,
+    // anywhere, prove about callee param K" and a closure's own scope is
+    // irrelevant to that question for a callee OUTSIDE the closure. Fresh
+    // (empty) scope on descent: a bare-name argument inside the closure may
+    // shadow an unrelated same-named enclosing binding, so this
+    // conservatively MISSES that one narrow shape rather than risk crediting
+    // the wrong name — the common real shape (a storage read, a literal, a
+    // nested call) resolves through exprMay's whole-program storage/
+    // bigintTyped/results sets, which need no localNames at all.
+    if (op === '=>') { visitCallSites(node[2], null, EMPTY_SEEN); return }
     if (op === '()' && typeof node[1] === 'string') {
       const callee = ctx.funcs.map.get(node[1])
       if (callee && callee.sig && callee.sig.params) {
@@ -607,6 +820,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
           const closedBigint = bigintRepIsClosed(rep) &&
             bigintRepBits(rep) !== BIGINT_REP_NONE && bigintRepBits(rep) !== BIGINT_REP_TOP
           markCallArg(callee.name, k, closedBigint)
+          markNeverBoolArg(callee.name, k, k < args.length && isStorageReadArgShape(args[k]))
         }
       }
     }
@@ -616,7 +830,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
   visitCallSites(ast, null, globals)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
 
-  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly }
+  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramNeverBool }
 }
 
 function deriveLocalProvenance(sig, body, localReps, program) {
@@ -684,6 +898,23 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     const bigintOnlyRow = options.provenance && options.provenance.paramBigintOnly
       ? options.provenance.paramBigintOnly.get(func.name) : null
     const provenBigintOnly = !generic && !uncovered && bigintOnlyRow != null && bigintOnlyRow.has(k)
+    // Shape #7 (encode.i64's real watr shape, sibling to layer 5 above): a
+    // param can be body-write bigint-provenant (a genuine typeof-guarded
+    // string/number/bigint normalizer) while its call-site argument is a
+    // storage read on an array that ISN'T bigint-pure (watr's `nodes` holds
+    // parsed WAT syntax; the i64 immediate arrives as text and is BigInt()-
+    // normalized inside the callee) — provenBigintOnly correctly declines
+    // (the argument truly isn't closed-bigint), but the legacy census still
+    // stamps the coarse closed-ALL-kinds answer, whose synthetic BOOL member
+    // vetoes materialization even though the value can never actually be a
+    // JS boolean here (it comes from a storage read — self-tagged per
+    // element at the wire, same invariant buildBodyData's own
+    // identitySafeStorageFlow carve-out already relies on for body defs).
+    // paramNeverBool proves the weaker, sufficient fact: not kind-purity,
+    // only boolean-impossibility.
+    const neverBoolRow = options.provenance && options.provenance.paramNeverBool
+      ? options.provenance.paramNeverBool.get(func.name) : null
+    const provenNeverBool = !generic && !uncovered && neverBoolRow != null && neverBoolRow.has(k)
     // `current` deliberately keeps deriving from the LEGACY (rep-based)
     // semantic even when provenBigintOnly overrides `semantic` itself —
     // regression found live (test/watr.js's uleb-loop pin): currentParamRep's
@@ -713,7 +944,14 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
     // one shared cause: this proof's precision is scoped to KIND purity
     // only, never presence.
     const semantic = mayBigint
-      ? (generic ? observed : provenBigintOnly ? semKind(VAL.BIGINT, semanticNullish(legacySemantic)) : legacySemantic)
+      ? (generic ? observed
+        : provenBigintOnly ? semKind(VAL.BIGINT, semanticNullish(legacySemantic))
+        : provenNeverBool ? packSemantic(
+            semanticKinds(legacySemantic) & ~bitOfKind(VAL.BOOL),
+            semanticClosed(legacySemantic),
+            semanticNullish(legacySemantic),
+          )
+        : legacySemantic)
       : noBigintSemantic()
     const current = mayBigint ? (generic ? BOXED_BIGINT : currentParamRep(rep, legacySemantic, uncovered)) : NO_BIGINT
     return {
@@ -1125,8 +1363,30 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached != null) return cached
     let out
     if (isBigintOrigin(node)) out = RAW_BIGINT
-    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
-      out = directCallBoundary(ctx, node[1]).result.current
+    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1])) {
+      // Shape #7 (encode.i64's own real watr shape): the BOUNDARY's current
+      // is the coarse, pre-body fact (open/ambiguous whenever the callee's
+      // own return sites disagree on raw-vs-boxed by construction, e.g.
+      // i64.parse's own multi-branch numeric-string parser) — but once the
+      // callee's BODY has settled, its OWN materializedResult/resultTarget
+      // is the precise, PROVEN single carrier every one of its return edges
+      // already normalizes to (ground truth, not a guess). emittedCandidate
+      // (below) already prefers this fact for join/materializedNames
+      // propagation; currentOf lagged behind it for the identical reason —
+      // a callee whose result is definitely one carrier, reached from a
+      // caller whose OWN call-argument evidence doesn't otherwise resolve
+      // the ambiguity, never got to use it. Same callee-before-caller
+      // ordering guarantee (analyzeFuncs completes every function's body
+      // before any caller's own buildBodyData runs) that emittedCandidate's
+      // own comment already documents; falls open to the boundary's current
+      // exactly like emittedCandidate does when the body isn't there yet.
+      const callee = ctx.funcs.map.get(node[1])
+      const calleeHandle = callee && ctx.plans.representations.get(callee)
+      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+      out = calleeBody?.materializedResult === true
+        ? calleeBody.resultTarget ?? ANY_BIGINT
+        : directCallBoundary(ctx, node[1]).result.current
+    }
     else if (node[0] === ',') out = currentOf(node[node.length - 1])
     else if (node[0] === '=') out = currentOf(node[2])
     else {
@@ -1550,8 +1810,26 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // about, leaving a closure with no tag-required param (the .map callback:
   // x's own boundary semantic excludes bigint entirely, closureBoxParams
   // stays empty) on its pre-existing REJECT path, unchanged.
+  //
+  // Shape #7: a SECOND, independent producer of genuine evidence —
+  // closureBoxParams only ever looks at the closure's OWN params, but a
+  // closure can be pure forwarding (`(nodes) => leb(nodes.shift())`, watr's
+  // dispatch-table entry) whose bigint-ness comes entirely from its RETURN,
+  // through a call to an ordinary named function, never touching a
+  // param at all. emittedCandidate's `ready: true` branches (a materialized
+  // name, a materialized join, or a callee whose OWN materializedResult is
+  // already proven — exactly this case, once leb's param provenance sees
+  // through the closure that calls it, see solveBigintProvenance's
+  // visitCallSites) are ground truth, not a guess — the SAME distinction
+  // that already excludes the .map callback above: `x + 1n` is a bare binary
+  // op, covered by none of emittedCandidate's proof branches, so it falls to
+  // the unready `{rep: currentOf(node), ready: false}` default and this
+  // clause stays false for it, unchanged. Additive only: closureBoxParams
+  // keeps its own job for a genuinely param-sourced result.
+  const resultForwardsProvenCallee = !!closureAbiIdentity && resultExprs.length > 0 &&
+    resultExprs.every(expr => expr != null && emittedCandidate(expr).ready === true)
   const materializedResult = (boundary.covered === true || boundary.result.forceTagged === true ||
-      (!!closureAbiIdentity && closureBoxParams.size > 0)) &&
+      (!!closureAbiIdentity && closureBoxParams.size > 0) || resultForwardsProvenCallee) &&
     !resultHasClosedBool &&
     sig?.results?.length === 1 && sig.results[0] === 'f64' &&
     resultExprs.every(expr => {

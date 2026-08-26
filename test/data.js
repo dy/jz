@@ -2172,47 +2172,68 @@ test('bigint: storage-read forwarded through a closure/dispatch-table call (shap
   }
 })
 
-test('bigint: storage-read forwarded OUT of a dispatch-table closure into a second function\'s reassigned param (shape #7 candidate — KNOWN-WRONG)', () => {
-  // Sibling of the pin above, NOT covered by its fix. That fix (generic closure
-  // planning's closure-local storage census) recognizes `let n = nodes.shift();
-  // n >>= 7n` when the storage-read, the LOCAL BINDING, and the compound
-  // reassignment all live in the SAME closure body. Real watr never does this:
-  // compile.js's `i64:` HANDLER entry (compile.js ~1050, `HANDLER[imm](nodes,
-  // ctx, op, out)` computed dispatch) reads `encode.i64(n.shift(), out)` --
-  // the storage-read is forwarded INLINE, unbound, straight into a SEPARATE
-  // named function (encode.js's `i64()`, ~118-136), which reassigns its OWN
-  // param in its LEB128 loop (`n >>= 7n`). No local ever exists inside the
-  // closure for the storage census to mark. Isolated further (differential
-  // probing, not yet landed anywhere): the storage-read isn't even essential --
-  // a bare BigInt LITERAL forwarded the identical way (closure forwards its
-  // OWN param to a second function through a computed-key dispatch call) fails
-  // identically, so the real gap is closure-PARAMETER materialization across a
-  // forwarded call, of which storage-read-sourced values are one producer.
-  // Wrong at EVERY optimization level (checked live, O0 included -- a plan-time
-  // gap, not an optimizer artifact), and the wrong TYPE itself is the tell:
-  // leb's reassigned param never round-trips as a BigInt at all, it comes back
-  // a plain Number (raw i64 bits reinterpreted as f64 at the boundary). Decoded
-  // against layout.js's own NaN-box fields (undoing the one `>>= 7n` exactly
-  // recovers every bit except the low 7, harmless for identifying the tag):
-  // O0/O2 leak 0x7ffa800000000480, O3 leaks 0x7ffa800000000500 -- both decode
-  // to TAG_SHIFT=47 tag 5 (PTR.BIGINT exactly, layout.js's own PTR.BIGINT=5),
-  // aux 0, a heap byte offset near 1152/1280: the box POINTER used as the i64
-  // PAYLOAD, the identical corruption class the whole Shape #6 fixpoint fixes,
-  // never unboxed at this one forwarded-call-argument boundary. This is the
-  // watr memory64 CI signature that survives current main: /test/official/
-  // memory64.wast data-segment offset 9221823924769379472 (0x7ffa80001113d490)
-  // and /test/official/float_memory64.wast offset 9221823924662201080
-  // (0x7ffa80000ab06af8) -- both from watr's `(memory (data ...))` desugar and
-  // its explicit `(data (i64.const N) ...)` encode path, both routing through
-  // this exact HANDLER[imm] -> encode.i64 forwarding seam; a third official
-  // test, call_indirect64.wast, fails alongside them ("table index is out of
-  // bounds") -- same seam, a table64 index instead of a data offset.
-  // FLIP CONDITION: once closure-forwarded param materialization lands (the
-  // plan proves a closure's OWN param is boxed-by-construction when every
-  // call site's argument is a provably-closed BigInt, THROUGH a computed-key
-  // dispatch call, and carries that proof into a forwarded call argument's
-  // callee-side param decision), replace the `typeof` reject below with
-  // `is(e.f(), 7n, ...)` matching the pin above.
+test('bigint: storage-read forwarded OUT of a dispatch-table closure into a second function\'s reassigned param (shape #7 — LANDED)', () => {
+  // Sibling of the pin above, was NOT covered by its fix. That fix (generic
+  // closure planning's closure-local storage census) recognizes `let n =
+  // nodes.shift(); n >>= 7n` when the storage-read, the LOCAL BINDING, and
+  // the compound reassignment all live in the SAME closure body. Real watr
+  // never does this: compile.js's `i64:` HANDLER entry (compile.js ~1050,
+  // `HANDLER[imm](nodes, ctx, op, out)` computed dispatch) reads
+  // `encode.i64(n.shift(), out)` -- the storage-read is forwarded INLINE,
+  // unbound, straight into a SEPARATE named function (encode.js's `i64()`,
+  // ~118-136), which reassigns its OWN param in its LEB128 loop (`n >>=
+  // 7n`). No local ever exists inside the closure for the storage census to
+  // mark.
+  //
+  // Root cause (three independent gaps, all in solveBigintProvenance,
+  // representation-plan.js): (1) `visitCallSites` (Shape #6 layer 5's
+  // paramBigintOnly proof, the whole-program "every call site's argument is
+  // a provably-closed bigint" census) explicitly refused to descend into
+  // closure (`=>`) bodies -- `leb`'s ONLY real call site sits inside the
+  // HANDLER.i64 closure, so `leb`'s param semantic fell back to the coarse
+  // closed-ALL-kinds legacy answer, whose synthetic BOOL member vetoes
+  // materializedNames permanently (the exact Shape #6 layer-5 disease, one
+  // level deeper). (2) EVEN once visitCallSites sees the call site, the
+  // storage census (`storage` -- which names are provably real, mutation-
+  // tracked arrays) is name-keyed, and the closure's OWN param is a
+  // DIFFERENT static name from the array pushed-to in `f` -- the by-
+  // reference taint that already forward-propagates through a DIRECT-NAME
+  // call (Shape #6 layer 6) never crossed a COMPUTED-key dispatch call at
+  // all, because nothing enumerated which closures such a call could reach.
+  // (3) The closure's OWN materializedResult admission (closure-forwarding
+  // slice) only recognized a directly-tagged PARAM as evidence
+  // (closureBoxParams); a closure that is pure result-forwarding (no
+  // param of its own is ever itself a bigint) had no admission path at all.
+  //
+  // Fix: `collectDispatchTableClosures` (new) statically enumerates every
+  // closure literal assigned as a property of a `let/const NAME = { … }`
+  // object-literal dispatch table -- the same move collectLocalClosures
+  // already makes for a single bound name, promoted to every property of a
+  // table. Wired into THREE seams: `exprMay`'s computed-call branch (a
+  // computed dispatch may carry bigint when ANY candidate's own result may),
+  // `scan`'s forward+backward storage-taint rules (mirrored per candidate,
+  // by reference, same soundness argument as the existing direct-call
+  // rules), and `visitCallSites` now descends into closure bodies (a
+  // closure's call to a NAMED function is a real, enumerable call site for
+  // THAT function's param evidence, unlike scan()'s own local-name tracking
+  // which closures correctly re-derive separately). Plus a fourth, additive
+  // disjunct on the closure's own materializedResult gate: a result that
+  // forwards through a proven-ready (materialized name/join, or a callee
+  // whose OWN materializedResult already holds) expression is legitimate
+  // evidence, independent of closureBoxParams. No pipeline reorder, no
+  // change to the plan-as-sole-authority discipline; the plan simply sees a
+  // second closure-storage shape (an object-literal table) it was blind to.
+  //
+  // Correct now at every optimization level (a plan-time fix, not an
+  // optimizer-dependent one). This is the watr memory64 CI signature:
+  // /test/official/memory64.wast data-segment offset 9221823924769379472
+  // (0x7ffa80001113d490) and /test/official/float_memory64.wast offset
+  // 9221823924662201080 (0x7ffa80000ab06af8) -- both from watr's `(memory
+  // (data ...))` desugar and its explicit `(data (i64.const N) ...)` encode
+  // path, both routing through this exact HANDLER[imm] -> encode.i64
+  // forwarding seam; a third official test, call_indirect64.wast, failed
+  // alongside them ("table index is out of bounds") -- same seam, a table64
+  // index instead of a data offset.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -2225,7 +2246,155 @@ test('bigint: storage-read forwarded OUT of a dispatch-table closure into a seco
         return encode("i64", nodes)
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: closure-forwarded storage-read into a second function's reassigned param crosses as raw box-pointer bits (Number), never a BigInt`)
+    is(e.f(), 7n, `${lbl}: closure-forwarded storage-read into a second function's reassigned param crosses as a real BigInt`)
+  }
+})
+
+test('bigint: storage-read forwarded through TWO plain named functions, no closure/dispatch table (shape #7 sibling — LANDED)', () => {
+  // Found while probing shape #7's own "no closure at all" variant (phase-c
+  // doc): drop the dispatch table and the closure entirely -- a bare
+  // `f() -> handle(nodes) -> leb(nodes.shift())` direct-call chain, the
+  // SAME shape Shape #6 layer 6's forward-taint rule already covers (its
+  // own doc names this exact shape: "function handle(arr){ return
+  // i64(arr.shift()) }"). Was correct at O0/O2; wrong at O3 only -- a
+  // SEPARATE, narrower root cause from shape #7's own dispatch-table gap
+  // (which was wrong at every level, unconditionally): this shape has no
+  // closure and no computed-key dispatch anywhere, so none of shape #7's
+  // dispatch-table fix seams (collectDispatchTableClosures, exprMay/scan's
+  // dispatch-table wiring, visitCallSites' closure descent) touch it.
+  //
+  // Root cause (live-traced): at -O3, `inlineHotInternalCalls` (plan/
+  // index.js) splices `handle`'s call into `f` BEFORE solveRepresentation
+  // Boundaries ever runs (confirmed: `f`'s own body already reads `return
+  // leb(nodes.shift())` -- `handle` never appears in it -- by the time
+  // solveBigintProvenance walks the AST) -- but `handle`'s OWN function
+  // declaration survives, fully intact and unreferenced, in ctx.funcs.list.
+  // This orphaned copy still calls `leb(nodes.shift())` using ITS OWN
+  // (now-uncallable) param -- and since nothing calls `handle` anymore, the
+  // forward storage-taint rule that would normally prove that param BOXED
+  // (Shape #6 layer 6, which requires the receiver be a PROVEN bigint-pure
+  // array) never fires for it: no live call site exists to carry the taint.
+  // solveBigintProvenance's whole-program paramBigintOnly census
+  // (`markCallArg`) is sticky-impure BY DESIGN (a genuine union stays a
+  // union) -- it cannot distinguish "one caller can't prove kind-purity"
+  // from "this caller is dead code, ignore it" -- so the orphaned,
+  // unreachable call site permanently poisons `leb`'s param KIND-PURITY
+  // proof for EVERY caller, including `f`'s own genuinely-provable inlined
+  // one.
+  //
+  // Fix: closed as a side effect of the SAME `paramNeverBool` proof shape
+  // #7's own encode.i64 sibling gap needed (see the pin above and
+  // representation-plan.js) -- a STRUCTURALLY weaker bar than
+  // paramBigintOnly's kind-purity one (any storage-read-shaped argument,
+  // regardless of receiver content-purity, regardless of whether that
+  // particular call site is live or orphaned post-inline -- the AST SHAPE
+  // of an argument expression doesn't change when its enclosing function
+  // becomes unreachable). Both the orphaned and the live call site's
+  // arguments are STRUCTURALLY `.shift()` reads either way, so
+  // paramNeverBool stays true regardless of which one poisons
+  // paramBigintOnly -- the BOOL-veto (the actual thing blocking
+  // materialization) no longer needs kind-purity to clear, only boolean-
+  // impossibility, which an orphaned call site can't retroactively revoke.
+  // The inliner/dead-code-liveness gap itself (a fully-spliced-away callee
+  // surviving in ctx.funcs.list) remains real and unfixed -- this pin closes
+  // because the SYMPTOM it produced no longer reaches a wrong value, not
+  // because the orphan stopped existing.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function leb(n) { n >>= 7n; return n }
+      function handle(nodes) { return leb(nodes.shift()) }
+      export let f = () => {
+        let nodes = []
+        nodes.push(900n)
+        return handle(nodes)
+      }
+    `, { optimize }).exports
+    is(e.f(), 7n, `${lbl}: plain two-hop named-function storage forwarding crosses as a real BigInt`)
+  }
+})
+
+test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a bare name (shape #7 residual — KNOWN-WRONG)', () => {
+  // Root-caused validating shape #7's own fix against the REAL watr build
+  // (not a repro shape): watr's actual memory64/float_memory64/
+  // call_indirect64 CI failures survive shape #7's closure/dispatch-table
+  // fix (landed above) AND every sibling gap it also closed (paramNeverBool,
+  // currentOf's callee-body materializedResult lookahead, bigintTyped
+  // program-wide pre-seeding — all in representation-plan.js, all verified
+  // against this same watr build). The one remaining seam: compile.js's
+  // `HANDLER.i64` closure calls `encode.i64(n.shift(), out)` (a DIRECT NAME
+  // call once bundled — already correctly resolved) — but `encode.i64`
+  // itself, internally, does `n = i64.parse(n)`, a `.`-MEMBER call to
+  // `i64.parse` (`i64.parse = n => {...}`, a function attached as a static
+  // property of `i64`, a SAME-MODULE sibling — not a bare name, not a
+  // computed dispatch, not a closure).
+  //
+  // Isolated below to the minimal control pair: the IDENTICAL callee body,
+  // called by bare name, is ALREADY correct (proves every OTHER mechanism —
+  // paramNeverBool, the BOOL-veto bypass, the storage-argument proof — is
+  // fine); called via `ns.parse(...)` instead, the exact same value comes
+  // back as a plain Number (raw i64 bits misread as a subnormal float,
+  // `3.5e-323` — the identical corruption class this whole fixpoint exists
+  // to close). Root cause: EVERY provenance function in this file that
+  // resolves a call's callee — currentOf, semanticOf, exprMay, exprRep,
+  // visitCallSites, scan's storage-taint rules — gates the direct-callee
+  // branch on `typeof node[1] === 'string'` (a bare-name callee) exclusively
+  // (aside from a narrow, built-in-method-name allowlist for `.get`/`.pop`/
+  // `.shift`/`.at`/etc.). A `.`-member call to a REAL, user-defined named
+  // function (`ns.parse(x)`) is invisible to all of them — even though
+  // emission's OWN call resolution (ctx.funcs.map, via a different,
+  // already-bundle-aware path) calls it correctly; representationCallArg
+  // Action's own edge decision at the call site resolves fine for the SAME
+  // reason bare-name calls do (it consumes emission's resolved callee, not
+  // this file's own node[1] string match) — the gap is specifically in the
+  // ANALYSIS-side provenance functions' inability to name the callee at all
+  // from a `.`-shaped node, so the callee's OWN param/result facts never
+  // enter the fixpoint's evidence base in the first place.
+  //
+  // Out of shape #7's own scope (closure-parameter materialization across a
+  // COMPUTED-DISPATCH boundary): no closure, no computed key, anywhere in
+  // this shape. A distinct, comparably-sized undertaking — extending every
+  // one of the provenance functions above to resolve a `.`-member callee to
+  // its bundled function (the same base-name+property → function-name
+  // mapping emission's own resolution already has, not yet available to
+  // this file) — not a slice of shape #7's fix. Stopped here per the wall
+  // protocol rather than forced.
+  // FLIP CONDITION: once `.`-member calls to same-module named functions
+  // resolve through the SAME direct-callee machinery bare-name calls already
+  // use (in currentOf, semanticOf, exprMay, exprRep, and visitCallSites/
+  // scan's call-argument evidence), replace the `typeof` reject below with
+  // `is(e.f(), 7n, ...)` matching the bare-name control right above it.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const src = `
+      function parseNum(n) {
+        if (typeof n === 'string') n = BigInt(n)
+        n >>= 7n
+        return n
+      }
+      export let control = () => {
+        let nodes = []
+        nodes.push("900")
+        return parseNum(nodes.shift())
+      }
+    `
+    const control = jz(src, { optimize }).exports
+    is(control.control(), 7n, `${lbl}: bare-name control (same callee body) is already correct`)
+    const e = jz(`
+      function parseNum(n) {
+        if (typeof n === 'string') n = BigInt(n)
+        n >>= 7n
+        return n
+      }
+      const ns = {}
+      ns.parse = parseNum
+      export let f = () => {
+        let nodes = []
+        nodes.push("900")
+        return ns.parse(nodes.shift())
+      }
+    `, { optimize }).exports
+    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: identical callee reached via .member call crosses as raw box-pointer bits (Number), never a BigInt`)
   }
 })
 
