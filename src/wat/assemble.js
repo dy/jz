@@ -303,6 +303,22 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
     // __schema_tbl/__schema_next as GLOBAL INITS: zero init code, and the reserve
     // (JSON.parse-registered runtime schemas) lives in writable data the globals
     // sweep correctly rewinds at _clear (runtime schemas are round state).
+    //
+    // `tblConsumed` (above) is a whole-program "might some dynamic dispatch need
+    // ANY schema's key array" decision — coarser than what any later pass proves.
+    // A schema minted only because an opaque `.length`/property-dispatch site was
+    // VISITED here (e.g. module/core.js's emitLengthAccess, before narrowing/
+    // devirtualization resolve the receiver's real type) can end up with NO
+    // surviving reader at all once optimizeModule/treeshake finish — every key
+    // string this loop interns for such a schema would otherwise leak into the
+    // data segment unconditionally. Record the byte span this whole table
+    // construction owns (every nested key array, chained off ONE `__schema_tbl`
+    // global) so stripDeadInternedSpans can reclaim it from the tail once real
+    // reachability is known. Skipped under `runtimeReserve`: JSON.parse can write
+    // a NEW schema pointer into a reserved slot past `nSchemas` at RUNTIME, a
+    // write this static liveness scan can't see — reclaiming there could orphan
+    // a slot a live runtime write still depends on.
+    const schemaDataStart = dataLen()
     let staticBits = ctx.memory.shared ? null : []
     if (staticBits) for (const keys of ctx.schema.list) {
       const bits = keys.map(k => extractF64Bits(asF64(emit(['str', String(k)]))))
@@ -323,6 +339,8 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       // patches BOXED slots via staticPtrSlots, but a global's declared init
       // needs its own shift (same as __internBase's bespoke re-declare).
       ;(ctx.runtime.staticI32GlobalInits ??= []).push('__schema_tbl')
+      if (!runtimeReserve && dataLen() > schemaDataStart)
+        ctx.runtime.reclaimSpans.push({ global: '__schema_tbl', start: schemaDataStart, end: dataLen() })
       if (runtimeReserve) {
         if (!ctx.scope.globals.has('__schema_next')) declGlobal('__schema_next', 'i32')
         const nextG = ctx.scope.globals.get('__schema_next')
@@ -1466,6 +1484,81 @@ export function stripDeadLazyTables(sec) {
 }
 
 /**
+ * Phase: reclaim data-segment bytes a COARSE, pre-treeshake step interned
+ * speculatively — a schema minted (and its key strings materialized) the
+ * moment an opaque dispatch site was VISITED during emission (module/core.js's
+ * emitLengthAccess et al, before narrowing/devirtualization resolve the real
+ * receiver type), or a stdlib thunk's own string constants realized merely to
+ * discover its call graph (src/ctx.js's resolveIncludes autoDepsOf). Both are
+ * sound at the point they run — the program COULD still reach that dispatch —
+ * but optimizeModule/treeshake can later prove the specific call site (or the
+ * whole helper) unreachable, same class of over-approximation
+ * stripDeadLazyTables already closes for the EL/Ryū tables and the jz:schema/
+ * jz:errcls custom-section reconciliation (src/compile/index.js) already
+ * closes for the host-facing schema listing. This is the runtime-data-segment
+ * analog for the string pool: `ctx.runtime.reclaimSpans` (populated by
+ * buildStartFn's schema-table construction and by any stdlib thunk that
+ * interns its own constants, e.g. module/core.js's __throw_property_nullish)
+ * records the exact byte range each such interning owns.
+ *
+ * Unlike lazySpans, a reclaimSpans entry can be addressed either by a global
+ * (the schema table, indirected through `__schema_tbl`) OR by literal
+ * NaN-boxed bit patterns baked directly into ONE function's body (a thunk's
+ * own strBits constants — nothing else can reference them, since nothing else
+ * ever calls ctx.core.emit['str'] with that exact text from that exact
+ * template). The second shape has no global to repoint if shifted, so —
+ * unlike stripDeadLazyTables's rebuild-and-repoint — this pass ONLY ever
+ * truncates a dead run off the ABSOLUTE TAIL, walking spans in reverse append
+ * order and stopping at the first still-live (or non-contiguous) one. A live
+ * span is therefore NEVER moved, so no reference — global-indirected or
+ * literal-baked — can ever desync. The cost of that safety is precision: a
+ * dead span buried before a live one is left as harmless residual weight
+ * rather than reclaimed (same accepted trade stripDeadLazyTables documents
+ * for shared memory). Must run in the same window as stripDeadLazyTables —
+ * after optimizeModule (real reachability is final) and before the data
+ * segment is serialized into sec.data.
+ */
+export function stripDeadInternedSpans(sec) {
+  const spans = ctx.runtime.reclaimSpans
+  if (!spans || !spans.length) return
+  const byName = new Map()
+  for (const arr of [sec.funcs, sec.stdlib, sec.start])
+    for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
+  const live = new Set(), liveGlobals = new Set(), work = []
+  const mark = (ref) => { if (typeof ref === 'string' && byName.has(ref) && !live.has(ref)) { live.add(ref); work.push(ref) } }
+  const scan = (n) => {
+    if (!Array.isArray(n)) return
+    if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string') mark(n[1])
+    else if ((n[0] === 'global.get' || n[0] === 'global.set') && typeof n[1] === 'string') liveGlobals.add(n[1].slice(1))
+    for (const c of n) scan(c)
+  }
+  for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
+  // An inline-exported global (`declGlobal(name, ty, init, { export: '…' })`) is a
+  // host-facing root exactly like an exported func — live with no in-wasm
+  // reference at all, same rule optimize/index.js's dead-global elimination
+  // uses. `__schema_tbl` itself never carries one today, but a `global`-keyed
+  // reclaimSpans entry must hold for whatever future span also uses this shape.
+  for (const n of sec.globals || [])
+    if (Array.isArray(n) && n[0] === 'global' && typeof n[1] === 'string' &&
+        n.some(c => Array.isArray(c) && c[0] === 'export')) liveGlobals.add(n[1].slice(1))
+  for (const f of sec.start) scan(f)
+  for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
+    if (!Array.isArray(n)) continue
+    for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
+  }
+  while (work.length) scan(byName.get(work.pop()))
+  let cut = dataLen()
+  for (let i = spans.length - 1; i >= 0; i--) {
+    const s = spans[i]
+    if (s.end !== cut) break   // not contiguous with the true tail — something else already lives past it
+    if (s.fn ? live.has(s.fn) : liveGlobals.has(s.global)) break
+    cut = s.start
+  }
+  if (cut < dataLen()) dataReset(dataString().slice(0, cut), cut)
+  ctx.runtime.reclaimSpans = []
+}
+
+/**
  * Phase: strip static-data prefix.
  */
 export function stripStaticDataPrefix(sec) {
@@ -1515,6 +1608,14 @@ export function stripStaticDataPrefix(sec) {
   // in post-strip coordinates so stripDeadLazyTables truncates at the right base.
   if (ctx.runtime.lazySpans) for (const s of ctx.runtime.lazySpans)
     if (s.start >= prefix) s.start -= prefix
+  // reclaimSpans (buildStartFn's schema table, a stdlib thunk's own interned
+  // constants) — same re-coordination, both edges: stripDeadInternedSpans'
+  // contiguity check (`s.end !== cut`) needs `end` in the same post-strip
+  // basis as `dataLen()`, not just `start`.
+  if (ctx.runtime.reclaimSpans) for (const s of ctx.runtime.reclaimSpans) {
+    if (s.start >= prefix) s.start -= prefix
+    if (s.end >= prefix) s.end -= prefix
+  }
   let s = ''
   for (let i = prefix; i < buf.length; i++) s += String.fromCharCode(buf[i])
   // Explicit length, same rationale as stripDeadLazyTables's own dataReset call

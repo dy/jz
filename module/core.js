@@ -19,6 +19,7 @@ import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, HEAP, FORWARDING_MASK, emitArity, followForwardingWat, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { dataLen } from '../src/static-data.js'
 import { ptrOffsetFwdWat, STR_INTERN_BIT } from '../layout.js'
 import { nanPrefixHex, nanPrefixMaskHex, ssoBitI64Hex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
@@ -2787,11 +2788,26 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     }
     const sid = ctx.schema.errorSid('TypeError')
     const slots = ctx.abi.object.ops.allocSlots(2)
+    // This thunk can realize more than once (resolveIncludes' speculative
+    // autoDepsOf scan, reachableStdlib's own confirmatory walk, the final pull)
+    // while `$__length`/`$__length.value` — the only callers — are STILL only
+    // conservatively "might be reachable": the receiver's real type can resolve
+    // later, in optimizeModule, to something that never dispatches through here
+    // at all. Record the byte span these two interns own on the FIRST (real)
+    // realize — dedup makes every later call a no-op (dataLen() doesn't move) —
+    // so src/wat/assemble.js's stripDeadInternedSpans can reclaim it once
+    // treeshake's later verdict is known. Both constants are baked as literal
+    // NaN-boxed bit patterns directly below, not through any global, so a
+    // surviving reference can never be desynced by that reclaim (see its doc).
+    const spanStart = dataLen()
+    const msgBits = strBits('Cannot read properties of undefined')
+    const nameBits = strBits('TypeError')
+    if (dataLen() > spanStart) ctx.runtime.reclaimSpans.push({ fn: '$__throw_property_nullish', start: spanStart, end: dataLen() })
     return `(func $__throw_property_nullish
       (local $p i32) (local $e f64)
       (local.set $p (call $__alloc_hdr (i32.const 0) (i32.const ${slots})))
-      (f64.store (local.get $p) (f64.const ${strBits('Cannot read properties of undefined')}))
-      (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${strBits('TypeError')}))
+      (f64.store (local.get $p) (f64.const ${msgBits}))
+      (f64.store (i32.add (local.get $p) (i32.const 8)) (f64.const ${nameBits}))
       (local.set $e (call $__mkptr (i32.const ${PTR.OBJECT}) (i32.const ${sid}) (local.get $p)))
       (global.set $__jz_last_err_bits (i64.reinterpret_f64 (local.get $e)))
       (throw $__jz_err (local.get $e)))`

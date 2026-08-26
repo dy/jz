@@ -19,6 +19,7 @@ import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
+import { dataLen } from '../src/static-data.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
 import { ssoEncode } from './string.js'
 import { ERR, ERR_INFO } from '../err-codes.js'
@@ -3111,6 +3112,17 @@ export default (ctx) => {
   // template below -- no data-segment offset arithmetic to hand-format.
   ctx.core.stdlib['__err_prop'] = () => {
     const strBits = (text) => ctx.core.emit['str'](text)[1]
+    // Same coarse-vs-final-reachability gap as __throw_property_nullish
+    // (module/core.js, see its own doc): this thunk realizes whenever SOME
+    // .message/.name read reached the dynamic dispatch during emission
+    // (maybeIncErrProp), which can still resolve to a receiver type that never
+    // dispatches through here once optimizeModule finishes. Every key string
+    // below (up to ~2×|ERR_INFO|, the largest single interning site in the
+    // stdlib) is baked as a literal NaN-boxed bit pattern into THIS function's
+    // own body only — record the span so stripDeadInternedSpans can reclaim it
+    // once __err_prop's real liveness is known; a no-op on any re-realize
+    // (dataDedup already holds every string, dataLen() doesn't move).
+    const spanStart = dataLen()
     const msgHash = strHashLiteral('message')
     const nameHash = strHashLiteral('name')
     const msgKeyBits = strBits('message')
@@ -3121,6 +3133,7 @@ export default (ctx) => {
         (i64.reinterpret_f64 (f64.const ${strBits(info.message)}))
         (i64.reinterpret_f64 (f64.const ${strBits(info.name)}))
         (local.get $isMessage)))))`).join('')
+    if (dataLen() > spanStart) ctx.runtime.reclaimSpans.push({ fn: '$__err_prop', start: spanStart, end: dataLen() })
     return `(func $__err_prop (param $obj i64) (param $key i64) (param $h i32) (result i64)
     (local $f f64) (local $isMessage i32) (local $isName i32)
     (local.set $f (f64.reinterpret_i64 (local.get $obj)))
