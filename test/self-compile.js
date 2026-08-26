@@ -27,7 +27,13 @@ const SELF = join(ROOT, 'dist/jz.wasm')
 
 const ensureSelf = () => {
   if (existsSync(SELF)) return
-  const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 600_000 })
+  // 1200s build timeout (was 600s): the self-compile build measures 330s wall on a
+  // loaded M-series local machine; CI's ubuntu runner is ~2× slower, which put it
+  // right at the old cap (CI "build exit null" = spawnSync's timeout SIGKILL, no
+  // OOM — local peak RSS is 3.1 GB). The compact-facts campaign knowingly traded
+  // some native build time for the self-hosted memory wins (its ledger records the
+  // creep); the streaming-encoder work reworks this pipeline and re-earns it.
+  const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, encoding: 'utf8', timeout: 1_200_000 })
   if (r.status !== 0) {
     console.log(r.stdout); console.log(r.stderr)
     throw new Error(`self-compile build exit ${r.status}`)
@@ -57,7 +63,7 @@ const compileViaSelf = (src) => {
 
 test('self-compile: build dist/jz.wasm', () => {
   const r = spawnSync(process.execPath, [BUILD], {
-    cwd: ROOT, encoding: 'utf8', timeout: 600_000,
+    cwd: ROOT, encoding: 'utf8', timeout: 1_200_000,
   })
   if (r.status !== 0) { console.log(r.stdout); console.log(r.stderr) }
   ok(r.status === 0, `build exit ${r.status}`)

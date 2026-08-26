@@ -60,7 +60,7 @@ const getSelfModule = () => {
   if (selfModule) return selfModule
   if (!existsSync(SELF)) {
     console.log('dist/jz.wasm missing — building (npm run build)…')
-    const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
+    const r = spawnSync(process.execPath, [BUILD], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
     if (r.status !== 0) throw new Error(`failed to build dist/jz.wasm (exit ${r.status})`)
   }
   selfModule = instantiate(readFileSync(SELF), { memory: 8192 }).module

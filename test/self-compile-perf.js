@@ -115,7 +115,7 @@ const sourceFor = (name) => {
 
 const ensureSelf = () => {
   if (existsSync(SELF)) return
-  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 600_000 })
+  const r = spawnSync(process.execPath, [join(ROOT, 'scripts/self-compile-build.mjs')], { cwd: ROOT, stdio: 'inherit', timeout: 1_200_000 })
   if (r.status !== 0) throw new Error(`self-compile build exit ${r.status}`)
 }
 
