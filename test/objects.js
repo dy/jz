@@ -54,6 +54,34 @@ test('opaque .length nullish TypeError schema is catchable at every tier', () =>
     is(jz(src, { optimize }).exports.f(null), 1, `O${optimize}`)
 })
 
+// schema/errcls-vs-treeshake reconciliation (fix/schema-treeshake): the
+// length-throw's shared TypeError schema still mints eagerly at emission
+// (commit 8954dac2, pin above) so O0 catch planning never races it, but the
+// jz:schema/jz:errcls custom sections are now built AFTER treeshake and only
+// carry entries something surviving still constructs — a mint whose sole
+// caller treeshakes away must not leave dead schema/errcls bytes behind
+// (the aos/dotprod/wav/callback size-gate regression, e867c3af).
+test('dead opaque-length TypeError schema is pruned from custom sections post-treeshake', () => {
+  // `dead` is declared but never called or exported — at O2/O3 (treeshake on)
+  // it, and its only use of the shared length-throw path, are fully removed.
+  const src = `function dead(x) { return x.length }\nexport let f = () => 42`
+  for (const optimize of [2, 3, 'size']) {
+    const wat = compile(src, { optimize, wat: true })
+    ok(!wat.includes('"jz:schema"'), `O${optimize}: no live schema left to describe — section omitted`)
+    ok(!wat.includes('"jz:errcls"'), `O${optimize}: no live Error class left to name — section omitted`)
+    ok(!wat.includes('__throw_property_nullish'), `O${optimize}: the dead call's only throw helper is gone too`)
+  }
+})
+
+test('reachable opaque-length TypeError schema survives custom-section reconciliation', () => {
+  const src = `export let f = x => x.length`
+  for (const optimize of [0, 2, 3, 'size'])
+    ok(compile(src, { optimize, wat: true }).includes('"jz:errcls"'),
+      `O${optimize}: a genuinely reachable throw keeps the Error class named`)
+  throws(() => jz(src).exports.f(null), err => err instanceof TypeError,
+    'genuinely reachable nullish .length still throws a real host TypeError')
+})
+
 test('opaque .length host provenance survives aliases and internal call hops', () => {
   if (onWasi()) return
   const src = `
