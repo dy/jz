@@ -92,7 +92,7 @@ import plan from './plan/index.js'
 import { foldStaticConstAggregates } from './plan/literals.js'
 import {
   buildStartFn, dedupClosureBodies, finalizeClosureTable,
-  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables,
+  pullStdlib, syncImports, optimizeModule, stripStaticDataPrefix, hoistConstGlobalInits, stripDeadLazyTables, stripDeadInternedSpans,
   stripLocalRenameSuffixes,
   stdlibParseCacheMap, setStdlibParseCacheMap,
 } from '../wat/assemble.js'
@@ -203,7 +203,21 @@ function buildInternTable() {
   if (ctx.memory.shared || !ctx.runtime.dataDedup?.size) return
   const enc = new TextEncoder()
   const entries = []
+  // buildStartFn's schema-table construction (the only reclaimSpans producer that
+  // can have already run by this point — __throw_property_nullish/__err_prop's
+  // spans are pushed later, inside pullStdlib, well after this function returns)
+  // may have interned strings that stripDeadInternedSpans later truncates off the
+  // data-segment tail once real reachability is known. This probe table is raw
+  // bytes baked straight into the data segment — there is no going back to edit a
+  // slot out of it once written — so a reclaimable string must never earn one: a
+  // stale slot's candidate offset would sit past the (now correspondingly
+  // shrunk) memory bound, and the in-wasm probe (module/string.js's
+  // internProbeWat) reads the candidate's length header before it ever compares
+  // bytes, so a hash COLLISION alone — no matching runtime string required —
+  // would be a genuine out-of-bounds trap, not just a wasted probe.
+  const inReclaimSpan = (off) => (ctx.runtime.reclaimSpans || []).some(s => off >= s.start && off < s.end)
   for (const [str, off] of ctx.runtime.dataDedup) {
+    if (inReclaimSpan(off)) continue
     const b = enc.encode(str)
     if (b.length < 5 || b.length > 32) continue
     let h = 0x811c9dc5 | 0
@@ -2987,6 +3001,13 @@ export default function compile(ast, profiler, regionHooks) {
   // functions no live code calls — must run after sec.globals/funcs are final (exact
   // reachability) and before the data segment below serializes ctx.runtime.data.
   stripDeadLazyTables(sec)
+
+  // Reclaim the trailing run of any OTHER coarsely-interned data (buildStartFn's
+  // whole-schema-list table, a stdlib thunk's own string constants — see
+  // stripDeadInternedSpans' own doc) that the same exact, final reachability
+  // proves dead. Runs after stripDeadLazyTables so a dead lazy table doesn't
+  // masquerade as the "true tail" this pass's contiguity check relies on.
+  stripDeadInternedSpans(sec)
 
   // Data segments (after emit — string literals append to ctx.runtime.data / strPool during emit)
   // Active segment at address 0 — skipped for shared memory (would collide across modules)

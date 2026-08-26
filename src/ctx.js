@@ -814,6 +814,16 @@ export function reset(proto, globals, bridge) {
     staticPtrSlots: null,  // [byteOffset] data-segment slots holding NaN-boxed ptrs (host relocates); lazy-init in ir.js
     staticDataLen: 0,      // byte length of the address-0 static string block (seeded by module/number staticStr)
     typeofStrs: null,      // [str] interned typeof result strings; lazy-init in module/core `typeof`
+    // Trailing-reclaim spans — {start,end,fn?,global?} per byte range a COARSE
+    // pre-treeshake step interned speculatively (buildStartFn's whole-schema-list
+    // table, a stdlib thunk's own strBits calls). src/wat/assemble.js's
+    // stripDeadInternedSpans reads this at the SAME pipeline point as
+    // stripDeadLazyTables (after optimizeModule, before the data segment freezes)
+    // and truncates a dead run off the TRUE TAIL only — see that function's own
+    // doc for why trailing-only (never repositioning a kept span) is what makes
+    // this safe for content addressed by literal NaN-boxed bit patterns baked
+    // directly into a function body, not just global-indirected tables.
+    reclaimSpans: [],
   }
 
   ctx.memory = {

@@ -484,6 +484,66 @@ test('minimal: nullish-receiver TypeError message strings appear exactly when th
   }
 })
 
+// String-pool reachability (fix/string-pool-reach): an opaque `.length` access is
+// emitted through module/core.js's runtime-dispatch arm (emitLengthAccess) before
+// the receiver's real type is known — that arm eagerly mints the TypeError schema
+// and, once pullStdlib realizes $__length/$__length.value, interns "TypeError" and
+// "Cannot read properties of undefined" (module/core.js's __throw_property_nullish
+// thunk), plus buildStartFn's whole-schema-list runtime table (src/wat/assemble.js)
+// bakes every schema's key strings (e.g. the branded ['message','name'] pair) into
+// the data segment the same way. All of that is SOUND at the point it runs — the
+// receiver could still be nullish — but a LATER pass (optimizeModule's narrowing,
+// here: proving `rows` is always the array it was just built as) can resolve the
+// specific call site to a direct array-length read, leaving $__length/
+// $__length.value/$__throw_property_nullish and the whole schema table with no
+// surviving caller. Before this fix those interned bytes leaked into every module
+// with ANY opaque length/property-dispatch site regardless of whether treeshake
+// proved the throw path itself dead (the audited aos/wav size-gate regression).
+// stripDeadInternedSpans (src/wat/assemble.js) reclaims that trailing dead run once
+// real reachability is known — this pin is the negative half (dead: neither
+// string, matching the schema-fix's OWN 'jz:schema' custom-section reconciliation
+// this is the runtime-data-segment analog of); the pin below is the positive half
+// (live: both strings, AND the throw actually happens with the right host-visible
+// class/message).
+test('minimal: dead opaque-.length throw path leaves neither the TypeError schema name nor its message string (fix/string-pool-reach)', () => {
+  if (skip) return
+  const src = `export let f = () => {
+    const rows = []
+    for (let i = 0; i < 5; i++) rows.push({ x: i })
+    let s = 0
+    for (let i = 0; i < rows.length; i++) s += rows[i].x
+    return s
+  }`
+  for (const O of [0, 2, 3]) {
+    const w = wat(src, O)
+    ok(!w.includes('TypeError'), `@O${O}: rows is provably always an array — the TypeError class name string must not leak`)
+    ok(!w.includes('Cannot read properties of undefined'), `@O${O}: the never-reached throw's message string must not leak`)
+  }
+})
+
+test('minimal: live opaque-.length throw path keeps both strings and throws a real host TypeError (fix/string-pool-reach)', () => {
+  if (skip) return
+  const src = `export let f = (x) => {
+    let obj = x > 0 ? { a: 1 } : undefined
+    return obj.length
+  }`
+  for (const O of [0, 2, 3]) {
+    const w = wat(src, O)
+    ok(w.includes('TypeError'), `@O${O}: obj can be undefined at runtime — the TypeError class name string must survive`)
+    ok(w.includes('Cannot read properties of undefined'), `@O${O}: the reachable throw's message string must survive`)
+  }
+  // skip is already false here (the early return above covers WASI/kernel, whose
+  // command wrapping / self-hosted pipeline this default-JS-host instantiate call
+  // doesn't target) — host-side runtime correctness for those is the job of
+  // test/errors.js and the kernel-oracle/kernel-parity legs, not this file.
+  const inst = jz(src)
+  let caught = null
+  try { inst.exports.f(-1) } catch (e) { caught = e }
+  ok(caught instanceof TypeError, `host received ${caught?.constructor?.name ?? caught}, expected a real TypeError instance`)
+  ok(!!caught && /Cannot read properties of undefined/.test(caught.message),
+    `message was ${JSON.stringify(caught?.message)}, expected it to mention "Cannot read properties of undefined"`)
+})
+
 // Per-instance RUNTIME HEAP cost of a constructed Error. audit-#9 P0-2 shrank
 // the object from 3 slots (['message','name','__errcls__']) to 2
 // (['message','name']) — class identity moved to the schema id, so this is
