@@ -213,3 +213,18 @@ Next: implement the streaming encoder/compact-IR path required for 4 GiB
 closure; close or explicitly defer the 187 parser-context residuals; refresh
 performance evidence + general loss fixes; then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
+
+## 4 GiB close — candidate strategy: release-behind-the-cursor (2026-08-26)
+
+Alternative to the full streaming encoder, from the manual-release line of
+thinking: the final wall is the WAT tree and output bytes coexisting, but
+bytes are produced by WALKING the tree — so per-function region-scoped
+subtrees can reset the moment their bytes emit ("free behind the cursor").
+Tax-free by construction: release points are function boundaries, not
+object lifetimes — no refcount, no sweep, no per-allocation cost. Reuses
+the dormant region machinery (REGION_HOOKS_ACTIVE) rather than rewriting
+the encoder; prerequisite is fixing the one remaining region-live
+soundness trip. Evaluate against the streaming encoder on: implementation
+size, whether pullStdlib/optimizer boundaries allow per-function region
+scoping, and native-path benefit (both strategies should also cut the
+native build's ~3.1 GB peak).
