@@ -84,7 +84,7 @@
  * @module prepare/pre-eval
  */
 
-import { extractParams, classifyParam } from '../ast.js'
+import { extractParams, classifyParam, PARAM_NAME } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { MATH_KERNEL, powFold } from './math-kernel.js'
 import * as bn from '../bignum.js'
@@ -673,7 +673,7 @@ function collectParamNamesShallow(paramsNode) {
   const names = []
   for (const p of extractParams(paramsNode)) {
     const c = classifyParam(p)
-    if (typeof c.name === 'string') names.push(c.name)
+    if (typeof c[PARAM_NAME] === 'string') names.push(c[PARAM_NAME])
   }
   return names
 }

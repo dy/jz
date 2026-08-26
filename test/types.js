@@ -1532,7 +1532,7 @@ test('mayBeUndefined closure capture: an ordinary captured binding is not flagge
   `, { wat: true, optimize: { sourceInline: false } })
   const cb = ctx.closure.bodies.find(b => b.captures?.some(c => c.startsWith('x')))
   ok(cb, 'expected a closure body capturing x')
-  is(cb.mayBeUndefineds, undefined)
+  is(cb.mayBeUndefineds, null)  // fixed-shape closure record: absent facts use null
 })
 
 // --- narrowValResults' own OR-join: honest boundary ---

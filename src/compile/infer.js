@@ -49,7 +49,7 @@ import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
 import { typedElemCtor, typedStaticLen } from '../type.js'
-import { typedStorageCtorFromContext } from '../typed-context.js'
+import { typedStorageCtorFromContext, typedStorageCtorFromMaps } from '../typed-context.js'
 import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
 import { VAL, updateRep, updateGlobalRep } from '../reps.js'
@@ -608,10 +608,5 @@ export function inferArrElemValType(expr, cx) {
  *  Sources: caller's body-local typedElems, caller's typed params, literal `new TypedArray(...)`,
  *  calls to typed-narrowed user funcs. Returns null when the ctor can't be determined. */
 export function inferTypedCtor(expr, cx) {
-  const callerElems = cx.callerElems, paramFacts = cx.paramFacts  // hoist: see inferArrElemSchema
-  return typedStorageCtorFromContext(ctx, expr, {
-    nameMaps: [callerElems, paramFacts],
-    ambientNames: false,
-    fieldSids: cx.callerSids,
-  })
+  return typedStorageCtorFromMaps(ctx, expr, cx.callerElems, cx.paramFacts, cx.callerSids)
 }

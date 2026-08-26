@@ -251,24 +251,12 @@ test('FlowState multi-field and control-stack scopes restore on throw', () => {
     'throw restored every field and popped the owning control stack')
 })
 
-test('FunctionPlan is session-owned, opaque, and detached from emission state', () => {
+test('FunctionPlan is linearly retired after its sole emission consumer', () => {
   if (onKernel()) return
   compile('export let planned = n => { let xs = [n, n + 1]; return xs[0] }')
   const func = ctx.funcs.map.get('planned')
-  const plan = ctx.plans.functions.get(func)
-  ok(plan && Object.keys(plan).length === 0,
-    'function identity resolves to an opaque plan handle with no mutable facts exposed')
-  const displaced = enterActiveFunction(ctx, { sig: func.sig, body: func.body })
-  const first = installFunctionPlan(ctx, plan)
-  const plannedLocals = first.locals.size
-  ctx.func.locals.set('emit-only', 'i32')
-  ctx.func.localReps.set('emit-only', { val: 1 })
-  const second = installFunctionPlan(ctx, plan)
-  ok(second.locals.size === plannedLocals && !second.locals.has('emit-only') && !second.localReps.has('emit-only'),
-    'a later install is detached from prior emission writes')
-  ok(first.locals !== second.locals && first.localReps !== second.localReps,
-    'repeated installs never share mutable working collections')
-  restoreActiveFunction(ctx, displaced)
+  ok(!ctx.plans.functions.has(func),
+    'emitted function no longer roots its consumed FunctionPlan/fact maps')
 })
 
 test('RepresentationPlan v2 publishes normalized edge facts without exposing mutable state', () => {
@@ -381,24 +369,19 @@ test('closure bodies publish opaque FunctionPlans before their IR emission', () 
   const bodies = ctx.closure.bodies || []
   ok(bodies.length >= 2, 'probe produced parent and nested closure bodies')
   ok(bodies.every(cb => {
-    const plan = ctx.plans.functions.get(cb)
     const repPlan = representationPlanOf(ctx, cb)
-    return plan && Object.keys(plan).length === 0 && repPlan && Object.keys(repPlan).length === 0 &&
-      !ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan)
-  }), 'every discovered closure body published then linearly transferred its opaque plan')
+    return !ctx.plans.functions.has(cb) && repPlan && Object.keys(repPlan).length === 0
+  }), 'every discovered closure body consumed and retired its FunctionPlan')
 })
 
 test('synthetic __start publishes an opaque FunctionPlan before module-init emission', () => {
   if (onKernel()) return
   compile(`let total = 0; for (let i = 0; i < 4; i++) total += i; export let read = () => total`)
   const start = ctx.plans.start
-  const plan = start && ctx.plans.functions.get(start)
   const repPlan = start && representationPlanOf(ctx, start)
-  ok(start?.name === '__start' && plan && Object.keys(plan).length === 0 &&
+  ok(start?.name === '__start' && !ctx.plans.functions.has(start) &&
       repPlan && Object.keys(repPlan).length === 0,
-    '__start has explicit opaque FunctionPlan and RepresentationPlan identities')
-  ok(!ctx.plans.functionWorking.has(plan) && !ctx.plans.functionData.has(plan),
-    '__start plan was linearly transferred to emission and its canonical access retired')
+    '__start retired its FunctionPlan while retaining its RepresentationPlan identity')
 })
 
 test('typedElem/typedLen active state does not leak past a nested-closure compile', () => {

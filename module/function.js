@@ -271,19 +271,26 @@ export default (ctx) => {
     // i32-narrowed cells travel with the capture: the closure body must access
     // the shared cell at the same width the owner does (see funcFacts.cellTypes).
     const cellI32Captures = boxedCaptures.filter(c => ctx.func.cellTypes?.has(c))
-    const bodyFn = { name: fnName, params, body, captures: envCaptures, arity: 1,
-      ...(restParam && { rest: restParam }),
-      ...(defaults && { defaults }),
-      ...(boxedCaptures.length && { boxed: new Set(boxedCaptures) }),
-      ...(cellI32Captures.length && { cellI32: new Set(cellI32Captures) }),
-      ...(captureIntConsts.size && { intConsts: captureIntConsts }),
-      ...(captureIntCertain.size && { intCertain: captureIntCertain }),
-      ...(captureNullables.size && { nullables: captureNullables }),
-      ...(captureMayBeUndefineds.size && { mayBeUndefineds: captureMayBeUndefineds }),
-      ...(captureValTypes.size && { valTypes: captureValTypes }),
-      ...(captureSchemaVars.size && { schemaVars: captureSchemaVars }),
-      ...(captureTypedElems.size && { typedElems: captureTypedElems }),
-      ...(captureDirectClosures.size && { directClosures: captureDirectClosures }) }
+    // Fixed-shape closure-plan record. Conditional spreads used to create a
+    // family of HASH-shaped records; region compaction could relocate the
+    // outer bodies array while losing one optional-shape member (`params`
+    // became null at full jz×jz scale). Null sentinels preserve every existing
+    // truthy/optional consumer and give the relocator one stable slot layout.
+    const bodyFn = {
+      name: fnName, params, body, captures: envCaptures, arity: 1,
+      rest: restParam || null,
+      defaults: defaults || null,
+      boxed: boxedCaptures.length ? new Set(boxedCaptures) : null,
+      cellI32: cellI32Captures.length ? new Set(cellI32Captures) : null,
+      intConsts: captureIntConsts.size ? captureIntConsts : null,
+      intCertain: captureIntCertain.size ? captureIntCertain : null,
+      nullables: captureNullables.size ? captureNullables : null,
+      mayBeUndefineds: captureMayBeUndefineds.size ? captureMayBeUndefineds : null,
+      valTypes: captureValTypes.size ? captureValTypes : null,
+      schemaVars: captureSchemaVars.size ? captureSchemaVars : null,
+      typedElems: captureTypedElems.size ? captureTypedElems : null,
+      directClosures: captureDirectClosures.size ? captureDirectClosures : null,
+    }
     ctx.closure.bodies.push(bodyFn)
     const returnKind = closureBodyReturnKind(body, captureValTypes)
     if (returnKind) (ctx.closure.valResult ||= new Map()).set(fnName, returnKind)

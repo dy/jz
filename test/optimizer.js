@@ -13,7 +13,7 @@ import test from 'tst'
 import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
-import { optimizeFunc, resolveOptimize, PASS_NAMES, propagateSingleUse } from '../src/optimize/index.js'
+import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES, propagateSingleUse } from '../src/optimize/index.js'
 import { compile } from '../index.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
@@ -4090,6 +4090,22 @@ test('source-inlined call-free boolean leaves stay eager inside call-bearing cal
   const ex = run(src, { optimize: 'speed' }).f
   is(ex(2), 2, 'true chain exact')
   is(ex(3), 0, 'false chain exact')
+})
+
+test('reachable-global-write SCC bitsets close cycles and indirect calls', () => {
+  const funcs = [
+    ['func', '$a', ['call', '$b']],
+    ['func', '$b', ['global.set', '$x', ['i32.const', 1]], ['call', '$a']],
+    ['func', '$c', ['call', '$a']],
+    ['func', '$d'],
+    ['func', '$e', ['call_indirect', '$ft', ['i32.const', 0]]],
+    ['func', '$ywriter', ['global.set', '$y', ['i32.const', 1]]],
+  ]
+  const reach = collectReachableGlobalWrites(funcs)
+  ok(reach.has('$a', '$x') && reach.has('$b', '$x') && reach.has('$c', '$x'),
+    'one direct write propagates through an SCC and its caller')
+  ok(!reach.has('$d', '$x') && !reach.has('$d', '$y'), 'no-effect function keeps the shared empty row')
+  ok(reach.has('$e', '$x') && reach.has('$e', '$y'), 'indirect call conservatively reaches every written global')
 })
 
 test('fixed global typed cells cache across loops but reachable mutation fails closed', () => {

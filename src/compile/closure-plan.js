@@ -1,4 +1,4 @@
-import { extractParams, classifyParam, T } from '../ast.js'
+import { extractParams, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_DEFAULT, PARAM_PATTERN, T } from '../ast.js'
 import { findFreeVars } from './analyze.js'
 import { ctx } from '../ctx.js'
 import { repOf } from '../reps.js'
@@ -102,10 +102,10 @@ export function mintClosureEnvPlans(body) {
     let destructured = false
     for (const r of raw) {
       const c = classifyParam(r)
-      if (c.kind === 'destruct' || c.kind === 'destruct-default') destructured = true
-      if (typeof c.name === 'string') paramSet.add(c.name)
-      else if (c.pattern) collectPatternNames(c.pattern, paramSet)
-      if (c.kind === 'default' || c.kind === 'destruct-default') defaultVals.push(c.defValue)
+      if (c[PARAM_KIND] === 'destruct' || c[PARAM_KIND] === 'destruct-default') destructured = true
+      if (typeof c[PARAM_NAME] === 'string') paramSet.add(c[PARAM_NAME])
+      else if (c[PARAM_PATTERN]) collectPatternNames(c[PARAM_PATTERN], paramSet)
+      if (c[PARAM_KIND] === 'default' || c[PARAM_KIND] === 'destruct-default') defaultVals.push(c[PARAM_DEFAULT])
     }
 
     // Plan key: the arrow's BODY node (see invariant 1 above) for the common

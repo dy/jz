@@ -13,7 +13,7 @@ import { typed, asF64, asI64, asI32, asI32Sat, NULL_NAN, UNDEF_NAN, temp, tempI3
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, refsName, REFS_IN_EXPR } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -2007,7 +2007,7 @@ export default (ctx) => {
     const params = new Set()
     for (const r of extractParams(fn[1])) {
       const p = classifyParam(r)
-      if (p.name) params.add(p.name)
+      if (p[PARAM_NAME]) params.add(p[PARAM_NAME])
     }
     const locals = new Set(params)
     collectLocals(fn[2], locals)

@@ -24,7 +24,8 @@ import { OPTF } from '../ctx.js'
 
 import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
-  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam, JZ_UNDEF, TYPEOF,
+  hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam,
+  PARAM_KIND, PARAM_NAME, PARAM_DEFAULT, PARAM_PATTERN, JZ_UNDEF, TYPEOF,
   ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, emitArity, setLinkDemand, getFactStore } from '../ctx.js'
@@ -37,7 +38,10 @@ import { bodyOnlyCharCodeAtCalls } from '../abi/string.js'
 import { includeForStringOnly, includeForArrayLiteral, includeForRuntimeKeyIteration } from '../autoload.js'
 import { nonNegIntLiteral, intLiteralValue, intExprRange, constIntExpr, staticPropertyKey, guardCounterName, forCounterRange } from '../static.js'
 import { findFreeVars } from './analyze.js'
-import { scanBindingUses, USE } from './analyze-scans.js'
+import {
+  BINDING_USE_DECLS, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_KEY,
+  BINDING_USE_OPTIONAL, BINDING_USE_COMPUTED, BINDING_USE_OP, scanBindingUses, USE,
+} from './analyze-scans.js'
 import {
   containsNestedClosure, containsNestedLoop, nestedSmallLoopBudget,
   containsDeclOf, cloneWithSubst, containsKnownTypedArrayIndex,
@@ -1723,9 +1727,10 @@ function concatBufEligible(name) {
   const body = ctx.func.body
   if (!body) return false
   const uses = scanBindingUses(body).get(name)
-  if (!uses || uses.decls !== 1) return false
-  for (const u of uses.uses) {
-    if (u.kind === USE.MEMBER_R && !u.optional && !u.computed && (u.key === 'length' || u.key === 'charCodeAt')) continue
+  if (!uses || uses[BINDING_USE_DECLS] !== 1) return false
+  for (const u of uses[BINDING_USE_USES]) {
+    if (u[BINDING_USE_KIND] === USE.MEMBER_R && !u[BINDING_USE_OPTIONAL] &&
+        !u[BINDING_USE_COMPUTED] && (u[BINDING_USE_KEY] === 'length' || u[BINDING_USE_KEY] === 'charCodeAt')) continue
     return false
   }
   const consumed = new WeakSet()
@@ -2229,10 +2234,11 @@ export function emitDecl(...inits) {
     // read back at the env-slot store — see that file's own comment there.
     const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
     if (ambiguousIdentity && !neverEscapes) {
-      const uses = scanBindingUses(ctx.func.body).get(name)?.uses || []
+      const summary = scanBindingUses(ctx.func.body).get(name)
+      const uses = summary ? summary[BINDING_USE_USES] : []
       const unsupported = uses.some(use =>
-        use.kind !== USE.CAPTURE &&
-        !(use.kind === USE.BOOL_TEST && use.op !== 'typeof'))
+        use[BINDING_USE_KIND] !== USE.CAPTURE &&
+        !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
       if (unsupported)
         err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
     }
@@ -7539,14 +7545,14 @@ export const emitter = {
     let restParam = null, bodyPrefix = []
     for (const r of raw) {
       const c = classifyParam(r)
-      if (c.kind === 'rest') { restParam = c.name; params.push(c.name) }
-      else if (c.kind === 'plain') params.push(c.name)
-      else if (c.kind === 'default') { params.push(c.name); defaults[c.name] = c.defValue }
+      if (c[PARAM_KIND] === 'rest') { restParam = c[PARAM_NAME]; params.push(c[PARAM_NAME]) }
+      else if (c[PARAM_KIND] === 'plain') params.push(c[PARAM_NAME])
+      else if (c[PARAM_KIND] === 'default') { params.push(c[PARAM_NAME]); defaults[c[PARAM_NAME]] = c[PARAM_DEFAULT] }
       else {
         const tmp = `${T}p${freshId(ctx)}`
         params.push(tmp)
-        if (c.kind === 'destruct-default') defaults[tmp] = c.defValue
-        bodyPrefix.push(['let', ['=', c.pattern, tmp]])
+        if (c[PARAM_KIND] === 'destruct-default') defaults[tmp] = c[PARAM_DEFAULT]
+        bodyPrefix.push(['let', ['=', c[PARAM_PATTERN], tmp]])
       }
     }
 

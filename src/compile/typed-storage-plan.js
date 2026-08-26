@@ -1,6 +1,9 @@
 import { ctorFromElemAux, typedElemAux } from '../../layout.js'
 import { VAL } from '../reps.js'
-import { typedCtorName, typedStorageCtor } from '../typed-provenance.js'
+import {
+  TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
+  typedCtorName, typedStorageCtor,
+} from '../typed-provenance.js'
 
 /**
  * Frozen per-body typed-storage provenance.
@@ -32,13 +35,14 @@ const arrayElemCtor = (data, name) => {
   return isLocal ? null : data.globalReps?.get(name)?.arrayElemTypedCtor ?? null
 }
 
-const planSources = data => ({
-  name: name => nameCtor(data, name),
-  call: callee => data.program.calls.get(callee) ?? null,
-  field: (obj, prop) => typeof obj === 'string' && typeof prop === 'string'
-    ? data.fieldKeys.get(obj + '\0' + prop) ?? null : null,
-  index: obj => typeof obj === 'string' ? arrayElemCtor(data, obj) : null,
-})
+const resolvePlanSource = (kind, a, b, _node, data) => {
+  if (kind === TYPED_SOURCE_NAME) return nameCtor(data, a)
+  if (kind === TYPED_SOURCE_CALL) return data.program.calls.get(a) ?? null
+  if (kind === TYPED_SOURCE_FIELD) return typeof a === 'string' && typeof b === 'string'
+    ? data.fieldKeys.get(a + '\0' + b) ?? null : null
+  if (kind === TYPED_SOURCE_INDEX) return typeof a === 'string' ? arrayElemCtor(data, a) : null
+  return null
+}
 
 const ctorInfo = ctor => {
   const name = typedCtorName(ctor)
@@ -152,12 +156,14 @@ const plannedCtor = (ctx, data, expr) => {
   // not analysis fallback: the emitter creating the local supplies its ctor.
   if (typeof expr === 'string' && ctx.func.localTypedElemsOverlay?.has(expr))
     return ctx.func.localTypedElemsOverlay.get(expr) ?? null
-  const sources = planSources(data)
-  // Method chains rooted at a transient temp need that overlay at the leaf.
-  sources.name = name => ctx.func.localTypedElemsOverlay?.has(name)
-    ? ctx.func.localTypedElemsOverlay.get(name) ?? null
-    : nameCtor(data, name)
-  return typedStorageCtor(expr, sources)
+  const overlay = ctx.func.localTypedElemsOverlay
+  if (overlay?.size) {
+    // Method chains rooted at a transient temp need that overlay at the leaf.
+    const resolve = (kind, a, b, node, state) => kind === TYPED_SOURCE_NAME && overlay.has(a)
+      ? overlay.get(a) ?? null : resolvePlanSource(kind, a, b, node, state)
+    return typedStorageCtor(expr, resolve, data)
+  }
+  return typedStorageCtor(expr, resolvePlanSource, data)
 }
 
 /** Constructor decision from the active frozen body plan. */

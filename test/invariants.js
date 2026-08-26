@@ -330,14 +330,13 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
 // ============================================================================
 // FunctionPlan clone — deep independence and dispatch fidelity
 // ============================================================================
-// clonePlanValue is the leaf of every FunctionPlan clone (once per localReps
-// entry per publish — the compiler's hottest record-copy path when compiling
-// itself). Its 2026-08-18 restructure (spread-clone + in-place overwrite,
-// direct Map/Set loops) must preserve the original semantics exactly: deep
-// clone of the closed plan vocabulary (Map/Set/Array/plain records/MapOverlay),
-// insertion order kept, no aliasing between plan and source.
-test('invariant: FunctionPlan clone is deep, order-preserving, dispatch-faithful', async () => {
-  const { createFunctionPlan } = await import('../src/compile/function-plan.js')
+// Canonical FunctionPlans pack maps/sets as compact tuples across the
+// analyze→emit gap, then materialize fresh mutable collections for emission.
+// The ownership representation must preserve the original semantics exactly:
+// deep clone of the closed plan vocabulary, insertion order kept, and no
+// aliasing between the packed authority, a working copy, or the source facts.
+test('invariant: packed FunctionPlan materialization is deep, order-preserving, dispatch-faithful', async () => {
+  const { createFunctionPlan, installFunctionPlan } = await import('../src/compile/function-plan.js')
   const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
   const wideRep = { val: 3, ptrKind: null, ptrAux: undefined, schemaId: 7, intConst: 42, intCertain: true, notString: false, arrayElemSchema: { id: 1, elems: [1, 2] }, range: [0, 100], typedCtor: 'Float64Array', wasm: 'f64', nullable: false, mayBeUndefined: true, dictValueValType: new Set(['a']), inner: new Map([['k', { deep: [{ x: 1 }] }]]) }
   const facts = {
@@ -354,7 +353,7 @@ test('invariant: FunctionPlan clone is deep, order-preserving, dispatch-faithful
   }
   const { ctx } = await import('../src/ctx.js')
   const plan = createFunctionPlan(ctx, facts)
-  const data = ctx.plans.functionData.get(plan)
+  const data = installFunctionPlan(ctx, plan)
   // structure equal where it matters
   is(data.locals.get('w').schemaId, 7)
   is(data.locals.get('n'), 5)
@@ -375,9 +374,11 @@ test('invariant: FunctionPlan clone is deep, order-preserving, dispatch-faithful
   is(wideRep.inner.get('k').deep[0].x, 1)
   is(wideRep.dictValueValType.size, 1)
   is(facts.flatObjects.get('f').slots.length, 2)
-  // and the reverse: mutate the source, clone must not move
+  // and the reverse: mutate the source, a fresh materialization must not move
   wideRep.range[0] = -1
-  is(data.locals.get('w').range[0], 0)
+  const again = installFunctionPlan(ctx, plan)
+  is(again.locals.get('w').range[0], 0)
+  is(again.locals.get('w').schemaId, 7, 'first working copy did not mutate packed authority')
   ctx.plans.functionData.delete(plan)
 })
 

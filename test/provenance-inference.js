@@ -9,22 +9,23 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
-import { TYPED_CTOR_CONFLICT, typedStorageFact } from '../src/typed-provenance.js'
+import {
+  TYPED_CTOR_CONFLICT, TYPED_SOURCE_NAME, TYPED_SOURCE_CALL, TYPED_SOURCE_FIELD, TYPED_SOURCE_INDEX,
+  typedStorageFact,
+} from '../src/typed-provenance.js'
 
 test('typed provenance: one grammar authority joins and chains every storage source', () => {
   const names = new Map([['a', 'new.Int16Array'], ['b', 'new.Int16Array'], ['c', 'new.Float64Array']])
-  const sources = {
-    name: name => names.get(name) ?? null,
-    call: name => name === 'make' ? 'new.BigInt64Array' : null,
-    field: (_obj, prop) => prop === 'lane' ? 'new.Uint32Array' : null,
-    index: obj => obj === 'rows' ? 'new.Float32Array' : null,
-  }
-  is(typedStorageFact(['?:', 'flag', 'a', 'b'], sources), 'new.Int16Array', 'same-ctor join closes')
-  is(typedStorageFact(['?:', 'flag', 'a', 'c'], sources), TYPED_CTOR_CONFLICT, 'mixed join conflicts')
-  is(typedStorageFact(['??', 'a', 'b'], sources), 'new.Int16Array', 'nullish join uses same meet')
-  is(typedStorageFact(['()', ['.', ['()', 'make'], 'slice'], null], sources), 'new.BigInt64Array', 'call → copy')
-  is(typedStorageFact(['()', ['.', ['.', 'plan', 'lane'], 'subarray'], null], sources), 'new.Uint32Array.view', 'field → view')
-  is(typedStorageFact(['()', ['.', ['[]', 'rows', 'i'], 'map'], null], sources), 'new.Float32Array', 'indexed storage → copy')
+  const resolve = (kind, a, b) => kind === TYPED_SOURCE_NAME ? names.get(a) ?? null
+    : kind === TYPED_SOURCE_CALL ? (a === 'make' ? 'new.BigInt64Array' : null)
+    : kind === TYPED_SOURCE_FIELD ? (b === 'lane' ? 'new.Uint32Array' : null)
+    : kind === TYPED_SOURCE_INDEX ? (a === 'rows' ? 'new.Float32Array' : null) : null
+  is(typedStorageFact(['?:', 'flag', 'a', 'b'], resolve), 'new.Int16Array', 'same-ctor join closes')
+  is(typedStorageFact(['?:', 'flag', 'a', 'c'], resolve), TYPED_CTOR_CONFLICT, 'mixed join conflicts')
+  is(typedStorageFact(['??', 'a', 'b'], resolve), 'new.Int16Array', 'nullish join uses same meet')
+  is(typedStorageFact(['()', ['.', ['()', 'make'], 'slice'], null], resolve), 'new.BigInt64Array', 'call → copy')
+  is(typedStorageFact(['()', ['.', ['.', 'plan', 'lane'], 'subarray'], null], resolve), 'new.Uint32Array.view', 'field → view')
+  is(typedStorageFact(['()', ['.', ['[]', 'rows', 'i'], 'map'], null], resolve), 'new.Float32Array', 'indexed storage → copy')
 })
 
 const KERNEL = `export let go = (n) => { let s = 0; for (let i = 0; i < n; i++) s += T[i & 1023]; return s }`

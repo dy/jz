@@ -23,7 +23,7 @@
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { withValueOverlay } from '../flow-state.js'
 import { warningsView } from '../../session-views.js'
-import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, collectParamNames } from '../../ast.js'
+import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { intLevelMap } from '../../type.js'
 import { TYPED_CTOR_CONFLICT, typedStorageFact } from '../../typed-provenance.js'
@@ -67,12 +67,14 @@ export const inferModuleLetTypes = (ast) => {
   // when its fixed point is a single concrete ctor — sound: every assignment then
   // provably yields that typed-array kind or nullish.
   const MIXED = TYPED_CTOR_CONFLICT
-  const defs = new Map()  // name → { ctors:Set<string>, refs:Set<string>, bad:bool }
+  const DEF_CTORS = 0, DEF_REFS = 1, DEF_BAD = 2
+  const defs = new Map()  // name → [ctors[], refs[], bad]
   const getDef = (name) => {
     let d = defs.get(name)
-    if (!d) defs.set(name, d = { ctors: new Set(), refs: new Set(), bad: false })
+    if (!d) defs.set(name, d = [[], [], false])
     return d
   }
+  const addUnique = (list, value) => { if (!list.includes(value)) list.push(value) }
 
   const isNullishLit = (e) => e == null || e === 'undefined' || e === 'null'
     || (Array.isArray(e) && e[0] == null && (e[1] === undefined || e[1] === null))
@@ -106,28 +108,28 @@ export const inferModuleLetTypes = (ast) => {
     const d = getDef(key(name, sid))
     if (isNullishLit(rhs)) return
     const ctor = typedStorageFact(rhs)
-    if (ctor === MIXED) { d.bad = true; return }
-    if (ctor) { d.ctors.add(ctor); return }
-    if (typeof rhs === 'string') { d.refs.add(key(rhs, sid)); return }
+    if (ctor === MIXED) { d[DEF_BAD] = true; return }
+    if (ctor) { addUnique(d[DEF_CTORS], ctor); return }
+    if (typeof rhs === 'string') { addUnique(d[DEF_REFS], key(rhs, sid)); return }
     // Field provenance: a schema slot holding ONE typed kind program-wide (and a
     // prop never written — both gates inside slotTypedCtorAt, which also fails
     // closed before the slot census exists) contributes that kind as evidence.
     if (Array.isArray(rhs) && (rhs[0] === '.' || rhs[0] === '?.') &&
         typeof rhs[1] === 'string' && typeof rhs[2] === 'string') {
       const fc = ctx.schema?.slotTypedCtorAt?.(rhs[1], rhs[2])
-      if (fc) { d.ctors.add(fc); return }
-      d.bad = true
+      if (fc) { addUnique(d[DEF_CTORS], fc); return }
+      d[DEF_BAD] = true
       return
     }
     if (Array.isArray(rhs) && rhs[0] === '()') {
       const callee = rhs[1]
       // `recv.subarray(...)` / `recv.slice(...)` / `recv.map(...)` → inherit recv's ctor.
       if (Array.isArray(callee) && callee[0] === '.' && typeof callee[1] === 'string'
-        && CTOR_PRESERVING.has(callee[2])) { d.refs.add(key(callee[1], sid)); return }
+        && CTOR_PRESERVING.has(callee[2])) { addUnique(d[DEF_REFS], key(callee[1], sid)); return }
       // `fn(...)` to a user function → inherit its return ctor.
-      if (typeof callee === 'string' && fnames.has(callee)) { d.refs.add('@ret:' + callee); return }
+      if (typeof callee === 'string' && fnames.has(callee)) { addUnique(d[DEF_REFS], '@ret:' + callee); return }
     }
-    d.bad = true
+    d[DEF_BAD] = true
   }
 
   // Scope-aware walk. Every `=>` opens a fresh scope so same-named locals across
@@ -155,7 +157,7 @@ export const inferModuleLetTypes = (ast) => {
       return
     }
     // Compound-assigns (`+=`, `++`, …) can't preserve a typed-array kind — poison.
-    if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') { getDef(key(node[1], sid)).bad = true; walk(node[2], sid, retFn); return }
+    if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') { getDef(key(node[1], sid))[DEF_BAD] = true; walk(node[2], sid, retFn); return }
     for (let i = 1; i < node.length; i++) walk(node[i], sid, retFn)
   }
   // Descend into a function body anchored on `@ret:fn`. An arrow expr-body IS the
@@ -183,9 +185,9 @@ export const inferModuleLetTypes = (ast) => {
   while (changed) {
     changed = false
     for (const [name, d] of defs) {
-      let cur = d.bad ? MIXED : null
-      if (cur !== MIXED) for (const c of d.ctors) cur = join(cur, c)
-      if (cur !== MIXED) for (const r of d.refs) cur = join(cur, refState(r))
+      let cur = d[DEF_BAD] ? MIXED : null
+      if (cur !== MIXED) for (const c of d[DEF_CTORS]) cur = join(cur, c)
+      if (cur !== MIXED) for (const r of d[DEF_REFS]) cur = join(cur, refState(r))
       if (cur !== (state.get(name) ?? null)) { state.set(name, cur); changed = true }
     }
   }
@@ -391,20 +393,22 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   // `@ret:<fn>` virtual nodes (also globally unique). No scope qualification
   // needed — everything that ISN'T a candidate-to-candidate or fn-return alias
   // resolves synchronously via valTypeOf under the per-scope overlay below.
+  const G_VALS = 0, G_REFS = 1, G_BAD = 2
   const defs = new Map()
-  const getDef = (k) => { let d = defs.get(k); if (!d) defs.set(k, d = { vals: new Set(), refs: new Set(), bad: false }); return d }
+  const getDef = (k) => { let d = defs.get(k); if (!d) defs.set(k, d = [[], [], false]); return d }
+  const addUnique = (list, value) => { if (!list.includes(value)) list.push(value) }
 
   const observe = (name, rhs) => {
     const d = getDef(name)
-    if (d.bad) return
+    if (d[G_BAD]) return
     if (isNullishLit(rhs)) return                            // no evidence either way
-    if (typeof rhs === 'string' && candidates.has(rhs)) { d.refs.add(rhs); return }
+    if (typeof rhs === 'string' && candidates.has(rhs)) { addUnique(d[G_REFS], rhs); return }
     if (Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string' && fnames.has(rhs[1])) {
-      d.refs.add('@ret:' + rhs[1]); return
+      addUnique(d[G_REFS], '@ret:' + rhs[1]); return
     }
     const vt = valTypeOf(rhs)
-    if (vt) d.vals.add(vt)
-    else d.bad = true                                         // unrecognized/computed shape — fail closed
+    if (vt) addUnique(d[G_VALS], vt)
+    else d[G_BAD] = true                                         // unrecognized/computed shape — fail closed
   }
 
   // Positional (index-keyed) param names for a `=>` params node or a func.list
@@ -412,7 +416,7 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   // via paramReps, which is fine: they fall to the overlay's ordinary "unknown".
   const paramNamesOf = (paramsNode) => extractParams(paramsNode).map(r => {
     const c = classifyParam(r)
-    return (c.kind === 'plain' || c.kind === 'default') ? c.name : null
+    return (c[PARAM_KIND] === 'plain' || c[PARAM_KIND] === 'default') ? c[PARAM_NAME] : null
   })
 
   // Enter one function/arrow scope: `body` is walked for writes to `candidates`,
@@ -461,12 +465,12 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
       const t = node[1]
       if (typeof t === 'string') { if (candidates.has(t) && !bound.has(t)) observe(t, node[2]) }
       else if (isAssignPatternNode(t)) {
-        for (const n of collectParamNames([t])) if (candidates.has(n) && !bound.has(n)) getDef(n).bad = true
+        for (const n of collectParamNames([t])) if (candidates.has(n) && !bound.has(n)) getDef(n)[G_BAD] = true
       }
     } else if (ASSIGN_OPS.has(op) && typeof node[1] === 'string') {
-      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1]).bad = true   // compound-assign: can't classify the merged value — poison
+      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1])[G_BAD] = true   // compound-assign: can't classify the merged value — poison
     } else if ((op === '++' || op === '--') && typeof node[1] === 'string') {
-      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1]).bad = true   // ToNumeric mutation — poison (recordGlobalRep/inferModuleIntGlobals own the numeric-counter case)
+      if (candidates.has(node[1]) && !bound.has(node[1])) getDef(node[1])[G_BAD] = true   // ToNumeric mutation — poison (recordGlobalRep/inferModuleIntGlobals own the numeric-counter case)
     }
     for (let i = 1; i < node.length; i++) walkStmts(node[i], bound, retFn)
   }
@@ -501,9 +505,9 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   while (changed) {
     changed = false
     for (const [k, d] of defs) {
-      let cur = d.bad ? GLOBAL_VT_CONFLICT : null
-      if (cur !== GLOBAL_VT_CONFLICT) for (const v of d.vals) cur = join(cur, v)
-      if (cur !== GLOBAL_VT_CONFLICT) for (const r of d.refs) cur = join(cur, refState(r))
+      let cur = d[G_BAD] ? GLOBAL_VT_CONFLICT : null
+      if (cur !== GLOBAL_VT_CONFLICT) for (const v of d[G_VALS]) cur = join(cur, v)
+      if (cur !== GLOBAL_VT_CONFLICT) for (const r of d[G_REFS]) cur = join(cur, refState(r))
       if (cur !== (state.get(k) ?? null)) { state.set(k, cur); changed = true }
     }
   }
@@ -1019,8 +1023,8 @@ export const devirtGlobalCalls = (ast) => {
     const params = []
     for (const p of extractParams(node[1])) {
       const c = classifyParam(p)
-      if (c.kind !== 'plain') return null
-      params.push(c.name)
+      if (c[PARAM_KIND] !== 'plain') return null
+      params.push(c[PARAM_NAME])
     }
     const bound = new Set(params)
     const free = new Set()

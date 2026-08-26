@@ -368,12 +368,16 @@ export function handlerArgs(args) {
 }
 
 /** Early-exit walk; skips into `=>` bodies by default. */
-export function some(node, pred, { skipArrow = true } = {}) {
+const someNode = (node, pred, skipArrow) => {
   if (!Array.isArray(node)) return false
   if (pred(node)) return true
   if (skipArrow && node[0] === '=>') return false
-  for (let i = 1; i < node.length; i++) if (some(node[i], pred, { skipArrow })) return true
+  for (let i = 1; i < node.length; i++) if (someNode(node[i], pred, skipArrow)) return true
   return false
+}
+
+export function some(node, pred, opts) {
+  return someNode(node, pred, opts?.skipArrow !== false)
 }
 
 /** Options for {@link refsName} / {@link refsAny}. */
@@ -381,6 +385,8 @@ export function some(node, pred, { skipArrow = true } = {}) {
 // skipStr: don't descend into `str` literal nodes.
 // skipBindingPositions: on `.`/`?.` recurse only the receiver; on `:` only the value.
 
+/** Shared option records: callers never allocate `{skipArrow:false}` in hot scans. */
+export const REFS_THROUGH_ARROWS = { skipArrow: false }
 /** Expression-position name refs: descends into `=>`, skips literal keys and `str`. */
 export const REFS_IN_EXPR = { skipArrow: false, skipStr: true, skipBindingPositions: true }
 
@@ -482,14 +488,19 @@ export function extractParams(rawParams) {
   return p == null ? [] : Array.isArray(p) ? (p[0] === ',' ? p.slice(1) : [p]) : [p]
 }
 
+export const PARAM_KIND = 0
+export const PARAM_NAME = 1
+export const PARAM_DEFAULT = 2
+export const PARAM_PATTERN = 3
+
 export function classifyParam(r) {
-  if (Array.isArray(r) && r[0] === '...') return { kind: 'rest', name: r[1] }
+  if (Array.isArray(r) && r[0] === '...') return ['rest', r[1]]
   if (Array.isArray(r) && r[0] === '=') {
-    if (typeof r[1] === 'string') return { kind: 'default', name: r[1], defValue: r[2] }
-    return { kind: 'destruct-default', pattern: r[1], defValue: r[2] }
+    if (typeof r[1] === 'string') return ['default', r[1], r[2]]
+    return ['destruct-default', undefined, r[2], r[1]]
   }
-  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return { kind: 'destruct', pattern: r }
-  return { kind: 'plain', name: r }
+  if (Array.isArray(r) && (r[0] === '[]' || r[0] === '{}')) return ['destruct', undefined, undefined, r]
+  return ['plain', r]
 }
 
 export function collectParamNames(raw, out = new Set()) {

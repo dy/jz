@@ -2042,9 +2042,10 @@ export function collectVolatileGlobals(funcs) {
   const recordWrite = node => {
     if (Array.isArray(node) && node[0] === 'global.set' && typeof node[1] === 'string') volatile.add(node[1])
   }
+  const walkOptions = { enter: recordWrite }
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || fn[1] === '$__start') continue
-    for (let i = 2; i < fn.length; i++) walkAst(fn[i], { enter: recordWrite })
+    walkAst(fn, walkOptions)
   }
   return volatile
 }
@@ -2063,33 +2064,114 @@ export function collectVolatileGlobals(funcs) {
  */
 export function collectReachableGlobalWrites(funcs) {
   const writes = new Map(), callees = new Map(), indirect = new Set(), all = new Set()
+  const EMPTY = new Set()
+  let w = null, c = null, fnName = null
+  // One stable dispatcher instead of one closure + two eager Sets per function.
+  const recordEffect = n => {
+    if (!Array.isArray(n)) return
+    if (n[0] === 'global.set' && typeof n[1] === 'string') {
+      if (!w) w = new Set()
+      w.add(n[1]); all.add(n[1])
+    } else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
+      if (!c) c = new Set()
+      c.add(n[1])
+    } else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') {
+      indirect.add(fnName)
+    }
+  }
+  const walkOptions = { enter: recordEffect }
   for (const fn of funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func' || typeof fn[1] !== 'string') continue
-    const w = new Set(), c = new Set()
-    const recordEffect = n => {
-      if (!Array.isArray(n)) return
-      if (n[0] === 'global.set' && typeof n[1] === 'string') { w.add(n[1]); all.add(n[1]) }
-      else if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') c.add(n[1])
-      else if (n[0] === 'call_indirect' || n[0] === 'call_ref' || n[0] === 'return_call_indirect') indirect.add(fn[1])
-    }
-    for (let i = 2; i < fn.length; i++) walkAst(fn[i], { enter: recordEffect })
-    writes.set(fn[1], w); callees.set(fn[1], c)
+    w = null; c = null; fnName = fn[1]
+    walkAst(fn, walkOptions)
+    if (w || c || indirect.has(fnName)) writes.set(fnName, w || new Set())
+    if (c) callees.set(fnName, c)
   }
-  // Worklist fixpoint over the call graph.
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const [name, w] of writes) {
-      const before = w.size
-      if (indirect.has(name)) for (const g of all) w.add(g)
-      for (const callee of callees.get(name)) {
-        const cw = writes.get(callee)
-        if (cw) for (const g of cw) w.add(g)
+  // Dense transitive rows are the expensive part of this analysis: thousands
+  // of Sets repeat the same handful of global-name pointers. Convert direct
+  // rows once to compact u32 bitsets, then run the closure as word-wise OR.
+  const globalIds = new Map()
+  for (const name of all) globalIds.set(name, globalIds.size)
+  const words = Math.max(1, Math.ceil(globalIds.size / 32))
+  const rows = new Map()
+  for (const [name, direct] of writes) {
+    const bits = new Uint32Array(words)
+    for (const g of direct) {
+      const id = globalIds.get(g)
+      bits[id >>> 5] |= 1 << (id & 31)
+    }
+    rows.set(name, bits)
+  }
+  const allBits = new Uint32Array(words)
+  for (let id = 0; id < globalIds.size; id++) allBits[id >>> 5] |= 1 << (id & 31)
+  // Collapse recursive call components once, then propagate on the resulting
+  // DAG. A bit crosses each component edge once instead of once per newly-
+  // discovered bit (the event worklist degenerates on large cyclic compilers).
+  const names = [...rows.keys()]
+  const ids = new Map()
+  for (let i = 0; i < names.length; i++) ids.set(names[i], i)
+  const index = new Int32Array(names.length), low = new Int32Array(names.length)
+  const onStack = new Uint8Array(names.length), componentOf = new Int32Array(names.length)
+  index.fill(-1); componentOf.fill(-1)
+  const stack = []
+  let nextIndex = 0, componentCount = 0
+  const strong = v => {
+    index[v] = nextIndex
+    low[v] = nextIndex++
+    stack.push(v); onStack[v] = 1
+    for (const callee of callees.get(names[v]) || EMPTY) {
+      const w = ids.get(callee)
+      if (w == null) continue
+      if (index[w] === -1) { strong(w); low[v] = Math.min(low[v], low[w]) }
+      else if (onStack[w]) low[v] = Math.min(low[v], index[w])
+    }
+    if (low[v] !== index[v]) return
+    const cid = componentCount++
+    while (stack.length) {
+      const w = stack.pop()
+      onStack[w] = 0
+      componentOf[w] = cid
+      if (w === v) break
+    }
+  }
+  for (let v = 0; v < names.length; v++) if (index[v] === -1) strong(v)
+
+  const componentBits = [], componentEdges = []
+  for (let i = 0; i < componentCount; i++) { componentBits.push(new Uint32Array(words)); componentEdges.push(null) }
+  for (let v = 0; v < names.length; v++) {
+    const cid = componentOf[v], target = componentBits[cid], direct = rows.get(names[v])
+    for (let i = 0; i < words; i++) target[i] |= direct[i]
+    if (indirect.has(names[v])) for (let i = 0; i < words; i++) target[i] |= allBits[i]
+    for (const callee of callees.get(names[v]) || EMPTY) {
+      const w = ids.get(callee)
+      if (w != null && componentOf[w] !== cid) {
+        let edges = componentEdges[cid]
+        if (!edges) { edges = new Set(); componentEdges[cid] = edges }
+        edges.add(componentOf[w])
       }
-      if (w.size !== before) changed = true
     }
   }
-  return writes
+  const solved = new Uint8Array(componentCount)
+  const solve = cid => {
+    if (solved[cid]) return
+    const target = componentBits[cid]
+    for (const dep of componentEdges[cid] || EMPTY) {
+      solve(dep)
+      const source = componentBits[dep]
+      for (let i = 0; i < words; i++) target[i] |= source[i]
+    }
+    solved[cid] = 1
+  }
+  for (let cid = 0; cid < componentCount; cid++) solve(cid)
+
+  return {
+    has(name, global) {
+      const id = globalIds.get(global), fid = ids.get(name)
+      if (id == null || fid == null) return false
+      const row = componentBits[componentOf[fid]]
+      return !!(row[id >>> 5] & (1 << (id & 31)))
+    },
+  }
 }
 
 /**
@@ -2114,7 +2196,7 @@ export function collectReachableGlobalWrites(funcs) {
  *
  * @param {Array} fn - func IR node
  * @param {Set<string>} stablePtrGlobals - '$name's of VAL.TYPED module globals
- * @param {Map<string,Set<string>>} reachableWrites - from collectReachableGlobalWrites
+ * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
  */
 // Never-forwarding pointee kinds: every PTR tag outside __ptr_offset's
 // forwarding set {ARRAY, HASH, SET, MAP} — same bits ⇒ same offset.
@@ -2190,7 +2272,7 @@ export function hoistGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
 
   const calleeWrites = (g) => {
     if (hasIndirect) return true  // unknown targets — assume they write
-    for (const c of ownCallees) if (reachableWrites?.get(c)?.has(g)) return true
+    for (const c of ownCallees) if (reachableWrites?.has(c, g)) return true
     return false
   }
 
@@ -2390,8 +2472,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
   const byteLens = typedGlobalByteLengths()
   if (!byteLens.size) return
   const writes = reachableMemoryWrites?.get(fn[1]) || new Set(['*'])
-  const globalWrites = reachableGlobalWrites?.get(fn[1]) || new Set(['*'])
-  if (writes.has('*') || globalWrites.has('*')) return
+  if (writes.has('*') || !reachableGlobalWrites) return
   const opWidth = op => op.startsWith('v128.') ? 16
     : op.startsWith('f64.') || op.startsWith('i64.') ? 8
     : op.includes('load8') ? 1 : op.includes('load16') ? 2 : 4
@@ -2418,7 +2499,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
   const baseByGlobal = new Map()
   for (const [name, rec] of aliases) if (rec.offset === 0 && !baseByGlobal.has(rec.global)) baseByGlobal.set(rec.global, name)
   const chosen = [...sites.values()].filter(rec =>
-    (rec.nodes.length >= 2 || rec.depth > 0) && baseByGlobal.has(rec.global) && !globalWrites.has(rec.global))
+    (rec.nodes.length >= 2 || rec.depth > 0) && baseByGlobal.has(rec.global) && !reachableGlobalWrites.has(fn[1], rec.global))
   if (!chosen.length) return
 
   const bodyStart = findBodyStart(fn)
@@ -2648,7 +2729,7 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  *
  * @param {Array} fn - func IR node
  * @param {Set<string>} stablePtrGlobals - '$name's of never-forwarding module globals
- * @param {Map<string,Set<string>>} reachableWrites - from collectReachableGlobalWrites
+ * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
  */
 export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
@@ -2738,18 +2819,14 @@ export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) 
 
     const preheader = []
     if (sites.size && indirectCount === 0) {
-      const calleeWriteSets = []
-      for (const c of ownCallees) {
-        const writes = reachableWrites?.get(c)
-        if (writes) calleeWriteSets.push(writes)
-      }
+      const calleeNames = [...ownCallees]
       // The candidate set is tiny (module pointer globals per loop). Keep the
       // mapping in parallel arrays while the IR subtree is rewritten in place;
       // this is stable in both native and self-compiled executions.
       const chosenGlobals = [], chosenNames = []
       for (const g of sites.keys()) {
         let calleeWrites = false
-        for (const writes of calleeWriteSets) if (writes.has(g)) { calleeWrites = true; break }
+        for (const callee of calleeNames) if (reachableWrites?.has(callee, g)) { calleeWrites = true; break }
         if (!stablePtrGlobals.has(g) || ownWrites.has(g) || calleeWrites) continue
         chosenGlobals.push(g)
         chosenNames.push(freshId())
@@ -2871,7 +2948,7 @@ export function promoteGlobals(fn, globalTypes, volatileGlobals, reachableWrites
     // only by init stays promotable in functions whose call graph never
     // reaches init); without it, fall back to the coarse module-wide set.
     if (hasCall && (reachableWrites
-      ? (hasIndirect || [...callees].some(c => reachableWrites.get(c)?.has(gName)))
+      ? (hasIndirect || [...callees].some(c => reachableWrites.has(c, gName)))
       : volatileGlobals?.has(gName))) continue
     // Determine type: use provided map, or infer from context
     const type = globalTypes?.get(gName) || inferTypeFromContext(fn, gName, bodyStart)
@@ -3030,7 +3107,7 @@ export function hoistConstantPool(funcs, addGlobal) {
  * @param addFunc  — callback `(watString) => void` to register new helpers
  * @param parseWat — `wat → IR` parser (injected to avoid circular imports)
  */
-export function specializeMkptr(funcs, addFunc, parseWat) {
+export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
   // Per-target specification: param-types, result-type. Threshold tuned so helper cost amortizes.
   // Any target not listed here is left untouched. Order matters only for readability.
   const SPECS = {
@@ -3047,41 +3124,73 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
   // above 20 (the ~2 k-site $__strBase relativization) with nothing in the 5–19 band.
   const MIN_USES = 4
 
-  // Build literal-arg signature key for a call node. Returns null if no args are literal.
-  // Key format: 'T:V' per literal arg, 'D' per dynamic; indexed by position.
+  // Dynamic arguments share one interned trie key; literal arguments use their
+  // number directly. Counting through this trie allocates only for a NEW
+  // signature, not once per call site (the self-host has millions of sites and
+  // no tracing GC between region exits).
+  const DYNAMIC_SIG = 'D'
+  const sigPart = a => Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number'
+    ? a[1] : DYNAMIC_SIG
   const sigKey = (call, nParams) => {
-    const key = []
-    let anyLit = false
+    let key = '', anyLit = false
     for (let i = 0; i < nParams; i++) {
-      const a = call[2 + i]
-      if (Array.isArray(a) && a[0] === 'i32.const' && typeof a[1] === 'number') { key.push('L:' + a[1]); anyLit = true }
-      else key.push('D')
+      const part = sigPart(call[2 + i])
+      if (i) key += '|'
+      if (part === DYNAMIC_SIG) key += 'D'
+      else { key += 'L:' + part; anyLit = true }
     }
-    return anyLit ? key.join('|') : null
+    return anyLit ? key : null
   }
 
-  // Pass 1: count per (target, sig) AND record candidate site locations for direct
-  // rewrite in pass 3. Pre-order push means nested candidates appear later in `sites`,
-  // so reverse iteration in pass 3 yields leaf-first rewrite order (inner before outer).
-  const counts = new Map()  // 'target##sig' → count
-  const sites = []  // { parent, idx, fullKey, parts }
-  const collectCall = (node, parent, idx) => {
+  // Pass 1 counts signatures only. The former implementation retained one
+  // `{parent, idx, fullKey, parts}` record per candidate until the module-wide
+  // count settled; on compiler-sized modules that site ledger alone consumed
+  // the remaining wasm32 heap. Pass 3 now performs a second, post-order walk:
+  // linear time, bounded solver state, and the same leaf-first rewrite order.
+  let counts = new Map()  // target → nested arg-part Maps → compact leaf tuple
+  let countEntries = []   // first-seen full-signature order (output-order authority)
+  const collectCall = (node, parent) => {
     if (!parent || !Array.isArray(node) || node[0] !== 'call' || typeof node[1] !== 'string' || !SPECS[node[1]]) return
     const spec = SPECS[node[1]]
-    if (node.length === 2 + spec.params.length) {
-      const k = sigKey(node, spec.params.length)
-      if (k) {
-        const fullKey = node[1] + '##' + k
-        counts.set(fullKey, (counts.get(fullKey) || 0) + 1)
-        sites.push({ parent, idx, fullKey, parts: k.split('|') })
+    if (node.length !== 2 + spec.params.length) return
+    let row = counts.get(node[1])
+    if (!row) { row = new Map(); counts.set(node[1], row) }
+    let anyLit = false
+    for (let i = 0; i < spec.params.length; i++) {
+      const part = sigPart(node[2 + i])
+      if (part !== DYNAMIC_SIG) anyLit = true
+      if (i === spec.params.length - 1) {
+        if (anyLit) {
+          let leaf = row.get(part)
+          if (!leaf) {
+            leaf = [node[1] + '##' + sigKey(node, spec.params.length), 1]
+            row.set(part, leaf)
+            countEntries.push(leaf)
+          } else leaf[1]++
+        }
+      } else {
+        let next = row.get(part)
+        if (!next) { next = new Map(); row.set(part, next) }
+        row = next
       }
     }
   }
-  for (let i = 0; i < funcs.length; i++) walkAst(funcs[i], { enter: collectCall })
+  const collectOptions = { enter: collectCall }
+  let scanMark = null, scanN = 0
+  for (let i = 0; i < funcs.length; i++) {
+    if (regionHooks && scanMark == null) scanMark = regionHooks.mark()
+    walkAst(funcs[i], collectOptions)
+    scanN++
+    if (regionHooks && (scanN >= 8 || i === funcs.length - 1)) {
+      ;[counts, countEntries] = (regionHooks.forceExit || regionHooks.exit)(scanMark, [counts, countEntries])
+      scanMark = null
+      scanN = 0
+    }
+  }
 
   // Pass 2: for each eligible (target, sig), emit helper.
   const specialized = new Set()
-  for (const [k, n] of counts) if (n >= MIN_USES) specialized.add(k)
+  for (const [k, n] of countEntries) if (n >= MIN_USES) specialized.add(k)
   if (!specialized.size) return
 
   const variantName = (target, sigParts) => target.slice(1) + '_' + sigParts
@@ -3121,19 +3230,20 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     addFunc(`(func $${name} ${dynArgs.join(' ')} (result ${spec.result}) (call ${target} ${callArgs.join(' ')}))`)
   }
 
-  // Pass 3: rewrite recorded sites in reverse (leaf-first since pass 1 was pre-order).
-  // Iterating the captured site list avoids a second full-AST walk.
-  // Idempotency guard: shared subtrees in the IR cause the same (parent, idx) to be
-  // recorded as multiple sites. The first visit rewrites; subsequent visits see the
-  // rewritten call (target no longer in SPECS) and skip — same behavior as the
-  // recursive rewrite this replaces.
-  for (let i = sites.length - 1; i >= 0; i--) {
-    const { parent, idx, fullKey, parts } = sites[i]
-    if (!specialized.has(fullKey)) continue
-    const c = parent[idx]
+  // Pass 3: second post-order walk, preserving the old reverse-preorder
+  // leaf-first behavior without retaining a module-sized site ledger.
+  const rewrite = (c, parent, idx) => {
+    if (!Array.isArray(c)) return
+    for (let i = 1; i < c.length; i++) rewrite(c[i], c, i)
+    if (!parent || c[0] !== 'call' || typeof c[1] !== 'string') return
     const target = c[1]
     const spec = SPECS[target]
-    if (!spec || c.length !== 2 + spec.params.length) continue
+    if (!spec || c.length !== 2 + spec.params.length) return
+    const key = sigKey(c, spec.params.length)
+    if (!key) return
+    const fullKey = target + '##' + key
+    if (!specialized.has(fullKey)) return
+    const parts = key.split('|')
 
     // $__mkptr fully literal (rare — mkPtrIR usually folds these ahead of us, but defensive):
     if (target === '$__mkptr' && parts[0].startsWith('L:') && parts[1].startsWith('L:') && parts[2].startsWith('L:')) {
@@ -3141,7 +3251,7 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
       const n = ['f64.const', 'nan:' + i64Hex(ptrBits(type, aux, off))]
       n.type = 'f64'
       parent[idx] = n
-      continue
+      return
     }
 
     const name = variantName(target, parts)
@@ -3150,6 +3260,17 @@ export function specializeMkptr(funcs, addFunc, parseWat) {
     const newCall = ['call', '$' + name, ...dynArgs]
     newCall.type = spec.result
     parent[idx] = newCall
+  }
+  let rewriteMark = null, batch = []
+  for (let i = 0; i < funcs.length; i++) {
+    if (regionHooks && rewriteMark == null) rewriteMark = regionHooks.mark()
+    rewrite(funcs[i], null, -1)
+    if (regionHooks) batch.push(funcs[i])
+    if (regionHooks && (batch.length >= 8 || i === funcs.length - 1)) {
+      ;[batch] = (regionHooks.forceExit || regionHooks.exit)(rewriteMark, [batch])
+      rewriteMark = null
+      batch = []
+    }
   }
 }
 

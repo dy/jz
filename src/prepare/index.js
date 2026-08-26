@@ -31,10 +31,12 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode } from '../ast.js'
+import { handlerArgs, refsName, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode } from '../ast.js'
 import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook } from '../ctx.js'
 import { T } from '../ast.js'
-import { extractParams, collectParamNames, classifyParam } from '../ast.js'
+import {
+  extractParams, collectParamNames, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_DEFAULT, PARAM_PATTERN,
+} from '../ast.js'
 import { observeNodeFacts } from '../compile/program-facts.js'
 import { staticObjectProps, staticPropertyKey, staticValue, NO_VALUE } from '../static.js'
 import { VAL } from '../reps.js'
@@ -92,7 +94,8 @@ const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED
 // scope query; the consolidated reset documents the set.
 let depth          // arrow nesting depth (0=top-level, >0=inside function)
 let scopes         // block scope stack: [{names: Set, renames: Map}]
-let staticConstScopes  // lexical const facts: [{strings: Map, arrays: Map}]
+let staticConstScopes  // lexical const facts: [[strings?, arrays?, consts?]]
+const STATIC_STRINGS = 0, STATIC_ARRAYS = 1, STATIC_CONSTS = 2
 let assignedStaticGlobals
 let mutatedArrayNames  // raw names with any indexed/.length/mutating-method op anywhere (census)
 // Per-arrow set of names already declared anywhere in the function body. Used
@@ -210,7 +213,7 @@ const scanReassignedTopLevel = (root) => {
       const inner = new Set(bound)
       for (const p of extractParams(n[1])) {
         const c = classifyParam(p)
-        if (c?.name) inner.add(c.name)
+        if (c[PARAM_NAME]) inner.add(c[PARAM_NAME])
       }
       declaredIn(n[2], inner)
       walk(n[2], inner)
@@ -592,7 +595,7 @@ function staticString(value) {
 function lookupStaticString(name) {
   const resolved = scopes.length && isDeclared(name) ? resolveScope(name) : (ctx.scope.chain[name] || name)
   for (let i = staticConstScopes.length - 1; i >= 0; i--) {
-    const v = staticConstScopes[i].strings.get(resolved)
+    const v = staticConstScopes[i][STATIC_STRINGS]?.get(resolved)
     if (v != null) return v
   }
   return ctx.scope.shapeStrs?.get(resolved) ?? ctx.scope.constStrs?.get(resolved) ?? null
@@ -601,7 +604,7 @@ function lookupStaticString(name) {
 function lookupStaticStringArray(name) {
   const resolved = scopes.length && isDeclared(name) ? resolveScope(name) : (ctx.scope.chain[name] || name)
   for (let i = staticConstScopes.length - 1; i >= 0; i--) {
-    const v = staticConstScopes[i].arrays.get(resolved)
+    const v = staticConstScopes[i][STATIC_ARRAYS]?.get(resolved)
     if (v) return v
   }
   return ctx.scope.shapeStrArrays?.get(resolved) ?? null
@@ -956,7 +959,7 @@ function prescanBlockDecls(node) {
 
 function pushScope(scope = new Map()) {
   scopes.push(scope)
-  staticConstScopes.push({ strings: new Map(), arrays: new Map(), consts: new Set() })
+  staticConstScopes.push([null, null, null])
 }
 
 function popScope() {
@@ -967,8 +970,8 @@ function popScope() {
 function bindStaticConst(name, str, arr) {
   const frame = staticConstScopes.at(-1)
   if (!frame || typeof name !== 'string') return
-  if (str != null) frame.strings.set(name, str)
-  if (arr) frame.arrays.set(name, arr)
+  if (str != null) (frame[STATIC_STRINGS] ||= new Map()).set(name, str)
+  if (arr) (frame[STATIC_ARRAYS] ||= new Map()).set(name, arr)
 }
 
 function bindStaticGlobal(name, str, arr) {
@@ -993,7 +996,7 @@ function deleteStaticGlobal(name) {
 // — this closes the in-walk fold window those two leave open.
 function invalidateMutatedArray(name) {
   if (typeof name !== 'string') return
-  for (const s of staticConstScopes) s.arrays.delete(name)
+  for (const s of staticConstScopes) s[STATIC_ARRAYS]?.delete(name)
   ctx.scope.shapeStrArrays?.delete(name)
 }
 
@@ -1350,7 +1353,7 @@ function prep(node) {
     // Resolve through the live block scopes so a shadowing `let` of the same
     // name stays writable; module-level consts are guarded by emit's isConst.
     const target = scopes.length && isDeclared(args[0]) ? resolveScope(args[0]) : args[0]
-    if (typeof target === 'string' && staticConstScopes.some(f => f.consts?.has(target)))
+    if (typeof target === 'string' && staticConstScopes.some(f => f[STATIC_CONSTS]?.has(target)))
       err(`Assignment to constant '${args[0]}' (TypeError in JS)`)
   }
   if (op == null) {
@@ -1478,7 +1481,7 @@ function bindingNames(pattern, out = new Set()) {
  *  per-iteration for-head `let` lowering (pay only when actually captured). */
 function bodyCapturesName(node, name) {
   if (!Array.isArray(node)) return false
-  if (node[0] === '=>') return refsName(node[2], name, { skipArrow: false })
+  if (node[0] === '=>') return refsName(node[2], name, REFS_THROUGH_ARROWS)
   for (let i = 1; i < node.length; i++) if (bodyCapturesName(node[i], name)) return true
   return false
 }
@@ -2166,7 +2169,7 @@ function prepDecl(op, ...inits) {
       // isConst covers only module scope, so `const c = 2; c = 3` inside a
       // function used to compile and mutate silently.
       if (op === 'const' && typeof declName === 'string' && scopes.length)
-        staticConstScopes[staticConstScopes.length - 1]?.consts?.add(declName)
+        (staticConstScopes[staticConstScopes.length - 1][STATIC_CONSTS] ||= new Set()).add(declName)
       // Track const for reassignment checks — only module-scope consts (depth 0)
       if (typeof declName === 'string' && depth === 0 && !isLoopLocal) {
         if (ctx.module.currentPrefix) {
@@ -2424,7 +2427,7 @@ function foldNamespaceIntrospection(callee, args) {
 // Compiler-internal synthetic callees: emit-handled intrinsics, never user
 // function values — so a bare reference must not pull in the callable-value
 // (function table / closure) machinery.
-const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro', '__region_mark', '__region_exit'])
+const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro', '__region_mark', '__region_exit', '__region_exit_force'])
 
 // Resolve a member-receiver to a builtin module name, honoring FUNCTION-SCOPED
 // namespace aliases (`const M = Math` inside a body registers M → 'math' in the
@@ -3036,26 +3039,26 @@ const handlers = {
     const bodyPrefix = []
     for (const r of raw) {
       const c = classifyParam(r)
-      if (c.kind === 'rest') {
+      if (c[PARAM_KIND] === 'rest') {
         // A rest param is an array: the binding holds one, and every call site
         // builds the rest array via `['[', …]`. Pull in the array emitter even
         // when the body never names an array literal (e.g. `(...xs) => 0`),
         // otherwise the call-site rest construction hits "Unknown op: [".
         includeForArrayLiteral()
-        if (typeof c.name === 'string' && !fnScope.has(c.name)) fnScope.set(c.name, mintLocal(c.name))
-        censusUnknownInitDecl(pName(c.name))   // closure params: unknown-shape binding sites (see censusUnknownInitDecl)
-        nextParams.push(typeof c.name === 'string' ? ['...', pName(c.name)] : r)
-      } else if (c.kind === 'plain') {
-        censusUnknownInitDecl(pName(c.name))
-        nextParams.push(pName(c.name))
-      } else if (c.kind === 'default') {
-        censusUnknownInitDecl(pName(c.name))
-        nextParams.push(['=', pName(c.name), prep(c.defValue)])
+        if (typeof c[PARAM_NAME] === 'string' && !fnScope.has(c[PARAM_NAME])) fnScope.set(c[PARAM_NAME], mintLocal(c[PARAM_NAME]))
+        censusUnknownInitDecl(pName(c[PARAM_NAME]))   // closure params: unknown-shape binding sites (see censusUnknownInitDecl)
+        nextParams.push(typeof c[PARAM_NAME] === 'string' ? ['...', pName(c[PARAM_NAME])] : r)
+      } else if (c[PARAM_KIND] === 'plain') {
+        censusUnknownInitDecl(pName(c[PARAM_NAME]))
+        nextParams.push(pName(c[PARAM_NAME]))
+      } else if (c[PARAM_KIND] === 'default') {
+        censusUnknownInitDecl(pName(c[PARAM_NAME]))
+        nextParams.push(['=', pName(c[PARAM_NAME]), prep(c[PARAM_DEFAULT])])
       } else {
         const tmp = `${T}p${freshPrepareId()}`
         fnScope.set(tmp, tmp)
-        nextParams.push(c.kind === 'destruct-default' ? ['=', tmp, prep(c.defValue)] : tmp)
-        bodyPrefix.push(prep(['let', ['=', c.pattern, tmp]]))
+        nextParams.push(c[PARAM_KIND] === 'destruct-default' ? ['=', tmp, prep(c[PARAM_DEFAULT])] : tmp)
+        bodyPrefix.push(prep(['let', ['=', c[PARAM_PATTERN], tmp]]))
       }
     }
     let preparedBody = prep(body)
@@ -3803,17 +3806,17 @@ function defFunc(name, node) {
   // owner id; censusing again here would double-count every param into a bar).
   for (const r of raw) {
     const c = classifyParam(r)
-    if (c.kind === 'rest') { hasRest.push(c.name); params.push({ name: c.name, type: 'f64', rest: true }) }
-    else if (c.kind === 'plain') params.push({ name: c.name, type: 'f64' })
-    else if (c.kind === 'default') {
-      params.push({ name: c.name, type: 'f64' })
+    if (c[PARAM_KIND] === 'rest') { hasRest.push(c[PARAM_NAME]); params.push({ name: c[PARAM_NAME], type: 'f64', rest: true }) }
+    else if (c[PARAM_KIND] === 'plain') params.push({ name: c[PARAM_NAME], type: 'f64' })
+    else if (c[PARAM_KIND] === 'default') {
+      params.push({ name: c[PARAM_NAME], type: 'f64' })
       // defFunc's node arrives PREPPED (every caller passes prep(rhs); the body is
       // consumed as-is below) — so the default value is prepped too. Re-prepping it
       // here double-lowered an arrow default's body: its prepared 5-ary 'for' nodes
       // re-entered the 2-ary 'for' handler, shifting init/cond/step into the wrong
       // slots (surfaced by subscript 10.5.0's dispatch(ops, tail, fn = (…) => {for…}) ).
-      const defVal = c.defValue
-      defaults[c.name] = defVal
+      const defVal = c[PARAM_DEFAULT]
+      defaults[c[PARAM_NAME]] = defVal
       // A default OBJECT LITERAL must NOT bind the param's schema: the default
       // shape holds only on the OMITTED-argument arm — a caller supplying a
       // differently-ordered object made `o.x` read the default's slot (6→9
@@ -3824,8 +3827,8 @@ function defFunc(name, node) {
     } else {
       const tmp = `${T}p${freshPrepareId()}`
       params.push({ name: tmp, type: 'f64' })
-      if (c.kind === 'destruct-default') defaults[tmp] = c.defValue   // prepped (see 'default' above)
-      bodyPrefix.push(['let', ['=', c.pattern, tmp]])
+      if (c[PARAM_KIND] === 'destruct-default') defaults[tmp] = c[PARAM_DEFAULT]   // prepped (see 'default' above)
+      bodyPrefix.push(['let', ['=', c[PARAM_PATTERN], tmp]])
     }
   }
 
@@ -4180,7 +4183,7 @@ function tryFusePair(decl, forNode, seq, declIdx) {
   if (!hasAnyIndexedRead(forBody, NAME) && !hasAnyIndexedRead(cond, NAME)) return null
   // `NAME` must not be read after the for-loop in the same block.
   for (let k = declIdx + 2; k < seq.length; k++) {
-    if (refsName(seq[k], NAME, { skipArrow: false })) return null
+    if (refsName(seq[k], NAME, REFS_THROUGH_ARROWS)) return null
   }
   // RECV must not be reassigned inside the for-loop (would invalidate substitution).
   if (assignsName(forNode, RECV) || assignsName(forNode, NAME)) return null

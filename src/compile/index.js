@@ -30,7 +30,7 @@ import { dataAlign, dataPush, dataLen, dataString, strPoolLen, strPoolString } f
 import parseWat from 'watr/parse'
 import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
-import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan } from './function-plan.js'
+import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
 import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
@@ -39,9 +39,10 @@ import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
-  analyzeStructInline, analyzeUnionInline, reanalyzeBody,
+  analyzeStructInline, analyzeUnionInline, reanalyzeBody, invalidateAllBodyFacts,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
+import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
 import { VAL, updateRep, REP_FIELDS } from '../reps.js'
 import { inferLocals } from './infer.js'
 import { optimizeFunc, treeshake } from '../optimize/index.js'
@@ -60,6 +61,7 @@ import {
   scanDynClosureTableCandidates, recordParamClosureDefault, recordDirectReturnClosure, resolveDynFnTables,
   scanClosureTableLatticeCandidates, scanImperativeClosureTableLatticeCandidates,
 } from './dyn-closure-tables.js'
+
 
 // Monotonic across all functions so a CSE temp never collides (even after later
 // inlining). Per-compile (ctx.transform.cseId, reset in ctx.reset — the
@@ -2389,9 +2391,10 @@ export default function compile(ast, profiler, regionHooks) {
   // see dyn-closure-tables.js's own doc for the safety notion and the
   // module-init-order reasoning behind its "early-mergeable" subset.
   ctx.scope.imperativeClosureTableLatticeCandidates = scanImperativeClosureTableLatticeCandidates(ast)
-  if (regionHooks)
-    [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
+  if (regionHooks) {
+    ;[ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
       regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
+  }
 
   // Inspect sink: editor hosts opt in via { inspect: true } to read inferred shapes.
   // Initialized here (post-plan) so paramReps and schema.list are stable, populated
@@ -2430,6 +2433,12 @@ export default function compile(ast, profiler, regionHooks) {
   // AFE_ROUND_BATCH is a tunable constant, sized from jessie/watr/jzify-entry
   // measurement (`.work/research.md` §Region arena, this entry), not guessed.
   const AFE_ROUND_BATCH = 32
+  // Fixed-shape closure records closed the former `cb.params` relocation
+  // corruption, but full closure-round jz×jz still reaches wasm32's copying
+  // ceiling before producing bytes. Keep this high-copy boundary dormant until
+  // the complete goal (not only parity/oracle probes) proves it end to end.
+  const CLOSURE_ROUNDS_ACTIVE = false
+  const EMIT_FUNC_ROUNDS_ACTIVE = true
   timePhase(profiler, 'analyzeFuncs', () => {
     // Mark lazily, at the first index actually reached (not unconditionally
     // before the loop) — an empty/all-raw `ctx.funcs.list` must never leave
@@ -2492,6 +2501,12 @@ export default function compile(ast, profiler, regionHooks) {
   // post-prepare SESSION+PROGRAM snapshot with ANALYSIS (currently empty);
   // compared at 'pre-assemble' below.
   assertCtxInvariants('post-analyze')
+  // FunctionPlans now own every named-function fact needed by emission. Drop
+  // the duplicate bodyFacts cache before region rounds start; any genuinely
+  // late consumer recomputes, while the self-host relocator no longer copies
+  // both the canonical plan and its analysis cache for every function.
+  invalidateAllBodyFacts()
+  resetBindingUsesCache()
   // isReassigned memo window: emission is a pure projection of the frozen
   // post-analyze AST, so per-subtree assigned-name sets stay valid for the
   // whole stage (see the memo doc in ast.js).
@@ -2512,9 +2527,18 @@ export default function compile(ast, profiler, regionHooks) {
   // stdlibParseCache, src/wat/assemble.js — same documented hazard class,
   // only live during that one stage) without every site paying for it.
   const DOLLAR_EXTERN = [dollarMap, setDollarMap]
-  const emissionRoundExit = (mark, root, extern = [DOLLAR_EXTERN]) => {
-    const out = regionHooks.exit(mark, [...root, ...extern.map(([get]) => get())])
-    for (let i = extern.length - 1; i >= 0; i--) extern[i][1](out.pop())
+  const emissionRoundExit = (mark, root, extern = [DOLLAR_EXTERN], exit = regionHooks.exit) => {
+    const values = []
+    for (let i = 0; i < extern.length; i++) values.push(extern[i][0]())
+    const rootLen = root.length
+    // `extern` itself contains closure-valued setter functions and is used
+    // AFTER region exit. Root and rebind that descriptor too; otherwise the
+    // freshly-created default `[DOLLAR_EXTERN]` can be reclaimed and the first
+    // setter call reads a stale closure aux → call_indirect table OOB.
+    const out = exit(mark, [...root, extern, ...values])
+    const movedExtern = out[rootLen]
+    for (let i = movedExtern.length - 1; i >= 0; i--) movedExtern[i][1](out.pop())
+    out.splice(rootLen, 1)
     return out
   }
   // Region rounds through EMISSION (re-landing .work/research.md §Emission
@@ -2580,21 +2604,33 @@ export default function compile(ast, profiler, regionHooks) {
   // an unconfirmed mechanism.
   let funcs = timePhase(profiler, 'emitFuncs', () => {
     let out = []
-    let __mark = null
+    let __mark = null, batchN = 0
+    const closeRound = () => {
+      endAssignedMemo()
+      ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
+        emissionRoundExit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
+      __mark = null
+      batchN = 0
+      beginAssignedMemo()
+    }
     beginAssignedMemo()
     try {
       for (let i = 0; i < ctx.funcs.list.length; i++) {
-        if (regionHooks && __mark == null) __mark = regionHooks.mark()
         const func = ctx.funcs.list[i]
-        out.push(func.raw ? emitFunc(func, null, programFacts) : emitFunc(func, functionPlanOf(ctx, func), programFacts))
-        const last = i === ctx.funcs.list.length - 1
-        if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || last)) {
-          endAssignedMemo()
-          ;[ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
-            emissionRoundExit(__mark, [ast, programFacts, out, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
-          __mark = null
-          beginAssignedMemo()
+        // Fixed-shape closure records make closure-producing named functions
+        // relocation-safe too; all named functions share one batched policy.
+        // Closure-BODY waves remain separately gated below.
+        if (EMIT_FUNC_ROUNDS_ACTIVE && regionHooks && __mark == null) __mark = regionHooks.mark()
+        if (func.raw) out.push(emitFunc(func, null, programFacts))
+        else {
+          const functionPlan = functionPlanOf(ctx, func)
+          out.push(emitFunc(func, functionPlan, programFacts))
+          retireFunctionPlan(ctx, func, functionPlan)
+          invalidateBindingUsesCache(func.body)
         }
+        if (__mark != null) batchN++
+        const last = i === ctx.funcs.list.length - 1
+        if (__mark != null && (batchN >= AFE_ROUND_BATCH || last)) closeRound()
       }
     } finally { endAssignedMemo() }
     return out
@@ -2623,16 +2659,21 @@ export default function compile(ast, profiler, regionHooks) {
     // own "durable receiver, stale pointer" note applies identically here);
     // `funcs`/`closureFuncs`/`__secRoot` ride in the root bundle.
     while (compiledBodyCount < (ctx.closure.bodies?.length || 0)) {
-      const __mark = regionHooks?.mark()
+      const __mark = CLOSURE_ROUNDS_ACTIVE ? regionHooks?.mark() : null
       const batchEnd = ctx.closure.bodies.length
       for (let i = compiledBodyCount; i < batchEnd; i++) analyzeClosureBodyForEmit(ctx.closure.bodies[i])
       beginAssignedMemo()
       try {
-        for (let i = compiledBodyCount; i < batchEnd; i++)
-          closureFuncs.push(emitClosureBody(ctx.closure.bodies[i], functionPlanOf(ctx, ctx.closure.bodies[i])))
+        for (let i = compiledBodyCount; i < batchEnd; i++) {
+          const cb = ctx.closure.bodies[i]
+          const functionPlan = functionPlanOf(ctx, cb)
+          closureFuncs.push(emitClosureBody(cb, functionPlan))
+          retireFunctionPlan(ctx, cb, functionPlan)
+          invalidateBindingUsesCache(cb.body)
+        }
       } finally { endAssignedMemo() }
       compiledBodyCount = batchEnd
-      if (regionHooks) {
+      if (CLOSURE_ROUNDS_ACTIVE && regionHooks) {
         ;[ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
           emissionRoundExit(__mark, [ast, programFacts, funcs, closureFuncs, __secRoot, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
         if (__secRoot) sec = __secRoot
@@ -2795,19 +2836,128 @@ export default function compile(ast, profiler, regionHooks) {
   // fired by every `parseTemplate` call inside pullStdlib's own realize
   // step — rooted here via the `extern` list (site-scoped: no other round
   // touches it).
+  // Everything below pullStdlib needs only compact public-ABI/export facts,
+  // never source bodies or FunctionPlans. Snapshot those facts before the
+  // stage-8 region exit so that exit can release the complete analysis graph.
+  const lateRest = []
+  const lateExt = []
+  const lateI64 = []
+  const lateHostAbi = []
+  const lateNamedExports = []
+  const lateExportedNames = new Set()
+  for (const f of ctx.funcs.list) {
+    if (isExported(f)) lateExportedNames.add(f.name)
+    if (isExported(f) && f.rest) {
+      const fixed = f.sig.params.length - 1
+      for (const exportName of exportNamesOf(f.name)) lateRest.push({ name: exportName, fixed })
+    }
+    if (isExported(f) && isBoundaryWrapped(f) && f._exportExtParams) {
+      const p = []
+      const d = {}
+      f._exportExtParams.forEach((b, i) => {
+        if (!b) return
+        p.push(i)
+        if (typeof b === 'object' && b.def != null) d[String(i)] = b.def
+      })
+      if (p.length) {
+        const hasDefaults = Object.keys(d).length > 0
+        for (const exportName of exportNamesOf(f.name))
+          lateExt.push(hasDefaults ? { name: exportName, p, d } : { name: exportName, p })
+      }
+    }
+    if (isExported(f) && isBoundaryWrapped(f) && f._exportI64) {
+      const { p, r, m } = f._exportI64
+      for (const exportName of exportNamesOf(f.name))
+        lateI64.push(m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p })
+    }
+    if (isExported(f)) {
+      const tag = []
+      for (let i = 0; i < f.sig.params.length; i++)
+        if (representationHostBoxesParam(ctx, f, i)) tag.push(i)
+      if (tag.length) for (const exportName of exportNamesOf(f.name))
+        lateHostAbi.push({ name: exportName, tag })
+    }
+  }
+  for (const [name, val] of Object.entries(ctx.funcs.exports)) {
+    if (val === true) {
+      if (ctx.scope.userGlobals?.has(name)) lateNamedExports.push(['export', `"${name}"`, ['global', `$${name}`]])
+      continue
+    }
+    if (typeof val !== 'string') continue
+    const func = ctx.funcs.list.find(f => f.name === val)
+    if (func) lateNamedExports.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
+    else if (ctx.scope.globals.has(val)) lateNamedExports.push(['export', `"${name}"`, ['global', `$${val}`]])
+  }
+  let lateFacts = {
+    rest: lateRest,
+    ext: lateExt,
+    i64: lateI64,
+    hostAbi: lateHostAbi,
+    namedExports: lateNamedExports,
+    userFuncs: new Set(ctx.funcs.list.map(f => `$${f.name}`)),
+    exportedNames: lateExportedNames,
+    funcCount: ctx.funcs.list.length,
+    errorSidEntries: [...ctx.schema.errorSidEntries()],
+    typedPins: null,
+  }
+
   const __stdlibMark = regionHooks?.mark()
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
   ensureThrowRuntime(sec)
+  lateFacts.errorSidEntries = [...ctx.schema.errorSidEntries()]
+  lateFacts.typedPins = ctx.linkDemand.typedRuntime
+    ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
+      .filter(name => ctx.core.includes.has(name.slice(1)))
+    : []
   if (regionHooks) {
-    ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
-      emissionRoundExit(__stdlibMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps],
+    let lateScope = {
+      globals: ctx.scope.globals,
+      globalTypes: ctx.scope.globalTypes,
+      userGlobals: ctx.scope.userGlobals,
+      globalValTypes: ctx.scope.globalValTypes,
+      globalTypedLen: ctx.scope.globalTypedLen,
+      globalTypedElem: ctx.scope.globalTypedElem,
+      staticArrs: ctx.scope.staticArrs,
+      constFnArrays: ctx.scope.constFnArrays,
+      dvArmFns: ctx.scope.dvArmFns,
+    }
+    let lateTypes = { arrResized: ctx.types.arrResized, nameEscapes: ctx.types.nameEscapes }
+    let lateSchema = { list: ctx.schema.list }
+    // pullStdlib only mutates these section arrays. Root them individually;
+    // traversing `sec` would also walk every already-durable user function,
+    // turning a ~stdlib-only reclaim into a multi-gigabyte full-module copy.
+    let lateSections = {
+      start: sec.start,
+      imports: sec.imports,
+      memory: sec.memory,
+      extStdlib: sec.extStdlib,
+      stdlib: sec.stdlib,
+      tags: sec.tags,
+    }
+    ;[lateSections, lateFacts, lateScope, lateTypes, lateSchema, ctx.transform, ctx.runtime, ctx.memory, ctx.core.includes, ctx.warnings] =
+      emissionRoundExit(__stdlibMark, [lateSections, lateFacts, lateScope, lateTypes, lateSchema, ctx.transform, ctx.runtime, ctx.memory, ctx.core.includes, ctx.warnings],
         [DOLLAR_EXTERN, [stdlibParseCacheMap, setStdlibParseCacheMap]])
+    sec.start = lateSections.start
+    sec.imports = lateSections.imports
+    sec.memory = lateSections.memory
+    sec.extStdlib = lateSections.extStdlib
+    sec.stdlib = lateSections.stdlib
+    sec.tags = lateSections.tags
+    ctx.scope = lateScope
+    ctx.types = lateTypes
+    ctx.schema = lateSchema
+    ctx.funcs = { list: { length: lateFacts.funcCount } }
     __secRoot = sec
   }
 
   stripStaticDataPrefix(sec)
 
-  timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler))
+  timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler,
+    regionHooks ? {
+      mark: regionHooks.mark,
+      exit: (mark, root) => emissionRoundExit(mark, root),
+      forceExit: regionHooks.forceExit || regionHooks.exit,
+    } : null))
   if (ctx.transform.helperCallsites) instrumentHelperCallsites([...sec.funcs, ...sec.stdlib, ...sec.start])
 
   // Fold constant `__start` global inits into immutable inline decls (drops the
@@ -2903,12 +3053,12 @@ export default function compile(ast, profiler, regionHooks) {
   // has no other way to recover "which ECMAScript class did this sid come
   // from" than a small table shipped alongside the module. Compact format:
   // varint(nEntries); per entry: varint(sid), varint(len), utf8 bytes(name).
-  if (ctx.schema.errorSidEntries?.().size) {
+  if (lateFacts.errorSidEntries.length) {
     const bytes = []
     const utf8 = new TextEncoder()
     const varint = (n) => { while (n >= 0x80) { bytes.push((n & 0x7F) | 0x80); n >>>= 7 } bytes.push(n) }
-    const entries = ctx.schema.errorSidEntries()
-    varint(entries.size)
+    const entries = lateFacts.errorSidEntries
+    varint(entries.length)
     for (const [sid, name] of entries) {
       varint(sid)
       const b = utf8.encode(name)
@@ -2925,12 +3075,7 @@ export default function compile(ast, profiler, regionHooks) {
   // list; otherwise JS pads the missing args with UNDEF_NAN and the
   // VAL.ARRAY narrow path reads i32 at `__ptr_offset(UNDEF_NAN) - 8`, hitting
   // OOB instead of the polymorphic length-check fallback's tag-aware return-0.
-  const restParamFuncs = []
-  for (const f of ctx.funcs.list) {
-    if (!isExported(f) || !f.rest) continue
-    const fixed = f.sig.params.length - 1
-    for (const exportName of exportNamesOf(f.name)) restParamFuncs.push({ name: exportName, fixed })
-  }
+  const restParamFuncs = lateFacts.rest
   if (restParamFuncs.length)
     sec.customs.push(['@custom', '"jz:rest"', `"${JSON.stringify(restParamFuncs).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
@@ -2940,31 +3085,7 @@ export default function compile(ast, profiler, regionHooks) {
   // 0-based externref param indices and d (optional) is a map idx→default
   // string for jsstring-carrier params whose default-substitution happens
   // JS-side. Empty list emits nothing.
-  const extExports = []
-  for (const f of ctx.funcs.list) {
-    if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportExtParams) continue
-    const p = []
-    const d = {}
-    f._exportExtParams.forEach((b, i) => {
-      if (!b) return
-      p.push(i)
-      // String-key the index: object property keys are conceptually strings (JSON renders
-      // `{"0":…}` either way), and the self-compile kernel's objects don't enumerate a numeric
-      // key — `d[0]=…` stores but Object.keys(d) misses it, so the `d` map would read empty
-      // and the default never reach the jz:extparam section. Same coercion as the optimize
-      // LEVEL_PRESETS lookup. (Native is unaffected: numeric keys auto-stringify.)
-      if (typeof b === 'object' && b.def != null) d[String(i)] = b.def
-    })
-    if (!p.length) continue
-    // Build each export entry as a direct literal — no `entry.d = d` after the fact and no
-    // `{...entry, name}` spread. The self-compile kernel's fixed-schema objects don't enumerate
-    // a key added to a non-empty literal (JSON.stringify/spread would silently drop a post-hoc
-    // `d`), and spreading a 3-key literal mis-resolves the merged schema there. Constructing
-    // the final shape directly sidesteps both.
-    const hasDefaults = Object.keys(d).length > 0
-    for (const exportName of exportNamesOf(f.name))
-      extExports.push(hasDefaults ? { name: exportName, p, d } : { name: exportName, p })
-  }
+  const extExports = lateFacts.ext
   if (extExports.length)
     sec.customs.push(['@custom', '"jz:extparam"', `"${JSON.stringify(extExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
@@ -2975,13 +3096,7 @@ export default function compile(ast, profiler, regionHooks) {
   // exports emit no entry. A proven raw BigInt result is i64 but unmarked.
   // Written under every JS-visible alias, like jz:extparam. Each shape is built as a direct
   // literal (no spread) — the self-compile kernel's fixed schemas don't enumerate post-hoc keys.
-  const i64Exports = []
-  for (const f of ctx.funcs.list) {
-    if (!isExported(f) || !isBoundaryWrapped(f) || !f._exportI64) continue
-    const { p, r, m } = f._exportI64
-    for (const exportName of exportNamesOf(f.name))
-      i64Exports.push(m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p })
-  }
+  const i64Exports = lateFacts.i64
   if (i64Exports.length)
     sec.customs.push(['@custom', '"jz:i64exp"', `"${JSON.stringify(i64Exports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
@@ -3019,15 +3134,7 @@ export default function compile(ast, profiler, regionHooks) {
   // element exactly like an unmarked fixed slot. A slot in neither `raw` nor
   // `tag` — the overwhelming common case — carries no BigInt evidence of any
   // kind: reject.
-  const hostAbiExports = []
-  for (const f of ctx.funcs.list) {
-    if (!isExported(f)) continue
-    const tag = []
-    for (let i = 0; i < f.sig.params.length; i++)
-      if (representationHostBoxesParam(ctx, f, i)) tag.push(i)
-    if (!tag.length) continue
-    for (const exportName of exportNamesOf(f.name)) hostAbiExports.push({ name: exportName, tag })
-  }
+  const hostAbiExports = lateFacts.hostAbi
   if (hostAbiExports.length)
     sec.customs.push(['@custom', '"jz:hostabi"', `"${JSON.stringify(hostAbiExports).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`])
 
@@ -3035,18 +3142,7 @@ export default function compile(ast, profiler, regionHooks) {
   // alias under host:'wasi' emits its natural entry here too — legalizeForTarget (TargetProfile
   // stage, src/optimize/watr-tail.js) rewrites it into the () -> () wrapper afterward, keyed
   // off this same customs entry shape (no wasiCommandExports skip needed).
-  for (const [name, val] of Object.entries(ctx.funcs.exports)) {
-    if (val === true) {
-      if (ctx.scope.userGlobals?.has(name)) sec.customs.push(['export', `"${name}"`, ['global', `$${name}`]])
-      continue
-    }
-    if (typeof val !== 'string') continue
-    const func = ctx.funcs.list.find(f => f.name === val)
-    // Boundary-wrapped funcs export through the synthesized $${val}$exp wrapper
-    // so the JS-visible alias preserves f64 ABI.
-    if (func) sec.customs.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
-    else if (ctx.scope.globals.has(val)) sec.customs.push(['export', `"${name}"`, ['global', `$${val}`]])
-  }
+  sec.customs.push(...lateFacts.namedExports)
 
   // Whole-module: prune funcs unreachable from entry points (start, exports, elem refs).
   // Removes orphan top-level consts that never get called (e.g. watr's unused `hoist` = 26 KB).
@@ -3058,7 +3154,7 @@ export default function compile(ast, profiler, regionHooks) {
     [{ arr: sec.stdlib }, { arr: sec.funcs }, { arr: sec.start }],
     [...sec.start, ...sec.elem, ...sec.customs, ...sec.extStdlib, ...sec.imports, ...sec.tags],
     { removeDead: !optCfg || optCfg.treeshake !== false, globals: sec.globals, userGlobals: ctx.scope.userGlobals,
-      userFuncs: new Set(ctx.funcs.list.map(f => `$${f.name}`)) }
+      userFuncs: lateFacts.userFuncs }
   )
 
   pruneUnusedThrowRuntime(sec)
@@ -3108,8 +3204,50 @@ export default function compile(ast, profiler, regionHooks) {
   // through a stale `ctx.*` or the pre-relocation `builtModule` reference is
   // a use-after-free, the identical contract frontHalf's own rebind
   // documents.
-  if (regionHooks)
+  if (regionHooks?.releaseSession) {
+    // The wasm-hosted compiler immediately feeds this module to the WAT tail;
+    // it never observes analysis/session internals after compileAst returns.
+    // Preserve only immutable optimizer facts and a compact boundary summary,
+    // rather than copying every AST, FunctionPlan and analysis cache alongside
+    // the already-large emitted module at the final region boundary.
+    const cfg = ctx.transform.optimize
+    const boundaryPins = [
+      ...(cfg?._vectorizedFnNames?.size
+        ? [...cfg._vectorizedFnNames].filter(name => lateFacts.exportedNames.has(name.slice(1)))
+        : []),
+      ...lateFacts.typedPins,
+    ]
+    let released = {
+      transform: ctx.transform,
+      funcs: { list: { length: lateFacts.funcCount } },
+      scope: {
+        globalValTypes: ctx.scope.globalValTypes,
+        globalTypedLen: ctx.scope.globalTypedLen,
+        globalTypedElem: ctx.scope.globalTypedElem,
+        staticArrs: ctx.scope.staticArrs,
+        constFnArrays: ctx.scope.constFnArrays,
+        dvArmFns: ctx.scope.dvArmFns,
+      },
+      types: { arrResized: ctx.types.arrResized, nameEscapes: ctx.types.nameEscapes },
+      schema: { list: ctx.schema.list },
+      includes: ctx.core.includes,
+      warnings: ctx.warnings,
+      diagSink: ctx.core.diagSink,
+      tail: { funcCount: lateFacts.funcCount, boundaryPins, targetProfile: ctx.transform.targetProfile },
+    }
+    ;[builtModule, released] = (regionHooks.finalExit || regionHooks.exit)(__regionMark, [builtModule, released])
+    ctx.transform = released.transform
+    ctx.funcs = released.funcs
+    ctx.scope = released.scope
+    ctx.types = released.types
+    ctx.schema = released.schema
+    ctx.core.includes = released.includes
+    ctx.warnings = released.warnings
+    ctx.core.diagSink = released.diagSink
+    ctx.transform._regionTail = released.tail
+  } else if (regionHooks) {
     [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts] =
       regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts])
+  }
   return builtModule
 }

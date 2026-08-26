@@ -178,9 +178,38 @@ against its unchanged 1.03 cap, so no performance claim is made or cap loosened.
 `dist/jz.wasm` is 17,258.9 kB. The 162-module full jz×jz probe remains at
 exactly 2^32 bytes and traps (heap i32 -24).
 
+## Slice 6 — compiler-fact compaction and final encoder wall
+
+Compiler analysis records now use compact tuples/lazy collections where the
+self host formerly paid a HASH allocation per query or per empty field.
+FunctionPlans pack canonical maps/sets across the analyze→emit gap, materialize
+once, and retire after their sole emission consumer. Body/binding caches retire
+at the same boundary. Fixed-shape closure records and complete extern rooting
+close the two evidenced relocation corruptions. The optimizer's reachable-
+global-write closure uses SCC-condensed u32 bitsets, and specializeMkptr counts
+signatures without a per-call-site object ledger.
+
+On the exact 162-module graph, `__alloc_hdr_n` falls
+6,528,188→3,258,286 and `__hash_new_cap` 2,989,365→517,263. A diagnostic
+region-live build advances through all named emission, pullStdlib, and the
+pre-watr optimizer to the final module boundary, while parity/oracle remain
+green. It still exhausts wasm32 with zero output bytes: final copying and
+watr's whole-module cleanup/code-byte arrays need a second module-sized working
+set. A self-only in-place cleanup experiment only moved the wall into byte
+materialization and was reverted. The general next step is a streaming typed
+encoder (then compact HIR), not a larger cap or another root-list tweak.
+`REGION_HOOKS_ACTIVE` remains false.
+
+Validation: core and full matrix green at 3660/3659/0/1 (WASI
+3659/3658/0/1); functional self 21/21; parity 3/3; oracle 14/14; ratchet and
+fixpoint 10/10; types green; test262 remains 3003/0/54 with exact 3858/187,
+builtins 853/0/86. Warm remains red at 1.126–1.161x against the unchanged
+1.03 cap; fresh passes at 0.887x. Normal region-disabled `dist/jz.wasm` is
+17,732.2 kB.
+
 ## Remaining order
 
-Next: close or explicitly defer the 187 parser-context residuals, then 4 GiB
-attribution/closure, fresh performance evidence + general loss fixes,
-then generic native legalization/tooling. Source maps and ecosystem demos are
+Next: implement the streaming encoder/compact-IR path required for 4 GiB
+closure; close or explicitly defer the 187 parser-context residuals; refresh
+performance evidence + general loss fixes; then generic native legalization/tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.

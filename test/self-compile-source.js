@@ -94,8 +94,10 @@ test('self-compile-source: every region hook boundary is gated by REGION_HOOKS_A
   const { code } = resolveModuleGraph(SELF, { resolveNode: true })
   const markerFalse = 'export const REGION_HOOKS_ACTIVE = false'
   const markerTrue = 'export const REGION_HOOKS_ACTIVE = true'
-  const guarded = 'REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined'
-  const sites = code.split(guarded).length - 1
+  const guarded = [...code.matchAll(/REGION_HOOKS_ACTIVE \? \{[\s\S]*?\} : undefined/g)]
+  const sites = guarded.filter(({ 0: site }) =>
+    site.includes('mark: () => __region_mark()') &&
+    site.includes('exit: (mark, root) => __region_exit(mark, root)')).length
   ok(code.includes(markerFalse) !== code.includes(markerTrue),
     'scripts/self.js must declare exactly one literal REGION_HOOKS_ACTIVE state')
   ok(sites === 3,

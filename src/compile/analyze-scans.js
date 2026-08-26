@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, T, isLiteralStr } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -176,6 +176,23 @@ export const USE = {
   DELETE_MEMBER: 11, // `delete name.member`
   BARE: 12,          // any other value position — the conservative catch-all
 }
+// Immutable singleton records for uses with no metadata. scanBindingUses
+// creates hundreds of thousands of these in self-hosted analysis; sharing by
+// kind preserves every read-only consumer while removing one object + HASH
+// sidecar per occurrence.
+export const BINDING_USE_KIND = 0
+export const BINDING_USE_KEY = 1
+export const BINDING_USE_OPTIONAL = 2
+export const BINDING_USE_COMPUTED = 3
+export const BINDING_USE_COMPOUND = 4
+export const BINDING_USE_CALLEE = 5
+export const BINDING_USE_ARG_INDEX = 6
+export const BINDING_USE_NULL_CMP = 7
+export const BINDING_USE_OP = 8
+const SIMPLE_USE = Array.from({ length: 13 }, (_, kind) => [kind])
+export const BINDING_USE_DECLS = 0
+export const BINDING_USE_INIT = 1
+export const BINDING_USE_USES = 2
 // Self-compile-only: see resetProgramFactsCache (program-facts.js) — a fresh
 // factStore (src/session.js) swaps in a fresh WeakMap each session so a
 // warm-instance compile-clear-compile loop never reads a dangling arena
@@ -193,6 +210,7 @@ export const USE = {
 // has never seen. Stale entries for orphaned old bodies just sit unreachable
 // until GC; nothing ever reads them.
 export function resetBindingUsesCache() { getFactStore().bindingUses = new WeakMap() }
+export function invalidateBindingUsesCache(body) { getFactStore().bindingUses.delete(body) }
 const _CMP_OPS = new Set(['==', '!=', '===', '!==', '<', '>', '<=', '>='])
 const _isNullishLit = (e) =>
   e === 'null' || e === 'undefined' ||
@@ -211,13 +229,16 @@ export function scanBindingUses(body, trackNames) {
     if (hit) return hit
   }
 
-  const summary = new Map()                    // name → { decls, initRhs, uses }
+  const summary = new Map()                    // name → [decls, initRhs, uses]
   const slot = (name) => {
     let s = summary.get(name)
-    if (!s) { s = { decls: 0, initRhs: undefined, uses: [] }; summary.set(name, s) }
+    if (!s) { s = [0, undefined, []]; summary.set(name, s) }
     return s
   }
-  const use = (name, kind, extra) => slot(name).uses.push(extra ? { kind, ...extra } : { kind })
+  const use = (name, kind, record) => {
+    if (record) record[BINDING_USE_KIND] = kind
+    slot(name)[BINDING_USE_USES].push(record || SIMPLE_USE[kind])
+  }
 
   // Static string key of a `[]` index node, else null (computed).
   const litKey = (k) => (Array.isArray(k) && k[0] === 'str' && typeof k[1] === 'string') ? k[1] : staticIndexKey(k)
@@ -238,12 +259,12 @@ export function scanBindingUses(body, trackNames) {
     if (!Array.isArray(t)) return
     const o = t[0]
     if ((o === '.' || o === '?.') && typeof t[1] === 'string') {
-      use(t[1], USE.MEMBER_W, { key: typeof t[2] === 'string' ? t[2] : null, computed: false, compound })
+      use(t[1], USE.MEMBER_W, [0, typeof t[2] === 'string' ? t[2] : null, undefined, false, compound])
       return
     }
     if (o === '[]' && typeof t[1] === 'string') {
       const k = litKey(t[2])
-      use(t[1], USE.MEMBER_W, { key: k, computed: k == null, compound })
+      use(t[1], USE.MEMBER_W, [0, k, undefined, k == null, compound])
       if (t[2] != null) val(t[2])
       return
     }
@@ -260,11 +281,11 @@ export function scanBindingUses(body, trackNames) {
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (typeof d === 'string') { if (!inClosure) slot(d).decls++; continue }
+        if (typeof d === 'string') { if (!inClosure) slot(d)[BINDING_USE_DECLS]++; continue }
         if (Array.isArray(d) && d[0] === '=') {
           const lhs = d[1], rhs = d[2]
           if (typeof lhs === 'string') {
-            if (!inClosure) { const s = slot(lhs); s.decls++; if (s.initRhs === undefined) s.initRhs = rhs }
+            if (!inClosure) { const s = slot(lhs); s[BINDING_USE_DECLS]++; if (s[BINDING_USE_INIT] === undefined) s[BINDING_USE_INIT] = rhs }
           } else {
             walk(lhs, inClosure)                // pattern — computed keys/defaults are real uses
           }
@@ -297,13 +318,13 @@ export function scanBindingUses(body, trackNames) {
     if (op === '.' || op === '?.') {
       const recv = node[1]
       if (typeof recv === 'string')
-        use(recv, USE.MEMBER_R, { key: typeof node[2] === 'string' ? node[2] : null, optional: op === '?.', computed: false })
+        use(recv, USE.MEMBER_R, [0, typeof node[2] === 'string' ? node[2] : null, op === '?.', false])
       else walk(recv)
       return                                    // node[2] is the property name
     }
     if (op === '[]') {
       const recv = node[1], k = litKey(node[2])
-      if (typeof recv === 'string') use(recv, USE.MEMBER_R, { key: k, optional: false, computed: k == null })
+      if (typeof recv === 'string') use(recv, USE.MEMBER_R, [0, k, false, k == null])
       else walk(recv)
       if (node[2] != null) val(node[2])
       return
@@ -329,7 +350,8 @@ export function scanBindingUses(body, trackNames) {
         for (let ai = 0; ai < args.length; ai++) {
           const a = args[ai]
           if (Array.isArray(a) && a[0] === '...') { val(a[1]); continue }
-          if (typeof a === 'string') use(a, USE.CALL_ARG, { callee: typeof callee === 'string' ? callee : null, argIndex: ai })
+          if (typeof a === 'string') use(a, USE.CALL_ARG, [0, undefined, undefined, undefined, undefined,
+            typeof callee === 'string' ? callee : null, ai])
           else walk(a)
         }
       }
@@ -338,7 +360,8 @@ export function scanBindingUses(body, trackNames) {
     if (_CMP_OPS.has(op) && node.length === 3) {
       for (let i = 1; i <= 2; i++) {
         const side = node[i]
-        if (typeof side === 'string') use(side, USE.COMPARE, { nullCmp: _isNullishLit(node[3 - i]) })
+        if (typeof side === 'string') use(side, USE.COMPARE, [0, undefined, undefined, undefined, undefined, undefined, undefined,
+          _isNullishLit(node[3 - i])])
         else walk(side)
       }
       return
@@ -353,13 +376,13 @@ export function scanBindingUses(body, trackNames) {
     }
     if (op === '!' || op === 'typeof' || op === 'void') {
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST, { op })
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, [0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, op])
       else walk(c)
       return
     }
     if (op === 'if' || op === 'while' || op === '?:') {  // `prepare` normalizes `?` → `?:`
       const c = node[1]
-      if (typeof c === 'string') use(c, USE.BOOL_TEST, { op })
+      if (typeof c === 'string') use(c, USE.BOOL_TEST, [0, undefined, undefined, undefined, undefined, undefined, undefined, undefined, op])
       else walk(c)
       for (let i = 2; i < node.length; i++) val(node[i])
       return
@@ -375,7 +398,7 @@ export function scanBindingUses(body, trackNames) {
 
   walk(body, false)
 
-  for (const [name, s] of summary) if (s.decls === 0 && !trackNames?.has(name)) summary.delete(name)
+  for (const [name, s] of summary) if (s[BINDING_USE_DECLS] === 0 && !trackNames?.has(name)) summary.delete(name)
   // `body` can be null (a module whose every top-level statement got lifted
   // into ctx.funcs.list, e.g. a single `export const f = () => …` leaves
   // nothing at module scope) — WeakMap keys must be objects.
@@ -488,17 +511,17 @@ function selfPreservingWrittenKeys(body, name, written) {
 // second one. Returns the `{names, values, written, selfPreserving}` entry,
 // or null when `name` doesn't dissolve.
 function flatObjectCandidate(name, s, body) {
-  if (s.decls !== 1 || !Array.isArray(s.initRhs)) return null
+  if (s[BINDING_USE_DECLS] !== 1 || !Array.isArray(s[BINDING_USE_INIT])) return null
   // Candidate aggregate: an object literal `{…}` (string keys) or a small array
   // literal `[…]` (index keys "0","1",…). An array dissolves into `name#i` scalar
   // locals exactly like an object — same `.`/`[]` flat hooks, no heap alloc — when
   // every use is a static-index read/write. Capped at FLAT_ARRAY_MAX: a larger
   // literal belongs in one constant data-segment region, not N spilled locals.
   let props
-  if (s.initRhs[0] === '{}') {
-    props = staticObjectProps(s.initRhs.slice(1))
-  } else if (s.initRhs[0] === '[' || s.initRhs[0] === '[]') {
-    const elems = staticArrayElems(s.initRhs)
+  if (s[BINDING_USE_INIT][0] === '{}') {
+    props = staticObjectProps(s[BINDING_USE_INIT].slice(1))
+  } else if (s[BINDING_USE_INIT][0] === '[' || s[BINDING_USE_INIT][0] === '[]') {
+    const elems = staticArrayElems(s[BINDING_USE_INIT])
     if (!elems || !elems.length || elems.length > FLAT_ARRAY_MAX) return null
     // Holes (`[1,,3]`) and spreads (`[...x]`) aren't a fixed positional schema.
     if (elems.some(e => e == null || (Array.isArray(e) && e[0] === '...'))) return null
@@ -511,7 +534,7 @@ function flatObjectCandidate(name, s, body) {
     if (!elems.every(e => staticValue(e) !== NO_VALUE)) return null
     props = { names: elems.map((_, i) => String(i)), values: elems }
   } else return null
-  const isArr = s.initRhs[0] !== '{}'
+  const isArr = s[BINDING_USE_INIT][0] !== '{}'
   if (!props || new Set(props.names).size !== props.names.length) return null
   if (props.values.some(v => refsName(v, name, REFS_IN_EXPR))) return null
 
@@ -525,19 +548,22 @@ function flatObjectCandidate(name, s, body) {
   // value-type is exactly its literal initializer's) iff its key is absent here.
   const schema = new Set(props.names)
   const written = new Set()
-  for (const u of s.uses)
-    if (u.kind === USE.MEMBER_W && !u.compound && !u.computed && u.key != null) {
-      if (!isArr) schema.add(u.key)
-      written.add(u.key)
+  for (const u of s[BINDING_USE_USES])
+    if (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] &&
+        !u[BINDING_USE_COMPUTED] && u[BINDING_USE_KEY] != null) {
+      if (!isArr) schema.add(u[BINDING_USE_KEY])
+      written.add(u[BINDING_USE_KEY])
     }
 
   // Flat iff every mention is an in-schema literal-key `.`/`[]` READ, or an
   // in-schema literal-key plain `.`/`[]` WRITE. Any other use kind — `?.`,
   // computed/off-schema key, reassignment, compound or `delete` member write,
   // `++`/`--`, call arg, closure capture, bare ref — leaves the object live.
-  const flat = s.uses.every(u =>
-    (u.kind === USE.MEMBER_R && !u.optional && !u.computed && schema.has(u.key)) ||
-    (u.kind === USE.MEMBER_W && !u.compound && !u.computed && schema.has(u.key)))
+  const flat = s[BINDING_USE_USES].every(u =>
+    (u[BINDING_USE_KIND] === USE.MEMBER_R && !u[BINDING_USE_OPTIONAL] &&
+      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY])) ||
+    (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] &&
+      !u[BINDING_USE_COMPUTED] && schema.has(u[BINDING_USE_KEY])))
   if (!flat) return null
 
   // Materialize the parallel {names, values}: literal props first, then each
@@ -595,7 +621,7 @@ const _isSliceCall = (n) =>
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.
 function sliceViewCandidate(s) {
-  return s.decls === 1 && _isSliceCall(s.initRhs) && s.uses.every(u => _SLICE_VIEW_OK.has(u.kind))
+  return s[BINDING_USE_DECLS] === 1 && _isSliceCall(s[BINDING_USE_INIT]) && s[BINDING_USE_USES].every(u => _SLICE_VIEW_OK.has(u[BINDING_USE_KIND]))
 }
 
 export function scanSliceViews(body) {
@@ -658,8 +684,8 @@ export function safeReads(node, name) {
 // flatObjectCandidate above.
 function neverGrownCandidate(name, s, body) {
   // Candidate: a single-declaration binding initialized from a fresh array literal.
-  if (s.decls !== 1 || !Array.isArray(s.initRhs)) return false
-  if (s.initRhs[0] !== '[' && !(s.initRhs[0] === '[]' && s.initRhs.length <= 2)) return false
+  if (s[BINDING_USE_DECLS] !== 1 || !Array.isArray(s[BINDING_USE_INIT])) return false
+  if (s[BINDING_USE_INIT][0] !== '[' && !(s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2)) return false
   return safeReads(body, name)
 }
 
@@ -683,14 +709,14 @@ export function scanNeverGrown(body) {
  * direct test coverage.
  */
 export function scanObjectArrayFacts(body) {
-  const flatObjects = new Map(), sliceViews = new Set(), neverGrown = new Set()
+  let flatObjects = null, sliceViews = null, neverGrown = null
   for (const [name, s] of scanBindingUses(body)) {
     const entry = flatObjectCandidate(name, s, body)
-    if (entry) flatObjects.set(name, entry)
-    if (sliceViewCandidate(s)) sliceViews.add(name)
-    if (neverGrownCandidate(name, s, body)) neverGrown.add(name)
+    if (entry) (flatObjects ||= new Map()).set(name, entry)
+    if (sliceViewCandidate(s)) (sliceViews ||= new Set()).add(name)
+    if (neverGrownCandidate(name, s, body)) (neverGrown ||= new Set()).add(name)
   }
-  return { flatObjects, sliceViews, neverGrown }
+  return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET]
 }
 
 /**
@@ -755,12 +781,12 @@ function numFillSafe(node, name, isNumericRhs) {
 }
 
 export function scanNumericFill(body, isNumericRhs) {
-  const out = new Set()
+  let out = null
   for (const [name, s] of scanBindingUses(body)) {
-    if (s.decls !== 1 || !isFreshArrayCtor(s.initRhs)) continue
-    if (numFillSafe(body, name, isNumericRhs)) out.add(name)
+    if (s[BINDING_USE_DECLS] !== 1 || !isFreshArrayCtor(s[BINDING_USE_INIT])) continue
+    if (numFillSafe(body, name, isNumericRhs)) (out ||= new Set()).add(name)
   }
-  return out
+  return out || EMPTY_SCAN_SET
 }
 
 /**
@@ -779,21 +805,23 @@ export function scanNumericFill(body, isNumericRhs) {
  * cmpOp/+/-/*|% → f64-widen by true sign, foldConst → skip) sees its true
  * [0, 2^32) value instead of silently reboxing the bit pattern signed.
  */
+const EMPTY_SCAN_SET = new Set()
+const EMPTY_SCAN_MAP = new Map()
 export function narrowUint32(body, locals) {
-  const initLit = new Set()   // names with a valid u32-literal initializer
-  const disq = new Set()      // names disqualified by an unsafe occurrence
-  const seen = new Set()
+  // One state map replaces initLit/disq/seen's three hash tables.
+  // 1 = one valid u32 initializer and no unsafe write; 0 = disqualified.
+  const states = new Map()
   const isU32Lit = e => {
     const v = typeof e === 'number' ? e
       : Array.isArray(e) && e[0] == null && typeof e[1] === 'number' ? e[1] : NaN
     return Number.isInteger(v) && v >= 0 && v < 4294967296
   }
   const banNames = n => {
-    if (typeof n === 'string') disq.add(n)
+    if (typeof n === 'string') states.set(n, 0)
     else if (Array.isArray(n)) for (let i = 1; i < n.length; i++) banNames(n[i])
   }
   const walk = (node, inClosure) => {
-    if (typeof node === 'string') { if (inClosure) disq.add(node); return }
+    if (typeof node === 'string') { if (inClosure) states.set(node, 0); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (typeof op !== 'string') {
@@ -806,20 +834,19 @@ export function narrowUint32(body, locals) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
           const nm = d[1]
-          if (seen.has(nm) || inClosure || !isU32Lit(d[2])) disq.add(nm)
-          else initLit.add(nm)
-          seen.add(nm)
+          if (states.has(nm) || inClosure || !isU32Lit(d[2])) states.set(nm, 0)
+          else states.set(nm, 1)
           walk(d[2], inClosure)
-        } else if (typeof d === 'string') { disq.add(d); seen.add(d) }
+        } else if (typeof d === 'string') states.set(d, 0)
         else if (Array.isArray(d) && d[0] === '=') { banNames(d[1]); walk(d[2], inClosure) }
       }
       return
     }
-    if ((op === '++' || op === '--') && typeof node[1] === 'string') { disq.add(node[1]); return }
+    if ((op === '++' || op === '--') && typeof node[1] === 'string') { states.set(node[1], 0); return }
     if (ASSIGN_OPS.has(op)) {
       const lhs = node[1]
       if (typeof lhs === 'string') {
-        if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) disq.add(lhs)
+        if (op !== '=' || inClosure || !(Array.isArray(node[2]) && node[2][0] === '>>>')) states.set(lhs, 0)
       } else banNames(lhs)
       walk(node[2], inClosure)
       return
@@ -827,15 +854,15 @@ export function narrowUint32(body, locals) {
     for (let i = 1; i < node.length; i++) walk(node[i], inClosure)
   }
   walk(body, false)
-  const result = new Set()
-  for (const nm of initLit) {
-    if (disq.has(nm)) continue
+  let result = null
+  for (const [nm, state] of states) {
+    if (state !== 1) continue
     const t = locals.get(nm)
     if (t !== 'i32' && t !== 'f64') continue
     locals.set(nm, 'i32')
-    result.add(nm)
+    ;(result ||= new Set()).add(nm)
   }
-  return result
+  return result || EMPTY_SCAN_SET
 }
 
 // Operators under which a counter remains a *monotone, bounded* function of the
@@ -956,19 +983,19 @@ const mathFnName = (callee) =>
 // an inline `=>` node in the enclosing body and would be invisible to a scan
 // that stops there. See collectBareEscapes' own crossClosure doc.
 function collectComparedNames(body, crossClosure) {
-  const names = new Set()
+  let names = null
   const walk = (node) => {
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') { if (crossClosure) walk(node[2]); return }
     if (CMP_OPS_SET.has(op)) {
-      if (typeof node[1] === 'string') names.add(node[1])
-      if (typeof node[2] === 'string') names.add(node[2])
+      if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
+      if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
     }
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
-  return names
+  return names || EMPTY_SCAN_SET
 }
 
 /**
@@ -1018,7 +1045,7 @@ function collectComparedNames(body, crossClosure) {
  * evidence walk already uses program-wide.
  */
 export function collectBareEscapes(body, locals, crossClosure) {
-  const escaped = new Set()
+  let escaped = null
   const compared = collectComparedNames(body, crossClosure)
   const walk = (node, mode) => {   // mode: 'idx' | 'edge' | 'value'
     // A BARE NAME leaf must apply the SAME `escapeInRangeI32` proof (rule a,
@@ -1035,7 +1062,7 @@ export function collectBareEscapes(body, locals, crossClosure) {
     // soundness contract as the compound-node check, applied one level
     // earlier: a reassigned accumulator (`id` after `id *= 100000`) gets no
     // processDecl range stamp either way, so this adds no new tolerance.
-    if (typeof node === 'string') { if (mode === 'value' && !compared.has(node) && !escapeInRangeI32(node)) escaped.add(node); return }
+    if (typeof node === 'string') { if (mode === 'value' && !compared.has(node) && !escapeInRangeI32(node)) (escaped ||= new Set()).add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '=>') { if (crossClosure) walk(node[2], 'value'); return }  // local mode: separate scope/body; global mode: descend (see doc)
@@ -1072,7 +1099,7 @@ export function collectBareEscapes(body, locals, crossClosure) {
     for (let i = 1; i < node.length; i++) walk(node[i], mode)
   }
   walk(body, 'value')
-  return escaped
+  return escaped || EMPTY_SCAN_SET
 }
 
 // === Co-induction accumulator fact (INDUCTION-VARIABLE FACT project) ===
@@ -1276,7 +1303,9 @@ export function stampCoInductionRanges(body) {
   walk(body)
 }
 
+const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
 export function collectI32SafeIndexVars(body, locals) {
+  if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
   const safe = new Set()
   // Collect names reachable from `node` through affine ops only, into `sink`.
   const addAffine = (node, sink) => {
@@ -1296,10 +1325,10 @@ export function collectI32SafeIndexVars(body, locals) {
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { edges.push({ target: d[1], rhs: d[2] }); addDef(d[1], d[2]) }
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') { edges.push([d[1], d[2]]); addDef(d[1], d[2]) }
       }
-    } else if (op === '=' && typeof node[1] === 'string') { edges.push({ target: node[1], rhs: node[2] }); addDef(node[1], node[2]) }
-    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { edges.push({ target: node[1], rhs: node[2] }); addDef(node[1], [op[0], node[1], node[2]]) }
+    } else if (op === '=' && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], node[2]) }
+    else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], [op[0], node[1], node[2]]) }
     if (op === '=>') return
     for (let i = 1; i < node.length; i++) collect(node[i])
   }
@@ -1348,7 +1377,7 @@ export function collectI32SafeIndexVars(body, locals) {
   let changed = true
   while (changed) {
     changed = false
-    for (const { target, rhs } of edges) {
+    for (const [target, rhs] of edges) {
       if (!safe.has(target)) continue
       const src = new Set()
       addAffine(rhs, src)
@@ -1386,9 +1415,10 @@ export function collectI32SafeIndexVars(body, locals) {
  * so it stays i32, where the i32 body + increment is the real win.)
  */
 export function collectF64StridedIndexVars(body, locals) {
-  const set = new Set()
+  if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
+  let set = null
   const addAffine = (node) => {
-    if (typeof node === 'string') { set.add(node); return }
+    if (typeof node === 'string') { (set ||= new Set()).add(node); return }
     if (Array.isArray(node) && AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
   }
   const walk = (node) => {
@@ -1398,7 +1428,7 @@ export function collectF64StridedIndexVars(body, locals) {
     for (let i = 1; i < node.length; i++) walk(node[i])
   }
   walk(body)
-  return set
+  return set || EMPTY_SCAN_SET
 }
 
 /**

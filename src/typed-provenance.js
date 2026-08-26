@@ -54,29 +54,35 @@ const joinCtor = (a, b) => {
   return a === b ? a : TYPED_CTOR_CONFLICT
 }
 
+export const TYPED_SOURCE_NAME = 0
+export const TYPED_SOURCE_CALL = 1
+export const TYPED_SOURCE_FIELD = 2
+export const TYPED_SOURCE_INDEX = 3
+
 /**
  * Detailed typed-storage result of `expr`: canonical ctor string, null (open),
  * or TYPED_CTOR_CONFLICT (closed disagreement).
  *
- * `sources` is the complete provenance boundary for this cycle-free leaf:
- * `{ name, call, field, index }`. Callers provide facts; this function owns
- * expression traversal and method/join semantics.
+ * `resolve(kind, a, b, node, state)` is the complete provenance boundary.
+ * One dispatcher replaces the former `{name,call,field,index}` object plus
+ * four per-query closures — important in the self-hosted compiler, where each
+ * closure/object otherwise acquires a dynamic-property HASH sidecar.
  */
-export function typedStorageFact(expr, sources = {}) {
-  if (typeof expr === 'string') return sources.name?.(expr) ?? null
+export function typedStorageFact(expr, resolve, state) {
+  if (typeof expr === 'string') return resolve?.(TYPED_SOURCE_NAME, expr, null, null, state) ?? null
   const direct = typedElemCtor(expr)
   if (direct) return direct
   if (!Array.isArray(expr)) return null
 
   const op = expr[0]
-  if (op === '=') return typedStorageFact(expr[2], sources)
-  if (op === ',') return typedStorageFact(expr[expr.length - 1], sources)
+  if (op === '=') return typedStorageFact(expr[2], resolve, state)
+  if (op === ',') return typedStorageFact(expr[expr.length - 1], resolve, state)
   if (op === '?:') return joinCtor(
-    typedStorageFact(expr[2], sources), typedStorageFact(expr[3], sources))
+    typedStorageFact(expr[2], resolve, state), typedStorageFact(expr[3], resolve, state))
   if (op === '&&' || op === '||' || op === '??') return joinCtor(
-    typedStorageFact(expr[1], sources), typedStorageFact(expr[2], sources))
-  if (op === '.' || op === '?.') return sources.field?.(expr[1], expr[2], expr) ?? null
-  if (op === '[]' || op === '?.[]') return sources.index?.(expr[1], expr[2], expr) ?? null
+    typedStorageFact(expr[1], resolve, state), typedStorageFact(expr[2], resolve, state))
+  if (op === '.' || op === '?.') return resolve?.(TYPED_SOURCE_FIELD, expr[1], expr[2], expr, state) ?? null
+  if (op === '[]' || op === '?.[]') return resolve?.(TYPED_SOURCE_INDEX, expr[1], expr[2], expr, state) ?? null
   if (op !== '()') return null
 
   const callee = expr[1]
@@ -86,14 +92,14 @@ export function typedStorageFact(expr, sources = {}) {
       if (TYPED_FAMILY_CTORS.has(name) && name.endsWith('Array') && name !== 'ArrayBuffer')
         return 'new.' + name
     }
-    return sources.call?.(callee, expr) ?? null
+    return resolve?.(TYPED_SOURCE_CALL, callee, null, expr, state) ?? null
   }
   if (!Array.isArray(callee) || (callee[0] !== '.' && callee[0] !== '?.') || typeof callee[2] !== 'string') return null
 
   const method = callee[2]
   if (method !== 'subarray' && !FRESH_TYPED_RESULT_METHODS.has(method) && !RECEIVER_TYPED_RESULT_METHODS.has(method))
-    return sources.call?.(callee, expr) ?? null
-  const source = typedStorageFact(callee[1], sources)
+    return resolve?.(TYPED_SOURCE_CALL, callee, null, expr, state) ?? null
+  const source = typedStorageFact(callee[1], resolve, state)
   if (source === TYPED_CTOR_CONFLICT) return source
   if (!isTypedArrayCtor(source)) return null
   if (method === 'subarray') return stripTypedView(source) + '.view'
@@ -102,7 +108,7 @@ export function typedStorageFact(expr, sources = {}) {
 }
 
 /** Concrete ctor only; open/conflicting results both fail closed to null. */
-export function typedStorageCtor(expr, sources = {}) {
-  const fact = typedStorageFact(expr, sources)
+export function typedStorageCtor(expr, resolve, state) {
+  const fact = typedStorageFact(expr, resolve, state)
   return typeof fact === 'string' ? fact : null
 }

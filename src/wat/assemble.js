@@ -52,7 +52,7 @@ export const setStdlibParseCacheMap = (m) => { stdlibParseCache = m }
 import { T } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
-import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan } from '../compile/function-plan.js'
+import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan, retireFunctionPlan } from '../compile/function-plan.js'
 import { mintRepresentationPlan, representationProgramHasBigint } from '../compile/representation-plan.js'
 import { mintTypedStoragePlan } from '../compile/typed-storage-plan.js'
 import { VAL } from '../reps.js'
@@ -449,6 +449,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   if (closureFuncs.length > beforeLateClosures)
     sec.funcs.unshift(...closureFuncs.slice(beforeLateClosures))
   } finally {
+    retireFunctionPlan(ctx, start, startPlan)
     restoreActiveFunction(ctx, outerFrame)
   }
 }
@@ -1229,11 +1230,11 @@ export function stripLocalRenameSuffixes(funcs) {
   }
 }
 
-export function optimizeModule(sec, profiler) {
+export function optimizeModule(sec, profiler, regionHooks) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
   const cfg = ctx.transform.optimize
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
-    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat))
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat, regionHooks))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
   // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
@@ -1305,7 +1306,21 @@ export function optimizeModule(sec, profiler) {
     for (const list of ctx.scope.constFnArrays.values()) for (const c of list) candNames.add(`$${c.name}`)
     ctx.scope.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }
-  t('optimizeFuncs', () => { for (const s of allFuncs) optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, reachableWrites) })
+  t('optimizeFuncs', () => {
+    let mark = null, batch = []
+    for (let i = 0; i < allFuncs.length; i++) {
+      if (regionHooks && mark == null) mark = regionHooks.mark()
+      const s = allFuncs[i]
+      optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, reachableWrites)
+      if (regionHooks) batch.push(s)
+      if (regionHooks && (batch.length >= 16 || i === allFuncs.length - 1)) {
+        ;[batch, ctx.scope, ctx.transform, ctx.types, ctx.schema, ctx.core.includes, ctx.runtime] =
+          regionHooks.exit(mark, [batch, ctx.scope, ctx.transform, ctx.types, ctx.schema, ctx.core.includes, ctx.runtime])
+        mark = null
+        batch = []
+      }
+    }
+  })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size
     // The guarded form necessarily writes a declared v128 local. Keep scalar

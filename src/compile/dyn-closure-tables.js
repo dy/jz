@@ -45,7 +45,10 @@
  */
 import { ctx } from '../ctx.js'
 import { isReassigned } from '../ast.js'
-import { scanBindingUses, USE } from './analyze-scans.js'
+import {
+  BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES,
+  BINDING_USE_KIND, BINDING_USE_COMPOUND, BINDING_USE_COMPUTED, scanBindingUses, USE,
+} from './analyze-scans.js'
 import { closureBodyReturnKind } from './flow-types.js'
 import { VAL } from '../reps.js'
 
@@ -58,7 +61,8 @@ import { VAL } from '../reps.js'
 // scanFlatObjects (analyze-scans.js): any use kind not explicitly allowed here
 // poisons the candidate.
 const safeTableUse = (u) =>
-  u.kind === USE.MEMBER_R || (u.kind === USE.MEMBER_W && !u.compound && u.computed)
+  u[BINDING_USE_KIND] === USE.MEMBER_R ||
+  (u[BINDING_USE_KIND] === USE.MEMBER_W && !u[BINDING_USE_COMPOUND] && u[BINDING_USE_COMPUTED])
 
 const isEmptyArrayLit = (rhs) =>
   Array.isArray(rhs) && ((rhs[0] === '[' && rhs.length === 1) || (rhs[0] === '[]' && rhs.length <= 2))
@@ -84,7 +88,7 @@ export function scanDynClosureTableCandidates(ast) {
   const candidates = new Set()
   for (const root of topRoots) {
     for (const [name, s] of scanBindingUses(root))
-      if (s.decls === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s.initRhs)) candidates.add(name)
+      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s[BINDING_USE_INIT])) candidates.add(name)
   }
   if (!candidates.size) return candidates
 
@@ -102,7 +106,7 @@ export function scanDynClosureTableCandidates(ast) {
     for (const name of candidates) {
       if (!candidates.has(name)) continue
       const s = uses.get(name)
-      if (s && !s.uses.every(safeTableUse)) candidates.delete(name)
+      if (s && !s[BINDING_USE_USES].every(safeTableUse)) candidates.delete(name)
     }
   }
   return candidates
@@ -203,9 +207,9 @@ export function scanClosureTableLatticeCandidates(ast) {
   const initRhsOf = new Map()
   for (const root of topRoots)
     for (const [name, s] of scanBindingUses(root))
-      if (s.decls === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s.initRhs)) {
+      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && ctx.scope.consts?.has(name) && isArrowArrayLit(s[BINDING_USE_INIT])) {
         candidates.add(name)
-        initRhsOf.set(name, s.initRhs)
+        initRhsOf.set(name, s[BINDING_USE_INIT])
       }
   if (!candidates.size) return candidates
 
@@ -402,7 +406,7 @@ export function scanImperativeClosureTableLatticeCandidates(ast) {
   const candidates = new Set()
   for (const root of topRoots)
     for (const [name, s] of scanBindingUses(root))
-      if (s.decls === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s.initRhs) && !isExportedName(name))
+      if (s[BINDING_USE_DECLS] === 1 && ctx.scope.globals?.has(name) && isEmptyArrayLit(s[BINDING_USE_INIT]) && !isExportedName(name))
         candidates.add(name)
   if (!candidates.size) return candidates
 

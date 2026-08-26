@@ -12,7 +12,8 @@ import { withCurrentFunction, withFunctionFields, withTypedElemOverlay, withType
 import { warningsView } from '../session-views.js'
 import {
   isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam,
-  refsName, carriesName,
+  PARAM_KIND, PARAM_NAME,
+  refsName, carriesName, REFS_THROUGH_ARROWS,
 } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
@@ -1209,7 +1210,7 @@ function inferInternalArrayLengths(paramReps) {
   // can read/alias/mutate the name at any time, so it counts as a reference
   // everywhere this predicate gates a reject. A shadowing arrow param matches
   // by string and over-rejects — sound.
-  const refs = (n, name) => refsName(n, name, { skipArrow: false })
+  const refs = (n, name) => refsName(n, name, REFS_THROUGH_ARROWS)
   const pushCount = (n, arr) => {
     if (!Array.isArray(n)) return 0
     if (n[0] === '=>') return refs(n, arr) ? null : 0
@@ -1663,7 +1664,7 @@ function inferTypedValueRanges(paramReps) {
     }
     return out || [0, 0]
   }
-  const mentions = (n, name) => refsName(n, name, { skipArrow: false })
+  const mentions = (n, name) => refsName(n, name, REFS_THROUGH_ARROWS)
   // Expressions that can evaluate to the array object itself. Element/property
   // reads merely consume it and must not be mistaken for aliases.
   const carries = carriesName
@@ -1872,35 +1873,48 @@ export default function narrowSignatures(programFacts, ast) {
     return (raw != null && Number.isInteger(raw) && raw >= I32_MIN && raw <= I32_MAX) ? raw : null
   }
 
-  // Per-call-site inference context for a narrowable callee. null for call sites
-  // whose callee is exported / value-used / unknown, or whose caller has no ctx.
-  const siteState = (cs) => {
+  // Per-call-site inference context for a narrowable callee. Rules consume it
+  // synchronously and never retain it, so reuse one stable record and one Map
+  // across every sweep. The former fresh 13-field object + method closure + Map
+  // per site was the largest attributed HASH-sidecar source in self-hosted
+  // narrowing (hundreds of thousands of constructions before the 4 GiB wall).
+  const paramFactsCache = new Map()
+  let sharedSiteState
+  const callerParamFacts = key => {
+    const callerFunc = sharedSiteState.callerFunc
+    if (!paramFactsCache.has(key)) paramFactsCache.set(key, paramFactsOf(paramReps, callerFunc, key))
+    return paramFactsCache.get(key)
+  }
+  sharedSiteState = {
+    callee: undefined, callerFunc: undefined, argList: undefined, func: undefined, restIdx: -1,
+    callerLocals: undefined, callerValTypes: undefined, callerTypedElems: undefined,
+    callerParamFacts,
+    // runArrElemFixpoint mutates these named context channels in place.
+    callerElems: undefined, paramFacts: undefined, callerSids: undefined, callerSchemaIds: undefined,
+    _teOverlay: null, _lastArgMiss: false,
+  }
+  const siteState = cs => {
     const { callee, argList, callerFunc } = cs
     const func = ctx.funcs.map.get(callee)
     if (!func || func.exported || valueUsed.has(callee)) return null
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
-    const restIdx = func.rest ? func.sig.params.length - 1 : -1
-    const paramFactsCache = new Map()
-    return {
-      callee, callerFunc, argList, func, restIdx,
-      callerLocals: ctxEntry.callerLocals,
-      callerValTypes: ctxEntry.callerValTypes,
-      callerTypedElems: ctxEntry.callerTypedElems,
-      callerParamFacts(key) {
-        if (!paramFactsCache.has(key)) paramFactsCache.set(key, paramFactsOf(paramReps, callerFunc, key))
-        return paramFactsCache.get(key)
-      },
-      // Pre-declared (not added later): runArrElemFixpoint's infer() mutates these
-      // in place as the named cx it hands each inferFn (see that fn's own comment).
-      // Declaring the slots here keeps this object's shape stable from construction —
-      // mutating them later is a same-shape value write, not a hidden-class reshape.
-      // Cheap (a monomorphic object literal either way), and this object is built
-      // fresh per call site per lattice sweep inside narrowSignatures' hottest loop,
-      // which runs AS the self-host kernel — shape churn there is on the self-host
-      // compile-speed critical path.
-      callerElems: undefined, paramFacts: undefined, callerSids: undefined, callerSchemaIds: undefined,
-    }
+    paramFactsCache.clear()
+    sharedSiteState.callee = callee
+    sharedSiteState.callerFunc = callerFunc
+    sharedSiteState.argList = argList
+    sharedSiteState.func = func
+    sharedSiteState.restIdx = func.rest ? func.sig.params.length - 1 : -1
+    sharedSiteState.callerLocals = ctxEntry.callerLocals
+    sharedSiteState.callerValTypes = ctxEntry.callerValTypes
+    sharedSiteState.callerTypedElems = ctxEntry.callerTypedElems
+    sharedSiteState.callerElems = undefined
+    sharedSiteState.paramFacts = undefined
+    sharedSiteState.callerSids = undefined
+    sharedSiteState.callerSchemaIds = undefined
+    sharedSiteState._teOverlay = null
+    sharedSiteState._lastArgMiss = false
+    return sharedSiteState
   }
   // Per-site rule application, extracted so both the sweeping lattice runner
   // and the worklist fixpoint drive the same body (Stage 2 slice 3b).
@@ -3713,7 +3727,7 @@ export function speculateTypedParams(programFacts, ast) {
     // Enclosing-arrow param? Meet the arrow's own call sites at that position.
     const arrows = siteNode ? arrowPathTo(body, siteNode) : null
     if (arrows) for (let a = arrows.length - 1; a >= 0; a--) {
-      const names = extractParams(arrows[a][1]).map(p => classifyParam(p)).filter(c => c.kind === 'plain').map(c => c.name)
+      const names = extractParams(arrows[a][1]).map(p => classifyParam(p)).filter(c => c[PARAM_KIND] === 'plain').map(c => c[PARAM_NAME])
       const j = names.indexOf(arg)
       if (j < 0) continue
       // The binding name of this arrow (`const edge = (…) => …`), then its calls.

@@ -83,9 +83,10 @@ import jzify from '../jzify/index.js'
 // the default-derivation source when a caller doesn't override.
 export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
+  const tail = ctx.transform._regionTail
   return watrTail(module, cfg, {
-    funcCount: ctx.funcs.list.length,
-    boundaryPins: [
+    funcCount: tail ? tail.funcCount : ctx.funcs.list.length,
+    boundaryPins: tail ? tail.boundaryPins : [
       ...(cfg._vectorizedFnNames?.size
         ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
         : []),
@@ -93,7 +94,7 @@ function optimizeTail(module, cfg) {
         ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
           .filter(name => ctx.core.includes.has(name.slice(1))) : []),
     ],
-    targetProfile: ctx.transform.targetProfile,
+    targetProfile: tail ? tail.targetProfile : ctx.transform.targetProfile,
     // This call site must stay gated on REGION_HOOKS_ACTIVE — same ternary
     // shape as front()'s regionHooks below. If the two call sites' gates
     // ever diverge (one ternary, one unconditional), the optimize-tail
@@ -173,7 +174,13 @@ function front(source, strict) {
 // mark/exit/rebind itself, exactly like frontHalf does for the front
 // boundary; this is only the kernel-only call site that supplies the hooks.
 function emitIR(ast) {
-  const module = compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined)
+  const module = compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? {
+    mark: () => __region_mark(),
+    exit: (mark, root) => __region_exit(mark, root),
+    finalExit: (mark, root) => __region_exit(mark, root),
+    forceExit: (mark, root) => __region_exit_force(mark, root),
+    releaseSession: true,
+  } : undefined)
   if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
   return module
 }

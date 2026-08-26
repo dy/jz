@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, T, stmtList, refsName, REFS_IN_EXPR, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
+  some, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -1110,7 +1110,7 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
   // anyway, but this is explicit and avoids walking the inner closure).
   if (op === '=>') {
     for (const n of candidates.keys()) {
-      if (!disqualified.has(n) && refsName(node, n, { skipArrow: false })) disqualified.add(n)
+      if (!disqualified.has(n) && refsName(node, n, REFS_THROUGH_ARROWS)) disqualified.add(n)
     }
     return
   }

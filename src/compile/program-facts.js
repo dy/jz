@@ -6,7 +6,7 @@ import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../a
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
-import { extractParams, classifyParam, collectAllBoundNames } from '../ast.js'
+import { extractParams, classifyParam, PARAM_KIND, collectAllBoundNames } from '../ast.js'
 import { staticObjectProps, objLiteralSchemaId } from '../static.js'
 import { intLevelChecker } from '../type.js'
 import { typedStorageCtorFromContext } from '../typed-context.js'
@@ -172,7 +172,7 @@ export function observeNodeFacts(node, f) {
   } else if (op === '=>') {
     let fixedN = 0
     for (const r of extractParams(args[0])) {
-      if (classifyParam(r).kind === 'rest') f.hasRest = true
+      if (classifyParam(r)[PARAM_KIND] === 'rest') f.hasRest = true
       else fixedN++
     }
     if (fixedN > f.maxDef) f.maxDef = fixedN

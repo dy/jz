@@ -206,6 +206,8 @@ lexicalTemplateExpr = (src, start, strict) => {
   fail('unterminated template expression')
 }
 
+const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
   src.includes('\u2028') || src.includes('\u2029') ||
@@ -343,32 +345,32 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '?' && src[i + 1] === '.') optionalDepth = parens.length
     if (src.slice(i, i + 3) === '...') {
       const group = parens[parens.length - 1]
-      if (group) { group.sawRest = true; group.restDepth = nesting }
+      if (group) { group[P_REST] = true; group[P_REST_DEPTH] = nesting }
       canRegex = true; lastPunct = '...'; i += 3; continue
     }
-    if (ch === '(') { parens.push({ control: pendingControl, semis: 0, sawRest: false, restComma: false, restDepth: -1, baseDepth: nesting }); pendingControl = null }
+    if (ch === '(') { parens.push([pendingControl, 0, false, false, -1, nesting]); pendingControl = null }
     else if (ch === ')') {
       const group = parens.pop()
-      if (group?.control === 'for' && group.semis !== 0 && group.semis !== 2)
+      if (group && group[P_CONTROL] === 'for' && group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2)
         fail('for header has the wrong number of semicolons')
-      if (group?.restComma && !group.control) {
+      if (group && group[P_REST_COMMA] && !group[P_CONTROL]) {
         let k = i + 1
         while (isWhitespaceCode(src.charCodeAt(k))) k++
         if (src.slice(k, k + 2) === '=>' || src[k] === '{') fail('rest parameter cannot have a trailing comma')
       }
-      if (group?.control) expectStatement = true
+      if (group && group[P_CONTROL]) expectStatement = true
       if (optionalDepth > parens.length) optionalDepth = -1
     } else if (ch === '{') { nesting++; expectStatement = false; pendingControl = null }
     else if (ch === '[') nesting++
     else if (ch === '}' || ch === ']') {
       nesting--
       const group = parens[parens.length - 1]
-      if (group?.sawRest && nesting < group.restDepth) group.sawRest = false
+      if (group && group[P_REST] && nesting < group[P_REST_DEPTH]) group[P_REST] = false
     }
     else if (ch === ';' || ch === ',') {
       const group = parens[parens.length - 1]
-      if (ch === ';' && group?.control === 'for' && group.baseDepth === nesting) group.semis++
-      if (ch === ',' && group?.sawRest && group.restDepth === nesting) group.restComma = true
+      if (ch === ';' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting) group[P_SEMIS]++
+      if (ch === ',' && group && group[P_REST] && group[P_REST_DEPTH] === nesting) group[P_REST_COMMA] = true
       optionalDepth = -1
     }
     canRegex = !(/[)\]}]/.test(ch))
@@ -421,11 +423,11 @@ const decodeIdentifier = name => typeof name === 'string' ? name.replace(/\\u(?:
   (_m, braced, fixed) => String.fromCodePoint(parseInt(braced || fixed, 16))) : name
 
 const duplicateName = names => {
-  const seen = new Set()
-  for (const raw of names) {
-    const name = decodeIdentifier(raw)
-    if (seen.has(name)) return name
-    seen.add(name)
+  // Binding lists are tiny; a nested comparison avoids allocating a Set (and
+  // its 8-slot table) for every declaration/parameter list.
+  for (let i = 0; i < names.length; i++) {
+    const name = decodeIdentifier(names[i])
+    for (let k = 0; k < i; k++) if (decodeIdentifier(names[k]) === name) return name
   }
   return null
 }
@@ -518,6 +520,7 @@ const paramsOf = raw => {
 
 const isSimpleParams = params => params.every(p => typeof p === 'string')
 
+const D_TYPE = 0, D_NAMES = 1
 const declaration = node => {
   if (!isNode(node)) return null
   if (node[0] === 'async' && isNode(node[1]) && (node[1][0] === 'function' || node[1][0] === 'function*'))
@@ -536,11 +539,11 @@ const declaration = node => {
       const d = node[i]
       boundNames(isNode(d) && d[0] === '=' ? d[1] : d, names)
     }
-    return { type: node[0], names }
+    return [node[0], names]
   }
-  if (node[0] === 'class' && typeof node[1] === 'string') return { type: 'class', names: [node[1]] }
+  if (node[0] === 'class' && typeof node[1] === 'string') return ['class', [node[1]]]
   if ((node[0] === 'function' || node[0] === 'function*') && typeof node[1] === 'string')
-    return { type: 'function', names: [node[1]] }
+    return ['function', [node[1]]]
   return null
 }
 
@@ -550,9 +553,9 @@ const collectVarNames = (node, out, scopeKind, direct = true) => {
   if (op === '=>' || op === 'function' || op === 'function*' || op === 'class') return
   if (op === 'async' && isNode(node[1]) && (node[1][0] === 'function' || node[1][0] === 'function*')) return
   const d = declaration(node)
-  if (d?.type === 'var') for (const name of d.names) out.push(name)
-  if (direct && (scopeKind === 'global' || scopeKind === 'function') && d?.type === 'function')
-    for (const name of d.names) out.push(name)
+  if (d && d[D_TYPE] === 'var') for (const name of d[D_NAMES]) out.push(name)
+  if (direct && (scopeKind === 'global' || scopeKind === 'function') && d && d[D_TYPE] === 'function')
+    for (const name of d[D_NAMES]) out.push(name)
   for (let i = 1; i < node.length; i++) collectVarNames(node[i], out, scopeKind, false)
 }
 
@@ -563,10 +566,10 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   for (const stmt of list) {
     const d = declaration(stmt)
     if (!d) continue
-    if (d.type === 'let' || d.type === 'const' || d.type === 'class' ||
-        (d.type === 'function' && scopeKind !== 'global' && scopeKind !== 'function'))
-      lexical.push(...d.names)
-    else if (d.type === 'var' || d.type === 'function') directVar.push(...d.names)
+    if (d[D_TYPE] === 'let' || d[D_TYPE] === 'const' || d[D_TYPE] === 'class' ||
+        (d[D_TYPE] === 'function' && scopeKind !== 'global' && scopeKind !== 'function'))
+      lexical.push(...d[D_NAMES])
+    else if (d[D_TYPE] === 'var' || d[D_TYPE] === 'function') directVar.push(...d[D_NAMES])
   }
   const dup = duplicateName(lexical)
   if (dup) fail(`duplicate lexical declaration '${dup}'`)
@@ -741,7 +744,7 @@ const validateExports = ast => {
       return
     }
     const d = declaration(node)
-    if (d) for (const name of d.names) add(name)
+    if (d) for (const name of d[D_NAMES]) add(name)
   }
   const scan = (node, depth = 0) => {
     if (!isNode(node)) return
@@ -780,7 +783,7 @@ const validateExports = ast => {
   }
   for (const stmt of statements(ast)) {
     const d = declaration(stmt)
-    if (d) for (const name of d.names) locals.add(decodeIdentifier(name))
+    if (d) for (const name of d[D_NAMES]) locals.add(decodeIdentifier(name))
     collectImports(stmt)
   }
   scan(ast)

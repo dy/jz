@@ -519,14 +519,14 @@ function solveBigintProvenance(ctx, programFacts, ast) {
       while (localChanged) {
         localChanged = false
         for (const [name, entries] of defs) {
-          for (const entry of entries) if (entry.rhs != null && exprMay(entry.rhs, func, names)) {
+          for (const entry of entries) if (entry[DEF_RHS] != null && exprMay(entry[DEF_RHS], func, names)) {
             if (mark(names, name)) { localChanged = true; graphChanged = true }
             break
           }
           // Storage aliases preserve the receiver's content provenance.
-          for (const entry of entries) if (typeof entry.rhs === 'string') {
-            if (storage.has(entry.rhs) && mark(storage, name)) { localChanged = true; graphChanged = true }
-            if (bigintTyped.has(entry.rhs) && mark(bigintTyped, name)) { localChanged = true; graphChanged = true }
+          for (const entry of entries) if (typeof entry[DEF_RHS] === 'string') {
+            if (storage.has(entry[DEF_RHS]) && mark(storage, name)) { localChanged = true; graphChanged = true }
+            if (bigintTyped.has(entry[DEF_RHS]) && mark(bigintTyped, name)) { localChanged = true; graphChanged = true }
           }
         }
       }
@@ -653,7 +653,7 @@ function deriveLocalProvenance(sig, body, localReps, program) {
   while (changed) {
     changed = false
     for (const [name, entries] of defs)
-      if (!names.has(name) && entries.some(entry => entry.rhs != null && localExprMay(entry.rhs))) {
+      if (!names.has(name) && entries.some(entry => entry[DEF_RHS] != null && localExprMay(entry[DEF_RHS]))) {
         names.add(name)
         changed = true
       }
@@ -871,13 +871,14 @@ const CONDITIONAL_ASSIGN_OPS = new Set(['&&=', '||=', '??='])
 const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[2]]
 
 
+const DEF_RHS = 0, DEF_OWNER = 1
 function collectDefs(body) {
   const defs = new Map()
   const add = (name, rhs, owner, slot) => {
     if (typeof name !== 'string') return
     let list = defs.get(name)
     if (!list) { list = []; defs.set(name, list) }
-    list.push({ rhs, owner, slot })
+    list.push([rhs, owner])
   }
   const walk = (node, root = false) => {
     if (!Array.isArray(node)) return
@@ -1061,9 +1062,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const [name, list] of defs) {
       let next = params.has(name) ? semanticNames.get(name) : semBottom()
       for (const def of list) {
-        const value = def.rhs == null
+        const value = def[DEF_RHS] == null
           ? packSemantic(0, true, true)
-          : semanticOf(def.rhs)
+          : semanticOf(def[DEF_RHS])
         next = joinSem(next, value)
       }
       const prev = semanticNames.get(name) || semBottom()
@@ -1164,7 +1165,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const [name, list] of defs) {
       let out = params.has(name) ? (currentNames.get(name) ?? ANY_BIGINT) : null
       for (const def of list) {
-        const next = def.rhs == null ? NO_BIGINT : currentOf(def.rhs)
+        const next = def[DEF_RHS] == null ? NO_BIGINT : currentOf(def[DEF_RHS])
         out = out == null ? next : joinRep(out, next)
       }
       out ??= ANY_BIGINT
@@ -1358,16 +1359,16 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const nameSemantic = semanticNames.get(name) ?? semAll()
     let hasStorageSeed = false, identitySafeStorageFlow = true
     for (const def of list) {
-      if (def.rhs == null) continue
-      if (isStorageReadProducer(def.rhs)) { hasStorageSeed = true; continue }
-      if (!NUMERIC_VALUE_OPS.has(def.owner && def.owner[0])) { identitySafeStorageFlow = false; break }
+      if (def[DEF_RHS] == null) continue
+      if (isStorageReadProducer(def[DEF_RHS])) { hasStorageSeed = true; continue }
+      if (!NUMERIC_VALUE_OPS.has(def[DEF_OWNER] && def[DEF_OWNER][0])) { identitySafeStorageFlow = false; break }
     }
     identitySafeStorageFlow = identitySafeStorageFlow && hasStorageSeed
     if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0 &&
         !identitySafeStorageFlow) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
-      if (def.rhs == null) return true
+      if (def[DEF_RHS] == null) return true
       // Shape #6 layer 4: a compound-assignment def (`n >>= 7n`) is a valid
       // ready shape too, not just plain '=' and the conditional compounds —
       // NUMERIC_VALUE_OPS already covers the full arithmetic/bitwise compound
@@ -1376,7 +1377,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       // above); only this readiness gate lagged behind. ++/-- now consult the
       // dedicated representationUnaryUpdateAction when local valTypeOf cannot
       // see a covered param's whole-program proof.
-      const ownerOp = def.owner && def.owner[0]
+      const ownerOp = def[DEF_OWNER] && def[DEF_OWNER][0]
       if (ownerOp !== '=' && !CONDITIONAL_ASSIGN_OPS.has(ownerOp) && !NUMERIC_VALUE_OPS.has(ownerOp)) return false
       // Readiness is about the carrier the emitter produces before this
       // binding-write edge, not the expression's eventual planned target.
@@ -1386,7 +1387,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       // physical construction (taggedStoredValue) — sourceReady lets a
       // BOXED→BOXED KEEP through without waiting on some OTHER producer's
       // own materialization to prove the same physical fact twice.
-      return edgeMaterializable(currentOf(def.rhs), target, def.rhs, isStorageReadProducer(def.rhs))
+      return edgeMaterializable(currentOf(def[DEF_RHS]), target, def[DEF_RHS], isStorageReadProducer(def[DEF_RHS]))
     })
     if (ready) materializedNames.add(name)
   }
@@ -1512,15 +1513,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   for (const [name, list] of defs) {
     if (materializedNames.has(name) || ctx.scope.globals?.has(name)) continue
     if (params.has(name) && boundary.covered !== true) continue
-    if (!list.some(def => Array.isArray(def.rhs) && (materializedJoins.has(def.rhs) || closureCallNeedsBox(def.rhs)))) continue
+    if (!list.some(def => Array.isArray(def[DEF_RHS]) && (materializedJoins.has(def[DEF_RHS]) || closureCallNeedsBox(def[DEF_RHS])))) continue
     const nameSemantic = semanticNames.get(name) ?? semAll()
     if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     if (list.every(def => {
-      if (def.rhs == null) return true
-      if (def.owner?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def.owner?.[0])) return false
-      const source = emittedCandidate(def.rhs)
-      return edgeMaterializable(source.rep, target, def.rhs, source.ready)
+      if (def[DEF_RHS] == null) return true
+      if (def[DEF_OWNER]?.[0] !== '=' && !CONDITIONAL_ASSIGN_OPS.has(def[DEF_OWNER]?.[0])) return false
+      const source = emittedCandidate(def[DEF_RHS])
+      return edgeMaterializable(source.rep, target, def[DEF_RHS], source.ready)
     })) materializedNames.add(name)
   }
 
@@ -1851,7 +1852,7 @@ export function representationBindingWriteAction(ctx, name, source) {
  *  whose source can be any expression shape) there is no per-node fact to
  *  look up: no AST node to key nodeFacts by even exists inside these
  *  handlers (they receive `name`/`val`, never the wrapping compound node
- *  collectDefs recorded as `def.rhs`). Without this action, layer 4 letting
+ *  collectDefs recorded as `def[DEF_RHS]`). Without this action, layer 4 letting
  *  such a def into materializedNames just moves the corruption: the WRITE
  *  back into a now-BOXED-target binding stored the raw i64 bits unboxed
  *  (readVar's next isPlanTaggedBigint-gated read would then unbox THOSE

@@ -28,7 +28,7 @@ import { valTypeOf, jsonConstString, shapeOf, shapeOfObjectLiteralAst, censusMay
 import { intLiteralValue, nonNegIntLiteral, constIntExpr, intExprRange, NO_VALUE, staticPropertyKey, staticValue, staticObjectProps, staticArrayElems, objLiteralSchemaId, exprSchemaId, inlineArraySid, inplaceKey } from '../static.js'
 import { typedElemCtor, typedStaticLen, isCondExpr, scanBoundedLoops, scanBoundedArrIdx, inBoundsCharCodeAt, exprType, intCertainMap, intLevelMap, isTerminator } from '../type.js'
 import { TYPED_CTOR_CONFLICT } from '../typed-provenance.js'
-import { typedStorageCtorFromContext } from '../typed-context.js'
+import { typedStorageCtorFromContext, typedStorageFactFromName } from '../typed-context.js'
 import { TYPED_ELEM_CODE, TYPED_ELEM_VIEW_FLAG, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux, typedElemAux, TYPED_ELEM_NAMES, ctorFromElemAux } from '../../layout.js'
 
 // ValueRep field docs + ParamReps lattice helpers — storage lives in src/reps.js.
@@ -82,6 +82,7 @@ import {
   findFreeVars, findMutations, boxedCaptures,
   collectI32SafeIndexVars, collectF64StridedIndexVars, collectBareEscapes, narrowUint32, scanBindingUses,
   scanObjectArrayFacts, scanNumericFill, isFreshArrayCtor, USE,
+  BINDING_USE_INIT, BINDING_USE_USES, BINDING_USE_KIND, BINDING_USE_NULL_CMP,
   stampCoInductionRanges,
 } from './analyze-scans.js'
 
@@ -124,18 +125,18 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
 // infers NUMBER for the dead initializer) — "default is never wrong, only sometimes
 // wider than necessary" (module header, src/infer.js).
 const makeValTracker = (get, set, del) => {
-  const poison = new Set()
+  let poison = null
   return (name, vt) => {
-    if (poison.has(name)) return
-    if (!vt) { poison.add(name); del(name); return }
+    if (poison?.has(name)) return
+    if (!vt) { (poison ||= new Set()).add(name); del(name); return }
     const prev = get(name)
-    if (prev && prev !== vt) { poison.add(name); del(name); return }
+    if (prev && prev !== vt) { (poison ||= new Set()).add(name); del(name); return }
     set(name, vt)
   }
 }
 const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
-  const poison = new Set()
-  const invalidate = (name) => { poison.add(name); del(name); if (delLen) delLen(name) }
+  let poison = null
+  const invalidate = (name) => { (poison ||= new Set()).add(name); del(name); if (delLen) delLen(name) }
   // Resolve a variable-name ternary branch to its known typed-array ctor: a
   // local typed binding (`get`), or a module global promoted typed by plan
   // (`inferModuleLetTypes` populates `globalTypedElem`, copied into
@@ -144,7 +145,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
   const resolveName = (n) =>
     get(n) ?? ctx.func.typedElem?.get(n) ?? ctx.scope.globalTypedElem?.get(n) ?? null
   return (name, rhs) => {
-    if (poison.has(name)) return
+    if (poison?.has(name)) return
     const setOrInvalidate = (c) => {
       if (c === TYPED_CTOR_CONFLICT) return invalidate(name)
       // Module-level alias fact: a `.view` ctor (subarray / buffer-backed) is the ONLY
@@ -180,7 +181,7 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
     // nested method chains, fresh species-preserving copies, and subarray views.
     // This is what keeps BigInt64Array map/slice/filter results typed after a
     // local assignment instead of decaying to a raw f64 element read.
-    const ctor = typedStorageCtorFromContext(ctx, rhs, { resolveName, detailed: true })
+    const ctor = typedStorageFactFromName(ctx, rhs, resolveName)
     if (ctor) return setOrInvalidate(ctor)
     if (typeof rhs === 'string') return
   }
@@ -223,13 +224,17 @@ const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
  * itself, right below, for why this is scoped to signatures and not the full
  * ambient staleness JZ_DEBUG_CACHE tried and failed at.
  */
+const EMPTY_BODY_FACT_MAP = new Map()
+const EMPTY_BODY_FACT_SET = new Set()
+const EMPTY_OBJECT_ARRAY_FACTS = [EMPTY_BODY_FACT_MAP, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET]
+
 export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
   // for any slice and can't be WeakMap-keyed. Return empty maps without caching.
   if (body === null || typeof body !== 'object') return {
     locals: new Map(), valTypes: new Map(), arrElemSchemas: new Map(), arrElemSchemaSets: new Map(),
-    arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), escapes: new Map(),
-    flatObjects: new Map(),
+    arrElemValTypes: new Map(), arrElemTypedCtors: new Map(), typedElems: new Map(), typedLens: new Map(),
+    escapes: new Map(), flatObjects: new Map(),
   }
   const bodyFacts = getFactStore().bodyFacts
   const hit = bodyFacts.get(body)
@@ -252,25 +257,25 @@ export function analyzeBody(body) {
   const locals = new Map()
   const valTypes = new Map()
   const arrElemSchemas = new Map()
-  const arrElemSchemaSets = new Map()  // name → Set<sid> | null — closed heterogeneous union
+  let arrElemSchemaSets = null  // name → Set<sid> | null — closed heterogeneous union
   const arrElemValTypes = new Map()
   // Nested element kind: `name`'s elements are themselves arrays whose elements
   // share this VAL.*. Lets `chord = padChord[i]; chord[j]` (floatbeat pad voicings,
   // `padChord = [[0,2,4],…]`) bind `chord`'s arrayElemValType through one index step,
   // so `chord[j]` is a Number and skips __to_num. Single-level only — enough for the
   // 2-D table pattern without a general nested-type lattice.
-  const arrElemElemValTypes = new Map()
+  let arrElemElemValTypes = null
   // `name`'s elements are all typed arrays of one ctor ('new.Float32Array'), e.g.
   // `Array.from(nCh, () => new Float32Array(n))` (codec channelData). Lets `arr[i]`
   // resolve as that typed array so `arr[i][j]` / `let o = arr[i]; o[j]` inline.
-  const arrElemTypedCtors = new Map()
+  let arrElemTypedCtors = null
   const typedElems = new Map()
-  const typedLens = new Map()
-  const escapes = new Map() // name → bool: local holds allocation, true if it escapes
+  let typedLens = null
+  let escapes = null // name → bool: local holds allocation, true if it escapes
 
   const doSchemas = !!ctx.schema?.register
   // Per-walk local schema map for chained `arr.push(name)` resolution.
-  const localSchemaMap = new Map()
+  let localSchemaMap = null
 
   // === Observation helpers ===
   //
@@ -289,7 +294,8 @@ export function analyzeBody(body) {
     // an unknown-schema source (sid == null) poisons both lattices. The closed
     // union is what discriminant refinement and union-agreeing slot reads
     // consume; the singular fact keeps its monomorphic consumers unchanged.
-    if (arrElemSchemaSets.get(arr) !== null) {
+    if (arrElemSchemaSets?.get(arr) !== null) {
+      arrElemSchemaSets ||= new Map()
       if (sid == null) arrElemSchemaSets.set(arr, null)
       else {
         let s = arrElemSchemaSets.get(arr)
@@ -322,9 +328,10 @@ export function analyzeBody(body) {
   // TypedArray ctor of an array's elements.
   const observeArrTypedCtor = (arr, ctor) => {
     if (typeof arr !== 'string') return
-    if (arrElemTypedCtors.get(arr) === null) return
+    if (arrElemTypedCtors?.get(arr) === null) return
+    arrElemTypedCtors ||= new Map()
     if (!ctor) { arrElemTypedCtors.set(arr, null); return }
-    if (!arrElemTypedCtors.has(arr)) arrElemTypedCtors.set(arr, ctor)
+    if (!arrElemTypedCtors?.has(arr)) arrElemTypedCtors.set(arr, ctor)
     else if (arrElemTypedCtors.get(arr) !== ctor) arrElemTypedCtors.set(arr, null)
   }
   // The concrete typed storage an element expression produces, including
@@ -430,7 +437,9 @@ export function analyzeBody(body) {
   // Local-Map slices: bind the Map's get/set/delete as the tracker's three ops.
   const trackVal = makeValTracker(n => valTypes.get(n), (n, vt) => valTypes.set(n, vt), n => valTypes.delete(n))
   const trackTyped = makeTypedTracker(n => typedElems.get(n), (n, c) => typedElems.set(n, c), n => typedElems.delete(n),
-    n => typedLens.get(n), (n, l) => typedLens.set(n, l), n => typedLens.delete(n))
+    n => typedLens?.get(n),
+    (n, l) => { (typedLens ||= new Map()).set(n, l) },
+    n => typedLens?.delete(n))
 
   // === Per-decl observation (called for each `let`/`const` `name = rhs`) ===
   const processDecl = (name, rhs) => {
@@ -454,7 +463,7 @@ export function analyzeBody(body) {
       ? (typedElems.get(rhs[1]) ?? ctx.func.typedElem?.get(rhs[1]) ?? ctx.scope.globalTypedElem?.get(rhs[1]))
       : null
     const readLen = typedRead
-      ? (typedLens.get(rhs[1]) ?? ctx.func.typedLen?.get(rhs[1]) ?? ctx.scope.globalTypedLen?.get(rhs[1]))
+      ? (typedLens?.get(rhs[1]) ?? ctx.func.typedLen?.get(rhs[1]) ?? ctx.scope.globalTypedLen?.get(rhs[1]))
       : null
     const readIdx = typedRead ? intLiteralValue(rhs[2]) : null
     const typedReadMayMiss = readCtor != null && readIdx != null &&
@@ -490,16 +499,16 @@ export function analyzeBody(body) {
 
     // arr-elem schema (arrElemSchemas slice) — schema bindings + array-literal init + alias + call return
     if (doSchemas) {
-      const sid = exprSchemaId(rhs, localSchemaMap)
-      if (sid != null) localSchemaMap.set(name, sid)
+      const sid = exprSchemaId(rhs, localSchemaMap || EMPTY_BODY_FACT_MAP)
+      if (sid != null) (localSchemaMap ||= new Map()).set(name, sid)
       {
         const rawElems = staticArrayElems(rhs)
         if (rawElems) {
           const elems = rawElems.filter(e => e != null)
           if (elems.length && elems.length === rawElems.length) {
-            let common = exprSchemaId(elems[0], localSchemaMap)
+            let common = exprSchemaId(elems[0], localSchemaMap || EMPTY_BODY_FACT_MAP)
             for (let k = 1; k < elems.length && common != null; k++) {
-              if (exprSchemaId(elems[k], localSchemaMap) !== common) common = null
+              if (exprSchemaId(elems[k], localSchemaMap || EMPTY_BODY_FACT_MAP) !== common) common = null
             }
             if (common != null) observeArrSchema(name, common)
           }
@@ -517,7 +526,7 @@ export function analyzeBody(body) {
       if (typeof rhs === 'string' && arrElemSchemas.has(rhs)) {
         const sid2 = arrElemSchemas.get(rhs)
         if (sid2 != null) observeArrSchema(name, sid2)
-        else { const s2 = arrElemSchemaSets.get(rhs); if (s2) for (const sid of s2) observeArrSchema(name, sid) }
+        else { const s2 = arrElemSchemaSets?.get(rhs); if (s2) for (const sid of s2) observeArrSchema(name, sid) }
       }
       if (typeof rhs === 'string') {
         const repSid = ctx.func.localReps?.get(rhs)?.arrayElemSchema
@@ -553,7 +562,7 @@ export function analyzeBody(body) {
             for (let k = 1; k < elems.length && nested != null; k++) {
               if (arrLitElemCommonVal(elems[k]) !== nested) nested = null
             }
-            if (nested != null) arrElemElemValTypes.set(name, nested)
+            if (nested != null) (arrElemElemValTypes ||= new Map()).set(name, nested)
           }
         }
       }
@@ -562,7 +571,7 @@ export function analyzeBody(body) {
       // `arr` may be a function-local (arrElemElemValTypes) or a module-level const
       // table (global rep, recorded by recordGlobalRep) — the latter dynWrite-guarded.
       if (Array.isArray(rhs) && rhs[0] === '[]' && rhs.length === 3 && typeof rhs[1] === 'string') {
-        const nested = arrElemElemValTypes.get(rhs[1])
+        const nested = arrElemElemValTypes?.get(rhs[1])
           ?? (!ctx.func.localReps?.has(rhs[1]) && !ctx.types?.dynWriteVars?.has(rhs[1])
                 ? ctx.scope.globalReps?.get(rhs[1])?.arrayElemElemValType : null)
         if (nested) observeArrValType(name, nested)
@@ -635,7 +644,7 @@ export function analyzeBody(body) {
       (rhs[0] === '()' && Array.isArray(rhs[1]) && rhs[1][0] === '.' &&
        (rhs[1][2] === 'slice' || rhs[1][2] === 'concat')))
 
-  const markEscape = (name) => { if (escapes.has(name)) escapes.set(name, true) }
+  const markEscape = (name) => { if (escapes?.has(name)) escapes.set(name, true) }
 
   const isStaticIndex = (key) =>
     typeof key === 'number' || typeof key === 'string' ||
@@ -648,8 +657,8 @@ export function analyzeBody(body) {
     const op = expr[0]
     if (op === 'str') return
     if (op === ':') { markEscapeValue(expr[2]); return }
-    if ((op === '.' || op === '?.') && typeof expr[1] === 'string' && escapes.has(expr[1])) return
-    if (op === '[]' && typeof expr[1] === 'string' && escapes.has(expr[1])) {
+    if ((op === '.' || op === '?.') && typeof expr[1] === 'string' && escapes?.has(expr[1])) return
+    if (op === '[]' && typeof expr[1] === 'string' && escapes?.has(expr[1])) {
       if (!isStaticIndex(expr[2])) markEscape(expr[1])
       markEscapeValue(expr[2])
       return
@@ -684,7 +693,7 @@ export function analyzeBody(body) {
         const name = a[1], rhs = a[2]
         processDecl(name, rhs)
         if (Array.isArray(rhs) && (rhs[0] === '[' || rhs[0] === '{}')) {
-          escapes.set(name, false)
+          (escapes ||= new Map()).set(name, false)
         }
         markEscapeValue(rhs)
         // Walk rhs only — never enter the `=` node so the reassignment-invalidation
@@ -709,8 +718,8 @@ export function analyzeBody(body) {
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'push' && typeof node[1][1] === 'string') {
       const arr = node[1][1]
       const originVal = elemOrigin.has(arr) || arrElemValTypes.has(arr)
-      const originSchema = elemOrigin.has(arr) || arrElemSchemas.has(arr) || arrElemSchemaSets.has(arr)
-      const originCtor = elemOrigin.has(arr) || arrElemTypedCtors.has(arr)
+      const originSchema = elemOrigin.has(arr) || arrElemSchemas.has(arr) || arrElemSchemaSets?.has(arr)
+      const originCtor = elemOrigin.has(arr) || arrElemTypedCtors?.has(arr)
       const list = commaList(node[2])
       for (const a of list) {
         if (Array.isArray(a) && a[0] === '...') {
@@ -718,7 +727,7 @@ export function analyzeBody(body) {
           if (originVal) observeArrValType(arr, null)
           continue
         }
-        if (originSchema) observeArrSchema(arr, exprSchemaId(a, localSchemaMap))
+        if (originSchema) observeArrSchema(arr, exprSchemaId(a, localSchemaMap || EMPTY_BODY_FACT_MAP))
         if (originVal) observeArrValType(arr, exprElemSourceVal(a))
         // `ch.push(new Float32Array(m))` — track the element ctor so `ch[c][i]`
         // inlines, same as the Array.from / array-literal forms.
@@ -732,7 +741,7 @@ export function analyzeBody(body) {
     // nothing about its other elements).
     if (op === '=' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3
         && typeof node[1][1] === 'string' && valTypeOf(node[2]) === VAL.TYPED
-        && (elemOrigin.has(node[1][1]) || arrElemValTypes.has(node[1][1]) || arrElemTypedCtors.has(node[1][1]))) {
+        && (elemOrigin.has(node[1][1]) || arrElemValTypes.has(node[1][1]) || arrElemTypedCtors?.has(node[1][1]))) {
       observeArrValType(node[1][1], VAL.TYPED)
       observeArrTypedCtor(node[1][1], elemTypedCtorOf(node[2]))
     }
@@ -750,7 +759,7 @@ export function analyzeBody(body) {
       trackTyped(name, rhs)
       if (arrElemSchemas.has(name) && !isArrayProducingRhs(rhs)) observeArrSchema(name, null)
       if (arrElemValTypes.has(name) && !isArrayProducingRhs(rhs)) observeArrValType(name, null)
-      if (arrElemTypedCtors.has(name) && !isArrayProducingRhs(rhs)) observeArrTypedCtor(name, null)
+      if (arrElemTypedCtors?.has(name) && !isArrayProducingRhs(rhs)) observeArrTypedCtor(name, null)
       return
     }
 
@@ -781,7 +790,7 @@ export function analyzeBody(body) {
       }
     }
 
-    if (op === '[]' && typeof node[1] === 'string' && escapes.has(node[1])) {
+    if (op === '[]' && typeof node[1] === 'string' && escapes?.has(node[1])) {
       const key = node[2]
       if (!isStaticIndex(key)) markEscape(node[1])
     }
@@ -834,15 +843,24 @@ export function analyzeBody(body) {
   // cross-dependency between the three (walk-count design A1,
   // .work/walk-count-design.md §1.3/§5 item 1) — so one fused scan computes
   // all three instead of three separate full-body scans.
-  const { flatObjects, sliceViews, neverGrown } = doSchemas
+  const [flatObjects, sliceViews, neverGrown] = doSchemas
     ? scanObjectArrayFacts(body)
-    : { flatObjects: new Map(), sliceViews: new Set(), neverGrown: new Set() }
+    : EMPTY_OBJECT_ARRAY_FACTS
   for (const [name, props] of flatObjects) {
     for (let i = 0; i < props.names.length; i++) locals.set(`${name}#${i}`, 'f64')
     locals.delete(name)
   }
 
-  const result = { locals, valTypes, arrElemSchemas, arrElemSchemaSets, arrElemValTypes, arrElemTypedCtors, typedElems, typedLens, escapes, flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill }
+  const result = {
+    locals, valTypes, arrElemSchemas,
+    arrElemSchemaSets: arrElemSchemaSets || EMPTY_BODY_FACT_MAP,
+    arrElemValTypes,
+    arrElemTypedCtors: arrElemTypedCtors || EMPTY_BODY_FACT_MAP,
+    typedElems,
+    typedLens: typedLens || EMPTY_BODY_FACT_MAP,
+    escapes: escapes || EMPTY_BODY_FACT_MAP,
+    flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill,
+  }
   // null (not '') when ctx.func.current is unset at capture time — some legitimate
   // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)
   // never set it, and a bare '' would then collide with a genuinely-empty signature's
@@ -928,6 +946,7 @@ function sigFingerprint(sig) {
  * i32-range-safe by construction: literals, bitwise ops, comparisons,
  * Math.imul/clz32) needs no check — every value it can hold already fits i32.
  */
+const WIDEN_CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
 function widenLocalTypes(body, locals) {
   const i32SafeIdx = collectI32SafeIndexVars(body, locals)
   // Names this scope's own locals map might be reassigned FROM INSIDE A NESTED
@@ -943,7 +962,7 @@ function widenLocalTypes(body, locals) {
   // silently truncating the return. Gated on nestedNames.size so the common
   // case (no nested reassignment anywhere) keeps the original, cheaper walk.
   const nestedNames = new Set()
-  findMutations(body, new Set(locals.keys()), nestedNames)
+  findMutations(body, locals, nestedNames)
   // Raw levels (not the collapsed intCertainMap boolean): level 2 (STRICT
   // i32-range-safe by construction — literals, bitwise ops, comparisons,
   // Math.imul/clz32) needs no further check below, but level 1 (integral,
@@ -952,14 +971,12 @@ function widenLocalTypes(body, locals) {
   // collectI32SafeIndexVars' back-propagation does, and Pass D below closes
   // the identical gap for it (see .work/todo.md KNOWN GAP #1 sibling note).
   const intLevels = intLevelMap(body, nestedNames)
-  const intCounters = new Map(); for (const [n, l] of intLevels) intCounters.set(n, l >= 1)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
-  const keepI32 = (name) => i32SafeIdx.has(name) || (intCounters.get(name) === true && !f64IdxVars.has(name))
-  const CMP_OPS = new Set(['<', '>', '<=', '>=', '==', '!='])
+  const keepI32 = (name) => i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
     const [op, ...args] = node
-    if (CMP_OPS.has(op)) {
+    if (WIDEN_CMP_OPS.has(op)) {
       const [a, b] = args
       const ta = exprType(a, locals), tb = exprType(b, locals)
       if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !keepI32(a)) locals.set(a, 'f64')
@@ -1997,9 +2014,10 @@ export function unboxablePtrs(body, locals, boxed) {
     if (!UNBOXABLE_KINDS.has(vt)) continue
     if (locals.get(name) !== 'f64') continue
     if (boxed?.has(name)) continue
-    if (!isFreshInit(s.initRhs, vt)) continue
-    const ok = s.uses.every(u =>
-      u.kind !== USE.REASSIGN && !(u.kind === USE.COMPARE && u.nullCmp))
+    if (!isFreshInit(s[BINDING_USE_INIT], vt)) continue
+    const ok = s[BINDING_USE_USES].every(u =>
+      u[BINDING_USE_KIND] !== USE.REASSIGN &&
+      !(u[BINDING_USE_KIND] === USE.COMPARE && u[BINDING_USE_NULL_CMP]))
     if (ok) result.set(name, vt)
   }
   return result

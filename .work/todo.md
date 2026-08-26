@@ -24,9 +24,17 @@ three-state provenance grammar plus a sparse frozen per-body plan; emitters no
 longer read live ctor maps, and missing active BigInt plans are invariant
 failures. Slice 5 adds native/kernel early-error validation and reduces
 accepted-invalid test262 parses 1538→187; the residual set is now path-exact,
-family-classified, and still a v1 blocker. Final gates are recorded in the
-campaign doc. Next: close/defer those 187 explicitly, 4 GiB closure, fresh perf
-claims, generic native target. No push by the agent.
+family-classified, and still a v1 blocker. Slice 6 compacts compiler facts and
+linear ownership (`__alloc_hdr_n` 6,528,188→3,258,286; `__hash_new_cap`
+2,989,365→517,263), fixes the evidenced closure-record/extern region roots,
+and advances a region-live 162-module run through all compilation stages to
+the final WAT encode boundary. It still returns zero bytes at wasm32's ceiling:
+watr's all-module cleanup/code-byte materialization needs a streaming typed
+encoder (the experimental in-place cleanup merely moved the wall and was
+reverted). Region hooks therefore remain dormant. Final gates are recorded in
+the campaign doc. Next: build the streaming encoder/compact HIR needed for
+4 GiB closure; close/defer the exact 187; refresh perf/claims; generic native
+target. No push by the agent.
 
 ## CLOSED (2026-08-22): opaque `.length` + `Array.from` property semantics
 Source commit e867c3af. Unresolved `.length` now remains an ordinary f64

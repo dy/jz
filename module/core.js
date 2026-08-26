@@ -100,6 +100,7 @@ export default (ctx) => {
     // — __ptr_offset used to be pulled in only via the dyn_props-gated
     // branch below, which would have silently under-declared it for a build
     // with no __dyn_props global anywhere.
+    __region_exit_force: ['__region_exit'],
     __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__memgrow_exact', '__ptr_offset',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
     // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
@@ -646,6 +647,7 @@ export default (ctx) => {
     declGlobal('__scratch_heap', 'i32', 0)
     declGlobal('__scratch_end', 'i32', 0)
     declGlobal('__memo_cap_hint', 'i32', 64)
+    declGlobal('__region_force', 'i32', 0)
     // See the shared-memory __alloc above for why the unsigned-wraparound guard
     // (`next < ptr`) is needed here too: once memory.size() organically reaches the
     // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-compile
@@ -1115,6 +1117,15 @@ export default (ctx) => {
     ctx.core.stdlib['__region_mark'] = `(func $__region_mark (result f64)
       (f64.convert_i32_u (global.get $__heap)))`
 
+
+    // Bypass the 16 MiB churn skip for explicitly bounded optimizer scans and
+    // narrowly-rooted rewrites. Those batches otherwise retain thousands of
+    // individually-small allocations; generic mutation rounds still use the
+    // adaptive ordinary __region_exit path.
+    ctx.core.stdlib['__region_exit_force'] = `(func $__region_exit_force (param $mark f64) (param $root f64) (result f64)
+      (global.set $__region_force (i32.const 1))
+      (call $__region_exit (local.get $mark) (local.get $root)))`
+
     // Function form (see __region_copy_rec's comment below for why): the
     // $__dyn_props implicit-root block needs ctx.scope.globals.has('__dyn_props')
     // read at PULL time.
@@ -1192,8 +1203,10 @@ export default (ctx) => {
       ;; boundary-hazard mechanisms (durable/ephemeral split, off-16,
       ;; __coll_order counting, no-stub compaction, $__dyn_props root-
       ;; completeness, chain-round rebuild) all live inside.
-      (if (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.const 16777216))
+      (if (i32.and (i32.eqz (global.get $__region_force))
+            (i32.lt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.const 16777216)))
         (then (return (local.get $rootF))))
+      (global.set $__region_force (i32.const 0))
       ;; Explicit reset, not reliance on the global's own 0 init value: a
       ;; PRIOR call's successful reservation must never leak into this one
       ;; if THIS call's own ceiling guard below declines to reserve — that
@@ -3240,6 +3253,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // f64 out, matching watr's own untyped AST-node value shape.
   ctx.core.emit['__region_mark'] = () => (inc('__region_mark'), typed(['call', '$__region_mark'], 'f64'))
   ctx.core.emit['__region_exit'] = (mark, root) => (inc('__region_exit'), typed(['call', '$__region_exit', asF64(emit(mark)), asF64(emit(root))], 'f64'))
+  ctx.core.emit['__region_exit_force'] = (mark, root) => (inc('__region_exit_force'), typed(['call', '$__region_exit_force', asF64(emit(mark)), asF64(emit(root))], 'f64'))
 
   // Object-literal AST shape with NO 'toString'/'valueOf' key: a DEFINITIVE
   // (not merely unproven) empty OrdinaryToPrimitive method chain — a spread

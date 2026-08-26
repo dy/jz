@@ -48,7 +48,7 @@ import { propValType, CMP_OPS } from './kind-traits.js'
 import { NO_VALUE, staticValue, intLiteralValue, intExprRange, constIntExpr } from './static.js'
 import { typedElemAux } from '../layout.js'
 import { typedElemCtor } from './typed-provenance.js'
-import { typedStorageCtorFromContext } from './typed-context.js'
+import { typedStorageNameCtor } from './typed-context.js'
 export { typedElemCtor } from './typed-provenance.js'
 
 /** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
@@ -2126,8 +2126,7 @@ export function isTerminator(body) {
 // analyzeBody/narrow when the per-func map is null, so a read of a *global* typed array
 // (`DX[i]` with `let DX = new Int32Array(...)` at module scope) resolves its element type
 // instead of defaulting to f64. Guard against local shadows / dynamic rewrites (cf. kind.js).
-const typedElemCtorOf = (name, locals) =>
-  typedStorageCtorFromContext(ctx, name, { localNames: locals })
+const typedElemCtorOf = (name, locals) => typedStorageNameCtor(ctx, name, locals)
 
 // An expression whose i32 value carries the unsigned [0, 2^32) magnitude (not a signed i32):
 // `>>>`, an unsigned-result call, or a Uint32Array read (aux 5 — the only typed array whose
