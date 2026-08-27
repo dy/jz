@@ -62,7 +62,7 @@ import {
   temp, tempI32, tempI64, allocPtr,
   block64, withTemp,
   boxedAddr, readVar, writeVar, isNullish, isNull, isUndef, isBoolAtom, throwTypeErrorIR,
-  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
+  boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, boxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isPlanTaggedBigint, readI64, bigintEraseErr, bigintStrict,
   isLiteralStr, resolveValType, isFuncRef,
   multiCount, loopTop, flat,
   reconstructArgsWithSpreads, tcoTailRewrite,
@@ -1524,13 +1524,20 @@ function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
   // shape too.
   if (node !== undefined && (valTypeOf(node) === VAL.BIGINT || repAction === REP_EDGE_UNBOX || repAction === REP_EDGE_BOX)) {
     if (repAction === REP_EDGE_UNBOX) {
+      // maybeUnboxBigInt, not unboxBigInt (range-boundary BOX/UNBOX OOB fix,
+      // 2026-08 — see applyBigintRepresentationAction's identical fix, ir.js,
+      // for the full mechanism): repAction here is the SAME materializedNames/
+      // hostBoxParams fixpoint verdict edgeMaterializable produces, subject
+      // to the identical order-sensitivity — a mis-proven raw arg's own low
+      // 32 bits (0xFFFFFFFF for the 0x7fffffffffffffffn / 2^64-1-wrapped
+      // family) make unboxBigInt's unconditional $__ptr_offset deref trap.
       const t = temp('argbx')
       const tGet = typed(['local.get', `$${t}`], 'f64')
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${t}`, ir],
         ['if', ['result', 'f64'], isNullish(tGet),
           ['then', tGet],
-          ['else', fromI64(unboxBigInt(tGet))]]], 'f64')
+          ['else', fromI64(maybeUnboxBigInt(tGet))]]], 'f64')
     }
     if (repAction === REP_EDGE_BOX) {
       if (!nodeIsNullishBigintMerge(node)) return boxBigInt(asI64(ir))

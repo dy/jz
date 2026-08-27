@@ -474,11 +474,50 @@ export function unboxBigInt(f64expr) {
   return typed(['i64.load', ptrOffsetIR(f64expr, VAL.BIGINT)], 'i64')
 }
 
-/** Apply one frozen RepresentationPlan edge action to a definite BigInt. */
+/** Apply one frozen RepresentationPlan edge action to a definite BigInt.
+ *
+ *  UNBOX goes through `maybeUnboxBigInt`, not the unconditional `unboxBigInt`
+ *  (range-boundary BOX/UNBOX OOB fix, 2026-08): `action` here is a FIXPOINT
+ *  verdict (edgeMaterializable, representation-plan.js), not a runtime fact —
+ *  the fixpoint's own doc comments (edgeMaterializable's neighboring
+ *  isMaterializedCallProducer/resultForwardsSingleParam slices, Shape #8's
+ *  trail) already document that this proof is order-sensitive: a body built
+ *  before its callee's own plan has settled can call this with `ir` genuinely
+ *  RAW while `action` says UNBOX. `unboxBigInt` trusts its input completely —
+ *  `ptrOffsetIR`'s `$__ptr_offset` masks the low 32 bits off WHATEVER i64
+ *  it's handed and `i64.load`s there, no tag check, by design (the hot,
+ *  every-heap-kind dereference path). A raw BigInt payload's own bits are
+ *  exactly as capable of decoding to a garbage address as a corrupted
+ *  pointer would be — confirmed live: 0x7fffffffffffffffn / 0xffffffffffffffffn
+ *  (i64 max and the 2^64-1 wrapped pattern) both carry 0xFFFFFFFF in their
+ *  low 32 bits, so an UNBOX wrongly applied to either (proof says boxed,
+ *  runtime value is raw) makes `$__ptr_offset` return an address ~4 GiB out,
+ *  and `i64.load` there traps ("memory access out of bounds") in any
+ *  realistically-sized instance — not a hypothetical, this is byte-for-byte
+ *  what `__unbox_bigint` applied directly to either literal reproduces
+ *  (test/pointers.js's own boundary pins, `__box_bigint` first, never hit
+ *  this — only a bare, unmatched UNBOX does). Every other BigInt boundary
+ *  value in test/pointers.js's own pins (5n, -5n, 0n, i64 min, …) has small
+ *  low-32 bits and merely reads/traps-silently-into adjacent heap garbage
+ *  instead of a hard trap — same corruption, quieter failure mode, not
+ *  safer.
+ *
+ *  `maybeUnboxBigInt` (already the established answer for every OTHER
+ *  not-fully-closed BigInt read in this file/emit.js — readI64's schema-slot
+ *  arm, bigIntOperand/bigIntUnary's CONSERVATIVE PAIRING) tags-checks via
+ *  `$__ptr_type` first and only dereferences a genuine PTR.BIGINT; a
+ *  mis-proven raw value takes the `else` (bits-are-already-the-payload)
+ *  branch instead of dereferencing — no trap, and the CORRECT value once the
+ *  proof is eventually right elsewhere. One extra `$__ptr_type` call
+ *  (an i64 shift+and, already the cheapest primitive in this file) on every
+ *  plan-directed UNBOX; BOX is unaffected (a box-side mis-proof double-boxes
+ *  a garbage payload — a silent wrong-value bug already tracked separately,
+ *  e.g. test/data.js's `.member`-call KNOWN-WRONG pin — never a dereference,
+ *  so it cannot trap and is out of this fix's scope). */
 export function applyBigintRepresentationAction(ir, node, action) {
   if (valTypeOf(node) !== VAL.BIGINT) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
-  if (action === REP_EDGE_UNBOX) return fromI64(unboxBigInt(asF64(ir)))
+  if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
   return ir
 }
 

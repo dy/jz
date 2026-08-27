@@ -2398,6 +2398,100 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
   }
 })
 
+// Range-boundary BOX/UNBOX OOB (2026-08 fix, src/ir.js applyBigintRepresentationAction
+// + src/compile/emit.js coerceArg): every plan-directed UNBOX now routes through
+// maybeUnboxBigInt (runtime tag-checked) instead of the unconditional unboxBigInt —
+// see that fix's own doc comment and test/pointers.js's "carrier: unboxBigInt applied
+// to a RAW…" pins for the mechanism (a raw payload's own low-32 bits misused as a heap
+// address once a plan proof calls for UNBOX on a value that never got boxed; 0x7fff…f
+// and 0xffff…f both decode to the address ~4 GiB, tripping "memory access out of
+// bounds" specifically, where a smaller BigInt would just silently misread nearby
+// heap memory). The three box-forcing shapes below (storage, Number|BigInt union,
+// host export boundary) are the ones that route real programs through the fixed
+// chokepoints; none of them crashed on unmodified main either (representation-plan.js's
+// own materializedNames/emittedCandidate proof stays order-safe for every one of these
+// — the crash is real and reproduced directly, test/pointers.js's __unbox_bigint pins
+// above, but needs an order-UNSAFE proof no ordinary program shape reaches without
+// landing fix/shape8-member-callee's own `.`-member callee resolution). Pinned here as
+// regression coverage for the fixed chokepoints themselves, across every representation
+// the family can take: ±(2^63-1), the 2^64-1 wrapped forms (asUintN(64,·) collapses
+// both to small-magnitude i64 bit patterns, ±1), and ±2^62 as in-range controls.
+test('bigint: range-boundary family survives storage box/unbox (array push+read+arithmetic)', () => {
+  const FAMILY = {
+    'i64 max (2^63-1)': ['9223372036854775807n', 9223372036854775807n],
+    'negated i64 max': ['-9223372036854775807n', -9223372036854775807n],
+    'i64 min (-2^63)': ['-9223372036854775808n', -9223372036854775808n],
+    '2^64-1 wrapped': ['18446744073709551615n', -1n],
+    'negated 2^64-1 wrapped': ['-18446744073709551615n', 1n],
+    '+2^62 control': ['4611686018427387904n', 4611686018427387904n],
+    '-2^62 control': ['-4611686018427387904n', -4611686018427387904n],
+  }
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    for (const [name, [lit, expect]] of Object.entries(FAMILY)) {
+      // Seeded array literal (`[0n]`, not `[]`) — an untyped empty-array-literal's
+      // own element-kind inference is a separate, pre-existing gap (unrelated to
+      // this fix) this pin isn't testing; seeding with a BigInt element gives the
+      // array a provable BigInt-typed storage from its first write.
+      const { f } = jz(`export let f = () => { let a = [0n]; a[0] = ${lit}; return a[0] + 0n }`, { optimize }).exports
+      is(f(), expect, `${lbl}: storage round-trip, ${name}`)
+    }
+  }
+})
+
+test('bigint: range-boundary family survives a Number|BigInt union box/unbox (mixed-kind reassignment)', () => {
+  const FAMILY = {
+    'i64 max (2^63-1)': ['9223372036854775807n', 9223372036854775807n],
+    'negated i64 max': ['-9223372036854775807n', -9223372036854775807n],
+    'i64 min (-2^63)': ['-9223372036854775808n', -9223372036854775808n],
+    '2^64-1 wrapped': ['18446744073709551615n', -1n],
+    'negated 2^64-1 wrapped': ['-18446744073709551615n', 1n],
+    '+2^62 control': ['4611686018427387904n', 4611686018427387904n],
+    '-2^62 control': ['-4611686018427387904n', -4611686018427387904n],
+  }
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    for (const [name, [lit, expect]] of Object.entries(FAMILY)) {
+      // `x` starts Number, reassigned to the boundary BigInt on the taken branch —
+      // a genuine Number|BigInt union, unconditionally boxed by construction — then
+      // forced back through arithmetic (`+ 0n`), which only type-checks once the
+      // BigInt arm is the one actually reached (`present` truthy).
+      const { f } = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; return x + 0n }`, { optimize }).exports
+      is(f(1), expect, `${lbl}: union round-trip, ${name}`)
+    }
+  }
+})
+
+test('bigint: range-boundary family survives the host export boundary (string in, BigInt out)', () => {
+  const FAMILY = {
+    'i64 max (2^63-1)': ['9223372036854775807', 9223372036854775807n],
+    'negated i64 max': ['-9223372036854775807', -9223372036854775807n],
+    'i64 min (-2^63)': ['-9223372036854775808', -9223372036854775808n],
+    '2^64-1 wrapped': ['18446744073709551615', -1n],
+    'negated 2^64-1 wrapped': ['-18446744073709551615', 1n],
+    '+2^62 control': ['4611686018427387904', 4611686018427387904n],
+    '-2^62 control': ['-4611686018427387904', -4611686018427387904n],
+  }
+  // String param, not a raw host BigInt argument: interop.js's own i64Arg
+  // marshaling for a raw-BigInt host argument (jz:hostabi's raw/tag split)
+  // turns out to have a PRE-EXISTING, unrelated compile-state-leak fragility
+  // in this exact suite's warm context — confirmed independent of this fix
+  // (still reproduces with src/ir.js and src/compile/emit.js reverted to
+  // unmodified main) — not this P1's mechanism (interop.js touches none of
+  // the box/unbox emission this fix changes) and out of scope to chase here.
+  // BigInt(str) inside the compiled program is the exact alternative the
+  // runtime's own error for that path names ("pass a decimal string to a
+  // typeof-guarded normalizing parameter") — a genuine host round-trip
+  // (string crosses in, BigInt crosses back out) through the SAME
+  // materialize-then-arithmetic box-forcing shape as the union pin above,
+  // without the unrelated raw-argument marshaling gap.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const { f } = jz(`export let f = (s) => { let n = BigInt(s); return n + 0n }`, { optimize }).exports
+    for (const [name, [str, expect]] of Object.entries(FAMILY)) is(f(str), expect, `${lbl}: host boundary round-trip, ${name}`)
+  }
+})
+
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
   // The retired sentinel export lane could not be disabled until these
   // producer shapes materialized through the generic tagged decode; doing so
