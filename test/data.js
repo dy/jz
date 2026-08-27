@@ -2599,3 +2599,55 @@ test('typeof folds preserve operand effects, in source order (audit P0: emitType
     is(bi.count(), 2, `O${optimize || 0}: negated bigint staticFold still ran g()`)
   }
 })
+
+test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched, never hardcoded from one call site (fix/selfhost-hash-read)', () => {
+  // Root cause (fix/selfhost-hash-read, no shape8 dependency — this is the
+  // general compiler bug, reproducible on an ordinary compiled program, that
+  // self-hosting exposed for representation-plan.js's own buildBodyData/
+  // ensureBoundary identity param): paramReps' `val` field (exact-kind meet)
+  // and `possibleKinds` (existential, wider-census join) are computed
+  // INDEPENDENTLY over the same call sites (src/param-reps.js's own header).
+  // A shared function whose ONE call site passes a directly-provable literal
+  // (`dispatch({...})`) and whose OTHER call site passes an array-element-
+  // derived value (`dispatch(list[i])` — `val`'s narrower, soft-merge
+  // observation set never resolves an exact kind for it, so it contributes
+  // NO vote at all) settles `val` to the literal site's kind alone, even
+  // though the array-element site's value is a DIFFERENT PTR-tagged shape at
+  // runtime. emitTypeTag (src/ir.js) trusted that lone, non-representative
+  // `val` unconditionally, hardcoding `(i32.const PTR.OBJECT)` for `x`'s
+  // runtime type-tag argument instead of reading it — so `x?.name` on the
+  // array-derived (PTR.HASH) receiver misdispatched into the OBJECT
+  // (schema-slot) codepath and silently returned undefined, for EVERY
+  // property, not just `.name` (mirrors the identical shape defFunc's own
+  // conditional-spread funcInfo hits when representation-plan.js's identity
+  // param crosses its own compile/index.js array-element vs. wat/assemble.js
+  // object-literal call sites, self-hosted).
+  const src = `
+    function mkHash(hasDefaults) {
+      return { name: 'H', body: 1, exported: 2, sig: 3, ...(hasDefaults && {defaults: 4}) }
+    }
+    function dispatch(x) {
+      return x?.name
+    }
+    const list = []
+    function build(hasDefaults) {
+      list.push(mkHash(hasDefaults))
+    }
+    function useDirect() {
+      return dispatch({ name: 'O', body: 9 })
+    }
+    function useArrElem(i) {
+      return dispatch(list[i])
+    }
+    export function run() {
+      build(true)
+      const a = useDirect()
+      const b = useArrElem(0)
+      return a + '|' + b
+    }
+  `
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    is(e.run(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
+  }
+})
