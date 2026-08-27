@@ -2802,6 +2802,23 @@ export function emitBlockBody(node) {
       const s = stmts[i]
       if (s == null || typeof s === 'number') continue
       out.push(...emitVoid(s))
+      // Sibling statements after an unconditional return/throw/break/continue
+      // (or a nested `{}`/`;`-block whose OWN last statement is one) are
+      // UNREACHABLE — real JS never evaluates them, so a reference inside
+      // one never actually ReferenceErrors either (the read never happens).
+      // Stop walking the rest of THIS statement list rather than emit (and
+      // wrongly reject, per src/compile/emit.js's bare-identifier-fallback
+      // reject — see that fallback's own comment) code that can never run.
+      // isTerminator (src/type.js) is the same "always exits via return/
+      // throw/break/continue" predicate this function already trusts for
+      // post-terminator type-refinement, just below — reused, not
+      // reinvented. Narrower than full reachability (an `if/else` where
+      // BOTH arms terminate isn't recognized as unconditional here, matching
+      // isTerminator's own existing scope) but sound as far as it goes: a
+      // false negative here just re-walks code that's actually fine to skip
+      // (the wall-protocol default — reject only fires for something truly
+      // unresolved), never a false positive that skips reachable code.
+      if (isTerminator(s)) break
       // `let`/`const` decls self-record via emitDecl; only a bare reassignment needs it here.
       if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]))
       // After an `if (cond) terminator` — including a terminator else-if LADDER
@@ -5601,6 +5618,21 @@ export const emitter = {
     const out = []
     for (const a of args) {
       out.push(...emitVoid(a))
+      // Same dead-tail truncation as emitBlockBody's own statement loop (see
+      // that function's comment for the full rationale) — needed HERE too,
+      // separately: a `;`-list can arrive at emit already NESTED one level
+      // inside a `{}`-block's own list (e.g. jzify's `do…while` desugaring —
+      // transform.js `'do'` — wraps the loop body as `[';', flagReset,
+      // userBody]`, so a user body of `break; FOR1;` lands as ONE list item,
+      // `[';', ['break'], 'FOR1']`, from emitBlockBody's OUTER loop — that
+      // loop's own isTerminator check sees only the LAST inner statement
+      // (FOR1, not a terminator) and never looks inside). Without this, a
+      // bare `break`/`continue`/`return`/`throw` mid-list here left its
+      // FOLLOWING dead siblings walked anyway, wrongly hitting the bare-
+      // identifier-fallback reject (src/compile/emit.js) for code real JS
+      // never evaluates (confirmed live via test262 statements/break+continue/
+      // line-terminators.js's ASI-split shape, a do…while body).
+      if (isTerminator(a)) break
     }
     return out
   },
@@ -6285,19 +6317,23 @@ export const emitter = {
       return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
     const v = emit(a)
     if (v.type === 'i32') return asF64(v)
-    // toNumF64 is the general ToNumber (VAL.NUMBER passthrough, VAL.BOOL,
-    // VAL.OBJECT via the OrdinaryToPrimitive method chain, and — its own
-    // final fallback — the same generic __to_num dispatch this used to call
-    // directly). Calling it directly for every non-i32 case (not just the
-    // already-proven-NUMBER one) is a strict superset, not a behavior change
-    // for anything this already handled correctly: an OBJECT operand
-    // previously skipped straight to __to_num, which has no way to invoke a
-    // user-defined valueOf/toString (no compile-time schema access) and
-    // returned a wrong sentinel — confirmed live, `+{valueOf:()=>2}` gave
-    // `null`, not `2` (jzify/generators.js's Iterator take/drop use exactly
-    // this operator for their `+n` limit coercion, so this was ALSO the
-    // route to both Iterator/prototype/take and drop's ToPrimitive gaps).
-    return toNumF64(a, v)
+    // Deliberately NOT routed through toNumF64 for every non-NUMBER operand
+    // (fix/wrong-values-2 tried exactly that, to fix `+{valueOf:()=>2}`'s
+    // ToPrimitive gap — no test262 entry actually needed it in the end, since
+    // Iterator take/drop's own `+n` runs on an untyped parameter that never
+    // reaches toNumF64's VAL.OBJECT gate either way). Reverted: it broke
+    // test/watr.js's "simd load/store" bug-pin (37/37 -> 36/37) by changing
+    // codegen for a STRING operand read inside a discarded short-circuit
+    // expression whose LEFT side is itself an assignment (watr's own
+    // compile.js memarg(): `if (align) ((align = Math.log2(align)) % 1) &&
+    // err(...)` — align starts '1'-derived-via-unary-plus, discarded-value
+    // context) — the nested `align = Math.log2(align)` reassignment stopped
+    // taking effect, a genuine toNumF64/discarded-value codegen bug exposed
+    // by, not created by, routing a STRING operand through it. Out of scope
+    // to chase further here; flagged, not fixed.
+    if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
+    inc('__to_num')
+    return typed(['call', '$__to_num', asI64(v)], 'f64')
   },
   'u-': (a, self) => emitNeg(a, self),
   '*': (a, b, self) => {
