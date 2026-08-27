@@ -62,6 +62,36 @@ export const mergeParamFact = (rep, key, observed) => {
   else if (rep[key] !== observed) { rep[key] = null; latticeMeet.changed = true }   // disagreement → TOP
 }
 
+/** Is a fact's `val` (the exact-kind meet field) safe to trust as a receiver's
+ *  STATIC representation tag — e.g. emitTypeTag (src/ir.js) hardcoding
+ *  `(i32.const PTR.*)` instead of a runtime `$__ptr_type` read?
+ *
+ *  `val` and `possibleKinds` are two INDEPENDENT lattices over the same call
+ *  sites (this file's own header: "no cross-check between the two"). Ordinarily
+ *  that's fine — `val`'s meet already polices its OWN agreement (mergeParamFact
+ *  pois to TOP on disagreement). But `val`'s meet only sees the sites whose
+ *  argument this fixpoint could itself resolve to an EXACT single kind; a site
+ *  passing an unresolved expression (e.g. an array element / a further
+ *  pass-through of a still-unsettled caller param — the shape a compiler's own
+ *  `ctx.funcs.list[i]` element read produces) contributes NO observation at
+ *  all under the soft merge policy (this file's header, `val` runs SOFT) —
+ *  BOTTOM, not a vote — so a single OTHER, easily-proven site's kind stands as
+ *  the sole "consensus" even though the unresolved sites could clash with it.
+ *  `possibleKinds` (joinKinds, existential, widen-only) is exactly the
+ *  independent census that would catch this: it accumulates from a WIDER set
+ *  of producers (narrow.js's own trackKind observers), so a genuinely
+ *  polymorphic parameter shows up there as size > 1 even when `val`'s own,
+ *  narrower observation set never disagreed with itself. `kindsCoverage ===
+ *  'closed'` is this file's own existing proof that EVERY call site was
+ *  enumerated (never external/indirect/exported) — so a closed, size > 1
+ *  `possibleKinds` is a SOUND, complete-census refutation of a same-fact `val`
+ *  that only ever saw one (non-representative) site vote. Absent
+ *  `possibleKinds` (not tracked for this fact at all) changes nothing —
+ *  `val` is trusted exactly as before; this is a narrowing-only guard, never a
+ *  new source of trust. */
+export const paramValTrustworthy = (r) =>
+  !(r?.possibleKinds && r.kindsCoverage === 'closed' && r.possibleKinds.size > 1)
+
 /** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */
 export const ensureParamRep = (paramReps, funcName, k) => {
   let m = paramReps.get(funcName)

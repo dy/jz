@@ -53,7 +53,7 @@ import { mintRepresentationPlan, representationHostBoxesParam, representationPro
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
-import { cloneRep } from '../param-reps.js'
+import { cloneRep, paramValTrustworthy } from '../param-reps.js'
 import { unrollRecurrence, unrollScalarChains, selectArmUpdatesIn } from './loop-recurrence.js'
 import { peelClampedStencil } from './peel-stencil.js'
 import { cseLoads } from './cse-load.js'
@@ -547,7 +547,20 @@ function analyzeFuncForEmit(func, programFacts) {
           if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
         }
       }
-      if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // paramValTrustworthy: `r.val` and `r.possibleKinds` are independent
+      // lattices over the same call sites (param-reps.js's own header) — a
+      // parameter fed by a mix of easily-proven and unresolved-argument call
+      // sites (e.g. a compiler-internal helper whose receiver sometimes comes
+      // from a plain literal, sometimes from an array-element read whose own
+      // kind this fixpoint's `val` meet never got to observe) can settle
+      // `val` to a single, UNCHALLENGED kind from the one site that WAS
+      // provable, while `possibleKinds`' own wider census (closed coverage:
+      // every site enumerated) proves the parameter is genuinely polymorphic.
+      // Trusting `val` alone there hardcodes a receiver type tag
+      // (emitTypeTag, src/ir.js) that's wrong for every other-kinded call —
+      // fix/selfhost-hash-read's own root cause (a HASH-representation
+      // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
+      if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       // presentVal (§16→§18 "presentVal param producers") — narrow.js's
       // inter-procedural hardParamPresentVal fold (mirroring hardParamVal's
       // own poison-on-disagreement discipline, NOT mayBeUndefined's monotonic
@@ -1507,7 +1520,20 @@ function emitFunc(func, functionPlan, programFacts) {
       // analyzeFuncForEmit settled, guarded — but re-applying the UNGUARDED
       // call-site fact here would undo it) so it needs the identical guard.
       const reassigned = isReassigned(body, pname)
-      if (r.val && !reassigned && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
+      // paramValTrustworthy: `r.val` and `r.possibleKinds` are independent
+      // lattices over the same call sites (param-reps.js's own header) — a
+      // parameter fed by a mix of easily-proven and unresolved-argument call
+      // sites (e.g. a compiler-internal helper whose receiver sometimes comes
+      // from a plain literal, sometimes from an array-element read whose own
+      // kind this fixpoint's `val` meet never got to observe) can settle
+      // `val` to a single, UNCHALLENGED kind from the one site that WAS
+      // provable, while `possibleKinds`' own wider census (closed coverage:
+      // every site enumerated) proves the parameter is genuinely polymorphic.
+      // Trusting `val` alone there hardcodes a receiver type tag
+      // (emitTypeTag, src/ir.js) that's wrong for every other-kinded call —
+      // fix/selfhost-hash-read's own root cause (a HASH-representation
+      // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
+      if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       // presentVal: mirrors the analyzeFuncForEmit seeding above (see its comment) —
       // same guard, same duplication reason.
       if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
