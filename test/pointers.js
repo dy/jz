@@ -231,6 +231,105 @@ test('carrier: box/unbox roundtrip — i64 min (-2^63)', () => {
   is(f64BitsBig(f()), -9223372036854775808n)
 })
 
+// Range-boundary BOX/UNBOX OOB (2026-08 fix): the two pins above (i64 max,
+// i64 min) round-trip fine — box(x) then unbox THAT SAME pointer always
+// derefs a real, freshly-`$__alloc`'d heap cell, independent of the payload's
+// bit pattern. The bug is narrower and easy to miss testing box/unbox only in
+// matched pairs: `unboxBigInt` (ir.js) is `i64.load(ptrOffsetIR(f64expr))`
+// with NO runtime tag check — by design, for the common case where a BOX
+// paired it. `ptrOffsetIR` unconditionally masks the low 32 bits off
+// WHATEVER i64 it is handed and treats that as a heap address. Call it on a
+// value that was NEVER boxed — a raw BigInt payload reinterpreted as if it
+// were a pointer — and its own bits become the "address". For most BigInts
+// that's a small, silently-wrong offset (reads/corrupts adjacent heap
+// garbage, no trap). For 0x7fffffffffffffffn (i64 max) and
+// 0xffffffffffffffffn (2^64-1, wraps to the all-ones i64 bit pattern), the
+// low 32 bits are 0xFFFFFFFF — ~4 GiB — which is out of bounds for any
+// realistically-sized instance, so `i64.load` there TRAPS instead of merely
+// corrupting: "memory access out of bounds". This is exactly the shape a
+// RepresentationPlan proof gets wrong when it is not order-safe (Shape #8's
+// own investigation trail, `fix/shape8-member-callee`, `src/compile/
+// representation-plan.js`'s `edgeMaterializable` doc comment): the fixpoint
+// can call for UNBOX on a node whose runtime value is still raw. The FIX
+// (applyBigintRepresentationAction and coerceArg, src/ir.js /
+// src/compile/emit.js) routes every PLAN-DIRECTED unbox through
+// `maybeUnboxBigInt` instead of the unconditional `unboxBigInt` —
+// `maybeUnboxBigInt` tag-checks via `$__ptr_type` first and only dereferences
+// a genuine PTR.BIGINT box; a mis-proven raw value takes its `else` arm
+// (bits are already the payload) instead of dereferencing, so a wrong proof
+// can no longer trap. `__unbox_bigint` itself stays the raw, unconditional
+// primitive on purpose (its own doc comment: exposes ir.js's unboxBigInt
+// directly, nothing production calls it) — calling it on a bare, un-boxed
+// literal is a genuine precondition violation, not the bug; these two pins
+// document that precondition rather than expect it to somehow stop trapping.
+test('carrier: unboxBigInt applied to a RAW (never-boxed) i64-max payload traps — documents the precondition unboxBigInt trusts unconditionally', () => {
+  const { f } = run(`export let f = () => { let a=[0]; return __unbox_bigint(9223372036854775807n) }`)
+  throws(f)
+})
+test('carrier: unboxBigInt applied to a RAW (never-boxed) 2^64-1-wrapped payload traps — same precondition, the other bit pattern whose low 32 bits are 0xFFFFFFFF', () => {
+  const { f } = run(`export let f = () => { let a=[0]; return __unbox_bigint(18446744073709551615n) }`)
+  throws(f)
+})
+
+test('carrier: box/unbox roundtrip — 2^64-1 wrapped (all-ones i64 bit pattern)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(18446744073709551615n))
+  }`)
+  is(f64BitsBig(f()), -1n)  // BigInt.asUintN(64, 2^64-1) wraps to the i64 bit pattern of -1
+})
+
+test('carrier: box/unbox roundtrip — negated 2^64-1 (wraps to 1)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(-18446744073709551615n))
+  }`)
+  is(f64BitsBig(f()), 1n)  // -(2^64-1) mod 2^64 == 1
+})
+
+test('carrier: box/unbox roundtrip — +2^62 control (comfortably inside range)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(4611686018427387904n))
+  }`)
+  is(f64BitsBig(f()), 4611686018427387904n)
+})
+
+test('carrier: box/unbox roundtrip — -2^62 control (comfortably inside range)', () => {
+  const { f } = run(`export let f = () => {
+    let a = [0]
+    return __unbox_bigint(__box_bigint(-4611686018427387904n))
+  }`)
+  is(f64BitsBig(f()), -4611686018427387904n)
+})
+
+// maybeUnboxBigInt (the fix's actual replacement primitive) applied to the
+// exact same traps-when-raw payloads above, via its pre-existing production
+// consumer (readI64's schema-slot arm, ir.js isSchemaSlotBigintPossible) — a
+// polymorphic object field the write-side census saw both Number and BigInt
+// on, so the read is boxed-but-unproven, exactly maybeUnboxBigInt's own
+// contract. No trap, correct value: the runtime tag check means a genuinely
+// boxed payload still dereferences (this IS a real box here), proving the
+// fix's replacement primitive is sound, not merely non-crashing.
+for (const optimize of [false, 2, 3]) {
+  const lbl = `O${optimize || 0}`
+  const schemaSlotBig = (lit, expect) => {
+    const { f } = run(`
+      function make(useBig) {
+        let o = { field: 0 }
+        if (useBig) o.field = ${lit}
+        else o.field = 1
+        return o
+      }
+      export let f = (useBig) => { let o = make(useBig); return o.field + 0n }
+    `, { optimize })
+    is(f(1), expect)
+  }
+  test(`carrier: maybeUnboxBigInt via schema-slot read — i64 max, ${lbl}`, () => schemaSlotBig('9223372036854775807n', 9223372036854775807n))
+  test(`carrier: maybeUnboxBigInt via schema-slot read — 2^64-1 wrapped, ${lbl}`, () => schemaSlotBig('18446744073709551615n', -1n))
+  test(`carrier: maybeUnboxBigInt via schema-slot read — i64 min, ${lbl}`, () => schemaSlotBig('-9223372036854775808n', -9223372036854775808n))
+}
+
 test('carrier: box/unbox roundtrip — bit pattern that aliases a real NaN-box (round-2\'s own wall)', () => {
   // The exact hazard round 2 could not resolve at read time: a raw i64 whose
   // bits alias a genuine PTR.OBJECT-shaped NaN-box. Round 3's answer is
