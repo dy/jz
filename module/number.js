@@ -1806,17 +1806,28 @@ export default (ctx) => {
   // parseInt({valueOf:()=>"42"}) returned null, not 42 — the coercion was
   // skipped, not differently rounded). Reject; string/number/boolean/array
   // arguments are unaffected and keep their existing (correct) handling.
-  // valTypeOf(x) alone MISSES this once the enclosing function also contains
-  // a try/catch anywhere (even unrelated, even textually after this call) —
-  // confirmed live: valTypeOf stayed unresolved (not VAL.OBJECT) for the
-  // exact same `var object = {valueOf:…}` shape once a sibling `try {…}
-  // catch(e){…}` existed later in the SAME function, letting the object slip
-  // through uncoerced (test262 built-ins/parseInt/S15.1.2.2_A1_T7.js, which
-  // has exactly this shape, was NOT caught by the valTypeOf-only version of
-  // this check). ctx.schema.slotOf tracks an object literal's OWN property
-  // schema independently of that flow-sensitive valType inference (the same
-  // resolution src/ir.js's primMethodIdx already relies on for toPrimitiveChain),
-  // so check it directly too rather than trusting valTypeOf as the sole signal.
+  // valTypeOf(x) used to MISS this once the enclosing function also
+  // contained a try/catch anywhere (even unrelated, even textually after
+  // this call) — test262 built-ins/parseInt/S15.1.2.2_A1_T7.js, which has
+  // exactly this shape (`var object = {valueOf:…}` reassigned again inside a
+  // LATER try/catch elsewhere in the function), slipped the object through
+  // uncoerced. Root-caused and fixed in emit.js (fix/wrong-values-3):
+  // valTypeOf itself was never the bug — the flow-sensitive overlay it reads
+  // (ctx.func.localValTypesOverlay, "tier #2") was blocked from EVER
+  // recording a fact for `object` ANYWHERE in the function, by a whole-block
+  // veto (setFlowVal/nestedWritesOf) that didn't distinguish "reassigned
+  // later, at a nested position" from "reassigned later, INSIDE A LOOP" —
+  // only the second actually needs a blanket veto (a loop's static body runs
+  // dynamically many times); the first only needs to stop trusting the fact
+  // FROM THE REASSIGNMENT POINT FORWARD, not retroactively for every read
+  // that already dominates it. ctx.schema.slotOf tracks an object literal's
+  // OWN property schema independently of that flow-sensitive valType
+  // inference (the same resolution src/ir.js's primMethodIdx already relies
+  // on for toPrimitiveChain), so this still checks it directly too rather
+  // than trusting valTypeOf as the sole signal — a second, structural proof
+  // for whatever valTypeOf still can't reach (e.g. a name never assigned an
+  // object-shaped RHS in THIS function at all, only received boxed through a
+  // dynamic path).
   const rejectObjectArg = (x, who) => {
     const objType = valTypeOf(x) === VAL.OBJECT
     const hasToPrimitiveMethod = typeof x === 'string' && ctx.schema?.slotOf &&

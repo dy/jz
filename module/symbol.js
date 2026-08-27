@@ -22,7 +22,10 @@ import { typed, asF64, mkPtrIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
-const RESERVED = 16  // first user atom ID
+// fix/wrong-values-3: exported — module/json.js's __json_omit needs this
+// exact threshold to tell a genuine user Symbol apart from a canonical
+// arithmetic NaN (aux=0, explicitly "reserved" above, never a real atom).
+export const RESERVED = 16  // first user atom ID
 
 export default (ctx) => {
   inc('__mkptr')
