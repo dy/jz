@@ -119,6 +119,40 @@ test('destruct assign: [...rest] = arr', () => {
   is(f(), 35)
 })
 
+// audit-#12 Family A (test262 ary-ptrn-rest-id-direct/-exhausted, 12 files):
+// `const [...x] = arr` desugars to `let %tmp = arr, x = %tmp.slice(j)`
+// (prepare/index.js expandDestruct) — %tmp is a plain int-array-literal
+// promotion candidate (src/compile/plan/literals.js promoteIntArrayLiterals);
+// `Array.isArray(x)` only disqualified %tmp's promotion when `x` WAS the
+// candidate name, missing this one-hop-derived case. Promoted at O1-O3, %tmp
+// (and so `x`, via .typed:slice) lost its ARRAY identity: Array.isArray(x)
+// answered false though `x` is a genuine (small) array by every other
+// observation. Fixed via _collectDerivedArrayNames (same file) — pinned at
+// every optimize level via npm run test:matrix (test:opt0/opt3 rerun this
+// whole file; JZ_TEST_OPTIMIZE governs jz's own default via index.js).
+test('destruct: const [...x] = arr keeps Array identity under promotion (audit-#12 Family A)', () => {
+  const { f } = run(`export let f = () => {
+    const [...x] = [1]
+    return Array.isArray(x) ? 1 : 0
+  }`)
+  is(f(), 1, 'Array.isArray(x) must stay true across all optimize levels')
+})
+test('destruct: const [,,...x] = arr (exhausted iterator) keeps Array identity (audit-#12 Family A)', () => {
+  const { f } = run(`export let f = () => {
+    const [, , ...x] = [1, 2]
+    return (Array.isArray(x) ? 1 : 0) * 10 + x.length
+  }`)
+  is(f(), 10, 'Array.isArray(x) true (10s digit) and x.length === 0 (1s digit)')
+})
+test('destruct: let/var rest-pattern also keeps Array identity under promotion (audit-#12 Family A)', () => {
+  const { f } = run(`export let f = () => {
+    let [...a] = [1, 2, 3]
+    var [...b] = [4, 5]
+    return (Array.isArray(a) ? 1 : 0) * 10 + (Array.isArray(b) ? 1 : 0)
+  }`)
+  is(f(), 11)
+})
+
 test('destruct assign: [a = v] default', () => {
   const { f } = run(`export let f = () => {
     let a

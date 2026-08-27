@@ -1020,54 +1020,124 @@ function collectWork() {
 // former EXPECTED_FAIL entries were pruned and the baseline bumped 1428→1437.)
 const EXPECTED_FAIL_PREFIXES = [
 ]
-// Boolean kind-loss residue (2026-07-10): predicate-builtin kinds landed
-// (CALLEE_VAL BOOL entries — the isNaN()/isArray() families were pruned as
-// xpasses). What remains is the JOIN family: a boolean flowing through a
-// `??`/`||`/`&&`/`?:` with a non-bool arm loses its kind (VT's deliberate
-// numeric-context coercion rule, pinned by the vectorizer), so the raw 0/1
-// carrier then bit-compares against the TRUE/FALSE atom. Fix needs the bool
-// arm to atom-box at mixed joins, or a BOOL|OTHER lattice point — the
-// recorded carrier-design edge (.work/todo.md). Thrown-value compares
-// (`throw true; catch e === true`) are the same join through the throw slot.
-const BOOL_CARRIER = 'boolean kind loss at a mixed ??/||/&&/?: join or throw slot (raw 0/1 vs TRUE/FALSE atom) — carrier-design edge'
+// Boolean kind-loss residue (2026-07-10 → audit-#12 category-(iii) closure,
+// this commit): predicate-builtin kinds landed (CALLEE_VAL BOOL entries — the
+// isNaN()/isArray() families were pruned as xpasses). What remained was the
+// JOIN family plus two more MECHANISM-A gaps the audit's reproductions
+// exposed as ACCEPTED-WRONG (not merely xfail-and-forget):
+//  1. FIXED exactly — the throw slot (src/compile/emit.js 'throw' emitter)
+//     used a raw `asF64(emit(expr))`, the 18th unnamed site of the untyped-
+//     boxed-value-slot gap bridge.js's storedValue doc comment describes.
+//     Routed through storedValue (the established chokepoint) instead —
+//     `throw true`/`throw b&&false` and the catch-bound read-back now box
+//     correctly. 3 files below now pass.
+//  2. FIXED exactly — RegExp flag getters (module/regex.js .regex:global
+//     etc.) emitted a raw `f64.const 0/1` instead of the boxed TRUE/FALSE
+//     atom; `regexp.global === true` bit-compared a plain NUMBER against the
+//     atom and always lost. The flag is a compile-time-known constant, so
+//     this now emits TRUE_IR/FALSE_IR directly. 6 files below now pass.
+//  3. FIXED exactly — emitStrictEq's "one BOOL side, one dynamic-unknown
+//     side" branch assumed an unresolved (null) static kind can never carry a
+//     raw BOOL bit. False for `true || undefined`/`true || null`: VT['||']
+//     can't unify BOOL with NULL/UNDEF so the join's own static kind comes
+//     back null, but the arm actually taken at runtime (`true`) is still raw
+//     BOOL. Now boxed via mayCarryRawBool + emitIdentitySafeArms. 1 file
+//     below (A4_T4) now passes.
+//  4. STILL XFAILS, but now REJECTS instead of computing silently — the
+//     genuine BOOL∪NUMBER ambiguous-merge case (`x = false ?? 1`, a raw 0/1
+//     carrier bit-compared against the TRUE/FALSE atom with NO way to
+//     recover which one produced a given 0/1 bit pattern short of the full
+//     tagged-Boolean-carrier plan STABILITY.md's "Known limitations" section
+//     names) previously skipped the identity-escape REJECT entirely on the
+//     plain-reassignment path (`let x; x = …` — a DIFFERENT emitter than
+//     decl-with-init's emitDecl, which already had this REJECT). Both paths
+//     now share rejectAmbiguousBoolIdentity (src/compile/emit.js). Zero
+//     accepted-wrong remains for this shape; STABILITY.md's documented v1
+//     limitation is the flip condition for turning REJECT into an exact fix.
+//  5. STILL XFAILS, REJECTS (not the ambiguous-merge shape at all — a THIRD,
+//     narrower gap surfaced by 2 of the audit's logical-or/-and files):
+//     `true || x` / `false && x` with `x` a genuinely undeclared identifier
+//     in the dead (never-evaluated) short-circuit arm. mayCarryRawBool's
+//     structural check now reaches for `x`'s emission when boxing the join's
+//     identity — and jz's "not in scope" reject fires (test262.js's own
+//     skip-message allowlist already treats that as skip, not fail/xfail —
+//     see the two entries' reason text below). Was silently wrong (a raw
+//     NUMBER bit-compare loss, same as #4); now loud. The IDEAL fix (true
+//     short-circuit dead-code elision reaching identity-safe emission too, so
+//     `x` is never touched and the comparison folds to the correct `true`/
+//     `false` at compile time) is a separate, un-scoped optimizer gap — see
+//     .work/todo.md if picked up.
+// [WRONG-VALUE] tag below = release-blocking per STABILITY.md's semantics
+// contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
+// matches README "What differs from JS?").
+const BOOL_CARRIER = '[WRONG-VALUE, pinned — flip condition: STABILITY.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge now correctly REJECTS (was silently wrong; audit-#12) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
+// Audit-#12 classification pass (this commit) — every entry below is tagged
+// by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
+// never hide behind a plausible-sounding xfail reason again:
+//   [REJECT]   — valid source, cleanly rejected at compile time as
+//                unsupported. No value was ever silently produced. Acceptable.
+//   [DIALECT]  — documented dialect divergence (README "What differs from
+//                JS?" — generators/async lower to state machines, jobs drain
+//                at host boundaries). Acceptable.
+//   [WRONG-VALUE] — accepted, ran, and produced a plausible-looking value that
+//                silently differs from JS with NO README coverage. Release-
+//                blocking per STABILITY.md's semantics contract; NOT fixed by
+//                this commit (out of the two assigned families — Family A
+//                rest-destructure isArray, Family B BOOL_CARRIER — surfaced
+//                here as a byproduct of walking the full xfail list). Pinned
+//                so it stays visible rather than reading as "just an xfail".
+//   [VERIFY]   — outcome not conclusively determined (deep engine-internal
+//                spec corner); flagged honestly rather than guessed into
+//                either acceptable bucket.
+const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed this commit] '
 const EXPECTED_FAIL_FILES = new Map([
   ['test/language/expressions/comma/S11.14_A2.1_T2.js',
-    'undeclared-identifier read must throw runtime ReferenceError — jz has no runtime binding resolution (documented subset divergence)'],
+    WV + 'undeclared-identifier read silently evaluates (no runtime ReferenceError) instead of rejecting — jz has no runtime binding resolution and dead-code elimination can reach the reference before any scope check'],
   ['test/language/expressions/instanceof/S11.8.6_A2.1_T1.js',
-    '({}) instanceof Object via a rebound constructor value — constructor-identity instanceof outside the fixed-shape model'],
-  ['test/language/function-code/switch-case-decl-onlystrict.js',
-    'strict block-scoped function declaration inside switch case — AnnexB-adjacent scoping outside current jz scope'],
-  ['test/language/function-code/switch-dflt-decl-onlystrict.js',
-    'strict block-scoped function declaration inside switch default — AnnexB-adjacent scoping outside current jz scope'],
+    WV + '({}) instanceof OBJECT (a variable bound to Object) answers false — jz\'s instanceof resolves the RHS by literal identifier text, not by runtime value, so a rebound constructor reference silently loses the fixed-shape recognition (LEGACY_LANG_LIMITATIONS tracks the sibling "unrecognized constructor" shapes as REJECT; this one differs by silently answering false instead)'],
+  // audit-#12: switch-case/dflt-decl-onlystrict.js used to list here, tagged
+  // [REJECT] — but their reject message ("'Error' is not in scope") already
+  // matches runTest's own skip-message allowlist (msg.includes('is not in
+  // scope')), so the runner classifies them as skip, never fail, and this
+  // entry was NEVER ACTUALLY CONSULTED (expectedFailReason only runs for
+  // status==='fail'). Pruned per the file's own established convention two
+  // screens up: "Features that reject cleanly ('not supported'/'not in
+  // scope'/…) need no pattern: the runTest message allowlist absorbs them
+  // per-file." Pre-existing staleness, surfaced by this pass, not introduced
+  // by it.
   ['test/language/statements/break/line-terminators.js',
-    'CR between `break` and label must ASI-split — parser line-terminator edge (upstream subscript grammar)'],
+    WV + 'CR between `break` and label must ASI-split (real JS: break executes unlabeled, then a separate label statement) — jz\'s parser (upstream subscript) instead parses it as a labeled break, a silently different control-flow shape, not a reject'],
   ['test/language/statements/continue/line-terminators.js',
-    'CR between `continue` and label must ASI-split — parser line-terminator edge (upstream subscript grammar)'],
+    WV + 'CR between `continue` and label must ASI-split — same upstream-subscript parser gap as break/line-terminators.js above, silently different control flow'],
   ['test/language/statements/for-in/scope-body-var-none.js',
-    'var hoisted from for-in body captured by head-default closures — var-hoisting environment corner (lex siblings pass)'],
+    '[VERIFY] var hoisted from for-in body captured by head-default closures — per-iteration lexical-environment interaction with var-hoisting (V8-authored spec-corner regression test); the escaping exception carried no message text, so whether this is a clean trap or a silent value divergence was not conclusively distinguished during the audit-#12 pass'],
   ['test/language/statements/function/S13_A15_T4.js',
-    'typeof arguments === "object" reflection — jz lowers arguments to an array copy; function-object reflection out of scope'],
+    WV + 'typeof arguments reads \'undefined\' instead of \'object\' when a function body hoists `var arguments = …` after an early return — jz\'s var-hoisting clobbers the arguments binding\'s slot outright where spec keeps the real Arguments object until the (unreached) assignment; jz lowers arguments to an array copy in general, but this specific hoisting-priority interaction isn\'t in README\'s divergence list'],
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
-    '`async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge)'],
+    '[REJECT] `async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge); compile-time reject'],
   ['test/language/statements/for-await-of/let-identifier-with-newline.js',
-    '`let` as an ASI-split identifier after a for-await body — sloppy-mode let-identifier grammar edge'],
-  // async-generator divergences (documented): job ordering is per-drain-cycle,
-  // and destructuring / yield* abrupt-completion semantics are out of the v1.
+    '[REJECT] `let` as an ASI-split identifier after a for-await body — sloppy-mode let-identifier grammar edge; compile-time reject (jzify duplicate-hoist diagnostic)'],
+  // async-generator divergences: job ordering is per-drain-cycle (README
+  // "Generators and async... Jobs drain at host boundaries"), and
+  // destructuring / yield* abrupt-completion semantics are approximations of
+  // that same state-machine lowering — every file below LOUDLY fails (an
+  // exception/timeout propagates; none compute a silently-plausible value),
+  // so [DIALECT] by extension of the documented state-machine-lowering bullet.
   ['test/language/statements/async-generator/return-undefined-implicit-and-explicit.js',
-    'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+    '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/expressions/await/for-await-of-interleaved.js',
-    'per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
+    '[DIALECT] per-tick job ordering — jz drains per boundary cycle (documented divergence)'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-elision-step-err.js',
-    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
   ['test/language/statements/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
-    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
   ['test/language/statements/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
-    'destructuring abrupt-completion semantics — outside the async-generator v1'],
+    '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)'],
   ['test/language/statements/async-generator/yield-star-expr-abrupt.js',
-    'yield* abrupt GetIterator semantics — outside the async-generator v1'],
+    '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)'],
   ['test/language/statements/async-generator/yield-star-getiter-sync-returns-abrupt.js',
-    'yield* abrupt GetIterator semantics — outside the async-generator v1'],
+    '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)'],
   ...[
     'test/language/expressions/async-generator/dstr/ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/dflt-ary-ptrn-elision-step-err.js',
@@ -1075,51 +1145,43 @@ const EXPECTED_FAIL_FILES = new Map([
     'test/language/expressions/async-generator/dstr/ary-ptrn-rest-id-iter-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-elision-step-err.js',
     'test/language/expressions/async-generator/dstr/named-ary-ptrn-rest-id-iter-step-err.js',
-  ].map(f => [f, 'destructuring abrupt-completion semantics — outside the async-generator v1']),
+  ].map(f => [f, '[DIALECT] destructuring abrupt-completion semantics — outside the async-generator v1 (loud failure, not a silent value)']),
   ...[
     'test/language/expressions/async-generator/named-yield-star-expr-abrupt.js',
     'test/language/expressions/async-generator/named-yield-star-getiter-sync-returns-abrupt.js',
     'test/language/expressions/async-generator/yield-star-expr-abrupt.js',
     'test/language/expressions/async-generator/yield-star-getiter-sync-returns-abrupt.js',
-  ].map(f => [f, 'yield* abrupt GetIterator semantics — outside the async-generator v1']),
+  ].map(f => [f, '[DIALECT] yield* abrupt GetIterator semantics — outside the async-generator v1 (loud failure, not a silent value)']),
+  // Ambiguous BOOL∪NUMBER merge assigned to a binding — REJECTS (was silently
+  // wrong). See BOOL_CARRIER's own doc comment, point 4.
   ...[
     'test/language/expressions/coalesce/chainable-with-bitwise-and.js',
     'test/language/expressions/coalesce/chainable-with-bitwise-or.js',
     'test/language/expressions/coalesce/chainable-with-bitwise-xor.js',
     'test/language/expressions/coalesce/short-circuit-number-false.js',
     'test/language/expressions/coalesce/short-circuit-number-true.js',
-    'test/language/expressions/logical-or/S11.11.2_A2.1_T4.js',
-    'test/language/expressions/logical-or/S11.11.2_A4_T4.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T1.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T4.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T5.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T6.js',
-    'test/language/statements/throw/S12.13_A2_T3.js',
-    'test/language/statements/try/S12.14_A18_T3.js',
-    'test/language/expressions/logical-and/S11.11.1_A2.1_T4.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T2.js',
-    'test/language/literals/regexp/S7.8.5_A3.1_T3.js',
-    'test/language/statements/throw/S12.13_A3_T1.js',
   ].map(f => [f, BOOL_CARRIER]),
-  // Array.isArray of a REST-pattern result (derived from a typed-PROMOTED array
-  // literal) answers false at O2+ — the promotion pass's isArray disqualifier
-  // tracks direct names only, not derived values. Recorded optimizer gap
-  // (.work/todo.md, extension-surface archive); a blanket skip demoted real passes, so the
-  // exact failing files ride xfail until the derived-name flow lands.
-  ...[
-    'test/language/statements/const/dstr/ary-ptrn-rest-id-direct.js',
-    'test/language/statements/const/dstr/ary-ptrn-rest-id-exhausted.js',
-    'test/language/statements/for/dstr/const-ary-ptrn-rest-id-direct.js',
-    'test/language/statements/for/dstr/const-ary-ptrn-rest-id-exhausted.js',
-    'test/language/statements/for/dstr/let-ary-ptrn-rest-id-direct.js',
-    'test/language/statements/for/dstr/let-ary-ptrn-rest-id-exhausted.js',
-    'test/language/statements/for/dstr/var-ary-ptrn-rest-id-direct.js',
-    'test/language/statements/for/dstr/var-ary-ptrn-rest-id-exhausted.js',
-    'test/language/statements/let/dstr/ary-ptrn-rest-id-direct.js',
-    'test/language/statements/let/dstr/ary-ptrn-rest-id-exhausted.js',
-    'test/language/statements/variable/dstr/ary-ptrn-rest-id-direct.js',
-    'test/language/statements/variable/dstr/ary-ptrn-rest-id-exhausted.js',
-  ].map(f => [f, 'Array.isArray of promotion-derived rest array — recorded optimizer gap (derived-name isArray disqualifier)']),
+  // Short-circuit dead-arm identity box reaching an undeclared other arm —
+  // see point 5 in the comment above for the mechanism.
+  // `logical-or/S11.11.2_A2.1_T4.js` and `logical-and/S11.11.1_A2.1_T4.js`
+  // used to list here — both now REJECT "not in scope", which (like the
+  // switch-decl-onlystrict entries pruned above) matches runTest's own
+  // skip-message allowlist and so classifies as skip, not fail — never
+  // actually reaching expectedFailReason. No map entry needed.
+  // FIXED (audit-#12 category-(iii) closure, this commit) — was: Array.isArray
+  // of a REST-pattern result (derived from a typed-PROMOTED array literal)
+  // answered false at O2+ — the promotion pass's isArray disqualifier
+  // (src/compile/plan/literals.js _disqualifyPromotion) tracked the literal's
+  // OWN direct name only; `const [...x] = [1]` desugars to `%tmp = [1], x =
+  // %tmp.slice(0)` (prepare/index.js expandDestruct), so `Array.isArray(x)`
+  // never disqualified `%tmp`'s promotion — a DERIVED name, not a candidate.
+  // Fixed by _collectDerivedArrayNames: `%tmp.slice/map/filter(…)`-derived
+  // bindings are walked through the SAME _disqualifyPromotion logic a second
+  // time (as their own candidates-shaped map, zero changes to the existing
+  // function), and a hit propagates back to the literal root — precision over
+  // the blanket disqualifier a prior attempt rejected (see that function's
+  // own doc comment). All 12 files below now pass at O0-O3; pinned at
+  // test/rest-params.js.
   // FIXED (three-bug bundle, this commit) — was: pre-eval folded a compile-time-
   // constant multi-operator numeric subtree (src/prepare/pre-eval.js foldNumBinary/
   // foldNumAdd) as ONE exact rational, rounding to f64 only at the very end instead

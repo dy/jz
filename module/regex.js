@@ -7,7 +7,7 @@
  * @module regex
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, TRUE_IR, FALSE_IR, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHook } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1102,11 +1102,21 @@ export default (ctx) => {
     return emit(['str', [...FLAG_ORDER].filter(c => f.includes(c)).join('')])
   })
 
-  // Individual flag accessors → 1/0 (jz carries booleans as f64).
+  // Individual flag accessors — a boxed TRUE/FALSE atom, not a raw 0/1 f64
+  // constant: this is a boxed-VALUE slot (a getter return can flow straight
+  // into `=== true`/`typeof`/a stored binding, all identity-observing), the
+  // same "boxed-value slot" contract as any other untyped carrier (ir.js
+  // carrierF64's own doc comment). A raw `f64.const 0/1` here was audit-#12's
+  // BOOL_CARRIER regexp sub-family (S7.8.5_A3.1_T1..T6): `regexp.global ===
+  // true` compared the getter's plain NUMBER bits against `true`'s TRUE_NAN
+  // atom and always lost. The flag is a compile-time-known constant (resolved
+  // from the literal's own AST via flagsOf), so this emits the literal atom
+  // IR directly — same TRUE_IR/FALSE_IR ir.js hands any other known-constant
+  // boolean site.
   for (const [prop, ch] of [
     ['global', 'g'], ['ignoreCase', 'i'], ['multiline', 'm'], ['dotAll', 's'],
     ['unicode', 'u'], ['sticky', 'y'], ['hasIndices', 'd'], ['unicodeSets', 'v'],
-  ]) registerGetter(`.regex:${prop}`, (obj) => typed(['f64.const', flagsOf(obj).includes(ch) ? 1 : 0], 'f64'))
+  ]) registerGetter(`.regex:${prop}`, (obj) => typed((flagsOf(obj).includes(ch) ? TRUE_IR : FALSE_IR).slice(), 'f64'))
 
   // lastIndex — for /g and /y regexes, reads the mutable global; others always 0.
   registerGetter('.regex:lastIndex', (obj) => {

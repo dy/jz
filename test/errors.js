@@ -400,6 +400,39 @@ test('error: strict mode dynamic property access message', () => {
   ok(error.message.includes('strict'), `message should mention strict mode: ${error.message}`)
 })
 
+// audit-#12 BOOL_CARRIER: the ambiguous-identity REJECT (`Binding '…' can be
+// both Boolean and Number…`) previously fired only on a decl-with-init
+// (`let x = false ?? 1`, emitDecl). A PLAIN reassignment to an already-
+// declared binding (`let x; x = false ?? 1`) reached a different emitter
+// ('=' in emit.js) that skipped the check entirely — the ambiguous merge
+// silently kept its collapsed raw-NUMBER carrier, so `typeof x`/`x===false`
+// read wrong with NO error at all. Both paths now share
+// rejectAmbiguousBoolIdentity — was ACCEPTED-WRONG, now loudly REJECTS
+// (STABILITY.md's documented v1 limitation: full support needs the tagged-
+// Boolean-carrier plan; reject is the correct interim per the semantics
+// contract, "reject rather than silently choose … a value").
+test('error: ambiguous BOOL∪NUMBER identity rejects on plain reassignment too (audit-#12, was silently WRONG)', () => {
+  let error
+  try { compile('export let f = () => { let x; x = false ?? 1; return typeof x }') } catch (e) { error = e }
+  ok(error, 'should throw — was silently accepted with x reading as NUMBER')
+  ok(error.message.includes('Boolean and Number'), `message should name the ambiguity: ${error.message}`)
+})
+test('error: ambiguous BOOL∪NUMBER identity still rejects on decl-with-init (regression guard)', () => {
+  let error
+  try { compile('export let f = () => { let x = false ?? 1; return typeof x }') } catch (e) { error = e }
+  ok(error, 'should throw — pre-existing decl-path reject must stay intact')
+  ok(error.message.includes('Boolean and Number'), `message should name the ambiguity: ${error.message}`)
+})
+test('error: plain reassignment does NOT reject when the ambiguous merge only escapes via truthiness (no regression)', () => {
+  // rejectAmbiguousBoolIdentity only fires on an IDENTITY-observing use
+  // (typeof, ===) — a truthiness-only consumer (if/!/&&/||/?: condition)
+  // stays exempt on both the decl and the assignment path alike.
+  let error, result
+  try { result = compile('export let f = () => { let x; x = false ?? 1; return x ? 1 : 0 }') } catch (e) { error = e }
+  ok(!error, `truthiness-only use should compile fine: ${error?.message}`)
+  ok(result, 'should produce output')
+})
+
 test('error: unknown op produces readable message', () => {
   let error
   try { compile('export let f = () => new.target') } catch (e) { error = e }

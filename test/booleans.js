@@ -172,3 +172,55 @@ test('bool: bare boolean read from a container decodes as a real boolean', () =>
   is(run('export let f = () => { let a = [true, false]; return a[0] }')(), true)
   is(run('export let f = () => { let a = [true, false]; return typeof a[0] }')(), 'boolean')
 })
+
+// ============================================
+// audit-#12 BOOL_CARRIER closures (this commit) — test262's own reproductions
+// of the join/throw-slot carrier gap, pinned at every optimize level.
+// ============================================
+
+test('bool: throw/catch preserve boolean identity (audit-#12, was WRONG)', () => {
+  // src/compile/emit.js 'throw' emitter used `asF64(emit(expr))` — a raw
+  // numeric box, the 18th unnamed site of bridge.js storedValue's "boxed-
+  // value slot" gap (see the emitter's own doc comment). `throw true`
+  // crossed the throw slot as a plain NUMBER carrier: `catch(e){ e===true }`
+  // read false and `typeof e` read 'number'. Fixed by routing the thrown
+  // expression through storedValue (the established chokepoint) instead —
+  // covers a bare boolean AND an ambiguous join thrown directly.
+  const cases = [
+    ['export let f = () => { let r; try { throw true } catch (e) { r = typeof e } return r }', 'boolean'],
+    ['export let f = () => { let r; try { throw true } catch (e) { r = e === true } return r }', true],
+    ['export let f = () => { let r; try { throw false } catch (e) { r = e === false } return r }', true],
+    ['export let f = () => { let b = true; let r; try { throw b && false } catch (e) { r = e === false } return r }', true],
+    ['export let f = () => { let b = true; let r; try { throw b || false } catch (e) { r = e === true } return r }', true],
+  ]
+  for (const [src, want] of cases) for (const optimize of [0, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f(), want, `O${optimize} ${src}`)
+})
+
+test('bool: RegExp flag getters preserve boolean identity (audit-#12, was WRONG)', () => {
+  // module/regex.js's `.regex:global`/etc. getters emitted a raw `f64.const
+  // 0/1` instead of the boxed TRUE/FALSE atom: `regexp.global === true`
+  // bit-compared a plain NUMBER against the atom and always read false. The
+  // flag is a compile-time-known constant, so this now emits TRUE_IR/
+  // FALSE_IR directly (test262 literals/regexp/S7.8.5_A3.1_T1..T6).
+  const src = `export let f = () => {
+    let re = /(?:)/g
+    return (re.global === true ? 1 : 0) * 100 + (re.ignoreCase === false ? 1 : 0) * 10 + (re.multiline === false ? 1 : 0)
+  }`
+  for (const optimize of [0, 1, 2, 3]) is(jz(src, { optimize }).exports.f(), 111, `O${optimize}`)
+})
+
+test('bool: strict-eq boxes a short-circuited BOOL arm even when the sibling arm is unresolved (audit-#12, was WRONG)', () => {
+  // emitStrictEq's "one side proven BOOL, other side dynamic-unknown" branch
+  // assumed an unresolved (null) static kind can never carry a raw BOOL bit.
+  // False for `true || undefined`/`true || null`: VT['||'] can't unify BOOL
+  // with NULL/UNDEF (kind stays null), but the arm actually taken at runtime
+  // (`true`) is still raw BOOL. Fixed via mayCarryRawBool + the
+  // gate/body-split emitIdentitySafeArms (test262 logical-or/S11.11.2_A4_T4).
+  const cases = [
+    'export let f = () => (true || undefined) === true',
+    'export let f = () => (true || null) === true',
+  ]
+  for (const src of cases) for (const optimize of [0, 1, 2, 3])
+    is(jz(src, { optimize }).exports.f(), true, `O${optimize} ${src}`)
+})

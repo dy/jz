@@ -731,13 +731,31 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 //
 // A prefix covers a whole feature family that will not be implemented; a file
 // entry is an exact, individually-reviewed expectation (and gets xpass tracking).
+// Audit-#12 classification pass (this commit, same tagging scheme as
+// test262.js's own EXPECTED_FAIL_FILES banner — see that file for the full
+// [REJECT]/[DIALECT]/[WRONG-VALUE]/[VERIFY] legend). A representative sample
+// across this file's clusters was compiled and RUN (not just read) to check
+// the label against actual behavior — result: several long-standing "out of
+// scope" reasons here describe a SILENT wrong value, not a reject (confirmed
+// live: `parseInt({valueOf:()=>"42"})` → null not NaN; `typeof Promise` →
+// 'undefined' not 'function'; `Object.keys(fnWithOwnProp)` → [] not the real
+// keys; `JSON.stringify({toJSON:()=>42})` → "{}" not "42";
+// `"abcxdef".indexOf({valueOf:()=>"x"})` → 3 not -1 (real ToPrimitive tries
+// toString before valueOf for a string-hint coercion — jz calls valueOf
+// directly)). The common thread: a dynamic-dispatch / ToPrimitive coercion /
+// function-object-reflection protocol that jz's static object model can't
+// invoke, so it silently falls back to SOME other behavior instead of
+// rejecting. NOT fixed by this commit (out of the two assigned families);
+// tagged so the "out of scope" prose can't be mistaken for "safely rejects"
+// again. Where the specific file wasn't itself run, tagged [VERIFY] rather
+// than assumed into either bucket.
 const EXPECTED_FAIL_PREFIXES = [
-  ['built-ins/BigInt/', 'BigInt arithmetic/coercion — out of scope (no BigInt type)'],
-  ['built-ins/RegExp/prototype/exec/', 'dynamic RegExp lastIndex / u-flag exec — out of scope'],
-  ['built-ins/ArrayBuffer/', 'resizable ArrayBuffer options — out of scope'],
-  ['built-ins/SharedArrayBuffer/', 'growable/maxByteLength options — out of scope'],
-  ['built-ins/Atomics/notify/', 'notify/wait blocking semantics need the agent harness; resizable-buffer edges out of scope'],
-  ['built-ins/Symbol/', 'Symbol primitive semantics — out of scope'],
+  ['built-ins/BigInt/', '[DIALECT] BigInt arithmetic/coercion — out of scope (README: BigInt is a signed 64-bit integer, not arbitrary precision)'],
+  ['built-ins/RegExp/prototype/exec/', '[VERIFY] dynamic RegExp lastIndex / u-flag exec — out of scope'],
+  ['built-ins/ArrayBuffer/', '[VERIFY] resizable ArrayBuffer options — out of scope'],
+  ['built-ins/SharedArrayBuffer/', '[VERIFY] growable/maxByteLength options — out of scope'],
+  ['built-ins/Atomics/notify/', '[VERIFY] notify/wait blocking semantics need the agent harness; resizable-buffer edges out of scope'],
+  ['built-ins/Symbol/', '[REJECT] Symbol primitive semantics — out of scope (confirmed: bare `Symbol` reference rejects \'not in scope\')'],
   // audit-#11 item 7 sub-2 (pin bump 05bb0329 → b363f29d, 2026-06-04 →
   // 2026-07-31): four Iterator helper methods this newer upstream snapshot
   // added tests for that jz's Iterator pool (module/collection.js) does not
@@ -748,31 +766,44 @@ const EXPECTED_FAIL_PREFIXES = [
   // entries already tracked below (those four ARE implemented, only a narrow
   // corner of each is out of scope — chunks/windows/includes/join are not
   // implemented at all).
-  ['built-ins/Iterator/prototype/chunks/', 'Iterator.prototype.chunks — not implemented'],
-  ['built-ins/Iterator/prototype/windows/', 'Iterator.prototype.windows — not implemented'],
-  ['built-ins/Iterator/prototype/includes/', 'Iterator.prototype.includes — not implemented'],
-  ['built-ins/Iterator/prototype/join/', 'Iterator.prototype.join — not implemented'],
+  // audit-#12: this comment's OWN text says chunks/windows "silently no-op…
+  // returns undefined" — if accurate, that IS a silent wrong value, not a
+  // clean reject. A direct probe (`[1,2,3,4].values().chunks(2)`) instead hit
+  // a clean 'not a host object' REJECT, contradicting the comment above —
+  // so either the comment describes a different receiver shape (an external/
+  // host-object iterator) than the plain-array one just probed, or it's
+  // stale. Genuinely conflicting evidence: tagged [VERIFY], not asserted
+  // either way, rather than trusting either source uncritically.
+  ['built-ins/Iterator/prototype/chunks/', '[VERIFY] Iterator.prototype.chunks — not implemented; comment above claims silent no-op (WRONG-VALUE) but a plain-array-iterator probe rejected cleanly instead — conflicting evidence, not resolved'],
+  ['built-ins/Iterator/prototype/windows/', '[VERIFY] Iterator.prototype.windows — not implemented; comment above claims silent no-op (WRONG-VALUE) but a plain-array-iterator probe (of the sibling .chunks) rejected cleanly instead — conflicting evidence, not resolved'],
+  ['built-ins/Iterator/prototype/includes/', '[REJECT] Iterator.prototype.includes — not implemented (unregistered-stdlib guard rejects)'],
+  ['built-ins/Iterator/prototype/join/', '[REJECT] Iterator.prototype.join — not implemented (unregistered-stdlib guard rejects)'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
   // RegExp.escape — jz strings are UTF-8 bytes: the spec's \\uXXXX escaping of
   // astral/whitespace/lineterminator code points cannot arise byte-wise (non-ASCII
   // bytes are never regex-special and pass through).
-  ['built-ins/RegExp/escape/escaped-lineterminator.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
-  ['built-ins/RegExp/escape/escaped-surrogates.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
-  ['built-ins/RegExp/escape/escaped-whitespace.js', 'RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings)'],
+  ['built-ins/RegExp/escape/escaped-lineterminator.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
+  ['built-ins/RegExp/escape/escaped-surrogates.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
+  ['built-ins/RegExp/escape/escaped-whitespace.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
   // Array.of.call(CustomCtor, …) — this-constructor protocol on builtins
-  ['built-ins/Array/of/return-a-custom-instance.js', 'builtin .call with custom this-constructor — out of scope'],
+  ['built-ins/Array/of/return-a-custom-instance.js', '[REJECT] builtin .call with custom this-constructor — out of scope (confirmed: rejects "`this` not supported")'],
   // JSON.parse — ToString-coerces a non-string argument
-  ['built-ins/JSON/parse/text-object.js', 'JSON.parse non-string-arg ToString coercion — out of scope'],
-  // JSON.stringify — replacer argument (jz stringify is single-arg)
-  ['built-ins/JSON/stringify/replacer-array-duplicates.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-array-order.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-array-undefined.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-function-array-circular.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-function-object-circular.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-function-result-undefined.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/replacer-function-tojson.js', 'JSON.stringify replacer argument — out of scope'],
-  ['built-ins/JSON/stringify/value-bigint-replacer.js', 'JSON.stringify replacer argument — out of scope'],
+  ['built-ins/JSON/parse/text-object.js', '[WRONG-VALUE] JSON.parse non-string-arg ToString coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf below)'],
+  // JSON.stringify — replacer argument (jz stringify is single-arg). Function
+  // replacers confirmed REJECT cleanly ("JSON.stringify with a runtime
+  // replacer is not supported"); array replacers confirmed WORK for the
+  // basic case (`JSON.stringify(o, ['a'])` filters correctly) — these three
+  // specific files test array-replacer EDGE behavior (duplicate keys / key
+  // order / an explicit undefined element) not covered by that basic probe.
+  ['built-ins/JSON/stringify/replacer-array-duplicates.js', '[VERIFY] JSON.stringify array-replacer duplicate-key edge — out of scope'],
+  ['built-ins/JSON/stringify/replacer-array-order.js', '[VERIFY] JSON.stringify array-replacer key-order edge — out of scope'],
+  ['built-ins/JSON/stringify/replacer-array-undefined.js', '[VERIFY] JSON.stringify array-replacer explicit-undefined-element edge — out of scope'],
+  ['built-ins/JSON/stringify/replacer-function-array-circular.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
+  ['built-ins/JSON/stringify/replacer-function-object-circular.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
+  ['built-ins/JSON/stringify/replacer-function-result-undefined.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
+  ['built-ins/JSON/stringify/replacer-function-tojson.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
+  ['built-ins/JSON/stringify/value-bigint-replacer.js', '[VERIFY] JSON.stringify replacer argument (with a BigInt value present) — out of scope'],
   // Main-stabilization interim flip (2026-08-14, src/ir.js's bigintStrict()
   // doc comment): BigInt retirement Slice 1 added 8 entries here for files
   // that construct a BigInt inside a heterogeneous array/object literal or
@@ -784,17 +815,27 @@ const EXPECTED_FAIL_FILES = new Map([
   // not refuses, unless JZ_BIGINT_STRICT=1), these compile again exactly as
   // they did pre-Slice-1 — removed, not converted, restoring the pre-Slice-1
   // baseline (852/0, not Slice 1's 851/0).
-  // JSON.stringify — toJSON() hook
-  ['built-ins/JSON/stringify/value-tojson-not-function.js', 'JSON.stringify toJSON() hook — out of scope'],
+  // JSON.stringify — toJSON() hook. audit-#12: a DIRECT probe
+  // (`JSON.stringify({toJSON:()=>42})`) confirmed jz silently IGNORES the
+  // hook (gives "{}" — the function-valued prop dropped like any function —
+  // instead of "42", the hook's return). This specific file's name
+  // ("not-function") suggests it tests the INVERSE case (a `toJSON` property
+  // present but not callable, where real JS also ignores it) — plausibly
+  // still correct for the WRONG reason, not verified either way.
+  ['built-ins/JSON/stringify/value-tojson-not-function.js', '[VERIFY] JSON.stringify toJSON-not-a-function edge — out of scope (sibling toJSON-IS-a-function shape confirmed [WRONG-VALUE]: hook silently ignored, not invoked)'],
   // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges
-  ['built-ins/JSON/stringify/space-string-object.js', 'JSON.stringify wrapper-object coercion — out of scope'],
-  ['built-ins/JSON/stringify/value-boolean-object.js', 'JSON.stringify wrapper-object coercion — out of scope'],
-  ['built-ins/JSON/stringify/value-object-abrupt.js', 'JSON.stringify abrupt-getter propagation — out of scope'],
-  ['built-ins/JSON/stringify/value-object-circular.js', 'JSON.stringify circular-reference detection — out of scope'],
-  ['built-ins/JSON/stringify/value-symbol.js', 'JSON.stringify of Symbol value — out of scope'],
-  // String
-  ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
-  ['built-ins/String/prototype/indexOf/position-tointeger.js', 'String indexOf position object ToPrimitive coercion — out of scope'],
+  ['built-ins/JSON/stringify/space-string-object.js', '[WRONG-VALUE] JSON.stringify wrapper-object coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as String.indexOf below)'],
+  ['built-ins/JSON/stringify/value-boolean-object.js', '[WRONG-VALUE] JSON.stringify wrapper-object coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as String.indexOf below)'],
+  ['built-ins/JSON/stringify/value-object-abrupt.js', '[VERIFY] JSON.stringify abrupt-getter propagation — out of scope'],
+  ['built-ins/JSON/stringify/value-object-circular.js', '[VERIFY] JSON.stringify circular-reference detection — out of scope (trap vs silent divergence not distinguished)'],
+  ['built-ins/JSON/stringify/value-symbol.js', '[REJECT] JSON.stringify of Symbol value — out of scope (Symbol usage rejects upstream, confirmed)'],
+  // String — audit-#12 direct probe confirmed: `"abcxdef".indexOf({valueOf:
+  // ()=>"x"})` returns 3 (found via valueOf's "x"), not -1 (real ES: a
+  // string-hint ToPrimitive tries toString FIRST, which for a plain object
+  // gives "[object Object]", never found in "abcxdef" → -1). jz calls
+  // valueOf directly instead of the toString-first protocol.
+  ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', '[WRONG-VALUE] String wrapper-object ToPrimitive coercion — out of scope (confirmed: valueOf used directly, not the spec toString-first protocol — wrong search value, not a reject)'],
+  ['built-ins/String/prototype/indexOf/position-tointeger.js', '[WRONG-VALUE] String indexOf position object ToPrimitive coercion — out of scope (confirmed: `"aaaa".indexOf("a",{valueOf:()=>2})` returns 0, not 2 — the position argument\'s valueOf is never invoked, silently treated as absent)'],
   // audit-#11 item 7 sub-3 (gate honesty pass): three PRE-EXISTING real fails,
   // A1_T9 is the one PRE-EXISTING fail from that trio that's still genuinely out of
   // scope (not a bug — see the String/indexOf entries above for the same class):
@@ -823,43 +864,52 @@ const EXPECTED_FAIL_FILES = new Map([
   // same latent bug (confirmed live: `[1,2,3,4,5].slice(NaN, Infinity)` drops the
   // last element) — out of this bundle's scope (no test262 baseline row exercises
   // it), reported here, not fixed.
-  ['built-ins/String/prototype/slice/S15.5.4.13_A1_T9.js', 'String wrapper-object ToPrimitive coercion — out of scope'],
-  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', 'String(object) is JSON-ish, not "[object Object]" — documented divergence (boolean/number/null/undefined/array needles all coerce correctly)'],
+  ['built-ins/String/prototype/slice/S15.5.4.13_A1_T9.js', '[WRONG-VALUE] String wrapper-object ToPrimitive coercion — out of scope (same class as the String/indexOf entries above, confirmed there)'],
+  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', '[VERIFY] String(object) is JSON-ish, not "[object Object]" — CLAIMED "documented divergence" but this specific stringification behavior has no matching bullet in README "What differs from JS?"; the claim itself needs verifying (add to README, or reclassify)'],
   // Array
-  ['built-ins/Array/isArray/15.4.3.2-0-2.js', 'builtin function .length reflection — out of scope (function-object property semantics)'],
+  ['built-ins/Array/isArray/15.4.3.2-0-2.js', '[WRONG-VALUE] builtin function .length reflection — out of scope (function-object property semantics; same reflection pattern confirmed wrong for Promise/Object.keys below)'],
   // Object — function objects, array-likes, dynamic schema, iterable coercion
-  ['built-ins/Object/keys/15.2.3.14-3-2.js', 'Object.keys on function object — out of scope'],
-  ['built-ins/Object/keys/15.2.3.14-3-4.js', 'Object.keys on arguments/array-like — out of scope'],
-  ['built-ins/Object/assign/OnlyOneArgument.js', 'primitive ToObject boxing — out of scope'],
-  ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', 'Object.fromEntries iterable/entry coercion — out of scope'],
-  ['built-ins/Object/fromEntries/supports-symbols.js', 'Object.fromEntries Symbol keys — out of scope'],
+  ['built-ins/Object/keys/15.2.3.14-3-2.js', '[WRONG-VALUE] Object.keys on function object — out of scope (confirmed: `f.x=1; Object.keys(f)` gives [], not [\'x\'] — the dynamically-added own property is invisible to Object.keys on a function receiver)'],
+  ['built-ins/Object/keys/15.2.3.14-3-4.js', '[VERIFY] Object.keys on arguments/array-like — out of scope'],
+  ['built-ins/Object/assign/OnlyOneArgument.js', '[VERIFY] primitive ToObject boxing — out of scope (a basic probe\'s observable result happened to match JS here; the specific assertions this file makes were not individually checked)'],
+  ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', '[VERIFY] Object.fromEntries iterable/entry coercion — out of scope'],
+  ['built-ins/Object/fromEntries/supports-symbols.js', '[REJECT] Object.fromEntries Symbol keys — out of scope (Symbol usage rejects upstream, confirmed)'],
   // Promise — jz promises are fixed-shape values adopted STRUCTURALLY
   // (`__p === 1` → subscribe), not via a dynamic `.then` lookup, so overriding
   // `.then` on a native promise is not observed (documented divergence).
-  ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/prototype/then/resolve-settled-rejected-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/race/resolve-prms-cstm-then.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', 'overridden .then on a native promise — structural adoption divergence'],
-  ['built-ins/Promise/resolve-prms-cstm-then-immed.js', 'overridden .then on a native promise — structural adoption divergence'],
+  // audit-#12: a deliberate, self-consistent architectural choice (not an
+  // accident) — tagged [DIALECT] though this specific behavior has no
+  // verbatim README bullet; the general "method dispatch is static... traps
+  // cannot attach" Objects bullet covers it in spirit.
+  ['built-ins/Promise/prototype/then/resolve-pending-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-pending-rejected-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-settled-fulfilled-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/prototype/then/resolve-settled-rejected-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/race/resolve-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
+  ['built-ins/Promise/resolve-prms-cstm-then-immed.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   // Iterator — reflection / coercion edges
-  ['built-ins/Iterator/constructor.js', 'typeof Iterator as first-class value — out of scope'],
-  ['built-ins/Iterator/prototype/take/limit-tonumber.js', 'take limit object ToPrimitive coercion — out of scope'],
-  ['built-ins/Iterator/prototype/drop/limit-tonumber.js', 'drop limit object ToPrimitive coercion — out of scope'],
-  ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
-  ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
-  ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', 'running-generator reentrancy guard — out of scope'],
-  // Promise — function-object / namespace reflection
-  ['built-ins/Promise/constructor.js', 'typeof Promise as first-class value — out of scope'],
-  ['built-ins/Promise/exec-args.js', 'executor resolve/reject .length reflection — out of scope'],
-  ['built-ins/Promise/prototype/catch/S25.4.5.1_A2.1_T1.js', 'instanceof Function reflection — out of scope'],
-  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', 'instanceof Function reflection — out of scope'],
-  ['built-ins/Promise/withResolvers/resolvers.js', 'resolve/reject .name/.length reflection — out of scope'],
-  // parseInt / parseFloat
-  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', 'parseInt object-arg ToPrimitive coercion — out of scope'],
-  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', 'parseInt object-radix ToPrimitive coercion — out of scope'],
-  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', 'encodeURIComponent object ToPrimitive coercion — out of scope'],
+  ['built-ins/Iterator/constructor.js', '[WRONG-VALUE] typeof Iterator as first-class value — out of scope (same reflection pattern confirmed wrong for `typeof Promise` below)'],
+  ['built-ins/Iterator/prototype/take/limit-tonumber.js', '[WRONG-VALUE] take limit object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf)'],
+  ['built-ins/Iterator/prototype/drop/limit-tonumber.js', '[WRONG-VALUE] drop limit object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf)'],
+  ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (absent guard means the expected TypeError never fires; whether the call then proceeds to a wrong value or fails some other way was not checked)'],
+  ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
+  ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
+  // Promise — function-object / namespace reflection. audit-#12 direct probe
+  // confirmed: `typeof Promise` → 'undefined', not 'function' — jz doesn't
+  // reify Promise as a first-class value at all (unlike Symbol, which at
+  // least rejects cleanly); silently falls through to undefined instead.
+  ['built-ins/Promise/constructor.js', '[WRONG-VALUE] typeof Promise as first-class value — out of scope (confirmed: `typeof Promise` reads \'undefined\', not \'function\' — no reject)'],
+  ['built-ins/Promise/exec-args.js', '[WRONG-VALUE] executor resolve/reject .length reflection — out of scope (same reflection pattern confirmed wrong above)'],
+  ['built-ins/Promise/prototype/catch/S25.4.5.1_A2.1_T1.js', '[WRONG-VALUE] instanceof Function reflection — out of scope (same reflection pattern confirmed wrong above)'],
+  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', '[WRONG-VALUE] instanceof Function reflection — out of scope (same reflection pattern confirmed wrong above)'],
+  ['built-ins/Promise/withResolvers/resolvers.js', '[WRONG-VALUE] resolve/reject .name/.length reflection — out of scope (same reflection pattern confirmed wrong above)'],
+  // parseInt / parseFloat / encodeURIComponent — audit-#12 direct probe
+  // confirmed: `parseInt({valueOf:()=>"42"})` → null, not NaN (real ES:
+  // ToString(obj) → ToPrimitive('string') → the same skipped-coercion class).
+  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', '[WRONG-VALUE] parseInt object-arg ToPrimitive coercion — out of scope (confirmed: returns null, not NaN — the coercion is skipped, not merely differently rounded)'],
+  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', '[WRONG-VALUE] parseInt object-radix ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern)'],
+  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', '[WRONG-VALUE] encodeURIComponent object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern)'],
 ])
 
 function expectedFailReason(rel) {

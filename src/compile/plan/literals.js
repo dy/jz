@@ -1256,6 +1256,63 @@ const _disqualifyPromotion = (node, candidates, disqualified, initSet, valTypes)
   for (let i = 1; i < node.length; i++) _disqualifyPromotion(node[i], candidates, disqualified, initSet, valTypes)
 }
 
+// Array-returning methods from _TYPED_SAFE_METHODS whose RESULT is itself an
+// array-shaped value (as opposed to `.indexOf`/`.some`/`.forEach`/… whose
+// result is a scalar/undefined and so can never itself face an
+// Array.isArray-shaped identity check).
+const _DERIVED_ARRAY_METHODS = new Set(['slice', 'map', 'filter'])
+
+// Registers `d` (an `['=', name, rhs]` node — a let/const declarator OR a
+// bare reassignment) as derived when `rhs` is `rootName.slice/map/filter(…)`
+// and `rootName` resolves to a candidate. Shared by both walk sites below.
+const _registerIfDerived = (d, candidates, derived) => {
+  if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') return
+  const rhs = d[2]
+  if (!Array.isArray(rhs) || rhs[0] !== '()') return
+  const callee = rhs[1]
+  if (!Array.isArray(callee) || callee[0] !== '.' || typeof callee[1] !== 'string' ||
+      !_DERIVED_ARRAY_METHODS.has(callee[2])) return
+  const src = callee[1]
+  const root = candidates.has(src) ? src : derived.get(src)?.root
+  if (root) derived.set(d[1], { initDecl: d, root })
+}
+
+// Walk `body` to collect every `let derivedName = rootName.slice/map/filter(…)`
+// binding, where `rootName` resolves (directly, or through an earlier entry
+// in `derived` — same-body decls run in source order) to a literal-array
+// candidate. `derivedName` holds no literal of its own — it is never
+// promoted directly — but its VALUE is shaped by whatever `rootName`
+// resolves to at emit time, so an identity-observing use of `derivedName`
+// must disqualify `rootName`'s promotion just as surely as observing
+// `rootName` itself would. See promoteIntArrayLiteralsInBody's own comment
+// for how this is applied (a second _disqualifyPromotion pass, then
+// propagate to root) and _disqualifyPromotion's `Array.isArray` branch for
+// the gap this closes.
+//
+// Two registration sites, not one: `var`'s hoist-then-assign desugaring
+// (jz hoists `var` to a bare `let name` with NO initializer, then a
+// SEPARATE plain `name = …` statement — prepare/index.js) means a derived
+// rest-destructure binding is NOT always a let/const declarator — it can be
+// a bare top-level `['=', name, rootName.slice(…)]` reassignment sitting
+// next to (not inside) any `let`/`const` node. `_disqualifyPromotion`
+// already treats a bare `=` identically to a declarator once it's in
+// `initSet` (its very first check, `initSet.has(node)`, only cares about
+// object identity) — this collector just needs to also OFFER that node up.
+// Found live: `var [...b] = [4, 5]; Array.isArray(b)` (audit-#12 Family A,
+// test262 for/var-ary-ptrn-rest-id-* — the `let [...a]`/`const [...x]` forms
+// alone didn't exercise this path, so it shipped unnoticed initially).
+const _collectDerivedArrayNames = (node, candidates, derived) => {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (op === '=>') return
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) _registerIfDerived(node[i], candidates, derived)
+  } else if (op === '=') {
+    _registerIfDerived(node, candidates, derived)
+  }
+  for (let i = 1; i < node.length; i++) _collectDerivedArrayNames(node[i], candidates, derived)
+}
+
 // Walk `body` to collect every `let X = [intLit, …]` candidate. Each entry
 // carries the exact init-decl AST node so the disqualifier can skip the
 // binding's own LHS reference (which would otherwise look like a reassign).
@@ -1326,6 +1383,33 @@ const promoteIntArrayLiteralsInBody = (body) => {
   const { valTypes } = analyzeBody(body)
   const disqualified = new Set()
   _disqualifyPromotion(body, candidates, disqualified, initSet, valTypes)
+
+  // Derived-name flow (closes the KNOWN GAP the `Array.isArray` branch above
+  // documents): `let derivedName = candidateName.slice/map/filter(…)` hands
+  // `derivedName` a value that is ITSELF shaped by the candidate's promotion
+  // (a TYPED carrier instead of ARRAY once promoted) — test262's rest-pattern
+  // destructuring desugars exactly to this (`const [...x] = [1]` → `let %tmp
+  // = [1], x = %tmp.slice(0)`, prepare/index.js expandDestruct), so `x` is a
+  // derived name one hop from the literal candidate. Walk the SAME
+  // disqualification logic a second time treating derived names as the
+  // "candidates" — zero changes to _disqualifyPromotion itself, so every
+  // existing candidate-side pin (the .map/.filter-promotes tests, the
+  // string-key/mutation/escape disqualifiers) is untouched byte-for-byte —
+  // then propagate any hit back to the ROOT literal candidate. A derived
+  // name is never itself rewritten (only real candidates are), so this only
+  // ever REMOVES a candidate from `validated`, never adds one — precision
+  // over the blanket disqualifier the comment above rejected.
+  const derived = new Map()
+  _collectDerivedArrayNames(body, candidates, derived)
+  if (derived.size) {
+    const derivedNames = new Map()
+    const derivedInitSet = new Set()
+    for (const [name, { root, initDecl }] of derived) { derivedNames.set(name, root); derivedInitSet.add(initDecl) }
+    const derivedDisqualified = new Set()
+    _disqualifyPromotion(body, derivedNames, derivedDisqualified, derivedInitSet, valTypes)
+    for (const [name, root] of derivedNames) if (derivedDisqualified.has(name)) disqualified.add(root)
+  }
+
   const validated = new Set()
   for (const name of candidates.keys()) if (!disqualified.has(name)) validated.add(name)
   if (!validated.size) return { node: body, changed: false }

@@ -1887,6 +1887,46 @@ export function emitLoopFreshBoxed(body, frame) {
   return inits
 }
 
+// Loud identity-escape REJECT for a BOOL∪NUMBER-ambiguous merge landing in a
+// plain (non-boxed) local — STABILITY.md "Known limitations at v1": "Ambiguous
+// boolean∪number locals whose stored identity would escape reject at compile
+// time (truthiness-only uses compile fine); full support needs a tagged
+// Boolean carrier plan." `expr`'s own VT rule (kind.js hasAmbiguousBoolMerge)
+// took the BOOL-vs-NUMBER benign-coercion branch — sound for arithmetic
+// (`cond && 1` used as a number), unsound the moment `name`'s STORED value is
+// later read back for its own identity (typeof, strict-eq): the raw 0/1
+// carrier can't be told apart from a genuine coerced-false/true. Scans EVERY
+// use of `name` in the enclosing function body, not just the ones downstream
+// of this one assignment — the ambiguity lives in the BINDING's storage, so a
+// later `typeof name` sees exactly the same collapsed bits regardless of
+// which assignment produced them. A plain truthiness test (`if(name)`,
+// `!name`, `name ? : `) stays exempt — only typeof and other identity-
+// observing uses are unsupported; a captured (closure) use is handled by its
+// own identity-shadow box, not this reject. Shared by emitDecl (the original
+// call site, decl-with-init) and the plain-assignment '=' handler below (the
+// audit's BOOL_CARRIER family — `let x; x = false ?? 1`/`x = b && 1` skipped
+// this REJECT entirely, silently keeping the wrong raw NUMBER carrier).
+//
+// USE.REASSIGN is ALSO exempt, same as CAPTURE — a WRITE to `name` (this
+// very assignment included: scanBindingUses records every `x = …` target as
+// a REASSIGN "use" of x) is never itself an identity-OBSERVING read. Without
+// this exemption the plain-assignment call site below always saw its own
+// assignment statement as a disqualifying "use" and rejected UNCONDITIONALLY
+// — even `let x; x = false ?? 1; return x ? 1 : 0` (pure truthiness
+// downstream, which the decl-path's `let x = false ?? 1; return x ? 1 : 0`
+// correctly accepts) — a real over-rejection caught by this fix's own test
+// suite (test/errors.js "does NOT reject … truthiness"), not by the audit.
+function rejectAmbiguousBoolIdentity(name, expr) {
+  if (typeof name !== 'string' || !hasAmbiguousBoolMerge(expr)) return
+  const summary = scanBindingUses(ctx.func.body).get(name)
+  const uses = summary ? summary[BINDING_USE_USES] : []
+  const unsupported = uses.some(use =>
+    use[BINDING_USE_KIND] !== USE.CAPTURE && use[BINDING_USE_KIND] !== USE.REASSIGN &&
+    !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
+  if (unsupported)
+    err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
+}
+
 /** Emit let/const initializations as typed local.set instructions. */
 export function emitDecl(...inits) {
   const result = []
@@ -2233,15 +2273,7 @@ export function emitDecl(...inits) {
     // ctx.func.identityShadow for module/function.js's ctx.closure.make to
     // read back at the env-slot store — see that file's own comment there.
     const ambiguousIdentity = typeof name === 'string' && hasAmbiguousBoolMerge(init)
-    if (ambiguousIdentity && !neverEscapes) {
-      const summary = scanBindingUses(ctx.func.body).get(name)
-      const uses = summary ? summary[BINDING_USE_USES] : []
-      const unsupported = uses.some(use =>
-        use[BINDING_USE_KIND] !== USE.CAPTURE &&
-        !(use[BINDING_USE_KIND] === USE.BOOL_TEST && use[BINDING_USE_OP] !== 'typeof'))
-      if (unsupported)
-        err(`Binding '${name}' can be both Boolean and Number, but its stored carrier erases that identity — use the merge expression directly or normalize with Boolean()/Number()`)
-    }
+    if (ambiguousIdentity && !neverEscapes) rejectAmbiguousBoolIdentity(name, init)
     const identityCapture = ambiguousIdentity && ctx.func.capturedNames?.has(name)
     let identityShadowName = null
     let val = viewInit || withArrayLiteralEscape(neverEscapes, () => {
@@ -2902,8 +2934,27 @@ const nullableOperand = (n) => {
 //
 // NO unboxing anywhere: nothing at the guarded consumer sites currently
 // expects a raw atom, only a correctly-identity-carrying f64 value.
+//
+// Gate split from body (emitIdentitySafeArms): hasAmbiguousBoolMerge only
+// recognizes a join whose OTHER arm resolved to NUMBER (the specific benign-
+// coercion collapse its own doc describes) — it says nothing about a join
+// whose other arm's kind never resolved AT ALL (`true || undeclaredIdent`:
+// the RHS's valType is null, not NUMBER, so the merge reads as "not
+// ambiguous" even though the taken BOOL arm still needs its atom). Audit-#12
+// BOOL_CARRIER family, logical-or/-and short-circuit-vs-strict-eq shape
+// (S11.11.1_A2.1_T4/S11.11.2_A2.1_T4/A4_T4): `(true || x) === true` compiled
+// `(true||x)` through the plain asF64(emit()) fallback (strictA unresolved,
+// not proven BOOL) while `true` on the other side boxed to its atom via
+// carrierF64 — mismatched carriers, bit-compare false. emitStrictEq calls
+// emitIdentitySafeArms directly (bypassing this gate) exactly there, once its
+// OWN structural check (mayCarryRawBool) proves a BOOL arm is structurally
+// reachable — every other caller keeps going through the gated wrapper below,
+// unchanged.
 export function emitIdentitySafe(node) {
   if (!Array.isArray(node) || !hasAmbiguousBoolMerge(node)) return emit(node)
+  return emitIdentitySafeArms(node)
+}
+function emitIdentitySafeArms(node) {
   const [op] = node
   if (op === '?:') {
     const [, a, b, c] = node
@@ -3223,6 +3274,25 @@ function emitLooseEq(a, b, negate, strict) {
   return negate ? typed(['i32.eqz', call], 'i32') : call
 }
 
+// True when `node` is a `?:`/`&&`/`||`/`??` join with a structurally-reachable
+// BOOL arm — even one whose OVERALL static kind never resolved (VT['||'] etc.
+// return null, not NUMBER, when the OTHER arm's kind is itself unprovable,
+// e.g. a dead short-circuit branch referencing an unresolved name). Narrower
+// than hasAmbiguousBoolMerge's own definition would need to become to catch
+// this (that predicate specifically requires the OTHER arm to resolve
+// NUMBER — see emitIdentitySafe's doc comment above) — kept as its own
+// local, single-purpose check rather than widening the shared kind.js
+// predicate every other emission site also gates on.
+function mayCarryRawBool(node) {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === '?:') return valTypeOf(node[2]) === VAL.BOOL || valTypeOf(node[3]) === VAL.BOOL ||
+    mayCarryRawBool(node[2]) || mayCarryRawBool(node[3])
+  if (op === '&&' || op === '||' || op === '??') return valTypeOf(node[1]) === VAL.BOOL || valTypeOf(node[2]) === VAL.BOOL ||
+    mayCarryRawBool(node[1]) || mayCarryRawBool(node[2])
+  return false
+}
+
 function emitStrictEq(a, b, negate) {
   // `typeof x === 'type'` (prepare rewrote the literal to a numeric code) — typeof
   // always yields a string, so strict and loose agree; reuse the loose lowering.
@@ -3286,8 +3356,15 @@ function emitStrictEq(a, b, negate) {
   // even though the loose lowering's ToNumber would equate them. Compare bits:
   // the BOOL side boxes to its atom, the unknown side is compared verbatim.
   if ((strictA === VAL.BOOL) !== (strictB === VAL.BOOL) && (strictA == null || strictB == null)) {
-    const va = strictA === VAL.BOOL ? carrierF64(a, emit(a)) : asF64(emit(a))
-    const vb = strictB === VAL.BOOL ? carrierF64(b, emit(b)) : asF64(emit(b))
+    // An "unknown" (null) side isn't always genuinely opaque: `true || x`
+    // with `x` unresolved (e.g. dead short-circuit branch on an undeclared
+    // name) resolves neither BOOL nor NUMBER, but the arm actually reached at
+    // runtime (`true`) is still a raw BOOL that needs its atom — see
+    // mayCarryRawBool's own doc comment (audit-#12 BOOL_CARRIER family).
+    const va = strictA === VAL.BOOL ? carrierF64(a, emit(a))
+      : strictA == null && mayCarryRawBool(a) ? emitIdentitySafeArms(a) : asF64(emit(a))
+    const vb = strictB === VAL.BOOL ? carrierF64(b, emit(b))
+      : strictB == null && mayCarryRawBool(b) ? emitIdentitySafeArms(b) : asF64(emit(b))
     const cmp = typed(['i64.eq', ['i64.reinterpret_f64', va], ['i64.reinterpret_f64', vb]], 'i32')
     return negate ? typed(['i32.eqz', cmp], 'i32') : cmp
   }
@@ -5560,8 +5637,20 @@ export const emitter = {
   'throw': expr => {
     ctx.runtime.throws = ctx.runtime.userThrows = true
     const thrown = temp()
+    // The exception payload is an untyped ANY slot — exactly the boxed-value
+    // contract storedValue exists for (container stores, collection keys/
+    // values, generic call args; see its own doc comment above). A plain
+    // `asF64(emit(expr))` was the 18th unnamed site of the MECHANISM A gap
+    // bridge.js's storedValue doc comment describes: a bare Boolean thrown
+    // value (`throw true`) emits as a raw i32 0/1 then f64-converts to a
+    // plain 0.0/1.0 float — bit-identical to a genuinely thrown 0/1 number —
+    // so `catch (e) { e === true }` reads false and `typeof e` reads
+    // 'number', both wrong per ES 12.13 (audit-#12, BOOL_CARRIER family).
+    // storedValue also correctly boxes an AMBIGUOUS BOOL∪NUMBER throw
+    // (`throw cond && 1`) via emitIdentitySafe, and leaves every other kind
+    // (number/string/object/BigInt) byte-identical to the old asF64(emit()).
     return typed(['block',
-      ['local.set', `$${thrown}`, asF64(emit(expr))],
+      ['local.set', `$${thrown}`, storedValue(expr)],
       ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['local.get', `$${thrown}`]]],
       ['throw', '$__jz_err', ['local.get', `$${thrown}`]]], 'void')
   },
@@ -5758,6 +5847,14 @@ export const emitter = {
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)} — jz assigns to a plain variable, obj.prop, or arr[i] only`)
+    // Plain reassignment (`x = …`, `name` already bound) reaches a DIFFERENT
+    // emitter than a decl-with-init (emitDecl above) — the ambiguous-identity
+    // REJECT lived only on the decl path, so `let x; x = false ?? 1` (and any
+    // later `typeof x`/`x === false`) skipped it entirely and silently kept
+    // the collapsed raw-NUMBER carrier (audit-#12 BOOL_CARRIER family). Same
+    // helper, same contract: rejects only when SOME use of `name` actually
+    // observes its identity — a truthiness-only reassignment still compiles.
+    rejectAmbiguousBoolIdentity(name, val)
     if (isNullishLit(val)) ctx.func.maybeNullish?.add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
     if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
