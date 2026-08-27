@@ -62,6 +62,17 @@ export const mergeParamFact = (rep, key, observed) => {
   else if (rep[key] !== observed) { rep[key] = null; latticeMeet.changed = true }   // disagreement → TOP
 }
 
+/** VAL.* kinds `emitTypeTag` (src/ir.js, VAL_TO_PTR) hardcodes a `(i32.const
+ *  PTR.*)` receiver tag for, given a provable exact `val`. Kept as an
+ *  independent copy, not an import: ir.js is the compile-time IR layer and
+ *  already imports from this file's own consumers (src/compile/*) — the
+ *  handful of literal kind names here is far cheaper than risking a cycle,
+ *  and VAL_TO_PTR's own membership is effectively frozen (a PTR tag doc
+ *  contract, layout.js). 'string' is deliberately absent: ir.js's own
+ *  VAL_TO_PTR comment already excludes it as ambiguous (heap vs SSO) — it
+ *  was never hardcode-eligible in the first place. */
+const PTR_TAGGED_KINDS = new Set(['array', 'object', 'set', 'map', 'closure', 'typed', 'buffer', 'date'])
+
 /** Is a fact's `val` (the exact-kind meet field) safe to trust as a receiver's
  *  STATIC representation tag — e.g. emitTypeTag (src/ir.js) hardcoding
  *  `(i32.const PTR.*)` instead of a runtime `$__ptr_type` read?
@@ -69,7 +80,7 @@ export const mergeParamFact = (rep, key, observed) => {
  *  `val` and `possibleKinds` are two INDEPENDENT lattices over the same call
  *  sites (this file's own header: "no cross-check between the two"). Ordinarily
  *  that's fine — `val`'s meet already polices its OWN agreement (mergeParamFact
- *  pois to TOP on disagreement). But `val`'s meet only sees the sites whose
+ *  poisons to TOP on disagreement). But `val`'s meet only sees the sites whose
  *  argument this fixpoint could itself resolve to an EXACT single kind; a site
  *  passing an unresolved expression (e.g. an array element / a further
  *  pass-through of a still-unsettled caller param — the shape a compiler's own
@@ -85,12 +96,25 @@ export const mergeParamFact = (rep, key, observed) => {
  *  'closed'` is this file's own existing proof that EVERY call site was
  *  enumerated (never external/indirect/exported) — so a closed, size > 1
  *  `possibleKinds` is a SOUND, complete-census refutation of a same-fact `val`
- *  that only ever saw one (non-representative) site vote. Absent
- *  `possibleKinds` (not tracked for this fact at all) changes nothing —
- *  `val` is trusted exactly as before; this is a narrowing-only guard, never a
- *  new source of trust. */
+ *  that only ever saw one (non-representative) site vote.
+ *
+ *  Gated on `PTR_TAGGED_KINDS.has(r.val)`, not bare `possibleKinds.size > 1`:
+ *  distrust is only WARRANTED where a wrongly-trusted `val` can actually
+ *  reach emitTypeTag's hardcode branch. `val`'s OWN consumers outside that
+ *  one branch (numeric specialization, method dispatch, …) have no PTR-tag
+ *  hardcoding hazard — poisoning THEIR `val` too on any polymorphism closed-
+ *  census happens to observe (bigint-vs-number, string-vs-hash, …) traded a
+ *  targeted fix for a compiler-wide de-optimization with its own correctness
+ *  surface (confirmed live: the untargeted version, gating on bare
+ *  `possibleKinds.size > 1`, flipped 324 unrelated facts compiling the
+ *  self-compile graph and newly failed kernel-parity/kernel-oracle's
+ *  typed-array cases — reverted in favor of this narrower gate). Absent
+ *  `possibleKinds`, or a `val` no PTR tag hardcode ever reads, changes
+ *  nothing — `val` is trusted exactly as before; this is a narrowing-only
+ *  guard on the ONE unsound consumer, never a new source of trust and never
+ *  a new source of distrust elsewhere. */
 export const paramValTrustworthy = (r) =>
-  !(r?.possibleKinds && r.kindsCoverage === 'closed' && r.possibleKinds.size > 1)
+  !(r?.val && PTR_TAGGED_KINDS.has(r.val) && r.possibleKinds && r.kindsCoverage === 'closed' && r.possibleKinds.size > 1)
 
 /** Get-or-create per-param rep at (funcName, paramIdx) on a paramReps map. */
 export const ensureParamRep = (paramReps, funcName, k) => {
