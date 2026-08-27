@@ -514,7 +514,17 @@ function evalStringMethod(name, s, args) {
     return isAsciiSafe(r) ? strResult(r) : null
   }
   if (name === 'charAt' && args.length <= 1 && isNumOrAbsent(args[0])) return strResult(s.charAt(args[0]?.v ?? 0))
-  if (name === 'indexOf' && args.length >= 1 && args[0]?.t === 'str' && isAsciiSafe(args[0].v))
+  // Same isNumOrAbsent guard as slice/charAt above, applied to the position
+  // arg — a surviving sibling of that exact bug class, missed by the earlier
+  // fix: `args[1]?.v` alone can't distinguish "no position argument" from "a
+  // position argument present but unfoldable" (an object, an IIFE, …) — both
+  // read as `undefined` through optional chaining, so an unfoldable position
+  // silently folded as if OMITTED (confirmed live: `"aaaa".indexOf("a",
+  // {valueOf:()=>2})` folded to `"aaaa".indexOf("a", undefined)` === 0,
+  // never reaching the real emitter's own correct object-ToPrimitive path —
+  // spec truth is 2). isNumOrAbsent(args[1]) makes this fold bail (return
+  // null) instead, falling through to the runtime posIndex()/toNumF64() path.
+  if (name === 'indexOf' && args.length >= 1 && args.length <= 2 && args[0]?.t === 'str' && isAsciiSafe(args[0].v) && isNumOrAbsent(args[1]))
     return numResult(s.indexOf(args[0].v, args[1]?.v))
   return null
 }

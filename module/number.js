@@ -16,7 +16,7 @@ import { isReassigned } from '../src/ast.js'
 import { dataPush } from '../src/static-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
-import { inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 
 // ─── Shared decimal-number parsing fragments ────────────────────────────────
@@ -1797,6 +1797,34 @@ export default (ctx) => {
     ${EL_SCALE}
     (local.get $result))`
 
+  // A statically OBJECT-typed argument needs ToPrimitive (try valueOf, then
+  // toString) before parseInt/parseFloat can treat it as a string — jz's
+  // object model has no general dynamic-dispatch machinery to call an
+  // arbitrary (possibly user-defined) valueOf/toString method and re-enter
+  // ToPrimitive on its result, so this can't silently fall through to
+  // treating the object's raw bits as a string pointer (confirmed live:
+  // parseInt({valueOf:()=>"42"}) returned null, not 42 — the coercion was
+  // skipped, not differently rounded). Reject; string/number/boolean/array
+  // arguments are unaffected and keep their existing (correct) handling.
+  // valTypeOf(x) alone MISSES this once the enclosing function also contains
+  // a try/catch anywhere (even unrelated, even textually after this call) —
+  // confirmed live: valTypeOf stayed unresolved (not VAL.OBJECT) for the
+  // exact same `var object = {valueOf:…}` shape once a sibling `try {…}
+  // catch(e){…}` existed later in the SAME function, letting the object slip
+  // through uncoerced (test262 built-ins/parseInt/S15.1.2.2_A1_T7.js, which
+  // has exactly this shape, was NOT caught by the valTypeOf-only version of
+  // this check). ctx.schema.slotOf tracks an object literal's OWN property
+  // schema independently of that flow-sensitive valType inference (the same
+  // resolution src/ir.js's primMethodIdx already relies on for toPrimitiveChain),
+  // so check it directly too rather than trusting valTypeOf as the sole signal.
+  const rejectObjectArg = (x, who) => {
+    const objType = valTypeOf(x) === VAL.OBJECT
+    const hasToPrimitiveMethod = typeof x === 'string' && ctx.schema?.slotOf &&
+      (ctx.schema.slotOf(x, 'valueOf') >= 0 || ctx.schema.slotOf(x, 'toString') >= 0)
+    if (objType || hasToPrimitiveMethod)
+      err(`${who}: an object argument (with valueOf/toString) is not supported — jz has no general ToPrimitive dynamic dispatch; call .valueOf()/.toString() (or String()/Number()) yourself before passing the result`)
+  }
+
   // ToString(arg) for the string-input builtins. A statically-known boolean must
   // render as "true"/"false" (spec step 1: ToString) before parsing — otherwise
   // its 0/1 carrier bits are fed to the parser as if a string pointer. Other types
@@ -1811,6 +1839,8 @@ export default (ctx) => {
   // need no env.parseInt/parseFloat import at all.
   ctx.core.emit['Number.parseInt'] = (x, radix) => {
     inc('__parseInt')
+    rejectObjectArg(x, 'parseInt')
+    rejectObjectArg(radix, 'parseInt')
     const radixIR = radix == null ? ['i32.const', 0] : toI32(toNumF64(radix, emit(radix)))
     return typed(['call', '$__parseInt', strInputI64(x), radixIR], 'f64')
   }
@@ -1818,6 +1848,7 @@ export default (ctx) => {
 
   ctx.core.emit['Number.parseFloat'] = (x) => {
     inc('__parseFloat')
+    rejectObjectArg(x, 'parseFloat')
     return typed(['call', '$__parseFloat', strInputI64(x)], 'f64')
   }
   ctx.core.emit['parseFloat'] = ctx.core.emit['Number.parseFloat']

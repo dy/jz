@@ -86,6 +86,7 @@ export const ITER_HELPERS_RUNTIME = `
 let __it_fn = (f, name) => { if (f == null || typeof f !== 'function') throw 'TypeError: ' + name + ' callback must be callable' }
 let __it_cl = (it) => { if (typeof it.return === 'function') it.return(undefined) }
 let __it_lim = (n, name) => {
+  if (typeof n === 'object') throw 'TypeError: ' + name + ' limit is an object (with valueOf/toString) — jz has no general ToPrimitive dynamic dispatch for a value received through an untyped parameter; call .valueOf()/.toString() (or Number()) yourself before passing the result'
   let lim = +n
   if (lim !== lim) throw 'RangeError: ' + name + ' limit must not be NaN'
   lim = Math.trunc(lim)

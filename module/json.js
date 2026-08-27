@@ -1651,6 +1651,17 @@ ${localDecls}
   }
 
   ctx.core.emit['JSON.parse'] = (x) => {
+    // An OBJECT argument needs ToString → ToPrimitive (try valueOf, then
+    // toString) before parsing, same class as parseInt/encodeURIComponent's
+    // own reject (module/number.js's rejectObjectArg, module/string.js's
+    // uriEncodeBind — jz's stdlib coercion layer has no general dynamic
+    // valueOf/toString dispatch). Without this check the argument falls
+    // through to jsonConstString below, which can't render it as JSON source
+    // text either, so it previously surfaced as a confusing runtime "Unexpected
+    // token in JSON" — true but misleading (looks like a JSON syntax bug, not
+    // an unsupported-argument one). Reject with the real reason instead.
+    if (valTypeOf(x) === VAL.OBJECT)
+      err('JSON.parse: an object argument (with valueOf/toString) is not supported — jz has no general ToPrimitive dynamic dispatch; call String() on it yourself before passing the result')
     // A non-string primitive literal argument is coerced via ToString, then
     // parsed: JSON.parse(0) → "0", JSON.parse(null) → "null", JSON.parse() →
     // "undefined" (which parses to a SyntaxError, the spec-correct outcome).

@@ -774,8 +774,17 @@ const EXPECTED_FAIL_PREFIXES = [
   // host-object iterator) than the plain-array one just probed, or it's
   // stale. Genuinely conflicting evidence: tagged [VERIFY], not asserted
   // either way, rather than trusting either source uncritically.
-  ['built-ins/Iterator/prototype/chunks/', '[VERIFY] Iterator.prototype.chunks — not implemented; comment above claims silent no-op (WRONG-VALUE) but a plain-array-iterator probe rejected cleanly instead — conflicting evidence, not resolved'],
-  ['built-ins/Iterator/prototype/windows/', '[VERIFY] Iterator.prototype.windows — not implemented; comment above claims silent no-op (WRONG-VALUE) but a plain-array-iterator probe (of the sibling .chunks) rejected cleanly instead — conflicting evidence, not resolved'],
+  // fix/wrong-values-2: resolved by evidence — [REJECT], not [WRONG-VALUE].
+  // Re-probed live (a plain array iterator's `.chunks(2)`/`.windows(2)`):
+  // both cleanly throw "'chunks'/'windows' — jz dispatched this method call
+  // to the host, but the receiver is not a host object" — a loud runtime
+  // reject, not a silent no-op. The message doesn't match this runner's own
+  // skip-allowlist (no "not supported"/"is not in scope" substring), so it
+  // stays a tracked xfail rather than an auto-skip — that's a message-text
+  // gap, not a silent-value gap; out of this pass's scope to also patch the
+  // message.
+  ['built-ins/Iterator/prototype/chunks/', '[REJECT] Iterator.prototype.chunks — not implemented; confirmed live: a plain-array-iterator receiver rejects cleanly ("not a host object"), no silent no-op'],
+  ['built-ins/Iterator/prototype/windows/', '[REJECT] Iterator.prototype.windows — not implemented; confirmed live: a plain-array-iterator receiver rejects cleanly ("not a host object"), no silent no-op'],
   ['built-ins/Iterator/prototype/includes/', '[REJECT] Iterator.prototype.includes — not implemented (unregistered-stdlib guard rejects)'],
   ['built-ins/Iterator/prototype/join/', '[REJECT] Iterator.prototype.join — not implemented (unregistered-stdlib guard rejects)'],
 ]
@@ -788,8 +797,28 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/RegExp/escape/escaped-whitespace.js', '[DIALECT] RegExp.escape non-ASCII \\u-escaping — out of scope (byte-wise strings; README: Strings are UTF-8 bytes, not UTF-16)'],
   // Array.of.call(CustomCtor, …) — this-constructor protocol on builtins
   ['built-ins/Array/of/return-a-custom-instance.js', '[REJECT] builtin .call with custom this-constructor — out of scope (confirmed: rejects "`this` not supported")'],
-  // JSON.parse — ToString-coerces a non-string argument
-  ['built-ins/JSON/parse/text-object.js', '[WRONG-VALUE] JSON.parse non-string-arg ToString coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf below)'],
+  // fix/wrong-values-2: JSON.parse/parseInt/parseFloat/encodeURIComponent/
+  // encodeURI's object-argument ToPrimitive gap (jz's stdlib coercion layer
+  // has no general dynamic valueOf/toString dispatch) gained a COMPILE-TIME
+  // reject (module/number.js rejectObjectArg, module/string.js
+  // uriEncodeBind, module/json.js JSON.parse) for the statically-provable-
+  // object case. Confirmed live at the SIMPLE case (a single, try/catch-free
+  // `var o = {...}; parseInt(o)`); JSON.parse/text-object.js's own shape is
+  // exactly that simple case and now cleanly rejects "not supported" → skip,
+  // no entry needed. The full parseInt/encodeURIComponent test262 FILES
+  // (below) are NOT resolved, though — full-battery re-run surfaced a
+  // GENUINE gate regression the isolated probes during development missed:
+  // valTypeOf(name) — the check's only signal — stays unresolved (neither
+  // VAL.OBJECT nor anything else conclusive) for a `var object = {…}`
+  // once the SAME function ALSO contains a try/catch ANYWHERE, even
+  // unrelated, even textually after the affected call (both files' remaining
+  // CHECK blocks use try/catch for abrupt-completion assertions). Adding a
+  // ctx.schema.slotOf(name,'valueOf'/'toString') fallback (the same
+  // resolution src/ir.js's toPrimitiveChain already leans on) did NOT
+  // resolve it either — the deeper cause is still open. Reverted the
+  // over-claimed "now passes" tag on these two files; still real
+  // [WRONG-VALUE] xfail entries below (JSON.parse's own shape is
+  // unaffected — it has no map entry because IT stays try/catch-free).
   // JSON.stringify — replacer argument (jz stringify is single-arg). Function
   // replacers confirmed REJECT cleanly ("JSON.stringify with a runtime
   // replacer is not supported"); array replacers confirmed WORK for the
@@ -822,20 +851,83 @@ const EXPECTED_FAIL_FILES = new Map([
   // ("not-function") suggests it tests the INVERSE case (a `toJSON` property
   // present but not callable, where real JS also ignores it) — plausibly
   // still correct for the WRONG reason, not verified either way.
-  ['built-ins/JSON/stringify/value-tojson-not-function.js', '[VERIFY] JSON.stringify toJSON-not-a-function edge — out of scope (sibling toJSON-IS-a-function shape confirmed [WRONG-VALUE]: hook silently ignored, not invoked)'],
-  // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges
-  ['built-ins/JSON/stringify/space-string-object.js', '[WRONG-VALUE] JSON.stringify wrapper-object coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as String.indexOf below)'],
-  ['built-ins/JSON/stringify/value-boolean-object.js', '[WRONG-VALUE] JSON.stringify wrapper-object coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as String.indexOf below)'],
+  // fix/wrong-values-2: resolved by evidence. Per-line probes confirmed the
+  // file's OWN question (does jz wrongly INVOKE a non-callable toJSON
+  // property?) is answered correctly — jz never invokes ANY toJSON hook at
+  // all (confirmed separately, still true, still unfixed: a genuinely
+  // CALLABLE toJSON is silently ignored, `JSON.stringify({toJSON:()=>42})`
+  // gives "{}" not "42" — a real gap, but not what THIS file tests), so
+  // "not invoked" is spec-correct here regardless of the reason. The file
+  // still fails, on an UNRELATED bug the probes surfaced: line 25's
+  // `JSON.stringify({toJSON: /re/})` (a RegExp VALUE, not a toJSON
+  // question) serializes as "{\"toJSON\":0}" instead of "{\"toJSON\":{}}" —
+  // a genuinely new silent-wrong-value class (RegExp-as-a-JSON-value
+  // serialization) found by this pass, NOT fixed (ran out of time to trace
+  // it safely) — retagged from [VERIFY] to an honest [WRONG-VALUE] with the
+  // real, narrower cause named, not left as an open question.
+  ['built-ins/JSON/stringify/value-tojson-not-function.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] JSON.stringify({toJSON: /re/}) (a RegExp VALUE) serializes as {"toJSON":0} instead of {"toJSON":{}} — confirmed live; unrelated to the file\'s own toJSON-callability question, which jz already answers correctly (no toJSON hook is ever invoked, callable or not)'],
+  // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges.
+  // fix/wrong-values-2: space-string-object.js retagged [DIALECT] — confirmed
+  // live it does NOT silently compute a plausible value; it loudly THROWS
+  // (test262's own assert.sameValue catching a real mismatch), because jz's
+  // `new String(x)`/`new Boolean(x)` lowering (jzify/transform.js's `new`
+  // handler) treats a boxed-primitive constructor call as its bare primitive
+  // — documented elsewhere in this exact file as "boxed primitive object
+  // outside current jz scope" (shouldSkip's `new (Boolean|Number|String)`
+  // rule, for the LANGUAGE suite) — so a later `str.toString = fn` override
+  // on the "wrapper" has nothing real to attach to and is silently a no-op,
+  // same as assigning a property to any primitive in sloppy mode. Same
+  // family, not independently re-verified line-by-line: value-boolean-object.js
+  // is UNCHANGED — direct probe confirms `JSON.stringify(new Boolean(true))`
+  // already gives "true" correctly, but the full file's third assertion uses
+  // a runtime FUNCTION replacer, which was ALREADY correctly rejecting
+  // ("JSON.stringify with a runtime replacer is not supported") before this
+  // pass — that reject fires at compile time regardless of assertion order,
+  // so the whole file already classified as skip; no entry needed, pruned.
+  ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
   ['built-ins/JSON/stringify/value-object-abrupt.js', '[VERIFY] JSON.stringify abrupt-getter propagation — out of scope'],
   ['built-ins/JSON/stringify/value-object-circular.js', '[VERIFY] JSON.stringify circular-reference detection — out of scope (trap vs silent divergence not distinguished)'],
   ['built-ins/JSON/stringify/value-symbol.js', '[REJECT] JSON.stringify of Symbol value — out of scope (Symbol usage rejects upstream, confirmed)'],
-  // String — audit-#12 direct probe confirmed: `"abcxdef".indexOf({valueOf:
-  // ()=>"x"})` returns 3 (found via valueOf's "x"), not -1 (real ES: a
-  // string-hint ToPrimitive tries toString FIRST, which for a plain object
-  // gives "[object Object]", never found in "abcxdef" → -1). jz calls
-  // valueOf directly instead of the toString-first protocol.
-  ['built-ins/String/prototype/indexOf/S15.5.4.7_A1_T9.js', '[WRONG-VALUE] String wrapper-object ToPrimitive coercion — out of scope (confirmed: valueOf used directly, not the spec toString-first protocol — wrong search value, not a reject)'],
-  ['built-ins/String/prototype/indexOf/position-tointeger.js', '[WRONG-VALUE] String indexOf position object ToPrimitive coercion — out of scope (confirmed: `"aaaa".indexOf("a",{valueOf:()=>2})` returns 0, not 2 — the position argument\'s valueOf is never invoked, silently treated as absent)'],
+  // fix/wrong-values-2: String.prototype.indexOf/slice's wrapper-object
+  // receiver coercion (`new String(obj)` where obj has valueOf/toString) and
+  // indexOf's position-argument ToPrimitive coercion are both FIXED — full
+  // files now PASS outright (confirmed live via the harness), removed as
+  // newly-passing, not pruned as skip. Root cause was shared, in
+  // src/ir.js's toPrimitiveChain (OrdinaryToPrimitive's method-fallback
+  // chain, called by both toNumF64 and toStrI64 — every ToPrimitive call
+  // site in the compiler shares this one function): `present` (from
+  // primMethodIdx) only proves a method NAME exists in the object's schema,
+  // not that its stored VALUE is callable — `{toString: void 0}` (an
+  // ordinary object literal, `S15.5.4.7_A1_T9.js`'s exact shape) has
+  // "toString" in its schema with a non-callable value, and the chain called
+  // it anyway via ctx.closure.call, a WebAssembly "table index is out of
+  // bounds" trap on the non-closure bit pattern. Fixed by guarding each
+  // slot's call behind a PTR.CLOSURE check (GetMethod, ES 7.3.11: a
+  // non-callable method value is treated as absent, not invoked) — restructured
+  // around `br` instead of `br_if` inside the guard (a non-taken `br_if`
+  // leaves its value on the stack, which doesn't balance inside a void `if`;
+  // an unconditional `br` has no not-taken path to leave anything on).
+  // position-tointeger.js's remaining "valueOf never invoked" symptom was a
+  // SEPARATE, sibling bug in src/prepare/pre-eval.js's evalStringMethod:
+  // `indexOf`'s constant-fold used `args[1]?.v` directly (unlike its
+  // slice/charAt siblings just above it in that file, already guarded by
+  // isNumOrAbsent from an earlier fix) — an unfoldable position argument
+  // (an object, evalConst → null) and a genuinely OMITTED one (undefined)
+  // both read as `undefined` through optional chaining, so the fold silently
+  // treated "present but unfoldable" as "absent", masking the real runtime
+  // coercion path (which the toPrimitiveChain fix above now computes
+  // correctly) from ever running. Fixed by applying the same isNumOrAbsent
+  // guard indexOf's siblings already used.
+  // Not one of the flagged files, but a residual worth naming: a plain
+  // object with NO own toString/valueOf at all (relying on JS's INHERITED
+  // Object.prototype.toString → "[object Object]") still isn't matched —
+  // jz's toPrimitiveChain only ever consults an object's OWN schema (jz has
+  // no prototype chain at all, a documented v1 limitation), so e.g.
+  // `"abcxdef".indexOf({valueOf:()=>"x"})` still returns 3 (valueOf's "x"),
+  // not -1 (real ES: inherited toString wins first, finds nothing). Left
+  // open — no flagged entry in either corpus exercises it, and implementing
+  // an inherited-toString fallback is a materially bigger feature than a
+  // per-call-site coercion fix.
   // audit-#11 item 7 sub-3 (gate honesty pass): three PRE-EXISTING real fails,
   // A1_T9 is the one PRE-EXISTING fail from that trio that's still genuinely out of
   // scope (not a bug — see the String/indexOf entries above for the same class):
@@ -864,12 +956,21 @@ const EXPECTED_FAIL_FILES = new Map([
   // same latent bug (confirmed live: `[1,2,3,4,5].slice(NaN, Infinity)` drops the
   // last element) — out of this bundle's scope (no test262 baseline row exercises
   // it), reported here, not fixed.
-  ['built-ins/String/prototype/slice/S15.5.4.13_A1_T9.js', '[WRONG-VALUE] String wrapper-object ToPrimitive coercion — out of scope (same class as the String/indexOf entries above, confirmed there)'],
+  // fix/wrong-values-2: S15.5.4.13_A1_T9.js (`new String(obj).slice(undefined,
+  // obj)`, obj = {valueOf:function(){}, toString:void 0}) is the SAME
+  // toPrimitiveChain callable-guard fix as the String/indexOf entries above —
+  // now PASSES outright, removed as newly-passing (not pruned as skip).
   ['built-ins/String/prototype/indexOf/searchstring-tostring.js', '[VERIFY] String(object) is JSON-ish, not "[object Object]" — CLAIMED "documented divergence" but this specific stringification behavior has no matching bullet in README "What differs from JS?"; the claim itself needs verifying (add to README, or reclassify)'],
-  // Array
-  ['built-ins/Array/isArray/15.4.3.2-0-2.js', '[WRONG-VALUE] builtin function .length reflection — out of scope (function-object property semantics; same reflection pattern confirmed wrong for Promise/Object.keys below)'],
-  // Object — function objects, array-likes, dynamic schema, iterable coercion
-  ['built-ins/Object/keys/15.2.3.14-3-2.js', '[WRONG-VALUE] Object.keys on function object — out of scope (confirmed: `f.x=1; Object.keys(f)` gives [], not [\'x\'] — the dynamically-added own property is invisible to Object.keys on a function receiver)'],
+  // fix/wrong-values-2: Array.isArray.length — same function-object
+  // .length/.name reflection gap as Promise's own entries below (jz compiles
+  // closures/named functions AND builtins straight to WASM funcs with no
+  // reflectable metadata object). Fixed with a compile-time reject
+  // (prepare/index.js's `.` handler, NS_CTORS-name check) — confirmed live,
+  // now cleanly rejects "not supported" → skip, no entry needed.
+  // Object — function objects, array-likes, dynamic schema, iterable coercion.
+  // fix/wrong-values-2: Object.keys on a function receiver is the SAME
+  // function-object-reflection gap — module/object.js's emitKeysGeneric now
+  // rejects a VAL.CLOSURE receiver ("not supported") → skip, no entry needed.
   ['built-ins/Object/keys/15.2.3.14-3-4.js', '[VERIFY] Object.keys on arguments/array-like — out of scope'],
   ['built-ins/Object/assign/OnlyOneArgument.js', '[VERIFY] primitive ToObject boxing — out of scope (a basic probe\'s observable result happened to match JS here; the specific assertions this file makes were not individually checked)'],
   ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', '[VERIFY] Object.fromEntries iterable/entry coercion — out of scope'],
@@ -888,28 +989,53 @@ const EXPECTED_FAIL_FILES = new Map([
   ['built-ins/Promise/race/resolve-prms-cstm-then.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-deferred.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
   ['built-ins/Promise/resolve-prms-cstm-then-immed.js', '[DIALECT] overridden .then on a native promise — structural adoption divergence'],
-  // Iterator — reflection / coercion edges
-  ['built-ins/Iterator/constructor.js', '[WRONG-VALUE] typeof Iterator as first-class value — out of scope (same reflection pattern confirmed wrong for `typeof Promise` below)'],
-  ['built-ins/Iterator/prototype/take/limit-tonumber.js', '[WRONG-VALUE] take limit object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf)'],
-  ['built-ins/Iterator/prototype/drop/limit-tonumber.js', '[WRONG-VALUE] drop limit object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern as parseInt/String.indexOf)'],
+  // Iterator — reflection / coercion edges.
+  // fix/wrong-values-2: `typeof Iterator` (constructor.js) is the SAME
+  // bare-builtin-name-as-value gap as `typeof Promise` below. Root cause:
+  // src/prepare/index.js's isUnresolvableBareIdent folded it straight to the
+  // literal string 'undefined' per spec §13.5.3's "unresolvable reference"
+  // rule — WRONG, because `Promise`/`Iterator` are real, spec-defined
+  // globals (not unresolvable), just ones jz has no first-class VALUE for.
+  // Fixed by excluding NS_CTORS members + 'Iterator' from that fold, so the
+  // bare identifier reaches REAL emission instead, where it now correctly
+  // rejects via the SAME emit.js root fix as the language corpus's comma/
+  // instanceof entries — "is not in scope" → skip, no entry needed.
+  ['built-ins/Iterator/prototype/take/limit-tonumber.js', '[REJECT] take limit object ToPrimitive coercion — jz has no general dynamic-dispatch ToPrimitive for a value received through an untyped parameter (fixed to an HONEST runtime TypeError in jzify/generators.js\'s __it_lim, was a misleading "limit must not be NaN" RangeError before this pass; confirmed live, still a genuine — if now honestly worded — runtime reject, not silent)'],
+  ['built-ins/Iterator/prototype/drop/limit-tonumber.js', '[REJECT] drop limit object ToPrimitive coercion — same as take/limit-tonumber.js above, same fix, same residual (honest runtime TypeError, not a compile-time reject)'],
   ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (absent guard means the expected TypeError never fires; whether the call then proceeds to a wrong value or fails some other way was not checked)'],
   ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
   ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
-  // Promise — function-object / namespace reflection. audit-#12 direct probe
-  // confirmed: `typeof Promise` → 'undefined', not 'function' — jz doesn't
-  // reify Promise as a first-class value at all (unlike Symbol, which at
-  // least rejects cleanly); silently falls through to undefined instead.
-  ['built-ins/Promise/constructor.js', '[WRONG-VALUE] typeof Promise as first-class value — out of scope (confirmed: `typeof Promise` reads \'undefined\', not \'function\' — no reject)'],
-  ['built-ins/Promise/exec-args.js', '[WRONG-VALUE] executor resolve/reject .length reflection — out of scope (same reflection pattern confirmed wrong above)'],
-  ['built-ins/Promise/prototype/catch/S25.4.5.1_A2.1_T1.js', '[WRONG-VALUE] instanceof Function reflection — out of scope (same reflection pattern confirmed wrong above)'],
-  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', '[WRONG-VALUE] instanceof Function reflection — out of scope (same reflection pattern confirmed wrong above)'],
-  ['built-ins/Promise/withResolvers/resolvers.js', '[WRONG-VALUE] resolve/reject .name/.length reflection — out of scope (same reflection pattern confirmed wrong above)'],
-  // parseInt / parseFloat / encodeURIComponent — audit-#12 direct probe
-  // confirmed: `parseInt({valueOf:()=>"42"})` → null, not NaN (real ES:
-  // ToString(obj) → ToPrimitive('string') → the same skipped-coercion class).
-  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', '[WRONG-VALUE] parseInt object-arg ToPrimitive coercion — out of scope (confirmed: returns null, not NaN — the coercion is skipped, not merely differently rounded)'],
-  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', '[WRONG-VALUE] parseInt object-radix ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern)'],
-  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', '[WRONG-VALUE] encodeURIComponent object ToPrimitive coercion — out of scope (same confirmed ToPrimitive-coercion-skipped pattern)'],
+  // Promise — function-object / namespace reflection.
+  // fix/wrong-values-2: `typeof Promise` (constructor.js) — same
+  // isUnresolvableBareIdent fix as `typeof Iterator` above; now rejects
+  // "is not in scope" → skip, no entry needed.
+  // catch/S25.4.5.1_A2.1_T1.js / then/S25.4.5.3_A1.1_T2.js's `instanceof
+  // Function` assertions are FIXED exactly (jzify/transform.js's
+  // 'instanceof' handler gained a function-shape probe — `typeof===
+  // 'function'` — alongside its existing Promise/Iterator shape probes,
+  // fixing the general "closure instanceof Function/Object" gap the
+  // permissive typeof-object fallback always answered false for). then's OWN
+  // file still fails on an UNFIXED sibling assertion in the same file
+  // (`p.then.length` must be 2) — kept below under its real remaining cause.
+  ['built-ins/Promise/exec-args.js', '[WRONG-VALUE] executor resolve/reject .length reflection — NOT fixed this pass: `.length`/`.name` reflection is fixed for a NAMED/bound function value (prepare/index.js\'s `.` handler) but not yet for an anonymous closure reached only through a PARAMETER binding (the executor\'s own `resolve`/`reject` args) — confirmed live, still reads `undefined` not the real arity'],
+  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', '[WRONG-VALUE] `.then.length` reflection — the file\'s `instanceof Function` assertion is now fixed (see above); its `.length` assertion is the SAME unfixed function-value-through-a-property-read gap as Promise/exec-args.js and Promise/withResolvers/resolvers.js below — confirmed live'],
+  ['built-ins/Promise/withResolvers/resolvers.js', '[WRONG-VALUE] resolve/reject .name/.length reflection — same unfixed function-value-through-a-property-read gap as Promise/exec-args.js above (resolve/reject are PROPERTIES of the withResolvers() result, not a bound name my `.` -handler fix\'s isFuncValueLocal/hasFunc check recognizes) — confirmed live, still silently reads undefined'],
+  // parseInt / encodeURIComponent object-argument coercion — module/number.js
+  // rejectObjectArg / module/string.js uriEncodeBind (see the JSON.parse
+  // entry near the top of this map) reject the SIMPLE, try/catch-free case
+  // cleanly, but do NOT reliably fire once the file's OTHER assertions (all
+  // three below use try/catch for abrupt-completion checks) sit in the same
+  // function — valTypeOf(name) stays unresolved for an object-literal
+  // variable once ANY try/catch exists anywhere in that function, a
+  // pre-existing type-inference limitation neither this check nor a
+  // ctx.schema.slotOf fallback could route around in the time available.
+  // Confirmed live (full-battery re-run): all three still silently compute
+  // and return the wrong value, caught only by the test's own assertion —
+  // genuinely NOT resolved this pass, honestly re-tagged from an
+  // over-optimistic "fixed" claim during development.
+  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] parseInt object-arg ToPrimitive coercion — rejectObjectArg (module/number.js) does not fire once the file\'s later try/catch checks exist in the same function; valTypeOf(name) stays unresolved for the object variable in that context — confirmed live, still returns a silently wrong value (0 instead of the correct answer)'],
+  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] parseInt object-radix ToPrimitive coercion — same try/catch-defeats-valTypeOf gap as S15.1.2.2_A1_T7.js above'],
+  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] encodeURIComponent object ToPrimitive coercion — same try/catch-defeats-valTypeOf gap (module/string.js uriEncodeBind\'s guard uses the identical valTypeOf(value)===VAL.OBJECT check) — confirmed live, still silently returns "" instead of the encoded ToPrimitive result'],
 ])
 
 function expectedFailReason(rel) {

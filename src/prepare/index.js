@@ -1124,6 +1124,16 @@ function isUnresolvableBareIdent(name) {
   if (ctx.scope.userGlobals?.has?.(name)) return false
   const fnNames = funcLocalNames[funcLocalNames.length - 1]
   if (fnNames?.has(name)) return false
+  // A builtin-namespace constructor name (NS_CTORS, declared below — safe to
+  // forward-reference: this function only ever runs after module init) or
+  // `Iterator` is NOT a spec §13.5.3 unresolvable reference — it's a real,
+  // spec-defined global, just one jz has no first-class VALUE for (no
+  // general function/builtin reflection — see the emit-time "not in scope"
+  // reject this falls through to instead). Folding `typeof Promise` straight
+  // to the string 'undefined' here would ship a confident wrong answer
+  // (confirmed live: real JS says 'function') that never even reaches that
+  // reject, since a folded literal never emits the identifier at all.
+  if (NS_CTORS.has(name) || name === 'Iterator') return false
   return true
 }
 // Constant fold typeof for known builtin namespaces (e.g. Math.exp). prep(x) resolves Math.exp → 'math.exp'.
@@ -3648,8 +3658,19 @@ const handlers = {
     // funcValueNames holds POST-RENAME binding keys (totality) — resolve the
     // receiver spelling through scopes before the membership check.
     const objKey = typeof obj === 'string' && scopes.length && isDeclared(obj) ? resolveScope(obj) : obj
-    if ((obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey)) && (prop === 'caller' || prop === 'callee'))
+    const isFuncValueRecv = obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey)
+    if (isFuncValueRecv && (prop === 'caller' || prop === 'callee'))
       err('`.caller`/`.callee` are prohibited: deprecated function stack introspection — jz has no equivalent; pass what you need as an explicit argument instead')
+    // `.length`/`.name` on a function VALUE is real ECMAScript function-object
+    // reflection (own data properties every Function instance carries) — jz
+    // compiles a closure/named function straight to a WASM func with no
+    // metadata object behind it, so there is nothing to read. Confirmed live
+    // as a silent wrong value, not a reject: `((a,b)=>a+b).length` and a
+    // named `function f(a,b){}`'s `f.length` both read plain `undefined`
+    // instead of `2`. Same class, same remedy as `.caller`/`.callee` just
+    // above — reject rather than guess.
+    if (isFuncValueRecv && (prop === 'length' || prop === 'name'))
+      err(`.${prop} is not supported on a function value — jz compiles closures/named functions straight to WASM funcs with no reflectable metadata object; jz has no general function-object reflection`)
     if (prop === 'url' && isImportMeta(obj)) return staticString(importMetaUrl())
     // A user binding named like a builtin namespace (`let Math = {…}`) shadows it
     // — read the property off the local value, not the builtin namespace table.
@@ -3664,6 +3685,22 @@ const handlers = {
       if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
       return key
     }
+    // `Namespace.method.length`/`.name` — the OUTER `.` here has a receiver
+    // that's ITSELF a `.` node resolving to a builtin function (`Array.isArray`,
+    // `Math.sqrt`, …); same function-object-reflection gap as the bound-name
+    // case above, just reached through a namespace member instead of a local.
+    // Confirmed live: `Array.isArray.length` reads `undefined`, not `1`.
+    // NS_CTORS name check (static, module-load-order-independent) rather than
+    // an `emitArity(ctx.core.emit[...])` probe: a builtin static method
+    // reached ONLY through property reflection (never actually CALLED, as
+    // here) hasn't necessarily triggered that method's owning module include
+    // yet, so its emit-table entry may not exist AT THIS POINT even though
+    // the call would resolve fine once reached — the arity probe would
+    // silently miss exactly the shape being guarded against.
+    if ((prop === 'length' || prop === 'name') && Array.isArray(obj) && obj[0] === '.' &&
+        typeof obj[1] === 'string' && typeof obj[2] === 'string' && NS_CTORS.has(obj[1]) &&
+        !shadowsBuiltin(obj[1]) && !(scopes.length && isDeclared(obj[1])))
+      err(`.${prop} is not supported on a function value — jz compiles builtins straight to WASM funcs with no reflectable metadata object; jz has no general function-object reflection`)
     // Source module namespace: import * as X → X.prop resolved to mangled name
     if (typeof obj === 'string' && ctx.module.namespaces?.[obj]) {
       const mangled = ctx.module.namespaces[obj].get(prop)

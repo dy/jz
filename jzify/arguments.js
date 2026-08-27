@@ -50,6 +50,61 @@ function bindsArguments(body) {
   return isArgDecl(n)
 }
 
+// A body-level `var arguments = X` (NOT a parameter — that's paramsBindArguments,
+// handled by the caller before this ever runs) does not create an independent
+// binding. Per FunctionDeclarationInstantiation, `arguments` is already var-bound
+// to the real Arguments object before the body's own `var` hoisting runs, so
+// hoisting a `var arguments` is a no-op there — only the ASSIGNMENT half of `var
+// arguments = X` has any effect, at its ORIGINAL position, exactly like any other
+// reassignment of an already-bound name (test262 language/statements/function/
+// S13_A15_T4.js: `return typeof arguments; var arguments = X;` — the assignment
+// is unreached dead code after the return, so `typeof arguments` must still see
+// the real Arguments object, not `X` or `undefined`). Strip the `var`-ness of
+// just the `arguments` declarator(s) IN PLACE — `var arguments = X` becomes the
+// plain assignment `arguments = X`; a bare `var arguments` (no initializer) is a
+// pure no-op, dropped — so every `arguments` reference in the body, including
+// this one, keeps resolving to the SAME binding, and the real-arguments-object
+// materialization below (triggered because `usesArguments` now sees this
+// reference too) renames it right along with every other read.
+// This runs AFTER hoistVars (jzify/index.js hoists before transformScope), which
+// already split a source-level `var arguments = X` into a bare hoisted decl at
+// the function top — `let arguments` (hoistVars promotes to `let`, not `var` —
+// same effective top-of-function-undefined start) — plus a plain `arguments = X`
+// assignment left at the original site. So the decl half arrives here bare
+// (never with an initializer) and must be matched on 'var'/'let'/'const' alike
+// (isArgDecl, just above, already does); leaving 'var' unmatched let a hoisted
+// `let arguments` (later renamed to e.g. `let arg0`) survive as a real
+// mid-block redeclaration that shadowed the rest-param binding of the same
+// name with a fresh always-undefined local — silently reproducing the exact
+// bug this function exists to fix.
+function stripArgumentsVarDecl(body) {
+  const convertList = (stmts) => stmts.flatMap(s => {
+    if (!Array.isArray(s) || (s[0] !== 'var' && s[0] !== 'let' && s[0] !== 'const')) return [s]
+    const kept = []
+    const out = []
+    for (const d of s.slice(1)) {
+      if (d === 'arguments') continue // bare `var arguments;` — no-op, drop
+      if (Array.isArray(d) && d[0] === '=' && d[1] === 'arguments') { out.push(['=', 'arguments', d[2]]); continue }
+      kept.push(d)
+    }
+    if (kept.length) out.unshift([s[0], ...kept])
+    return out
+  })
+  let n = body
+  if (Array.isArray(n) && n[0] === '{}') {
+    const inner = n[1]
+    const stmts = Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : inner == null ? [] : [inner]
+    const converted = convertList(stmts)
+    return ['{}', converted.length === 1 ? converted[0] : [';', ...converted]]
+  }
+  if (Array.isArray(n) && n[0] === ';') {
+    const converted = convertList(n.slice(1))
+    return converted.length === 1 ? converted[0] : [';', ...converted]
+  }
+  const converted = convertList([n])
+  return converted.length === 1 ? converted[0] : [';', ...converted]
+}
+
 function renameArguments(node, to) {
   if (node === 'arguments') return to
   if (!Array.isArray(node)) return node
@@ -105,7 +160,7 @@ export function createArgumentsLowering(names) {
       const fresh = names.arg()
       return lowerArguments(renameArguments(params, fresh), renameArguments(body, fresh))
     }
-    if (bindsArguments(body)) body = renameArguments(body, names.arg())
+    if (bindsArguments(body)) body = stripArgumentsVarDecl(body)
     const paramsNeedLowering = paramList(params).some(isDestructurePat)
     const usesArgsObj = usesArguments(params) || usesArguments(body)
     if (!paramsNeedLowering && !usesArgsObj) return [params, body]

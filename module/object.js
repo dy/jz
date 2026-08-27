@@ -15,7 +15,7 @@ import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
-import { isReassigned } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS } from '../src/ast.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -375,6 +375,28 @@ export default (ctx) => {
       out.ptr], 'f64')
   }
 
+  // A DIRECT object-literal argument (`Object.keys({a: f()})`, or the same
+  // shape reaching here through for-in's __keys_ro) whose property values
+  // contain a call, `new`, assignment/mutate op, or nested closure is not
+  // safe for the schema-derived-keys fast path below: that path emits the
+  // key list straight from the compile-time schema and never calls emit(obj)
+  // at all, so the literal's own construction — and any side effect in a
+  // property value — silently never runs (confirmed live: `Object.keys({a:
+  // (function(){sum=5;return 1})()})` left `sum` at its initial value; the
+  // identical mechanism, reached via for-in's shared schema path, further
+  // left an escaping closure holding a stale/default bit pattern that a
+  // later call trapped on — "table index is out of bounds"). A bare-variable
+  // or member-expression `obj` needs no such check: reading it back has no
+  // side effect of its own, and whatever produced its value was already
+  // emitted in full at its own (separate, unconditionally-evaluated)
+  // declaration or assignment site.
+  const hasUnsafeLiteralValueEffect = (n) => {
+    if (!Array.isArray(n)) return false
+    const op = n[0]
+    if (op === '()' || op === '?.()' || op === 'new' || op === '=>' || MUTATE_OPS.has(op)) return true
+    for (let i = 1; i < n.length; i++) if (hasUnsafeLiteralValueEffect(n[i])) return true
+    return false
+  }
   // Shared by Object.keys and __keys_ro. `ro` marks the for-in path: its result
   // is read-only by construction (the lowering only reads ks[i]/ks.length), so
   // the HASH arms may serve the shared enum-cache array (core.js __hash_keys_ro)
@@ -386,14 +408,27 @@ export default (ctx) => {
     if (ctx.memory.shared) ro = false
     const nullish = requireCoercible(obj)
     if (nullish) return nullish
+    // A function value can carry its own dynamically-added properties in real
+    // JS (`f.x = 1; Object.keys(f)` → ['x']) — jz compiles closures/named
+    // functions straight to WASM funcs with no property bag behind them at
+    // all, so there is nothing to enumerate. Confirmed live as a silent
+    // wrong value (`[]`, not the real own-key list), not a reject — same
+    // function-object-reflection gap, same remedy, as the `.length`/`.name`
+    // reject in prepare/index.js's `.` handler.
+    if ((typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE)
+      err('Object.keys/getOwnPropertyNames on a function value is not supported — jz compiles closures/named functions straight to WASM funcs with no reflectable property bag; jz has no general function-object reflection')
     if (isHashTyped(obj)) return ro ? emitHashKeysRO(obj) : emitHashKeys(obj)
     if (arrayValType(obj)) return idxKeys(obj, '__len')
     if (stringValType(obj)) return idxKeys(obj, '__str_len')
     const schema = resolveSchema(obj)
-    if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj))
+    const literalUnsafe = Array.isArray(obj) && obj[0] === '{}' && hasUnsafeLiteralValueEffect(obj)
+    if (schema && !hasOutOfSchemaWrites(obj, schema) && !mayHaveDynProps(obj) && !literalUnsafe)
       return emitStringArray(schema)
-    // Unknown receiver, or schema with possible dyn props: dispatch on ptr-type
-    // at runtime (HASH probe table / OBJECT schema+dyn merge / else []).
+    // Unknown receiver, schema with possible dyn props, or (rare) a direct
+    // literal argument whose values aren't provably side-effect-free: dispatch
+    // on ptr-type at runtime (HASH probe table / OBJECT schema+dyn merge /
+    // else []) — this path genuinely emit()s `obj`, so its construction (and
+    // any side effect in it) runs exactly once, in place, like any other value.
     return emitRuntimeKeys(obj, ro)
   }
   ctx.core.emit['Object.keys'] = (obj) => emitKeysGeneric(obj, false)

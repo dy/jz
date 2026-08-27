@@ -519,6 +519,18 @@ export function createTransform(opts) {
         const t0 = transform(val)
         return ['&&', ['===', ['typeof', t0], [null, 'object']], ['!=', ['.', t0, 'next'], [null, null]]]
       }
+      // function-shape probe — the permissive `typeof===object` fallback
+      // (this handler's own last line, below) always answers false for a
+      // closure/named-function value (its typeof is 'function', not
+      // 'object'), so `someClosure instanceof Function` silently read false
+      // instead of true (confirmed live). Every jz-representable callable
+      // value's typeof is exactly 'function' (no other kind claims it), so
+      // this is exact, not a guess — same shape of fix as the Promise/
+      // Iterator probes just above, one hint value instead of two.
+      if (ctor === 'Function') {
+        const t0 = transform(val)
+        return ['===', ['typeof', t0], [null, 'function']]
+      }
       const t = transform(val)
       let name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
       if (name === 'SharedArrayBuffer') name = 'ArrayBuffer'   // same canonicalization as `new`

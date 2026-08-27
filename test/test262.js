@@ -1070,7 +1070,7 @@ const EXPECTED_FAIL_PREFIXES = [
 // [WRONG-VALUE] tag below = release-blocking per STABILITY.md's semantics
 // contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
 // matches README "What differs from JS?").
-const BOOL_CARRIER = '[WRONG-VALUE, pinned — flip condition: STABILITY.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge now correctly REJECTS (was silently wrong; audit-#12) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
+const BOOL_CARRIER = '[REJECT, pinned — flip condition: STABILITY.md tagged-Boolean-carrier plan] BOOL∪NUMBER ambiguous merge correctly REJECTS (was silently wrong pre-audit-#12; retagged from a stale [WRONG-VALUE] label in fix/wrong-values-2 — confirmed live, all 5 files reject cleanly at compile time, no behavior change) — raw 0/1 carrier vs TRUE/FALSE atom at a mixed ??/||/&&/?: join, no way to recover identity post-collapse without the carrier plan'
 // Audit-#12 classification pass (this commit) — every entry below is tagged
 // by OUTCOME, not just symptom, so a category-(iii) accepted-wrong value can
 // never hide behind a plausible-sounding xfail reason again:
@@ -1090,29 +1090,78 @@ const BOOL_CARRIER = '[WRONG-VALUE, pinned — flip condition: STABILITY.md tagg
 //                spec corner); flagged honestly rather than guessed into
 //                either acceptable bucket.
 const WV = '[WRONG-VALUE, pinned — audit-#12 classification pass, not fixed this commit] '
+// Second pass (fix/wrong-values-2, this commit) — every [WRONG-VALUE] entry
+// from the audit-#12 pass above was run down to ONE of two outcomes; entries
+// that now cleanly REJECT with a message matching runTest's own skip-message
+// allowlist need no map entry at all (same established convention the
+// switch-decl-onlystrict prune below already documents) — pruned rather than
+// retagged. Entries resolved:
+//  - comma/S11.14_A2.1_T2.js: the root cause was emit()'s bare-identifier
+//    fallback (index.js's fallback in the OLD src/compile/emit.js) blindly
+//    guessing `local.get $name` for ANY unresolved identifier, valid or not
+//    — real only by accident when the read's value was USED (watr's "Unknown
+//    local" then surfaced); when the value was merely DISCARDED (`x, 1`;
+//    bare `x;`), dead-code elimination silently dropped the bogus reference
+//    before that safety net ever ran. Fixed at the root (src/compile/emit.js
+//    emit()'s final string-node fallback): reject unconditionally instead of
+//    guessing — every legitimate resolution channel (bound name/global/
+//    top-level function/namespace member/host global) had already failed by
+//    that point, so the guess was NEVER valid. Now rejects "is not in scope"
+//    → skip.
+//  - instanceof/S11.8.6_A2.1_T1.js: `var OBJECT = Object; ({}) instanceof
+//    OBJECT` — reading the bare builtin-constructor VALUE `Object` (jz has no
+//    first-class value for it, only the syntactic instanceof/new positions)
+//    used to silently vanish via the SAME dead-code-elimination gap as the
+//    comma case above (the `OBJECT` binding was never read anywhere emit()
+//    would actually reach, since instanceof's sound RHS handler reads the
+//    identifier's SPELLING, not its value). The same emit.js root fix makes
+//    `Object`'s read reject instead — the whole file now fails to compile at
+//    the `var OBJECT = Object` line, "is not in scope" → skip.
+//  - break+continue/line-terminators.js: root cause isolated to bare CR
+//    (U+000D) specifically — LF/LS/PS already correctly flip subscript's
+//    restricted-production `parse.newline` flag (feature/asi.js), only a
+//    lone CR (not part of CRLF) was skipped as ordinary whitespace without
+//    setting it, so `break\rLABEL` parsed as a labeled break instead of
+//    ASI-splitting. Fixed in src/parse.js: one more wrapper layered onto
+//    subscript's shared `parse.space` (same "monkey-patch the shared parser
+//    object" pattern as this file's pre-existing NaN/true/false/BigInt token
+//    overrides) that also flags CR. The fixed ASI split makes the label an
+//    unreachable-after-break bare identifier reference, which now correctly
+//    rejects via the SAME comma-class fix above → skip.
+//  - for-in/scope-body-var-none.js (was [VERIFY]): root-caused to
+//    module/object.js's emitKeysGeneric — an object LITERAL argument with a
+//    complete static schema took a compile-time-constant-keys fast path
+//    (pooling the schema's key list directly) that never called emit() on
+//    the literal AT ALL, so any side effect in a property VALUE (an
+//    assignment, a call, a closure) silently never ran — confirmed as BOTH a
+//    silently-skipped IIFE side effect AND (the escaping-closure shape this
+//    file exercises) a WebAssembly "table index is out of bounds" trap on a
+//    stale/default bit pattern. Fixed by vetoing the fast path when the
+//    literal's values aren't provably side-effect-free (falls through to the
+//    existing, already-correct emitRuntimeKeys path instead). Sibling-swept:
+//    the identical bug reached directly via Object.keys/getOwnPropertyNames
+//    (not just for-in) is fixed by the same veto. This file now PASSES
+//    outright (was a genuine V8-authored spec-corner regression test, not
+//    merely a reject) — removed as newly-passing, not pruned as skip.
+//  - function/S13_A15_T4.js: `return typeof arguments; var arguments = X;` —
+//    jzify/arguments.js's lowerArguments renamed EVERY `arguments` reference
+//    in a body containing `var arguments = X` to an independent fresh
+//    variable (defaulting to undefined) the moment the declaration existed
+//    anywhere, even textually after the point spec requires the REAL
+//    Arguments object to still be visible. Fixed: `var arguments = X` (no
+//    parameter shadowing — that's the separate, already-correct
+//    paramsBindArguments path) now has its `var`-ness stripped in place
+//    (`arguments = X`, a plain reassignment) instead of triggering an
+//    independent rename, so every `arguments` reference — including this one
+//    — resolves through the SAME real-arguments-object materialization, and
+//    the dead reassignment after the early return stays exactly as
+//    unreached as spec requires. This file now PASSES outright — removed.
+//  - coalesce/* (BOOL_CARRIER, below): already correctly REJECTS (confirmed
+//    live, all 5 files, via the tagged-Boolean-carrier STABILITY.md pin) —
+//    the [WRONG-VALUE] tag itself was stale (the doc comment even says "now
+//    correctly REJECTS" in its own text). Retagged [REJECT] below, no
+//    behavior change.
 const EXPECTED_FAIL_FILES = new Map([
-  ['test/language/expressions/comma/S11.14_A2.1_T2.js',
-    WV + 'undeclared-identifier read silently evaluates (no runtime ReferenceError) instead of rejecting — jz has no runtime binding resolution and dead-code elimination can reach the reference before any scope check'],
-  ['test/language/expressions/instanceof/S11.8.6_A2.1_T1.js',
-    WV + '({}) instanceof OBJECT (a variable bound to Object) answers false — jz\'s instanceof resolves the RHS by literal identifier text, not by runtime value, so a rebound constructor reference silently loses the fixed-shape recognition (LEGACY_LANG_LIMITATIONS tracks the sibling "unrecognized constructor" shapes as REJECT; this one differs by silently answering false instead)'],
-  // audit-#12: switch-case/dflt-decl-onlystrict.js used to list here, tagged
-  // [REJECT] — but their reject message ("'Error' is not in scope") already
-  // matches runTest's own skip-message allowlist (msg.includes('is not in
-  // scope')), so the runner classifies them as skip, never fail, and this
-  // entry was NEVER ACTUALLY CONSULTED (expectedFailReason only runs for
-  // status==='fail'). Pruned per the file's own established convention two
-  // screens up: "Features that reject cleanly ('not supported'/'not in
-  // scope'/…) need no pattern: the runTest message allowlist absorbs them
-  // per-file." Pre-existing staleness, surfaced by this pass, not introduced
-  // by it.
-  ['test/language/statements/break/line-terminators.js',
-    WV + 'CR between `break` and label must ASI-split (real JS: break executes unlabeled, then a separate label statement) — jz\'s parser (upstream subscript) instead parses it as a labeled break, a silently different control-flow shape, not a reject'],
-  ['test/language/statements/continue/line-terminators.js',
-    WV + 'CR between `continue` and label must ASI-split — same upstream-subscript parser gap as break/line-terminators.js above, silently different control flow'],
-  ['test/language/statements/for-in/scope-body-var-none.js',
-    '[VERIFY] var hoisted from for-in body captured by head-default closures — per-iteration lexical-environment interaction with var-hoisting (V8-authored spec-corner regression test); the escaping exception carried no message text, so whether this is a clean trap or a silent value divergence was not conclusively distinguished during the audit-#12 pass'],
-  ['test/language/statements/function/S13_A15_T4.js',
-    WV + 'typeof arguments reads \'undefined\' instead of \'object\' when a function body hoists `var arguments = …` after an early return — jz\'s var-hoisting clobbers the arguments binding\'s slot outright where spec keeps the real Arguments object until the (unreached) assignment; jz lowers arguments to an array copy in general, but this specific hoisting-priority interaction isn\'t in README\'s divergence list'],
   // for-await grammar edges (2026-07-13, wired with async generators):
   ['test/language/statements/for-await-of/head-lhs-async.js',
     '[REJECT] `async` as a for-await LHS identifier — subset reserves the async prefix (upstream grammar edge); compile-time reject'],

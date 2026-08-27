@@ -1115,7 +1115,19 @@ function primMethodIdx(node, name) {
  *  (number hint → [valueOf,toString]; string hint → [toString,valueOf]). Each
  *  present method is called in turn: a primitive result short-circuits out, a
  *  non-primitive (object) result falls through to the next method, and if every
- *  method yields a non-primitive a TypeError is thrown — the spec algorithm. */
+ *  method yields a non-primitive a TypeError is thrown — the spec algorithm.
+ *  `present` (from primMethodIdx) only proves the property NAME exists in the
+ *  object's schema — a schema slot's stored VALUE can be anything (`{toString:
+ *  void 0}` is a completely ordinary object literal), so each slot is guarded
+ *  by a PTR.CLOSURE check before being called: GetMethod (ES 7.3.11), which
+ *  OrdinaryToPrimitive calls for each method name, treats a non-callable
+ *  value the SAME as an absent one (skip to the next method in the chain) —
+ *  it does not invoke it. Without this guard a `toString`/`valueOf` slot
+ *  holding `undefined` (or any other non-closure value) was loaded and handed
+ *  straight to ctx.closure.call as if it were a real closure pointer —
+ *  confirmed live as a WebAssembly "table index is out of bounds" trap
+ *  (String({valueOf:()=>'42', toString: void 0}), which per spec must skip
+ *  the non-callable toString and fall through to valueOf). */
 function toPrimitiveChain(node, v, order) {
   const present = order.map(name => primMethodIdx(node, name)).filter(i => i >= 0)
   if (!present.length) return null
@@ -1124,18 +1136,33 @@ function toPrimitiveChain(node, v, order) {
   const blk = `$tp${freshId(ctx)}`
   const prim = tempI64('prim')
   const optr = tempI32('op')
+  const mslot = temp('tpm')
   // Resolve the object's data pointer once — `v` may carry side effects and is
   // referenced once per method slot below.
   const body = [['result', 'i64'],
     ['local.set', `$${optr}`, ptrOffsetIR(v, VAL.OBJECT)]]
   for (const idx of present) {
     const method = typed(ctx.abi.object.ops.load(['local.get', `$${optr}`], idx), 'f64')
+    // NOT `br_if`: br_if's block-result operand stays on the stack when its
+    // condition is false (WASM's `[t i32] -> [t]` typing — that's how a
+    // fallthrough sees the value at all), so nesting one inside a void `if`
+    // (this method's callability guard) only balances on the taken path —
+    // the not-taken path leaves a stray i64 the void `if` can't account for
+    // ("expected 0 elements on the stack for fallthru, found 1"). An
+    // unconditional `br` has no not-taken path to leave anything on, so it
+    // nests cleanly inside either void `if` (not callable / non-primitive
+    // result) — both just fall through empty, exactly like the pre-existing
+    // "this method isn't present at all" case already did.
     body.push(
-      ['local.set', `$${prim}`, asI64(ctx.closure.call(method, []))],
-      ['br_if', blk, ['local.get', `$${prim}`],
-        ['i32.eqz', ['call', '$__is_object', ['local.get', `$${prim}`]]]])
+      ['local.set', `$${mslot}`, method],
+      ['if', ptrTypeEq(['local.get', `$${mslot}`], PTR.CLOSURE),
+        ['then',
+          ['local.set', `$${prim}`, asI64(ctx.closure.call(typed(['local.get', `$${mslot}`], 'f64'), []))],
+          ['if', ['i32.eqz', ['call', '$__is_object', ['local.get', `$${prim}`]]],
+            ['then', ['br', blk, ['local.get', `$${prim}`]]]]]])
   }
-  // Every method returned a non-primitive — `Cannot convert object to primitive`.
+  // Every method was absent, non-callable, or returned a non-primitive —
+  // `Cannot convert object to primitive`.
   body.push(['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TO_PRIMITIVE]]], ['throw', '$__jz_err', ['f64.const', ERR.TO_PRIMITIVE]])
   return typed(['block', blk, ...body], 'i64')
 }

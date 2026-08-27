@@ -6285,9 +6285,19 @@ export const emitter = {
       return err('unary `+` on a BigInt is a TypeError in JS — use Number(x)')
     const v = emit(a)
     if (v.type === 'i32') return asF64(v)
-    if (valTypeOf(a) === VAL.NUMBER) return toNumF64(a, v)
-    inc('__to_num')
-    return typed(['call', '$__to_num', asI64(v)], 'f64')
+    // toNumF64 is the general ToNumber (VAL.NUMBER passthrough, VAL.BOOL,
+    // VAL.OBJECT via the OrdinaryToPrimitive method chain, and — its own
+    // final fallback — the same generic __to_num dispatch this used to call
+    // directly). Calling it directly for every non-i32 case (not just the
+    // already-proven-NUMBER one) is a strict superset, not a behavior change
+    // for anything this already handled correctly: an OBJECT operand
+    // previously skipped straight to __to_num, which has no way to invoke a
+    // user-defined valueOf/toString (no compile-time schema access) and
+    // returned a wrong sentinel — confirmed live, `+{valueOf:()=>2}` gave
+    // `null`, not `2` (jzify/generators.js's Iterator take/drop use exactly
+    // this operator for their `+n` limit coercion, so this was ALSO the
+    // route to both Iterator/prototype/take and drop's ToPrimitive gaps).
+    return toNumF64(a, v)
   },
   'u-': (a, self) => emitNeg(a, self),
   '*': (a, b, self) => {
@@ -7920,8 +7930,25 @@ export function emit(node, expect) {
       ctx.core.hostGlobals.add(node)
       return typed(['global.get', `$${node}`], 'i64')
     }
-    const t = ctx.func.locals?.get(node) || ctx.func.current?.params.find(p => p.name === node)?.type || 'f64'
-    return typed(['local.get', `$${node}`], t)
+    // Every legitimate resolution channel above (boxed/local/param/global/
+    // intConst, top-level function value, namespace/emit-table member, host
+    // global) has already failed — `node` is a genuinely undeclared
+    // identifier. The old fallback here guessed `local.get $node` (default
+    // type 'f64') as if it were a real local; that guess is never valid
+    // (isBoundName, checked above, covers every case ctx.func.locals?.get
+    // could hit), so it only ever "succeeds" by accident: when the read's
+    // value goes unused, dead-code elimination drops the bogus local.get
+    // before watr's assembler gets a chance to reject it as an unknown
+    // local — a SILENT wrong value (`x, 1` and bare `x;` both ran clean,
+    // dropping `x`'s ReferenceError) instead of the reject a *used* stray
+    // reference already gets. jz has no runtime binding resolution (no
+    // dynamic scope object to throw a catchable ReferenceError from), so
+    // the sound fix is to reject here unconditionally — same message shape
+    // as the watr-surfaced "not in scope" (index.js), so this reads as one
+    // consistent error family and the test262 runner's existing
+    // 'is not in scope' skip-message allowlist keeps classifying it as a
+    // clean structural reject, not a miscompile.
+    err(`'${node}' is not in scope — jz has no runtime identifier resolution, so an undeclared reference must be rejected at compile time (JS would throw ReferenceError here); declare '${node}', fix the spelling, or import it`)
   }
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 

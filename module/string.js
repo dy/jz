@@ -2280,6 +2280,14 @@ export default (ctx) => {
 
   const uriEncodeBind = (kernel) => (value) => {
     inc(kernel)
+    // ToPrimitive on an OBJECT argument needs a dynamic valueOf/toString call
+    // jz's stdlib coercion layer doesn't have (see module/number.js's
+    // rejectObjectArg for the same class, in the same words) — confirmed live:
+    // encodeURIComponent({toString:()=>"a b"}) silently returned "" instead of
+    // calling toString and encoding "a%20b". Reject rather than misencode the
+    // object's raw bits; string/number/boolean arguments are unaffected.
+    if (valTypeOf(value) === VAL.OBJECT)
+      err(`${kernel === '__encodeURI' ? 'encodeURI' : 'encodeURIComponent'}: an object argument (with valueOf/toString) is not supported — jz has no general ToPrimitive dynamic dispatch; call .valueOf()/.toString() (or String()) yourself before passing the result`)
     const input = value === undefined ? ['i64.const', UNDEF_NAN] : asI64(emit(value))
     return typed(['call', `$${kernel}`, input], 'f64')
   }

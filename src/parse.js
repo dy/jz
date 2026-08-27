@@ -23,6 +23,43 @@ import { validateEarlyErrors } from './early-errors.js'
 // self-compile kernel doesn't surface (the added key is stored but unenumerated). An explicit
 // strip is the conventional parser responsibility anyway (Node, V8 do the same), is
 // host/kernel-identical, and is independent of object-model internals.
+// subscript's ASI layer (feature/asi.js) tracks the "no LineTerminator here"
+// restricted-production flag (`parse.newline`, consulted by break/continue/
+// return/yield/postfix-++/--'s own keyword handlers) by rescanning each
+// whitespace run parse.space() just skipped for LF (`\n`) only. ES2026's
+// LineTerminator production (§12.4) is LF | CR | LS | PS: a lone CR (`\r`
+// U+000D, not part of a CRLF pair) is skipped as ordinary whitespace WITHOUT
+// setting parse.newline, so e.g. `break\rLABEL` parses as a labeled break
+// instead of ASI-splitting into an unlabeled break followed by a new
+// statement (confirmed live — test262 language/statements/break+continue
+// line-terminators.js: LF/LS/PS already flip parse.newline correctly, only a
+// bare CR is missed; LS/PS reach the right outcome by a different route —
+// their codepoint sits above subscript's core whitespace ceiling, so the
+// base skip loop halts there and the stalled identifier match falls through
+// to the same unlabeled-break result by construction, not via the newline
+// flag). Compose one more wrapper on top of asi.js's parse.space — same
+// "layer another override onto subscript's shared mutable parser state"
+// pattern as the NaN/true/false/BigInt token overrides below — to also flag
+// CR. jessieParse (imported above) and subscript/parse.js's own `parse` are
+// the same shared singleton object (feature/jessie re-exports it verbatim),
+// so no separate import is needed; `idx`/`cur` (imported above) are live
+// bindings that already reflect the position parse.space() just advanced to.
+// No rest/spread here (`(...args) => … asiSpace(...args)`): jz's own
+// self-compile kernel rejects a spread call into a function it proves
+// non-variadic ("Spread not supported in calls to non-variadic function"),
+// and asi.js's parse.space is exactly that (fixed 2-param `(cc, from)`,
+// both immediately overwritten on entry — see its own body — so it is
+// ALWAYS called with zero arguments in practice; every real call site in
+// this codebase, subscript's own included, calls it as `parse.space()`).
+// Zero-arg wrapper matches that actual calling convention exactly.
+const asiSpace = jessieParse.space
+jessieParse.space = () => {
+  const from = idx
+  const cc = asiSpace()
+  for (let i = from; i < idx; i++) if (cur.charCodeAt(i) === 13) { jessieParse.newline = true; break }
+  return cc
+}
+
 const parse = (src) => {
   if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
     const nl = src.indexOf('\n')
