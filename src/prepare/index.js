@@ -108,6 +108,19 @@ let funcLocalNames
 // Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
 // prohibited introspection — from a data object that merely has such a field.
 let funcValueNames
+// Names bound directly to jz's own Promise-runtime helper CALLS (jzify/
+// async.js's ASYNC_RUNTIME + jzify/transform.js's Promise canonicalization —
+// `new Promise(fn)` → __p_exec(fn), `Promise.withResolvers()` →
+// __p_withResolvers()): the ONE static proof the `.`-handler's isFuncValueRecv
+// check (below) needs to recognize `.then`/`.resolve`/`.reject` read off THESE
+// SPECIFIC receivers as function-valued too, alongside the existing bound-name
+// case. FLAT (not a per-scope stack like funcValueNames): safe because it's
+// keyed by the SAME post-rename-unique spelling every OTHER name-based fact in
+// this file already relies on (mintForScope never reuses a spelling across
+// live scopes; a module-level name is unique by construction). Populated once,
+// at decl-processing time, right where funcValueNames gets its own entries.
+let promiseRecvNames  // `.then`/`.catch`/`.finally` are function-valued
+let withResolversRecvNames  // `.resolve`/`.reject` are function-valued
 // Per-module set of top-level names WRITTEN beyond their declaration (bare-name
 // assign/compound/++ anywhere in the module, locals-shadowed writes excluded).
 // Gates defFunc: a depth-0 `let g = (…) => …` lifts into a fixed NAMED FUNCTION,
@@ -164,6 +177,8 @@ const resetPrepState = () => {
   mutatedArrayNames = new Set()
   funcLocalNames = [new Set()]
   funcValueNames = [new Set()]
+  promiseRecvNames = new Set()
+  withResolversRecvNames = new Set()
   reassignedTopLevel = new Set()
   assignSid = new Map()
   declInitUnknown = new Set()
@@ -1308,6 +1323,80 @@ function prep(node) {
     setFeature('error', true)
     ;(ctx.features.errorClasses ??= new Set()).add('TypeError')
   }
+  // Promise executor resolve/reject closures (jzify/async.js's __p_exec(fn)
+  // calls fn((v)=>…, (e)=>…) — see async.js's ASYNC_RUNTIME) have no static
+  // binding site of their OWN: they're injected AT THE __p_exec CALL SITE,
+  // invisible to isFuncValueRecv's existing hasFunc/isFuncValueLocal proof
+  // below (both keyed off a name whose OWN declaration RHS is a literal
+  // `=>`). A name copied straight from one of these params (`resolve = a`,
+  // test262 Promise/exec-args.js's exact shape) has no such literal RHS
+  // either, so `.length`/`.name` on it fell through to a silent wrong value
+  // at the generic dynamic-property layer (module/core.js emitPropAccess/
+  // buildLengthHelper) — with no SOUND way to catch it there: that
+  // dispatcher runs for the COMPILER'S OWN self-hosted code too, and
+  // module/core.js's emitArity (`h?.argc ?? h?.length`, src/ctx.js) reads
+  // `.length` off exactly this shape (an unresolved-kind closure PARAMETER)
+  // as a normal, tolerated pattern throughout the compiler's own emit-table
+  // arity probes — a receiver-kind RUNTIME guard there broke self-hosting
+  // (confirmed live: crashed the kernel on every single compile via
+  // emitArity, kernel-oracle 3/14 — reverted). Reject HERE instead, only at
+  // compile time and only for this one named construct: jz's own compiler
+  // source never writes `new Promise`/`__p_exec` (verified — zero hits), so
+  // this scan can never fire while compiling the compiler itself. Scans the
+  // executor's OWN literal body for a bare `outer = firstOrSecondParam`
+  // copy-through and adds `outer`'s post-rename spelling to funcValueNames —
+  // the SAME set isFuncValueRecv already consults for a directly-literal-
+  // bound name, just reached one hop later (through the param, not a `=>`
+  // RHS).
+  if (Array.isArray(node) && node[0] === '()' && node[1] === '__p_exec' && Array.isArray(node[2])) {
+    const executor = node[2]
+    const eop = executor[0]
+    const rawParams = eop === '=>' ? executor[1] : eop === 'function' ? executor[2] : null
+    const execBody = eop === '=>' ? executor[2] : eop === 'function' ? executor[3] : null
+    let params = rawParams == null ? [] : extractParams(rawParams).slice(0, 2).filter(p => typeof p === 'string')
+    // An executor whose body reads `arguments` was already rewritten by
+    // jzify's lowerArguments BEFORE prepare ever sees it: the real params
+    // (a, b) vanish behind a single rest param, recovered inside the body's
+    // own destructure `let a = arg0[0], b = arg0[1]` (test262 exec-args.js's
+    // own real shape: its executor's THIRD statement is `argCount =
+    // arguments.length`, confirmed live to trigger exactly this rewrite).
+    // classifyParam (src/ast.js) is the SAME rest-param recognizer prepare's
+    // own param-processing already trusts elsewhere.
+    if (!params.length && rawParams != null) {
+      const rp = extractParams(rawParams)
+      if (rp.length === 1 && classifyParam(rp[0])[PARAM_KIND] === 'rest') {
+        const restName = classifyParam(rp[0])[PARAM_NAME]
+        const stmts = Array.isArray(execBody) && execBody[0] === '{}' && Array.isArray(execBody[1]) && execBody[1][0] === ';'
+          ? execBody[1].slice(1) : []
+        const recovered = []
+        for (const s of stmts) {
+          if (!Array.isArray(s) || (s[0] !== 'let' && s[0] !== 'const')) continue
+          for (let i = 1; i < s.length; i++) {
+            const d = s[i]
+            if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
+                Array.isArray(d[2]) && d[2][0] === '[]' && d[2][1] === restName &&
+                Array.isArray(d[2][2]) && d[2][2][0] == null && typeof d[2][2][1] === 'number')
+              recovered[d[2][2][1]] = d[1]
+          }
+        }
+        params = recovered.slice(0, 2).filter(p => typeof p === 'string')
+      }
+    }
+    if (params.length) {
+      const paramSet = new Set(params)
+      const scanExecutorAlias = (n) => {
+        if (!Array.isArray(n)) return
+        const nop = n[0]
+        if (nop === '=' && typeof n[1] === 'string' && typeof n[2] === 'string' && paramSet.has(n[2])) {
+          const outer = scopes.length && isDeclared(n[1]) ? resolveScope(n[1]) : n[1]
+          funcValueNames[funcValueNames.length - 1]?.add(outer)
+        }
+        if (nop === '=>') return  // the executor's own nested closures are a separate scope
+        for (let i = 1; i < n.length; i++) scanExecutorAlias(n[i])
+      }
+      scanExecutorAlias(execBody)
+    }
+  }
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
   if (node == null) return [, 0] // null/undefined → 0 literal
   // Keep boolean identity (was folded to 1/0). The working representation is
@@ -2168,6 +2257,15 @@ function prepDecl(op, ...inits) {
       // the binding so `.caller`/`.callee` on it reads as prohibited introspection.
       if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '=>')
         funcValueNames[funcValueNames.length - 1]?.add(declName)
+      // promiseRecvNames/withResolversRecvNames (see their own declaration,
+      // above) — a name bound DIRECTLY to jz's own Promise-runtime helper
+      // calls. Checked structurally on the ALREADY-jzify-canonicalized RHS
+      // (`new Promise(fn)` → __p_exec(fn), `Promise.withResolvers()` →
+      // __p_withResolvers()), not the pre-transform source spelling.
+      if (typeof declName === 'string' && Array.isArray(normed) && normed[0] === '()') {
+        if (normed[1] === '__p_exec') promiseRecvNames.add(declName)
+        else if (normed[1] === '__p_withResolvers') withResolversRecvNames.add(declName)
+      }
       // The mutation census (indexed/.length/mutating-method anywhere, raw
       // names) gates every ARRAY-fact bind: execution can reach the mutation
       // before a later fold site regardless of textual order (hoisted function
@@ -2653,6 +2751,18 @@ const handlers = {
       // depth > 0: consensus/poison only — a function local never publishes
       // into the module-global vars map (see bindAssignSchema).
       bindAssignSchema(plhs, objLiteralSid(prhs), false)
+    }
+    // promiseRecvNames/withResolversRecvNames (see their own declaration,
+    // near funcValueNames) — the REASSIGNMENT sibling of the decl-time check
+    // above (`typeof declName === 'string' && normed[0] === '()' …`): a
+    // `var p = new Promise(fn)` is exactly this shape by the time prepare
+    // sees it (jzify/hoist-vars.js already split it into a bare `let p` decl
+    // elsewhere plus this plain assignment) — the decl-time check alone
+    // never fires for it, so `p.then.length` (test262 Promise/prototype/
+    // then/S25.4.5.3_A1.1_T2.js) needs this hop too.
+    if (typeof plhs === 'string' && Array.isArray(prhs) && prhs[0] === '()') {
+      if (prhs[1] === '__p_exec') promiseRecvNames.add(plhs)
+      else if (prhs[1] === '__p_withResolvers') withResolversRecvNames.add(plhs)
     }
     return ['=', plhs, prhs]
   },
@@ -3658,7 +3768,20 @@ const handlers = {
     // funcValueNames holds POST-RENAME binding keys (totality) — resolve the
     // receiver spelling through scopes before the membership check.
     const objKey = typeof obj === 'string' && scopes.length && isDeclared(obj) ? resolveScope(obj) : obj
-    const isFuncValueRecv = obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey)
+    // A receiver that's ITSELF a `.` read of 'then'/'catch'/'finally' off a
+    // KNOWN Promise instance, or 'resolve'/'reject' off a KNOWN
+    // Promise.withResolvers() result (promiseRecvNames/withResolversRecvNames
+    // — their own declaration above has the full mechanism) is ALSO provably
+    // function-valued: `p.then.length` / `instance.resolve.name` fell through
+    // the same silent-wrong-value gap a directly bound closure name's OWN
+    // `.length` used to, before hasFunc/isFuncValueLocal below closed THAT
+    // case. Resolves obj[1] the same way objKey does, just one level deeper.
+    const isPromiseHelperPropRecv = Array.isArray(obj) && (obj[0] === '.' || obj[0] === '?.') && typeof obj[1] === 'string' && (() => {
+      const recv = scopes.length && isDeclared(obj[1]) ? resolveScope(obj[1]) : obj[1]
+      return (promiseRecvNames.has(recv) && (obj[2] === 'then' || obj[2] === 'catch' || obj[2] === 'finally')) ||
+        (withResolversRecvNames.has(recv) && (obj[2] === 'resolve' || obj[2] === 'reject'))
+    })()
+    const isFuncValueRecv = obj === 'arguments' || hasFunc(objKey) || isFuncValueLocal(objKey) || isPromiseHelperPropRecv
     if (isFuncValueRecv && (prop === 'caller' || prop === 'callee'))
       err('`.caller`/`.callee` are prohibited: deprecated function stack introspection — jz has no equivalent; pass what you need as an explicit argument instead')
     // `.length`/`.name` on a function VALUE is real ECMAScript function-object

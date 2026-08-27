@@ -2724,58 +2724,81 @@ export function emitVoid(node) {
 // reassignment statement.
 function setFlowVal(name, vt) {
   if (!ctx.func.localValTypesOverlay || !isBoundName(name)) return
-  // A name reassigned at any NESTED position of the current block (inside an
-  // if/loop/closure body, a for's step, …) carries NO overlay fact: the recording
-  // site doesn't dominate the reassignment, so the fact can go stale while the
-  // binding is live — `let x = [7,8]; if (c) x = 5; x.length` read the number 5
-  // through the ARRAY fast path (OOB): a latent pre-existing miscompile, widened
-  // when decl recording moved into emitDecl and began covering for-init decls
-  // (`for (let x = […]; x.length; x = 0)`). Top-level `=` statements stay
-  // recordable — the block driver re-records at each, so the fact always
-  // reflects the latest dominating write.
+  // A name reassigned somewhere inside a LOOP body (while/do/for/for-in/for-of,
+  // at any nesting depth within it) carries NO overlay fact anywhere in this
+  // block, ever: a loop's body is emitted once but RUNS repeatedly, so a fact
+  // recorded before the loop (or earlier in the very same body, on a prior
+  // iteration) cannot be trusted the next time the same physical code runs —
+  // `let x = [7,8]; while (c) { use(x); x = 5 }` must not let `use(x)` trust
+  // the pre-loop ARRAY fact, because on iteration 2 x is really 5 (OOB through
+  // the ARRAY fast path). See collectLoopBlocked below for the reachability
+  // rule (only a write that crosses a loop boundary counts). A write reachable
+  // only through if/try/catch/finally does NOT block here — see
+  // nestedWritesOf's doc comment for why those invalidate position-sensitively
+  // instead, in emitBlockBody's own per-statement loop.
   if (ctx.func.flowValBlocked?.has(name)) return
   if (vt) ctx.func.localValTypesOverlay.set(name, vt)
   else ctx.func.localValTypesOverlay.delete(name)
 }
 
-// Names assigned at a NESTED position within this block's statements: anything
-// except top-level `name = rhs` statement heads and top-level decl heads (both
-// re-recorded by the emit drivers as they pass). Walks into closures too — a
-// closure assigning an outer name can run between the recording and any later
-// read. ++/-- count as assignments (conservative: their result is numeric, but
-// blocking keeps the rule uniform).
-function collectNestedAssigns(stmts) {
-  const blocked = new Set()
-  const walk = (n) => {
+const FLOW_LOOP_OPS = new Set(['while', 'do', 'for', 'for-in', 'for-of'])
+
+// Names assigned at a NESTED position within `node` (anything except a
+// top-level `name = rhs` statement head or top-level decl head, both
+// re-recorded by the emit drivers that pass them directly to setFlowVal) —
+// split by whether the write is reachable WITHOUT crossing a loop boundary.
+// Walks into closures too — a closure assigning an outer name can run between
+// the recording and any later read. ++/-- count as assignments (conservative:
+// their result is numeric, but invalidating keeps the rule uniform).
+//
+// The split matters because the two cases need different treatment:
+//   - loopWrites (any FLOW_LOOP_OPS ancestor between the write and `node`):
+//     the write's containing loop body is static-once/dynamic-many, so NO
+//     fact for this name is safe ANYWHERE in the current block, including
+//     before the loop starts (setFlowVal's whole-block flowValBlocked gate,
+//     unchanged from before this split existed).
+//   - flatWrites (no loop ancestor — reachable only through if/try/catch/
+//     finally, which run their body at most once per pass through the
+//     enclosing block): a fact recorded by a statement BEFORE this one is
+//     still exactly as trustworthy as it always was; only statements AFTER
+//     this one must stop trusting it. The caller (emitBlockBody) deletes
+//     these names from the live overlay right after emitting `node`, instead
+//     of never letting them be recorded at all — the whole-block veto was
+//     needlessly retroactive for this case (audit: `var`-hoisted `object =
+//     {…}` reassigned a second time inside an unrelated try/catch elsewhere
+//     in the function blinded even the FIRST, textually-dominating read).
+function nestedWritesOf(node, loopWrites) {
+  const flatWrites = new Set()
+  const walk = (n, inLoop) => {
     if (!Array.isArray(n)) return
     const op = n[0]
     // A decl's `['=', name, init]` pairs are DECLARATIONS, not reassignments
     // (same as isReassigned's let/const handling) — a nested `for (let x = …)`
-    // init must not block x; only a true write in cond/step/body does.
+    // init must not count as a write; only a true write in cond/step/body does.
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
-        if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2])
+        if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2], inLoop)
       }
       return
     }
-    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof n[1] === 'string') blocked.add(n[1])
-    for (let i = 1; i < n.length; i++) walk(n[i])
+    if (FLOW_LOOP_OPS.has(op)) inLoop = true
+    if ((ASSIGN_OPS.has(op) || op === '++' || op === '--') && typeof n[1] === 'string')
+      (inLoop ? loopWrites : flatWrites).add(n[1])
+    for (let i = 1; i < n.length; i++) walk(n[i], inLoop)
   }
-  for (const s of stmts) {
-    if (!Array.isArray(s)) continue
-    const op = s[0]
-    if (op === '=' && typeof s[1] === 'string') { walk(s[2]); continue }   // top-level target re-records
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < s.length; i++) {
-        const d = s[i]
-        if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2])   // decl head re-records; walk init
-      }
-      continue
+  if (!Array.isArray(node)) return flatWrites
+  const op = node[0]
+  if (op === '=' && typeof node[1] === 'string') { walk(node[2], false); return flatWrites }   // top-level target re-records
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (Array.isArray(d) && d[0] === '=' && d[2] != null) walk(d[2], false)   // decl head re-records; walk init
     }
-    walk(s)
+    return flatWrites
   }
-  return blocked
+  walk(node, false)
+  return flatWrites
 }
 
 /** Emit block body as flat list of WASM instructions. Unwraps {} and delegates to emitVoid per statement.
@@ -2789,14 +2812,19 @@ export function emitBlockBody(node) {
   const frame = ctx.func
   const prevValOverlay = frame.localValTypesOverlay
   frame.localValTypesOverlay = new Map(prevValOverlay || [])
-  // Nested-assignment blocklist for this block. Per-block own-scan is sufficient:
-  // an outer name whose fact was blocked in the outer block never entered the
-  // outer overlay (which this block's overlay copies), and a name reassigned at
-  // THIS block's top level re-records right after the assignment (dominating the
-  // rest of this block) — the scan blocks exactly the recordings that don't
-  // dominate their possible staleness point.
+  // Loop-reachable-write blocklist for this block (setFlowVal's whole-block
+  // gate — see its doc comment). Per-block own-scan is sufficient: an outer
+  // name blocked in the outer block never entered the outer overlay (which
+  // this block's overlay copies), and a name reassigned at THIS block's top
+  // level re-records right after the assignment (dominating the rest of this
+  // block). `flatWrites[i]` (position-sensitive; see nestedWritesOf) holds the
+  // non-loop nested writes for stmts[i] alone — the loop below deletes those
+  // names from the live overlay right after passing stmts[i], instead of
+  // vetoing them for the whole block up front.
   const prevFlowBlocked = frame.flowValBlocked
-  frame.flowValBlocked = collectNestedAssigns(stmts)
+  const loopBlocked = new Set()
+  const flatWrites = stmts.map(s => nestedWritesOf(s, loopBlocked))
+  frame.flowValBlocked = loopBlocked
   try {
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i]
@@ -2819,6 +2847,12 @@ export function emitBlockBody(node) {
       // (the wall-protocol default — reject only fires for something truly
       // unresolved), never a false positive that skips reachable code.
       if (isTerminator(s)) break
+      // Position-sensitive invalidation FIRST, re-record SECOND: stmts[i]'s
+      // own top-level target (if any) is the authoritative post-statement
+      // state and must win over a same-statement nested self-write (e.g. a
+      // closure IIFE'd into its own RHS that also happens to assign the
+      // target name) — an edge case, but cheap to order correctly.
+      for (const name of flatWrites[i]) frame.localValTypesOverlay.delete(name)
       // `let`/`const` decls self-record via emitDecl; only a bare reassignment needs it here.
       if (Array.isArray(s) && s[0] === '=' && typeof s[1] === 'string') setFlowVal(s[1], valTypeOf(s[2]))
       // After an `if (cond) terminator` — including a terminator else-if LADDER

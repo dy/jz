@@ -16,6 +16,7 @@ import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { i64Hex } from '../layout.js'
 import { strHashLiteral, heapResetWat } from './collection.js'
+import { RESERVED as ATOM_RESERVED } from './symbol.js'
 import { ERR } from '../err-codes.js'
 
 function jsonConstString(ctx, expr) {
@@ -32,12 +33,31 @@ const NOT_LIT = Symbol('not-literal')
 // Evaluate a prepared AST node to its constant JS value, or NOT_LIT if any
 // part is dynamic. Mirrors the literal grammar prepare produces: `[null, v]`
 // for primitives, `['str', s]`, `['[' …]` arrays, `['{}' …]` objects.
+//
+// `'//'` (fix/wrong-values-3): a regex LITERAL. module/regex.js's own doc
+// ("Regex literals become compile-time WASM functions") is the root cause of
+// the sibling runtime bug this static fold exists to avoid — jz's regex
+// VALUE representation (ctx.core.emit['//']) is a bare i32 compile-time
+// table index, boxed to f64 the same as any real number, so a regex reaching
+// __json_val's runtime tag-dispatch (module/json.js) is bit-identical to the
+// NUMBER 0/1/2/… and gets misrendered as that raw index — confirmed live,
+// `JSON.stringify({toJSON: /re/})` produced `{"toJSON":0}`. No runtime tag
+// exists to recover "this was a regex" once degraded to f64, so the fix
+// lives here, at the STATIC layer, before that degradation happens. `{}` —
+// not `new RegExp(pattern, flags)` — deliberately: real JS's OWN answer is
+// unconditionally `{}` for every regex regardless of pattern (RegExp has no
+// OWN ENUMERABLE properties — `source`/`flags`/`global`/… are prototype
+// getters, and `lastIndex`, the one own property, is non-enumerable; verified
+// against Node/V8: `JSON.stringify(/x/gi)` is `"{}"`), so this needs no
+// pattern/flags parsing at all — and sidesteps any host-vs-jz regex-dialect
+// syntax mismatch `new RegExp(pattern, flags)` could throw on.
 function literalValue(node) {
   if (node === undefined) return undefined            // array hole
   if (!Array.isArray(node)) return NOT_LIT
   const op = node[0]
   if (op == null) return node[1]                      // number | string | bool | null | undefined
   if (op === 'str') return node[1]
+  if (op === '//') return {}                          // regex — always {} (see doc above)
   if (op === 'u-') { const v = literalValue(node[1]); return v === NOT_LIT ? NOT_LIT : -v }
   if (op === '[') {
     const arr = []
@@ -139,7 +159,7 @@ export default (ctx) => {
   deps({
     __stringify: ['__json_val', '__json_setgap', '__json_omit', '__jput', '__jput_str', '__jput_num', '__mkstr'],
     __json_setgap: ['__alloc', '__ptr_type', '__str_byteLen', '__char_at'],
-    __json_omit: ['__ptr_type'],
+    __json_omit: ['__ptr_type', '__ptr_aux'],
     __json_enter: ['__alloc'],
     __jindent: ['__jput'],
     __json_val: ['__ptr_type', '__len', '__ptr_offset', '__jput', '__jindent', '__jput_num', '__jput_str', '__json_enter', '__json_leave', '__json_hash', '__json_obj'],
@@ -348,15 +368,44 @@ export default (ctx) => {
     (call $__jput_str (i64.reinterpret_f64 (call $__ftoa (local.get $val) (i32.const 0) (i32.const 0)))))`
 
   // __json_omit(val: i64) → i32 — 1 if the value serializes to nothing
-  // (undefined or a function/CLOSURE). Per the JSON spec such values are
-  // dropped from objects, rendered as null in arrays, and make a top-level
-  // JSON.stringify return undefined.
+  // (undefined, a function/CLOSURE, or a Symbol/ATOM — ES 25.5.2.2
+  // SerializeJSONProperty: IsCallable(value) OR Type(value) is Symbol both
+  // return undefined, the same "drop" treatment). Per the JSON spec such
+  // values are dropped from objects, rendered as null in arrays (the
+  // ARRAY-element caller in __json_val's own dispatch never calls this —
+  // it falls through the same "no known tag matched" arm that already
+  // renders null for them, which is the ARRAY-position spec answer for
+  // free), and make a top-level JSON.stringify return undefined.
   ctx.core.stdlib['__json_omit'] = `(func $__json_omit (param $val i64) (result i32)
-    (local $f f64)
+    (local $f f64) (local $t i32)
     (local.set $f (f64.reinterpret_i64 (local.get $val)))
     (if (f64.eq (local.get $f) (local.get $f)) (then (return (i32.const 0))))
     (if (i64.eq (local.get $val) (i64.const ${UNDEF_NAN})) (then (return (i32.const 1))))
-    (i32.eq (call $__ptr_type (local.get $val)) (i32.const ${PTR.CLOSURE})))`
+    (local.set $t (call $__ptr_type (local.get $val)))
+    (if (i32.eq (local.get $t) (i32.const ${PTR.CLOSURE})) (then (return (i32.const 1))))
+    ;; PTR.ATOM(=0) is the SHARED tag for null/false/true/Symbol — AND for a
+    ;; genuine, un-boxed arithmetic NaN (module/symbol.js's own doc: "0 =
+    ;; reserved" is PTR.ATOM's tag value itself, not just one of its aux ids
+    ;; — a canonical NaN's mantissa is all-zero, so it decodes as aux=0, same
+    ;; tag as ATOM). A FIRST DRAFT of this check excluded only the three
+    ;; named reserved bit patterns (null/false/true) and treated everything
+    ;; else tagged ATOM as "must be a Symbol" — unsound: 0 divided by 0's
+    ;; canonical NaN is ALSO tag=ATOM and matches none of those three, so it
+    ;; was wrongly omitted too. Confirmed live via the kernel-target battery
+    ;; (jz's own self-hosted JSON.stringify, called from module/json.js's
+    ;; OWN foldStringify while COMPILING a user program, hit exactly this
+    ;; path compiling itself): stringifying 0/0 returned undefined instead
+    ;; of the string 'null' — passed, not failed, under NATIVE compilation
+    ;; only because native's host-JS-delegated const-fold (foldStringify's
+    ;; own JSON.stringify call, this file) never reaches this runtime arm
+    ;; for a literal-foldable NaN at all, masking the bug there.
+    ;; POSITIVE proof instead: module/symbol.js's own RESERVED constant is
+    ;; the first id a real Symbol() / Symbol.for() call ever mints (ids 0-15
+    ;; are ALL reserved — 1/2/4/5 named, 0/3/6-15 unused but still not a real
+    ;; atom) — aux >= RESERVED is the same authority module/symbol.js's own
+    ;; header comment documents, not a re-derived guess.
+    (if (i32.ne (local.get $t) (i32.const ${PTR.ATOM})) (then (return (i32.const 0))))
+    (i32.ge_u (call $__ptr_aux (local.get $val)) (i32.const ${ATOM_RESERVED})))`
 
   // __json_enter(val: i64) — push a container onto the cycle stack, throwing a
   // TypeError ($__jz_err) if it is already an open ancestor (a circular ref).
@@ -1528,6 +1577,21 @@ ${localDecls}
     // true/false — exactly bool. Guard on no replacer: a replacer function may
     // rewrite the top-level value, in which case fall to runtime.
     if (noReplacer && valTypeOf(x) === VAL.BOOL) return bool(x)
+    // Provably-regex top-level value (fix/wrong-values-3): the const-fold
+    // above already renders a LITERAL regex tree exactly (literalValue's
+    // '//' case, this file) — this arm is the sibling for a NON-literal
+    // expression (a name, a property, a call) whose VAL kind is still
+    // statically known to be REGEX. Needed because module/regex.js's own
+    // VALUE representation (ctx.core.emit['//']) is a bare compile-time
+    // table-index i32, boxed to f64 the SAME as any real number — once
+    // reached at runtime it is bit-identical to that index as a NUMBER, and
+    // no tag exists to recover "this was a regex" from it (see
+    // literalValue's own '//' doc, above, for the full mechanism and the
+    // {} answer's spec citation — unconditional regardless of pattern/flags,
+    // so this needs no runtime value at all). `x` is still emitted, for any
+    // side effect a non-trivial expression might carry, then dropped.
+    if (noReplacer && valTypeOf(x) === VAL.REGEX)
+      return typed(['block', ['result', 'f64'], ['drop', asF64(emit(x))], asF64(emit(['str', '{}']))], 'f64')
     inc('__stringify')
     // storedValue (not raw emit): MECHANISM A (research.md §Carrier invariant) —
     // `__json_val`'s runtime dispatcher already discriminates a genuine number

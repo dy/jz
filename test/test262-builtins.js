@@ -806,19 +806,24 @@ const EXPECTED_FAIL_FILES = new Map([
   // `var o = {...}; parseInt(o)`); JSON.parse/text-object.js's own shape is
   // exactly that simple case and now cleanly rejects "not supported" → skip,
   // no entry needed. The full parseInt/encodeURIComponent test262 FILES
-  // (below) are NOT resolved, though — full-battery re-run surfaced a
-  // GENUINE gate regression the isolated probes during development missed:
-  // valTypeOf(name) — the check's only signal — stays unresolved (neither
-  // VAL.OBJECT nor anything else conclusive) for a `var object = {…}`
-  // once the SAME function ALSO contains a try/catch ANYWHERE, even
-  // unrelated, even textually after the affected call (both files' remaining
-  // CHECK blocks use try/catch for abrupt-completion assertions). Adding a
-  // ctx.schema.slotOf(name,'valueOf'/'toString') fallback (the same
-  // resolution src/ir.js's toPrimitiveChain already leans on) did NOT
-  // resolve it either — the deeper cause is still open. Reverted the
-  // over-claimed "now passes" tag on these two files; still real
-  // [WRONG-VALUE] xfail entries below (JSON.parse's own shape is
-  // unaffected — it has no map entry because IT stays try/catch-free).
+  // (below) were NOT resolved at the time, though — full-battery re-run
+  // surfaced a GENUINE gate regression the isolated probes during
+  // development missed: valTypeOf(name) — the check's only signal — stayed
+  // unresolved (neither VAL.OBJECT nor anything else conclusive) for a `var
+  // object = {…}` once the SAME function ALSO contained a try/catch
+  // ANYWHERE, even unrelated, even textually after the affected call (both
+  // files' remaining CHECK blocks use try/catch for abrupt-completion
+  // assertions). Adding a ctx.schema.slotOf(name,'valueOf'/'toString')
+  // fallback (the same resolution src/ir.js's toPrimitiveChain already leans
+  // on) did NOT resolve it either at the time — the deeper cause was left
+  // open (JSON.parse's own shape was unaffected — it has no map entry
+  // because IT stays try/catch-free).
+  //
+  // fix/wrong-values-3: root-caused and fixed — see the parseInt/
+  // encodeURIComponent note further below (near those two files' former xfail
+  // entries) for the actual mechanism. valTypeOf itself was never the bug;
+  // the fix lives in emit.js's flow-value overlay, not kind.js. Both files
+  // now REJECT cleanly at compile time; no map entry needed.
   // JSON.stringify — replacer argument (jz stringify is single-arg). Function
   // replacers confirmed REJECT cleanly ("JSON.stringify with a runtime
   // replacer is not supported"); array replacers confirmed WORK for the
@@ -854,18 +859,44 @@ const EXPECTED_FAIL_FILES = new Map([
   // fix/wrong-values-2: resolved by evidence. Per-line probes confirmed the
   // file's OWN question (does jz wrongly INVOKE a non-callable toJSON
   // property?) is answered correctly — jz never invokes ANY toJSON hook at
-  // all (confirmed separately, still true, still unfixed: a genuinely
+  // all (SEPARATELY confirmed, still true, still unfixed: a genuinely
   // CALLABLE toJSON is silently ignored, `JSON.stringify({toJSON:()=>42})`
-  // gives "{}" not "42" — a real gap, but not what THIS file tests), so
-  // "not invoked" is spec-correct here regardless of the reason. The file
-  // still fails, on an UNRELATED bug the probes surfaced: line 25's
+  // gives "{}" not "42" — a real gap, but not what THIS file tests, and no
+  // test262 file currently pinned below needs it either), so "not invoked"
+  // is spec-correct here regardless of the reason. fix/wrong-values-2 left
+  // the file failing on an UNRELATED bug its own probes surfaced: line 25's
   // `JSON.stringify({toJSON: /re/})` (a RegExp VALUE, not a toJSON
-  // question) serializes as "{\"toJSON\":0}" instead of "{\"toJSON\":{}}" —
-  // a genuinely new silent-wrong-value class (RegExp-as-a-JSON-value
-  // serialization) found by this pass, NOT fixed (ran out of time to trace
-  // it safely) — retagged from [VERIFY] to an honest [WRONG-VALUE] with the
-  // real, narrower cause named, not left as an open question.
-  ['built-ins/JSON/stringify/value-tojson-not-function.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] JSON.stringify({toJSON: /re/}) (a RegExp VALUE) serializes as {"toJSON":0} instead of {"toJSON":{}} — confirmed live; unrelated to the file\'s own toJSON-callability question, which jz already answers correctly (no toJSON hook is ever invoked, callable or not)'],
+  // question) serialized as "{\"toJSON\":0}" instead of "{\"toJSON\":{}}".
+  // fix/wrong-values-3: root-caused and fixed. module/regex.js's own doc
+  // ("Regex literals become compile-time WASM functions") names the actual
+  // cause — a regex VALUE (ctx.core.emit['//']) is a bare i32 compile-time
+  // table index, boxed to f64 the same as any real number, so once it
+  // reaches __json_val's runtime tag dispatch (module/json.js) it is
+  // bit-identical to the NUMBER 0/1/2/… (the literal's table index) and gets
+  // misrendered as that raw index — no runtime tag can recover "this was a
+  // regex" after that degradation. Fixed at the STATIC layer instead, before
+  // the value degrades: literalValue's new '//' case (module/json.js) folds
+  // any regex reachable through a literal tree straight to its ALWAYS-`{}`
+  // answer (RegExp has no own ENUMERABLE property — verified against Node/
+  // V8 — so this needs no pattern/flags parsing at all), and a matching
+  // top-level valTypeOf(x)===VAL.REGEX fast path in JSON.stringify's own
+  // emitter covers a non-literal-but-statically-regex-typed top-level value.
+  // Sibling-swept the same value-kind switch for functions (module/core.js's
+  // __json_omit — already correct: omitted from objects, null in arrays,
+  // undefined at top level, all confirmed against Node) and Symbol (jz's
+  // OTHER PTR.ATOM producer, module/symbol.js — was NOT correct: __json_omit
+  // didn't recognize it, so `{a: Symbol()}` kept the key with a wrong `null`
+  // value and a top-level Symbol rendered the STRING "null" instead of the
+  // value undefined; both now match Node exactly, fixed by teaching
+  // __json_omit to treat any PTR.ATOM that isn't the three reserved null/
+  // false/true bit patterns as omit-worthy, the same treatment a function
+  // already got). This file's own 4 assertions (null/false/[]/regex toJSON
+  // values) now all pass exactly; removed from this map, not retagged — see
+  // the JSON.stringify emitter's own doc for the residual, out-of-scope
+  // narrower case this pass did NOT chase: a regex reachable only through a
+  // DYNAMIC, non-top-level property (`{toJSON: aRegexVariable}` where the
+  // whole object isn't itself a literal tree) still degrades the same way —
+  // no test262 file currently exercises that shape.
   // JSON.stringify — wrapper-object / circular / abrupt-getter / Symbol edges.
   // fix/wrong-values-2: space-string-object.js retagged [DIALECT] — confirmed
   // live it does NOT silently compute a plausible value; it loudly THROWS
@@ -1017,25 +1048,74 @@ const EXPECTED_FAIL_FILES = new Map([
   // permissive typeof-object fallback always answered false for). then's OWN
   // file still fails on an UNFIXED sibling assertion in the same file
   // (`p.then.length` must be 2) — kept below under its real remaining cause.
-  ['built-ins/Promise/exec-args.js', '[WRONG-VALUE] executor resolve/reject .length reflection — NOT fixed this pass: `.length`/`.name` reflection is fixed for a NAMED/bound function value (prepare/index.js\'s `.` handler) but not yet for an anonymous closure reached only through a PARAMETER binding (the executor\'s own `resolve`/`reject` args) — confirmed live, still reads `undefined` not the real arity'],
-  ['built-ins/Promise/prototype/then/S25.4.5.3_A1.1_T2.js', '[WRONG-VALUE] `.then.length` reflection — the file\'s `instanceof Function` assertion is now fixed (see above); its `.length` assertion is the SAME unfixed function-value-through-a-property-read gap as Promise/exec-args.js and Promise/withResolvers/resolvers.js below — confirmed live'],
-  ['built-ins/Promise/withResolvers/resolvers.js', '[WRONG-VALUE] resolve/reject .name/.length reflection — same unfixed function-value-through-a-property-read gap as Promise/exec-args.js above (resolve/reject are PROPERTIES of the withResolvers() result, not a bound name my `.` -handler fix\'s isFuncValueLocal/hasFunc check recognizes) — confirmed live, still silently reads undefined'],
+  // fix/wrong-values-3: root-caused and fixed — all three now reject at
+  // COMPILE TIME ("is not supported" → skip, no entry needed below).
+  //
+  // The static reject (prepare/index.js's `.` handler, isFuncValueRecv) only
+  // ever proved a receiver function-valued through a BOUND NAME's own
+  // literal `=>` RHS — a closure reached only through an untyped PARAMETER
+  // (exec-args.js's executor resolve/reject) or an object PROPERTY
+  // (withResolvers().resolve/.reject, p.then) had no such static proof and
+  // fell through to a silent wrong value at the generic dynamic-property
+  // layer (module/core.js emitPropAccess/buildLengthHelper).
+  //
+  // FIRST ATTEMPT (reverted): a RUNTIME guard on that dynamic-property layer
+  // — check the receiver's PTR tag for CLOSURE, reject if so. Correct in
+  // isolation, but that dispatcher runs for the COMPILER'S OWN self-hosted
+  // code too: module/core.js's emitArity (`h?.argc ?? h?.length`, src/
+  // ctx.js) reads `.length` off exactly this shape (an unresolved-kind
+  // closure PARAMETER) throughout the compiler's own emit-table arity
+  // probes, as a normal, gracefully-tolerated-as-undefined pattern — the
+  // runtime guard turned that into an uncaught throw, crashing the KERNEL
+  // (self-compiled dist/jz.wasm) on every single compile (kernel-oracle
+  // 14/14 → 3/14, confirmed live via the full battery before landing).
+  // Reverted whole — src/ir.js/module/core.js carry no trace of it.
+  //
+  // ACTUAL FIX: three STATIC extensions to prepare/index.js's existing
+  // isFuncValueRecv proof, each narrowly scoped to a construct jz's own
+  // compiler source never writes (verified: zero `new Promise`/`.then(`/
+  // `Promise.withResolvers` hits anywhere in src/**, module/**), so none of
+  // them can ever fire while compiling the compiler itself:
+  //   1. `new Promise(executor)` (→ jzify's `__p_exec(executor)`) — scan the
+  //      executor's own literal body for `outer = firstOrSecondParam` (also
+  //      recognizing jzify's lowerArguments rewrite, when the executor's own
+  //      body reads `arguments`: params collapse to one rest param, real
+  //      names recovered from its own `let a = arg0[0], b = arg0[1]`
+  //      destructure) — adds `outer`'s post-rename spelling to
+  //      funcValueNames, the SAME set isFuncValueRecv already consults for a
+  //      directly-literal-bound name. Fixes exec-args.js.
+  //   2. A name bound directly to `__p_exec(...)`'s result (`new Promise`)
+  //      → promiseRecvNames; `.then`/`.catch`/`.finally` read off it join
+  //      isFuncValueRecv. Fixes then/S25.4.5.3_A1.1_T2.js.
+  //   3. A name bound directly to `__p_withResolvers()`'s result
+  //      (`Promise.withResolvers()`) → withResolversRecvNames; `.resolve`/
+  //      `.reject` read off it join isFuncValueRecv. Fixes
+  //      withResolvers/resolvers.js.
+  // Both (2)/(3) are checked at BOTH a decl site (`let`/`const`) and a bare
+  // reassignment site — `var p = new Promise(fn)` is ALREADY a reassignment
+  // by the time prepare sees it (jzify/hoist-vars.js splits it into a bare
+  // `let p` elsewhere plus this plain assignment), so the decl-site check
+  // alone missed it.
   // parseInt / encodeURIComponent object-argument coercion — module/number.js
   // rejectObjectArg / module/string.js uriEncodeBind (see the JSON.parse
-  // entry near the top of this map) reject the SIMPLE, try/catch-free case
-  // cleanly, but do NOT reliably fire once the file's OTHER assertions (all
-  // three below use try/catch for abrupt-completion checks) sit in the same
-  // function — valTypeOf(name) stays unresolved for an object-literal
-  // variable once ANY try/catch exists anywhere in that function, a
-  // pre-existing type-inference limitation neither this check nor a
-  // ctx.schema.slotOf fallback could route around in the time available.
-  // Confirmed live (full-battery re-run): all three still silently compute
-  // and return the wrong value, caught only by the test's own assertion —
-  // genuinely NOT resolved this pass, honestly re-tagged from an
-  // over-optimistic "fixed" claim during development.
-  ['built-ins/parseInt/S15.1.2.2_A1_T7.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] parseInt object-arg ToPrimitive coercion — rejectObjectArg (module/number.js) does not fire once the file\'s later try/catch checks exist in the same function; valTypeOf(name) stays unresolved for the object variable in that context — confirmed live, still returns a silently wrong value (0 instead of the correct answer)'],
-  ['built-ins/parseInt/S15.1.2.2_A3.1_T7.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] parseInt object-radix ToPrimitive coercion — same try/catch-defeats-valTypeOf gap as S15.1.2.2_A1_T7.js above'],
-  ['built-ins/encodeURIComponent/S15.1.3.4_A6_T1.js', '[WRONG-VALUE, pinned — fix/wrong-values-2, not fixed this pass] encodeURIComponent object ToPrimitive coercion — same try/catch-defeats-valTypeOf gap (module/string.js uriEncodeBind\'s guard uses the identical valTypeOf(value)===VAL.OBJECT check) — confirmed live, still silently returns "" instead of the encoded ToPrimitive result'],
+  // entry near the top of this map) used to reject the SIMPLE, try/catch-free
+  // case cleanly but not once the file's OTHER assertions (all three below
+  // use try/catch for abrupt-completion checks) sat in the same function.
+  // fix/wrong-values-3: root-caused and fixed — the actual mechanism was
+  // never valTypeOf itself (kind.js, unowned by this branch, was never the
+  // bug) but emit.js's flow-sensitive localValTypesOverlay ("tier #2" of
+  // lookupValType): collectNestedAssigns computed ONE whole-block veto set
+  // up front, so a name reassigned ANYWHERE at a nested position (inside an
+  // if/try/catch/loop, anywhere later in the block, even textually AFTER a
+  // dominating read) blocked setFlowVal from recording ANY fact for that name
+  // ANYWHERE in the block — including at its first, textually-dominating
+  // write. Split into a loop-reachable set (unchanged blanket veto — a loop's
+  // static body runs dynamically many times, so no position in it is safe)
+  // and a non-loop set, now invalidated POSITION-SENSITIVELY: only from the
+  // point the nested if/try/catch/finally write is actually passed, in
+  // emitBlockBody's own per-statement walk. All three now REJECT cleanly at
+  // compile time ("is not supported" — jz's own skip-classification, no xfail
+  // entry needed) instead of silently computing the wrong value.
 ])
 
 function expectedFailReason(rel) {
