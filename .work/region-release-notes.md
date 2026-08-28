@@ -129,3 +129,38 @@ encode phase with headroom.
   `resolveSelfCompileBuild()`'s own `{code, modules}` graph back into the built kernel's
   `default(code,strict,optJSON,modulesJSON,host)` export and reading
   `exports.memory.buffer.byteLength` after trap/completion).
+
+## CRITICAL CAVEAT found after the above was written: streaming-encoder kernel has a real, uncaught correctness bug
+
+Ran `node test/kernel-oracle.js` against the streaming-encoder-built kernel (the exact
+artifact the peak-bytes measurement above used): **9/14 fail**, first failure on `sum` (the
+same trivial program) at O0/O2/O3, with the identical `decodeThrown`/TypeError-wrong-object-
+shape signature seen in the (unrelated, region-hooks) soundness investigation above. Baseline-
+probed immediately: the DORMANT baseline kernel (no streaming, no regions, same aff67069
+source) passes the SAME unmodified test 14/14 (605 assertions) — proves this is a NEW,
+real bug introduced by the streaming encoder, not a pre-existing or coincidental issue.
+
+Root cause not found (out of time this session). Likely explanation: watr's own 604/0/22
+green suite only ever exercised the DEFAULT (non-streaming) path against the official
+conformance tests — `streamCode:true` was only ever validated against 2 tiny hand-written
+smoke-test modules (a handful of instructions each) before being wired into a real jz
+self-compile. jz's actual compiled output is far more structurally complex (many functions,
+large bodies, real stdlib), and something about that scale/shape trips a bug the smoke tests
+never exercised — most plausibly in the reserve+backpatch offset bookkeeping
+(`buildCodeItemStreaming`/`patchUleb5`) rather than in the underlying instruction encoding
+(which IS the same `instr()`/HANDLER logic the 604-test suite already exercises, just fed
+into a different destination buffer).
+
+**Consequence for the peak-bytes measurement above**: the streaming-encoder kernel that
+produced "peakBytes 4294967296, same as baseline" is a DEMONSTRABLY BUGGY compiler artifact.
+The measurement is real (that build, as built, traps at exactly the same point as baseline)
+but should be read as suggestive, not a clean validated apples-to-apples comparison — a
+CORRECT streaming encoder could plausibly behave differently. The structural argument (regions
+never wire into watrCompile, so a dormant build can't benefit from an encode-only optimization
+regardless) still holds independently of this bug and is the more load-bearing reason not to
+expect this prototype alone to move the ceiling.
+
+**Required follow-up before trusting streamCode:true for anything real**: a differential test
+that runs the FULL official wasm testsuite (or better, jz's own real compiled output) through
+BOTH `compile(nodes)` and `compile(nodes, {streamCode:true})` and compares EXECUTION results
+(not just validity) — the gap that let this ship past watr's own green suite unnoticed.
