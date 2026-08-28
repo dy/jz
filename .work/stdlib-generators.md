@@ -105,16 +105,34 @@ External export surface preserved exactly: `LANE`, `collectionLaneBytes`,
 re-exports/imports them back so module/core.js's `collectionLaneBytes`
 import and module/object.js's `GROW_QUAD_CAP` import are untouched.
 
-Cross-module edge: `module/collection/upsert.js` imports 5 `durable*IR`
-helpers back from `../collection.js` (they're part of that file's cohesive,
-cross-referenced 8-function "durable heap log" family — 4 of the 8 have
-consumers outside the probe family, e.g. `durableFwdLogIR` is imported
-directly by `module/array.js`, so splitting the family in half to dodge a
-cycle would fragment a documented, comment-cross-referenced unit for no
-reason). This is a two-node cycle (collection.js ↔ collection/upsert.js)
-safe under ESM because every use is inside a function body evaluated lazily
-at template-materialization time, never at module-evaluation time — verified
-empirically by the full test battery below, not just argued.
+**Correction during verification**: the first cut of this move had
+`module/collection/upsert.js` import its 5 `durable*IR` helpers back from
+`../collection.js`, while `collection.js` imports the 10 generators from
+`upsert.js` — a two-node cycle. Plain Node ESM tolerates it (every use is
+inside a function body evaluated lazily at template-materialization time,
+never at module-evaluation time), so `node --check` and a direct `import()`
+both looked clean — but **jz's own `resolveModuleGraph`** (used to compile
+jz's own source, e.g. the `bench:jz` self-compile case) rejects circular
+module imports outright, throwing `Circular import: ...` for exactly the
+`bench:jz` corpus row. That's the task's own oracle catching a real defect,
+not a false alarm: self-hosting is the whole point of jz, so "my own
+compiler can't compile itself anymore" is disqualifying, tolerant Node
+semantics notwithstanding.
+
+Fix: pulled the whole cohesive, comment-cross-referenced "durable heap log"
+family (`heapResetWat` + all 8 `durable*IR` helpers — collection.js
+64-319, corrected from an earlier `~140-333` estimate in this doc's draft
+that mis-measured the block and would have truncated the unrelated
+`ssoMix` helper mid-body had it been used for an extraction) out to
+**`module/collection/durable.js`**, a true leaf module (only dependency:
+the `ctx` singleton from `src/ctx.js`). Now the graph is a one-directional
+diamond: `durable.js` ← `upsert.js` (imports the 5 it needs from the
+sibling `./durable.js`, not from `../collection.js`) and `durable.js` ←
+`collection.js` (imports the 5 non-probe-family exports it and
+array.js/core.js/json.js need — `heapResetWat`, `durableFwdLogIR`,
+`durableLenLogIR`, `durableArrSnapIR`, `durableArrSnapNode` — re-exported
+under their original names). No cycle anywhere. Re-verified: `resolveModuleGraph`
+on `bench/jz/jz.js` (`resolveNode: true`) resolves and compiles clean.
 
 ## typedarray.js map (3055 lines before)
 
@@ -143,10 +161,15 @@ Top-level shape:
 No external consumers of anything in the SIMD section (grep across
 module/src/test: nothing imports named symbols from typedarray.js at all —
 only `module/index.js` imports its default export). `module/typedarray/simd-
-map.js` imports `STRIDE`/`SHIFT`/`LOAD`/`STORE` back from `../typedarray.js`
-(newly exported — zero external consumers today, so widening their
-visibility is inert) and `PTR` directly from `../../src/ctx.js`. Same
-two-node-cycle shape as collection.js/upsert.js, same safety argument.
+map.js` imports `PTR` directly from `../../src/ctx.js`.
+
+Same cycle risk as collection.js/upsert.js, fixed the same way: `STRIDE`,
+`SHIFT`, `LOAD`, `STORE` (self-contained array literals, zero dependencies
+of their own) moved to **`module/typedarray/elem-tables.js`**, a leaf with
+no imports at all. `typedarray.js` imports them from there for its own
+(non-SIMD) use across the file; `simd-map.js` imports them from the same
+sibling leaf, not from `../typedarray.js`. One-directional diamond, no
+cycle — re-verified against `resolveModuleGraph` the same way.
 
 ## Dead-variant check (task step 4)
 
@@ -179,14 +202,22 @@ immediately" — not fixed here: fixing it would change emitted output for
 that input shape, which this task must not do, and it's unrelated to
 pipeline minimality.
 
-## Commits (filled in as each move lands)
+## Commits
 
-1. `.work/stdlib-generators.md` (this file).
-2. PURE MOVE: `module/collection/upsert.js` extracted from collection.js
-   407-1372; collection.js imports the 10 generators + LANE/
+1. `06849a2a` — `.work/stdlib-generators.md` (this file).
+2. `9a7dc7d2` — PURE MOVE: `module/collection/upsert.js` extracted from
+   collection.js 407-1372; collection.js imports the 10 generators + LANE/
    collectionLaneBytes/collectionStride/GROW_QUAD_CAP back.
-3. PURE MOVE: `module/typedarray/simd-map.js` extracted from typedarray.js
-   59-238; typedarray.js imports analyzeSimd/genSimdMap back.
+3. `60502911` — PURE MOVE: `module/typedarray/simd-map.js` extracted from
+   typedarray.js 59-238; typedarray.js imports analyzeSimd/genSimdMap back.
+4. `ff082916` — PURE MOVE + cycle fix: `module/collection/durable.js`
+   extracted from collection.js 64-319 (the durable-heap-log family);
+   upsert.js's durable-helper import repointed from `../collection.js` to
+   the `./durable.js` sibling (see "Correction during verification" above).
+5. `916811ab` — PURE MOVE + cycle fix: `module/typedarray/elem-tables.js`
+   extracted from typedarray.js 29-38 (STRIDE/SHIFT/LOAD/STORE);
+   simd-map.js's table import repointed from `../typedarray.js` to the
+   `./elem-tables.js` sibling.
 
 No de-duplication commit and no deletion commit follow, per the findings
 above — both would be scope invention against an already-minimal codebase.
