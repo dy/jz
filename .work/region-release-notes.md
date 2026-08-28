@@ -2001,3 +2001,123 @@ either way). (3) The goal-probe (jz×jz peak-bytes measurement) — not re-run t
 correctly foreclosed by the mandate: Group 2/fuzz is unexamined and the hooks-on kernel-oracle/
 kernel-parity `dict` byte-gap (a real, if minor and pre-existing, divergence) means the hooks-on
 battery is not unconditionally green yet, even with Group 1 closed.
+
+## Session (2026-08-28, worktree fix/region-hooks-on-parity @ 2f3fb8ea) — goal (0) pin landed; goal (1) one more Class fixed (mfold), dict/subviewtyped/dvnested root-caused precisely but NOT fixed
+
+Picking up the task's 4 ordered goals. Worktree base `2f3fb8ea` (Group 1/stripStaticDataPrefix
+already fixed and verified per the section above).
+
+**Goal (0) — DONE (`f0175b6e`)**: `test/pointers.js` gained a native-only regression pin,
+independent of eager loading/region hooks entirely. A bare string literal (`let s = "hello
+world"`) is enough to make `ctx.runtime.staticDataLen` nonzero on a completely normal compile —
+confirmed by instrumentation: 77 bytes, the exact same magic number this whole investigation's
+Group 1 chase eventually traced to `ctx.runtime.staticDataLen` itself (a string literal loads
+`string`, which MOD_DEPS-chains to `number`, whose `init(ctx)` unconditionally seeds
+`ctx.runtime.staticDataLen` with the canonical NaN/Infinity/true/false/… static block,
+module/number.js:871). Paired with `__mkptr(1|6, 100, 1048576)` (ARRAY and OBJECT tags — both were
+affected pre-fix, ATOM never was) and a full `[type,aux,offset]` round-trip check, at O0/O2/O3 via
+an explicit `for (const optimize of [false,2,3])` loop (this file's own established pattern for
+multi-tier pins, not reliant on `JZ_TEST_OPTIMIZE`). 73/73 pass (67 pre-existing + 6 new).
+
+**Goal (1) — dict/mfold/subviewtyped root-caused; ONE new fix landed (`e56d571c`), TWO residuals
+left open with precise mechanisms documented**:
+
+- **mfold — FIXED.** Root cause had NOTHING to do with `Math.sqrt`/`Math.abs` folding (a bare
+  `export let g = () => 5` reproduces identically — confirmed by testing a literal, a `Math.sqrt`
+  fold, and a plain `2+3` fold side by side, byte-for-byte identical divergence on all three).
+  Traced via a `narrowableFuncs` breadcrumb (temporary, reverted): under lazy, `plan()`'s
+  `canSkipWholeProgramNarrowing(programFacts)` fast-path (src/compile/plan/scope.js:1174) returns
+  `true` for this trivial program and the WHOLE narrowing fixpoint — including `narrowSignatures`/
+  `narrowI32Results` — never runs at all, so `g` keeps whatever plain-literal emission produces
+  (`f64.const 5` directly). Under eager, that gate's `!ctx.closure.make` condition is FALSE (module/
+  function.js sets `ctx.closure.make` unconditionally the instant `fn` merely registers, regardless
+  of whether the program has any closures), so the skip is refused and the full fixpoint runs,
+  narrowing `g`'s return to i32 (provably a small integer) and adding an `isBoundaryWrapped`
+  `$g$exp` trampoline (`f64.convert_i32_s`) — execution-correct (5 round-trips exactly) but a real
+  byte-parity break. Third confirmed instance of this campaign's core false-equivalence ("module
+  loaded" as a proxy for "feature demanded"), this time gating a SKIP/performance fast-path rather
+  than dispatch or registration. **Fix**: `!ctx.closure.make` → `!ctx.module.demanded.has('fn')`
+  (scope.js) — sound because no MOD_DEPS edge lists `fn` as a dependency, so under any NORMAL
+  (non-eager) compile the only way `fn` ever loads at all is a real `includeModule('fn')` call,
+  which marks `demanded` unconditionally (even on its own already-loaded early return) before
+  delegating to `loadModule` — `demanded` and `ctx.closure.make` always coincide there; eager
+  preload (`includeAllMods` → `loadModule` directly) is the ONLY path that breaks the correlation,
+  by design (the established "module load = registration only" invariant this campaign exists to
+  enforce). Verified: `test/eager-stdlib-parity.js` 22/22 (mfold promoted out of KNOWN_GAP); full
+  native suite (`node test/index.js`, all tests minus bench-c) 3731 pass / 1 skip / 0 fail — no
+  regression from widening what `canSkipWholeProgramNarrowing` disqualifies.
+
+- **dict — root-caused, NOT fixed (real risk identified in the obvious fix, deliberately not
+  taken)**. Bisected the same way as mfold (shrinking `STDLIB` locally, reverted after each trial):
+  the sole culprit, alone, is `date` — `STDLIB=['core','object','array','string','number','date']`
+  reproduces dict's exact 29885B→29921B (+36) gap; every other module is clean. Root cause:
+  `module/date.js`'s `ctx.schema.dateSid = ctx.schema.register(['\x00time'])` sits at UNCONDITIONAL
+  module-init top level (not inside any lazily-invoked handler) — the moment `date` merely loads,
+  it registers a brand-new schema entry into `ctx.schema.list`, which gets serialized into the
+  SHARED static-data segment (`buildStartFn`'s schema table) regardless of whether the program ever
+  constructs a `Date`. One extra table entry shifts every OTHER static offset that follows it —
+  confirmed via WAT diff: `$__throw_property_nullish` (dict's own trigger, the `d[c]||0` nullish-
+  length guard — the SAME helper this whole file's history has repeatedly landed on) is
+  byte-IDENTICAL in shape between lazy and eager, but its two embedded NaN-boxed message-string
+  literals sit at offsets shifted by exactly +32 in both cases (`0x8C`→`0xAC`, `0xB4`→`0xD4`) — a
+  classic downstream consequence of one extra schema-table entry earlier in the segment, not a
+  string-content or dispatch difference. **Attempted fix, REVERTED as unsafe**: moving the
+  registration into `new.Date`'s own lazily-invoked emit handler (`ctx.schema.dateSid ??=
+  ctx.schema.register(...)`, mirroring the timer.js/`ensureWasiTimerRuntime` pattern) DOES close
+  the byte gap in isolation, but breaks a real cross-function invariant: `src/compile/emit.js`'s
+  `dateAuxFallback` (~line 4097, `.date:${method}` dispatch on an unresolved receiver) bakes
+  `ctx.schema.dateSid` as a WAT `i32.const` the instant IT emits — which can happen for a function
+  compiled BEFORE any `new Date()` call site elsewhere in the same program (e.g. `function
+  getT(d){return d.getTime()}` defined ahead of `main(){let d=new Date(); getT(d)}`). Under the
+  CURRENT (unconditional, module-init-time) registration this is always already resolved by the
+  time ANY function's emission starts, because `date`'s `init(ctx)` runs during `prepare()`'s
+  whole-AST scan, strictly before per-function emission begins — moving registration to emission
+  time reintroduces exactly the ordering hole the eager module-init-time design was unknowingly
+  also protecting against, and would silently bake `i32.const undefined` (malformed WAT) for that
+  ordering. Confirmed no MOD_DEPS/other-module shortcut avoids this (json.js's OWN two consumers of
+  `dateSid`, module/json.js:172/568, are both genuinely late — `pullStdlib`-time lazy thunks, safe
+  either way). **The real fix needs a new hook**: something that runs strictly AFTER `prepare()`
+  finishes (when `ctx.module.demanded` is a fully-resolved, AST-content-driven fact, independent of
+  what eager-preloaded) but strictly BEFORE any per-function emission begins (front.js's `frontHalf`
+  return point, or the very top of `compile()`/`emitIR`) — general enough to let a module like
+  date.js defer a MUST-BE-EARLY-BUT-ONLY-IF-DEMANDED decision safely. No such hook exists yet; this
+  is a genuinely different, harder shape than the timer.js/function.js Class-1 fixes (those had a
+  natural emission-time home for their deferred effect; a cross-function-referenced compile-time
+  CONSTANT does not). Left as a documented `test/eager-stdlib-parity.js` KNOWN_GAP row.
+
+- **subviewtyped — SHRANK but not closed, different mechanism than dict's, not root-caused**.
+  Pre-session: 1007B→1015B (+8). Post mfold's fix: 1007B→1007B — same LENGTH now, but
+  `bytesEqual` still fails: a direct byte diff shows 138 differing bytes despite equal total
+  length, and a `--wat` diff confirms it's a pure FUNCTION-EMISSION-ORDER difference (e.g. lazy's
+  WAT has `$__mkptr` where eager's has `$__ptr_offset` at the identical text offset — same final
+  reachable function SET per earlier sessions' Class 1/2 audits, just a different relative order).
+  Plausibly `ctx.core.stdlib`/`ctx.core.includes` object-key or Set insertion order leaking into
+  `pullStdlib`'s emission order, itself a function of which modules registered which stdlib names
+  in which sequence — NOT investigated further this session (a real but low-severity, byte-only,
+  execution-correct gap). Stayed in `KNOWN_GAP`, comment updated with this precise characterization
+  for whoever continues.
+
+- **dvnested — unchanged, confirmed still the pre-existing watr DCE-at-scale gap, not this
+  session's concern.** Eager output shrank from the historically-recorded 25033B down to 20245B
+  (cumulative effect of every fix landed across sessions before this one — NOT from this session's
+  mfold fix specifically, which doesn't touch dispatch or dead-code elimination) but is STILL
+  invalid wasm with the byte-for-byte IDENTICAL failure signature recorded in the prior session's
+  "FULLY LOCALIZED" section (`WebAssembly.Module(): Compiling function #33 failed: not enough
+  arguments on the stack for f64.convert_i32_s (need 1, got 0) @+8888`) — re-verified directly
+  this session, not re-localized further (prior session's finding — a watr optimizer DCE
+  reliability gap at scale, out of this repo — already stands and was not revisited).
+
+**Consequence for the task's own literal target** ("the eager-vs-lazy pin... must then flip all
+four known-gap rows to byte-identical"): NOT reached. One of four (mfold) is closed. dict and
+subviewtyped are real, root-caused-to-differing-depths, NOT closed (dict has an identified-but-
+unsafe-to-apply fix needing a new architectural hook; subviewtyped needs more investigation before
+any fix is attempted). dvnested is confirmed the same pre-existing, out-of-repo watr issue as
+every prior session found. Time-boxed given the task's remaining goals (2, 3) still needed —
+continuing to goal (2)/(3) rather than chasing dict's new-hook design or subviewtyped's ordering
+question further this session.
+
+`REGION_HOOKS_ACTIVE` is still `false` in this worktree (`git diff HEAD -- scripts/self.js` empty)
+— no kernel-affecting source file was touched this session except `src/compile/plan/scope.js`
+(dormant-path-only effect confirmed: the `canSkipWholeProgramNarrowing` change only changes
+behavior when `ctx.module.demanded.has('fn')` differs from `ctx.closure.make`'s bare truthiness,
+which only happens under eager preload).
