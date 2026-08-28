@@ -2622,6 +2622,8 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
   // conditional-spread funcInfo hits when representation-plan.js's identity
   // param crosses its own compile/index.js array-element vs. wat/assemble.js
   // object-literal call sites, self-hosted).
+  // Export is named `go`, not `run`: under host:'wasi' `run` is the entry point and its
+  // return value is discarded (test/_matrix.js) — the pin must stay observable on the wasi leg.
   const src = `
     function mkHash(hasDefaults) {
       return { name: 'H', body: 1, exported: 2, sig: 3, ...(hasDefaults && {defaults: 4}) }
@@ -2639,7 +2641,7 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
     function useArrElem(i) {
       return dispatch(list[i])
     }
-    export function run() {
+    export function go() {
       build(true)
       const a = useDirect()
       const b = useArrElem(0)
@@ -2648,6 +2650,6 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
   `
   for (const optimize of [false, 2, 3]) {
     const e = jz(src, { optimize }).exports
-    is(e.run(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
+    is(e.go(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
   }
 })

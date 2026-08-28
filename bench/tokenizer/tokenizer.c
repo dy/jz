@@ -11,6 +11,7 @@ static char* make_source(int* len) {
   int base_len = (int)strlen(BASE);
   *len = base_len * N_REPEAT;
   char* src = malloc((size_t)*len + 1);
+  if (!src) { fprintf(stderr, "malloc failed\n"); exit(1); }
   for (int i = 0; i < N_REPEAT; i++) memcpy(src + i * base_len, BASE, (size_t)base_len);
   src[*len] = 0;
   return src;
