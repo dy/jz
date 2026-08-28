@@ -9,7 +9,7 @@
  * @module compile/analyze/val-types
  */
 import { OPTF, DBG_INVARIANTS, ctx } from '../../ctx.js'
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, collectAllBoundNames } from '../../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isLiteralStr, collectAllBoundNames, walkAst } from '../../ast.js'
 import { VAL, repOf, updateRep, KIND_UNIVERSE } from '../../reps.js'
 import { valTypeOf, shapeOf, censusMaybeUndefinedKind } from '../../kind.js'
 import { intExprRange, objLiteralSchemaId } from '../../static.js'
@@ -274,10 +274,10 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // this Set, while censusKindsOf (opt-in) can now see the real union.
 function dictValueTypeOf(body, name) {
   const kinds = new Set()
-  const walk = (node) => {
-    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
+  walkAst(body, { enter: node => {
+    if (kinds.size === KIND_UNIVERSE.length) return false
     const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
       const [, wobj, widx] = node[1]
       if (!isLiteralStr(widx)) {
@@ -285,14 +285,12 @@ function dictValueTypeOf(body, name) {
         while (Array.isArray(root) && root[0] === '[]') root = root[1]
         if (root === name) {
           const wvt = dictWriteVT(dictEffectiveWriteValue(op, node[1], node[2]))
-          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
+          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
           kinds.add(wvt)
         }
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return kinds
 }
 
@@ -308,22 +306,20 @@ function dictValueTypeOf(body, name) {
 // Slice 7 union-join swap as dictValueTypeOf above — see its doc comment.
 function mapValueTypeOf(body, name) {
   const kinds = new Set()
-  const walk = (node) => {
-    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
+  walkAst(body, { enter: node => {
+    if (kinds.size === KIND_UNIVERSE.length) return false
     const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
         node[1][1] === name && node[1][2] === 'set') {
       const cargs = commaList(node[2])
       if (cargs.length === 2) {
         const wvt = dictWriteVT(cargs[1])
-        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
+        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
         kinds.add(wvt)
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return kinds
 }
 

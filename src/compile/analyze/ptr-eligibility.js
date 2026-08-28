@@ -10,7 +10,7 @@
  *
  * @module compile/analyze/ptr-eligibility
  */
-import { MUTATE_OPS, isI32 } from '../../ast.js'
+import { MUTATE_OPS, isI32, walkAst } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { VAL, repOfGlobal, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -181,10 +181,9 @@ export function inheritPtrAliases(body, locals, boxed) {
     return null
   }
   const predicted = (ctx.func.p1Predicted ??= new Set())
-  ;(function walk(node) {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
@@ -207,10 +206,9 @@ export function inheritPtrAliases(body, locals, boxed) {
           }
         }
       }
-      return
+      return false
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  })(body)
+  } })
 }
 
 /**
@@ -331,8 +329,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
   // Pass 3 — store-target disjointness (d). A store lands in `base`'s allocation.
   let unknownStore = false
   const storeKinds = new Set()
-  const scanStores = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) &&
         (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') &&
@@ -341,9 +338,7 @@ export function cseSafeLoadBases(body, locals, localReps) {
       if (k == null) unknownStore = true
       else storeKinds.add(k)
     }
-    for (let i = 1; i < node.length; i++) scanStores(node[i])
-  }
-  scanStores(body)
+  } })
   if (unknownStore) return new Set()
 
   const safe = new Set()

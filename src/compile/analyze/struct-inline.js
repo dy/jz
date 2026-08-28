@@ -7,7 +7,7 @@
  *
  * @module compile/analyze/struct-inline
  */
-import { ASSIGN_OPS } from '../../ast.js'
+import { ASSIGN_OPS, walkAst } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from '../function-plan.js'
 import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.js'
@@ -173,8 +173,8 @@ export function analyzeStructInline(programFacts) {
     // Pass 1 — collect `const p = a[i]` cursors; drop on name clash / re-decl.
     const cursor = new Map()        // name → sid
     const declSeen = new Set()
-    const collectCursors = (node) => {
-      if (!Array.isArray(node) || node[0] === '=>') return
+    walkAst(body, { enter: node => {
+      if (node[0] === '=>') return false
       if (node[0] === 'let' || node[0] === 'const') {
         for (let i = 1; i < node.length; i++) {
           const d = node[i]
@@ -190,9 +190,7 @@ export function analyzeStructInline(programFacts) {
           }
         }
       }
-      for (let i = 1; i < node.length; i++) collectCursors(node[i])
-    }
-    collectCursors(body)
+    } })
     if (cursor.size) cursorsByFunc.set(func.sig, cursor)
 
     // A `['[]', arrName, idx]` element read of a tracked array → its sid.
