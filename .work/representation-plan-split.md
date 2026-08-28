@@ -221,3 +221,77 @@ flagged as a possible deletion target was already resolved before this
 base commit (see "index-resolved `.`-member callees" above) — confirmed via
 `.work/member-callee-binding-write-notes.md` and a direct read of
 `edgeMaterializable`'s current form.
+
+## Status — what actually landed
+
+Shas (branch `refactor/representation-plan-split`, base `0feb9e29`):
+- `8d27e543` — pure move (this doc's committed version, one commit).
+- `c963c418` — merge `b76a34b3` (main): main landed `ffac902c` mid-slice
+  (a sibling `refactor/pipeline-minimality` campaign retiring 152 walkers
+  onto `walkAst`/`some` repo-wide, including 3 in this exact file). Resolved
+  by keeping this branch's split for `representation-plan.js` itself and
+  reapplying the 3 walkAst conversions verbatim to their new homes
+  (`collectLocalClosures` → common.js, `collectDispatchTableClosures` +
+  `deriveLocalProvenance`'s `scanStorage` → provenance.js). New baseline
+  for all gates from this commit on: `b76a34b3`, not `0feb9e29`.
+- `0db49b24` — corrected this doc's own scanStorage mis-analysis (see
+  "CORRECTION" note above).
+- `1f127c42` — decompose: 5 helpers hoisted (provenance.js:
+  paramNeedsHostTag, isStorageReadArgShape, seedBigintTyped,
+  paramEntryExcludesBool; body-data.js: edgeMaterializable), plus the new
+  `hasClosedBool` dedup helper (7 call sites).
+
+Final module map (lines, `wc -l`): barrel 62, common.js 239, boundaries.js
+252, provenance.js 785, body-data.js 933, materialize.js 400, call-args.js
+45 — 2716 total (vs 2565 original; growth is import-statement overhead
+from splitting one scope into six, plus new/expanded doc comments on the
+5 hoisted helpers — no logic duplication).
+
+Full battery (final commit `1f127c42`):
+- `refactor-oracle check --ref b76a34b3` (140/560 non-self-host corpus):
+  CLEAN, both after the merge commit and after the decompose commit.
+- `node test/index.js` (excluding bench-c, sandbox constraint): 3771
+  total / 3770 pass / 0 fail / 1 skip (27416 assertions) — the 1 skip is
+  pre-existing (unrelated to this slice).
+- kernel build (`npm run build`): clean. `JZ_TEST_TARGET=jz.wasm node
+  test/index.js` (plain invocation): 2984 total / 2983 pass / 0 fail /
+  1 skip (14348 assertions) — the self-compiled kernel, built from this
+  branch's own split source, compiles and runs the full suite with zero
+  failures.
+- `node test/kernel-parity.js`: 3/3 (33/33 byte-identical WAT at O0/O2/O3).
+- `node test/kernel-oracle.js`: 14/14 (605 assertions).
+- `node test/data.js` standalone: 171/171 (935 assertions, incl. the
+  Shape #5-#9 pins). `node test/pointers.js` standalone: 73/73 (132
+  assertions).
+- `node scripts/bench-size.mjs --json`: ran clean; spot-checked `watr`
+  (293047 bytes) against the non-full oracle's own `bench:watr|size`
+  entry for the same commit — identical, as expected (both measure the
+  same size-tuned build through the same corpus the oracle already
+  proved byte-identical).
+- Kernel bytes (`dist/jz.wasm`, `npm run build`): baseline (`b76a34b3`)
+  17,881,876 bytes. After the pure-move split alone: 17,881,862 bytes
+  (-14). After the decompose commit (the `hasClosedBool` dedup removes 6
+  duplicate inline copies of the BOOL-veto guard from the self-compiled
+  kernel's own body): 17,878,294 bytes (-3,582 from baseline). Both
+  deltas are reproducible (rebuilt twice, identical sha256 each time) but
+  NOT byte-for-byte identical to the baseline kernel — expected and
+  benign, not a correctness concern: the self-host leg compiles jz's OWN
+  source graph, which now has 7 modules where representation-plan.js used
+  to be 1 (170 total modules vs presumably 165), so any module-count- or
+  discovery-order-sensitive pass (e.g. `ctx.funcs.list` ordering) can
+  shift the compiled layout even under a byte-for-byte behavior-preserving
+  source change — a different class of guarantee than the non-self-host
+  corpus the standard oracle covers, which compiles individual small
+  programs unaffected by jz's OWN module count. A `refactor-oracle
+  --full` run (which includes this exact self-host leg in its SHA256
+  comparison) was attempted but its own temp baseline worktree was
+  removed mid-run by what looks like unrelated concurrent activity in
+  this multi-agent campaign (`fatal: cannot change to
+  '.../jz-oracle-IG3NXX/wt'`, `baseline commit null` in its own output) —
+  inconclusive, not re-attempted a second time (30+ min per attempt) given
+  the direct behavioral evidence already in hand: the FULL test suite
+  (2983/2984, 0 fail) run THROUGH this exact rebuilt, byte-different
+  kernel — the strongest available proof for THIS file specifically, since
+  representation-plan.js's own documented history (`.work/phase-c-
+  unification.md`) is full of self-host-only divergences that manifest as
+  test failures, not silent byte-identity.
