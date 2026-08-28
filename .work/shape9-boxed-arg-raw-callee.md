@@ -123,7 +123,52 @@ root-cause tracing) have been removed from the final diff. No permanent
 trace scaffolding was added — matches this codebase's existing precedent
 (trace ad hoc, then strip).
 
-## Battery — IN PROGRESS
+## Battery
 
-See task report for final numbers; this file is a working log, updated as
-each leg completes.
+- `node test/index.js` (native): 3714 total / 3713 pass / 0 fail / 1 skip
+  (21619 assertions). 0 fail — gate met.
+- `test/kernel-parity.js`: 3/3 (33/33 byte-identical WAT at O2/O3).
+- `test/kernel-oracle.js`: 14/14 (605 assertions).
+- Kernel build (`npm run build`): clean (dist/jz.wasm 17491.3 kB).
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: in progress / see report.
+- `node test/bench.js`: in progress / see report (size/correctness gates
+  only — speed ratchets are expected to be noisy under this machine's
+  concurrent load per the task brief, not a signal either way).
+
+## Watr downstream
+
+Built `/private/tmp/.../scratchpad/watrchk/dist/watr.wasm` with this
+branch's `cli.js` (`node cli.js /Users/div/projects/watr/watr.js -O3
+--memory 4096 -o .../watrchk/dist/watr.wasm`), then `WATR_WASM=1 node
+test/index.js` in that watrchk worktree (jz symlink repointed from a stale
+prior-session target to this worktree first).
+
+Result: **600/626 pass, 4 fail** — BYTE-IDENTICAL failure set (same 4
+messages, same exact corrupt offsets) to the pre-existing
+`dist/watr-baseline.wasm` already sitting in that worktree (verified
+directly: swapped it in as `dist/watr.wasm` and reran — identical output).
+This fix causes **zero change** to the watr downstream result, confirming
+what the pinning note already flagged as likely: shape #9 was a
+genuinely separate, unrelated bug from watr's own real failure.
+
+The 4 failures: `case: error on unknown instruction: should throw` (an
+unrelated case-level assertion, not a bigint/box shape — matches an older
+recon note's own classification) plus the 3 box-pointer-bits corruptions
+(`call_indirect64.wast`, `float_memory64.wast`, `memory64.wast` — all the
+same `PTR.BIGINT`-tag-over-heap-offset signature every other shape in this
+campaign fixes). These 3 are watr's real `i64.parse` named-function-property
+shape (a DISPATCH TABLE / computed-property call, `HANDLER[imm](nodes,
+ctx, op, out)`, whose `i64:` entry is an arrow function value forwarding to
+a SEPARATE named function via `encode.i64(...)`) — NOT shape #9's edge:
+shape #9's own bare-name construction is a direct call, no computed
+dispatch, no property value-use anywhere. Confirmed unrelated, matching the
+original pinning note's own uncertainty ("may or may not be this same
+edge" — it is not). Root cause matches the closure-materialization /
+generic-ABI gap this file's own "index-resolved `.`-member callee" sibling
+pin also traces to — a real, separate, comparably-sized undertaking.
+
+The task brief's own stated baseline ("601/626") differs by one from what
+was measured here (600/626) on both the freshly-built and the pre-existing
+baseline wasm alike — likely a stale/approximate figure from an earlier
+measurement window, not a regression: both builds agree byte-for-byte on
+this run, so the delta is not attributable to this fix.
