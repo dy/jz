@@ -1683,17 +1683,33 @@ export function stripStaticDataPrefix(sec) {
     for (let i = 0; i < node.length; i++) {
       const child = node[i]
       if (!Array.isArray(child)) continue
+      // Each arm below pattern-matches CODE for "this literal is plausibly a
+      // pointer INTO the static-data segment that just got truncated by
+      // `prefix` bytes" — `>= prefix` alone is not proof: a real static-data
+      // address is ALSO necessarily `< buf.length` (the segment's own
+      // pre-strip size), since nothing can point past the data it addresses.
+      // Without the upper bound, an ARBITRARY pointer-shaped literal with a
+      // large offset that has NOTHING to do with static data (e.g. a user/
+      // test program calling the `__mkptr` intrinsic directly with its own
+      // literal offset, as `test/pointers.js`'s nan-box round-trip tests do)
+      // false-positives once `prefix` is nonzero and gets its offset silently
+      // shifted down by `prefix` — reachable only once eager stdlib loading
+      // (front.js, region-arena builds) makes `ctx.runtime.staticDataLen`
+      // reliably nonzero for programs that would otherwise need no static
+      // data at all. Same bug class as every other "code path assumes
+      // module-loaded implies feature-used" fix in this campaign, one level
+      // down: here it's "offset >= prefix implies static-data pointer".
       if (child[0] === 'call' && child[1] === '$__mkptr' &&
         Array.isArray(child[2]) && SHIFTABLE.has(child[2][1]) &&
         Array.isArray(child[4]) && child[4][0] === 'i32.const' &&
-        typeof child[4][1] === 'number' && child[4][1] >= prefix) {
+        typeof child[4][1] === 'number' && child[4][1] >= prefix && child[4][1] < buf.length) {
         const isSsoString = child[2][1] === PTR.STRING &&
           Array.isArray(child[3]) && child[3][0] === 'i32.const' &&
           typeof child[3][1] === 'number' && (child[3][1] & LAYOUT.SSO_BIT)
         if (!isSsoString) child[4][1] -= prefix
       } else if (typeof child[0] === 'string' && child[0].endsWith('.store') &&
         Array.isArray(child[1]) && child[1][0] === 'i32.const' &&
-        typeof child[1][1] === 'number' && child[1][1] >= prefix) {
+        typeof child[1][1] === 'number' && child[1][1] >= prefix && child[1][1] < buf.length) {
         child[1][1] -= prefix
       } else if (child[0] === 'f64.const' &&
         typeof child[1] === 'string' && child[1].startsWith('nan:0x')) {
@@ -1709,7 +1725,7 @@ export function stripStaticDataPrefix(sec) {
           if (SHIFTABLE.has(ty) &&
               !(ty === PTR.STRING && ((bits >> BigInt(LAYOUT.AUX_SHIFT)) & BigInt(LAYOUT.SSO_BIT)))) {
             const off = Number(bits & BigInt(LAYOUT.OFFSET_MASK))
-            if (off >= prefix) {
+            if (off >= prefix && off < buf.length) {
               const hi = bits & ~BigInt(LAYOUT.OFFSET_MASK)
               const newBits = hi | BigInt(off - prefix)
               // i64Hex, not newBits.toString(16) — newBits keeps the SAME
