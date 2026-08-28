@@ -1375,8 +1375,27 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else if (node[0] === '()' && typeof node[1] === 'string' &&
              (node[1] === 'BigInt' || node[1].startsWith('BigInt.')))
       out = semKind(VAL.BIGINT)
-    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node)))
-      out = directCallBoundary(ctx, calleeNameOf(node)).result.semantic
+    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
+      // Same callee-before-caller upgrade currentOf/plannedOf already apply
+      // (below, and see plannedOf's own comment): the BOUNDARY's semantic is
+      // a coarse, PRE-BODY guess; once the callee's BODY has settled, its
+      // OWN resultSemantic (stored on the body record right alongside
+      // resultTarget) is the precise, PROVEN semantic every one of its
+      // return edges already normalizes to. Without this, a join whose one
+      // arm is this call node could never prove `definiteBigint` even when
+      // the callee's body plainly does (watr's real i64.parse, a proven-RAW
+      // typed-array storage read) — targetRepFor's OWN gate requires
+      // definiteBigint before it will ever trust `current`, so a
+      // still-coarse boundary semantic forced the BOXED default onto a join
+      // whose value is a single, closed, proven carrier.
+      const calleeName = calleeNameOf(node)
+      const callee = ctx.funcs.map.get(calleeName)
+      const calleeHandle = callee && ctx.plans.representations.get(callee)
+      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+      out = calleeBody?.materializedResult === true
+        ? calleeBody.resultSemantic ?? directCallBoundary(ctx, calleeName).result.semantic
+        : directCallBoundary(ctx, calleeName).result.semantic
+    }
     else if (NUMERIC_VALUE_OPS.has(node[0])) {
       const operands = node.slice(1).filter(x => x !== undefined).map(semanticOf)
       const anyBig = operands.some(canBeBigint)
@@ -1570,7 +1589,29 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached != null) return cached
     let target, normalizedElsewhere = false
     if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
-      target = directCallBoundary(ctx, calleeNameOf(node)).result.target
+      // Same callee-before-caller upgrade currentOf's own Shape #7 comment
+      // already documents and applies (above): the BOUNDARY's target is a
+      // coarse, PRE-BODY guess (targetRepFor defaults to BOXED whenever the
+      // boundary can't yet prove a closed-RAW current) — once the callee's
+      // BODY has settled, its OWN materializedResult/resultTarget is the
+      // precise, PROVEN single carrier every one of its return edges already
+      // normalizes to. plannedOf lacked this upgrade even for a bare-name
+      // callee before this fix (a pre-existing asymmetry with currentOf,
+      // not introduced by `.`-member resolution) — found live via a
+      // `.`-member callee whose body IS a proven-RAW typed-array storage
+      // read (watr's real i64.parse) but whose boundary alone can't prove
+      // it: a ternary joining this callee's call against a plain closed-RAW
+      // global literal boxed ONLY the callee arm, corrupting the join (the
+      // callee arm's stale BOXED target disagreed with its own settled RAW
+      // body, and nothing coerced the mismatch away since
+      // `normalizedElsewhere` skips the ordinary result-edge check).
+      const calleeName = calleeNameOf(node)
+      const callee = ctx.funcs.map.get(calleeName)
+      const calleeHandle = callee && ctx.plans.representations.get(callee)
+      const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+      target = calleeBody?.materializedResult === true
+        ? calleeBody.resultTarget ?? ANY_BIGINT
+        : directCallBoundary(ctx, calleeName).result.target
       normalizedElsewhere = true // the callee's return edges own this transition
     } else {
       const recv = memberReceiver(node)
