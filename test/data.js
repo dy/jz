@@ -2953,3 +2953,280 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
     is(e.main(0), 0, `O${optimize || 0}: count=0 (no write ever executes) still reaches bufToBytes's .subarray() and must not trap`)
   }
 })
+
+// --- object mutated inside a function via a PARAMETER did not propagate
+// back (src/compile/infer.js methodEvidence guessing ARRAY from usage) ---
+//
+// Root cause: infer.js's `methodEvidence` evidence source (part of
+// `inferParams`, seeded into a parameter's `val` fact whenever the
+// cross-function call-site fixpoint had no proof of its own — see that
+// module's header, rung 2/3 of its evidence ladder) treated seeing
+// `<param>.push(...)` (or pop/shift/unshift/splice/flat/flatMap —
+// ARRAY_INDUCERS, kind-traits.js) as PROOF the parameter is a real Array.
+// That is only sound for the STRING-vs-non-STRING question (no
+// String.prototype method of those names exists) — it is NOT proof of
+// ARRAY specifically: a plain OBJECT/HASH value can equally own a
+// same-named closure property (`b.push = (v) => {...}`, attached to an
+// object literal post-construction — the makeByteBuf/ByteBuf idiom: a
+// growable byte buffer built from push/ensure/growth, exactly what watr's
+// streaming WASM code-section encoder uses). Once wrongly settled to
+// VAL.ARRAY, every downstream consumer trusted it as fully proven:
+//   - src/compile/emit.js's tryGenericEmitter (method-call dispatch,
+//     strategy #10) only shadow-probes an own property when `vt == null`;
+//     a non-null (but merely guessed) ARRAY skipped the probe and
+//     dispatched `.push(v)` straight to jz's built-in Array-growth codegen
+//     (__arr_grow_known et al) instead of the user's own closure, so the
+//     write landed on the wrong memory shape entirely — silently a no-op
+//     for a small buffer, an out-of-bounds trap for a larger one.
+//   - module/core.js's emitLengthAccess (property READ, not a method call)
+//     unconditionally reads a jz Array's length HEADER WORD for any
+//     VAL.ARRAY receiver — sound for a REAL array (no own-property shadow
+//     is ever possible there), unsound here: a `.length` read elsewhere in
+//     the SAME function silently read the wrong memory offset instead of
+//     the object's real (dynamic, hash-keyed) `length` property.
+// Two consumers independently broken by one bad fact, with no way to
+// enumerate every consumer with confidence — fixed at the source instead:
+// methodEvidence no longer induces a positive ARRAY verdict from usage
+// syntax at all. `ARRAY_ONLY_POISON` (a strict superset of the names) still
+// proves the sound negative ("not a STRING"), restoring the module's own
+// documented contract ("Default is never wrong, only sometimes wider than
+// necessary" — infer.js header). emit.js's tryGenericEmitter also gained a
+// narrower, defense-in-depth widening of its own shadow probe for the same
+// shape, kept as a second layer.
+test('object mutated via a parameter: plain field reassignment propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function bump(o) { o.n = o.n + 1 }
+      export function main() {
+        const o = { n: 0 }
+        bump(o)
+        bump(o)
+        return o.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 2, `O${optimize || 0}: two calls through a parameter each reassign the caller's own field`)
+  }
+})
+
+test('object mutated via a parameter: typed-array field growth (reassignment) propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function grow(o) {
+        const nb = new Uint8Array(o.buf.length * 2)
+        nb.set(o.buf)
+        nb[0] = 99
+        o.buf = nb
+      }
+      export function main() {
+        const o = { buf: new Uint8Array(4) }
+        o.buf[0] = 1
+        grow(o)
+        return o.buf.length + o.buf[0]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 107, `O${optimize || 0}: a callee reassigning a typed-array field (growth) is visible through the caller's own reference`)
+  }
+})
+
+test('object mutated via a parameter: nested call depth 2 propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function inner(o, v) { o.buf[o.n] = v; o.n = o.n + 1 }
+      function outer(o, v) { inner(o, v) }
+      export function main() {
+        const o = { buf: new Uint8Array(8), n: 0 }
+        outer(o, 5)
+        outer(o, 9)
+        return o.n * 100 + o.buf[0] * 10 + o.buf[1]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 259, `O${optimize || 0}: a mutation two call-frames deep (main -> outer -> inner) still reaches the original object`)
+  }
+})
+
+test('object mutated via a parameter: loop with zero and one iterations propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function bump(o) { o.n = o.n + 1 }
+      export function main(count) {
+        const o = { n: 0 }
+        for (let i = 0; i < count; i++) bump(o)
+        return o.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: zero iterations — no mutation, field stays at its initial value`)
+    is(e.main(1), 1, `O${optimize || 0}: one iteration — the single call's mutation propagates back`)
+  }
+})
+
+test('object mutated via a parameter: closure method named like an Array builtin (.push) called through a parameter', () => {
+  // The exact shape that broke: an object literal with a POST-HOC attached
+  // closure property named `push` (not a real Array), mutated by calling
+  // that closure THROUGH a separate function's own parameter — the
+  // minimal core of the makeByteBuf/writeItem idiom below.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      const makeBuf = (cap) => {
+        const b = { buf: new Uint8Array(cap), n: 0 }
+        b.push = (v) => { b.buf[b.n] = v; b.n = b.n + 1 }
+        return b
+      }
+      function writeOne(out, v) { out.push(v) }
+      export function main(count) {
+        const buf = makeBuf(64)
+        for (let i = 0; i < count; i++) writeOne(buf, i + 1)
+        return buf.n * 1000 + buf.buf[0] * 10 + buf.buf[1]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: count=0 — no push, buffer stays empty`)
+    is(e.main(1), 1010, `O${optimize || 0}: one push through the param calls the object's OWN closure, not the Array builtin`)
+    is(e.main(3), 3012, `O${optimize || 0}: three pushes through the param, each one visible to the next`)
+  }
+})
+
+test('object mutated via a parameter: .length read elsewhere in the same function stays sound after a same-object .push() call', () => {
+  // Isolates the SECOND consumer (module/core.js emitLengthAccess) from the
+  // method-dispatch consumer above: `out.length` is a plain property READ,
+  // not a method call, computed BEFORE any push — this pin fails if that
+  // read is ever compiled as a jz-Array header load (ptr-8) instead of the
+  // object's real dynamic `length` property, independent of whether
+  // `.push()` itself dispatches correctly.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      const makeByteBuf = (cap) => {
+        const buf0 = new Uint8Array(cap)
+        const b = { buf: buf0, length: 0 }
+        b.ensure = (n) => {
+          if (b.length + n <= b.buf.length) return
+          let cap2 = b.buf.length * 2 || 1024
+          while (cap2 < b.length + n) cap2 *= 2
+          const nb = new Uint8Array(cap2)
+          nb.set(b.buf.subarray(0, b.length))
+          b.buf = nb
+        }
+        b.push = (...xs) => { b.ensure(xs.length); for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+        b.set = (i, v) => { b.buf[i] = v }
+        b.inc = (i) => { b.buf[i]++ }
+        b.toBytes = () => b.buf.subarray(0, b.length)
+        return b
+      }
+      const uleb5 = (value) => {
+        const result = []
+        for (let i = 0; i < 5; i++) {
+          let byte = value & 0x7f
+          value >>>= 7
+          if (i < 4) byte |= 0x80
+          result.push(byte)
+        }
+        return result
+      }
+      const patchUleb5 = (buf, at, value) => { const bytes = uleb5(value); for (let i = 0; i < 5; i++) buf.set(at + i, bytes[i]) }
+      function writeItem(out, seed) {
+        const sizeAt = out.length
+        out.push(0x80, 0x80, 0x80, 0x80, 0x00)
+        const bodyStart = out.length
+        const n = (seed % 37) + 1
+        for (let i = 0; i < n; i++) out.push((seed + i) & 0xff)
+        patchUleb5(out, sizeAt, out.length - bodyStart)
+      }
+      export function main() {
+        const buf = makeByteBuf(64)
+        writeItem(buf, 0)
+        return buf.buf[0] * 1000000 + buf.buf[1] * 100000 + buf.buf[2] * 10000 + buf.buf[3] * 1000 + buf.buf[4]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 143208000, `O${optimize || 0}: the ULEB128 size-prefix backpatch (first byte 0x81) lands correctly — sizeAt/.length reads stayed sound`)
+  }
+})
+
+test('object mutated via a parameter: the real watr-shaped repro (makeByteBuf/writeItem/uleb5/patchUleb5) matches native JS for every count', () => {
+  // The original repro this whole investigation traced back to (watr's
+  // streaming WASM code-section encoder, isolated as scratch/diff/
+  // snippet-bytebuf.js by the sibling agent that first hit this).
+  const src = `
+    const makeByteBuf = (cap) => {
+      const buf0 = new Uint8Array(cap)
+      const b = { buf: buf0, length: 0 }
+      b.ensure = (n) => {
+        if (b.length + n <= b.buf.length) return
+        let cap2 = b.buf.length * 2 || 1024
+        while (cap2 < b.length + n) cap2 *= 2
+        const nb = new Uint8Array(cap2)
+        nb.set(b.buf.subarray(0, b.length))
+        b.buf = nb
+      }
+      b.push = (...xs) => { b.ensure(xs.length); for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+      b.set = (i, v) => { b.buf[i] = v }
+      b.inc = (i) => { b.buf[i]++ }
+      b.toBytes = () => b.buf.subarray(0, b.length)
+      return b
+    }
+    const uleb5 = (value) => {
+      const result = []
+      for (let i = 0; i < 5; i++) {
+        let byte = value & 0x7f
+        value >>>= 7
+        if (i < 4) byte |= 0x80
+        result.push(byte)
+      }
+      return result
+    }
+    const patchUleb5 = (buf, at, value) => { const bytes = uleb5(value); for (let i = 0; i < 5; i++) buf.set(at + i, bytes[i]) }
+    function writeItem(out, seed) {
+      const sizeAt = out.length
+      out.push(0x80, 0x80, 0x80, 0x80, 0x00)
+      const bodyStart = out.length
+      const n = (seed % 37) + 1
+      for (let i = 0; i < n; i++) out.push((seed + i) & 0xff)
+      patchUleb5(out, sizeAt, out.length - bodyStart)
+    }
+    export function main(count) {
+      const buf = makeByteBuf(64)
+      for (let i = 0; i < count; i++) writeItem(buf, i)
+      const bytes = buf.toBytes()
+      let sum = 0
+      for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i % 251 + 1)) | 0
+      return (sum ^ bytes.length) | 0
+    }
+  `
+  const expected = { 0: 0, 1: 1287, 2: 5688, 3: 13824, 5: 44452 }
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    for (const count of [0, 1, 2, 3, 5]) {
+      is(e.main(count), expected[count], `O${optimize || 0} count=${count}: matches native JS`)
+    }
+  }
+})
+
+test('object passed as a parameter: a param that is only READ keeps its direct (non-shadow-probed) codegen — WAT shape', () => {
+  // Negative control for the fix above: a parameter proven ARRAY through a
+  // real construction/call-site proof (a literal array argument, resolved
+  // by the cross-function paramReps fixpoint — never through the removed
+  // methodEvidence guess) and used only for `.length`/index READS must
+  // keep the direct, fast array-header codegen — no own-property shadow
+  // probe, no dynamic dispatch. Confirms the fix is scoped to the unsound
+  // guess and doesn't tax the common, already-sound proven-array path.
+  const src = `
+    function sumArr(a) {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s
+    }
+    export function main() {
+      return sumArr([1, 2, 3, 4, 5])
+    }
+  `
+  is(jz(src, { optimize: false }).exports.main(), 15, 'O0: sum of a literal-array argument through a read-only parameter')
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const start = wat.indexOf('(func $sumArr')
+  const next = wat.indexOf('\n  (func ', start + 1)
+  const body = wat.slice(start, next)
+  ok(!/__dyn_get_expr/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
+  ok(/\$__ptr_offset/.test(body) && /i32\.const 8/.test(body), 'O0: .length still reads the direct array-header word (fast path unchanged)')
+})

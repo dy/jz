@@ -274,7 +274,18 @@ test('alloc:false omits allocator helper exports', () => {
 // __arr_grow (untyped call sites) still needs the generic helper — receiver isn't proven.
 test('__arr_grow_known: proven-ARRAY grow skips the generic __ptr_offset call', () => {
   if (onKernel()) return  // self-compile kernel codegen shape differs; in-process leg owns this
-  const w = wat(`export let f = (a) => { a.push(1); return a.length }`)
+  // Was a single exported `f`'s own bare parameter (`(a) => { a.push(1); ... }`)
+  // — its ONLY "proof" that `a` was ARRAY came from src/compile/infer.js's
+  // methodEvidence source treating `.push` usage alone as certain (fix/
+  // param-mutation-propagation found that unsound: a plain OBJECT/HASH value
+  // can own a same-named closure property, so `.push` usage no longer induces
+  // ARRAY). Rewritten to prove `a` is ARRAY the SOUND way instead — two real
+  // call sites both passing array literals, resolved by the cross-function
+  // paramReps fixpoint (src/param-reps.js) — so this test still exercises the
+  // real optimization (a genuinely proven-ARRAY receiver skips the generic
+  // tag-dispatch), just from evidence that can't misfire on a closure-bearing
+  // object.
+  const w = wat(`const g = (a) => { a.push(1); return a.length }; export const h1 = () => g([1]); export const h2 = () => g([2, 3])`)
   const body = w.match(/\(func \$__arr_grow_known\b[\s\S]*?\n  \)/)?.[0] || ''
   ok(body, 'expected __arr_grow_known to be emitted')
   is(hasCall(body, '__ptr_offset_fwd'), true)  // ARRAY still needs the forwarding chase
