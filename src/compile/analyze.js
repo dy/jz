@@ -19,7 +19,7 @@ import { OPTF, getFactStore, DBG_INVARIANTS } from '../ctx.js'
  * @module analyze
  */
 
-import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR, walkAst } from '../ast.js'
+import { commaList, ASSIGN_OPS, MUTATE_OPS, isReassigned, STMT_OPS, isBlockBody, isLiteralStr, isFuncRef, I32_MIN, I32_MAX, isI32, T, extractParams, classifyParam, collectParamNames, collectAllBoundNames, alwaysReturns, returnExprs, refsName, REFS_IN_EXPR } from '../ast.js'
 import { ctx, setLinkDemand } from '../ctx.js'
 import { withFunctionField } from './flow-state.js'
 import { forEachFunctionPlanRep, functionPlanRepField } from './function-plan.js'
@@ -1388,10 +1388,10 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // this Set, while censusKindsOf (opt-in) can now see the real union.
 function dictValueTypeOf(body, name) {
   const kinds = new Set()
-  walkAst(body, { enter: node => {
-    if (kinds.size === KIND_UNIVERSE.length) return false
+  const walk = (node) => {
+    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
       const [, wobj, widx] = node[1]
       if (!isLiteralStr(widx)) {
@@ -1399,12 +1399,14 @@ function dictValueTypeOf(body, name) {
         while (Array.isArray(root) && root[0] === '[]') root = root[1]
         if (root === name) {
           const wvt = dictWriteVT(dictEffectiveWriteValue(op, node[1], node[2]))
-          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
+          if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
           kinds.add(wvt)
         }
       }
     }
-  } })
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
   return kinds
 }
 
@@ -1420,20 +1422,22 @@ function dictValueTypeOf(body, name) {
 // Slice 7 union-join swap as dictValueTypeOf above — see its doc comment.
 function mapValueTypeOf(body, name) {
   const kinds = new Set()
-  walkAst(body, { enter: node => {
-    if (kinds.size === KIND_UNIVERSE.length) return false
+  const walk = (node) => {
+    if (kinds.size === KIND_UNIVERSE.length || !Array.isArray(node)) return
     const op = node[0]
-    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return false
+    if (op === '=>' && collectAllBoundNames(node, new Set()).has(name)) return
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
         node[1][1] === name && node[1][2] === 'set') {
       const cargs = commaList(node[2])
       if (cargs.length === 2) {
         const wvt = dictWriteVT(cargs[1])
-        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return false }
+        if (!wvt) { for (const k of KIND_UNIVERSE) kinds.add(k); return }
         kinds.add(wvt)
       }
     }
-  } })
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
   return kinds
 }
 
@@ -2219,7 +2223,8 @@ export function cseSafeLoadBases(body, locals, localReps) {
   // Pass 3 — store-target disjointness (d). A store lands in `base`'s allocation.
   let unknownStore = false
   const storeKinds = new Set()
-  walkAst(body, { enter: node => {
+  const scanStores = (node) => {
+    if (!Array.isArray(node)) return
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1]) &&
         (node[1][0] === '.' || node[1][0] === '?.' || node[1][0] === '[]') &&
@@ -2228,7 +2233,9 @@ export function cseSafeLoadBases(body, locals, localReps) {
       if (k == null) unknownStore = true
       else storeKinds.add(k)
     }
-  } })
+    for (let i = 1; i < node.length; i++) scanStores(node[i])
+  }
+  scanStores(body)
   if (unknownStore) return new Set()
 
   const safe = new Set()
