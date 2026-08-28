@@ -1068,3 +1068,146 @@ when `regionHooks` is falsy (the whole `if (__rh(16))`/`if (regionHooks)` block 
 never executes), so this is a sanity check, not expected to find anything. (4) If the full
 hooks-on battery is green, measure the jz×jz self-compile goal-probe peak bytes (baseline traps
 at exactly 4,294,967,296) and report the number regardless of outcome, per the task mandate.
+
+## Session (2026-08-28, worktree fix/pure-stdlib-init @ d2c04d32) — pure-registration audit for the two open findings (a) OUTPUT-affecting init side effects, (b) kernel-vs-native REJECT divergence
+
+Picking up the task mandate's two open items (both already isolated to eager-loading's side
+effects, not region relocation itself). Built a NATIVE (no kernel, no region hooks) empirical
+probe rather than auditing ~150 `inc()`/`declGlobal()`/`hostImport()` call sites by eye across
+20 module files — cheaper, ground-truthed, and it's literally what the task's own required pin
+needs anyway.
+
+**Test infra landed** (`eabc8f9e`): `src/front.js`'s `frontHalf` now takes `eagerStdlib`,
+independent of `regionHooks` — `if (regionHooks || eagerStdlib) includeAllMods()`. Wired from
+`index.js`'s `jzCompileInner` via a new internal `opts._eagerStdlib` (never set by real callers,
+same underscore-prefixed-internal-opt convention as `opts._interp`/`opts._compactCollections`).
+This decouples "eager stdlib load" from region-arena's mark/exit machinery entirely — proving
+"module load = registration only" is a general pipeline invariant, not something that needs a
+real region round (or a fake passthrough regionHooks shim) to test. `compile(src, {..., opts})`
+vs `compile(src, {...opts, _eagerStdlib:true})` on IDENTICAL source, diffed byte-for-byte, is the
+exact native pin the task asked for ("compile a corpus with includeAllMods() forced vs default
+and assert byte-identical wasm").
+
+**Probe script** (scratchpad, not committed —
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/eager-probe.mjs`):
+hardcodes kernel-parity.js's 11-entry CORPUS (copy, NOT an import — importing test/kernel-parity.js
+directly runs its top-level `tst` test blocks immediately, including a `compileViaKernel` call
+that hung indefinitely with no kernel built in this worktree; costly false start, killed and
+rewrote standalone). Compiles each entry lazy vs `_eagerStdlib:true` at `host:'js'` and
+`host:'wasi'`, `optimize:0`, diffs byte length + raw bytes + `WebAssembly.Module.imports`.
+
+### Empirical result: EVERY corpus entry diverges. Two distinct bug classes, not one.
+
+```
+[js]   sum:          78B → 111B   (+33, no import diff)
+[js]   math:         53B → 86B    (+33)
+[js]   dict:         29885B → 29954B (+69)
+[js]   arr:          1401B → 1434B  (+33)
+[js]   fold:         41B → 74B    (+33)
+[js]   mfold:        41B → 78B    (+37)
+[js]   boolconst:    247B → 280B  (+33)
+[js]   nestedtyped:  1463B → 1496B (+33)
+[js]   subviewtyped: 1007B → 1048B (+41)
+[js]   fromnested:   719B → 752B  (+33)
+[js]   dvnested:     764B → 25033B  — EAGER OUTPUT IS INVALID WASM, see below
+[wasi] every entry:  same as [js] PLUS imports-onlyEager=[wasi_snapshot_preview1.clock_time_get]
+                      and a further ~500B (sum 97B→626B, fold/mfold both 60B→589B, etc.)
+```
+
+**Class 1 — confirmed, matches the task's two named examples exactly.** The uniform ~33B `[js]`-
+host delta (present on EVERY entry, including the numeric-only `sum`/`fold`/`mfold` that touch no
+closure) is `module/function.js`'s `ctx.closure.types.add(1)` (init line 103, unconditional —
+"presence triggers $ftN type emission", read in full this session: lines 79-101 first set up
+`ctx.closure.types/table/bodies/envMeta` as empty containers if absent — harmless, matches the
+"registration" doctrine — but line 103's `.add(1)` is a real, immediate, unconditional value
+write with a directly documented output effect, not deferred into any handler). The extra
+`wasi`-host ~500B + `clock_time_get` import on EVERY entry (even ones needing no timer) is
+`module/timer.js`'s `setupWasi` (called unconditionally from `init(ctx)` whenever
+`ctx.transform.targetProfile.wasiShims`, independent of source content) — read in full this
+session (module/timer.js:62-287): unconditionally does `inc('__timer_init','__timer_tick',
+'__timer_loop')` (forces those 3 stdlib funcs — and transitively their callee `__time_ns`, hence
+the import — into `ctx.core.includes`, NOT reachability-gated the way `inc()` calls inside
+`ctx.core.emit[name]=(...)=>{}` handlers naturally are), `hostImport('wasi_snapshot_preview1',
+'clock_time_get',...)` directly (not deferred behind a `need*`-style thunk — contrast
+`setupWasi`'s OWN sibling `setupJsHost`, which correctly defers every `hostImport` call behind
+`needSetTimeout`/`needClearTimeout`/`needRaf`/`needCancelRaf` thunks only invoked from inside the
+`ctx.core.emit['setTimeout']` etc. handlers — `setupWasi` is the ONE inconsistent branch in this
+same file), and 3 unconditional `declGlobal('__timer_queue'|'__timer_next_id'|'__timer_count',
+'i32')` calls. `setTimeout`/`setInterval`/`clearTimeout`/`clearInterval`'s own emit handlers
+(lines 251-278) ARE already correctly demand-gated (`inc('__timer_add'|'__timer_cancel')` fires
+only inside the handler, i.e. only when the AST actually calls one) — only `setupWasi`'s OWN
+top-level init side effects are the bug.
+
+Confirms the general shape: registration helpers (`reg`/`bind`/`wat`/`registerGetter` — all write
+only `ctx.core.emit`/`ctx.core.stdlib`, inert until reachability-marked) and `inc()`/`hostImport()`/
+`declGlobal()` calls made FROM WITHIN a registered `ctx.core.emit[name]=(...)=>{}` handler body are
+ALREADY correctly demand-driven regardless of eager/lazy module load — the handler only ever RUNS
+when the compiler emits an actual call to that method in the real AST, so merely *registering* it
+early (eager load) changes nothing observable. Read `module/navigator.js` and `module/web.js` in
+full as a cross-check (both call `hostImport` — grep had flagged them): both are clean, textbook
+demand-driven — `hostImport` sits inside the `ctx.core.emit[...]=()=>{...}` closure body in both
+files, never at init top level. `module/crypto.js` read in full: also clean on the hot path
+(`needEntropy`/`inc(...)` both fire only inside `bind('crypto.getRandomValues',...)`/
+`bind('crypto.randomUUID',...)` handlers) — ONE narrow exception found: `declGlobal('crypto.state',
+seedConst)` (line 35) is unconditional whenever `ctx.transform.randomSeed` is a number, regardless
+of whether the source ever calls a crypto method — real instance of the same bug class, but gated
+behind a rarely-used compile opt (`randomSeed`) rather than firing on every compile; lower priority,
+flagged not yet fixed. The BUG (Class 1) is specifically: unconditional, non-deferred `inc()`/
+`hostImport()`/`declGlobal()`/`ctx.closure.*`-value-write calls sitting directly in a module's
+`init(ctx)` top level (or a helper it calls unconditionally, e.g. `setupWasi`), as opposed to
+inside a lazily-invoked emit handler or `need*`-style thunk.
+
+**Class 2 — NEW, more serious than anything the task named: `dvnested` (`(dv) => dv.setFloat64(
+dv.getInt32(0), dv.getFloat64(8))`) produces genuinely INVALID wasm under eager load, not just
+extra bytes.** `[js]` host: 764B (valid, 6 functions per `--wat` dump) → 25033B (52 functions) —
+an 8.7× function-count blowup, not the ~33B closure-preamble constant seen on every other entry.
+`WebAssembly.Module()` on the eager bytes throws at parse/validate time: `Compiling function #4
+failed: not enough arguments on the stack for f64.convert_i32_s (need 1, got 0)`. Same signature
+under `wasi` host. This is NOT "harmless extra dead scaffolding" (Class 1's shape) — it's a
+STRUCTURALLY DIFFERENT, wrong code path being taken for the DataView receiver, one with a genuine
+stack-imbalance codegen bug in it. Dumped both WATs (`--wat` dump, `/private/tmp/.../scratchpad/
+dvnested-{lazy,eager}.wat`): lazy's `$f` body (line 199, ~170 lines) is a direct, typed DataView
+emission — `$__ptr_offset`/`$__dv_index`/inline bounds checks/`$__bswap64`, no dynamic dispatch,
+matches `module/typedarray.js`'s DataView get/set emitters read earlier this session. Have NOT
+yet dumped eager's `$f` body (session paused before that read) — the leading hypothesis, by
+elimination, is the SAME general class as the task's named finding (b) (`externalMethodFallback`'s
+`valTypeOf` gate, src/compile/emit.js ~4553): eager-loading changes some type/dispatch resolution
+so `dv`'s receiver type (or the `.getInt32`/`.setFloat64`/`.getFloat64` method resolution) falls
+through to a generic/dynamic path instead of typedarray.js's direct typed emitter, and that
+fallback path's DataView-shaped call has a real, independent stack-depth bug in it (plausibly
+never exercised before because nothing previously reached dynamic dispatch for a DataView-typed
+receiver — `dv`'s parameter type is provably DataView from the `new DataView`-shaped call site in
+every existing test, so this exact receiver/dispatch combination may simply never have been
+compiled via the fallback path before). **Not yet root-caused — this is the single most
+promising lead connecting the task's two "open findings" into one mechanism** (eager-loading
+perturbs `valTypeOf`/dispatch-tier resolution for at least one receiver shape) and should be the
+next concrete step: dump eager's `$f` body, diff against lazy's, identify which dispatch tier
+fires, then read `externalMethodFallback` (src/compile/emit.js ~4553) and whatever tier actually
+intercepts `getInt32`/`setFloat64`/`getFloat64` under eager load to find why `valTypeOf(dv)` (or
+an earlier tier) resolves differently now that ALL 21 modules are pre-loaded before `prepare()`
+ever sees the source (module presence order / `ctx.module.modules` truthiness is the prime
+suspect for WHAT changed, mirroring exactly how Class 1 bugs are keyed off "module loaded" instead
+of "feature used" — this may be the SAME root confusion one level up: some dispatch tier keys off
+"is module X loaded" as a proxy for "receiver type provably needs module X's emitter", which eager
+load breaks the same way it breaks Class-1's "module loaded" ⇒ "feature used" correlation).
+
+**Not yet done**: (1) root-cause Class 2 (dvnested/dispatch-tier) per the above — likely the same
+mechanism as the task's finding (b), possibly the SAME fix closes both. (2) Fix Class 1's two
+confirmed sites (function.js line 103, timer.js's `setupWasi`) by making them demand-driven —
+NOT YET EDITED as of this note. (3) Re-run the native eager-probe corpus after fixes — expect
+`[js]` deltas to drop to 0 for every non-dvnested entry, `[wasi]` deltas to drop to 0 for every
+entry (timer fix), and `dvnested` to become valid+byte-identical once Class 2 is closed. (4)
+Audit the REMAINING module-init `inc()`/`declGlobal()` call sites found by grep this session
+(`atomics.js:69,118`; `array.js:207,356`; `collection.js` ~10 top-level sites; `object.js` ~10
+top-level sites; `regex.js:30`; `symbol.js:31`; `typedarray.js:273`; `string.js:235`) that look
+top-level-unconditional by indentation but were NOT individually confirmed clean or dirty this
+session — the probe's `dict`/`arr`/`nestedtyped`/`subviewtyped`/`fromnested` entries already
+exercise object/array/typedarray module loading and show ONLY the uniform Class-1 closure delta
+(no EXTRA delta beyond +33/+41B), which is decent indirect evidence these particular sites are
+harmless (their `inc()`-marked helpers are either already unconditionally pulled in by `core`
+itself — `__mkptr`/`__alloc`/`__ptr_offset`/`__ptr_type`/`__len` are exactly core's own baseline
+— or genuinely get treeshaken since nothing calls them) but NOT a proof for every module (`json`,
+`date`, `regex`, `symbol`, `console`, `atomics`, `simd`, `fs` have no dedicated corpus entry
+exercising "module loads but feature unused" yet). Widening the probe corpus to touch every
+STDLIB entry at least once (one program using it, one program near-identical but not using it) is
+the rigorous way to close this out; not done yet this session.
