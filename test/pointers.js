@@ -1,9 +1,11 @@
 // NaN-boxing pointer encoding tests + multi-value threshold
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
-import jz from '../index.js'
+import jz, { compile } from '../index.js'
+import parseWat from 'watr/parse'
 import { resolveModuleGraph } from '../src/resolve.js'
 import { onKernel, withBigintStrict } from './_matrix.js'
+import { i64Hex, ptrBits, PTR } from '../layout.js'
 
 function run(code, opts) {
   return jz(code, opts).exports
@@ -165,6 +167,74 @@ test('nan-box: EXTERNAL (type=11)', () => {
     return __ptr_type(__mkptr(11, 67, 0))
   }`)
   is(f(), 11)
+})
+
+// === i64Hex regression guard (fix/i64hex-hazards) ===
+// Under self-host, raw BigInt#toString(radix) on a value whose bits are
+// PTR-tag-shaped (any real box prefix — the tag nibble sits at bit 47) routes
+// through readI64/isPlanTaggedBigint, which can misjudge it as a boxed
+// pointer and unbox it, reading unrelated heap bytes (layout.js's i64Hex doc;
+// confirmed live for PTR.BIGINT's own prefix, 0x7FFA800000000000). i64Hex
+// never calls .toString() on the raw BigInt — it reaches the hex digits via
+// BigInt shift/and/Number — so it can't reach that dispatch. specializeMkptr
+// (src/optimize/index.js) and boxPtrIR (src/ir.js) both used to fold their
+// box-prefix constant via raw toString(16); these pins inspect the actual
+// compiled WAT text (not just a runtime value) for each site and assert the
+// baked-in hex constant is byte-identical to i64Hex's own native output for
+// the same (type, aux) — a regression back to toString(16) would desync this
+// text even though it may not visibly corrupt a NATIVE (non-self-hosted) run.
+// Structural (optimize:2 heuristics), not value correctness — skip on the
+// self-compile kernel leg like the fixture-based pins above.
+const findFunc = (tree, name) => tree.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === name)
+const i64ConstsOf = (node, out = []) => {
+  if (!Array.isArray(node)) return out
+  if (node[0] === 'i64.const' && typeof node[1] === 'string') out.push(node[1])
+  for (let i = 1; i < node.length; i++) i64ConstsOf(node[i], out)
+  return out
+}
+
+test("carrier: specializeMkptr's inline $__mkptr fast-path template matches i64Hex natively", () => {
+  if (onKernel()) return
+  // 4+ call sites sharing one literal (type, aux) with a DYNAMIC offset is
+  // specializeMkptr's own MIN_USES threshold for baking a per-combo helper
+  // whose body folds the box prefix into one `i64.const`. (type=5, aux=0) is
+  // PTR.BIGINT's own prefix — the exact value the original bug report found
+  // corrupted live under self-host.
+  const src = `
+    export let f = (o) => [
+      __mkptr(5, 0, o),
+      __mkptr(5, 0, o + 8),
+      __mkptr(5, 0, o + 16),
+      __mkptr(5, 0, o + 24),
+    ]
+  `
+  const tree = parseWat(compile(src, { optimize: 2, wat: true }))
+  const fn = findFunc(tree, '$__mkptr_5_0_d')
+  ok(fn, 'specializeMkptr must bake a $__mkptr_5_0_d helper for 4 same-signature dynamic-offset call sites')
+  is(i64ConstsOf(fn).join(','), i64Hex(ptrBits(5, 0)),
+    "the helper's i64.const template must be byte-identical to i64Hex(ptrBits(5,0))")
+})
+
+test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt) matches i64Hex natively", () => {
+  if (onKernel()) return
+  // narrow.js's applyPointerParamAbi devirtualizes a non-exported, never-
+  // mutated, provably-single-kind pointer param to a raw i32 offset; asF64
+  // (ir.js) re-boxes it via boxPtrIR whenever the value must cross back out
+  // as f64 — here, chase's own recursive return. PTR.BUFFER's aux is always
+  // 0 by construction (no schema id involved, unlike OBJECT), keeping the
+  // expected prefix exact without depending on schema-registration order.
+  const src = `
+    const chase = (o, n) => n <= 0 ? o : chase(o, n - 1)
+    const chaseFromBuf = (n) => chase(new ArrayBuffer(8), n)
+    export const roundTrip = (n) => chaseFromBuf(n)
+  `
+  const tree = parseWat(compile(src, { optimize: 2, wat: true }))
+  const fn = findFunc(tree, '$chase')
+  ok(fn, "applyPointerParamAbi must devirtualize chase's BUFFER param to a raw i32 offset")
+  const oParam = fn.find(n => Array.isArray(n) && n[0] === 'param' && n[1] === '$o')
+  is(oParam[2], 'i32', "chase's o param must be narrowed to i32 for this pin to exercise boxPtrIR's re-box")
+  is(i64ConstsOf(fn).join(','), i64Hex(ptrBits(PTR.BUFFER, 0)),
+    "boxPtrIR's re-box template must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 
 // === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
