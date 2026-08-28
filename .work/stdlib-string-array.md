@@ -192,33 +192,64 @@ from none of them. One-directional star, no cycle.
 
 ## Commits
 
-1. `.work/stdlib-string-array.md` (this file).
-2. array.js: delete dead `arrMethod` (205-210).
-3. PURE MOVE: `module/string/uri.js` extracted from string.js 2222-2407;
-   string.js imports the 6 `bind()` names' registration back (calls the
-   registration function at the original position).
-4. PURE MOVE: `module/string/base64.js` extracted from string.js 2581-2882;
-   string.js imports the registration function back.
-5. PURE MOVE (leaf): `module/array/callback.js` extracted from array.js
-   66-72, 76-203, 2043-2047 (hoistArrayValue, pure-expr trio, makeCallback,
-   callbackArgReps, idxF64/idxArg); array.js imports
+1. `752785ba` — `.work/stdlib-string-array.md` (this file).
+2. `cd0e7128` — array.js: delete dead `arrMethod` (205-210 pre-move).
+3. `c40bd902` — PURE MOVE: `module/string/uri.js` extracted from string.js
+   2221-2407 (corrected during execution — the comment header starts at
+   2221, one line earlier than this doc's first draft said) and
+   `module/string/base64.js` from string.js 2581-2882 (one commit, both
+   moves — both are string.js-only, zero cross-file risk between them);
+   string.js imports `registerUri`/`registerBase64` and calls them at the
+   original positions.
+4. `0c1690db` — PURE MOVE (leaf): `module/array/callback.js` extracted from
+   array.js 66-72, 76-203, 2043-2047 (post-arrMethod-deletion line numbers:
+   hoistArrayValue, the pure-expr trio, makeCallback, callbackArgReps,
+   idxF64/idxArg — the pure-expr trio stays private/unexported, matching its
+   original zero-external-use scope); array.js imports
    `hoistArrayValue`/`makeCallback`/`callbackArgReps`/`idxF64`/`idxArg` back.
-6. PURE MOVE: `module/array/from.js` extracted from array.js 457-663
-   (post-step-5 line numbers); imports the callback leaf; array.js imports
-   the registration function back.
-7. PURE MOVE: `module/array/early-exit.js` extracted from array.js
-   1927-1987 (post-step-6 line numbers); imports the callback leaf;
-   array.js imports the registration function back.
+   Three whitespace-only double-blank-line artifacts left by the removals
+   collapsed to single blank lines in the same commit (zero semantic change
+   — blank lines in a stdlib registration file have no compiled-output
+   effect either way).
+5. `35f3cb7b` — PURE MOVE: `module/array/from.js` extracted from array.js
+   314-520 (post-step-4 line numbers); imports `makeCallback`/`idxArg` from
+   the callback leaf; array.js imports `arrayFromEmit` and assigns
+   `ctx.core.emit['Array.from'] = arrayFromEmit` at the original position
+   (the one-line declaration-to-import substitution mechanically verified
+   against the sed-extracted original).
+6. `96570381` — PURE MOVE: `module/array/early-exit.js` extracted from
+   array.js 1579-1639 (post-step-5 line numbers); imports
+   `hoistArrayValue`/`makeCallback`/`callbackArgReps`/`idxArg` from the
+   callback leaf; array.js imports `registerEarlyExit` and calls it at the
+   original position.
+
+No de-duplication commit and no further deletion commit — both would be
+scope invention (see the "shape difference" section above: the remaining
+bulk in both files is one interconnected core, not a pile of duplicated
+template text).
 
 ## Verification
 
 - Every extraction: sed-extracted body text vs. new sibling file body diffed
-  byte-identical (mechanical, never retyped).
-- `node scripts/refactor-oracle.mjs check --ref b70dd817` run after each
-  commit.
-- Full battery before reporting: oracle clean, `node test/index.js` (excl.
-  bench-c.js), kernel build + `JZ_TEST_TARGET=jz.wasm node test/index.js`,
-  `node test/kernel-parity.js`, kernel-oracle, kernel byte count before/
-  after, `node scripts/bench-size.mjs --json`.
-
-(Numbers filled in as commits land — see the final report.)
+  byte-identical (mechanical, via a Python line-slice + assert script —
+  never retyped). Each `export` keyword insertion and the one
+  `ctx.core.emit['Array.from'] = (src, mapFn) => {` → `export const
+  arrayFromEmit = (src, mapFn) => {` declaration rewrite verified as the
+  ONLY diff between original and moved text (`diff` on the full piece minus
+  that one line).
+- `node scripts/refactor-oracle.mjs check --ref b70dd817` run after every
+  commit from step 2 onward — CLEAN (560/560 identical) every time,
+  including the final state (commit `96570381`).
+- `resolveModuleGraph` on `bench/jz/jz.js` (`resolveNode: true`) re-run
+  after every array.js move — resolves clean, no cycle, module count
+  climbing by exactly 1 per new file (211→212→213→214).
+- Full battery: oracle clean; `node test/index.js` (91 files, excludes
+  bench-c.js, run in 4 batches to stay within a bounded foreground timeout)
+  — 3753 pass, 1 skip, 0 fail; kernel build (`npm run build`) +
+  `JZ_TEST_TARGET=jz.wasm node test/index.js` (plain invocation) — 2983
+  pass, 1 skip, 0 fail; `node test/kernel-parity.js` — 33/33; `node
+  test/kernel-oracle.js` — 14/14 (605 assertions); `node
+  scripts/bench-size.mjs --json` — byte-identical to a baseline run at
+  b70dd817 (`diff` empty); kernel byte count before/after — see the final
+  report for the numbers (baseline built in a separate detached worktree at
+  b70dd817).
