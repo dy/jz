@@ -1195,6 +1195,36 @@ VT['()'] = (args) => {
   }
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
+    // Same-module `.`-member callee, proven (or not) by the frozen
+    // call-target index (call-target-index.js, built once in plan/index.js
+    // before any consumer — including this one, since valTypeOf is never
+    // queried on a call node until prepare's early-plan passes run, and the
+    // index is built before narrowSignatures/solveRepresentationBoundaries;
+    // an earlier query simply sees `callTargets` still undefined and falls
+    // through below, exactly like today). This is the SAME question
+    // calleeValType's bare-name tail (`ctx.funcs.map.get(callee).valResult`,
+    // kind-traits.js) already answers for `f(x)` — `obj.method(x)` deserves
+    // the identical Tier-1 answer once the index proves `obj.method` names
+    // the very same-module function a bare call to it would reach. Checked
+    // BEFORE methodValType's builtin-method-name dispatch below: a resolved
+    // same-module function is a strictly stronger, structural proof than a
+    // name-only builtin-method guess (methodValType's `push` arm, e.g.,
+    // matches on the property name alone, unconditionally). resolveMember
+    // itself refuses anything shadowed, reassigned, dynamically written, or
+    // escaping the module (its own header) — an ordinary Array/Map/String/
+    // TypedArray `.method()` call can never spuriously resolve here.
+    //
+    // Deliberately reuses valResult (a per-function SEMANTIC kind fact,
+    // narrow.js's whole-program census) and nothing representation-plan-
+    // specific (carrier/boxed-vs-raw choice, per-param boundary targets) —
+    // those live one layer down in representation-plan.js's own
+    // directCallBoundary/resolveMemberCallee machinery, which needs a
+    // resolved NAME (not just a kind) to look up a richer record valTypeOf
+    // has no vocabulary for. This is the narrower, general-purpose half of
+    // that same proof: "what VAL kind does this call produce," asked and
+    // answered exactly once, here, for every consumer of valTypeOf.
+    const resolved = ctx.types.callTargets?.resolveMember(obj, method)
+    if (resolved?.valResult) return resolved.valResult
     // INVARIANT: NO `.get` short-circuit here: mapValueKindOf (above)
     // is a censusMaybeUndefinedKind-only helper — VT['()'] must NOT promote
     // a `.get()` read to an exact VT (see mapValueKindOf's own doc comment
