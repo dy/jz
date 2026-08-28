@@ -534,6 +534,11 @@ const jzCompileInner = (code, opts = {}) => {
   let ast = frontHalf(code, {
     strict: opts.strict, jzify, time,
     afterPrepare: () => assertCtxInvariants('post-prepare'),
+    // Test-only (test/eager-stdlib-parity.js): force every stdlib module's
+    // init(ctx) to run up front, the same eager load the region-arena front
+    // round needs — proves module load alone (no region hooks involved) is
+    // pure registration with no output effect. Never set by real callers.
+    eagerStdlib: opts._eagerStdlib,
   })
 
   // Hidden AST-shape auto-configuration REMOVED (2026-07-22): the default tier

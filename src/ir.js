@@ -521,6 +521,18 @@ export function unboxBigInt(f64expr) {
  *  a garbage payload — a silent wrong-value bug already tracked separately,
  *  e.g. test/data.js's `.member`-call KNOWN-WRONG pin — never a dereference,
  *  so it cannot trap and is out of this fix's scope). */
+// valTypeOf (kind.js) now resolves a `.`-member callee through the frozen
+// call-target index (the same one representationActiveMaterializedRep's own
+// `()` branch, above, and representation-plan.js's calleeNameOf/
+// resolveMemberCallee already consult) — a `.`-member call proves exactly
+// as BIGINT here as the equivalent bare-name call always did, so this gate
+// needs no separate `.`-member admission path. (An earlier version of this
+// fix re-derived the answer from representationActiveMaterializedRep's own
+// CARRIER verdict — REP_EDGE_BOX/UNBOX-shaped, call-site-insensitive — as a
+// stand-in for "is this proven BigInt"; that mismatched abstraction (a
+// carrier-choice fact used as a semantic-kind proof) is what regressed
+// watr's float_memory family, see .work/member-callee-binding-write-notes.md.
+// valTypeOf asks the plain semantic question directly and needs no proxy.)
 export function applyBigintRepresentationAction(ir, node, action) {
   if (valTypeOf(node) !== VAL.BIGINT) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))

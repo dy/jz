@@ -276,13 +276,20 @@ const MOD_DEPS = {
 // registration (and its own onRegister callback) before this module's `before`
 // snapshot is even taken, so the dep's keys are already in `before` and never
 // double-counted here.
-export function includeModule(name, onRegister) {
-  const modName = MOD_ALIAS[name] || name
+// Low-level primitive: run modName's init(ctx) once (idempotent on
+// ctx.module.modules), with NO demand tracking. The one and only caller that
+// wants this — includeAllMods()'s bulk preload — deliberately bypasses
+// ctx.module.demanded: preloading a module is registration ONLY (the task's
+// "module load = registration only" invariant), so it must stay invisible to
+// any dispatch decision keyed on "did the SOURCE actually ask for this". Real
+// (AST-content-driven) callers go through includeModule below instead, which
+// wraps this with the demand mark.
+function loadModule(modName, onRegister) {
   const init = mods[modName]
-  if (!init) return err(`Module not found: ${name}`)
+  if (!init) return err(`Module not found: ${modName}`)
   if (ctx.module.modules[modName]) return
   ctx.module.modules[modName] = true
-  for (const dep of MOD_DEPS[modName] || []) includeModule(dep, onRegister)
+  for (const dep of MOD_DEPS[modName] || []) loadModule(dep, onRegister)
   // Stdlib registration two-dialect gate (CONTRIBUTING "Stdlib registration"):
   // reg()/registerGetter()/bind() guard their OWN flat-key write (src/ctx.js
   // registerName), but can't see a LATER raw `ctx.core.emit[name] = …`
@@ -296,6 +303,20 @@ export function includeModule(name, onRegister) {
   init(ctx)
   if (onRegister) onRegister(modName, Object.keys(ctx.core.emit).filter(k => !before.has(k)))
   verifyEmitIntegrity(ctx.core.emit, ctx.core.regEmitOrder, ctx.core.regEmitDialect, ctx.core.regEmitModule, ctx.core.regEmitValue)
+}
+
+// THE real, content-driven entry point — every includeForXxx helper below,
+// prepare()'s own unconditional includeModule('core'), and every other
+// AST-triggered call site in the tree. Marks ctx.module.demanded UNCONDITIONALLY,
+// even when modName is already loaded (the early return inside loadModule) —
+// demanded must answer "was this ever REALLY asked for", independent of
+// WHETHER init(ctx) already ran for some other reason (eager preload, an
+// earlier real demand). See ctx.module.demanded's own doc (src/ctx.js reset()).
+export function includeModule(name, onRegister) {
+  const modName = MOD_ALIAS[name] || name
+  if (!mods[modName]) return err(`Module not found: ${name}`)
+  ctx.module.demanded.add(modName)
+  loadModule(modName, onRegister)
 }
 
 export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
@@ -312,7 +333,12 @@ export const includeMods = (...names) => names.forEach(name => includeModule(nam
 // pins the two in sync). The region-arena front round loads them all before mark()
 // (src/front.js) so no first-ever module init can allocate into an unrooted round.
 export const STDLIB = ['math', 'core', 'array', 'object', 'string', 'number', 'fn', 'typedarray', 'collection', 'symbol', 'console', 'json', 'regex', 'timer', 'date', 'simd', 'atomics', 'fs', 'web', 'crypto', 'navigator']
-export const includeAllMods = () => includeMods(...STDLIB)
+// Bulk preload — registration only, NOT a demand (see loadModule's own doc):
+// goes straight to loadModule, never through includeModule, so it never marks
+// ctx.module.demanded. A module loaded ONLY by this call is, from every
+// dispatch decision's point of view, indistinguishable from a module that was
+// never loaded at all until the source's own content later (if ever) demands it.
+export const includeAllMods = () => STDLIB.forEach(name => loadModule(MOD_ALIAS[name] || name))
 
 export const includeForOp = op => {
   const modules = OP_MODULES[op]
