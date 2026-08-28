@@ -659,14 +659,25 @@ export function dedupClosureBodies(closureFuncs, sec) {
  * Phase: closure-table finalize + ABI shrink.
  */
 export function finalizeClosureTable(sec) {
-  let indirectUsed = ctx.transform.targetProfile.preserveClosureTable
+  // callIndirectSeen: the TRUE fact — does ANYTHING in the actually-compiled,
+  // reachability-resolved output really execute `call_indirect (type $ftN)`?
+  // NEVER seeded by preserveClosureTable (unlike `indirectUsed` below): a WASM
+  // table needs no type-section entry to be walked/called from OUTSIDE this
+  // module (an embedder invoking exports.__jz_table.get(i)(...) doesn't touch
+  // this module's own `call_indirect`), so keeping the table alive for an
+  // external caller (preserveClosureTable's actual job) never implies `$ftN`
+  // itself must exist — only an IN-MODULE call_indirect does. Drives $ftN's
+  // presence in sec.types alone, at the end of this function, independent of
+  // every other decision below (table/elem preservation, per-closure ABI
+  // shrink) which legitimately DO stay gated on preserveClosureTable.
+  let callIndirectSeen = false
   const scan = (n) => {
-    if (!Array.isArray(n) || indirectUsed) return
-    if (n[0] === 'call_indirect') { indirectUsed = true; return }
+    if (!Array.isArray(n) || callIndirectSeen) return
+    if (n[0] === 'call_indirect') { callIndirectSeen = true; return }
     for (const c of n) if (Array.isArray(c)) scan(c)
   }
-  for (const fn of sec.funcs) { scan(fn); if (indirectUsed) break }
-  if (!indirectUsed) for (const fn of sec.start) scan(fn)
+  for (const fn of sec.funcs) { scan(fn); if (callIndirectSeen) break }
+  if (!callIndirectSeen) for (const fn of sec.start) scan(fn)
   // stdlib values are mixed: WAT-template strings + lazy generator functions.
   // Only the string templates can carry a literal `call_indirect`; a typeof
   // guard skips the generators (where `.includes` is meaningless — and on a jz
@@ -688,12 +699,33 @@ export function finalizeClosureTable(sec) {
   // "__jz_table") 0 funcref)` section purely because SOME unrelated,
   // never-included template registered by an eager-preloaded module (e.g.
   // timer's __timer_dispatch) happens to contain the substring `call_indirect`.
-  if (!indirectUsed) {
+  if (!callIndirectSeen) {
     resolveIncludes()
     for (const [name, tpl] of Object.entries(ctx.core.stdlib)) {
       if (!ctx.core.includes.has(name)) continue
-      if (typeof tpl === 'string' && tpl.includes('call_indirect')) { indirectUsed = true; break }
+      if (typeof tpl === 'string' && tpl.includes('call_indirect')) { callIndirectSeen = true; break }
     }
+  }
+  // indirectUsed: whether TABLE/ELEM/uniform-ABI must be preserved — real
+  // call_indirect usage OR host:'wasi' preserveClosureTable's own reason
+  // (an embedder may walk/call __jz_table from outside this module — see
+  // callIndirectSeen's own doc for why that never implies $ftN must exist).
+  const indirectUsed = callIndirectSeen || ctx.transform.targetProfile.preserveClosureTable
+  // $ftN itself: present iff genuinely used, full stop — independent of every
+  // branch below. Regressed 71 native tests once as a `.size`-on-ctx.closure.
+  // types gate at the EARLIER push site (src/compile/index.js) that only
+  // fired for a literally-minted closure, missing the generic-dynamic-dispatch
+  // (tryGenericEmitter/tryDynamicPropCall) call_indirect users; then
+  // regressed EVERY host:'wasi' compile once reverted to a bare module-loaded
+  // truthiness check there, because preserveClosureTable used to also gate
+  // OFF the $ftN-stripping `else` branch below, so wasi never reached it.
+  // This is the one, sufficient, correctly-scoped fix: unconditional, driven
+  // by callIndirectSeen alone, every host, every branch.
+  if (!callIndirectSeen) sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
+  else if (!sec.types.some(t => Array.isArray(t) && t[1] === '$ftN')) {
+    const params = [['param', 'f64'], ['param', 'i32']]
+    for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])
+    sec.types.push(['type', '$ftN', ['func', ...params, ['result', 'f64']]])
   }
   if (indirectUsed) {
     if (!ctx.closure.table) ctx.closure.table = []
@@ -703,7 +735,6 @@ export function finalizeClosureTable(sec) {
   }
   sec.table = []
   sec.elem = []
-  sec.types = sec.types.filter(t => !(Array.isArray(t) && t[1] === '$ftN'))
   const W = ctx.closure.width ?? MAX_CLOSURE_ARITY
   const abiOf = new Map()
   for (const cb of (ctx.closure.bodies || [])) {
