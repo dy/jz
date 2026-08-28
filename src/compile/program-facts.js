@@ -16,6 +16,7 @@ import { safeReads } from './analyze-scans.js'
 
 
 import { ARR_RESIZE_METHODS, collectBodyElemSids, effectiveWriteValue } from './program-facts/shared.js'
+import { invalidateProgramFactsCache, resetProgramFactsCache } from './program-facts/cache.js'
 
 // MUTATE_OPS (ast.js) is the property-write op set: any write op whose first
 // arg is a `.`/`?.` member node feeds `writtenProps` (any prop name ever
@@ -188,33 +189,6 @@ export function observeNodeFacts(node, f) {
     // that carries no `{}` literal to trip hasSchemaLiterals on its own.
     if (Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'set' && cargs.length === 2)
       f.hasMapSet = true
-  }
-}
-
-/** Drop all cached program-fact walks (called at compile entry — normally
- *  implicit via beginSession's fresh factStore; exposed for any caller that
- *  needs to force a mid-session drop). Natively the gen bump alone is enough
- *  (stale entries just go unreachable on a real GC heap). In the self-compile
- *  kernel these WeakMaps' own backing storage is itself an arena allocation
- *  that `_clear` rewinds between compiles in a warm-instance loop — a
- *  post-`_clear` alloc can overwrite the WeakMap's internal bytes, so we also
- *  swap in fresh WeakMap instances (cheap: O(1), no traversal). */
-export function resetProgramFactsCache() {
-  const pf = getFactStore().programFacts
-  pf.gen++
-  pf.walkCache = new WeakMap()
-  pf.moduleInitSlot = new WeakMap()
-  pf.bodyIntCertain = new WeakMap()
-}
-
-/** Drop cached walks for specific AST roots (in-place module rewrites). */
-export function invalidateProgramFactsCache(...roots) {
-  const pf = getFactStore().programFacts
-  for (const r of roots) {
-    if (r == null || typeof r !== 'object') continue
-    pf.walkCache.delete(r)
-    pf.moduleInitSlot.delete(r)
-    pf.bodyIntCertain.delete(r)
   }
 }
 
@@ -1967,4 +1941,4 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
 }
 
 
-export { effectiveWriteValue }
+export { effectiveWriteValue, resetProgramFactsCache, invalidateProgramFactsCache }
