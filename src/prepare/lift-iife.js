@@ -27,7 +27,7 @@
  *
  * @module prepare/lift-iife
  */
-import { T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_PATTERN } from '../ast.js'
+import { T, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, walkAst } from '../ast.js'
 import { findFreeVars, findMutations } from '../compile/analyze-scans.js'
 
 // Build a comma-list operand node (the parser's shape) from an array of nodes.
@@ -81,13 +81,10 @@ function functionLocals(paramNodes, body) {
     if (typeof c[PARAM_NAME] === 'string') names.add(c[PARAM_NAME])
     else if (c[PARAM_PATTERN]) collectPatternNames(c[PARAM_PATTERN], names)
   }
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === '=>') return
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
     if (n[0] === 'let' || n[0] === 'const') for (const d of n.slice(1)) collectDeclNames(d, names)
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
-  scan(body)
+  } })
   return names
 }
 

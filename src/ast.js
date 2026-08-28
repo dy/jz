@@ -105,23 +105,26 @@ export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] ===
 
 // === Shared traversal ===
 
-/** Pre-order walk over an array AST/IR tree.
+/** Walk over an array AST/IR tree.
  *
- * `enter(node, parent, index)` sees each array node. Returning `false` prunes
- * that node's children. `boundary`, when supplied, runs after `enter` and
- * prunes children when it returns true. Primitive operands are not visited;
- * callers inspect them through their containing node.
+ * `enter(node, parent, index)` sees each array node pre-order. Returning `false`
+ * prunes that node's children (and skips its `exit`). `boundary`, when supplied,
+ * runs after `enter` and prunes children when it returns true. `exit(node,
+ * parent, index)` sees each unpruned node post-order, after its children — the
+ * hook for in-place rewrites that must see rewritten children first. Primitive
+ * operands are not visited; callers inspect them through their containing node.
  * The root has `parent === null` and `index === -1`; array opcode slots (`[0]`)
  * are not visited separately because `enter` already receives their node.
  *
  * The walk deliberately keeps no visited set: AST is a tree, and optimizer IR
  * may share a subtree whose occurrences must each retain their original visit. */
-export function walkAst(node, { enter, boundary } = {}) {
+export function walkAst(node, { enter, boundary, exit } = {}) {
   const visit = (value, parent, index) => {
     if (!Array.isArray(value)) return
     if (enter && enter(value, parent, index) === false) return
     if (boundary && boundary(value, parent, index)) return
     for (let i = 1; i < value.length; i++) visit(value[i], value, i)
+    if (exit) exit(value, parent, index)
   }
   visit(node, null, -1)
   return node
@@ -367,17 +370,22 @@ export function handlerArgs(args) {
   return spreadArgs(args).filter(a => a != null)
 }
 
-/** Early-exit walk; skips into `=>` bodies by default. */
-const someNode = (node, pred, skipArrow) => {
+/** Early-exit walk. `pred` sees every array node (a boundary node included)
+ *  before the boundary test; `stop(node)` prunes that node's children. */
+const someNode = (node, pred, stop) => {
   if (!Array.isArray(node)) return false
   if (pred(node)) return true
-  if (skipArrow && node[0] === '=>') return false
-  for (let i = 1; i < node.length; i++) if (someNode(node[i], pred, skipArrow)) return true
+  if (stop && stop(node)) return false
+  for (let i = 1; i < node.length; i++) if (someNode(node[i], pred, stop)) return true
   return false
 }
 
+const isArrowNode = node => node[0] === '=>'
+
+/** Options: `boundary(node)` names the nodes whose children are not searched;
+ *  without it, `skipArrow` (default true) stops at `=>` bodies. */
 export function some(node, pred, opts) {
-  return someNode(node, pred, opts?.skipArrow !== false)
+  return someNode(node, pred, opts?.boundary ?? (opts?.skipArrow !== false ? isArrowNode : null))
 }
 
 /** Options for {@link refsName} / {@link refsAny}. */

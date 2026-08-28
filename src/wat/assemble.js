@@ -50,7 +50,7 @@ export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
 // root/rebind it exactly like DOLLAR, via this pair.
 export const stdlibParseCacheMap = () => stdlibParseCache
 export const setStdlibParseCacheMap = (m) => { stdlibParseCache = m }
-import { T } from '../ast.js'
+import { T, walkAst, some } from '../ast.js'
 import { analyzeValTypes, analyzeBody, findMutations } from '../compile/analyze.js'
 import { enterActiveFunction, restoreActiveFunction } from '../compile/active-function.js'
 import { enterPreparedFunction, functionPlanOf, publishPreparedFunctionPlan, retireFunctionPlan } from '../compile/function-plan.js'
@@ -96,23 +96,16 @@ function applyArenaRewind(func, fn, safeCallees) {
   let hasAlloc = false
   let unsafe = false
   const scan = node => {
-    if (unsafe || !Array.isArray(node)) return
+    if (unsafe) return false
     const op = node[0]
-    if (op === 'global.set' || op === 'return_call' || op === 'call_indirect' || op === 'call_ref') {
-      unsafe = true
-      return
-    }
+    if (op === 'global.set' || op === 'return_call' || op === 'call_indirect' || op === 'call_ref') { unsafe = true; return false }
     if (op === 'call') {
       const name = node[1]
       if (name === '$__alloc' || name === '$__alloc_hdr' || name === '$__alloc_hdr_n') hasAlloc = true
-      if (!(safeCallees ?? ARENA_SAFE_CALLS).has(name)) {
-        unsafe = true
-        return
-      }
+      if (!(safeCallees ?? ARENA_SAFE_CALLS).has(name)) { unsafe = true; return false }
     }
-    for (let i = 1; i < node.length; i++) scan(node[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) scan(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: scan })
   if (unsafe || !hasAlloc) return false
 
   let id = 0
@@ -490,11 +483,9 @@ export function hoistConstGlobalInits(sec) {
   if (!startFn) return
   const writes = new Map()
   const scan = (node) => {
-    if (!Array.isArray(node)) return
     if (node[0] === 'global.set' && typeof node[1] === 'string') writes.set(node[1], (writes.get(node[1]) || 0) + 1)
-    for (const c of node) scan(c)
   }
-  for (const arr of [sec.funcs, sec.stdlib, sec.start]) for (const fn of arr) scan(fn)
+  for (const arr of [sec.funcs, sec.stdlib, sec.start]) for (const fn of arr) walkAst(fn, { enter: scan })
   for (let i = startFn.length - 1; i >= findBodyStart(startFn); i--) {
     const stmt = startFn[i]
     if (!Array.isArray(stmt) || stmt[0] !== 'global.set' || writes.get(stmt[1]) !== 1) continue
@@ -558,13 +549,10 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // collapsing them differently would split/merge groups and change output.
   const localNamesOf = (fn) => {
     const names = new Set()
-    const collect = (node) => {
-      if (!Array.isArray(node)) return
+    walkAst(fn, { enter: node => {
       if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
         names.add(node[1])
-      for (const c of node) collect(c)
-    }
-    collect(fn)
+    } })
     return names
   }
   const hashOf = (fn, locals) => {
@@ -670,14 +658,9 @@ export function finalizeClosureTable(sec) {
   // presence in sec.types alone, at the end of this function, independent of
   // every other decision below (table/elem preservation, per-closure ABI
   // shrink) which legitimately DO stay gated on preserveClosureTable.
-  let callIndirectSeen = false
-  const scan = (n) => {
-    if (!Array.isArray(n) || callIndirectSeen) return
-    if (n[0] === 'call_indirect') { callIndirectSeen = true; return }
-    for (const c of n) if (Array.isArray(c)) scan(c)
-  }
-  for (const fn of sec.funcs) { scan(fn); if (callIndirectSeen) break }
-  if (!callIndirectSeen) for (const fn of sec.start) scan(fn)
+  const isCallIndirect = n => n[0] === 'call_indirect'
+  let callIndirectSeen = sec.funcs.some(fn => some(fn, isCallIndirect))
+  if (!callIndirectSeen) callIndirectSeen = sec.start.some(fn => some(fn, isCallIndirect))
   // stdlib values are mixed: WAT-template strings + lazy generator functions.
   // Only the string templates can carry a literal `call_indirect`; a typeof
   // guard skips the generators (where `.includes` is meaningless — and on a jz
@@ -763,20 +746,18 @@ export function finalizeClosureTable(sec) {
       }
     }
   }
-  const rewriteCalls = (node) => {
-    if (!Array.isArray(node)) return
-    for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
-    if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
-      const callee = node[1].slice(1)
+  const rewriteCalls = (node) => walkAst(node, { exit: n => {
+    if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
+      const callee = n[1].slice(1)
       const abi = abiOf.get(callee)
       if (!abi) return
       const newArgs = []
-      if (abi.needEnv) newArgs.push(node[2])
-      if (abi.needArgc) newArgs.push(node[3])
-      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
-      node.splice(2, node.length - 2, ...newArgs)
+      if (abi.needEnv) newArgs.push(n[2])
+      if (abi.needArgc) newArgs.push(n[3])
+      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(n[4 + i])
+      n.splice(2, n.length - 2, ...newArgs)
     }
-  }
+  } })
   for (const fn of sec.funcs) rewriteCalls(fn)
   for (const fn of sec.start) rewriteCalls(fn)
 }
@@ -798,13 +779,11 @@ function reachableStdlib(sec) {
   // dotted module funcs are the ones the `$__`-only regex used to miss, pruning live code.
   const add = (name) => { if (!reach.has(name)) { reach.add(name); if (stdlib[name] != null) stack.push(name) } }
   const scanIR = (node) => {
-    if (!Array.isArray(node)) return
     if ((node[0] === 'call' || node[0] === 'return_call' || node[0] === 'ref.func') &&
         typeof node[1] === 'string' && node[1][0] === '$') add(node[1].slice(1))
-    for (const c of node) scanIR(c)
   }
-  for (const fn of sec.funcs) scanIR(fn)
-  for (const fn of sec.start) scanIR(fn)
+  for (const fn of sec.funcs) walkAst(fn, { enter: scanIR })
+  for (const fn of sec.start) walkAst(fn, { enter: scanIR })
   for (const e of sec.elem)               // closure table: bare `$fn` func refs
     if (Array.isArray(e)) for (const c of e) if (typeof c === 'string' && c[0] === '$') add(c.slice(1))
   // A stdlib func that self-exports (`(export "__invoke_closure")`) is a host-facing
@@ -851,8 +830,8 @@ export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
   while (added) {
     added = false
     const refs = new Set()
-    const scan = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string' && n[1][0] === '$') refs.add(n[1]); for (const c of n) scan(c) }
-    for (const n of moduleArr) scan(n)
+    const scan = (n) => { if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string' && n[1][0] === '$') refs.add(n[1]) }
+    for (const n of moduleArr) walkAst(n, { enter: scan })
     for (const ref of refs) {
       const name = ref.slice(1)
       if (have.has(ref) || !LATE_VEC_HELPERS.has(name) || stdlib[name] == null) continue
@@ -902,8 +881,7 @@ export function pullStdlib(sec) {
     !!(ctx.memory.shared && dataLen() > 0)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
-  const hasMemOp = (node) => Array.isArray(node) &&
-    ((typeof node[0] === 'string' && MEM_OPS.test(node[0])) || node.some(hasMemOp))
+  const hasMemOp = (node) => some(node, n => typeof n[0] === 'string' && MEM_OPS.test(n[0]), { skipArrow: false })
   // `ctx.runtime.data` is never empty here — the number module seeds a static stringify
   // prefix (`NaNInfinity…`) at offset 0; stripStaticDataPrefix removes it when unused, so
   // the real question is whether any data lives *beyond* that strippable prefix.
@@ -1007,11 +985,9 @@ export function pullStdlib(sec) {
           '__enumc_off', '__enumc_len', '__enumc_arr'])
         const runtimeWritten = new Set()
         const scanSet = (node) => {
-          if (!Array.isArray(node)) return
           if (node[0] === 'global.set' && typeof node[1] === 'string' && node[1][0] === '$') runtimeWritten.add(node[1].slice(1))
-          for (const c of node) scanSet(c)
         }
-        for (const fn of sec.funcs) scanSet(fn)
+        for (const fn of sec.funcs) walkAst(fn, { enter: scanSet })
         // stdlib bodies are still WAT text here (parseTemplate runs later) — scan textually.
         // Helpers write registry globals too: collection's __seq, json's __jbuf/__jstack….
         // Thunked templates expand ONCE by contract (expansion-time ctx reads) — memoize
@@ -1289,15 +1265,9 @@ export function stripLocalRenameSuffixes(funcs) {
     for (const [bare, list] of byBare)
       if (list.length === 1 && !declared.has(bare)) map.set(list[0], bare)
     if (!map.size) continue
-    const walk = (n) => {
-      if (!Array.isArray(n)) return
-      for (let i = 0; i < n.length; i++) {
-        const c = n[i]
-        if (typeof c === 'string') { if (map.has(c)) n[i] = map.get(c) }
-        else walk(c)
-      }
-    }
-    walk(fn)
+    walkAst(fn, { enter: n => {
+      for (let i = 0; i < n.length; i++) if (typeof n[i] === 'string' && map.has(n[i])) n[i] = map.get(n[i])
+    } })
   }
 }
 
@@ -1356,9 +1326,10 @@ export function optimizeModule(sec, profiler, regionHooks) {
       // semantic inlining, enabled per-compile via `optimize.inlinePureFns: true`, until a real case pays.
       if (cfg.inlinePureFns === true) t('inlinePureFns', () => {
         const callCount = new Map()
-        const countCalls = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') callCount.set(n[1], (callCount.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countCalls(n[i]) }
-        for (const s of allFuncs) countCalls(s)
-        const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, i) => a + (i > 0 ? nodeCount(c) : 0), 0)
+        for (const s of allFuncs) walkAst(s, { enter: n => {
+          if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') callCount.set(n[1], (callCount.get(n[1]) || 0) + 1)
+        } })
+        const nodeCount = (n) => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
         const INLINE_MAX = 48
         const canInline = new Set([...pureFuncMap.keys()].filter(name =>
           callCount.get(name) === 1 && nodeCount(pureFuncMap.get(name)) <= INLINE_MAX))
@@ -1484,11 +1455,9 @@ export function stripDeadLazyTables(sec) {
     for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
   const live = new Set(), work = []
   const mark = (ref) => { if (typeof ref === 'string' && byName.has(ref) && !live.has(ref)) { live.add(ref); work.push(ref) } }
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string') mark(n[1])
-    for (const c of n) scan(c)
-  }
+  const scan = (n) => walkAst(n, { enter: x => {
+    if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
+  } })
   for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
   for (const f of sec.start) scan(f)
   for (const part of [sec.elem, sec.globals, sec.tags, sec.table]) for (const n of part || []) {
@@ -1579,12 +1548,10 @@ export function stripDeadInternedSpans(sec) {
     for (const f of arr || []) if (Array.isArray(f) && f[0] === 'func' && typeof f[1] === 'string') byName.set(f[1], f)
   const live = new Set(), liveGlobals = new Set(), work = []
   const mark = (ref) => { if (typeof ref === 'string' && byName.has(ref) && !live.has(ref)) { live.add(ref); work.push(ref) } }
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'call' || n[0] === 'return_call' || n[0] === 'ref.func') && typeof n[1] === 'string') mark(n[1])
-    else if ((n[0] === 'global.get' || n[0] === 'global.set') && typeof n[1] === 'string') liveGlobals.add(n[1].slice(1))
-    for (const c of n) scan(c)
-  }
+  const scan = (n) => walkAst(n, { enter: x => {
+    if ((x[0] === 'call' || x[0] === 'return_call' || x[0] === 'ref.func') && typeof x[1] === 'string') mark(x[1])
+    else if ((x[0] === 'global.get' || x[0] === 'global.set') && typeof x[1] === 'string') liveGlobals.add(x[1].slice(1))
+  } })
   for (const f of sec.funcs) if (f.some(el => Array.isArray(el) && el[0] === 'export')) mark(f[1])
   // An inline-exported global (`declGlobal(name, ty, init, { export: '…' })`) is a
   // host-facing root exactly like an exported func — live with no in-wasm

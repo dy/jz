@@ -18,7 +18,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { stmtList, T, some, isReassigned, hasControlTransfer } from '../../ast.js'
+import { stmtList, T, some, isReassigned, hasControlTransfer, walkAst } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { constIntExpr } from '../../static.js'
 import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
@@ -136,18 +136,15 @@ const bindNestedRowLengthsSeq = (body) => {
 
   if (!rowAliases.size) return { node: body, changed: false }
 
-  const needsLen = (node) => {
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === '.' && typeof node[1] === 'string' && rowAliases.has(node[1]) && node[2] === 'length') return true
-    if (op === '[]' && typeof node[1] === 'string' && rowAliases.has(node[1])) {
-      const idx = node[2]
+  const needsLen = (node) => some(node, n => {
+    if (n[0] === '.' && typeof n[1] === 'string' && rowAliases.has(n[1]) && n[2] === 'length') return true
+    if (n[0] === '[]' && typeof n[1] === 'string' && rowAliases.has(n[1])) {
+      const idx = n[2]
       if (Array.isArray(idx) && idx[0] === '%' && Array.isArray(idx[2])
-          && idx[2][0] === '.' && idx[2][1] === node[1] && idx[2][2] === 'length') return true
+          && idx[2][0] === '.' && idx[2][1] === n[1] && idx[2][2] === 'length') return true
     }
-    for (let i = 1; i < node.length; i++) if (needsLen(node[i])) return true
     return false
-  }
+  }, { skipArrow: false })
   if (!stmts.some(s => needsLen(s))) return { node: body, changed: false }
 
   const rowIndexExpr = (rowExpr, progName) =>
@@ -458,14 +455,12 @@ const trySplitFor = (node, parent, idx) => {
 export const splitCharScanLoops = () => {
   if (!optimizing() || ctx.transform.optimize?.splitCharScan === false) return false
   let changed = false
-  const visit = (node, parent, idx) => {
-    if (!Array.isArray(node) || node[0] === '=>') return
-    if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return }
-    for (let k = 1; k < node.length; k++) visit(node[k], node, k)
-  }
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    visit(func.body, null, -1)
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }
+    } })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.
   }

@@ -533,16 +533,7 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       ? ['f64.convert_i32_s', ['block', out, ['result', 'i32'], ...spills, inner, ['i32.trunc_sat_f64_s', generic]]]
       : ['block', out, ['result', 'f64'], ...spills, inner, generic]
   }
-  const walkDV = (n) => {
-    if (!Array.isArray(n)) return
-    for (let i = 1; i < n.length; i++) {
-      const c = n[i]
-      if (!Array.isArray(c)) continue
-      if (c[0] === 'call_indirect' && c.dvArr) { walkDV(c); rewrite(n, i); continue }
-      walkDV(c)
-    }
-  }
-  walkDV(fn)
+  walkAst(fn, { exit: (n, parent, idx) => { if (parent && n[0] === 'call_indirect' && n.dvArr) rewrite(parent, idx) } })
   if (newDecls.length) {
     let at = typeof fn[1] === 'string' ? 2 : 1
     while (at < fn.length && Array.isArray(fn[at]) &&

@@ -30,7 +30,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  callArgs, setCallArgs, some, blockStmts, T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
+  callArgs, setCallArgs, some, walkAst, blockStmts, T, refsName, refsAny, REFS_IN_EXPR, MUTATE_OPS,
   extractParams,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
@@ -64,20 +64,18 @@ const pureCanonicalBool = n => Array.isArray(n) && (
   (BOOL_LEAF_OPS.has(n[0]) && pureScalarExpr(n[1]) && pureScalarExpr(n[2])) ||
   (n[0] === '!' && pureCanonicalBool(n[1])) ||
   ((n[0] === '&&' || n[0] === '||') && pureCanonicalBool(n[1]) && pureCanonicalBool(n[2])))
-const eagerCallFreeBooleans = n => {
-  if (!Array.isArray(n) || n[0] === '=>') return n
-  // Encode leaf provenance in an internal AST operator rather than an array
-  // side-property: subsequent plan transforms clone arrays but preserve op
-  // strings. Emit still proves both lowered operands pure before going eager,
-  // so generic parameters that need coercion retain short-circuit semantics.
-  if ((n[0] === '&&' || n[0] === '||') && pureCanonicalBool(n)) {
-    for (let i = 1; i < n.length; i++) eagerCallFreeBooleans(n[i])
-    n[0] = n[0] === '&&' ? '__eager&&' : '__eager||'
-    return n
-  }
-  for (let i = 1; i < n.length; i++) eagerCallFreeBooleans(n[i])
-  return n
-}
+// Encode leaf provenance in an internal AST operator rather than an array
+// side-property: subsequent plan transforms clone arrays but preserve op
+// strings. Emit still proves both lowered operands pure before going eager,
+// so generic parameters that need coercion retain short-circuit semantics.
+// The purity test runs pre-order on purpose: it reads the children's own
+// `&&`/`||` ops, which this same walk renames — testing after the children were
+// visited would see `__eager&&` and reject every outer node of a chain.
+const eagerCallFreeBooleans = n => walkAst(n, { enter: n => {
+  if (n[0] === '=>') return false
+  if ((n[0] === '&&' || n[0] === '||') && pureCanonicalBool(n)) n[0] = n[0] === '&&' ? '__eager&&' : '__eager||'
+} })
+
 const bodyHasCall = body => some(body, n => n[0] === '()' || n[0] === 'new')
 
 const inlinedBody = (func, args) => {
@@ -349,8 +347,7 @@ const SHORT_CIRCUIT = new Set(['?:', '?', '&&', '||', '??'])
 const OPTIONAL_CHAIN = new Set(['?.', '?.[]', '?.()'])
 // Mutating expression operators — evaluating one is an observable side effect.
 // Does evaluating this expression have an observable side effect (a call or assignment)?
-const containsEffect = (n) => Array.isArray(n) && n[0] !== '=>' &&
-  ((n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || MUTATE_OPS.has(n[0]) || n.slice(1).some(containsEffect))
+const containsEffect = (n) => some(n, n => (n[0] === '()' && !pureSIMDCall(n)) || n[0] === '?.()' || MUTATE_OPS.has(n[0]))
 
 // Hoist an unconditionally-evaluated NESTED call to a block-body candidate out to a
 // preceding `const __h = call(...)` temp. inlineInStmt folds block-body candidates only at

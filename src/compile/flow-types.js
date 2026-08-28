@@ -19,7 +19,7 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL } from '../reps.js'
-import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate } from '../ast.js'
+import { isReassigned, isBlockBody, alwaysReturns, TYPEOF, typeofPredicate, walkAst } from '../ast.js'
 import { constIntExpr } from '../static.js'
 import { valTypeOfWithLocals, exprMayBeUndefinedIn } from '../kind.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
@@ -224,9 +224,8 @@ function constPropAliases() {
   const hit = cache.get(body)
   if (hit) return hit
   const out = new Map()
-  const walk = (n, root = false) => {
-    if (!Array.isArray(n)) return
-    if (!root && (n[0] === '=>' || n[0] === 'function')) return
+  walkAst(body, { enter: (n, parent) => {
+    if (parent !== null && (n[0] === '=>' || n[0] === 'function')) return false
     if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
       const d = n[i]
       if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
@@ -234,9 +233,7 @@ function constPropAliases() {
           typeof d[2][1] === 'string' && typeof d[2][2] === 'string')
         out.set(d[1], { obj: d[2][1], prop: d[2][2] })
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body, true)
+  } })
   cache.set(body, out)
   return out
 }
@@ -312,18 +309,15 @@ export function inferSchemaBranch(body) {
   const schemas = ctx.schema?.list
   if (!schemas?.length) return null
   const byName = new Map()
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(body, { enter: n => {
     const op = n[0]
-    if (op === '=>' || op === 'function') return
+    if (op === '=>' || op === 'function') return false
     if (op === '.' && typeof n[1] === 'string' && typeof n[2] === 'string') {
       let row = byName.get(n[1])
       if (!row) byName.set(n[1], row = { props: new Set(), accesses: 0 })
       row.props.add(n[2]); row.accesses++
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body)
+  } })
 
   let best = null
   for (const [name, row] of byName) {

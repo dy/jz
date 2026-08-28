@@ -412,12 +412,9 @@ const memGlobal = (n, aliases) => {
     return { global: rec.global, offset: rec.offset == null ? offset : rec.offset + offset, exact: rec.offset != null }
   }
   const found = new Set()
-  const bases = x => {
-    if (!Array.isArray(x)) return
-    if (x[0] === 'local.get' && aliases.has(x[1])) { found.add(aliases.get(x[1]).global); return }
-    for (let i = 1; i < x.length; i++) bases(x[i])
-  }
-  bases(addr)
+  walkAst(addr, { enter: x => {
+    if (x[0] === 'local.get' && aliases.has(x[1])) { found.add(aliases.get(x[1]).global); return false }
+  } })
   return { global: found.size === 1 ? [...found][0] : null, offset, exact: false }
 }
 
@@ -495,8 +492,7 @@ export function hoistStableGlobalConstLoads(fn, reachableMemoryWrites, reachable
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
   const used = new Set()
-  const ids = n => { if (Array.isArray(n)) { if (n[0] === 'local' && typeof n[1] === 'string') used.add(n[1]); for (let i = 1; i < n.length; i++) ids(n[i]) } }
-  ids(fn)
+  walkAst(fn, { enter: n => { if (n[0] === 'local' && typeof n[1] === 'string') used.add(n[1]) } })
   let seq = 0
   const fresh = () => {
     let n = `$__gl${seq++}`
@@ -671,12 +667,7 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
       end = start
     }
   }
-  const walk = n => {
-    if (!Array.isArray(n)) return
-    for (let i = 1; i < n.length; i++) walk(n[i])
-    if (n[0] === 'loop') processLoop(n)
-  }
-  walk(fn)
+  walkAst(fn, { exit: n => { if (n[0] === 'loop') processLoop(n) } })
 }
 
 /**
@@ -721,6 +712,11 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
  * @param {Set<string>} stablePtrGlobals - '$name's of never-forwarding module globals
  * @param {{has(name:string, global:string):boolean}} reachableWrites - from collectReachableGlobalWrites
  */
+// hoistLoopGlobalPtrOffset keeps its hand-rolled inspect/replace recursion on
+// purpose: the self-compiled kernel (dist/jz.wasm) miscompiles walkAst callbacks
+// that capture this pass's per-loop state — the same divergence the loop-hoist
+// trio hit (.work/handoff-2026-08-22.md §"Full test:wasm loop-hoist trio");
+// test/index.js's kernel leg pins it ("ablation: hoistLoopGlobalPtrOffset …").
 export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return
   const bodyStart = findBodyStart(fn)

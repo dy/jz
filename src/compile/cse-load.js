@@ -20,7 +20,7 @@
  * Runs post-analyze (purity known) and pre-emit, mutating the body. Purely conservative.
  */
 
-import { ASSIGN_OPS } from '../ast.js'
+import { ASSIGN_OPS, walkAst } from '../ast.js'
 
 const isArr = (x) => Array.isArray(x)   // arrow, not a bare builtin alias — jz can't self-compile a builtin as a first-class value
 const isName = (x) => typeof x === 'string'
@@ -53,8 +53,7 @@ const ASSIGN = new Set([...ASSIGN_OPS, '++', '--'])
 
 function buildFacts(body) {
   const def = new Map(), declCount = new Map(), positive = new Set()
-  const scan = (n) => {
-    if (!isArr(n)) return
+  walkAst(body, { enter: n => {
     const op = n[0]
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < n.length; i++) {
@@ -77,9 +76,7 @@ function buildFacts(body) {
       // `for (j = 0; j < BOUND; …)` ⇒ inside the body BOUND ≥ 1 (j ≥ 0 ∧ j < BOUND). Mark BOUND positive.
       if (loZero && isArr(cond) && (cond[0] === '<' || cond[0] === '<=') && isName(cond[2])) positive.add(cond[2])
     }
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
-  scan(body)
+  } })
   for (const [n, c] of declCount) if (c > 1) def.delete(n)   // reassigned ⇒ not a stable def
   return { def, positive }
 }
@@ -209,11 +206,6 @@ export function cseLoads(body, isTypedArray, freshName) {
   }
 
   // Walk to every `[';', …]` sequence; run CSE on each, then recurse into its (now-rewritten) stmts.
-  const descend = (node) => {
-    if (!isArr(node)) return
-    if (node[0] === ';') runSeq(node)
-    for (let i = 1; i < node.length; i++) descend(node[i])
-  }
-  descend(body)
+  walkAst(body, { enter: n => { if (n[0] === ';') runSeq(n) } })
   return eliminated
 }

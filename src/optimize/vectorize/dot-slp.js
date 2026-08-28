@@ -198,12 +198,9 @@ const hoistDotInvariant = (loop, parent, idx, fnLocals, freshIdRef, newLocalDecl
 // loops first (post-order) so a dot is hoisted relative to its tightest enclosing
 // loop, and an already-rewritten dot can't re-match in an outer pass.
 export const hoistReductionInvariantsIn = (fn, fnLocals, freshIdRef, newLocalDecls) => {
-  const walk = (node, parent, idx) => {
-    if (!isArr(node)) return
-    for (let i = 0; i < node.length; i++) if (isArr(node[i])) walk(node[i], node, i)
+  walkAst(fn, { exit: (node, parent, idx) => {
     if (node[0] === 'loop' && isArr(parent)) hoistDotInvariant(node, parent, idx, fnLocals, freshIdRef, newLocalDecls)
-  }
-  for (let i = 0; i < fn.length; i++) if (isArr(fn[i])) walk(fn[i], fn, i)
+  } })
 }
 
 // =============================================================================
