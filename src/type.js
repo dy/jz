@@ -53,11 +53,17 @@ import {
   idxKey, isUnitIncrement, isUnitDecrement, redeclaresName, collectDecls, lengthRecv,
   inBoundsCharCodeAt, inBoundsArrIdx, litBoundArrIdx,
 } from './type/canonical-bounds.js'
+import { containsNestedClosure } from './type/loop-unroll.js'
 export { typedElemCtor } from './typed-provenance.js'
 export {
   idxKey, isUnitIncrement, isUnitDecrement, scanBoundedLoops, inBoundsCharCodeAt,
   scanBoundedArrIdx, inBoundsArrIdx, litBoundArrIdx,
 } from './type/canonical-bounds.js'
+export {
+  MAX_SMALL_FOR_UNROLL, MAX_NESTED_FOR_UNROLL, containsNestedClosure, containsNestedLoop,
+  nestedSmallLoopBudget, containsDeclOf, containsKnownTypedArrayIndex, smallConstForTripCount,
+  isTerminator,
+} from './type/loop-unroll.js'
 
 /** Static element count for `new T(<int literal>)` / `new T([literals…])`, or null
  *  for views (buffer, off, len), buffer/array copies, ternaries and computed sizes.
@@ -1707,44 +1713,6 @@ export function intervalIdxRanges(ctx) {
 const NO_INTERVAL_RANGES = new Map()
 const NO_INTERVAL_PROVEN = new Set()
 
-// === Loop unroll / AST transforms (emit + plan) ===
-
-export const MAX_SMALL_FOR_UNROLL = 8
-export const MAX_NESTED_FOR_UNROLL = 64
-
-export function containsNestedClosure(body) {
-  return some(body, n => n[0] === '=>')
-}
-
-export function containsNestedLoop(body) {
-  return some(body, n => n[0] === 'for' || n[0] === 'while' || n[0] === 'do')
-}
-
-export function nestedSmallLoopBudget(body) {
-  if (!Array.isArray(body)) return 1
-  if (body[0] === '=>') return 1
-  if (body[0] === 'for') {
-    const [, init, cond, step, loopBody] = body
-    const n = smallConstForTripCount(init, cond, step)
-    return n == null ? MAX_NESTED_FOR_UNROLL + 1 : n * nestedSmallLoopBudget(loopBody)
-  }
-  let max = 1
-  for (let i = 1; i < body.length; i++) max = Math.max(max, nestedSmallLoopBudget(body[i]))
-  return max
-}
-
-export function containsDeclOf(body, name) {
-  return some(body, n => {
-    if (n[0] !== 'let' && n[0] !== 'const') return false
-    for (let i = 1; i < n.length; i++) {
-      const d = n[i]
-      if (d === name) return true
-      if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
-    }
-    return false
-  })
-}
-
 /** Clone AST with substitutions/renames. Skips into `=>` bodies. */
 export function cloneWithSubst(node, subst, rename = null) {
   if (!(subst instanceof Map)) {
@@ -1789,45 +1757,6 @@ function stampClonedIdxProof(node, out) {
   if (rng != null) ranges.set(idxKey(out[1], out[2]), rng)   // hulls survive substitution too
   const owner = ctx.types?.assumedBounds?.get(k)
   if (owner != null) ctx.types.assumedBounds.set(idxKey(out[1], out[2]), owner)
-}
-
-
-export function containsKnownTypedArrayIndex(body) {
-  return some(body, n => n[0] === '[]' && typeof n[1] === 'string' && ctx.func.typedElem?.has(n[1]))
-}
-
-/** Trip count for `for (let i=0; i<N; i++)` when structurally obvious, else null. */
-export function smallConstForTripCount(init, cond, step, maxEnd = MAX_SMALL_FOR_UNROLL) {
-  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
-  const decl = init[1]
-  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
-  const name = decl[1]
-  const start = intLiteralValue(decl[2])
-  if (start !== 0) return null
-  if (!Array.isArray(cond) || cond[0] !== '<' || cond[1] !== name) return null
-  const end = intLiteralValue(cond[2])
-  if (end == null || end < 0 || end > maxEnd) return null
-  const stepOk = Array.isArray(step) && (
-    (step[0] === '++' && step[1] === name) ||
-    (step[0] === '-' && Array.isArray(step[1]) && step[1][0] === '++' && step[1][1] === name && intLiteralValue(step[2]) === 1)
-  )
-  return stepOk ? end : null
-}
-
-/** Does `body` always exit via return/throw/break/continue? */
-export function isTerminator(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'return' || op === 'throw' || op === 'break' || op === 'continue') return true
-  if (op === '{}' || op === ';') {
-    for (let i = body.length - 1; i >= 1; i--) {
-      const s = body[i]
-      if (s == null) continue
-      return isTerminator(s)
-    }
-    return false
-  }
-  return false
 }
 
 // Resolve a name's typed-array element ctor: in-progress local overlay (analyzeBody) →
