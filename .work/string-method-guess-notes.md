@@ -1590,3 +1590,158 @@ adds a real (if here byte-neutral) precision fix — but does NOT close the
 watr size gap.** See "Per-function byte attribution" above for the
 honest, final accounting of why, and the flagged next lever
 (`inferValAtSite`'s inability to resolve a `.`-property-read argument).
+
+## Seventh session: implemented the `.`-property-read case flagged above —
+## sound, pinned four ways, measured NET ZERO on watr specifically (root
+## cause confirmed: watr's own `ctx` is never schema-registered)
+
+Branch tip: 9b4d0c6a (from c31cf730 at session start; two commits,
+`3daeb98f` the mechanism, `9b4d0c6a` the pins). Two watchdog restarts this
+round (both mid-verification, no source left uncommitted either time — the
+restart protocol held: commit real progress the moment it's verified, keep
+scratch/repro/ uncommitted per this branch's own convention).
+
+### What shipped
+
+1. **`module/schema.js`**: factored the existing `ctx.schema.slotVT(varName,
+   prop)` into a new raw accessor `ctx.schema.slotVTBySid(id, prop)` (the
+   `.kind`/`slotHazarded` lookup with NO `ctx.func`/`repOf` dependency) plus
+   a thin `slotVT` that resolves `varName`→id via the pre-existing
+   `ctx.schema.idOf` (live-frame path, unchanged for its existing kind.js
+   `VT['.']` caller) and delegates. Exactly mirrors the file's own existing
+   `slotTypedCtorAt`/`slotTypedCtorBySid` split — same reason: "narrow's
+   per-call-site schema census — live refinements/reps aren't reachable
+   there."
+2. **`src/compile/narrow.js`**, `inferValAtSite`: new case for a `.`-node
+   argument (`c.type`, `rows[i].x`). Two settled-fact sources, both already-
+   audited primitives, no new machinery:
+   - `receiverSchemaId(recv, state)` calls `inferSchemaId(recv,
+     state.callerParamFacts('schemaId'))` — the IDENTICAL resolver the
+     pre-existing `schemaId` mergeRule already runs per call-site argument
+     (bare param via the caller's own settled schemaId param fact, module
+     `ctx.schema.vars` binding, `{}`/`()`/`?:`/`&&`/`||` compound exprs).
+   - one hop through a proven ARRAY-element read (`rows[i].x`): the SAME
+     `arrayElemSchema` census `runArrFixpoint` already settles (body census
+     via a newly-hoisted `callerArrSchemas = phase.callerElems('arrElemSchemas')`,
+     alongside the pre-existing `callerArrValTypes` hoist — same accepted
+     early-capture/staleness idiom, never wrong, only possibly missing a
+     later-provable win) or the caller's own `arrayElemSchema` param fact.
+   - Given a resolved sid, `ctx.schema.slotVTBySid(sid, prop)` returns the
+     field's kind or null. A genuinely mixed-kind field declines for free —
+     SlotFact.kind is itself null on any whole-program disagreement, no
+     separate check needed.
+   Timing/soundness verified by tracing the actual pipeline (not assumed):
+   `ctx.schema.slotFacts` populates via `observeProgramSlots`, called once
+   pre-narrowSignatures (`collectProgramFacts`) and once more mid-fixpoint
+   (narrow.js's existing `if (hasSchemaLiterals||hasMapSet)
+   observeProgramSlots(ast)` call, BEFORE the array-domain loop and the
+   final hard sweep) — NEITHER call passes `{fresh:true}`, so `slotFacts`
+   only ever grows more complete within narrowSignatures, never regresses;
+   an early miss just self-heals on the next `val` soft sweep exactly like
+   every other soft-fact source already does. `collectSlotWriteHazards`
+   (backing `slotHazarded`) runs INSIDE `observeProgramSlots` itself, same
+   lifecycle — confirmed, not assumed, by reading program-facts.js directly.
+
+### A real, empirically-found soundness pitfall — corrected before landing
+
+First negative-control attempt used two module consts `A = {items:[...],
+tag}` / `B = {items:'oops', tag}` (same schema, disagreeing field kind) with
+`useB(){ return B.items }` — a COMPILE-TIME-CONSTANT read. Traced (temporary
+`JZ_DBG_PROPREAD` console.error, added and fully reverted) that this
+produced `kind=array` (WRONGLY clean) instead of the expected poison: B's
+whole `{}`-literal gets folded away before either census call ever sees it
+(nothing else needs a live runtime `B`), so the disagreement never reaches
+`observeSlot`. This wasn't a bug in the fix — it's a correct reflection of
+the ACTUAL compiled program (B truly doesn't exist as a runtime value once
+folded) — but it made the test vacuous, not a real negative control. Fixed
+by routing the disagreeing branch through a runtime parameter
+(`pick(flag){ return (flag?B:A).items }`) so neither construction can be
+folded away; re-traced and confirmed `kind=null` (correctly poisoned), WAT
+shows `grab` keeps the full runtime probe. Flagging the pitfall itself for
+whoever next writes a schema-disagreement negative control on this branch.
+
+### Pins (test/data.js, appended after the sixth session's own last pin)
+
+1. Positive: `grab(nm,list){return list[nm]}` fed only `dispatch`'s own
+   `c.items` (CTX a genuine `{items:[...],tag}` literal) — direct array
+   codegen, no `__dyn_get_expr`. A sibling `useUnproven(o,k){return o[k]}`
+   keeps the shadow-probe machinery live in the same unit (not vacuous).
+   A/B-confirmed to FAIL under the pre-fix source (probe present).
+2. Positive, array-element-chained: `visit(i,rows){return grab(0,
+   rows[i].items)}` — exercises `receiverSchemaId`'s arrayElemSchema
+   fallback specifically. Also A/B-confirmed to fail pre-fix.
+3. Negative control: the runtime-`pick`-guarded A/B-disagreement shape above
+   — `grab` stays runtime-dispatched, JS-correct through the slow path.
+4. Ordering independence: a 3-hop chain (`grab<-relay<-outer`, outer's OWN
+   param must itself settle before relay's `c` resolves it) — byte-identical
+   WAT at O3 across all 4 declaration-order permutations tried (stronger
+   than a 2-hop swap; 2-hop was also checked standalone and also identical).
+
+`node test/data.js` standalone: 192 tests / 985 assertions / 0 fail (+4
+tests / +12 assertions over the 188/973 checkpoint).
+
+### Product-proof measurements — before (c31cf730) vs after (this session)
+
+- `node cli.js /Users/div/projects/watr/watr.js -O3`: **595859 B — byte-
+  identical to baseline.** Target 586426 B — not met, gap unmoved.
+- `node scripts/bench-size.mjs --json`: **watr = 299635 B — byte-identical
+  to baseline.** Budget 298000 — still fails, unmoved (+1635 B). All other
+  23/24 budgeted cases pass (computed explicitly against test/bench.js's
+  own SIZE_BUDGET dict, not eyeballed).
+
+**Root cause of the net-zero result, confirmed by reading watr's actual
+source (`/Users/div/projects/watr/src/compile.js:90-92`), not guessed**:
+`id`/`blockid`/`reftype`'s `list`/`block`/`ctx` receiver is
+`const ctx = []` — a plain ARRAY with STRING-keyed properties attached via
+`for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []` (a DYNAMIC,
+computed-key write in a loop, never a `{}`-literal). `ctx.schema.register`
+only ever fires on an `op==='{}'` AST node (`inferSchemaId`'s own `{}`
+branch, prepare.js's own literal tracking) — this receiver was NEVER going
+to get a schemaId, by ANY existing or newly-added mechanism, regardless of
+how precisely `inferValAtSite` resolves `.`-reads. This is a FOURTH,
+genuinely distinct limitation from the three already catalogued on this
+branch (methodEvidence guessing, possibleKinds ordering, computed-dispatch-
+table synthesis) — closing it would mean proving a `for...in`-over-a-
+statically-enumerable-object write pattern populates N known string keys
+each with a provable per-key kind, which is a materially different (and
+today entirely absent) analysis, not a `.`-read precision gap. Considered
+and explicitly rejected during this session: generalizing the existing
+`dictValueTypes`/`dictValueKindOf` union-census (which DOES observe
+`ctx[kind]=[]`'s dynamic writes) as a proof source here — kind.js's own
+"INVARIANT: NO dict-mode receiver fold here" comment documents THREE prior
+reverts of exactly this promotion as unsound (an unwritten key reads real
+`undefined` regardless of the census; presence is a separate, unproven
+question from kind), and separately `ctx`'s own name is almost certainly in
+`programFacts.nameEscapes` here (passed as an argument constantly), which
+gates `dictValueKindSet` closed anyway. Not attempted — matches this
+branch's own established discipline of declining a rushed, unaudited change
+to a soundness-load-bearing shared census.
+
+Also explicitly scoped OUT this session, from the task's own third
+enumerated proof source ("a same-module object literal with known property
+kinds via the call-target index's points-to"): checked `call-target-
+index.js` directly — its `resolveMember`/`resolveComputed`/`foldWrite`
+family resolves ONLY function-VALUED properties, of MODULE-TOP-LEVEL names
+only (its own doc: "property writes are collected ONLY at true module top
+level"). watr's `ctx` is function-LOCAL (declared inside `assemble`), so
+this mechanism's own scope excludes it independent of the function-vs-any-
+value restriction. Generalizing it to non-function property VALUES at
+arbitrary scope would be a materially new, independently-risky points-to
+analysis — not attempted, matches every prior session's own declined-scope
+precedent for a change this size.
+
+### Battery (this session)
+
+- `node test/data.js` standalone: 192/192, 985 assertions, 0 fail (both new
+  positive pins A/B-confirmed to fail pre-fix; negative control and
+  ordering pins pass on BOTH sides, as expected for invariant-style pins).
+- `node test/index.js` (91 of 92 TESTS names, bench-c excluded per this
+  worktree's sandbox hang): **3748 total / 3747 pass / 1 skip / 0 fail**
+  (21760 assertions), zero `✗` in the log.
+- `node scripts/bench-size.mjs --json`: 23/24 budgeted cases pass (computed
+  explicitly against SIZE_BUDGET); watr fails at 299635/298000, unmoved.
+- Remaining battery (kernel build + JZ_TEST_TARGET=jz.wasm test/index.js,
+  kernel-parity, kernel-oracle, eager-stdlib-parity, kernel bytes vs main):
+  IN PROGRESS as this entry is being written — see the final report / tail
+  of this file for the landed numbers before treating this branch as
+  mergeable.
