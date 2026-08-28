@@ -2810,7 +2810,16 @@ export default function compile(ast, profiler, regionHooks) {
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
   // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
-  if (ctx.closure.types) {
+  // .size, not bare truthiness: module/function.js's init(ctx) unconditionally
+  // creates the Set (so `fn` loading — including region-arena/opts._eagerStdlib
+  // eager preload, unrelated to whether the source mints any closure — never
+  // needs a null-check elsewhere), but only ctx.closure.mint ever adds to it,
+  // exactly when a real closure funcIdx is minted (see mint's own doc). A bare
+  // object-presence check fired for every compile that merely LOADED `fn`,
+  // forcing this $ftN type (and, transitively, the closure table below) into
+  // output for programs with zero closures — byte-identity probe: eager-loaded
+  // `sum` (no closures anywhere) diverged from native by exactly this preamble.
+  if (ctx.closure.types?.size) {
     const params = [['param', 'f64'], ['param', 'i32']] // env + argc
     for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])
     sec.types.push(['type', `$ftN`, ['func', ...params, ['result', 'f64']]])

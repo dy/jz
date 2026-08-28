@@ -671,8 +671,29 @@ export function finalizeClosureTable(sec) {
   // Only the string templates can carry a literal `call_indirect`; a typeof
   // guard skips the generators (where `.includes` is meaningless — and on a jz
   // closure receiver would read the closure pointer as a string, out of bounds).
-  if (!indirectUsed) for (const tpl of Object.values(ctx.core.stdlib)) {
-    if (typeof tpl === 'string' && tpl.includes('call_indirect')) { indirectUsed = true; break }
+  // Scoped to ctx.core.includes (the REACHABLE set), not Object.values(ctx.core.stdlib)
+  // (EVERY REGISTERED template, from every module that ever loaded — including
+  // region-arena/opts._eagerStdlib eager preload, which registers all 21
+  // modules' templates regardless of whether the source needs any of them).
+  // resolveIncludes() runs here, ahead of its normal call inside pullStdlib
+  // (below, in compile/index.js): emission has already finished by this point
+  // (this function's own caller sits right before the pre-assemble invariant
+  // checkpoint, which asserts exactly that — .work/region-release-notes.md),
+  // so ctx.core.includes' DIRECT set is already final and only needs the
+  // transitive-deps expansion resolveIncludes() performs; that expansion is a
+  // pure, monotonic fixpoint over names (src/ctx.js), so calling it again
+  // (unchanged) inside pullStdlib right after is a genuine no-op, not a
+  // double-resolve hazard. Byte-identity probe: an eager-loaded `sum` (zero
+  // closures anywhere) used to get a phantom zero-length `(table (export
+  // "__jz_table") 0 funcref)` section purely because SOME unrelated,
+  // never-included template registered by an eager-preloaded module (e.g.
+  // timer's __timer_dispatch) happens to contain the substring `call_indirect`.
+  if (!indirectUsed) {
+    resolveIncludes()
+    for (const [name, tpl] of Object.entries(ctx.core.stdlib)) {
+      if (!ctx.core.includes.has(name)) continue
+      if (typeof tpl === 'string' && tpl.includes('call_indirect')) { indirectUsed = true; break }
+    }
   }
   if (indirectUsed) {
     if (!ctx.closure.table) ctx.closure.table = []

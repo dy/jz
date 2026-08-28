@@ -100,8 +100,6 @@ export default (ctx) => {
   // publication channel).
   ctx.closure.topLevelIntConsts = topLevelIntConsts
 
-  ctx.closure.types.add(1) // presence triggers $ftN type emission
-
   // Region arena side table mint (.work/research.md §Region arena, funcIdx
   // skew) — the ONE place that grows ctx.closure.table. Every OTHER minter
   // (emit.js's builtinFunctionValue and its top-level-function-used-as-value
@@ -110,9 +108,20 @@ export default (ctx) => {
   // a bare `table.push()` elsewhere silently desyncs the two arrays, and
   // every closure minted after that point gets attributed to the WRONG
   // funcIdx's env-length/cell-mask by src/wat/assemble.js's side-table build.
+  // Also the demand site for `ctx.closure.types.add(1)` ("presence triggers
+  // $ftN type emission", src/compile/index.js ~2786): a program that loads
+  // `fn` (region-arena/opts._eagerStdlib eager preload, or a real but
+  // closure-free use of the module's OTHER exports) but never actually mints
+  // a closure must not pay for the $ftN type + closure table preamble — that
+  // used to be unconditional here, at module init, so merely LOADING `fn`
+  // forced it regardless of use (byte-identity probe: eager-loaded `sum`
+  // diverged from native by exactly this preamble). Marking it HERE instead
+  // of at init keeps it exactly reachability-gated: it fires if and only if
+  // a real closure funcIdx gets minted, native or region-arena alike.
   ctx.closure.mint = (name, meta) => {
     let idx = ctx.closure.table.indexOf(name)
     if (idx === -1) {
+      ctx.closure.types.add(1)
       idx = ctx.closure.table.length
       ctx.closure.table.push(name)
       ctx.closure.envMeta.push(meta || { len: 0, cellMask: 0 })
