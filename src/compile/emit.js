@@ -4210,7 +4210,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
   const strEmitter = ctx.core.emit[strKey]
   const typedEmitter = ctx.core.emit[typedKey]
   const genEmitter = ctx.core.emit[genKey]
-  if (!vt && genEmitter && (strEmitter || typedEmitter)) {
+  if (!vt && (strEmitter || typedEmitter)) {
     const t = `${T}rt${freshId(ctx)}`, tt = `${T}rtt${freshId(ctx)}`
     ctx.func.locals.set(t, 'f64'); ctx.func.locals.set(tt, 'i32')
     // A string/typed/array method is only valid on a NaN-boxed pointer. `f64.eq(t,t)`
@@ -4256,12 +4256,36 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // own prop) or the TYPED arm (a PROVEN-typed receiver never shadow-checks
     // either, via tryStaticDispatch above — same established rule this fork's
     // TYPED case should stay consistent with, not invent a new one for).
-    const canShadowProbe = ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
-    const genericCall = canShadowProbe
-      ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
-          (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
-          () => asF64(callMethod(t, genEmitter)))
-      : callMethod(t, genEmitter)
+    // No generic (bare, non-kind-prefixed) emitter exists for this method —
+    // true for any TYPED/STRING-exclusive method with no generic-Array analog
+    // (e.g. `.subarray`: TypedArray-only by spec — kind-traits.js's own
+    // methodValType comment notes "no plain-array analog"). Requiring
+    // genEmitter used to gate this WHOLE runtime ptr-type fork off for such
+    // methods, so a receiver with an unproven `vt` that TURNS OUT to be a
+    // real typed/string value at runtime never reached `.typed:${method}` /
+    // `.string:${method}` at all — it fell through every remaining strategy
+    // to tryDynamicPropCall, which treats the method name as an arbitrary
+    // DYNAMIC OWN-PROPERTY key. That's sound for a genuinely user-defined
+    // closure property, but always wrong for a built-in prototype intrinsic
+    // no runtime value ever stores as an own hash-keyed property (silently
+    // yields `undefined` / an invalid call target instead of the real
+    // result — see .work/literal-method-typed-index-notes.md). Falling back
+    // to the SAME dynamic-property-call / external-call strategies the chain
+    // would try next — rather than requiring a generic emitter to exist —
+    // keeps this fork's STRING/TYPED cases correct while the "genuinely
+    // neither" case degrades exactly like it would have if this fork had
+    // declined outright. Reuses `t` (already holds the once-evaluated
+    // receiver) as the receiver for both, so a non-pure `obj` expression is
+    // never re-evaluated.
+    const canShadowProbe = genEmitter && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
+    const genericCall = genEmitter
+      ? (canShadowProbe
+          ? sidecarOverride(typed(['local.get', `$${t}`], 'f64'), asI64(emit(['str', method])),
+              (p) => ctx.closure.call(typed(['local.get', `$${p}`], 'f64'), parsed.normal),
+              () => asF64(callMethod(t, genEmitter)))
+          : callMethod(t, genEmitter))
+      : (tryDynamicPropCall({ obj: t, method, parsed, vt: null })
+          ?? externalMethodFallback({ obj: t, method, parsed }))
     const generic = mayBeUndef ? typed(['if', ['result', 'f64'],
       isNullish(typed(['local.get', `$${t}`], 'f64')),
       ['then', throwTypeErrorIR()],

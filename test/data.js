@@ -2632,3 +2632,132 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
     is(e.go(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
   }
 })
+
+// --- .subarray() after a same-property dynamic-index write elsewhere in the
+// unit (tryRuntimePtrTypeFork's genEmitter gate — was KNOWN-WRONG) ---
+//
+// Root cause, two layers that turned out to be ONE mechanism:
+//
+// Layer A (src/kind.js VT['.'], the object-literal child-type fold, ~"schema
+// slot write hazard" census): a property's static kind is nulled program-wide
+// the moment ANY write to a same-named property, anywhere in the compiled
+// unit, has a non-literal index the analyzer can't resolve to a constant —
+// keyed by property NAME/schema slot via STATIC data-flow (the call graph /
+// closure capture), not by receiver identity and not by RUNTIME reachability.
+// A closure merely DEFINED (never called) that closes over the same object
+// already counts, because the capture itself is a static data-flow edge; a
+// standalone function whose parameter is unified with the object's schema
+// through a real (even zero-iteration-at-runtime) call edge counts too. This
+// half is a deliberate fail-closed conservatism for the STATIC type fold —
+// sound BY ITSELF, as long as the runtime fallback for "kind unknown" stays
+// correct.
+//
+// Layer B (src/compile/emit.js tryRuntimePtrTypeFork, method-call dispatch
+// strategy #8 of emitMethodCall's 12-strategy chain) is where it stops being
+// sound: this is the strategy that's SUPPOSED to catch "static kind unknown"
+// by checking the receiver's real ptr-tag at runtime instead of guessing —
+// but its guard was `!vt && genEmitter && (strEmitter || typedEmitter)`,
+// unconditionally requiring a GENERIC (bare, non-kind-prefixed) emitter to
+// exist before attempting ANY runtime dispatch. `.subarray` has no generic
+// Array analog (real JS: TypedArray.prototype.subarray only — kind-traits.js
+// methodValType's own comment: "no plain-array analog"), so `genEmitter` is
+// always undefined for it and the whole runtime fork silently declined —
+// even though `.typed:subarray` (module/typedarray.js) was right there,
+// itself already capable of a further runtime dispatch when only the
+// TYPED array's element ctor (not its typed-ness) is unknown. Execution fell
+// through to strategy #11 (tryDynamicPropCall), which treats an unresolved
+// method name as an arbitrary DYNAMIC OWN PROPERTY to fetch and invoke as a
+// closure — correct for a genuine user closure property, always wrong for a
+// built-in prototype intrinsic no runtime value ever stores as an own
+// hash-keyed property. Depending on surrounding code shape this either
+// silently returned `undefined` (small function, few locals) or trapped
+// `unreachable` after jz's own runtime manufactured an internal
+// "TypeError: Cannot read properties of undefined" and had no reachable
+// try/catch to route it to (larger function — matches the original watr
+// streaming-code-section self-compile symptom this was found chasing:
+// decodeThrown seeing a RuntimeError it couldn't cleanly decode).
+//
+// Fix: tryRuntimePtrTypeFork's guard now only requires `(strEmitter ||
+// typedEmitter)` — when no generic emitter exists, the runtime fork's
+// "neither STRING nor TYPED" arm defers to the SAME tryDynamicPropCall /
+// externalMethodFallback strategies the chain would have tried next anyway
+// (reusing the already-evaluated receiver temp, so a non-pure receiver
+// expression is never evaluated twice), instead of refusing to dispatch at
+// all. General fix for any string/typed-exclusive method with no generic
+// counterpart — not a `.subarray`-specific special case.
+test('typed array: .subarray() stays sound after a same-property dynamic-index write elsewhere (tryRuntimePtrTypeFork genEmitter gate)', () => {
+  // Minimal shape: a closure ATTACHED to the object literal post-construction
+  // (`b.set = ...`, not a literal-time method) whose body writes `b.buf[i] =
+  // v` using its OWN parameter as the index. Calling `b.set(...)` isn't even
+  // required — the closure only has to EXIST (see the "defined, never
+  // called" pin below) — but this pin also exercises the call, matching the
+  // originally-reported repro shape (a closure attached to an object literal,
+  // used as its own typed-array-index method).
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      export function main() {
+        const b = { buf: new Uint8Array(8), n: 0 }
+        b.set = (i, v) => { b.buf[i] = v }
+        b.inc = (i) => { b.buf[i]++ }
+        b.set(3, 7)
+        b.inc(3)
+        const s = b.buf.subarray(0, 4)
+        return s[3]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 8, `O${optimize || 0}: .subarray() after closure-method writes reads the real receiver, not a dynamic-property lookup of "subarray"`)
+  }
+})
+
+test('typed array: .subarray() stays sound even when the poisoning closure is only DEFINED, never called', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      export function main() {
+        const b = { buf: new Uint8Array(8), n: 0 }
+        b.set = (i, v) => { b.buf[i] = v }  // dead code — never invoked
+        b.buf[3] = 7                        // literal-index direct write, unaffected
+        const s = b.buf.subarray(0, 4)
+        return s[3]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 7, `O${optimize || 0}: an uncalled closure's dynamic-index write must not null the receiver's kind for .subarray()`)
+  }
+})
+
+test('typed array: .subarray() stays sound across a real (zero-iteration-at-runtime) call graph, regardless of unrelated sibling functions', () => {
+  // Standalone-function variant (no methods/closures at all) mirroring the
+  // watr streaming-code-section self-compile symptom this was found chasing
+  // (buildCodeItemStreaming-shaped call chain: main -> writeSome -> inner ->
+  // bufPush, `out` threaded as a plain parameter throughout). Traps at
+  // count=0 pre-fix even though the loop body (the only place any write
+  // happens) never runs — the schema-slot hazard is established by the
+  // STATIC call graph (bufPush's parameter unified with makeByteBuf's return
+  // shape), not by which loop iterations actually execute.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      const makeByteBuf = (cap) => { const buf0 = new Uint8Array(cap); const b = { buf: buf0, length: 0 }; return b }
+      function bufEnsure(b, n) {
+        if (b.length + n <= b.buf.length) return
+        let cap2 = b.buf.length * 2 || 1024
+        while (cap2 < b.length + n) cap2 *= 2
+        const nb = new Uint8Array(cap2)
+        nb.set(b.buf.subarray(0, b.length))
+        b.buf = nb
+      }
+      function bufPush(b, ...xs) { bufEnsure(b, xs.length); for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+      function bufToBytes(b) { return b.buf.subarray(0, b.length) }
+      function inner(out, seed) { bufPush(out, seed & 0xff, (seed + 1) & 0xff) }
+      function writeSome(out, seed) { inner(out, seed) }
+      export function main(count) {
+        const buf = makeByteBuf(64)
+        for (let i = 0; i < count; i++) writeSome(buf, i)
+        const bytes = bufToBytes(buf)
+        return bytes.length * 1000 + (bytes.length > 0 ? bytes[0] : 0)
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: count=0 (no write ever executes) still reaches bufToBytes's .subarray() and must not trap`)
+  }
+})
