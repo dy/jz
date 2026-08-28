@@ -11,7 +11,11 @@
  * lives in the build layer rather than in the sealed compiler source.
  */
 import { parse } from '../src/parse.js'
-import { compile as watrCompile } from 'watr'
+// PROTOTYPE (jz 4 GiB-close campaign, strategy B measurement rig — NOT a real
+// dependency change, throwaway absolute worktree path): points at a modified
+// local watr checkout with an opt-in streaming code-section encoder
+// (streamCode:true below). See feat/streaming-code-section on the watr repo.
+import { compile as watrCompile } from 'file:///private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/watr-stream/src/compile.js'
 import watrPrint from 'watr/print'
 import { ctx, reset, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
@@ -193,7 +197,7 @@ function emitIR(ast) {
  */
 export default function compileSelf(source, strict, optJSON, modulesJSON, host) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
+  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize), { streamCode: true })
 }
 
 /**
