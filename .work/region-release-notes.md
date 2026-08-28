@@ -1891,3 +1891,113 @@ e.g. temporarily forcing `optimizeModule`'s `regionHooks` argument to `null` at 
 battery is nowhere near green — Group 1 unfixed, Group 2/fuzz unexamined this session). No
 production source file differs from HEAD (`git diff HEAD --stat` — only `scripts/self.js`'s
 flag, reverted; `module/core.js`'s breadcrumb was added and fully reverted, confirmed clean).
+
+## Group 1 ROOT-CAUSED AND FIXED (`ae5dc024`) — NOT a region-arena bug at all: `stripStaticDataPrefix`'s heuristic false-positives once eager loading makes the static-data prefix nonzero
+
+**The "77" was `ctx.runtime.staticDataLen` for this exact compile — confirmed by breadcrumb, not
+inferred.** Continuing directly from the two Cuts above. Found the exact mechanism by bisecting
+between "value correct right after `emit()`" (Cut 1) and "value wrong by the time `optimizeModule`
+starts" (this session's new Cut 3): a breadcrumb placed immediately before
+`stripStaticDataPrefix(sec)`'s call site (`src/compile/index.js:3050`) showed the `__mkptr` call's
+3rd argument STILL correct (2048) with `ctx.runtime.staticDataLen = 77` logged right next to it —
+the SAME 77 this whole investigation had been treating as a mysterious threshold. One function
+call later (`optimizeModule`'s own entry), the value was already 1971.
+
+**Root cause, `src/wat/assemble.js`'s `stripStaticDataPrefix`, the `shift()` closure (~line 1685,
+now ~1697 after the fix's comment)**: after the static-data segment's dead head is truncated by
+`prefix` bytes, `shift()` walks EVERY function's IR tree pattern-matching three shapes that could
+plausibly hold a pointer INTO that segment and need their embedded offset reduced by `prefix`: (1)
+`(call $__mkptr TYPE AUX (i32.const OFF))` where `TYPE` is a literal in `SHIFTABLE` (STRING,
+OBJECT, ARRAY, HASH, SET, MAP, BUFFER, TYPED, CLOSURE — note ATOM is NOT a member, exactly why
+Group 1's TYPE=0 case was always clean while TYPE=1/6 were not), (2) an `X.store` instruction whose
+address operand is a literal `>= prefix`, (3) a raw `f64.const nan:0x...` literal whose decoded tag
+is SHIFTABLE. All three arms used **`offset >= prefix` as the ENTIRE test** for "this is a
+static-data pointer" — with no upper bound. A REAL static-data pointer is necessarily ALSO `<
+buf.length` (the segment's own pre-strip length) — nothing can address past the data it addresses —
+but that half of the invariant was never encoded. Every OTHER branch in the same function
+(`staticPtrSlots`, `staticI32GlobalInits`, `lazySpans`, `reclaimSpans`) reads from a TRACKED LIST of
+addresses ALREADY KNOWN to be real static-data references; `shift()`'s three arms are the only ones
+that HEURISTICALLY GUESS from raw code shape, and the guess was unsound the moment a program could
+contain a pointer-shaped literal with a large offset that has NOTHING to do with static data — which
+is exactly what `test/pointers.js`'s nan-box round-trip tests are: `__mkptr(1, 100, 2048)` called
+directly, by design, to construct an arbitrary (type, aux, offset) triple and read it straight back.
+
+**Why eager loading (and therefore region-arena builds) specifically**: `ctx.runtime.staticDataLen`
+is 0 (function early-returns, line 1622) for a small/lazy compile that pulls in no stdlib static
+string data. `front.js`'s eager `includeMods(...)` (the already-landed, correct fix for a DIFFERENT,
+earlier bug in this same investigation) forces all 21 stdlib modules to register, and several of
+them carry real static string data (error messages, property names, …) — making `staticDataLen`
+reliably nonzero for essentially ANY program once eager-loaded, region-arena or not. This is why
+every symptom in this whole Group-1 investigation only ever showed up under `REGION_HOOKS_ACTIVE=
+true`: region hooks are what TRIGGER eager loading, not because region-arena relocation itself was
+ever at fault. **Confirmed with zero kernel/wasm involvement**: `compile(src, {optimize:0,
+_eagerStdlib:true})` (index.js's existing native eager-load test hook, no region hooks, plain
+Node.js) reproduces the identical `2048 → 1971` corruption; the SAME call with the fix applied
+(below) emits `2048` correctly. This is a **general emit/assemble-pipeline bug**, not a region-arena
+soundness gap — it merely needed region-arena's side effect (eager loading) to become reachable,
+same as this campaign's other "module loaded ⇒ feature demanded" false-equivalence fixes, one level
+further down the stack (here: "offset >= prefix ⇒ static-data pointer").
+
+**Fix** (`ae5dc024`, `src/wat/assemble.js`, `stripStaticDataPrefix`'s `shift()`): added the missing
+upper bound to all three arms — `&& child[4][1] < buf.length` (the `$__mkptr` arm), `&& child[1][1]
+< buf.length` (the `.store` arm), `&& off < buf.length` (the `f64.const nan:` arm) — `buf.length` is
+the segment's own pre-strip byte length, already in scope. A real static-data pointer still matches
+(`prefix <= off < buf.length` by construction); an arbitrary large literal that was never a
+static-data address now correctly falls through untouched.
+
+**Verified, this session, in order**:
+1. Native repro fixed: `compile('export let f=()=>{let p=__mkptr(1,100,2048);return
+__ptr_offset(p)}', {optimize:0, _eagerStdlib:true})` now emits `(i32.const 2048)` (was `1971`);
+same for the OBJECT(6)/large-offset variants; executed results match expected (2048, 3072).
+2. `node test/pointers.js` (native): **67/67 pass, 114 assertions** — zero regressions.
+3. `node test/eager-stdlib-parity.js`: **20/20 pass, 54 assertions** (was 17/20 before the fix, with
+the 3 fails being `dict`'s kernel-parity byte-gap against a stale `dist/jz.wasm` — see next point).
+4. Rebuilt the DORMANT production kernel (`node scripts/self-compile-build.mjs`, default O3,
+`REGION_HOOKS_ACTIVE=false`, 308.9s, 17,959,865 bytes) — fresh baseline with the fix baked in:
+   - `node test/kernel-oracle.js`: **14/14, 605 assertions** — exact baseline match.
+   - `node test/kernel-parity.js`: **3/3, 33/33 assertions**, including `dict O3: identical` — the
+   pre-existing `dict` kernel-parity byte-gap this file tracked for MANY sessions as a separate,
+   unrelated, execution-correct nit is ALSO now closed (dict's own source apparently carries enough
+   static data to have hit this SAME heuristic bug even in a plain dormant compile — a bonus fix,
+   not this session's target, but confirms the mechanism generalizes beyond eager-loading's forcing
+   function).
+   - `node scripts/bench-size.mjs`: exit 0, no budget failures, every case within SIZE_BUDGET.
+   - `JZ_TEST_TARGET=jz.wasm node test/index.js`: **2977/2978 pass, 1 skip, 0 fail** (14330+
+   assertions) — full green, well under the foreground timeout (contradicts the prior session's
+   20-45 min estimate; today's run completed directly).
+   - `node test/index.js` (native, full, no filter): **3726/3727 pass, 1 skip, 0 fail** (21709
+   assertions) — fully clean; the `dict` gap that showed here against a STALE mid-session kernel is
+   gone against the fresh build.
+5. Rebuilt the HOOKS-ON kernel (`REGION_HOOKS_ACTIVE=true`, default O3, 240.9s, 15,801,936 bytes):
+   - `node test/kernel-oracle.js`: **11/14 test-blocks, 581 assertions — every EXECUTION assertion
+   passes; the only 3 failures are `dict`'s WAT-byte-parity check** (O0/O2/O3) — this is the SAME,
+   already-tracked, execution-correct gap (NOT the same `dict` shown fixed in dormant mode above —
+   the HOOKS-ON kernel is a structurally different build, e.g. the documented `$ftN`/closure-table
+   scaffolding delta from front's eager-load trade-off, `module/function.js`'s `$ftN` type emission
+   — a KNOWN, separate, non-Group-1 byte-size artifact, not re-diagnosed this session). This exactly
+   matches the LAST known-good hooks-on milestone recorded earlier in this file (before Group 1/
+   Group 2 were even found), i.e. the fix introduces no new hooks-on regression and Group 1's own
+   symptom (which never showed up in kernel-oracle/kernel-parity's OWN corpus — sum/math/dict/arr/
+   etc., none of which call `__mkptr` directly — only in `test/pointers.js`'s dedicated nan-box
+   rows) is gone from every angle this session could check without the full `JZ_TEST_TARGET`
+   hooks-on leg (not re-run this session — see below).
+   - `node test/kernel-parity.js`: same 3-fail `dict`-byte-parity-only result, `sum`/`math` still
+   byte-identical.
+
+**NOT done this session, for whoever continues**: (1) `JZ_TEST_TARGET=jz.wasm node test/index.js`
+against the HOOKS-ON kernel (the leg that originally produced "2971/2995, 23 fail" — 4+ of which
+were Group 1's `test/pointers.js` rows) — not re-run this session (time-bounded; the dormant leg
+above took a few minutes today but the hooks-on leg's corpus is structurally larger/slower per
+prior sessions' own measurements, 20-45+ min under load). Group 1 is verified fixed via `node
+test/pointers.js` natively (67/67) and the native `_eagerStdlib:true` differential (the exact
+mechanism eager-loading triggers, with zero kernel involved) — both are strong evidence, but the
+literal target-battery number is not re-measured. (2) Group 2 (`fuzz.js` seed=84 opt=3, "Maximum
+call stack size exceeded") — NOT examined this session at all; still exactly as the prior session
+left it (flagged, not root-caused, plausibly a self-hosted-compiler stack-depth limit in the same
+class as the existing errors/parser-bugs/transform hang exclusions, not confidently attributed
+either way). (3) The goal-probe (jz×jz peak-bytes measurement) — not re-run this session.
+
+**`REGION_HOOKS_ACTIVE` stays `false`** (reverted, `git diff HEAD` on `scripts/self.js` is empty) —
+correctly foreclosed by the mandate: Group 2/fuzz is unexamined and the hooks-on kernel-oracle/
+kernel-parity `dict` byte-gap (a real, if minor and pre-existing, divergence) means the hooks-on
+battery is not unconditionally green yet, even with Group 1 closed.
