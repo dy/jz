@@ -25,6 +25,7 @@ import { T } from './ast.js'
 import { liftIIFEs } from './prepare/lift-iife.js'
 import prepare from './prepare/index.js'
 import { preEval } from './prepare/pre-eval.js'
+import { includeMods } from './autoload.js'
 
 // U+E000 (T) prefixes every jz-generated local. The JS spec forbids it in
 // identifiers, but subscript's parser is lenient and accepts it — so a user name
@@ -66,8 +67,34 @@ export const rejectReservedPrefix = (node) => {
  *  machinery) that the region-arena relocation walk is not proven safe
  *  against. `ctx` itself is NEVER a root element here — only its individual
  *  fields are, so no `setSession()` rebind seam is needed. Any later read
- *  through a stale `ast`/`ctx.*` binding is a use-after-free. */
+ *  through a stale `ast`/`ctx.*` binding is a use-after-free.
+ *  PRE-MARK MODULE LOAD (`.work/region-release-notes.md` "ROOT CAUSE FOUND"):
+ *  `prepare()`'s own first line unconditionally calls `includeModule('core')`,
+ *  and several later, source-dependent branches call `includeModule(mod)` for
+ *  other stdlib modules. `includeModule` runs a module's `init(ctx)` on first
+ *  load, writing hundreds of fresh CLOSURE values into `ctx.core.emit`/
+ *  `ctx.core.stdlib` — exactly the fields the paragraph above says can never
+ *  be rooted (rooting them wholesale was tried — commit 7085cb57 — and made
+ *  the regression WORSE). A module loaded mid-round (after `mark()`, before
+ *  `exit()`) allocates its whole closure table into the ephemeral zone with
+ *  no root path to it, so `exit()` silently abandons it — `ctx.core.emit`
+ *  keeps its identity (durable container, allocated at `reset()`) but every
+ *  property it just gained now points into reclaimed memory. Load every
+ *  stdlib module here, BEFORE `mark()`, so nothing `prepare()` might
+ *  conditionally load — 'core' unconditionally, others by source content —
+ *  can ever be the first-ever load of a module while a round is active.
+ *  `includeModule` is idempotent (its own `ctx.module.modules` guard), so
+ *  this costs one bounded, one-time-per-compile registration pass; gated on
+ *  `regionHooks` so the native host pipeline (which never sees a region
+ *  round) keeps its existing lazy, on-demand load order unchanged. Named
+ *  literally (not `for...in` over a `import * as` namespace object — jz's
+ *  self-compilable subset has no runtime object backing a namespace import,
+ *  so enumerating one is a compile-time "not in scope" error) — keep this
+ *  list in sync with `module/index.js`'s own export list (that file's header
+ *  comment: "Adding a stdlib module = add its import + name here, nothing
+ *  else" — mirror any addition here too). */
 export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
+  if (regionHooks) includeMods('math', 'core', 'array', 'object', 'string', 'number', 'fn', 'typedarray', 'collection', 'symbol', 'console', 'json', 'regex', 'timer', 'date', 'simd', 'atomics', 'fs', 'web', 'crypto', 'navigator')
   const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)
