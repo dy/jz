@@ -684,8 +684,14 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
         if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
         if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
           claimedNodes.add(n)
-          const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
-          if (innerArgList.every(a => !mentionsAny(a, bound)))
+          const rawArgList = commaList(n[2])
+          const innerArgList = rawArgList.map(a => substitute(a, subst))
+          const ok = innerArgList.every(a => !mentionsAny(a, bound))
+          if (process.env.JZ_DBG_SYNTH2) {
+            const flagged = innerArgList.map((a, i) => mentionsAny(a, bound) ? i : -1).filter(i => i >= 0)
+            console.error(JSON.stringify({ ok, objName: site.objName, arrowParams, inner: n[1], raw: rawArgList, subst: [...subst.entries()], out: innerArgList, flagged }))
+          }
+          if (ok)
             programFacts.callSites.push({
               callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
             })
