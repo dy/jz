@@ -2269,6 +2269,33 @@ function emitClosureBody(cb, functionPlan) {
  *  rounds, threaded through the SAME `regionHooks` this function receives —
  *  see that file's own doc) ship DORMANT, gate-verified on both axes, not
  *  wired live in any shipped build.
+ *
+ *  THE RULE for every one of this function's SIX-plus nested mark/exit
+ *  pairs (SCAN, AFE, emitFuncs, `__buildMark`, `__stdlibMark`, this
+ *  outermost one — each documented individually at its own call site):
+ *  a round's root/snapshot must carry every PLAIN-DATA field ANY code
+ *  reachable before the NEXT mark (including code after this round's own
+ *  exit, up to and including the function's return and whatever the
+ *  caller reads next) still touches — not just what the round's OWN body
+ *  writes. Two confirmed instances of getting this wrong, both fixed by
+ *  WIDENING an existing snapshot rather than adding a new root category:
+ *  front's round originally missed `ctx.core` entirely (a stdlib module's
+ *  `init(ctx)` triggered mid-round by `prepare()`'s unconditional
+ *  `includeModule('core')`, fixed by hoisting every stdlib load before
+ *  `mark()` — `88e48378`); `__stdlibMark`'s `lateSchema` snapshot missed
+ *  `ctx.schema.namedUses` (a plain array `module/core.js`'s
+ *  `__throw_property_nullish` populates for nearly every compile, read
+ *  ~40 lines after this round's own exit by the `usedSchemaIds` walk —
+ *  region-emitir-round session, `.work/region-release-notes.md`). Neither
+ *  bug was a fault in `__region_exit`'s own relocation walk (that
+ *  machinery is sound and unconditionally correct for whatever root it's
+ *  given) — both were root-COMPLETENESS gaps at the JS call site. `ctx.core`
+ *  itself (its `.emit`/`.stdlib` closure dicts) stays permanently OUT of
+ *  every round's root (wholesale-rooting it was tried in `7085cb57` and
+ *  made the regression WORSE) — the fix for a field living there is always
+ *  to either hoist its write before `mark()`, or copy the specific
+ *  plain-data field a round's own snapshot needs into that snapshot, never
+ *  to root `ctx.core` itself.
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler, regionHooks) {
