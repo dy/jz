@@ -6,7 +6,7 @@ import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../a
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
-import { extractParams, classifyParam, PARAM_KIND, collectAllBoundNames } from '../ast.js'
+import { extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectAllBoundNames } from '../ast.js'
 import { staticObjectProps, objLiteralSchemaId } from '../static.js'
 import { intLevelChecker } from '../type.js'
 import { typedStorageCtorFromContext } from '../typed-context.js'
@@ -224,7 +224,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
-    propMap: new Map(), valueUsed: new Set(), callSites: [],
+    propMap: new Map(), valueUsed: new Set(), callSites: [], computedCallSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -257,6 +257,7 @@ function mergeWalkFacts(into, from) {
   }
   for (const v of from.valueUsed) into.valueUsed.add(v)
   into.callSites.push(...from.callSites)
+  into.computedCallSites.push(...from.computedCallSites)
 }
 
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
@@ -322,6 +323,21 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           else walkFacts(a, true, inArrow, caller)
         }
         return
+      }
+      // Computed-member call `TABLE[key](args)` — candidate for
+      // call-target-index.js's `resolveComputed`. Stashed here, resolved
+      // LATER (plan/index.js's synthesizeComputedDispatchCallSites, after
+      // buildCallTargetIndex runs — this walk happens BEFORE the index
+      // exists, so it can only record the candidate, never resolve it).
+      // No `return`: every existing fact this call's own subtree would
+      // otherwise contribute (nameEscapes on `key`, whatever the args
+      // walk marks) still runs exactly as before this branch existed —
+      // purely additive, changes no other observation.
+      if (op === '()' && Array.isArray(args[0]) && args[0][0] === '[]' &&
+          args[0].length === 3 && typeof args[0][1] === 'string') {
+        const a = args[1]
+        const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        acc.computedCallSites.push({ objName: args[0][1], argList, callerFunc: caller, node })
       }
       if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
@@ -484,11 +500,147 @@ export function collectProgramFacts(ast) {
   ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
+    computedCallSites: f.computedCallSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
     hasBigint: f.hasBigint, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
+  }
+}
+
+/** For each stashed computed-member call candidate (`TABLE[key](args)`,
+ *  `programFacts.computedCallSites` — collected above, during the same walk
+ *  as `callSites`, since `resolveComputed` didn't exist yet to resolve them
+ *  on sight), resolve `TABLE` through the call-target index and, when it
+ *  proves closed, synthesize call-site observations into
+ *  `programFacts.callSites` so paramReps/narrowSignatures' census sees what
+ *  a bare-name call would — see call-target-index.js's `resolveComputed`
+ *  doc and .work/string-method-guess-notes.md "Third follow-up session" for
+ *  why this needs two hops, not one. Must run after `programFacts.
+ *  callTargets` is built and before narrowSignatures ever reads
+ *  `programFacts.callSites` (plan/index.js wires the ordering, right after
+ *  `buildCallTargetIndex`).
+ *
+ *  Two resolved-member shapes, per call-target-index.js's `foldWrite`:
+ *   - a same-module named function (`resolveMember`'s own shape — e.g. an
+ *     `ns.parse = parseNum`-style property): synthesized DIRECTLY, one call
+ *     site per outer site, reusing that site's own `argList` verbatim — the
+ *     member function receives exactly what a bare-name call to it would.
+ *   - an inline arrow literal (watr's actual `HANDLER` shape — every
+ *     property an arrow, none a reference to a pre-existing declared
+ *     function): the arrow itself has no paramReps identity to feed
+ *     (prepare.js never lifts an object-literal property's arrow into a
+ *     named function — verified empirically, see the notes above), so this
+ *     reaches one hop further: walks the arrow's OWN direct body (never
+ *     descending into a nested `=>` for DISCOVERING calls — the same scope
+ *     boundary every other closure-aware walk in this file/call-target-
+ *     index.js already draws) for calls to real, named functions,
+ *     substitutes the arrow's OWN formal parameters with the outer site's
+ *     actual argument expressions wherever they textually occur (plain,
+ *     referentially-transparent AST rewriting — no evaluation, so it's
+ *     sound regardless of side effects), and synthesizes ONE call site per
+ *     such inner call. An inner call synthesizes ONLY when every one of its
+ *     arguments, POST-substitution, is free of every name the arrow itself
+ *     binds anywhere (its own params or a body-local `let`/`const`, via
+ *     `collectAllBoundNames` — the identical shadow-bail primitive call-
+ *     target-index.js already uses) — failing that for even one argument
+ *     declines the WHOLE inner call rather than guess: the same "forfeit
+ *     precision, never fabricate" discipline every producer in this module
+ *     already follows. A declined call simply gets no synthesized
+ *     observation — exactly its pre-existing (unproven) status quo.
+ *
+ *  Every synthesized site is tagged `synthetic: true` and may reuse an AST
+ *  node another synthesized site (same inner call reached from a different
+ *  outer caller, or the SAME outer computed-dispatch node for two different
+ *  resolved members) already points at — `.node` here exists only so the
+ *  census's own read-only consumers (evidenceOfArg, containment checks) can
+ *  use it exactly like a real site's; nothing may ever WRITE through it.
+ *  variant.js's `materializeVariant` (the one place a call edge gets
+ *  retargeted — `site.node[1] = cloneName`) and plan/inline.js's
+ *  `specializeFixedRestCalls` (the one place `setCallArgs` rewrites a call
+ *  node's own arguments) both skip `synthetic` sites for exactly this
+ *  reason — see their own comments at the skip. */
+export function synthesizeComputedDispatchCallSites(programFacts) {
+  const resolveComputed = programFacts.callTargets?.resolveComputed
+  if (!resolveComputed || !programFacts.computedCallSites.length) return
+
+  const boundNamesCache = new WeakMap()
+  const boundNamesOf = (arrowNode) => {
+    let s = boundNamesCache.get(arrowNode)
+    if (!s) { s = collectAllBoundNames(arrowNode, new Set()); boundNamesCache.set(arrowNode, s) }
+    return s
+  }
+  // Does `node` contain a bare-string reference to any name in `bound`,
+  // anywhere — INCLUDING inside a further-nested `=>`. Unlike every scope-
+  // closedness walk elsewhere in this file (which stop at `=>` because a
+  // deeper closure body doesn't run just by being textually present), a
+  // captured reference inside a callback ARGUMENT here is still a live use
+  // of the arrow's own param at the moment this call executes, so it must
+  // still count. Runs only over one already-small inner-call argument
+  // subtree, never a whole function body.
+  const mentionsAny = (node, bound) => {
+    if (typeof node === 'string') return bound.has(node)
+    if (!Array.isArray(node)) return false
+    for (let i = 1; i < node.length; i++) if (mentionsAny(node[i], bound)) return true
+    return false
+  }
+  // Substitute every bare-string occurrence of a mapped param name with its
+  // outer-site argument expression, recursing everywhere (including nested
+  // `=>` bodies, for the same reason mentionsAny does). Pure — returns a
+  // NEW node when anything changed, never mutates `node` itself: the
+  // original AST is still the live tree emission compiles from.
+  const substitute = (node, subst) => {
+    if (typeof node === 'string') return subst.has(node) ? subst.get(node) : node
+    if (!Array.isArray(node)) return node
+    let changed = false
+    const out = new Array(node.length)
+    out[0] = node[0]
+    for (let i = 1; i < node.length; i++) {
+      const c = substitute(node[i], subst)
+      if (c !== node[i]) changed = true
+      out[i] = c
+    }
+    return changed ? out : node
+  }
+
+  for (const site of programFacts.computedCallSites) {
+    const members = resolveComputed(site.objName)
+    if (!members) continue
+    for (const member of members) {
+      if (!Array.isArray(member)) {
+        // Named-function member: has its own real paramReps identity —
+        // synthesize directly, the outer site's argList unchanged, exactly
+        // like an ordinary bare-name call would.
+        programFacts.callSites.push({
+          callee: member.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
+        })
+        continue
+      }
+      // Inline-arrow member: no identity of its own — reach one hop
+      // further, into calls the arrow's OWN body makes to real functions.
+      const arrowParams = extractParams(member[1])
+      const subst = new Map()
+      for (let i = 0; i < arrowParams.length && i < site.argList.length; i++) {
+        const p = arrowParams[i]
+        const name = typeof p === 'string' ? p : classifyParam(p)[PARAM_NAME]
+        if (typeof name === 'string') subst.set(name, site.argList[i])
+      }
+      const bound = boundNamesOf(member)
+      const walkInner = (n) => {
+        if (!Array.isArray(n)) return
+        if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
+        if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
+          const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
+          if (innerArgList.every(a => !mentionsAny(a, bound)))
+            programFacts.callSites.push({
+              callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
+            })
+        }
+        for (let i = 1; i < n.length; i++) walkInner(n[i])
+      }
+      walkInner(member[2])
+    }
   }
 }
 

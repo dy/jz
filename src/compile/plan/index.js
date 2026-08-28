@@ -28,7 +28,7 @@
 
 import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
-import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
+import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown, synthesizeComputedDispatchCallSites } from '../program-facts.js'
 import { buildCallTargetIndex } from '../call-target-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
@@ -229,6 +229,18 @@ export default function plan(ast, profiler, regionHooks) {
   // never `programFacts`) can read it too.
   programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
   ctx.types.callTargets = programFacts.callTargets
+  // Computed-dispatch call-site synthesis (program-facts.js's own doc on
+  // synthesizeComputedDispatchCallSites has the full reasoning): must run
+  // AFTER callTargets exists (it resolves through resolveComputed) and
+  // BEFORE anything reads programFacts.callSites for real — narrowSignatures
+  // below is the first and primary reader, but materializeAutoBoxSchemas/
+  // resolveClosureWidth/canSkipWholeProgramNarrowing all run first in this
+  // function, so this sits right at the earliest safe point, immediately
+  // after the index itself. Mutates programFacts.callSites in place (pushes
+  // only) — the same "enrich in place, never re-collected past here"
+  // contract this function's own header already documents for
+  // narrowSignatures' paramReps writes.
+  t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts))
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
