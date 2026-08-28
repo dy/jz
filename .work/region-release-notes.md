@@ -957,6 +957,58 @@ session). This number predates the `errorSidEntries` fix above; re-measuring aft
 step, though that fix is very unlikely to change THIS mechanism (it closes a HOST-decode gap for
 thrown Errors, not a peak-memory or in-kernel value-shape issue).
 
+### Third battery leg (both fixes applied) — 25 fail (down from 49), one class investigated and OPEN
+
+`JZ_TEST_TARGET=jz.wasm node test/index.js` with both fixes: **2949/2975 pass, 25 fail** (up from
+2925/49 before the `errorSidEntries` fix — that fix alone closed ~24 of the previous 49,
+consistent with it fixing the whole `SyntaxError`/`TypeError`/`RangeError`/`ReferenceError`/
+`URIError`/`EvalError` × {new,bare} message-decode family plus related rows). Remaining 25:
+1 pre-existing/unrelated (`const-exponent pow fold — SIMD twin`, present in BOTH the 49-fail and
+25-fail runs, never investigated — orthogonal to this session's scope), plus 24 that group into
+(at least) two DIFFERENT, NEWLY-DISTINGUISHED shapes once directly repro'd outside the full-suite
+run:
+
+**(a) Spurious host imports on a program that needs none** — `try/catch: non-throwing body emits
+portable wasm` / `try/finally: ...` (`test/statements.js`): `compile(src, {host:'wasi'})` for
+`() => { try { return 1 } catch (e) { return 2 } }` (nothing time/IO-related) natively produces
+ZERO imports; the region-live kernel's output declares
+`{module:"wasi_snapshot_preview1", name:"clock_time_get"}` — confirmed by dumping
+`WebAssembly.Module.imports(...)` on both. Traced to `module/timer.js:79`'s `hostImport(...)`
+call under `host==='wasi'` — plausible mechanism: front's ALREADY-MERGED eager-`includeMods(...)`
+fix (`88e48378`) loads `timer` (and every other stdlib module) for EVERY region-live compile
+regardless of whether the source uses timers, and this specific host import registration isn't
+gated behind actual reachability the way stdlib HELPER functions are (`pullStdlib`'s own
+`reachableStdlib` scan). Same general CLASS as the already-documented `$ftN`/closure-table
+WAT-size divergence (`module/function.js`'s unconditional `ctx.closure.types.add(1)` on module
+load) — a stdlib module's `init(ctx)` doing something UNCONDITIONAL that used to only ever run
+for programs that actually needed that module, now running for every region-live compile because
+eager-loading no longer correlates "module loaded" with "module's feature actually used".
+NOT investigated to a confirmed fix — flagged, same as the closure-table case.
+
+**(b) A compile-time rejection silently stops firing** — `unknown method on KNOWN receiver
+rejects in default mode` (`test/errors.js:819`): `[3,1,2].frobnicate()` should reject at compile
+with `'...frobnicate' is not implemented for a array receiver...'` — native throws this exactly;
+the region-live kernel compiles it silently (confirmed via direct repro, both `compileViaKernel`
+and native `compile` on the identical source). Traced the rejection's gate
+(`src/compile/emit.js:4553` `externalMethodFallback`, tier 12 of the method-dispatch chain):
+`const vt = valTypeOf(obj); if (vt != null && vt !== VAL.OBJECT && vt !== VAL.HASH) err(...)` —
+this only fires when the receiver's type is PROVABLY a closed native kind (ARRAY here); `vt ===
+null` or OBJECT/HASH falls through to a permissive dynamic-dispatch path instead. Did NOT
+determine whether (i) `valTypeOf([3,1,2])` itself resolves differently under kernel/region-live
+conditions (would be a genuinely serious, in-scope finding — `valTypeOf` is extremely
+heavily-used elsewhere without failures, so a wholesale break seems unlikely, but not ruled out
+for this one call shape) or (ii) an EARLIER dispatch tier (1-11, not read this session) now
+intercepts `frobnicate` before tier 12's rejection is ever reached, plausibly for the same
+eager-loading reason as (a). **OPEN — not root-caused, not fixed.** This is the one finding from
+this session's battery run that could plausibly still be an in-scope region-arena
+root-completeness gap rather than the eager-loading side effect class; whoever continues this
+should start here, with a direct `valTypeOf(parse('[3,1,2]'))`-style unit probe run BOTH natively
+and self-hosted before assuming it's the same eager-loading class as (a).
+
+Neither this session's `namedUses` fix nor its `errorSidEntries` fix touches import registration,
+method dispatch, or type inference at all (both are scoped entirely to the `jz:schema`/
+`jz:errcls` custom-section builders) — structurally, neither fix CAN be the cause of (a) or (b).
+
 **Consequence for the literal task targets**: `kernel-oracle.js 14/14` and `kernel-parity.js
 33/33` are NOT reachable while front's eager-load trade-off stands, independent of anything in
 emitIR's round — both test files abort their per-optimize-level loop on the FIRST byte-mismatch
