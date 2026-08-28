@@ -2272,16 +2272,7 @@ function emitClosureBody(cb, functionPlan) {
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler, regionHooks) {
-  // THROWAWAY DIAGNOSTIC SCAFFOLDING (region-emitir-round session) — bit i of
-  // ctx.transform._dbgRoundMask selectively disables ONE of this function's six
-  // nested region rounds without a kernel rebuild (self.js's __dbgCompile sets
-  // it post-reset). Unset (undefined) in every real path => __M = ~0 (all bits),
-  // __rh(bit) always returns `regionHooks` unchanged => zero behavior change.
-  // MUST be reverted (this block + every __rh(...) call site below + self.js's
-  // __dbgCompile + REGION_HOOKS_ACTIVE) before this branch is considered mergeable.
-  const __M = ctx.transform._dbgRoundMask ?? ~0
-  const __rh = (bit) => (regionHooks && (__M & bit)) ? regionHooks : null
-  const __regionMark = __rh(32)?.mark()
+  const __regionMark = regionHooks?.mark()
   // Contract: callers (jzCompileInner / scripts/self.js compileSelf) must set
   // ctx.transform.optimize before reaching here — every optimize-gated pass below
   // reads `cfg && cfg.x === false`, so a null cfg silently runs every pass.
@@ -2401,7 +2392,7 @@ export default function compile(ast, profiler, regionHooks) {
 
   // `let`, not `const`: the post-plan-scans region round below (region-live
   // only, dead code otherwise) rebinds this from its own `exit()` return.
-  let programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, __rh(64)))
+  let programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, regionHooks))
 
   // Region-arena plan-tail round 6 (.work/research.md §Region arena, per-pass
   // slice): the three closure-table scans below are pure AST walks producing
@@ -2411,7 +2402,7 @@ export default function compile(ast, profiler, regionHooks) {
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale
   // for why this is the union of every field any round has ever needed,
   // applied uniformly, rather than a wholesale `[ast, ctx]` root).
-  const __scanMark = __rh(1)?.mark()
+  const __scanMark = regionHooks?.mark()
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
   // structurally safe candidate closure tables (never alias/escape) — the
   // write-family + call-site facts gathered during emission below only fire
@@ -2440,7 +2431,7 @@ export default function compile(ast, profiler, regionHooks) {
   // see dyn-closure-tables.js's own doc for the safety notion and the
   // module-init-order reasoning behind its "early-mergeable" subset.
   ctx.scope.imperativeClosureTableLatticeCandidates = scanImperativeClosureTableLatticeCandidates(ast)
-  if (__rh(1)) {
+  if (regionHooks) {
     ;[ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
       regionHooks.exit(__scanMark, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
   }
@@ -2494,7 +2485,7 @@ export default function compile(ast, profiler, regionHooks) {
     // an unpaired `mark()` with no matching `exit()`.
     let __mark = null
     for (let i = 0; i < ctx.funcs.list.length; i++) {
-      if (__rh(2) && __mark == null) __mark = regionHooks.mark()
+      if (regionHooks && __mark == null) __mark = regionHooks.mark()
       const func = ctx.funcs.list[i]
       if (!func.raw) {
         const facts = analyzeFuncForEmit(func, programFacts)
@@ -2502,7 +2493,7 @@ export default function compile(ast, profiler, regionHooks) {
         captureFuncInspect(func, facts, programFacts)
       }
       const lastFunc = i === ctx.funcs.list.length - 1
-      if (__rh(2) && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
+      if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
         // Union-field root (Slice C-v2, `.work/compile-session-design.md`
         // §2.1/§3, front.js's own doc has the full rationale): covers every
         // container this loop writes — `ctx.plans` (publishFunctionPlan's
@@ -2669,7 +2660,7 @@ export default function compile(ast, profiler, regionHooks) {
         // Fixed-shape closure records make closure-producing named functions
         // relocation-safe too; all named functions share one batched policy.
         // Closure-BODY waves remain separately gated below.
-        if (EMIT_FUNC_ROUNDS_ACTIVE && __rh(4) && __mark == null) __mark = regionHooks.mark()
+        if (EMIT_FUNC_ROUNDS_ACTIVE && regionHooks && __mark == null) __mark = regionHooks.mark()
         if (func.raw) out.push(emitFunc(func, null, programFacts))
         else {
           const functionPlan = functionPlanOf(ctx, func)
@@ -2824,9 +2815,9 @@ export default function compile(ast, profiler, regionHooks) {
   // emissionRoundExit. `sec` rides via __secRoot (registered above); `funcs`/
   // `closureFuncs` may still grow here (compilePendingClosures' own re-entry
   // from inside buildStartFn) so both stay in the root too.
-  const __buildMark = __rh(8)?.mark()
+  const __buildMark = regionHooks?.mark()
   timePhase(profiler, 'buildStart', () => buildStartFn(ast, sec, closureFuncs, compilePendingClosures))
-  if (__rh(8)) {
+  if (regionHooks) {
     ;[ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps] =
       emissionRoundExit(__buildMark, [ast, programFacts, funcs, closureFuncs, sec, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand, ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring, ctx.core.hostGlobals, ctx.core.stdlibDeps])
     __secRoot = sec
@@ -2950,7 +2941,7 @@ export default function compile(ast, profiler, regionHooks) {
     typedPins: null,
   }
 
-  const __stdlibMark = __rh(16)?.mark()
+  const __stdlibMark = regionHooks?.mark()
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
   ensureThrowRuntime(sec)
   lateFacts.errorSidEntries = [...ctx.schema.errorSidEntries()]
@@ -2958,7 +2949,7 @@ export default function compile(ast, profiler, regionHooks) {
     ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
       .filter(name => ctx.core.includes.has(name.slice(1)))
     : []
-  if (__rh(16)) {
+  if (regionHooks) {
     let lateScope = {
       globals: ctx.scope.globals,
       globalTypes: ctx.scope.globalTypes,
@@ -2971,7 +2962,18 @@ export default function compile(ast, profiler, regionHooks) {
       dvArmFns: ctx.scope.dvArmFns,
     }
     let lateTypes = { arrResized: ctx.types.arrResized, nameEscapes: ctx.types.nameEscapes }
-    let lateSchema = { list: ctx.schema.list }
+    // `namedUses` (plain {sid, funcName} pairs — module/core.js's
+    // __throw_property_nullish and module/json.js's per-shape parsers push
+    // onto it eagerly, unconditionally, for essentially every compile) MUST
+    // ride along here: the usedSchemaIds walk a little further down this
+    // function (`if (ctx.schema.namedUses.length) {...}`) reads it AFTER this
+    // round's exit, unconditionally. Omitting it left `ctx.schema` narrowed to
+    // `{list}` post-exit, so that later read threw `Cannot read properties of
+    // undefined (reading 'length')` on EVERY region-live compile, including
+    // the trivial single-function AGREE-tier corpus — this was the emitIR-
+    // round crash this whole investigation chased (region-emitir-round
+    // session, .work/region-release-notes.md).
+    let lateSchema = { list: ctx.schema.list, namedUses: ctx.schema.namedUses }
     // pullStdlib only mutates these section arrays. Root them individually;
     // traversing `sec` would also walk every already-durable user function,
     // turning a ~stdlib-only reclaim into a multi-gigabyte full-module copy.
@@ -3002,7 +3004,7 @@ export default function compile(ast, profiler, regionHooks) {
   stripStaticDataPrefix(sec)
 
   timePhase(profiler, 'optimizeModule', () => optimizeModule(sec, profiler,
-    __rh(128) ? {
+    regionHooks ? {
       mark: regionHooks.mark,
       exit: (mark, root) => emissionRoundExit(mark, root),
       forceExit: regionHooks.forceExit || regionHooks.exit,
@@ -3382,7 +3384,7 @@ export default function compile(ast, profiler, regionHooks) {
   // through a stale `ctx.*` or the pre-relocation `builtModule` reference is
   // a use-after-free, the identical contract frontHalf's own rebind
   // documents.
-  if (__rh(32)?.releaseSession) {
+  if (regionHooks?.releaseSession) {
     // The wasm-hosted compiler immediately feeds this module to the WAT tail;
     // it never observes analysis/session internals after compileAst returns.
     // Preserve only immutable optimizer facts and a compact boundary summary,
@@ -3423,7 +3425,7 @@ export default function compile(ast, profiler, regionHooks) {
     ctx.warnings = released.warnings
     ctx.core.diagSink = released.diagSink
     ctx.transform._regionTail = released.tail
-  } else if (__rh(32)) {
+  } else if (regionHooks) {
     [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts] =
       regionHooks.exit(__regionMark, [builtModule, ctx.func, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.transform, ctx.facts])
   }
