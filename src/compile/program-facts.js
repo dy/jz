@@ -606,6 +606,17 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
   const resolveComputed = programFacts.callTargets?.resolveComputed
   if (!resolveComputed || !programFacts.computedCallSites.length) return
 
+  // Does `node` contain a bare-string reference to any name in `names`,
+  // anywhere — INCLUDING inside a further-nested `=>` (a captured reference
+  // inside a callback ARGUMENT is still a live use at the moment this call
+  // executes). Runs only over one already-small inner-call argument
+  // subtree, never a whole function body.
+  const mentionsAny = (node, names) => {
+    if (typeof node === 'string') return names.has(node)
+    if (!Array.isArray(node)) return false
+    for (let i = 1; i < node.length; i++) if (mentionsAny(node[i], names)) return true
+    return false
+  }
   // Substitute every bare-string occurrence of a mapped param name with its
   // outer-site argument expression, recursing everywhere (including nested
   // `=>` bodies, for the same reason mentionsAny does). Pure — returns a
@@ -623,6 +634,33 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
       out[i] = c
     }
     return changed ? out : node
+  }
+
+  // Does calling `calleeName` with only `argc` arguments leave one of ITS
+  // OWN trailing params both unsupplied AND undefault-able? `narrow.js`'s
+  // `missing()` rule (mergeRule) treats that shape as a DEFINITIVE fact —
+  // "this exact call always hands the callee `undefined` here" — and
+  // poisons `val` for it UNCONDITIONALLY, in EVERY fixpoint pass including
+  // the soft ones (unlike an ordinary unresolvable-VALUE observation, which
+  // the soft pass safely no-ops on and a later re-visit can still heal).
+  // That poison is real and correct when this shape is the program's own
+  // TRUE, permanent behavior (an ordinary same-arity-shortfall call site
+  // elsewhere in the program pays the identical price) — but synthesizing
+  // ONE MORE such site here would only ever GUARANTEE that permanent
+  // poison, with no possible upside for the position it poisons, so
+  // there's nothing to gain by including it: any OTHER position the same
+  // inner call would have proven is still provable from its next-cleanest
+  // source (a real member forwarding the same callee's SAME position with
+  // a full argument list), while this position was never going to resolve
+  // to anything but null regardless — declining the WHOLE call is strictly
+  // no worse than synthesizing it, every time this shape is detected.
+  const calleeArityShortfalls = (calleeName, argc) => {
+    const fn = ctx.funcs.map.get(calleeName)
+    const params = fn?.sig?.params
+    if (!params || argc >= params.length) return false
+    for (let i = argc; i < params.length; i++)
+      if (fn.defaults?.[params[i].name] == null) return true
+    return false
   }
 
   // A resolved arrow member's body was ALREADY reached once before, by the
@@ -667,10 +705,37 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
       // further, into calls the arrow's OWN body makes to real functions.
       const arrowParams = extractParams(member[1])
       const subst = new Map()
-      for (let i = 0; i < arrowParams.length && i < site.argList.length; i++) {
+      // Params THIS outer site simply doesn't supply (site.argList shorter
+      // than the arrow's own arity — e.g. watr's `for (const k in HANDLER)
+      // SIZE_HANDLER[k] = (n,c,op) => HANDLER[k](n,c,op).length` idiom,
+      // calling every member with only 3 args) are genuinely, provably
+      // `undefined` at THIS call — not "unknown," which is a different,
+      // weaker fact. Forwarding the bare param name onward would misrepresent
+      // "definitely absent here" as "an opaque unresolvable expression,"
+      // and since narrow.js's `possibleKinds` join treats every `v==null`
+      // observation as "join the full universe" REGARDLESS of which of the
+      // two it actually was, the practical effect is identical either way —
+      // so there is nothing to gain from modeling it more precisely, only a
+      // real cost: a genuinely-supplied SIBLING call (the same member
+      // reached via an outer site that DOES pass every argument, e.g.
+      // `instr`'s own `HANDLER[imm](nodes, ctx, op, out)`) would have its
+      // OWN clean observation permanently swamped by this unrelated site's
+      // forced full-universe join, the moment both feed the same callee's
+      // same parameter position. Declining ONLY the inner calls that
+      // mention one of these specifically-unsuppliable names (never the
+      // whole outer site, never a call that only touches an in-range
+      // param) keeps every other position — including a body-local the
+      // arrow computes at runtime (`let t = n.shift()`), which unlike an
+      // out-of-range param really is supplied, just not statically known,
+      // and safely resolves to the same conservative "unknown" outcome via
+      // ordinary lookup-miss, no special-casing needed (see the doc above).
+      const unsuppliable = new Set()
+      for (let i = 0; i < arrowParams.length; i++) {
         const p = arrowParams[i]
         const name = typeof p === 'string' ? p : classifyParam(p)[PARAM_NAME]
-        if (typeof name === 'string') subst.set(name, site.argList[i])
+        if (typeof name !== 'string') continue
+        if (i < site.argList.length) subst.set(name, site.argList[i])
+        else unsuppliable.add(name)
       }
       const walkInner = (n) => {
         if (!Array.isArray(n)) return
@@ -678,9 +743,12 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
         if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
           claimedNodes.add(n)
           const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
-          programFacts.callSites.push({
-            callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
-          })
+          const ok = (!unsuppliable.size || innerArgList.every(a => !mentionsAny(a, unsuppliable))) &&
+            !calleeArityShortfalls(n[1], innerArgList.length)
+          if (ok)
+            programFacts.callSites.push({
+              callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
+            })
         }
         for (let i = 1; i < n.length; i++) walkInner(n[i])
       }
