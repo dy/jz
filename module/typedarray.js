@@ -26,16 +26,7 @@ const _NAN_BITS = nanPrefixHex()
 
 
 const typedAux = (name, isView = false) => encodeTypedElemAux(name, isView)
-export const STRIDE = [1, 1, 2, 2, 4, 4, 4, 8]
-export const SHIFT = [0, 0, 1, 1, 2, 2, 2, 3]
-export const LOAD = [
-  'i32.load8_s', 'i32.load8_u', 'i32.load16_s', 'i32.load16_u',
-  'i32.load', 'i32.load', 'f32.load', 'f64.load',
-]
-export const STORE = [
-  'i32.store8', 'i32.store8', 'i32.store16', 'i32.store16',
-  'i32.store', 'i32.store', 'f32.store', 'f64.store',
-]
+import { STRIDE, SHIFT, LOAD, STORE } from './typedarray/elem-tables.js'
 // f64 value → this element's stored representation (paired with STORE). Signed
 // kinds trunc_s, unsigned trunc_u, f32 demotes, f64 stores as-is (null = identity).
 // ES ToIntN store conversion (SetValueInBuffer) — THE one semantic for every

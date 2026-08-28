@@ -10,11 +10,17 @@
  * emitted WAT. See .work/stdlib-generators.md for the extraction boundary
  * and the byte-identity verification method.
  *
+ * Imports STRIDE/SHIFT/LOAD/STORE from the `./elem-tables.js` sibling (not
+ * from `../typedarray.js`, which imports analyzeSimd/genSimdMap FROM this
+ * file) — typedarray.js's own resolveModuleGraph (self-compile) rejects
+ * circular module imports, so this stays a one-directional leaf-module
+ * chain: elem-tables.js ← simd-map.js ← typedarray.js.
+ *
  * @module typedarray/simd-map
  */
 
 import { PTR } from '../../src/ctx.js'
-import { STRIDE, SHIFT, LOAD, STORE } from '../typedarray.js'
+import { STRIDE, SHIFT, LOAD, STORE } from './elem-tables.js'
 
 // SIMD: vector width per element type (elements per v128)
 const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
