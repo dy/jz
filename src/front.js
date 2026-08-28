@@ -79,6 +79,7 @@ export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrep
   parsed = time('liftIIFE', () => liftIIFEs(parsed))
   if (!strict && jzify) parsed = time('jzify', () => jzify(parsed))
   let ast = time('prepare', () => prepare(parsed))
+  if (code === 'export let sum = (a, b) => a + b') throw new Error('astIsArr=' + Array.isArray(ast) + ' len=' + (Array.isArray(ast) ? ast.length : -1))
   if (afterPrepare) afterPrepare()
   if (regionHooks) {
     ;[ast, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
