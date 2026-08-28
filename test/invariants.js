@@ -542,9 +542,12 @@ test('invariant: paramReps/callSites consumer order independence — a function\
   // `let len` temp becomes `$len0` or `$len1` purely depending on how many
   // OTHER same-named temps were minted earlier in the module, which shifts
   // with declaration order by design (cosmetic renaming, not a logic
-  // change). Strip each name's trailing counter before comparing so the pin
-  // asserts structural/logical identity, not name-supply-order identity.
-  const stripIdCounters = w => w.replace(/\$([A-Za-z_]+?)\d+\b/g, '$$$1')
+  // change; some synthesized names also carry a leading private-use marker
+  // codepoint before the letters, invisible in a terminal — `\S` rather than
+  // `[A-Za-z_]` so the strip isn't fooled by it). Strip each name's trailing
+  // counter before comparing so the pin asserts structural/logical identity,
+  // not name-supply-order identity.
+  const stripIdCounters = w => w.replace(/\$(\S+?)\d+\b/g, '$$$1')
   // useF/useG give f/g a concrete internal typed-array call site, so
   // narrowSignatures/specializeBimorphicTyped settle both to a monomorphic
   // typed body (paramReps' whole reason to exist) instead of the generic
