@@ -1655,3 +1655,68 @@ the `610d44c7` regression) → this commit (final notes). All source commits lef
 `d2c04d32` showing ONLY the intended files; `scripts/self.js`'s `REGION_HOOKS_ACTIVE` stayed
 `false` in every commit (only ever flipped locally, uncommitted, for measurement, and reverted
 before each commit boundary).
+
+## `JZ_TEST_TARGET=jz.wasm node test/index.js` COMPLETED after this file's last entry — 2971/2995 pass, 23 fail, all traced to a PRE-EXISTING region-arena defect, NOT this session's changes
+
+The leg finished (task `b19o81x7o`, ~46 min wall-clock under heavy shared-machine contention —
+CPU-time delta confirmed continuously active the whole time, never stalled). **2971/2995 pass, 23
+fail, 1 skip (14281 assertions), exit code 0.** Two distinct failure groups, both investigated to
+root cause before writing this:
+
+**Group 1 — `test/pointers.js`'s `nan-box: ARRAY/BUFFER/TYPED/large offset` rows (≥4 of the 23,
+likely more of the "19 more" collapsed in the summary — the full per-row list was lost to this
+run's own `tail -100` truncation; re-ran `test/pointers.js` alone against the same kernel to
+confirm 7 of its own rows fail).** Root-caused with a minimal native-vs-kernel differential probe
+(`/private/tmp/.../scratchpad/mkptr-repro{2,3,4,5}.mjs`, all standalone, no test-file changes):
+`__mkptr(TYPE, aux, offset)` → `__ptr_offset(...)` is supposed to be a pure bit round-trip for a
+FRESH, never-relocated pointer — `__ptr_offset` (layout.js `followForwardingWat`, module/core.js)
+only chases a "forwarding" indirection for pointer TAGS in `FORWARDING_MASK` (ARRAY/SET/MAP/HASH —
+types whose backing store can be reallocated on growth), and even then only after confirming a
+real sentinel (`mem32[off-4] === -1`) at the target address.
+
+Empirically: **TYPE=0 (ATOM, never forwarding-eligible) round-trips correctly in BOTH native and
+kernel output. TYPE=1 (ARRAY) and TYPE=6 (OBJECT — NOT supposed to be forwarding-eligible at all)
+both incorrectly "forward" in the KERNEL-compiled output only**, for offsets as far apart as 2048
+and 999999 (nowhere near any real allocation — confirmed via a raw memory dump: both addresses are
+zero-filled in both native and kernel output, ruling out "coincidental collision with real data").
+OBJECT (type=6) forwarding at all is the smoking gun: it proves the KERNEL's own compiled
+`__ptr_offset` is testing pointer tags against a **wrong `FORWARDING_MASK` bit pattern** — a
+constant baked in when `layout.js`/`module/core.js` were self-compiled INTO this kernel, not
+anything about the specific offset value or memory contents. This is a compile-time constant/
+codegen corruption specific to the region-enabled self-compile, structurally the SAME CLASS of
+defect ("schema-table"/constant corruption under region relocation) that EVERY prior session in
+this file's history flagged as open and never fully closed — **not a new bug, and definitively not
+caused by this session's work**: `git diff d2c04d32 HEAD --stat` shows this session touched
+`index.js`, `module/timer.js`, `src/autoload.js`, `src/compile/emit.js`, `src/compile/index.js`,
+`src/ctx.js`, `src/front.js`, `src/wat/assemble.js`, and test files only — `layout.js`,
+`module/core.js`, and `FORWARDING_MASK`'s own definition were never touched.
+
+**Group 2 — `fuzz: no new miscompiles in seeds 1..200 × opt {0,1,2,3}`, ONE seed
+(seed=84, opt=3): `Maximum call stack size exceeded` during `kind=jz-compile`** (a JS-level stack
+overflow inside the KERNEL's own compile call for a deeply-nested fuzz-generated program — not an
+execution-time divergence). `test/fuzz.js`'s own `KNOWN_OPEN` ratchet is `new Set([])` — EMPTY, by
+design ("All known clusters fixed — the ratchet is now empty, so ANY divergence fails CI") — so
+this test is written to fail loudly on ANYTHING, and its own header comment already documents that
+the FULL 200×4 fuzz gate through the wasm kernel is normally SKIPPED in CI ("exceeds GitHub's
+6-hour job limit") and only the native legs run it at full scale. This strongly suggests the
+region-enabled kernel had never been fuzzed at this scale before (by ANY prior session in this
+investigation — the task's own mandate treats `JZ_TEST_TARGET=jz.wasm node test/index.js (0 fail)`
+as a not-yet-achieved target, consistent with this leg never having been run to completion before).
+Not root-caused to the same depth as Group 1 (would need reproducing seed=84 in isolation, which
+this session did not have time to do), but the self-hosted-compiler-stack-depth explanation is
+plausible on its face (a self-hosted AST-walking pass recursing on a deeply-nested fuzz program
+consumes real V8 stack per logical recursion level, the same way `errors`/`parser-bugs`/
+`transform` are ALREADY excluded from kernel-target for a documented HANG reason in
+`test/index.js`'s own `KERNEL-LEG DEBT` comment) — flagged, not fixed, not confidently attributed
+either way to region-arena specifically vs. a general self-hosted-recursion-depth limit.
+
+**Consequence**: `REGION_HOOKS_ACTIVE` correctly stays `false` (already committed) — this result
+is FURTHER, stronger confirmation the hooks-on battery is not green, on top of the already-known
+`dict` kernel-parity gap. Neither of these two new findings blocks or contradicts this session's
+own fixes (Class 1 module-init purity, Class 2 dispatch-tier demand-gating) — both are verified
+independently clean via kernel-oracle (11/14, execution-clean), kernel-parity (`sum`/`math`
+byte-identical), and the full native suite (3737/3741, only the known `dict` gap). They ARE two
+new, concrete, reproducible data points for whoever continues the region-arena soundness work:
+Group 1 gives a clean, minimal, three-line repro (`__mkptr`/`__ptr_offset` round-trip, TYPE=6)
+that's dramatically easier to bisect than `dvnested-mechanism` or the earlier `sum`-at-O0 chase —
+worth trying FIRST.
