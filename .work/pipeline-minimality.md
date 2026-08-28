@@ -75,6 +75,10 @@ Results (branch tip vs base):
 - Byte identity: corpus 378/378 rows identical (0 differ, 0 missing).
 - Style: every new site uses the one existing idiom `walkAst(x, { enter: n => { … } })`
   (no method-shorthand / multi-line object forms), so the diff is the conversion only.
+- Refactor oracle (scripts/refactor-oracle.mjs, merged to main after this slice was
+  cut): `check --ref main` CLEAN — 560 entries identical (140 specs × O0/O2/O3/size,
+  baseline 0d785f9c). This oracle supersedes the ad-hoc corpus hash used above
+  and is the gate for every later slice (`.work/refactor-oracle.md`'s rule).
 - Gates (scripts/battery.mjs, 15.5 min): native 3723/3724 (1 skip), O0 3723, O3 3723,
   wasi 3722, kernel (test:wasm on the rebuilt dist) 2974, functional self-compile
   21/21 (206), fuzz 30,173 programs × 4 tiers no divergence, fixpoint PASS,
@@ -84,14 +88,60 @@ Results (branch tip vs base):
   analysis/emission" identically on a clean d2c04d32 checkout (4/10 standalone,
   same assertions) — not introduced here, left for its own root-cause session.
 
-## Queue after M1 (same campaign)
+## Division of labor (2026-08-28, from the branch list)
+
+Concurrent slices by other sessions — not duplicated here: vectorize.js split
+(merged: src/optimize/vectorize/, 24 modules), stdlib generators (merged),
+`refactor/optimize-split` (optimize/index.js → licm/peephole/locals/… modules,
+in flight), `refactor/analyze-traversals` (analyzeBody's traversal chain — the
+walk-count design A2 item, just opened). This branch owns the walker retrofit
+(batches 1–3) and the outlier-function/file items not claimed above.
+
+## Slice M1b — traversal retrofit, batch 2
+
+Opened once the fix/* branches merged: narrow.js, program-facts.js,
+wat/assemble.js, representation-plan.js, kind.js, ir.js, infer.js, emit.js,
+compile/index.js, early-errors.js, src/optimize/vectorize/*.js, recurse.js,
+module/typedarray.js, regex.js, object.js, jzify/generators.js, jzify/async.js.
+No-go regions (main's uncommitted hunks at the time): narrow.js 2950–2975,
+emit.js 5935–5980, compile/index.js 66–76 + 1700–1735, early-errors.js 205–410,
+prepare/index.js 1105–1115 + 2395–2420 + 3835–3955, collection.js 280–290 +
+1785–1865, core.js 2445–2800; whole optimize/index.js (split in flight).
+
+Results: 78 sites read; **43 converted, 35 kept** (env-threading evaluators, mapping
+rewriters, whole-walk-abort validators, slot-0-inclusive IR walks, leaf-order-sensitive
+diagnostics), 4 grep false positives (IR emitters named `scan`/`walkDyn`). Census:
+name-based 145 → **122**, idiom-based 224 → **191**, `walkAst` sites 196 → **235 in 48
+files**, `some` sites 26. Diff: 16 files, +236/−315 (net −79). No hunk inside or
+adjacent to a no-go region. Gates: refactor oracle `check --ref main` CLEAN (560/560,
+baseline 0d785f9c); battery 15.5 min: O0 3732/3733 (1 skip), O3 3732, wasi 3731,
+kernel 2983, self-compile 21/21, fuzz 30,173 × 4 tiers clean, fixpoint PASS, build
+17,474.8 kB. Two red legs, neither this slice's: `dbg` = the pre-existing jsstring
+invariant trip (same on clean main); `native` = test/statements.js "clearInterval:
+stops interval" (a 20 ms-tick wall-clock test) failed under the 7-leg load and passes
+3/3 standalone on the branch and on clean main — timers are untouched here.
+
+Follow-ups surfaced by the agents, queued for batch 3: (a) `some` needs a `boundary`
+option so jzify's `FN_BOUNDARY_OPS`-gated predicates (`refsAwait`, `refsSuspend`,
+`hasYield`) can reuse it; (b) module/typedarray.js `hasWrite`/`hasSameRead` (any-
+predicates) and `safeRmwAst` (an every-predicate — no combinator yet); (c) the six
+verbatim load/store validator ports across vectorize map/stencil/reduce are one
+walker copied six times — a semantic DRY slice, not a mechanical swap; (d)
+optimize/index.js's 19 sites after `refactor/optimize-split` lands, in the new modules.
+
+## Queue after M1b (same campaign)
 
 1. `analyzeBody` 6 → 5 traversals: fold `scanNumericFill` (walk-count design
    A2; needs the assert-gated old-vs-new run it prescribes).
 2. Schema-liveness scan re-derives facts from emitted WAT
    (compile/index.js ~:3158-3273) → emission-time used-sid fact (handoff item 2).
-3. Outlier functions: `genUpsertStrictPrehashed` (~2.5k ln, collection.js),
-   `emitInstanceof` (~2.1k, emit.js), `inferTypedValueRanges` (~1.3k, narrow.js).
+3. Outlier functions (re-measured 2026-08-28; the audit's list was partly stale):
+   `genUpsertStrictPrehashed` (~2.5k ln, collection.js — main has uncommitted edits
+   inside it, wait); `narrowSignatures` (1,085 ln, narrow.js's default export —
+   `.work/narrow-split.md` §6: one mutable `sharedSiteState` shared by ~20 nested
+   closures for a measured perf reason, needs its own audit); `emitInstanceof` is
+   14 lines now (already split); `inferTypedValueRanges` is 181 lines, keep nested
+   (closure matrix in narrow-split.md — hoisting has zero reuse payoff).
 4. Files >3k lines (10): vectorize 8500, emit 8129, optimize/index 5537,
    prepare/index 4430, collection 3974, narrow 3934, compile/index 3476,
    core 3474, analyze 3301, typedarray 3055.

@@ -26,7 +26,7 @@ import {
   commaList, T, isBlockBody, isReassigned, mutatesArrayLength, isConstLiteral, constLiteralHoistable,
   hasOwnContinue, hasLabeledContinueTo, hasOwnBreakOrContinue, extractParams, classifyParam,
   PARAM_KIND, PARAM_NAME, PARAM_DEFAULT, PARAM_PATTERN, JZ_UNDEF, TYPEOF,
-  ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf,
+  ASSIGN_OPS, MUTATE_OPS, firstRefKind, isLeaf, walkAst, some,
 } from '../ast.js'
 import { ctx, err, inc, warnDeopt, PTR, ssoBitI64Hex, LAYOUT, DBG_INVARIANTS, emitArity, setLinkDemand, getFactStore } from '../ctx.js'
 import {
@@ -650,13 +650,13 @@ const boolEagerBody = () => {
   const cache = getFactStore().boolEager
   if (cache.has(body)) return cache.get(body)
   let calls = false
-  const walk = (n, root = false) => {
-    if (calls || !Array.isArray(n)) return
-    if (!root && n[0] === '=>') return
-    if (n[0] === '()' || n[0] === 'new') { calls = true; return }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body, true)
+  // body itself may be an arrow (curried fn value: `a => b => …`) — the root
+  // is still probed for its own children; only a NESTED arrow is a boundary.
+  walkAst(body, { enter: (n, parent) => {
+    if (calls) return false
+    if (parent !== null && n[0] === '=>') return false
+    if (n[0] === '()' || n[0] === 'new') { calls = true; return false }
+  } })
   const result = !calls
   cache.set(body, result)
   return result
@@ -1167,13 +1167,7 @@ function unrollSmallConstFor(init, cond, step, body) {
       // inner kernel when its induction value selects machine operations
       // (radix shifts, lane selectors). The inner loops remain loops; code
       // growth is bounded directly instead of multiplying their trip counts.
-      let controlsOp = false
-      const scan = n => {
-        if (controlsOp || !Array.isArray(n) || n[0] === '=>') return
-        if ((n[0] === '>>>' || n[0] === '>>' || n[0] === '<<') && n[2] === name) { controlsOp = true; return }
-        for (let i = 1; i < n.length; i++) scan(n[i])
-      }
-      scan(body)
+      const controlsOp = some(body, n => (n[0] === '>>>' || n[0] === '>>' || n[0] === '<<') && n[2] === name)
       if (!controlsOp || tripCount > 4 || tripCount * forInBodyCost(body) > 600) return null
     }
   }

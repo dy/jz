@@ -8,6 +8,7 @@
  */
 
 import { typed, asF64, asI64, UNDEF_NAN, NULL_NAN, TRUE_IR, FALSE_IR, mkPtrIR, temp, tempI32, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
+import { walkAst } from '../src/ast.js'
 import { emit, deps } from '../src/bridge.js'
 import { ctx, err, inc, PTR, LAYOUT, registerGetter, declGlobal, registerResetHook } from '../src/ctx.js'
 import { valTypeOf } from '../src/kind.js'
@@ -120,18 +121,16 @@ export const parseRegex = (pattern, flags = '') => {
 // Rewrite ['\k', name] placeholders → the SAME ['\N'] node numbered backrefs
 // produce (in place, post-parse so forward references resolve). The match VM
 // supports \1–\9 — a named group past index 9 can't be referenced by name.
-const resolveNamedBackrefs = (node, names) => {
-  if (!Array.isArray(node)) return
-  if (node[0] === '\\k') {
-    const i = names.indexOf(node[1])
-    if (i < 0) perr(`Named backreference to undefined group '${node[1]}'`)
+const resolveNamedBackrefs = (node, names) => walkAst(node, { enter: n => {
+  if (n[0] === '\\k') {
+    const i = names.indexOf(n[1])
+    if (i < 0) perr(`Named backreference to undefined group '${n[1]}'`)
     if (i > 9) perr('Named backreference to a group past index 9 unsupported')
-    node.length = 1
-    node[0] = '\\' + i
-    return
+    n.length = 1
+    n[0] = '\\' + i
+    return false
   }
-  for (let j = 1; j < node.length; j++) resolveNamedBackrefs(node[j], names)
-}
+} })
 
 const parseAlt = () => {
   const alts = [parseSeq()]
@@ -277,9 +276,9 @@ const parseGroup = () => {
 // sourced from the group nodes' 4th element (set by parseGroup). Kernel-safe: relies
 // only on the surviving AST structure, not module-level parse state.
 const collectGroupNames = (node, out = []) => {
-  if (!Array.isArray(node)) return out
-  if (node[0] === '()' && typeof node[2] === 'number' && typeof node[3] === 'string') out[node[2]] = node[3]
-  for (let i = 1; i < node.length; i++) collectGroupNames(node[i], out)
+  walkAst(node, { enter: n => {
+    if (n[0] === '()' && typeof n[2] === 'number' && typeof n[3] === 'string') out[n[2]] = n[3]
+  } })
   return out
 }
 

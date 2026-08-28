@@ -27,7 +27,7 @@ import { declareLocal, freshEmitId } from './compile/active-function.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
-import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
+import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf, walkAst } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode } from './kind.js'
 import { T } from './ast.js'
@@ -2336,15 +2336,14 @@ export function verifyFn(fn) {
     declared.add(c[1])
   }
   let bad = null
-  const walk = (n) => {
-    if (bad || !Array.isArray(n)) return
+  const enter = n => {
+    if (bad) return false
     const op = n[0]
     if ((op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof n[1] === 'string' && !declared.has(n[1])) {
-      bad = `${op} of undeclared local ${n[1]}`; return
+      bad = `${op} of undeclared local ${n[1]}`; return false
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
   }
-  for (let i = bodyStart; i < fn.length; i++) walk(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter })
   return bad
 }
 

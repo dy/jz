@@ -2,7 +2,7 @@
  * Whole-program fact collection — dyn keys, call sites, schema slots.
  * @module program-facts
  */
-import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
+import { commaList, isFuncRef, isLiteralStr, ASSIGN_OPS, MUTATE_OPS, walkAst } from '../ast.js'
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../ctx.js'
 import { VAL, lookupValType, repOf, updateGlobalRep, KIND_UNIVERSE } from '../reps.js'
 import { valTypeOf, nullishArm } from '../kind.js'
@@ -884,16 +884,14 @@ export function observeProgramSlots(ast, opts) {
       }
       out.set(name, out.has(name) && out.get(name) !== max ? null : max)
     }
-    const walk = (n) => {
-      if (!Array.isArray(n)) return
-      if (n[0] === '=>') return
+    const walk = (n) => walkAst(n, { enter: n => {
+      if (n[0] === '=>') return false
       if ((n[0] === 'let' || n[0] === 'const')) {
         for (let i = 1; i < n.length; i++)
           if (Array.isArray(n[i]) && n[i][0] === '=') note(n[i][1], n[i][2])
       } else if (n[0] === '=' && typeof n[1] === 'string') note(n[1], n[2])
       else if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') out.set(n[1], null)
-      for (let i = 1; i < n.length; i++) walk(n[i])
-    }
+    } })
     walk(body)
     return out
   }
@@ -914,8 +912,7 @@ export function observeProgramSlots(ast, opts) {
   // forfeits a fact, never misattributes a local write to an outer receiver.
   const observeNestedDictMapWrites = (arrowNode, paramVts) => {
     const bound = collectAllBoundNames(arrowNode, new Set())
-    const walk = (node) => {
-      if (!Array.isArray(node)) return
+    const walk = (node) => walkAst(node, { enter: node => {
       const op = node[0]
       if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
         const [, wobj, widx] = node[1]
@@ -938,8 +935,7 @@ export function observeProgramSlots(ast, opts) {
           }
         }
       }
-      for (let i = 1; i < node.length; i++) walk(node[i])
-    }
+    } })
     walk(arrowNode[2])
   }
   const visit = (node, intRefs = null, paramVts = null) => {
@@ -1197,8 +1193,7 @@ function collectBodyElemSids(func, paramReps) {
   const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
     ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
   const sids = new Map(), writes = new Map()
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
+  const scan = (n) => walkAst(n, { enter: n => {
     if (n[0] === '=' && typeof n[1] === 'string') {
       writes.set(n[1], (writes.get(n[1]) || 0) + 1)
       const rhs = n[2]
@@ -1207,8 +1202,7 @@ function collectBodyElemSids(func, paramReps) {
         if (sid != null) sids.set(n[1], sid)
       }
     }
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
+  } })
   scan(func.body)
   for (const [name, c] of writes) if (c > 1) sids.delete(name)
   return sids.size ? sids : null
@@ -1534,8 +1528,7 @@ export function collectSlotWriteHazards(ast, opts) {
     if (op === '[]') return keyedWrite(pat[1], pat[2])
     for (let i = 1; i < pat.length; i++) patternTargets(pat[i])
   }
-  const visit = (node) => {
-    if (!Array.isArray(node)) return
+  const visit = (node) => walkAst(node, { enter: node => {
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1])) {
       const lhs = node[1]
@@ -1610,8 +1603,7 @@ export function collectSlotWriteHazards(ast, opts) {
     } else if (op === 'for-in') {
       dynKeyedEnum(node[2])
     }
-    for (let i = 1; i < node.length; i++) visit(node[i])
-  }
+  } })
   // Per-body valTypes overlays (mirrors observeProgramSlots): receiver/key
   // resolution must see local kinds — `ps[i] = {…}` with ps a local ARRAY and
   // i an int counter is an ELEMENT write, not a slot hazard; without the
@@ -1752,8 +1744,8 @@ export function analyzeParamNeverGrown(paramReps) {
     // (OBJECT/HASH keyed writes land in slots / dict tables — arena-bump
     // allocation never moves an existing array.)
     const maybeArray = (x) => { const v = kindOf(x); return v == null || v === VAL.ARRAY }
-    const scan = (n) => {
-      if (dirty || !Array.isArray(n)) return
+    const scan = (n) => walkAst(n, { enter: n => {
+      if (dirty) return false
       const op = n[0]
       if (op === '()') {
         const c = n[1]
@@ -1762,26 +1754,25 @@ export function analyzeParamNeverGrown(paramReps) {
         // (Arrow LITERAL args are fine — their bodies are scanned right here.)
         const argRoot = n[2]
         const args = Array.isArray(argRoot) && argRoot[0] === ',' ? argRoot.slice(1) : argRoot === undefined ? [] : [argRoot]
-        for (const a of args) if (typeof a === 'string' && ctx.funcs.map?.has(a)) { dirty = true; return }
+        for (const a of args) if (typeof a === 'string' && ctx.funcs.map?.has(a)) { dirty = true; return false }
         if (typeof c === 'string') {
           if (ctx.funcs.map?.has(c)) out.add(c)
-          else if (!(c.startsWith('math.') || c.startsWith('new.') || _NG_SAFE_CALLEES.has(c))) { dirty = true; return }
+          else if (!(c.startsWith('math.') || c.startsWith('new.') || _NG_SAFE_CALLEES.has(c))) { dirty = true; return false }
         } else if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.') && typeof c[2] === 'string') {
           // A method name WRITTEN anywhere program-wide could be a user
           // closure shadowing the builtin (the sidecar method fork) — its
           // body is invisible here, so it poisons like any unknown call.
-          if (ctx.types.writtenProps?.has(c[2])) { dirty = true; return }
+          if (ctx.types.writtenProps?.has(c[2])) { dirty = true; return false }
           if (ARR_RESIZE_METHODS.has(c[2])) {
-            if (maybeArray(c[1])) { dirty = true; return }
-          } else if (!_NG_SAFE_METHODS.has(c[2])) { dirty = true; return }
-        } else { dirty = true; return }   // computed callee — could be any user closure
+            if (maybeArray(c[1])) { dirty = true; return false }
+          } else if (!_NG_SAFE_METHODS.has(c[2])) { dirty = true; return false }
+        } else { dirty = true; return false }   // computed callee — could be any user closure
       } else if (MUTATE_OPS.has(op) && Array.isArray(n[1])) {
         const lhs = n[1]
-        if ((lhs[0] === '.' || lhs[0] === '?.') && lhs[2] === 'length') { dirty = true; return }
-        if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return }
+        if ((lhs[0] === '.' || lhs[0] === '?.') && lhs[2] === 'length') { dirty = true; return false }
+        if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return false }
       }
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
+    } })
     withValueOverlay(facts.valTypes, () => scan(func.body))
     if (dirty) poisoned.add(func.name)
     else edges.set(func.name, out)
@@ -1914,10 +1905,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Body walker: for each `{}` literal observe per-slot intCertain; for each
   // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
   // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
-  const visit = (node, isInt) => {
-    if (!Array.isArray(node)) return
+  const visit = (node, isInt) => walkAst(node, { enter: node => {
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
@@ -1942,8 +1932,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
         // Unresolvable receivers are hazard-poisoned (collectSlotWriteHazards).
       }
     }
-    for (let i = 1; i < node.length; i++) visit(node[i], isInt)
-  }
+  } })
 
   const sweep = (fresh) => {
     // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a

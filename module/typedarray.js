@@ -9,7 +9,7 @@ import { OPTF } from '../src/ctx.js'
  */
 
 import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId } from '../src/ir.js'
-import { isReassigned, T, ASSIGN_OPS } from '../src/ast.js'
+import { isReassigned, T, ASSIGN_OPS, walkAst } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1479,8 +1479,8 @@ export default (ctx) => {
         for (let k = 1; k < n.length; k++) if (hasWrite(n[k], name)) return true
         return false
       }
-      const scan = (n) => {
-        if (!Array.isArray(n) || n[0] === '=>') return
+      walkAst(body, { enter: n => {
+        if (n[0] === '=>') return false
         if (n[0] === 'while' && Array.isArray(n[1]) && n[1][0] === '<' && typeof n[1][1] === 'string') {
           const pc = n[1][1], bound = constIntExpr(n[1][2]), stmts = stmtsOf(n[2])
           if (bound != null && bound > 0) {
@@ -1492,19 +1492,18 @@ export default (ctx) => {
               if (width == null || width < 1) continue
               const base = d[1], groups = new Map(), bad = new Set()
               let pcWritten = false
-              const walkReads = (x, visit) => {
-                if (!Array.isArray(x) || x[0] === '=>') return
-                if (x[0] === '[]' && typeof x[1] === 'string') {
+              const walkReads = (x, visit) => walkAst(x, { enter: n => {
+                if (n[0] === '=>') return false
+                if (n[0] === '[]' && typeof n[1] === 'string') {
                   let off = null
-                  if (x[2] === base) off = 0
-                  else if (Array.isArray(x[2]) && x[2][0] === '+' && x[2].length === 3) {
-                    if (x[2][1] === base) off = constIntExpr(x[2][2])
-                    else if (x[2][2] === base) off = constIntExpr(x[2][1])
+                  if (n[2] === base) off = 0
+                  else if (Array.isArray(n[2]) && n[2][0] === '+' && n[2].length === 3) {
+                    if (n[2][1] === base) off = constIntExpr(n[2][2])
+                    else if (n[2][2] === base) off = constIntExpr(n[2][1])
                   }
-                  if (off != null && off >= 0 && off < width) visit(x[1], off, idxKey(x[1], x[2]))
+                  if (off != null && off >= 0 && off < width) visit(n[1], off, idxKey(n[1], n[2]))
                 }
-                for (let k = 1; k < x.length; k++) walkReads(x[k], visit)
-              }
+              } })
               for (const st of stmts) {
                 const directDecl = Array.isArray(st) && (st[0] === 'let' || st[0] === 'const')
                 const writesPcHere = hasWrite(st, pc)
@@ -1527,9 +1526,7 @@ export default (ctx) => {
             }
           }
         }
-        for (let k = 1; k < n.length; k++) scan(n[k])
-      }
-      scan(body)
+      } })
       store.set(body, guards)
     }
     const key = idxKey(arr, i), g = store.get(body).get(key)

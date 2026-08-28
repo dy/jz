@@ -21,6 +21,8 @@
  * @module jzify/generators
  */
 
+import { walkAst } from '../src/ast.js'
+
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
 // THE one canonical function boundary for every control-effects walker in
 // this layer (hasYield/hasReturn/hasFreeJump/collectLocals here, async.js's
@@ -212,11 +214,10 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
   // Collect every let/const binding name in the body — generator locals live in
   // the factory scope so they survive across next() resumes. Shadowing across
   // sibling blocks would collide after hoisting — reject (rename support later).
-  const collectLocals = (node, out, path) => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'let' || node[0] === 'const')) {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
+  const collectLocals = (node, out, path) => walkAst(node, { enter: n => {
+    if ((n[0] === 'let' || n[0] === 'const')) {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
         const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
         if (typeof name !== 'string')
           err('generators v1: destructuring declarations inside a generator body are not supported yet — bind names first')
@@ -225,9 +226,8 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       }
     }
     // nested function forms create their own scope — their decls don't hoist
-    if (FN_BOUNDARY_OPS.has(node[0])) return
-    for (let i = 1; i < node.length; i++) collectLocals(node[i], out, path)
-  }
+    if (FN_BOUNDARY_OPS.has(n[0])) return false
+  } })
 
   function lowerGenerator(params, rawBody) {
     const body = blockStmts(rawBody)

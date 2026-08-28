@@ -175,22 +175,16 @@ export function inlinePureFnsInFn(fn, pureFuncMap, freshIdRef, canInline) {
     }
     return 'f64'
   }
-  const walk = (node) => {
-    if (!isArr(node)) return node
-    const parentIsStmt = INLINE_STMT_CTX.has(node[0])
-    for (let i = 1; i < node.length; i++) {
-      let child = node[i]
-      if (!isArr(child)) continue
-      child = walk(child)          // recurse first → inline nested calls (e.g. in this call's args)
-      node[i] = child
-      if (!parentIsStmt && child[0] === 'call' && typeof child[1] === 'string' &&
-          child[1] !== selfName && canInline.has(child[1]) && pureFuncMap.has(child[1])) {
-        const inlined = inlinePureCallExpr(child, pureFuncMap, freshIdRef, newLocals, resultTypeOf(pureFuncMap.get(child[1])), '$__gi')
-        if (inlined != null) node[i] = inlined
-      }
-    }
-    return node
+  // Post-order (walkAst's exit): a call's own args are rewritten first → inline
+  // nested calls (e.g. in this call's args) — then the call itself is considered,
+  // via its parent slot, for inlining.
+  for (let i = bodyStart; i < fn.length; i++) {
+    walkAst(fn[i], { exit: (node, parent, index) => {
+      if (!parent || INLINE_STMT_CTX.has(parent[0]) || node[0] !== 'call' || typeof node[1] !== 'string' ||
+          node[1] === selfName || !canInline.has(node[1]) || !pureFuncMap.has(node[1])) return
+      const inlined = inlinePureCallExpr(node, pureFuncMap, freshIdRef, newLocals, resultTypeOf(pureFuncMap.get(node[1])), '$__gi')
+      if (inlined != null) parent[index] = inlined
+    } })
   }
-  for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }

@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, commaList, isReassigned, returnExprs } from '../ast.js'
+import { ASSIGN_OPS, commaList, isReassigned, returnExprs, walkAst } from '../ast.js'
 import { BIGINT_JOINT_BINARY_OPS, censusMaybeUndefinedKind, nullishArm, valTypeOf } from '../kind.js'
 import { DBG_INVARIANTS } from '../ctx.js'
 import { KIND_UNIVERSE, VAL } from '../reps.js'
@@ -935,17 +935,15 @@ function solveBigintProvenance(ctx, programFacts, ast) {
 
 function deriveLocalProvenance(sig, body, localReps, program) {
   const names = new Set(), params = new Set(), storage = new Set()
-  const scanStorage = (node, root = false) => {
-    if (!Array.isArray(node)) return
-    if (!root && node[0] === '=>') return
-    const cm = callMember(node)
+  const scanStorage = node => walkAst(node, { enter: (n, parent) => {
+    if (parent !== null && n[0] === '=>') return false
+    const cm = callMember(n)
     if (cm && typeof cm[1] === 'string' &&
         (STORAGE_READ_METHODS.has(cm[2]) || STORAGE_WRITE_METHODS.has(cm[2]))) storage.add(cm[1])
-    if (ASSIGN_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string')
-      storage.add(node[1][1])
-    for (let i = 1; i < node.length; i++) scanStorage(node[i])
-  }
-  scanStorage(body, true)
+    if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && typeof n[1][1] === 'string')
+      storage.add(n[1][1])
+  } })
+  scanStorage(body)
   const localExprMay = expr => {
     const recv = memberReceiver(expr), cm = callMember(expr)
     if (recv != null && storage.has(recv)) return true
