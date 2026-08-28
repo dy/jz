@@ -130,7 +130,8 @@ trace scaffolding was added — matches this codebase's existing precedent
 - `test/kernel-parity.js`: 3/3 (33/33 byte-identical WAT at O2/O3).
 - `test/kernel-oracle.js`: 14/14 (605 assertions).
 - Kernel build (`npm run build`): clean (dist/jz.wasm 17491.3 kB).
-- `JZ_TEST_TARGET=jz.wasm node test/index.js`: in progress / see report.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: 2966 total / 2965 pass / 0
+  fail / 1 skip (14246 assertions). 0 fail — gate met.
 - `node test/bench.js`: in progress / see report (size/correctness gates
   only — speed ratchets are expected to be noisy under this machine's
   concurrent load per the task brief, not a signal either way).
