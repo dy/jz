@@ -136,11 +136,15 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   //     write, an unresolvable call argument, or any other ordinary value position.
   const occurrencesByName = new Map()
   const candidateRoots = new Set()
+  const __dbgFilter = process.env.JZ_DBG_DICTIDX_ROOT
   const record = (name, occ) => {
+    if (__dbgFilter && occ.t === 'poison' && name.startsWith(__dbgFilter))
+      console.error('DBG poison-record for', name, 'currentNode:', JSON.stringify(__curNode).slice(0, 300))
     let arr = occurrencesByName.get(name)
     if (!arr) { arr = []; occurrencesByName.set(name, arr) }
     arr.push(occ)
   }
+  let __curNode = null
 
   const walkComputedWriteKey = (target, key, valueNode, activeLoops) => {
     for (let i = activeLoops.length - 1; i >= 0; i--) {
@@ -155,6 +159,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
   const walk = (node, activeLoops) => {
     if (!Array.isArray(node)) return
+    __curNode = node
     const op = node[0]
     if (op === 'import' || op === 'export') return
 
@@ -166,16 +171,27 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
     if (MUTATE_OPS.has(op)) {
       const lhs = node[1], rhs = node.length > 2 ? node[2] : undefined
+      // A logical assignment (`??=`/`||=`/`&&=`) either leaves the slot exactly as it
+      // already was (its short-circuit branch) or sets it to RHS (same as plain `=`) —
+      // never a THIRD, newly-derived kind the way arithmetic/bitwise compound ops
+      // (`+=`, `|=`, …) can. "Left unchanged" contributes no new fact beyond what
+      // every OTHER write to the same key already establishes, and this census's own
+      // meet-on-disagreement fold (foldKey) already catches a real conflict between
+      // this write's RHS and any other — so folding RHS's kind here is exactly as
+      // sound as for `=`, not a widening. Watr's real `(ctx.metadata ??= {})[type]
+      // ??= []` is exactly this shape (module/object metadata + a dict-of-arrays
+      // idiom) — treating it as poison-on-sight was needlessly conservative.
+      const plainOrLogical = op === '=' || op === '??=' || op === '||=' || op === '&&='
       if (typeof lhs === 'string') { record(lhs, { t: 'poison' }); if (rhs !== undefined) walk(rhs, activeLoops); return }
       if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string') {
-        if (op === '=') record(lhs[1], { t: 'literalWrite', key: lhs[2], valueNode: rhs })
+        if (plainOrLogical) record(lhs[1], { t: 'literalWrite', key: lhs[2], valueNode: rhs })
         else record(lhs[1], { t: 'poison' }) // compound mutation (+=, ++, …) through a literal prop
         if (rhs !== undefined) walk(rhs, activeLoops)
         return
       }
       if (Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string') {
         const target = lhs[1], key = lhs[2]
-        if (op === '=') {
+        if (plainOrLogical) {
           if (isLiteralStr(key)) record(target, { t: 'literalWrite', key: key[1], valueNode: rhs })
           else if (!walkComputedWriteKey(target, key, rhs, activeLoops)) record(target, { t: 'poison' })
         } else record(target, { t: 'poison' }) // compound mutation through a computed key
@@ -232,7 +248,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
     for (let i = 1; i < node.length; i++) {
       const c = node[i]
-      if (typeof c === 'string') record(c, { t: 'poison' })
+      if (typeof c === 'string') record(c, { t: 'poison', __dbgNode: node })
       else walk(c, activeLoops)
     }
   }
@@ -339,6 +355,50 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
     return result
   }
 
+  // A member of a POSITIONAL array-of-arrows table (constArrayMembers) that is
+  // itself reached ONLY through a runtime-computed index needs one uniform WASM
+  // call_indirect signature — every member sharing a numeric table slot must
+  // agree on param/result types regardless of its own original arity, since the
+  // index is only known at runtime (watr's real `build[SECTION.code](item,
+  // ctx)`). An earlier plan pass (this codebase's own closure-ABI normalization
+  // for exactly this shape) rewrites such a member's own params down to a
+  // single rest parameter and inserts a mechanical PROLOGUE recovering each
+  // original positional argument — confirmed empirically against the actual
+  // rewritten AST, not assumed: `(...REST) => { let name = REST[0], ctx =
+  // REST[1], ... ; <original body> }`. A member's params never see this
+  // rewrite at all when it's dispatched by a runtime STRING key instead (an
+  // object-literal table, resolveComputed's own domain) — WASM has no
+  // string-keyed call primitive, so that shape is emitted as a plain runtime
+  // comparison chain calling each ORIGINAL-signature function directly, never
+  // needing one shared type. Recovers the recovered name ONLY from the exact
+  // mechanical shape the rewrite produces — a literal-number-indexed read of
+  // the rest param, assigned to a fresh local, at the arrow's own top level
+  // (never inside a nested if/loop, so a conditionally-executed read can never
+  // be mistaken for the unconditional prologue) — declining (null) on anything
+  // else rather than guess which local a runtime-computed index might mean.
+  const arrowParamNameAt = (arrowNode, pos) => {
+    const ps = extractParams(arrowNode[1])
+    const p = ps[pos]
+    if (typeof p === 'string') return p
+    if (p) { const c = classifyParam(p); if (typeof c[PARAM_NAME] === 'string') return c[PARAM_NAME] }
+    if (ps.length !== 1 || !Array.isArray(ps[0]) || ps[0][0] !== '...' || typeof ps[0][1] !== 'string') return null
+    const rest = ps[0][1]
+    let found = null
+    const scan = (stmt) => {
+      if (found !== null || !Array.isArray(stmt)) return
+      if (stmt[0] === ';') { for (let i = 1; i < stmt.length && found === null; i++) scan(stmt[i]); return }
+      if (stmt[0] === '{}') { scan(stmt[1]); return }
+      if (stmt[0] !== 'let' && stmt[0] !== 'const') return
+      for (const d of stmt.slice(1)) {
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' &&
+            Array.isArray(d[2]) && d[2][0] === '[]' && d[2][1] === rest &&
+            Array.isArray(d[2][2]) && d[2][2][0] == null && d[2][2][1] === pos) { found = d[1]; return }
+      }
+    }
+    scan(arrowNode[2])
+    return found
+  }
+
   // ---- fold one write's VALUE into a shared per-key census ----
   const foldKey = (census, key, kind) => {
     const prior = census.get(key)
@@ -376,6 +436,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   const nameToCensus = new Map() // name -> Map<key,kind>|null (frozen result, shared across every alias of one root)
   const resolveRoot = (rootName) => {
     if (nameToCensus.has(rootName)) return
+    const dbgTarget = process.env.JZ_DBG_DICTIDX_ROOT
     const census = new Map()
     const visited = new Set()
     const queue = [rootName]
@@ -384,10 +445,13 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
       const name = queue.shift()
       if (visited.has(name)) continue
       visited.add(name)
+      const dbg = dbgTarget && name.startsWith(dbgTarget)
+      if (dbg) console.error('DBG root', rootName, 'reached target at visit', name, 'occs:', JSON.stringify(occurrencesByName.get(name)))
       if (visited.size > ALIAS_BOUND) { poisoned = true; break }
       const occs = occurrencesByName.get(name)
       if (!occs) continue
       for (const o of occs) {
+        if (dbg) console.error('DBG occ', name, JSON.stringify(o))
         if (o.t === 'decl' || o.t === 'safe' || o.t === 'loopNumericWrite') continue
         if (o.t === 'literalWrite') {
           const kind = valTypeOf(o.valueNode)
@@ -420,9 +484,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
           if (!members) { poisoned = true; break }
           let bad = false
           for (const m of members) {
-            let pname
-            if (Array.isArray(m)) { const ps = extractParams(m[1]); const p = ps[o.pos]; pname = typeof p === 'string' ? p : (p ? classifyParam(p)[PARAM_NAME] : undefined) }
-            else pname = m.sig?.params?.[o.pos]?.name
+            const pname = Array.isArray(m) ? arrowParamNameAt(m, o.pos) : m.sig?.params?.[o.pos]?.name
             if (typeof pname !== 'string') { bad = true; break }
             if (!visited.has(pname)) queue.push(pname)
           }
@@ -440,9 +502,9 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
   for (const name of candidateRoots) resolveRoot(name)
   if (process.env.JZ_DBG_DICTIDX) {
-    console.error('candidateRoots:', [...candidateRoots])
-    for (const name of candidateRoots) console.error(name, '->', JSON.stringify(occurrencesByName.get(name)))
-    for (const [name, census] of nameToCensus) console.error('nameToCensus', name, '->', census ? [...census] : null)
+    const filt = process.env.JZ_DBG_DICTIDX_ROOT
+    for (const [name, census] of nameToCensus) if (!filt || name.startsWith(filt))
+      console.error('nameToCensus', name, '->', census ? [...census] : null)
   }
 
   const resolveDictKind = (name, key) => {
