@@ -457,12 +457,10 @@ export const splitCharScanLoops = () => {
   let changed = false
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    walkAst(func.body, {
-      enter(node, parent, idx) {
-        if (node[0] === '=>') return false
-        if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }
-      },
-    })
+    walkAst(func.body, { enter: (node, parent, idx) => {
+      if (node[0] === '=>') return false
+      if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }
+    } })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.
   }
