@@ -519,6 +519,112 @@ test('SIMD i32x4 - map bitwise still takes the SIMD lane path (unaffected by the
   }`).main(), (5 & 15) + (-6 & 15) + (255 & 15) + (-1 & 15))
 })
 
+// === SIMD map bitwise/arithmetic CONSTANT normalization (genSimdMap's i32.const
+// site) — fix/simd-map-const-toint32 ===
+// Companion to the float×bitwise decline above: the bitwise/shift arms
+// (module/typedarray/simd-map.js's simdI32/scalarI32) embed the JS AST
+// literal `c` verbatim into `i32.const`/`i32x4.splat (i32.const c)`. Left
+// unnormalized, any non-integer or non-finite `c` (`1.5`, `-1.5`, `0.9`,
+// `2147483648.7`, `Infinity`, `-Infinity`) isn't even valid WAT integer
+// syntax — `new Int32Array(4).map(x => x & 1.5)` used to throw "Bad int 1.5"
+// at compile time, a spurious REJECT of valid JS (ECMAScript ToInt32:
+// `x & 1.5` ≡ `x & 1`). genSimdMap now normalizes `c` via toI32Const — the
+// same `Number.isFinite(v) ? v | 0 : 0` fold src/ir.js's toI32 applies to a
+// literal f64.const — for BOTH the value family (and/or/xor) and the
+// shift-count family (shl/shr/shru: no separate `&31` needed, WASM's own
+// shl/shr_s/shr_u — scalar and i32x4 lane-wise alike — already reduce the
+// shift-count operand modulo 32 at the instruction level).
+// Differential against the host's own TypedArray.prototype.map (the
+// authoritative oracle) at O0/O2/O3, element-by-element. Int16Array/Uint8Array
+// included as a CONTROL: elemType < 4 never reaches genSimdMap's SIMD i32
+// path at all (declines unconditionally, "no SIMD path" below), so these two
+// kinds exercise the SAME constants purely through the pre-existing generic
+// lowering — confirms the differential harness itself (and that path) is
+// sound, independent of this fix.
+const INT_BW_CONSTS = [1.5, -0, 33, 0.9, 2147483648.7, NaN, Infinity, -1.5]
+const INT_BW_ELEMS = {
+  Int32Array: [0, 1, -1, 5, -6, 255, -255, 2147483647, -2147483648, 1000000],
+  Uint32Array: [0, 1, 5, 255, 2147483647, 2147483648, 4294967295, 3000000000],
+  Int16Array: [0, 1, -1, 5, -6, 255, -255, 32767, -32768],
+  Uint8Array: [0, 1, 5, 255, 128, 254],
+}
+const INT_BW_JS_OPS = { '&': (x, c) => x & c, '|': (x, c) => x | c, '^': (x, c) => x ^ c, '<<': (x, c) => x << c, '>>': (x, c) => x >> c, '>>>': (x, c) => x >>> c }
+
+for (const [Kind, vals] of Object.entries(INT_BW_ELEMS)) {
+  for (const [jsOp, fn] of Object.entries(INT_BW_JS_OPS)) {
+    test(`SIMD map bitwise constant - ${Kind} x ${jsOp} c matches native ToInt32/shift-mask for c in {1.5,-0,33,0.9,2147483648.7,NaN,Infinity,-1.5}, O0/O2/O3`, () => {
+      const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+      for (const c of INT_BW_CONSTS) {
+        const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${bwLit(c)}) }`
+        const want = Array.from(new globalThis[Kind](vals).map(x => fn(x, c)))
+        for (const optimize of [0, 2, 3]) {
+          const got = Array.from(jz(src, { optimize }).exports.main())
+          for (let i = 0; i < vals.length; i++)
+            is(got[i], want[i], `${Kind} x${jsOp}${bwLit(c)} O${optimize} elem[${i}] (src=${vals[i]})`)
+        }
+      }
+    })
+  }
+}
+
+// Arithmetic (mul/add/sub) on an INTEGER element (Int32Array/Uint32Array) with
+// a FRACTIONAL constant: JS computes `x OP c` in f64 (the loaded int32 value
+// promoted to double) and applies ToInt32/ToUint32 only once, when STORING
+// the result — `x * 1.5` on an Int32Array is NOT `x * 1` (x=3 → f64 4.5 →
+// ToInt32 4, not 3). genSimdMap declines the fast path for this shape (same
+// `return null` idiom as the float×bitwise/i8/i16/u8/u16 declines) rather
+// than round/truncate the constant, falling through to the generic
+// per-element lowering, which stores through elemStoreIR's real conversion.
+// An integer-valued constant (`x * 3`) needs no decline — exact-integer f64
+// arithmetic and i32 wrapping arithmetic agree bit-for-bit — verified by the
+// WAT-shape control below alongside this value differential.
+test('SIMD map arithmetic decline - Int32Array/Uint32Array fractional constant (x*1.5, x+0.5, x-1.5) matches native ToInt32/ToUint32-on-store, O0/O2/O3', () => {
+  const ARITH_JS_OPS = { '*': (x, c) => x * c, '+': (x, c) => x + c, '-': (x, c) => x - c }
+  const cases = [['*', 1.5], ['+', 0.5], ['-', 1.5]]
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    const vals = INT_BW_ELEMS[Kind]
+    const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+    for (const [jsOp, c] of cases) {
+      const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${c}) }`
+      const want = Array.from(new globalThis[Kind](vals).map(x => ARITH_JS_OPS[jsOp](x, c)))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < vals.length; i++)
+          is(got[i], want[i], `${Kind} x${jsOp}${c} O${optimize} elem[${i}] (src=${vals[i]})`)
+      }
+    }
+  }
+})
+
+test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fractional-arithmetic constants decline', () => {
+  // Positive: an INTEGER constant (unchanged by toI32Const) keeps taking the
+  // SIMD lane path for every recognized op family, on both Int32Array and
+  // Uint32Array — this fix's normalization/decline gates must not spill onto
+  // the ordinary, already-correct integer-constant case.
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    ok(/v128\.and/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })), `${Kind} x&255: v128.and present`)
+    ok(/i32x4\.mul/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x * 3) }`, { optimize: 0 })), `${Kind} x*3: i32x4.mul present`)
+    ok(/i32x4\.add/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x + 3) }`, { optimize: 0 })), `${Kind} x+3: i32x4.add present`)
+  }
+  for (const [jsOp, watOp] of [['<<', 'i32x4.shl'], ['>>', 'i32x4.shr_s'], ['>>>', 'i32x4.shr_u']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 33) }`, { optimize: 0 })
+    ok(w.includes(watOp), `Int32Array x${jsOp}33: ${watOp} present (out-of-range integer shift count still vectorizes)`)
+    ok(w.includes('i32.const 33'), `Int32Array x${jsOp}33: constant embeds unchanged (WASM masks mod-32 at the instruction level)`)
+  }
+  // Negative: a FRACTIONAL arithmetic constant must decline (no i32x4.mul/add
+  // in the output at all — proves the generic fallback fired, not merely that
+  // the final number happens to be right).
+  for (const [jsOp, watOp] of [['*', 'i32x4.mul'], ['+', 'i32x4.add']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 1.5) }`, { optimize: 0 })
+    ok(!w.includes(watOp), `Int32Array x${jsOp}1.5: ${watOp} ABSENT (fast path declined)`)
+  }
+  // A bitwise constant that was ALREADY valid WAT integer syntax before this
+  // fix (e.g. -0 stringifies to "0") must produce byte-identical WAT to
+  // before — normalization is idempotent on already-normalized constants.
+  const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x & -0) }`, { optimize: 0 })
+  ok(w.includes('i32.const 0'), `Int32Array x&-0: normalizes to i32.const 0 (ToInt32(-0) === 0)`)
+})
+
 // === SIMD ramp-map (out[i] = f(i), induction var as DATA) — tryRampMap ===
 // No input load: the IV becomes an i32x4 ramp [i, i+1, i+2, i+3]. SIMD result is
 // checked bit-for-bit against the scalar (NOVEC) oracle.
