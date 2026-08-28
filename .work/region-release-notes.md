@@ -2363,3 +2363,85 @@ already-built/cached kernel binary) — confirmed `git diff HEAD -- scripts/self
   the machine is less contended (this session ran under heavy, confirmed multi-agent shared-machine
   load throughout — every kernel operation took noticeably longer wall-clock than its own CPU-time
   would suggest).
+
+## Session (2026-08-28, worktree fix/region-hooks-on-defects @ b05caa1a) — goal (a) `conditional-spread.js`: root cause FOUND (not yet fixed) — an INLINER rename gap, not a region-relocation bug
+
+Picking up the task's goal (1): root-cause `conditional-spread.js`'s "Maximum call stack size
+exceeded" crash (`{ a: 1, c: 3, ...(cond && { b: 2 }) }`).
+
+**Diagnostic infra landed (`4b5c66e2`, throwaway, WIP, must be reverted before any battery run or
+merge)**: `scripts/self.js` gained `__dbgCompile(mask, ...)` (like `compileSelf` but sets
+`ctx.transform._dbgRoundMask = mask` right after `setupSelf`'s reset) and `__dbgCompileWat(mask,
+...)` (same, via `watrPrint` instead of `watrCompile` — print doesn't validate local declarations
+the way encode does, so it can surface a corrupted-but-printable module). `src/compile/index.js`'s
+`compile()` gained a bit-per-round gate (`__M = ctx.transform._dbgRoundMask ?? ~0`, `__rh = bit =>
+(regionHooks && (__M & bit)) ? regionHooks : null`) threaded through all 8 of its own round
+boundaries in place of the bare `regionHooks` truthy-checks — same technique and same bit numbering
+(1=SCAN 2=AFE 4=emitFuncs 8=__buildMark 16=__stdlibMark 32=outermost/releaseSession 64=plan()'s own
+rounds 128=optimizeModule's round) as the prior "emitIR's round — ISOLATED to `__stdlibMark`"
+session above, reconstructed since that session's own scaffolding was fully reverted. Default mask
+(all-bits, `~0`) is behaviorally identical to bare `regionHooks` on every existing call path.
+
+**First finding — the bug needs the KERNEL itself built at O3, not just the guest optimize level.**
+A fast `JZ_SELF_COMPILE_OPT=0` diagnostic kernel (96.7s, 13,486,519 bytes) does NOT reproduce the
+crash at ANY guest optimize level (false/0/2/3, all clean) — confirmed via `__dbgCompile`. Only a
+REAL PRODUCTION kernel (`node scripts/self-compile-build.mjs`, default O3 self-compile, 241.9s,
+15,804,341 bytes) reproduces a failure on this source at guest `optimize:3` (guest 0/2/false all
+clean on this kernel too) — the defect is sensitive to the SELF-COMPILE's OWN optimize level (how
+the COMPILER's own source, e.g. module/object.js's conditional-spread handling, gets compiled INTO
+the kernel), not only to what optimize level the kernel then applies to a guest program.
+
+**Second finding — the observed SYMPTOM differs from the task's own recorded one, but is the SAME
+underlying defect class.** Against this session's O3 kernel, the guest source throws `Error:
+Unknown local $b` (a watr-level "reference to an undeclared local" validation error, from
+`self.exports.default(...)` AND `__dbgCompile` alike — confirmed via a raw, non-diagnostic
+`self.exports.default(...)` call too, so this is not an artifact of the bitmask scaffolding) rather
+than the task-recorded "Maximum call stack size exceeded". Both are exactly the kind of
+build-layout-sensitive symptom this campaign has repeatedly seen before (see the O2
+"heisenbug"/"address-boundary-sensitive" note at the top of scripts/self.js, and the `dvnested`
+watr-DCE-at-scale gap above) — a stale/corrupted-reference bug's OBSERVABLE surface (stack
+overflow vs. a bad local reference vs. a wrong value) plausibly depends on exactly what memory
+happens to sit where in a given build, not on the underlying root cause changing. Treating "Unknown
+local $b" as the same defect and continuing to root-cause IT (much more inspectable than a stack
+trace into unnamed wasm frames) rather than re-chasing the exact original symptom.
+
+**Root cause, precisely localized: `$__to_str` (module/core.js or module/string.js's shared
+number→string stdlib helper) has an INLINED Ryu float-formatting helper's body spliced into it
+(locals renamed with an `$__inl7_` prefix — `$__inl7_vr/vp/vm/roundUp/removed/ieeeE/e2/even/...`),
+and ONE instruction inside that inlined region reads a BARE, un-prefixed `local.get $b` instead of
+whatever `$__inl7_`-prefixed local it should be** (`src/compile/index.js`'s WAT dump, kernel build
+only — confirmed absent from the equivalent native WAT, which has no `$b` anywhere near this span).
+Found by: dumping the kernel's WAT via `__dbgCompileWat` (mask=255, optimize:3) — `watrPrint`
+happily prints the malformed tree that `watrCompile` refuses to encode — then writing a small
+script (parses the dump with watr's own NATIVE `parse.js`, walks every `(func ...)` form, collects
+its declared param/local names, and flags any `local.get/set/tee` referencing a name outside that
+set). Exactly ONE bad reference in the whole ~15,800-line dump: inside `$__to_str`, at
+```
+(local.set $__inl7_olen
+  (i32.add
+    (i64.ne (i64.and (local.get $b) (i64.const 0x0000400000000000)) (i64.const 0))
+    (i64.const 0)))
+```
+— every sibling instruction in this same block uses the `$__inl7_` prefix consistently; this one
+alone reads a bare `$b`. `$__inl7_e2`/`$__inl7_even` (both present in the function's OWN declared-
+locals list) are the likely intended target, by the shape of the surrounding Ryu rounding-decision
+code (an is-even mantissa bit test feeding an extra-digit decision) — not yet confirmed which.
+
+**Working hypothesis (not yet confirmed against source)**: some inliner (`$__inl<N>_` naming —
+grep hits so far: `src/session.js:344`'s comment "recompiles emit history-dependent WAT text
+(__inl5 → __inl15)", `src/optimize/vectorize.js:1574`'s "`$__inl7___li0`" LICM-hoisted-invariant-
+under-inlining comment — the actual renaming call site not yet located) builds its rename map from
+a callee's CURRENT/live declared-locals list and substitutes every reference in the callee's body
+accordingly. If the callee body being spliced in is a STALE snapshot (pre-dating some earlier
+pass's own rename of one local from `$b` to `$e2`/`$even` — i.e. two different-generation copies of
+the same logical function body coexisting, one used to BUILD the rename map, an older one actually
+WALKED and substituted) the walk would substitute every occurrence of the NEW name correctly while
+leaving an old `$b` occurrence untouched (not in the map, so passed through as-is) — a root-
+completeness-shaped bug, but in an INLINER's own before/after body pairing rather than in a region
+round's snapshot. Whether this pairing is itself something a region round's relocation could
+desync (e.g. one of the two copies riding in a round's root while the other is a stale reference
+NOT re-read after the round's exit) is the next thing to confirm — has NOT yet been traced to the
+actual inliner source or connected back to a specific region round via the bitmask infra already
+built. Next step: locate the actual `$__inl` rename call site (grep `src/optimize/*.js` more
+broadly, e.g. for the literal `__inl` prefix template or a rename-map-building loop near an inline
+pass), read it, and find where it could read two non-corresponding snapshots of the same callee.
