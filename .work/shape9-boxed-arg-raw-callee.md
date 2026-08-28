@@ -132,9 +132,17 @@ trace scaffolding was added — matches this codebase's existing precedent
 - Kernel build (`npm run build`): clean (dist/jz.wasm 17491.3 kB).
 - `JZ_TEST_TARGET=jz.wasm node test/index.js`: 2966 total / 2965 pass / 0
   fail / 1 skip (14246 assertions). 0 fail — gate met.
-- `node test/bench.js`: in progress / see report (size/correctness gates
-  only — speed ratchets are expected to be noisy under this machine's
-  concurrent load per the task brief, not a signal either way).
+- `node test/bench.js`: 221 total / 207 pass / 14 fail. Every failing
+  assertion is a SPEED/timing comparison (`fastest-wasm` per-target ms
+  races, `examples corpus — jz beats V8 per frame` geomean) — several
+  explicitly self-annotated as pre-existing "known gap"s in the bench
+  file itself, unrelated to this change. Zero size-keyword hits anywhere
+  in the failure set (`grep -i size` over the full output: no matches) —
+  the actual SIZE/correctness gates this task's battery cares about all
+  pass. Machine had ≥2 other concurrent heavy sessions running the same
+  suites throughout (confirmed via `ps`) — matches the task brief's own
+  expectation ("speed ratchets fail under machine load — only size/
+  correctness gates count").
 
 ## Watr downstream
 
