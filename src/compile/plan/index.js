@@ -29,6 +29,7 @@
 import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
+import { buildCallTargetIndex } from '../call-target-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -216,6 +217,18 @@ export default function plan(ast, profiler, regionHooks) {
   ctx.types.arrResized = programFacts.arrResized
   ctx.types.nameEscapes = programFacts.nameEscapes
   ctx.types.literalObjectVars = programFacts.literalObjectVars
+  // CallTargetIndex (finish-order item 1, call-target-index.js): the single,
+  // frozen, same-module authority for a `.`-member call's callee. Built ONCE,
+  // here — after every AST-mutating early-plan pass above has settled and
+  // before solveRepresentationBoundaries/narrowSignatures (this function's
+  // own two callers of both, further down) or emission ever run — so every
+  // consumer reads the identical snapshot, never a pass-order-dependent
+  // partial one (the exact hazard that sank fix/shape8-member-callee, see
+  // that module's own header comment). Published on `ctx.types` alongside
+  // its sibling whole-program facts above so emit.js (which only sees `ctx`,
+  // never `programFacts`) can read it too.
+  programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
+  ctx.types.callTargets = programFacts.callTargets
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
