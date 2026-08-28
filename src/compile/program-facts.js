@@ -658,8 +658,13 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
     const fn = ctx.funcs.map.get(calleeName)
     const params = fn?.sig?.params
     if (!params || argc >= params.length) return false
+    // A REST param left unsupplied is a real default too — an empty array,
+    // never `undefined` — so it never triggers narrow.js's own `missing()`
+    // poison in the first place; only checked here to keep this function's
+    // own verdict consistent with that (a redundant-safe skip either way).
+    const restIdx = fn.rest ? params.length - 1 : -1
     for (let i = argc; i < params.length; i++)
-      if (fn.defaults?.[params[i].name] == null) return true
+      if (i !== restIdx && fn.defaults?.[params[i].name] == null) return true
     return false
   }
 
