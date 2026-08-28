@@ -35,6 +35,12 @@
  * corpus-building itself (missing files, bad module graphs) still throws;
  * only the per-(spec,level) `compile()` call is guarded.
  *
+ * Every command additionally takes `--only <substring>`, filtering specs to
+ * those whose name (e.g. "bench:mandelbrot", "example:julia",
+ * "kernel-parity:sum", "watr:watr.js") contains it — a fast, targeted rerun
+ * instead of the full corpus (useful while iterating, or to isolate one
+ * suspicious specimen after a `check` reports it).
+ *
  * # Commands
  *   snapshot <out.json> [--full]
  *     Compiles the whole corpus and writes `{meta, entries}` to <out.json>,
@@ -109,6 +115,32 @@ const SELFHOST_CASES = new Set(['jz'])
 const GRAPH_CASES = new Set(['jessie', 'jz'])
 
 const hashBuffer = (buf) => createHash('sha256').update(buf).digest('hex')
+
+// Replicated verbatim from test/kernel-parity.js's exported CORPUS (source of
+// truth — diff against it if this ever needs to catch up). Deliberately NOT
+// imported: `import '../test/kernel-parity.js'` runs that file's own
+// top-level `test(...)` registrations as a side effect, and those pull in
+// `kernel-target.js`, which lazily runs `npm run build` to produce
+// dist/jz.wasm (a full self-host compile) the first time it's missing —
+// exactly the expensive self-host cost this tool excludes by default (see
+// SELFHOST_CASES above). A plain `import` for one constant should not risk
+// minutes of unrelated build work, especially inside a --ref temp worktree
+// that gets deleted right after (the build would be paid, then thrown away,
+// on every single check --ref run).
+const KERNEL_PARITY_CORPUS = {
+  sum: `export let sum = (n) => { let s = 0; for (let i = 0; i < n; i++) s += i; return s }`,
+  math: `export let f = (x) => Math.sqrt(x * x + 1) + Math.abs(x)`,
+  dict: `export let count = (s) => { let d = {}; for (let i = 0; i < s.length; i++) { let c = s[i]; d[c] = (d[c] || 0) + 1 } return d['a'] || 0 }`,
+  arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
+  fold: `export let f = () => 0.1 + 0.2 - 0.3`,
+  mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
+  boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
+export let f = (s) => g(s) === false`,
+  nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
+  subviewtyped: `export let f = (buf) => new Int32Array(buf, 0, new Float64Array(4).length)`,
+  dvnested: `export let f = (dv) => dv.setFloat64(dv.getInt32(0), dv.getFloat64(8))`,
+  fromnested: `export let f = () => Int32Array.from([Float64Array.from([5])[0], 2])`,
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Corpus construction — parameterized by `root` so the SAME logic can build
@@ -211,8 +243,7 @@ async function buildCorpus(root, { full = false } = {}) {
   exampleSpecs.push(makeExampleSpec(root, 'zzfx', 'zzfx'))
 
   const kernelParitySpecs = []
-  const { CORPUS } = await import(pathToFileURL(join(root, 'test/kernel-parity.js')).href)
-  for (const [name, src] of Object.entries(CORPUS)) kernelParitySpecs.push({ name: `kernel-parity:${name}`, code: src, opts: {} })
+  for (const [name, src] of Object.entries(KERNEL_PARITY_CORPUS)) kernelParitySpecs.push({ name: `kernel-parity:${name}`, code: src, opts: {} })
 
   const watrSpecs = []
   const watrJs = process.env.JZ_ORACLE_WATR || '/Users/div/projects/watr/watr.js'
@@ -244,9 +275,10 @@ function runSpec(compile, spec, level, { wat = false } = {}) {
   }
 }
 
-async function snapshotRoot(root, { full = false, log = false } = {}) {
+async function snapshotRoot(root, { full = false, log = false, only = null } = {}) {
   const { compile } = await loadRoot(root)
-  const specs = await buildCorpus(root, { full })
+  let specs = await buildCorpus(root, { full })
+  if (only) specs = specs.filter(s => s.name.includes(only))
   const entries = {}
   let i = 0
   for (const spec of specs) {
@@ -321,6 +353,7 @@ function parseFlags(args) {
     const a = args[i]
     if (a === '--full') flags.full = true
     else if (a === '--ref') flags.ref = args[++i]
+    else if (a === '--only') flags.only = args[++i]
     else rest.push(a)
   }
   return { rest, flags }
@@ -329,8 +362,8 @@ function parseFlags(args) {
 async function cmdSnapshot(args) {
   const { rest, flags } = parseFlags(args)
   const out = rest[0]
-  if (!out) { console.error('usage: refactor-oracle.mjs snapshot <out.json> [--full]'); process.exit(1) }
-  const snap = await snapshotRoot(ROOT, { full: flags.full, log: true })
+  if (!out) { console.error('usage: refactor-oracle.mjs snapshot <out.json> [--full] [--only <substring>]'); process.exit(1) }
+  const snap = await snapshotRoot(ROOT, { full: flags.full, log: true, only: flags.only })
   writeFileSync(out, JSON.stringify(snap, null, 2) + '\n')
   console.error(`[refactor-oracle] wrote ${out} — ${Object.keys(snap.entries).length} entries (${snap.meta.specCount} specs × ${snap.meta.levelCount} levels), commit ${snap.meta.commit}`)
 }
@@ -341,15 +374,15 @@ async function cmdCheck(args) {
   let tmpWt = null
   if (flags.ref) {
     tmpWt = makeDetachedWorktree(flags.ref)
-    try { before = await snapshotRoot(tmpWt, { full: flags.full, log: true }) }
+    try { before = await snapshotRoot(tmpWt, { full: flags.full, log: true, only: flags.only }) }
     finally { removeDetachedWorktree(tmpWt) }
   } else if (rest[0]) {
     before = JSON.parse(readFileSync(rest[0], 'utf8'))
   } else {
-    console.error('usage: refactor-oracle.mjs check <baseline.json> [--full]  OR  check --ref <gitref> [--full]')
+    console.error('usage: refactor-oracle.mjs check <baseline.json> [--full] [--only <substring>]  OR  check --ref <gitref> [--full] [--only <substring>]')
     process.exit(1)
   }
-  const after = await snapshotRoot(ROOT, { full: flags.full, log: true })
+  const after = await snapshotRoot(ROOT, { full: flags.full, log: true, only: flags.only })
   const diffs = compareSnapshots(before, after)
   if (!diffs.length) {
     console.log(`[refactor-oracle] CLEAN — ${Object.keys(after.entries).length} entries identical (baseline commit ${before.meta.commit}, current ${after.meta.commit})`)
