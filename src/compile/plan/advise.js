@@ -1,6 +1,6 @@
 import { ctx, warn, err } from '../../ctx.js'
 import { warningsView } from '../../session-views.js'
-import { walkAst, refsName, REFS_IN_EXPR } from '../../ast.js'
+import { walkAst, some, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
@@ -33,13 +33,7 @@ function isHeapAlloc(node) {
   return false
 }
 
-function containsHeapAlloc(node) {
-  if (!Array.isArray(node)) return false
-  if (isHeapAlloc(node)) return true
-  for (let i = 1; i < node.length; i++)
-    if (containsHeapAlloc(node[i])) return true
-  return false
-}
+const containsHeapAlloc = (node) => some(node, isHeapAlloc, { skipArrow: false })
 
 function heapLoopBody(node) {
   if (!Array.isArray(node) || !HEAP_LOOP_OPS.has(node[0])) return null

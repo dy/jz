@@ -29,12 +29,7 @@ const isIvMinus1 = (n, iv) => isArr(n) && n[0] === '-' && n[1] === iv && litN(n[
 // or a call that could alias/mutate `arr` or reorder side effects).
 const REJECT = new Set(['for', 'while', 'do', 'for-in', 'for-of', 'break', 'continue', 'return',
   'throw', 'switch', 'try', 'catch', 'finally', '=>', 'label'])
-const hasUnsafe = (n) => {
-  if (!isArr(n)) return false
-  if (REJECT.has(n[0])) return true
-  if (n[0] === '()' && typeof n[1] === 'string') return true   // function call `f(args)`
-  return n.some(hasUnsafe)
-}
+const hasUnsafe = (n) => some(n, node => REJECT.has(node[0]) || (node[0] === '()' && typeof node[1] === 'string'))   // function call `f(args)`
 
 // Substitute every value-reference of `iv` with (iv + 1); leave the op slot and property keys.
 const subPlus1 = (n, iv) => {
@@ -49,13 +44,10 @@ const subPlus1 = (n, iv) => {
 // are untouched, so the recurrence still threads through them.
 function renameDecls(stmts, suf) {
   const declared = new Set()
-  const collect = (n) => {
-    if (!isArr(n)) return
+  for (const s of stmts) walkAst(s, { enter: n => {
     if (n[0] === 'let' || n[0] === 'const')
       for (let k = 1; k < n.length; k++) if (isArr(n[k]) && n[k][0] === '=' && typeof n[k][1] === 'string') declared.add(n[k][1])
-    n.forEach(collect)
-  }
-  stmts.forEach(collect)
+  } })
   if (!declared.size) return stmts
   const ren = (n) => {
     if (typeof n === 'string') return declared.has(n) ? n + suf : n
@@ -129,7 +121,7 @@ function tryUnroll(stmt, cm) {
   // The carry `left = storeVal` is emitted right after the store, so a recurrence read AFTER the
   // store would see this cell's value, not arr[iv-1]. Require every arr[iv-1] read to precede it.
   const storeIdx = stmts.findIndex(s => isArr(s) && s[0] === '=' && isArr(s[1]) && s[1][0] === '[]' && s[1][1] === arr && s[1][2] === iv)
-  const readsRec = (n) => isArr(n) && ((n[0] === '[]' && n[1] === arr && isIvMinus1(n[2], iv)) || n.some(readsRec))
+  const readsRec = (n) => some(n, m => m[0] === '[]' && m[1] === arr && isIvMinus1(m[2], iv), { skipArrow: false })
   for (let k = storeIdx + 1; k < stmts.length; k++) if (readsRec(stmts[k])) return null
 
   // iv assigned only by the step; iv/arr/HI loop-invariant (not mutated, incl. via a closure call)

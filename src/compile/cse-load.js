@@ -206,11 +206,6 @@ export function cseLoads(body, isTypedArray, freshName) {
   }
 
   // Walk to every `[';', …]` sequence; run CSE on each, then recurse into its (now-rewritten) stmts.
-  const descend = (node) => {
-    if (!isArr(node)) return
-    if (node[0] === ';') runSeq(node)
-    for (let i = 1; i < node.length; i++) descend(node[i])
-  }
-  descend(body)
+  walkAst(body, { enter: n => { if (n[0] === ';') runSeq(n) } })
   return eliminated
 }

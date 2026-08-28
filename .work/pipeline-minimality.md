@@ -129,7 +129,53 @@ verbatim load/store validator ports across vectorize map/stencil/reduce are one
 walker copied six times — a semantic DRY slice, not a mechanical swap; (d)
 optimize/index.js's 19 sites after `refactor/optimize-split` lands, in the new modules.
 
-## Queue after M1b (same campaign)
+## Slice M1c — traversal retrofit, batch 3 (name-agnostic sweep)
+
+Two parts. (a) `some` gained an optional `boundary(node)` predicate (default
+behaviour unchanged: the `=>` stop), so jzify's `FN_BOUNDARY_OPS`-gated
+`hasYield`/`refsAwait`/`refsSuspend` and typedarray's `hasWrite`/`hasSameRead`
+became direct `some` calls. (b) A sweep for every remaining self-recursive descent
+regardless of name (`collect*`, `find*`, `count*`, `has*`, `contains*`, …) over
+the free files: program-facts, plan/literals, plan/inline, ops.js; type.js,
+representation-plan, plan/scope, kind, ir; cse-load, call-target-index,
+loop-recurrence, flow-types, closure-plan, lift-iife, wat/assemble, plan/common,
+plan/loops, loop-model, emit-assign, dyn-closure-tables, peel-stencil,
+inplace-store, plan/advise. Discovery needed more than the C-for idiom regex
+(early-exit `if (f(n[i])) return true` shapes, one-line `.some(f)` arrows) —
+the agents supplemented it with self-call scans and full reads.
+
+Results: **57 converted** (5 + 8 + 28 + 16), ~110 examined and kept (value
+dispatchers, env-threading evaluators, mapping rewriters, dual-tree comparators,
+irregular child selection; two "considered" `!some(…, {boundary})` rewrites of
+safety gates left in their direct form on purpose). One collector replaced by
+the existing `refsName` (inplace-store `containsName`). Census: name-based 124,
+idiom-based 191 → **165**, `walkAst` sites 235 → **265 in 51 files**, `some`
+sites 48. Diff: 22 files changed, 197 insertions(+), 324 deletions(-). Gates: refactor oracle `check --ref main` CLEAN (560/560, baseline 0feb9e29);
+battery 15.7 min: native 3771/3772 (1 skip), O3 3771, wasi 3770, kernel 2983,
+self-compile 21/21, fuzz 30,173 × 4 tiers clean, fixpoint PASS, build 17,458.2 kB.
+Red legs: `dbg` (the pre-existing jsstring invariant trip) and `O0` on the same
+20 ms-tick "clearInterval: stops interval" wall-clock test that flaked under load in
+M1b — it passed in the native/O3/wasi legs of the same run and 2/2 standalone at O0.
+
+Oracle catch (the reason this gate exists): the first run reported 9 differences —
+bench:qoi, bench:tokenizer, example:schrodinger at O2/O3/size (qoi +11–18 % bytes).
+Bisecting the 22 files by reverting each to HEAD isolated plan/inline.js:
+`eagerCallFreeBooleans` renames `&&`/`||` to `__eager&&`/`__eager||`; the original
+tested `pureCanonicalBool(n)` pre-order (children still `&&`/`||`) and renamed
+post-order, and the conversion had moved the test into `exit`, after the children
+were already renamed — so only the innermost node of a chain still qualified.
+Testing and renaming in `enter` is exactly equivalent (a parent's rename never
+affects a child's own subtree test); all 9 outputs are byte-identical to HEAD
+again. Rule added to the conversion contract: a rewriter whose predicate reads
+its children's ops must evaluate that predicate pre-order.
+
+Side findings: `src/ops.js` (118 lines, integer op-tag seed, "parked as a dormant
+option" in 610ba822) has zero importers — a delete-or-keep decision for the owner,
+not taken here. analyze.js's three M1 conversions were dropped again in 44f03e1a
+so `refactor/analyze-traversals` (which splits that file and retires its
+collectors itself) merges without conflict.
+
+## Queue after M1c (same campaign)
 
 1. `analyzeBody` 6 → 5 traversals: fold `scanNumericFill` (walk-count design
    A2; needs the assert-gated old-vs-new run it prescribes).

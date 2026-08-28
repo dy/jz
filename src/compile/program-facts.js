@@ -408,15 +408,13 @@ export function collectProgramFacts(ast) {
   // path: a full walkFactsRoot here would re-register schemas and promote
   // init-stored func REFS into valueUsed — a program-wide dispatch behavior
   // change this census repair must not smuggle in.
-  const initCallSites = (node) => {
-    if (!Array.isArray(node)) return
+  const initCallSites = (node) => walkAst(node, { enter: node => {
     if (node[0] === '()' && isFuncRef(node[1], ctx.funcs.names)) {
       const a = node[2]
       const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
-    for (let i = 1; i < node.length; i++) initCallSites(node[i])
-  }
+  } })
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
   if (initFacts) {
@@ -1514,8 +1512,7 @@ export function collectSlotWriteHazards(ast, opts) {
   }
   // Member targets buried in a destructuring pattern — written with values the
   // censuses can't see; hazard them like opaque writes.
-  const patternTargets = (pat) => {
-    if (!Array.isArray(pat)) return
+  const patternTargets = (pat) => walkAst(pat, { enter: pat => {
     const op = pat[0]
     if (op === '.' || op === '?.') {
       if (typeof pat[2] === 'string') {
@@ -1523,11 +1520,10 @@ export function collectSlotWriteHazards(ast, opts) {
         if (sid != null) addPointsTo(sid)
         else hz.props.add(pat[2])
       }
-      return
+      return false
     }
-    if (op === '[]') return keyedWrite(pat[1], pat[2])
-    for (let i = 1; i < pat.length; i++) patternTargets(pat[i])
-  }
+    if (op === '[]') { keyedWrite(pat[1], pat[2]); return false }
+  } })
   const visit = (node) => walkAst(node, { enter: node => {
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1])) {
@@ -1721,8 +1717,7 @@ export function analyzeParamNeverGrown(paramReps) {
     const reps = paramReps?.get(func.name)
     const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
     const objLocals = new Set()
-    const collectObjDecls = (n) => {
-      if (!Array.isArray(n)) return
+    const collectObjDecls = (n) => walkAst(n, { enter: n => {
       if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var') {
         for (let i = 1; i < n.length; i++) {
           const d = n[i]
@@ -1730,8 +1725,7 @@ export function analyzeParamNeverGrown(paramReps) {
               Array.isArray(d[2]) && d[2][0] === '{}') objLocals.add(d[1])
         }
       }
-      for (let i = 1; i < n.length; i++) collectObjDecls(n[i])
-    }
+    } })
     collectObjDecls(func.body)
     const out = new Set()
     let dirty = false

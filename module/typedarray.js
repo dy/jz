@@ -9,7 +9,7 @@ import { OPTF } from '../src/ctx.js'
  */
 
 import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId } from '../src/ir.js'
-import { isReassigned, T, ASSIGN_OPS, walkAst } from '../src/ast.js'
+import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1473,12 +1473,8 @@ export default (ctx) => {
           for (let k = 1; k < s.length; k++) if (Array.isArray(s[k]) && s[k][0] === '=' && typeof s[k][1] === 'string') out.push(s[k])
         return out
       }
-      const hasWrite = (n, name) => {
-        if (!Array.isArray(n)) return false
-        if ((ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') && n[1] === name) return true
-        for (let k = 1; k < n.length; k++) if (hasWrite(n[k], name)) return true
-        return false
-      }
+      const hasWrite = (n, name) =>
+        some(n, x => (ASSIGN_OPS.has(x[0]) || x[0] === '++' || x[0] === '--') && x[1] === name, REFS_THROUGH_ARROWS)
       walkAst(body, { enter: n => {
         if (n[0] === '=>') return false
         if (n[0] === 'while' && Array.isArray(n[1]) && n[1][0] === '<' && typeof n[1][1] === 'string') {
@@ -1803,12 +1799,7 @@ export default (ctx) => {
       for (let k = 1; k < n.length; k++) if (!safeRmwAst(n[k])) return false
       return true
     }
-    const hasSameRead = (n) => {
-      if (!Array.isArray(n)) return false
-      if (sameIdx(n)) return true
-      for (let k = 1; k < n.length; k++) if (hasSameRead(n[k])) return true
-      return false
-    }
+    const hasSameRead = (n) => some(n, sameIdx, REFS_THROUGH_ARROWS)
     const i32Rhs = sameIdx(val) || (Array.isArray(val) &&
       (val[0] === '&' || val[0] === '|' || val[0] === '^' || val[0] === '<<' || val[0] === '>>' || val[0] === '>>>' ||
        (val[0] === '()' && val.length > 2 && (val[1] === 'math.imul' ||

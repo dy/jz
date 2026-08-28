@@ -35,6 +35,7 @@
  * path, so runtime aliens stay bit-exact).
  */
 import { ctx } from '../ctx.js'
+import { refsName } from '../ast.js'
 import { analyzeBody } from './analyze.js'
 import { staticObjectProps, inplaceKey } from '../static.js'
 import { VAL } from '../reps.js'
@@ -252,12 +253,7 @@ export function scanInplaceStores(programFacts) {
     walkStmt(fn.body, null, 0)
   }
 
-  const containsName = (n, name) => {
-    if (n === name) return true
-    if (!Array.isArray(n)) return false
-    for (let i = (n[0] === 'str' ? n.length : 1); i < n.length; i++) if (containsName(n[i], name)) return true
-    return false
-  }
+  const containsName = (n, name) => refsName(n, name, { skipStr: true, skipArrow: false })
 
   // Content-keyed result: per-function body transforms and emit-time inlining
   // between plan and emit rebuild the tree (and splice bodies across function

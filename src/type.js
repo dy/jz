@@ -40,7 +40,7 @@
  *
  * @module type
  */
-import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS, walkAst } from './ast.js'
+import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep, REFS_THROUGH_ARROWS } from './ast.js'
 import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind, exprPresentValIn, exprMapGetShapedIn } from './kind.js'
@@ -411,13 +411,10 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
     if (!inds || unit !== 1 || !inds.size || isReassigned(body, iv)) return null
   } else if (step == null && isReassigned(body, iv)) {
     const writes = []
-    const collectW = (n) => {
-      if (!Array.isArray(n)) return
+    walkAst(body, { enter: n => {
       if (((n[0] === '=' || n[0] === '+=') && n[1] === iv) || ((n[0] === '++' || n[0] === '--') && n[1] === iv))
         writes.push(n)
-      for (let k = 1; k < n.length; k++) collectW(n[k])
-    }
-    collectW(body)
+    } })
     if (writes.length !== 1) return null
     const w = writes[0]
     const incOf = (n) => {
@@ -637,10 +634,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   walkLoop(init, cond, step, body, null, true)
   const stableTop = (name) => typeof name !== 'string'
     || (!isReassigned(body, name) && !redeclaresName(body, name))
-  const exprNames = (e, out) => {
-    if (typeof e === 'string') out.push(e)
-    else if (Array.isArray(e)) for (let k = 1; k < e.length; k++) exprNames(e[k], out)
-  }
+  const exprNames = (e, out) => someDeep(e, n => { if (typeof n === 'string') out.push(n); return false })
   const keepPre = levels.filter((L) => {
     // A numeric hull that already exceeds a receiver's STATIC length can never
     // satisfy the emitted version guard. Drop that candidate instead of
@@ -692,8 +686,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
   // enclosing scope by construction — a body-declared cursor is rejected by
   // redeclaresName).
   const cursorWrites = new Map()   // name → { node, slope } | null (disqualified)
-  const collectCW = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(body, { enter: n => {
     if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') {
       const name = n[1]
       const L = n[0] === '++' ? 1
@@ -712,19 +705,14 @@ export function versionableTypedNest(init, cond, step, body, locals) {
       cursorWrites.set(name, cursorWrites.has(name) || L == null || L < 1 || !Number.isInteger(L)
         ? null : { node: n, slope: L })
     }
-    for (let k = 1; k < n.length; k++) collectCW(n[k])
-  }
-  collectCW(body)
-  const contains = (hay, needle) => hay === needle
-    || (Array.isArray(hay) && hay.some((x, i) => i > 0 && contains(x, needle)))
+  } })
+  const contains = (hay, needle) => some(hay, n => n === needle, REFS_THROUGH_ARROWS)
   const allLoopBodies = []
-  const collectLoops = (n) => {
-    if (!Array.isArray(n) || n[0] === '=>') return
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
     if (n[0] === 'while' && n.length === 3) allLoopBodies.push(n[2])
     else if (n[0] === 'for' && n.length === 5) allLoopBodies.push(n[4])
-    for (let k = 1; k < n.length; k++) collectLoops(n[k])
-  }
-  collectLoops(body)
+  } })
   const keptBodies = new Set(keep.map(L => L.bodyNode))
   const cursors = []
   for (const [name, w] of cursorWrites) {
@@ -792,27 +780,27 @@ export function isUnitDecrement(step, name) {
 /** `let`/`const` re-declaration of `name` within `node` — does not cross `=>`
  *  (a closure has its own scope; collection already stops at closure boundaries). */
 function redeclaresName(node, name) {
-  if (!Array.isArray(node) || node[0] === '=>') return false
-  if (node[0] === 'let' || node[0] === 'const') {
-    for (let k = 1; k < node.length; k++) {
-      const d = node[k]
+  return some(node, n => {
+    if (n[0] !== 'let' && n[0] !== 'const') return false
+    for (let k = 1; k < n.length; k++) {
+      const d = n[k]
       if (d === name) return true
       if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
     }
-  }
-  for (let k = 1; k < node.length; k++) if (redeclaresName(node[k], name)) return true
-  return false
+    return false
+  })
 }
 
 /** Collect `recv.charCodeAt(idxVar)` callee nodes within `node`. Stops at `=>`:
  *  a closure may run after the loop, when `idxVar` has reached `recv.length`. */
 function collectBoundedCC(node, recv, idxVar, set) {
-  if (!Array.isArray(node) || node[0] === '=>') return
-  if (node[0] === '()' && node.length === 3 && node[2] === idxVar
-      && Array.isArray(node[1]) && node[1][0] === '.'
-      && node[1][1] === recv && node[1][2] === 'charCodeAt')
-    set.add(node[1])
-  for (let k = 1; k < node.length; k++) collectBoundedCC(node[k], recv, idxVar, set)
+  walkAst(node, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === '()' && n.length === 3 && n[2] === idxVar
+        && Array.isArray(n[1]) && n[1][0] === '.'
+        && n[1][1] === recv && n[1][2] === 'charCodeAt')
+      set.add(n[1])
+  } })
 }
 
 /** Receiver of a `.length` expression, possibly wrapped in `(… | 0)` — the
@@ -903,10 +891,11 @@ export function inBoundsCharCodeAt(ctx) {
  *  the pair is unambiguous. Stops at `=>` (a closure may run after the loop, when
  *  `idxVar` has reached `recv.length`). */
 function collectBoundedArrIdx(node, recv, idxVar, set) {
-  if (!Array.isArray(node) || node[0] === '=>') return
-  if (node[0] === '[]' && node.length === 3 && node[1] === recv && node[2] === idxVar)
-    set.add(recv + '\x00' + idxVar)
-  for (let k = 1; k < node.length; k++) collectBoundedArrIdx(node[k], recv, idxVar, set)
+  walkAst(node, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === '[]' && n.length === 3 && n[1] === recv && n[2] === idxVar)
+      set.add(recv + '\x00' + idxVar)
+  } })
 }
 
 /** Walk `node`, recording `"recv\x00idx"` pairs for `recv[idx]` reads proven within
@@ -953,12 +942,10 @@ export function scanBoundedArrIdx(node, set, litSet) {
         if (start != null && start >= 0 && B != null && B >= 0
             && isUnitIncrement(step, idx2) && !isReassigned(body, idx2) && !redeclaresName(body, idx2)) {
           const recvs = new Set()
-          const collectRecvs = (n) => {
-            if (!Array.isArray(n) || n[0] === '=>') return
+          walkAst(body, { enter: n => {
+            if (n[0] === '=>') return false
             if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === idx2) recvs.add(n[1])
-            for (let k = 1; k < n.length; k++) collectRecvs(n[k])
-          }
-          collectRecvs(body)
+          } })
           for (const r of recvs) {
             if (r === idx2 || isReassigned(body, r)) continue
             const key = r + '\x00' + idx2
@@ -1042,10 +1029,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     for (let k = 1; k < n.length; k++) collectClosureWrites(n[k], into)
   }
-  const collectNames = (n, set) => {
-    if (typeof n === 'string') { set.add(n); return }
-    if (Array.isArray(n)) for (let k = 1; k < n.length; k++) collectNames(n[k], set)
-  }
+  const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
   const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
   const setEnv = (name, v) => {
@@ -1150,12 +1134,9 @@ function scanIntervalIdx(body, out, lens, ranges) {
   // The lhs also admits the AFFINE form `name ± c` (`inl_i + 3 <= N` — the strided
   // codec cursors): the comparison re-biases to `name OP K∓c`. The rhs admits any
   // ACCESS-FREE expression the evaluator folds to a singleton (`src.length | 0`).
-  const pureExpr = (e) => {
-    if (!Array.isArray(e)) return true
-    if (e[0] === '[]' || e[0] === '()' || e[0] === 'new' || e[0] === '?:' || e[0] === '=' || WRITE_OPS.has(e[0])) return false
-    for (let k = 1; k < e.length; k++) if (!pureExpr(e[k])) return false
-    return true
-  }
+  const pureExpr = (e) => !some(e,
+    n => n[0] === '[]' || n[0] === '()' || n[0] === 'new' || n[0] === '?:' || n[0] === '=' || WRITE_OPS.has(n[0]),
+    REFS_THROUGH_ARROWS)
   const refine = (c, negate) => {
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
@@ -1210,16 +1191,15 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
     ? [...refineAll(c2[1]), ...refineAll(c2[2])]
     : (() => { const r = refine(c2, false); return r ? [r] : [] })()
-  const killAssigned = (n) => {
-    if (!Array.isArray(n)) return   // descend into closures too — capture-writes stay dead
-    if (MUTATE_OPS.has(n[0])) {
-      if (typeof n[1] === 'string') env.set(n[1], null)
-      else if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
-        const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
+  // descend into closures too — capture-writes stay dead
+  const killAssigned = (n) => walkAst(n, { enter: n2 => {
+    if (MUTATE_OPS.has(n2[0])) {
+      if (typeof n2[1] === 'string') env.set(n2[1], null)
+      else if (Array.isArray(n2[1]) && n2[1][0] !== '[]' && n2[1][0] !== '.' && n2[1][0] !== '?.') {
+        const s = new Set(); collectNames(n2[1], s); for (const x of s) env.set(x, null)
       }
     }
-    for (let k = 1; k < n.length; k++) killAssigned(n[k])
-  }
+  } })
   // A canonical-iv range `iv ∈ [entry, B−1]` is a body-independent THEOREM only
   // while B is invariant: a body-written bound (`while (i < n) { …; n = 12 }`)
   // admits iv past the entry bound — the seed then "proved" raw OOB reads
@@ -1664,19 +1644,17 @@ function scanIntervalIdx(body, out, lens, ranges) {
           if (ipOk(h) && writesTo(lbody, name) === 1) coupled.push([name, h, incNode])
         }
         const changedNames = new Set()
-        const collectChanged = (x) => {
-          if (!Array.isArray(x) || x[0] === '=>') return
+        walkAst(lbody, { enter: x => {
+          if (x[0] === '=>') return false
           if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') changedNames.add(x[1])
-          for (let j = 1; j < x.length; j++) collectChanged(x[j])
-        }
-        collectChanged(lbody)
+        } })
         // Only build cursor budgets for names that actually feed a typed index
         // in this loop. The amortized path scanner is intentionally demand-
         // driven: running it for every pair of mutated scalar locals made the
         // compiler itself pay O(locals²) on unrelated arithmetic loops.
         const indexCaps = new Map()
-        const collectIndexCaps = (x) => {
-          if (!Array.isArray(x) || x[0] === '=>') return
+        walkAst(lbody, { enter: x => {
+          if (x[0] === '=>') return false
           if (x[0] === '[]' && typeof x[1] === 'string' && ctx.func.typedElem?.has(x[1])) {
             const L = lens(x[1])
             if (L != null) {
@@ -1687,9 +1665,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
               }
             }
           }
-          for (let j = 1; j < x.length; j++) collectIndexCaps(x[j])
-        }
-        collectIndexCaps(lbody)
+        } })
         for (const name of changedNames) {
           const caps = indexCaps.get(name)
           if (!caps?.length) continue
@@ -1774,10 +1750,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           const e0 = env.get(a2[1])
           if (!e0 || e0[0] < 0 || e0[1] > M) continue
           let writes = 0
-          const cw = (x) => { if (!Array.isArray(x)) return
-            if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++
-            for (let j = 1; j < x.length; j++) cw(x[j]) }
-          cw(wbody)
+          walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === a2[1]) writes++ } })
           if (writes === 1) wraps.push([a2[1], [0, M]])
         }
         for (let k = 1; k < stmts.length - 1; k++) {
@@ -1798,10 +1771,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
           if (!e0 || e0[0] < 0 || (C != null && e0[1] > C - 1)) continue
           // the pair must be the only writes (2 exact: the add and the reset)
           let writes = 0
-          const cw = (x) => { if (!Array.isArray(x)) return
-            if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++
-            for (let j = 1; j < x.length; j++) cw(x[j]) }
-          cw(wbody)
+          walkAst(wbody, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === nm) writes++ } })
           if (writes !== 2) continue
           if (C != null) wraps.push([nm, [0, C - 1]])
           // symbolic bound (`let SEQLEN = 5` — mutable): the invariant is
@@ -1979,19 +1949,11 @@ export const MAX_SMALL_FOR_UNROLL = 8
 export const MAX_NESTED_FOR_UNROLL = 64
 
 export function containsNestedClosure(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return true
-  for (let i = 1; i < body.length; i++) if (containsNestedClosure(body[i])) return true
-  return false
+  return some(body, n => n[0] === '=>')
 }
 
 export function containsNestedLoop(body) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === 'for' || op === 'while' || op === 'do') return true
-  if (op === '=>') return false
-  for (let i = 1; i < body.length; i++) if (containsNestedLoop(body[i])) return true
-  return false
+  return some(body, n => n[0] === 'for' || n[0] === 'while' || n[0] === 'do')
 }
 
 export function nestedSmallLoopBudget(body) {
@@ -2008,18 +1970,15 @@ export function nestedSmallLoopBudget(body) {
 }
 
 export function containsDeclOf(body, name) {
-  if (!Array.isArray(body)) return false
-  const op = body[0]
-  if (op === '=>') return false
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < body.length; i++) {
-      const d = body[i]
+  return some(body, n => {
+    if (n[0] !== 'let' && n[0] !== 'const') return false
+    for (let i = 1; i < n.length; i++) {
+      const d = n[i]
       if (d === name) return true
       if (Array.isArray(d) && d[0] === '=' && d[1] === name) return true
     }
-  }
-  for (let i = 1; i < body.length; i++) if (containsDeclOf(body[i], name)) return true
-  return false
+    return false
+  })
 }
 
 /** Clone AST with substitutions/renames. Skips into `=>` bodies. */
@@ -2070,11 +2029,7 @@ function stampClonedIdxProof(node, out) {
 
 
 export function containsKnownTypedArrayIndex(body) {
-  if (!Array.isArray(body)) return false
-  if (body[0] === '=>') return false
-  if (body[0] === '[]' && typeof body[1] === 'string' && ctx.func.typedElem?.has(body[1])) return true
-  for (let i = 1; i < body.length; i++) if (containsKnownTypedArrayIndex(body[i])) return true
-  return false
+  return some(body, n => n[0] === '[]' && typeof n[1] === 'string' && ctx.func.typedElem?.has(n[1]))
 }
 
 /** Trip count for `for (let i=0; i<N; i++)` when structurally obvious, else null. */
@@ -2448,13 +2403,12 @@ function collectIntDefs(body, capturedNames) {
     if (!list) { list = []; defs.set(name, list) }
     list.push(rhs)
   }
-  const collect = (node, inArrow) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') {
-      if (capturedNames && capturedNames.size) collect(args[1], true)
-      return
+  const collect = (node, inArrow) => walkAst(node, { enter: n => {
+    if (n[0] === '=>') {
+      if (capturedNames && capturedNames.size) collect(n[2], true)
+      return false
     }
+    const [op, ...args] = n
     if (op === 'let' || op === 'const') {
       for (const a of args)
         if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2], inArrow)
@@ -2466,8 +2420,7 @@ function collectIntDefs(body, capturedNames) {
     } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
       pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]], inArrow)
     }
-    for (const a of args) collect(a, inArrow)
-  }
+  } })
   collect(body, false)
   return defs
 }

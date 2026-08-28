@@ -21,7 +21,7 @@
  * @module jzify/generators
  */
 
-import { walkAst } from '../src/ast.js'
+import { walkAst, some } from '../src/ast.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
 // THE one canonical function boundary for every control-effects walker in
@@ -35,7 +35,8 @@ const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*
 // ("yield inside `function`" rejections for previously-supported bodies).
 export const FN_BOUNDARY_OPS = new Set(['=>', 'function', 'function*', 'class', 'async'])
 
-const hasYield = (n) => Array.isArray(n) && !FN_BOUNDARY_OPS.has(n[0]) && (isYield(n) || n.some(hasYield))
+const fnBoundary = (n) => FN_BOUNDARY_OPS.has(n[0])
+const hasYield = (n) => some(n, isYield, { boundary: fnBoundary })
 
 // A break/continue that would bind OUTSIDE this statement (its target loop was
 // decomposed into states, so the raw op would bind my dispatch while(1) instead).

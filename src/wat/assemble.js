@@ -549,13 +549,10 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // collapsing them differently would split/merge groups and change output.
   const localNamesOf = (fn) => {
     const names = new Set()
-    const collect = (node) => {
-      if (!Array.isArray(node)) return
+    walkAst(fn, { enter: node => {
       if ((node[0] === 'local' || node[0] === 'param') && typeof node[1] === 'string' && node[1][0] === '$')
         names.add(node[1])
-      for (const c of node) collect(c)
-    }
-    collect(fn)
+    } })
     return names
   }
   const hashOf = (fn, locals) => {
@@ -749,20 +746,18 @@ export function finalizeClosureTable(sec) {
       }
     }
   }
-  const rewriteCalls = (node) => {
-    if (!Array.isArray(node)) return
-    for (const c of node) if (Array.isArray(c)) rewriteCalls(c)
-    if ((node[0] === 'call' || node[0] === 'return_call') && typeof node[1] === 'string') {
-      const callee = node[1].slice(1)
+  const rewriteCalls = (node) => walkAst(node, { exit: n => {
+    if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') {
+      const callee = n[1].slice(1)
       const abi = abiOf.get(callee)
       if (!abi) return
       const newArgs = []
-      if (abi.needEnv) newArgs.push(node[2])
-      if (abi.needArgc) newArgs.push(node[3])
-      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(node[4 + i])
-      node.splice(2, node.length - 2, ...newArgs)
+      if (abi.needEnv) newArgs.push(n[2])
+      if (abi.needArgc) newArgs.push(n[3])
+      for (let i = 0; i < abi.usedSlots; i++) newArgs.push(n[4 + i])
+      n.splice(2, n.length - 2, ...newArgs)
     }
-  }
+  } })
   for (const fn of sec.funcs) rewriteCalls(fn)
   for (const fn of sec.start) rewriteCalls(fn)
 }
@@ -886,8 +881,7 @@ export function pullStdlib(sec) {
     !!(ctx.memory.shared && dataLen() > 0)
   // Memory ops can be emitted *inline* into user/start funcs (a heap-path char read
   // loads without calling a stdlib helper), so scan the emitted bodies too.
-  const hasMemOp = (node) => Array.isArray(node) &&
-    ((typeof node[0] === 'string' && MEM_OPS.test(node[0])) || node.some(hasMemOp))
+  const hasMemOp = (node) => some(node, n => typeof n[0] === 'string' && MEM_OPS.test(n[0]), { skipArrow: false })
   // `ctx.runtime.data` is never empty here — the number module seeds a static stringify
   // prefix (`NaNInfinity…`) at offset 0; stripStaticDataPrefix removes it when unused, so
   // the real question is whether any data lives *beyond* that strippable prefix.
@@ -1332,9 +1326,10 @@ export function optimizeModule(sec, profiler, regionHooks) {
       // semantic inlining, enabled per-compile via `optimize.inlinePureFns: true`, until a real case pays.
       if (cfg.inlinePureFns === true) t('inlinePureFns', () => {
         const callCount = new Map()
-        const countCalls = (n) => { if (!Array.isArray(n)) return; if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') callCount.set(n[1], (callCount.get(n[1]) || 0) + 1); for (let i = 1; i < n.length; i++) countCalls(n[i]) }
-        for (const s of allFuncs) countCalls(s)
-        const nodeCount = (n) => !Array.isArray(n) ? 0 : 1 + n.reduce((a, c, i) => a + (i > 0 ? nodeCount(c) : 0), 0)
+        for (const s of allFuncs) walkAst(s, { enter: n => {
+          if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string') callCount.set(n[1], (callCount.get(n[1]) || 0) + 1)
+        } })
+        const nodeCount = (n) => { let c = 0; walkAst(n, { enter: () => { c++ } }); return c }
         const INLINE_MAX = 48
         const canInline = new Set([...pureFuncMap.keys()].filter(name =>
           callCount.get(name) === 1 && nodeCount(pureFuncMap.get(name)) <= INLINE_MAX))

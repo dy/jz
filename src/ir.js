@@ -27,7 +27,7 @@ import { declareLocal, freshEmitId } from './compile/active-function.js'
 import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
-import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf, walkAst } from './ast.js'
+import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf, walkAst, some, REFS_THROUGH_ARROWS } from './ast.js'
 import { VAL, lookupValType, repOf, repOfGlobal } from './reps.js'
 import { valTypeOf, censusMaybeUndefined, censusMaybeUndefinedKind, censusShapedNode } from './kind.js'
 import { T } from './ast.js'
@@ -907,7 +907,7 @@ export const isPureIR = n => Array.isArray(n) && PURE_OPS.has(n[0]) && n.slice(1
 // an expensive op several levels down (a single div anywhere in the chain forces every
 // level above it to eagerly pay for it every time `select` nests arms eagerly).
 const EXPENSIVE_PURE_OPS = new Set(['f64.div', 'f64.sqrt'])
-export const hasExpensiveOp = n => Array.isArray(n) && (EXPENSIVE_PURE_OPS.has(n[0]) || n.some(hasExpensiveOp))
+export const hasExpensiveOp = n => some(n, node => EXPENSIVE_PURE_OPS.has(node[0]), REFS_THROUGH_ARROWS)
 
 // A select's CONDITION is a cost axis distinct from hasExpensiveOp's ARMS. `&&`/`||`
 // lower short-circuit evaluation to a value-`if` whenever eager (i32.and/i32.or) isn't
@@ -925,9 +925,8 @@ export const hasExpensiveOp = n => Array.isArray(n) && (EXPENSIVE_PURE_OPS.has(n
 // comparison-only flag (`(h & 1) === 0`, noise's gradient sign-flip) never builds this
 // shape at all and must keep `select`; vetoing on load-freedom alone would wrongly catch
 // pointer-typed local.get reads too, so this checks for actual load OPS, not pointers.
-const hasLoadOp = n => Array.isArray(n) && (typeof n[0] === 'string' && MEM_OPS.test(n[0]) || n.some(hasLoadOp))
-export const dataDependentFlag = n => Array.isArray(n) &&
-  (n[0] === 'if' ? hasLoadOp(n) : n.some(dataDependentFlag))
+const hasLoadOp = n => some(n, node => typeof node[0] === 'string' && MEM_OPS.test(node[0]), REFS_THROUGH_ARROWS)
+export const dataDependentFlag = n => some(n, node => node[0] === 'if' && hasLoadOp(node), { boundary: node => node[0] === 'if' })
 
 /** Ops whose f64 result is always a plain number (never a NaN-boxed pointer).
  *  Used by toNumF64 to skip the __to_num wrapper when the value is provably numeric.

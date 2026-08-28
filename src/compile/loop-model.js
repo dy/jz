@@ -68,11 +68,9 @@ export function normalizeLoop(stmt) {
 // unsafe to strength-reduce. (ASSIGN_OPS plus the `++`/`--` updates.)
 export function closureMutatedVars(body) {
   const out = new Set()
-  const collect = (n) => {
-    if (!Array.isArray(n)) return
-    if (typeof n[1] === 'string' && MUTATE_OPS.has(n[0])) out.add(n[1])
-    n.forEach(collect)
-  }
+  const collect = (n) => walkAst(n, { enter: m => {
+    if (typeof m[1] === 'string' && MUTATE_OPS.has(m[0])) out.add(m[1])
+  } })
   walkAst(body, { enter: n => { if (n[0] === '=>') collect(n) } })
   return out
 }

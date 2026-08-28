@@ -213,18 +213,16 @@ const EMPTY_KIND_MAP = new Map()
  *  guard — a rare shadow-name imprecision, not new to this pass. */
 function collectLocalClosures(body) {
   const closures = new Map()
-  const collect = node => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
-        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-      const init = node[1][2]
-      if (Array.isArray(init) && init[0] === '=>' && !closures.has(node[1][1])) {
+  const collect = node => walkAst(node, { enter: n => {
+    if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 &&
+        Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+      const init = n[1][2]
+      if (Array.isArray(init) && init[0] === '=>' && !closures.has(n[1][1])) {
         const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
-        if (ps.every(p => typeof p === 'string')) closures.set(node[1][1], { params: ps, body: init[2] })
+        if (ps.every(p => typeof p === 'string')) closures.set(n[1][1], { params: ps, body: init[2] })
       }
     }
-    for (let i = 1; i < node.length; i++) collect(node[i])
-  }
+  } })
   collect(body)
   return closures
 }
@@ -246,11 +244,10 @@ function collectLocalClosures(body) {
  *  uncovered rather than guessed at. */
 function collectDispatchTableClosures(roots) {
   const tables = new Map()
-  const collect = node => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
-        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-      const init = node[1][2]
+  const collect = node => walkAst(node, { enter: n => {
+    if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 &&
+        Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+      const init = n[1][2]
       // Match module/object.js's own ctx.core.emit['{}'] flattening EXACTLY
       // (not ast.js's descriptorProps, which assumes a different, pre-
       // compile bundler-stage shape): at THIS stage a multi-property
@@ -273,14 +270,13 @@ function collectDispatchTableClosures(roots) {
         // the same helper this file's own call-argument sites use.
         const ps = commaList(value[1]?.[1])
         if (!ps.every(p => typeof p === 'string')) continue
-        const name = node[1][1]
+        const name = n[1][1]
         let list = tables.get(name)
         if (!list) { list = []; tables.set(name, list) }
         list.push({ params: ps, body: value[2] })
       }
     }
-    for (let i = 1; i < node.length; i++) collect(node[i])
-  }
+  } })
   for (const root of roots) collect(root)
   return tables
 }

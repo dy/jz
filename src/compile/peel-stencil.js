@@ -46,9 +46,11 @@ function ivMonotonic(node, iv) {
 // Find, anywhere in `node`, a clamp `if (ci < 0) ci = 0; else if (ci >= B) ci = B-1`
 // over a var `ci` and bound var `B`. Returns { ci, bound } or null (first match).
 function findClamp(node) {
-  if (!Array.isArray(node)) return null
-  if (node[0] === 'if') {
-    const [, cond, then, els] = node
+  let result = null
+  walkAst(node, { enter: n => {
+    if (result) return false   // first match wins — prune once found
+    if (n[0] !== 'if') return
+    const [, cond, then, els] = n
     // outer: if (ci < 0) ci = 0; else <inner>
     if (Array.isArray(cond) && cond[0] === '<' && isVar(cond[1]) && litN(cond[2], 0)
       && Array.isArray(then) && then[0] === '=' && then[1] === cond[1] && litN(then[2], 0)
@@ -58,11 +60,10 @@ function findClamp(node) {
       if (Array.isArray(c2) && c2[0] === '>=' && c2[1] === ci && isVar(c2[2])
         && Array.isArray(t2) && t2[0] === '=' && t2[1] === ci
         && Array.isArray(t2[2]) && t2[2][0] === '-' && t2[2][1] === c2[2] && litN(t2[2][2], 1))
-        return { ci, bound: c2[2], node }
+        result = { ci, bound: c2[2], node: n }
     }
-  }
-  for (const c of node) { const r = findClamp(c); if (r) return r }
-  return null
+  } })
+  return result
 }
 
 // `ci = iv + k` (or `k + iv`) assignment/decl: returns { iv, tap } given the clamp var.

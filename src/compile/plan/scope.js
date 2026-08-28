@@ -427,14 +427,11 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
     // local mutation, not a global one — it must not pollute the global's kind.
     const bound = new Set()
     for (const p of paramNames) if (p) bound.add(p)
-    const collectDecls = (node) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === '=>') return
-      if (op === 'let' || op === 'const') collectParamNames(node.slice(1), bound)
-      if (op === 'catch' && typeof node[2] === 'string') bound.add(node[2])
-      for (let i = 1; i < node.length; i++) collectDecls(node[i])
-    }
+    const collectDecls = (node) => walkAst(node, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'let' || n[0] === 'const') collectParamNames(n.slice(1), bound)
+      if (n[0] === 'catch' && typeof n[2] === 'string') bound.add(n[2])
+    } })
     collectDecls(body)
 
     // Overlay: this scope's own let/const locals (analyzeBody — the same
@@ -478,11 +475,9 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   // walk exists only to reach closures DEFINED at module-init time (an inline
   // `.forEach(x => { g = x })` at top level) whose BODIES don't run until
   // called — invisible to the depth-0 walk, visible to this one.
-  const findArrows = (node) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === '=>') { walkFn(node[2], paramNamesOf(node[1]), null); return }
-    for (let i = 1; i < node.length; i++) findArrows(node[i])
-  }
+  const findArrows = (node) => walkAst(node, { enter: n => {
+    if (n[0] === '=>') { walkFn(n[2], paramNamesOf(n[1]), null); return false }
+  } })
   findArrows(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) findArrows(init)
   for (const f of ctx.funcs.list) {

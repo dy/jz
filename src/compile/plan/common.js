@@ -55,15 +55,10 @@ export const nodeSize = (node) => {
 
 /** Collect every binder name in `node` into `out` (lexical-scope set; doesn't
  *  descend into nested arrow bodies — those open a new scope). */
-export const collectBindings = (node, out) => {
-  if (!Array.isArray(node)) return
-  const op = node[0]
-  if (op === '=>') return
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < node.length; i++) collectBindingTarget(node[i], out)
-  }
-  for (let i = 1; i < node.length; i++) collectBindings(node[i], out)
-}
+export const collectBindings = (node, out) => walkAst(node, { enter: n => {
+  if (n[0] === '=>') return false
+  if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) collectBindingTarget(n[i], out)
+} })
 
 const collectBindingTarget = (node, out) => {
   if (typeof node === 'string') { out.add(node); return }

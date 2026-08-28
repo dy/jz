@@ -136,18 +136,15 @@ const bindNestedRowLengthsSeq = (body) => {
 
   if (!rowAliases.size) return { node: body, changed: false }
 
-  const needsLen = (node) => {
-    if (!Array.isArray(node)) return false
-    const op = node[0]
-    if (op === '.' && typeof node[1] === 'string' && rowAliases.has(node[1]) && node[2] === 'length') return true
-    if (op === '[]' && typeof node[1] === 'string' && rowAliases.has(node[1])) {
-      const idx = node[2]
+  const needsLen = (node) => some(node, n => {
+    if (n[0] === '.' && typeof n[1] === 'string' && rowAliases.has(n[1]) && n[2] === 'length') return true
+    if (n[0] === '[]' && typeof n[1] === 'string' && rowAliases.has(n[1])) {
+      const idx = n[2]
       if (Array.isArray(idx) && idx[0] === '%' && Array.isArray(idx[2])
-          && idx[2][0] === '.' && idx[2][1] === node[1] && idx[2][2] === 'length') return true
+          && idx[2][0] === '.' && idx[2][1] === n[1] && idx[2][2] === 'length') return true
     }
-    for (let i = 1; i < node.length; i++) if (needsLen(node[i])) return true
     return false
-  }
+  }, { skipArrow: false })
   if (!stmts.some(s => needsLen(s))) return { node: body, changed: false }
 
   const rowIndexExpr = (rowExpr, progName) =>

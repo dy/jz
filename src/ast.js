@@ -370,17 +370,22 @@ export function handlerArgs(args) {
   return spreadArgs(args).filter(a => a != null)
 }
 
-/** Early-exit walk; skips into `=>` bodies by default. */
-const someNode = (node, pred, skipArrow) => {
+/** Early-exit walk. `pred` sees every array node (a boundary node included)
+ *  before the boundary test; `stop(node)` prunes that node's children. */
+const someNode = (node, pred, stop) => {
   if (!Array.isArray(node)) return false
   if (pred(node)) return true
-  if (skipArrow && node[0] === '=>') return false
-  for (let i = 1; i < node.length; i++) if (someNode(node[i], pred, skipArrow)) return true
+  if (stop && stop(node)) return false
+  for (let i = 1; i < node.length; i++) if (someNode(node[i], pred, stop)) return true
   return false
 }
 
+const isArrowNode = node => node[0] === '=>'
+
+/** Options: `boundary(node)` names the nodes whose children are not searched;
+ *  without it, `skipArrow` (default true) stops at `=>` bodies. */
 export function some(node, pred, opts) {
-  return someNode(node, pred, opts?.skipArrow !== false)
+  return someNode(node, pred, opts?.boundary ?? (opts?.skipArrow !== false ? isArrowNode : null))
 }
 
 /** Options for {@link refsName} / {@link refsAny}. */
