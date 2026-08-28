@@ -359,8 +359,6 @@ export default (ctx) => {
   // `** -0.5` is intentionally NOT folded: 1/sqrt double-rounds and loses the last
   // ULP vs Math.pow's single rounding, so it keeps the exact $math.pow path.
   const powCall = emitter(['math.pow'], (a, b) => fn('math.pow', a, b))
-  // base-2 power → dedicated $math.exp2(y) (skips exp's ×ln2 / ÷ln2 round-trip)
-  const exp2Call = emitter(['math.exp2'], (exp) => typed(['call', '$math.exp2', toNumF64(exp, emit(exp))], 'f64'))
   // Shared pow/** lowering.
   const emitPow = (a, b, allowExpPos) => {
     // BigInt ** is real JS (2n ** 3n === 8n) but unimplemented — the f64 pow
