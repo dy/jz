@@ -222,6 +222,18 @@ from none of them. One-directional star, no cycle.
    `hoistArrayValue`/`makeCallback`/`callbackArgReps`/`idxArg` from the
    callback leaf; array.js imports `registerEarlyExit` and calls it at the
    original position.
+7. `67c74a82` — this doc: fill in commit shas and battery results (mid-task
+   checkpoint).
+8. `8ae611ed` — whitespace-only: de-indent `module/array/from.js`'s body to
+   module top level. Step 5's mechanical wrap left the moved body at its
+   original 2-space closure-nested indent (matching every other extraction
+   in this task) while its ONE substituted line
+   (`export const arrayFromEmit = …`) landed at 0-indent — visually
+   inconsistent. Fixed to match `array/callback.js`'s piece-C treatment
+   (idxF64/idxArg, also originally closure-nested, de-indented on its own
+   move). Verified content-identical modulo leading whitespace (line-by-line
+   `.strip()` comparison, matching line count) before and after; oracle
+   re-run clean.
 
 No de-duplication commit and no further deletion commit — both would be
 scope invention (see the "shape difference" section above: the remaining
