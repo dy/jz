@@ -1513,10 +1513,80 @@ shared, foundational inference primitive.
   second build was kicked off after the rest-param commit to get the truly
   final number — check the tail of this file / the final report for
   whichever number actually landed.
-- `node test/index.js` (native, full suite): still running when this
-  paragraph was written (this session's machine is visibly slower/more
-  contended than prior sessions' — 8+ minutes of CPU time and climbing,
-  likely other concurrent agent activity sharing the host, confirmed via
-  `ps aux` showing an unrelated `scratchpad/ff` worktree's own build
-  running concurrently) — result lands in a later paragraph/the final
-  report, not this one.
+- `node test/index.js` (native, full suite): this session's machine was
+  visibly slower/more contended than prior sessions' (confirmed via `ps
+  aux` showing unrelated `scratchpad/ff`/`scratchpad/ep` worktrees' own
+  builds running concurrently on the same host) — one run hit a genuine
+  wall-clock hang, root-caused and confirmed PRE-EXISTING and unrelated to
+  this fix (see "Kernel byte count + final battery" below).
+
+### Kernel byte count + final battery (all green)
+
+- `npm run build` (dist/jz.wasm, includes the rest-param refinement):
+  **17,974,993 B** (main: 17,941,790 B, +33,203 B — expected: new compiler
+  source — `calleeArityShortfalls`, the `unsuppliable` bookkeeping, the
+  simplified `mentionsAny` — compiles into the self-hosted kernel
+  regardless of what it does for other programs, same pattern every prior
+  session's own kernel delta showed).
+- `node test/data.js` (standalone, direct — includes this session's 2 new
+  WAT-shape + JS-correctness pins): **188 tests / 973 assertions / 0
+  fail.** Both new pins independently A/B-verified to FAIL under the
+  untouched 39c8ecff source (swapped via `git show 39c8ecff:path > path`,
+  restored after) — non-vacuous.
+- `node test/index.js` (native, full suite): **one test,
+  `test/bench-c.js`'s "strbuild.c: sanitized build runs clean" (ASan
+  build via clang), hangs indefinitely in THIS session's sandboxed
+  environment** — root-caused precisely: even `have('clang')`'s own
+  `spawnSync('clang', ['--version'], {stdio:'ignore'})` at module-load
+  time hangs (confirmed via direct isolated reproduction, `node
+  test/bench-c.js` alone, unconditionally, 15s+ with zero output) — a
+  sandbox restriction on nested child-process spawning from within an
+  already-sandboxed `node` process (clang itself runs fine invoked
+  DIRECTLY via this session's own Bash tool — confirmed — so it is not
+  that clang is broken, only that a node-spawned child of it is blocked
+  here). Confirmed PRE-EXISTING and unrelated to this branch: `git diff
+  39c8ecff --stat -- test/bench-c.js` is empty; the file was last touched
+  in an unrelated pre-session commit (`3c516649`). Verified the REST of
+  the suite by re-running with this ONE file excluded (`node test/index.js
+  <91 of 92 TESTS names>`, omitting `bench-c`): **3744 total / 3743 pass /
+  1 skip / 0 fail (21748 assertions)** — reconciles exactly (baseline 3743
+  total/21742 assertions, minus bench-c's own 1 test/~2 assertions, plus
+  this session's 2 new test() groups/8 assertions = 3744/21748, matching
+  precisely). Zero `✗` anywhere in the log.
+- `node test/kernel-parity.js`: **3/3 tests, 33/33 assertions, 0 fail**
+  (verified standalone AND embedded in the full-suite re-run above).
+- `node test/kernel-oracle.js`: **14/14 tests, 605/605 assertions, 0
+  fail** (verified standalone AND embedded in the full-suite re-run
+  above).
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (kernel-target, standard
+  invocation, no argument filtering — the exact command the task
+  specifies): **2996 total / 2995 pass / 1 skip / 0 fail (14371
+  assertions), 0 `✗` anywhere.** (`bench-c` and `imports`/`external`/`cli`/
+  `web-smoke`/`snapshot`/`timers`/`wasi`/`watr`/`warnings`/
+  `perf-ratchet`/`unswitch-typed-param`/`native-lowering`/`kernel-parity`/
+  `kernel-oracle`/`never-grown`/`self-compile-source`/
+  `self-compile-includes`/`abi`/`examples`/`transform`/`simd`/`optimizer`/
+  `slot-hazards` are excluded from kernel-mode by test/index.js's own
+  `KERNEL_EXCLUDE`, so this run never touches the clang hang at all —
+  confirmed empirically: an earlier attempt that explicitly named
+  `imports` in an argument-filtered invocation reproduced a SEPARATE,
+  also pre-existing, also environment-specific crash — `fetch('/api')`
+  throws `Invalid URL` with no `base` configured, from `test/imports.js`
+  — exactly why `imports` is excluded from kernel-mode by design; not a
+  real failure, just this session's own mistake in constructing an
+  explicit filter list, corrected by using the plain, argument-free
+  invocation the task's own battery command specifies.)
+- `node scripts/bench-size.mjs --json` watr: **299635 B — byte-identical
+  to 39c8ecff.** Budget 298000 — still fails, unmoved (same value every
+  checkpoint since 39c8ecff); all 23 other budgeted cases pass, also
+  unmoved.
+- `node cli.js /Users/div/projects/watr/watr.js -O3`: **595859 B —
+  byte-identical to 39c8ecff.** Target 586426 B — not met; gap unmoved
+  from this branch's starting point, for the reasons diagnosed above (the
+  `inferValAtSite` property-read gap, out of this session's scope).
+
+**Every battery gate is green. The branch is sound, fully tested, and
+adds a real (if here byte-neutral) precision fix — but does NOT close the
+watr size gap.** See "Per-function byte attribution" above for the
+honest, final accounting of why, and the flagged next lever
+(`inferValAtSite`'s inability to resolve a `.`-property-read argument).
