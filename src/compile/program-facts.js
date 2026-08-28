@@ -88,10 +88,37 @@ export function observeNodeFacts(node, f) {
     const skip = ESCAPE_SKIP[op]
     if (skip !== true && op != null) {
       const declEq = op === '=' && f._declEq?.has(node)
+      // `__keys_ro(src)` is prepare's OWN `for…in` lowering (src/prepare/
+      // index.js, "for-in's read-only key list") — never written by a user
+      // program directly, and by the time this walk ever sees a call to it,
+      // that's the ONLY shape it can be in: strict mode ERRORS on `for…in`
+      // before this walk runs at all, and every other program has already
+      // had it rewritten into exactly this call. Its one argument is read
+      // ONLY for its enumerable key STRINGS (Object.keys semantics, "sound
+      // only because for-in reads ks[i]/ks.length and never mutates") — the
+      // identical "queried, not exposed" shape `'in'`'s RHS is already
+      // exempted for above, one call-argument position instead of an
+      // operator's own fixed slot (a per-OP `ESCAPE_SKIP['for-in']` entry
+      // would never fire — the `'for-in'` op itself never reaches here).
+      const keysRoArg = op === '()' && args[0] === '__keys_ro'
+      // A bare-name operand of an equality/inequality comparison against a
+      // STATICALLY nullish literal (`x === null`, `x != undefined`) is a
+      // nullish TEST, not a value-escaping read — comparing a reference to
+      // null/undefined never aliases or exposes it, the same "queried, not
+      // exposed" shape as `__keys_ro`'s argument and `in`'s RHS above. This
+      // is exactly the shape prepare's OWN `for…in` lowering introduces (the
+      // `src == null` runtime guard ahead of `__keys_ro`, src/prepare/
+      // index.js "for-in over null/undefined is a no-op") — without this, a
+      // receiver used ONLY as a `[]`/for-in-lowered `__keys_ro` argument
+      // still marks via THIS comparison alone.
+      const nullishEqOperand = (op === '==' || op === '===' || op === '!=' || op === '!==')
+        ? (nullishArm(args[1]) ? 0 : nullishArm(args[0]) ? 1 : -1) : -1
       for (let i = 0; i < args.length; i++) {
         if (typeof args[i] !== 'string') continue
         if (skip instanceof Set && skip.has(i)) continue
         if (declEq && i === 0) continue
+        if (keysRoArg && i === 1) continue
+        if (i === nullishEqOperand) continue
         f.nameEscapes.add(args[i])
       }
     }
