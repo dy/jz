@@ -3496,3 +3496,90 @@ test('object read via a parameter: the STRING-guess WAT-dispatch shape — unpro
   ok(/ccbase/.test(provenBody), 'O0: the proven param still reaches the SSO/heap charCodeAt fast decoder')
   ok(/__dyn_get_expr/.test(unprovenBody), 'O0: an unproven param (no call-site proof, methodEvidence retired) DOES get the own-property shadow probe — confirms the fix changes real codegen, not vacuously')
 })
+
+test('closed computed-dispatch table: a member forwarded into a named function gets its param proven from the table\'s own callers (positive) vs stays runtime-dispatched once the table escapes (negative control)', () => {
+  // watr's real shape (.work/string-method-guess-notes.md "Third follow-up
+  // session"): `const HANDLER = { a: (buf,v) => push2(buf,v), ... }`, invoked
+  // ONLY as `HANDLER[key](buf, v)`. Nobody ever calls `push2` by a bare name
+  // anywhere in the program — before this fix its `buf` param had ZERO
+  // observations (the outer computed dispatch is invisible to the call-site
+  // walker; program-facts.js's own doc on synthesizeComputedDispatchCallSites
+  // has the full mechanism). `instr`'s own `out` literal is genuinely,
+  // monomorphically an array at the one real call site — call-target-index.js's
+  // resolveComputed proves HANDLER closed (every property a same-module
+  // arrow, no escape/dynWrite/shadow/rebind), and the synthesis walks `a`'s
+  // own body for its call to push2, substituting `a`'s formal params with
+  // `instr`'s actual arguments.
+  const closedSrc = `
+    const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      return out.length
+    }
+  `
+  // Negative control: byte-identical shape, except HANDLER is also handed to
+  // an unrelated function (`leak`) — a genuine value-escaping use (passed as
+  // an argument, not a `[]`-receiver/`__keys_ro` read) — so resolveComputed
+  // must decline the whole table, same as resolveMember already would.
+  // push2's `buf` stays exactly as unprovable as it always was: real runtime
+  // dispatch, not a wrong guess.
+  const escapedSrc = `
+    const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+    function leak(h) { return h }
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      leak(HANDLER)
+      return out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const closedWat = String(compile(closedSrc, { optimize: false, wat: true }))
+  const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also escapes via leak(HANDLER) — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
+  for (const optimize of [false, 2, 3]) {
+    is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
+  }
+})
+
+test('closed computed-dispatch table: declaration order relative to its caller does not affect the compiled output', () => {
+  // Same discipline as the possibleKinds ordering-independence pin above
+  // (test "possibleKinds census is pass-order-independent"): the strongest
+  // direct proof the fix isn't an accidental worklist-order artifact is that
+  // source declaration order (table before vs after the function that
+  // dispatches through it) doesn't change the compiled bytes at all.
+  const push2Src = `const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }\n`
+  const handlerSrc = `
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+  `
+  const instrSrc = `
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      return out.length
+    }
+  `
+  const watTableFirst = String(compile(push2Src + handlerSrc + instrSrc, { optimize: 3, wat: true }))
+  const watTableLast = String(compile(push2Src + instrSrc + handlerSrc, { optimize: 3, wat: true }))
+  is(watTableFirst, watTableLast, 'O3: declaring the dispatch table before vs after its caller compiles to byte-identical WAT')
+})
