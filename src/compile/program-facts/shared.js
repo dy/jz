@@ -15,6 +15,7 @@
  *     API surface (re-exported from the barrel).
  * @module program-facts/shared
  */
+import { walkAst } from '../../ast.js'
 import { analyzeBody } from '../analyze.js'
 
 // Array methods that can change length or relocate the payload (grow copies to a
@@ -35,8 +36,7 @@ export function collectBodyElemSids(func, paramReps) {
   const elemSidOf = (arr) => facts.arrElemSchemas?.get(arr)
     ?? (paramIdx.has(arr) ? reps?.get(paramIdx.get(arr))?.arrayElemSchema : null)
   const sids = new Map(), writes = new Map()
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
+  const scan = (n) => walkAst(n, { enter: n => {
     if (n[0] === '=' && typeof n[1] === 'string') {
       writes.set(n[1], (writes.get(n[1]) || 0) + 1)
       const rhs = n[2]
@@ -45,8 +45,7 @@ export function collectBodyElemSids(func, paramReps) {
         if (sid != null) sids.set(n[1], sid)
       }
     }
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
+  } })
   scan(func.body)
   for (const [name, c] of writes) if (c > 1) sids.delete(name)
   return sids.size ? sids : null

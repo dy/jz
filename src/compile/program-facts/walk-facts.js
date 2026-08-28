@@ -7,7 +7,7 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/walk-facts
  */
-import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND } from '../../ast.js'
+import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, walkAst } from '../../ast.js'
 import { ctx, err, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
@@ -376,15 +376,13 @@ export function collectProgramFacts(ast) {
   // path: a full walkFactsRoot here would re-register schemas and promote
   // init-stored func REFS into valueUsed — a program-wide dispatch behavior
   // change this census repair must not smuggle in.
-  const initCallSites = (node) => {
-    if (!Array.isArray(node)) return
+  const initCallSites = (node) => walkAst(node, { enter: node => {
     if (node[0] === '()' && isFuncRef(node[1], ctx.funcs.names)) {
       const a = node[2]
       const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
-    for (let i = 1; i < node.length; i++) initCallSites(node[i])
-  }
+  } })
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
   if (initFacts) {

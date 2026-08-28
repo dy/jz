@@ -7,7 +7,7 @@
  * for the full module map and build order.
  * @module program-facts/slot-int-census
  */
-import { MUTATE_OPS } from '../../ast.js'
+import { MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, err, getFactStore, DBG_INVARIANTS } from '../../ctx.js'
 import { repOf } from '../../reps.js'
 import { staticObjectProps } from '../../static.js'
@@ -117,10 +117,9 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
   // Body walker: for each `{}` literal observe per-slot intCertain; for each
   // `obj.prop = expr` write, poison-or-confirm the slot resolved via the
   // schema attached to `obj` (ValueRep `schemaId` or `ctx.schema.vars`).
-  const visit = (node, isInt) => {
-    if (!Array.isArray(node)) return
+  const visit = (node, isInt) => walkAst(node, { enter: node => {
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === '{}') {
       const parsed = staticObjectProps(node.slice(1))
       if (parsed) {
@@ -145,8 +144,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
         // Unresolvable receivers are hazard-poisoned (collectSlotWriteHazards).
       }
     }
-    for (let i = 1; i < node.length; i++) visit(node[i], isInt)
-  }
+  } })
 
   const sweep = (fresh) => {
     // Hazard poison FIRST: the optimistic slotIntOf resolver must never count a

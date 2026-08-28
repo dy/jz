@@ -8,7 +8,7 @@
  * module map and build order.
  * @module program-facts/slot-kind-census
  */
-import { commaList, isLiteralStr, MUTATE_OPS, collectAllBoundNames } from '../../ast.js'
+import { commaList, isLiteralStr, MUTATE_OPS, collectAllBoundNames, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { VAL, repOf, updateGlobalRep, KIND_UNIVERSE } from '../../reps.js'
 import { valTypeOf, nullishArm } from '../../kind.js'
@@ -411,16 +411,14 @@ export function observeProgramSlots(ast, opts) {
       }
       out.set(name, out.has(name) && out.get(name) !== max ? null : max)
     }
-    const walk = (n) => {
-      if (!Array.isArray(n)) return
-      if (n[0] === '=>') return
+    const walk = (n) => walkAst(n, { enter: n => {
+      if (n[0] === '=>') return false
       if ((n[0] === 'let' || n[0] === 'const')) {
         for (let i = 1; i < n.length; i++)
           if (Array.isArray(n[i]) && n[i][0] === '=') note(n[i][1], n[i][2])
       } else if (n[0] === '=' && typeof n[1] === 'string') note(n[1], n[2])
       else if (MUTATE_OPS.has(n[0]) && typeof n[1] === 'string') out.set(n[1], null)
-      for (let i = 1; i < n.length; i++) walk(n[i])
-    }
+    } })
     walk(body)
     return out
   }
@@ -441,8 +439,7 @@ export function observeProgramSlots(ast, opts) {
   // forfeits a fact, never misattributes a local write to an outer receiver.
   const observeNestedDictMapWrites = (arrowNode, paramVts) => {
     const bound = collectAllBoundNames(arrowNode, new Set())
-    const walk = (node) => {
-      if (!Array.isArray(node)) return
+    const walk = (node) => walkAst(node, { enter: node => {
       const op = node[0]
       if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && node[1][0] === '[]') {
         const [, wobj, widx] = node[1]
@@ -465,8 +462,7 @@ export function observeProgramSlots(ast, opts) {
           }
         }
       }
-      for (let i = 1; i < node.length; i++) walk(node[i])
-    }
+    } })
     walk(arrowNode[2])
   }
   const visit = (node, intRefs = null, paramVts = null) => {

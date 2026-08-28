@@ -7,7 +7,7 @@
  * for the full module map and build order.
  * @module program-facts/param-never-grown
  */
-import { isLiteralStr, MUTATE_OPS } from '../../ast.js'
+import { isLiteralStr, MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -69,8 +69,7 @@ export function analyzeParamNeverGrown(paramReps) {
     const reps = paramReps?.get(func.name)
     const paramIdx = new Map((func.sig?.params || []).map((p, k) => [p.name, k]))
     const objLocals = new Set()
-    const collectObjDecls = (n) => {
-      if (!Array.isArray(n)) return
+    const collectObjDecls = (n) => walkAst(n, { enter: n => {
       if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var') {
         for (let i = 1; i < n.length; i++) {
           const d = n[i]
@@ -78,8 +77,7 @@ export function analyzeParamNeverGrown(paramReps) {
               Array.isArray(d[2]) && d[2][0] === '{}') objLocals.add(d[1])
         }
       }
-      for (let i = 1; i < n.length; i++) collectObjDecls(n[i])
-    }
+    } })
     collectObjDecls(func.body)
     const out = new Set()
     let dirty = false
@@ -92,8 +90,8 @@ export function analyzeParamNeverGrown(paramReps) {
     // (OBJECT/HASH keyed writes land in slots / dict tables — arena-bump
     // allocation never moves an existing array.)
     const maybeArray = (x) => { const v = kindOf(x); return v == null || v === VAL.ARRAY }
-    const scan = (n) => {
-      if (dirty || !Array.isArray(n)) return
+    const scan = (n) => walkAst(n, { enter: n => {
+      if (dirty) return false
       const op = n[0]
       if (op === '()') {
         const c = n[1]
@@ -102,26 +100,25 @@ export function analyzeParamNeverGrown(paramReps) {
         // (Arrow LITERAL args are fine — their bodies are scanned right here.)
         const argRoot = n[2]
         const args = Array.isArray(argRoot) && argRoot[0] === ',' ? argRoot.slice(1) : argRoot === undefined ? [] : [argRoot]
-        for (const a of args) if (typeof a === 'string' && ctx.funcs.map?.has(a)) { dirty = true; return }
+        for (const a of args) if (typeof a === 'string' && ctx.funcs.map?.has(a)) { dirty = true; return false }
         if (typeof c === 'string') {
           if (ctx.funcs.map?.has(c)) out.add(c)
-          else if (!(c.startsWith('math.') || c.startsWith('new.') || _NG_SAFE_CALLEES.has(c))) { dirty = true; return }
+          else if (!(c.startsWith('math.') || c.startsWith('new.') || _NG_SAFE_CALLEES.has(c))) { dirty = true; return false }
         } else if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.') && typeof c[2] === 'string') {
           // A method name WRITTEN anywhere program-wide could be a user
           // closure shadowing the builtin (the sidecar method fork) — its
           // body is invisible here, so it poisons like any unknown call.
-          if (ctx.types.writtenProps?.has(c[2])) { dirty = true; return }
+          if (ctx.types.writtenProps?.has(c[2])) { dirty = true; return false }
           if (ARR_RESIZE_METHODS.has(c[2])) {
-            if (maybeArray(c[1])) { dirty = true; return }
-          } else if (!_NG_SAFE_METHODS.has(c[2])) { dirty = true; return }
-        } else { dirty = true; return }   // computed callee — could be any user closure
+            if (maybeArray(c[1])) { dirty = true; return false }
+          } else if (!_NG_SAFE_METHODS.has(c[2])) { dirty = true; return false }
+        } else { dirty = true; return false }   // computed callee — could be any user closure
       } else if (MUTATE_OPS.has(op) && Array.isArray(n[1])) {
         const lhs = n[1]
-        if ((lhs[0] === '.' || lhs[0] === '?.') && lhs[2] === 'length') { dirty = true; return }
-        if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return }
+        if ((lhs[0] === '.' || lhs[0] === '?.') && lhs[2] === 'length') { dirty = true; return false }
+        if (lhs[0] === '[]' && !isLiteralStr(lhs[2]) && maybeArray(lhs[1])) { dirty = true; return false }
       }
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
+    } })
     withValueOverlay(facts.valTypes, () => scan(func.body))
     if (dirty) poisoned.add(func.name)
     else edges.set(func.name, out)

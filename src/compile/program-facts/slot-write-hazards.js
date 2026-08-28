@@ -7,7 +7,7 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/slot-write-hazards
  */
-import { commaList, isLiteralStr, MUTATE_OPS } from '../../ast.js'
+import { commaList, isLiteralStr, MUTATE_OPS, walkAst } from '../../ast.js'
 import { ctx, getFactStore } from '../../ctx.js'
 import { VAL, repOf } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -292,8 +292,7 @@ export function collectSlotWriteHazards(ast, opts) {
   }
   // Member targets buried in a destructuring pattern — written with values the
   // censuses can't see; hazard them like opaque writes.
-  const patternTargets = (pat) => {
-    if (!Array.isArray(pat)) return
+  const patternTargets = (pat) => walkAst(pat, { enter: pat => {
     const op = pat[0]
     if (op === '.' || op === '?.') {
       if (typeof pat[2] === 'string') {
@@ -301,13 +300,11 @@ export function collectSlotWriteHazards(ast, opts) {
         if (sid != null) addPointsTo(sid)
         else hz.props.add(pat[2])
       }
-      return
+      return false
     }
-    if (op === '[]') return keyedWrite(pat[1], pat[2])
-    for (let i = 1; i < pat.length; i++) patternTargets(pat[i])
-  }
-  const visit = (node) => {
-    if (!Array.isArray(node)) return
+    if (op === '[]') { keyedWrite(pat[1], pat[2]); return false }
+  } })
+  const visit = (node) => walkAst(node, { enter: node => {
     const op = node[0]
     if (MUTATE_OPS.has(op) && Array.isArray(node[1])) {
       const lhs = node[1]
@@ -382,8 +379,7 @@ export function collectSlotWriteHazards(ast, opts) {
     } else if (op === 'for-in') {
       dynKeyedEnum(node[2])
     }
-    for (let i = 1; i < node.length; i++) visit(node[i])
-  }
+  } })
   // Per-body valTypes overlays (mirrors observeProgramSlots): receiver/key
   // resolution must see local kinds — `ps[i] = {…}` with ps a local ARRAY and
   // i an int counter is an ELEMENT write, not a slot hazard; without the
