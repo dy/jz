@@ -998,3 +998,236 @@ primitive regressed nothing.
   discrepancy (292.6 kB vs 299635 B for the identical `watr` case, same
   tree) — flagged above for visibility; used `--json` throughout for
   every reported number since that's what the real gate runs.
+
+## Fifth session: class (A) ceiling measured small; class (B)'s real bug found
+## (all-or-nothing decline throws away resolvable sibling args) — fix designed,
+## NOT YET IMPLEMENTED when a watchdog restart interrupted this round
+
+Branch tip at session start: 39c8ecff (unchanged from session 4's end). Baseline
+reconfirmed byte-identical to the task brief: `bench-size.mjs --json` watr =
+299635 B (budget 298000), `cli.js .../watr.js -O3` = 595859 B (target 586426).
+
+### Class (A) — HANDLER members' own DIRECT param usage — ceiling is SMALL, and
+### the existing closure-table param lattice can't express ARRAY at all yet
+
+Traced the full mechanism the task brief pointed at:
+- `module/array.js` (~line 913-920): a module-scope const array-of-arrows
+  literal, when every element folds to a static closure, tags
+  `ptr.fnElements = vals.map(v => ({idx: v.closureFuncIdx, name:
+  v.closureBodyName}))`. `module/object.js`'s parallel `ctx.core.emit['{}']`
+  handler (its own static-data-segment branch, ~line 210-241, structurally
+  identical gate: module-scope const, `neverWritten`, `!shadow`, every value
+  foldable) has **no equivalent tagging today** — confirmed by an exhaustive
+  repo-wide grep for `fnElements`: the only producer is array.js, the only
+  consumers are emit.js's two `val.fnElements` reads (gated on
+  `ctx.scope.closureTableLatticeCandidates`) — object literals never reach
+  either.
+- `dyn-closure-tables.js`'s `scanClosureTableLatticeCandidates` (the const-
+  array-of-arrows scan) and `scanImperativeClosureTableLatticeCandidates`
+  (the empty-array-then-`table[k]=fn` scan) are BOTH gated on
+  `isArrowArrayLit`/`isEmptyArrayLit` — an object literal (`{}`) fails both
+  shape checks trivially (checks `rhs[0] === '['`). `everyUseIsIndexedCall`/
+  `everyUseIsIndexedCallOrLiteralWrite` themselves are receiver-shape-generic
+  (`['[]', name, idx]` AST shape — true for both `arr[i]` and `obj[key]`), so
+  ONLY the two initial-declaration-shape checks would need widening to admit
+  `{}` — structurally cheap, confirming the task brief's premise that this
+  part is a small change.
+- **BUT**: traced `emitGenericClosureCall`'s `recordClosureTableCallSite` →
+  `resolveClosureTableParamLattice` → `seedClosureFrame`'s consumption
+  (compile/index.js ~1941-1953) all the way through, and the lattice ONLY
+  ever sets `val: VAL.NUMBER` (from `ptRow[i]===true`, itself only ever set
+  by `recordClosureTableCallSite`'s `valTypeOf(arg) === VAL.NUMBER` check) or
+  `val: VAL.TYPED` (from `tcRow`, gated on `valTypeOf(arg) === VAL.TYPED`).
+  **Nothing in this lattice can ever express plain VAL.ARRAY** — it was
+  purpose-built for the dispatch-bench's loop-carried-numeric shape (the
+  module doc says so explicitly: "letting arg evidence at the NEXT
+  iteration's call site prove numeric too"), not as a general per-position
+  kind census. So even a full, correct object-literal extension of
+  dyn-closure-tables.js's scan family would NOT, by itself, prove `out` is
+  ARRAY inside `HANDLER.block`'s own body — `recordClosureTableCallSite`
+  would need a THIRD row (e.g. `arrRow`, mirroring `numRow`/`tcRow`, checking
+  `valTypeOf(arg) === VAL.ARRAY`) AND `seedClosureFrame` would need a new
+  `if (arrRow[i]) updateRep(cb.params[i], { val: VAL.ARRAY })` branch. This
+  is a real, well-scoped extension, not a blocker — but it's MORE than "just
+  feed object literals into the existing mechanism," so its cost was
+  under-estimated in the brief.
+- Read watr's actual `HANDLER` (`/Users/div/projects/watr/src/compile.js`
+  971-1122, ~44 properties) line by line for every member's OWN use of its
+  4th param `out`. Only **two** members ever touch `out` directly (not via
+  forwarding to a named function): `block` (`for (...) out.push(b[i])`) and
+  `memarg_order` (`out.push(ord)`, alongside three OTHER positions in the
+  same body that DO forward to `uleb`, i.e. it's a mixed case). Every other
+  `out`-taking member (`call_indirect`, `memarg`, `opt_memory`, `labelidx`,
+  `laneidx`(no — laneidx also direct-pushes, see correction below)... — full
+  re-check: `laneidx: (n,c,op,out) => { const v = parseUint(n.shift(),0xff);
+  if (out) { out.push(v); return } return [v] }` is ALSO a direct `out.push`
+  — three members, not two: `block`, `memarg_order`, `laneidx`. The rest
+  (`funcidx`, `typeidx`, `tableidx`, `memoryidx`, `globalidx`, `localidx`,
+  `dataidx`, `elemidx`, `tagidx`, `'memoryidx?'`, `stringidx`, `i32`, `i64`,
+  `f64`, `opt_memory`) purely forward `out` to one named-function call
+  (`wleb`/`encode.i32`/`encode.i64`/`encode.f64`) — class (B) territory, not
+  (A). **Class (A)'s real ceiling in this program is 3 closure bodies' worth
+  of codegen (`block`, `memarg_order`, `laneidx`), not the ~20+ members that
+  forward — class (B) is the dominant remaining class.** Given class (A)
+  additionally needs the lattice's own ARRAY-row extension (above) before it
+  buys anything, and its ceiling is small, it is NOT the next move — see
+  class (B) below, which is bigger AND the fix is already fully designed.
+
+### Class (B) — helper-forwarding declines — instrumented on REAL watr.js, and
+### the actual bug is different from what session 4 guessed
+
+Added temporary env-gated instrumentation (`JZ_DBG_SYNTH2=1`) inside
+`synthesizeComputedDispatchCallSites`'s `walkInner` (program-facts.js), right
+at the existing `innerArgList.every(a => !mentionsAny(a, bound))` gate —
+logs `{ok, objName, arrowParams, inner: <callee>, raw: <pre-substitution
+args>, subst: <param→outer-arg map>, out: <post-substitution args>, flagged:
+<positions that still mentionAny>}` as one JSON line per inner-call
+candidate. **Committed as WIP** (commit `57a9f774`,
+`src/compile/program-facts.js` — 8 lines, env-var gated, zero behavior
+change when unset) so it survives a restart; MUST be reverted before this
+branch is considered done (matches every prior session's discipline for
+temporary instrumentation — see e.g. session 3/4's `git show HEAD:path >
+path` reverts).
+
+Ran `JZ_DBG_SYNTH2=1 node cli.js /Users/div/projects/watr/watr.js -O3 -o
+/tmp/watr-instr.wasm 2>/tmp/synth-log.txt`: **169 inner-call candidates, 105
+SYNTH / 64 DECLINE**. Wrote a throwaway node script (not committed) to
+classify the 64 declines:
+
+- **32 are single-arg or every-position-flagged** — e.g. `HANDLER.reversed`'s
+  `uleb(id(e, c.elem))` where `e = n.shift()` (a genuinely-mutating,
+  unprovable destructure of the receiver array — correctly declined, no
+  evaluation-free substitution can resolve it) — and this decline is
+  provably HARMLESS: `uleb`'s only touched param here is `n` (deliberately
+  polymorphic/reassigned per the existing "already correctly handled STRING
+  family" note above), and `buffer` isn't even passed at this call (uses its
+  own `= []` default, which is ALREADY separately proven via the unrelated
+  `missing()`-arg default-substitution path in narrow.js's mergeRule,
+  regardless of whether this specific site synthesizes). Same story for the
+  other 31 in this bucket (each traced back to a body-local from `n.shift()`
+  / destructuring feeding the ONE param position this call touches, with the
+  param(s) we actually care about either absent from the call or the
+  arg the decline poisons is not one the census needs).
+- **32 are multi-arg calls with ≥1 CLEANLY-substituted position AND ≥1
+  FLAGGED position — the real, fixable bug.** Breakdown by (callee,
+  clean-position, flagged-position):
+  - `id(nm, list)` — 17×, position 0 (`nm`) flagged (a body-local like
+    `idx`/`t`/`e` from `n.shift()`/destructuring), position 1 (`list`, e.g.
+    `c.type`/`c.table`/`c.elem`/`c.memory`) CLEAN. `id`'s `list` param is
+    read via `list[nm]` / `list.length` / `n in list` — proving its kind
+    would let `id` skip generic dynamic dispatch, a real win never
+    attempted before this trace.
+  - `blockid(nm, block)` — 5×, same shape, position 1 (`c.block`) clean.
+  - `uleb(n, buffer)` — 5×, position 1 (`buffer`, the forwarded `out`) CLEAN
+    — this is the ORIGINAL target parameter session 4 was chasing. Matches
+    session 4's own closing note: "`$m1_encode$uleb`'s own body still
+    carries ONE `__dyn_get_expr` probe."
+  - `reftype(t, ctx)` — 2×, position 1 (`ctx`, i.e. `c`) clean.
+  - `memargEnc(nodes, op, memIdx, out)` called with only 3 args (from
+    `memlane`'s `memargEnc(n, op, memIdx)`, no `out` at this call) — 1×,
+    positions 0,1 (`nodes`,`op`) clean, position 2 (`memIdx`, a body-local
+    ternary result) flagged.
+  - `wleb(v, out)` — 1×, position 1 (`out`) clean, position 0 flagged. Traced
+    to `HANDLER.stringidx`: `let s = n.shift(), key = s.valueOf(), idx =
+    c.strings.findIndex(...); if (idx < 0) idx = c.strings.push(s) - 1;
+    return wleb(idx, out)` — `idx` is a genuinely runtime-computed
+    body-local (correctly unprovable), `out` is the clean param.
+
+**Root cause, precisely**: `synthesizeComputedDispatchCallSites`'s decline
+rule is ALL-OR-NOTHING per call (`innerArgList.every(...)` — one bad
+position poisons the whole site), but `narrow.js`'s consumer
+(`applySiteRules`/`mergeRule.apply`, called once per PARAMETER POSITION `k`
+independently) never needed that — a per-position `v == null` at one
+position already can't corrupt a SIBLING position's own fold (confirmed by
+re-reading `applySiteRules`, narrow.js ~1921-1937: the loop is `for (let k
+= 0; k < func.sig.params.length; k++) { ... rule.apply(r, arg, k, state) }`,
+one independent call per `k`). The synthesis-time all-or-nothing gate is
+therefore STRICTLY MORE CONSERVATIVE than what the consumer actually needs —
+it exists (session 4's own comment) to avoid a DIFFERENT hazard: leaving an
+arrow-local name unsubstituted in a position narrow.js WILL try to resolve
+against the wrong scope (`site.callerFunc`, not the arrow) risks a
+same-spelled-different-binding misattribution.
+
+**Key fact discovered that de-risks a per-position fix**: this codebase's
+AST is ALREADY alpha-renamed program-wide before program-facts.js ever runs
+— every binding gets a globally-unique suffixed name (confirmed directly in
+the instrumentation dump: `n`→`nf113_0` / `nf114_0` / `nf117_0`... — a
+DIFFERENT suffix per lexical declaration site, HANDLER's own `(n,c,op,out)`
+params included). This means a *leftover, unsubstituted* arrow-local name
+(e.g. `idxf143_6`, `HANDLER.stringidx`'s own `idx`) can **never** collide
+with any other real binding anywhere in the program — `state.
+callerValTypes.get('idxf143_6')` / `state.callerParamFacts('val')?.get(
+'idxf143_6')` against the SYNTHESIZED site's `callerFunc` (e.g. `instr`)
+will always cleanly miss (that name was never declared in `instr`'s scope)
+and fall through `inferValAtSite` to `null` — a safe "unclassifiable"
+observation for exactly that one position, nothing fabricated. **NOT YET
+independently re-verified**: that this alpha-renaming is a true, DOCUMENTED,
+whole-pipeline invariant (not an accident of this one program) — grep
+`prepare/index.js` for the renaming pass and confirm it runs unconditionally
+before `program-facts.js`'s walk, on every build, before relying on it. This
+is the one load-bearing fact the fix below depends on; verify FIRST in the
+next round before writing the fix.
+
+### Fix designed, NOT YET IMPLEMENTED (interrupted by a watchdog restart)
+
+Change `synthesizeComputedDispatchCallSites`'s inner-call synthesis from
+whole-call all-or-nothing to a call that is ALWAYS synthesized once the
+callee itself resolves (`isFuncRef` true), keeping each argument POSITION's
+own substituted value even when a SIBLING position still mentions an
+arrow-bound name — i.e. delete the `if (innerArgList.every(a =>
+!mentionsAny(a, bound)))` gate around the whole `programFacts.callSites.push`
+and push unconditionally, relying on (a) the alpha-renaming uniqueness fact
+above to make a leftover arrow-local name a safe, collision-free "always
+resolves to null" observation at its own position, and (b) narrow.js's
+existing per-position independence (`applySiteRules`) to keep that null from
+poisoning sibling positions. Needs, before landing:
+1. Verify the alpha-renaming invariant (above) in prepare/index.js.
+2. Re-derive whether `mentionsAny`/the `flagged` computation is even still
+   needed for anything ELSE after this change (the instrumentation's `ok`
+   field becomes vacuous if the gate is deleted outright — check no OTHER
+   consumer of `synthesizeComputedDispatchCallSites`'s output implicitly
+   relied on "a declined call means NO site was pushed" for some unrelated
+   soundness reason, e.g. `claimedNodes` — re-read the "drop the raw twin"
+   logic (session 4, commit `8a56815f`) to confirm it still applies
+   correctly when EVERY inner call now always gets a synthetic twin: the
+   raw/always-poisoning twin must still be dropped for every claimed node,
+   regardless of whether the synthetic replacement is "fully clean" or
+   "partially null" — re-read `claimedNodes.add(n)` (called BEFORE the old
+   gate, so this is already unconditional today — should be unaffected, but
+   confirm).
+3. Revert the temporary `JZ_DBG_SYNTH2` instrumentation (commit 57a9f774)
+   once the real fix's own pins are in place — or fold its measurement
+   into a smaller, permanent-style debug hook ONLY if the codebase
+   convention elsewhere keeps such hooks (check — session 2's cause-class
+   instrumentation was fully reverted, not kept; match that).
+4. Rebuild watr (`bench-size.mjs --json` AND the real CLI `-O3`), diff WAT
+   for `$m1_encode$uleb`/`$m0_compile$id`/`$m0_compile$blockid`/
+   `$m0_compile$reftype` to confirm the shadow probe actually drops (not
+   just that a callSite got synthesized — the census downstream still needs
+   `paramValTrustworthy`/the hard-settle sweep to actually accept it).
+5. Full battery + kernel bytes vs main, per the task's mergeable gate.
+6. Add pins: positive WAT-shape (the exact partial-forward repro: a helper
+   whose ONE param is proven via a partially-declined multi-arg forwarding
+   call, e.g. mirroring `id(idx, c.type)`/`out` shape) gets direct codegen;
+   negative control (a GENUINELY polymorphic forwarded position stays
+   runtime-dispatched); ordering-independence if plausible for this change
+   (likely N/A — this isn't a fixpoint-ordering fix like session 2's, it's a
+   one-shot synthesis pass, but check whether iterating `computedCallSites`
+   in a different order could matter — should not, since each site's
+   synthesis is independent, but confirm via the existing watr
+   declaration-order pin idiom if a cheap repro exists).
+
+### What was explicitly NOT done this session (interrupted)
+
+- Did not verify the alpha-renaming invariant independently in
+  prepare/index.js (item 1 above) — next action.
+- Did not implement the fix (the `every(...)` gate deletion above).
+- Did not re-run the battery or bench-size after any source change (none
+  made yet beyond the temporary, committed-as-WIP instrumentation).
+- Did not extend dyn-closure-tables.js / module/object.js for class (A) —
+  deprioritized in favor of class (B) per the ceiling analysis above; may
+  still be worth a follow-up round once (B) is landed and measured, to see
+  what's left.
+- Sizes/battery UNCHANGED from session 4's checkpoint: `bench-size.mjs
+  --json` watr = 299635 B (budget 298000), `cli.js .../watr.js -O3` =
+  595859 B (target 586426 B), kernel = 17,971,075 B (main 17,941,790 B).
