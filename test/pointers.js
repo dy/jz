@@ -330,6 +330,70 @@ for (const optimize of [false, 2, 3]) {
   test(`carrier: maybeUnboxBigInt via schema-slot read — i64 min, ${lbl}`, () => schemaSlotBig('-9223372036854775808n', -9223372036854775808n))
 }
 
+// Self-host-only representation divergence, readI64's NAME arm (2026-08,
+// fix/selfhost-fixpoint-divergence): isPlanTaggedBigint's readI64 call site
+// (ir.js) was the one remaining PLAN-DIRECTED unbox site still routing
+// through the unconditional, unguarded unboxBigInt instead of the
+// maybeUnboxBigInt CONSERVATIVE PAIRING applyBigintRepresentationAction and
+// coerceArg (this file's own pins above) already use for the identical
+// fixpoint-proof-not-runtime-fact hazard. A bare, NEVER-boxed local BigInt
+// whose LITERAL VALUE happens to alias a genuine box's own bit shape
+// (NAN_PREFIX_BITS | tag<<47 | aux<<32 | offset, layout.js) is the
+// adversarial case this arm is the last to guard: 0x7ffa800000000000n is
+// PTR.BIGINT's own box PREFIX (tag=5, aux=0, offset=0) reinterpreted as a
+// plain number. RepresentationPlan must never materialize a local this
+// simple — never escapes, never stored behind an unproven slot, never
+// reassigned — so it stays RAW by construction on every legitimate build;
+// isPlanTaggedBigint must read FALSE for it and readI64 must fall through
+// to the plain asI64 reinterpret, never touching unboxBigInt OR
+// maybeUnboxBigInt (a RAW-proven value must never route through the
+// runtime pairing — only a genuinely OPEN/uncertain verdict earns that).
+//
+// Traced live (four rounds of source-literal warn() instrumentation via
+// disposable self-compile probes, .work/todo.md's selfhost-fixpoint-
+// divergence entry) against the fix/shape8-member-callee branch's own
+// self-compiled kernel, which DOES fail this exact repro at every optimize
+// level: every representation-plan.js/ir.js decision for `n` traced BYTE-
+// IDENTICAL natively vs in-kernel (materializedNames, the write action, the
+// read verdict, isPlanTaggedBigint, even the parsed decimal string) — the
+// corruption traces to that branch's OWN in-progress Tier-1 `.`-member-
+// callee resolution (kind.js's f.valResult read racing narrow.js's
+// whole-program fixpoint, corrupting watr's own baked-in i64.parse when the
+// KERNEL ITSELF is built — see representation-plan.js's activeRep doc
+// trail there), not to anything reachable from this branch. Confirmed
+// NOT reproducible here at any optimize level, natively or in-kernel;
+// pinned so a future change (including any eventual merge of that
+// in-progress work) that reopens the divergence is caught immediately, and
+// readI64 hardened here regardless as the established, documented pattern.
+for (const optimize of [false, 2, 3]) {
+  const lbl = `O${optimize || 0}`
+  test(`carrier: bare RAW local whose literal aliases PTR.BIGINT's own box prefix — toString(16), ${lbl}`, () => {
+    const { hexOf } = run(`export let hexOf = () => { let n = 0x7ffa800000000000n; return n.toString(16) }`, { optimize })
+    is(hexOf(), '7ffa800000000000')
+  })
+  test(`carrier: box-tag-shaped family, prefix+1 offset — toString(16), ${lbl}`, () => {
+    const { f } = run(`export let f = () => { let n = 0x7ffa800000000001n; return n.toString(16) }`, { optimize })
+    is(f(), '7ffa800000000001')
+  })
+  test(`carrier: box-tag-shaped family through arithmetic (n + 1n), ${lbl}`, () => {
+    const { f } = run(`export let f = () => { let n = 0x7ffa800000000000n; let m = n + 1n; return m.toString(16) }`, { optimize })
+    is(f(), '7ffa800000000001')
+  })
+  test(`carrier: box-tag-shaped family through array storage roundtrip, ${lbl}`, () => {
+    const { f } = run(`export let f = () => { let n = 0x7ffa800000000000n; let a = [n]; return a[0].toString(16) }`, { optimize })
+    is(f(), '7ffa800000000000')
+  })
+  test(`carrier: ordinary (non-adversarial) BigInt values unaffected by the hardened readI64 arm, ${lbl}`, () => {
+    const { f } = run(`export let f = (kind) => {
+      if (kind === 0) { let n = 12345n; return n.toString(16) }
+      if (kind === 1) { let n = 4n; return n.toString(16) }
+      if (kind === 2) { let n = 0xFFFFFFFFFFFFFFFFn; return n.toString(16) }
+      let n = 0x8000000000000000n; return n.toString(16)
+    }`, { optimize })
+    is(f(0), '3039'); is(f(1), '4'); is(f(2), '-1'); is(f(3), '-8000000000000000')
+  })
+}
+
 test('carrier: box/unbox roundtrip — bit pattern that aliases a real NaN-box (round-2\'s own wall)', () => {
   // The exact hazard round 2 could not resolve at read time: a raw i64 whose
   // bits alias a genuine PTR.OBJECT-shaped NaN-box. Round 3's answer is

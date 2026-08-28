@@ -587,7 +587,22 @@ export const isPlanTaggedBigint = node =>
 export function readI64(node, emitted) {
   if (
       ((typeof node === 'string' && isTernaryBoxedBigint(node)) || isPlanTaggedBigint(node)))
-    return unboxBigInt(emitted)
+    // maybeUnboxBigInt, not unboxBigInt (range-boundary BOX/UNBOX OOB fix,
+    // 2026-08 — the same fix already applied to applyBigintRepresentationAction's
+    // UNBOX arm above and to emit.js's coerceArg): isPlanTaggedBigint's verdict
+    // is representationActiveMaterializedRep's own FIXPOINT proof (edgeMaterializable),
+    // not a runtime fact — order-sensitive by the same mechanism those two
+    // call sites' doc comments already document, so a body built (or, under
+    // self-host, a KERNEL BUILT from source containing an order-hazardous
+    // consumer of this same fixpoint elsewhere — traced live, see
+    // .work/todo.md's selfhost-fixpoint-divergence entry) before this proof
+    // has genuinely settled can reach here with `node` truly RAW while the
+    // verdict claims BOXED. unboxBigInt trusts its input completely and
+    // dereferences unconditionally; maybeUnboxBigInt tag-checks first and
+    // only dereferences a genuine PTR.BIGINT, falling back to the bits-are-
+    // already-the-payload reinterpret otherwise — this was the one remaining
+    // unguarded isPlanTaggedBigint-consuming call site of the three.
+    return maybeUnboxBigInt(emitted)
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
 }
