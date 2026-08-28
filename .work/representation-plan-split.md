@@ -178,17 +178,33 @@ identical "skip index 0" behavior for that shape (its own loop starts at
 `i = 1`, same as walkAst) — the port changes nothing about which nodes get
 visited, whatever `ast[0]`'s shape turns out to be.
 
-Declined (documented, unchanged): every walker with a `root`-parameterized
-`=>`-boundary exemption (`collectDefs`'s `walk`, `deriveLocalProvenance`'s
-`scanStorage`, `buildBodyData`'s `walkEdges`, `paramNeedsHostTag`) — each
-recurses into the top-level `body` even when `body` itself is an arrow
-(closure bodies are frequently exactly this shape) but stops at any
-**nested** arrow; `walkAst`'s `boundary` callback has no such root exemption
-(it would prune the root's own children too), so a naive port silently
-stops analyzing every closure whose body is passed in directly. This is the
-same class of hard incompatibility `.work/analyze-traversals.md` documents
-for `narrowUint32`/`collectBareEscapes`'s bare-string-leaf special case —
-"wrong answer, not just an awkward port" — not a style preference. Also
+CORRECTION (post-merge, main b76a34b3): the `root`-parameterized-`=>`-boundary
+class above was mis-analyzed as a hard `walkAst` incompatibility. `walkAst`'s
+`enter(node, parent, index)` receives `parent` — `parent === null` identifies
+the root call (`visit(node, null, -1)`), so `if (parent !== null && n[0] ===
+'=>') return false` inside `enter` replicates `if (!root && op === '=>')
+return` exactly, no `boundary` option or root exemption needed. The sibling
+`refactor/pipeline-minimality` campaign found this independently and retired
+`deriveLocalProvenance`'s `scanStorage` this way; merged into this branch
+verbatim (byte-identical to main's tip) rather than re-derived. Retired:
+`collectLocalClosures`, `collectDispatchTableClosures` (this branch's own
+finding, both in common.js/provenance.js respectively), plus `scanStorage`
+(merged from main, now in provenance.js) — three for three of the
+root-exempt walkers actually named below turned out to be safe once the
+`parent` trick is used; the fourth (`paramNeedsHostTag`) and the two
+`Array.isArray(node[0])`-dependent ones were not touched by the sibling
+campaign either and stay declined for the reason already given.
+
+Declined (documented, unchanged): `collectDefs`'s `walk` and `buildBodyData`'s
+`walkEdges` still have the `Array.isArray(op)` "op is itself a list" branch
+in addition to the root exemption (see below) — the `parent` trick alone
+does not resolve that second incompatibility, so retiring these needs the
+same list-shape care the declined pair below already flags, not attempted
+here. `paramNeedsHostTag` (solveBigintProvenance-local, not hoisted this
+slice) has the plain root exemption only and IS a same-shape candidate for
+the `parent` trick — not applied in this slice (found only via the merge,
+not independently), recorded here as a follow-up rather than guessed at
+under time pressure. Also
 declined: `solveBigintProvenance`'s `seedBigintTyped`/`scan`/`visitCallSites`
 (all three have the `Array.isArray(node[0])` "op is itself a list" branch,
 used for the top-level `ast` walk specifically — walkAst has no equivalent).
