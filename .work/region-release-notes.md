@@ -1795,3 +1795,99 @@ Kernel used throughout: `/private/tmp/claude-501/-Users-div-projects-jz/0482f00a
 (gitignored, O0, region-hooks-on, built from this worktree's `scripts/self.js` with
 `REGION_HOOKS_ACTIVE` locally flipped `true` — uncommitted, matches every prior session's
 convention of never committing that flip).
+
+## Group 1 continued (same session) — corruption isolated to AFTER emission, BEFORE optimizeModule's named passes; exact line not yet found
+
+Continuing the v>=77/-77 characterization above. Two more empirical cuts, both against the SAME
+93.1s O0 region-hooks kernel (rebuilt once more, 93.7s, 13,485,298 bytes, only to add/remove a
+throwaway breadcrumb — reverted, `git diff module/core.js` is clean):
+
+**Cut 1 — value is CORRECT at the point `module/core.js`'s own `ctx.core.emit['__mkptr']` handler
+builds its IR node.** Instrumented that ONE handler (`src/compile` emit dispatch, module/core.js:
+3252) with `if (tIR[0]==='i32.const' && (tIR[1]===1||tIR[1]===6) && oIR[0]==='i32.const' &&
+oIR[1]===2048) throw new Error('DBGMKPTR o='+oIR[1])` immediately after `oIR = asI32(emit(o))` —
+i.e. read the offset argument's OWN freshly-emitted IR node, right where the handler is about to
+splice it into the `['call','$__mkptr',tIR,aIR,oIR]` node. Threw `DBGMKPTR o=2048` — **the correct
+value**, not `1971`. So `emit(o)` (the literal's own emission) is NOT where the corruption enters,
+and neither is anything upstream of it (parse/prepare/narrow/analyze) — the `2048` literal is
+still 2048 the instant `ctx.core.emit['__mkptr']` finishes building its own node. Whatever
+corrupts it runs strictly AFTER this handler returns.
+
+**Cut 2 — ruled out every OPTIONAL pass inside `optimizeModule`/`optimizeFunc` by disabling them
+all via runtime `optimize` config (no rebuild needed — `compileViaKernel(src, {optimize: {...}})`
+against the SAME already-built kernel).** Tested with ALL of these simultaneously `false`:
+`specializeMkptr, hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistGlobalConstLoads,
+maskedSuffixGuard, arenaRewind, hoistConstantPool` — corruption UNCHANGED (`[1,100,1971]`).
+Separately also tried `fusedRewrite:false` (src/optimize/index.js:3925, the "peephole rebox
+folds + inline ptr/is_* helpers" pass, also unconditionally-on like the others — `if (!cfg ||
+cfg.fusedRewrite !== false)`) — corruption STILL present (v=2049 → 1972, same -77). Every
+NAMED, individually-disableable pass documented in `src/optimize/index.js`'s own header comment
+(the `specializeMkptr`/`hoistConstantPool`/`fusedRewrite`/hoist-family list) is now eliminated.
+`specializeMkptr`'s counting/rewrite loops were the leading suspect going in (they thread
+`regionHooks` directly and batch every 8 funcs, `src/optimize/index.js:3116`) but are conclusively
+NOT it.
+
+**Also confirmed NOT the mechanism** (static reading, this session): `mkPtrIR` (src/ir.js:769,
+the fold `__mkptr(literal,literal,literal)` → bare `f64.const`) — the user-source `__mkptr(...)`
+intrinsic call does NOT route through it at all (it goes through `ctx.core.emit['__mkptr']`'s
+plain passthrough handler above, module/core.js:3252 — confirmed by the WAT always retaining a
+real `call $__mkptr`, never folding to a bare constant, across every test this session ran).
+Generic (non-`__mkptr`) 3-argument user calls with a literal first-arg of 1 or 6 do NOT show any
+corruption on their 3rd argument (`g(6,100,2048)` → `f64.const 2048`, correct) — rules out a
+generic "first-arg-value 1-or-6" bug unrelated to `__mkptr`'s specific pointer semantics.
+`pre-eval.js` has zero references to `__mkptr` (grepped) — not a preEval constant-fold either.
+
+**What's left, precisely**: the corruption happens somewhere between (a) `ctx.core.emit['__mkptr']`
+returning its `['call','$__mkptr',tIR,aIR,oIR]` node (proven correct, Cut 1) and (b) the final WAT
+text (proven wrong). Everything cfg-gated inside `optimizeModule`/`optimizeFunc` is now ruled out
+(Cut 2). The two remaining candidates, NOT YET TESTED: (1) `optimizeFuncs`'s own UNCONDITIONAL
+region round (`src/wat/assemble.js` `optimizeModule`'s `t('optimizeFuncs', ...)` loop, mark/exit
+every 16 funcs, root `[batch, ctx.scope, ctx.transform, ctx.types, ctx.schema, ctx.core.includes,
+ctx.runtime]` — narrower than the documented "wide" emission-round root, e.g. missing
+`ctx.funcs/ctx.module/ctx.closure/ctx.warnings/ctx.plans/ctx.inspect/ctx.func/ctx.facts/
+ctx.memory/ctx.error/ctx.linkDemand/ctx.names/ctx.features` and several `ctx.core.*` subfields —
+though for THIS 5-function repro the loop almost certainly completes in ONE batch, well under 16,
+which weakens but doesn't eliminate this candidate: a single-batch round's OWN exit-time
+`__region_copy_rec` walk could still mis-relocate something even with no cross-batch staleness
+involved); (2) `emitFuncs`'s OWN closeRound (`src/compile/index.js` ~2645-2655, EARLIER than
+optimizeModule, wraps each function's fresh IR right after `emit()` finishes it, using the WIDE
+`emissionRoundExit` root) — NOT cfg-gated at all (always active whenever `regionHooks` is
+truthy), so it could NOT be tested via the runtime-config method Cut 2 used; this is now the
+SINGLE MOST LIKELY remaining site, since it is the one region round that sits chronologically
+between Cut 1's proven-correct point and Cut 2's proven-clean set, and it operates directly on
+the just-built function IR tree (containing the `(i32.const 2048)` node) via the general
+`__region_copy_rec` relocation walk — the same walk this whole investigation's original
+(now-disproven) hypothesis suspected, just in the right ROUND this time instead of the wrong one
+(`__ptr_offset`'s stdlib body, proven byte-identical native vs kernel, is not a region-relocated
+object at all — it is WAT TEXT built once, pre-mark, by `module/core.js`'s `init(ctx)`, per the
+front's-round-fix already landed).
+
+**Reproduction recipe for whoever continues** (no new build needed if this worktree's kernel
+still exists; else ~93s O0 rebuild with `REGION_HOOKS_ACTIVE=true`):
+```js
+import { compileViaKernel } from './test/kernel-target.js'
+const src = `export let f = () => {
+  let p = __mkptr(1, 100, 2048)
+  return __ptr_offset(p)
+}`
+compileViaKernel(src, { wat: true, optimize: 0 })  // $__mkptr's 3rd i32.const arg is 1971, not 2048
+```
+Sweep confirms: any literal offset `v >= 77` with a literal type of `1` (ARRAY) or `6` (OBJECT) —
+NOT `0` (ATOM) — emits `v - 77` instead of `v`, exactly, for every tested magnitude 78..1,048,576;
+`v <= 76` is untouched. Only the OFFSET (3rd) argument is affected — the same literal in the
+TYPE or AUX position is unaffected, and an unrelated literal appearing before/after the `__mkptr`
+call in the same function is unaffected (dead-code-discarded results still show the corruption,
+so it is not about downstream use). **Next concrete step**: instrument `emitFuncs`'s closeRound
+specifically (a breadcrumb reading the SAME node — the offset arg of the JUST-EMITTED `$f`'s
+`__mkptr` call — immediately before vs. immediately after that round's own `regionHooks.exit(...)`
+call, mirroring Cut 1's technique one round later) to confirm or rule it out with the same
+precision Cut 1 already achieved for emission itself; if ruled out too, move to
+`optimizeFuncs`'s own round next (Cut 2 only disabled its NAMED sub-passes, not its own
+mark/exit/root, which cannot be disabled via config — would need a source edit + rebuild,
+e.g. temporarily forcing `optimizeModule`'s `regionHooks` argument to `null` at its call site,
+`src/compile/index.js:3052-3057`).
+
+**REGION_HOOKS_ACTIVE reverted to `false`** in this worktree per the task mandate (hooks-on
+battery is nowhere near green — Group 1 unfixed, Group 2/fuzz unexamined this session). No
+production source file differs from HEAD (`git diff HEAD --stat` — only `scripts/self.js`'s
+flag, reverted; `module/core.js`'s breadcrumb was added and fully reverted, confirmed clean).
