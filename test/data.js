@@ -2505,6 +2505,58 @@ test('bigint: shape #9 sibling — index-resolved `.`-member callee (KNOWN-WRONG
   }
 })
 
+test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding write, not the RAW-consuming callee itself (FIXED)', () => {
+  // The pin above ("index-resolved `.`-member callee") reaches `leb` (the
+  // RAW-consuming callee) through `.`-member and is a GENUINELY DIFFERENT,
+  // still-open residual (a value-used-via-property-write function excluded
+  // from RepresentationPlan's materializedNames fixpoint entirely, needing
+  // the closure-materialization subsystem — out of this fix's scope). THIS
+  // pin is the residual its own comment separately named: `directCallBoundary`
+  // (buildBodyData's callee lookup, feeding semanticOf/currentOf/plannedOf/
+  // walkEdges) was bare-name-only, so a caller's OWN bigint-provenance proof
+  // for a reassigned local depended on resolving a `.`-member callee — here,
+  // `i64.parse` (a lifted named-function property, watr's own real shape,
+  // matching the "shape #7-residual" pin above) is the RHS of `i64`'s own
+  // binding write `n = i64.parse(n)`; `leb` (the eventual RAW-consuming
+  // callee) stays bare-name, unlike the pin above.
+  //
+  // Root cause, live-traced (two layers, both in representation-plan.js):
+  // (1) buildBodyData's directCallBoundary consumers (semanticOf/currentOf/
+  // plannedOf/walkEdges/emittedCandidate) gained a `calleeNameOf` helper —
+  // `typeof node[1] === 'string' ? node[1] : provenance.resolveMemberCallee
+  // (node[1])?.name` — reusing the SAME frozen call-target-index resolver
+  // solveBigintProvenance's own exprMay/exprRep/scan/visitCallSites already
+  // use (Shape #8), so `i64.parse(n)`'s callee now resolves to `i64$parse`
+  // and `currentOf` can read its proven RAW_BIGINT result. (2) That alone
+  // surfaced a SECOND, narrower gap: `edgeMaterializable`'s BOX/UNBOX safety
+  // check (guards buildBodyData's materializedNames/materializedResult
+  // fixpoints against boxing a value that isn't actually proven bigint)
+  // trusted ONLY `valTypeOf(node) === VAL.BIGINT` — kind.js's OWN Tier-1
+  // bare-name call resolution (narrow.js's whole-program valResult census),
+  // which has no `.`-member equivalent (deliberately — that was the shelved
+  // fix/shape8-member-callee branch's own kernel-taint lesson). A resolved
+  // `.`-member callee whose OWN body plan already proves a CLOSED bigint
+  // result (`calleeBody.materializedResult`, falling back to the callee's
+  // BOUNDARY-level current when its body hasn't settled yet at THIS caller's
+  // analysis time — same callee-before-caller body-readiness fallback
+  // currentOf's own Shape #7 comment already documents) is exactly as safe
+  // to admit as what valTypeOf already proves for a bare name — a new
+  // `calleeProvenBigintResult` helper reuses that ground truth instead of
+  // widening trust in `source`'s bits generally (which can also reach a
+  // closed bigint bit through the unrelated NUMERIC_VALUE_OPS+canBeBigint
+  // heuristic, still correctly gated by valTypeOf alone).
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
+      i64.parse = n => { n = n.replaceAll('_', ''); return BigInt(n) }
+      function leb(n) { n >>= 7n; return n }
+      export let f = () => i64("900")
+    `, { optimize }).exports
+    is(e.f(), 7n, `${lbl}: i64.parse's proven BigInt result now reaches i64's own binding write, leb(n) gets a real BigInt`)
+  }
+})
+
 test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 pre-existing KNOWN-WRONG)', () => {
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s

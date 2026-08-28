@@ -862,8 +862,13 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     // structurally never-bool by their own AST tag, no recursion needed.
     if (typeof node === 'number') return true
     if (Array.isArray(node) && node[0] === 'str') return true
-    if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return false
-    const callee = ctx.funcs.map.get(node[1])
+    if (!Array.isArray(node) || node[0] !== '()') return false
+    // Shape #9 sibling: a `.`-member callee the call-target index resolves
+    // (Shape #8) is exactly as real a same-module callee as a bare name for
+    // this recursion — without this, `n = i64.parse(n)` (watr's own shape)
+    // can never prove its own reaching def never-bool, so a caller passing
+    // `n` onward never clears the callee's BOOL-veto either.
+    const callee = typeof node[1] === 'string' ? ctx.funcs.map.get(node[1]) : resolveMemberCallee(node[1])
     if (!callee || !callee.body || seen.has(callee)) return false
     const tails = Array.isArray(callee.body) && callee.body[0] === '{}' ? returnExprs(callee.body) : [callee.body]
     if (tails.length === 0) return false
@@ -925,7 +930,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
   visitCallSites(ast, null, globals)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) visitCallSites(init, null, globals)
 
-  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramNeverBool }
+  return { namesByFunc, paramsByFunc, results, resultReps, storage, bigintTyped, globals, globalReps, indirectResult, exprMay, paramBigintOnly, paramNeverBool, resolveMemberCallee }
 }
 
 function deriveLocalProvenance(sig, body, localReps, program) {
@@ -1263,6 +1268,20 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // misses it. Used below to recognize the specific shape that needs a
   // representation verdict OTHER than the generic unresolved-call fallback.
   const localClosures = collectLocalClosures(body)
+  // Shape #9 sibling (.work/shape9-boxed-arg-raw-callee.md residual 2): every
+  // directCallBoundary consumer below (semanticOf/currentOf/plannedOf/
+  // walkEdges/emittedCandidate) resolved ONLY a bare-name callee
+  // (`typeof node[1] === 'string'`) — a `.`-member callee the frozen
+  // call-target index proves (Shape #8/#7-residual, `resolveMemberCallee`,
+  // the SAME function solveBigintProvenance's own exprMay/exprRep/scan/
+  // visitCallSites already use) was invisible here even when fully resolved
+  // there, so a binding write like watr's own `n = i64.parse(n)` never
+  // reached its callee's proven representation. One authority, reused
+  // verbatim (never re-derived): null whenever `provenance` itself is absent
+  // or the node isn't a resolvable `.`-member call, exactly like every other
+  // `provenance?.` guarded fact in this function.
+  const calleeNameOf = node =>
+    typeof node[1] === 'string' ? node[1] : provenance?.resolveMemberCallee(node[1])?.name ?? null
   const semanticNames = new Map()
   const currentNames = new Map()
   const targetNames = new Map()
@@ -1356,8 +1375,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     else if (node[0] === '()' && typeof node[1] === 'string' &&
              (node[1] === 'BigInt' || node[1].startsWith('BigInt.')))
       out = semKind(VAL.BIGINT)
-    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1]))
-      out = directCallBoundary(ctx, node[1]).result.semantic
+    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node)))
+      out = directCallBoundary(ctx, calleeNameOf(node)).result.semantic
     else if (NUMERIC_VALUE_OPS.has(node[0])) {
       const operands = node.slice(1).filter(x => x !== undefined).map(semanticOf)
       const anyBig = operands.some(canBeBigint)
@@ -1458,7 +1477,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (cached != null) return cached
     let out
     if (isBigintOrigin(node)) out = RAW_BIGINT
-    else if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1])) {
+    else if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
       // Shape #7 (encode.i64's own real watr shape): the BOUNDARY's current
       // is the coarse, pre-body fact (open/ambiguous whenever the callee's
       // own return sites disagree on raw-vs-boxed by construction, e.g.
@@ -1475,12 +1494,13 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       // before any caller's own buildBodyData runs) that emittedCandidate's
       // own comment already documents; falls open to the boundary's current
       // exactly like emittedCandidate does when the body isn't there yet.
-      const callee = ctx.funcs.map.get(node[1])
+      const calleeName = calleeNameOf(node)
+      const callee = ctx.funcs.map.get(calleeName)
       const calleeHandle = callee && ctx.plans.representations.get(callee)
       const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
       out = calleeBody?.materializedResult === true
         ? calleeBody.resultTarget ?? ANY_BIGINT
-        : directCallBoundary(ctx, node[1]).result.current
+        : directCallBoundary(ctx, calleeName).result.current
     }
     else if (node[0] === ',') out = currentOf(node[node.length - 1])
     else if (node[0] === '=') out = currentOf(node[2])
@@ -1549,8 +1569,8 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     const cached = nodeTarget.get(node)
     if (cached != null) return cached
     let target, normalizedElsewhere = false
-    if (node[0] === '()' && typeof node[1] === 'string' && directCallBoundary(ctx, node[1])) {
-      target = directCallBoundary(ctx, node[1]).result.target
+    if (node[0] === '()' && calleeNameOf(node) && directCallBoundary(ctx, calleeNameOf(node))) {
+      target = directCallBoundary(ctx, calleeNameOf(node)).result.target
       normalizedElsewhere = true // the callee's return edges own this transition
     } else {
       const recv = memberReceiver(node)
@@ -1621,8 +1641,9 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       addEdge('return', plannedOf(node[1]), bodyResultTarget, node)
     } else if (op === '()') {
       const args = commaList(node[2])
-      if (typeof node[1] === 'string') {
-        const callee = directCallBoundary(ctx, node[1])
+      const calleeName = calleeNameOf(node)
+      if (calleeName) {
+        const callee = directCallBoundary(ctx, calleeName)
         if (callee) {
           for (let i = 0; i < args.length && i < callee.params.length; i++)
             addEdge('call-arg', plannedOf(args[i]), callee.params[i].target, node)
@@ -1650,6 +1671,49 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const expr of returnExprs(body)) plannedOf(expr)
   }
 
+  // Shape #9 sibling (buildBodyData's own edgeMaterializable, found live
+  // tracing `n = i64.parse(n)`): the BOX/UNBOX safety check below trusts
+  // ONLY valTypeOf(node) === VAL.BIGINT to admit a genuine BOX/UNBOX
+  // transition — kind.js's valTypeOf has Tier-1 bare-name call resolution
+  // (narrow.js's whole-program valResult census) but, deliberately (the
+  // shelved fix/shape8-member-callee branch's own kernel-taint lesson,
+  // .work/phase-c-unification.md "Shape #8 branch: SHELVED"), no `.`-member
+  // equivalent — so a `.`-member callee's call node never satisfied this
+  // gate even once calleeNameOf/directCallBoundary (above) could prove its
+  // result. For a BARE-NAME call this was invisible: currentOf's own
+  // `calleeBody.resultTarget` fact and valTypeOf's narrow.js fact are two
+  // independently-derived routes to the SAME underlying truth (the callee's
+  // return is provably one bigint carrier) and always agreed. Once
+  // `.`-member callees became resolvable here (this fix) they split: a call
+  // whose callee's OWN body plan already proves a CLOSED bigint result is
+  // exactly as safe to box/unbox as one valTypeOf can name — reusing that
+  // ground truth (not a new guess, not a broadened trust of `source` itself,
+  // which can also reach a closed bigint bit through the unrelated
+  // NUMERIC_VALUE_OPS+canBeBigint heuristic a few lines below, still
+  // correctly gated by valTypeOf alone).
+  const calleeProvenBigintResult = node => {
+    if (!Array.isArray(node) || node[0] !== '()') return false
+    const calleeName = calleeNameOf(node)
+    if (!calleeName) return false
+    const cb = directCallBoundary(ctx, calleeName)
+    if (!cb) return false
+    // Same callee-before-caller body-readiness fallback currentOf's own
+    // identical lookup already documents (Shape #7 comment, above): when
+    // this callee's BODY hasn't settled yet at THIS caller's analysis time
+    // (buildBodyData runs in ctx.funcs.list order, not dependency order —
+    // the callee here is textually declared AFTER its caller), its own
+    // materializedResult/resultTarget aren't published yet and the coarse,
+    // pre-body BOUNDARY current is the only fact available — proven live:
+    // for `i64.parse`, exactly this fallback fires (the body branch is
+    // reached with `hasBody: false`) and the boundary current is ALREADY
+    // the correct closed RAW answer, from solveBigintProvenance's own
+    // whole-program resultReps fixpoint, independent of body order.
+    const callee = ctx.funcs.map.get(calleeName)
+    const calleeHandle = callee && ctx.plans.representations.get(callee)
+    const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+    const rep = calleeBody?.materializedResult === true ? calleeBody.resultTarget : cb.result.current
+    return bigintRepIsClosed(rep) && bigintRepBits(rep ?? NO_BIGINT) !== BIGINT_REP_NONE
+  }
   // A local—or a parameter on a covered direct boundary—whose complete def
   // set uses plain writes can have every incoming edge normalized at
   // emitDecl / the '=' handler. Keep this
@@ -1657,7 +1721,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const edgeMaterializable = (source, target, node, sourceReady = false) => {
     const action = edgeAction(source, target)
     if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
-      return valTypeOf(node) === VAL.BIGINT
+      return valTypeOf(node) === VAL.BIGINT || calleeProvenBigintResult(node)
     if (action !== REP_EDGE_KEEP) return false
     // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
     // identity. BOXED→BOXED is ready only when the upstream producer family
@@ -1789,18 +1853,25 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     }
     if (Array.isArray(node)) {
       if (materializedJoins.has(node)) return { rep: nodeTarget.get(node) ?? ANY_BIGINT, ready: true }
-      if (node[0] === '()' && typeof node[1] === 'string') {
-        const callee = ctx.funcs.map.get(node[1])
-        const calleeHandle = callee && ctx.plans.representations.get(callee)
-        const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
-        if (calleeBody?.materializedResult === true)
-          return { rep: calleeBody.resultTarget ?? ANY_BIGINT, ready: true }
+      if (node[0] === '()') {
+        const calleeName = calleeNameOf(node)
+        if (calleeName) {
+          const callee = ctx.funcs.map.get(calleeName)
+          const calleeHandle = callee && ctx.plans.representations.get(callee)
+          const calleeBody = calleeHandle && ctx.plans.representationData.get(calleeHandle)?.body
+          if (calleeBody?.materializedResult === true)
+            return { rep: calleeBody.resultTarget ?? ANY_BIGINT, ready: true }
+        }
         // Closure-forwarding slice: a same-body local closure's plan doesn't
         // exist yet at THIS body's build time (closures compile at module
         // end, after their callers — the ctx.funcs.map lookup above always
         // misses), so closureCallNeedsBox's own structural proof (a
         // passthrough tail fed a non-excluded argument) stands in for the
-        // callee-plan lookup this branch ordinarily uses.
+        // callee-plan lookup this branch ordinarily uses. Bare-name only by
+        // construction (its own internal gate): a local closure is never
+        // reachable through a `.`-member call — call-target-index.js's own
+        // property-write census never descends into any function body, so a
+        // closure assigned to a property from inside one is never indexed.
         if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }
       }
     }
@@ -2132,8 +2203,15 @@ export function representationActiveMaterializedRep(ctx, name) {
     if (body?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
     return NO_BIGINT
   }
-  if (Array.isArray(name) && name[0] === '()' && typeof name[1] === 'string') {
-    const callee = ctx.funcs.map.get(name[1])
+  if (Array.isArray(name) && name[0] === '()') {
+    // Shape #9 sibling: same one-authority widening as buildBodyData's own
+    // calleeNameOf (this function runs at emission time, outside that
+    // closure, so it reaches the identical frozen resolver via the program
+    // plan record's own `provenance` instead of re-deriving it).
+    const calleeName = typeof name[1] === 'string'
+      ? name[1]
+      : programPlanRecord(ctx)?.provenance?.resolveMemberCallee(name[1])?.name ?? null
+    const callee = calleeName ? ctx.funcs.map.get(calleeName) : null
     const calleeHandle = callee && ctx.plans.representations.get(callee)
     const calleeRecord = calleeHandle && ctx.plans.representationData.get(calleeHandle)
     return calleeRecord?.body?.materializedResult === true
