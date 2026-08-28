@@ -1276,3 +1276,85 @@ another correctness bug.
 test suite (`node test/index.js`) run started after this commit to confirm zero regressions from
 the dispatch-tier narrowing before continuing — check its result before trusting this fix is
 regression-free.
+
+## Class 1 task-named sites fixed (`31ce2aa6`, `610d44c7`) — closure $ftN/table + WASI timer runtime
+
+Both closed this session, both verified via the native byte-identity probe (real fix, not
+speculative) — see each commit's own message for the full mechanism (summarized): `ctx.closure.
+types.add(1)` moved from module/function.js's unconditional init into `ctx.closure.mint` (the
+established single mint site); `src/compile/index.js`'s consumer changed `if (ctx.closure.types)`
+(bare Set-object presence, always true once `fn` merely loads — the Set itself is created
+unconditionally at init) to `if (ctx.closure.types?.size)`; `src/wat/assemble.js`'s
+`finalizeClosureTable` changed its `call_indirect`-substring scan from `Object.values(ctx.core.
+stdlib)` (every EVER-REGISTERED template) to only `ctx.core.includes`-reachable ones (calling
+`resolveIncludes()` early — confirmed safe: a pure, monotonic, memoized fixpoint, and emission has
+already finished by this call site per the very next line's own pre-assemble invariant checkpoint).
+`module/timer.js`'s `setupWasi` extracted its four unconditional effects (the two `inc()`s, the
+host import, the three `declGlobal`s) into `ensureWasiTimerRuntime()`, a lazy idempotent thunk
+called from all four timer emit handlers — the same `needSetTimeout`-style pattern this file's own
+`setupJsHost` sibling already used correctly.
+
+Byte-identity probe, both fixes applied, full real corpus × both hosts:
+`sum`/`math`/`arr`/`fold`/`boolconst`/`nestedtyped`/`fromnested` now byte-IDENTICAL eager vs lazy
+at BOTH `host:'js'` and `host:'wasi'` (were diverging on every single entry before this session).
+Remaining, NOT fixed this session: `dict`/`mfold`/`subviewtyped` diverge by a handful of bytes
+(4-69B) at both hosts — traced (mfold) to a pre-existing, unrelated representation/narrowing
+difference (execution-CORRECT: `g()` still returns `5` under eager load, via an i32-then-
+`f64.convert_i32_s` wrapper instead of preEval's plain folded f64 constant — so this is a
+kernel-parity BYTE gap, not a correctness bug) — not root-caused for `dict`/`subviewtyped`
+specifically, likely the same class. `dvnested` is WORSE than a byte gap: **still genuininely
+INVALID wasm** under eager load (`WebAssembly.Module()` rejects it) even after every fix above.
+
+### `dvnested` residual — narrowed further, NOT closed, real remaining risk
+
+Re-bisected with ALL of this session's fixes applied (temporarily shrinking `src/autoload.js`'s
+`STDLIB` locally, same technique as the Class-2 bisection above, reverted after — confirmed
+`git diff src/autoload.js` empty before moving on each time): **`['core','typedarray','string']`
+alone still produces invalid wasm** — same `f64.convert_i32_s` stack-imbalance signature. Since
+the Class-2 dispatch fix (`d1f4b585`) already proved `dvnested`'s OWN `$f` function body compiles
+byte-identically to native once `ctx.module.demanded` correctly excludes 'string'/'fn' from the
+shadow-probe/dynamic-dispatch gates, **the remaining corruption is in a DIFFERENT function, not
+`$f` itself** — confirmed by locating the WAT function WebAssembly's own error names: with
+`STDLIB=['core','typedarray','string']`, the parse error moved from "function #4" (this session's
+earlier, pre-Class-2-fix state) to "function #33" — counting `(func $name` declarations in
+document order (0 imports for this host:'js' repro), index 33 (0-indexed) lands on `$f` itself
+again by one counting convention, but `$f`'s own body (read directly) is the SAME correct shape
+confirmed clean in the Class-2 section above (no `$__dyn_get_expr`/`call_indirect` — direct
+`$__dv_index` dispatch) — the WASM engine's own function-index numbering (which counts only
+CODE-SECTION-local functions, possibly 1-indexed, disagreeing with a raw doc-order func count) was
+NOT successfully resolved to a specific culprit this session; `$__clear` (a 3-line, obviously
+correct function) sits at the position one plausible indexing convention pointed to, ruling that
+convention out too. **Genuinely not localized to a specific function this session** — this is the
+one open item most worth a fresh pair of eyes.
+
+**Leading hypothesis, not confirmed**: the extra ~20KB of eagerly-pulled-in code for this minimal
+repro is dominated by `number`/`string`'s own float-to-decimal machinery (`__ftoa`,
+`__ftoa_shortest`, `__dec_to_f64`, the four `__ryu_*` helpers, `__pow10`, `__itoa`) — none of
+which `dvnested`'s DataView-only source has any real use for. These are almost certainly reached
+NOT via any module's own unconditional top-level `inc()` (audited: neither `module/number.js` nor
+`module/string.js` has one comparable to function.js's/timer.js's fixed sites — `string.js:235`'s
+`inc('__mkptr','__alloc')` is the one top-level call found, and those two are trivially-correct
+foundational core helpers, not plausible bug sites) but TRANSITIVELY, via `resolveIncludes()`'s
+own auto-dep scan (src/ctx.js `autoDepsOf`, matches `$__[A-Za-z0-9_]+` inside every stdlib template
+already included) chaining from some broadly-used, genuinely-reachable-for-almost-any-string-using-
+program helper like `$__to_str` — i.e. the SAME general shape as this session's two confirmed
+fixes (a check that can't distinguish "reachable because genuinely needed" from "reachable because
+eager-loaded neighbors dragged it in transitively"), just one level deeper in the dependency graph
+than either fix reached. **Not verified — the auto-dep chain from whatever triggers `$__to_str`
+(or whichever helper is the actual entry point) down to the RYU cluster was not traced this
+session.** Whoever continues: re-run this section's bisection (`STDLIB=['core','typedarray',
+'string']`, revert after via `git show HEAD:src/autoload.js > src/autoload.js`), get the WAT dump
+via a `{wat:true, optimize:0}` compile, and this time identify the broken function by BINARY
+offset (the error names a byte offset — `@+8888` etc. — decode the actual `.wasm` bytes' code
+section function boundaries directly, e.g. via `wasm-tools objdump`/`wasm2wat` if available in the
+sandbox, rather than trusting a WAT-text function-declaration ORDER count against the engine's own
+internal numbering, which this session never got to agree with either "0-indexed, no imports" or
+"1-indexed" — neither landed on a plausible culprit).
+
+**Consequence for the task's literal targets**: this is NOT yet the "everything demand-driven,
+zero observable output/validity effect from loading a module" state the task's conceptual fix
+demands — a genuinely INVALID module for at least one real program shape is a correctness risk,
+not just a size nit. The native byte-identity pin below deliberately does NOT assert
+`dvnested`-shaped byte-identity or even validity under eager load — see the pin file's own
+`[known-gap]`-style comment — so it stays green while this is tracked, rather than silently
+skipping coverage of everything ELSE that IS fixed.
