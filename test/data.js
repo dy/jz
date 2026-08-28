@@ -3583,3 +3583,87 @@ test('closed computed-dispatch table: declaration order relative to its caller d
   const watTableLast = String(compile(push2Src + instrSrc + handlerSrc, { optimize: 3, wat: true }))
   is(watTableFirst, watTableLast, 'O3: declaring the dispatch table before vs after its caller compiles to byte-identical WAT')
 })
+
+test('closed computed-dispatch table: an unresolvable SIBLING argument no longer poisons the whole synthesized call', () => {
+  // watr's real residual (.work/string-method-guess-notes.md "Fifth
+  // session"): `grab`'s inner call is `grab(lookup(idx, list), buf)` — arg0
+  // nests a reference to `a`'s OWN body-local `idx` (from `list.shift()`,
+  // never statically resolvable — genuinely unknown, not absent), arg1 is
+  // `a`'s OWN param `buf`, forwarded cleanly from `instr`'s own array. The
+  // OLD all-or-nothing gate declined the WHOLE call over arg0 alone, losing
+  // arg1's perfectly good observation too. The fix keeps synthesizing
+  // regardless — each argument POSITION is independent in narrow.js's own
+  // fold (applySiteRules folds one call-site argument per parameter index,
+  // never coupled to a sibling) — so `grab`'s `buf` param (2nd position)
+  // still proves ARRAY even though `x` (1st position) stays correctly
+  // unresolvable.
+  const src = `
+    const lookup = (k, m) => m[k]
+    const grab = (x, buf) => { buf.push(x); return buf }
+    const HANDLER = {
+      a: (buf, list) => { const idx = list.shift(); return grab(lookup(idx, list), buf) },
+      b: (buf, list) => { buf.push(list.shift()); return buf },
+    }
+    function instr(buf, key, list) { return HANDLER[key](buf, list) }
+    export function main() {
+      let out = []
+      instr(out, 'a', [7])
+      return out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 1, `O${optimize || 0}: list.shift() empties the array (idx=7, list=[]), lookup(7,[]) is undefined, grab pushes it once — computes the JS-correct length regardless of which positions the census could prove`)
+})
+
+test('closed computed-dispatch table: a member reached by a SHORT outer call declines its own unsuppliable trailing param instead of forwarding it as a false "merely unknown" fact', () => {
+  // The regression this fix corrects (.work/string-method-guess-notes.md
+  // "Fifth session"): watr's real `for (const k in HANDLER) SIZE_HANDLER[k]
+  // = (n,c,op) => HANDLER[k](n,c,op).length` idiom calls every HANDLER
+  // member with 3 args, one short of the table's own 4-param convention —
+  // mirrored here by `short(key, buf, v)` calling `HANDLER[key](buf, v)`
+  // (2 args) against members declared `(buf, v, out)` (3 params). The
+  // member's own `out` is genuinely, provably ABSENT at that call — not
+  // merely unknown — so forwarding `relay`'s internal call `relay(buf, v)`
+  // (2 args, missing its own `out`) would hand narrow.js's `missing()` rule
+  // a call site with NO default for the missing position, which poisons
+  // UNCONDITIONALLY (soft or hard, no self-heal possible — unlike an
+  // ordinary unresolved VALUE) — permanently swamping the CLEAN observation
+  // `a`'s own fully-supplied call already proved for that exact same
+  // parameter. The fix declines synthesizing the whole under-arity call
+  // instead: `relay.out` stays cleanly ARRAY from `a`'s site alone, and
+  // `write`'s own `buf` param (fed ONLY by relay's internal, `if(out)`-
+  // guarded call to `write`) inherits that clean proof.
+  const src = `
+    const write = (buf, x) => { buf.push(x); return buf }
+    const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
+    const HANDLER = {
+      a: (buf, v, out) => relay(buf, v, out),
+      b: (buf, v) => relay(buf, v),
+    }
+    function instr(buf, key, v, out) { return HANDLER[key](buf, v, out) }
+    function short(key, buf, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      let scratch = []
+      instr(out, 'a', 5, scratch)
+      short('b', out, 9)
+      return scratch.length + out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
+})
