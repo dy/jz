@@ -169,8 +169,6 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
   // Pass 3: second post-order walk, preserving the old reverse-preorder
   // leaf-first behavior without retaining a module-sized site ledger.
   const rewrite = (c, parent, idx) => {
-    if (!Array.isArray(c)) return
-    for (let i = 1; i < c.length; i++) rewrite(c[i], c, i)
     if (!parent || c[0] !== 'call' || typeof c[1] !== 'string') return
     const target = c[1]
     const spec = SPECS[target]
@@ -213,7 +211,7 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
   let rewriteMark = null, batch = []
   for (let i = 0; i < funcs.length; i++) {
     if (regionHooks && rewriteMark == null) rewriteMark = regionHooks.mark()
-    rewrite(funcs[i], null, -1)
+    walkAst(funcs[i], { exit: rewrite })
     if (regionHooks) batch.push(funcs[i])
     if (regionHooks && (batch.length >= 8 || i === funcs.length - 1)) {
       ;[batch] = (regionHooks.forceExit || regionHooks.exit)(rewriteMark, [batch])

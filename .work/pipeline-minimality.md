@@ -175,7 +175,31 @@ not taken here. analyze.js's three M1 conversions were dropped again in 44f03e1a
 so `refactor/analyze-traversals` (which splits that file and retires its
 collectors itself) merges without conflict.
 
-## Queue after M1c (same campaign)
+## Slice M1d — traversal retrofit, batch 4 (the split optimizer modules)
+
+Opened by `refactor/optimize-split` landing on main (optimize/index.js → 16 pass
+modules). globals.js 3 converted (`bases`, `ids`, and `guardMaskedVectorSuffix`'s
+post-order walk), devirt.js 1, specialize-mkptr.js 1; licm.js 0.
+**Kernel-leg catch**: the first battery converted `hoistLoopGlobalPtrOffset`'s
+`inspect`/`replace` too — native suite, oracle and fuzz all clean, but the
+self-compiled compiler (test:wasm on dist/jz.wasm) failed its own ablation pin
+("hoistLoopGlobalPtrOffset hoists a string-global scan loop past a call to a
+provably-clean named function"). Same class as the loop-hoist trio in
+.work/handoff-2026-08-22.md: walkAst callbacks capturing that pass's per-loop
+state miscompile under self-compile. Reverted those two sites with a comment
+pinning the reason; the kernel-target root cause (closure capture through
+walkAst callbacks) is a compiler defect worth its own session, not a walker
+question. Note the battery's kernel leg is the only gate that sees this class —
+the oracle and the native suite cannot. — every walker there
+is threaded-state analysis (depth+abort flags, SSA def-chain follows, a
+control-flow-sensitive CSE table). peephole/locals/cse-address: mapping rewriters
+and dataflow evaluators, kept. One "moderate doubt" keep recorded by the agent:
+licm.js `narrowLoopBound`'s processNode (two boundary shapes + splice hazard) is
+convertible at equal length — left for a reviewer. Census: name-based 122,
+idiom-based 165 → **159**, `walkAst` sites 265 → **272 in 63 files**.
+Diff: 3 files, +10/−27 after the revert. Gates: (appended below)
+
+## Queue after M1d (same campaign)
 
 1. `analyzeBody` 6 → 5 traversals: fold `scanNumericFill` (walk-count design
    A2; needs the assert-gated old-vs-new run it prescribes).
