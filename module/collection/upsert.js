@@ -8,13 +8,19 @@
  * WHERE the code lives, not what it emits — see .work/stdlib-generators.md
  * for the extraction boundary and the byte-identity verification method.
  *
+ * Imports the durable-log helpers from the `./durable.js` sibling (not from
+ * `../collection.js`, which imports the generators below FROM this file) —
+ * collection.js's own resolveModuleGraph (self-compile) rejects circular
+ * module imports, so this stays a one-directional leaf-module chain:
+ * durable.js ← upsert.js ← collection.js.
+ *
  * @module collection/upsert
  */
 
 import { TOMB_NAN, UNDEF_NAN } from '../../src/ir.js'
 import { ctx, PTR, LAYOUT } from '../../src/ctx.js'
 import { STR_HCACHE_BIT } from '../../layout.js'
-import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from '../collection.js'
+import { durableFwdLogIR, durableSlotLogIR, durableEntryLogIR, durableSlotCancelIR, durableSlotRelogIR } from './durable.js'
 
 // Normal outputs keep the cache-dense HASH LANE introduced for wordcount
 // (+7.2% measured). The self-compile artifact's compact profile drops only that
