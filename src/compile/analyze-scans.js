@@ -1412,9 +1412,3 @@ export function collectF64StridedIndexVars(body, locals) {
   } })
   return set || EMPTY_SCAN_SET
 }
-
-/**
- * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
- * Callers that need to extend (e.g. add params to locals) must clone explicitly
- * before mutating. Slice reads via `analyzeBody(body).<slice>`.
- */
