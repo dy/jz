@@ -936,6 +936,27 @@ all) — NOT a region-arena root-set/dangling-pointer defect, and NOT something 
 module presence) — a separate, non-trivial change to a DIFFERENT module's architecture, out of
 this session's scope (apply the same root-set discipline to emitIR's round). Flagged, not fixed.
 
+### Goal-probe with the `namedUses` fix alone (before the `errorSidEntries` fix above)
+
+`goal-probe.mjs` (feeds the O3 hooks-on kernel its OWN `{code,modules}` graph, jz×jz):
+
+```
+region-fixed(hooks-on): TRAP "unreachable", peakBytes 3998613504, elapsedMs 601108, 163 modules
+```
+
+Compare baseline: TRAP at EXACTLY 4,294,967,296 B (the wasm32 ceiling), 10974ms. This run traps
+at 3,998,613,504 B — **93.1% of the ceiling, not the ceiling itself** — after **601 seconds**
+(vs baseline's 11s). Both numbers say the same thing: the compile is now doing dramatically more
+real work (roughly 55x longer) before failing, and failing via a DIFFERENT mechanism (an
+"unreachable" trap well short of the memory wall, not memory exhaustion at the wall) — consistent
+with hitting the ALREADY-DOCUMENTED, jz×jz-SCALE-ONLY open issue this file's own earlier section
+flags ("KNOWN OPEN ISSUE... deterministic 'memory access out of bounds'/'Cannot iterate null or
+undefined' at peak 3059.38 MB" — a different peak number, different session, but the same class:
+a defect that ONLY manifests at real self-compile scale, banked rather than chased in an earlier
+session). This number predates the `errorSidEntries` fix above; re-measuring after it is a next
+step, though that fix is very unlikely to change THIS mechanism (it closes a HOST-decode gap for
+thrown Errors, not a peak-memory or in-kernel value-shape issue).
+
 **Consequence for the literal task targets**: `kernel-oracle.js 14/14` and `kernel-parity.js
 33/33` are NOT reachable while front's eager-load trade-off stands, independent of anything in
 emitIR's round — both test files abort their per-optimize-level loop on the FIRST byte-mismatch
@@ -943,6 +964,45 @@ emitIR's round — both test files abort their per-optimize-level loop on the FI
 every row this session's fix allows the harness to REACH passes on EXECUTION correctness; the
 harness just can't get past row 1's byte-count check to try the rest. This is reported honestly
 rather than claimed as 14/14 / 33/33.
+
+### Second bug found by the required battery — jz:errcls custom section silently skipped
+
+`JZ_TEST_TARGET=jz.wasm node test/index.js` against the real O3 hooks-on kernel: **2925/2975
+pass, 49 fail** (14190 assertions) — every failure is either an error-class message-decode row
+(`SyntaxError`/`TypeError`/etc. "surfaces message", ~48 of the 49) or one unrelated SIMD
+`pow_fold_v` row (not investigated, looks pre-existing/orthogonal). Isolated with a 6-line direct
+repro (`throw new TypeError("bad TypeError")` through `compileViaKernel` + `instantiate`):
+`e.thrown` decoded the underlying value CORRECTLY (`{message: 'bad TypeError', name:
+'TypeError'}`) but `e.message` was `"[object Object]"` and `e` was a bare `Error`, not a
+`TypeError` — the exact `decodeThrown`-fallback signature from earlier in this investigation,
+meaning the raw {message,name} FIELDS were fine but the sid→class-NAME lookup (`jz:errcls`
+custom section) never reached the host.
+
+**Same bug class as `namedUses`, a SECOND missed field**: `src/compile/index.js`'s `jz:errcls`
+custom-section builder (~line 3350, right after the `jz:schema` section) called
+`ctx.schema.errorSidEntries?.().size` / `ctx.schema.errorSidEntries()` directly — but
+`errorSidEntries` is a METHOD on the FULL `ctx.schema` object, and by this point in the
+function `ctx.schema` has been the narrow `lateSchema = {list, namedUses}` stub since
+`__stdlibMark`'s exit (no such method survives narrowing). The optional chain (`?.()`)
+silently short-circuited the whole `.size` read to `undefined` — no throw, just SKIPPED the
+entire `if` block, so NO `jz:errcls` section was ever emitted for ANY region-live compile.
+Fix: `lateFacts.errorSidEntries` was ALREADY being captured as a plain resolved array (the
+exact same `[...ctx.schema.errorSidEntries()]` call) BEFORE the narrowing — twice, in fact,
+once pre-mark and once again right after `pullStdlib`/`ensureThrowRuntime` — for exactly this
+kind of post-round consumption (matching `.rest`/`.ext`/`.i64`/`.hostAbi`/etc., every one of
+which is already consumed via `lateFacts.X`, never by re-deriving through `ctx.X` post-narrowing).
+The `jz:errcls` builder just wasn't following that already-established pattern. Changed both
+reads to `lateFacts.errorSidEntries`/`.length`. Verified with a quick O0 kernel rebuild + the
+same direct repro: `throw new TypeError(...)` now decodes to a real `TypeError` with the correct
+message.
+
+**Both fixes are the SAME conceptual bug, found the SAME way** (narrowing `ctx.schema` at
+`__stdlibMark`'s exit drops something a LATER read still needs) — the second one only surfaced
+because the FIRST fix let compiles run far enough to reach the `jz:errcls`-building code at all
+(with the `namedUses` crash still in place, EVERY compile died before ever getting anywhere near
+line 3350). This is exactly the pattern the task warned about: fixing one escaping-allocation
+class can only ever prove the NEXT layer was untested, not that it's sound — worth remembering
+for whoever continues this if a THIRD dropped-field bug turns up after these two.
 
 **Actual next steps for this session**: (1) revert the bitmask/`__dbgCompile` diagnostic
 scaffolding from `scripts/self.js` and `src/compile/index.js` (its job — localizing the bug — is
