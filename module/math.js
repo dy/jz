@@ -19,6 +19,7 @@ import { repOf, VAL } from '../src/reps.js'
 import { valTypeOf } from '../src/kind.js'
 import { PTR, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 import { registerPowTranscend } from './math/pow-transcend.js'
+import { PI, INV_PI, HALF_PI, SIN_C, COS_C, EXP2_C } from './math/trig-tables.js'
 
 export default (ctx) => {
   // `**`/Math.pow kernel select — see the single authoritative comment block just above
@@ -561,16 +562,6 @@ export default (ctx) => {
   const horner = (cs, v) => cs.reduceRight((acc, c, i) =>
     i === cs.length - 1 ? `(f64.const ${c})`
       : `(f64.add (f64.const ${c}) (f64.mul (local.get ${v}) ${acc}))`, '')
-  const SIN_C = [1, -0.16666660296130772, 0.008333091744946387, -0.00019811771757028443, 0.000002611054662215034]
-  const COS_C = [1, -0.4999993043717576, 0.04166402742354027, -0.0013856638518363177, 0.00002321737177898552]
-  // 2^f over the reduced range f ∈ [-0.5, 0.5] for $math.exp2 (rel. err ≤ 6e-9). Lets the
-  // base-2 power `2**y` skip the ×ln2 / ÷ln2 round-trip exp(y·ln2) pays — see $math.exp2.
-  const EXP2_C = [1, 0.6931472000619209, 0.24022650999918949, 0.05550340682450019, 0.009618048870444599, 0.0013395279077191057, 0.00015463102004723134]
-  // Range-reduction constants via plain number interpolation: `${number}` now formats
-  // through the Ryū shortest-round-trip __ftoa in BOTH legs (host and self-compiled
-  // kernel), so the full-precision f64 bakes into the WAT verbatim — the former
-  // string-literal workaround for the kernel's 9-digit dtoa is obsolete.
-  const PI = Math.PI, INV_PI = 1 / Math.PI, HALF_PI = Math.PI / 2
 
   // Round-to-nearest reduction r = x − q·π ∈ [−π/2, π/2], in pure f64 — no int conversion,
   // so it never traps and never saturates. A SECOND pass folds the q·π rounding error back
