@@ -2028,3 +2028,20 @@ itself gap.
   the `loopNumericWrite`-recognized-but-unmodeled write) — nothing in the
   traced consumers reads `ctx[numericLiteral]`, so there was nothing to
   gain from modeling it; flagged as a possible future generalization only.
+
+## Landing decision evidence (2026-08-28, orchestrator)
+
+Same machine, same load, `node bench/bench.mjs --cases=watr --targets=jz,v8` run back to back:
+
+| tree | jz median | v8 median | jz/v8 | jz bytes | parity |
+|---|---|---|---|---|---|
+| main b05caa1a | 1043 µs | 835 µs | 1.25× | 293047 | ok |
+| this branch 4b1879a6 | 939 µs | 887 µs | 1.06× | 299511 | ok |
+
+Sound inference makes watr FASTER (-10% median) while +2.2% larger; the `SIZE_BUDGET.watr = 298000`
+budget was calibrated on codegen that relied on the now-removed unsound method-usage guesses. Every
+correctness gate is green (native 3759/0, kernel-target 3011/0, kernel-parity 33/33, kernel-oracle
+14/14, eager-stdlib-parity 20/20). Recommended landing: recalibrate `SIZE_BUDGET.watr` to 300000 with
+this attribution in test/bench.js (that file is held uncommitted by a concurrent session at the time
+of writing, which is the only reason the branch is not yet on main); the remaining precision items
+(for-in-derived wrapper tables, `Object.assign` batch writes) stay as post-v1 inference work.
