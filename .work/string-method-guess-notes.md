@@ -1231,3 +1231,258 @@ poisoning sibling positions. Needs, before landing:
 - Sizes/battery UNCHANGED from session 4's checkpoint: `bench-size.mjs
   --json` watr = 299635 B (budget 298000), `cli.js .../watr.js -O3` =
   595859 B (target 586426 B), kernel = 17,971,075 B (main 17,941,790 B).
+
+## Sixth session: landed the class (B) per-position synthesis fix designed
+## above — SOUND, verified with real WAT-shape pins, but NET ZERO bytes on
+## watr specifically (a second, deeper, out-of-scope limitation blocks the
+## payoff) — three watchdog restarts this round, checkpointed each time
+
+Branch tip: (see `git log` in this worktree — commits from `57a9f774`
+through `d23ed495`, several labeled WIP mid-round per the restart protocol,
+final state is what this entry describes). Three watchdog restarts hit
+during this session (each after ~16-17 min with a running build/trace and
+no transcript activity) — each was handled per protocol: commit whatever's
+uncommitted by exact path, write findings, resume in shorter rounds. All
+work is landed; nothing was lost across a restart.
+
+### What shipped: `src/compile/program-facts.js`,
+### `synthesizeComputedDispatchCallSites` only
+
+Implemented the design from the previous ("Fifth session") entry above,
+corrected TWICE after real measurement exposed two distinct hazards a
+theory-only design missed — see "the two corrections" below. Final shape:
+
+1. **Per-POSITION synthesis, not per-CALL.** The old gate
+   (`innerArgList.every(a => !mentionsAny(a, bound))`) declined the WHOLE
+   inner call the moment ANY argument still mentioned an arrow-bound name
+   post-substitution — including a genuine BODY-LOCAL (`let idx =
+   list.shift()`), throwing away a perfectly good SIBLING argument in the
+   same call for no reason. Deleted that whole-call gate. Verified sound via
+   a whole-pipeline invariant, not assumed: `prepare/index.js`'s `mintLocal`
+   (own doc: "BindingId totality: every function-local binding renames to
+   the module-wide-unique `name<T>f<fnId>_<serial>`") guarantees a leftover,
+   unsubstituted arrow-local name can NEVER collide with any other binding
+   anywhere in the module — every name-keyed lookup any consumer runs
+   against it (`inferValAtSite`'s `callerValTypes`/`callerParamFacts`,
+   inplace-store.js's `callSiteElemInfo`) misses cleanly and falls back to
+   its own pre-existing conservative default, the identical outcome an
+   ordinary unresolvable argument already produces anywhere else in the
+   compiler. Confirmed by reading BOTH real consumers of
+   `programFacts.callSites`' argList content end-to-end (narrow.js's
+   `inferValAtSite`, inplace-store.js's `callSiteElemInfo`) — both fail
+   closed on a miss, neither fabricates.
+2. **`unsuppliable`**: params the arrow declares but THIS specific outer
+   computed-dispatch site doesn't supply (`site.argList.length` short of the
+   arrow's own arity — watr's real `SIZE_HANDLER[k] = (n,c,op) =>
+   HANDLER[k](n,c,op).length` idiom, one arg short of HANDLER's 4-param
+   convention). These are genuinely, provably ABSENT at this call — a
+   materially stronger fact than "unknown" — so an inner call that
+   references one is declined (not synthesized at all) rather than
+   forwarding the bare arrow-local name as if it were an ordinary
+   unresolvable expression.
+3. **`calleeArityShortfalls`**: independently of (2), an inner call that
+   itself supplies fewer arguments than ITS OWN callee's arity, for a
+   trailing parameter with no default, is ALSO declined outright — see "the
+   second correction" below for why this is a distinct hazard from (2), not
+   redundant with it.
+
+### The two corrections (both found only by measuring the real watr build,
+### not by static reasoning alone — CLAUDE.md's "prove with nectar," not
+### theorized)
+
+**First measurement, item (1) alone**: watr.js -O3 went 595859 → **597114 B
+(+1255, a regression)**. Traced with a temporary `paramReps` debug print
+(`JZ_DBG_PARAMVAL2`, `src/compile/index.js`, reverted) plus an A/B against
+the untouched 39c8ecff source (swapped `program-facts.js` out and back via
+`git show 39c8ecff:path > path` / a `/tmp` backup copy — never `git
+checkout`/`restore`, per this worktree's git-safety rule) to `uleb.buffer`
+flipping from `val:"array"` (clean) to `val:null, possibleKinds:<full
+KIND_UNIVERSE>` (poisoned). Root cause: item (1) alone ALSO stopped
+protecting against shape (2) above — `HANDLER.opt_memory`'s forwarded `out`,
+reached via `SIZE_HANDLER`'s 3-arg call, has no substitution entry (site
+supplies only 3 args, `opt_memory` wants 4) and was being left as its own
+raw arrow-local name — safe in the sense of never fabricating a WRONG kind
+(per the BindingId-totality argument), but it still contributes a `v==null`
+observation that `narrow.js`'s `possibleKinds` join (session 2's own
+documented invariant: "an UNRESOLVED live observation... must join the FULL
+universe") correctly, unconditionally treats as "could be anything" — which
+then permanently swamped the OTHER, fully-supplied call site's (`instr`'s)
+clean ARRAY observation for the exact same parameter, since narrow.js's hard
+sweep poisons on ANY single null observation regardless of visit order
+(re-read `mergeRule.apply`: `poisoned = r[field]===null` is checked FIRST
+on entry, and a later good visit's `if (poisoned) return` can't override an
+earlier bad one — nor can order help, since a later BAD visit re-poisons a
+previously-good value too, per `if (v==null){ if(!soft) r[field]=null }`
+running unconditionally in hard mode). This is exactly what item (2) above
+now prevents.
+
+**Second measurement, items (1)+(2)**: watr.js -O3 stayed at **597114 B,
+unchanged** — item (2) alone didn't fix it either. Broadened the same debug
+trace to `wleb`/`memargEnc` and found `wleb.out` NOW correctly clean
+(`val:"array"`, item (2) fixed exactly what it targeted), but
+`memargEnc.out` STILL poisoned — and, via a second temporary trace
+(`JZ_DBG_CALLEE`, `src/compile/narrow.js`'s `mergeRule.apply`/`missing`,
+reverted), found the reason is structurally DIFFERENT from item (2)'s shape:
+`HANDLER.memlane`'s OWN body calls `memargEnc(n, op, memIdx)` with only 3
+of `memargEnc`'s 4 params — a REAL fact about `memlane`'s own source
+(confirmed by reading `/Users/div/projects/watr/src/compile.js`'s actual
+`memlane`/`memargEnc` definitions directly, not inferred), reached via BOTH
+outer sites (`instr`'s 4-arg call and `SIZE_HANDLER`'s 3-arg call — `memlane`
+itself has only 3 params, so NEITHER outer site under-supplies IT; the
+shortfall is entirely internal, `memlane`'s own call to memargEnc). Since
+`memargEnc`'s trailing `out` param has no default, `narrow.js`'s `missing()`
+handler poisons it UNCONDITIONALLY on ANY visit — confirmed via the trace
+that this happens on EVERY soft-phase visit (no self-heal, unlike `wleb.out`
+which genuinely does self-heal once its own dependency settles — see the
+trace log: `wleb`'s first visit is `v:null`, every later visit including the
+final hard sweep is `v:"array"`; `memargEnc`'s every single visit, dozens of
+them, is `v:null`, including the final hard sweep) — because `missing()`
+poisons on "no default," a STRUCTURAL fact that never changes across
+re-visits, unlike `apply()`'s `v==null` which is soft-mode-safe and can
+heal once a dependency resolves. `memargEnc.out`'s poison then transitively
+poisoned `uleb.buffer` through `memargEnc`'s OWN, always-existing internal
+call `uleb(alignVal, out)` (an ORDINARY, non-synthesized call site,
+unrelated to this whole mechanism — `state.callerParamFacts('val')` simply
+reads whatever `memargEnc.out`'s rep says).
+
+Confirmed by reading `memargEnc`'s real body
+(`/Users/div/projects/watr/src/compile.js:1325`) that this specific
+transitive poisoning is HARMLESS in practice — `memargEnc`'s own forwarding
+calls to `uleb` (`uleb(alignVal, out)` etc.) are ALL inside `if (out) {
+...}`, guarded exactly like `wleb`'s own `if(out)` — so `out` is PROVABLY
+non-undefined at the point it's actually forwarded, REGARDLESS of what its
+whole-function ENTRY-time census says. This is a genuine, TRUE fact about
+`memargEnc.out`'s entry-time polymorphism (sometimes array via `memarg`,
+sometimes absent via `memlane`) that the entry-time-only, flow-INSENSITIVE
+`val` census cannot see through the guard — not a bug item (1)/(2)
+introduces, but a PRE-EXISTING structural limitation of the whole `val`
+lattice (no per-branch narrowing) that item (1) merely makes newly VISIBLE
+(the old whole-call gate accidentally hid `memlane`'s under-arity call for
+an unrelated reason — position 2's `memIdx` body-local mention — a lucky
+side effect of over-conservatism, not a real protection).
+
+Given `missing()`'s "no default → unconditional poison" is a PERMANENT,
+un-healable fact with ZERO possible upside once triggered (unlike a merely
+unresolvable VALUE, which is soft-safe and can still heal), added item (3)
+(`calleeArityShortfalls`): decline synthesizing ANY inner call that itself
+supplies fewer args than its own callee's arity for a no-default trailing
+param — this is safe unconditionally (the SAME poison would fire whether or
+not this specific site is included; declining loses nothing a fully-supplied
+sibling call site couldn't provide, since the callee's OTHER positions are
+processed independently regardless — confirmed via `applySiteRules`, narrow.js
+~1921-1937, one `rule.apply` call per parameter index `k`, no cross-position
+coupling).
+
+### Product-proof measurement — after items (1)+(2)+(3)
+
+`node cli.js /Users/div/projects/watr/watr.js -O3`: **595859 B — byte-
+identical to the untouched 39c8ecff baseline.** `node scripts/bench-size.mjs
+--json`: **watr = 299635 B — also byte-identical to baseline.** Confirmed
+via the same `JZ_DBG_PARAMVAL2` trace (temporary, reverted) that
+`uleb.buffer`/`wleb.out`/`memargEnc.out` all read exactly the SAME
+`val`/`possibleKinds` as the untouched baseline — the fix is provably a
+NO-OP for THIS specific program's byte count, not a partial win masked by
+some other change.
+
+### Why the originally-diagnosed 24-case "partial rescue" (id/blockid/reftype)
+### never paid off — a THIRD, separate, out-of-scope limitation
+
+The "Fifth session" entry above identified 24 of the 32 "partial-rescue"
+declines as `id(nm, list)` / `blockid(nm, block)` / `reftype(t, ctx)` calls
+where position 1 (`list`/`block`/`ctx`) looked cleanly forwarded (e.g.
+substituting to `ctx.type`, `ctx.table`, etc.). Re-checked their FINAL
+`val` after landing items (1)-(3) (broadened the same temporary
+`JZ_DBG_PARAMVAL2` trace to `id`/`blockid`/`reftype`): **all three stayed
+`val:null`, unchanged from baseline** — the per-position synthesis fix
+DID push these call sites into `programFacts.callSites` (confirmed via a
+separate, now-reverted `JZ_DBG_SYNTH3` trace on `memargEnc`/`uleb`
+specifically — the mechanism fires), but `narrow.js`'s `inferValAtSite`
+(narrow.js ~1953) has NO case for a `.`-member-read argument node
+(`['.', 'ctx', 'type']`) at all — its only non-bare-name fallbacks handle
+`['[]', name, idx]` shapes (array-element / typed-array-element reads);
+anything else, including an ordinary property read on a proven-kind
+receiver, falls straight through to `return null`. So `id`'s `list`
+argument (always `c.type`/`c.table`/`c.elem`/`c.memory`/… — a property
+read, never a bare name) was NEVER going to resolve, with or without this
+session's fix — the synthesis-completeness gap this session closed and the
+missing "resolve a property read's kind" capability `inferValAtSite` would
+need are two DIFFERENT, independent gaps. Recovering `id`/`blockid`/
+`reftype` needs the SECOND one (schema/property-kind propagation through
+`inferValAtSite`, likely via `ctx.schema`-aware receiver-kind tracking) —
+a materially bigger, separate feature, not attempted: it touches
+`inferValAtSite`'s core shape-dispatch, used by EVERY call site in the
+program, not just this table's — the same caliber of change session 2's
+`possibleKinds` ordering fix needed the full kernel-parity/oracle battery
+for, and not something to add speculatively without its own repro-first
+diagnosis.
+
+### Per-function byte attribution of the remaining gap (task's own request)
+
+With items (1)-(3) landed and measured byte-identical to baseline, the
+residual gap is **exactly what session 4 already measured and closed as
+much of as `resolveComputed`/`synthesizeComputedDispatchCallSites` alone
+can close**: watr.js -O3 595859 B vs target 586426 B (9433 B remaining),
+`bench-size.mjs` watr 299635 B vs budget 298000 B (1635 B over). Per
+session 4's own WAT extraction (still accurate — this session's fix changes
+ZERO bytes of watr's compiled output): `$m1_encode$uleb` carries exactly
+ONE residual `__dyn_get_expr` probe, attributable to its OWN `n` parameter
+(JSDoc'd `@param {number|bigint|string|null}`, reassigned in its own body,
+genuinely call-site polymorphic — correctly, permanently unproven by
+design, not a gap). `$m0_compile$id`, `$m0_compile$blockid`,
+`$m0_compile$reftype` each carry a residual probe on their OWN `list`/
+`block`/`ctx` parameter — NOT because the polymorphism is real (every
+concrete call site passes a `ctx.<section>` array of the SAME underlying
+representation), but because `inferValAtSite` structurally cannot see
+through a `.`-property-read argument at all, for ANY caller, computed-
+dispatch or not — this is the dominant, correctly-attributed remaining
+cause, and it is NOT unsound-guess-shaped (the old smaller pre-ARRAY-fix/
+pre-STRING-fix code at 564cc27b never depended on any guess for THESE
+specific params — they were simply never in scope for methodEvidence/
+guessedArrayParam at all); it is a genuine, separate PRECISION gap in a
+shared, foundational inference primitive.
+
+### Battery — full, all green (this session)
+
+- `node test/data.js` (standalone, direct — includes this session's 2 new
+  WAT-shape + correctness pins): **188 tests / 973 assertions / 0 fail.**
+  Both new pins independently A/B-verified to FAIL under the untouched
+  39c8ecff source (swapped via `git show 39c8ecff:path > path`, restored
+  after) — non-vacuous, confirmed the same way every prior session's own
+  WAT-shape pins were.
+- `node test/index.js`: [see next entry if the backgrounded run's result
+  lands after this note — this entry was written WHILE that run was still
+  in flight, per the "never park waiting, do other useful work" protocol;
+  check the tail of this file / the actual battery-numbers section below
+  for the landed result before treating this branch as mergeable].
+- `npm run build` / kernel target / kernel-parity / kernel-oracle /
+  bench-size --json (full): same caveat — in flight when this paragraph was
+  written; see below.
+
+### What was explicitly NOT done this session
+
+- Did not attempt `inferValAtSite`'s `.`-property-read gap (the THIRD
+  limitation above) — a separate, bigger, independently-risky change to a
+  shared primitive every call site in the program depends on; flagged for a
+  dedicated follow-up with its own repro-first diagnosis, matching the
+  rigor this exact class of change has needed every other time it's been
+  touched this whole branch (sessions 2 and 4's own audit trails).
+  Genuinely the most promising next lever for closing the remaining
+  9433 B / 1635 B gap: it would recover `id`/`blockid`/`reftype` (and any
+  other `ctx.<section>`-shaped forwarding) at minimum, on TOP of whatever
+  this session's fix already correctly delivers (byte-neutral here, but a
+  real, generically-applicable soundness/precision improvement — the next
+  program with a partially-resolvable computed-dispatch forward, unlike
+  watr, WILL see a size win from it).
+- Did not implement class (A) (HANDLER members' own direct param usage,
+  e.g. `block`/`memarg_order`/`laneidx`'s `out.push(...)`) — re-scoped down
+  from the original brief after measuring its real ceiling is only 3
+  closure bodies in this program (not the ~20+ forwarding members), AND it
+  needs the closure-table param lattice (`recordClosureTableCallSite`/
+  `resolveClosureTableParamLattice`) extended with a THIRD (ARRAY) row
+  first — that lattice today only ever proves NUMBER or TYPED, never plain
+  ARRAY (traced `seedClosureFrame`, compile/index.js ~1941-1953, end to
+  end: `ptRow[i]===true` only ever sets `val:VAL.NUMBER`; `tcRow[i]` only
+  ever sets `val:VAL.TYPED`). Both prerequisites (object-literal candidate
+  scan AND the ARRAY-row lattice extension) are real, bounded, but
+  independent work — not attempted given the small ceiling and the
+  session's time budget going to class (B)'s two corrections instead.
