@@ -81,7 +81,7 @@ import jzify from '../jzify/index.js'
 // resolveSelfCompileBuild may override the derivation explicitly via its own
 // `regionArena` profile field (see that helper's doc); this marker is only
 // the default-derivation source when a caller doesn't override.
-export const REGION_HOOKS_ACTIVE = true
+export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   const tail = ctx.transform._regionTail
   return watrTail(module, cfg, {
