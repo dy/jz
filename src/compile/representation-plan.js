@@ -916,6 +916,10 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const row = paramReps?.get(func.name)
   const params = (func.sig?.params || []).map((param, k) => {
     const rep = row?.get(k) || (generic ? options.localReps?.get(param.name) : null)
+    if (process.env.JZ_SHAPE9_TRACE) console.error('PARAMREP', func.name, k, JSON.stringify({
+      possibleKinds: rep?.possibleKinds ? [...rep.possibleKinds] : rep?.possibleKinds,
+      kindsCoverage: rep?.kindsCoverage, val: rep?.val, presentVal: rep?.presentVal, nullable: rep?.nullable,
+    }))
     const mayBigint = generic
       ? options.localProvenance?.params.has(k)
       : options.provenance?.paramsByFunc.get(func.name)?.has(k)
@@ -1642,6 +1646,10 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const materializedNames = new Set()
   const exportedIdentity = isExported(ctx, identity)
   for (const [name, list] of defs) {
+    if (process.env.JZ_SHAPE9_TRACE) console.error('LOOP-ENTER', identity?.name, name, JSON.stringify({
+      isGlobal: !!ctx.scope.globals?.has(name), isParam: params.has(name), covered: boundary.covered,
+      exportedIdentity, nameSemantic: semanticNames.get(name),
+    }))
     if (ctx.scope.globals?.has(name)) continue
     if (params.has(name) && boundary.covered !== true && !exportedIdentity) continue
     // RepresentationPlan only normalizes the BigInt member. A BOOL member in
@@ -1682,6 +1690,15 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       // own materialization to prove the same physical fact twice.
       return edgeMaterializable(currentOf(def[DEF_RHS]), target, def[DEF_RHS], isStorageReadProducer(def[DEF_RHS]))
     })
+    if (process.env.JZ_SHAPE9_TRACE) console.error('MATNAMES', JSON.stringify({
+      identity: identity?.name, name, ready, target,
+      defs: list.map(def => ({
+        owner: def[DEF_OWNER] && def[DEF_OWNER][0],
+        rhsOp: Array.isArray(def[DEF_RHS]) ? def[DEF_RHS][0] : def[DEF_RHS],
+        current: def[DEF_RHS] == null ? null : currentOf(def[DEF_RHS]),
+        valType: def[DEF_RHS] == null ? null : valTypeOf(def[DEF_RHS]),
+      })),
+    }))
     if (ready) materializedNames.add(name)
   }
 
@@ -2231,11 +2248,20 @@ export function representationCallArgAction(ctx, node, params, index) {
   const hostReady = targetRecord.body?.hostBoxParams?.has(index) === true
   const closureReady = targetRecord.body?.closureBoxParams?.has(index) === true
   const ready = targetBoundary.params[index]?.stable === true || bodyReady
+  if (process.env.JZ_SHAPE9_TRACE) console.error('CALLARG', JSON.stringify({
+    callee: targetBoundary.func?.name, index, targetName, bodyReady, hostReady, closureReady,
+    stable: targetBoundary.params[index]?.stable, covered: targetBoundary.covered,
+    boundaryTarget: targetBoundary.params[index]?.target,
+    bodyTarget: targetRecord.body?.targetNames?.get(targetName),
+    node, source: activeEmittedRep(ctx, node),
+  }))
   if ((!ready || targetBoundary.covered !== true) && !hostReady && !closureReady) return REP_EDGE_REJECT
   const target = bodyReady || hostReady || closureReady
     ? targetRecord.body.targetNames?.get(targetName) ?? ANY_BIGINT
     : targetBoundary.params[index]?.target ?? ANY_BIGINT
-  return edgeAction(activeEmittedRep(ctx, node), target)
+  const action = edgeAction(activeEmittedRep(ctx, node), target)
+  if (process.env.JZ_SHAPE9_TRACE) console.error('CALLARG-ACTION', targetBoundary.func?.name, action)
+  return action
 }
 
 /** True when every result tail is a proven raw BigInt carrier. This is the
