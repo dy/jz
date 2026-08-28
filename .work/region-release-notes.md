@@ -2244,11 +2244,122 @@ gating, everything this campaign's sessions have actually closed) — the mfold-
 handful of emitted bytes per function, nowhere near enough to move a peak that sits at 93%+ of a
 4 GiB ceiling after 10 minutes of real compiler work.
 
-**`JZ_TEST_TARGET=jz.wasm node test/index.js` (the third battery leg) — LAUNCHED, background task
-`bnoch62cq`, result pending at time of this note** (excluding `bench-c` per the task mandate,
-same 91-name list every session in this file has used). Expect the SAME `dict`-class byte-parity
-divergence kernel-oracle/kernel-parity already show (native-vs-kernel, execution-correct) as the
-only baseline-expected failure, PLUS confirmation the `fuzz` leg no longer hangs (seed 84 now
-skipped under `onKernel()`) — anything else is new. See that task's own output file, or re-run
-fresh against this worktree's `dist/jz.wasm` (still the hooks-on kernel, untouched since the
-253.2s/15,802,268-byte build earlier this session) once available.
+### `JZ_TEST_TARGET=jz.wasm node test/index.js` — RESULT: 2797/2811 pass, 13 fail, 1 skip; 7 already-known/excluded-class, 6 GENUINE NEW hooks-on-specific regressions found
+
+**Methodology correction, worth recording precisely — do not repeat this mistake**: passing an
+explicit `argFilters` list to `test/index.js` (naming every test file) BYPASSES `KERNEL_EXCLUDE`
+entirely — the filter is `!(onKernelTarget && !argFilters.includes(name) && KERNEL_EXCLUDE.has(name))`,
+so a NAMED file runs even when kernel-excluded. The first attempt (task `bnoch62cq`) passed the
+full 91-name (minus bench-c) native list under `JZ_TEST_TARGET=jz.wasm` and crashed the WHOLE
+process with an uncaught rejection inside `imports.js`'s "host override: globalThis.fetch" test
+(a real `fetch('/api')` call — imports.js is kernel-excluded precisely because host-facing opts
+don't reach the kernel path at all). Fix: compute `TESTS ∖ KERNEL_EXCLUDE ∖ {bench-c}` and pass
+THAT as args. A first attempt at this computation (regex-extracting the `KERNEL_EXCLUDE` Set
+literal without stripping `//` comments first) also mis-scored — the block's own comments mention
+many ALREADY-CLEARED former exclusions by name in quotes (`'errors'`, `'objects'`, `'destruct'`,
+etc.), which a naive scan folds into the Set. Correct extraction (strip comments per line, THEN
+match quoted strings) gives the true set: **24 entries** — `abi, bench-c, cli, examples, external,
+imports, kernel-oracle, kernel-parity, native-lowering, never-grown, optimizer, perf-ratchet,
+self-compile-includes, self-compile-source, simd, slot-hazards, snapshot, timers, transform,
+unswitch-typed-param, warnings, wasi, watr, web-smoke` — giving **68** kernel-safe files (minus
+bench-c) out of 92 total. The run actually launched used a list computed with the flawed (comment-
+polluted) extraction — 64 files, including 2 that ARE genuinely kernel-excluded (`optimizer`,
+`slot-hazards` leaked through) and excluding several that should have run (no correctness impact,
+just narrower coverage than ideal). The CORRECT 68-name list is saved for whoever continues:
+`<scratchpad>/test-names-kernel-fixed.txt` (not re-run this session — time-boxed, see below).
+
+**Full result** (task `b4nnv2nhh`, the corrected-list run): **2797/2811 pass, 13 fail, 1 skip
+(18050 assertions)**. Every one of the 13 failures individually attributed to its source file by
+matching each `✗` line back to its nearest `[0m► ` test-block header:
+
+- **4 from `slot-hazards`, 1 from `simd`, 1 from `optimizer`** — all three files ARE genuinely
+  kernel-excluded (`KERNEL_EXCLUDE`'s own documented "Optimizer-shape class... kernel runs
+  optimize:false; shape asserts can't match"), only ran because of the listing bug above. Not
+  region-arena-related, not new, not investigated further — exactly the class their own exclusion
+  already exists for.
+- **1 from `pow-fold-ulp`** (`const-exponent pow fold — SIMD twin`) — this EXACT row was already
+  flagged as "1 pre-existing/unrelated... never investigated — orthogonal to this session's scope"
+  in an EARLIER session's own battery run recorded in this file (search "pow_fold_v" above) —
+  confirmed still present, still orthogonal, not re-investigated.
+- **6 GENUINE, NEW, hooks-on-specific findings** — confirmed NOT pre-existing by directly re-running
+  each one's OWN test file against a **freshly-built DORMANT kernel** (this session's own
+  17,960,197-byte/319.7s dormant build, see below): all 6 pass CLEANLY there (`mem`: 61/61;
+  `perf`+`passes`+`array-methods`+`objects`+`conditional-spread` together: 380/380) — proving these
+  are NOT general kernel-vs-native gaps, NOT caused by this session's fixes (which are all verified
+  no-ops on the dormant path), and NOT present in the historical dormant `JZ_TEST_TARGET` record
+  ("2977/2978 pass... 0 fail" from an earlier session) — they are **specific to region-hooks being
+  active**, undiscovered by any prior session (none reached a clean-enough hooks-on state to run
+  this leg to completion before). None investigated to root cause this session (time-boxed) —
+  recorded here precisely so the NEXT session starts with reproduction targets, not a re-discovery:
+  1. `test/array-methods.js` — **"runtime-polymorphic TypedArray writes tag computed named-method
+     results"**: `'parse' — jz dispatched this method call to the host, but the receiver is not a
+     host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`. A
+     dispatch-tier REJECT firing where it shouldn't — same SHAPE as this file's own Class 2 fix
+     (`ctx.module.demanded`-gated tiers), worth checking whether ANOTHER dispatch tier has the same
+     "module loaded ⇒ feature demanded" false-equivalence for a computed/dynamic method name.
+  2. `test/mem.js` — **"shared memory: duplicate schemas not re-added"**: `same schema not
+     duplicated` — `is(memory.schemas.length, 1)` fails after two separate `jz(src, {memory})`
+     calls sharing one `jz.memory()`. Schema-table related — worth checking against this session's
+     OWN `dict`/date.js schema-table finding (Goal 1) for a shared mechanism (both are about schema
+     TABLE state under region/eager conditions), though the shapes differ (cross-compile dedup vs.
+     single-compile bloat).
+  3. `test/perf.js` — **"codegen: no-arg scalar allocator rewinds heap on return"**: `expected heap
+     save local` — a structural/WAT-shape assertion (looking for a specific local in the compiled
+     output), region-hooks apparently changes this codegen shape.
+  4. `test/passes.js` — **"passes: dead code never changes retained-code bytes (no hidden auto-
+     tuning)"**: `byte count stable under appended dead code (2)` — a BYTE-COUNT test, same general
+     CLASS as this session's whole Goal 1 investigation (output-neutrality under a structural
+     change) — worth checking first among the 6, likely fastest to connect to already-understood
+     mechanisms.
+  5. `test/objects.js` — **"spread copy: read-after-copy with no mutation resolves slots
+     correctly"**: plain `should be equal` — a VALUE mismatch, potentially the most concerning of
+     the 6 (an actual wrong-answer, not a shape/byte-count nit) — should be first priority to
+     confirm is real and understand before anything else here.
+  6. `test/conditional-spread.js` — **"conditional-spread: base props read correctly alongside a
+     conditional group"**: `Maximum call stack size exceeded` — on source as trivial as `{ a: 1, c:
+     3, ...(cond && { b: 2 }) }`. **This is the SAME error signature as Goal (2)'s fuzz seed=84
+     finding**, but on a tiny, non-fuzzed, hand-written program — far more suspicious than a stack
+     issue on a deeply-nested generated one. Given the mandate's own root-completeness rule (a
+     stack overflow this shallow is much more likely a genuine unbounded-recursion defect than a
+     depth LIMIT), **this is the single highest-priority lead for whoever continues this
+     investigation** — small enough to bisect quickly, and plausibly the SAME root cause as Goal
+     (2)'s hang (both are self-hosted-kernel-only, both are call-stack-shaped failures, both
+     involve object/spread-adjacent shapes to some degree). Repro: `node --import=<preload that
+     calls _setCompileTarget(compileViaKernel)> test/conditional-spread.js` (or add a direct
+     `compileViaKernel(src)` call) against a region-hooks-on kernel with the source literally
+     copied from this test.
+
+**Consequence**: `REGION_HOOKS_ACTIVE` correctly, definitively stays `false` — 6 new, real,
+unexplained hooks-on-only findings (one of them a stack overflow on trivial input) is decisively
+not a green battery. Reverted early this session (safe: the source flag doesn't affect an
+already-built/cached kernel binary) — confirmed `git diff HEAD -- scripts/self.js` empty.
+
+### Dormant-battery reverification (this session's changes: scope.js, fuzz.js, pointers.js, eager-stdlib-parity.js, module/date.js reverted to clean)
+
+- **Native full suite** (`node test/index.js`, all 91 files minus bench-c): **3731 pass, 1 skip, 0
+  fail (21725 assertions)** — re-run AFTER every commit this session (scope.js fix + fuzz.js fix +
+  pointers.js pin + eager-stdlib-parity.js restructure all included). Zero regressions.
+- **Fresh dormant kernel build** (`REGION_HOOKS_ACTIVE=false`, `node scripts/self-compile-build.mjs`,
+  default O3): **319.7s, 17,960,197 bytes** — in line with every prior dormant build recorded in
+  this file (304-320s, 17.87-17.96 MB).
+- **`node test/kernel-oracle.js`**: **14/14 pass, 605 assertions** — exact baseline match.
+- **`node test/kernel-parity.js`**: **3/3 pass, 33/33 assertions**, including `dvnested O3:
+  identical` and `subviewtyped O3: identical` — confirms Group 1's `ae5dc024` fix (and everything
+  since) is still fully intact on the dormant path.
+- **`node scripts/bench-size.mjs`**: exit 0, no budget failures (geomean jz/AS = 1.048×, jz/(jz+
+  wasmopt) = 0.971× — both within normal historical range, no size regression from this session's
+  source changes).
+- **`node test/eager-stdlib-parity.js`**: 22/22 pass (verified earlier this session, native-only,
+  independent of which kernel is built — see Goal 1 section above).
+- **The 7 files with hooks-on-only failures, spot-checked against this fresh dormant kernel under
+  `JZ_TEST_TARGET=jz.wasm`**: `mem` 61/61, and `perf`+`passes`+`array-methods`+`objects`+
+  `conditional-spread` together 380/380 — all clean, confirming the 6 new findings above are
+  hooks-on-specific, not dormant-path regressions from this session's work.
+- **NOT run this session**: the FULL `JZ_TEST_TARGET=jz.wasm node test/index.js` dormant leg (all
+  68 kernel-safe files) — time-boxed given the length of the hooks-on investigation above. The
+  targeted spot-check (previous bullet) plus native-full/kernel-oracle/kernel-parity all being
+  clean is strong, but not exhaustive, evidence it would still be clean; re-running it fresh is the
+  one remaining item to close out full certainty on the dormant mandate, expected ~10-20 min once
+  the machine is less contended (this session ran under heavy, confirmed multi-agent shared-machine
+  load throughout — every kernel operation took noticeably longer wall-clock than its own CPU-time
+  would suggest).
