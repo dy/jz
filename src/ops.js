@@ -1,3 +1,5 @@
+import { walkAst } from './ast.js'
+
 // === AST op tags — integer-tagged-union representation ===
 // internOps (prepare->compile boundary) converts array node[0] from op STRING to its
 // integer tag; the compile half then dispatches via integer-keyed (eventually array)
@@ -110,10 +112,7 @@ export const opStr = (op) => typeof op === "number" ? OPS[op] : op
 // the prepare boundary. Unknown op-strings stay strings (dual-keyed tables handle them
 // until the int-only phase). node[0]===null (numeric literal) stays null; identifiers
 // (bare strings at n[1+]) untouched.
-export const internOps = (n) => {
-  if (!Array.isArray(n)) return n
+export const internOps = (n) => walkAst(n, { enter: n => {
   const t = n[0]
   if (typeof t === "string") { const id = OP[t]; if (id !== undefined) n[0] = id }
-  for (let i = 1; i < n.length; i++) if (Array.isArray(n[i])) internOps(n[i])
-  return n
-}
+} })
