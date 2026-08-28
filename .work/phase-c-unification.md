@@ -786,3 +786,81 @@ Decisive fact (fixdiv, 2026-08-27): main's kernel does NOT corrupt box-tag-shape
 call-target-index.js lands Shape #8 (`ns.parse`-style points-to) with a full green battery; a second, function-property resolver strategy for watr's real `i64.parse` shape regressed kernel-oracle (crashes) and was reverted, so that deeper shape stays open (watr downstream unchanged at 600/626).
 Chasing it surfaced an UNRELATED, pre-existing bug confirmed on unmodified aff67069 with zero `.`-member calls: a reassigned param whose plan-TARGET is BOXED (crosses an export boundary as Number|BigInt) never converts to RAW when passed as a bare-name call argument to a callee expecting RAW — the boxed pointer's own bits cross as-is and misread as a garbage Number.
 Pinned KNOWN-WRONG on fix/boxed-param-raw-callee-pin (test/data.js "shape #9"). Root fix: representationCallArgAction / the emitted coerceArg edge for a BOXED-source→RAW-target call argument.
+
+## Shape #9 LANDED (2026-08-28, branch fix/boxed-arg-raw-callee @ fb2dec2e)
+
+Live-traced root cause CORRECTS the pin's own prose: `leb`'s plan-TARGET for
+`n` is BOXED, not RAW (`current`/`target` stay pinned to the legacy
+whole-program `paramReps` census per the Shape #6 "TWO REGRESSIONS"
+invariant, and that census can't see through a bare-name argument that is
+itself a reassigned caller local — `exprRep` on a bare local resolves
+ANY_BIGINT, open — so it falls back to the coarse closed-ALL-14-kinds
+answer, BOOL included). That trips buildBodyData's BOOL-veto, so `leb`'s
+`n` never enters `leb`'s OWN materializedNames for ANY caller;
+`representationCallArgAction` sees `bodyReady=false` and REJECTs the edge
+outright (no coercion at all, not a wrong one) — the caller's still-boxed
+pointer bits cross unconverted. Exactly the residual
+`solveBigintProvenance`'s own `paramBigintOnly` doc comment already named
+and scoped out ("a missed opportunity, not a soundness gap").
+
+Fix: extended the call-site argument proof feeding `paramNeverBool`/
+`markNeverBoolArg` (Shape #7's own structurally-weaker "boolean
+impossible" bar, not kind purity) — a bare-name argument now also counts
+as never-bool when every explicit reaching definition of that name in the
+caller's own body (`collectDefs`/`defMapByFunc`) is itself structurally
+never-bool (bigint origin, storage read, number/string literal, or a call
+whose callee's own return tail is structurally `isBigintOrigin` — pure AST
+inspection, no ordering hazard), and the name's own entry semantic, if a
+parameter, is also never-bool per the same legacy census. Wired through the
+one shared `visitCallSites` call-arg loop Shape #8 already resolves both
+bare-name and `.`-member callees through, so both share the identical
+proof. Clears the BOOL-veto; `leb`'s `n` materializes BOXED (unchanged
+target), the call-arg edge becomes an ordinary BOXED→BOXED KEEP once ready
+— no new box/unbox primitive needed, the existing UNBOX/BOX branches in
+`representationCallArgAction`/`coerceArg` were already correct.
+
+Two GENUINE, DIFFERENT, separate-scope residuals found and pinned
+KNOWN-WRONG while isolating sibling shapes (not fixed here, not this
+slice's scope):
+1. Once a function's own VALUE is written to a property anywhere (which
+   `call-target-index.js` itself needs to resolve ANY `.`-member call —
+   e.g. `obj.leb = leb`), narrow.js's whole-program census marks it
+   `valueUsed`, flipping `makeBoundaryData`'s `uncovered` true;
+   `buildBodyData`'s materializedNames loop deliberately excludes an
+   uncovered non-exported param from the fixpoint (`if (params.has(name)
+   && boundary.covered !== true && !exportedIdentity) continue`), diverting
+   it to the pre-RepresentationPlan legacy sink/generic-closure machinery
+   entirely — confirmed independently at emission too:
+   `trySchemaClosureCall` dispatches `.`-member calls via a generic
+   `ctx.closure.call` and never invokes `representationCallArgAction` at
+   all. Needs the closure-materialization subsystem
+   (`closureBoxParams`/`mintRepresentationPlan(...,{generic:true})`) to
+   prove a value-used function's own param boxed-by-construction across a
+   property-dispatched call — the same class Shape #7's own dispatch-table
+   residual and the closure-forwarding slice already name.
+2. `buildBodyData`'s own `directCallBoundary` (feeding `semanticOf`/
+   `currentOf`/`plannedOf`/`walkEdges`) is bare-name-only
+   (`ctx.funcs.map.get`, no `resolveMemberCallee` fallback) — unlike
+   `solveBigintProvenance`'s own exprMay/exprRep/scan/visitCallSites, which
+   Shape #8 already made call-target-index-aware. A caller whose OWN
+   bigint-provenance proof for a reassigned local depends on a `.`-member-
+   resolved callee (not the RAW-consuming callee itself) still misreads —
+   isolated as its own minimal repro, confirmed distinct from residual 1.
+
+Pins: primary flipped to correct at O0/O2/O3; three siblings added — a
+non-reassigned BOXED union param (O0/O2 correct, O3 pre-existing
+KNOWN-WRONG, confirmed BYTE-IDENTICAL on unmodified fb2dec2e — the same
+inliner-splices-before-provenance class the LANDED "shape #7 sibling" pin
+already documents, open here for a bare bigint-literal argument instead of
+a storage read), the index-resolved `.`-member callee (residual 1, KNOWN-
+WRONG), and a RAW→RAW negative control with a WAT-shape assertion (no
+`call $__ptr_type`/`call $__alloc` inserted where none is needed).
+
+Battery: native full suite 3714/3713/0/1 (21619 assertions, same
+pre-existing skip count), kernel-parity 3/3 (33/33 byte-identical O2/O3),
+kernel-oracle 14/14 (605). Watr downstream (fresh `dist/watr.wasm` built
+with this branch): 600/626, BYTE-IDENTICAL failure set (same 4 messages,
+same exact corrupt offsets) to the pre-existing baseline wasm in the same
+worktree — zero change, confirming shape #9 was never watr's own real
+`i64.parse` failure (a dispatch-table/computed-property forwarding shape,
+matching residual 1's own mechanism, not shape #9's direct-call one).
