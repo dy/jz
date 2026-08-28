@@ -6,6 +6,33 @@ import { LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { liftFail, liftStmt } from './lift.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 
+// ---- Stencil recognizer (neighbour loads: a[i±δ], a[c±δ], a[rn+x]) --------
+//
+// Vectorizes a map whose loads read NEIGHBOURING elements — `b[i] = f(a[i-1],
+// a[i], a[i+1])` and the 2-D form `b[c] = f(a[c-1], a[c+1], a[rn+x], …)` where
+// `c = rc + x` is a derived induction var (rc loop-invariant, x the IV).
+//
+// The lift is bit-exact BY CONSTRUCTION: a scalar `f64.load` at `base+(idx<<K)`
+// becomes `v128.load` at the SAME address; for f64x2 lanes (x, x+1) that covers
+// `(elem[idx], elem[idx+1])` — exactly the bytes the two scalar iterations read.
+// No new memory is touched (scalar tail handles the remainder) ⇒ no boundary
+// special-casing, no new OOB. The neighbour `a[i+1]` arrives as
+// `(f64.load offset=8 …)` → `v128.load offset=8` (the +1-shifted pair). Stride-1
+// in the IV is required (consecutive lanes ⇒ consecutive elements): every index
+// must be affine in the IV with coefficient exactly 1 (`ivCoeff`).
+//
+// Correctness gates:
+//   • f64/f32 lanes only — float data locals vs i32 index/address locals are
+//     type-distinct, so localKind is by type. An i32-used-as-data case bails in
+//     the lifter (never miscompiles). Integer-lane stencils (types collide) decline.
+//   • In-place bail: if the WRITTEN base is also accessed at a DIFFERENT element,
+//     SIMD reads the old value where scalar reads the just-written one (loop-
+//     carried) ⇒ null. Offset-0 read of the written array is safe.
+//   • Distinct base subtrees ⇒ assumed non-aliasing — the SAME assumption the
+//     plain map path already relies on. A ping-pong buffer swap (waves) is OUTSIDE
+//     the loop, so in-loop bases stay distinct globals — safe without a runtime guard.
+//   • Reassociation: summing neighbours reorders f64 adds across lanes (ulp, like
+//     float reductions) — gated behind cfg.stencil until proven.
 export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   if (!enabled) return null
   // Consumes the dispatch-computed inner scaffold (LoopPlan) — the opts there
@@ -303,38 +330,76 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   return { wrapper, newLocalDecls }
 }
 
-// ---- Reduction recognizer -------------------------------------------------
+// ---- General STENCIL base layer (layer 4, .work/vectorizer-generality-design.md §2-3
+// step 4) — tryStencil's own affine-offset proof, generalized to every LOAD_OPS/STORE_OPS
+// lane type + runtime alias versioning ---------------------------------------------------
 //
-// Matches inner loops of shape:
-//     for (let i = 0; i < N; i++) S = OP(S, EXPR(arr[i], ...))
-// where OP is associative+commutative (REDUCE_OPS table) and EXPR is lane-
-// pure (operates on the loaded element with at most loop-invariant data).
-// S is a SCALAR loop-carried accumulator — exempt from the lane-local
-// "first access must be a write" check.
+// BASE LAYER: dispatch-chain terminal, runs immediately after `tryGeneralMap` (before
+// `tryGeneralReduce`) — after every idiom recognizer AND after `tryGeneralMap`'s own broader
+// address proof, so it only fires on loops BOTH declined: `tryStencil` itself stays first
+// (float/f32-lane neighbour-load specimens keep byte-identical priority), `tryGeneralMap`
+// second (i32-domain-only affine, no wrap, no float-domain index — see its own header doc's
+// "simplified to drop the toroidal wrap-select and float-domain-index branches (genuinely
+// stencil-specific, out of scope for a plain map)"). This pass is the fold-back: it PORTS
+// `tryStencil`'s full `ivCoeff`/`isStep`/`isWrapSelect`/`matchAddr` verbatim (including both
+// banked branches) and GENERALIZES the lane-type gate the same way `tryGeneralMap` generalized
+// the plain-map one — `tryStencil` hard-declines every lane but f64/f32
+// (`if (lt !== 'f64' && lt !== 'f32') return false`) because an i32-typed local is ambiguously
+// either address/index scalar or i8/i16/i32 LANE data; this pass resolves that ambiguity the
+// same way `tryGeneralMap`'s own `_isAddrLocalGM` does (ported below as `_isAddrLocalGS`,
+// parametrized on THIS pass's own broader `matchAddr`/`ivCoeff`).
 //
-// Lift:
-//   acc = splat(IDENTITY)
-//   for (i = 0; i < bound & ~(L-1); i += L) acc = OP_v(acc, lifted EXPR)
-//   S = OP(S, horizontal_reduce(acc))
-//   <original scalar tail handles the remainder>
+// Placement justified by SPECIFICITY, not by an arbitrary tie-break: `tryGeneralMap`'s address
+// proof is a strict SUBSET of this pass's own (plain i32-domain affine only, no wrap-select, no
+// float-domain-index arithmetic) — every loop `tryGeneralMap` accepts, this pass would ALSO
+// accept, so running this pass FIRST would only add risk (a second, larger address grammar
+// re-deriving the same accept decision) for zero additional reach; running it LAST means it is
+// reached only by the genuinely NEW territory — a wrap-select boundary or a float-domain grid
+// index — that `tryGeneralMap`'s deliberately-narrower proof cannot see. Zero risk to
+// `tryGeneralMap`'s own already-verified corpus by construction (dispatch order unchanged).
 //
-// Float adds are not strictly associative — vectorized reduction differs
-// from scalar reduction by ulps. Acceptable when bit-exact equality is not
-// required (which it isn't, by spec, in JS engines either).
+// The float-domain grid-index branch tryStencil's own `ivCoeff` carries (2-D row-base loops
+// like schrodinger's `y*w+x`) FOLDS IN NATURALLY. `ivCoeff`'s `f64.add`/`f64.sub`/`i32.mul`/`f64.mul`/
+// `f64.convert_i32_s`/`i32.wrap_i64`/`i64.trunc_sat_f64_s` arms below are copied verbatim from
+// `tryStencil` — the SAME algorithm that already proves "coefficient 0 or 1" for a row base
+// computed in f64 domain (jz's own overflow-canon idiom) works identically regardless of what
+// lane type the SITE that consumes the resulting address happens to store/load — address
+// arithmetic and lane data are orthogonal axes; nothing about the float-domain proof needed to
+// change to reach integer lanes. Likewise the toroidal wrap-select (`isWrapSelect`/`needsPeel`/
+// `rightBs`) — periodic-boundary stencils (`x>0?x-1:w-1`) — ports unchanged and now reaches
+// integer-lane grids (e.g. a byte/int cellular-automaton or palette-index wraparound), not just
+// f64/f32 ones.
 //
-// REDUCTION unification (.work/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
-// general recognizer"): this is the reassociating (tree-reduce + horizontal-sum) fold-order
-// tier of the ONE reduction transform — a single scalar accumulator, `S = OP(S, EXPR(arr[i]))`.
-// `tryReduceBitExact` below is the other fold-order tier (scalar-order-preserving f64x2
-// pairing, multi-accumulator). `tryReduce`, at the bottom of this section, is the shared
-// dispatch entry: try this (reassociating) shape first — exactly today's `tryReduceVectorize
-// ?? tryMapReduceVectorize` order — falling to the bit-exact shape only when this one bails.
-// The two shapes' preconditions are structurally disjoint (single vs. multi accumulator,
-// one-or-two-statement canonical body vs. arbitrary straight-line multi-statement body) enough
-// that unifying their MATCH bodies (not just their dispatch slot) would risk a behavior change
-// under the byte-identical gate; kept as two internal matchers behind one recognizer entry,
-// selected by which fold order (`bitExact`) actually fires — see `tryReduce`.
-
+// NOT folded — banked again: non-constant (runtime-COMPUTED, not merely runtime-invariant)
+// stride coefficients. `ivCoeff` proves coefficient exactly 0 or 1; a genuine non-unit runtime
+// stride (`a[i*stepIn]` for a parameter `stepIn`, or any coefficient other than 1) would need
+// gather-style codegen (per-lane scalar loads assembled into a vector, or a strided SIMD load
+// instruction wasm doesn't have) instead of the one-`v128.load`-per-step contiguous-window
+// codegen this pass (and `tryStencil`/`tryGeneralMap` before it) shares — a different transform,
+// not a proof extension; still out of scope here.
+//
+// In-place / loop-carried gate: `tryStencil`'s own `elemKey` check (every access to a WRITTEN
+// base must hit the SAME element as every OTHER access to that base) is no longer an
+// unconditional decline on mismatch — reuses layer 3's (`tryGeneralMap`) three-way
+// resolution VERBATIM (ported, not shared — matching every prior layer's own "port, don't share"
+// precedent so `tryGeneralMap`'s already-gated corpus behavior stays untouched): a compile-time
+// element delta ≥ lanes is accepted for free; < lanes declines exactly as before (a genuine
+// windowed in-place recurrence — no runtime check could ever make it safe); a delta that depends
+// on something other than the IV (a runtime parameter) gets VERSIONED — the unchanged SIMD path
+// behind a hoisted `i32.or` disjointness guard, the untouched original scalar loop as the
+// `else`. `ALIAS_VERSION_MAX_BODY_NODES`/`gmNodeCount` are REUSED directly (already module-level
+// constants as of layer 3, not per-function state — no port needed). Multiple input arrays:
+// already sound without any new work — distinct base subtrees are assumed non-aliasing (the
+// SAME baseline convention `tryStencil`/`tryGeneralMap` both already rely on), so an
+// N-array combine (`out[i] = a[i-1]+a[i]+a[i+1] + b[i]`) needs no `elemKey` reasoning at all
+// for any base that's never a store target.
+//
+// Codegen: `tryStencil`'s own proven neighbourhood-gather wrapper construction, UNCHANGED
+// (`boundSetup` = overshoot-safe absolute cap `simdCap − (lanes−1)`, not `tryGeneralMap`'s
+// iv-relative span-align — needed because stencils commonly enter at a non-zero IV and can read
+// BEHIND the IV, e.g. `a[i−1]`; `peelStmts` for the toroidal left-boundary column) — reused
+// verbatim, only wrapped in layer 3's versioning `if`/`then`/`else` when `aliasGuards` is
+// non-null, exactly as `tryGeneralMap` wraps its own simpler `simdPath`.
 export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts = {}) {
   if (!enabled) return null
   if (!bl) return null
@@ -655,47 +720,3 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   const newLocalDecls = [['local', simdBoundName, 'i32'], ...[...newLanedLocals.values()].map(laneName => ['local', laneName, 'v128']), ...extraLocals]
   return { wrapper, newLocalDecls }
 }
-
-// ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
-//
-// Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
-// literal post-lowering WAT-pattern list — to an AST-level affine-in-IV proof, the SAME lever
-// `tryGeneralMap` already applied to the MAP class (design §2/§3 step 3, REDUCTION slice —
-// .work/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
-// `tryGeneralMap`'s own (itself ported from `tryStencil`) — not a literal import, matching
-// `tryGeneralMap`'s own "port, don't share" precedent so `tryReduceReassoc`'s already-gated
-// corpus behavior stays byte-for-byte untouched. One difference from `tryGeneralMap`'s copy:
-// `matchAddr` takes the lane stride as an explicit parameter instead of inferring it from the
-// first load site — a reduction's accumulator (and its associative op) already fixes the lane
-// type before any load is scanned, so there is nothing to infer.
-//
-// Preconditions (design brief): single scalar accumulator, ONE recognized associative-
-// commutative op (`REDUCE_OP_LOOKUP`: i32/i64 add·mul·xor·and·or, f32/f64 add·mul — the SAME
-// table `tryReduce` itself gates on, so no new op is accepted, only a broader ADDRESS proof) —
-// or the int/float min-max canon shapes `tryReduceReassoc` already recognizes
-// (`matchIntMinMaxReduce`/`REDUCE_CANON`, reused verbatim, no new codegen). Body restricted to
-// exactly ONE statement (bare op / int-minmax) or TWO (the NaN-canon float-minmax temp+select
-// pair) — this alone proves "no other loop-carried state": a second independent write would be
-// a third body statement, which this recognizer declines. Loads must be affine-in-IV at
-// coefficient 1 (`ivCoeff`); `scanExpr` forbids stores, intermediates (`local.set`/`.tee`), and
-// any re-reference of the accumulator inside EXPR — the identical contract `tryReduceReassoc`
-// already enforces. Bound must be loop-invariant (`boundLocal` or an `i32.const`) — same
-// convention every recognizer in this file uses.
-//
-// Deliberately OUT of scope (stays `tryReduce`'s territory — its address proof already succeeds
-// there whenever it applies; this pass only widens the ADDRESS proof, never adds new numeric
-// behavior): the narrow-widening sum/min-max variants (`widen`/`accI32`/`accF64`), the
-// conditional-store→select-assign rewrite, the CSE-collapsed 2-statement body, and the
-// un-flattened `block`-wrapped NaN-canon. Also out of scope: `tryReduceBitExact`'s multi-
-// accumulator bit-exact tier — it has no single canonical "one accumulator, one op" shape to
-// generalize (inherently multi-accumulator by construction), so REDUCTION's `bitExact` policy
-// knob (design §2) is unaffected by this recognizer either way.
-//
-// Codegen from "Synthesize SIMD prefix…" on is byte-identical to `tryReduceReassoc`'s own
-// horizontal-fold synth (copied, not refactored-shared — see the port-not-share note above),
-// with `widen`/`sawWidenF32` fixed at their "off" values since this recognizer never produces
-// those shapes (the accType gate below enforces it). Fold-order/bitExact convention: reassociates
-// exactly where `tryReduceReassoc` already reassociates (float add/mul — ULP-level reorder,
-// documented at `REDUCE_OPS`'s own header), value-exact everywhere `tryReduceReassoc` already is
-// (int add/mul/xor/and/or, min/max) — no new numeric divergence, same fold order, just reached
-// from a broader address proof.
