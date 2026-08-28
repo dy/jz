@@ -536,3 +536,218 @@ exposes — matching this campaign's own repeated historical pattern
 (Shape #6's "two regressions found only by the full suite", Shape #9's own
 "residual 1"/"residual 2" split) — not evidence the approach itself is
 wrong, but real, unresolved gaps nonetheless.
+
+## SESSION 2 (2026-08-28): residual 1 — ROOT CAUSE FOUND, FIX APPLIED, BUT
+## THE FIX ITSELF HAS A NEW, UNRESOLVED REGRESSION. NOT MERGEABLE YET.
+
+New agent, continuing from the FINAL STATE above. Worked ONLY in this
+worktree, base 21bcfc57, on top of e8d9a851 + aa61e9d9 (uncommitted at
+session start: only bench/bench.svg, pre-existing/unrelated).
+
+### Residual 1 root cause (int_literals.wast `i64-hex-sep1`, 0n instead of
+### 3078696982321561n)
+
+Minimal native repro (magnitude-only, no `.replaceAll` needed — confirmed
+the earlier session's `neg`/`body`-extraction variants were hitting an
+UNRELATED pre-existing gap, not this one; a plain `i64.parse = n =>
+BigInt(n)` is enough):
+```js
+function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
+i64.parse = n => BigInt(n)
+function leb(n) { n >>= 7n; return n }
+export let f = () => i64("3078696982321561")
+```
+Pre-fix: `0n` (wrong) at O0/O2/O3. Bare-name sibling (`parseIt` instead of
+`i64.parse`): `24052320174387n` (correct) at all levels — confirms the
+divergence is `.`-member-specific, not a general BigInt(string) bug (also
+directly verified: `BigInt("0xaf00f00009999")`/`BigInt("3078696982321561")`
+called with NO wrapper at all are both correct — jz's own BigInt(string)
+runtime conversion is fine).
+
+Magnitude sweep (decimal, real leb-forwarding shape): every power of two
+2^16..2^53 is CORRECT via the `.`-member path. Only `3078696982321561`
+(and neighboring non-power-of-two values in that range) failed. This
+looked magnitude-correlated but isn't cleanly a magnitude threshold —
+it's a specific-VALUE-vs-tag-collision thing (below).
+
+WAT root cause (O0, `i64.parse = n => BigInt(n)`, no replaceAll):
+`$i64$parse`'s body is `(return_call $__to_bigint (i64.reinterpret_f64
+(local.get $n)))` — a RAW i64-disguised-as-f64 result (this is
+`__to_bigint`'s own established return convention; the BARE-NAME sibling's
+`$parseIt` has the byte-identical body). The two callers diverge:
+- BARE-NAME caller (`$i64` calling `$parseIt`): boxes the raw result
+  explicitly at the call site — `__alloc(8)` + `i64.store` + `__mkptr(5,
+  0, ptr)` — before assigning into `$n`.
+- MEMBER caller (`$i64` calling `$i64$parse`): `(local.set $n (call
+  $i64$parse (local.get $n)))` — NO boxing. The raw i64-in-f64-disguise
+  value flows into `$n` UNBOXED.
+
+Downstream, `$leb` does `(i32.eq (call $__ptr_type (reinterpret n))
+(i32.const 5)) (then i64.load through the pointer) (else reinterpret n
+directly)` — i.e. it tag-checks `$n` to decide box-vs-raw. For an
+UNBOXED raw i64 value, this is only safe if the value's OWN top bits never
+alias tag=5 (PTR.BIGINT) by coincidence. `3078696982321561`'s 64-bit
+pattern is `0x000af00f00009999`; `(bits >> LAYOUT.TAG_SHIFT=47) &
+LAYOUT.TAG_MASK=0xF` = 5 — an exact, confirmed alias. `$leb` wrongly
+dereferences it as a pointer (`__ptr_offset` + `i64.load` from a bogus
+address), reading `0n` in this run (could as easily be a trap elsewhere —
+this IS the "box-tag-shaped i64 constants" hazard class named in this
+file's own KNOWN-OPEN comment and in phase-c-unification.md).
+
+**The actual gap**: `ir.js`'s `applyBigintRepresentationAction(ir, node,
+action)` (the function that ACTUALLY emits the `boxBigInt`/`maybeUnboxBigInt`
+calls for every BOX/UNBOX edge in the whole compiler — assignment RHS,
+return, ternary arms, call args, ~15 call sites in emit.js/index.js) has
+its OWN, SEPARATE, un-widened admission gate: `if (valTypeOf(node) !==
+VAL.BIGINT) return ir` — i.e. it re-derives "is this really a BigInt" via
+`valTypeOf` (kind.js) BEFORE trusting the `action` a caller already computed.
+`valTypeOf` has the exact same Tier-1-bare-name-only blind spot documented
+at length for `edgeMaterializable`'s `calleeSourceProvenBigint` — but
+THIS site was never touched by the original 7-site fix (it's in ir.js, not
+representation-plan.js, and it's a genuinely separate function, not one of
+the `directCallBoundary` consumers). So even though the FIXED upstream
+logic now correctly computes `action = REP_EDGE_BOX` for `n = i64.parse(n)`,
+this gate silently discards it (`return ir` unchanged) because `valTypeOf(the
+i64.parse(n) call node)` is null for a `.`-member call — this IS the 8th
+site, and it's why the box never happens.
+
+**Fix applied** (`src/ir.js`, ~line 538-548): added a narrow
+`memberCalleeResultProvenBigint(node)` helper reusing
+`representationActiveMaterializedRep(ctx, node)` — the SAME already-`.`-
+member-aware resolver `isPlanTaggedBigint`/`readI64` already trust for
+reads (no new resolver invented; per its own `()` branch it goes through
+`programPlanRecord(ctx)?.provenance?.resolveMemberCallee`, i.e. the frozen
+call-target index, at emission time — NOT inside any buildBodyData
+fixpoint, so it does not carry the reentrancy-flavored hazard the
+`calleeNameOf`/`resolveMemberCallee` re-derivation had when called from
+INSIDE the analysis fixpoint in the self-host investigation below).
+`applyBigintRepresentationAction`'s gate became `valTypeOf(node) ===
+VAL.BIGINT || memberCalleeResultProvenBigint(node)`. Verified: the minimal
+repro above now returns `24052320174387n` correctly at O0/O2/O3, matching
+the bare-name sibling exactly. `node --check` passes.
+
+**Verified against the REAL watr pipeline** (not just the reduction):
+built `dist/watr.wasm` via this worktree's `cli.js` against
+`/Users/div/projects/watr/watr.js` (-O3 --memory 4096), ran `WATR_WASM=1
+node test/index.js` in the watrchk worktree
+(`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/watrchk`).
+`int_literals.wast` now fully passes (the one assertion that was failing,
+`i64-hex-sep1`, is fixed) — residual 1's OWN reported symptom is
+conclusively resolved.
+
+### NEW REGRESSION found by the same watr run — NOT YET RESOLVED
+
+Full watr downstream went from baseline 603/626 (1 fail: int_literals) to
+**600/626 (4 fail)** with this fix: `compile: simd const`,
+`float_memory.wast`, `float_memory0.wast`, `float_memory64.wast` — all
+newly broken; int_literals newly fixed. Net regression, confirmed
+reproducible (rebuilt twice, same result) and confirmed NOT a
+cross-test/shared-instance corruption artifact: `TST_GREP='float_memory'
+WATR_WASM=1 node test/index.js` (watrchk's `tst`-based runner, same
+`TST_GREP` mechanism jz's own tests use) fails the SAME way in complete
+isolation (only float_memory* files execute in that process — nothing
+upstream to have corrupted anything).
+
+Exact failure: `assert_return: invoke i64.load() === 9219994337134247936`
+(`0x7ff4000000000000`, the bit pattern of `f64.const nan:0x4000000000000`
+— float_memory.wast's own literal). Actual value returned:
+`9221823924512697384n` = `0x7ffa800001c72c28`. Decoded against jz's OWN
+NaN-boxing layout (`layout.js`: TAG_SHIFT=47, TAG_MASK=0xF, AUX_SHIFT=32,
+PTR.BIGINT=5): tag=**5**, aux=0, low32=`0x1c72c28`. **This is a
+well-formed jz-internal NaN-boxed PTR.BIGINT pointer** (a real `__mkptr(5,
+0, someHeapOffset)` value) **leaking out as if it were the raw payload** —
+i.e. the same hazard class as residual 1's own root cause, but pointed the
+OPPOSITE direction: here a BOXED value is being used where RAW bits were
+required, instead of a RAW value being mistaken for boxed.
+
+WAT diff (baseline ir.js vs fixed ir.js, both compiling the full
+`watr.js`, `compile(src, {wat:true, optimize:3, memory:4096})` via
+`cli.js --wat`) confirms the change is 100% confined to ONE function,
+`$m1_encode$i64` (encode.js's `i64()` LEB encoder — the same function
+residual 1's fix targets), plus a harmless reordering of the shared
+`__mkptr_5_0_d` helper. No other function (in particular `$m1_encode$f64`,
+which is where the actually-broken behavior manifests) differs by a
+single byte between the two builds. So the regression is NOT a separate
+edit reaching into f64's own encoding — it's a consequence of the SAME
+gate change, reached through a DIFFERENT call site of `i64.parse`.
+
+Source of that other call site (`src/encode.js`, watr, ~line 244):
+`f64()`'s NaN-payload parser —
+```js
+value = (tail === 'canonical' || tail === 'arithmetic') ? F64_QUIET : i64.parse(tail)
+value |= F64_NAN
+if (input[0] === '-') value |= F64_SIGN
+_i64[0] = value
+```
+`i64.parse(tail)` here is ONE ARM of a ternary whose OTHER arm is a plain
+closed BigInt constant (`F64_QUIET`); the ternary's result then feeds a
+BigInt `|=` (arithmetic — needs RAW), possibly a second `|=`, then a
+`BigInt64Array` element write. Reduced this exact shape standalone
+(`scratchpad/probe-ternary2.mjs`) — **did NOT reproduce**: the reduction's
+`.`-member ternary arm is ALSO wrong at baseline (pre-fix) `ir.js`,
+byte-identical wrong value with or without the fix — i.e. that reduction
+hits a different, pre-existing, unrelated ternary/`.`-member/bigint-op gap,
+not this regression. The real regression needs `i64.parse`'s specific
+multi-call-site shape (see hypothesis below) that a from-scratch reduction
+didn't capture; did not chase a faithful standalone reduction further
+before time ran out on this round.
+
+**Leading hypothesis, NOT confirmed**: `representationActiveMaterializedRep`'s
+`()` branch (representation-plan.js ~line 2213-2226, the resolver my fix
+reuses) reads `calleeRecord.body.resultTarget` — ONE fact stored on the
+CALLEE's OWN function record (`ctx.funcs.map.get('i64.parse')`), not
+per-call-site. `i64.parse` is called from at least two places with
+different downstream needs: `i64()`'s own body (`n = i64.parse(n)`, needs
+the caller to BOX — residual 1's own fix) and `f64()`'s NaN-payload
+ternary (`i64.parse(tail)`, needs the result to stay RAW for the
+immediately-following `|=`). If the fixpoint's single, shared
+`resultTarget` for `i64.parse` gets pulled toward BOXED (to satisfy the
+`i64()` call site, or some other aggregate reason), EVERY caller now
+inherits that same verdict through my new gate — including the `f64()`
+ternary arm, which structurally needs RAW. Tested narrowing my fix to
+BOX-only admission (excluding UNBOX) as a cheap differential — **made no
+difference** (600/626, same 4 fails) — so the wrong verdict is being
+produced (and now acted on) specifically as `action === REP_EDGE_BOX` for
+this ternary-arm call node; this isn't an admitted-UNBOX problem. Whether
+the true bug is (a) the shared/global `resultTarget` fact itself being
+too coarse across call sites of the same callee, or (b) a separate,
+missing UNBOX at the `|=` operand-coercion site that only became
+reachable/consequential once BOX started actually firing here (matching
+`ir.js`'s own documented "BOX is unaffected — a box-side mis-proof
+double-boxes a garbage payload... out of this fix's scope" caveat) is NOT
+yet distinguished. Next step for whoever continues: instrument (temporary,
+env-gated, removed after — same discipline as this campaign's prior
+rounds) `representationActiveMaterializedRep`'s `()` branch and
+`representationBindingWriteAction`/whatever computes the ternary arm's
+`action` specifically for `ctx.funcs.map.get('i64.parse')`, compiling ONLY
+`src/encode.js`'s `f64`+`i64`+`i64.parse` (need `cleanInt`/`sepRE`/`intRE`
+too, or a stand-in) through `cli.js`, to see the actual resultTarget/action
+values chosen and which call site drives them.
+
+### Current state / disposition
+
+`src/ir.js` carries the BOTH-direction fix (BOX and UNBOX admission both
+widened via `memberCalleeResultProvenBigint`) — kept over the BOX-only
+variant since narrowing bought nothing and the symmetric form matches
+`edgeMaterializable`'s own established BOX/UNBOX-together precedent.
+**NOT mergeable as-is**: trades int_literals.wast (1 fix) for
+float_memory/float_memory0/float_memory64.wast + `compile: simd const`
+(net -3 on the watr downstream: 603->600). Did not reach residual 2
+(self-host `parseInt(1e-7)` crash) this round — ran out of budget
+isolating the new regression first, since shipping a fix that regresses
+3 previously-green tests to fix 1 is not a defensible trade either way,
+and residual 2's own investigation (kernel-parity WAT diffing) is a
+separate, substantial effort per the original task brief's own framing.
+
+Did NOT run the full native battery / kernel build / kernel-parity /
+kernel-oracle / bench-size this round given the confirmed watr-downstream
+regression already disqualifies merging — no point spending a kernel
+rebuild cycle (minutes) on a fix known to need more work. `node
+test/index.js` (jz's own native suite) was NOT re-run this round either;
+should be the first step of any continuation, before further watr/kernel
+cycles.
+
+Scratch files this round (scratchpad/, safe to ignore/delete):
+probe-hexlit.mjs..probe-hexlit6.mjs, probe-wat1.mjs/probe-wat2.mjs
+(+ their .wat outputs), probe-i64enc.mjs/probe-i64enc2.mjs,
+probe-ternary2.mjs, dump-watr-wat.mjs.

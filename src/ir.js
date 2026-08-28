@@ -24,7 +24,7 @@ import { ERR } from '../err-codes.js'
 
 import { ctx, err, inc, PTR, LAYOUT } from './ctx.js'
 import { declareLocal, freshEmitId } from './compile/active-function.js'
-import { BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
+import { BIGINT_REP_RAW, BIGINT_REP_BOXED, BIGINT_REP_CLOSED, REP_EDGE_BOX, REP_EDGE_UNBOX, representationActiveMaterializedRep } from './compile/representation-plan.js'
 import { ptrBoxPrefixBigInt, ptrBits, i64Hex, atomNanHex, nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex } from '../layout.js'
 import { ERR_CLASS_NAMES } from '../err-codes.js'
 import { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef, isLeaf } from './ast.js'
@@ -521,8 +521,27 @@ export function unboxBigInt(f64expr) {
  *  a garbage payload — a silent wrong-value bug already tracked separately,
  *  e.g. test/data.js's `.member`-call KNOWN-WRONG pin — never a dereference,
  *  so it cannot trap and is out of this fix's scope). */
+// valTypeOf (kind.js) has Tier-1 bare-name call resolution but structurally
+// cannot see a `.`-member callee — the same gap class representation-plan.js's
+// calleeSourceProvenBigint (buildBodyData) exists to close for the PLANNING
+// side. applyBigintRepresentationAction's own valTypeOf gate below is that
+// same admission question asked again at the EMISSION side, with the
+// identical blind spot: a `.`-member call node it never widened, so a
+// plan-computed BOX/UNBOX action for one was silently discarded here — the
+// action said "materialize," this gate refused to believe the node was ever
+// BigInt, and the caller's raw i64-in-f64 payload flowed on unboxed (or an
+// already-boxed payload flowed on undecoded). representationActiveMaterializedRep
+// already resolves a `.`-member callee through the SAME frozen call-target-index
+// authority (its own `()` branch — reused verbatim by isPlanTaggedBigint/readI64
+// above), so reusing it here — rather than re-deriving a third resolver — closes
+// the gap with the one authority this file already trusts.
+const memberCalleeResultProvenBigint = node => {
+  if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] === 'string') return false
+  const rep = representationActiveMaterializedRep(ctx, node)
+  return rep === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED) || rep === (BIGINT_REP_RAW | BIGINT_REP_CLOSED)
+}
 export function applyBigintRepresentationAction(ir, node, action) {
-  if (valTypeOf(node) !== VAL.BIGINT) return ir
+  if (valTypeOf(node) !== VAL.BIGINT && !memberCalleeResultProvenBigint(node)) return ir
   if (action === REP_EDGE_BOX) return boxBigInt(asI64(ir))
   if (action === REP_EDGE_UNBOX) return fromI64(maybeUnboxBigInt(asF64(ir)))
   return ir
