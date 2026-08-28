@@ -412,3 +412,187 @@ plainly rather than asserting an unverified mechanism.
   the same rigor as the primary repro — the value flip is empirically
   A/B-confirmed real; the exact mid-fixpoint visit that used to pollute it
   was not separately isolated.
+
+## Second follow-up session: instrumented the residual gap, found ONE dominant
+## cause class, did NOT land a fix (see reasoning below)
+
+Branch tip still c2cab870 (worktree scratchpad/sm) — this session made no
+source changes; only temporary (reverted) instrumentation. Task: instrument
+`tryGenericEmitter`'s shadow-probe branch (emit.js) and `emitLengthAccess`'s
+runtime-dispatch fallback (module/core.js) to log every ARRAY_INDUCERS/
+STRING_ONLY_METHODS/`.length` receiver that is a PARAMETER reaching generic
+dispatch, for `bench/watr/watr.js` (the SIZE_BUDGET gate's own build,
+298000 B) — group by cause, fix conceptually per class.
+
+### Instrumentation method (temporary, reverted — not in the diff)
+
+Four `JZ_DBG_*`-gated `console.error` sites, all removed before finishing
+(worktree restored to byte-identical HEAD via `git show HEAD:path > path`):
+1. emit.js `tryGenericEmitter`, inside `if (vt == null && ctx.closure.call
+   && …)`: logs `{family, funcName, paramName, method, reassigned, rep}`
+   when `method` ∈ ARRAY_INDUCERS/STRING_ONLY_METHODS and `obj` is a bare
+   param of `ctx.func.current` (`JZ_DBG_GENERIC=1`). `ctx.func.current` is
+   the bare `sig` object (`{params, results}` — `src/compile/active-
+   function.js` `createActiveFunction`); it carries NO `.name` (name lives
+   on the sibling `funcInfo` in `ctx.funcs.list`, destructured separately in
+   compile/index.js) — resolved via `ctx.funcs.list.find(f => f.sig ===
+   fn)?.name`, an O(n) lookup fine for temp debug only.
+2. module/core.js, in `ctx.core.emit['.']`'s `.length` arm, right after
+   `arrayOrTyped` is computed: same log shape for the `vt == null &&
+   !arrayOrTyped` case (the only remaining branch that reaches
+   emitLengthAccess's `__length.value` runtime-dispatch fallback).
+3. compile/index.js, both param-fact-seeding sites (~563, ~1536): logs
+   `{cause, val, kindsCoverage, possibleKinds}` per param, where `cause` ∈
+   REASSIGNED / BOTTOM (`r.val===undefined`) / TOP (`r.val===null`) /
+   DISTRUSTED (`r.val` set but `!paramValTrustworthy(r)`) / PROVEN
+   (`JZ_DBG_PARAMVAL=1`).
+4. narrow.js `mergeRule`'s `apply`/`missing`: logs every site's raw
+   `(callee, k, callerFunc, arg, v)` for one target callee
+   (`JZ_DBG_CALLEE=<funcName>`), gated `field==='val'` — the ground-truth
+   per-site trace.
+
+### Cause-class table (bench/watr/watr.js, 66 dispatch-site log lines → 31
+### distinct (function, param, method) tuples; STRING family excluded below
+### — see "already sound" note)
+
+| cause class                                              | count | fixable this session? |
+|-----------------------------------------------------------|-------|------------------------|
+| body-reassigned param (STRING family's 3, + 2 ARRAY: `assemble`'s `nodes`, `normalize`'s `nodes`) | 5 | NO — correctly declined by design (§ below), not a proof gap |
+| **dynamic/computed-dispatch-table forwarding** (`HANDLER[imm](…)` / `SIZE_HANDLER[k](…)` in watr's compile.js) | **~23 of the remaining ~26** | NO — diagnosed precisely, fix is a real feature (design sketched below), not attempted |
+| unexplained / not individually re-traced (LENGTH-family entries in `checksumF64/U32/U8`, `str`) | ~3 | downstream symptom of the SAME cause (see cascade note) — not independent |
+
+The STRING family (`cleanInt`'s `v`, `f64$parse`'s `input`, `uleb`'s `n` —
+all `replaceAll`) is **already correctly handled**: all 3 are
+`reassigned=true` (the function's own body writes the param after reading
+it, e.g. `uleb`: `n = /[_x]/i.test(n) ? BigInt(n.replaceAll('_','')) :
+i32.parse(n)`), and the JSDoc confirms genuine call-site polymorphism
+(`@param {number|bigint|string|null} n`). Declining to seed a hardcoded
+entry-time `val` here is correct — not a proof gap to close.
+
+### Root cause: `HANDLER[imm](nodes, ctx, op, out)` — computed member call,
+### invisible to the call-site census
+
+watr's `compile.js` encodes each WAT immediate through a closed dispatch
+table: `const HANDLER = { reversed: (n,c)=>…, block: (n,c,op,out)=>…,
+call_indirect: (n,c,op,out)=>…, memarg: (n,c,op,out)=>…, … }`, invoked ONLY
+as `HANDLER[imm](nodes, ctx, op, out)` (`imm` a runtime string from a lookup
+table). Several members forward their 4th param `out` into `uleb(x, out)` /
+`memargEnc(x, y, z, out)`. Traced with instrumentation (3) below:
+
+- `program-facts.js`'s call-site walker (`walkFacts`, ~line 300) ONLY
+  registers a call site when `op === '()' && isFuncRef(args[0],
+  ctx.funcs.names)` — i.e. the callee position must be a literal bare name.
+  `HANDLER[imm](…)` is `['()', ['[]', 'HANDLER', 'imm'], …]` — `args[0]` is
+  a computed-member node, `isFuncRef` is false, NO call site is ever
+  recorded for ANY of `HANDLER`'s member functions.
+- Consequence: `call_indirect`/`memarg`/`memarg_order`/`block`'s OWN `out`
+  (and `n`) params get **zero observations ever** in `paramReps` — BOTTOM,
+  not TOP, not "genuinely polymorphic."
+- `uleb`'s `buffer` param (default `= []`) IS soundly proven ARRAY by the
+  SOFT mid-fixpoint sweep (every direct/default-arg site agrees — traced
+  via instrumentation (4), `JZ_DBG_CALLEE=__encode_js\$uleb`: dozens of
+  `missing→v=array` sites, one direct `instr`'s `out` → `v=array`). But the
+  handful of `HANDLER`-forwarded sites (`memargEnc`'s `out`, `wleb`'s
+  `out`, two more) resolve to `v=null` (their own source parameter is
+  BOTTOM, and `inferValAtSite` can't distinguish "forward-reference to a
+  permanently-unobserved param" from "genuinely unclassifiable
+  expression"). Under the SOFT rule (`mergeRule('val', …, soft=true)`,
+  narrow.js fixpointRules) a null observation is correctly skipped (stays
+  BOTTOM, doesn't disturb the ARRAY consensus) — but the **final "Settle val
+  HARD" sweep** (narrow.js ~2697: `runCallsiteLattice([mergeRule('val', …,
+  false, true)])`, `soft=false` by design — "a site left BOTTOM =
+  genuinely untyped" per its own doc comment) re-visits the SAME sites and
+  this time HARD-POISONS `r.val = null` (sticky) on the first null
+  observation. This is the documented, intentional contract of that sweep
+  (param-reps.js header: "`val` runs SOFT… A signature-mutating consumer…
+  re-folds the sites HARD… a final hard sweep settles val") — NOT a bug in
+  the sweep itself, and NOT the same mechanism the prior session's
+  `trackKind`-ordering fix touched (that was about `possibleKinds`/
+  `joinKinds`; this is `val`'s own `mergeParamFact` hard-poison path).
+- Traced the ROOT of the chain: `instr(nodes, ctx)` (compile.js, the real
+  caller reached via `assemble`) declares `let out = []` — a genuine
+  literal — and calls `HANDLER[imm](nodes, ctx, op, out)`. The runtime
+  value is monomorphically an array at EVERY invocation; the census simply
+  cannot see through the one dynamic-dispatch hop to know that.
+- Confirmed the SAME cause cascades into `assemble`'s own return kind (→
+  `compile`'s → `checksumBytes`'s `buf` param in bench/watr/watr.js itself)
+  and into the `argsf198_0`/`m0_compile$memarg`(standalone, different
+  function from `HANDLER.memarg`) chain one hop further — i.e. this is one
+  root cause with a fan-out of symptoms, not several independent ones.
+
+### Is this the same class the task's brief anticipated?
+
+Adjacent to, but distinct from, the four candidate classes listed in the
+task brief (default-initialized params, literal/typed-ctor/slice-map/
+String() call arguments, closure-forwarded params, exported-function host
+boundary). It is closest in spirit to "forwarded from another unproven
+param... external/escaped callee" but the callee here is neither external
+nor exported — it's a same-module, fully closed dispatch table that the
+census's callee-resolution (`isFuncRef` on a bare name only) was never
+taught to look through.
+
+### Why not fixed this session
+
+Checked for an existing, narrower mechanism first (the responsible move
+before building anything new) — found `src/compile/dyn-closure-tables.js`,
+a mature three-phase proof (`scanDynClosureTableCandidates` /
+`scanClosureTableLatticeCandidates` / `resolveDynFnTables`) for EXACTLY
+this shape ("`table[idx](args)` where table is a closed dispatch table of
+arrows"), already handling both a literal-array table (`devirtConstFnArrayCalls`)
+and an imperatively-built one (subscript's `lookup[c] = fn` idiom). Two
+reasons it does not already cover `HANDLER[imm](…)`:
+1. It is scoped to ARRAY-shaped tables (`isEmptyArrayLit`/`isArrowArrayLit`
+   both require `rhs[0] === '['`/`'[]'`), numeric-indexed. `HANDLER` is a
+   plain OBJECT literal (`{}`), string-keyed. Extending the scan family to
+   object literals is plausible (the same closedness/no-alias/no-escape
+   proof applies structurally) but untested territory for this file.
+2. More fundamentally, this mechanism feeds a DIFFERENT lattice —
+   emit.js's own closure-call param-type table (`tryDirectClosureCall`'s
+   paramTypes/paramTypedCtors, for CLOSURE devirtualization + call codegen)
+   — NOT `program-facts.js`'s `callSites`/`sitesByCallee`, which is what
+   `paramReps`/`narrowSignatures`'s `val` census (the mechanism actually
+   poisoning `uleb.buffer`) reads. Even a full object-literal extension of
+   dyn-closure-tables.js would not, by itself, fix this bug — the missing
+   piece is specifically teaching `program-facts.js`'s `walkFacts` (`op ===
+   '()'`, ~line 300) to recognize a computed-member callee against a
+   proven-closed table and register ONE SYNTHETIC CALL SITE PER TABLE
+   MEMBER (same `argList`), which is new machinery, not a call into the
+   existing one.
+
+Building that soundly — proving `HANDLER` is closed/non-escaping/never
+aliased (the same rigor call-target-index.js's `safeReceiver` already
+applies for the literal-property-name case, generalized to "every own
+property, not just one"), synthesizing N call sites from 1 AST node without
+breaking any consumer that assumes a 1:1 node↔callee relationship
+(`variant.js`'s `retarget` mutates `site.node[1]`/`site.callee` in place —
+a synthetic site sharing one `node` across N callees needs its own
+retarget-safety argument), and verifying against the FULL battery
+(kernel-parity/kernel-oracle/self-compile, per this exact codebase's own
+established practice for changes this close to `paramReps`/callSites) is a
+real feature addition, not a bounded bug fix — assessed as irresponsible to
+rush in a single time-boxed, short-round session, especially one resuming
+after a watchdog restart. Flagging precisely for a dedicated follow-up
+session rather than landing a partial/unverified version.
+
+### What was explicitly NOT done (this session)
+
+- No source fix landed. No pins added (nothing to pin — reverting the
+  instrumentation left the worktree byte-identical to c2cab870).
+- Did not attempt the object-literal extension to dyn-closure-tables.js's
+  scan family, nor the new callSites-synthesis machinery in
+  program-facts.js sketched above — see reasoning.
+- Did not separately re-verify the `checksumF64`/`checksumU32`/`checksumU8`/
+  `str` LENGTH-family entries beyond confirming they cascade from the same
+  compile.js-internal HANDLER-dispatch poisoning (via `assemble`'s/
+  `compile`'s own unprovable return kind) — treated as the same cause
+  class, not re-traced site-by-site.
+- Did not repeat this instrumentation pass against the real
+  `/Users/div/projects/watr/watr.js` CLI target (`-O3`, 597581 B) — high
+  confidence (same `compile.js`, same `HANDLER` table) it is the dominant
+  contributor there too, plus whatever print.js/template.js add, but not
+  independently confirmed this session.
+- Sizes/battery are UNCHANGED from the 594879e1-follow-up checkpoint above
+  (this session made no source edits): `bench-size.mjs watr` = 300640 B
+  (budget 298000, still failing), watr.js -O3 = 597581 B (target 586426 B),
+  kernel = 17,954,279 B (main 17,941,790 B). Battery not re-run this
+  session (no source changed since it was last confirmed green).
