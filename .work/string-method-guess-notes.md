@@ -1486,3 +1486,37 @@ shared, foundational inference primitive.
   scan AND the ARRAY-row lattice extension) are real, bounded, but
   independent work — not attempted given the small ceiling and the
   session's time budget going to class (B)'s two corrections instead.
+- Added a small fourth refinement to `calleeArityShortfalls` after the
+  above was written: a callee's own REST param, left unsupplied by a short
+  inner call, defaults to an empty array — not `undefined` — so it was
+  exempted from the "no default → decline" rule (redundant-safe either way:
+  narrow.js's own `missing()` almost certainly already treats a rest
+  param's absence as its own implicit default and never poisons on it, so
+  this exemption mostly just keeps this function's OWN verdict honest
+  rather than closing a live gap — not independently re-verified against
+  narrow.js's exact rest handling, given zero rest-param forwarding exists
+  anywhere in watr's own HANDLER/uleb/wleb/memargEnc/id/blockid/reftype
+  chain — flagged for whoever next extends this function). Re-ran
+  `test/data.js` standalone after — 188/188 still green.
+
+### Battery — final numbers (landed after the notes above were written;
+### background builds finished while this entry was being drafted)
+
+- `node test/data.js` (standalone): 188 tests / 973 assertions / 0 fail
+  (unchanged by the rest-param refinement, confirmed by re-running after).
+- `node cli.js .../watr.js -O3`: 595859 B (byte-identical to 39c8ecff).
+- `node scripts/bench-size.mjs --json` watr: 299635 B (byte-identical to
+  39c8ecff; budget 298000 — still fails, unmoved, same value every
+  checkpoint since 39c8ecff).
+- `npm run build` (dist/jz.wasm): see the numbered results below — the
+  FIRST build (before the rest-param commit) measured **17,974,922 B**; a
+  second build was kicked off after the rest-param commit to get the truly
+  final number — check the tail of this file / the final report for
+  whichever number actually landed.
+- `node test/index.js` (native, full suite): still running when this
+  paragraph was written (this session's machine is visibly slower/more
+  contended than prior sessions' — 8+ minutes of CPU time and climbing,
+  likely other concurrent agent activity sharing the host, confirmed via
+  `ps aux` showing an unrelated `scratchpad/ff` worktree's own build
+  running concurrently) — result lands in a later paragraph/the final
+  report, not this one.
