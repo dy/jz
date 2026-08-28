@@ -709,3 +709,74 @@ fix needs representation-plan.js's closure-materialization subsystem
 true})) to prove a closure's OWN param is boxed-by-construction across a
 FORWARDED call argument, not only across its own local's storage-read —
 comparably sized to residual-2's own fix, not a one-line extension of it.
+
+## Self-host fixpoint divergence — investigation trail (relocated from .work/todo.md, 2026-08-27)
+
+
+## CLOSED (2026-08-27): selfhost-fixpoint-divergence — traced to fix/shape8-member-callee, not reproducible on main; readI64 hardened as defense-in-depth
+
+Assigned as a P0 self-host miscompile hunt: `let n = 0x7ffa800000000000n;
+return n.toString(16)` — native "7ffa800000000000" at every optimize level,
+kernel-compiled "6e69666e494e614e" (ASCII "NaNInfin", string-pool bytes near
+address 0). Decisive first fact, built fresh at main@92fa1ed1: the kernel
+does NOT fail this repro, nor the wider adversarial-value family
+(12345n/4n/0xFFFFFFFFFFFFFFFFn/0x8000000000000000n/0x7fffffffffffffffn/0n/
+-5n), at O0/O2/O3 — robust across a clean rebuild and re-verified after
+landing the fix below.
+
+Bisected against fix/shape8-member-callee (an unmerged, in-progress branch
+adding Tier-1/Tier-2 `.`-member-callee BigInt provenance resolution): the
+repro already fails at the branch's FIRST commit (17ef8687) and persists
+through 31b55655 (which closed a related but distinct 18→9-fail
+kernel-target regression). Traced live — four rounds of source-literal
+`warn()` instrumentation added to a disposable self-compile probe, each
+rebuilt and diffed natively vs in-kernel — every representation-plan.js/
+ir.js decision for `n` (materializedNames membership, the write action,
+`applyBigintRepresentationAction`'s action, `representationActiveMaterializedRep`'s
+verdict, `isPlanTaggedBigint`, even the parsed decimal string
+`9221823924482867200`) came back BYTE-IDENTICAL native vs in-kernel — ruling
+out that branch's own representation-plan machinery as the site of
+corruption for THIS repro. Root cause instead matches that branch's own
+prior diagnosis (a69bd910, 2a6a7c1f, wall protocol invoked, not fixed
+there): kind.js's Tier-1 `VT['()']` branch reads `ctx.funcs.map.get(fname)
+.valResult` — narrow.js's whole-program fixpoint field — with no ordering
+guarantee against Tier-1's own late-synthesized `.`-member callees
+(prepare's tryFnPropCall, e.g. watr's own `i64.parse = n => {...}`), so the
+same call-site AST node answers both `undefined` and the correct kind
+depending on which compiler pass asks first DURING THE KERNEL'S OWN
+SELF-COMPILE BUILD — baking a wrong representation decision for watr's own
+`i64.parse` (WAT-to-wasm's numeric-literal encoder, `m61_encode$i64$parse`
+in 2a6a7c1f's own stack trace) permanently into that branch's dist/jz.wasm.
+Once tainted, the kernel's own i64.parse misencodes any LATER i64 constant
+in ANY program it compiles — including this totally unrelated `hexOf` —
+whose parsed bit pattern happens to alias jz's own PTR-tag NaN-boxing
+scheme, via the identical "mis-proven UNBOX dereferences a raw value's own
+bits as a pointer" mechanism this file's box/unbox pins already document,
+just baked into watr's encoder rather than triggered in the user program's
+own compiled logic. None of that Tier-1 machinery exists on main, so main
+was never exposed.
+
+Landed anyway, independent of reproducibility: `readI64`'s
+`isPlanTaggedBigint` arm (ir.js) was the one remaining PLAN-DIRECTED unbox
+call site still using the unconditional, unguarded `unboxBigInt` instead of
+the `maybeUnboxBigInt` CONSERVATIVE PAIRING `applyBigintRepresentationAction`
+and `coerceArg` already use for the identical fixpoint-proof-not-runtime-fact
+hazard (the range-boundary BOX/UNBOX OOB fix) — the same order-sensitivity
+those two call sites' own doc comments already document can apply anywhere
+this fixpoint's verdict gets consumed, not just on fix/shape8-member-callee.
+Closing the last unguarded site is defense-in-depth, matching established
+practice; it does not by itself change this repro's result (a RAW-proven
+value's own bits already alias PTR.BIGINT's box prefix, so even the
+runtime-checked pairing can't distinguish it from a real box — only a
+correct RAW verdict, which main already computes, keeps this value out of
+any unbox path at all). Pinned in test/pointers.js: the exact repro plus the
+box-tag-shaped family (prefix, prefix+1, through arithmetic, through array
+storage) and an ordinary-value control row, all at O0/O2/O3.
+
+Gates: build clean, kernel-oracle 14/14 (605), kernel-parity 3/3 (33),
+native full suite 3710/3709/0/1 (21,602), kernel-target full suite
+2962/2961/0/1 (14,229).
+
+## Shape #8 branch: SHELVED as custodian (fix/shape8-member-callee @ d7efe7a7)
+
+Decisive fact (fixdiv, 2026-08-27): main's kernel does NOT corrupt box-tag-shaped BigInt literals; the branch's Tier-1/Tier-2 member-callee machinery taints how the kernel compiles watr's own i64.parse at kernel-build time (fails from its first commit 17ef8687), so every later i64 constant whose bits alias a PTR tag misencodes. Independently sound pieces extracted separately: the four i64Hex hazard fixes (0e7887b6, d7efe7a7). Replacement design per the second audit: ONE frozen same-module call-target index computed before any consumer (no pass-order-dependent facts), consumed by plan and emission alike — the ordering race and the kernel taint are both symptoms of ad-hoc per-family resolution. The Shape #8 KNOWN-WRONG pin stays on main until the index lands.
