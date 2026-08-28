@@ -28,18 +28,20 @@ export const STRING_METHODS = new Set([
 
 export const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
 
-// Method names absent on String.prototype and TypedArray.prototype — seeing
-// `name.push(...)` etc on a bare binding with no other evidence is infer.js's
-// methodEvidence source's cheap signal that `name` is a plain Array (rungs
-// 2-3 of its evidence ladder — see that module's header). NOT a proof: a
-// plain OBJECT/HASH value can equally own a same-named closure property
-// (`{ push: (v) => {...} }`, the makeByteBuf/ByteBuf idiom) — infer.js only
-// ever applies this to a function PARAMETER it has no stronger (call-site)
-// evidence for, so any binding it taints this way is a guess, never
-// corroborated. src/compile/emit.js's tryGenericEmitter consults the SAME
-// set to decide when a non-null-but-unproven ARRAY `vt` still needs the
-// own-property shadow probe it already runs for a genuinely unknown (null)
-// vt — see that function's own comment for the full mechanism.
+// Method names absent on String.prototype and TypedArray.prototype, present
+// on Array.prototype — the names `.push(...)` usage syntax on a bare binding
+// COULD tempt a "must be Array" guess from (infer.js's methodEvidence source
+// used to induce exactly that; fix/param-mutation-propagation removed it —
+// see that module's header for why: a plain OBJECT/HASH value can equally
+// own a same-named closure property, `{ push: (v) => {...} }`, the
+// makeByteBuf/ByteBuf idiom). infer.js still imports this set for the sound
+// half of that evidence (proving NOT-a-STRING, via ARRAY_ONLY_POISON, a
+// strict superset). src/compile/emit.js's tryGenericEmitter separately
+// consults this exact set — defense in depth — to widen its own-property
+// shadow probe to a function PARAMETER whose `vt` somehow still reads
+// VAL.ARRAY for one of these methods (the probe already runs unconditionally
+// for a genuinely unresolved `vt == null` receiver; see that function's own
+// comment for the full mechanism).
 export const ARRAY_INDUCERS = new Set([
   'push', 'pop', 'shift', 'unshift', 'splice', 'flat', 'flatMap',
 ])
