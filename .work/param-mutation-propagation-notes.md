@@ -213,6 +213,49 @@ Verified Part A alone left TWO more consumers of the same wrongly-guessed
    `ARRAY_INDUCERS` import removed from infer.js (dead after this edit);
    stays exported from kind-traits.js for Part A's emit.js consumer.
 
+## Pins added (test/data.js, appended after the .subarray/tryRuntimePtrTypeFork
+## pins from the sibling merge) — all verified passing via `TST_GREP`:
+
+- field reassignment through a parameter (2)
+- typed-array field growth (reassignment) through a parameter (107)
+- nested call depth 2 through two parameter hops (259)
+- loop with zero and one iterations through a parameter (0, 1)
+- the confirmed defect family itself: closure named `.push` called through
+  a parameter (count 0/1/3 → 0/1010/3012)
+- the SECOND consumer (emitLengthAccess/.length) in isolation (143208000)
+- the full original watr-shaped repro, every count 0/1/2/3/5, O0/O2/O3
+- negative WAT-shape control: a read-only, call-site-proven-ARRAY parameter
+  keeps its direct header-read codegen (no `__dyn_get_expr` introduced) —
+  confirms the fix is scoped, not a blanket slowdown
+
+test/inference.js's own pre-existing pin for the REMOVED behavior
+("methodEvidence ARRAY: .push induces VAL.ARRAY (no STRING branch)") had to
+be corrected — it was asserting the old, unsound fast-path codegen as
+intentional. Rewritten to assert the corrected (safe, polymorphic-dispatch)
+shape instead, with a note explaining why. Header doc comment (lines 8-11)
+updated to match.
+
+## Related finding, NOT fixed (out of this task's scope — read-only, not a
+## mutation-propagation defect): STRING_ONLY_METHODS has the identical
+## unsoundness
+
+While auditing methodEvidence's OTHER rung for consistency, confirmed (repro/
+string-collision.mjs, scratch) that `STRING_ONLY_METHODS` (charCodeAt,
+charAt, trim, padStart, …) has the EXACT same class of bug: a plain object
+with an own same-named closure property (`t.charCodeAt = (i) => t.n + i`),
+called through a function parameter, gets hijacked to jz's STRING builtin
+at O0 (native=102, jz=NaN; MATCHES at O2 by what looks like incidental
+optimizer reshaping, not a real fix). Did NOT touch this — three reasons:
+(1) out of THIS task's precise scope (a read-only method-dispatch mismatch,
+not "a mutation does not propagate back"); (2) STRING_ONLY_METHODS is far
+more pervasively load-bearing for performance across jz's own self-hosted
+parser/lexer (unlike the narrow ARRAY_INDUCERS rung) — removing its
+positive-induce power the same way risks a much larger performance
+regression the kernel build/bench gates would catch, needing its own
+focused investigation; (3) time-boxing this session to the assigned,
+already-large fix rather than open-ended scope expansion. Flagging for a
+follow-up task.
+
 ## Battery status at this checkpoint
 
 All bisection repros (bisect-plain/closure/fields/set/idx0/idx0b/uleb5-check)
