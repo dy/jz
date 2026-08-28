@@ -424,3 +424,57 @@ would only add path-churn risk for zero structural benefit; the task's step
 Per-file imports are trimmed to what each file actually calls (verified by
 grep per symbol, not copied wholesale) — this mechanically drops the 31 dead
 symbols noted in Part 1's "Dead code" section; nothing else changes.
+
+## 5. Status — what actually landed (updated post-execution)
+
+The split in §4 landed as commit `ffcbced7` (oracle 560/560 clean against
+`0d785f9c`). The orphaned comments (both files) were deleted in `7df0ff8d`.
+
+12 retirements landed in `91f21bec` (oracle 560/560 clean): analyze-scans.js
+— `selfPreservingWrittenKeys`, `collectComparedNames`,
+`stampCoInductionRanges`'s outer walk, `collectF64StridedIndexVars`,
+`collectI32SafeIndexVars`'s `collect` + `seed` passes, `boxedCaptures`'s
+`collectDecls`; `analyze/val-types.js` — `dictValueTypeOf`, `mapValueTypeOf`;
+`analyze/ptr-eligibility.js` — `inheritPtrAliases`'s walk, `cseSafeLoadBases`'s
+`scanStores` pass; `analyze/struct-inline.js` — `analyzeStructInline`'s
+`collectCursors` pre-pass. Each was hand-traced against its original before
+conversion (enter-returns-false ⟺ the old early `return`; enter-falls-through
+⟺ the old unconditional trailing recursion) — see the retirement commit
+message for the full correspondence argument, independently re-derived from
+(not merged from) the sibling branch's same idea for 7 of the 12.
+
+**A concrete structural reason surfaced while implementing** that sharpens
+several "declined" entries above from "this has env-threaded state" to a
+harder constraint: `walkAst`'s `visit` only calls `enter` on **array**
+nodes (`if (!Array.isArray(value)) return` gates every call) — a bare
+string leaf is never independently visited, callers only ever see it
+through its containing array node's own children. `narrowUint32` and
+`collectBareEscapes` both special-case a bare string node FIRST, before any
+array check (`if (typeof node === 'string') { ...; return }` /
+`if (typeof node === 'string') { if (mode === 'value' && ...) ...; return }`)
+— retiring either onto `walkAst` would silently stop seeing every bare-name
+leaf, not merely lose closure-state threading. This is a hard incompatibility
+(wrong answer, not just an awkward port), not a style preference — recorded
+here since it's sharper than the original "env-threading" framing above.
+
+Not attempted beyond the 12: `analyzeBody`'s own main `walk`, `widenLocalTypes`'s
+`widenPass`/`recheck` fixpoint, `dictWalkLean`/`dictWalkI32`/`dictDomainOf`,
+`narrowUint32`, `collectBareEscapes`, `analyzeStructInline`'s `verify`/
+`verifyCall`, `analyzeUnionInline`'s `collect`/`verify`, `analyzeFuncNamespaces`'s
+`visit`, `cseSafeLoadBases`'s Pass 1/Pass 2, `scanBindingUses`'s `walk` — each
+for a reason recorded in Parts 1-2 above (string-leaf visits, env-threaded
+state, fixpoint iteration, or documented iterative-recursion necessity).
+
+No traversal fusion (distinct from retirement) was found beyond the
+already-landed `scanObjectArrayFacts` (prior art). Every pair of traversals
+re-examined for a shared node-set/order either has a genuine data dependency
+(one must complete before the other starts: `collect`→`seed` in
+`collectI32SafeIndexVars`, `collectCursors`→`verify` in
+`analyzeStructInline`, `walk`→`widenLocalTypes`→`narrowUint32` in
+`analyzeBody`) or visits a different node set under a different closure-
+descent rule (`cseSafeLoadBases`'s three passes). Forcing any of these
+together would need either an unproven internal fixpoint (the `walk`-
+`widenLocalTypes` chain — `.work/walk-count-design.md` §1.3 calls this
+"materially bigger and riskier" than the accretion-only fusions) or would
+change which nodes get visited when — outside "provably equals the
+original" territory this slice's gate demands.
