@@ -2618,3 +2618,57 @@ loading before assuming it belongs to the same investigation.
 dispatch/schema-proof decision," matching this campaign's own established, fixable bug class, but
 the EXACT gate/tier was not pinned down in the time available. `REGION_HOOKS_ACTIVE` stays `false`;
 no production source file was changed by this investigation (native probes/`_eagerStdlib` only).
+
+## Defects (e)/(f) triaged the same cheap way — (e) is genuinely region/self-host-only (NOT
+## reproducible via `_eagerStdlib`); (f) DOES reproduce natively, narrowed to `fn`+`number`
+
+**(e) `perf.js` — "codegen: no-arg scalar allocator rewinds heap on return"** (`new
+Float64Array(4)` scalar-allocator shape, asserting the WAT contains a `heap_save`-named local +
+a `global.set $__heap` restore): tested `compile(src, {wat:true, optimize:{watr:false},
+_eagerStdlib:true})` natively — **clean at every level, `heap_save`/`global.set $__heap` both
+present exactly like lazy.** This is the ONE defect of the six that does NOT reproduce via plain
+eager-loading — genuinely specific to self-hosted execution (region hooks and/or running inside
+the kernel), not triageable further without a kernel build. Not investigated further this session
+(time-boxed) — whoever continues should go straight to a kernel + the bitmask infra (this session's
+scaffolding is in git history at `4b5c66e2` if worth restoring) rather than chasing an eager-load
+angle for this one specifically.
+
+**(f) `passes.js` — "dead code never changes retained-code bytes"** (`compile(live)` vs
+`compile(live + 60 unused closure-shaped functions)` must be byte-identical — treeshake must fully
+strip the 60 unused functions): reproduces natively with `_eagerStdlib:true` — `compile(live)`
+alone is 48 bytes either way (eager adds nothing extra to a program with no dead code), but
+`compile(live+dead)` is 48 bytes lazy vs. **424 bytes eager** — the 60 unused functions are NOT
+fully treeshaken away once stdlib is eager-loaded, even though they are (still) genuinely
+unreferenced. `STDLIB` bisection: `['core','fn']` alone is clean; `['core','fn','number']` alone
+reproduces it (`string` not required once `number` is present). Given `unused0..59` are plain
+scalar arrow functions (`(a) => {let s=0; for(...) s+=a*k; return s}`, no arrays/objects/strings at
+all) needing BOTH `fn` (they're closures — assigned to a `let`, never called, so `fn` module
+registration is what makes them closure-table CANDIDATES at all) and `number` specifically to
+retain phantom bytes, the leading hypothesis (NOT verified this session) is the SAME family as the
+already-documented, still-open `$ftN`/closure-table residual flagged earlier in this file
+("`finalizeClosureTable`... `72eddaee`... `callIndirectSeen`... unconditionally, independent of
+`preserveClosureTable`" — the FIX already landed narrows the closure TABLE's contents to real
+`call_indirect` users, but may not by itself force TREESHAKE to drop a closure-shaped function's
+own BODY when `number`'s eager-registered arithmetic helpers give that body's operations a
+retained-looking call target). Not traced to a specific line this session (time-boxed) — next step
+for whoever continues: `--wat` diff `compile(live+dead,{optimize:2})` lazy vs.
+`_eagerStdlib:true` and identify which of the 60 `unused*` functions (or which stdlib helper they
+transitively pull in only under eager) survives treeshake that shouldn't.
+
+**Session disposition, all six defects**: (a) root-caused to a watr-internal (not jz) region-round
+integration gap, same "real bug, lives in a dependency, not fixed this session" disposition as
+`dvnested`; (b)/(d)/(f) root-caused to this campaign's established "eager-loading defeats a
+demand/proof gate" class (native-reproducible, no kernel needed), narrowed via `STDLIB` bisection
+but not pinned to an exact line/fix; (e) is the one genuinely kernel/region-only defect among the
+six, not even started. **Zero of the six were fixed this session** — every fix landed in prior
+sessions of this campaign started from an EQUALLY precise localization before the actual patch
+landed (see e.g. the `namedUses`/`errorSidEntries`/`stripStaticDataPrefix` sessions above, each of
+which took a full session from "localized" to "fixed+verified") — this session's contribution is
+that same first half for all six, not a completed cycle for any of them. (c) `mem.js` was not
+investigated at all this session (deprioritized behind the other five — flagged above as
+structurally likely NOT the same class, being a cross-compile host-`{memory}` concern). Goal (3)
+(`dict`/date.js registration hook, `subviewtyped` function-ordering) and goal (4) (hooks-on kernel
+build + full verification battery) were NOT reached this session — the hooks-on battery is exactly
+as far from green as it was at session start (still the same 6 genuine defects, now more precisely
+understood but none fixed), so per the task's own mandate flipping `REGION_HOOKS_ACTIVE` was
+correctly never attempted.
