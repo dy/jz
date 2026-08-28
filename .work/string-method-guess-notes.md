@@ -1745,3 +1745,286 @@ precedent for a change this size.
   IN PROGRESS as this entry is being written — see the final report / tail
   of this file for the landed numbers before treating this branch as
   mergeable.
+
+## Eighth session: merged current main (2f3fb8ea, 45 commits) and built
+## dict-kind-index.js — the FOURTH limitation's own general fix, sound and
+## pinned eight ways, but STILL net-zero on real watr (a FIFTH, deeper
+## limitation found and precisely diagnosed: SIZE_HANDLER, a for-in-DERIVED
+## wrapper dispatch table, plus its own Object.assign static overrides)
+
+### Merge
+
+`git merge 2f3fb8ea` → commit `280a47f6`. Four conflicts, all resolved by
+combining both sides' intent (never picking one side over the other):
+- `src/compile/call-target-index.js`: kept resolveComputed's arrow-node-
+  aware foldWrite contract (this branch) alongside safeFuncBase/
+  collectValueEscapes and the lifted-function-property fallback (main);
+  resolveMember gates through isFuncBase and still declines returning a
+  bare arrow node (session 4's own contract, unchanged).
+- `src/compile/plan/index.js`: both new passes (synthesizeComputedDispatch-
+  CallSites, releaseLiftedValueUsed) run back-to-back right after
+  callTargets — independent of each other, order-insensitive.
+- `src/compile/emit.js`: kept main's `ctx.module.demanded`-based gate
+  (correct under eager stdlib preload — the pre-existing `ctx.core.emit.str`
+  truthiness check this branch relied on became unsound once main's eager
+  preload made it always-true) plus this branch's own comment on the
+  retired ARRAY-usage widening.
+- `test/data.js`: append-only, both sides kept in full; ONE test ("shape #9
+  sibling — non-reassigned BOXED param") had been independently added by
+  BOTH branches with an IDENTICAL body — kept once, titled per what the
+  body actually proves (O0/O2/O3 all correct — HEAD's title was accurate;
+  main's own title ("O0/O2 FIXED, O3 KNOWN-WRONG") was stale, contradicted
+  by its own body/comment one screen down).
+
+Verified combined tree green BEFORE starting new work: `node test/data.js`
+196/196 (1036 assertions); `node test/index.js` (91/92, bench-c excluded)
+3752 total/3751 pass/1 skip/0 fail; `JZ_TEST_TARGET=jz.wasm node
+test/index.js` (plain invocation, no args — KERNEL_EXCLUDE only applies
+when no name is explicitly forced) 3004 total/3003 pass/1 skip/0 fail;
+`node test/kernel-parity.js` 33/33; `node test/kernel-oracle.js` 14/14
+(605 assertions); `node test/eager-stdlib-parity.js` 20/20 (54 assertions).
+Kernel bytes: merged 18,013,240 B vs main-alone 17,959,865 B (+53,375 B,
+expected — this branch's own new analysis machinery compiles into the
+self-hosted kernel regardless of what it does for other programs, same
+pattern every prior session's own kernel delta showed). bench-size watr
+post-merge: 299,511 B vs budget 298,000 (main-alone: 293,047 B) — essentially
+unmoved from the pre-merge 299,635 B baseline (small clean drift from the
+45 merged commits, not from anything this branch changed).
+
+### The task brief's own ask: prove `for (k in OBJ) T[k]=…`/`T[OBJ[k]]=…`
+### unrolling generally, altitude (b) — a pure fact, never an AST rewrite
+
+Chose (b) over (a) deliberately: watr's real `ctx` is declared `[]` and used
+with genuine array ops (`.push`, numeric indices from the SAME loop) — re-
+representing it as an object would need proving those array ops stay sound
+under the new representation too, a materially bigger and riskier change
+than adding one more read-side fact source alongside session seven's own
+`ctx.schema`-based one. New file `src/compile/dict-kind-index.js`
+(`buildDictKindIndex`, wired into plan/index.js right after
+buildCallTargetIndex/synthesizeComputedDispatchCallSites — needs
+`callTargets.resolveComputed`; consumed in narrow.js's `inferValAtSite`
+`.`-node case as a fallback alongside `ctx.schema.slotVTBySid`).
+
+**Mechanism** (full design rationale is the file's own header comment):
+1. One whole-program, `=>`-transparent walk (module root + moduleInits +
+   every `ctx.funcs.list` body) classifies EVERY bare-name occurrence into:
+   `decl` (a `let/const NAME = [...]` — candidate root), `safe` (a `.`/`?.`/
+   `[]` receiver read — doesn't expose the name), `literalWrite` (a plain
+   `.prop=`/`['str']=`), `loopKeyWrite`/`loopNumericWrite` (a computed-key
+   write matching an ACTIVE recognized for-in-unroll loop's own K/OBJ[K]),
+   `fwdNamed`/`fwdComputed` (an argument to a resolvable same-module call —
+   a new alias edge), or `poison` (anything else: whole-name reassignment, a
+   dynamic/unrecognized computed key, an unresolvable call argument, or any
+   other ordinary value position).
+2. `matchForInShape` recognizes prepare's own for-in desugar (verified
+   empirically against the real post-prepare AST, not assumed — the
+   `['for', decls, cond, step, [';', bindEach, body]]` 5-slot flat shape,
+   `keysExpr` either `['()','__keys_ro',OBJ]` or the nullish-guarded
+   ternary for a bare-name OBJ) and extracts `{objName, K, innerBody}`.
+3. `constObjKeys`/`findConstInit` resolve OBJNAME to a `{}`-literal with
+   every key statically named (staticObjectProps) that is never reassigned
+   as a whole anywhere in the program (own decl's `=` excluded from the
+   reassign scan — the exact false-positive call-target-index.js's own
+   collectMemberWrites already documents avoiding).
+4. Soundness for FUNCTION-LOCAL targets (watr's real `ctx`, declared inside
+   `assemble`) rests on ONE whole-pipeline invariant this branch's own sixth
+   session already verified and relied on: prepare's `mintLocal` renames
+   EVERY function-local binding to a module-wide-unique
+   `name<T>f<fnId>_<serial>` (`T` = `''`, a private-use Unicode
+   separator — renders INVISIBLE in a terminal/JSON.stringify, which cost
+   real time this session chasing a phantom "the alias closure never
+   reaches ctx" bug that was actually just `===`/`.startsWith()` against a
+   HAND-TYPED string missing the invisible char; fixed by matching on a
+   safe ASCII prefix only). A function-local's exact renamed spelling can
+   never collide with any other binding anywhere in the program, so walking
+   the WHOLE program for every occurrence of that one spelling is exhaustive
+   and unambiguous — no separate shadow-scan needed (module-level targets
+   would need call-target-index.js's own collectShadowedNames for the
+   identical protection that file already gives its own module-top-level
+   receivers; not implemented — watr's own case is function-local, the
+   module-level case was deprioritized as speculative generality no pin
+   currently exercises).
+5. T's value threading through the program as an ordinary argument (watr's
+   real ctx is — `instr(nodes, ctx)`, `HANDLER[imm](nodes, ctx, op, out)`)
+   doesn't by itself invalidate the census: a write reaching T through an
+   ALIASED parameter (confirmed real: `build[SECTION.code]`'s own arrow
+   writes `ctx.local`/`ctx.block`/`ctx.meta`/`ctx._codeIdx` through its OWN
+   2nd parameter) is exactly as much a hazard as a direct write, so the
+   alias is followed through TWO closed, already-audited forwarding
+   channels — a same-module NAMED function's own parameter at the same
+   position (`ctx.funcs.map`/`names`), or a `resolveComputed`-resolved
+   member's own parameter at the same position — and the SAME occurrence-
+   classification recurses into it (a plain worklist over pre-collected
+   occurrences, not a re-walk: O(1) per alias, not O(program) per alias).
+   Any OTHER value-position use (assigned to a second binding, returned,
+   spread, compared, an unresolvable callee) declines the WHOLE target —
+   confirmed real and correctly declined: a `leak(ctx)`-then-write repro.
+6. **Second table shape, discovered only by tracing the real watr build**:
+   `resolveComputed` (call-target-index.js) resolves ONLY `{}`-literal
+   tables (its own header is explicit). Watr's real
+   `build[SECTION.code](item, ctx)` is a POSITIONAL ARRAY of arrows instead
+   (needed for an actual WASM `call_indirect` — numeric index, one shared
+   function type). New sibling resolver `constArrayMembers` (same
+   `findConstInit` + `staticArrayElems`, same never-reassigned proof) closes
+   this — but its members needed a THIRD piece: `arrowParamNameAt`, because
+   an earlier plan pass (this codebase's own closure-ABI normalization for
+   "many arities, one shared call_indirect type") rewrites such a member's
+   params down to a SINGLE REST PARAMETER and inserts a mechanical prologue
+   recovering each original positional argument — confirmed empirically
+   against the real rewritten AST: `(...REST) => { let name = REST[0], ctx
+   = REST[1], ...; <original body> }`. `arrowParamNameAt` recovers the name
+   ONLY from this exact mechanical shape (a literal-number-indexed read of
+   the rest param, assigned to a fresh local, at the arrow's own top level —
+   never inside a nested if/loop). Three distinct outcomes, kept separate on
+   purpose after an A/B-found bug: a resolved NAME; `undefined` for a
+   position an ORDINARY (non-rewritten) arrow simply never declared (real JS
+   arrow functions have no `arguments` object of their own, so an extra call
+   argument beyond a plain arrow's own declared arity is PROVABLY
+   unreachable inside it — confirmed real: watr's own `HANDLER` mixes
+   members of genuinely different arities, one 1-param member never even
+   touching `ctx` — safe to SKIP, not a hazard); `null` for anything
+   genuinely ambiguous (declines — first version of this code conflated
+   "absent" with "ambiguous" and wrongly poisoned the whole target on the
+   1-param sibling; found and fixed via direct AST-shape tracing, not
+   guessed).
+7. **`??=`/`||=`/`&&=` fold like `=`, not as an opaque compound mutation**:
+   found via the same real-watr trace — `(ctx.metadata ??= {})[type] ??=
+   []`. A logical assignment's short-circuit branch never introduces a kind
+   beyond what other writes to the same key already establish (it either
+   sets RHS or leaves whatever a PRIOR write already put there — and that
+   prior write, if one exists, is independently folded too, so a genuine
+   disagreement still poisons via the existing meet-on-disagreement path);
+   arithmetic/bitwise compound ops (`+=`, `|=`, …) are NOT included — their
+   result kind isn't simply "the RHS's own kind," so they still poison.
+8. Two poison granularities, kept deliberately distinct: an ACCOUNTING gap
+   (an unrecognized occurrence, an unresolvable forward, ALIAS_BOUND=128
+   exceeded) poisons the WHOLE target — every key, since an unaccounted
+   write could touch any of them; a VALUE gap (a fully-recognized write
+   whose own value kind can't be proven, or that fails the loop-invariance
+   check) poisons only THAT write's specific key(s) via the same foldKey
+   meet-on-disagreement path a real kind conflict already uses — confirmed
+   real and independently useful: watr's own `ctx.local`/`ctx.block`/
+   `ctx.meta`/`ctx._codeIdx` correctly decline while the SECTION-derived
+   keys (`type`/`table`/`func`/…) stay clean from the SAME target.
+
+### Pins (test/data.js, appended after the seventh session's own last pin)
+
+Eight new tests: three positive (direct `.`-property-read; the full
+named-function + computed-dispatch-table forwarding chain, watr's real
+shape; a positional array-of-arrows table exercising the arity-skip case),
+one `??=`/`||=`/`&&=` fold pin, three negative controls (escaping target;
+same-key kind disagreement leaving a sibling key from the SAME target
+clean — the per-key-not-whole-target precision this design leans on
+throughout; a non-constant/reassignable source object), one declaration-
+order-independence pin. Every positive/ordering pin independently
+A/B-confirmed to fail with the mechanism's own read-side hookup disabled
+(a one-line `false &&` guard in narrow.js, reverted after). Two of the
+eight had real JS-semantics bugs in their OWN test source on first write
+(an indexed-into-a-plain-NUMBER expectation, and two accidentally-distinct
+`ctx` locals) — caught by the failing run itself, not the mechanism; fixed
+before committing. `node test/data.js` standalone: 204/204, 1062
+assertions, 0 fail.
+
+### Root cause of the STILL-net-zero result on real watr — a FIFTH,
+### precisely diagnosed, deeper limitation
+
+`node scripts/bench-size.mjs watr --json`: **299,511 B — byte-identical to
+the pre-mechanism baseline.** `node cli.js .../watr.js -O3`: **596,635 B —
+also byte-identical.** Traced with the same JZ_DBG_DICTIDX*-style
+instrumentation every prior session in this file used (added, used, fully
+reverted before committing — see the two commits' own messages): `ctx`'s
+real alias closure (25 aliases: `assemble`'s own `ctx`, `instr`'s, EVERY
+`HANDLER` member's own 2nd param reached via the computed-dispatch forward,
+`build[SECTION.code]`'s own param reached via the array-table forward, …)
+resolves EVERY single alias's own occurrences cleanly (confirmed via a
+temporary bypass — see below — the census genuinely settles to `{type:
+array, table: array, func: array, …}` once this ONE remaining edge is
+skipped) EXCEPT one: `instrSize` (the size-only twin of `instr`, compile.js's
+own documented pattern for `instr`/`build[SECTION.code]`'s sibling
+`build[SECTION.code]`… — see compile.js's own "Size-only twin" comments)
+forwards `ctx` into `SIZE_HANDLER[imm](nodes, ctx, op)`. `SIZE_HANDLER` is
+declared `const SIZE_HANDLER = {}` then populated TWO ways, NEITHER visible
+to `resolveComputed`, `constArrayMembers`, or call-target-index.js's own
+`foldWrite`:
+  1. `for (const k in HANDLER) SIZE_HANDLER[k] = (n, c, op) =>
+     HANDLER[k](n, c, op).length` — a for-in loop over an ALREADY-CLOSED
+     table (HANDLER), populating a SECOND table with per-key WRAPPER arrows
+     that each forward their own params, positionally, into the
+     CORRESPONDING member of the first table. Structurally this is my OWN
+     `matchForInShape`/`loopKeyWrite` shape (TARGET=SIZE_HANDLER,
+     OBJNAME=HANDLER, K=k) — recognized as an occurrence today — but the
+     WRITE VALUE is an ARROW that itself needs recognizing as "a pure
+     positional-forwarding wrapper around OBJNAME[K]", which nothing built
+     this session attempts.
+  2. `Object.assign(SIZE_HANDLER, { i32: (n) => …, memarg: (n,c,op) => …,
+     … ~20 more })` — a SEPARATE, big batch of STATIC override properties,
+     assigned via `Object.assign` rather than a `.`/`['literal']=` write.
+     Neither this file's own occurrence-walker NOR call-target-index.js's
+     `collectMemberWrites` recognizes `Object.assign(TARGET, {…})` as a
+     write source at all — a second, independent gap, needed even IF (1)
+     were solved, since SOME of SIZE_HANDLER's real members come from here.
+  Confirmed this is genuinely the ONLY remaining blocker (not "one of
+  several") via a temporary, NOT-shipped diagnostic (`fwdComputed`'s
+  `!members` branch made to `continue` instead of poisoning, one line,
+  env-gated, reverted immediately after — see commit `d39a492e`'s own
+  message): with SIZE_HANDLER's own unresolvability skipped, `ctx`'s full
+  census resolves cleanly to `{type: array, table: array, func: array,
+  import: array, …all 14 SECTION keys: array; local/block/meta/_codeIdx/
+  metadata: correctly per-key-poisoned}` — i.e. the MECHANISM ITSELF is
+  fully sound and sufficient once this one table shape is also covered.
+
+**Why not attempted this session**: closing it needs (a) a new recognizer
+— "a for-in loop over an ALREADY-RESOLVED table populates a second table
+with UNIFORM positional-forwarding wrapper arrows around the first table's
+own corresponding member" (conceptually an extension of this file's own
+`loopKeyWrite`, but the VALUE-side proof is a different shape than
+"loop-invariant literal" this session's `mentionsName`/`valTypeOf` check
+handles — it would need to prove an ARROW BODY is exactly `OBJNAME[K](args
+positionally forwarded)`, then treat the resulting table as an ALIAS of
+OBJNAME's own member set, not a value with a kind) — and (b) recognizing
+`Object.assign(TARGET, {…LITERAL…})` as a batch of static writes, which
+touches call-target-index.js's `foldWrite`/`collectMemberWrites` — a
+heavily-audited, foundational primitive with MULTIPLE OTHER consumers
+(dictValueTypes' own three-revert history is the standing warning for
+exactly this class of "looks like a small extension" change). Both are
+real, bounded, GENERALIZABLE features (neither is a watr-specific special
+case — a for-in-derived wrapper/adapter table and an `Object.assign`-built
+object literal are both common JS idioms) but stacking a fifth and sixth
+layer of newly-discovered depth onto a single session, the last one
+touching a foundational shared primitive multiple unrelated mechanisms
+already depend on, was assessed as the wrong place to stop being
+conservative — flagging both precisely, with the exact shapes and file
+locations, for a dedicated follow-up rather than rushing them in.
+
+### Per-function attribution of the remaining gap (task's own request)
+
+With the mechanism landed, sound, and pinned, and the ONE remaining blocker
+(SIZE_HANDLER) precisely diagnosed rather than guessed: watr.js -O3 stays
+at 595,859+776=596,635 B (target 586,426 B — the +776 B delta from this
+branch's own earlier-recorded 595,859 B checkpoint is the 45-commit main
+merge, unrelated to this session), `bench-size.mjs` watr stays at 299,511 B
+(budget 298,000 B, +1,511 B over). Every byte of this residual is
+attributable to ONE specific, named cause: `$m0_compile$id`,
+`$m0_compile$blockid`, `$m0_compile$reftype` (their `list`/`block`/`ctx`
+params) and whatever downstream cascades from `instrSize`'s own unresolved
+`ctx` — all because `SIZE_HANDLER`'s two write shapes are invisible to
+every table-resolution mechanism in this codebase, this session's own new
+one included. This is NOT the price of real polymorphism (every SECTION-
+derived key IS soundly, uniformly ARRAY — confirmed directly, see above);
+it is a real, further precision gap in the SAME family as every prior
+session's own residual, now one layer deeper than session seven's `ctx`-
+itself gap.
+
+### What was explicitly NOT done this session
+
+- Did not implement the SIZE_HANDLER for-in-derived-wrapper-table
+  recognizer or the `Object.assign(TARGET, {…})` batch-write recognizer —
+  see reasoning above.
+- Did not extend dict-kind-index.js to module-level (non-function-local)
+  targets — watr's own case is function-local; no pin currently exercises
+  the module-level case, and call-target-index.js's collectShadowedNames
+  would need exporting/reusing for that case's own shadow-safety.
+- Did not attempt a compound-key numeric-alias fact (`ctx[SECTION[kind]]`,
+  the `loopNumericWrite`-recognized-but-unmodeled write) — nothing in the
+  traced consumers reads `ctx[numericLiteral]`, so there was nothing to
+  gain from modeling it; flagged as a possible future generalization only.
