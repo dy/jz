@@ -69,18 +69,41 @@ const setupWasi = (ctx) => {
     __timer_loop: ['__time_ns', '__timer_dispatch'],
   })
 
-  // Demand-driven WASI timer runtime bring-up — was unconditional here (module
-  // init time), forcing __timer_init/__timer_tick/__timer_loop into every wasi
-  // compile's output (inc() marks them REACHABLE regardless of use — not
-  // reachability-pruned the way a plain unreferenced stdlib registration is),
-  // the clock_time_get host import onto every wasi compile's import list, and
-  // the 3 timer-state globals onto every wasi compile's global section — ALL
-  // regardless of whether the source ever calls a timer builtin. Harmless when
-  // the timer module only ever loads in response to real timer usage (native,
-  // lazy loading), but a genuine output divergence once the module can load
-  // for an unrelated reason (region-arena's front-round eager preload,
-  // opts._eagerStdlib): byte-identity probe caught a non-throwing try/catch
-  // program (test/statements.js) that touches no timer/IO gaining a spurious
+  // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
+  // call_indirect always matches the $ftN type (env, argc, a0..a7). Stays
+  // HERE, at module init time, unconditional — unlike the four effects below
+  // (inc/hostImport/declGlobal, all correctly demand-gated), this is a
+  // WIDTH-POLICY decision that must apply BEFORE any closure body in the
+  // program gets compiled, not merely before __invoke_closure's OWN
+  // call_indirect: a closure literal minted earlier in emission order than
+  // the first setTimeout/setInterval/clearTimeout/clearInterval call site
+  // would already have its param list fixed at whatever width was in force
+  // at MINT time, and a call_indirect through a narrower-than-expected
+  // callee is a genuine type mismatch, not a size nit — confirmed by trying
+  // the lazy version first: `wasmtime` rejected the compiled output outright
+  // ("type mismatch: expected i32, found f64" — a real, invalid-wasm
+  // regression, not a byte-count difference). Harmless as an eager-load
+  // divergence source: once `$ftN` itself is properly demand-gated
+  // (src/wat/assemble.js finalizeClosureTable, this branch's own earlier
+  // fix), a program with NO reachable call_indirect never emits `$ftN` at
+  // all, so this width value is moot dead data whenever it doesn't matter —
+  // it only ever surfaces in output when `$ftN` is ALSO genuinely needed,
+  // where it's a legitimate (if slightly wide) ABI choice, not a purity bug.
+  ctx.closure.floor = MAX_CLOSURE_ARITY
+
+  // Demand-driven WASI timer runtime bring-up — the OTHER three were
+  // unconditional here (module init time), forcing __timer_init/__timer_tick/
+  // __timer_loop into every wasi compile's output (inc() marks them
+  // REACHABLE regardless of use — not reachability-pruned the way a plain
+  // unreferenced stdlib registration is), the clock_time_get host import
+  // onto every wasi compile's import list, and the 3 timer-state globals onto
+  // every wasi compile's global section — ALL regardless of whether the
+  // source ever calls a timer builtin. Harmless when the timer module only
+  // ever loads in response to real timer usage (native, lazy loading), but a
+  // genuine output divergence once the module can load for an unrelated
+  // reason (region-arena's front-round eager preload, opts._eagerStdlib):
+  // byte-identity probe caught a non-throwing try/catch program
+  // (test/statements.js) that touches no timer/IO gaining a spurious
   // env.clock_time_get import under wasi host. Idempotent on the
   // __timer_queue global (same guard idiom as this file's sibling
   // declGlobal-if-absent sites elsewhere in the tree) — called from every
@@ -90,9 +113,6 @@ const setupWasi = (ctx) => {
   const ensureWasiTimerRuntime = () => {
     if (ctx.scope.globals.has('__timer_queue')) return
     inc('__timer_init', '__timer_tick', '__timer_loop')
-    // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
-    // call_indirect always matches the $ftN type (env, argc, a0..a7)
-    ctx.closure.floor = MAX_CLOSURE_ARITY
     hostImport('wasi_snapshot_preview1', 'clock_time_get',
       ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
     declGlobal('__timer_queue', 'i32')
