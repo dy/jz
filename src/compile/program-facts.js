@@ -567,15 +567,29 @@ export function collectProgramFacts(ast) {
  *     actual argument expressions wherever they textually occur (plain,
  *     referentially-transparent AST rewriting — no evaluation, so it's
  *     sound regardless of side effects), and synthesizes ONE call site per
- *     such inner call. An inner call synthesizes ONLY when every one of its
- *     arguments, POST-substitution, is free of every name the arrow itself
- *     binds anywhere (its own params or a body-local `let`/`const`, via
- *     `collectAllBoundNames` — the identical shadow-bail primitive call-
- *     target-index.js already uses) — failing that for even one argument
- *     declines the WHOLE inner call rather than guess: the same "forfeit
- *     precision, never fabricate" discipline every producer in this module
- *     already follows. A declined call simply gets no synthesized
- *     observation — exactly its pre-existing (unproven) status quo.
+ *     such inner call — ALWAYS, per POSITION, never declining the whole
+ *     call over one unresolvable sibling argument. An argument the arrow
+ *     itself computes (a body-local from a destructuring/`.shift()`
+ *     extraction, e.g. HANDLER.stringidx's `idx`) has no substitution
+ *     entry and is left as its own arrow-local name verbatim — sound, not
+ *     just "forfeit precision," because of a whole-pipeline invariant:
+ *     prepare/index.js's `mintLocal` (its own doc: "BindingId totality:
+ *     every function-local binding renames to the module-wide-unique
+ *     `name<T>f<fnId>_<serial>`") guarantees this leftover name can never
+ *     collide with any OTHER binding anywhere in the module, so every
+ *     name-keyed lookup this call site's `callerFunc` (a real, unrelated
+ *     function — e.g. `instr`, not the arrow) is later checked against
+ *     (narrow.js's `inferValAtSite`'s `callerValTypes`/`callerParamFacts`
+ *     lookups, inplace-store.js's `callSiteElemInfo`) misses cleanly and
+ *     falls back to its own conservative "unproven" default — the same
+ *     outcome a normal, non-synthesized unresolvable argument already
+ *     produces everywhere else in this codebase, never a fabricated claim.
+ *     A SIBLING argument at the same call that substitutes cleanly (e.g.
+ *     the forwarded `out`/`buffer` position) is completely unaffected by
+ *     an unresolvable neighbor: narrow.js's `applySiteRules` folds each
+ *     parameter POSITION independently (one `rule.apply` per `k`), so this
+ *     is strictly more precise than an all-or-nothing decline without
+ *     being any less sound.
  *
  *  Every synthesized site is tagged `synthetic: true` and may reuse an AST
  *  node another synthesized site (same inner call reached from a different
@@ -592,26 +606,6 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
   const resolveComputed = programFacts.callTargets?.resolveComputed
   if (!resolveComputed || !programFacts.computedCallSites.length) return
 
-  const boundNamesCache = new WeakMap()
-  const boundNamesOf = (arrowNode) => {
-    let s = boundNamesCache.get(arrowNode)
-    if (!s) { s = collectAllBoundNames(arrowNode, new Set()); boundNamesCache.set(arrowNode, s) }
-    return s
-  }
-  // Does `node` contain a bare-string reference to any name in `bound`,
-  // anywhere — INCLUDING inside a further-nested `=>`. Unlike every scope-
-  // closedness walk elsewhere in this file (which stop at `=>` because a
-  // deeper closure body doesn't run just by being textually present), a
-  // captured reference inside a callback ARGUMENT here is still a live use
-  // of the arrow's own param at the moment this call executes, so it must
-  // still count. Runs only over one already-small inner-call argument
-  // subtree, never a whole function body.
-  const mentionsAny = (node, bound) => {
-    if (typeof node === 'string') return bound.has(node)
-    if (!Array.isArray(node)) return false
-    for (let i = 1; i < node.length; i++) if (mentionsAny(node[i], bound)) return true
-    return false
-  }
   // Substitute every bare-string occurrence of a mapped param name with its
   // outer-site argument expression, recursing everywhere (including nested
   // `=>` bodies, for the same reason mentionsAny does). Pure — returns a
@@ -678,23 +672,15 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
         const name = typeof p === 'string' ? p : classifyParam(p)[PARAM_NAME]
         if (typeof name === 'string') subst.set(name, site.argList[i])
       }
-      const bound = boundNamesOf(member)
       const walkInner = (n) => {
         if (!Array.isArray(n)) return
         if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
         if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
           claimedNodes.add(n)
-          const rawArgList = commaList(n[2])
-          const innerArgList = rawArgList.map(a => substitute(a, subst))
-          const ok = innerArgList.every(a => !mentionsAny(a, bound))
-          if (process.env.JZ_DBG_SYNTH2) {
-            const flagged = innerArgList.map((a, i) => mentionsAny(a, bound) ? i : -1).filter(i => i >= 0)
-            console.error(JSON.stringify({ ok, objName: site.objName, arrowParams, inner: n[1], raw: rawArgList, subst: [...subst.entries()], out: innerArgList, flagged }))
-          }
-          if (ok)
-            programFacts.callSites.push({
-              callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
-            })
+          const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
+          programFacts.callSites.push({
+            callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
+          })
         }
         for (let i = 1; i < n.length; i++) walkInner(n[i])
       }
