@@ -1671,64 +1671,24 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const expr of returnExprs(body)) plannedOf(expr)
   }
 
-  // Shape #9 sibling (buildBodyData's own edgeMaterializable, found live
-  // tracing `n = i64.parse(n)`): the BOX/UNBOX safety check below trusts
-  // ONLY valTypeOf(node) === VAL.BIGINT to admit a genuine BOX/UNBOX
-  // transition — kind.js's valTypeOf has Tier-1 bare-name call resolution
-  // (narrow.js's whole-program valResult census) but, deliberately (the
-  // shelved fix/shape8-member-callee branch's own kernel-taint lesson,
-  // .work/phase-c-unification.md "Shape #8 branch: SHELVED"), no `.`-member
-  // equivalent — so a `.`-member callee's call node never satisfied this
-  // gate even once calleeNameOf/directCallBoundary (above) could prove its
-  // result. `source` (this function's own first argument) is ALREADY
-  // `currentOf(node)`-derived at every edgeMaterializable call site, and
-  // currentOf's own `.`-member branch (above) already computed the exact
-  // fact needed — reusing it needs no extra callee resolution. Scoped to a
-  // call node specifically (`node[0] === '()'`) so the NUMERIC_VALUE_OPS+
-  // canBeBigint heuristic branch a few lines up in currentOf (which can
-  // ALSO produce a closed bigint bit without valTypeOf's proof, for an
-  // unrelated node shape) can never reach this arm. Restricted to a
-  // `.`-member callee specifically (`typeof node[1] !== 'string'`): a
-  // bare-name call already has valTypeOf's own authority via the `||`'s
-  // first operand, and a first attempt that admitted bare names too (by
-  // omission, not intent) proved live-reproducibly unsound for at least one
-  // shape inside jz's own runtime-library internals (see the KNOWN-OPEN
-  // note below — narrowing away from bare names did not fully close it).
-  //
-  // KNOWN-OPEN (not resolved by this slice, found while landing it):
-  // enabling this arm at all — regardless of re-deriving the callee's proof
-  // from scratch (calleeNameOf/directCallBoundary/ctx.plans.representations,
-  // tried first) or reusing `source` as below (functionally identical
-  // result both ways, confirmed by direct A/B) — trips TWO separate,
-  // narrower regressions neither present with this arm fully disabled:
-  // (1) `JZ_TEST_TARGET=jz.wasm node test/index.js`: "memory access out of
-  // bounds" compiling `parseInt(1e-7)` (test/number.js) through the
-  // self-hosted kernel specifically — zero divergence natively, isolated by
-  // bisection to this arm being reachable at all (not to any specific wrong
-  // verdict it returns: for this exact case it never even resolves a
-  // callee). (2) watr's own `int_literals.wast` "i64-hex-sep1"
-  // (`0xa_f00f_0000_9999`, a LARGE i64 hex literal — its `0x1_a_A_0_f`
-  // small-value sibling passes) returns 0n instead of the correct value,
-  // natively, through watr's real i64.parse/leb path this whole fixpoint
-  // targets — i.e. the same shape this slice exists to fix, at a value
-  // magnitude the minimal repro that drove the slice didn't cover. Neither
-  // is pinned yet (found late, budget ran out before either was minimally
-  // reproduced in isolation — recorded here and in the handoff notes
-  // instead of guessed at); this arm still nets a real improvement (watr's
-  // named trio — memory64/float_memory64/call_indirect64 — goes from
-  // consistently red to consistently green) and is kept live on that
-  // balance, not because either residual is understood yet.
-  const calleeSourceProvenBigint = (node, source) =>
-    Array.isArray(node) && node[0] === '()' && typeof node[1] !== 'string' &&
-    bigintRepIsClosed(source) && bigintRepBits(source) !== BIGINT_REP_NONE
   // A local—or a parameter on a covered direct boundary—whose complete def
   // set uses plain writes can have every incoming edge normalized at
   // emitDecl / the '=' handler. Keep this
   // readiness private: readers get only a scalar projection, never the Set.
+  //
+  // BOX/UNBOX admission is plain valTypeOf(node) === VAL.BIGINT — no
+  // `.`-member widening needed here. kind.js's valTypeOf (VT['()']) now
+  // resolves a `.`-member callee through the same frozen call-target index
+  // this file's own calleeNameOf/resolveMemberCallee already consult, so a
+  // `.`-member call proves exactly as BIGINT here as the equivalent
+  // bare-name call always did — one authority, not a second proof re-derived
+  // from `source`'s own representation bits (the prior approach here, and
+  // ir.js's independent applyBigintRepresentationAction widening, both
+  // removed with kind.js's own fix: .work/member-callee-binding-write-notes.md).
   const edgeMaterializable = (source, target, node, sourceReady = false) => {
     const action = edgeAction(source, target)
     if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
-      return valTypeOf(node) === VAL.BIGINT || calleeSourceProvenBigint(node, source)
+      return valTypeOf(node) === VAL.BIGINT
     if (action !== REP_EDGE_KEEP) return false
     // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
     // identity. BOXED→BOXED is ready only when the upstream producer family
