@@ -1,0 +1,538 @@
+# Progress notes — fix/member-callee-binding-write
+
+Worktree: /private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/mc
+Branch: fix/member-callee-binding-write, base 21bcfc57. NOT yet committed.
+
+## Done: the mechanical "one authority" widening
+
+Edited src/compile/representation-plan.js. All bare-name-only callee gates
+(`typeof node[1] === 'string'`) that resolve a call's callee for BigInt
+provenance/materialization now also accept an index-resolved `.`-member
+callee via the SAME `resolveMemberCallee` (call-target-index.js), reused
+verbatim, never re-derived:
+
+1. `solveBigintProvenance`'s return now exposes `resolveMemberCallee` (was
+   already used internally by exprMay/exprRep/scan/visitCallSites — added to
+   the returned object so buildBodyData/representationActiveMaterializedRep
+   can reuse the SAME instance instead of re-deriving).
+2. `structurallyNeverBoolExpr` (Shape #9's own paramNeverBool machinery,
+   ~line 855-872): now resolves `.`-member callees too (resolveMemberCallee
+   already in lexical scope, no threading needed).
+3. `buildBodyData` gained a local `calleeNameOf(node)` helper (right after
+   `localClosures`): `typeof node[1]==='string' ? node[1] :
+   provenance?.resolveMemberCallee(node[1])?.name ?? null`. All 4
+   `directCallBoundary`-gated consumers now use it: `semanticOf`, `currentOf`
+   (incl. its embedded duplicate `ctx.funcs.map.get(node[1])` lookup),
+   `plannedOf`, `walkEdges`'s call-arg loop.
+4. `emittedCandidate` (buildBodyData-local, feeds the JOIN_OPS materialize
+   fixpoint): same `calleeNameOf` widening. `closureCallNeedsBox` stays
+   bare-name-only by construction (documented inline: a local closure can
+   never be a `.`-member call target — call-target-index's own census never
+   descends into any function body).
+5. `representationActiveMaterializedRep` (exported, emission-time, outside
+   buildBodyData/solveBigintProvenance's closures): reaches the same
+   resolver via `programPlanRecord(ctx)?.provenance?.resolveMemberCallee`.
+   `ir.js`'s `isPlanTaggedBigint`/`readI64` consume this function already —
+   no ir.js edit needed, they inherit the fix for free.
+
+Explicitly reviewed and left bare-name-only (documented why, not a gap):
+- `isBigintOrigin`'s `node[1]==='BigInt'||node[1].startsWith('BigInt.')` and
+  semanticOf's identical arm: builtin-name literal detectors, categorically
+  not a same-module callee resolution question.
+- `ir.js` `tcoTailRewrite`: tail-call codegen, unrelated to BigInt rep.
+- `ir.js` `isSchemaSlotBigintPossible`/`slotIntCertainAt` checks: `.`-member
+  READS (property access), not calls — different, already-correct channel
+  (slotBigintProvenAt/slotBigintBoxedAt).
+- `param-reps.js`: zero BigInt references at all, not a sibling gap.
+- Various `typeof node[1]==='string'` on ASSIGN_OPS/collectDefs: these test
+  an assignment's LHS target name, not a callee — unrelated.
+
+`node --check` passes. Have NOT yet run the full battery.
+
+## IN PROGRESS: real bug found, not yet fixed
+
+Empirical probe (scratch script, jz() compiled directly, not via test file):
+
+Task's exact repro (`i64.parse` lifted from a named function):
+```
+function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
+i64.parse = n => { n = n.replaceAll('_', ''); return BigInt(n) }
+function leb(n) { n >>= 7n; return n }
+export let f = () => i64("900")
+```
+Baseline (pre-fix, 21bcfc57): f() = 3.5e-323 (Number, box-bits-as-payload —
+matches task's own description).
+With my fix: f() = 72045052733429808n (bigint tag now correct at the
+boundary — the fix DID move something — but the VALUE is still wrong, a
+different wrongness).
+
+Bisection (see scratchpad/probe2.mjs) isolated it further: even the
+SIMPLEST case — `i64.parse("900")` alone, no `leb` at all —
+`function i64(n) { if (typeof n==='string') n = i64.parse(n); return n }`
+returns pre-fix: 4.447e-321 (Number, wrong); post-fix: "900" (STRING,
+unchanged — meaning the reassignment appears to have NO EFFECT on what's
+read back).
+
+WAT inspection (O0, see scratchpad/probe1.wat) of $i64 with my fix reveals
+the actual mechanism — NOT what I expected:
+
+```wat
+(func $i64
+  (param $n f64) (result f64)
+  (local $0 f64) (local $bbig1 i32)
+  (if (i32.and (f64.ne (local.tee $0 (local.get $n)) (local.get $0))
+               (i32.eq (call $__ptr_type (i64.reinterpret_f64 (local.get $0))) (i32.const 4)))
+    (then
+      (local.set $n
+        (call $i64$parse
+          (block (result f64)
+            (local.set $bbig1 (call $__alloc (i32.const 8)))
+            (i64.store (local.get $bbig1) (i64.reinterpret_f64 (local.get $n)))
+            (call $__mkptr (i32.const 5) (i32.const 0) (local.get $bbig1)))))))
+  (return (local.get $n)))
+```
+
+The `typeof n==='string'` guard is correct. But the ARGUMENT passed to
+`$i64$parse` is WRONG: instead of passing `n` (the string) through
+unchanged, it allocates 8 bytes, stores n's OWN NaN-boxed STRING bits into
+it, and wraps that pointer as a PTR.BIGINT box (`__mkptr(5, 0, ptr)` — tag 5
+= PTR.BIGINT) — i.e. it's applying BOX-BIGINT coercion to a value that is
+structurally a STRING at this exact call site (before the reassignment
+takes effect). `i64$parse` then receives a fake "BigInt box" whose payload
+is actually the string's own tag bits, not 900.
+
+Control (A/B, same probe file): the ALREADY-LANDED, ALREADY-WORKING
+bare-name sibling (`n = parseIt(n)` instead of `n = i64.parse(n)`, otherwise
+byte-identical `i64` body) compiles `(call $parseIt (local.get $n))` — a
+PLAIN pass-through, no coercion at all, and returns the correct 7n through
+`leb`. So this wrong-boxing is specific to the `.`-member-resolved shape,
+newly reachable through my fix.
+
+## Hypothesis (NOT YET CONFIRMED — next step)
+
+This whole representation-plan analysis is explicitly, deliberately
+FLOW-INSENSITIVE per-name (documented repeatedly in the file: "collectDefs
+is flow-INSENSITIVE"): `currentNames`/`targetNames`/`semanticNames` hold ONE
+value per NAME for the entire function body, not per occurrence. `i64`'s own
+`n` is a union across the whole function (string at entry, bigint after the
+reassignment via `n = i64.parse(n)` — now correctly seen thanks to my fix).
+If that union now MATERIALIZES `n` (enters `materializedNames`, gets a
+BOXED target), then EVERY read of `n` — including the read used as
+`i64.parse(n)`'s own ARGUMENT, which happens BEFORE the reassignment, while
+`n` is structurally still a string — gets coerced via that same blanket
+target. That would explain the wrong box.
+
+Open question I was mid-instrumentation on when interrupted: does the
+ALREADY-WORKING bare-name sibling (`parseIt`) actually leave `n` OUT of
+`materializedNames` (so it never hits this hazard), while my fix newly pulls
+`n` INTO `materializedNames` for the member-resolved shape specifically? Or
+is `n` materialized in BOTH shapes and the real difference is in
+`i64$parse`'s vs `parseIt`'s OWN proven param-0 target (i.e. the LIFTED
+arrow `i64$parse` gets a wrong/different signature analysis than a plain
+declared function)? Need one bounded instrumentation round (temporary
+console.error in buildBodyData around the materializedNames fixpoint and
+around representationCallArgAction, gated on an env var, removed after) to
+tell these apart before attempting a fix. Do NOT guess-fix without this.
+
+Candidate fix directions once the mechanism is confirmed:
+- If this is a genuine PRE-EXISTING flow-insensitivity hazard for the
+  `n = f(n)` self-rebinding shape in general (not specific to `.`-member),
+  the fix likely belongs in whatever emits the call-argument coercion for a
+  SELF-REASSIGNMENT call shape specifically — i.e. recognize `n = CALLEE(n)`
+  as a shape where the ARGUMENT occurrence of `n` must use its PRE-write
+  representation (current/entry), never the post-fixpoint blanket target.
+  This would be a real, narrow, load-bearing fix, not scope creep — but
+  needs confirming it doesn't already have a carve-out I'm missing.
+- If instead this is specific to the lifted-arrow `i64$parse`'s own
+  (wrongly-analyzed) param semantic, the fix is elsewhere (prepare's lift,
+  or how a lifted function's signature is seeded into paramReps/provenance).
+
+## RESOLVED: root cause and fix (2026-08-28)
+
+Confirmed via bounded instrumentation (added, used once, fully removed —
+zero trace scaffolding left in the diff, matching this codebase's own
+precedent): the wrong BOX coercion traced to a SECOND, narrower gap beyond
+the mechanical directCallBoundary widening — `edgeMaterializable`'s
+BOX/UNBOX safety check (guards buildBodyData's materializedNames/
+materializedResult fixpoints against boxing a value not actually proven
+bigint) trusted ONLY `valTypeOf(node) === VAL.BIGINT`. kind.js's valTypeOf
+has Tier-1 bare-name call resolution (narrow.js's whole-program valResult
+census) but deliberately no `.`-member equivalent (the shelved
+fix/shape8-member-callee branch's own kernel-taint lesson). Once
+calleeNameOf/directCallBoundary could resolve `i64.parse` as a callee, this
+became the live blocker: `i64`'s own `n` never entered materializedNames
+because `valTypeOf(i64.parse(n))` is null (not VAL.BIGINT), even though
+`currentOf` now correctly proves the SAME call node is RAW_BIGINT.
+
+Fix: `calleeProvenBigintResult(node)` — a resolved callee's own proven body
+result (materializedResult, falling back to the boundary-level current when
+the callee's body hasn't settled yet at this caller's analysis time — same
+callee-before-caller ordering fallback currentOf's own Shape #7 comment
+already documents) is exactly as sound a BOX/UNBOX admission as
+`valTypeOf`'s bare-name proof. Wired as `valTypeOf(node) === VAL.BIGINT ||
+calleeProvenBigintResult(node)` — deliberately NOT a broader "trust any
+closed source" relaxation, since `currentOf` also reaches closed bits
+through the NUMERIC_VALUE_OPS+canBeBigint heuristic branch, which still
+needs valTypeOf's stricter gate.
+
+Verified: task's own repro now returns 7n correctly at O0/O2/O3 (was: a
+3.5e-323-class Number pre-fix, then a wrong-but-differently-wrong bigint
+mid-fix before this second gap was found). Bare-name sibling unaffected
+(still 7n). Negative/control probes unaffected.
+
+Known, deliberately out-of-scope residual found during bisection: the
+DIRECT-return variant (`function i64(n) { if (typeof n==='string') n =
+i64.parse(n); return n }`, no leb call at all — i.e. i64 itself is the
+export's own direct callee and returns the reassigned union param
+immediately) still misreads (a Number, same wrongness as baseline,
+unaffected by this fix either way — checked via A/B). This is NOT the
+task's own repro shape (which always forwards through `leb`, matching
+watr's real chain) and matches the pre-existing "EXPORT-BOUNDARY RESULT
+DECODE" gap class already named in phase-c-unification.md's C1/C2 sections
+and the C5b "DIRECT-return union expression" residual — a different
+consumer (the function's OWN result/export-boundary materializedResult
+path when the function's SOLE body is the reassignment+immediate-return,
+never a leb-style forwarding call). Did not chase further: out of this
+task's scope, not exercised by the actual watr trio.
+
+Committed: e8d9a851 "route .-member callees through the call-target index
+in buildBodyData" (src/compile/representation-plan.js + test/data.js).
+
+## Test pin decision (IMPORTANT — corrects the task brief's own framing)
+
+The task brief said "the KNOWN-WRONG pin 'shape #9 sibling — index-resolved
+`.`-member callee' in test/data.js... is this exact residual" (referring to
+the directCallBoundary gap). Empirically this is WRONG: that EXISTING pin
+uses `const obj = {}; obj.leb = leb` (an object-literal receiver whose
+value-write marks `leb` valueUsed, forcing `uncovered`, categorically
+excluding it from the materializedNames fixpoint AND routing emission
+through trySchemaClosureCall's generic closure dispatch — never
+representationCallArgAction at all) — confirmed via direct A/B (before vs
+after this fix) to be BYTE-IDENTICAL, completely unaffected by this fix.
+That pin's OWN code comment already correctly named this as a separate,
+closure-materialization-subsystem-sized gap — I did NOT flip it (flipping
+it would just make it fail; verified).
+
+Instead: added a NEW pin right after it, using the task's own exact repro
+(`i64.parse` as a lifted NAMED-FUNCTION property — watr's real shape,
+matching the "shape #7-residual" pin — feeding a caller-side BINDING WRITE,
+consumed via a bare-name `leb`), titled to make the distinction from its
+neighbor explicit. This is genuinely what this fix resolves.
+
+## Battery status
+
+data.js: 169/169 pass (896 assertions), including the new pin. Verified
+clean (no JZ_PROBE/instrumentation residue — grep confirms 0 hits).
+
+Battery so far:
+- native full suite (`node test/index.js`): 3725/3724/0 fail/1 skip (21670
+  assertions). PASS, gate met.
+- kernel build (`npm run build`): clean, dist/jz.wasm 17527.3 kB.
+- kernel-parity: 3/3 (33/33 byte-identical O2/O3). PASS.
+- kernel-oracle: 14/14 (605 assertions). PASS.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (my-fix-built kernel): 2976
+  total / 2955 pass / **20 FAIL** / 1 skip. NOT yet a clean gate.
+
+## URGENT: kernel-target 20 failures — baseline A/B IN PROGRESS
+
+The 20 failing kernel-target suites (extracted via inline `×` failure
+markers in pretty-format output — TAP format crashes on a BigInt
+`JSON.stringify`, a pre-existing tst formatter bug, unrelated, abandoned
+that path):
+1. statements: compound-assign on BigInt uses i64 arithmetic, not f64
+   (memory access out of bounds — a CRASH)
+2-13. carrier: bare RAW local whose literal aliases PTR.BIGINT's own box
+   prefix / box-tag-shaped family (prefix+1, +arithmetic, +array storage)
+   — toString(16), at O0/O2/O3 (4 shapes × 3 opt levels = 12)
+14. RepresentationPlan: covered reassigned params use tagged typeof
+15. RepresentationPlan: Map storage preserves dynamic BigInt keys/values
+16. RepresentationPlan: array mutators preserve dynamic BigInt values
+17. RepresentationPlan: JSON.stringify throws on dynamic BigInt
+18. bigint: storage-read box-pointer-bits leak through a reassigned param
+    across a call (shape #6 — was corrupt) — "unreachable" (a CRASH)
+19. bigint: ++/-- on a covered-function param uses RepresentationPlan
+    provenance (shape #6)
+20. Number: parseInt whitespace / radix / numeric-arg spec edges (memory
+    access out of bounds — a CRASH)
+
+WHY THIS IS SERIOUS: nearly every one of these names matches, almost
+verbatim, the exact test family the EARLIER "Self-host fixpoint divergence"
+investigation (phase-c-unification.md, CLOSED 2026-08-27) traced and
+supposedly ruled out for main — "PTR.BIGINT box-tag-aliasing values,
+self-host/kernel-target-only divergence". That investigation's own
+conclusion was reassuring ONLY because the culprit branch's kind.js Tier-1
+`.`-member valResult changes don't exist on main. My fix does NOT touch
+kind.js (deliberately, to avoid exactly that hazard) — but it DOES add new
+`.`-member-callee-aware paths to representation-plan.js's OWN analysis, so
+it is NOT automatically exonerated by that prior investigation's reasoning
+— must verify empirically, not assume.
+
+Action in progress: swapped src/compile/representation-plan.js back to the
+EXACT 21bcfc57 baseline content (`git show 21bcfc57:... > path`, NOT a git
+checkout — plain file overwrite, easy to reverse), rebuilding dist/jz.wasm
+from that baseline NOW (backgrounded, task bqf55fvyc, log
+/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/tasks/bqf55fvyc.output).
+Once built, will run the SAME 20 suites via
+`TST_GREP='carrier: |compound-assign on BigInt|RepresentationPlan: covered reassigned|RepresentationPlan: Map storage|RepresentationPlan: array mutators|RepresentationPlan: JSON.stringify|storage-read box-pointer-bits|param uses RepresentationPlan provenance|parseInt whitespace' JZ_TEST_TARGET=jz.wasm node test/index.js`
+against the BASELINE kernel to see whether these 20 ALSO fail there
+(pre-existing, unrelated) or are NEW (a real regression needing a fix or a
+revert-and-rethink).
+
+CONFIRMED via A/B: baseline kernel (representation-plan.js reverted to
+21bcfc57, rebuilt) passes ALL 20 suspect suites cleanly (53/53 assertions,
+0 fail, via TST_GREP-scoped run). This is a GENUINE REGRESSION from my fix,
+not pre-existing. RESTORED my fix afterward (`cp /tmp/
+representation-plan.MYFIX2.js src/compile/representation-plan.js`,
+confirmed `git diff` empty against commit e8d9a851 — worktree source is
+back to my fix). Backup copies: /tmp/representation-plan.MYFIX2.js (my fix)
+and the baseline dump was transient (not kept separately, recoverable via
+`git show 21bcfc57:...` any time).
+
+## Working hypothesis: kernel-instance heap corruption cascade, not 20 independent bugs
+
+`JZ_TEST_TARGET=jz.wasm` compiles EVERY test program THROUGH one single,
+long-lived kernel wasm instance (dist/jz.wasm) — the compiler itself is
+self-hosted and reused across the whole suite run, unlike each test's own
+OUTPUT module (which does get a fresh instance). If the KERNEL's OWN
+COMPILATION (not the compiled program's later execution) of one adversarial
+program corrupts the kernel's OWN compile-time heap/pointer state (e.g. by
+treating a BigInt literal's raw bits, which alias a real PTR.BIGINT box's
+tag pattern, as an actual heap pointer and dereferencing/writing through
+it), that corruption would persist and explain "memory access out of
+bounds" crashes in LATER, textually-unrelated tests (Number: parseInt,
+statements: compound-assign) that happen to run afterward in the same
+process — not 20 independent regressions, quite possibly ONE root cause
+with a corruption cascade downstream of it.
+
+This mirrors the earlier "Self-host fixpoint divergence" investigation's
+own confirmed mechanism almost exactly (a kernel that miscompiles ONE
+internal BigInt-literal-adjacent shape during ITS OWN self-build, then
+misencodes every LATER BigInt constant it touches) — except THIS time
+during a later kernel invocation compiling test programs, not during the
+kernel's OWN bootstrap build. Grepped jz's own src/ for a watr-i64.parse-
+shaped `OBJ.PROP = arrow` pattern near bigint/i64 logic as the likely
+self-application trigger — found nothing resembling it (VT.bigint/
+jessieParse.space are unrelated). Hypothesis not yet narrowed to a specific
+line; next step (kernel rebuilt with my fix restored, task bce48ty31) is to
+test the CASCADE hypothesis directly: run ONLY the "Number: parseInt"
+suite in isolation (TST_GREP scoped to exclude every carrier/bigint test)
+against the my-fix kernel — if it passes ALONE, that confirms cascade
+(fix the root "carrier" cause only); if it STILL fails alone, it is a
+genuinely separate, third mechanism.
+
+If narrowed to the "carrier" family specifically: the likely next diagnostic
+is the SAME technique the earlier investigation used — temporary
+console.warn/error instrumentation INSIDE representation-plan.js (which
+gets compiled INTO the kernel, so the prints surface from kernel execution
+too) around isPlanTaggedBigint/materializedNames/the write action for a
+disposable single-file self-compile probe — expensive (each round needs a
+kernel rebuild, several minutes), so batch multiple checks per instrumented
+round rather than one-at-a-time.
+
+Do NOT report this task done or hand back a green battery until this
+regression is root-caused and fixed, or conclusively shown to need a
+narrower, documented carve-out. The mechanical `.`-member routing itself
+(the 7 sites + calleeProvenBigintResult) is very likely correct in
+substance — natively verified thoroughly — but something about it, self-
+hosted, corrupts kernel state for this specific adversarial BigInt-literal
+family.
+
+## ROOT CAUSE FOUND (2026-08-28) — methodology error in my own bisection, then a real fix
+
+First bisection round was INVALID: my standalone scripts set `JZ_TEST_TARGET=jz.wasm`
+as an env var but never called `_setCompileTarget(compileViaKernel)` (test/
+kernel-target.js) — that wiring lives in test/index.js itself, not in index.js's
+jz(). So my "12 cases all pass individually" and "54-prefix replay doesn't
+crash" results were BOTH silently running the NATIVE compiler the whole
+time, not the kernel — worthless data. Redid it properly
+(scratchpad/bisect_parseint2.mjs, explicitly importing and calling
+_setCompileTarget(compileViaKernel) before touching jz()) and it reproduced
+immediately and cheaply — no need for the cumulative/GC/cross-instance
+theories (confirmed irrelevant: test/kernel-target.js gives every compile a
+FRESH 512MB instance, zero cross-compile memory sharing by design).
+
+Isolated to ONE specific sub-case: `parseInt(1e-7)` alone (not the other 11
+in that test) throws "memory access out of bounds" through the kernel.
+
+Root cause: `calleeProvenBigintResult` (my new helper, feeding
+edgeMaterializable's BOX/UNBOX safety gate) computes `calleeNameOf(node)`,
+which — correctly, for its OTHER 6 use sites (semanticOf/currentOf/
+plannedOf/walkEdges/emittedCandidate/structurallyNeverBoolExpr) — returns
+node[1] directly for a bare-name call. But calleeProvenBigintResult is a
+BRAND NEW function, not a modification of an existing bare-name-aware call
+site — so accepting bare names too made it a SECOND, independent path to
+"proven bigint" for EVERY bare-name call in the ENTIRE codebase (not just
+the new `.`-member case), including calls inside jz's OWN runtime-library
+internals (parseInt/Ryū number-to-string, module/number.js) that the
+self-hosted kernel ALSO has to compile. My own doc-comment claimed
+valTypeOf's bare-name proof and this new callee-body proof "always agree"
+for bare names — untested assumption, and wrong for at least this one
+internal shape: the kernel-compiled version disagrees with valTypeOf badly
+enough to corrupt something (materialize/box a value that safety valTypeOf
+was correctly withholding from that treatment).
+
+Fix: added `|| typeof node[1] === 'string'` to calleeProvenBigintResult's
+bail-out — now STRICTLY additive for the `.`-member shape only, exactly
+matching the task's own scope; bare-name calls are governed by valTypeOf
+alone, unchanged from baseline, byte-for-byte.
+
+Kernel rebuild with the narrowed fix completed — STILL FAILS
+(parseInt(1e-7) still "memory access out of bounds"). Narrowing
+calleeProvenBigintResult to `.`-member-only did NOT fix it — my hypothesis
+that it was purely about bare-name over-reach was WRONG (or incomplete).
+Native re-verification stayed clean throughout (task repro 7n, data.js
+169/169) — the regression is confirmed isolated to the kernel-target leg
+only, narrowing didn't hurt anything, just didn't (alone) fix it either.
+
+New hypothesis, not yet confirmed: `calleeNameOf`'s widening now runs
+`resolveMemberCallee` for EVERY `.`-member call node these 6-7 sites see —
+including ordinary METHOD calls (`arr.push(x)`, `n.replaceAll(...)`,
+`n.toString(16)`) that pre-fix NEVER reached the directCallBoundary-style
+branch at all (its old gate was `typeof node[1]==='string'`, always false
+for a `.`-member node, unconditionally falling through to the
+memberReceiver/callMember handling further down in the SAME dispatch
+chain). Now `calleeNameOf`/`resolveMemberCallee` gets a first look at EVERY
+such node, before that fallback. `resolveMemberCallee`'s own shape gate
+(`calleeNode[0]==='.' && string receiver && string prop`) matches `.push`/
+`.replaceAll`/`.toString` receivers too — for an ordinary LOCAL variable
+receiver this should safely resolve to null (shadowed → safeReceiver
+false) has NOT been verified as airtight for every receiver shape jz's own
+runtime-library internals use (module/number.js's Ryū implementation is
+the prime suspect, not yet located: my grep for a literal `OBJ.PROP =`
+top-level write pattern found nothing there, but that only rules out the
+WRITE side, not a coincidental resolve via the LIFTED-function-property
+fallback branch of resolveMember, e.g. if some receiver name inside
+module/number.js happens to literally be a function name with NO write at
+all, going straight to the `ctx.funcs.map.get(`${objName}$${prop}`)`
+fallback — worth checking next if the current bisection round (disabling
+calleeProvenBigintResult entirely, task b0b8fmvq2, to isolate whether the
+bug is in THAT function specifically vs. the other 6 calleeNameOf sites)
+points there).
+
+CONFIRMED via bisection: disabling calleeProvenBigintResult entirely
+(`false && calleeProvenBigintResult(node)`) makes parseInt(1e-7) pass
+through the kernel (-> 1, correct). The bug is definitively isolated to
+THIS function's `.`-member path specifically (already excluded bare names)
+— NOT the other 6 calleeNameOf sites (semanticOf/currentOf/plannedOf/
+walkEdges/emittedCandidate/structurallyNeverBoolExpr), which are
+structurally simpler (pure name substitution, always were reached for the
+`.`-member shape via the SAME resolveMemberCallee this function also
+calls) — so the bug is specific to calleeProvenBigintResult's OWN
+additional logic (the directCallBoundary/materializedResult/resultTarget
+lookup chain it does AFTER resolving the name), not to resolveMemberCallee
+itself misresolving.
+
+console.warn probe result: it NEVER FIRED for the parseInt(1e-7) crash
+(confirmed the probe mechanism itself works — it DID fire correctly for
+the task's own i64.parse repro, run through the properly-routed kernel,
+which ALSO still correctly returns 7n self-hosted, good independent
+confirmation). This means the crash is triggered by calleeProvenBigintResult
+being CALLED AT ALL (even hitting only its early-return paths before ever
+reaching a resolved calleeName) — not by it resolving anything wrong. So
+the hazard is in the RE-DERIVATION machinery itself (calleeNameOf →
+resolveMemberCallee → resolveMember, self-hosted), not in any verdict it
+produces.
+
+## REAL FIX APPLIED: stop re-deriving, reuse the already-computed `source`
+
+Replaced calleeProvenBigintResult entirely with `calleeSourceProvenBigint
+(node, source)` — no callee re-resolution at all. Insight: `edgeMaterializable`
+already RECEIVES `source` as its first argument, and at every one of its 5
+call sites (verified all 5: the materializedNames loop, the JOIN_OPS
+fixpoint's two arms, the later widening pass, and the materializedResult
+check) `source` is already either `currentOf(node)` directly or
+`emittedCandidate(node).rep` (which itself bottoms out at currentOf(node)
+for anything not specially handled) — currentOf's own `.`-member branch
+(the FIRST of my 7 original fixes) already computed the exact fact needed.
+Trusting `source` directly needs zero extra resolution calls. Scoped to
+`node[0] === '()'` so the unrelated NUMERIC_VALUE_OPS+canBeBigint heuristic
+branch in currentOf (a genuine, different, still-valTypeOf-gated risk)
+structurally cannot reach this arm — mutually exclusive node shapes.
+
+Removed the console.warn probe. First rebuild of calleeSourceProvenBigint
+(the "reuse source, no re-derivation" version) STILL CRASHED on
+parseInt(1e-7) — surprising given the soundness argument. Root cause of
+THAT: when rewriting calleeProvenBigintResult into calleeSourceProvenBigint
+I DROPPED the `typeof node[1] === 'string'` bare-name exclusion I had
+already proven necessary in the FIRST narrowing round (same file, same
+session, same lesson — just re-lost during the rewrite). Confirmed via a
+quick native disable test that the function IS structurally load-bearing
+(disabling it entirely regresses the task repro back to the wrong bigint
+72045052733429808n) — so it can't simply be deleted. Re-added the
+exclusion (`typeof node[1] !== 'string'` in the guard). Native re-check:
+task repro 7n at O0/O2/O3, still correct. Kernel rebuild #4 in progress
+(task bflachyv0) to verify this actually clears parseInt(1e-7)
+self-hosted. If it does, that closes the loop: the true, isolated
+necessary-and-sufficient condition was "reuse-of-source (not
+re-derivation) AND `.`-member-only (not bare-name)" — BOTH changes
+together, neither alone was sufter enough on its own in my testing so far
+(re-derivation+narrowed still crashed per the very first narrowing round;
+reuse+un-narrowed also crashed). If THIS ALSO still crashes, the
+regression is not about EITHER axis and needs a completely different
+diagnosis — would be the point to seriously consider reporting blocked
+rather than continuing to guess.
+
+## Test pin reconnaissance (relevant, already done)
+
+The EXISTING "shape #9 sibling — index-resolved `.`-member callee" pin in
+test/data.js (~line 2452) uses `const obj = {}; obj.leb = leb` — an
+OBJECT-LITERAL receiver, NOT the named-function-property lift shape my fix
+targets. Confirmed via probe (scratchpad/probe1.mjs) that this pin's
+behavior is COMPLETELY UNCHANGED by my fix (still `typeof e.f() === 'number'`
+at O0/O2/O3, same wrongness as baseline) — consistent with its own code
+comment's root cause (a function's value written to a plain object property
+marks it `valueUsed`, forcing `uncovered`, which categorically excludes it
+from buildBodyData's materializedNames fixpoint AND routes emission through
+`trySchemaClosureCall`'s generic closure dispatch, never
+`representationCallArgAction` at all) — a genuinely separate,
+closure-materialization-subsystem-sized gap, explicitly out of scope per
+that pin's own comment. This pin should almost certainly stay KNOWN-WRONG
+as-is; it does NOT test the same residual my fix addresses. The task brief's
+claim that this specific pin "is this exact residual" appears to be
+imprecise — the REAL repro for the residual I'm fixing is the task's own
+`i64.parse` arrow-lift example, which has no test/data.js pin yet (need to
+add one once the value bug above is resolved, likely right next to the
+existing "shape #9 — FIXED" pin, describing it as the genuine
+directCallBoundary/buildBodyData residual, and leave the existing
+`obj.leb = leb` pin untouched as its own, separate, still-open residual).
+
+## Files touched so far
+- src/compile/representation-plan.js — committed at aa61e9d9 (on top of e8d9a851)
+- test/data.js — committed at e8d9a851
+
+## Scratch files (not part of the repo, in scratchpad/, safe to ignore/delete)
+- probe1.mjs, probe2.mjs, probe1.wat, probe3.wat, representation-plan.MYFIX.js (backup copy)
+- bisect_parseint.mjs (INVALID — didn't actually route through the kernel, kept only as a
+  cautionary example of the methodology trap), bisect_parseint2.mjs (the CORRECT version),
+  bisect_cumulative.mjs (also invalid, same trap), number_prefix_cases.json
+
+## FINAL STATE (end of session, see the fuller writeup inserted above this
+section for the complete residual 1/residual 2 findings and battery
+numbers)
+
+Branch fix/member-callee-binding-write, base 21bcfc57, commits e8d9a851 +
+aa61e9d9. Watr's own named trio (call_indirect64/float_memory64/memory64)
+is fixed: 601/626 -> 603/626 on a fresh watr.wasm build via this branch's
+cli.js. Two new, narrower, NOT-root-caused residuals were found while
+landing this (self-host-only parseInt(1e-7) crash under
+JZ_TEST_TARGET=jz.wasm; a large-value watr hex-literal case,
+i64-hex-sep1) — both documented in the code and here, neither pinned
+(ran out of budget to minimally isolate either in jz-only terms). Native
+battery is fully clean (full suite 0 fail, kernel-parity 3/3, kernel-oracle
+14/14, data.js 169/169 incl. the new positive pin). The kernel-target gate
+(JZ_TEST_TARGET=jz.wasm node test/index.js, required at 0 fail per the task
+brief) is NOT met — 20 failures, all traced to residual 1's single crash
+cascading within one test file's own run. bench.js size gates: check
+/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/tasks/br38jeu38.output
+for the result (was still running at last check).
+
+Recommendation: do not merge as-is. The core fix (route every
+directCallBoundary consumer plus the BOX/UNBOX safety gate through the same
+call-target-index resolveMemberCallee, one authority, matching the task's
+own explicit ask) is sound and thoroughly verified where it could be
+checked directly (native, the actual watr product proof). The two residuals
+read as genuinely separate, deeper layers this fix's own correctness newly
+exposes — matching this campaign's own repeated historical pattern
+(Shape #6's "two regressions found only by the full suite", Shape #9's own
+"residual 1"/"residual 2" split) — not evidence the approach itself is
+wrong, but real, unresolved gaps nonetheless.
