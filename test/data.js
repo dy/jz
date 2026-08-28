@@ -2505,7 +2505,7 @@ test('bigint: shape #9 sibling — index-resolved `.`-member callee (KNOWN-WRONG
   }
 })
 
-test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 pre-existing KNOWN-WRONG)', () => {
+test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2/O3 all correct)', () => {
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s
   // own `n` — rather than from a reassignment inside the caller. `relay`
@@ -2519,28 +2519,39 @@ test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 p
   // `argStructurallyNeverBool`'s param-entry branch (this fix) proves `n`
   // never-bool from that same census, same as the primary pin.
   //
-  // O3 KNOWN-WRONG, confirmed PRE-EXISTING and IDENTICAL on unmodified
-  // fb2dec2e (this fix reverted) — not introduced or fixed by this change.
-  // Matches the class test/data.js's own "storage-read forwarded through
-  // TWO plain named functions... shape #7 sibling" pin already documents
-  // (`inlineHotInternalCalls` splices `f`'s call to `relay` away at -O3
-  // before provenance/census analysis runs, degrading the evidence that
-  // shape's own LANDED fix covers for a storage-read argument) — this is
-  // the same inliner-vs-analysis-ordering class for a bare bigint-literal
-  // argument instead, still open.
+  // O3 used to be KNOWN-WRONG (a corrupted-number misread — `f()` returned
+  // the raw bigint bits reinterpreted as a plain f64, e.g. 3.5e-323 — not
+  // merely a typeof cosmetic): confirmed PRE-EXISTING and IDENTICAL on
+  // unmodified fb2dec2e, unrelated to the argStructurallyNeverBool fix this
+  // test's siblings pin. Now fixed as a side effect of the possibleKinds
+  // census ordering fix (narrow.js mergeRule trackKind deferred to a single
+  // post-convergence pass — see "RepresentationPlan: a forwarded, genuinely
+  // monomorphic array param is trusted" above): verified via direct A/B
+  // against the pre-fix narrow.js on this exact source — 3.5e-323 (wrong)
+  // before, 7n (correct) after — and NOT gated by paramValTrustworthy
+  // (confirmed no distrust event fires for this program; 'bigint' isn't in
+  // PTR_TAGGED_KINDS). representation-plan.js's OWN, separate
+  // paramEntryExcludesBool reads `rep.possibleKinds`/`kindsCoverage`
+  // directly (the census this file's comment above calls "the legacy
+  // census") to decide whether `relay`'s param `n`, forwarded into `leb`,
+  // structurally excludes BOOL — the same class of consumer as
+  // paramValTrustworthy (trusting a closed-coverage possibleKinds snapshot),
+  // just a different call site than the one this fix's primary repro traces
+  // in full; not independently re-traced to its exact premature-join site
+  // with the same rigor, but the mechanism (a stale KIND_UNIVERSE surviving
+  // in possibleKinds from before this fix) is the same family and the value
+  // flip is real and reproduced, not assumed.
   const src = `
     function leb(n) { n >>= 7n; return n }
     function relay(n) { return typeof n === 'bigint' ? leb(n) : n }
     export let f = () => relay(900n)
     export let g = () => relay(5)
   `
-  for (const [optimize, lbl] of [[false, 'O0'], [2, 'O2']]) {
+  for (const [optimize, lbl] of [[false, 'O0'], [2, 'O2'], [3, 'O3']]) {
     const e = jz(src, { optimize }).exports
     is(e.f(), 7n, `${lbl}: non-reassigned BOXED union param crosses into leb(n)'s argument as a real BigInt`)
     is(e.g(), 5, `${lbl}: the Number arm stays untouched (never reaches leb)`)
   }
-  const e3 = jz(src, { optimize: 3 }).exports
-  is(typeof e3.f(), 'number', 'O3 KNOWN-WRONG (pre-existing, unrelated inliner/census-ordering gap): non-reassigned BOXED union param still misreads at -O3')
 })
 
 test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i64 pass, no unbox inserted', () => {
@@ -2823,6 +2834,132 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
     const e = jz(src, { optimize }).exports
     is(e.go(), 'O|H', `O${optimize || 0}: both the literal-object and array-element-HASH call sites read their own .name correctly`)
   }
+})
+
+// --- possibleKinds census ordering (src/compile/narrow.js mergeRule
+// trackKind) — a forwarding argument used to permanently pessimize the
+// census if the worklist visited it before its own source had settled ---
+
+test('RepresentationPlan: a forwarded, genuinely monomorphic array param is trusted (possibleKinds census ordering)', () => {
+  // Root cause: paramReps' possibleKinds census (param-reps.js — the wide,
+  // existential cross-check paramValTrustworthy gates on) used to ride EVERY
+  // sweep of the soft `val` worklist fixpoint (narrow.js mergeRule's
+  // trackKind flag). uleb's `buffer` param (default `= []`; every call site —
+  // direct, its own recursive self-call, AND a second function `wleb`
+  // FORWARDING its own still-unsettled `out` param into uleb) genuinely
+  // converges to one val: ARRAY. But a premature worklist visit of the
+  // wleb->uleb call site — before wleb's OWN `out` had itself settled — used
+  // to permanently join the full KIND_UNIVERSE into possibleKinds (joinKinds
+  // is a monotone union, no retraction), so paramValTrustworthy wrongly
+  // distrusted a genuinely monomorphic param and forced it onto the runtime
+  // shadow-probe path (mirrors watr's actual encode.js uleb/wleb shape —
+  // .work/string-method-guess-notes.md's "Root cause of the REMAINING
+  // ~16718-byte gap"). `pushInto` (exported — no in-program call sites at
+  // all, genuinely unprovable) shares this compiled unit so the shadow-probe
+  // machinery (ctx.closure.call, pulled in by makeCounter's own-property
+  // closure) is definitely available — the uleb result below isn't a vacuous
+  // "no closures anywhere, so nothing can ever probe."
+  const src = `
+    const uleb = (n, buffer = []) => {
+      let byte = n & 0x7f
+      n >>>= 7
+      if (n === 0) { buffer.push(byte); return buffer }
+      buffer.push(byte | 0x80)
+      return uleb(n, buffer)
+    }
+    const wleb = (v, out) => { if (out) { uleb(v, out); return } return uleb(v) }
+    function makeCounter() {
+      const c = { n: 0 }
+      c.push = (v) => { c.n += v; return c.n }
+      return c
+    }
+    function useClosure() { return makeCounter().push(7) }
+    export function pushInto(o, v) { o.push(v); return o.length }
+    export function useIt() {
+      const b = []
+      wleb(5, b)
+      return uleb(300).length + useClosure()
+    }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const extractBody = (fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    return wat.slice(start, wat.indexOf('\n  (func ', start + 1))
+  }
+  ok(!/__dyn_get_expr/.test(extractBody('uleb')), "O0: uleb's forwarded, genuinely-monomorphic array param keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody('pushInto')), 'O0: pushInto (exported, genuinely unprovable) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the uleb result above is not vacuous')
+  is(jz(src, { optimize: false }).exports.useIt(), 9, 'O0: uleb(300) ULEB128-encodes to 2 bytes (0xAC,0x02) — .length=2, plus useClosure()=7')
+})
+
+test('RepresentationPlan: a forwarded param stays untrusted when its OWN source is genuinely polymorphic (not merely an ordering artifact)', () => {
+  // Negative control for the fix above: sink's `buf` has one direct,
+  // concrete-ARRAY call site (useDirect) AND one forwarding call site
+  // (forward -> sink) whose SOURCE (forward's own param `x`) is genuinely
+  // polymorphic — ARRAY at one of forward's own call sites, a closure-bearing
+  // hash-shaped object at the other — so forward.x's val never settles to a
+  // single kind (real disagreement, not an ordering artifact). sink.buf's
+  // narrow val fold still reads as pure ARRAY (the forwarding site
+  // contributes no vote under the soft merge — mirrors the existing
+  // "RepresentationPlan: a polymorphic-receiver param stays
+  // runtime-dispatched" pin above, one forwarding hop deeper): the fix above
+  // must not weaken this — sink.buf has to stay runtime-dispatched.
+  const src = `
+    function makeHijack() {
+      const h = { n: 0 }
+      h.push = (v) => { h.n += v }
+      return h
+    }
+    function sink(buf) { buf.push(1); return buf.length }
+    function forward(x) { return sink(x) }
+    function useDirect() { return sink([7]) }
+    function useForwardArr() { return forward([1, 2]) }
+    function useForwardHijack() { return forward(makeHijack()) }
+    export function polyUse() {
+      return useDirect() + useForwardArr() + useForwardHijack()
+    }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const start = wat.indexOf('(func $sink')
+  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 1))
+  ok(/__dyn_get_expr/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
+  for (const optimize of [false, 2, 3]) {
+    // makeHijack's object has no .length — buf.length legitimately reads
+    // undefined -> NaN through the real (runtime-dispatched) property read,
+    // consistently across optimize levels, not a garbage jz-Array header word.
+    ok(Number.isNaN(jz(src, { optimize }).exports.polyUse()), `O${optimize || 0}: the hijack leg's real (dynamic) .length is undefined -> NaN, not a misread ARRAY header`)
+  }
+})
+
+test("RepresentationPlan: possibleKinds census is pass-order-independent — swapping two forwarding functions' declaration order yields byte-identical WAT", () => {
+  // The bug was specifically an ordering artifact of narrow.js's worklist
+  // (which call site the fixpoint happens to visit first) — the strongest
+  // direct proof it's gone is that source-level declaration order (which
+  // determines the worklist's initial seed order) no longer affects the
+  // compiled output at all.
+  const ulebSrc = `
+    const uleb = (n, buffer = []) => {
+      let byte = n & 0x7f
+      n >>>= 7
+      if (n === 0) { buffer.push(byte); return buffer }
+      buffer.push(byte | 0x80)
+      return uleb(n, buffer)
+    }
+  `
+  const wlebSrc = `
+    const wleb = (v, out) => { if (out) { uleb(v, out); return } return uleb(v) }
+  `
+  const tailSrc = `
+    export function useIt() {
+      const b = []
+      wleb(5, b)
+      return uleb(300).length
+    }
+  `
+  const shapeUlebFirst = ulebSrc + wlebSrc + tailSrc
+  const shapeWlebFirst = wlebSrc + ulebSrc + tailSrc
+  const watUlebFirst = String(compile(shapeUlebFirst, { optimize: 3, wat: true }))
+  const watWlebFirst = String(compile(shapeWlebFirst, { optimize: 3, wat: true }))
+  is(watUlebFirst, watWlebFirst, 'O3: declaring uleb before wleb or after compiles to byte-identical WAT — the census no longer depends on which function the worklist happens to visit first')
 })
 
 // --- .subarray() after a same-property dynamic-index write elsewhere in the
