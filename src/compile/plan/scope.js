@@ -1177,7 +1177,27 @@ export const canSkipWholeProgramNarrowing = (programFacts) =>
   !programFacts.anyDyn &&
   programFacts.propMap.size === 0 &&
   !programFacts.hasSchemaLiterals &&
-  !ctx.closure.make &&
+  // `ctx.closure.make` truthiness means "has the `fn` module's init(ctx) run",
+  // NOT "does this program have closures" — front.js's eager includeMods()
+  // (region-arena builds) and index.js's `_eagerStdlib` test hook both load
+  // `fn` for EVERY compile regardless of source content (the established
+  // "module load = registration only" invariant, .work/region-release-
+  // notes.md Class 1/2), so the bare-truthy check silently forced the full
+  // whole-program narrowing fixpoint to run for programs with zero closures —
+  // observable eager-vs-lazy divergence even on `() => 5` (no call sites, no
+  // value-used names, nothing else that would ever disqualify the skip path):
+  // narrowI32Results, unreached on the lazy skip path, narrowed the literal
+  // return to i32 + a boundary-wrap trampoline once the full pass ran, purely
+  // because `fn` happened to be loaded. `ctx.module.demanded` (src/ctx.js) is
+  // the real, AST-content-driven ledger the Class 2 fix already established
+  // for exactly this "loaded vs demanded" distinction — `includeModule` marks
+  // it unconditionally (even on the already-loaded early return) while the
+  // eager bulk preload (`includeAllMods` → `loadModule` directly) never does,
+  // so under normal (non-eager) compiles `demanded` and `ctx.closure.make`
+  // always coincide (the only path that loads `fn` at all IS a real
+  // `includeModule('fn')` call — no MOD_DEPS edge lists `fn` as a dependency)
+  // and this is a pure narrowing of the proxy, not a behavior change.
+  !ctx.module.demanded.has('fn') &&
   // Typed default-arg annotations (`arr = new Int32Array(0)`) feed the param
   // lattice even with zero call sites — a host-called SPMD kernel (Workers v1)
   // gets its pointer-ABI lane and Atomics receiver proof from exactly this.

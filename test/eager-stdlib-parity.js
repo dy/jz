@@ -37,9 +37,21 @@ const bytesEqual = (a, b) => a.length === b.length && Buffer.compare(Buffer.from
 // the region-arena kernel itself only ever builds at a fixed optimize level
 // per run, so this is the comparison that actually matters for that consumer).
 // Every CORPUS entry EXCEPT the three named below (tracked as a known gap —
-// see .work/region-release-notes.md "Class 1 task-named sites fixed" and the
-// "dvnested residual" section right after it).
-const KNOWN_GAP = new Set(['dict', 'mfold', 'subviewtyped', 'dvnested'])
+// see .work/region-release-notes.md "dict/mfold/subviewtyped root-caused" and
+// the "dvnested residual" section right after it). `mfold` was a THIRD
+// instance of the "module loaded ⇒ feature demanded" false-equivalence
+// (canSkipWholeProgramNarrowing's `!ctx.closure.make`, src/compile/plan/
+// scope.js) — closed once `ctx.module.demanded.has('fn')` replaced it.
+// `subviewtyped` SHRANK from a length-changing gap to a same-length one under
+// that fix (1007B → 1015B became 1007B → 1007B) but still isn't byte-
+// identical — confirmed a pure FUNCTION-ORDER difference (same final
+// reachable set, e.g. $__mkptr/$__ptr_offset emitted in a different relative
+// order), not a size regression. A different, not-yet-root-caused mechanism
+// from dict's — likely stdlib pull/emission order keyed off `ctx.core.stdlib`/
+// `ctx.core.includes` object-key or Set insertion order, which eager-loading
+// perturbs even when the final reachable set doesn't change. Left as a known
+// gap rather than chased further this session.
+const KNOWN_GAP = new Set(['dict', 'subviewtyped', 'dvnested'])
 for (const host of ['js', 'wasi']) {
   for (const [name, src] of Object.entries(CORPUS)) {
     if (KNOWN_GAP.has(name)) continue
@@ -52,15 +64,32 @@ for (const host of ['js', 'wasi']) {
   }
 }
 
-// The known gap, made explicit rather than silently uncovered: these still
-// diverge (a handful of bytes — an unrelated, pre-existing representation/
-// narrowing difference, confirmed execution-correct for mfold) or, for
-// dvnested, still produce genuinely INVALID wasm under eager load (traced to
-// SOME eagerly-pulled-in helper beyond dvnested's own now-fixed dispatch —
-// not yet localized). Promote to the loop above once closed.
-test('eager-stdlib parity [known-gap]: dict/mfold/subviewtyped diverge by a few bytes, execution-correct', () => {
+// The known gap, made explicit rather than silently uncovered: `dict` still
+// diverges by a handful of bytes (execution-correct — root-caused, not yet
+// fixed: module/date.js's `ctx.schema.dateSid = ctx.schema.register([...])`
+// is unconditional at module-init time, so eager-loading 'date' registers a
+// schema entry NO program without a real `new Date` needs — ctx.schema.list
+// gets serialized into the shared static-data segment (buildStartFn's schema
+// table), so one extra entry shifts every OTHER static offset that follows
+// it, including `$__throw_property_nullish`'s own embedded message-string
+// offsets, which is what `dict` (needing that guard for `d[c]||0`) actually
+// shows. Naively moving the registration into `new.Date`'s own lazy emit
+// handler is UNSAFE, not just untried: src/compile/emit.js's
+// `dateAuxFallback` (~line 4097) bakes `ctx.schema.dateSid` as a WAT constant
+// while emitting a Date-method call on an unresolved receiver, which can
+// happen in a function compiled BEFORE any `new Date()` elsewhere in the same
+// program — under the current eager-safe module-init-time registration this
+// is always already resolved by the time emission starts; moving it to
+// emission time would silently reintroduce the ordering dependency and bake
+// `i32.const undefined` for that ordering. A real fix needs a POST-prepare,
+// PRE-emission hook (prepare() already knows genuine demand via
+// `ctx.module.demanded` by the time it returns) — no such hook exists yet.
+// `subviewtyped` still diverges too (same LENGTH, different bytes — a pure
+// function-order difference, see KNOWN_GAP's own comment above). dvnested
+// (below) is a separate, non-jz bug (watr DCE-at-scale gap).
+test('eager-stdlib parity [known-gap]: dict/subviewtyped diverge, execution-correct', () => {
   if (skip) return
-  for (const name of ['dict', 'mfold', 'subviewtyped']) {
+  for (const name of ['dict', 'subviewtyped']) {
     const src = CORPUS[name]
     const lazy = compile(src, { host: 'js', optimize: 0 })
     const eager = compile(src, { host: 'js', optimize: 0, _eagerStdlib: true })
