@@ -592,3 +592,165 @@ here.
 derived) — proceeding now to implement the fix (module registration hoisted before `mark()`,
 NOT rooting `ctx.core` — that path is foreclosed by 7085cb57) and verify with one region-enabled
 kernel build + the full battery.
+
+## FRONT'S ROUND FIX — CONFIRMED AND LANDED (2026-08-28); emitIR's round has a SEPARATE, still-open bug
+
+Empirically confirmed the root-cause hypothesis above with a real region-enabled kernel build
+(not just static reading) and landed the fix. Two commits on this branch:
+
+- `e726b884` — reverted the streaming-encoder prototype wiring in `scripts/self.js` (Strategy-B
+  measurement rig from a prior session, `abc17d1b`/commit history). That prototype has its OWN
+  independent, unresolved correctness bug with the IDENTICAL `decodeThrown`/TypeError-wrong-
+  object-shape signature (documented above under "CRITICAL CAVEAT"). Building region-hooks test
+  kernels with it still wired in would conflate two unresolved bugs and make every kernel-oracle/
+  kernel-parity number in this section ambiguous. Purely a test-isolation cleanup — no functional
+  change beyond removing the throwaway absolute-path import and `{streamCode:true}`.
+- `88e48378` — the actual fix: `src/front.js`'s `frontHalf` now calls
+  `includeMods('math', 'core', 'array', 'object', 'string', 'number', 'fn', 'typedarray',
+  'collection', 'symbol', 'console', 'json', 'regex', 'timer', 'date', 'simd', 'atomics', 'fs',
+  'web', 'crypto', 'navigator')` (every name in `module/index.js`'s export list, gated on
+  `regionHooks` truthy) as the FIRST statement, BEFORE `regionHooks?.mark()`. This forces every
+  stdlib module's `init(ctx)` — the ONLY code that populates `ctx.core.emit`/`ctx.core.stdlib`
+  for the first time — to run pre-mark, so it's durable, regardless of which module
+  `prepare()`'s own `includeModule('core')` (unconditional, prepare/index.js:800) or its several
+  source-dependent `includeModule(mod)` branches would otherwise have first-loaded mid-round.
+  `includeModule`'s own idempotency guard (`ctx.module.modules[modName]`) makes every later call
+  a no-op once `mark()` fires, so this is a pure reordering, not a new allocation pattern.
+
+  Implementation note for future readers: the first attempt used
+  `import * as stdlibModules from '../module/index.js'` + `for (const name in stdlibModules)`.
+  This FAILED AT NATIVE SELF-COMPILE TIME with `'stdlibModules' is not in scope` — jz's self-
+  compilable subset has no runtime object backing a namespace import (`import * as X` erases to
+  compile-time bindings, not a reified enumerable object), so `for...in` over one is a compile-
+  time error, not a runtime one. Fixed by naming the 21 modules literally via the EXISTING
+  `includeMods(...)` helper (the same pattern already used elsewhere in this codebase, e.g.
+  `includeMods('core', 'fn')`) — proven to compile. The literal list must be kept in sync with
+  `module/index.js`'s own export list by hand (that file's own header comment already says
+  "Adding a stdlib module = add its import + name here, nothing else" — mirror any addition into
+  `front.js` too now).
+
+### Empirical proof (bisection), region-enabled kernel, `JZ_SELF_COMPILE_OPT=0` (~95-100s/build)
+
+Method: scripts/self.js's three `regionHooks` call sites (`optimizeTail`, `front`, `emitIR`) can
+each be independently forced to `regionHooks: undefined`, isolating which region round is
+active — the same bisection technique the prior session used for Finding 2.
+
+1. **Front's round ALONE** (optimizeTail's and emitIR's forced `undefined`; front's fix in
+   place): `node test/kernel-oracle.js` → **11/14 pass, 575 assertions run** (up from 36 before
+   any fix — the corruption previously aborted the AGREE-tier loop on its first row, `sum`, so
+   almost nothing downstream ever ran). `sum`, `math`, `dict`, `arr`, `mfold`, `nestedtyped`,
+   `fromnested`, subnormal, heterogeneous-BigInt, ternary (all `is`/`throws` execution
+   assertions) — ALL GREEN, at O0/O2/O3, natively AND through the kernel. **The only 3 failures
+   are `kernel parity: byte-identical WAT` at O0/O2/O3**, reporting a benign SIZE divergence
+   ("sum O0: diverges (native 642B vs kernel 923B)") — not a crash, not a value mismatch — an
+   expected artifact of running with 2 of 3 region rounds forcibly disabled for this bisection
+   (kernel WAT naturally differs in shape from a build with only 1 of its normal 3 rounds live).
+   This is unambiguous, direct confirmation: front's round, run alone with the fix, is sound —
+   the ORIGINAL `sum`-at-O0/O2/O3 crash this whole investigation chased is CLOSED for front's
+   round specifically.
+
+2. **Front's (fixed) + emitIR's rounds, optimizeTail's forced off**: same crash reproduces
+   IDENTICALLY (2/14 pass, 36 assertions, `KERNEL FAIL ROW: sum`, same
+   `$__throw_property_nullish`-shaped TypeError). Isolates the REMAINING bug to emitIR's round
+   (`compileAst`'s own mark/exit, Slice 3, `src/compile/index.js`) — ruling OUT optimizeTail's
+   round (`watrTail`) as the O0 cause. This is a new, more precise finding than what self.js's
+   own pre-session comments documented (those attributed the ONLY known region-hooks failures to
+   `optimizeTail`'s round specifically, at O2/O3 only, via `dvnested-mechanism` — a DIFFERENT,
+   more complex source; this session's `sum`-at-O0 failure is a broader, previously-undocumented
+   instance in a DIFFERENT round).
+
+3. **All three rounds active** (real, unforced `REGION_HOOKS_ACTIVE` ternaries): same crash as
+   #2 — 2/14 pass, 36 assertions. Confirms optimizeTail's round is inert/uninvolved for this
+   specific repro (consistent with #2) and that the fix from step 1 is necessary but not
+   sufficient for the FULL battery.
+
+**Conclusion: front's round is fixed and proven sound in isolation. emitIR's round
+(`src/compile/index.js`'s `compile()`) has a SEPARATE, NOT-YET-ROOT-CAUSED bug, structurally
+independent of front's fix and of optimizeTail's round.** `REGION_HOOKS_ACTIVE` stays `false` —
+the full battery is not green with it on, per the mandate not to flip the default without that.
+
+### emitIR's round — precise starting point for whoever continues this
+
+`compile()` (`src/compile/index.js:2274`) is NOT one region round — it is roughly 1150 lines
+containing SIX-plus nested `mark()`/`exit()` pairs, plus `plan()`'s own 5 further internal
+rounds (called at line 2395, `src/compile/plan/index.js`, not examined this session):
+
+- SCAN round: mark `~2405`, exit `~2434-2436` (root: `[ast, programFacts, ctx.funcs, ctx.module,
+  ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func,
+  ctx.transform, ctx.facts]` — the SAME narrower 12-ish-field union front.js used, NOT the wider
+  one `emissionRoundExit` proved necessary — worth checking whether this round ALSO needs
+  `ctx.runtime`/`ctx.memory`/`ctx.error`/`ctx.linkDemand`/`ctx.names`/`ctx.features`, by the exact
+  same reasoning as front's fix. This is the MOST PROMISING next lead — it is structurally
+  IDENTICAL to front's bug (same narrow root list) and runs very early (right after `plan()`),
+  so a fresh `sum`-scale compile would reach it almost immediately).
+- AFE (analyzeFuncs) round: mark inside the loop `~2488`, batched exit `~2496-2507` (same root
+  list as SCAN's).
+- `emissionRoundExit` helper (`~2570`) + its first user, `emitFuncs`'s `closeRound` (`~2645-2655`,
+  exit at `~2650-2651`) — the WIDE, already-audited root (`ast, programFacts, out, ctx.funcs,
+  ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect,
+  ctx.func, ctx.transform, ctx.facts, ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand,
+  ctx.names, ctx.features, ctx.core.includes, ctx.core.extImports, ctx.core.jsstring,
+  ctx.core.hostGlobals, ctx.core.stdlibDeps`) — this round ALSO explicitly documents its own
+  "KNOWN OPEN ISSUE" but SCOPES it to "jz×jz scale only" (self-compiling the whole compiler,
+  2234 functions) — `sum` (1 function) is nowhere near that scale, so this specific documented
+  issue is unlikely to be `sum`'s trigger, though not formally ruled out this session.
+- `CLOSURE_ROUNDS_ACTIVE` (`~2480`): already `false` (permanently disabled, pre-existing,
+  unrelated to this session) — inert, not a candidate.
+- `__buildMark` round: mark `~2818`, exit `~2820-2822` (same `emissionRoundExit` wide root).
+- `__stdlibMark` round: mark `~2944`, exit `~2977-2979`, wrapping `pullStdlib(sec)` +
+  `ensureThrowRuntime(sec)`. Examined this session — looks carefully reasoned (its own comment:
+  "`ensureThrowRuntime`'s one post-pullStdlib read of `ctx.core.stdlib`... is closed by
+  reordering, not rooting" — and the read DOES run before this round's own exit at line 2978, so
+  that specific concern is already closed). No obvious gap found on inspection, but not
+  exhaustively audited.
+- Outermost round (`__regionMark` at `2275`, exit at `3376-3416` — the `releaseSession` branch,
+  confirmed ACTIVE for THIS repro since `scripts/self.js`'s `emitIR` passes
+  `releaseSession: true`; the alternate `else if (regionHooks)` branch at `3417-3419` is NOT
+  reached in this configuration). Root is a hand-built `released` object exposing
+  `transform, funcs.list.length, scope.{...6 fields}, types.{2 fields}, schema.list,
+  ctx.core.includes, ctx.core.diagSink, warnings, tail` — deliberately narrow, well-commented,
+  explicitly excludes `ctx.core`/`ctx.bridge` wholesale by the same established reasoning. No
+  obvious gap found on inspection, but not exhaustively audited.
+
+**A REAL, but CONFIRMED-NOT-the-`sum`-trigger, additional instance of the SAME bug class**: three
+more mid-round writes into `ctx.core.stdlib[...]` (a PLAIN STRING each time, template literals
+evaluated immediately — not a closure/thunk like some module-init-time stdlib entries, so
+rooting just these specific dynamic entries would not hit the "closure-valued, not proven safe"
+wall front.js's fix had to route around) were found at:
+- `src/compile/emit.js:293` (`builtinFunctionValue` — fires when a builtin function like
+  `Math.sqrt` is referenced AS A VALUE, not called directly).
+- `src/compile/emit.js:7931` (multi-result-function call trampoline).
+- `src/compile/emit.js:7958` (single-result forwarding trampoline, context not fully read this
+  session).
+Checked each trigger condition: NONE fire for `sum = (a, b) => a + b` (no builtin-as-value, no
+multi-result function, no dynamic forwarding call in that source) — so these are NOT what crashes
+`sum` specifically, but ARE a real, live instance of "code writes into wholesale-excluded
+`ctx.core.stdlib` mid-round" for OTHER programs, worth fixing once the `sum` trigger itself is
+found (same architecture question as front's fix, but these entries are emitted DYNAMICALLY per
+call-site — cannot be hoisted pre-mark the way module registration was, since they don't exist
+until emission actually happens; the correct fix here is more likely an "escape into a rooted
+sidecar accumulator, reconciled back into `ctx.core.stdlib` once durable again" pattern — option
+(c) from the original task framing — not attempted this session).
+
+**Next step for whoever continues**: build a region-enabled kernel (`JZ_SELF_COMPILE_OPT=0` for
+~100s iteration), reproduce with `node test/kernel-oracle.js` (still fails on `sum` with all 3
+rounds active), then bisect WITHIN `compile()` by temporarily forcing individual `mark()`/`exit()`
+pairs off one at a time (SCAN, AFE, emitFuncs's closeRound, `__buildMark`, `__stdlibMark`, the
+outermost `releaseSession` exit, and `plan()`'s own regionHooks argument at line 2395) the same
+way this session bisected the THREE outer call sites in self.js — starting with the SCAN round
+(`~2405-2436`) as the most promising lead, since it uses the SAME narrower root-field list front's
+round originally had, before this session's fix widened front's.
+
+### Final battery (dormant, `REGION_HOOKS_ACTIVE=false`, production/default build — `node
+scripts/self-compile-build.mjs`, no `JZ_SELF_COMPILE_OPT` override, i.e. the real O3 self-compile
+that actually ships): 304.4s, 17,868,354 bytes (baseline doc above: 320s, 17,867,935 bytes — a
+419-byte difference, well within noise from unrelated source-comment growth elsewhere in the
+tree; confirms front.js's new eager-load line is correctly inert when `regionHooks` is falsy,
+zero behavior change on the shipped path).
+
+- `node test/kernel-oracle.js`: **14/14 pass, 605 assertions** — exact match to the documented
+  clean baseline.
+- `node test/kernel-parity.js`: **3/3 pass, 33/33 assertions** — exact match to the task's
+  expected number.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: running in background at the point these notes
+  were written; result to be appended once it completes.
