@@ -301,34 +301,14 @@ export const memory = (src) => {
     return raw + 16
   }
 
-  // Read schemas from module custom section, merge into memory.schemas. Schema
-  // entries are { type, payload } where type=0 means null (computed/missing
-  // key), type=1 means nested [null, name] (synthetic shape), else a UTF-8
-  // length-prefixed property name. Section format is varint-prefixed list.
-  let schemas = mem.schemas || []
-  const schemaBytes = mod && customSection(mod, 'jz:schema')
-  if (schemaBytes) {
-    const r = sectionReader(schemaBytes)
-    const dec = () => {
-      const t = r.u8()
-      if (t === 0) return null
-      if (t === 1) return [null, dec()]
-      return r.str(r.varint())
-    }
-    const nS = r.varint(), newSchemas = []
-    for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
-    for (const s of newSchemas) {
-      const key = s.join(',')
-      if (!schemas.some(existing => existing.join(',') === key)) schemas.push(s)
-    }
-  }
-
-  // Read the Error-class sid→name map (audit-#9 P0-2 brand redesign — class
-  // identity lives in the schema id, not a decodable slot, so decodeThrown
-  // below needs this table to recover which ECMAScript class a decoded Error
-  // object's sid came from). Same merge discipline as `schemas` above: a sid
-  // already known (from a prior enhance of this memory) wins — first module's
-  // numbering is authoritative.
+  // Read the Error-class sid→name map FIRST (audit-#9 P0-2 brand redesign —
+  // class identity lives in the schema id, not a decodable slot, so
+  // decodeThrown below needs this table to recover which ECMAScript class a
+  // decoded Error object's sid came from). Same merge discipline as
+  // `schemas` below: a sid already known (from a prior enhance of this
+  // memory) wins — first module's numbering is authoritative. Read before
+  // jz:schema below because that merge now needs it (this module's own
+  // sid→className, keyed by the SAME positional index jz:schema uses).
   const errorSidToClass = mem.errorSidToClass || new Map()
   const errClsBytes = mod && customSection(mod, 'jz:errcls')
   if (errClsBytes) {
@@ -340,9 +320,58 @@ export const memory = (src) => {
     }
   }
 
+  // Read schemas from module custom section, merge into memory.schemas. Schema
+  // entries are { type, payload } where type=0 means null (computed/missing
+  // key), type=1 means nested [null, name] (synthetic shape), else a UTF-8
+  // length-prefixed property name. Section format is varint-prefixed list,
+  // POSITIONAL (entry index === compile-time schema id — compile/index.js's
+  // jz:schema writer comment).
+  //
+  // The dedup key MUST mirror ctx.schema.register's own compile-time key
+  // exactly (module/schema.js: `props.length + '\x01' + props.join('\x01')
+  // + (salt ? '\x02' + salt : '')`) — content alone is not a valid identity.
+  // All 7 built-in Error classes deliberately share props ['message','name']
+  // and are kept distinct at compile time only by their class-name salt; a
+  // content-only key (the previous form here) collapsed every Error class
+  // after the first into ONE merged index, shifting every later sid's
+  // position in `schemas` and corrupting that entry's decode — the LIVE
+  // sibling of the dead-schema collision compile/index.js's jz:schema writer
+  // already documents and fixes (its `[String(id)]` placeholder solves it
+  // only for DEAD entries, which carry no salt to lose). Minimal repro:
+  // `export let f = w => { if (w===0) throw new TypeError('a'); if (w===1)
+  // throw new RangeError('b'); throw Error('c') }` — TypeError decodes fine
+  // (first registered), RangeError/Error both lose their .message (decode to
+  // an EMPTY schema, `mem.schemas[sid] === []`, from the dedup collision).
+  //
+  // `mem._schemaKeyToId` persists the salted key → index mapping across
+  // enhances — `schemas[]` itself must stay a plain prop-name-array list
+  // (mem.read's OBJECT case indexes it directly by sid and reads prop names
+  // off it), so a key that was salt-qualified can't be recovered later by
+  // re-scanning `schemas` content alone; it has to be remembered separately.
+  let schemas = mem.schemas || []
+  const schemaKeyToId = mem._schemaKeyToId || new Map()
+  const schemaBytes = mod && customSection(mod, 'jz:schema')
+  if (schemaBytes) {
+    const r = sectionReader(schemaBytes)
+    const dec = () => {
+      const t = r.u8()
+      if (t === 0) return null
+      if (t === 1) return [null, dec()]
+      return r.str(r.varint())
+    }
+    const nS = r.varint(), newSchemas = []
+    for (let j = 0; j < nS; j++) { const k = r.varint(), props = []; for (let p = 0; p < k; p++) props.push(dec()); newSchemas.push(props) }
+    newSchemas.forEach((s, j) => {
+      const salt = errorSidToClass.get(j)
+      const key = s.length + '\x01' + s.join('\x01') + (salt ? '\x02' + salt : '')
+      if (!schemaKeyToId.has(key)) { schemaKeyToId.set(key, schemas.length); schemas.push(s) }
+    })
+  }
+
   // If already enhanced, just update bindings (new module compiled into same memory)
   if (_enhanced.has(mem)) {
     mem.schemas = schemas
+    mem._schemaKeyToId = schemaKeyToId
     mem.errorSidToClass = errorSidToClass
     if (wasmAlloc) { alloc = wasmAlloc; mem.alloc = alloc }
     mem.reset = jsReset   // post-init rewind — see the note at the first-enhance path
@@ -352,6 +381,7 @@ export const memory = (src) => {
 
   // Patch methods onto the Memory instance
   mem.schemas = schemas
+  mem._schemaKeyToId = schemaKeyToId
   mem.errorSidToClass = errorSidToClass
   mem._extMap = extMap
 

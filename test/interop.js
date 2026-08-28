@@ -207,6 +207,64 @@ test('interop: memory.allocTyped gives a live view + box for zero-copy input', (
   is(out2[2], out[2])
 })
 
+// decodeThrown / jz:schema (watr downstream CI, 2026-08): a thrown Error's
+// `.message` decodes through mem.read's generic OBJECT case, which indexes
+// `mem.schemas[sid]` positionally (compile/index.js's jz:schema writer:
+// "entry index === schema id"). The reader used to merge incoming entries
+// into `mem.schemas` by CONTENT alone (`props.join(',')`) — sound for
+// ordinary object schemas (content really does mean "same shape" there),
+// unsound for the 7 built-in Error classes, which module/schema.js
+// deliberately keeps as SEPARATE compile-time ids sharing the identical
+// physical prop list ['message','name'] (distinguished only by a `salt`
+// — the class name — folded into ctx.schema.register's dedup key, never
+// serialized into the jz:schema bytes themselves). Registering 2+ of the
+// 7 collapsed every one after the first into ONE runtime index, shifting
+// every later sid's position — so the SECOND (and later) Error class
+// registered in a program decoded its thrown `.message` as `undefined`
+// (mem.schemas[sid] resolves to some OTHER, unrelated, usually zero-field
+// schema). This is the live-schema sibling of the dead-schema collision
+// compile/index.js's jz:schema writer already names and fixes (its
+// `[String(id)]` placeholder covers only entries with no salt to lose).
+// Root cause: interop.js's read-side dedup key didn't mirror
+// ctx.schema.register's write-side key (which folds in `salt`) — fixed by
+// reading jz:errcls first and computing the identical salted key while
+// merging jz:schema.
+//
+// This exact shape was watr's own downstream CI failure ("case: error on
+// unknown instruction: should throw", compile.js's `err()` — a SECOND
+// built-in Error class had already been registered elsewhere in the
+// program by the time this one threw, e.g. `err()`'s own — the corruption
+// throws off every Error class after the first one used anywhere in the
+// module, not just at this call site).
+for (const optimize of [false, 2, 3]) {
+  const lbl = `O${optimize || 0}`
+  test(`interop: decodeThrown recovers .message for EVERY built-in Error class in one module, not just the first (${lbl})`, () => {
+    const { exports } = interop.instantiate(compile(`
+      export let f = (which) => {
+        if (which === 0) throw new TypeError('type problem')
+        if (which === 1) throw new RangeError('range problem')
+        if (which === 2) throw new SyntaxError('syntax problem')
+        throw Error('generic problem')
+      }
+    `, { optimize }))
+    const expect = [
+      ['TypeError', 'type problem'],
+      ['RangeError', 'range problem'],
+      ['SyntaxError', 'syntax problem'],
+      ['Error', 'generic problem'],
+    ]
+    expect.forEach(([name, message], which) => {
+      try {
+        exports.f(which)
+        ok(false, `${name}: should throw`)
+      } catch (e) {
+        is(e.constructor.name, name, `${name}: class`)
+        is(e.message, message, `${name}: message survives (not the empty-schema collision)`)
+      }
+    })
+  })
+}
+
 test('interop: allocTyped rejects an unsupported ctor', () => {
   const { memory } = interop.instantiate(compile('export let f = () => 1'))
   throws(() => memory.allocTyped(Array, 4))
