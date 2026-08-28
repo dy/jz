@@ -754,3 +754,112 @@ zero behavior change on the shipped path).
   expected number.
 - `JZ_TEST_TARGET=jz.wasm node test/index.js`: running in background at the point these notes
   were written; result to be appended once it completes.
+
+## emitIR's round — ISOLATED to `__stdlibMark` (2026-08-28, new session, worktree feat/region-emitir-round @ 21bcfc57)
+
+Continuing "emitIR's round — precise starting point for whoever continues this" above. Built
+ONE diagnostic kernel instead of bisecting via many rebuilds: `src/compile/index.js`'s six-plus
+nested mark/exit pairs (SCAN, AFE, emitFuncs's closeRound, `__buildMark`, `__stdlibMark`, the
+outermost `releaseSession` exit) PLUS `plan()`'s own regionHooks passthrough and
+`optimizeModule`'s regionHooks passthrough (both previously unexamined) were each gated behind
+one bit of a NEW runtime-readable bitmask (`ctx.transform._dbgRoundMask`, default `~0` when
+unset — every real call path, including every existing test, is behaviorally identical to
+before: `__rh(bit) = (regionHooks && (__M & bit)) ? regionHooks : null` always resolves to the
+original `regionHooks` when the mask is untouched). `scripts/self.js` gained one throwaway
+export, `__dbgCompile(mask, source, strict, optJSON, modulesJSON, host)`, which sets
+`ctx.transform._dbgRoundMask = mask` right after `setupSelf`'s reset (so it survives) and then
+runs the normal pipeline. `REGION_HOOKS_ACTIVE` flipped `true` for this build only. ONE
+`JZ_SELF_COMPILE_OPT=0` build (93s, 13,474,175 bytes) then supported EIGHT single-round-off
+probes per optimize level with NO rebuild between them — just different `mask` arguments to the
+same wasm export, via a small script
+(`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/diag-mask.mjs`).
+
+Bit map: 1=SCAN 2=AFE 4=emitFuncs 8=`__buildMark` 16=`__stdlibMark` 32=outermost
+`releaseSession` 64=`plan()`'s own rounds 128=`optimizeModule`'s round. 255=all on (matches
+production shape, since `REGION_HOOKS_ACTIVE=true` plus the unmodified front-fix and
+`optimizeTail` ternaries in self.js means every OTHER region boundary is live exactly as
+production would run it).
+
+**Result — clean and identical across all three tested optimize levels (0, 2, 3), using the
+REAL kernel-oracle/kernel-parity `sum` corpus source (`export let sum = (n) => { let s = 0; for
+(let i = 0; i < n; i++) s += i; return s }`, not the simplified `a+b` form the prior session's
+repro used):** mask=255 (all on) fails with the identical `Cannot read properties of undefined`
+/ `TypeError` signature at every opt level. Every single-bit-off probe ALSO still fails
+identically EXCEPT mask=239 (bit 16, `__stdlibMark`, off) — that one alone passes cleanly (valid
+wasm module, non-trivial byte length) at O0, O2, AND O3. This isolates the entire remaining
+emitIR-round bug to `__stdlibMark`'s root specifically (wrapping `pullStdlib(sec)` +
+`ensureThrowRuntime(sec)`, `src/compile/index.js` ~2944-2991) — SCAN, AFE, emitFuncs,
+`__buildMark`, the outermost exit, `plan()`'s own rounds, and `optimizeModule`'s round are all
+now RULED OUT as the (sole) cause for this repro: forcing any one of them off alone does not
+clear the crash, so none of them is independently sufficient to trigger it, and `__stdlibMark`
+being off is both necessary and sufficient to clear it for this repro.
+
+**Leading candidate, found by reading `resolveIncludes()` (`src/ctx.js:272`, called
+unconditionally as the first line of `pullStdlib`, `src/wat/assemble.js:825`) immediately after
+the isolation above — NOT YET EMPIRICALLY CONFIRMED as the specific trigger:**
+`ctx.core._autoDeps ??= new Map()` (`src/ctx.js:286`) lazily creates a Map DIRECTLY on `ctx.core`
+the first time `resolveIncludes()` runs. `__stdlibMark`'s root
+(`[lateSections, lateFacts, lateScope, lateTypes, lateSchema, ctx.transform, ctx.runtime,
+ctx.memory, ctx.core.includes, ctx.warnings]` + the DOLLAR/stdlibParseCache externs) roots only
+`ctx.core.includes` — never `ctx.core._autoDeps`, which isn't part of ANY previously-documented
+excluded-field inventory (`ctx.core.emit`/`.stdlib`/`.bridge`/`.abi` — this is a THIRD, previously
+un-flagged `ctx.core` hazard, structurally the same class as those but a plain memo Map, not a
+closure dict). If `ctx.core._autoDeps` is created for the FIRST time here (post-`__stdlibMark`
+mark), its own backing storage is ephemeral and unrooted exactly like front's original bug's
+`ctx.core.emit`/`.stdlib` writes. Not yet confirmed whether anything reads `ctx.core._autoDeps`
+again in a way that surfaces the corruption WITHIN one compile (as opposed to only across a warm
+`_clear`-reuse) — this is the next concrete thing to check: (a) grep every other
+`resolveIncludes()` call site (a second one exists inside `pullStdlib`'s `needsAlloc` branch,
+`src/wat/assemble.js` ~922, "Late-add of allocators... re-resolve") and confirm both are
+purely within-round (they are, both live inside the same `pullStdlib` call); (b) determine
+whether the Map itself (as opposed to entries it deposits into `ctx.core.includes`, which IS
+rooted and should relocate fine) is EVER read again after this round's exit within the SAME
+compile — if not, this specific field may be a real-but-inert latent hazard (matters for warm
+multi-compile reuse, not this single-compile repro) and the ACTUAL `sum` trigger is still
+elsewhere inside `pullStdlib`/`ensureThrowRuntime`/`declGlobal`. `ensureThrowRuntime` itself
+(`src/compile/index.js:260-276`) was read in full and looks safe on inspection (`ctx.runtime.throws`
+is a scalar; `declGlobal`'s writes land in `ctx.scope.globals`/`globalTypes`, both aliased
+into the round's `lateScope`; `sec.tags.push` mutates the array aliased into `lateSections.tags`)
+— NOT yet ruled out with full confidence (`declGlobal`'s own full body wasn't re-read this
+session), but `ctx.core._autoDeps` is the stronger lead: it is a wholly new allocation directly
+off the permanently-excluded `ctx.core` receiver, matching the exact shape of every other
+confirmed instance of this bug class in this investigation.
+
+**Instrumentation currently on this branch (throwaway, NOT a candidate fix, must be fully
+reverted before any battery run or merge)**: `scripts/self.js` — `REGION_HOOKS_ACTIVE` forced
+`true`, one new export `__dbgCompile`. `src/compile/index.js` — `__M`/`__rh` bitmask gate defined
+at the top of `compile()`, threaded through all 8 round-boundary call sites (`__rh(1)` through
+`__rh(128)`) in place of the bare `regionHooks` truthy-checks; `plan(ast, profiler, regionHooks)`
+call became `plan(ast, profiler, __rh(64))`; `optimizeModule`'s regionHooks-wrapper ternary
+condition became `__rh(128)`. Every `regionHooks.mark()`/`.exit(...)` CALL itself (as opposed to
+the guard condition) is untouched — only entry conditions changed — so with the mask unset or
+all-bits-set this is byte-for-byte the pre-existing control flow. Diagnostic kernel at
+`dist/jz.wasm` in this worktree (13,474,175 bytes, O0) is ALSO throwaway (built with
+`REGION_HOOKS_ACTIVE=true`, not the production default) — do not confuse it with a battery
+artifact. Probe script: `/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/diag-mask.mjs`.
+
+**Next steps**: (1) confirm or rule out `ctx.core._autoDeps` empirically — cheapest check is a
+targeted breadcrumb (throw reporting `ctx.core._autoDeps` identity/contents at a checkpoint
+right after `__stdlibMark`'s exit) OR simply try rooting it (add `ctx.core._autoDeps` — or reset
+it to `null` right before mark, forcing a pre-mark-safe recreation pattern like front's fix —
+see whether mask=255 starts passing) as a fast confirm/deny, reusing the SAME diagnostic kernel
+build if the fix can be expressed as a source change gated the same way, otherwise one more
+build. (2) Once the exact write is confirmed, fix by construction per the task's own menu:
+this looks like the "escape into a rooted sidecar, reconciled back" case is NOT needed here —
+`ctx.core._autoDeps` is pure memoization (a speed optimization, not a value the rest of the
+compile depends on for correctness: `resolveIncludes` degrades to recomputing `autoDepsOf`
+instead of hitting cache if the Map is simply reset/dropped), so the likely-simplest fix is
+resetting `ctx.core._autoDeps = null` (or omitting the cache entirely / forcing recompute) at
+each region mark that precedes a `resolveIncludes()` call, OR moving its creation to session
+setup (`reset()`/`beginSession`, pre-mark, alongside the other `ctx.core.*` container
+initialization) so the Map object itself is always durable and only ever grows via `.set()` on an
+already-rooted-by-construction-exempt (like `ctx.core.emit`/`.stdlib`) container — mirroring the
+established doctrine that `ctx.core`'s OWN containers are fine to mutate in place across a round
+as long as the CONTAINER itself was allocated pre-mark; only a container ALLOCATED mid-round
+onto a durable receiver is the hazard. (3) Re-run this same bitmask kernel (or a fresh one with
+the fix applied and instrumentation reverted) through the full battery: `node
+test/kernel-oracle.js` (target 14/14), `node test/kernel-parity.js` (target 33/33),
+`JZ_TEST_TARGET=jz.wasm node test/index.js` (target 0 fail) — with mask unset / all rounds
+genuinely active (not via the diagnostic export). (4) Revert ALL of this session's throwaway
+scaffolding (`__M`/`__rh`, `__dbgCompile`, `REGION_HOOKS_ACTIVE` back to `false` for the
+dormant-default battery legs) before landing anything, keeping only the real fix.
