@@ -60,9 +60,6 @@ const invokeClosure1Fn = (exported) => `(func $__invoke_closure1${exported ? ' (
       (i64.const ${LAYOUT.AUX_MASK})))))`
 
 const setupWasi = (ctx) => {
-  // Always include init + tick + loop when timer module loads (structural, not per-emitter)
-  inc('__timer_init', '__timer_tick', '__timer_loop')
-
   deps({
     __timer_init: ['__alloc'],
     __timer_add: ['__time_ns'],
@@ -72,12 +69,36 @@ const setupWasi = (ctx) => {
     __timer_loop: ['__time_ns', '__timer_dispatch'],
   })
 
-  // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
-  // call_indirect always matches the $ftN type (env, argc, a0..a7)
-  ctx.closure.floor = MAX_CLOSURE_ARITY
-
-  hostImport('wasi_snapshot_preview1', 'clock_time_get',
-    ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
+  // Demand-driven WASI timer runtime bring-up — was unconditional here (module
+  // init time), forcing __timer_init/__timer_tick/__timer_loop into every wasi
+  // compile's output (inc() marks them REACHABLE regardless of use — not
+  // reachability-pruned the way a plain unreferenced stdlib registration is),
+  // the clock_time_get host import onto every wasi compile's import list, and
+  // the 3 timer-state globals onto every wasi compile's global section — ALL
+  // regardless of whether the source ever calls a timer builtin. Harmless when
+  // the timer module only ever loads in response to real timer usage (native,
+  // lazy loading), but a genuine output divergence once the module can load
+  // for an unrelated reason (region-arena's front-round eager preload,
+  // opts._eagerStdlib): byte-identity probe caught a non-throwing try/catch
+  // program (test/statements.js) that touches no timer/IO gaining a spurious
+  // env.clock_time_get import under wasi host. Idempotent on the
+  // __timer_queue global (same guard idiom as this file's sibling
+  // declGlobal-if-absent sites elsewhere in the tree) — called from every
+  // timer emit handler below, exactly the needSetTimeout/needClearTimeout/
+  // needRaf/needCancelRaf pattern setupJsHost (this file's OWN sibling
+  // function) already used correctly for its own host-import calls.
+  const ensureWasiTimerRuntime = () => {
+    if (ctx.scope.globals.has('__timer_queue')) return
+    inc('__timer_init', '__timer_tick', '__timer_loop')
+    // Force closure ABI width to MAX_CLOSURE_ARITY so __timer_dispatch's
+    // call_indirect always matches the $ftN type (env, argc, a0..a7)
+    ctx.closure.floor = MAX_CLOSURE_ARITY
+    hostImport('wasi_snapshot_preview1', 'clock_time_get',
+      ['func', '$__clock_time_get', ['param', 'i32'], ['param', 'i64'], ['param', 'i32'], ['result', 'i32']])
+    declGlobal('__timer_queue', 'i32')
+    declGlobal('__timer_next_id', 'i32')
+    declGlobal('__timer_count', 'i32')
+  }
 
   // __time_ns() → i64 — current monotonic nanoseconds
   // Reuses address 0-7 for the i64 output (same as __time_ms in console.js)
@@ -239,16 +260,9 @@ const setupWasi = (ctx) => {
 
   ctx.core.stdlib['__invoke_closure'] = invokeClosureFn(false)
 
-  // Register globals for timer state
-  // $__timer_queue: i32 — base address of timer array
-  // $__timer_next_id: i32 — next timer ID
-  // $__timer_count: i32 — number of active timers
-  declGlobal('__timer_queue', 'i32')
-  declGlobal('__timer_next_id', 'i32')
-  declGlobal('__timer_count', 'i32')
-
   // Emitter: setTimeout(closure, delay) → timer_id
   ctx.core.emit['setTimeout'] = (closureExpr, delayExpr) => {
+    ensureWasiTimerRuntime()
     inc('__timer_add')
     const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
@@ -258,6 +272,7 @@ const setupWasi = (ctx) => {
 
   // Emitter: setInterval(closure, delay) → timer_id
   ctx.core.emit['setInterval'] = (closureExpr, delayExpr) => {
+    ensureWasiTimerRuntime()
     inc('__timer_add')
     const t = tempI64('tc')
     return typed(['block', ['result', 'f64'],
@@ -267,12 +282,14 @@ const setupWasi = (ctx) => {
 
   // Emitter: clearTimeout(id) → undefined
   ctx.core.emit['clearTimeout'] = (idExpr) => {
+    ensureWasiTimerRuntime()
     inc('__timer_cancel')
     return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
   }
 
   // Emitter: clearInterval(id) → undefined
   ctx.core.emit['clearInterval'] = (idExpr) => {
+    ensureWasiTimerRuntime()
     inc('__timer_cancel')
     return typed(['call', '$__timer_cancel', asF64(emit(idExpr))], 'f64')
   }
