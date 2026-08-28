@@ -1000,16 +1000,97 @@ domain, confirmed via the real build's own float-literal crash).
 Commits this session: 038d523b (kind.js valTypeOf fix + widening
 removals), 45ea3581 (plannedOf/semanticOf upgrade).
 
-### Battery status (in progress)
+### Battery status
 
 - Task repro (i64.parse+leb, O0/O2/O3): 7n, correct.
 - Residual 1 (hex-sep magnitude 3078696982321561, O0/O2/O3): 24052320174387n, correct.
 - Bare-name sibling control: unaffected, correct.
 - Direct-return variant (documented pre-existing gap): unaffected.
 - watr downstream: 604/626, 0 fail (see above) — TARGET MET.
-- `node test/index.js` (native full suite): running in background this
-  round, result pending — will append once available.
-- kernel build / kernel-parity / kernel-oracle / bench-size: not yet run
-  this round — next steps.
-- Residual 2 (self-host `parseInt(1e-7)` OOB, kernel-parity byte-diff
-  method): not yet started this round.
+- `node test/index.js` (native full suite): **3725 total / 3724 pass / 0
+  fail / 1 skip (21670 assertions)** — same pre-existing skip count this
+  whole campaign has consistently reported. Clean.
+- `test/data.js` alone (incl. the two new pins): 171/171 (935 assertions).
+- `npm run build` (kernel build): clean, `dist/jz.wasm` 17530.1 kB.
+- `node test/kernel-parity.js`: **3/3 (33/33 byte-identical O0/O2/O3)**.
+- `node test/kernel-oracle.js`: **14/14 (605 assertions)**.
+- `node scripts/bench-size.mjs --json`: exit 0, every corpus case produced
+  a sane SIZE line (no crash/error) — same shape as the last several
+  sessions' own "size/correctness gates pass" confirmation.
+
+### Residual 2 — RESOLVED (not by a targeted fix; a side effect of removing
+### the per-site re-derivation machinery entirely)
+
+Per the task brief's own suspicion list (polymorphic-receiver param
+`emitTypeTag` hardcoding, HASH-record misdispatch, a trusted `val` fact
+possibleKinds prove polymorphic, box-tag-shaped i64 constants), first
+tried the byte-diff method directly: `compile(src, {wat:true, optimize:
+opt})` vs `compileViaKernel(src, {wat:true, optimize: opt})` for `export
+let f = () => parseInt(1e-7)` at O0/O2/O3 — **byte-identical at every
+level**, no divergence in the WAT text at all (scratchpad/residual2-
+diff.mjs). Since a WAT-identity match implies the actual wasm bytes are
+identical too (watr's encode step is a pure function of the same IR), this
+ruled out "the kernel MISCOMPILES this source" as the mechanism.
+
+Reproduced the REAL crash shape instead (compile AND instantiate AND
+CALL, via `_setCompileTarget(compileViaKernel)` + `run()` — session 1's
+own corrected methodology, scratchpad/residual2-repro.mjs): **no crash,
+`f() === 1`, correct** — with THIS session's current source tree. Ran the
+exact scoped TST_GREP session 1 used to isolate all 20 originally-failing
+kernel-target suites (`carrier: |compound-assign on BigInt|
+RepresentationPlan: covered reassigned|RepresentationPlan: Map storage|
+RepresentationPlan: array mutators|RepresentationPlan: JSON.stringify|
+storage-read box-pointer-bits|param uses RepresentationPlan provenance|
+parseInt whitespace`) under `JZ_TEST_TARGET=jz.wasm`: **53/53 assertions,
+0 fail** — the EXACT SAME count session 1's own baseline (pre-shape8/9)
+confirmation reported. All 20 are fixed.
+
+**Why, without a targeted fix**: session 1's own root-cause trail for
+residual 2 traced it to the RE-DERIVATION MACHINERY itself, not to any
+wrong verdict it produced — `calleeProvenBigintResult`/
+`calleeSourceProvenBigint` (representation-plan.js's per-site
+`edgeMaterializable` widening) and `memberCalleeResultProvenBigint`
+(ir.js's `applyBigintRepresentationAction` widening, session 2's WIP)
+each independently re-resolved a callee via `calleeNameOf`/
+`resolveMemberCallee`/`resolveMember` at THEIR OWN call site, self-hosted
+— session 1's own probe found the crash fired even when the resolution
+never reached a verdict, i.e. merely BEING CALLED, self-hosted, was
+hazardous. This session's fix removed BOTH of those re-derivation call
+sites entirely (see "Per-site widenings: removed two, kept two" above) —
+`valTypeOf` itself now resolves a `.`-member callee via ONE direct
+`ctx.types.callTargets?.resolveMember(...)` call, embedded in kind.js's
+existing VT['()'] dispatch, with no separate helper chain re-invoked at
+each of the (formerly) 2 widened consumer sites. Whatever the self-host-
+specific hazard in the OLD re-derivation chain was (never fully
+root-caused in session 1 despite extensive bisection), it doesn't exist
+in the new, structurally simpler call path. Not a guess: verified
+directly against the EXACT 20-suite scope that was failing, byte-for-byte
+assertion count match against the known-good baseline.
+
+## FINAL DISPOSITION (session 3)
+
+Mergeable. Every battery item green: native suite (3725/3724/0/1), watr
+downstream (604/626, 0 fail — task's own explicit target), kernel build,
+kernel-parity (3/3, 33/33 byte-identical), kernel-oracle (14/14),
+kernel-target full suite — BOTH the exact 20-suite scope (53/53, 0 fail)
+AND the COMPLETE unscoped run (`JZ_TEST_TARGET=jz.wasm node test/index.js`):
+**2976 total / 2975 pass / 0 fail / 1 skip (14291 assertions)** — bench-size
+(exit 0). Branch net diff vs 21bcfc57 baseline (`git
+diff 21bcfc57 --stat -- src`): representation-plan.js 128 changed lines
+(107 insertions/21 deletions — down from dadce8ce's peak of 129
+insertions/24 deletions despite ADDING the plannedOf/semanticOf upgrade,
+because removing calleeSourceProvenBigint's own long comment block more
+than paid for it), ir.js 12 lines (all a documentation-only comment
+explaining why NO widening is needed here — the CODE itself,
+`valTypeOf(node) !== VAL.BIGINT`, is byte-identical to baseline), kind.js
++30 (the one new authority). Net: smaller and simpler than every prior
+per-site-widening attempt on this branch, matching the task's own "should
+get SMALLER, not bigger" framing. Two new test/data.js pins added
+(residual-1 magnitude, ternary-arm/bitwise). Did NOT chase the isolated
+reduction's own third-layer residual (self-referential compound-assign
+NUMBER-poisoning fixpoint imprecision, documented above) further since
+it does not reach the real product-level watr build and is a genuinely
+separate, foundational, pre-existing fixpoint-precision question — worth
+a future session's own jz-only pin and fix, not blocking here.
+
+Commits this session: 038d523b, 45ea3581, 1814b0fd.
