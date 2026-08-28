@@ -534,51 +534,9 @@ export const hasImpureCall = (node) => {
   return found
 }
 
-// ---- Recognize a (block (loop)) pair --------------------------------------
-
-/**
- * Match the canonical vectorizable loop SCAFFOLD shared by every inner-loop
- * recognizer:
- *   (block $blk [preamble…]
- *     (loop $loop
- *       (br_if $blk (i32.eqz (i32.lt_{s,u} $i BOUND)))   ; exit guard
- *       BODY…
- *       (local.set $i (i32.add $i 1))                     ; bottom increment
- *       (br $loop)))
- *
- * Returns the structural FACTS only — no policy — or null when the shape
- * doesn't match:
- *   { blockNode, blockLabel, loopNode, loopLabel, endIdx, incIdx, incVar,
- *     exitInfo, bound, boundLocal, body, preamble }
- *   - `blockNode` is the original block, embedded verbatim as the scalar tail by
- *     each lifter's wrapper (the never-miscompile remainder loop).
- *   - `body`       = loopNode.slice(3, incIdx) (between exit guard and increment)
- *   - `bound`      = the raw BOUND expr; `boundLocal` = its local name when it is
- *     `(local.get $L)`, else null. Bound shape is NOT rejected here — callers that
- *     require a local-or-const bound check it themselves (tryStrengthReduceIV is
- *     bound-shape-agnostic, so baking a rejection in would change its behavior).
- *
- * `opts.allowPreamble` (default false): when true, LICM-hoisted invariant
- *   `(local.set $__li* EXPR)` statements BEFORE the loop are collected into
- *   `preamble` (pure & loop-invariant by construction — safe to clone/re-run);
- *   a non-`$__li` preamble, an impure value, or any array content AFTER the loop
- *   bails. When false, ANY non-loop array content in the block bails.
- *
- * Three opt-ins below cover recognizers whose acceptance genuinely differs — see each for
- * its exact contract: `opts.multiInc` (tryRampMap), `opts.envelope: 'loose'`
- * (tryBlurMultiPixel/tryChannelReduce), `opts.envelope: 'pixelIV'` (matchOuterPixelLoop).
- */
-// A transparent block — no label (first child isn't a `$label` string) and no result — is
-// pure statement grouping: wasm locals are function-scoped, and an unlabeled resultless block
-// is neither a branch target nor a value producer, so it can ONLY appear in statement position
-// (a resultless block in value position is a type error). jz emits one per source statement
-// group; watr's mergeBlocks/vacuum flattens them post-hoc. The vectorizer is jz LOWERING
-// (pre-watr), so it normalizes them itself IN PLACE — splicing each transparent block's
-// children into its parent's statement list — so every recognizer (scaffold-consuming AND
-// raw-node) reads the flat statement lists they were tuned against. Post-order: children are
-// already flat when a block is spliced up. A labeled block (branch target) or result-carrying
-// block (value producer) is kept — including the `(block $brk (loop …))` SIMD scaffold itself.
-
+// Scalar locals that are ALWAYS computed as `(i32.add base (i32.shl ind K))`
+// or aliased to such an address are "address tees", not lane data. They stay
+// scalar i32 in the lifted body.
 export function _isAddressLocal(body, name, ind) {
   let onlyAsAddrTee = true
   let foundTee = false
@@ -608,10 +566,3 @@ export function _isPixelIndexLocal(body, name, ind) {
   for (const s of body) walkAst(s, { enter: inspect })
   return found && ok
 }
-
-// ---- Lifter ----------------------------------------------------------------
-
-// Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
-// string — NOT a `{laneName}` object — because a schema-object read back through the Map in a
-// DIFFERENT function returns undefined under self-compile. Takes `newLanedLocals` directly
-// (not ctx) so callers don't need to pass the full ctx object to a helper at call-depth 2.

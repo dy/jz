@@ -6,6 +6,37 @@ import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_
 import { liftExprV, liftFail, vecState } from './lift.js'
 import { isArr } from './node-utils.js'
 
+// ---- Reduction recognizer -------------------------------------------------
+//
+// Matches inner loops of shape:
+//     for (let i = 0; i < N; i++) S = OP(S, EXPR(arr[i], ...))
+// where OP is associative+commutative (REDUCE_OPS table) and EXPR is lane-
+// pure (operates on the loaded element with at most loop-invariant data).
+// S is a SCALAR loop-carried accumulator — exempt from the lane-local
+// "first access must be a write" check.
+//
+// Lift:
+//   acc = splat(IDENTITY)
+//   for (i = 0; i < bound & ~(L-1); i += L) acc = OP_v(acc, lifted EXPR)
+//   S = OP(S, horizontal_reduce(acc))
+//   <original scalar tail handles the remainder>
+//
+// Float adds are not strictly associative — vectorized reduction differs
+// from scalar reduction by ulps. Acceptable when bit-exact equality is not
+// required (which it isn't, by spec, in JS engines either).
+//
+// REDUCTION unification (.work/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
+// general recognizer"): this is the reassociating (tree-reduce + horizontal-sum) fold-order
+// tier of the ONE reduction transform — a single scalar accumulator, `S = OP(S, EXPR(arr[i]))`.
+// `tryReduceBitExact` below is the other fold-order tier (scalar-order-preserving f64x2
+// pairing, multi-accumulator). `tryReduce`, at the bottom of this section, is the shared
+// dispatch entry: try this (reassociating) shape first — exactly today's `tryReduceVectorize
+// ?? tryMapReduceVectorize` order — falling to the bit-exact shape only when this one bails.
+// The two shapes' preconditions are structurally disjoint (single vs. multi accumulator,
+// one-or-two-statement canonical body vs. arbitrary straight-line multi-statement body) enough
+// that unifying their MATCH bodies (not just their dispatch slot) would risk a behavior change
+// under the byte-identical gate; kept as two internal matchers behind one recognizer entry,
+// selected by which fold order (`bitExact`) actually fires — see `tryReduce`.
 function tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc = false) {
   // Same scaffold as tryVectorize, but no preamble: a reduction block is just the loop.
   if (!bl || bl.preamble.length) return null
@@ -512,10 +543,49 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   return tryReduceReassoc(bl, fnLocals, freshIdRef, multiAcc) ?? tryReduceBitExact(bl, fnLocals, freshIdRef)
 }
 
-// Scalar locals that are ALWAYS computed as `(i32.add base (i32.shl ind K))`
-// or aliased to such an address are "address tees", not lane data. They stay
-// scalar i32 in the lifted body.
-
+// ---- General base-layer REDUCTION recognizer (dispatch-chain terminal) ----------------
+//
+// Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
+// literal post-lowering WAT-pattern list — to an AST-level affine-in-IV proof, the SAME lever
+// `tryGeneralMap` already applied to the MAP class (design §2/§3 step 3, REDUCTION slice —
+// .work/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
+// `tryGeneralMap`'s own (itself ported from `tryStencil`) — not a literal import, matching
+// `tryGeneralMap`'s own "port, don't share" precedent so `tryReduceReassoc`'s already-gated
+// corpus behavior stays byte-for-byte untouched. One difference from `tryGeneralMap`'s copy:
+// `matchAddr` takes the lane stride as an explicit parameter instead of inferring it from the
+// first load site — a reduction's accumulator (and its associative op) already fixes the lane
+// type before any load is scanned, so there is nothing to infer.
+//
+// Preconditions (design brief): single scalar accumulator, ONE recognized associative-
+// commutative op (`REDUCE_OP_LOOKUP`: i32/i64 add·mul·xor·and·or, f32/f64 add·mul — the SAME
+// table `tryReduce` itself gates on, so no new op is accepted, only a broader ADDRESS proof) —
+// or the int/float min-max canon shapes `tryReduceReassoc` already recognizes
+// (`matchIntMinMaxReduce`/`REDUCE_CANON`, reused verbatim, no new codegen). Body restricted to
+// exactly ONE statement (bare op / int-minmax) or TWO (the NaN-canon float-minmax temp+select
+// pair) — this alone proves "no other loop-carried state": a second independent write would be
+// a third body statement, which this recognizer declines. Loads must be affine-in-IV at
+// coefficient 1 (`ivCoeff`); `scanExpr` forbids stores, intermediates (`local.set`/`.tee`), and
+// any re-reference of the accumulator inside EXPR — the identical contract `tryReduceReassoc`
+// already enforces. Bound must be loop-invariant (`boundLocal` or an `i32.const`) — same
+// convention every recognizer in this file uses.
+//
+// Deliberately OUT of scope (stays `tryReduce`'s territory — its address proof already succeeds
+// there whenever it applies; this pass only widens the ADDRESS proof, never adds new numeric
+// behavior): the narrow-widening sum/min-max variants (`widen`/`accI32`/`accF64`), the
+// conditional-store→select-assign rewrite, the CSE-collapsed 2-statement body, and the
+// un-flattened `block`-wrapped NaN-canon. Also out of scope: `tryReduceBitExact`'s multi-
+// accumulator bit-exact tier — it has no single canonical "one accumulator, one op" shape to
+// generalize (inherently multi-accumulator by construction), so REDUCTION's `bitExact` policy
+// knob (design §2) is unaffected by this recognizer either way.
+//
+// Codegen from "Synthesize SIMD prefix…" on is byte-identical to `tryReduceReassoc`'s own
+// horizontal-fold synth (copied, not refactored-shared — see the port-not-share note above),
+// with `widen`/`sawWidenF32` fixed at their "off" values since this recognizer never produces
+// those shapes (the accType gate below enforces it). Fold-order/bitExact convention: reassociates
+// exactly where `tryReduceReassoc` already reassociates (float add/mul — ULP-level reorder,
+// documented at `REDUCE_OPS`'s own header), value-exact everywhere `tryReduceReassoc` already is
+// (int add/mul/xor/and/or, min/max) — no new numeric divergence, same fold order, just reached
+// from a broader address proof.
 export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   if (!bl || bl.preamble.length) return null
   const { incVar, bound, boundLocal, body, writes } = bl
@@ -768,14 +838,3 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
   ]
   return { wrapper, newLocalDecls }
 }
-
-// ---- HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) ---------
-//
-// JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
-// against; `loopPlanLink` (ir.js) maps it back to the HIR facts proved about this loop at
-// emission time (emit.js's `'for'` handler, the sole writer), keyed by node IDENTITY, as a
-// `{ plan, lowering }` pair — `plan` the frozen HIR-side facts, `lowering` the mutable WAT-side
-// name map (see ir.js's doc). A miss is the expected outcome once ANY rewrite has replaced the
-// block array between emission and here (pre-trio spec 2: fail-open) — proves nothing, asserts
-// nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
-// and must name the same induction variable / the same constant bound where both resolve one.

@@ -3,6 +3,36 @@ import { constNum, hasImpureCall, isI32Const, isLocalGet } from './addr-model.js
 import { isArr } from './node-utils.js'
 import { matchBlockLoop } from './scaffold.js'
 
+/**
+ * Divergent escape-time vectorizer — 2-wide f64x2, bit-exact with scalar f64.
+ *
+ * Recognizes the fractal escape-time nest (mandelbrot / julia / burning-ship / …):
+ *
+ *   for (qx = 0; qx < W; qx++) {              // outer pixel loop; ≥1 i32 pixel IVs
+ *     cx = <expr in qx>                       // per-pixel coordinate(s)
+ *     x = 0; y = 0; it = 0                     // loop-carried f64 + i32 counter
+ *     while (it < MAXIT) {                     // inner escape loop (it-limited)
+ *       <f64 updates to x,y (+ temps); one `if (|z|² > T) break`, ANY position>
+ *       it++
+ *     }
+ *     <epilogue: store(it)  OR  smooth-colour(x,y,it) → store>
+ *   }
+ *
+ * Two adjacent pixels run in f64x2 lockstep with a per-lane active mask. A lane is
+ * frozen (v128.bitselect) the instant it would escape or reach MAXIT, so its
+ * it/x/y stay bit-identical to the scalar loop — f64x2 add/sub/mul/abs are IEEE-
+ * identical to scalar f64 (no FMA fusion). The body is emitted statement-by-
+ * statement in source order, so the escape mask lands exactly where the scalar
+ * `break` is (before OR after the z-update), and the per-lane state freezes at the
+ * matching point. iter is kept as f64x2 (an i32 `it` is exact in f64), so the
+ * limit compare and the (possibly fractional) colour math both stay bitwise-exact.
+ *
+ * Loop-carried vars (first body access is a READ) freeze via bitselect; within-
+ * iteration temps (first access a WRITE — inlined squares, `xt`) recompute raw.
+ * The colour epilogue runs scalar, twice — once per lane — reading each lane's
+ * extracted x/y/it, with the pixel IVs advanced by +0/+1. Odd widths and extra
+ * lanes fall through to the original scalar pixel loop (the exact tail).
+ */
 export const CMP_NEG = {  // comparison → its logical negation (active lanes are finite → NaN-free)
   'f64.gt': 'f64.le', 'f64.ge': 'f64.lt', 'f64.lt': 'f64.ge', 'f64.le': 'f64.gt', 'f64.eq': 'f64.ne', 'f64.ne': 'f64.eq',
   'i32.lt_s': 'i32.ge_s', 'i32.ge_s': 'i32.lt_s', 'i32.gt_s': 'i32.le_s', 'i32.le_s': 'i32.gt_s',

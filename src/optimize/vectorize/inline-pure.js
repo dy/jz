@@ -3,6 +3,18 @@ import { walkAst } from '../../ast.js'
 import { isArr } from './node-utils.js'
 import { writesName } from './outer-scaffold.js'
 
+// Inline a PURE user function call `(call $f ARG…)` into a single scalar value-BLOCK, feeding
+// the result back through liftExprV so the callee's ternaries/compares/transcendentals lift via
+// the SAME machinery (no separate restricted inliner). Bails (null) on any non-value statement
+// (store/loop/impure) — only straight-line pure helpers (spow, a signed-power, …) inline.
+//
+// Every argument AND every callee local is bound ONCE to a fresh block-local; param/local reads
+// substitute to `(local.get bind)`. This is critical for NESTED calls (spow whose ratio arg is
+// used 3× and itself nests spow): naive expr substitution would duplicate each arg per use and
+// blow up exponentially (there is no CSE pass after the 'post' vectorizer). Binding keeps the
+// SIMD body the same size as the scalar call graph.
+// Infer the wasm type of a value node — from its `.type` expando (jz stamps every instruction) or
+// the op prefix (`f64.add`→f64, `i32.mul`→i32, v128 ops→v128). Used to declare inline temps.
 function nodeWasmType(n) {
   if (isArr(n)) {
     if (typeof n.type === 'string') return n.type
@@ -182,10 +194,3 @@ export function inlinePureFnsInFn(fn, pureFuncMap, freshIdRef, canInline) {
   for (let i = bodyStart; i < fn.length; i++) fn[i] = walk(fn[i])
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
-
-// Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
-//   v128.bitselect(splat(C), coreV, laneNe(coreV, coreV))
-// coreV is referenced three times. When it's a bare local.get (the common
-// flattened form, where the core was already hoisted to a temp) we share it
-// directly — matching the scalar select, which likewise reads the temp thrice.
-// Otherwise we materialize a fresh v128 temp so the core evaluates once.

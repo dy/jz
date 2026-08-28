@@ -267,6 +267,12 @@ export const LANE_COMPARE = {
 // ---- Recognizer ------------------------------------------------------------
 
 
+// Math.sin/cos lower to `call $math.{sin,cos}_core` (the emit-time fast path, math.js:67); the
+// public `$math.{sin,cos}` wrap the same core. Their f64x2 mirrors $math.sin2/$math.cos2 (the
+// vectorized reduce+horner, module/math.js:543) are BIT-EXACT per lane to the scalar core — so we
+// can lift the call straight to the *2 helper. Phase-2 adds pow/log/atan2 here (see PPC_CALL2).
+// NOTE: scalar targets here must be kept out of watr's single-caller inlining — jz passes these
+// keys (SIMD_PINNED, below) as watOptimize's `pin` list, else the call node is gone before this lift runs.
 export const PPC_CALL2 = {
   '$math.sin_core': '$math.sin2', '$math.cos_core': '$math.cos2',
   '$math.sin': '$math.sin2', '$math.cos': '$math.cos2',
@@ -286,15 +292,3 @@ export const PPC_CALL2 = {
 // `$math.cbrt_v` (inlining the small per-lane repack mirror would erase the vectorized call the
 // lift produced). The protection policy lives here in jz, not hardcoded in watr.
 export const SIMD_PINNED = [...new Set([...Object.keys(PPC_CALL2), ...Object.values(PPC_CALL2)])]
-
-// Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
-// escape loop: an outer pixel loop whose body computes an f64 value from the pixel index (via
-// cos/sin/sqrt/…), packs it to a u32 colour, and stores it — every pixel independent. We lift the
-// liftable f64 PREFIX of the body to f64x2 (two adjacent pixels per lane: the index becomes the
-// ramp [x, x+1]; transcendentals map to the bit-exact $math.*2 helpers; conditionals to bitselect),
-// then run the SCALAR pack+store once per lane (extract_lane → the original f64 local → the
-// untouched integer pack). The expensive transcendentals run 2-wide; the cheap pack stays scalar.
-// Bit-exact by construction: f64x2 arithmetic is per-lane IEEE-identical and extract_lane is exact.
-// A call we can't yet vectorize (pow in Phase 1) just ends the SIMD prefix — its lane local and the
-// rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
-// loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).

@@ -7,6 +7,12 @@ import { inlinePureCallExpr } from './inline-pure.js'
 import { F64_TO_F32X4, INT_WIDEN_F32, LANE_COMPARE, LANE_INFO, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
+// Wrap an already-lifted v128 value `coreV` in per-lane NaN canonicalization:
+//   v128.bitselect(splat(C), coreV, laneNe(coreV, coreV))
+// coreV is referenced three times. When it's a bare local.get (the common
+// flattened form, where the core was already hoisted to a temp) we share it
+// directly — matching the scalar select, which likewise reads the temp thrice.
+// Otherwise we materialize a fresh v128 temp so the core evaluates once.
 function liftCanon(coreV, C, ctx, info) {
   const laneNe = ctx.laneType === 'f32' ? 'f32x4.ne' : 'f64x2.ne'
   // The f32-via-f64 canon carries an f64 NaN const — splat it as f32 (demote is
@@ -710,13 +716,19 @@ export function liftExprV(expr, ctx) {
   return liftFail(ctx, `${op}: no lane-pure SIMD mapping for ${ctx.laneType}`)
 }
 
-// ---- Induction-variable strength reduction --------------------------------
-
-// Match `(i32.add (local.get $base) (i32.shl (local.get $ind) (i32.const K)))` in either
-// operand order, or `(i32.add (local.get $base) (local.get $ind))` (K=0). Returns
-// {base, k} — the address of element $ind in array $base, byte stride 1<<k — or null.
-// Thin wrapper over matchLaneAddr (tee/CSE/AoS-free); both operand orders + bare-local base are this fn's own residual.
-
+// Build the store for a ramp-map iteration: i32x4 `vval` → element width of
+// `storeOp` at scalar address `addr`. i32.store is the full vector; i32.store8
+// truncates (low byte of each lane) via i8x16.shuffle — exactly matching scalar
+// store8, with no value-range assumption (shuffle selects, never saturates).
+// Narrowing-map store: pack a wider float lane vector `val` down to a narrower
+// store element and write the low bytes (extract_lane 0 + scalar store, like
+// buildRampStore). f64→f32 demotes (bit-exact vs scalar); f64→i32 truncates;
+// f32→i16/i8 truncate to i32x4 then WRAP via i8x16.shuffle (low bytes = scalar
+// store{8,16}, never saturates). Returns the store stmt or null (unsupported).
+// Peel the scalar narrowing conversion off a store value, returning the inner float
+// expr to lift (narrowStore then applies the SIMD narrow). f32 store: f32.demote_f64(X).
+// int store: toI32's guarded select, wrapIntIR's ToIntN select (module/typedarray.js),
+// or a bare trunc_sat. The inner X is the f64/f32 lane value computed before the cast.
 export function peelNarrowConv(val, sty) {
   if (!isArr(val)) return null
   if (sty === 'f32') return val[0] === 'f32.demote_f64' ? val[1] : null

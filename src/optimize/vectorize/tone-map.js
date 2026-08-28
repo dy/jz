@@ -4,6 +4,28 @@ import { LANE_COMPARE, LANE_PURE, LOAD_OPS, PPC_CALL2, STORE_OPS } from './lane-
 import { liftFail } from './lift.js'
 import { isArr } from './node-utils.js'
 
+// ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
+//
+// Vectorizes the log-tonemap TAIL shared by fern / bifurcation / attractors:
+//   while (i<n){ let v=dens[i]; if(v>0){ g = trunc(min(log(v+1)*S, 255)) }
+//                px[i] = (255<<24)|(g<<16)|(g<<8)|g }
+// A flat 1-D loop that loads an i32 density, lifts it to f64 for a log, truncates
+// back to i32, packs an ARGB word, and stores it — i32 lanes wrapping an f64 ISLAND.
+// The single-lane-type lift can't carry an f64 intermediate inside an i32 store
+// (tryVectorize bails on `f64.mul: no lane-pure SIMD mapping for i32`), so this is a
+// dedicated 2-wide (f64x2) hybrid: load 2 u32 (`v128.load64_zero` → i32x4 low lanes),
+// `f64x2.convert_low_i32x4_s` into the island, `$math.log_v` + f64x2 arith + clamp,
+// `i32x4.trunc_sat_f64x2_s_zero` back out, the i32 pack, then a masked
+// `i64.store` of `i64x2.extract_lane 0` (the low 2 lanes = 2 pixels). 2 pixels/iter.
+//
+// BIT-EXACT by construction: each lane runs the scalar op (log_v is the per-lane
+// extract/repack mirror; the clamp keeps L finite & in [0,255] so `trunc_sat == |0`,
+// the ±Inf canon is a no-op and is dropped; the pack is element-wise). The conditional
+// masks are emitted in the SAME lane width as the data they select (`v>0` is i32 and
+// gates i32 stores/values; the `L>255` clamp is f64 and gates f64) — a width mismatch
+// bails. No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
+// trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
+// proven across the corpus, then promoted like the stencil/outer-strip wins.
 const _toneStripTee = (n) => isArr(n) && n[0] === 'local.tee' && n.length === 3 ? n[2] : n
 
 // `(i32.wrap_i64 (i64.trunc_sat_f64_{s,u} X))` or `(i32.trunc_sat_f64_{s,u} X)` — the
@@ -381,25 +403,3 @@ export function tryToneMap(bl, fnLocals, freshIdRef, enabled) {
   ]
   return { wrapper, newLocalDecls }
 }
-
-// ---- Radix-2 butterfly 2-wide lift (tryButterfly) ----
-//
-// The Cooley-Tukey inner loop — the one shape the generic lane lift can never take:
-// a DUAL-IV scaffold (`j++` carries the exit test, `k += STEP` walks the twiddle
-// table) with an in-place complex-rotation update over four disjoint streams
-// (re/im × a/b, b = a + HALF, twiddles wre/wim read-only). Lanes j and j+1:
-//   - every a/b access is an ADJACENT pair → one v128.load / v128.store,
-//   - the twiddle pair is strided by STEP → two scalar f64.loads + lane combine
-//     (same load count as two scalar iterations),
-//   - the +/−/× rotation lanes with NO reassociation and NO fusion — each lane
-//     computes the exact scalar sequence, so the result is bit-identical and the
-//     cross-engine checksum contract holds.
-// LEGALITY. The strip body runs only while j+1 < half, so b = a + half ≥ a + 2:
-// {a,a+1} and {b,b+1} never overlap — the b-pair stores cannot clobber lane 1's
-// a-pair loads, and the single im[a] pair load legitimately serves both the
-// im[b] store and the im[a] writeback (im[a] ∉ {im[b−1], im[b]}). re/im/wre/wim
-// are distinct base locals under the vectorizer's standing distinct-base
-// non-aliasing model. HALF/STEP and the four bases must not be written in the
-// loop (checked); j/k are exactly reproduced for the scalar tail (each strip
-// iteration consumes two scalar iterations), and the tail IS the original loop,
-// so an odd half (or half < 2) falls through untouched.

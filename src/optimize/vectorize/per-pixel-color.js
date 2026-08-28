@@ -5,6 +5,17 @@ import { LANE_PURE, PPC_CALL2, STORE_OPS } from './lane-tables.js'
 import { forEachLocalDef, isArr } from './node-utils.js'
 import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesName } from './outer-scaffold.js'
 
+// Per-pixel-color vectorizer. The dual of tryDivergentEscapeVectorize for kernels with NO inner
+// escape loop: an outer pixel loop whose body computes an f64 value from the pixel index (via
+// cos/sin/sqrt/…), packs it to a u32 colour, and stores it — every pixel independent. We lift the
+// liftable f64 PREFIX of the body to f64x2 (two adjacent pixels per lane: the index becomes the
+// ramp [x, x+1]; transcendentals map to the bit-exact $math.*2 helpers; conditionals to bitselect),
+// then run the SCALAR pack+store once per lane (extract_lane → the original f64 local → the
+// untouched integer pack). The expensive transcendentals run 2-wide; the cheap pack stays scalar.
+// Bit-exact by construction: f64x2 arithmetic is per-lane IEEE-identical and extract_lane is exact.
+// A call we can't yet vectorize (pow in Phase 1) just ends the SIMD prefix — its lane local and the
+// rest fall to the scalar epilogue, so the kernel still partially vectorizes. The original scalar
+// loop, re-run as the tail, finishes the odd last pixel for free (its own `x < W` guard).
 export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, outer) {
   // Outer per-pixel scaffold — matched once at the dispatch (LoopPlan); this pass
   // takes the straight-line-body branch (no inner escape loop) below.
@@ -259,19 +270,3 @@ export function tryPerPixelColor(blockNode, fnLocals, freshIdRef, pureFuncMap, o
   const wrapper = ['block', nm('w'), ...preamble, simdOuter, ['block', oLabel, loopNode]]
   return { wrapper, newLocalDecls }
 }
-
-// ---- Outer-loop strip-mine over an inner reduction (tryOuterStrip, experimental) ----
-//
-// The dual of tryPerPixelColor for pixel loops whose per-pixel value comes from an
-// INNER REDUCTION over invariant data — metaballs `sum += r²/((cx-bx[b])²+(cy-by[b])²+ε)`,
-// voronoi/lyapunov shapes. Strip-mine the OUTER pixel loop 2-wide: pixels (xi, xi+1) →
-// f64x2 lanes. The per-pixel coordinate (`cx = xi/W`) becomes a ramp `[cx, cx+1/W]`; the
-// inner loop's loads `bx[b]` are indexed by the INNER IV (same for both pixels) → splat;
-// the accumulator `sum` becomes an f64x2 carrying both lanes' running sums. After the inner
-// loop, each lane's sum is extracted and the scalar pack+store runs per lane (xi, xi+1).
-//
-// BIT-EXACT: each lane accumulates in the SAME scalar order as the original (f64x2.add is
-// per-lane IEEE-754-identical) — a per-lane reduction reorders nothing, unlike a horizontal
-// fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
-// only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
-// Gated behind cfg.outerStrip until proven across the corpus.

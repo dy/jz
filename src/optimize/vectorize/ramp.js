@@ -5,6 +5,26 @@ import { liftExprV, liftStmt } from './lift.js'
 import { isArr } from './node-utils.js'
 import { matchBlockLoop } from './scaffold.js'
 
+// ---- Byte-map recognizer (ramp + widening loads) ---------------------------
+//
+// Vectorize `for (i = 0; i < N; i++) out[i] = NARROW(f_i32(…))` where the i32
+// value is built from the induction variable used AS DATA (an i32x4 RAMP
+// `[i, i+1, i+2, i+3]`) and/or WIDENED narrow loads (`u8[i]` zero-extended to
+// i32x4). tryVectorize can't express either: it derives the lane type from an
+// input load and ties the compute width to it, so a byte LUT-free map whose
+// arithmetic overflows a byte (mul, shifts) — or that has no load at all —
+// falls through to here, where everything lifts to i32x4 and narrow-stores.
+//   • pure ramp (no loads, i8 store) → 16-wide pack (bytebeat)
+//   • widening u8 loads → 4-wide (alpha blend, brightness/color/threshold)
+//
+// Matches the post-strength-reduction shape (the IV strength-reducer runs
+// before this pass): the loop carries the logical IV (`i`, in the exit test,
+// += 1) plus one or more strided output pointers (`p += C`). Each increment is
+// scaled by LANES; the store narrows i32x4 back to the element width.
+//
+// Narrowing is truncation-exact for ANY i32 value (matching scalar store8/16):
+// `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
+// value-range assumption is needed.
 export function tryRampMap(blockNode, fnLocals, freshIdRef) {
   // Strict envelope (identical to tryVectorize's) + trailing RUN of increments; the "every
   // increment shares the IV's name" check below is tryRampMap's own residual.
@@ -328,20 +348,6 @@ export function tryRampMap(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
-// Build the store for a ramp-map iteration: i32x4 `vval` → element width of
-// `storeOp` at scalar address `addr`. i32.store is the full vector; i32.store8
-// truncates (low byte of each lane) via i8x16.shuffle — exactly matching scalar
-// store8, with no value-range assumption (shuffle selects, never saturates).
-// Narrowing-map store: pack a wider float lane vector `val` down to a narrower
-// store element and write the low bytes (extract_lane 0 + scalar store, like
-// buildRampStore). f64→f32 demotes (bit-exact vs scalar); f64→i32 truncates;
-// f32→i16/i8 truncate to i32x4 then WRAP via i8x16.shuffle (low bytes = scalar
-// store{8,16}, never saturates). Returns the store stmt or null (unsupported).
-// Peel the scalar narrowing conversion off a store value, returning the inner float
-// expr to lift (narrowStore then applies the SIMD narrow). f32 store: f32.demote_f64(X).
-// int store: toI32's guarded select, wrapIntIR's ToIntN select (module/typedarray.js),
-// or a bare trunc_sat. The inner X is the f64/f32 lane value computed before the cast.
-
 function buildRampStore(storeOp, addr, vval, ctx) {
   if (storeOp === 'i32.store') return ['v128.store', addr, vval]   // 4 i32 lanes → 16 bytes
   // i32.store8: hoist vval to a temp so the shuffle reads it once; low byte of
@@ -353,19 +359,3 @@ function buildRampStore(storeOp, addr, vval, ctx) {
   const packed = ['i8x16.shuffle', ...[0, 4, 8, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0].map(String), g, g]
   return ['block', ['local.set', tmp, vval], ['i32.store', addr, ['i32x4.extract_lane', 0, packed]]]
 }
-
-// Pivot-stride analysis for the multi-pixel lift. The lift reads 16 source bytes
-// (4 RGBA pixels) with ONE v128.load at the address for output pixel `pivot`, so the
-// 4 outputs are correct ONLY if consecutive output pixels read consecutive source
-// pixels — the load address must advance by EXACTLY 4 bytes per pivot step. Build, in
-// program order, each local's value-delta per unit-pivot increment (`pivot` → 1, every
-// other local → its assigned expr's delta, unknown/outer locals → 0 = pivot-invariant).
-// `delta(e)` returns that constant byte-delta, or null when the dependence is non-
-// constant (e.g. x*k) or uses an op we don't model — both of which must bail.
-// Index arithmetic is often f64-lowered (JS number `*`): `(yi*ww + x)` becomes
-// `(f64(yi)*ww + f64(x)) |0` = trunc_sat with a NaN-guard `select`. We model those
-// passthrough/arith ops too, so a runtime-dimension vblur (x carried through f64)
-// analyses the same as a literal-dimension one (x in plain i32). The select is the
-// `|0` coercion (value branch when the index is finite — always so for an integer
-// array index); we take the value branch's delta. Multiplies need a compile-time
-// constant factor on the pivot-bearing side (else the stride isn't constant).

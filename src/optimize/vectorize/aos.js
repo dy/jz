@@ -1,6 +1,12 @@
 import { LANE_INFO } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
+// ---- Lifter ----------------------------------------------------------------
+
+// Returns the v128 lane-local NAME (a string) for `name`, allocating once. We store the bare
+// string — NOT a `{laneName}` object — because a schema-object read back through the Map in a
+// DIFFERENT function returns undefined under self-compile. Takes `newLanedLocals` directly
+// (not ctx) so callers don't need to pass the full ctx object to a helper at call-depth 2.
 export function getOrAllocLanedLocal(name, newLanedLocals) {
   let laneName = newLanedLocals.get(name)
   if (!laneName) {
@@ -34,16 +40,3 @@ export function aosGather(expr, ctx) {
   const { a0, a1 } = aosAddrPair(addr, ctx)
   return ['f64x2.replace_lane', 1, ['f64x2.splat', aosLoad(baseOff, a0)], aosLoad(baseOff + delta, a1)]
 }
-
-// Inline a PURE user function call `(call $f ARG…)` into a single scalar value-BLOCK, feeding
-// the result back through liftExprV so the callee's ternaries/compares/transcendentals lift via
-// the SAME machinery (no separate restricted inliner). Bails (null) on any non-value statement
-// (store/loop/impure) — only straight-line pure helpers (spow, a signed-power, …) inline.
-//
-// Every argument AND every callee local is bound ONCE to a fresh block-local; param/local reads
-// substitute to `(local.get bind)`. This is critical for NESTED calls (spow whose ratio arg is
-// used 3× and itself nests spow): naive expr substitution would duplicate each arg per use and
-// blow up exponentially (there is no CSE pass after the 'post' vectorizer). Binding keeps the
-// SIMD body the same size as the scalar call graph.
-// Infer the wasm type of a value node — from its `.type` expando (jz stamps every instruction) or
-// the op prefix (`f64.add`→f64, `i32.mul`→i32, v128 ops→v128). Used to declare inline temps.

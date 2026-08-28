@@ -564,10 +564,3 @@ export function tryDivergentEscapeVectorize(blockNode, fnLocals, freshIdRef, out
   const wrapper = ['block', nm('w'), ...preamble, ...innerPre, simdOuter, tailBlock]
   return { wrapper, newLocalDecls }
 }
-
-// Math.sin/cos lower to `call $math.{sin,cos}_core` (the emit-time fast path, math.js:67); the
-// public `$math.{sin,cos}` wrap the same core. Their f64x2 mirrors $math.sin2/$math.cos2 (the
-// vectorized reduce+horner, module/math.js:543) are BIT-EXACT per lane to the scalar core — so we
-// can lift the call straight to the *2 helper. Phase-2 adds pow/log/atan2 here (see PPC_CALL2).
-// NOTE: scalar targets here must be kept out of watr's single-caller inlining — jz passes these
-// keys (SIMD_PINNED, below) as watOptimize's `pin` list, else the call node is gone before this lift runs.

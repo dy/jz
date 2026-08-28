@@ -2,6 +2,11 @@ import { cloneNode } from '../../ast.js'
 import { _offsetLocalStride, isI32Const, matchLaneAddr } from './addr-model.js'
 import { isArr } from './node-utils.js'
 
+// ---- memory.copy / memory.fill loop idioms ---------------------------------
+
+// Same-width store←load pairs (byte-window moves) and their element stride.
+// Sign-variant narrow loads are interchangeable for a MOVE: load8_u/load8_s
+// then store8 write the same byte back.
 const MEMOP_STORES = {
   'f64.store':   { k: 3, loads: new Set(['f64.load']) },
   'i64.store':   { k: 3, loads: new Set(['i64.load']) },
@@ -137,22 +142,3 @@ export function tryMemCopyFill(bl, fnLocals, freshIdRef) {
       ['then', ...setup, ...action]]]
   return { wrapper, newLocalDecls }
 }
-
-// ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
-//
-// The image-convolution hot shape: 4 adjacent-byte accumulators summed over a
-// window, then divided + stored — `for k: sr+=src[p]; sg+=src[p+1]; …` (blur,
-// box filters, separable convolutions). The 4 channels are 4 i32x4 lanes, the
-// 4-byte load is one widening v128.load32_zero. We vectorize ONLY the inner
-// accumulation (integer add → associative/exact → bit-identical) and extract the
-// lane sums back to the scalars; the edge-clamp address math and the per-pixel
-// divide+store stay scalar, untouched. So no float-reduction reordering, no
-// lane-juggled divide — just the dense inner loop lifted, safely.
-//
-// Operates on the OUTER pixel-loop block: its body is [exit, 4×(acc=0), …setup,
-// (block (loop INNER)), …uses-of-acc, inc, br]. INNER's body accumulates the 4
-// channels off a shared base address.
-
-// Match `(local.set $ACC (i32.add (local.get $ACC) (i32.load8_u ADDR)))` where
-// ADDR is `(local.get $base)` or `(local.tee $base EXPR)` at byte offset `off`.
-// Returns { acc, base, off, teeExpr? } or null.

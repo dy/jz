@@ -3,6 +3,24 @@ import { constNum, isI32Const, isLocalGet } from './addr-model.js'
 import { isArr } from './node-utils.js'
 import { readsVar } from './outer-scaffold.js'
 
+// ---- Channel-reduction recognizer (RGBA box-filter accumulation) -----------
+//
+// The image-convolution hot shape: 4 adjacent-byte accumulators summed over a
+// window, then divided + stored — `for k: sr+=src[p]; sg+=src[p+1]; …` (blur,
+// box filters, separable convolutions). The 4 channels are 4 i32x4 lanes, the
+// 4-byte load is one widening v128.load32_zero. We vectorize ONLY the inner
+// accumulation (integer add → associative/exact → bit-identical) and extract the
+// lane sums back to the scalars; the edge-clamp address math and the per-pixel
+// divide+store stay scalar, untouched. So no float-reduction reordering, no
+// lane-juggled divide — just the dense inner loop lifted, safely.
+//
+// Operates on the OUTER pixel-loop block: its body is [exit, 4×(acc=0), …setup,
+// (block (loop INNER)), …uses-of-acc, inc, br]. INNER's body accumulates the 4
+// channels off a shared base address.
+
+// Match `(local.set $ACC (i32.add (local.get $ACC) (i32.load8_u ADDR)))` where
+// ADDR is `(local.get $base)` or `(local.tee $base EXPR)` at byte offset `off`.
+// Returns { acc, base, off, teeExpr? } or null.
 function matchChannelAccum(stmt, off) {
   if (!isArr(stmt) || stmt[0] !== 'local.set' || stmt.length !== 3) return null
   const acc = stmt[1]
@@ -88,27 +106,21 @@ function matchChannelReducePixelLoop(loopNode, bodyStart, bodyEnd) {
   return { initIdx, accInits, innerIdx, innerBlock, innerLoop, ilEnd, innerBody, grp }
 }
 
-// ---- Byte-map recognizer (ramp + widening loads) ---------------------------
-//
-// Vectorize `for (i = 0; i < N; i++) out[i] = NARROW(f_i32(…))` where the i32
-// value is built from the induction variable used AS DATA (an i32x4 RAMP
-// `[i, i+1, i+2, i+3]`) and/or WIDENED narrow loads (`u8[i]` zero-extended to
-// i32x4). tryVectorize can't express either: it derives the lane type from an
-// input load and ties the compute width to it, so a byte LUT-free map whose
-// arithmetic overflows a byte (mul, shifts) — or that has no load at all —
-// falls through to here, where everything lifts to i32x4 and narrow-stores.
-//   • pure ramp (no loads, i8 store) → 16-wide pack (bytebeat)
-//   • widening u8 loads → 4-wide (alpha blend, brightness/color/threshold)
-//
-// Matches the post-strength-reduction shape (the IV strength-reducer runs
-// before this pass): the loop carries the logical IV (`i`, in the exit test,
-// += 1) plus one or more strided output pointers (`p += C`). Each increment is
-// scaled by LANES; the store narrows i32x4 back to the element width.
-//
-// Narrowing is truncation-exact for ANY i32 value (matching scalar store8/16):
-// `i8x16.shuffle` selects the low byte of each lane — never saturates — so no
-// value-range assumption is needed.
-
+// Pivot-stride analysis for the multi-pixel lift. The lift reads 16 source bytes
+// (4 RGBA pixels) with ONE v128.load at the address for output pixel `pivot`, so the
+// 4 outputs are correct ONLY if consecutive output pixels read consecutive source
+// pixels — the load address must advance by EXACTLY 4 bytes per pivot step. Build, in
+// program order, each local's value-delta per unit-pivot increment (`pivot` → 1, every
+// other local → its assigned expr's delta, unknown/outer locals → 0 = pivot-invariant).
+// `delta(e)` returns that constant byte-delta, or null when the dependence is non-
+// constant (e.g. x*k) or uses an op we don't model — both of which must bail.
+// Index arithmetic is often f64-lowered (JS number `*`): `(yi*ww + x)` becomes
+// `(f64(yi)*ww + f64(x)) |0` = trunc_sat with a NaN-guard `select`. We model those
+// passthrough/arith ops too, so a runtime-dimension vblur (x carried through f64)
+// analyses the same as a literal-dimension one (x in plain i32). The select is the
+// `|0` coercion (value branch when the index is finite — always so for an integer
+// array index); we take the value branch's delta. Multiplies need a compile-time
+// constant factor on the pivot-bearing side (else the stride isn't constant).
 function buildPivotCoeff(loopNode, pivot) {
   const coeff = new Map([[pivot, 1]])
   const cval = (n) => isI32Const(n) ? constNum(n) : (isArr(n) && n[0] === 'f64.const' && n[1] != null ? Number(n[1]) : null)
@@ -403,34 +415,3 @@ export function tryChannelReduce(blockNode, fnLocals, freshIdRef, bl, blurMP) {
   }
   return tryChannelReduce1px(blockNode, fnLocals, freshIdRef, bl, scan)
 }
-
-/**
- * Divergent escape-time vectorizer — 2-wide f64x2, bit-exact with scalar f64.
- *
- * Recognizes the fractal escape-time nest (mandelbrot / julia / burning-ship / …):
- *
- *   for (qx = 0; qx < W; qx++) {              // outer pixel loop; ≥1 i32 pixel IVs
- *     cx = <expr in qx>                       // per-pixel coordinate(s)
- *     x = 0; y = 0; it = 0                     // loop-carried f64 + i32 counter
- *     while (it < MAXIT) {                     // inner escape loop (it-limited)
- *       <f64 updates to x,y (+ temps); one `if (|z|² > T) break`, ANY position>
- *       it++
- *     }
- *     <epilogue: store(it)  OR  smooth-colour(x,y,it) → store>
- *   }
- *
- * Two adjacent pixels run in f64x2 lockstep with a per-lane active mask. A lane is
- * frozen (v128.bitselect) the instant it would escape or reach MAXIT, so its
- * it/x/y stay bit-identical to the scalar loop — f64x2 add/sub/mul/abs are IEEE-
- * identical to scalar f64 (no FMA fusion). The body is emitted statement-by-
- * statement in source order, so the escape mask lands exactly where the scalar
- * `break` is (before OR after the z-update), and the per-lane state freezes at the
- * matching point. iter is kept as f64x2 (an i32 `it` is exact in f64), so the
- * limit compare and the (possibly fractional) colour math both stay bitwise-exact.
- *
- * Loop-carried vars (first body access is a READ) freeze via bitselect; within-
- * iteration temps (first access a WRITE — inlined squares, `xt`) recompute raw.
- * The colour epilogue runs scalar, twice — once per lane — reading each lane's
- * extracted x/y/it, with the pixel IVs advanced by +0/+1. Odd widths and extra
- * lanes fall through to the original scalar pixel loop (the exact tail).
- */

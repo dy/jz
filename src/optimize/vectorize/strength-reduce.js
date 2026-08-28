@@ -2,6 +2,12 @@ import { walkAst } from '../../ast.js'
 import { isLocalGet, matchLaneAddr } from './addr-model.js'
 import { isArr } from './node-utils.js'
 
+// ---- Induction-variable strength reduction --------------------------------
+
+// Match `(i32.add (local.get $base) (i32.shl (local.get $ind) (i32.const K)))` in either
+// operand order, or `(i32.add (local.get $base) (local.get $ind))` (K=0). Returns
+// {base, k} — the address of element $ind in array $base, byte stride 1<<k — or null.
+// Thin wrapper over matchLaneAddr (tee/CSE/AoS-free); both operand orders + bare-local base are this fn's own residual.
 function matchAffineAddr(node, ind) {
   if (!isArr(node) || node[0] !== 'i32.add' || node.length !== 3) return null
   const fromOrder = (addr) => {
@@ -73,9 +79,3 @@ export function tryStrengthReduceIV(bl, fnLocals, freshIdRef) {
   loopNode.splice(incIdx + 1, 0, ...bumps)   // after the induction increment, before the br
   return { wrapper: ['block', ...preInits, bl.blockNode], newLocalDecls }
 }
-
-// ---- memory.copy / memory.fill loop idioms ---------------------------------
-
-// Same-width store←load pairs (byte-window moves) and their element stride.
-// Sign-variant narrow loads are interchangeable for a MOVE: load8_u/load8_s
-// then store8 write the same byte back.

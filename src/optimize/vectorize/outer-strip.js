@@ -6,6 +6,21 @@ import { CMP_LANE, bumpPixelIV, epilogueIsSafe, rampPixelIV, readsVar, writesNam
 import { tryPerPixelColor } from './per-pixel-color.js'
 import { matchBlockLoop } from './scaffold.js'
 
+// ---- Outer-loop strip-mine over an inner reduction (tryOuterStrip, experimental) ----
+//
+// The dual of tryPerPixelColor for pixel loops whose per-pixel value comes from an
+// INNER REDUCTION over invariant data — metaballs `sum += r²/((cx-bx[b])²+(cy-by[b])²+ε)`,
+// voronoi/lyapunov shapes. Strip-mine the OUTER pixel loop 2-wide: pixels (xi, xi+1) →
+// f64x2 lanes. The per-pixel coordinate (`cx = xi/W`) becomes a ramp `[cx, cx+1/W]`; the
+// inner loop's loads `bx[b]` are indexed by the INNER IV (same for both pixels) → splat;
+// the accumulator `sum` becomes an f64x2 carrying both lanes' running sums. After the inner
+// loop, each lane's sum is extracted and the scalar pack+store runs per lane (xi, xi+1).
+//
+// BIT-EXACT: each lane accumulates in the SAME scalar order as the original (f64x2.add is
+// per-lane IEEE-754-identical) — a per-lane reduction reorders nothing, unlike a horizontal
+// fold. The inner loop's trip count (b < count) is invariant, so its scaffold stays scalar;
+// only the f64 body lifts. Distinct base subtrees assumed non-aliasing (the standing model).
+// Gated behind cfg.outerStrip until proven across the corpus.
 function tryOuterStrip(blockNode, fnLocals, freshIdRef, enabled, outer) {
   if (!enabled) return null
   if (!outer) return null
@@ -557,27 +572,4 @@ export function tryOuterStripRest(blockNode, fnLocals, freshIdRef, pureFuncMap, 
     ?? tryIteratedReduce(blockNode, fnLocals, freshIdRef, outerStrip, outer)
     ?? tryConvColumn(blockNode, fnLocals, freshIdRef, outerStrip, outer)
 }
-
-// ---- Mixed-lane tone-map (tryToneMap, experimental) ------------------------
-//
-// Vectorizes the log-tonemap TAIL shared by fern / bifurcation / attractors:
-//   while (i<n){ let v=dens[i]; if(v>0){ g = trunc(min(log(v+1)*S, 255)) }
-//                px[i] = (255<<24)|(g<<16)|(g<<8)|g }
-// A flat 1-D loop that loads an i32 density, lifts it to f64 for a log, truncates
-// back to i32, packs an ARGB word, and stores it — i32 lanes wrapping an f64 ISLAND.
-// The single-lane-type lift can't carry an f64 intermediate inside an i32 store
-// (tryVectorize bails on `f64.mul: no lane-pure SIMD mapping for i32`), so this is a
-// dedicated 2-wide (f64x2) hybrid: load 2 u32 (`v128.load64_zero` → i32x4 low lanes),
-// `f64x2.convert_low_i32x4_s` into the island, `$math.log_v` + f64x2 arith + clamp,
-// `i32x4.trunc_sat_f64x2_s_zero` back out, the i32 pack, then a masked
-// `i64.store` of `i64x2.extract_lane 0` (the low 2 lanes = 2 pixels). 2 pixels/iter.
-//
-// BIT-EXACT by construction: each lane runs the scalar op (log_v is the per-lane
-// extract/repack mirror; the clamp keeps L finite & in [0,255] so `trunc_sat == |0`,
-// the ±Inf canon is a no-op and is dropped; the pack is element-wise). The conditional
-// masks are emitted in the SAME lane width as the data they select (`v>0` is i32 and
-// gates i32 stores/values; the `L>255` clamp is f64 and gates f64) — a width mismatch
-// bails. No cross-lane reordering, so no ulp drift. Speculatively-evaluated arms are
-// trap-free (log/convert/mul/min/trunc never trap; there is no div/rem). Gated until
-// proven across the corpus, then promoted like the stencil/outer-strip wins.
 

@@ -2,6 +2,27 @@ import { walkAst } from '../../ast.js'
 import { constNum, isLocalGet } from './addr-model.js'
 import { isArr } from './node-utils.js'
 
+// ---- Radix-2 butterfly 2-wide lift (tryButterfly) ----
+//
+// The Cooley-Tukey inner loop — the one shape the generic lane lift can never take:
+// a DUAL-IV scaffold (`j++` carries the exit test, `k += STEP` walks the twiddle
+// table) with an in-place complex-rotation update over four disjoint streams
+// (re/im × a/b, b = a + HALF, twiddles wre/wim read-only). Lanes j and j+1:
+//   - every a/b access is an ADJACENT pair → one v128.load / v128.store,
+//   - the twiddle pair is strided by STEP → two scalar f64.loads + lane combine
+//     (same load count as two scalar iterations),
+//   - the +/−/× rotation lanes with NO reassociation and NO fusion — each lane
+//     computes the exact scalar sequence, so the result is bit-identical and the
+//     cross-engine checksum contract holds.
+// LEGALITY. The strip body runs only while j+1 < half, so b = a + half ≥ a + 2:
+// {a,a+1} and {b,b+1} never overlap — the b-pair stores cannot clobber lane 1's
+// a-pair loads, and the single im[a] pair load legitimately serves both the
+// im[b] store and the im[a] writeback (im[a] ∉ {im[b−1], im[b]}). re/im/wre/wim
+// are distinct base locals under the vectorizer's standing distinct-base
+// non-aliasing model. HALF/STEP and the four bases must not be written in the
+// loop (checked); j/k are exactly reproduced for the scalar tail (each strip
+// iteration consumes two scalar iterations), and the tail IS the original loop,
+// so an odd half (or half < 2) falls through untouched.
 export function tryButterfly(blockNode, fnLocals, freshIdRef) {
   if (!isArr(blockNode) || blockNode[0] !== 'block' || typeof blockNode[1] !== 'string') return null
   const brk = blockNode[1]
@@ -158,50 +179,3 @@ export function tryButterfly(blockNode, fnLocals, freshIdRef) {
   return { wrapper, newLocalDecls }
 }
 
-
-// ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2): a
-// profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
-// tryGeneralStencil/tryGeneralReduce below) — every idiom FUSER above (tryDivergentEscapeVectorize,
-// tryBlurMultiPixel, tryButterfly, …) keeps its own separately-tuned, always-fire behavior
-// unchanged; this gate never runs for them. Today the three general recognizers vectorize
-// UNCONDITIONALLY the instant their affine/dependence proof succeeds — sound, but blind to
-// whether the SIMD prologue/epilogue/blend overhead is actually worth paying for a given body.
-//
-// Estimate, not a simulator: `scalarCost` = weighted op count of ONE original scalar iteration
-// (`body`, pre-lift); `vectorCost` = weighted op count of ONE vector step (`lifted`, the SAME
-// tree the codegen below emits, processing `lanes` elements) + a fixed prologue overhead + a
-// per-guard overhead when runtime alias-versioning (layer 3) adds a disjointness check. Decline
-// (the caller returns null, exactly like any other precondition failure in this file) when
-// `vectorCost / lanes >= scalarCost` — vectorizing would cost at least as much per element as
-// just running the scalar loop.
-//
-// Weights: `load`/`store` = 1, the baseline unit. Arithmetic/compare/convert-class ops (add,
-// sub, mul, and, or, xor, shift, eq/lt/gt/…, min, max, neg, abs, sqrt, floor/ceil/trunc/nearest,
-// convert/extend/narrow/wrap/promote/demote, splat) = 1 — same instruction-count class as a
-// load. `div`/`rem` (float only — integer div/rem are never LANE_PURE, see that table's own
-// header; a speculated arm containing one fails to lift and declines the WHOLE loop, never
-// reaching this cost check) = 8 — division has no fast SIMD form on wasm (no reciprocal-estimate
-// instruction in the MVP+SIMD feature set). `bitselect` (blend, the if-conversion codegen
-// above) = 5.
-//
-// Calibration: these weights are an ESTIMATE, not a measured multiplier. A wall-clock microbench
-// (`d = mask ? a : b` vs `d = a + b` vs `d = a / b`, SIMD_OPT, both a 2e7-element streaming pass
-// and a 2e5-element pass repeated 200× to stay cache-resident) showed NO measurable difference
-// between add/blend/div on V8 — all three are memory-bandwidth-bound, not compute-bound, at any
-// array size tried. That is itself useful signal (real streaming SIMD kernels are memory-bound,
-// so op-mix rarely changes wall-clock much), but it means no microbench can supply a blend/div
-// MULTIPLIER directly. The weights actually used are a conservative PRIOR instead (in the spirit
-// of LLVM's TargetTransformInfo select/div cost classes — blend ~2-5x, div severalx-to-double-digit
-// x, target-dependent), gate-calibrated against corpus behavior: `div`=8 is the illustrative
-// starting value (never empirically contradicted — no corpus loop has a speculated arm with float
-// division to test against either way); `bitselect`=5 and `COST_OVERHEAD_PROLOGUE`/
-// `COST_OVERHEAD_PER_GUARD` = 1/1 are chosen so the model does not decline a real, corpus-shaped
-// case (`test/simd.js`'s alias-versioned f64 same-array runtime-offset map — an ordinary affine
-// MAP with one alias-versioning guard, NO if-conversion, at f64's 2-lane width, where guard/
-// prologue overhead alone would otherwise punish a perfectly profitable plain map) while still
-// declining the synthetic decline case below (§SIMD cost model tests). Governing rule: if the
-// model would decline a real corpus case, the model is wrong — recalibrate the weights, never
-// special-case the site. Weight is shifted FROM the lane-count-sensitive per-loop overhead (which
-// penalizes every general-layer recognizer, if-converted or not, hardest at f64/i64's 2 lanes)
-// TOWARD the blend-specific weight (which only penalizes if-conversion codegen). A full corpus
-// sweep against the test suite is the decisive calibration signal — not either number in isolation.

@@ -66,6 +66,16 @@ import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
 
+// ---- HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) ---------
+//
+// JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
+// against; `loopPlanLink` (ir.js) maps it back to the HIR facts proved about this loop at
+// emission time (emit.js's `'for'` handler, the sole writer), keyed by node IDENTITY, as a
+// `{ plan, lowering }` pair — `plan` the frozen HIR-side facts, `lowering` the mutable WAT-side
+// name map (see ir.js's doc). A miss is the expected outcome once ANY rewrite has replaced the
+// block array between emission and here (pre-trio spec 2: fail-open) — proves nothing, asserts
+// nothing. A HIT that disagrees is a genuine finding: the two derivations describe the SAME loop
+// and must name the same induction variable / the same constant bound where both resolve one.
 function assertLoopPlanAgrees(node, bl) {
   const link = ctx.plans.loweringLinks.get(node)
   if (!link) return
