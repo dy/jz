@@ -39,6 +39,49 @@ const directCallBoundary = (ctx, name) => {
  *  identical question a closure's own plan will ask of itself. */
 const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e === paramName)
 
+// A local—or a parameter on a covered direct boundary—whose complete def
+// set uses plain writes can have every incoming edge normalized at
+// emitDecl / the '=' handler. Keep this
+// readiness private: readers get only a scalar projection, never the Set.
+//
+// BOX/UNBOX admission is plain valTypeOf(node) === VAL.BIGINT — no
+// `.`-member widening needed here. kind.js's valTypeOf (VT['()']) now
+// resolves a `.`-member callee through the same frozen call-target index
+// this file's own calleeNameOf/resolveMemberCallee already consult, so a
+// `.`-member call proves exactly as BIGINT here as the equivalent
+// bare-name call always did — one authority, not a second proof re-derived
+// from `source`'s own representation bits (the prior approach here, and
+// ir.js's independent applyBigintRepresentationAction widening, both
+// removed with kind.js's own fix: .work/member-callee-binding-write-notes.md).
+//
+// Already fully self-contained (every dependency an explicit parameter or a
+// module-level import) before this slice — buildBodyData's own materialization
+// fixpoint is its only caller, at 5 sites, but nothing here reads that
+// fixpoint's local state, so it lives at module scope like this file's
+// other single-purpose predicates.
+const edgeMaterializable = (source, target, node, sourceReady = false) => {
+  const action = edgeAction(source, target)
+  if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
+    return valTypeOf(node) === VAL.BIGINT
+  if (action !== REP_EDGE_KEEP) return false
+  // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
+  // identity. BOXED→BOXED is ready only when the upstream producer family
+  // has itself materialized, not merely because its eventual target is BOXED.
+  return bigintRepBits(source) === BIGINT_REP_NONE ||
+    (source === RAW_BIGINT && target === RAW_BIGINT) ||
+    (source === BOXED_BIGINT && target === BOXED_BIGINT && sourceReady)
+}
+
+/** The "BOOL-veto": true when a closed semantic includes the BOOL member.
+ *  RepresentationPlan only ever normalizes the BigInt member of a union; a
+ *  value that MIGHT be a JS boolean still needs the separate BOOL-atom
+ *  producer, so materializing BigInt onto it would erase that other
+ *  identity. Repeated verbatim at 7 sites in buildBodyData's materialization
+ *  fixpoints (materializedNames, hostBoxParams, closureBoxParams, the
+ *  JOIN_OPS pass, the census-unary/joint pass, the materializedNames
+ *  propagation pass, resultHasClosedBool) — one helper, not seven copies. */
+const hasClosedBool = sem => semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0
+
 function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const defs = collectDefs(body)
   const provenance = options.provenance
@@ -503,33 +546,6 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const expr of returnExprs(body)) plannedOf(expr)
   }
 
-  // A local—or a parameter on a covered direct boundary—whose complete def
-  // set uses plain writes can have every incoming edge normalized at
-  // emitDecl / the '=' handler. Keep this
-  // readiness private: readers get only a scalar projection, never the Set.
-  //
-  // BOX/UNBOX admission is plain valTypeOf(node) === VAL.BIGINT — no
-  // `.`-member widening needed here. kind.js's valTypeOf (VT['()']) now
-  // resolves a `.`-member callee through the same frozen call-target index
-  // this file's own calleeNameOf/resolveMemberCallee already consult, so a
-  // `.`-member call proves exactly as BIGINT here as the equivalent
-  // bare-name call always did — one authority, not a second proof re-derived
-  // from `source`'s own representation bits (the prior approach here, and
-  // ir.js's independent applyBigintRepresentationAction widening, both
-  // removed with kind.js's own fix: .work/member-callee-binding-write-notes.md).
-  const edgeMaterializable = (source, target, node, sourceReady = false) => {
-    const action = edgeAction(source, target)
-    if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
-      return valTypeOf(node) === VAL.BIGINT
-    if (action !== REP_EDGE_KEEP) return false
-    // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
-    // identity. BOXED→BOXED is ready only when the upstream producer family
-    // has itself materialized, not merely because its eventual target is BOXED.
-    return bigintRepBits(source) === BIGINT_REP_NONE ||
-      (source === RAW_BIGINT && target === RAW_BIGINT) ||
-      (source === BOXED_BIGINT && target === BOXED_BIGINT && sourceReady)
-  }
-
   // Shape #6 layers 2+3: a storage READ always crosses the storage boundary
   // already boxed — the write side boxes unconditionally via
   // taggedStoredValue, a physical fact of the wire format, not a plan
@@ -582,8 +598,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       if (!NUMERIC_VALUE_OPS.has(def[DEF_OWNER] && def[DEF_OWNER][0])) { identitySafeStorageFlow = false; break }
     }
     identitySafeStorageFlow = identitySafeStorageFlow && hasStorageSeed
-    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0 &&
-        !identitySafeStorageFlow) continue
+    if (hasClosedBool(nameSemantic) && !identitySafeStorageFlow) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     const ready = list.every(def => {
       if (def[DEF_RHS] == null) return true
@@ -614,8 +629,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (exportedIdentity) for (const [name, k] of params) {
     const sem = semanticNames.get(name) ?? semAll()
     const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
-    if (ready && targetNames.get(name) === BOXED_BIGINT &&
-        !(semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0))
+    if (ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
       hostBoxParams.add(k)
   }
   const closureBoxParams = new Set()
@@ -623,8 +637,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   if (closureAbiIdentity) for (const [name, k] of params) {
     const sem = semanticNames.get(name) ?? semAll()
     const ready = boundary.params[k]?.stable === true || materializedNames.has(name)
-    if (ready && targetNames.get(name) === BOXED_BIGINT &&
-        !(semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0))
+    if (ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
       closureBoxParams.add(k)
   }
 
@@ -689,7 +702,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     for (const [node, target] of nodeTarget) {
       if (materializedJoins.has(node) || !JOIN_OPS.has(node[0]) || target !== BOXED_BIGINT) continue
       const sem = semanticOf(node)
-      if (semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0) continue
+      if (hasClosedBool(sem)) continue
       const [armA, armB] = joinArms(node)
       const left = emittedCandidate(armA), right = emittedCandidate(armB)
       if (edgeMaterializable(left.rep, target, armA, left.ready) &&
@@ -723,7 +736,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
       censusMaybeUndefinedKind(node[1]) === VAL.BIGINT && censusMaybeUndefinedKind(node[2]) === VAL.BIGINT
     if (!sentinelUnary && !sentinelJoint) continue
     const sem = semanticOf(node)
-    if (semanticClosed(sem) && (semanticKinds(sem) & bitOfKind(VAL.BOOL)) !== 0) continue
+    if (hasClosedBool(sem)) continue
     materializedJoins.add(node)
   }
 
@@ -740,7 +753,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (params.has(name) && boundary.covered !== true) continue
     if (!list.some(def => Array.isArray(def[DEF_RHS]) && (materializedJoins.has(def[DEF_RHS]) || closureCallNeedsBox(def[DEF_RHS])))) continue
     const nameSemantic = semanticNames.get(name) ?? semAll()
-    if (semanticClosed(nameSemantic) && (semanticKinds(nameSemantic) & bitOfKind(VAL.BOOL)) !== 0) continue
+    if (hasClosedBool(nameSemantic)) continue
     const target = targetNames.get(name) ?? ANY_BIGINT
     if (list.every(def => {
       if (def[DEF_RHS] == null) return true
@@ -750,8 +763,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     })) materializedNames.add(name)
   }
 
-  const resultHasClosedBool = semanticClosed(bodyResultSemantic) &&
-    (semanticKinds(bodyResultSemantic) & bitOfKind(VAL.BOOL)) !== 0
+  const resultHasClosedBool = hasClosedBool(bodyResultSemantic)
   // Closure-forwarding slice: a closure's boundary is ALWAYS uncovered
   // (options.generic forces it, independent of how enumerable its call sites
   // actually are — see the emittedCandidate param-branch comment above), so

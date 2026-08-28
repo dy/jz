@@ -69,6 +69,114 @@ function collectDispatchTableClosures(roots) {
  * calls, returns, and named storage. Unknown semantic kind is not itself an
  * origin: this is the proof v1 lacked when it treated every TOP as raw-capable.
  */
+/** True when `name` reaches a shape that proves it's well-equipped for tagged
+ *  host BigInt ingress: `typeof name`, `u+name`, `Number(name)`/`BigInt(name)`
+ *  (order-insensitive, textual `.includes` — both are total single-arg
+ *  normalizers), or positional forwarding into a same-body local closure
+ *  (`localClosures`) whose own corresponding param needs the tag (cycle-
+ *  guarded via `seen`). Fully self-contained — every dependency is an
+ *  explicit parameter or a module-level import — so, unlike most of this
+ *  file's other helpers, it does not need solveBigintProvenance's own
+ *  fixpoint state and lives at module scope. `root` (default true) mirrors
+ *  the original inline closure's own root-exempt `=>`-boundary rule: the
+ *  top-level call scans the given `body` even when body ITSELF is an arrow,
+ *  but a NESTED arrow stops descent (recursive calls pass `root: false`). */
+const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
+  if (!Array.isArray(node)) return false
+  if (!root && node[0] === '=>') return false
+  if (node[0] === 'typeof' && node[1] === name) return true
+  if (node[0] === 'u+' && node[1] === name) return true
+  if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
+  // BigInt(name) — same producer as Number(name): BigInt() is a total
+  // normalizer over string/number/boolean/bigint (ES2024 21.2.1.1), so a
+  // param feeding it is well-equipped for the tagged ingress — a plain
+  // host bigint there should box and pass through BigInt()'s identity
+  // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
+  if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
+  // Local-closure forwarding (closure-forwarding slice, .work/phase-c-
+  // unification.md §C4b queue): `name` passed positionally into a SAME-BODY
+  // closure (`let parse = (x) => …`) whose own param needs the tag —
+  // watr's own uleb/limits shape, `f(v){ let parse = x => typeof x ===
+  // 'bigint' ? x : BigInt(x); return parse(v)+1n }`. Mirrors
+  // paramAllUsesNumeric's identical closure-forwarding judgement (compile/
+  // index.js) for the numeric/pointer-proof lattice — same AST shape (a
+  // `let NAME = (…) => BODY` local, found via localClosures below), same
+  // cycle guard (`seen`, closure names visited on this recursion path) —
+  // a different question (host-tag ingress) over the same forwarding
+  // structure. Position-exact only (arg K proves param K, no textual
+  // `.includes` — unlike Number()/BigInt() above, which are order-
+  // insensitive single-arg builtins): `parse(other, name)` must not credit
+  // `name` with whatever param 0 needs.
+  if (node[0] === '()' && typeof node[1] === 'string' && localClosures?.has(node[1]) && !seen.has(node[1])) {
+    const callee = localClosures.get(node[1])
+    const args = commaList(node[2])
+    const nextSeen = new Set(seen).add(node[1])
+    for (let k = 0; k < args.length && k < callee.params.length; k++)
+      if (args[k] === name && paramNeedsHostTag(callee.body, callee.params[k], localClosures, nextSeen, true))
+        return true
+  }
+  for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, localClosures, seen, false)) return true
+  return false
+}
+
+/** Seed `bigintTyped` from every `new BigInt64Array`/`new BigUint64Array`
+ *  declaration reachable from `node`, program-wide. A PURE SYNTACTIC fact —
+ *  depends on nothing but the AST and the target Set — so, like
+ *  paramNeedsHostTag above, it needs no fixpoint state and lives at module
+ *  scope; `bigintTyped` arrives as an explicit parameter (mutated by
+ *  reference, identical to closing over it) rather than a closed-over local.
+ *  solveBigintProvenance calls this ONCE, for every function body plus the
+ *  top-level `ast` plus every module init, BEFORE its own fixpoint's first
+ *  round: scan()'s per-round discovery of the same fact is round-timed
+ *  (a typed-array read textually after its own write can see `storage`
+ *  seeded but `bigintTyped` not yet, producing a permanently ambiguous
+ *  raw-or-boxed join) — this pre-pass closes that gap at the root. */
+const seedBigintTyped = (node, bigintTyped) => {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) seedBigintTyped(node[i], bigintTyped); return }
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const decl = node[i]
+      if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
+          Array.isArray(decl[2]) && decl[2][0] === '()' && BIGINT_TYPED_CTORS.has(decl[2][1]))
+        bigintTyped.add(decl[1])
+    }
+  }
+  for (let i = 1; i < node.length; i++) seedBigintTyped(node[i], bigintTyped)
+}
+
+/** True when `node` is structurally a storage-read shape (a `[]`/`.`-member
+ *  read, or a `.get/.pop/.shift/.at` call) — a strictly weaker bar than kind
+ *  purity, only "this receiver is tracked, mutation-visible storage". Fully
+ *  self-contained (module-level memberReceiver/callMember/STORAGE_READ_METHODS
+ *  only), so — like paramNeedsHostTag/seedBigintTyped above — it lives at
+ *  module scope rather than closing over solveBigintProvenance's fixpoint
+ *  state, which it never needed in the first place. */
+const isStorageReadArgShape = node => {
+  if (!Array.isArray(node)) return false
+  const recv = memberReceiver(node)
+  if (recv != null) return true
+  const cm = callMember(node)
+  return !!cm && STORAGE_READ_METHODS.has(cm[2])
+}
+
+/** True when `programFacts`'s whole-program census already proves param
+ *  `idx` of `func` can never be a JS boolean (closed kind coverage excluding
+ *  BOOL, or a single non-BOOL kind fact). Depends only on `programFacts`
+ *  (solveBigintProvenance's own parameter, threaded through explicitly here
+ *  rather than closed over) and its own explicit `func`/`idx` — no fixpoint
+ *  state — so it lives at module scope alongside the other three
+ *  self-contained provenance helpers. */
+const paramEntryExcludesBool = (programFacts, func, idx) => {
+  const rep = programFacts.paramReps.get(func.name)?.get(idx)
+  if (!rep) return false
+  if (rep.possibleKinds instanceof Set && rep.possibleKinds.size)
+    return rep.kindsCoverage === 'closed' && !rep.possibleKinds.has(VAL.BOOL)
+  const kind = rep.val || rep.presentVal
+  return !!kind && kind !== VAL.BOOL
+}
+
 export function solveBigintProvenance(ctx, programFacts, ast) {
   const namesByFunc = new Map()
   const paramsByFunc = new Map()
@@ -115,44 +223,6 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (set.has(value)) return false
     set.add(value)
     return true
-  }
-
-  const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
-    if (!Array.isArray(node)) return false
-    if (!root && node[0] === '=>') return false
-    if (node[0] === 'typeof' && node[1] === name) return true
-    if (node[0] === 'u+' && node[1] === name) return true
-    if (node[0] === '()' && node[1] === 'Number' && commaList(node[2]).includes(name)) return true
-    // BigInt(name) — same producer as Number(name): BigInt() is a total
-    // normalizer over string/number/boolean/bigint (ES2024 21.2.1.1), so a
-    // param feeding it is well-equipped for the tagged ingress — a plain
-    // host bigint there should box and pass through BigInt()'s identity
-    // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
-    if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
-    // Local-closure forwarding (closure-forwarding slice, .work/phase-c-
-    // unification.md §C4b queue): `name` passed positionally into a SAME-BODY
-    // closure (`let parse = (x) => …`) whose own param needs the tag —
-    // watr's own uleb/limits shape, `f(v){ let parse = x => typeof x ===
-    // 'bigint' ? x : BigInt(x); return parse(v)+1n }`. Mirrors
-    // paramAllUsesNumeric's identical closure-forwarding judgement (compile/
-    // index.js) for the numeric/pointer-proof lattice — same AST shape (a
-    // `let NAME = (…) => BODY` local, found via localClosures below), same
-    // cycle guard (`seen`, closure names visited on this recursion path) —
-    // a different question (host-tag ingress) over the same forwarding
-    // structure. Position-exact only (arg K proves param K, no textual
-    // `.includes` — unlike Number()/BigInt() above, which are order-
-    // insensitive single-arg builtins): `parse(other, name)` must not credit
-    // `name` with whatever param 0 needs.
-    if (node[0] === '()' && typeof node[1] === 'string' && localClosures?.has(node[1]) && !seen.has(node[1])) {
-      const callee = localClosures.get(node[1])
-      const args = commaList(node[2])
-      const nextSeen = new Set(seen).add(node[1])
-      for (let k = 0; k < args.length && k < callee.params.length; k++)
-        if (args[k] === name && paramNeedsHostTag(callee.body, callee.params[k], localClosures, nextSeen, true))
-          return true
-    }
-    for (let i = 1; i < node.length; i++) if (paramNeedsHostTag(node[i], name, localClosures, seen, false)) return true
-    return false
   }
 
   for (const func of ctx.funcs.list) {
@@ -438,23 +508,9 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // carrier. Fix at the root: seed bigintTyped from every BIGINT_TYPED_CTORS
   // declaration, program-wide, in ONE pass BEFORE the fixpoint's first round
   // — a purely syntactic fact needs no round-by-round discovery at all.
-  const seedBigintTyped = node => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (Array.isArray(op)) { for (let i = 0; i < node.length; i++) seedBigintTyped(node[i]); return }
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const decl = node[i]
-        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' &&
-            Array.isArray(decl[2]) && decl[2][0] === '()' && BIGINT_TYPED_CTORS.has(decl[2][1]))
-          bigintTyped.add(decl[1])
-      }
-    }
-    for (let i = 1; i < node.length; i++) seedBigintTyped(node[i])
-  }
-  for (const func of ctx.funcs.list) if (!func.raw && func.body) seedBigintTyped(func.body)
-  seedBigintTyped(ast)
-  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) seedBigintTyped(init)
+  for (const func of ctx.funcs.list) if (!func.raw && func.body) seedBigintTyped(func.body, bigintTyped)
+  seedBigintTyped(ast, bigintTyped)
+  if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) seedBigintTyped(init, bigintTyped)
 
   let graphChanged = true
   while (graphChanged) {
@@ -584,13 +640,6 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (!set) { set = new Set(); paramNeverBool.set(calleeName, set) }
     set.add(k)
   }
-  const isStorageReadArgShape = node => {
-    if (!Array.isArray(node)) return false
-    const recv = memberReceiver(node)
-    if (recv != null) return true
-    const cm = callMember(node)
-    return !!cm && STORAGE_READ_METHODS.has(cm[2])
-  }
   // Shape #9 (a bare-name sibling of shape #7's own paramNeverBool gap): a
   // call argument that is a REASSIGNED CALLER LOCAL (`leb(n)` inside
   // `function i64(n) { if (typeof n === 'string') n = parseIt(n); return
@@ -613,14 +662,6 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // provenance data, so it carries no ordering hazard against the
   // callee-before-caller settling this file's other cross-function facts
   // rely on.
-  const paramEntryExcludesBool = (func, idx) => {
-    const rep = programFacts.paramReps.get(func.name)?.get(idx)
-    if (!rep) return false
-    if (rep.possibleKinds instanceof Set && rep.possibleKinds.size)
-      return rep.kindsCoverage === 'closed' && !rep.possibleKinds.has(VAL.BOOL)
-    const kind = rep.val || rep.presentVal
-    return !!kind && kind !== VAL.BOOL
-  }
   const structurallyNeverBoolExpr = (node, seen) => {
     if (isBigintOrigin(node)) return true
     if (isStorageReadArgShape(node)) return true
@@ -653,7 +694,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     // Defs adds the initializer), so `list` alone is its complete reaching
     // set. Only a PARAMETER has an implicit entry value beyond its own
     // explicit reassignment defs.
-    if (idx >= 0 && !paramEntryExcludesBool(func, idx)) return false
+    if (idx >= 0 && !paramEntryExcludesBool(programFacts, func, idx)) return false
     if (idx < 0 && (!list || list.length === 0)) return false
     if (!list || list.length === 0) return idx >= 0
     return list.every(def => def[DEF_RHS] != null && structurallyNeverBoolExpr(def[DEF_RHS], EMPTY_SEEN))
