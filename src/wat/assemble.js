@@ -14,6 +14,7 @@
 
 import parseWat from 'watr/parse'
 import { ctx, inc, resolveIncludes, err, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { i64Hex } from '../../layout.js'
 import { dataAlign, dataPush, dataLen, dataString, dataReset, strPoolLen, strPoolString, pushStaticSlots } from '../static-data.js'
 import { assembleView } from '../session-views.js'
 
@@ -1659,7 +1660,13 @@ export function stripStaticDataPrefix(sec) {
             if (off >= prefix) {
               const hi = bits & ~BigInt(LAYOUT.OFFSET_MASK)
               const newBits = hi | BigInt(off - prefix)
-              child[1] = 'nan:0x' + newBits.toString(16).toUpperCase().padStart(16, '0')
+              // i64Hex, not newBits.toString(16) — newBits keeps the SAME
+              // NaN-prefix+tag high bits the `ty`/SHIFTABLE checks above just
+              // proved box-tag-shaped (only the low OFFSET bits changed), the
+              // exact self-host hazard fixed identically in ir.js/optimize's
+              // toString(16) sites (fix/i64hex-hazards). i64Hex reaches the
+              // hex digits via shift/and/Number, never a `.toString()` call.
+              child[1] = 'nan:' + i64Hex(newBits)
             }
           }
         }
