@@ -838,28 +838,77 @@ all-bits-set this is byte-for-byte the pre-existing control flow. Diagnostic ker
 `REGION_HOOKS_ACTIVE=true`, not the production default) — do not confuse it with a battery
 artifact. Probe script: `/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/diag-mask.mjs`.
 
-**Next steps**: (1) confirm or rule out `ctx.core._autoDeps` empirically — cheapest check is a
-targeted breadcrumb (throw reporting `ctx.core._autoDeps` identity/contents at a checkpoint
-right after `__stdlibMark`'s exit) OR simply try rooting it (add `ctx.core._autoDeps` — or reset
-it to `null` right before mark, forcing a pre-mark-safe recreation pattern like front's fix —
-see whether mask=255 starts passing) as a fast confirm/deny, reusing the SAME diagnostic kernel
-build if the fix can be expressed as a source change gated the same way, otherwise one more
-build. (2) Once the exact write is confirmed, fix by construction per the task's own menu:
-this looks like the "escape into a rooted sidecar, reconciled back" case is NOT needed here —
-`ctx.core._autoDeps` is pure memoization (a speed optimization, not a value the rest of the
-compile depends on for correctness: `resolveIncludes` degrades to recomputing `autoDepsOf`
-instead of hitting cache if the Map is simply reset/dropped), so the likely-simplest fix is
-resetting `ctx.core._autoDeps = null` (or omitting the cache entirely / forcing recompute) at
-each region mark that precedes a `resolveIncludes()` call, OR moving its creation to session
-setup (`reset()`/`beginSession`, pre-mark, alongside the other `ctx.core.*` container
-initialization) so the Map object itself is always durable and only ever grows via `.set()` on an
-already-rooted-by-construction-exempt (like `ctx.core.emit`/`.stdlib`) container — mirroring the
-established doctrine that `ctx.core`'s OWN containers are fine to mutate in place across a round
-as long as the CONTAINER itself was allocated pre-mark; only a container ALLOCATED mid-round
-onto a durable receiver is the hazard. (3) Re-run this same bitmask kernel (or a fresh one with
-the fix applied and instrumentation reverted) through the full battery: `node
+## ROOT CAUSE CONFIRMED AND FIXED (2026-08-28, same session) — `lateSchema` snapshot dropped `namedUses`
+
+`ctx.core._autoDeps` was empirically ruled out: pre-seeding it durably (moving `new Map()` into
+the `ctx.core = {...}` literal in `reset()`, `src/ctx.js`) and rebuilding did NOT clear the
+mask=255 crash — identical failure at O0/O2/O3. Reverted that test (zero net diff on `src/ctx.js`
+now). `ctx.core.extImports` was independently ruled out by static reading: it's already durably
+created in `reset()` (`src/ctx.js:422`, contrary to this section's earlier suspicion that its
+`??=` in `pullStdlib` was a first-creation site), and nothing anywhere in the codebase reads it
+back after `pullStdlib` writes it, so a stale reference to it could never surface.
+
+**The real bug**, found by re-reading the ~430-line span between `__stdlibMark`'s exit and the
+outermost exit (since disabling the OUTERMOST round alone did NOT clear the crash, the
+corruption had to already be complete by the time `__stdlibMark` itself exits, or manifest in
+that immediately-following span): `src/compile/index.js`'s `__stdlibMark` exit narrows
+`ctx.schema` to `let lateSchema = { list: ctx.schema.list }` — dropping `ctx.schema.namedUses`,
+a real, always-initialized (`src/ctx.js:567`, `namedUses: []`) plain-data array of `{sid,
+funcName}` pairs that `module/core.js:2794` (`__throw_property_nullish` — the SAME helper whose
+thrown TypeError this entire investigation has been chasing since the very first repro) and
+`module/json.js:1386` `.push()` onto, unconditionally/eagerly for essentially every compile
+(the doc comment at `ctx.schema`'s init: "TypeError… mint[ed] eagerly and unconditionally the
+moment either is visited during emission"). Once `ctx.schema = lateSchema` replaces the whole
+object post-exit, `src/compile/index.js`'s own usedSchemaIds walk — `if
+(ctx.schema.namedUses.length) { … for (const {sid, funcName} of ctx.schema.namedUses) … }`,
+~40 lines later, UNCONDITIONALLY reached by every compile, well before the outermost exit —
+reads `.length` off `undefined`. Exact match to the `$__throw_property_nullish`-shaped
+`Cannot read properties of undefined` TypeError this whole investigation (this session and the
+prior one) has been chasing since the very first repro. Not a dangling-pointer/stale-relocation
+bug at all (the region-arena copy/relocate machinery itself was never at fault anywhere in this
+investigation) — a plain root-SNAPSHOT-completeness gap: `lateSchema` needed a THIRD field it
+never carried.
+
+**Fix** (`src/compile/index.js`, `__stdlibMark`'s round, ~line 2974): `lateSchema` now captures
+`namedUses: ctx.schema.namedUses` alongside `list`, so it rides in the round's existing root
+array (position 5) and gets relocated/rebound exactly like every other lateXXX snapshot — no new
+root category, no wholesale `ctx.schema` inclusion beyond what was already there, purely widening
+one existing snapshot object by one plain-data field (a small array of `{number, string}` pairs
+— squarely inside the established "PLAIN-DATA FIELDS ONLY" doctrine this round's own comment
+already states, not the excluded closure-dict class). The outermost round's OWN later
+`released.schema = { list: ctx.schema.list }` (Slice 3's `releaseSession` branch) deliberately
+stays narrower — confirmed by grep that nothing reads `ctx.schema.namedUses` anywhere after the
+usedSchemaIds walk, so that later, even-narrower stub is correct as-is and needs no change.
+
+**Empirically verified** with the SAME bitmask diagnostic kernel (one more `JZ_SELF_COMPILE_OPT=0`
+rebuild, 90.7s, 13,474,383 bytes, mask/`__dbgCompile` scaffolding still in place at this point):
+mask=255 (ALL region rounds active — the real production shape, since `REGION_HOOKS_ACTIVE=true`
+plus the unmodified front-fix/`optimizeTail` ternaries mean every other boundary is live exactly
+as production runs it) now compiles the real kernel-oracle/kernel-parity `sum` corpus source
+cleanly at **O0, O2, AND O3** — first time this exact repro has passed with every region round
+genuinely active. Diagnostic scaffolding (bitmask `__rh`/`__M`, `__dbgCompile`,
+`REGION_HOOKS_ACTIVE=true`) now being reverted; the `lateSchema` fix itself is committed
+separately and is the only source change intended to survive past this session's diagnostics.
+
+**Superseded**: `ctx.core._autoDeps` is NOT the cause (empirically ruled out above) — the
+paragraph that used to stand here proposing to root/reset it is retired; that finding remains
+real (a memo Map created mid-round directly on the permanently-excluded `ctx.core` receiver,
+never re-read after `__stdlibMark`'s exit within one compile so currently inert, same bug CLASS
+as this session's confirmed fix but not itself load-bearing) and is left as a flagged, deferred
+hygiene item for a future session, same treatment as `ctx.core.extImports`/`emit.js`'s three
+dynamic `ctx.core.stdlib[name] = …` writes documented earlier in this file — none of these are
+the `sum` trigger, all are real instances of "write into a permanently-excluded `ctx.core` field
+mid-round" worth closing eventually, none blocked this session's fix.
+
+**Actual next steps for this session**: (1) revert the bitmask/`__dbgCompile` diagnostic
+scaffolding from `scripts/self.js` and `src/compile/index.js` (its job — localizing the bug — is
+done; keep only the `lateSchema` fix). (2) Build a REAL region-enabled kernel the normal way
+(`REGION_HOOKS_ACTIVE=true` in `scripts/self.js`, no bitmask) and run the full battery: `node
 test/kernel-oracle.js` (target 14/14), `node test/kernel-parity.js` (target 33/33),
-`JZ_TEST_TARGET=jz.wasm node test/index.js` (target 0 fail) — with mask unset / all rounds
-genuinely active (not via the diagnostic export). (4) Revert ALL of this session's throwaway
-scaffolding (`__M`/`__rh`, `__dbgCompile`, `REGION_HOOKS_ACTIVE` back to `false` for the
-dormant-default battery legs) before landing anything, keeping only the real fix.
+`JZ_TEST_TARGET=jz.wasm node test/index.js` (target 0 fail). (3) Revert
+`REGION_HOOKS_ACTIVE` to `false` and confirm the dormant battery (native, kernel build, kernel-
+target, parity, oracle, size gates) is still green — the `lateSchema` change is a pure no-op
+when `regionHooks` is falsy (the whole `if (__rh(16))`/`if (regionHooks)` block it lives inside
+never executes), so this is a sanity check, not expected to find anything. (4) If the full
+hooks-on battery is green, measure the jz×jz self-compile goal-probe peak bytes (baseline traps
+at exactly 4,294,967,296) and report the number regardless of outcome, per the task mandate.
