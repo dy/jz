@@ -1864,6 +1864,15 @@ export default function narrowSignatures(programFacts, ast) {
   const typedValueRanges = inferTypedValueRanges(paramReps)
   const internalArrayLengths = inferInternalArrayLengths(paramReps)
   const callerArrValTypes = phase.callerElems('arrElemValTypes')
+  // Same hoist-once-early idiom as callerArrValTypes above (its own long-
+  // standing acceptable staleness applies identically here: phase.refreshValTypes/
+  // clearNarrowingBodyState rebuild the underlying map later, but this captured
+  // reference stays whatever it resolved at hoist time — never WRONG, only
+  // possibly missing a later-provable win, same as every other consumer of
+  // this exact pattern already accepts). Used by inferValAtSite's `.`-read
+  // case to resolve `arr[i].prop`'s receiver schemaId through a proven
+  // array-element read, one hop beyond a bare-name/param receiver.
+  const callerArrSchemas = phase.callerElems('arrElemSchemas')
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg
@@ -1945,6 +1954,31 @@ export default function narrowSignatures(programFacts, ast) {
   }
 
   const poison = field => r => { if (r[field] !== null) { r[field] = null; latticeMeet.changed = true } }
+  // Resolve a `.`-read's RECEIVER to a proven schemaId, from settled facts
+  // only — never a guess. Two sources, both already-audited primitives used
+  // elsewhere in this exact fixpoint, not new machinery:
+  //   - inferSchemaId (infer.js) — the SAME resolver the `schemaId` mergeRule
+  //     (below) already runs per call-site argument: a bare name settles via
+  //     the caller's OWN already-narrowed param schemaId census
+  //     (state.callerParamFacts('schemaId')) or a module-level ctx.schema.vars
+  //     binding; a compound expr recurses through `{}`/`()`/`?:`/`&&`/`||`.
+  //   - one hop through a proven ARRAY-element read (`rows[i].x`): the SAME
+  //     arrayElemSchema census runArrFixpoint settles (caller body census via
+  //     callerArrSchemas, or the caller's own arrayElemSchema param fact).
+  // Returns null on anything unproven (receiver kind unknown, or a schema-
+  // less/hazarded/OBJECT-free value) — inferValAtSite's caller then simply
+  // contributes nothing for this site, exactly like any other unclassifiable
+  // argument shape below.
+  const receiverSchemaId = (recv, state) => {
+    const sid = inferSchemaId(recv, state.callerParamFacts('schemaId'))
+    if (sid != null) return sid
+    if (Array.isArray(recv) && recv[0] === '[]' && typeof recv[1] === 'string') {
+      return callerArrSchemas.get(state.callerFunc)?.get(recv[1])
+        ?? state.callerParamFacts('arrayElemSchema')?.get(recv[1])
+        ?? null
+    }
+    return null
+  }
   // Default-aware val inference. Adds two fallbacks beyond inferValType's
   // body-local `callerValTypes` lookup so a hot recursive helper like
   // `uleb(n, buffer = []) { ... return uleb(n, buffer) }` resolves the
@@ -1984,6 +2018,23 @@ export default function narrowSignatures(programFacts, ast) {
       if (Array.isArray(arg) && arg[0] === '[]' && arg.length === 3 && typeof arg[1] === 'string' &&
           (state.callerValTypes?.get(arg[1]) || ctx.scope.globalValTypes?.get(arg[1])) === VAL.TYPED)
         return typedCtorElemValType(state.callerTypedElems?.get(arg[1])) || VAL.NUMBER
+      // Property read (`c.type`, `rows[i].x`): resolve the receiver to a
+      // proven schemaId (never guessed — receiverSchemaId above) and read
+      // that field's program-wide-monomorphic kind off the SAME SlotFact
+      // census kind.js's VT['.'] trusts for a live receiver (ctx.schema.
+      // slotVT) — slotVTBySid is the by-sid sibling for exactly this caller:
+      // a call-site-resolved sid, never a live ctx.func/repOf frame (mirrors
+      // slotTypedCtorAt/slotTypedCtorBySid's existing split, module/schema.js).
+      // A genuinely mixed-kind field declines for free: SlotFact.kind is
+      // itself null on any whole-program disagreement, no separate check
+      // needed here.
+      if (Array.isArray(arg) && arg[0] === '.' && typeof arg[2] === 'string') {
+        const sid = receiverSchemaId(arg[1], state)
+        if (sid != null) {
+          const v = ctx.schema.slotVTBySid(sid, arg[2])
+          if (v != null) return v
+        }
+      }
       return null
     }
     const fromParam = state.callerParamFacts('val')?.get(arg)
@@ -2678,7 +2729,11 @@ export default function narrowSignatures(programFacts, ast) {
   // trackKind=true: this is ALSO the one and only place `possibleKinds` gets
   // populated (every earlier fixpointRules sweep above runs trackKind=false —
   // see that rule's comment). Since every fact `inferValAtSite` reads is
-  // already at its final, fully-converged value by this point (this sweep
+  // already at its final, fully-converged value by this point — including
+  // its `.`-property-read case's own two dependencies: `schemaId` (this
+  // exact runFixpointConverged, just above) and ctx.schema's SlotFact kind
+  // census (observeProgramSlots' mid-function re-observation, well before
+  // this line — see that call site's own comment) — (this sweep
   // itself only ever moves a param BOTTOM→null, never disturbs an
   // already-settled concrete val — a hard rule's `v == null` poisons
   // regardless of WHY it's null, so a not-yet-visited-this-pass source and a

@@ -315,6 +315,17 @@ export function initSchema(ctx) {
     return factAt(parentSid, idx)?.objSid ?? null
   }
 
+  /** Raw by-sid form for callers that resolve the receiver's schema themselves
+   *  (narrow's per-call-site schema census — live refinements/reps aren't
+   *  reachable there, same reason slotTypedCtorBySid exists below). No
+   *  refinement-union branch: a call-site fact is one resolved sid, never a
+   *  branch-local refinement's multi-sid union. */
+  ctx.schema.slotVTBySid = (id, prop) => {
+    if (id == null || slotHazarded(id, prop, true)) return null
+    const idx = ctx.schema.list[id]?.indexOf(prop)
+    return idx >= 0 ? (factAt(id, idx)?.kind ?? null) : null
+  }
+
   ctx.schema.slotVT = (varName, prop) => {
     const ids = ctx.func.refinements?.get(varName)?.schemaIds
     if (ids?.length) {
@@ -328,10 +339,7 @@ export function initSchema(ctx) {
       }
       return kind
     }
-    const id = ctx.schema.idOf(varName)
-    if (id == null || slotHazarded(id, prop, true)) return null
-    const idx = ctx.schema.list[id]?.indexOf(prop)
-    return idx >= 0 ? (factAt(id, idx)?.kind ?? null) : null
+    return ctx.schema.slotVTBySid(ctx.schema.idOf(varName), prop)
   }
 
   /** Resolve the monomorphic typed-array ctor for `varName.prop`, or null.
