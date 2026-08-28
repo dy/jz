@@ -2,7 +2,10 @@
  * SIMD auto-vectorization for TypedArray.prototype.map(): pattern detection
  * over the callback AST (analyzeSimd) plus v128 + scalar-remainder codegen
  * (genSimdMap), for the recognized scalar-op families (mul/add/sub/div/neg/
- * abs/sqrt/ceil/floor/bitwise) on Int32/Uint32/Float32/Float64 elements.
+ * abs/sqrt/ceil/floor) on Int32/Uint32/Float32/Float64 elements, plus
+ * bitwise (&|^<<>>>>>) on Int32/Uint32 elements only — a float element's
+ * ECMAScript ToInt32 has no SIMD-lane form, so genSimdMap declines the fast
+ * path for that combination (see its comment) rather than mis-lower it.
  *
  * Pure move out of module/typedarray.js (stdlib-generators minimality pass):
  * `.typed:map`'s one call site there now imports analyzeSimd/genSimdMap from
@@ -24,6 +27,12 @@ import { STRIDE, SHIFT, LOAD, STORE } from './elem-tables.js'
 
 // SIMD: vector width per element type (elements per v128)
 const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
+
+// Bitwise/shift op names analyzeSimd's bitwise branch (below) produces — the JS
+// operator → op-name mapping lives there. genSimdMap is the SINGLE gate that
+// declines this family for a float element (see its comment); simdOp/scalarOp's
+// bitwise arms below rely on that gate and stay i32-only.
+const BITWISE_OPS = new Set(['and', 'or', 'xor', 'shl', 'shr', 'shru'])
 
 
 // === SIMD pattern detection ===
@@ -48,6 +57,12 @@ const isConst = node => {
 /**
  * Analyze callback body for SIMD-vectorizable patterns.
  * Returns { op, val } or null.
+ *
+ * Deliberately element-kind-agnostic — this matches the bitwise family
+ * against ANY element type, float included. genSimdMap (the only caller,
+ * which alone knows the elemType) is the SINGLE place that decides which
+ * (op, elemType) combinations the fast path actually supports; don't add
+ * an elemType check here too — see genSimdMap's comment for why.
  */
 function analyzeSimd(body, param) {
   if (!Array.isArray(body)) return null
@@ -100,7 +115,9 @@ const simdOp = (p, t) => (op, c) => {
     sub: `${p}.sub (local.get $v) ${s}`, div: `${p}.div (local.get $v) ${s}`,
     neg: `${p}.neg (local.get $v)`, abs: `${p}.abs (local.get $v)`,
     sqrt: `${p}.sqrt (local.get $v)`, ceil: `${p}.ceil (local.get $v)`, floor: `${p}.floor (local.get $v)`,
-    // i32-only bitwise (no-op for float prefixes since analyzeSimd won't produce these for float)
+    // i32-only: genSimdMap declines a float element for this op family before
+    // ever calling simdF64/simdF32 (see its comment) — `p`/`t` here are
+    // always the i32x4/i32 prefix whenever `op` is one of these.
     and: `v128.and (local.get $v) (i32x4.splat (i32.const ${c}))`,
     or: `v128.or (local.get $v) (i32x4.splat (i32.const ${c}))`,
     xor: `v128.xor (local.get $v) (i32x4.splat (i32.const ${c}))`,
@@ -119,6 +136,9 @@ const scalarOp = (t, v) => (op, c) => {
     neg: t === 'i32' ? `(i32.sub (i32.const 0) ${g})` : `(${t}.neg ${g})`,
     abs: t === 'i32' ? `(select (i32.sub (i32.const 0) ${g}) ${g} (i32.lt_s ${g} (i32.const 0)))` : `(${t}.abs ${g})`,
     sqrt: `(${t}.sqrt ${g})`, ceil: `(${t}.ceil ${g})`, floor: `(${t}.floor ${g})`,
+    // i32-only: genSimdMap declines a float element for this op family before
+    // ever calling scalarF64/scalarF32 (see its comment) — `t`/`g` here are
+    // always the i32 local whenever `op` is one of these.
     and: `(i32.and ${g} (i32.const ${c}))`, or: `(i32.or ${g} (i32.const ${c}))`,
     xor: `(i32.xor ${g} (i32.const ${c}))`, shl: `(i32.shl ${g} (i32.const ${c}))`,
     shr: `(i32.shr_s ${g} (i32.const ${c}))`, shru: `(i32.shr_u ${g} (i32.const ${c}))`,
@@ -136,6 +156,31 @@ const scalarF64 = scalarOp('f64', 'e'), scalarF32 = scalarOp('f32', 'ef'), scala
  */
 function genSimdMap(name, elemType, pattern) {
   const { op, val: c } = pattern
+
+  // Bitwise/shift family (&|^<<>>>>>) needs ECMAScript ToInt32 applied to the
+  // element VALUE first — `x & 1` on a Float32Array element 1.5 is 1, not a
+  // raw-bit reinterpret. For Int32/Uint32 elements the stored i32 bits already
+  // ARE that ToInt32'd value, so the fast path below applies the op directly.
+  // For a Float32Array/Float64Array element there is no vectorized ToInt32:
+  // WASM SIMD's only float→int lanes (i32x4.trunc_sat_f32x4_*/
+  // f64x2_*_zero) SATURATE out-of-range magnitudes instead of wrapping mod
+  // 2^32 like ToInt32 does (e.g. ToInt32(3e9) must wrap to a specific
+  // negative i32, not clamp to INT32_MAX), so no SIMD instruction sequence
+  // reproduces it lane-wise — and the scalar tail's `i32.and`-family ops need
+  // an actual i32 operand, not an f32/f64 local's raw bits (mixing them is
+  // invalid WAT, not merely wrong — the bug this comment now prevents).
+  // Decline the fast path here — the SAME `return null` the i8/i16/u8/u16
+  // branch below already uses — so the caller (module/typedarray.js's
+  // `.typed:map`) falls through to the generic per-element map lowering,
+  // which already threads every bitwise op through the real ToInt32
+  // (src/ir.js toI32, via emit.js's `&|^<<>>>>>` handlers) and stores the
+  // result back through elemStoreIR's f32.demote_f64/f64.store — the ONE
+  // existing authority for float-element bitwise; not reimplemented here.
+  // This is genSimdMap's single element-kind gate for the family — analyzeSimd
+  // deliberately stays element-kind-agnostic (see its own comment) so the
+  // decision lives in exactly one place.
+  if ((elemType === 6 || elemType === 7) && BITWISE_OPS.has(op)) return null
+
   const stride = STRIDE[elemType]
   const shift = SHIFT[elemType]
   const load = LOAD[elemType], store = STORE[elemType]

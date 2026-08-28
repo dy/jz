@@ -441,6 +441,43 @@ test('SIMD - f32 reduction widens to f64x2 accumulate, bit-identical', () => {
   is(jz(`export let m = () => { let a = new Float32Array(16); for (let i=0;i<16;i++) a[i]=i+1; let s=0; for (let i=0;i<16;i++) s+=a[i]; return s }`, { optimize: 'speed' }).exports.m(), 136)
 })
 
+// === SIMD map bitwise-on-float — genSimdMap declines the fast path ===
+// ECMAScript ToInt32 has no SIMD-lane form (WASM SIMD's only float→int lanes —
+// i32x4.trunc_sat_f32x4_*/f64x2_*_zero — SATURATE out-of-range magnitudes,
+// they don't wrap mod 2^32 like ToInt32), so a Float32Array/Float64Array
+// `.map(x => x & c)`-shaped callback (& | ^ << >> >>>) declines the SIMD/
+// scalar fast path in module/typedarray/simd-map.js's genSimdMap and falls
+// through to the generic per-element map (module/typedarray.js), which
+// already threads the callback through the real ToInt32 (src/ir.js toI32,
+// via emit.js's operator handlers) and stores back through elemStoreIR
+// (f32.demote_f64/f64.store) — same as `x & 1` on 1.5 === 1, NaN === 0.
+// Differential against the host's own Float32Array/Float64Array (the
+// authoritative oracle for TypedArray.prototype.map + ToInt32) at O0/O2/O3,
+// element-by-element (not summed, so a compensating-error pair can't hide).
+const BW_VALUES = [
+  1.5, -2.5, 3, 4, 0, -0, -7, NaN, 0.4, 0.9999999,
+  2147483647, 2147483648, -2147483648, -2147483649, // INT32 boundary ±1
+  4294967296, 3e9, -3e9, 1e15, -1e15, Infinity, -Infinity, // beyond UINT32, well within toI32's ±2^63 wrap range
+]
+const bwLit = v => Number.isNaN(v) ? 'NaN' : v === Infinity ? 'Infinity' : v === -Infinity ? '-Infinity'
+  : Object.is(v, -0) ? '-0' : String(v)
+const BW_JS_OPS = { '&': x => x & 1, '|': x => x | 1, '^': x => x ^ 1, '<<': x => x << 1, '>>': x => x >> 1, '>>>': x => x >>> 1 }
+
+for (const Kind of ['Float64Array', 'Float32Array']) {
+  for (const [jsOp, fn] of Object.entries(BW_JS_OPS)) {
+    test(`SIMD map bitwise decline - ${Kind} x ${jsOp} 1 matches native ToInt32 semantics, O0/O2/O3`, () => {
+      const assigns = BW_VALUES.map((v, i) => `a[${i}]=${bwLit(v)}`).join('; ')
+      const src = `export let main = () => { let a = new ${Kind}(${BW_VALUES.length}); ${assigns}; return a.map(x => x ${jsOp} 1) }`
+      const want = Array.from(new globalThis[Kind](BW_VALUES).map(fn))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < BW_VALUES.length; i++)
+          is(got[i], want[i], `${Kind} x${jsOp}1 O${optimize} elem[${i}] (src=${BW_VALUES[i]})`)
+      }
+    })
+  }
+}
+
 // === SIMD Int32Array (i32x4 — 4 elements per vector) ===
 
 test('SIMD i32x4 - map multiply', () => {
@@ -459,6 +496,27 @@ test('SIMD i32x4 - map add', () => {
     let r = buf.map(x => x + 5)
     return r[0]+r[1]+r[2]+r[3]
   }`).main(), 120)
+})
+
+test('SIMD i32x4 - map bitwise still takes the SIMD lane path (unaffected by the float decline)', () => {
+  // Regression guard for the fix above: genSimdMap's float-only decline
+  // (elemType 6/7) must not spill onto Int32Array/Uint32Array (elemType 4/5) —
+  // WAT-shape pin, not just value correctness, so a regression is caught even
+  // if it happens to still compute the right number via the scalar fallback.
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    const w = wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })
+    ok(/i32x4\.and|v128\.and/.test(w), `${Kind}: bitwise .map() still vectorizes (v128.and present)`)
+  }
+  for (const [jsOp, watOp] of [['<<', 'i32x4.shl'], ['>>', 'i32x4.shr_s'], ['>>>', 'i32x4.shr_u']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 1) }`, { optimize: 0 })
+    ok(w.includes(watOp), `Int32Array x${jsOp}1: ${watOp} present`)
+  }
+  is(run(`export let main = () => {
+    let buf = new Int32Array(4)
+    buf[0]=5; buf[1]=-6; buf[2]=255; buf[3]=-1
+    let r = buf.map(x => x & 15)
+    return r[0]+r[1]+r[2]+r[3]
+  }`).main(), (5 & 15) + (-6 & 15) + (255 & 15) + (-1 & 15))
 })
 
 // === SIMD ramp-map (out[i] = f(i), induction var as DATA) — tryRampMap ===
