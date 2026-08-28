@@ -751,3 +751,18 @@ Scratch files this round (scratchpad/, safe to ignore/delete):
 probe-hexlit.mjs..probe-hexlit6.mjs, probe-wat1.mjs/probe-wat2.mjs
 (+ their .wat outputs), probe-i64enc.mjs/probe-i64enc2.mjs,
 probe-ternary2.mjs, dump-watr-wat.mjs.
+
+### Post-commit follow-up: native suite confirmed clean
+
+`node test/index.js` (full native suite, dadce8ce's `src/ir.js`) completed
+with **exit code 0, zero `✗`/`×` failure markers** in its output — includes
+the "watr metacircular: jz-built watr.wasm produces byte-identical output"
+block (22/22 assertions, all wat fixtures byte-identical) and reaches
+jz's own pinned "watr-regression: f64.const large hex integer rounds
+correctly" test (this exact bug class) with no failure before exit. So the
+`ir.js` gate widening is native-clean; the ONLY confirmed-broken surface
+remains the watr-downstream regression (float_memory family +
+`compile: simd const`, 603->600/626) documented above. Did not additionally
+run kernel build/kernel-parity/kernel-oracle/bench-size this session —
+correctly gated on resolving the watr regression first per this file's own
+"NOT mergeable as-is" disposition.
