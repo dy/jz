@@ -4328,11 +4328,27 @@ function trySchemaClosureCall({ obj, method, parsed }) {
     const idx = ctx.schema.slotOf(obj, method)
     if (idx >= 0) {
       const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-      if (parsed.hasSpread && !ctx.schema.isBoxed?.(obj)) {
-        const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
-        return ctx.closure.call(propRead, [buildArrayWithSpreads(combined)], true)
-      }
-      return ctx.closure.call(propRead, parsed.normal)
+      const prebuilt = parsed.hasSpread && !ctx.schema.isBoxed?.(obj)
+      const callArgs = prebuilt
+        ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
+        : parsed.normal
+      // Same runtime-verified box-tag strategy 11 (tryDynamicPropCall) already
+      // applies for its own dynamic dispatch: this property read is resolved
+      // to a real closure/function value at COMPILE time (a known schema
+      // slot), but WHICH function it holds is a runtime fact here — a proven
+      // same-module BigInt-returning candidate (Shape #8, call-target-index.js;
+      // still name-guess-only for the object-literal-method-shorthand shape
+      // bigintMethodTargets already covered) means the raw i64 payload needs
+      // boxing when the runtime dispatch actually lands on it. Unresolved
+      // (targets.size === 0) is byte-identical to the pre-existing code path —
+      // tagDynamicMethodResult's own total-passthrough contract.
+      const targets = bigintMethodTargets(obj, method)
+      if (!targets.size) return ctx.closure.call(propRead, callArgs, prebuilt)
+      const propTmp = temp('schemaProp')
+      const nativeCall = ctx.closure.call(typed(['local.get', `$${propTmp}`], 'f64'), callArgs, prebuilt)
+      return block64(
+        ['local.set', `$${propTmp}`, propRead],
+        tagDynamicMethodResult(propTmp, nativeCall, targets))
     }
   }
 }
@@ -4416,6 +4432,16 @@ function bigintMethodTargets(obj, method) {
     if (typeof expr === 'string') {
       for (const name of [`${expr}$${method}`, `${expr}${T}${method}`])
         if (ctx.funcs.map.get(name)?.valResult === VAL.BIGINT) out.add(name)
+      // Shape #8 (call-target-index.js): a same-module named function
+      // reached through a schema property, proven by the frozen call-target
+      // index rather than guessed from a naming convention — complements
+      // the two name-guesses above rather than replacing them (they serve a
+      // different, unrelated shape: an object-literal-method-shorthand
+      // property, synthesized as a standalone function at those exact
+      // names, never recorded as a write this index's own write-census
+      // would see).
+      const resolved = ctx.types.callTargets?.resolveMember(expr, method)
+      if (resolved?.valResult === VAL.BIGINT) out.add(resolved.name)
       return
     }
     if (!Array.isArray(expr)) return

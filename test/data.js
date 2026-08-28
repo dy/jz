@@ -2314,56 +2314,35 @@ test('bigint: storage-read forwarded through TWO plain named functions, no closu
   }
 })
 
-test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a bare name (shape #7 residual — KNOWN-WRONG)', () => {
-  // Root-caused validating shape #7's own fix against the REAL watr build
-  // (not a repro shape): watr's actual memory64/float_memory64/
-  // call_indirect64 CI failures survive shape #7's closure/dispatch-table
-  // fix (landed above) AND every sibling gap it also closed (paramNeverBool,
-  // currentOf's callee-body materializedResult lookahead, bigintTyped
-  // program-wide pre-seeding — all in representation-plan.js, all verified
-  // against this same watr build). The one remaining seam: compile.js's
-  // `HANDLER.i64` closure calls `encode.i64(n.shift(), out)` (a DIRECT NAME
-  // call once bundled — already correctly resolved) — but `encode.i64`
-  // itself, internally, does `n = i64.parse(n)`, a `.`-MEMBER call to
-  // `i64.parse` (`i64.parse = n => {...}`, a function attached as a static
-  // property of `i64`, a SAME-MODULE sibling — not a bare name, not a
-  // computed dispatch, not a closure).
+test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a bare name (shape #8 — FIXED)', () => {
+  // Was KNOWN-WRONG (shape #8): watr's actual memory64/float_memory64/
+  // call_indirect64 CI failures survived shape #7's closure/dispatch-table
+  // fix (above) because `encode.i64`'s own `n = i64.parse(n)` is a
+  // `.`-MEMBER call to `i64.parse` (`i64.parse = n => {…}`, a function
+  // attached as a static property of `i64`, a same-module sibling — not a
+  // bare name, not a computed dispatch, not a closure). Every provenance
+  // function in this file (currentOf/semanticOf/exprMay/exprRep/
+  // visitCallSites/scan) gated its direct-callee branch on
+  // `typeof node[1] === 'string'` exclusively, so a `.`-member call to a
+  // real, user-defined function was invisible to analysis even though
+  // emission's own dynamic dispatch called it correctly at the VALUE level
+  // — the exact same callee body, called by bare name (the control just
+  // above), was already correct; called via `ns.parse(...)`, the raw i64
+  // bits crossed unboxed and were misread as a subnormal Number
+  // (`3.5e-323`).
   //
-  // Isolated below to the minimal control pair: the IDENTICAL callee body,
-  // called by bare name, is ALREADY correct (proves every OTHER mechanism —
-  // paramNeverBool, the BOOL-veto bypass, the storage-argument proof — is
-  // fine); called via `ns.parse(...)` instead, the exact same value comes
-  // back as a plain Number (raw i64 bits misread as a subnormal float,
-  // `3.5e-323` — the identical corruption class this whole fixpoint exists
-  // to close). Root cause: EVERY provenance function in this file that
-  // resolves a call's callee — currentOf, semanticOf, exprMay, exprRep,
-  // visitCallSites, scan's storage-taint rules — gates the direct-callee
-  // branch on `typeof node[1] === 'string'` (a bare-name callee) exclusively
-  // (aside from a narrow, built-in-method-name allowlist for `.get`/`.pop`/
-  // `.shift`/`.at`/etc.). A `.`-member call to a REAL, user-defined named
-  // function (`ns.parse(x)`) is invisible to all of them — even though
-  // emission's OWN call resolution (ctx.funcs.map, via a different,
-  // already-bundle-aware path) calls it correctly; representationCallArg
-  // Action's own edge decision at the call site resolves fine for the SAME
-  // reason bare-name calls do (it consumes emission's resolved callee, not
-  // this file's own node[1] string match) — the gap is specifically in the
-  // ANALYSIS-side provenance functions' inability to name the callee at all
-  // from a `.`-shaped node, so the callee's OWN param/result facts never
-  // enter the fixpoint's evidence base in the first place.
-  //
-  // Out of shape #7's own scope (closure-parameter materialization across a
-  // COMPUTED-DISPATCH boundary): no closure, no computed key, anywhere in
-  // this shape. A distinct, comparably-sized undertaking — extending every
-  // one of the provenance functions above to resolve a `.`-member callee to
-  // its bundled function (the same base-name+property → function-name
-  // mapping emission's own resolution already has, not yet available to
-  // this file) — not a slice of shape #7's fix. Stopped here per the wall
-  // protocol rather than forced.
-  // FLIP CONDITION: once `.`-member calls to same-module named functions
-  // resolve through the SAME direct-callee machinery bare-name calls already
-  // use (in currentOf, semanticOf, exprMay, exprRep, and visitCallSites/
-  // scan's call-argument evidence), replace the `typeof` reject below with
-  // `is(e.f(), 7n, ...)` matching the bare-name control right above it.
+  // Fixed by call-target-index.js: one frozen, same-module index, built
+  // once in plan/index.js before representation-plan.js's provenance walk
+  // or narrow.js's signature narrowing ever run, proving a `.`-member call's
+  // callee from whole-program property-write evidence (never a name guess).
+  // representation-plan.js's exprMay/exprRep/scan/visitCallSites now resolve
+  // a `.`-member callee through the SAME index bare-name calls trivially
+  // already had; emission's trySchemaClosureCall (a schema-known property
+  // dispatched as a closure call) applies the identical runtime-verified
+  // box-tag strategy tryDynamicPropCall already used for its own guessed
+  // targets, now fed the index's proven candidate too. An unresolved
+  // `.`-member call is untouched — same runtime dispatch, same "no claim"
+  // default as before this fix.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const src = `
@@ -2394,7 +2373,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
         return ns.parse(nodes.shift())
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: identical callee reached via .member call crosses as raw box-pointer bits (Number), never a BigInt`)
+    is(e.f(), 7n, `${lbl}: identical callee reached via .member call now crosses as a real BigInt`)
   }
 })
 
