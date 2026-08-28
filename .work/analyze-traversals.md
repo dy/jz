@@ -465,9 +465,30 @@ Not attempted beyond the 12: `analyzeBody`'s own main `walk`, `widenLocalTypes`'
 for a reason recorded in Parts 1-2 above (string-leaf visits, env-threaded
 state, fixpoint iteration, or documented iterative-recursion necessity).
 
+**One genuine redundant-computation win was found and fixed** (distinct from
+both retirement and node-set fusion): `widenLocalTypes` called
+`collectBareEscapes(body, locals)` up to TWICE per invocation — once
+internally inside `collectI32SafeIndexVars` (called from `widenLocalTypes`'s
+very first line), and again, conditionally, in Pass D when `level1I32` is
+true. `collectBareEscapes`'s `locals` parameter is provably dead (grep-
+verified: never referenced in its body) and it does not mutate anything —
+its result depends only on `body` (frozen during analyze) and `crossClosure`
+(omitted, false, at both call sites) — so the two calls are byte-identical
+whenever both fire. `collectBareEscapes` is itself a full-body walk PLUS an
+internal `collectComparedNames` full-body sub-walk, so this was a real
+duplicate traversal, not just a duplicate function call. Fixed by giving
+`collectI32SafeIndexVars` an optional lazy-memoizing `bareEscapesOf` thunk
+parameter (default: a fresh call, so any other/future caller's behavior is
+byte-for-byte unchanged) and having `widenLocalTypes` construct ONE
+memoizing thunk shared by both consumers — computed at most once, and not
+at all when neither consumer needs it (preserves both early-exit paths:
+`collectI32SafeIndexVars`'s own no-dynamic-index short-circuit, and Pass D's
+`level1I32` gate).
+
 No traversal fusion (distinct from retirement) was found beyond the
-already-landed `scanObjectArrayFacts` (prior art). Every pair of traversals
-re-examined for a shared node-set/order either has a genuine data dependency
+already-landed `scanObjectArrayFacts` (prior art) and the redundant-call
+dedup above. Every pair of traversals re-examined for a shared node-set/order
+either has a genuine data dependency
 (one must complete before the other starts: `collect`→`seed` in
 `collectI32SafeIndexVars`, `collectCursors`→`verify` in
 `analyzeStructInline`, `walk`→`widenLocalTypes`→`narrowUint32` in

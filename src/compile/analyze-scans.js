@@ -1293,7 +1293,14 @@ export function stampCoInductionRanges(body) {
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
-export function collectI32SafeIndexVars(body, locals) {
+// `bareEscapesOf` (optional): a zero-arg thunk returning `collectBareEscapes(body,
+// locals)`, for a caller (widenLocalTypes) that ALSO needs that same fact for its
+// own Pass D and would otherwise trigger it twice — collectBareEscapes is itself a
+// full-body walk plus a collectComparedNames sub-walk, so a shared, once-computed
+// value (the caller's thunk typically memoizes) avoids a real duplicate traversal
+// whenever both consumers fire. Defaults to a fresh call, matching prior behavior
+// exactly for any other caller.
+export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => collectBareEscapes(body, locals)) {
   if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
   const safe = new Set()
   // Collect names reachable from `node` through affine ops only, into `sink`.
@@ -1381,7 +1388,7 @@ export function collectI32SafeIndexVars(body, locals) {
   // role, not on some other excluded var's escape status (a plain local
   // copy `e = id` already routes through the SAME edge-exemption regardless
   // of id's verdict, so e's own qualification — if any — is unaffected).
-  for (const n of collectBareEscapes(body, locals)) safe.delete(n)
+  for (const n of bareEscapesOf()) safe.delete(n)
   // Promote integer-shaped index feeders the type pass left at f64 (a hoisted
   // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
   // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.
