@@ -1562,3 +1562,96 @@ change what an EARLIER-compiled sibling observes", not just "does this cost byte
   `execFileSync` timeout and automatic non-sanitized fallback already built into the test — not a
   bug, just slower than the earlier glance suggested; the second attempt ran the same section
   through to completion without intervention once given the full 60s.)
+
+## Session end state — `REGION_HOOKS_ACTIVE` reverted to `false`, `JZ_TEST_TARGET=jz.wasm` leg still running at handoff
+
+**`REGION_HOOKS_ACTIVE` reverted to `false`** (`scripts/self.js`, matches HEAD/d2c04d32, zero diff)
+per the task's own mandate — the hooks-on battery is NOT fully green: the `dict` kernel-parity byte
+gap remains open (native suite 3737/3741, kernel-oracle 11/14 blocks, kernel-parity aborts at
+`dict`), and the `JZ_TEST_TARGET=jz.wasm node test/index.js` leg had not finished by session end
+(see below). Flipping the default was correctly foreclosed by the mandate's own condition.
+
+**`JZ_TEST_TARGET=jz.wasm node test/index.js` (the kernel-target battery leg) was STILL RUNNING,
+unfinished, at session end** — launched against the `72eddaee`-era region-enabled kernel (built
+AFTER the `d1f4b585`/`31ce2aa6`/`72eddaee` fixes, BEFORE the `4b37da79` closure.floor fix — that
+fix is `host:'wasi'`+`nativeTimers`-specific and `timers` is itself in `test/index.js`'s own
+`KERNEL_EXCLUDE` set, so it can't affect this leg regardless of kernel staleness). Ran 38+ minutes
+continuously (confirmed healthy throughout via repeated `ps` CPU-time-delta checks — steadily
+accumulating, never stalled) without producing output (piped through `tail -100`, so nothing
+prints until the whole run finishes) under exceptionally heavy shared-machine load (3-4 concurrent
+unrelated agent sessions' own full test/build runs observed competing for CPU throughout this
+session — confirmed via `lsof`-verified `cwd` on every `node test/index.js` process in the process
+table, not just guessed). A direct, isolated sanity check (`JZ_TEST_TARGET=jz.wasm node -e
+"compile('export let f=(a,b)=>a+b',{})"`) confirmed the kernel-target PATH itself works correctly
+and instantly against this exact kernel — the long run is scale (a large corpus, each case a
+real wasm-kernel compile call, slower per-call than native) plus today's contention, not a hang.
+
+**Task ID / how to pick this back up**: the background command is `Bash` task id `b19o81x7o`
+(prompt: "Run the kernel-target test battery against the region-enabled kernel"), output file
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/tasks/
+b19o81x7o.output`, backing process PID 75735 (cwd this worktree). If it completed after this
+session ended, read that file directly for the result. If the WORKTREE has since been torn down
+and the process is gone, re-run `JZ_TEST_TARGET=jz.wasm node test/index.js` fresh against a
+rebuilt kernel (rebuild first — `dist/jz.wasm` is gitignored, not part of any commit) once
+`REGION_HOOKS_ACTIVE` is flipped back to `true` for that purpose; expect the SAME `dict`-class
+gap to surface there too (native-vs-kernel byte parity, not execution), consistent with every
+other leg this session measured, and otherwise a clean run — every fix landed this session was
+independently verified via the OTHER four battery legs (native full suite, kernel-oracle,
+kernel-parity, goal-probe) before this leg was even launched.
+
+### Summary of everything independently confirmed clean this session (i.e., NOT blocked on the
+### still-running kernel-target leg)
+
+1. Native full suite (`node test/index.js`, no filter, no `JZ_TEST_TARGET`): **3737/3741 pass, 3
+   fail (all `dict` kernel-parity, pre-existing, execution-correct), 1 skip.**
+2. `node test/kernel-oracle.js` against the region-enabled kernel: **11/14 blocks, 581 assertions
+   — every EXECUTION assertion passes at O0/O2/O3; the only 3 failures are `dict`'s WAT-byte-parity
+   check.**
+3. `node test/kernel-parity.js` against the same kernel: **`sum`/`math` byte-IDENTICAL at O0/O2/O3
+   — the task's own originally-cited repro ("sum O0: native 642B vs kernel 923B") is closed.**
+   Aborts at `dict` (3rd corpus entry) per the file's own first-mismatch-throws design.
+4. `test/eager-stdlib-parity.js` (this session's own new pin): **20/20 pass standalone** — 7/11
+   corpus entries byte-identical eager-vs-lazy per host (up from 0/11 at session start), the
+   `dict`/`mfold`/`subviewtyped`/`dvnested` known-gaps tracked explicitly rather than silently
+   uncovered, frobnicate reject-parity pinned directly.
+5. Goal-probe (hooks-on, this session's full fix set): `TRAP "unreachable", peakBytes 3999662080,
+   elapsedMs 684846, 163 modules` — 93.1% of the wasm32 ceiling, same trap mechanism and scale as
+   the prior session's own measurement, confirming this session's fixes didn't regress (or
+   materially change) the separate, already-banked jz×jz-scale memory-wall issue.
+
+### The task's two named findings — both closed
+
+- **(a) Module-init purity (Class 1)**: `module/function.js`'s `ctx.closure.types.add(1)` and
+  `module/timer.js`'s `setupWasi`'s unconditional `hostImport`/`inc`/`declGlobal` were the two
+  task-named examples — both fixed (`31ce2aa6`→corrected in `72eddaee`; `610d44c7`→corrected in
+  `4b37da79`), plus a THIRD related site found and fixed in the same investigation
+  (`src/wat/assemble.js`'s `finalizeClosureTable` scanning EVERY ever-registered stdlib template
+  instead of only reachable ones, `31ce2aa6`). The broader "audit every module" ask was addressed
+  by BUILDING AND USING the byte-identity probe as the audit instrument (empirically confirmed
+  object/array/typedarray/string/collection module loading is already harmless via the corpus'
+  `dict`/`arr`/`nestedtyped`/`subviewtyped`/`fromnested`/`boolconst` rows) rather than manually
+  re-deriving "does treeshake cover this" for every one of ~150 `inc()`/`declGlobal()` call sites
+  by hand — spot-checked (atomics.js, symbol.js, navigator.js, web.js, crypto.js) all clean, one
+  narrow exception flagged not fixed (crypto.js's `declGlobal('crypto.state',...)` under the
+  `randomSeed` opt specifically, low priority, likely also treeshake-covered but not verified).
+- **(b) Kernel-vs-native REJECT divergence**: root-caused precisely — NOT a `valTypeOf` regression
+  (confirmed `vt` stays `'array'` identically eager vs lazy); it was `tryDynamicPropCall`'s `if
+  (ctx.closure.call)` gate treating "is `fn` LOADED" as a proxy for "could this receiver hold a
+  closure", which eager preload breaks. Fixed by adding `ctx.module.demanded` (src/ctx.js) — a
+  ledger of REAL, AST-content-driven module requests, separate from "has init(ctx) run for any
+  reason" — and gating both `tryDynamicPropCall` and `tryGenericEmitter`'s shadow probe on it.
+  Also closed an EXTRA, unplanned discovery of the identical mechanism (`dvnested`'s DataView
+  dispatch), and, while investigating THAT one to full closure, found and fully localized (though
+  did not fix — separate bug class, separate repo) a watr optimizer dead-code-elimination
+  reliability gap at scale.
+
+### Commits, in order (branch `fix/pure-stdlib-init`, base `d2c04d32`)
+
+`eabc8f9e` (test hook) → `57b9afc1` (notes) → `d1f4b585` (Class 2 fix) → `c3c95182` (notes) →
+`31ce2aa6` (Class 1 fix, closure table — later found to need correction) → `610d44c7` (Class 1
+fix, timer wasi runtime — later found to need correction) → `1ae0168b` (notes) → `80ec0155` (pin)
+→ `72eddaee` (fixes the `31ce2aa6` regression) → `e569712d`/`4ae76b18` (notes) → `4b37da79` (fixes
+the `610d44c7` regression) → this commit (final notes). All source commits left `git diff` against
+`d2c04d32` showing ONLY the intended files; `scripts/self.js`'s `REGION_HOOKS_ACTIVE` stayed
+`false` in every commit (only ever flipped locally, uncommitted, for measurement, and reverted
+before each commit boundary).
