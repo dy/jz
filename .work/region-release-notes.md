@@ -2121,3 +2121,90 @@ question further this session.
 (dormant-path-only effect confirmed: the `canSkipWholeProgramNarrowing` change only changes
 behavior when `ctx.module.demanded.has('fn')` differs from `ctx.closure.make`'s bare truthiness,
 which only happens under eager preload).
+
+### Goal (2)/(3), continued same session — hooks-on kernel rebuilt with this session's fix
+
+`REGION_HOOKS_ACTIVE` flipped `true` (uncommitted, this worktree only) and rebuilt the REAL O3
+production kernel (`node scripts/self-compile-build.mjs`, default config, no env overrides):
+**253.2s, 15,802,268 bytes** — matches the last recorded hooks-on size closely (15,801,936B in the
+prior session, +332B consistent with this session's `scope.js` source growth).
+
+- `node test/kernel-oracle.js`: **11/14 test-blocks pass, 581 assertions, 3 fail — all `dict`
+  WAT-byte-parity (O0/O2/O3)**, identical shape to every prior recording in this file (native
+  317703B vs kernel 317802B at O0, etc.) — every EXECUTION assertion passes. No regression, no
+  improvement from this session's mfold fix (expected: dict's gap is the SEPARATE, still-open
+  date.js/schema-table mechanism documented above, untouched by the `fn`/narrowing fix).
+- `node test/kernel-parity.js`: **sum/math byte-identical at O0/O2/O3** (the task's own originally-
+  cited repro stays closed), aborts at `dict` (3rd corpus entry) with the identical byte counts —
+  same as kernel-oracle's own numbers, cross-confirming.
+
+**Goal (2) — fuzz seed=84/opt=3 investigation, IN PROGRESS**: confirmed natively FIRST (cheapest
+check): `node test/fuzz.js --seed=84` compiles and matches JS at every opt level 0-3, cleanly,
+instantly — **no divergence, no slowness, no stack issue natively at all**. This rules out a
+semantic/miscompile explanation for the original kernel-side finding outright; whatever fails only
+fails inside the self-hosted kernel's own execution.
+
+Reproducing THIS specific repro against the kernel needed a small rig (documented for whoever
+continues, since it wasn't obvious): `node test/fuzz.js --seed=84` alone is ALWAYS native — the
+`JZ_TEST_TARGET=jz.wasm` env var is read ONLY by `test/index.js`'s own driver
+(`_setCompileTarget(compileViaKernel)`, called right before `for (const name of selected) await
+import(...)`), not automatically by `index.js`/`jz()` itself, and NOT by `test/fuzz.js` in
+isolation. Directly `import`-ing `test/fuzz.js`'s exported `fuzz()` to drive a targeted single-seed
+call is ALSO a trap: the file's `!isMain` branch (true whenever `import.meta.url` isn't
+`process.argv[1]`, i.e. true for anyone importing it as a library) registers 8 EXPENSIVE `test(...)`
+GATE blocks (the full 200×4 scalar sweep plus several 100-120-seed typed-array sweeps) that run for
+real the moment the module loads — the same general "importing a test file executes it" hazard this
+file's own "pure-stdlib-init" session already hit once for `kernel-parity.js`. Fix: `node --import=
+<preload.mjs> test/fuzz.js --seed=84 --opt=3`, where the preload module calls `_setCompileTarget
+(compileViaKernel)` BEFORE the main entry (`test/fuzz.js`) is ever loaded — Node's `--import` runs
+to completion before the main module resolves, so `test/fuzz.js` sees `isMain === true` (its own
+normal CLI path, `--seed=`) and every `jz(...)` call inside `check()` transparently routes through
+the kernel, with NO GATE blocks ever registered.
+
+**Result — genuinely slow or hung, not a fast throw**: unlike the ORIGINAL finding's "Maximum call
+stack size exceeded" (a fast, synchronous RangeError — stack overflows normally throw within
+milliseconds, not minutes), this session's repro run sat at 100% CPU, actively running (not
+blocked/stalled — confirmed via repeated `ps` ELAPSED/STAT checks, never zombied), for several
+minutes with no output and no crash. Whether it eventually throws the same stack-overflow or is
+actually a DIFFERENT failure mode (a genuine hang, in the same class as `transform`'s own
+documented "in-kernel infinite loop, 420s fence" — test/index.js's own `KERNEL-LEG DEBT` comment)
+was NOT resolved by session end — the run was still in flight; see the task-id/output-file pointer
+below for whoever picks this up. Notably, `test/index.js`'s own `KERNEL_EXCLUDE` comment records
+that `errors` and `parser-bugs` (two of the task's own three cited analogues) were BOTH fixed and
+UN-excluded on 2026-07-27 — only `transform` remains an actual current hang exclusion — so "self-
+hosted stack depth, permanent/unfixable" is NOT the only precedent in this codebase's own history;
+some of this exact failure CLASS turned out to be real, fixable bugs. This repro should not be
+assumed permanent without the same level of investigation those got.
+
+**Task ID / how to pick this back up**: background `Bash` task `bfflb8ux5` (this worktree, PID
+68858 at last check), command `node --import=<scratchpad>/kernel-preload.mjs test/fuzz.js
+--seed=84 --opt=3`, output file `<scratchpad>/tasks/bfflb8ux5.output`. If it completed after this
+session, read that file directly. If the worktree/process is gone, reproduce with the recipe above
+(needs a region-hooks-on kernel built first — `REGION_HOOKS_ACTIVE=true`,
+`node scripts/self-compile-build.mjs`, ~250s) — the preload script is `<scratchpad>/kernel-
+preload.mjs`, trivial to recreate (two imports + one `_setCompileTarget` call, shown in this
+section). If it turns out to be a genuine hang (not a fast stack-overflow throw), the concrete next
+step is bisecting seed=84's OWN generated program (shrink it — `test/fuzz.js`'s own `shrink()` +
+`report()` machinery, already wired for this exact purpose, just needs the SAME kernel-routed
+`check()` instead of the native one) to find the minimal nested shape that trips it, then compare
+against `errors`/`parser-bugs`'s ORIGINAL (now-fixed) root causes for a shared mechanism before
+concluding it's a new, unrelated one.
+
+**Goal (3) — goal-probe re-measurement, IN PROGRESS at session end**: launched
+(`<scratchpad>/goal-probe.mjs`, background task `b3ser1vkg`) against this session's freshly-built
+hooks-on kernel, reusing `resolveSelfCompileBuild({optimize:3, snapshot:true, helperCounters:false,
+helperCallsites:false})` (self-compile-build.mjs's own exact, unoverridden defaults) for
+`{graph.code, graph.modules}`, a fresh `interop.js` `instantiate(wasmBytes, {memory:65536})` (the
+wasm32 ceiling, 65536 pages), and `self.exports.default(codePtr, 0, optJSON, modulesPtr, 0)` —
+mirrors the recipe this file has used in every prior session. Result pending at session end — see
+task id `b3ser1vkg`, `<scratchpad>/tasks/b3ser1vkg.output`, or re-run `node <scratchpad>/goal-
+probe.mjs` fresh (script is self-contained, reads `dist/jz.wasm` from this worktree).
+
+**`JZ_TEST_TARGET=jz.wasm node test/index.js` (the third battery leg) — NOT YET RUN this session**,
+deliberately sequenced after the two background tasks above to avoid tripling concurrent kernel-
+scale CPU/memory load on a shared machine (both fuzz repro and goal-probe are long-running,
+resource-heavy processes already). Next step for whoever continues, once those two finish: `cd`
+this worktree, `JZ_TEST_TARGET=jz.wasm node test/index.js $(<the same test-names-minus-bench-c list
+this file's own earlier sessions used>)`, expect the SAME `dict`-class byte-parity failures
+kernel-oracle/kernel-parity already show (native-vs-kernel, not execution) as the only-expected
+divergence, per every prior session's leg — anything else is new.
