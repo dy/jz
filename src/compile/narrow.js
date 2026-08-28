@@ -2093,7 +2093,6 @@ export default function narrowSignatures(programFacts, ast) {
       if (poisoned && !trackKind) return
       const def = defaultArg(state, k)
       const v = def != null ? infer(def, k, state) : undefined
-      if (process.env.JZ_DBG_CALLEE === state.callee && field === 'val') console.error(JSON.stringify({ where: 'missing', callee: state.callee, k, callerFunc: state.callerFunc?.name ?? null, def, v, soft, trackKind }))
       if (trackKind) joinKinds(r, 'possibleKinds', v != null ? [v] : KIND_UNIVERSE)
       if (poisoned) return
       if (def != null) mergeParamFact(r, field, v)
@@ -2103,7 +2102,6 @@ export default function narrowSignatures(programFacts, ast) {
       const poisoned = r[field] === null
       if (poisoned && !trackKind) return
       const v = infer(arg, k, state)
-      if (process.env.JZ_DBG_CALLEE === state.callee && field === 'val') console.error(JSON.stringify({ where: 'apply', callee: state.callee, k, callerFunc: state.callerFunc?.name ?? null, arg, v, soft, trackKind }))
       if (trackKind) joinKinds(r, 'possibleKinds', v != null ? [v] : KIND_UNIVERSE)
       if (poisoned) return
       if (v == null) { if (!soft) { r[field] = null; latticeMeet.changed = true } return }

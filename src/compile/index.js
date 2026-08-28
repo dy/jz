@@ -560,7 +560,6 @@ function analyzeFuncForEmit(func, programFacts) {
       // (emitTypeTag, src/ir.js) that's wrong for every other-kinded call —
       // fix/selfhost-hash-read's own root cause (a HASH-representation
       // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
-      if (process.env.JZ_DBG_PARAMVAL2 && (name.includes('uleb') || name.includes('wleb') || name.includes('memargEnc') || name === 'm0_compile$id' || name.includes('blockid') || name === 'm0_compile$reftype')) console.error(JSON.stringify({ name, pname, k, val: r.val, reassigned, trustworthy: paramValTrustworthy(r), possibleKinds: r.possibleKinds ? [...r.possibleKinds] : r.possibleKinds, kindsCoverage: r.kindsCoverage }))
       if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       // presentVal (§16→§18 "presentVal param producers") — narrow.js's
       // inter-procedural hardParamPresentVal fold (mirroring hardParamVal's
@@ -1534,7 +1533,6 @@ function emitFunc(func, functionPlan, programFacts) {
       // (emitTypeTag, src/ir.js) that's wrong for every other-kinded call —
       // fix/selfhost-hash-read's own root cause (a HASH-representation
       // parameter compiled with an unconditionally-hardcoded PTR.OBJECT tag).
-      if (process.env.JZ_DBG_PARAMVAL2 && (name.includes('uleb') || name.includes('wleb') || name.includes('memargEnc') || name === 'm0_compile$id' || name.includes('blockid') || name === 'm0_compile$reftype')) console.error(JSON.stringify({ name, pname, k, val: r.val, reassigned, trustworthy: paramValTrustworthy(r), possibleKinds: r.possibleKinds ? [...r.possibleKinds] : r.possibleKinds, kindsCoverage: r.kindsCoverage }))
       if (r.val && !reassigned && paramValTrustworthy(r) && !ctx.func.localReps?.get(pname)?.val) updateRep(pname, { val: r.val })
       // presentVal: mirrors the analyzeFuncForEmit seeding above (see its comment) —
       // same guard, same duplication reason.
