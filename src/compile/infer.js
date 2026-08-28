@@ -97,15 +97,28 @@ export const inferParams = (body, candidates) => {
   return merged
 }
 
-// === Source: method evidence (rungs 2-3, member-access shape) ==============
+// === Source: method evidence (rung 2, member-access shape) =================
 //
-// `name.method(...)` is the strongest cheap signal we get for the STRING vs
-// ARRAY distinction. The method-name partition is three sets:
+// `name.method(...)` is a cheap signal for the STRING vs non-STRING
+// distinction. The method-name partition is two sets:
 //
-//   STRING_ONLY      — definite STRING (no Array/TypedArray equivalent)
-//   ARRAY_INDUCERS   — definite plain Array (absent on String + TypedArray)
-//   ARRAY_ONLY_POISON— Array + TypedArray (poisons tentative STRING, doesn't
-//                      induce ARRAY because the receiver may still be TYPED)
+//   STRING_ONLY       — definite STRING (no Array/TypedArray/Object
+//                       equivalent) — a genuine PROOF: seeing one of these
+//                       on a bare binding, `name` cannot be anything else.
+//   ARRAY_ONLY_POISON — Array/TypedArray/Object-shaped names (push/pop/…) —
+//                       proves the NEGATIVE (not a STRING: no
+//                       String.prototype method of these names exists) but
+//                       never induces a positive ARRAY verdict. A plain
+//                       OBJECT/HASH value can equally own a same-named
+//                       closure property (the makeByteBuf/ByteBuf `b.push =
+//                       (v) => {...}` idiom) — every consumer downstream
+//                       trusts a settled `val` as a hard proof (method
+//                       dispatch, AND plain property reads like `.length` —
+//                       module/core.js's emitLengthAccess reads a jz Array's
+//                       length HEADER word for a proven-ARRAY receiver, with
+//                       no own-property shadow to check, because a REAL
+//                       Array never needs one), so guessing ARRAY from
+//                       method-name usage alone silently miscompiled both.
 //
 // Reassignment to an unambiguously-typed RHS (`x = 0`) poisons the inference
 // regardless of prior evidence — a later method call can't re-induce a shape
@@ -128,10 +141,6 @@ const ARRAY_ONLY_POISON = new Set([
   'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',
   'flat', 'flatMap', 'copyWithin',
 ])
-const ARRAY_INDUCERS = new Set([
-  'push', 'pop', 'shift', 'unshift', 'splice', 'flat', 'flatMap',
-])
-
 const methodEvidence = (body, names) => {
   const scope0 = new Set(names)
   const evidence = new Map() // name → 'string' | 'array' | 'conflict'
@@ -163,7 +172,22 @@ const methodEvidence = (body, names) => {
       const m = node[2]
       if (typeof m === 'string') {
         if (STRING_ONLY_METHODS.has(m)) induce(name, 'string')
-        else if (ARRAY_INDUCERS.has(m)) induce(name, 'array')
+        // ARRAY_INDUCERS is NOT a positive-induce source (unlike
+        // STRING_ONLY_METHODS): seeing `name.push(...)` etc. proves `name`
+        // isn't a STRING (no String.prototype.push — that half of
+        // ARRAY_ONLY_POISON's job below still fires), but does NOT prove
+        // it's a real Array — a plain OBJECT/HASH value can equally own a
+        // same-named closure property (the makeByteBuf/ByteBuf `b.push =
+        // (v) => {...}` idiom). `val` downstream is trusted as a hard proof
+        // by every consumer (method dispatch AND plain property reads like
+        // `.length` — module/core.js's emitLengthAccess trusts VAL.ARRAY
+        // unconditionally, no own-property shadow to check the way a real
+        // Array never needs one), so inducing it from usage alone broke
+        // both: a `.length` read on such an object silently read the wrong
+        // memory offset (a jz Array's length HEADER word, which this HASH
+        // object doesn't have) instead of the real dynamic property.
+        // ARRAY_ONLY_POISON (a superset of ARRAY_INDUCERS) already covers
+        // the STRING-negative half below.
         else if (ARRAY_ONLY_POISON.has(m) && evidence.get(name) === 'string') {
           evidence.set(name, 'conflict')
         }

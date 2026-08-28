@@ -50,6 +50,7 @@ import {
   inBoundsArrIdx, typedIdxProven, versionableTypedNest, idxKey, SLOT_OPS,
 } from '../type.js'
 import { BIGINT_JOINT_BINARY_OPS, valTypeOf, shapeOf, hasAmbiguousBoolMerge, censusMaybeUndefined, censusMaybeUndefinedKind, nullishArm } from '../kind.js'
+import { ARRAY_INDUCERS } from '../kind-traits.js'
 import { VAL, lookupValType, repOf, updateRep, repOfGlobal } from '../reps.js'
 import {
   typed, asF64, asI32, asI32Sat, asI64, asPtrOffset, asParamType, toI32, fromI64,
@@ -4412,7 +4413,27 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // doubled closure-heavy golden sizes). __dyn_get_expr guards real-number receivers
     // itself, so no f===f pre-fork is needed. Gated on the string module (the probe key
     // is a string literal): a string-less program has no user string props to shadow.
-    if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
+    //
+    // A parameter's `vt` can reach VAL.ARRAY from a body-usage GUESS alone —
+    // kind-traits.js's ARRAY_INDUCERS, consumed by infer.js's methodEvidence
+    // source, treats `<param>.push(...)` syntax as proof the parameter is a
+    // real Array. That source only ever runs against a function's OWN
+    // parameters, and only the ones the (trustworthy) cross-function
+    // call-site fixpoint had no proof for (src/compile/index.js's
+    // `inferLocals` candidate filter) — so whenever it's the one that set
+    // `vt`, it is exactly as unproven as `vt == null`, just missing the
+    // shadow probe below (a plain OBJECT/HASH value can equally own a
+    // same-named closure property — the makeByteBuf/ByteBuf `b.push = (v)
+    // => {...}` idiom — and that own property must still win, same as any
+    // other `vt == null` receiver). A LOCAL never reaches VAL.ARRAY this way
+    // (its evidence comes from a real literal/constructor/assignment proof
+    // instead — analyzeValTypes, not methodEvidence), so scoping this to
+    // "receiver is one of the current function's own parameters" catches
+    // exactly the unsound case without taxing the ubiquitous proven-array
+    // local (`let a = []; a.push(x)`) with an extra runtime probe.
+    const guessedArrayParam = vt === VAL.ARRAY && ARRAY_INDUCERS.has(method) &&
+      typeof obj === 'string' && ctx.func.current?.params?.some(p => p.name === obj)
+    if ((vt == null || guessedArrayParam) && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
       // HOISTED override probe: for a stable module-global receiver (the same
       // proof as charCodeAt shape-1b — never assigned in this function, and the
       // body's only calls are .charCodeAt, so nothing that runs here can change
