@@ -2522,3 +2522,99 @@ clean at every level — rules out a Class-1/2-style eager-loading bug), `cs-mas
 `__dbgCompileWat` export), `cs-find-bad-local.mjs` (parses a WAT dump with watr's own native
 `parse.js` and flags any `local.get/set/tee` outside its enclosing func's declared names — the tool
 that found the exact bad reference; reusable for any future "Unknown local"-shaped repro).
+
+**All diagnostic scaffolding reverted (`df47b542`)**: `scripts/self.js`/`src/compile/index.js` are
+back to byte-identical with `b05caa1a` (`git diff b05caa1a --stat` shows only this notes file
+differs), `REGION_HOOKS_ACTIVE=false` confirmed. No kernel rebuild was needed to verify this — zero
+production source changed, so every previously-recorded dormant-battery result for `b05caa1a` still
+applies unchanged.
+
+## Goal (2), defects (b)/(d) — BOTH reproduce NATIVELY with `_eagerStdlib:true`, no kernel needed;
+## (b) narrowed to `fn` eager-load, root mechanism NOT fully closed; (d) not narrowed, same class
+
+Given (a)'s root cause turned out to live outside jz's own round doctrine entirely, tested the
+remaining 5 defects' repros the CHEAP way FIRST (native, `_eagerStdlib:true`, no kernel/no region
+hooks at all — the same test this campaign's Class-1/2/mfold/dict sessions always ran before
+assuming a defect needs self-hosted debugging) before spending another kernel build.
+
+**(b) `array-methods.js` — "runtime-polymorphic TypedArray writes tag computed named-method
+results"** (`(bigValue ? i64 : i32).parse()` where `i32`/`i64` are plain named functions each
+carrying a hand-attached `.parse` closure property): reproduces identically NATIVELY with
+`compile(src, {optimize, _eagerStdlib:true})` — `write(0,0)` throws `'parse' — jz dispatched this
+method call to the host, but the receiver is not a host object...` (the exact task-recorded
+message, verbatim — this error string lives in `interop.js:1181`, a HOST-SIDE throw fired when
+compiled code calls into a generic host-dispatch trampoline for a receiver the host side can't
+resolve — i.e. the COMPILED CODE itself, under eager load, emits a call to the wrong dispatch
+tier for this call site). **`STDLIB` bisection (same technique as the dvnested/Class-2 session,
+temporarily shrinking `src/autoload.js`'s `STDLIB` export, reverted after each trial — confirmed
+`git diff` clean before moving on): `['core','array','object','fn']` alone reproduces it — `fn`
+(the closures module) is necessary and, combined with `core`/`array`/`object`, sufficient.**
+
+This LOOKS like Class 2's already-fixed mechanism (`tryDynamicPropCall`'s `if (ctx.closure.call)` /
+now `ctx.module.demanded.has('fn')` gate, module/emit.js — "treats an unrecognized method as a
+possible dynamic closure-valued property whenever `fn` is loaded") but is NOT explained by it:
+`i32.parse = () => 7` is a REAL arrow-function literal in the source, so `fn` is genuinely
+DEMANDED here (a real `includeModule('fn')` fires during prepare, unconditionally marking
+`ctx.module.demanded` regardless of eager preload) — the already-landed fix's gate should still
+pass. The divergence must be a DIFFERENT tier or a receiver-type-proof difference (the same general
+shape as `dvnested`'s original root cause — eager loading perturbing WHICH dispatch tier intercepts
+a call, not the specific `ctx.module.demanded` gate already closed) — **not traced to the exact
+tier this session** (time-boxed). Next step for whoever continues: instrument
+`src/compile/emit.js`'s method-dispatch tier chain (`emitMethodCall`, the same tiers 1-12 read for
+Class 2) with the same throwaway `console.error`-per-tier technique that session used, comparing
+which tier fires for `.parse()` on a computed `(cond?i64:i32)` receiver, lazy vs.
+`_eagerStdlib:true` — likely one tier upstream of `tryDynamicPropCall` now intercepts first, or a
+receiver-type proof (`valTypeOf`-equivalent for a ternary-of-two-named-functions) resolves
+differently once every stdlib module is pre-loaded.
+
+**(d) `objects.js` — "spread copy: read-after-copy with no mutation resolves slots correctly"**
+(`let a = [{x:5,y:6}]; let c = {...a[0]}; return c.x*10+c.y`, expected 56): reproduces identically
+NATIVELY with `_eagerStdlib:true` — `go()` returns `NaN` instead of `56`, at both optimize 0 and 3.
+**Not yet narrowed by `STDLIB` bisection**: `['core','array','object']` alone is CLEAN (56, correct)
+at every optimize level tested; `['core','array','object','string','number','fn']` still clean too
+— the minimal triggering set was not found this session (time-boxed; whoever continues should keep
+growing from there, or binary-search the remaining 15 STDLIB names).
+
+Root mechanism, from a native `--wat` diff (`optimize:0`, lazy vs. `_eagerStdlib:true`, `d-wat-diff.mjs`):
+`$go`'s `__obj_clone(a[0])` call (the generic single-unknown-spread-source runtime clone —
+`emitObjectSpread`'s own shortcut for `{...expr}` when the source's static schema can't be proven,
+module/object.js ~1093) is BYTE-IDENTICAL lazy vs. eager (same construction, same mechanism, sound
+in both) — `mergeSpreadNames`/`resolveSchema(a[0])` legitimately fails to prove a static schema for
+an array-index expression in EITHER case (`sourceSchema`/`resolveSchema` only resolves a bare
+name/literal/JSON shape, not `a[0]`), so `emitObjectSpread` correctly takes the same generic-clone
+path both times — **this rules out `emitObjectSpread`'s own construction-time logic as the
+divergence** (confirmed identical). The DIVERGENCE is entirely on the READ side: lazy's `c.x` reads
+compile to a direct, static `f64.load` (proving `c`'s runtime schema despite `emitObjectSpread`
+itself not statically knowing it at the CONSTRUCTION site — some SEPARATE, more powerful analysis,
+not yet located, infers "a clone of a single-schema array's element is that same schema"); eager's
+`c.x` instead compiles to `call $__dyn_get_expr_t_h` (a fully dynamic, string-keyed property
+lookup) — and THAT dynamic lookup itself then fails to find `x`, yielding `NaN`. Two open questions,
+neither resolved this session: (i) which pass grants `c` a static schema in the lazy case (grep
+`arrayElemSchema` — used across `src/reps.js`, `src/param-reps.js`, `src/static.js`,
+`src/compile/{analyze-scans,narrow,index,analyze,program-facts,infer}.js`,
+`src/compile/plan/index.js`, `src/compile/inplace-store.js` — too broad to trace exhaustively this
+session, likely the actual site); (ii) why `__dyn_get_expr_t_h`'s OWN generic dynamic lookup fails
+to find `x` on a receiver that DOES structurally have it (a possible SECOND, independent bug in the
+dynamic-dispatch fallback itself, not just a lost static-schema proof — not distinguished from "the
+fallback is sound but the receiver's tag/box is itself wrong" this session).
+
+**Both (b) and (d) are the SAME general bug CLASS as this campaign's already-fixed Class 1/2/mfold
+findings ("module loaded" perturbing a dispatch/inference decision that should key off "feature
+demanded" or a purely-static proof) — neither is a region-arena/`ctx.*`-round issue at all** (both
+are 100% reproducible with zero region hooks, zero self-hosting). Given (a) already showed the
+task's "widen a round's root" fix shape doesn't apply universally, and (b)/(d) confirm a THIRD
+mechanism (neither ctx.*-round nor watr-internal) is still open in this codebase's eager-load
+handling, whoever continues should treat "does it reproduce with plain native `_eagerStdlib:true`"
+as the FIRST triage step for (c)/(e)/(f) too, before assuming they need a kernel at all — this
+session did not reach them (time-boxed after (a)'s deep dive and (b)/(d)'s bisection). (e)
+`perf.js` and (f) `passes.js` are WAT-shape/byte-count assertions (`compile(...,{wat:true})`-style
+checks) — likely testable the same cheap way. (c) `mem.js`'s "duplicate schemas not re-added" uses
+`jz.memory()` host-level sharing across TWO separate `jz(...)` calls — structurally different from
+the other five (a cross-compile, HOST-SIDE concern, not obviously a single-compile eager-load or
+region-round question at all) and worth checking whether it even involves self-hosting/eager
+loading before assuming it belongs to the same investigation.
+
+**No fix landed for (b) or (d) this session** — both root-caused to "eager loading changes a
+dispatch/schema-proof decision," matching this campaign's own established, fixable bug class, but
+the EXACT gate/tier was not pinned down in the time available. `REGION_HOOKS_ACTIVE` stays `false`;
+no production source file was changed by this investigation (native probes/`_eagerStdlib` only).
