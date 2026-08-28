@@ -28,7 +28,10 @@
 
 import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
-import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
+import {
+  collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown,
+  readonlyParamReps, freezeCallSites, assertProgramFactsShape,
+} from '../program-facts.js'
 import { buildCallTargetIndex, releaseLiftedValueUsed } from '../call-target-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
@@ -229,6 +232,12 @@ export default function plan(ast, profiler, regionHooks) {
   // never `programFacts`) can read it too.
   programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
   ctx.types.callTargets = programFacts.callTargets
+  // Shape check (program-facts-split.md §7.1): this is the ONLY staple-on
+  // site anywhere in src/compile/ that adds a top-level key to `programFacts`
+  // after `collectProgramFacts` publishes it — the moment it lands is the
+  // right place to assert no OTHER, undocumented key has snuck on too.
+  // DBG_INVARIANTS-gated (JZ_DEBUG_INVARIANTS=1), zero cost otherwise.
+  assertProgramFactsShape(programFacts, 'post-callTargets')
   // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
   // synthesis — see call-target-index.js's header) is the ONLY value-use
   // program-facts.js's whole-program walk can ever find for `fn$prop`, since
@@ -252,6 +261,18 @@ export default function plan(ast, profiler, regionHooks) {
   // contract).
   exitRound(__earlyMark)
   if (canSkipWholeProgramNarrowing(programFacts)) {
+    // Freeze point (program-facts-split.md §7): narrowSignatures never runs
+    // on this branch, so collectProgramFacts is paramReps/callSites' ONLY
+    // producer here — already fully settled the moment we reach this check.
+    // callSites is frozen for good (no writer anywhere ever touches it
+    // again); paramReps gets the read-only `{get,raw}` view for the four
+    // reads below and is restored (via `.raw`, not a stashed local — see
+    // readonlyParamReps's own doc on why: this branch takes no further
+    // round() boundary, but the restore stays uniform with the main path's
+    // region-relocation-safe shape below) to the real (still-empty) Map
+    // before returning.
+    freezeCallSites(programFacts.callSites)
+    programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
     // Phase J (jsstring boundary opt-in) is body-local and call-site-independent;
     // run it even when the rest of narrowing is skipped so simple `export let
     // f = (s) => s.length` still flips to externref. Likewise the boolean-result
@@ -261,6 +282,7 @@ export default function plan(ast, profiler, regionHooks) {
     strictBoundaryTypeCheck(programFacts)
     adviseProgram(programFacts)
     solveRepresentationBoundaries(ctx, programFacts, ast)
+    programFacts.paramReps = programFacts.paramReps.raw
     return programFacts
   }
 
@@ -341,6 +363,25 @@ export default function plan(ast, profiler, regionHooks) {
     t('refineFieldProvenance', () => refineFieldProvenance(ast))
     t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
   })
+  // Freeze point (program-facts-split.md §7): paramReps/callSites' true last
+  // producer WITHIN plan() is this round just above — specializeValKindDichotomy/
+  // speculateTypedParams when optimizing() (both write through materializeVariant),
+  // else round 2's unconditional specializeBimorphicTyped; refineDynKeys right
+  // above is read-only and always runs last in this round either way. Rounds
+  // 4-5 and solveRepresentationBoundaries below are exactly the consumers this
+  // closes off. callSites has no writer anywhere past this point (grep-verified,
+  // including compile/index.js's post-plan() emit phase) — frozen for good.
+  // paramReps does: compile/index.js's specializeUnionCursorParams (EMIT-phase
+  // union-cursor clones, called from OUTSIDE plan() entirely) legitimately
+  // keeps minting new entries for the clones it creates, so the read-only view
+  // is scoped to plan()'s own remaining rounds and restored (via `.raw` off
+  // the CURRENT programFacts.paramReps, never a stashed local — rounds 4/5
+  // below are real round() calls that can relocate `programFacts` wholesale
+  // under the self-hosted region allocator, see readonlyParamReps's own doc)
+  // to the real, writable Map right before `return programFacts`, so that
+  // later write keeps working exactly as before.
+  freezeCallSites(programFacts.callSites)
+  programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
   // Plan-tail round 4 (own boundary — the second-largest post-narrowSignatures
   // delta, +60 MB, analyzeSchemaSlotIntCertain's own whole-program AST walk).
   round(() => {
@@ -369,5 +410,10 @@ export default function plan(ast, profiler, regionHooks) {
   // specialization are settled. Publish boundary targets before any body
   // FunctionPlan is analyzed or emitted; this slice is observation-only.
   solveRepresentationBoundaries(ctx, programFacts, ast)
+  // Restore the real, writable Map before returning (see the freeze-point
+  // comment above): compile/index.js's own post-plan() emit phase
+  // (specializeUnionCursorParams) mutates programFacts.paramReps directly and
+  // must see the identical object it always has, unwrapped.
+  programFacts.paramReps = programFacts.paramReps.raw
   return programFacts
 }

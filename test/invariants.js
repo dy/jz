@@ -470,3 +470,104 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
     is(run([k1, k2]), '$c7,$c8', 'distinct constants stay distinct')
   } finally { ctx.closure.table = savedTable }
 })
+
+// ============================================================================
+// program-facts freeze discipline (v1 architecture-convergence, "facts frozen
+// before consumers" — .work/program-facts-split.md §7 has the full lifecycle
+// table: paramReps/callSites are STAGED facts, published empty/raw by
+// collectProgramFacts and settled by plan()'s own round 3; programFacts
+// itself is closed-shape once callTargets is stapled on). All three pins
+// below are white-box against the freeze.js mechanism itself, not a live
+// compile's internal state — no onKernel() guard needed, since
+// JZ_TEST_TARGET=jz.wasm only changes WHERE compilation happens, never what
+// this plain, side-effect-free module does when called directly from the host.
+// ============================================================================
+
+test('invariant: readonlyParamReps exposes get (+ the .raw restore hook), not a mutator — a stray write throws', async () => {
+  const { readonlyParamReps } = await import('../src/compile/program-facts.js')
+  const real = new Map([['f', new Map([[0, { val: 'NUMBER' }]])]])
+  const view = readonlyParamReps(real)
+  is(view.get('f').get(0).val, 'NUMBER', 'get() reads through to the real Map')
+  is(view.get('missing'), undefined, 'get() of an absent key reads through cleanly')
+  throws(() => view.set('g', new Map()), /is not a function/, 'no .set on the read-only view')
+  throws(() => view.delete('f'), /is not a function/, 'no .delete on the read-only view')
+  // .raw is plan/index.js's own restore hook (region-relocation-safe, per
+  // freeze.js's own doc — a stashed local across a round() boundary can go
+  // stale under the self-hosted region allocator) — it deliberately IS the
+  // same live, writable Map, so reading it back out is expected to work.
+  is(view.raw, real, '.raw recovers the exact same Map plan() installed')
+})
+
+test('invariant: freezeCallSites blocks structural mutation of both the array and its entries', async () => {
+  const { freezeCallSites } = await import('../src/compile/program-facts.js')
+  const entry = { callee: 'f', argList: [], callerFunc: null, node: ['()', 'f'] }
+  const sites = [entry]
+  const frozen = freezeCallSites(sites)
+  is(frozen, sites, 'freezeCallSites freezes in place and returns the same array')
+  throws(() => frozen.push({ callee: 'g' }), /not extensible/, 'push throws on a frozen callSites array')
+  throws(() => { frozen[0] = null }, /read only property/, 'index-assignment throws on a frozen callSites array')
+  throws(() => { entry.callee = 'g' }, /read only property/, 'a frozen entry cannot be retargeted after the freeze point')
+})
+
+test('invariant: assertProgramFactsShape rejects an undocumented programFacts key, only under JZ_DEBUG_INVARIANTS', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const root = new URL('..', import.meta.url).pathname
+  const script = `
+    import { assertProgramFactsShape } from './src/compile/program-facts.js'
+    const bogus = { dynVars: new Set(), callTargets: null, notARealFact: 1 }
+    assertProgramFactsShape(bogus, 'test')
+    console.log('no-throw')
+  `
+  const { JZ_DEBUG_INVARIANTS, ...envWithoutFlag } = process.env
+  const gated = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: envWithoutFlag })
+  is(gated.stdout.toString().trim(), 'no-throw', `unset JZ_DEBUG_INVARIANTS: zero cost, no throw even on a bad shape (stderr: ${gated.stderr.toString().slice(0, 300)})`)
+  const armed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: { ...envWithoutFlag, JZ_DEBUG_INVARIANTS: '1' } })
+  ok(armed.status !== 0, 'JZ_DEBUG_INVARIANTS=1: an undocumented top-level key throws')
+  ok(/notARealFact/.test(armed.stderr.toString()), `error should name the offending key: ${armed.stderr.toString().slice(0, 300)}`)
+})
+
+test('invariant: paramReps/callSites consumer order independence — a function\'s own compiled body does not depend on a sibling\'s declaration order', () => {
+  // Proxy for "two consumers swapped in registration order": since both
+  // functions' paramReps/callSites entries live in the SAME frozen Map/array
+  // (keyed by name, not position) once plan()'s round 3 settles, f's own
+  // narrowing/specialization must be identical whichever order the two
+  // functions were declared/registered in — a real, whole-compile pin, not a
+  // synthetic one, exercising the actual freeze this slice installs.
+  const extractFunc = (w, name) => {
+    const m = w.match(new RegExp(`\\(func \\$${name}\\b[\\s\\S]*?\\n  \\)`))
+    return m && m[0]
+  }
+  // Local/label names carry a whole-module monotonic disambiguation counter
+  // (freshId(), src/ir.js) wholly unrelated to paramReps/callSites — e.g. a
+  // `let len` temp becomes `$len0` or `$len1` purely depending on how many
+  // OTHER same-named temps were minted earlier in the module, which shifts
+  // with declaration order by design (cosmetic renaming, not a logic
+  // change). Strip each name's trailing counter before comparing so the pin
+  // asserts structural/logical identity, not name-supply-order identity.
+  const stripIdCounters = w => w.replace(/\$([A-Za-z_]+?)\d+\b/g, '$$$1')
+  // useF/useG give f/g a concrete internal typed-array call site, so
+  // narrowSignatures/specializeBimorphicTyped settle both to a monomorphic
+  // typed body (paramReps' whole reason to exist) instead of the generic
+  // dyn-dispatch shape a purely-exported, never-internally-called f/g would
+  // keep — the shape that actually exercises the frozen fact.
+  const declaredFirst = `
+    export let f = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s = s + a[i]; return s }
+    export let g = (b) => { let s = 0.0; for (let i = 0; i < b.length; i++) s = s + b[i] * 2; return s }
+    export let useF = () => f(new Int32Array([1, 2, 3]))
+    export let useG = () => g(new Float64Array([1.5, 2.5]))
+  `
+  const declaredSecond = `
+    export let g = (b) => { let s = 0.0; for (let i = 0; i < b.length; i++) s = s + b[i] * 2; return s }
+    export let f = (a) => { let s = 0; for (let i = 0; i < a.length; i++) s = s + a[i]; return s }
+    export let useG = () => g(new Float64Array([1.5, 2.5]))
+    export let useF = () => f(new Int32Array([1, 2, 3]))
+  `
+  const watFirst = wat(declaredFirst)
+  const watSecond = wat(declaredSecond)
+  const f1 = extractFunc(watFirst, 'f'), f2 = extractFunc(watSecond, 'f')
+  const g1 = extractFunc(watFirst, 'g'), g2 = extractFunc(watSecond, 'g')
+  ok(f1 && f2, `both compiles must emit $f: ${JSON.stringify([!!f1, !!f2])}`)
+  ok(g1 && g2, `both compiles must emit $g: ${JSON.stringify([!!g1, !!g2])}`)
+  is(stripIdCounters(f1), stripIdCounters(f2), 'f\'s own compiled body is structurally identical regardless of declaration order relative to g')
+  is(stripIdCounters(g1), stripIdCounters(g2), 'g\'s own compiled body is structurally identical regardless of declaration order relative to f')
+})

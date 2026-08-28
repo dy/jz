@@ -46,6 +46,11 @@
  *      pass, kind census before int census (int census's hazard call is a
  *      cache hit as a result, not a correctness order — see analyzeBody call
  *      graph in that file for the exact `hasSchemaLiterals`/`hasMapSet` gates).
+ *   6. `program-facts/freeze.js` — `readonlyParamReps`/`freezeCallSites`/
+ *      `assertProgramFactsShape`: the freeze discipline for the two STAGED
+ *      facts (`paramReps`/`callSites`, settled by `plan/index.js`'s own round
+ *      3, not by this module) and for `programFacts`'s own closed key-set.
+ *      Depends on nothing else here — a leaf, like `shared.js`/`cache.js`.
  *
  * External build order (documented in full in `plan/index.js`, cited here
  * so it's discoverable from this side too): `collectProgramFacts` runs once
@@ -56,9 +61,11 @@
  * `analyzeSchemaSlotIntCertain` again (same late-mode rebuild). Every one of
  * these later calls is a REBUILD (clears and re-derives), never an
  * incremental patch of the earlier pass's output — see `.work/program-facts-split.md`
- * for the full fact→builder→consumer map, including which returned
- * structures are mutated in place after publication (`programFacts.paramReps`,
- * `.callSites`) rather than rebuilt, and why this slice leaves that as-is.
+ * §7 for the full fact→producer→freeze-point→consumer table: `paramReps`/
+ * `.callSites` are mutated in place after publication through plan's own
+ * round 3 (`narrowSignatures` and its `specialize*` siblings), then frozen/
+ * view-wrapped by `plan/index.js` via this module's own `freeze.js` — no
+ * longer left open-ended past that point.
  *
  * @module program-facts
  */
@@ -69,3 +76,4 @@ export { analyzeSchemaSlotIntCertain } from './program-facts/slot-int-census.js'
 export { collectSlotWriteHazards, applySlotWriteHazards } from './program-facts/slot-write-hazards.js'
 export { analyzeParamNeverGrown } from './program-facts/param-never-grown.js'
 export { effectiveWriteValue } from './program-facts/shared.js'
+export { readonlyParamReps, freezeCallSites, assertProgramFactsShape, FACT_KEYS } from './program-facts/freeze.js'
