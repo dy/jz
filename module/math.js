@@ -12,7 +12,7 @@
  * @module math
  */
 
-import { typed, asF64, asI32, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
+import { typed, asF64, toI32, toNumF64, temp, arrayLoop, isLit, litVal, isPureIR } from '../src/ir.js'
 import { emit, emitter, reg, deps, dual, tag, wat } from '../src/bridge.js'
 import { inc, err } from '../src/ctx.js'
 import { repOf, VAL } from '../src/reps.js'
