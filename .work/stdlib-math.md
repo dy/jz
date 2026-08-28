@@ -221,23 +221,98 @@ own before being concatenated into the new file.
 
 ## Commits
 
-(filled in as each move lands)
+1. `a08247bc` — `.work/stdlib-math.md` (this file).
+2. `f010d139` — PURE MOVE: `module/math/pow-transcend.js` extracted from
+   math.js 1003-1501 (the correctly-rounded pow kernel interior, crPow-only);
+   math.js's `if (crPow) { … }` wrapper (995-1002/1502, kept verbatim) now
+   calls `registerPowTranscend()`.
+3. `af53dbc2` — PURE MOVE: `module/math/trig-tables.js` extracted from
+   math.js 564-573 (SIN_C/COS_C/EXP2_C + PI/INV_PI/HALF_PI); math.js imports
+   them back.
+4. `097a521b` — PURE MOVE: `module/math/simd.js` extracted from math.js
+   634-788 (the f64x2 SIMD family); imports PI/INV_PI/SIN_C/COS_C/EXP2_C
+   from the trig-tables leaf; math.js imports `registerMathSimd` and calls
+   it at the original position.
+5. `22fd9555` — PURE MOVE: `module/math/sum-precise.js` extracted from
+   math.js (reg() at 482-499 + wat() body at 1438-1615, 2 cuts, post-move-4
+   line numbers); math.js imports `registerSumPrecise`; `PTR`/
+   `TYPED_ELEM_BIGINT_FLAG` import dropped from math.js (now unused there).
+6. `bdbee4b6` — PURE MOVE: `module/math/random.js` extracted from math.js
+   (rngEntropy/rngSeedConst/wasi consts at 30-40 + reg('math.random') at
+   492-503 + wat('math.random')/globals/`__rng_seed` at 1406-1439 — 3 cuts,
+   post-move-5 line numbers, the last two now CONTIGUOUS since sumPrecise's
+   wat body no longer sits between them); math.js imports
+   `registerMathRandom`; `hostImport`/`declGlobal` imports dropped (now
+   unused in math.js).
+7. `06d19b44` — delete dead code (task step 4): `exp2Call`
+   (`const exp2Call = emitter(['math.exp2'], …)`, math.js line 363
+   pre-deletion) was grep-verified to have ZERO call sites anywhere in the
+   repo — defined, never read. `emitter()` (src/ctx.js) is a pure factory
+   (builds and returns a wrapper function, no side effect), so the binding
+   was fully inert; deleting it is a provable no-op for compiled output
+   (oracle re-run clean). This is a PRE-EXISTING dead binding, not something
+   the moves above created — present identically at the 3e960ee8 baseline.
+   The real base-2 `2**y` fast path lives inline inside `emitPow` (its own
+   dedicated comment there, unaffected).
+8. `9cd4775b` — drop unused `asI32` import from `../src/ir.js` (grep-
+   verified zero uses in math.js, both before and after every move above —
+   a second small pre-existing dead import, same class of finding as #7).
+
+No de-duplication commit: none found (see "Declined" above — the file
+already routes every shared shape through one generator).
 
 ## Verification
 
 - Each move: exact line ranges sed-extracted from a pristine copy of
   math.js and diffed byte-identical against the new file's body (mechanical
-  script, not hand-retyping) before the edit is considered done.
+  script, not hand-retyping) before the edit is considered done. Every
+  multi-cut move (sum-precise.js: 2 cuts, random.js: 3 cuts) diffed each
+  cut individually.
 - `resolveModuleGraph('bench/jz/jz.js', { resolveNode: true })` re-run after
-  every move (matches the precedent's own check) — must resolve with no
-  `Circular import` error and a module count that climbs by exactly 1 per
-  new file.
-- `node scripts/refactor-oracle.mjs check --ref 3e960ee8` after every
-  commit — must report CLEAN (560/560).
-- Full battery at the end: oracle clean; `node test/index.js` (excl.
-  bench-c.js); kernel build + `JZ_TEST_TARGET=jz.wasm node test/index.js`;
-  `node test/kernel-parity.js` (33/33); `node test/kernel-oracle.js`
-  (14/14); `node scripts/bench-size.mjs --json` byte-identical; kernel byte
-  count before/after.
-
-(Numbers filled in below once the battery runs.)
+  every move — resolved clean throughout, no `Circular import`, module
+  count climbing by exactly 1 per new file: 216 (baseline) → 217
+  (pow-transcend) → 218 (trig-tables) → 219 (simd) → 220 (sum-precise) →
+  221 (random).
+- `node scripts/refactor-oracle.mjs check --ref 3e960ee8` — CLEAN (560/560
+  identical) after every one of the 8 commits, including the final state.
+- Line counts: math.js 2296 → 1383 (−913, −39.8%). New files: pow-
+  transcend.js 518, trig-tables.js 23, simd.js 177, sum-precise.js 215,
+  random.js 76 (1009 total — the 96-line gap over the 913 removed is
+  JSDoc headers + imports + function wrappers added to each new file, not
+  logic; every moved body diffed byte-identical against its origin).
+- Full battery (this worktree, `refactor/stdlib-math` @ `9cd4775b`):
+  - oracle: CLEAN, 560/560, `--ref 3e960ee8`.
+  - `node test/index.js` (89 of the 91 non-bench-c files, run in 7 bounded
+    batches — kernel-parity/kernel-oracle pulled out and run standalone
+    instead, see below, since this sandbox's per-command timeout made the
+    heaviest cluster need isolating): 3764 pass, 1 skip, 0 fail across
+    batches of 1820+1skip/1168/460/124/165/5/22 pass. 0 fail in every
+    batch.
+  - kernel build (`npm run build`): `dist/jz.wasm` 17,861,447 bytes.
+  - `JZ_TEST_TARGET=jz.wasm node test/index.js` (plain invocation, full
+    auto-filtered suite in one run): 2983 pass, 1 skip, 0 fail (2984
+    total) — matches the string-array precedent's own count for this
+    exact check.
+  - `node test/kernel-parity.js` (standalone): 33/33 assertions (3/3
+    blocks) pass.
+  - `node test/kernel-oracle.js` (standalone): 14/14 blocks, 605
+    assertions, all pass.
+  - `node scripts/bench-size.mjs --json`: byte-identical to a baseline run
+    at 3e960ee8 (60/60 lines, `diff` empty).
+  - Kernel byte count before/after: 3e960ee8 baseline (fresh detached
+    worktree, `npm run build`) `dist/jz.wasm` = 17,957,537 bytes; this
+    branch = 17,861,447 bytes (−96,090 bytes, −0.53%). NOT the same
+    question the oracle/bench-size answer: those prove every ORDINARY
+    program compiles to byte-identical output (proven, both clean); the
+    self-hosted kernel is different — `dist/jz.wasm` is jz's OWN compiler
+    (module/*.js included) compiled by itself, so its size is a function
+    of the compiler's OWN source shape, which this refactor deliberately
+    changed (6 files instead of 1, new import/export lines, new JSDoc
+    headers) even though no function's behavior changed. The refactor-
+    oracle's own doc explicitly excludes this self-host case from its
+    default guarantee for exactly this reason. A second baseline rebuild
+    (to confirm the build is deterministic and the delta isn't sandbox
+    noise) was started but killed by an environment restart before
+    finishing — NOT re-verified. The direction (smaller) and magnitude
+    (0.53%) are consistent with net source-shape change, not a red flag,
+    but flagged here rather than asserted with unearned confidence.
