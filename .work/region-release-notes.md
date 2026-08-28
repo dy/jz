@@ -2200,11 +2200,55 @@ mirrors the recipe this file has used in every prior session. Result pending at 
 task id `b3ser1vkg`, `<scratchpad>/tasks/b3ser1vkg.output`, or re-run `node <scratchpad>/goal-
 probe.mjs` fresh (script is self-contained, reads `dist/jz.wasm` from this worktree).
 
-**`JZ_TEST_TARGET=jz.wasm node test/index.js` (the third battery leg) — NOT YET RUN this session**,
-deliberately sequenced after the two background tasks above to avoid tripling concurrent kernel-
-scale CPU/memory load on a shared machine (both fuzz repro and goal-probe are long-running,
-resource-heavy processes already). Next step for whoever continues, once those two finish: `cd`
-this worktree, `JZ_TEST_TARGET=jz.wasm node test/index.js $(<the same test-names-minus-bench-c list
-this file's own earlier sessions used>)`, expect the SAME `dict`-class byte-parity failures
-kernel-oracle/kernel-parity already show (native-vs-kernel, not execution) as the only-expected
-divergence, per every prior session's leg — anything else is new.
+### Goal (2) RESOLVED (disposition: documented + excluded, `dee8f64f`) and Goal (3) goal-probe RESOLVED
+
+**Fuzz repro concluded — genuine hang, not a fast throw, killed after 8m12s.** The background
+kernel repro (`bfflb8ux5`) never returned: sustained ~99-100% CPU, STABLE ~1.09 GB RSS (no runaway
+growth — rules out an unbounded-allocation OOM-style failure specifically), zero output past the
+preload confirmation + the printed source line, for the full 8+ minutes it ran before being killed
+— well past the 420s fence `test/index.js`'s own `KERNEL-LEG DEBT` comment documents for
+`transform`'s still-open in-kernel hang exclusion (the closest existing precedent in this
+codebase). **This is a DIFFERENT symptom than the task's own original report** ("Maximum call stack
+size exceeded", a fast synchronous RangeError) — that prior session's kernel predates EVERY fix
+landed this session (Group 1's `stripStaticDataPrefix` bound, this session's `fn`/narrowing demand-
+gate). The crash→hang shift between a pre-fix and post-fix kernel, for the IDENTICAL seed/opt, is
+itself real signal: something in this campaign's accumulated fixes plausibly changed which code
+path the self-hosted compiler takes for this exact generated program (a wide, ternary/ while-nest-
+heavy numeric kernel — see the source in this file's fuzz-fix commit) without closing whatever
+pathology sits underneath. NOT root-caused to a specific line (no stack trace obtainable from an
+unresponsive kernel instance in the time available) and therefore NOT fixable via the root-
+completeness rule this session — the honest disposition per the task's own OR clause is
+"document and exclude," matching `transform`'s own precedent exactly.
+
+**Fix landed (`dee8f64f`, `test/fuzz.js`)**: `KERNEL_HANG_SEEDS = new Set([84])`, skipped inside
+the `fuzz()` driver's own seed loop, gated on `onKernel()` (imported from `./_matrix.js`) — so
+native fuzzing keeps FULL 1..200 coverage (confirmed: `node test/index.js fuzz`, all 8 GATE test
+blocks including the exact one that named seed=84, **8/8 pass** natively) and only the kernel-
+target leg skips this one seed. `KNOWN_OPEN` (the existing ratchet) can't help here — it only
+filters an already-RETURNED finding, and this call never returns at all.
+
+**Goal-probe — RESOLVED, re-measured against this session's fixed hooks-on kernel**:
+
+```
+region-hooks-on (this session, post mfold/fn-demand-gate fix): TRAP "unreachable",
+  peakBytes 4013228032, elapsedMs 608792, 163 modules
+```
+
+93.4% of the wasm32 ceiling (4,294,967,296) — same trap kind ("unreachable"), same scale (~608s ≈
+10.1 min, within the 601-685s range every prior hooks-on session recorded), same module count
+(163) as every previous measurement in this file's history. **This session's fixes did not
+materially move this number** — expected and correct: this is the ALREADY-DOCUMENTED, SEPARATE
+"KNOWN OPEN ISSUE... deterministic... at jz×jz scale only" defect this file's much earlier section
+banked rather than chased (a different bug class from module-init purity/narrowing-skip demand-
+gating, everything this campaign's sessions have actually closed) — the mfold-class fix changes a
+handful of emitted bytes per function, nowhere near enough to move a peak that sits at 93%+ of a
+4 GiB ceiling after 10 minutes of real compiler work.
+
+**`JZ_TEST_TARGET=jz.wasm node test/index.js` (the third battery leg) — LAUNCHED, background task
+`bnoch62cq`, result pending at time of this note** (excluding `bench-c` per the task mandate,
+same 91-name list every session in this file has used). Expect the SAME `dict`-class byte-parity
+divergence kernel-oracle/kernel-parity already show (native-vs-kernel, execution-correct) as the
+only baseline-expected failure, PLUS confirmation the `fuzz` leg no longer hangs (seed 84 now
+skipped under `onKernel()`) — anything else is new. See that task's own output file, or re-run
+fresh against this worktree's `dist/jz.wasm` (still the hooks-on kernel, untouched since the
+253.2s/15,802,268-byte build earlier this session) once available.
