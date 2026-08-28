@@ -3347,8 +3347,24 @@ export default function compile(ast, profiler, regionHooks) {
   }
   // jz:errcls has an explicit sid per entry (unlike jz:schema above), so a
   // dead class is simply omitted rather than zeroed.
-  if (ctx.schema.errorSidEntries?.().size) {
-    const entries = [...ctx.schema.errorSidEntries()].filter(([sid]) => usedSchemaIds.has(sid))
+  //
+  // Reads `lateFacts.errorSidEntries` (an already-resolved ARRAY, captured
+  // from `ctx.schema.errorSidEntries()` — a METHOD — before `__stdlibMark`'s
+  // exit narrows `ctx.schema` to `lateSchema = {list, namedUses}`, which has
+  // no such method), not `ctx.schema.errorSidEntries()` directly: that method
+  // no longer exists post-narrowing, so re-calling it here silently produced
+  // `undefined` (optional-chained away, not thrown) — no `jz:errcls` custom
+  // section ever got emitted under region-live compiles, so `interop.js`'s
+  // decodeThrown always missed the sid->class-name lookup and every
+  // `new TypeError(...)`/`new SyntaxError(...)`/etc. reached the host as a
+  // generic `Error("[object Object]")` — right fields (verified via
+  // `e.thrown`: `{message, name}` both correct), wrong class/message
+  // (region-emitir-round session, `.work/region-release-notes.md`). Same
+  // fix shape as `lateSchema.namedUses` just above: consume the
+  // already-captured snapshot instead of re-deriving through a field this
+  // round's narrowing removed.
+  if (lateFacts.errorSidEntries.length) {
+    const entries = lateFacts.errorSidEntries.filter(([sid]) => usedSchemaIds.has(sid))
     if (entries.length) {
       const bytes = []
       const utf8 = new TextEncoder()
