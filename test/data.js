@@ -2953,3 +2953,60 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
     is(e.main(0), 0, `O${optimize || 0}: count=0 (no write ever executes) still reaches bufToBytes's .subarray() and must not trap`)
   }
 })
+
+test('bigint: typeof-guarded normalizer reached through a `.`-member call attached to a NAMED FUNCTION, not an object literal (shape #7-residual — FIXED)', () => {
+  // Shape #8 (above) resolves a `.`-member call through an OBJECT-LITERAL
+  // receiver (`const ns = {}; ns.parse = parseNum`). watr's REAL shape
+  // attaches the property directly onto a NAMED FUNCTION DECLARATION
+  // instead — `function i64(n, buffer) {…}; i64.parse = n => {…}`, encode.js
+  // — which prepare lifts into a top-level `i64$parse` function and
+  // rewrites the write to `i64.parse = i64$parse` (src/prepare/index.js's
+  // `'='` handler, "Function property assignment"), a shape
+  // collectMemberWrites/foldWrite (call-target-index.js) can fold exactly
+  // like Shape #8's object-literal write once it survives — but
+  // `programFacts.nameEscapes` has no exemption for a call's OWN callee
+  // position (program-facts.js's `ESCAPE_SKIP` has no `'()'` entry: "sound
+  // direction: over-marking loses a fold"), so `i64` being called directly
+  // ANYWHERE in the program (watr's own `encode.i64(...)`, flattened to a
+  // bare call) marked the receiver "escaped" and blocked the resolution
+  // regardless of whether the write itself was visible. Fixed by gating a
+  // function-declaration receiver on a narrower, purpose-built escape scan
+  // (`collectValueEscapes`) instead of `nameEscapes` for this one receiver
+  // shape — Shape #8's own object-literal gate is untouched. `g` below
+  // reproduces the actual blocking ingredient: the base function called
+  // directly, elsewhere, unrelated to the `.`-member call being resolved.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const src = `
+      function parseNum(n) {
+        if (typeof n === 'string') n = BigInt(n)
+        n >>= 7n
+        return n
+      }
+      export let control = () => {
+        let nodes = []
+        nodes.push("900")
+        return parseNum(nodes.shift())
+      }
+    `
+    const control = jz(src, { optimize }).exports
+    is(control.control(), 7n, `${lbl}: bare-name control (same callee body) is already correct`)
+    const e = jz(`
+      function i64(n) { return n }
+      i64.parse = n => {
+        if (typeof n === 'string') n = BigInt(n)
+        n >>= 7n
+        return n
+      }
+      export let f = () => {
+        let nodes = []
+        nodes.push("900")
+        return i64.parse(nodes.shift())
+      }
+      export let g = () => i64(5n)
+    `, { optimize }).exports
+    is(e.f(), 7n, `${lbl}: identical callee reached via a NAMED-FUNCTION .member call now crosses as a real BigInt`)
+    is(e.g(), 5n, `${lbl}: the base function itself, called directly elsewhere, is unaffected`)
+  }
+})
+
