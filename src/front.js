@@ -25,7 +25,7 @@ import { T } from './ast.js'
 import { liftIIFEs } from './prepare/lift-iife.js'
 import prepare from './prepare/index.js'
 import { preEval } from './prepare/pre-eval.js'
-import { includeMods } from './autoload.js'
+import { includeAllMods } from './autoload.js'
 
 // U+E000 (T) prefixes every jz-generated local. The JS spec forbids it in
 // identifiers, but subscript's parser is lenient and accepts it — so a user name
@@ -86,15 +86,12 @@ export const rejectReservedPrefix = (node) => {
  *  `includeModule` is idempotent (its own `ctx.module.modules` guard), so
  *  this costs one bounded, one-time-per-compile registration pass; gated on
  *  `regionHooks` so the native host pipeline (which never sees a region
- *  round) keeps its existing lazy, on-demand load order unchanged. Named
- *  literally (not `for...in` over a `import * as` namespace object — jz's
- *  self-compilable subset has no runtime object backing a namespace import,
- *  so enumerating one is a compile-time "not in scope" error) — keep this
- *  list in sync with `module/index.js`'s own export list (that file's header
- *  comment: "Adding a stdlib module = add its import + name here, nothing
- *  else" — mirror any addition here too). */
+ *  round) keeps its existing lazy, on-demand load order unchanged. The list
+ *  is autoload.js's STDLIB (a mirror of the manifest's export list, pinned in
+ *  sync by test/self-compile-includes.js) — the self-hosted kernel cannot
+ *  enumerate a namespace import. */
 export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
-  if (regionHooks) includeMods('math', 'core', 'array', 'object', 'string', 'number', 'fn', 'typedarray', 'collection', 'symbol', 'console', 'json', 'regex', 'timer', 'date', 'simd', 'atomics', 'fs', 'web', 'crypto', 'navigator')
+  if (regionHooks) includeAllMods()
   const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)

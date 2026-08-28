@@ -22,6 +22,8 @@ import { ctx } from '../src/ctx.js'
 import { onKernel } from './_matrix.js'
 import { deriveMethodModules } from '../scripts/gen-prop-modules.mjs'
 import { DERIVED_PROP_MODULES } from '../src/prop-modules.generated.js'
+import * as stdlibManifest from '../module/index.js'
+import { STDLIB } from '../src/autoload.js'
 
 // Broad surface so most templates register (each compile resets ctx; accumulate across compiles).
 const PROBES = [
@@ -136,4 +138,8 @@ test('RESOLVED_PROP_MODULES consults derived-only rows (re-audit finding 5)', as
     'derived-only method rows reach the resolved table')
   is([...RESOLVED_PROP_MODULES.getDate].sort().join(','), [...DERIVED_PROP_MODULES.getDate].sort().join(','),
     'derived-only rows no longer inherit the broad object/array/string/collection catch-all')
+})
+
+test('stdlib manifest: autoload.js STDLIB enumerates exactly the exported modules (front.js pre-mark load reads it)', () => {
+  is([...STDLIB].sort().join(','), Object.keys(stdlibManifest).sort().join(','), 'autoload.js STDLIB and module/index.js export list must not drift')
 })

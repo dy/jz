@@ -307,6 +307,12 @@ export const hasModule = name => Boolean(mods[MOD_ALIAS[name] || name])
 // (`includeMods('core','array','typedarray')` crashed on 'array' with
 // "onRegister is not a function" — the classic `.forEach(parseInt)` footgun).
 export const includeMods = (...names) => names.forEach(name => includeModule(name))
+// Every stdlib module, as an enumerable list: the self-hosted kernel cannot walk the `mods`
+// namespace, so the manifest's export list is mirrored here (test/self-compile-includes.js
+// pins the two in sync). The region-arena front round loads them all before mark()
+// (src/front.js) so no first-ever module init can allocate into an unrooted round.
+export const STDLIB = ['math', 'core', 'array', 'object', 'string', 'number', 'fn', 'typedarray', 'collection', 'symbol', 'console', 'json', 'regex', 'timer', 'date', 'simd', 'atomics', 'fs', 'web', 'crypto', 'navigator']
+export const includeAllMods = () => includeMods(...STDLIB)
 
 export const includeForOp = op => {
   const modules = OP_MODULES[op]
