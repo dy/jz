@@ -2445,3 +2445,80 @@ actual inliner source or connected back to a specific region round via the bitma
 built. Next step: locate the actual `$__inl` rename call site (grep `src/optimize/*.js` more
 broadly, e.g. for the literal `__inl` prefix template or a rename-map-building loop near an inline
 pass), read it, and find where it could read two non-corresponding snapshots of the same callee.
+
+**UPDATE — traced to the actual source; it is WATR'S OWN self-hosted inliner (`node_modules/watr`
+/ `/Users/div/projects/watr`'s `src/optimize.js`), not any jz `src/*.js` file.** The `$__inlN_`
+prefix comes from `inline`/`inlineOnce`'s shared `buildInline`-shaped rename step
+(watr/src/optimize.js:5475-5511 and the near-duplicate inline copy inside `inlineOnce`,
+~6134-6178): `rename.set(p.name, \`$__inl${uid}_${p.name.slice(1)}\`)` for every PARAM and LOCAL the
+callee function node declares, then a recursive `sub(n)` substitutes every `local.get/set/tee`
+whose name is IN `rename` — critically, one whose name is NOT in `rename` (line ~5502/~6177's
+fallback `return n.map((c,i) => i===0 ? c : sub(c))`) passes through **completely unchanged, with
+no error** — so a callee body referencing a local NOT in its own declared params/locals list
+survives verbatim as a bare, unrenamed reference. Read both `inline` (multi-caller, watr:5544-5636)
+and `inlineOnce` (single-caller, watr:6070-6070+) in full: `params`/`locals`/`cBody` are ALL derived
+from the SAME `callee` node reference, synchronously, in one JS call with no region-hook call
+anywhere inside either function or inside `buildInline` itself — internally self-consistent,
+ruling out an "inliner reads two out-of-sync snapshots of the same callee" bug in watr's OWN logic.
+This means the callee's OWN declared-locals list, as scanned by the inliner, genuinely did not
+include `b` — the AST handed to the inliner was already inconsistent (a body reference to a local
+its own signature never declares) before any inlining touched it.
+
+**Where watr's OWN region round actually lives** (relevant since scripts/self.js's
+`optimizeTail`→`watrTail`(src/optimize/watr-tail.js:314-327)→`watrOpts.regionMark/regionExit`
+wires jz's SAME `__region_mark`/`__region_exit` intrinsics into it): `runRounds`
+(watr/src/optimize.js:8487-8588) is a SEPARATE, self-contained region round from anything in jz's
+`compile()` — one mark/exit pair PER OPTIMIZER ROUND (up to 6), rooting `[ast, dirty, snapshots,
+opts.constF64, SW]`. `dirty`/`snapshots` are PROGRAM-NODE-KEYED (pointer-keyed) `Set`/`Map` —
+exactly the shape this campaign's own doctrine flags as needing special rebuild-fresh handling
+during relocation (module/core.js's own comment, quoted earlier in this file: "EVERY exit that
+reaches a pointer-keyed Map/Set rebuilds it FRESH"). `inlineOnce` is MODULE_SCOPE (runs inside this
+loop, `ast = fn(ast, opts)`, watr:8482-8483/8538-8546) — genuinely region-round-adjacent, unlike
+plain `inline` (explicitly excluded from `runRounds`'s per-round PASSES loop, watr:8528, called
+from elsewhere entirely outside any region-round window).
+
+**Ruled out**: a `inlineUid`/`ctUid`/`outUid`/`tmUid` (watr's own module-scope name-uid counters,
+`resetNameUids`, watr:8667) corruption theory — considered (they live outside `runRounds`'s root,
+so a stale/reclaimed cell is structurally possible) but doesn't fit the evidence: uid=7's OWN value
+and NEARLY ALL of its own renames (`$__inl7_ieeeE/e2/even/q/sh/tbl/vmTZ/vrTZ/removed/last/roundUp/
+buf/scr/pos/olen/n/i/bits/mmShift/mv/vr/vp/vm/h0/t/d10/out` — dozens) are self-consistent and
+correct; only ONE reference (`$b`) in the whole ~15,800-line dump is wrong. A corrupted uid would
+plausibly wreck the WHOLE splice's renames, not leave dozens correct and exactly one bad — not
+pursued further as the leading hypothesis.
+
+**Bisection signal is genuinely noisy — read with a specific caveat**: forcing EACH of SCAN, AFE,
+`__stdlibMark`, outermost, or `optimizeModule` off INDIVIDUALLY (5 of `compile()`'s 8 rounds) each
+independently "clears" the symptom; `emitFuncs`/`plan()` off do NOT clear it (same error); and
+`__buildMark` off does NOT clear it either but instead FLIPS the symptom to the task's originally-
+recorded "Maximum call stack size exceeded". Five different, structurally-unrelated bits each
+"fixing" the same bug, plus one bit changing WHICH symptom appears, is the signature this
+campaign's own history already named for a different bug ("O2:... reproduction depends on
+unrelated static-layout changes... adding or removing debug globals can flip a failing build to
+passing and back — points at an address/layout-boundary-sensitive bug rather than a single clean
+cause") — read as "many of these bits shift heap layout enough to dodge the trigger," NOT as "five
+independent root causes." None of the 5 "clearing" bits has a DIRECT mechanistic link to watr's
+`runRounds`/`inlineOnce` (all 5 finish before `optimizeTail`/`watrTail` even starts) — the truer
+signal is that `runRounds`'s pointer-keyed `dirty`/`snapshots` root, or `__region_copy_rec`'s core
+walk applied to whatever shape a fully-realized stdlib-heavy module produces, is the most
+mechanistically-direct remaining suspect, not yet confirmed.
+
+**Disposition, given the time already spent**: root-caused as far as static reading and one
+kernel's bitmask can take it without many more build iterations — precisely localized to a
+watr-internal (`/Users/div/projects/watr`, vendored as `node_modules/watr`) region-round
+integration gap, structurally independent of jz's own `ctx.*` round doctrine (the task's "widen a
+round's snapshot" fix shape does not directly apply — nothing in jz's own root arrays is
+demonstrably missing here). This is the SAME "real bug, but lives in watr, not jz's compile
+pipeline" disposition this file already gave `dvnested`'s DCE-at-scale gap — NOT fixed this
+session. Whoever continues: (1) add `dirty`/`snapshots` relocation-correctness assertions directly
+in a throwaway watr build (does `__region_copy_rec` faithfully preserve the (funcNode → hash)
+pairing across an exit, checked against a fresh re-hash immediately after?); (2) or bypass watr
+entirely for this one hypothesis test — build a kernel with `inlineOnce`/`inline` both forced off
+(`watr: {inlineOnce: false, inline: false}` merged into every optimize preset for the self-compile
+profile only) and see if `$__to_str` still corrupts some OTHER way, which would rule watr's inliner
+out entirely and point back at `runRounds`'s other passes or jz's own `optimizeModule`/`pullStdlib`.
+Diagnostic scripts (scratchpad, not committed): `cs-eager-native.mjs` (native ± `_eagerStdlib`,
+clean at every level — rules out a Class-1/2-style eager-loading bug), `cs-mask-probe{,2,3}.mjs`
+(the bitmask sweeps above), `cs-wat-dump.mjs` (kernel vs. native `--wat` dump via the new
+`__dbgCompileWat` export), `cs-find-bad-local.mjs` (parses a WAT dump with watr's own native
+`parse.js` and flags any `local.get/set/tee` outside its enclosing func's declared names — the tool
+that found the exact bad reference; reusable for any future "Unknown local"-shaped repro).
