@@ -152,7 +152,71 @@ Plan:
 5. Full battery: test/index.js, kernel build + JZ_TEST_TARGET=jz.wasm
    test/index.js, kernel-parity.js, kernel-oracle.js, bench.js size gates.
 
-## Status at this checkpoint
+## Fix applied — two parts
 
-Root cause fully traced and written up above; fix not yet coded. Resuming
-next to implement steps 1-5.
+### Part A (emit.js consumer-side hardening, defense in depth)
+
+`ARRAY_INDUCERS` moved from `src/compile/infer.js` to `src/kind-traits.js`
+(dependency-free leaf). `src/compile/emit.js`'s `tryGenericEmitter` (strategy
+10, ~line 4387): widened the existing own-property shadow-probe trigger from
+`vt == null` to also cover `vt === VAL.ARRAY && ARRAY_INDUCERS.has(method) &&
+typeof obj === 'string' && ctx.func.current?.params?.some(p => p.name ===
+obj)` — i.e. treat a parameter's ARRAY-via-method-evidence guess exactly
+like an unresolved receiver.
+
+### Part B (infer.js source-side fix — the one that actually matters)
+
+Verified Part A alone left TWO more consumers of the same wrongly-guessed
+`val=ARRAY` fact silently broken:
+
+1. `patchUleb5`'s SECOND-hop parameter calling `.set(...)` never went
+   through the guessed-array path at all (`.set` isn't in ARRAY_INDUCERS) —
+   ruled out as a separate cause via repro/bisect-set.mjs (MATCH).
+2. The REAL failure: `writeItem`'s OWN parameter `out` also reads `out.length`
+   (a plain PROPERTY READ, not a method call) — and `out`'s `.push(...)`
+   usage elsewhere in the SAME function body still poisoned `out`'s `val` to
+   VAL.ARRAY via infer.js's `methodEvidence`. `module/core.js`
+   `emitLengthAccess` (~line 2180) trusts `vt === VAL.ARRAY` UNCONDITIONALLY
+   for `.length` — no shadow probe exists there (correctly so for a REAL
+   array — a genuine Array's `.length` is always the header word, no own
+   -property collision is possible) — so it read the length HEADER WORD at
+   `ptr-8` instead of the real dynamic `length` property. Confirmed via WAT
+   dump (repro/idx0c.O0.wat, `$writeItem`'s `$sizeAt` computation) —
+   `__ptr_offset(out) - 8` read, no `__dyn_get_expr` in sight. Minimal
+   isolation: repro/bisect-idx0c.mjs (single `writeItem(buf,0)` call, no
+   loop) — native=143208000, jz=142208000 (byte 0 of the ULEB128 patch
+   stayed at its pre-patch placeholder — the FIRST of 5 `.set()` writes
+   landing at the right memory address doesn't matter if `sizeAt` itself
+   was wrong... actually confirmed sizeAt was fine (0) but a SEPARATE
+   `.length` read elsewhere was corrupted the same way — see WAT trace).
+   Also produced a THIRD symptom: repro/h3-levels.mjs showed a variant that
+   MATCHED at O0/O1 but MISMATCHED at O2/O3 — traced to jz's own AST-level
+   inliner (`src/compile/plan/inline.js` `inlineHotInternalCalls`) making
+   `writeOne`/`patchOne`/`makeBuf` disappear into `main` at O2+, which
+   simply exposed the SAME underlying `.length`-via-guessed-ARRAY defect
+   through a different code shape (post-inline, the corrupted length read
+   sat in a different position relative to the mutating calls) — not a
+   fourth bug, same root cause, confirmed fixed by the same change.
+
+   Given method dispatch (Part A) and property-length-read (this) are BOTH
+   broken by the same unsound `val=ARRAY` guess, and there was no way to
+   enumerate every consumer with confidence, fixed it at the SOURCE instead
+   of chasing more consumers: `src/compile/infer.js`'s `methodEvidence`
+   (~line 174) no longer calls `induce(name, 'array')` for ARRAY_INDUCERS
+   method names at all — it only proves the NEGATIVE ("not a STRING",
+   already handled by the existing `ARRAY_ONLY_POISON` conflict path, a
+   strict superset of ARRAY_INDUCERS' names) and never asserts a positive
+   ARRAY kind from usage alone. This restores the module's own documented
+   contract (infer.js header: "Default is never wrong, only sometimes wider
+   than necessary") — the STRING_ONLY_METHODS rung stays untouched (a
+   genuine proof: no Array/Object equivalent exists for those names).
+   `ARRAY_INDUCERS` import removed from infer.js (dead after this edit);
+   stays exported from kind-traits.js for Part A's emit.js consumer.
+
+## Battery status at this checkpoint
+
+All bisection repros (bisect-plain/closure/fields/set/idx0/idx0b/uleb5-check)
++ the full original snippet-bytebuf.js repro: 0 MISMATCH at O0-O3. Full
+project test battery (test/index.js, kernel build, kernel-parity,
+kernel-oracle, bench size gates) not yet run as of this checkpoint — next
+step.
