@@ -4410,9 +4410,18 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // an object. Probe the dyn-prop sidecar: own closure wins, else the builtin runs —
     // emitted ONCE (the builtin bodies are large inline emitters; a dual-arm emission
     // doubled closure-heavy golden sizes). __dyn_get_expr guards real-number receivers
-    // itself, so no f===f pre-fork is needed. Gated on the string module (the probe key
-    // is a string literal): a string-less program has no user string props to shadow.
-    if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str) {
+    // itself, so no f===f pre-fork is needed. Gated on ctx.module.demanded (NOT
+    // ctx.core.emit.str/.closure.call truthiness — those only prove the STRING/
+    // FN modules are LOADED, which the region-arena/opts._eagerStdlib eager
+    // preload makes true for every compile regardless of source content; a
+    // string-and-closure-less program genuinely has no user string-keyed
+    // closure props to shadow, and demanded is the one signal that still says
+    // so under eager preload — see src/ctx.js's ctx.module.demanded doc):
+    // a program that never demanded 'string' has no string literal to probe
+    // with, and one that never demanded 'fn' has no closure value that could
+    // ever occupy the shadowing property.
+    if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
+      && ctx.module.demanded.has('string') && ctx.module.demanded.has('fn')) {
       // HOISTED override probe: for a stable module-global receiver (the same
       // proof as charCodeAt shape-1b — never assigned in this function, and the
       // body's only calls are .charCodeAt, so nothing that runs here can change
@@ -4508,8 +4517,19 @@ function tagDynamicMethodResult(propLocal, result, targets) {
 // (1) closure-only fork — receiver carries no PTR.EXTERNAL (sidecar-bearing static
 //     types OR wasi target, where __ext_call doesn't exist); and (2) full fork
 //     adding a PTR.EXTERNAL → __ext_call leg for opaque js receivers.
+// Gated on ctx.module.demanded.has('fn'), not bare ctx.closure.call truthiness:
+// the latter only proves the `fn` module is LOADED, which eager preload
+// (region-arena / opts._eagerStdlib) makes true for every compile regardless
+// of source content. A program that never demanded 'fn' cannot have created a
+// closure value anywhere, so no receiver of unknown type could ever hold one
+// as an own property — this whole dynamic-dispatch strategy is moot and MUST
+// decline (falling through to strategy 12's externalMethodFallback, which is
+// the actual reject for e.g. `[3,1,2].frobnicate()` — see src/ctx.js's
+// ctx.module.demanded doc). `ctx.closure.call` itself stays the join's second
+// half: eager preload means it's callable even when demanded is empty, so the
+// IR-building code below is unaffected once this gate lets a real case through.
 function tryDynamicPropCall({ obj, method, parsed, vt }) {
-  if (ctx.closure.call) {
+  if (ctx.closure.call && ctx.module.demanded.has('fn')) {
     includeForRuntimeKeyIteration()
     if (ctx.transform.strict)
       err(`strict mode: method call \`${typeof obj === 'string' ? obj : '<expr>'}.${method}(...)\` on a value of unknown type pulls dynamic dispatch stdlib. Annotate the receiver type or pass { strict: false }.`)
