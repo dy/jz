@@ -315,6 +315,22 @@ function solveBigintProvenance(ctx, programFacts, ast) {
   // see collectDispatchTableClosures. Computed once; the AST this pass
   // walks is fixed for the whole fixpoint below.
   const dispatchTables = collectDispatchTableClosures([ast, ...(ctx.module.moduleInits || [])])
+  // Shape #8: a `.`-member call's callee, proven (or not) by the frozen
+  // call-target index (call-target-index.js) built once in plan/index.js
+  // before this whole fixpoint starts. Every direct-callee branch below
+  // already gates on `typeof node[1] === 'string'` (a bare name IS its own
+  // callee, trivially); this gives the SAME branches a second way to name a
+  // callee for a `['.', obj, method]` callee position, without changing
+  // their behavior for anything the index can't prove — `resolveMemberCallee`
+  // returns null for every other shape (computed dispatch stays on
+  // dispatchTables above; an unresolved receiver/property stays exactly as
+  // unresolved as it always was).
+  const callTargets = programFacts.callTargets
+  const resolveMemberCallee = calleeNode =>
+    (Array.isArray(calleeNode) && calleeNode[0] === '.' &&
+      typeof calleeNode[1] === 'string' && typeof calleeNode[2] === 'string')
+      ? callTargets?.resolveMember(calleeNode[1], calleeNode[2]) ?? null
+      : null
 
   const namesFor = func => {
     let names = namesByFunc.get(func)
@@ -424,7 +440,10 @@ function solveBigintProvenance(ctx, programFacts, ast) {
         if (BIGINT_READ_METHODS.has(method)) return true
         if (STORAGE_READ_METHODS.has(method) && typeof node[1][1] === 'string')
           return storage.has(node[1][1]) || bigintTyped.has(node[1][1])
-        return false
+        // Shape #8: a same-module named function reached via `.`-member call
+        // (`ns.parse(...)`) — proven, or not, by the call-target index.
+        const resolved = resolveMemberCallee(node[1])
+        return resolved ? results.has(resolved.name) : false
       }
       // Shape #7: a computed-key dispatch call (`HANDLER[imm](nodes)`) can't
       // name its callee statically, but when the base is a KNOWN dispatch
@@ -468,6 +487,12 @@ function solveBigintProvenance(ctx, programFacts, ast) {
       }
       if (Array.isArray(node[1]) && BIGINT_READ_METHODS.has(node[1][2])) return RAW_BIGINT
       if (Array.isArray(node[1]) && STORAGE_READ_METHODS.has(node[1][2])) return BOXED_BIGINT
+      // Shape #8: mirrors exprMay's own resolution above — exprRep is only
+      // ever asked once exprMay has already proven `true`, so a resolved
+      // member-call callee reads the SAME resultReps entry a bare-name call
+      // to it would.
+      const resolved = resolveMemberCallee(node[1])
+      if (resolved) return resultReps.get(resolved.name) ?? ANY_BIGINT
     }
     if (NUMERIC_VALUE_OPS.has(node[0])) return RAW_BIGINT
     return ANY_BIGINT
@@ -529,8 +554,13 @@ function solveBigintProvenance(ctx, programFacts, ast) {
         }
       }
     }
-    if (op === '()' && typeof node[1] === 'string') {
-      const callee = ctx.funcs.map.get(node[1])
+    if (op === '()') {
+      // Shape #8: widen the direct-callee lookup from "bare name only" to
+      // "bare name, or a `.`-member call the call-target index resolves" —
+      // every rule below (call-arg BigInt propagation, forward/backward
+      // storage taint) is otherwise unchanged and equally sound for either
+      // shape once `callee` names a real same-module function.
+      const callee = typeof node[1] === 'string' ? ctx.funcs.map.get(node[1]) : resolveMemberCallee(node[1])
       if (callee) {
         const args = commaList(node[2]), pset = paramsFor(callee)
         for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
@@ -811,8 +841,11 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     // nested call) resolves through exprMay's whole-program storage/
     // bigintTyped/results sets, which need no localNames at all.
     if (op === '=>') { visitCallSites(node[2], null, EMPTY_SEEN); return }
-    if (op === '()' && typeof node[1] === 'string') {
-      const callee = ctx.funcs.map.get(node[1])
+    if (op === '()') {
+      // Shape #8: same widening as scan's call-arg block above — a `.`-member
+      // call the index resolves is a real, enumerable call site for the
+      // resolved function's paramBigintOnly/paramNeverBool census too.
+      const callee = typeof node[1] === 'string' ? ctx.funcs.map.get(node[1]) : resolveMemberCallee(node[1])
       if (callee && callee.sig && callee.sig.params) {
         const args = commaList(node[2])
         for (let k = 0; k < callee.sig.params.length; k++) {
