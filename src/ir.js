@@ -53,9 +53,16 @@ function ptrBoxPrefix(ptrType, aux = 0) {
  *  so it must tag the schema-liveness fact onto ITS OWN result node. */
 function boxPtrIR(i32node, ptrType, aux = 0) {
   const prefix = ptrBoxPrefix(ptrType, aux)
+  // i64Hex, not prefix.toString(16) — prefix is BY CONSTRUCTION a NaN-box
+  // pattern (NAN_PREFIX_BITS | type<<47 | aux<<32), the exact self-host
+  // hazard fixed identically in specializeMkptr/extractF64Bits (see their
+  // own doc, fix/shape8-member-callee): under self-host, readI64/
+  // isPlanTaggedBigint can misjudge this shape as a boxed pointer and
+  // unbox it as one. i64Hex reaches the hex digits via shift/and/Number,
+  // never a `.toString()` call.
   const result = typed(['f64.reinterpret_i64',
     ['i64.or',
-      ['i64.const', '0x' + prefix.toString(16).toUpperCase()],
+      ['i64.const', i64Hex(prefix)],
       ['i64.extend_i32_u', i32node]]], 'f64')
   if (ptrType === PTR.OBJECT) result.schemaSid = aux
   // TAG-PRESERVING REBOX (.work/research.md §Carrier invariant, "DECL-INIT
@@ -822,7 +829,14 @@ export function extractF64Bits(node) {
     if (typeof node[1] === 'string' && node[1].startsWith('nan:')) {
       try {
         const v = BigInt(node[1].slice(4)) | 0x7ff0000000000000n
-        return '0x' + v.toString(16).padStart(16, '0')
+        // i64Hex, not v.toString(16): v is BY CONSTRUCTION a NaN-exponent
+        // pattern (the `| 0x7ff0...n` above) — under self-host, readI64/
+        // isPlanTaggedBigint can misjudge exactly this shape as a boxed
+        // pointer and unbox it as one (ir.js's own SELF-COMPILE CONTRACT
+        // note, mkPtrIR's identical fix in optimize/index.js's
+        // specializeMkptr, fix/shape8-member-callee). i64Hex reaches the
+        // hex digits via shift/and/Number, never .toString().
+        return i64Hex(v)
       } catch { return null }
     }
     return null
@@ -835,12 +849,12 @@ export function extractF64Bits(node) {
       // there and would silently corrupt).
       try {
         const v = (0xffffffffffffffffn - BigInt(s.slice(1)) + 1n) & 0xffffffffffffffffn
-        return '0x' + v.toString(16).padStart(16, '0')
+        return i64Hex(v)  // i64Hex, not v.toString(16) — same self-host hazard as above
       } catch { return null }
     }
     try {
       const v = BigInt(s)
-      return '0x' + v.toString(16).padStart(16, '0')
+      return i64Hex(v)  // i64Hex, not v.toString(16) — same self-host hazard as above
     } catch { return null }
   }
   return null

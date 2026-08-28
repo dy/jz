@@ -3217,8 +3217,22 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
         // Fully literal: all sites can be f64.const — no helper needed, handled in rewrite below.
         continue
       }
+      // i64Hex, not tmpl.toString(16) — the identical self-compile hazard
+      // i64Hex's own doc documents (layout.js): under self-host, a BigInt
+      // whose bits carry a PTR-tag-shaped pattern (any real box prefix,
+      // this one included — type=BIGINT's own tag nibble at bit 47 makes
+      // 0x7FFA… exactly such a pattern) routes `.toString(radix)` through
+      // readI64/isPlanTaggedBigint, which the kernel's own fixpoint proves
+      // (wrongly, ordering-sensitively) boxed — so the runtime tag-check
+      // "sees" a valid tag and unboxes a raw literal as if it were a
+      // pointer, reading unrelated heap bytes (confirmed live: watr's
+      // NaN-boxed i64.parse constant corrupted into string-pool "NaN"/
+      // "Infinity" fragments — kind/isBigInt's O2-only typeof regression,
+      // fix/shape8-member-callee). i64Hex computes the hex digits via
+      // BigInt shift/and/Number — never a `.toString()` call — so it never
+      // reaches that dispatch at all, native or self-hosted.
       addFunc(`(func $${name} (param $o i32) (result f64)
-        (f64.reinterpret_i64 (i64.or (i64.const 0x${tmpl.toString(16).toUpperCase()}) (i64.extend_i32_u (local.get $o)))))`)
+        (f64.reinterpret_i64 (i64.or (i64.const ${i64Hex(tmpl)}) (i64.extend_i32_u (local.get $o)))))`)
       continue
     }
 
