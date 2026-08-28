@@ -332,9 +332,28 @@ test('strict: .charCodeAt-inferred string param rejects a number argument', () =
   throwsStrict('export const g = (s) => s.charCodeAt(0); export const a = () => g("x"); export const f = () => g(42)',
     'strict mode', 'string-by-use param <- number arg should error'))
 
-test('strict: .push-inferred array param rejects a number argument', () =>
-  throwsStrict('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
-    'strict mode', 'array-by-use param <- number arg should error'))
+// Was: "strict: .push-inferred array param rejects a number argument" —
+// asserted this exact program threw a strict-mode boundary error, treating
+// `a.push(1)` as a "type-exclusive use" that proves `a` is a real Array.
+// fix/param-mutation-propagation found that's unsound in general: a plain
+// OBJECT/HASH value can own a same-named `.push` closure property (the
+// makeByteBuf/ByteBuf idiom — `b.push = (v) => {...}`, attached to an
+// object literal post-construction), so `.push` usage alone is NOT proof
+// of ARRAY the way `.charCodeAt` is claimed to be proof of STRING (no
+// String/Array/TypedArray equivalent exists for the compared-across
+// disambiguation that check relies on). infer.js's methodEvidence source no
+// longer induces ARRAY from `.push`/pop/shift/unshift/splice/flat/flatMap
+// usage — only the sound negative ("not a STRING"). `g`'s param is
+// therefore genuinely polymorphic here (one call site passes a real array,
+// another passes a number) and must compile permissively, same as any
+// other duck-typed parameter jz can't prove a single kind for — trading an
+// optional extra strict-mode diagnostic for never silently miscompiling
+// the makeByteBuf shape (STABILITY.md: a missed compile-time reject is far
+// preferable to a silent wrong value).
+test('strict: .push usage alone does not prove an ARRAY param (no false-positive reject)', () => {
+  ok(compile('export const g = (a) => { a.push(1); return a[0] }; export const h = () => g([1]); export const f = () => g(7)',
+    { strict: true }).byteLength > 0, 'a genuinely polymorphic (array-or-number) .push-using param must not be rejected on usage alone')
+})
 
 test('strict: matching argument types compile cleanly (no false positive)', () => {
   // number<-number, string<-string, and a genuinely untyped param accepting anything

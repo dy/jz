@@ -8,7 +8,10 @@
  * Aspects covered (src/infer.js evidence ladder):
  *   • notStringEvidence   — write-shape disproves STRING → drops __length poly
  *   • methodEvidence STR  — STRING_ONLY method induces STRING → drops __length
- *   • methodEvidence ARR  — ARRAY inducer (.push) → drops STRING/TYPED branches
+ *   • methodEvidence ARR  — `.push` et al. proves NOT-STRING only, never
+ *                            induces ARRAY (fix/param-mutation-propagation:
+ *                            a plain OBJECT/HASH can own a same-named
+ *                            closure property — `.push` alone is not proof)
  *   • extractRefinements  — flow `typeof x === 'string'` → return; → notString
  *
  * Call-site facts (infer* family):
@@ -118,18 +121,26 @@ test('Array.isArray flow refinement outranks an unrelated durable rep for .lengt
   is(count(branch, /\$__length\b/g), 0, 'positive branch uses the proven ARRAY header')
 })
 
-test('methodEvidence ARRAY: .push induces VAL.ARRAY (no STRING branch)', () => {
-  // `.push` is in ARRAY_INDUCERS → method source emits {val: ARRAY}. ARRAY
-  // tagging removes the STRING-vs-TYPED dispatch from `xs[i]` reads.
+test('methodEvidence ARRAY: .push proves NOT-STRING but must NOT induce VAL.ARRAY (fix/param-mutation-propagation)', () => {
+  // Was: "`.push` is in ARRAY_INDUCERS → method source emits {val: ARRAY}",
+  // asserting NO __str_idx dispatch survived — i.e. `.push` usage alone
+  // used to force the ARRAY-header fast path. That was unsound: a plain
+  // OBJECT/HASH value can own a same-named closure property (`b.push = (v)
+  // => {...}`, the makeByteBuf/ByteBuf idiom) — jz has no prototype chain
+  // to rule that out from the method NAME alone. An unresolved receiver
+  // (no call-site proof — `tail` is exported, so no argument evidence
+  // exists) must stay on the fully-polymorphic runtime dispatch: `.push`
+  // still proves the receiver ISN'T a string (ARRAY_ONLY_POISON — no
+  // String.prototype.push exists), but `xs[xs.length - 1]` has to keep
+  // checking at runtime, same as any other unproven receiver.
   const wat = jz.compile(`
     export const tail = (xs) => {
       xs.push(0)
       return xs[xs.length - 1]
     }
   `, { wat: true })
-  // ARRAY-known reads use __arr_idx_known (no STRING/TYPED branch).
-  // Just check there's no string-index dispatch.
-  is(count(wat, /\$__str_idx\b/g), 0, 'no __str_idx for ARRAY-typed receiver')
+  ok(count(wat, /\$__str_idx\b/g) > 0, 'unresolved receiver still runtime-dispatches the index read (no false ARRAY proof)')
+  ok(count(wat, /\$__length\b/g) > 0, 'unresolved receiver still runtime-dispatches .length (no false ARRAY proof)')
 })
 
 test('extractRefinements: post-typeof-string still permits object .length', () => {
