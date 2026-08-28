@@ -2377,7 +2377,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
   }
 })
 
-test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-name callee argument (shape #9 — KNOWN-WRONG)', () => {
+test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-name callee argument (shape #9 — FIXED)', () => {
   // Found while validating shape #8's own real watr shape (i64.parse
   // attached to a NAMED FUNCTION, not an object literal — a distinct
   // resolver strategy from shape #8's own landed one, attempted and
@@ -2387,23 +2387,45 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
   // pre-existing on unmodified main (aff67069), unrelated to the call-target
   // index or any shape #6/#7/#8 mechanism.
   //
-  // `i64`'s own param `n` is reassigned from a BigInt-returning callee
-  // (`n = parseIt(n)`), so its PLAN-TARGET representation is BOXED (`i64`'s
-  // result is exported, through `f`, as a Number|BigInt union — the ordinary
-  // "reassigned param crossing an export boundary" case every OTHER pin in
-  // this fixpoint already normalizes correctly on its own). Immediately
-  // after that write, the SAME local `n` is passed as a bare-name-call
-  // argument to `leb(n)`, whose OWN param wants the RAW carrier (`n >>= 7n`
-  // is raw i64 arithmetic). The BOXED-to-RAW conversion this call-argument
-  // edge needs never happens: `leb(900n)` should return `7n` (900n >> 7n);
-  // instead the still-boxed pointer's own bits cross as the argument and get
-  // misread as a plain (garbage) Number.
+  // Root cause (live-traced, CORRECTS this pin's original prose): `leb`'s
+  // own boundary/body TARGET for `n` is BOXED, not RAW — `targetRepFor`
+  // only picks RAW when the legacy whole-program param census
+  // (`programFacts.paramReps`, which `current`/`target` deliberately stay
+  // pinned to — see the Shape #6 "TWO REGRESSIONS" note) can prove `n`
+  // closed-kind-pure bigint across every call site. `leb`'s ONLY call site
+  // (`i64`'s `return leb(n)`) passes a BARE NAME that is itself a
+  // REASSIGNED CALLER LOCAL (`i64`'s own `n`, string at entry, `BigInt` via
+  // `n = parseIt(n)`) — opaque to that census, which falls back to the
+  // "any of the 14 kinds, closed" answer (BOOL included). That coarse,
+  // closed semantic trips buildBodyData's BOOL-veto, so `leb`'s `n` never
+  // enters `leb`'s OWN materializedNames for ANY caller — `representation
+  // CallArgAction` sees `bodyReady=false` and REJECTs the edge (not a
+  // BOXED-vs-RAW mismatch to bridge: there is no coercion at all), so the
+  // caller's still-boxed pointer bits cross unconverted and get misread as
+  // the i64 payload. Exactly the residual `solveBigintProvenance`'s own
+  // `paramBigintOnly` doc comment already named and scoped out: "a bare-name
+  // argument... resolves through exprRep as ANY_BIGINT — open, not closed
+  // ... a missed opportunity, not a soundness gap".
   //
-  // FLIP CONDITION: once a call argument correctly converts a BOXED local's
-  // carrier to RAW when the callee's own param demands it (representation-
-  // plan.js's representationCallArgAction / the emitted coerceArg edge for
-  // this shape), replace the `typeof e.f() === 'number'` assertion below
-  // with `is(e.f(), 7n, ...)`.
+  // Fix (representation-plan.js, `solveBigintProvenance`): extend the
+  // call-site argument proof feeding `paramNeverBool`/`markNeverBoolArg`
+  // (the SAME structurally-weaker, sufficient bar Shape #7 already
+  // established — boolean-impossibility, not kind purity) — a bare-name
+  // argument now also counts as structurally never-boolean when every
+  // explicit reaching definition of that name within the caller's own body
+  // (`collectDefs`, already computed as `defMapByFunc`) is itself
+  // structurally never-bool (a bigint origin, a storage read, a literal, or
+  // a call whose callee's own return tail(s) are structurally
+  // `isBigintOrigin` — pure AST inspection, no plan/provenance data, so no
+  // ordering hazard), AND the name's own entry semantic, if it is itself a
+  // parameter, is also never-bool per the same legacy census. This clears
+  // the BOOL-veto so `leb`'s `n` materializes (BOXED, unchanged from the
+  // legacy-derived target) — the call-arg edge becomes an ordinary
+  // BOXED→BOXED KEEP once both ends agree, no new box/unbox primitive
+  // needed for THIS shape. `argStructurallyNeverBool`/`markNeverBoolArg`
+  // fire through the SAME shared `visitCallSites` call-arg loop Shape #8
+  // already resolves `.`-member callees through — bare-name and
+  // index-resolved callees get the identical proof (sibling pin below).
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -2423,8 +2445,128 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
         return i64("900")
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: BOXED-target reassigned param crosses into leb(n)'s RAW-expecting argument as garbage, never 7n`)
+    is(e.f(), 7n, `${lbl}: BOXED-target reassigned param crosses into leb(n)'s argument as a real BigInt`)
   }
+})
+
+test('bigint: shape #9 sibling — index-resolved `.`-member callee (KNOWN-WRONG, separate residual)', () => {
+  // Requirement: the SAME call-argument edge (i64's reassigned local `n` ->
+  // leb's RAW-consuming param), but `leb` reached through a `.`-member the
+  // call-target index resolves (call-target-index.js), not a bare name.
+  //
+  // Traced: once a function's own VALUE is written to a property anywhere
+  // (`obj.leb = leb`, the property write call-target-index.js itself needs
+  // to prove ANY `.`-member call site), narrow.js's whole-program census
+  // marks it `valueUsed` — `makeBoundaryData`'s `uncovered = generic ||
+  // isExported(...) || valueAbi` goes true — and buildBodyData's
+  // materializedNames loop has a dedicated, deliberate gate for exactly
+  // this: `if (params.has(name) && boundary.covered !== true &&
+  // !exportedIdentity) continue` — an uncovered, non-exported param is
+  // categorically excluded from THIS fixpoint. `leb`'s `n` never
+  // materializes through RepresentationPlan at all (regardless of this
+  // fix); it falls to the pre-RepresentationPlan legacy sink/generic-
+  // closure machinery instead (ADR-0001's own "no legacy-machinery deletion
+  // in this campaign... the re-aimed retirement" scope boundary — a
+  // comparably-sized, separate undertaking, the same class of gap Shape #7's
+  // own dispatch-table residual and the closure-forwarding slice's
+  // `closureBoxParams`/`mintRepresentationPlan(...,{generic:true})`
+  // subsystem already name). `emit.js`'s OWN emission for a `.`-member call
+  // confirms this independently: `trySchemaClosureCall` dispatches via
+  // `ctx.closure.call` (a generic call_indirect, uniform ABI) and passes
+  // `parsed.normal` UNCOERCED — `representationCallArgAction`/`coerceArg`
+  // is never even invoked for this edge (confirmed live: zero call-arg
+  // trace entries for it), independent of whether the argument proof itself
+  // succeeds. Fixing this needs the closure-materialization subsystem to
+  // ALSO prove a value-used named function's own param boxed-by-construction
+  // across a property-dispatched call — out of this fix's scope; pinned
+  // KNOWN-WRONG, not silently accepted.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function leb(n) {
+        n >>= 7n
+        return n
+      }
+      const obj = {}
+      obj.leb = leb
+      function parseIt(n) {
+        n = n.replaceAll('_', '')
+        return BigInt(n)
+      }
+      function i64(n) {
+        if (typeof n === 'string') n = parseIt(n)
+        return obj.leb(n)
+      }
+      export let f = () => {
+        return i64("900")
+      }
+    `, { optimize }).exports
+    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: value-used leb (reached via .member) never materializes through RepresentationPlan; same box-bits-as-payload symptom as shape #9's own bare-name form`)
+  }
+})
+
+test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 pre-existing KNOWN-WRONG)', () => {
+  // Same edge class with the BOXED source coming from a genuine call-site
+  // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s
+  // own `n` — rather than from a reassignment inside the caller. `relay`
+  // stays covered (no property/value use anywhere): both `relay(900n)`
+  // (real, executed) and `relay(5)` (real, executed, but structurally
+  // routed away from `leb`'s raw arithmetic by relay's own typeof guard —
+  // avoids the genuine JS TypeError mixing Number/BigInt in `>>=` would
+  // throw) are visible call sites, so the legacy census sees a real
+  // {number, bigint} union and `relay`'s target is BOXED by construction
+  // (targetRepFor's default), never reassigned, `stable` throughout.
+  // `argStructurallyNeverBool`'s param-entry branch (this fix) proves `n`
+  // never-bool from that same census, same as the primary pin.
+  //
+  // O3 KNOWN-WRONG, confirmed PRE-EXISTING and IDENTICAL on unmodified
+  // fb2dec2e (this fix reverted) — not introduced or fixed by this change.
+  // Matches the class test/data.js's own "storage-read forwarded through
+  // TWO plain named functions... shape #7 sibling" pin already documents
+  // (`inlineHotInternalCalls` splices `f`'s call to `relay` away at -O3
+  // before provenance/census analysis runs, degrading the evidence that
+  // shape's own LANDED fix covers for a storage-read argument) — this is
+  // the same inliner-vs-analysis-ordering class for a bare bigint-literal
+  // argument instead, still open.
+  const src = `
+    function leb(n) { n >>= 7n; return n }
+    function relay(n) { return typeof n === 'bigint' ? leb(n) : n }
+    export let f = () => relay(900n)
+    export let g = () => relay(5)
+  `
+  for (const [optimize, lbl] of [[false, 'O0'], [2, 'O2']]) {
+    const e = jz(src, { optimize }).exports
+    is(e.f(), 7n, `${lbl}: non-reassigned BOXED union param crosses into leb(n)'s argument as a real BigInt`)
+    is(e.g(), 5, `${lbl}: the Number arm stays untouched (never reaches leb)`)
+  }
+  const e3 = jz(src, { optimize: 3 }).exports
+  is(typeof e3.f(), 'number', 'O3 KNOWN-WRONG (pre-existing, unrelated inliner/census-ordering gap): non-reassigned BOXED union param still misreads at -O3')
+})
+
+test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i64 pass, no unbox inserted', () => {
+  // A call argument that already agrees with the callee's RAW target on
+  // both ends (a bare bigint literal, the callee's ONLY call site) must
+  // stay a KEEP — kernel size/speed must not regress from this fix.
+  const src = `
+    function leb(n) { n >>= 7n; return n }
+    export let f = () => leb(900n)
+  `
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(src, { optimize }).exports
+    is(e.f(), 7n, `${lbl}: plain RAW bigint literal argument crosses unchanged`)
+  }
+  // WAT-shape (O0, unfolded): `f`'s own body must carry the raw i64 bits
+  // straight into `leb` — no `$__ptr_type` tag-check (maybeUnboxBigInt's
+  // own primitive) and no `$__alloc` call (boxBigInt's own primitive)
+  // inserted for an edge that never needed either.
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const start = wat.indexOf('(func $f')
+  ok(start >= 0, '$f found in WAT')
+  const next = wat.indexOf('\n  (func ', start + 1)
+  const fBody = next >= 0 ? wat.slice(start, next) : wat.slice(start)
+  ok(!/call \$__ptr_type/.test(fBody), 'O0: no unbox tag-check inserted for an already-RAW call argument')
+  ok(!/call \$__alloc/.test(fBody), 'O0: no box allocation inserted for an already-RAW call argument')
 })
 
 // Range-boundary BOX/UNBOX OOB (2026-08 fix, src/ir.js applyBigintRepresentationAction

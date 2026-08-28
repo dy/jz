@@ -822,6 +822,68 @@ function solveBigintProvenance(ctx, programFacts, ast) {
     const cm = callMember(node)
     return !!cm && STORAGE_READ_METHODS.has(cm[2])
   }
+  // Shape #9 (a bare-name sibling of shape #7's own paramNeverBool gap): a
+  // call argument that is a REASSIGNED CALLER LOCAL (`leb(n)` inside
+  // `function i64(n) { if (typeof n === 'string') n = parseIt(n); return
+  // leb(n) }`) resolves through exprRep/isStorageReadArgShape as neither a
+  // literal/call bigint origin nor a storage read — the legacy whole-program
+  // paramReps census (feeding makeBoundaryData's `rep`) then has no narrower
+  // answer than "any of the 14 kinds, closed" for the CALLEE's param either,
+  // whose synthetic BOOL member vetoes materialization permanently (the
+  // callee's own body never enters materializedNames for ANY caller). Same
+  // root class, same fix shape as storage reads: prove boolean-impossibility
+  // STRUCTURALLY, not kind purity. A name's value at any point in its OWN
+  // function is drawn from its entry (if a parameter) plus every explicit
+  // reassignment RHS (collectDefs is flow-INSENSITIVE — this reasoning
+  // already matches how buildBodyData's own semantic/current fixpoints treat
+  // the identical defs map elsewhere in this file) — proving EVERY one of
+  // those sources excludes boolean is a sound, if conservative,
+  // over-approximation regardless of which one actually reaches this call at
+  // runtime. Recursing one level into a called function's OWN return
+  // tail(s) is pure AST shape inspection (isBigintOrigin), never plan or
+  // provenance data, so it carries no ordering hazard against the
+  // callee-before-caller settling this file's other cross-function facts
+  // rely on.
+  const paramEntryExcludesBool = (func, idx) => {
+    const rep = programFacts.paramReps.get(func.name)?.get(idx)
+    if (!rep) return false
+    if (rep.possibleKinds instanceof Set && rep.possibleKinds.size)
+      return rep.kindsCoverage === 'closed' && !rep.possibleKinds.has(VAL.BOOL)
+    const kind = rep.val || rep.presentVal
+    return !!kind && kind !== VAL.BOOL
+  }
+  const structurallyNeverBoolExpr = (node, seen) => {
+    if (isBigintOrigin(node)) return true
+    if (isStorageReadArgShape(node)) return true
+    // A NUMBER literal (kind.js's own valTypeOf treats a bare JS number as
+    // exactly this — never a variable reference, see its "Literal forms"
+    // comment) and a STRING literal/concat result (the `['str', …]` tag —
+    // per C5b's hardening sweep, the ONLY producer of this shape) are each
+    // structurally never-bool by their own AST tag, no recursion needed.
+    if (typeof node === 'number') return true
+    if (Array.isArray(node) && node[0] === 'str') return true
+    if (!Array.isArray(node) || node[0] !== '()' || typeof node[1] !== 'string') return false
+    const callee = ctx.funcs.map.get(node[1])
+    if (!callee || !callee.body || seen.has(callee)) return false
+    const tails = Array.isArray(callee.body) && callee.body[0] === '{}' ? returnExprs(callee.body) : [callee.body]
+    if (tails.length === 0) return false
+    const nextSeen = new Set(seen).add(callee)
+    return tails.every(t => t != null && structurallyNeverBoolExpr(t, nextSeen))
+  }
+  const argStructurallyNeverBool = (node, func) => {
+    if (structurallyNeverBoolExpr(node, EMPTY_SEEN)) return true
+    if (typeof node !== 'string' || !func) return false
+    const list = defMapByFunc.get(func)?.get(node)
+    const idx = func.sig?.params?.findIndex(p => p.name === node) ?? -1
+    // A `let`/`const` local's declaration is itself a collected def (collect
+    // Defs adds the initializer), so `list` alone is its complete reaching
+    // set. Only a PARAMETER has an implicit entry value beyond its own
+    // explicit reassignment defs.
+    if (idx >= 0 && !paramEntryExcludesBool(func, idx)) return false
+    if (idx < 0 && (!list || list.length === 0)) return false
+    if (!list || list.length === 0) return idx >= 0
+    return list.every(def => def[DEF_RHS] != null && structurallyNeverBoolExpr(def[DEF_RHS], EMPTY_SEEN))
+  }
   const visitCallSites = (node, func, localNames) => {
     if (!Array.isArray(node)) return
     const op = node[0]
@@ -853,7 +915,7 @@ function solveBigintProvenance(ctx, programFacts, ast) {
           const closedBigint = bigintRepIsClosed(rep) &&
             bigintRepBits(rep) !== BIGINT_REP_NONE && bigintRepBits(rep) !== BIGINT_REP_TOP
           markCallArg(callee.name, k, closedBigint)
-          markNeverBoolArg(callee.name, k, k < args.length && isStorageReadArgShape(args[k]))
+          markNeverBoolArg(callee.name, k, k < args.length && argStructurallyNeverBool(args[k], func))
         }
       }
     }
