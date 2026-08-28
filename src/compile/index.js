@@ -2810,6 +2810,25 @@ export default function compile(ast, profiler, regionHooks) {
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
   // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
+  // Bare truthy, not `.size`: `ctx.closure.types` existing means `fn` loaded
+  // for SOME real reason — not only literal closure minting, but any use of
+  // ctx.closure.call (generic dynamic dispatch that COULD invoke a
+  // closure-shaped value at runtime, even one this specific program never
+  // literally constructs) also needs `$ftN` for its call_indirect. A `.size`
+  // gate here (this session's first attempt) undercounted that second case —
+  // regressed 71 native tests with "'ftN' is not in scope" (any compile whose
+  // ONLY closure-shaped code is a generic-dispatch call_indirect, never a
+  // literal `=>` reaching ctx.closure.mint). The REAL fix for eager-load's
+  // "fn loaded but never actually needed" divergence lives downstream, in
+  // finalizeClosureTable (src/wat/assemble.js): its own `indirectUsed` scan
+  // is the authoritative, later check (real call_indirect usage in the
+  // ACTUALLY-COMPILED, reachability-resolved output) — its `else` branch
+  // already strips this exact `$ftN` type back out (`sec.types = sec.types.
+  // filter(...)`) whenever indirectUsed is false, regardless of whether it
+  // was pushed here. That authoritative scan is what needed fixing (see its
+  // own doc — it used to scan EVERY ever-registered stdlib template instead
+  // of only reachable ones); this push staying unconditional-on-module-load
+  // was never the bug.
   if (ctx.closure.types) {
     const params = [['param', 'f64'], ['param', 'i32']] // env + argc
     for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])

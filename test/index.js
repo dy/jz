@@ -89,6 +89,7 @@ const TESTS = [
   'native-lowering',
   'kernel-parity',
   'kernel-oracle',
+  'eager-stdlib-parity',
   'headline',
   'examples',
 ]

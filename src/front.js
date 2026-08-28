@@ -89,9 +89,15 @@ export const rejectReservedPrefix = (node) => {
  *  round) keeps its existing lazy, on-demand load order unchanged. The list
  *  is autoload.js's STDLIB (a mirror of the manifest's export list, pinned in
  *  sync by test/self-compile-includes.js) — the self-hosted kernel cannot
- *  enumerate a namespace import. */
-export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks } = {}) {
-  if (regionHooks) includeAllMods()
+ *  enumerate a namespace import.
+ *  `eagerStdlib` (test-only, index.js opts._eagerStdlib): forces the SAME
+ *  eager `includeAllMods()` call independent of `regionHooks`, so the
+ *  "module load = registration only, no observable output effect" invariant
+ *  (test/eager-stdlib-parity.js) can be pinned NATIVELY — no region-arena
+ *  mark/exit machinery needed to prove a module's init(ctx) is pure
+ *  registration; loading it early must never change emitted bytes/imports. */
+export function frontHalf(code, { strict, jzify, time = (n, f) => f(), afterPrepare, regionHooks, eagerStdlib } = {}) {
+  if (regionHooks || eagerStdlib) includeAllMods()
   const mark = regionHooks?.mark()
   let parsed = time('parse', () => parse(code))
   if (typeof code === 'string' && code.includes(T)) rejectReservedPrefix(parsed)

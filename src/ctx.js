@@ -469,6 +469,20 @@ export function reset(proto, globals, bridge) {
   ctx.module = {
     imports: [],
     modules: {},
+    // Names ever passed to a REAL, AST-content-driven includeModule() call
+    // (every includeForXxx site in autoload.js, prepare()'s own unconditional
+    // includeModule('core')) — as opposed to `modules`, which also goes true
+    // when eager preload (front.js's includeAllMods(), region-arena/
+    // opts._eagerStdlib) runs a module's init(ctx) early with NO content
+    // trigger at all. A dispatch decision that means "did the SOURCE actually
+    // need this capability" (src/compile/emit.js's tryDynamicPropCall/
+    // tryGenericEmitter shadow probe — both used to read ctx.closure.call/
+    // ctx.core.emit.str truthiness as that proxy, which eager preload makes
+    // permanently true regardless of source content) must consult THIS, not
+    // `modules`. Population: includeModule() adds unconditionally, even on
+    // its own already-loaded early return; includeAllMods()'s bulk preload
+    // deliberately does NOT (see src/autoload.js loadModule/includeModule).
+    demanded: new Set(),
     importSources: null,  // user compile's bundled source graph; reset() clears it every session
     importAsts: null,   // self-compile: pre-parsed [specifier, ast] pairs (the kernel can't parse).
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
