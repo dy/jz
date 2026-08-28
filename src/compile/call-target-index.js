@@ -141,23 +141,39 @@ function collectShadowedNames(ast, moduleInits, funcsList) {
  *  everywhere `collectShadowedNames` does (module top level, moduleInits,
  *  every function body — a value can escape from any of them), with no
  *  `=>`-boundary stop: unlike shadow/write census above, an escape three
- *  closures deep is exactly as disqualifying as one at module top level. */
+ *  closures deep is exactly as disqualifying as one at module top level.
+ *
+ *  `safe` propagates a callee/receiver position THROUGH the ops that merely
+ *  forward one of their own operand's value untouched (`?:`, `&&`/`||`/`??`,
+ *  the comma operator) — a namespace-qualified call `encode[t].parse(...)`
+ *  lowers a computed read on a known-shape namespace into exactly this
+ *  ternary-of-equality-checks shape (`t === 'i64' ? m1_encode$i64 : t ===
+ *  'f32' ? …`, watr's real `compile.js` v128const), and each branch is
+ *  every bit as much "the `.`-receiver of a safe read" as a bare receiver
+ *  would be — losing that context at the ternary boundary would call a
+ *  namespace member's own encoder function an escape merely for being
+ *  reached through a runtime-selected branch instead of a fixed name. */
 function collectValueEscapes(ast, moduleInits, funcsList) {
   const out = new Set()
-  const walk = node => {
+  const walk = (node, safe = false) => {
+    if (typeof node === 'string') { if (!safe) out.add(node); return }
     if (!Array.isArray(node)) return
     const op = node[0]
     if (op === 'import' || op === 'export') return
-    if (op === '.' || op === '?.') { // neither the receiver nor the literal prop name reads a value
-      for (let i = 1; i < node.length; i++) walk(node[i])
+    if (op === '.' || op === '?.') { walk(node[1], true); return } // receiver reads without exposing it; prop name is never a value
+    if (op === '()' || op === '[]') { // callee / index-receiver position is safe; every other slot is an ordinary value position
+      walk(node[1], true)
+      for (let i = 2; i < node.length; i++) walk(node[i], false)
       return
     }
-    for (let i = 1; i < node.length; i++) {
-      const a = node[i]
-      if (typeof a !== 'string') { walk(a); continue }
-      const safe = (op === '()' || op === '[]') && i === 1 // callee / index-receiver
-      if (!safe) out.add(a)
+    if (op === '?:') { walk(node[1], false); walk(node[2], safe); walk(node[3], safe); return }
+    if (op === '&&' || op === '||' || op === '??') { walk(node[1], false); walk(node[2], safe); return }
+    if (op === ',') {
+      for (let i = 1; i < node.length - 1; i++) walk(node[i], false)
+      walk(node[node.length - 1], safe)
+      return
     }
+    for (let i = 1; i < node.length; i++) walk(node[i], false)
   }
   walk(ast)
   if (moduleInits) for (const init of moduleInits) walk(init)
