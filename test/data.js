@@ -2377,6 +2377,56 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
   }
 })
 
+test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-name callee argument (shape #9 — KNOWN-WRONG)', () => {
+  // Found while validating shape #8's own real watr shape (i64.parse
+  // attached to a NAMED FUNCTION, not an object literal — a distinct
+  // resolver strategy from shape #8's own landed one, attempted and
+  // reverted after it regressed kernel-oracle; see .work/phase-c-
+  // unification.md's own note on this pin for the trail). Isolated to a
+  // MINIMAL repro with ZERO `.`-member calls anywhere — confirmed
+  // pre-existing on unmodified main (aff67069), unrelated to the call-target
+  // index or any shape #6/#7/#8 mechanism.
+  //
+  // `i64`'s own param `n` is reassigned from a BigInt-returning callee
+  // (`n = parseIt(n)`), so its PLAN-TARGET representation is BOXED (`i64`'s
+  // result is exported, through `f`, as a Number|BigInt union — the ordinary
+  // "reassigned param crossing an export boundary" case every OTHER pin in
+  // this fixpoint already normalizes correctly on its own). Immediately
+  // after that write, the SAME local `n` is passed as a bare-name-call
+  // argument to `leb(n)`, whose OWN param wants the RAW carrier (`n >>= 7n`
+  // is raw i64 arithmetic). The BOXED-to-RAW conversion this call-argument
+  // edge needs never happens: `leb(900n)` should return `7n` (900n >> 7n);
+  // instead the still-boxed pointer's own bits cross as the argument and get
+  // misread as a plain (garbage) Number.
+  //
+  // FLIP CONDITION: once a call argument correctly converts a BOXED local's
+  // carrier to RAW when the callee's own param demands it (representation-
+  // plan.js's representationCallArgAction / the emitted coerceArg edge for
+  // this shape), replace the `typeof e.f() === 'number'` assertion below
+  // with `is(e.f(), 7n, ...)`.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function leb(n) {
+        n >>= 7n
+        return n
+      }
+      function parseIt(n) {
+        n = n.replaceAll('_', '')
+        return BigInt(n)
+      }
+      function i64(n) {
+        if (typeof n === 'string') n = parseIt(n)
+        return leb(n)
+      }
+      export let f = () => {
+        return i64("900")
+      }
+    `, { optimize }).exports
+    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: BOXED-target reassigned param crosses into leb(n)'s RAW-expecting argument as garbage, never 7n`)
+  }
+})
+
 // Range-boundary BOX/UNBOX OOB (2026-08 fix, src/ir.js applyBigintRepresentationAction
 // + src/compile/emit.js coerceArg): every plan-directed UNBOX now routes through
 // maybeUnboxBigInt (runtime tag-checked) instead of the unconditional unboxBigInt —

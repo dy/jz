@@ -780,3 +780,9 @@ native full suite 3710/3709/0/1 (21,602), kernel-target full suite
 ## Shape #8 branch: SHELVED as custodian (fix/shape8-member-callee @ d7efe7a7)
 
 Decisive fact (fixdiv, 2026-08-27): main's kernel does NOT corrupt box-tag-shaped BigInt literals; the branch's Tier-1/Tier-2 member-callee machinery taints how the kernel compiles watr's own i64.parse at kernel-build time (fails from its first commit 17ef8687), so every later i64 constant whose bits alias a PTR tag misencodes. Independently sound pieces extracted separately: the four i64Hex hazard fixes (0e7887b6, d7efe7a7). Replacement design per the second audit: ONE frozen same-module call-target index computed before any consumer (no pass-order-dependent facts), consumed by plan and emission alike — the ordering race and the kernel taint are both symptoms of ad-hoc per-family resolution. The Shape #8 KNOWN-WRONG pin stays on main until the index lands.
+
+## Shape #9 found while landing Shape #8, pinned not fixed (2026-08-28)
+
+call-target-index.js lands Shape #8 (`ns.parse`-style points-to) with a full green battery; a second, function-property resolver strategy for watr's real `i64.parse` shape regressed kernel-oracle (crashes) and was reverted, so that deeper shape stays open (watr downstream unchanged at 600/626).
+Chasing it surfaced an UNRELATED, pre-existing bug confirmed on unmodified aff67069 with zero `.`-member calls: a reassigned param whose plan-TARGET is BOXED (crosses an export boundary as Number|BigInt) never converts to RAW when passed as a bare-name call argument to a callee expecting RAW — the boxed pointer's own bits cross as-is and misread as a garbage Number.
+Pinned KNOWN-WRONG on fix/boxed-param-raw-callee-pin (test/data.js "shape #9"). Root fix: representationCallArgAction / the emitted coerceArg edge for a BOXED-source→RAW-target call argument.
