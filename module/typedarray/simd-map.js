@@ -217,8 +217,9 @@ function genSimdMap(name, elemType, pattern) {
   // (module/typedarray.js), which computes in f64 and stores through
   // elemStoreIR's real ToInt32/ToUint32 conversion — not reimplemented here.
   // This is genSimdMap's single constant-shape gate for the family; analyzeSimd
-  // deliberately stays value-agnostic (matches ANY numeric `c`) — see its own
-  // comment — so this decision, like the float×bitwise one, lives in one place.
+  // deliberately stays element-kind-agnostic (see its own comment) AND never
+  // inspects `c`'s value beyond "is it a number" — so, like the float×bitwise
+  // decision, this one lives in exactly one place too.
   if ((elemType === 4 || elemType === 5) && ARITH_OPS.has(op) && !Number.isInteger(c))
     return null
 
