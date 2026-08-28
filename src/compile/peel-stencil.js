@@ -19,7 +19,7 @@
 // y-loop) match. Number literals are sparse-array holes (`n[0]` is undefined), so
 // literal tests use `== null`; created literals are bare numbers.
 
-import { ASSIGN_OPS, MUTATE_OPS } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, walkAst } from '../ast.js'
 import { litN, unitIncVar, normalizeLoop, closureMutatedVars, rewriteBlocks, freshLoopId, loopHazards } from './loop-model.js'
 
 const isVar = (n) => typeof n === 'string'
@@ -68,15 +68,13 @@ function findClamp(node) {
 // `ci = iv + k` (or `k + iv`) assignment/decl: returns { iv, tap } given the clamp var.
 function clampSource(node, ci) {
   let found = null
-  const visit = (n) => {
-    if (found || !Array.isArray(n)) return
+  walkAst(node, { enter: n => {
+    if (found) return false   // first match wins — prune once found
     if (n[0] === '=' && n[1] === ci && Array.isArray(n[2]) && n[2][0] === '+') {
       const [, a, b] = n[2]
       if (isVar(a) && isVar(b)) found = { a, b }
     }
-    n.forEach(visit)
-  }
-  visit(node)
+  } })
   return found
 }
 
@@ -85,28 +83,20 @@ function clampSource(node, ci) {
 // Asymmetric / wider ranges would make xs=r, xe=bound-r unsound, so they bail.
 function tapRadius(loopBody, tap) {
   let boundR = null, initR = null
-  const visit = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(loopBody, { enter: n => {
     // tap loop bound `k <= r`: while (cond at [1]) or for (cond at [2]).
     const cond = n[0] === 'while' ? n[1] : n[0] === 'for' ? n[2] : null
     if (Array.isArray(cond) && cond[0] === '<=' && cond[1] === tap && isVar(cond[2])) boundR = cond[2]
     // tap init `k = -r` (a bare assignment, or inside the for's `let` init clause).
     if (n[0] === '=' && n[1] === tap) { const neg = negOf(n[2]); if (isVar(neg)) initR = neg }
-    n.forEach(visit)
-  }
-  visit(loopBody)
+  } })
   return boundR != null && boundR === initR ? boundR : null
 }
 
 // Count every write (=, compound-assign, ++/--) to variable `v` in `node`.
 function countWrites(node, v) {
   let n = 0
-  const visit = (x) => {
-    if (!Array.isArray(x)) return
-    if (MUTATE_OPS.has(x[0]) && x[1] === v) n++
-    x.forEach(visit)
-  }
-  visit(node)
+  walkAst(node, { enter: x => { if (MUTATE_OPS.has(x[0]) && x[1] === v) n++ } })
   return n
 }
 
@@ -115,14 +105,11 @@ function countWrites(node, v) {
 // the wrong (last-seen) radius, so xs=r/xe=bound-r no longer match the clamped loop.
 function tapStructures(body, tap) {
   let seeds = 0, bounds = 0
-  const visit = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(body, { enter: n => {
     const cond = n[0] === 'while' ? n[1] : n[0] === 'for' ? n[2] : null
     if (Array.isArray(cond) && cond[0] === '<=' && cond[1] === tap && isVar(cond[2])) bounds++
     if (n[0] === '=' && n[1] === tap && isVar(negOf(n[2]))) seeds++
-    n.forEach(visit)
-  }
-  visit(body)
+  } })
   return { seeds, bounds }
 }
 

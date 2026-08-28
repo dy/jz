@@ -40,7 +40,7 @@
  *
  * @module type
  */
-import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS } from './ast.js'
+import { isI32, isReassigned, cloneNode, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS, walkAst } from './ast.js'
 import { ctx, getFactStore } from './ctx.js'
 import { VAL, lookupValType } from './reps.js'
 import { valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, censusShapedNode, censusMaybeUndefinedKind, exprPresentValIn, exprMapGetShapedIn } from './kind.js'
@@ -254,8 +254,8 @@ function invariantIdxExpr(e, iv, body, env) {
  *  A second decl of the same name (block shadowing) evicts it permanently. */
 export function bodyAffineEnv(body, iv) {
   const env = new Map()   // name → affine, or null = body-declared but unresolvable
-  const walk = (n) => {
-    if (!Array.isArray(n) || n[0] === '=>') return
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
     if (n[0] === 'let' || n[0] === 'const') {
       for (let k = 1; k < n.length; k++) {
         const d = n[k]
@@ -266,9 +266,7 @@ export function bodyAffineEnv(body, iv) {
           : affineIdxOfIV(d[2], iv, body, env))
       }
     }
-    for (let k = 1; k < n.length; k++) walk(n[k])
-  }
-  walk(body)
+  } })
   return env
 }
 
@@ -492,7 +490,6 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
   let forcePre = false
   const isPost = () => !forcePre && bump > 0 && (ivWriteAt === -1 || scanTop === -1 || scanTop >= ivWriteAt)
   const scan = (n) => {
-    if (!Array.isArray(n)) return
     if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[1] !== iv
         && ctx.func.typedElem?.has(n[1]) && stable(n[1])) {
       const key = idxKey(n[1], n[2])
@@ -539,15 +536,14 @@ export function versionableTypedFor(init, cond, step, body, locals, entryHint = 
         }
       }
     }
-    for (let k = 1; k < n.length; k++) scan(n[k])
   }
   if (seqBody) {
-    for (let s = 1; s < body.length; s++) { scanTop = s; scan(body[s]) }
+    for (let s = 1; s < body.length; s++) { scanTop = s; walkAst(body[s], { enter: scan }) }
     scanTop = -1
-  } else scan(body)
+  } else walkAst(body, { enter: scan })
   // `&&`-cond rest conjuncts — scanned AFTER the body so a shared-key body
   // access (potentially post-increment, wider extent) wins the seen-set
-  if (condRest != null) { forcePre = true; scan(condRest); forcePre = false }
+  if (condRest != null) { forcePre = true; walkAst(condRest, { enter: scan }); forcePre = false }
   // typeof-process guard, not globalThis.process — a bare `globalThis` read
   // compiles to an env.globalThis import in the self-compile build; typeof folds dead
   if (typeof process !== 'undefined' && process.env.JZ_DBG_VS) console.error('VS', iv, 'cands', cands.length, 'bump', bump, 'ivWriteAt', ivWriteAt, 'body0', Array.isArray(body) ? body[0] : typeof body, cands.slice(0,4).map(c => c.recv + (c.range ? ':hull' : c.ind ? ':ind' : c.cursor != null ? `:cursor(${c.cursor},K=${c.K})` : ':aff') + (c.post ? ':POST' : '')).join(' '))
@@ -587,7 +583,7 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const cands = [], seen = new Set()
     const stable2 = (nm) => !isReassigned(b2, nm) && !redeclaresName(b2, nm)
     const scan = (n) => {
-      if (!Array.isArray(n) || n[0] === '=>') return
+      if (n[0] === '=>') return false
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string'
           && ctx.func.typedElem?.has(n[1]) && stable2(n[1])) {
         const key = idxKey(n[1], n[2])
@@ -598,10 +594,9 @@ export function versionableTypedNest(init, cond, step, body, locals) {
           }
         }
       }
-      for (let k = 1; k < n.length; k++) scan(n[k])
     }
-    scan(c2)   // `while (keys[h] !== k)` — the accesses live in the COND
-    scan(b2)
+    walkAst(c2, { enter: scan })   // `while (keys[h] !== k)` — the accesses live in the COND
+    walkAst(b2, { enter: scan })
     return cands.length ? { rangeOnly: true, cands } : null
   }
   const walkLoop = (i2, c2, s2, b2, hint, isTop) => {
@@ -746,15 +741,13 @@ export function versionableTypedNest(init, cond, step, body, locals) {
     const cands = []
     let seenWrite = false
     const scanC = (n) => {
-      if (!Array.isArray(n)) return
       if (n === w.node) { seenWrite = true }
       if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && n[2] === name
           && ctx.func.typedElem?.has(n[1])
           && !isReassigned(body, n[1]) && !redeclaresName(body, n[1]))
         cands.push({ recv: n[1], idx: n[2], post: seenWrite })
-      for (let k = 1; k < n.length; k++) scanC(n[k])
     }
-    scanC(body)
+    walkAst(body, { enter: scanC })
     if (cands.length) cursors.push({ name, slope: w.slope, chain, cands,
       kind: exprType(name, locals) === 'i32' ? 'i32' : 'f64' })
   }
@@ -1643,8 +1636,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const stmts = Array.isArray(lbody) && (lbody[0] === ';' || lbody[0] === '{}') ? lbody.slice(1) : [lbody]
         const writesTo = (root, name) => {
           let count = 0
-          const walk = (x) => {
-            if (!Array.isArray(x)) return
+          walkAst(root, { enter: x => {
             if (MUTATE_OPS.has(x[0])) {
               if (x[1] === name) count++
               else if (Array.isArray(x[1]) && x[1][0] !== '[]' && x[1][0] !== '.' && x[1][0] !== '?.') {
@@ -1652,9 +1644,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
                 if (names.has(name)) count++
               }
             }
-            for (let j = 1; j < x.length; j++) walk(x[j])
-          }
-          walk(root)
+          } })
           return count
         }
         for (const incNode of stmts) {

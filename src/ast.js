@@ -105,23 +105,26 @@ export const isLeaf = n => Array.isArray(n) && (n[0] === 'local.get' || n[0] ===
 
 // === Shared traversal ===
 
-/** Pre-order walk over an array AST/IR tree.
+/** Walk over an array AST/IR tree.
  *
- * `enter(node, parent, index)` sees each array node. Returning `false` prunes
- * that node's children. `boundary`, when supplied, runs after `enter` and
- * prunes children when it returns true. Primitive operands are not visited;
- * callers inspect them through their containing node.
+ * `enter(node, parent, index)` sees each array node pre-order. Returning `false`
+ * prunes that node's children (and skips its `exit`). `boundary`, when supplied,
+ * runs after `enter` and prunes children when it returns true. `exit(node,
+ * parent, index)` sees each unpruned node post-order, after its children — the
+ * hook for in-place rewrites that must see rewritten children first. Primitive
+ * operands are not visited; callers inspect them through their containing node.
  * The root has `parent === null` and `index === -1`; array opcode slots (`[0]`)
  * are not visited separately because `enter` already receives their node.
  *
  * The walk deliberately keeps no visited set: AST is a tree, and optimizer IR
  * may share a subtree whose occurrences must each retain their original visit. */
-export function walkAst(node, { enter, boundary } = {}) {
+export function walkAst(node, { enter, boundary, exit } = {}) {
   const visit = (value, parent, index) => {
     if (!Array.isArray(value)) return
     if (enter && enter(value, parent, index) === false) return
     if (boundary && boundary(value, parent, index)) return
     for (let i = 1; i < value.length; i++) visit(value[i], value, i)
+    if (exit) exit(value, parent, index)
   }
   visit(node, null, -1)
   return node

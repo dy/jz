@@ -18,7 +18,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { stmtList, T, some, isReassigned, hasControlTransfer } from '../../ast.js'
+import { stmtList, T, some, isReassigned, hasControlTransfer, walkAst } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import { constIntExpr } from '../../static.js'
 import { containsDeclOf, cloneWithSubst, isUnitIncrement } from '../../type.js'
@@ -458,14 +458,14 @@ const trySplitFor = (node, parent, idx) => {
 export const splitCharScanLoops = () => {
   if (!optimizing() || ctx.transform.optimize?.splitCharScan === false) return false
   let changed = false
-  const visit = (node, parent, idx) => {
-    if (!Array.isArray(node) || node[0] === '=>') return
-    if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return }
-    for (let k = 1; k < node.length; k++) visit(node[k], node, k)
-  }
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.body) continue
-    visit(func.body, null, -1)
+    walkAst(func.body, {
+      enter(node, parent, idx) {
+        if (node[0] === '=>') return false
+        if (node[0] === 'for' && node.length === 5 && parent && trySplitFor(node, parent, idx)) { changed = true; return false }
+      },
+    })
     // body root itself can't be a bare `for` without a parent slot — wrap-walk
     // handles every nested position; a top-level-for body is `{}`-wrapped.
   }

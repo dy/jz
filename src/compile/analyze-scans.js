@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -482,8 +482,7 @@ function selfPreservingWrittenKeys(body, name, written) {
   }
   const safe = new Map()  // key → observed-safe-so-far (absent = unobserved)
   const observe = (key, ok) => { if (safe.get(key) !== false) safe.set(key, ok) }
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(body, { enter: n => {
     const op = n[0]
     if (op === '=' && Array.isArray(n[1])) {
       const key = keyOf(n[1])
@@ -496,9 +495,7 @@ function selfPreservingWrittenKeys(body, name, written) {
       const key = keyOf(n[1])
       if (key != null && written.has(key)) observe(key, preserves(_effectiveWriteValue(op, n[1], n[2]), key))
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body)
+  } })
   const out = new Set()
   for (const k of written) if (safe.get(k) === true) out.add(k)
   return out
@@ -984,17 +981,14 @@ const mathFnName = (callee) =>
 // that stops there. See collectBareEscapes' own crossClosure doc.
 function collectComparedNames(body, crossClosure) {
   let names = null
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>') { if (crossClosure) walk(node[2]); return }
-    if (CMP_OPS_SET.has(op)) {
+  const enter = (node) => {
+    if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
+    if (CMP_OPS_SET.has(node[0])) {
       if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
       if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  walk(body)
+  walkAst(body, { enter })
   return names || EMPTY_SCAN_SET
 }
 
@@ -1271,8 +1265,7 @@ function collectConstStep(node, name) {
  *  processDecl only stamps non-reassigned names and this only considers
  *  MUTATE_OPS-written ones). */
 export function stampCoInductionRanges(body) {
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     if (node[0] === 'for' && node.length === 5) {
       const [, init, cond, step, loopBody] = node
       const counterName = guardCounterName(cond)
@@ -1298,9 +1291,7 @@ export function stampCoInductionRanges(body) {
         }
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
@@ -1421,13 +1412,10 @@ export function collectF64StridedIndexVars(body, locals) {
     if (typeof node === 'string') { (set ||= new Set()).add(node); return }
     if (Array.isArray(node) && AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
   }
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     if (node[0] === '[]' && !isLiteralStr(node[2]) && exprType(node[2], locals) === 'f64') addAffine(node[2])
-    if (node[0] === '=>') return
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+    if (node[0] === '=>') return false
+  } })
   return set || EMPTY_SCAN_SET
 }
 

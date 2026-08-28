@@ -9,7 +9,7 @@
 // post-order block walk that applies a per-statement rewrite. One home for all of them
 // — adding the next loop transform is then one recognizer over these, not a fourth copy.
 
-import { MUTATE_OPS } from '../ast.js'
+import { MUTATE_OPS, walkAst } from '../ast.js'
 import { ctx } from '../ctx.js'
 import { findMutations } from './analyze-scans.js'
 import { guardCounterName, forCounterRange, intExprRange } from '../static.js'
@@ -73,12 +73,7 @@ export function closureMutatedVars(body) {
     if (typeof n[1] === 'string' && MUTATE_OPS.has(n[0])) out.add(n[1])
     n.forEach(collect)
   }
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === '=>') collect(n)
-    n.forEach(walk)
-  }
-  walk(body)
+  walkAst(body, { enter: n => { if (n[0] === '=>') collect(n) } })
   return out
 }
 
