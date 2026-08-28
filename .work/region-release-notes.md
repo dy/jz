@@ -1547,8 +1547,18 @@ change what an EARLIER-compiled sibling observes", not just "does this cost byte
   this session's own fixes making the compile do marginally more real work before failing (more
   demand-driven registration bookkeeping), or heavy concurrent multi-agent load on the shared
   machine this measurement ran on; not further isolated.
-- `JZ_TEST_TARGET=jz.wasm node test/index.js`: running in background, result pending.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: running in background (long, ~20+ min under heavy
+  shared-machine multi-agent load today), result pending.
 - `node test/index.js` (native, full, no filter), re-run after the `4b37da79` closure.floor fix:
-  running in background, result pending — see above for the two regressions found and fixed
-  earlier in this same investigation (71-fail ftN → fixed `72eddaee`; 7-fail wasmtime/closure.floor
-  → fixed `4b37da79`).
+  **COMPLETE — 3737/3741 pass, 3 fail, 1 skip (21664 assertions).** The 3 failures are exactly the
+  ALREADY-KNOWN `dict` kernel-parity byte divergence (O0/O2/O3, native-vs-kernel, execution-correct,
+  pre-existing representation/narrowing gap unrelated to module purity or dispatch — same class as
+  `mfold`/`subviewtyped`) — nothing else. **Both regressions found and fixed earlier in this
+  session (71-fail `ftN` → `72eddaee`; 7-fail wasmtime/`closure.floor` → `4b37da79`) are confirmed
+  fully closed — zero new regressions from any fix landed this session.** (One operational note:
+  this run needed 2 attempts — the first background launch got killed after appearing stuck at
+  `bench-c.js`'s ASan-sanitized `strbuild` test, which turned out to be that test's own
+  ALREADY-DOCUMENTED "macOS ASan runtime busy-loops without reaching main" case, with a real 60s
+  `execFileSync` timeout and automatic non-sanitized fallback already built into the test — not a
+  bug, just slower than the earlier glance suggested; the second attempt ran the same section
+  through to completion without intervention once given the full 60s.)
