@@ -267,9 +267,10 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   // ever called directly by name anywhere counts as "escaped"). Computed
   // lazily, once, only if a function-base lookup actually needs it.
   let valueEscapes = null
-  const safeFuncBase = name =>
-    !shadowed.has(name) && !rebound.has(name) && !(dynWriteVars && dynWriteVars.has(name)) &&
-    !(valueEscapes ??= collectValueEscapes(ast, ctx.module.moduleInits, ctx.funcs.list)).has(name)
+  const safeFuncBase = name => {
+    valueEscapes ??= collectValueEscapes(ast, ctx.module.moduleInits, ctx.funcs.list)
+    return !shadowed.has(name) && !rebound.has(name) && !(dynWriteVars && dynWriteVars.has(name)) && !valueEscapes.has(name)
+  }
 
   const resolveMember = (objName, prop) => {
     if (typeof objName !== 'string' || typeof prop !== 'string') return null
@@ -291,4 +292,54 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   }
 
   return Object.freeze({ resolveMember })
+}
+
+/**
+ * Release `programFacts.valueUsed` of a lifted-function-property name whose
+ * only possible value-use is its own defining write. Called once from
+ * plan/index.js, immediately after `buildCallTargetIndex` — before
+ * `solveRepresentationBoundaries`/`narrowSignatures` (representation-plan.js's
+ * `makeBoundaryData`) ever read `valueUsed` to decide `uncovered` for a
+ * function's boundary plan.
+ *
+ * Prepare's `fn.prop = arrow` lift substitutes `fn.prop = fn$prop` — a
+ * SYNTHESIZED name that cannot appear anywhere else in the whole program by
+ * construction (the original source never spells it; nothing before this
+ * point in the pipeline re-derives or re-emits it). program-facts.js's
+ * whole-program `valueUsed` walk marks a bare func-ref RHS of any `=`
+ * (`observeNodeFacts`'s own comment: "so resolveClosureWidth sizes the
+ * closure ABI to its arity") — sound for a genuinely first-class use
+ * (`store[0] = pick3`, callable through an unknown later dispatch), but this
+ * ONE write is not that: it is prepare's own bookkeeping, and every call
+ * this index can trace to it goes through the SAME direct `.`-property path
+ * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMember`
+ * independently re-derives the identical `(base, prop) → fn$prop` fact —
+ * meaning `base` passed this file's own escape/shadow/reassignment proof —
+ * the write is provably fully covered: no truly indirect/closure call can
+ * reach `fn$prop` through it, so marking it `valueUsed` only forces every
+ * downstream boundary decision (`makeBoundaryData`'s `uncovered`,
+ * `representationCallArgAction`'s materialization) onto the conservative,
+ * closure-shaped path a REAL indirectly-reachable function needs.
+ *
+ * Deliberately narrower than "any index-resolved property": an
+ * object-literal receiver (Shape #8, `ns.parse = someExistingFn`) resolves
+ * to a real, independently-named, PRE-EXISTING function that this write is
+ * merely ONE reference to — it may legitimately have other value-uses this
+ * index has no way to rule out, so it is left in `valueUsed` untouched. Only
+ * a name matching the exact `${base}$${prop}` synthesis convention, with
+ * `base` itself a same-module function declaration, carries the "cannot
+ * exist anywhere else" guarantee this release depends on.
+ */
+export function releaseLiftedValueUsed(ctx, programFacts, callTargets) {
+  const valueUsed = programFacts?.valueUsed
+  if (!valueUsed || !valueUsed.size || !callTargets) return
+  const release = []
+  for (const name of valueUsed) {
+    const cut = name.lastIndexOf('$')
+    if (cut <= 0 || cut === name.length - 1) continue
+    const base = name.slice(0, cut), prop = name.slice(cut + 1)
+    if (!ctx.funcs.names.has(base)) continue
+    if (callTargets.resolveMember(base, prop)?.name === name) release.push(name)
+  }
+  for (const name of release) valueUsed.delete(name)
 }

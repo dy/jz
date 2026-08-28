@@ -29,7 +29,7 @@
 import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown } from '../program-facts.js'
-import { buildCallTargetIndex } from '../call-target-index.js'
+import { buildCallTargetIndex, releaseLiftedValueUsed } from '../call-target-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -229,6 +229,19 @@ export default function plan(ast, profiler, regionHooks) {
   // never `programFacts`) can read it too.
   programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
   ctx.types.callTargets = programFacts.callTargets
+  // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
+  // synthesis — see call-target-index.js's header) is the ONLY value-use
+  // program-facts.js's whole-program walk can ever find for `fn$prop`, since
+  // the name exists nowhere else in the program by construction. Once the
+  // index above independently re-derives the same fact, that write is
+  // provably fully covered — release `fn$prop` from `valueUsed` so its
+  // boundary plan (`makeBoundaryData`, representation-plan.js) gets the same
+  // direct-call materialization an ordinary internal function gets, instead
+  // of the conservative closure-shaped path `valueUsed` exists to force onto
+  // a genuinely indirectly-reachable one. Must run before
+  // solveRepresentationBoundaries/narrowSignatures below, both of which read
+  // `programFacts.valueUsed` to decide exactly that.
+  t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.callTargets))
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
