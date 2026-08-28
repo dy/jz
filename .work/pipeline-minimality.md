@@ -197,7 +197,23 @@ and dataflow evaluators, kept. One "moderate doubt" keep recorded by the agent:
 licm.js `narrowLoopBound`'s processNode (two boundary shapes + splice hazard) is
 convertible at equal length — left for a reviewer. Census: name-based 122,
 idiom-based 165 → **159**, `walkAst` sites 265 → **272 in 63 files**.
-Diff: 3 files, +10/−27 after the revert. Gates: (appended below)
+Diff: 3 files, +10/−27 after the revert. Gates: battery on the 7-conversion tree
+(before the revert): native 3771/3772, O0 3771, O3 3771, wasi 3770, self 21/21,
+fuzz clean, fixpoint PASS, oracle CLEAN, `dbg` = the known jsstring trip, kernel
+RED on the ablation pin above; after the revert: dist rebuilt, kernel leg
+2983/2984 (1 skip), oracle CLEAN vs 3149278d.
+
+## Landed (2026-08-28)
+
+Merged into main as ffac902c via a subset branch: everything except the
+conversions in emit.js, compile/index.js, narrow.js, early-errors.js and
+prepare/index.js, which main's working tree held uncommitted edits in (git would
+refuse to overwrite them, and nothing here stashes or commits someone else's
+in-progress work). Those ~26 conversions wait on `refactor/pipeline-minimality-rest`
+(tip b2ed11ff = full branch incl. the merge of main 3149278d): once those five
+files are committed, `git merge refactor/pipeline-minimality-rest` lands them
+(trial-merged clean). The three split plans (emit/narrow/prepare) wait on the same
+event for the same reason.
 
 ## Queue after M1d (same campaign)
 
