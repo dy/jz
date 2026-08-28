@@ -28,24 +28,6 @@ export const STRING_METHODS = new Set([
 
 export const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
 
-// Method names absent on String.prototype and TypedArray.prototype, present
-// on Array.prototype — the names `.push(...)` usage syntax on a bare binding
-// COULD tempt a "must be Array" guess from (infer.js's methodEvidence source
-// used to induce exactly that; fix/param-mutation-propagation removed it —
-// see that module's header for why: a plain OBJECT/HASH value can equally
-// own a same-named closure property, `{ push: (v) => {...} }`, the
-// makeByteBuf/ByteBuf idiom). infer.js still imports this set for the sound
-// half of that evidence (proving NOT-a-STRING, via ARRAY_ONLY_POISON, a
-// strict superset). src/compile/emit.js's tryGenericEmitter separately
-// consults this exact set — defense in depth — to widen its own-property
-// shadow probe to a function PARAMETER whose `vt` somehow still reads
-// VAL.ARRAY for one of these methods (the probe already runs unconditionally
-// for a genuinely unresolved `vt == null` receiver; see that function's own
-// comment for the full mechanism).
-export const ARRAY_INDUCERS = new Set([
-  'push', 'pop', 'shift', 'unshift', 'splice', 'flat', 'flatMap',
-])
-
 // Methods whose result is a boolean. Classifying them VAL.BOOL lets the export
 // boundary materialize the 0/1 carrier as a real boolean (host sees true/false,
 // not 1/0) and lets typeof/String/JSON observe it faithfully — internal branch/
