@@ -136,15 +136,11 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   //     write, an unresolvable call argument, or any other ordinary value position.
   const occurrencesByName = new Map()
   const candidateRoots = new Set()
-  const __dbgFilter = process.env.JZ_DBG_DICTIDX_ROOT
   const record = (name, occ) => {
-    if (__dbgFilter && occ.t === 'poison' && name.startsWith(__dbgFilter))
-      console.error('DBG poison-record for', name, 'currentNode:', JSON.stringify(__curNode).slice(0, 300))
     let arr = occurrencesByName.get(name)
     if (!arr) { arr = []; occurrencesByName.set(name, arr) }
     arr.push(occ)
   }
-  let __curNode = null
 
   const walkComputedWriteKey = (target, key, valueNode, activeLoops) => {
     for (let i = activeLoops.length - 1; i >= 0; i--) {
@@ -159,7 +155,6 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
   const walk = (node, activeLoops) => {
     if (!Array.isArray(node)) return
-    __curNode = node
     const op = node[0]
     if (op === 'import' || op === 'export') return
 
@@ -248,7 +243,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
 
     for (let i = 1; i < node.length; i++) {
       const c = node[i]
-      if (typeof c === 'string') record(c, { t: 'poison', __dbgNode: node })
+      if (typeof c === 'string') record(c, { t: 'poison' })
       else walk(c, activeLoops)
     }
   }
@@ -370,18 +365,33 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   // object-literal table, resolveComputed's own domain) — WASM has no
   // string-keyed call primitive, so that shape is emitted as a plain runtime
   // comparison chain calling each ORIGINAL-signature function directly, never
-  // needing one shared type. Recovers the recovered name ONLY from the exact
-  // mechanical shape the rewrite produces — a literal-number-indexed read of
-  // the rest param, assigned to a fresh local, at the arrow's own top level
-  // (never inside a nested if/loop, so a conditionally-executed read can never
-  // be mistaken for the unconditional prologue) — declining (null) on anything
-  // else rather than guess which local a runtime-computed index might mean.
+  // needing one shared type. Recovers the name ONLY from the exact mechanical
+  // shape the rewrite produces — a literal-number-indexed read of the rest
+  // param, assigned to a fresh local, at the arrow's own top level (never
+  // inside a nested if/loop, so a conditionally-executed read can never be
+  // mistaken for the unconditional prologue).
+  //
+  // THREE outcomes, deliberately distinct (the caller must not conflate the
+  // last two): a resolved NAME; `undefined` for a position an ORDINARY
+  // (non-rewritten) arrow simply never declared — real JS arrow functions have
+  // no `arguments` object of their own, so an extra call argument beyond a
+  // plain arrow's own declared arity is PROVABLY unreachable inside it, no
+  // different from it not being passed at all — safe to treat as "no alias,
+  // no hazard, skip" rather than an unresolved position (confirmed real:
+  // watr's own `HANDLER` mixes members of genuinely different arities, e.g. a
+  // 1-param member that never touches `ctx` at all); or `null` for anything
+  // genuinely ambiguous (a rest-param-normalized arrow whose prologue doesn't
+  // account for `pos`, or a non-rest param shape this function doesn't
+  // classify) — the position COULD be live there, so the caller must decline
+  // rather than guess.
   const arrowParamNameAt = (arrowNode, pos) => {
     const ps = extractParams(arrowNode[1])
+    const isRestNormalized = ps.length === 1 && Array.isArray(ps[0]) && ps[0][0] === '...' && typeof ps[0][1] === 'string'
+    if (!isRestNormalized && pos >= ps.length) return undefined // ordinary arrow, too few params: provably unreachable
     const p = ps[pos]
     if (typeof p === 'string') return p
     if (p) { const c = classifyParam(p); if (typeof c[PARAM_NAME] === 'string') return c[PARAM_NAME] }
-    if (ps.length !== 1 || !Array.isArray(ps[0]) || ps[0][0] !== '...' || typeof ps[0][1] !== 'string') return null
+    if (!isRestNormalized) return null
     const rest = ps[0][1]
     let found = null
     const scan = (stmt) => {
@@ -436,7 +446,6 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   const nameToCensus = new Map() // name -> Map<key,kind>|null (frozen result, shared across every alias of one root)
   const resolveRoot = (rootName) => {
     if (nameToCensus.has(rootName)) return
-    const dbgTarget = process.env.JZ_DBG_DICTIDX_ROOT
     const census = new Map()
     const visited = new Set()
     const queue = [rootName]
@@ -445,13 +454,10 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
       const name = queue.shift()
       if (visited.has(name)) continue
       visited.add(name)
-      const dbg = dbgTarget && name.startsWith(dbgTarget)
-      if (dbg) console.error('DBG root', rootName, 'reached target at visit', name, 'occs:', JSON.stringify(occurrencesByName.get(name)))
       if (visited.size > ALIAS_BOUND) { poisoned = true; break }
       const occs = occurrencesByName.get(name)
       if (!occs) continue
       for (const o of occs) {
-        if (dbg) console.error('DBG occ', name, JSON.stringify(o))
         if (o.t === 'decl' || o.t === 'safe' || o.t === 'loopNumericWrite') continue
         if (o.t === 'literalWrite') {
           const kind = valTypeOf(o.valueNode)
@@ -467,8 +473,18 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
           continue
         }
         if (o.t === 'fwdNamed') {
+          // Same "extra argument beyond declared arity is provably unreachable"
+          // reasoning as arrowParamNameAt below — a plain function/arrow body
+          // has no way to observe a positional argument it never declared a
+          // parameter for (no `arguments` object in this subset's own closure
+          // ABI; every consumer of func.sig.params elsewhere in this codebase
+          // already treats it as the complete parameter truth) — skip rather
+          // than decline the whole target over an argument that simply can't
+          // be read OR written inside this specific callee.
           const fn = ctx.funcs.map.get(o.callee)
-          const pname = fn?.sig?.params?.[o.pos]?.name
+          if (!fn) { poisoned = true; break } // an unresolvable callee genuinely could do anything
+          if (o.pos >= (fn.sig?.params?.length ?? 0)) continue
+          const pname = fn.sig.params[o.pos]?.name
           if (typeof pname !== 'string') { poisoned = true; break }
           if (!visited.has(pname)) queue.push(pname)
           continue
@@ -484,8 +500,16 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
           if (!members) { poisoned = true; break }
           let bad = false
           for (const m of members) {
-            const pname = Array.isArray(m) ? arrowParamNameAt(m, o.pos) : m.sig?.params?.[o.pos]?.name
-            if (typeof pname !== 'string') { bad = true; break }
+            if (!Array.isArray(m)) {
+              if (o.pos >= (m.sig?.params?.length ?? 0)) continue // named-function member: same arity-skip as fwdNamed
+              const pname = m.sig.params[o.pos]?.name
+              if (typeof pname !== 'string') { bad = true; break }
+              if (!visited.has(pname)) queue.push(pname)
+              continue
+            }
+            const pname = arrowParamNameAt(m, o.pos)
+            if (pname === undefined) continue // provably unreachable inside this specific member — no hazard, no alias
+            if (typeof pname !== 'string') { bad = true; break } // null: ambiguous — could be live, can't identify it
             if (!visited.has(pname)) queue.push(pname)
           }
           if (bad) { poisoned = true; break }
@@ -501,11 +525,6 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   }
 
   for (const name of candidateRoots) resolveRoot(name)
-  if (process.env.JZ_DBG_DICTIDX) {
-    const filt = process.env.JZ_DBG_DICTIDX_ROOT
-    for (const [name, census] of nameToCensus) if (!filt || name.startsWith(filt))
-      console.error('nameToCensus', name, '->', census ? [...census] : null)
-  }
 
   const resolveDictKind = (name, key) => {
     const census = nameToCensus.get(name)

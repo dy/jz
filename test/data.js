@@ -3981,3 +3981,216 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
   }
 })
 
+// --- DictKindIndex (src/compile/dict-kind-index.js): per-key kind facts for a
+// `let/const T = []` receiver used as a static string-keyed dictionary via a
+// `for (k in OBJ) T[k] = VALUE` unroll over a constant object literal — the
+// FOURTH limitation .work/string-method-guess-notes.md's seventh session
+// diagnosed (`T` is never schema-registered: that mechanism only fires on a
+// `{}`-literal AST node, never `[]`). Watr's real shape:
+//   for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+// with `ctx.type`/`ctx.table`/… read elsewhere, often through a same-module
+// named-function or computed-dispatch-table forwarding chain.
+const extractFnBody = (wat, fname) => {
+  const start = wat.indexOf(`(func $${fname}`)
+  if (start < 0) return null
+  const next = wat.indexOf('\n  (func ', start + 1)
+  return next >= 0 ? wat.slice(start, next) : wat.slice(start)
+}
+
+test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-property-read argument (positive)', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2, table: 3 }
+    function id(nm, list) { return list[nm] }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.type.push(42)
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
+})
+
+test('DictKindIndex: the for-in-unroll census survives a same-module named-function AND a computed-dispatch-table forwarding chain (positive, watr\'s real shape)', () => {
+  // Mirrors watr's real `instr(nodes, ctx) { ... HANDLER[imm](nodes, ctx, op, out) }`
+  // exactly: ctx is forwarded once through an ORDINARY named-function call
+  // (instr), then once more through a computed-dispatch table's own inline
+  // arrow member (HANDLER[op]) — both closed-forwarding channels this file's
+  // alias-closure walk follows, chained.
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    const HANDLER = {
+      funcidx: (n, c, op, out) => id(n.shift(), c.func),
+      typeidx: (n, c, op, out) => id(n.shift(), c.type),
+    }
+    function instr(nodes, ctx) {
+      let op = nodes.shift()
+      return HANDLER[op](nodes, ctx, op, null)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.func.push(11)
+      ctx.func.push(22)
+      return instr(['funcidx', 1], ctx)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
+})
+
+test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
+  // resolveComputed (call-target-index.js) resolves ONLY object-literal
+  // tables (its own header: property writes are `{}`-literal only) — watr's
+  // real `build[SECTION.code](item, ctx)` is a numerically-indexed ARRAY of
+  // arrows instead (needed for a real WASM call_indirect), which this file's
+  // own sibling resolver (constArrayMembers) covers. Two members, deliberately
+  // different arity, to also exercise arrowParamNameAt's "extra argument
+  // beyond a member's own declared arity is provably unreachable, not
+  // ambiguous" rule (the first member never even declares a 2nd parameter).
+  const src = `
+    function id(nm, list) { return list[nm] }
+    const TABLE = [
+      (onlyOneParam) => onlyOneParam.length,
+      (item, ctx) => id(0, ctx.type),
+    ]
+    function dispatch(idx, item, ctx) { return TABLE[idx](item, ctx) }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      const SECTION = { type: 1, func: 2 }
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.type.push(77)
+      return dispatch(1, [1, 2, 3], ctx)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
+})
+
+test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` write (positive, watr\'s real metadata idiom)', () => {
+  // watr's real `(ctx.metadata ??= {})[type] ??= []` — a logical-assignment
+  // write must not be treated as an opaque compound mutation (which would
+  // poison the WHOLE target): its short-circuit branch never introduces a
+  // kind beyond what other writes to the same key already establish, so
+  // folding its RHS is exactly as sound as `=`.
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.meta ??= {}
+      ctx.meta ??= {}
+      ctx.type.push(9)
+      return id(0, ctx.type)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
+})
+
+test('DictKindIndex negative: a target that escapes through an unrelated function keeps runtime dispatch', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function leak(x) { return x }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      const alias = leak(ctx)
+      alias.type = [5]
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: ctx escapes through leak()'s own return, an unaccounted alias could write ANY key — must decline, not guess")
+  is(jz(src, { optimize: false }).exports.main(), 5, 'O0: still JS-correct through the declined, slower runtime-dispatch path')
+})
+
+test('DictKindIndex negative: a same-key kind disagreement declines only that key, a sibling key from the same target stays clean', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function idA(nm, list) { return list[nm] }
+    function idB(nm, list) { return list[nm] }
+    function assemble(flag) {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      if (flag) ctx.type = 42
+      const a = idA(0, ctx.type)
+      const b = idB(0, ctx.func)
+      return a + b
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main(flag) { return assemble(flag) }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
+})
+
+test('DictKindIndex negative: a non-constant (reassignable) source object declines the whole target', () => {
+  const src = `
+    let SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function corrupt() { SECTION = { other: 9 } }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { corrupt(); return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), 'O0: SECTION is reassigned elsewhere (corrupt()) — a stale key-name snapshot could misreport PRESENCE, not just kind — must decline')
+})
+
+test('DictKindIndex: pass-order-independent — swapping the target/reader declaration order yields byte-identical codegen for the reader', () => {
+  const idSrc = `function id(nm, list) { return list[nm] }\n`
+  const assembleSrc = `
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      return id(0, ctx.type)
+    }
+  `
+  const constSrc = `const SECTION = { type: 1, func: 2 }\n`
+  const tailSrc = `export function main() { return assemble() }\n`
+  const perms = [
+    idSrc + constSrc + assembleSrc + tailSrc,
+    constSrc + assembleSrc + idSrc + tailSrc,
+    assembleSrc + idSrc + constSrc + tailSrc,
+    constSrc + idSrc + assembleSrc + tailSrc,
+  ]
+  const bodies = perms.map(src => extractFnBody(String(compile(src, { optimize: 3, wat: true })), 'id'))
+  ok(bodies.every(b => b === bodies[0]), "O3: id()'s own compiled body is byte-identical across every declaration-order permutation of SECTION/ctx/id/assemble")
+  ok(!/__dyn_get_expr/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
+})
+
