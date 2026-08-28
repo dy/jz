@@ -1211,3 +1211,68 @@ itself — `__mkptr`/`__alloc`/`__ptr_offset`/`__ptr_type`/`__len` are exactly c
 exercising "module loads but feature unused" yet). Widening the probe corpus to touch every
 STDLIB entry at least once (one program using it, one program near-identical but not using it) is
 the rigorous way to close this out; not done yet this session.
+
+## Class 2 root-caused and fixed (`d1f4b585`) — dispatch-tier gates on "module loaded" instead of "actually demanded"
+
+Bisected `dvnested`'s invalid-wasm case by shrinking `STDLIB` locally (uncommitted, reverted after)
+to find the minimal eager-loaded set that still corrupts it: `['core','typedarray']` alone —
+clean; adding `string` (which transitively also loads `number`, MOD_DEPS cycle) — corrupts. So
+'string'+'number' loaded EAGERLY, with NOTHING in the source needing them, is sufficient.
+
+Read `src/compile/emit.js`'s method-dispatch tier chain (`emitMethodCall`, tiers 1-12) end to end.
+Found the actual mechanism, confirmed with throwaway `console.error` instrumentation (added and
+fully removed before commit): **two dispatch tiers use "is `ctx.core.emit.str` truthy" / "is
+`ctx.closure.call` truthy" (i.e. "has the `string`/`fn` module's registration run") as a PROXY for
+"does the SOURCE actually need string/closure support"** — sound under lazy loading (a module
+only registers in response to real content), silently wrong once eager preload registers every
+module regardless of content:
+
+- `tryGenericEmitter`'s own-property shadow probe (tier 10, emit.js ~4415, comment: "Gated on the
+  string module... a string-less program has no user string props to shadow"): fires whenever
+  `vt==null && ctx.closure.call && ctx.core.emit.str`, treating the receiver as possibly a plain
+  object with an OWN property shadowing the builtin method name — a real ES-semantics concern for
+  a genuinely-unproven receiver, but pointless (and, for DataView's `getInt32`/`setFloat64`/
+  `getFloat64`, actively BUGGY — its own dynamic-property-probe IR has a stack-depth bug that lazy
+  loading had simply never exercised, since nothing before this reached it for a DataView-typed
+  receiver) once string+fn are ALWAYS loaded. This is `dvnested`'s trigger.
+- `tryDynamicPropCall` (tier 11, emit.js ~4520, `if (ctx.closure.call)`): same shape — treats an
+  unrecognized method as a possible dynamic closure-valued property whenever `fn` is loaded,
+  regardless of whether the source ever created a closure. This is `[3,1,2].frobnicate()`'s
+  trigger (the task's OWN named finding (b)) — confirmed via the same instrumentation: `vt` is
+  correctly `'array'` in BOTH lazy and eager (valTypeOf itself is NOT the divergence, ruling out
+  that half of the task's own open question), but under eager load `tryDynamicPropCall` intercepts
+  the call BEFORE tier 12 (`externalMethodFallback`, the actual reject) is ever reached.
+
+**Fix, same conceptual shape as every Class 1 fix**: `ctx.module` gains `demanded` (`src/ctx.js`
+reset(), a `Set`) — module names ever passed to a REAL, AST-content-driven `includeModule()` call,
+tracked SEPARATELY from `ctx.module.modules` (which just means "init(ctx) has run, for ANY
+reason"). `src/autoload.js`: split the old `includeModule` body into `loadModule` (bare load
+primitive — idempotent init(ctx) run, MOD_DEPS recursion, NO demand marking) and `includeModule`
+(marks `ctx.module.demanded.add(modName)` UNCONDITIONALLY — even on the "already loaded" early
+return, since demand and load-state are now different questions — then delegates to `loadModule`).
+`includeAllMods()` (the eager bulk preload) now calls `loadModule` directly for every STDLIB name,
+never `includeModule` — so eager preload is invisible to `demanded` by construction, exactly
+matching the task's "module load = registration only" doctrine. The two dispatch tiers now
+additionally require `ctx.module.demanded.has('string'|'fn')`, narrowing (never widening) their
+existing truthiness checks — pure no-op under lazy loading, where `demanded` and "loaded" always
+coincide (every load IS a real demand there).
+
+**Verified**: `[3,1,2].frobnicate()` now rejects identically lazy vs eager (same error message).
+`dvnested`'s OWN compiled `$f` function body is now byte-IDENTICAL IN SHAPE to native lazy output
+(`--wat` diff — same `$__ptr_offset`/`$__dv_index`/inline-bounds-check sequence, confirmed by
+direct read, not just byte-count) — the dispatch corruption itself is fully closed. The WHOLE
+MODULE's byte count still diverges from lazy (159KB→ WAT text still ~15x lazy's, was ~23x before
+this fix) — that remaining gap is Class 1 (unconditional `inc()`/registration in OTHER modules
+inflating the function count; watr's treeshake isn't clearing all of it, or one of the
+force-included-but-never-otherwise-reachable functions has its own latent bug) — NOT re-diagnosed
+after this fix, next step for whoever continues if the Class 1 sweep below doesn't already close
+it: re-run the `core+typedarray+string` bisection (this session's method) on the STILL-eager
+CORPUS to confirm the residual delta is pure dead-scaffolding (valid wasm, just bigger) rather than
+another correctness bug.
+
+**Not yet done this session**: fix Class 1's two task-named sites (`module/function.js`'s
+`ctx.closure.types.add(1)`, `module/timer.js`'s `setupWasi`'s unconditional `hostImport`/`inc`/
+`declGlobal`) — found and root-caused in the earlier section above, NOT YET EDITED. Native full
+test suite (`node test/index.js`) run started after this commit to confirm zero regressions from
+the dispatch-tier narrowing before continuing — check its result before trusting this fix is
+regression-free.
