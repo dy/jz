@@ -81,7 +81,7 @@ import jzify from '../jzify/index.js'
 // resolveSelfCompileBuild may override the derivation explicitly via its own
 // `regionArena` profile field (see that helper's doc); this marker is only
 // the default-derivation source when a caller doesn't override.
-export const REGION_HOOKS_ACTIVE = false
+export const REGION_HOOKS_ACTIVE = true
 function optimizeTail(module, cfg) {
   const tail = ctx.transform._regionTail
   return watrTail(module, cfg, {
@@ -269,5 +269,19 @@ export function compileDiag(source, strict, optJSON) {
   ctx.core.diagSink = {}
   emitIR(front(source, strict))
   return JSON.stringify(ctx.core.diagSink)
+}
+
+// THROWAWAY DIAGNOSTIC EXPORT (region-emitir-round session) — same pipeline as
+// compileSelf, but `mask` sets ctx.transform._dbgRoundMask (src/compile/index.js's
+// __rh bit gate) AFTER setupSelf's reset, so ONE kernel build supports many
+// selective-round-disable probes with no rebuild between them. bit 1=SCAN,
+// 2=AFE, 4=emitFuncs, 8=__buildMark, 16=__stdlibMark, 32=outermost releaseSession,
+// 64=plan()'s own region rounds, 128=optimizeModule's region round; 255=all on
+// (matches production shape exactly since REGION_HOOKS_ACTIVE is temporarily
+// forced true above for this build only). MUST be reverted before merge.
+export function __dbgCompile(mask, source, strict, optJSON, modulesJSON, host) {
+  setupSelf(strict, optJSON, modulesJSON, host)
+  ctx.transform._dbgRoundMask = mask
+  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
 }
 
