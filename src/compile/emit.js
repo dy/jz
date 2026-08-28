@@ -4328,10 +4328,10 @@ function trySchemaClosureCall({ obj, method, parsed }) {
     const idx = ctx.schema.slotOf(obj, method)
     if (idx >= 0) {
       const propRead = typed(ctx.abi.object.ops.load(ptrOffsetIR(asF64(emit(obj)), lookupValType(obj) || VAL.OBJECT), idx), 'f64')
-      const callArgs = (parsed.hasSpread && !ctx.schema.isBoxed?.(obj))
+      const prebuilt = parsed.hasSpread && !ctx.schema.isBoxed?.(obj)
+      const callArgs = prebuilt
         ? [buildArrayWithSpreads(reconstructArgsWithSpreads(parsed.normal, parsed.spreads))]
         : parsed.normal
-      const prebuilt = parsed.hasSpread && !ctx.schema.isBoxed?.(obj)
       // Same runtime-verified box-tag strategy 11 (tryDynamicPropCall) already
       // applies for its own dynamic dispatch: this property read is resolved
       // to a real closure/function value at COMPILE time (a known schema
