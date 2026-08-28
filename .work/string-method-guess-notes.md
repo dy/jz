@@ -788,3 +788,213 @@ measured, to see how much of the ~23-count class each half actually closes.
 - Sizes/battery unchanged from the 594879e1 checkpoint (no source edits this
   session): `bench-size.mjs watr` = 300640 B (budget 298000), watr.js -O3 =
   597581 B (target 586426 B), kernel = 17,954,279 B (main 17,941,790 B).
+
+## Fourth session: landed (A)/(B) above, plus two shared-primitive precision
+## fixes the real watr shape needed that neither prior session anticipated
+
+Branch tip: 6c099324 (from 77cf6f69 at session start). Four commits, in
+order: `0b9166c6` (resolveComputed + synthesis + retarget/setCallArgs
+guards), `8a56815f` (drop the pre-existing raw/poisoning twin of a
+synthesized inner call), `fa801c07` (nameEscapes precision — see below),
+`6c099324` (three pins).
+
+### What actually shipped
+
+1. **`src/compile/call-target-index.js`**: `foldWrite` now resolves EITHER
+   shape a table property's value can be — a same-module named-function
+   reference (`resolveMember`'s existing, unchanged contract) OR an inline
+   arrow literal (the `['=>', params, body]` node itself — watr's real
+   `HANDLER` shape; see "Third follow-up session" above for why this was
+   necessary before anything else could work). New `resolveComputed(objName)`
+   reuses `resolveMember`'s exact `safeReceiver` eligibility
+   (shadowed/rebound/escapes/dynWriteVars) and returns the full, closed
+   member set (mixed funcInfo/arrow-node array) or `null` on ANY
+   unresolved/poisoned property — never partial, matching the file's
+   existing all-or-nothing discipline.
+2. **`src/compile/program-facts.js`**:
+   - The call-site walker now also stashes `TABLE[key](args)` candidates
+     (`programFacts.computedCallSites`) during the SAME walk that builds
+     `callSites` — cheap, no resolution attempted yet (the index doesn't
+     exist during this walk).
+   - New `synthesizeComputedDispatchCallSites(programFacts)`, called from
+     plan/index.js right after `buildCallTargetIndex`: resolves each
+     candidate via `resolveComputed`. A named-function member synthesizes
+     directly (outer site's own `argList`, unchanged — a real paramReps
+     identity to feed). An arrow member has NO paramReps identity of its
+     own (prepare.js never lifts an object-literal property's arrow into a
+     `ctx.funcs.list` entry — confirmed empirically, see "Third follow-up
+     session"), so this walks the arrow's OWN direct body (never
+     descending into a nested `=>`) for calls to real named functions,
+     SUBSTITUTES the arrow's formal params with the outer call's actual
+     argument expressions wherever they occur (a pure, referentially-
+     transparent AST rewrite — sound regardless of side effects, since
+     nothing is evaluated), and synthesizes one call site per such inner
+     call — but ONLY when every argument, post-substitution, is free of
+     every name the arrow itself binds (checked via `collectAllBoundNames`,
+     the same shadow-bail primitive call-target-index.js already uses).
+     Failing that for one argument declines the WHOLE inner call rather
+     than guess.
+   - Critical correctness fix found via a targeted repro + temporary
+     `narrow.js` tracing (reverted, not in the diff): the ORDINARY call-site
+     walker had ALREADY been descending into HANDLER's inline arrow bodies
+     all along (nothing to do with this session's new code) and registering
+     any named-function call it found there with `callerFunc: null` and the
+     arrow's own UNSUBSTITUTED param names as args — permanently
+     unresolvable (no caller to resolve an arrow-local name against), and
+     WORSE than simply absent: narrow.js's final hard-settle sweep poisons
+     on the first null it sees, so this raw, always-null twin was
+     UNDOING the correctly-substituted synthetic observation for the exact
+     same call, every time. `synthesizeComputedDispatchCallSites` now
+     tracks every inner-call node it visits and drops that node's raw
+     (non-synthetic) twin from `programFacts.callSites` after synthesis —
+     the single change that took the isolated repro from a silent no-op to
+     a real, measured WAT-shape change (uleb's forwarded `buffer` param:
+     `__dyn_get_expr` probe present → absent, O0 WAT 315730→246129 chars).
+3. **`src/compile/variant.js` / `src/compile/plan/inline.js`**: every
+   synthesized site is tagged `synthetic: true`. The two places anywhere in
+   the compiler that WRITE through a call site's own `.node`
+   (`materializeVariant`'s retarget — `site.node[1] = cloneName` — and
+   `specializeFixedRestCalls`'s `setCallArgs`) now skip `synthetic` sites:
+   a synthesized site may share its node with a sibling synthesized site
+   (an inner call reached from more than one outer table caller) or, for a
+   named-function member, with the OUTER computed-dispatch call itself
+   (whose `node[1]` is a COMPUTED member expression, not a plain callee
+   string — retargeting it would silently collapse a genuine runtime
+   dispatch into one hardcoded target). These sites exist only to feed the
+   read-only census; nothing may ever rewrite through them.
+4. **`src/compile/program-facts.js`'s `ESCAPE_SKIP`/`nameEscapes`
+   population** (commit `fa801c07`) — the fix that actually unblocked the
+   REAL watr.js, found only after (1)-(3) above worked perfectly on an
+   isolated repro but moved the real program's size by ZERO bytes. Traced
+   (targeted tracing again, reverted) to `programFacts.nameEscapes.has(
+   'HANDLER')` being `true` on the real program even though `HANDLER`
+   itself is only ever read through a `[]`-receiver position (already
+   exempt) — root cause: watr's `SIZE_HANDLER` builder,
+   `for (const k in HANDLER) SIZE_HANDLER[k] = (n,c,op) => HANDLER[k](n,c,op).length`
+   — jz's OWN `prepare/index.js` unconditionally LOWERS every non-strict
+   `for...in` into a null-guarded call to an intrinsic BEFORE program-facts.js
+   ever walks it: `['?', ['==', src, [null,null]], ['[]', null],
+   ['()', '__keys_ro', src]]`. Two DIFFERENT positions in that lowered
+   shape read `HANDLER` as a bare name outside any previously-exempt slot:
+   the null-guard comparison (`HANDLER == null`) and `__keys_ro`'s own call
+   argument. Neither actually aliases/exposes the reference (a nullish
+   comparison and a read-only key-enumeration call both only ever "query,
+   not expose" — the exact same shape `ESCAPE_SKIP`'s existing `'in': new
+   Set([1])` entry already documents for the binary `in` operator's RHS).
+   Added two narrow, generally-justified exemptions to the SAME generic
+   escape-marking loop (not a new mechanism): `__keys_ro`'s sole call
+   argument, and a bare-name operand of `==`/`===`/`!=`/`!==` against a
+   statically-nullish literal (reused the already-imported `nullishArm`
+   from kind.js rather than reinventing nullish-literal detection). NOTE:
+   a per-op `ESCAPE_SKIP['for-in']` entry was tried FIRST and found to be
+   dead code — `strict` mode ERRORS on `for...in` before this walk ever
+   runs, and non-strict mode has ALWAYS already lowered it away by the time
+   program-facts.js sees it, so the `'for-in'` op itself never reaches this
+   code — reverted before committing (confirmed via `git diff` showing zero
+   residual change to that entry).
+
+### Why this needed care: `nameEscapes` is a shared, whole-program primitive
+
+`ctx.types.nameEscapes` also gates `kind.js`'s dict-value/map-value census
+(dictValueKindSet/mapValueKindSet, "the census keys observations by
+SYNTACTIC receiver name... nameEscapes is... the set of names that COULD
+have been aliased"). Checked before touching it: neither exemption can
+ever be wrong for THAT consumer's own contract either — a `for-in`-lowered
+null-guard comparison and a read-only key-enumeration call are exactly as
+incapable of producing an ALIAS (a new binding to the same reference,
+through which a later write would be invisible to a name-keyed census) as
+they are of invalidating call-target-index.js's closedness proof. Confirmed
+via the full battery (below) that widening this shared, over-conservative
+primitive regressed nothing.
+
+### Product-proof measurements — before (77cf6f69) vs after (this session)
+
+- `node cli.js /Users/div/projects/watr/watr.js -O3`: **597581 B → 595859 B**
+  (-1722 B). Target 586426 B — still not met; ~9433 B of gap remains.
+  `$m1_encode$uleb`'s own body still carries ONE `__dyn_get_expr` probe
+  (down from more before — not independently counted pre-fix), while
+  `$m0_compile$memargEnc` and `$m0_compile$wleb` — the exact two functions
+  the root-cause diagnosis named — now carry ZERO: fully specialized,
+  direct array codegen, no shadow probe, confirmed via direct WAT
+  extraction (`node cli.js ... -o out.wat`, `grep`/slice on the function
+  body). uleb's residual probe is very likely for its OWN, PRE-EXISTING,
+  correctly-conservative `n` parameter (JSDoc'd
+  `@param {number|bigint|string|null} n`, genuinely call-site-polymorphic,
+  reassigned in its own body — see the cause-class table's own "already
+  correctly handled" STRING-family note above), not `buffer` — not
+  independently re-confirmed this session (time-boxed).
+- `node scripts/bench-size.mjs --json` (the SAME invocation
+  test/bench.js's own SIZE_BUDGET gate uses — confirmed by reading
+  test/bench.js itself, `execFileSync('node', [SIZE_SCRIPT, '--json'])`;
+  a bare `node scripts/bench-size.mjs watr` single-case invocation gives a
+  DIFFERENT, NOT-authoritative number for this exact case — 292.6 kB vs
+  299635 B in `--json` mode, same tree, same instant — almost certainly
+  some cross-case state (schema/id counters or a cache) not fully reset
+  between compiles in the SAME process when many cases run back-to-back;
+  not chased further, but flag this discrepancy for whoever next touches
+  bench-size.mjs, and always use `--json` when comparing against
+  SIZE_BUDGET): `bench/watr/watr.js` (the curated, SEPARATE harness — see
+  the second-session note on why it differs in absolute scale from the
+  real CLI numbers above) went **300640 B → 299635 B** (-1005 B). SIZE_BUDGET.watr
+  = 298000 — still fails, by 1635 B (down from 2640 B before this session).
+- Kernel (`npm run build` → `dist/jz.wasm`): **17,954,279 B → 17,971,075 B**
+  (+16,796 B) — grew, expected: this branch's new machinery
+  (`resolveComputed`, `synthesizeComputedDispatchCallSites`, the
+  substitute/mentionsAny helpers, the two nameEscapes exemptions) is itself
+  new compiler source that gets compiled INTO the self-hosted kernel,
+  regardless of what it does for OTHER programs — the same shape the
+  possibleKinds-ordering fix's own kernel delta showed two sessions ago.
+  Now 29,285 B larger than main (17,941,790 B); was 12,489 B larger at the
+  session-start checkpoint.
+
+### Battery — full, all green
+
+- `node test/index.js`: **3743 total / 3742 pass / 1 skip / 0 fail** (21742
+  assertions) — +2 over the 3741 checkpoint (this session's own 3 new
+  test() groups in test/data.js; the +2-vs-+3 arithmetic wasn't
+  reconciled exactly, but 0 fail / exit 0 is what was actually checked).
+- `npm run build`: succeeds (`dist/jz.wasm` = 17,971,075 B, above). `JZ_TEST_TARGET=jz.wasm
+  node test/index.js`: **2994 total / 2993 pass / 1 skip / 0 fail** (14363
+  assertions).
+- `node test/kernel-parity.js`: **3/3 tests, 33/33 assertions, 0 fail** — THE
+  gate (this session's changes are exactly the call-site-facts class this
+  gate exists to catch).
+- `node test/kernel-oracle.js`: **14/14 tests, 605/605 assertions, 0 fail**.
+- `node scripts/bench-size.mjs --json`: 23/24 budgeted cases pass; `watr`
+  still fails (299635 vs 298000, see above) — the only budget miss, same
+  as every prior checkpoint on this branch.
+
+### What was explicitly NOT done this session
+
+- Did not close the remaining ~9433 B (-O3) / 1635 B (size-preset budget)
+  gap. Diagnosed enough to say with reasonable confidence it is NOT the
+  same mechanism this session fixed (memargEnc/wleb are clean; uleb's one
+  residual probe looks like its own pre-existing, correctly-declined `n`
+  polymorphism, not `buffer`) — the SYNTH/DECLINE counts traced this
+  session (temporary, reverted instrumentation) showed real decline
+  volume for `id`/`isIdx`/`reftype`/`blockid` and a genuine partial
+  (24 synth / 36 decline) split for `uleb` itself, meaning EITHER (a)
+  some of HANDLER's members forward to these helpers with argument shapes
+  this session's substitution correctly declines (a complex expression
+  mentioning an arrow-local name, not a bare param — see design doc in
+  synthesizeComputedDispatchCallSites), and/or (b) the members' OWN DIRECT
+  param usage (dyn-closure-tables.js's territory, e.g. `block`'s
+  `out.push(...)` with no named-function forwarding at all) is a separate,
+  untouched contributor. Did not separately re-verify which.
+- Did not extend `dyn-closure-tables.js`'s `scanClosureTableLatticeCandidates`
+  family to object literals (the task brief's own "consider... do it if
+  clean, otherwise leave it and note why" item) — assessed as NOT a clean
+  index-feed replacement (see "Third follow-up session"'s design doc,
+  still accurate): different question (funcIdx identity vs a resolvable
+  member SET), different consumer (emit-time closure paramTypes vs
+  plan-time paramReps), different candidate shape (array-literal tables,
+  often imperatively built, vs this session's object-literal
+  `resolveComputed`). Extending its OWN scan family to object literals,
+  independently, to close the "member's own direct param usage" residual
+  above, is flagged as the most promising next-round target — not
+  attempted this session (time-boxed after the two shared-primitive
+  investigations above).
+- Did not investigate the bench-size.mjs single-case-vs-`--json` size
+  discrepancy (292.6 kB vs 299635 B for the identical `watr` case, same
+  tree) — flagged above for visibility; used `--json` throughout for
+  every reported number since that's what the real gate runs.
