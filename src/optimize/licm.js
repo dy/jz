@@ -1170,23 +1170,3 @@ export function cseScalarLoad(fn) {
 
   if (newLocals.length) fn.splice(bodyStart, 0, ...newLocals)
 }
-
-/**
- * CSE for pure f64 binary ops on local-only operands.
- *
- * Mandelbrot loop: condition computes `(f64.mul $zx $zx)` and `(f64.mul $zy $zy)`;
- * body recomputes both inside `tx = zx*zx - zy*zy + cx`. Pure ops on locals can't
- * alias memory — only `local.set/tee X` invalidates entries referencing X. Unlike
- * `cseScalarLoad`, br_if doesn't need to clear (no memory aliasing concern).
- *
- * Targets nodes of shape `(OP A B)` where OP ∈ {f64.mul, f64.add, f64.sub} and
- * A,B ∈ `(local.get X)` | `(f64.const N)`. Commutative ops (mul, add) sort
- * operand keys for canonical form.
- *
- * Region boundaries:
- *   - `local.set/tee X` → invalidates entries referencing X
- *   - `loop`, `if` → recurse with cleared table; clear after (compound may have written)
- *   - `call`, `call_ref`, `call_indirect` → no clear (calls don't write locals directly;
- *     the surrounding `local.set/tee` handles that)
- *   - `br/br_if/br_table/return/unreachable` → NO clear (pure values still valid)
- */
