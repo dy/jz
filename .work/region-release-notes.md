@@ -495,3 +495,100 @@ fresh. No production source file (module/core.js, layout-kinds.js, src/compile/*
 one throwaway line, etc.) was changed by this session — no fix was landed, none was close enough
 to justify landing. `REGION_HOOKS_ACTIVE` remains `false`, unchanged from aff67069/dormant, exactly
 as it was at session start.
+
+## ROOT CAUSE FOUND (2026-08-28) — front's round mid-round-triggers stdlib module registration into wholesale-excluded ctx.core
+
+Continuing from "Corrected next step" above (the `ast===null` chase was a false lead;
+`.length`-on-nullish must be on some OTHER value). Found via pure static reading, no kernel
+build needed for this part.
+
+**The mechanism, precisely:**
+
+1. `src/front.js`'s `frontHalf` doc comment already documents a deliberate "UNION-FIELD ROOT"
+   of 12 `ctx.*` fields (`funcs, module, schema, closure, scope, types, warnings, plans,
+   inspect, func, transform, facts`) rebound at `regionHooks.exit(mark, [...])`. The SAME doc
+   comment explicitly excludes 9 other fields (`core, bridge, names, runtime, memory, error,
+   abi, features, linkDemand`) — reasoning given: "`ctx.core.emit`/`ctx.core.stdlib`/`ctx.bridge`
+   carry hundreds of CLOSURE-valued properties... that the region-arena relocation walk is not
+   proven safe against."
+
+2. `src/compile/index.js`'s LATER, separate EMISSION region round (`emissionRoundExit`, Slice 3)
+   roots a WIDER set — the same 12 PLUS `ctx.runtime, ctx.memory, ctx.error, ctx.linkDemand,
+   ctx.names, ctx.features` (its own comment: "extended past the ANALYSIS-stratum 12-field union
+   (front.js's own doc, shared by every round so far) with EMISSION's own write-set, PLAIN-DATA
+   FIELDS ONLY"), PLUS specific `ctx.core.includes/extImports/jsstring/hostGlobals/stdlibDeps`
+   subfields — but explicitly, permanently keeps `ctx.core.emit`/`ctx.core.stdlib` (and
+   `ctx.bridge`/`ctx.abi`) OUT: "this is the load-bearing lesson of the FIRST re-land attempt
+   (53bcb112+7085cb57, reverted) — 7085cb57 rooted `ctx.core`/`ctx.abi`/`ctx.bridge` wholesale to
+   fix exactly this under-coverage and made the regression WORSE ('phantom pair GROWN')" — ALSO
+   independently reproduced by "two direct experiments" in `.work/research.md` §CompileSession
+   Slice D as real WASM traps. So wholesale-rooting `ctx.core` is a previously-tried, previously-
+   REVERTED dead end, not an open option.
+
+3. **`src/prepare/index.js:800`** — `prepare()`'s own entry, right after
+   `ctx.module.include = includeModule` — calls **`includeModule('core')` unconditionally**, as
+   its first real action, for EVERY compile regardless of source content (confirmed by reading
+   the line in context — no guard). `includeModule` (`src/autoload.js:279`) is idempotent
+   (`if (ctx.module.modules[modName]) return`) but on a FIRST call runs `init(ctx)` —
+   `module/core.js`'s `export default (ctx) => {...}`, which registers a large number of
+   CLOSURE-valued entries into `ctx.core.emit`/`ctx.core.stdlib` (e.g. `__region_mark`,
+   `__region_exit`, and the bulk of core.js's ~1000+ lines of stdlib registration) — every one a
+   fresh heap allocation at KERNEL RUNTIME (compiling the guest program), since `module/core.js`
+   is itself self-compiled into the kernel and its `ctx.core.emit[name] = value` writes execute
+   as real WASM instructions using `$__alloc`/`$__heap`, the SAME bump allocator
+   `__region_mark`/`__region_exit` operate on (confirmed: `ctx.core.stdlib['__region_mark'] =
+   ...(f64.convert_i32_u (global.get $__heap))...` — `__region_mark` IS just "read current
+   `$__heap`").
+
+4. `frontHalf` calls `mark = regionHooks?.mark()` BEFORE `parse`/`liftIIFEs`/`jzify`/`prepare` —
+   so `prepare()`'s `includeModule('core')` call happens strictly AFTER `mark()`, i.e. INSIDE the
+   active region round. Since `ctx.core` is wholesale excluded from front's root (point 1), every
+   closure `module/core.js`'s `init(ctx)` allocates during THIS call lands in the ephemeral
+   post-mark zone with NO root path to it. `regionHooks.exit(mark, root)` — confirmed via
+   `module/core.js`'s own `__region_exit` body and its own comment ("the walk below is a
+   Cheney-copy over EVERYTHING reachable from `root`... EVERY exit that reaches a pointer-keyed
+   Map/Set rebuilds it FRESH") — compacts survivors down to `[mark, mark+size)` and resets
+   `$__heap` there, abandoning everything else. `ctx.core.emit`/`ctx.core.stdlib` (the CONTAINER
+   objects, allocated once at `reset()`, pre-mark, durable) survive with their identity intact —
+   but every property VALUE `init(ctx)` just wrote (the closures) now points into abandoned,
+   soon-to-be-reused memory. Reading `ctx.core.emit[name]` anywhere downstream (constantly, for
+   the REST of the compile — emit.js, compileAst, etc. all dispatch through it) returns a stale
+   pointer; CALLING it (`call_indirect` through a garbage function-table index / corrupted
+   captured env) is undefined behavior — fully consistent with an unrelated-looking `.length`
+   read on a nullish receiver surfacing deep in `$__length`'s own guard (Finding 1, above): a
+   corrupted dispatch can land anywhere.
+
+5. **Why front's round specifically, and why even the trivial `sum` program deterministically**:
+   front's round is the FIRST region round in the whole pipeline (`emitIR`'s own, later, EMISSION
+   round — Slice 3 — only starts after `front()` fully returns). `includeModule`'s guard means
+   'core' only ever gets registered ONCE per compile — so by the time EMISSION's round begins,
+   'core' (and whatever other modules the source needed) are ALREADY loaded, and EMISSION's round
+   rarely if ever triggers a NEW module load — which is presumably why EMISSION's round measures
+   as "GATE-CLEAN" at the scales tested even though it excludes `ctx.core` too. Front's round is
+   uniquely exposed because `prepare()`'s unconditional `includeModule('core')` is GUARANTEED to
+   be the first-ever load of the largest stdlib module, and it is guaranteed to happen mid-round.
+   This requires no throw/array/string/freeze/etc. in the source — `sum = (a,b) => a+b` triggers
+   it just by calling `prepare()` at all, explaining the deterministic O0/O2/O3 failure on the
+   simplest possible AGREE-tier program.
+
+**Verified clean (not implicated)**: grepped `jzify/*.js`, `src/prepare/lift-iife.js`, and
+`src/parse.js` for `includeModule`/`includeMods`/`ctx.core`/`ctx.bridge`/`ctx.abi` — zero matches
+in all three. Only `src/prepare/index.js` (via `prepare()` itself, `includeModule('core')` at
+line 800, plus many other CONDITIONAL `includeModule(mod)` call sites keyed to specific syntax —
+throw/freeze/array/etc. — none of which fire for `sum` specifically, confirmed earlier this
+session by checking each one's trigger condition) touches these fields during front's round. So
+the OTHER two front.js writes found earlier this session (`ctx.error.loc = node.loc` at
+prepare/index.js:1400, and `ctx.features.errorClasses`/`ctx.runtime.frozenVars` at 1294/1324/3377)
+are real instances of the SAME general excluded-field-write pattern but are NOT the trigger for
+`sum` specifically: `node.loc` is confirmed a plain NUMBER (subscript's parser sets
+`node.loc = at`, a character offset — `src/ctx.js`'s own `ctx.error.src.slice(0, ctx.error.loc)`
+usage confirms the numeric-offset shape), so copying it is not a pointer hazard; the
+errorClasses/frozenVars Set-writes need `throw`/`Object.freeze` syntax absent from `sum`. They
+remain real (general-case) instances of the same bug CLASS and should still be fixed by whatever
+general mechanism closes `includeModule('core')`'s hole, just not the specific trigger diagnosed
+here.
+
+**Not yet empirically confirmed with a kernel build** (this section is 100% static-analysis-
+derived) — proceeding now to implement the fix (module registration hoisted before `mark()`,
+NOT rooting `ctx.core` — that path is foreclosed by 7085cb57) and verify with one region-enabled
+kernel build + the full battery.
