@@ -30,6 +30,7 @@ import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import { collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown, synthesizeComputedDispatchCallSites } from '../program-facts.js'
 import { buildCallTargetIndex, releaseLiftedValueUsed } from '../call-target-index.js'
+import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -254,6 +255,16 @@ export default function plan(ast, profiler, regionHooks) {
   // solveRepresentationBoundaries/narrowSignatures below, both of which read
   // `programFacts.valueUsed` to decide exactly that.
   t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.callTargets))
+  // DictKindIndex (dict-kind-index.js): per-key kind facts for an array-literal
+  // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
+  // …` unroll over a constant object literal — never schema-registered, since
+  // that mechanism only fires on a `{}`-literal AST node). Depends on
+  // callTargets.resolveComputed (the HANDLER-forwarding alias channel), so it
+  // must run after the index above; independent of synthesizeComputedDispatch-
+  // CallSites/releaseLiftedValueUsed (neither reads nor feeds it), placed here
+  // only to keep every "built once, right after callTargets" fact together.
+  programFacts.dictKinds = t('buildDictKindIndex', () => buildDictKindIndex(ctx, programFacts, ast, programFacts.callTargets))
+  ctx.types.dictKinds = programFacts.dictKinds
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))

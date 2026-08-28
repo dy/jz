@@ -2034,6 +2034,18 @@ export default function narrowSignatures(programFacts, ast) {
           const v = ctx.schema.slotVTBySid(sid, arg[2])
           if (v != null) return v
         }
+        // Sibling source for a receiver that is never schema-registered at all —
+        // an ARRAY-declared local/module target only ever used as a static
+        // string-keyed dictionary (dict-kind-index.js's own doc has the full
+        // mechanism: a `for (k in OBJ) T[k] = …` unroll over a constant object
+        // literal). `arg[1]` is looked up by its OWN exact (alpha-renamed, if
+        // local) spelling — the index itself already resolves every alias this
+        // receiver could be forwarded through, so a direct name lookup here is
+        // exactly as sound as the schemaId path above, just keyed differently.
+        if (typeof arg[1] === 'string') {
+          const v = ctx.types.dictKinds?.resolveDictKind(arg[1], arg[2])
+          if (v != null) return v
+        }
       }
       return null
     }
