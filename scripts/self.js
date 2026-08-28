@@ -81,7 +81,7 @@ import jzify from '../jzify/index.js'
 // resolveSelfCompileBuild may override the derivation explicitly via its own
 // `regionArena` profile field (see that helper's doc); this marker is only
 // the default-derivation source when a caller doesn't override.
-export const REGION_HOOKS_ACTIVE = true
+export const REGION_HOOKS_ACTIVE = false
 function optimizeTail(module, cfg) {
   const tail = ctx.transform._regionTail
   return watrTail(module, cfg, {
@@ -269,29 +269,5 @@ export function compileDiag(source, strict, optJSON) {
   ctx.core.diagSink = {}
   emitIR(front(source, strict))
   return JSON.stringify(ctx.core.diagSink)
-}
-
-// THROWAWAY diagnostic scaffolding (fix/region-hooks-on-defects investigation,
-// .work/region-release-notes.md) — bisects WHICH of compile()'s internal
-// region rounds a given repro needs, via a runtime bitmask read off
-// ctx.transform._dbgRoundMask, instead of many rebuilds (same technique the
-// prior "emitIR's round — ISOLATED to __stdlibMark" session used). Setting the
-// mask right after setupSelf's reset (so it survives the whole pipeline) but
-// BEFORE front/emitIR run. Must be fully reverted before any battery run or
-// commit of a real fix — not itself a candidate fix.
-export function __dbgCompile(mask, source, strict, optJSON, modulesJSON, host) {
-  setupSelf(strict, optJSON, modulesJSON, host)
-  ctx.transform._dbgRoundMask = mask
-  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
-}
-
-// Same as __dbgCompile but prints WAT text (watrPrint, not watrCompile) --
-// print doesn't validate local declarations the way encode does, so this can
-// surface a corrupted-but-printable module (e.g. a reference to an
-// undeclared local) that watrCompile refuses outright. Diagnostic only.
-export function __dbgCompileWat(mask, source, strict, optJSON, modulesJSON, host) {
-  setupSelf(strict, optJSON, modulesJSON, host)
-  ctx.transform._dbgRoundMask = mask
-  return watrPrint(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
 }
 
