@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, some } from './ast.js'
+import { ASSIGN_OPS } from './ast.js'
 import { err } from './ctx.js'
 
 /**
@@ -792,9 +792,16 @@ const validateExports = ast => {
 
 export function validateEarlyErrors(ast, source) {
   validateExports(ast)
-  // No `=>` boundary here (unlike `some`'s default): a nested arrow can still
-  // contain top-level-only import/export syntax that hasn't been rejected yet.
-  const rootModule = some(ast, n => n[0] === 'import' || n[0] === 'export', { skipArrow: false })
+  const rootModule = (() => {
+    let found = false
+    const scan = n => {
+      if (!isNode(n) || found) return
+      if (n[0] === 'import' || n[0] === 'export') { found = true; return }
+      for (let i = 1; i < n.length; i++) scan(n[i])
+    }
+    scan(ast)
+    return found
+  })()
 
   const root = {
     // JZ's export declarations are an ABI surface over Script semantics; they

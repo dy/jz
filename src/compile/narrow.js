@@ -13,7 +13,7 @@ import { warningsView } from '../session-views.js'
 import {
   isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, ASSIGN_OPS, extractParams, classifyParam,
   PARAM_KIND, PARAM_NAME,
-  refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, some,
+  refsName, carriesName, REFS_THROUGH_ARROWS,
 } from '../ast.js'
 import { isLiteralStr, I32_MIN, I32_MAX } from '../ir.js'
 import {
@@ -831,9 +831,10 @@ const PTR_RESULT_KINDS_NOAUX = new Set([VAL.SET, VAL.MAP, VAL.BUFFER])
 // like `let a = new Float64Array(...); return a` resolves to a constant aux.
 function localElemAuxMap(body) {
   const m = new Map()
-  walkAst(body, { enter: n => {
+  const walk = (n) => {
+    if (!Array.isArray(n)) return
     const op = n[0]
-    if (op === '=>') return false
+    if (op === '=>') return
     if ((op === 'let' || op === 'const') && n.length > 1) {
       for (let i = 1; i < n.length; i++) {
         const a = n[i]
@@ -843,7 +844,9 @@ function localElemAuxMap(body) {
         }
       }
     }
-  } })
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
   return m
 }
 
@@ -1255,20 +1258,20 @@ function inferInternalArrayLengths(paramReps) {
     const arr = returnedName(f.body)
     if (!arr) continue
     let len = null, bad = false, defNode = null
-    walkAst(f.body, { enter: n => {
-      if (bad) return false
-      if (n[0] === '=>') { if (refs(n, arr)) bad = true; return false }
+    const walk = (n) => {
+      if (bad || !Array.isArray(n)) return
+      if (n[0] === '=>') { if (refs(n, arr)) bad = true; return }
       if ((n[0] === 'let' || n[0] === 'const')) for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && d[1] === arr) {
-          if (defNode) { bad = true; return false }
+          if (defNode) { bad = true; return }
           const elems = staticArrayElems(d[2])
           if (elems) { len = elems.length; defNode = d } else bad = true
         }
       }
       if ((n[0] === 'if' || n[0] === '?:' || n[0] === 'while' || n[0] === 'do' || n[0] === 'switch') && refs(n, arr)) {
         bad = true
-        return false
+        return
       }
       if (n[0] === 'for' && n.length === 5 && refs(n[4], arr)) {
         const initNames = new Set()
@@ -1286,18 +1289,20 @@ function inferInternalArrayLengths(paramReps) {
             hasOp(n[4], 'break') || hasOp(n[4], 'continue') || hasOp(n[4], 'return') || hasOp(n[4], 'throw') ||
             mutatesName(n[4], iv)) bad = true
         else len += (bound - start) * per
-        return false
+        return
       }
       if (n[0] === '()' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][1] === arr && n[1][2] === 'push') {
         if (len == null || !callArgs(n).length || callArgs(n).some(a => refs(a, arr))) bad = true
         else len += callArgs(n).length
-        return false
+        return
       }
-      if (n[0] === '()' && (refs(n[1], arr) || callArgs(n).some(a => refs(a, arr)))) { bad = true; return false }
+      if (n[0] === '()' && (refs(n[1], arr) || callArgs(n).some(a => refs(a, arr)))) { bad = true; return }
       if (n !== defNode && (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') &&
-          (n[1] === arr || refs(n[1], arr) || refs(n[2], arr))) { bad = true; return false }
-      if (n[0] === 'return' && n[1] === arr) return false
-    } })
+          (n[1] === arr || refs(n[1], arr) || refs(n[2], arr))) { bad = true; return }
+      if (n[0] === 'return' && n[1] === arr) return
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(f.body)
     if (!bad && len != null) { f.arrayLen = len; funcLens.set(f.name, len) }
   }
   // Length-preserving parameter summaries let a caller retain a local length
@@ -1308,8 +1313,9 @@ function inferInternalArrayLengths(paramReps) {
   const safeParams = new Map(funcs.map(f => [f.name, f.sig.params.map(() => true)]))
   for (const f of funcs) {
     const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
-    walkAst(f.body, { enter: n => {
-      if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return false }
+    const walk = (n) => {
+      if (!Array.isArray(n)) return
+      if (n[0] === '=>') { for (const [name, k] of ps) if (refs(n, name)) safe[k] = false; return }
       if (ASSIGN_OPS.has(n[0]) || n[0] === '++' || n[0] === '--') for (const [name, k] of ps) {
         if (n[1] === name || carries(n[2], name) || (Array.isArray(n[1]) && refs(n[1], name))) safe[k] = false
       }
@@ -1321,15 +1327,17 @@ function inferInternalArrayLengths(paramReps) {
           for (const a of args) if (carries(a, name) && (a !== name || !safeParams.has(callee))) safe[k] = false
         }
       }
-    } })
+      for (let i = 1; i < n.length; i++) walk(n[i])
+    }
+    walk(f.body)
   }
   let safeChanged = true
   while (safeChanged) {
     safeChanged = false
     for (const f of funcs) {
       const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), safe = safeParams.get(f.name)
-      walkAst(f.body, { enter: n => {
-        if (n[0] === '=>') return false
+      const walk = (n) => {
+        if (!Array.isArray(n) || n[0] === '=>') return
         if (n[0] === '()' && typeof n[1] === 'string' && safeParams.has(n[1])) {
           const args = callArgs(n), target = safeParams.get(n[1])
           for (let k = 0; k < args.length; k++) if (ps.has(args[k]) && !target[k] && safe[ps.get(args[k])]) {
@@ -1337,7 +1345,9 @@ function inferInternalArrayLengths(paramReps) {
             safeChanged = true
           }
         }
-      } })
+        for (let i = 1; i < n.length; i++) walk(n[i])
+      }
+      walk(f.body)
     }
   }
 
@@ -1456,18 +1466,20 @@ function literalOrCallerParamInt(expr, func, reps) {
  *  `const`) add it themselves. */
 function singleDefRhs(body, name) {
   let rhs = null, multi = false
-  walkAst(body, { enter: n => {
-    if (multi) return false
+  const walk = (n) => {
+    if (multi || !Array.isArray(n)) return
     if (n[0] === 'let' || n[0] === 'const') {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && d[1] === name) {
-          if (rhs !== null) { multi = true; return false }
+          if (rhs !== null) { multi = true; return }
           rhs = d[2]
         }
       }
     }
-  } })
+    for (let i = 1; i < n.length; i++) walk(n[i])
+  }
+  walk(body)
   return multi ? null : rhs
 }
 
@@ -1714,8 +1726,8 @@ function inferTypedValueRanges(paramReps) {
       changed = false
       for (const f of funcs) {
         const ps = new Map(f.sig.params.map((p, i) => [p.name, i])), sum = summaries.get(f.name)
-        walkAst(f.body, { enter: n => {
-          if (n[0] === '=>') return false
+        const walk = (n) => {
+          if (!Array.isArray(n) || n[0] === '=>') return
           if (n[0] === '()' && typeof n[1] === 'string' && summaries.has(n[1])) {
             const args = callArgs(n), target = summaries.get(n[1])
             for (let k = 0; k < args.length; k++) if (ps.has(args[k])) {
@@ -1727,7 +1739,9 @@ function inferTypedValueRanges(paramReps) {
               }
             }
           }
-        } })
+          for (let i = 1; i < n.length; i++) walk(n[i])
+        }
+        walk(f.body)
       }
     }
   }
@@ -1747,10 +1761,11 @@ function inferTypedValueRanges(paramReps) {
         if (!r) { poisoned.add(name); ranges.delete(name); return }
         ranges.set(name, hull(ranges.get(name), r))
       }
-      walkAst(f.body, { enter: n => {
+      const walk = (n) => {
+        if (!Array.isArray(n)) return
         if (n[0] === '=>') {
           for (const name of [...ranges.keys()]) if (mentions(n, name)) merge(name, null)
-          return false
+          return
         }
         if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
           const d = n[i]
@@ -1783,7 +1798,9 @@ function inferTypedValueRanges(paramReps) {
             }
           }
         }
-      } })
+        for (let i = 1; i < n.length; i++) walk(n[i])
+      }
+      walk(f.body)
       locals.set(f, ranges)
     }
     return locals
@@ -2492,22 +2509,25 @@ export default function narrowSignatures(programFacts, ast) {
   // (unresolvable → masks it), and any reassignment drops the name (the second
   // write could carry a different schema).
   const moduleSids = new Map()
-  // Top-level declarations only: recursion is an ALLOWLIST of wrapper ops
-  // (`;` statement lists, `export`), not the generic child walk — anything
-  // else (an `if`, a call, an arrow body, …) is a hard stop, so `enter`
-  // prunes by default and only lets `;`/`export` through.
-  walkAst(ast, { enter: node => {
-    if (node[0] === 'let' || node[0] === 'const') {
-      for (const d of node.slice(1)) {
-        if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
-        if (!ctx.scope.consts?.has(d[1])) continue
-        const sid = inferSchemaId(d[2], moduleSids)
-        if (sid != null && !moduleSids.has(d[1])) moduleSids.set(d[1], sid)
+  {
+    const visitDecl = (node) => {
+      if (!Array.isArray(node)) return
+      if (node[0] === 'let' || node[0] === 'const') {
+        for (const d of node.slice(1)) {
+          if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
+          if (!ctx.scope.consts?.has(d[1])) continue
+          const sid = inferSchemaId(d[2], moduleSids)
+          if (sid != null && !moduleSids.has(d[1])) moduleSids.set(d[1], sid)
+        }
+        return
       }
-      return false
+      if (node[0] === ';' || node[0] === 'export') for (let i = 1; i < node.length; i++) visitDecl(node[i])
     }
-    if (node[0] !== ';' && node[0] !== 'export') return false
-  } })
+    if (Array.isArray(ast)) {
+      if (ast[0] === ';') for (let i = 1; i < ast.length; i++) visitDecl(ast[i])
+      else visitDecl(ast)
+    }
+  }
   const callerSidsCtx = new Map()
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
@@ -2656,8 +2676,8 @@ export default function narrowSignatures(programFacts, ast) {
       if (seen.has(name)) return false            // cyclic alias: no new evidence
       seen.add(name)
       let found = false, nullish = false
-      walkAst(callerFunc?.body, { enter: node => {
-        if (nullish) return false
+      const walk = (node) => {
+        if (nullish || !Array.isArray(node)) return
         const op = node[0]
         if ((op === 'let' || op === 'const') && node.length >= 2) {
           for (let i = 1; i < node.length; i++) {
@@ -2675,7 +2695,9 @@ export default function narrowSignatures(programFacts, ast) {
           found = true
           nullish = true                          // ??=/||= etc. — fail closed
         }
-      } })
+        for (let i = 1; i < node.length; i++) walk(node[i])
+      }
+      walk(callerFunc?.body)
       return found ? nullish : true               // unwritten name — fail closed
     }
     return nameNullable
@@ -3848,7 +3870,8 @@ export function refineDynKeys(programFacts) {
         if (t != null) map.set(params[i].name, t)
       }
     }
-    walkAst(body, { enter: node => {
+    const walk = (node) => {
+      if (!Array.isArray(node)) return
       const op = node[0]
       if (op === 'let' || op === 'const') {
         for (let i = 1; i < node.length; i++) {
@@ -3863,30 +3886,32 @@ export function refineDynKeys(programFacts) {
           else if (typeof init === 'string' && map.has(init)) map.set(d[1], map.get(init))
         }
       }
-      if (op === '=>') return false  // don't cross into nested arrows; they're separate funcs
-    } })
+      if (op === '=>') return  // don't cross into nested arrows; they're separate funcs
+      for (let i = 1; i < node.length; i++) walk(node[i])
+    }
+    walk(body)
     return map
   }
 
   let real = false
   const visit = (typeMap, node) => {
-    if (real) return
-    // skipArrow: false — recurse into nested arrows too. Closures stay inline
-    // (defFunc skips depth>0), so a dynamic-key access captured in one — e.g.
-    // `handlers[op]` in a dispatch closure — is reachable only through its
-    // parent's body. Matches collectProgramFacts, which also crosses arrows
-    // when setting anyDyn; not crossing here let refineDynKeys reset a flag
-    // the initial scan correctly raised. Monotone-safe: extra visits only
-    // ever raise `real`.
-    if (some(node, n => {
-      if (n[0] === 'for-in') return true
-      if (n[0] !== '[]') return false
-      const idx = n[2]
-      if (isLiteralStr(idx)) return false
-      const obj = n[1]
-      const vt = typeof obj === 'string' ? typeMap.get(obj) : null
-      return !NON_DYN_VTS.has(vt)
-    }, REFS_THROUGH_ARROWS)) real = true
+    if (real || !Array.isArray(node)) return
+    const op = node[0]
+    if (op === '[]') {
+      const idx = node[2]
+      if (!isLiteralStr(idx)) {
+        const obj = node[1]
+        const vt = typeof obj === 'string' ? typeMap.get(obj) : null
+        if (!NON_DYN_VTS.has(vt)) real = true
+      }
+    } else if (op === 'for-in') real = true
+    // Recurse into nested arrows too. Closures stay inline (defFunc skips
+    // depth>0), so a dynamic-key access captured in one — e.g. `handlers[op]`
+    // in a dispatch closure — is reachable only through its parent's body.
+    // Matches collectProgramFacts, which also crosses arrows when setting
+    // anyDyn; not crossing here let refineDynKeys reset a flag the initial scan
+    // correctly raised. Monotone-safe: extra visits only ever raise `real`.
+    for (let i = 1; i < node.length; i++) visit(typeMap, node[i])
   }
 
   // Live: anything reachable from exports/first-class value uses. Skipping
