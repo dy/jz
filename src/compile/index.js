@@ -2269,6 +2269,33 @@ function emitClosureBody(cb, functionPlan) {
  *  rounds, threaded through the SAME `regionHooks` this function receives —
  *  see that file's own doc) ship DORMANT, gate-verified on both axes, not
  *  wired live in any shipped build.
+ *
+ *  THE RULE for every one of this function's SIX-plus nested mark/exit
+ *  pairs (SCAN, AFE, emitFuncs, `__buildMark`, `__stdlibMark`, this
+ *  outermost one — each documented individually at its own call site):
+ *  a round's root/snapshot must carry every PLAIN-DATA field ANY code
+ *  reachable before the NEXT mark (including code after this round's own
+ *  exit, up to and including the function's return and whatever the
+ *  caller reads next) still touches — not just what the round's OWN body
+ *  writes. Two confirmed instances of getting this wrong, both fixed by
+ *  WIDENING an existing snapshot rather than adding a new root category:
+ *  front's round originally missed `ctx.core` entirely (a stdlib module's
+ *  `init(ctx)` triggered mid-round by `prepare()`'s unconditional
+ *  `includeModule('core')`, fixed by hoisting every stdlib load before
+ *  `mark()` — `88e48378`); `__stdlibMark`'s `lateSchema` snapshot missed
+ *  `ctx.schema.namedUses` (a plain array `module/core.js`'s
+ *  `__throw_property_nullish` populates for nearly every compile, read
+ *  ~40 lines after this round's own exit by the `usedSchemaIds` walk —
+ *  region-emitir-round session, `.work/region-release-notes.md`). Neither
+ *  bug was a fault in `__region_exit`'s own relocation walk (that
+ *  machinery is sound and unconditionally correct for whatever root it's
+ *  given) — both were root-COMPLETENESS gaps at the JS call site. `ctx.core`
+ *  itself (its `.emit`/`.stdlib` closure dicts) stays permanently OUT of
+ *  every round's root (wholesale-rooting it was tried in `7085cb57` and
+ *  made the regression WORSE) — the fix for a field living there is always
+ *  to either hoist its write before `mark()`, or copy the specific
+ *  plain-data field a round's own snapshot needs into that snapshot, never
+ *  to root `ctx.core` itself.
  * @returns {Array} Complete WASM module as S-expression
  */
 export default function compile(ast, profiler, regionHooks) {
@@ -2783,6 +2810,25 @@ export default function compile(ast, profiler, regionHooks) {
   // argc = actual arg count passed; missing slots padded with UNDEF_NAN at caller.
   // Rest-param bodies pack slots a[fixedParams..argc-1] into their rest array.
   // MAX_CLOSURE_ARITY is the fixed inline-slot count; calls with more args error.
+  // Bare truthy, not `.size`: `ctx.closure.types` existing means `fn` loaded
+  // for SOME real reason — not only literal closure minting, but any use of
+  // ctx.closure.call (generic dynamic dispatch that COULD invoke a
+  // closure-shaped value at runtime, even one this specific program never
+  // literally constructs) also needs `$ftN` for its call_indirect. A `.size`
+  // gate here (this session's first attempt) undercounted that second case —
+  // regressed 71 native tests with "'ftN' is not in scope" (any compile whose
+  // ONLY closure-shaped code is a generic-dispatch call_indirect, never a
+  // literal `=>` reaching ctx.closure.mint). The REAL fix for eager-load's
+  // "fn loaded but never actually needed" divergence lives downstream, in
+  // finalizeClosureTable (src/wat/assemble.js): its own `indirectUsed` scan
+  // is the authoritative, later check (real call_indirect usage in the
+  // ACTUALLY-COMPILED, reachability-resolved output) — its `else` branch
+  // already strips this exact `$ftN` type back out (`sec.types = sec.types.
+  // filter(...)`) whenever indirectUsed is false, regardless of whether it
+  // was pushed here. That authoritative scan is what needed fixing (see its
+  // own doc — it used to scan EVERY ever-registered stdlib template instead
+  // of only reachable ones); this push staying unconditional-on-module-load
+  // was never the bug.
   if (ctx.closure.types) {
     const params = [['param', 'f64'], ['param', 'i32']] // env + argc
     for (let i = 0; i < (ctx.closure.width ?? MAX_CLOSURE_ARITY); i++) params.push(['param', 'f64'])
@@ -2962,7 +3008,18 @@ export default function compile(ast, profiler, regionHooks) {
       dvArmFns: ctx.scope.dvArmFns,
     }
     let lateTypes = { arrResized: ctx.types.arrResized, nameEscapes: ctx.types.nameEscapes }
-    let lateSchema = { list: ctx.schema.list }
+    // `namedUses` (plain {sid, funcName} pairs — module/core.js's
+    // __throw_property_nullish and module/json.js's per-shape parsers push
+    // onto it eagerly, unconditionally, for essentially every compile) MUST
+    // ride along here: the usedSchemaIds walk a little further down this
+    // function (`if (ctx.schema.namedUses.length) {...}`) reads it AFTER this
+    // round's exit, unconditionally. Omitting it left `ctx.schema` narrowed to
+    // `{list}` post-exit, so that later read threw `Cannot read properties of
+    // undefined (reading 'length')` on EVERY region-live compile, including
+    // the trivial single-function AGREE-tier corpus — this was the emitIR-
+    // round crash this whole investigation chased (region-emitir-round
+    // session, .work/region-release-notes.md).
+    let lateSchema = { list: ctx.schema.list, namedUses: ctx.schema.namedUses }
     // pullStdlib only mutates these section arrays. Root them individually;
     // traversing `sec` would also walk every already-durable user function,
     // turning a ~stdlib-only reclaim into a multi-gigabyte full-module copy.
@@ -3309,8 +3366,24 @@ export default function compile(ast, profiler, regionHooks) {
   }
   // jz:errcls has an explicit sid per entry (unlike jz:schema above), so a
   // dead class is simply omitted rather than zeroed.
-  if (ctx.schema.errorSidEntries?.().size) {
-    const entries = [...ctx.schema.errorSidEntries()].filter(([sid]) => usedSchemaIds.has(sid))
+  //
+  // Reads `lateFacts.errorSidEntries` (an already-resolved ARRAY, captured
+  // from `ctx.schema.errorSidEntries()` — a METHOD — before `__stdlibMark`'s
+  // exit narrows `ctx.schema` to `lateSchema = {list, namedUses}`, which has
+  // no such method), not `ctx.schema.errorSidEntries()` directly: that method
+  // no longer exists post-narrowing, so re-calling it here silently produced
+  // `undefined` (optional-chained away, not thrown) — no `jz:errcls` custom
+  // section ever got emitted under region-live compiles, so `interop.js`'s
+  // decodeThrown always missed the sid->class-name lookup and every
+  // `new TypeError(...)`/`new SyntaxError(...)`/etc. reached the host as a
+  // generic `Error("[object Object]")` — right fields (verified via
+  // `e.thrown`: `{message, name}` both correct), wrong class/message
+  // (region-emitir-round session, `.work/region-release-notes.md`). Same
+  // fix shape as `lateSchema.namedUses` just above: consume the
+  // already-captured snapshot instead of re-deriving through a field this
+  // round's narrowing removed.
+  if (lateFacts.errorSidEntries.length) {
+    const entries = lateFacts.errorSidEntries.filter(([sid]) => usedSchemaIds.has(sid))
     if (entries.length) {
       const bytes = []
       const utf8 = new TextEncoder()

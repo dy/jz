@@ -46,6 +46,50 @@ import { staticObjectProps } from '../static.js'
 // it can never fabricate a wrong one — every consumer's existing runtime-
 // dispatch/no-claim fallback is unchanged for anything this index declines
 // to resolve.
+//
+// Second source, same discipline: a LIFTED function-property (prepare's own
+// `fn.prop = arrow` → top-level `fn$prop` rule, src/prepare/index.js's `'='`
+// handler — watr's real `i64.parse = n => {...}` onto the named function
+// `i64`, not Shape #8's object-literal `ns.parse`). That rule rewrites the
+// write to `fn.prop = fn$prop` (a bare-name RHS, in principle exactly the
+// shape `collectMemberWrites`/`foldWrite` above already fold) — so for a
+// FUNCTION receiver, the write is often visible to the census same as any
+// object-literal one (`flattenFuncNamespaces`, plan/scope.js, drops it
+// outright only when the property is NEVER read as a value anywhere — see
+// that pass's own doc; when it survives, `foldWrite` resolves it exactly as
+// written, no different from Shape #8). What actually blocks it is
+// `safeReceiver`'s `nameEscapes` term: program-facts.js's whole-program
+// `nameEscapes` set has NO exemption for a call's own callee position
+// (`ESCAPE_SKIP` has no `'()'` entry — ordinary calls mark their callee
+// "escaped" right alongside a true value-read, "sound direction: over-
+// marking loses a fold"). A same-module function that is EVER called
+// directly by name anywhere — watr's `i64` is, from `encode.i64(...)`
+// flattened to a bare `m1_encode$i64(...)` call elsewhere in the very same
+// program — ends up in `nameEscapes` regardless of whether it ever truly
+// aliases. That coarseness is the right trade-off for `nameEscapes`' many
+// other whole-program consumers; it is simply the wrong question for THIS
+// file's narrower one. `collectValueEscapes` below answers the question
+// this file actually needs for a function-declaration receiver: does the
+// name ever appear anywhere OTHER than a call's own callee or a `.`/`?.`/
+// `[]` receiver — the two positions that read it without ever copying it
+// into a second binding a write could later reach through. If not, every
+// occurrence in the whole program is accounted for, and a `.`-property read
+// off it is exactly as safe to resolve as the object-literal case.
+//
+// The written-once witness for a DROPPED write (flattenFuncNamespaces did
+// remove it) survives anyway, in a different place: prepare's own lift
+// already recorded it, permanently, as an ordinary entry in
+// `ctx.funcs.names`/`ctx.funcs.map` (the function `fn$prop` itself) plus a
+// negative fact in `ctx.funcs.multiProp` (`"fn.prop"`) exactly when a SECOND
+// write to the same property occurs (wrapper-composition reassignment —
+// prepare's own "Collide → fresh name" branch). `resolveMember` below falls
+// back to these two facts when the census found no write to fold at all,
+// trusted the SAME way `tryFnPropCall`/`bigintMethodTargets` (emit.js)
+// already trust them for direct-call emission — a same-module function
+// base, no second write (`multiProp` absent), the `${objName}$${prop}` name
+// resolves — so the resolved callee is the exact function a bare-name call
+// to `fn$prop` would reach; no new proof, no new naming convention, no
+// divergence from what emission already does with zero analysis support.
 
 const POISON = Symbol('call-target-index poison')
 
@@ -87,6 +131,53 @@ function collectShadowedNames(ast, moduleInits, funcsList) {
     if (func.sig?.params) for (const p of func.sig.params) out.add(p.name)
     if (func.body) collectAllBoundNames(func.body, out)
   }
+  return out
+}
+
+/** Whole-program set of names that appear anywhere OTHER than a call's own
+ *  callee slot or a `.`/`?.`/`[]` receiver slot — see this file's header for
+ *  why `programFacts.nameEscapes` (which marks a call's callee too) is the
+ *  wrong instrument for a function-declaration receiver specifically. Walks
+ *  everywhere `collectShadowedNames` does (module top level, moduleInits,
+ *  every function body — a value can escape from any of them), with no
+ *  `=>`-boundary stop: unlike shadow/write census above, an escape three
+ *  closures deep is exactly as disqualifying as one at module top level.
+ *
+ *  `safe` propagates a callee/receiver position THROUGH the ops that merely
+ *  forward one of their own operand's value untouched (`?:`, `&&`/`||`/`??`,
+ *  the comma operator) — a namespace-qualified call `encode[t].parse(...)`
+ *  lowers a computed read on a known-shape namespace into exactly this
+ *  ternary-of-equality-checks shape (`t === 'i64' ? m1_encode$i64 : t ===
+ *  'f32' ? …`, watr's real `compile.js` v128const), and each branch is
+ *  every bit as much "the `.`-receiver of a safe read" as a bare receiver
+ *  would be — losing that context at the ternary boundary would call a
+ *  namespace member's own encoder function an escape merely for being
+ *  reached through a runtime-selected branch instead of a fixed name. */
+function collectValueEscapes(ast, moduleInits, funcsList) {
+  const out = new Set()
+  const walk = (node, safe = false) => {
+    if (typeof node === 'string') { if (!safe) out.add(node); return }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'import' || op === 'export') return
+    if (op === '.' || op === '?.') { walk(node[1], true); return } // receiver reads without exposing it; prop name is never a value
+    if (op === '()' || op === '[]') { // callee / index-receiver position is safe; every other slot is an ordinary value position
+      walk(node[1], true)
+      for (let i = 2; i < node.length; i++) walk(node[i], false)
+      return
+    }
+    if (op === '?:') { walk(node[1], false); walk(node[2], safe); walk(node[3], safe); return }
+    if (op === '&&' || op === '||' || op === '??') { walk(node[1], false); walk(node[2], safe); return }
+    if (op === ',') {
+      for (let i = 1; i < node.length - 1; i++) walk(node[i], false)
+      walk(node[node.length - 1], safe)
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i], false)
+  }
+  walk(ast)
+  if (moduleInits) for (const init of moduleInits) walk(init)
+  for (const func of funcsList) if (func.body) walk(func.body)
   return out
 }
 
@@ -198,18 +289,40 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   const safeReceiver = name =>
     !shadowed.has(name) && !rebound.has(name) &&
     !(nameEscapes && nameEscapes.has(name)) && !(dynWriteVars && dynWriteVars.has(name))
+  // Alternate gate for a receiver that is itself a same-module function
+  // declaration (`ctx.funcs.names.has(name)`) — see this file's header for
+  // why `nameEscapes` over-rejects exactly this receiver shape (a call's own
+  // callee position isn't exempt in that whole-program set, so any function
+  // ever called directly by name anywhere counts as "escaped"). Computed
+  // lazily, once, only if a function-base lookup actually needs it.
+  let valueEscapes = null
+  const safeFuncBase = name => {
+    valueEscapes ??= collectValueEscapes(ast, ctx.module.moduleInits, ctx.funcs.list)
+    return !shadowed.has(name) && !rebound.has(name) && !(dynWriteVars && dynWriteVars.has(name)) && !valueEscapes.has(name)
+  }
 
   const resolveMember = (objName, prop) => {
-    if (typeof objName !== 'string' || typeof prop !== 'string' || !safeReceiver(objName)) return null
-    const props = table.get(objName)
-    if (!props) return null
-    const fn = props.get(prop)
+    if (typeof objName !== 'string' || typeof prop !== 'string') return null
+    const isFuncBase = ctx.funcs.names.has(objName)
+    if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return null
+    const fn = table.get(objName)?.get(prop)
     // Only a named-function resolution is `resolveMember`'s contract — an
     // arrow-node resolution (foldWrite's other resolved shape, added for
     // resolveComputed below) is deliberately declined here, unchanged from
     // before that addition: nothing that calls resolveMember expects (or
     // could use) a bare AST node in place of a ctx.funcs.list entry.
-    return fn && fn !== POISON && !Array.isArray(fn) ? fn : null
+    if (fn === POISON || Array.isArray(fn)) return null
+    if (fn) return fn
+    if (!isFuncBase) return null
+    // Lifted function-property fallback (see header) — no write survived for
+    // the census above to fold (flattenFuncNamespaces dropped it outright),
+    // so resolve directly off prepare's own witnesses: same single-write
+    // proof (`multiProp` ABSENT — prepare adds it on a second write to the
+    // same `objName.prop`, the identical fact `tryFnPropCall`/
+    // `bigintMethodTargets` already gate on), same `${objName}$${prop}` name
+    // emission's own direct-call path uses.
+    if (ctx.funcs.multiProp.has(`${objName}.${prop}`)) return null
+    return ctx.funcs.map.get(`${objName}$${prop}`) ?? null
   }
 
   /**
@@ -250,4 +363,54 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   }
 
   return Object.freeze({ resolveMember, resolveComputed })
+}
+
+/**
+ * Release `programFacts.valueUsed` of a lifted-function-property name whose
+ * only possible value-use is its own defining write. Called once from
+ * plan/index.js, immediately after `buildCallTargetIndex` — before
+ * `solveRepresentationBoundaries`/`narrowSignatures` (representation-plan.js's
+ * `makeBoundaryData`) ever read `valueUsed` to decide `uncovered` for a
+ * function's boundary plan.
+ *
+ * Prepare's `fn.prop = arrow` lift substitutes `fn.prop = fn$prop` — a
+ * SYNTHESIZED name that cannot appear anywhere else in the whole program by
+ * construction (the original source never spells it; nothing before this
+ * point in the pipeline re-derives or re-emits it). program-facts.js's
+ * whole-program `valueUsed` walk marks a bare func-ref RHS of any `=`
+ * (`observeNodeFacts`'s own comment: "so resolveClosureWidth sizes the
+ * closure ABI to its arity") — sound for a genuinely first-class use
+ * (`store[0] = pick3`, callable through an unknown later dispatch), but this
+ * ONE write is not that: it is prepare's own bookkeeping, and every call
+ * this index can trace to it goes through the SAME direct `.`-property path
+ * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMember`
+ * independently re-derives the identical `(base, prop) → fn$prop` fact —
+ * meaning `base` passed this file's own escape/shadow/reassignment proof —
+ * the write is provably fully covered: no truly indirect/closure call can
+ * reach `fn$prop` through it, so marking it `valueUsed` only forces every
+ * downstream boundary decision (`makeBoundaryData`'s `uncovered`,
+ * `representationCallArgAction`'s materialization) onto the conservative,
+ * closure-shaped path a REAL indirectly-reachable function needs.
+ *
+ * Deliberately narrower than "any index-resolved property": an
+ * object-literal receiver (Shape #8, `ns.parse = someExistingFn`) resolves
+ * to a real, independently-named, PRE-EXISTING function that this write is
+ * merely ONE reference to — it may legitimately have other value-uses this
+ * index has no way to rule out, so it is left in `valueUsed` untouched. Only
+ * a name matching the exact `${base}$${prop}` synthesis convention, with
+ * `base` itself a same-module function declaration, carries the "cannot
+ * exist anywhere else" guarantee this release depends on.
+ */
+export function releaseLiftedValueUsed(ctx, programFacts, callTargets) {
+  const valueUsed = programFacts?.valueUsed
+  if (!valueUsed || !valueUsed.size || !callTargets) return
+  const release = []
+  for (const name of valueUsed) {
+    const cut = name.lastIndexOf('$')
+    if (cut <= 0 || cut === name.length - 1) continue
+    const base = name.slice(0, cut), prop = name.slice(cut + 1)
+    if (!ctx.funcs.names.has(base)) continue
+    if (callTargets.resolveMember(base, prop)?.name === name) release.push(name)
+  }
+  for (const name of release) valueUsed.delete(name)
 }
