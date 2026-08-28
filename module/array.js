@@ -202,13 +202,6 @@ function callbackArgReps(arr) {
   return [itemRep, idxRep, arrRep]
 }
 
-// Factory for simple arr→call stdlib patterns (mirrors strMethod in string.js)
-const arrMethod = (name, nArgs = 0) => (...args) => {
-  inc(name)
-  const call = ['call', `$${name}`, ...args.slice(0, nArgs + 1).map(a => asF64(emit(a)))]
-  return typed(call, 'f64')
-}
-
 const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
 // Whether durableFwdLogIR/durableArrSnapIR emit a real call (vs '' — see either's own
 // comment): only when __heap_reset exists (owned-memory builds; shared memory never
