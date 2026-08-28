@@ -1720,3 +1720,78 @@ new, concrete, reproducible data points for whoever continues the region-arena s
 Group 1 gives a clean, minimal, three-line repro (`__mkptr`/`__ptr_offset` round-trip, TYPE=6)
 that's dramatically easier to bisect than `dvnested-mechanism` or the earlier `sum`-at-O0 chase —
 worth trying FIRST.
+
+## Group 1 root-cause session (2026-08-28, worktree fix/region-forwarding-const @ 63fe910d) — FORWARDING_MASK hypothesis DISPROVEN; real bug isolated to a literal-argument miscompile with a clean v<77/v>=77 threshold
+
+Built a region-enabled kernel (`REGION_HOOKS_ACTIVE=true`, `JZ_SELF_COMPILE_OPT=0`, 93.1s,
+13,484,208 bytes) at current HEAD (63fe910d, i.e. with every landed fix: front's eager
+`includeMods`, `lateSchema.namedUses`, `lateFacts.errorSidEntries`, Class-1/Class-2 module-purity
+fixes). Diagnostic method: `compile(src,{wat:true,optimize:0})` (native) vs
+`compileViaKernel(src,{wat:true,optimize:0})` (kernel) on the exact `test/pointers.js` nan-box
+sources, diffing the emitted WAT function-by-function — no breadcrumbs/rebuilds needed, since the
+mismatch is a compile-TIME text difference, directly visible in `--wat` output.
+
+**`$__mkptr`, `$__ptr_offset`, and `$__ptr_offset_fwd` are BYTE-IDENTICAL between native and
+kernel output**, including `(i32.const 898)` for the `FORWARDING_MASK` bit-test inside
+`$__ptr_offset` (898 = `(1<<PTR.ARRAY)|(1<<PTR.HASH)|(1<<PTR.SET)|(1<<PTR.MAP)`, the correct
+value). **This DISPROVES the prior session's leading hypothesis** ("the kernel's self-compiled
+`__ptr_offset` has a wrong `FORWARDING_MASK` bit pattern baked in") — the stdlib helper functions
+themselves, as compiled into the kernel, are correct and identical to native, at the WAT-text
+level, not just "semantically equivalent."
+
+**The real divergence is in the CALLER's compiled code** — diffing `$f`'s own body (the guest
+function under test) shows the KERNEL emits a WRONG THIRD ARGUMENT to `$__mkptr`:
+native emits `(call $__mkptr (i32.const 1) (i32.const 100) (i32.const 2048))` for
+`__mkptr(1, 100, 2048)`; the kernel emits `(call $__mkptr (i32.const 1) (i32.const 100) (i32.const
+1971))` — the literal `2048` from the GUEST SOURCE gets replaced by `1971` during the KERNEL's
+own compilation of the guest program. `2048 - 1971 = 77`.
+
+**Swept the offset literal across many values (0, 1, 8, 50, 76, 77, 78, 100, 200, 500, 1000, 2000,
+2048, 5000, 10000, 65536, 100000, 999999, 1048576), reading the kernel's emitted `i32.const` for
+`$__mkptr`'s 3rd arg directly out of `--wat` output** (fresh kernel instance per compile, same
+93.1s O0 kernel throughout, no rebuilds): **v ≤ 76 emits `v` unchanged (correct). v ≥ 77 emits
+EXACTLY `v − 77`, for every tested magnitude from 78 to 1,048,576** — not proportional, not
+modular, a flat constant offset of 77 the instant the literal reaches 77, with zero exceptions
+across 3 orders of magnitude. This is a clean, deterministic, value-independent-once-past-
+threshold corruption — consistent with a small-integer INTERNING/POOL table of exactly 77 entries
+(plausibly indices 0..76) where entries ≥ 77 go through a different, buggy path that returns
+something that happens to equal the intended value minus the pool's own size, rather than the
+value itself (e.g. a value/index confusion for whatever backs literals past the inline table).
+
+**Narrowed further (position vs. downstream-use): NOT confirmed which theory is right — the two
+comparison tests run so far (2048 in `__mkptr`'s 1st arg followed by `__ptr_type(p)`: correct;
+2048 in the 2nd arg followed by `__ptr_aux(p)`: correct; 2048 in the 3rd arg followed by
+`__ptr_offset(p)`: WRONG) are confounded — they vary BOTH the argument position AND which
+accessor is called afterward simultaneously.** Next concrete step (not yet run): put a ≥77
+literal in the 3rd arg (offset) position WITHOUT calling `__ptr_offset` afterward (e.g. call
+`__ptr_type(p)` instead, or just discard `p`) to isolate "is `__mkptr`'s offset PARAMETER always
+special-cased" vs. "does the corruption only fire when the compiler also sees a later
+`__ptr_offset` call and tries to fold the `__mkptr`→`__ptr_offset` round-trip pattern at compile
+time" (the latter would implicate a peephole/algebraic-simplification pass — plausibly the same
+one `src/optimize/index.js:4125`'s `['i32.const', FORWARDING_MASK]` literal belongs to, which is
+a DIFFERENT code path than `inlinePtrOffsetFast`, src/passes.js:48, already ruled out by the prior
+session's "CRITICAL CORRECTION" section since that flag is force-`false` at O0/O2 regardless of
+region-arena). Both native and kernel run the SAME optimizer source, so if this is a peephole
+fold, the bug must be in how the fold's OWN constant computation behaves differently when the fold
+itself is executing self-hosted (inside the kernel, at L1) vs natively — e.g. a lookup into a
+region-arena-relocated table (schema/constant-pool) that's stale specifically past a 77-entry
+inline threshold. Whoever continues: (1) run the position-vs-use isolation test above; (2) if it
+implicates a fold, grep `src/optimize/index.js` and `src/compile/emit.js`/`narrow.js` for a
+constant-pool or "first N literals inline, rest overflow" shaped table with something like a
+77-ish fixed capacity, or any structure whose SIZE happens to be 77 for this particular kernel
+build (e.g. count of distinct small-int literals used by the compiler's OWN source, baked in at L0
+build time — would make "77" a build-specific accident, not a universal constant, worth
+re-checking against a fresh O3 production build to see if the threshold moves); (3) once the
+table/fold is found, apply the fix per the header doctrine in `src/compile/index.js` (widen the
+owning round's root/snapshot, or hoist the table's creation before `mark()` — never root
+`ctx.core` wholesale).
+
+Diagnostic scripts (not committed, scratchpad only): `fwdmask-wat-diff.mjs` (native-vs-kernel WAT
+diff for the 3 helper functions — proved them identical), `fwdmask-exec-diff.mjs` (executes both
+and compares — first showed the always-77 delta), `fwdmask-sweep.mjs` (the value sweep + the
+confounded position/accessor comparison above) — all three read
+`.../scratchpad/rf/index.js`/`test/kernel-target.js`/`interop.js` directly, no test-file edits.
+Kernel used throughout: `/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/rf/dist/jz.wasm`
+(gitignored, O0, region-hooks-on, built from this worktree's `scripts/self.js` with
+`REGION_HOOKS_ACTIVE` locally flipped `true` — uncommitted, matches every prior session's
+convention of never committing that flip).
