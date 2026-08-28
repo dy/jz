@@ -34,6 +34,27 @@ const VEC_WIDTH = [16, 16, 8, 8, 4, 4, 4, 2] // 128 bits / element bits
 // bitwise arms below rely on that gate and stay i32-only.
 const BITWISE_OPS = new Set(['and', 'or', 'xor', 'shl', 'shr', 'shru'])
 
+// Arithmetic op names analyzeSimd's binary branch (below) produces for x*c/
+// x+c/x-c/x/c. genSimdMap is the SINGLE gate that declines this family on an
+// INTEGER element (elemType 4/5) when `c` is fractional — see genSimdMap's
+// comment for why a float element needs no such gate.
+const ARITH_OPS = new Set(['mul', 'add', 'sub', 'div'])
+
+// Plain-number ECMAScript ToInt32 — the same fold `src/ir.js`'s `toI32` applies
+// to a literal `f64.const` (`Number.isFinite(v) ? v | 0 : 0`, "JS `|0` is
+// ToInt32"), mirrored here because this module hand-emits WAT text from bare
+// JS numbers, never IR nodes (toI32 itself walks an IR tree — wrong shape for
+// a raw AST constant). genSimdMap reuses this ONE function for both bitwise
+// value-conversion (and/or/xor: the ELEMENT undergoes ToInt32, so the constant
+// combined with it must too) and shift-count conversion (shl/shr/shru: JS
+// masks the count via ToUint32(c)&31) — WASM's shl/shr_s/shr_u instructions,
+// scalar AND i32x4 lane-wise alike, already reduce ANY i32 shift-count operand
+// modulo 32 at the instruction-semantics level (Core Spec "Numerics — Shifts":
+// k = i2 mod N), and ToInt32(c)'s bit pattern shares the same low 5 bits as
+// ToUint32(c)'s — so one conversion correctly serves both families; no
+// per-operator special case.
+const toI32Const = c => Number.isFinite(c) ? c | 0 : 0
+
 
 // === SIMD pattern detection ===
 
@@ -155,7 +176,8 @@ const scalarF64 = scalarOp('f64', 'e'), scalarF32 = scalarOp('f32', 'ef'), scala
  * Takes (src: f64) → f64, returns new typed array with transform applied.
  */
 function genSimdMap(name, elemType, pattern) {
-  const { op, val: c } = pattern
+  const { op, val } = pattern
+  let c = val
 
   // Bitwise/shift family (&|^<<>>>>>) needs ECMAScript ToInt32 applied to the
   // element VALUE first — `x & 1` on a Float32Array element 1.5 is 1, not a
@@ -180,6 +202,35 @@ function genSimdMap(name, elemType, pattern) {
   // deliberately stays element-kind-agnostic (see its own comment) so the
   // decision lives in exactly one place.
   if ((elemType === 6 || elemType === 7) && BITWISE_OPS.has(op)) return null
+
+  // Arithmetic (mul/add/sub/div) on an INTEGER element (Int32Array/Uint32Array)
+  // with a fractional `c`: JS computes `x OP c` in f64 (the loaded int32 value
+  // promoted to double) and applies ToInt32/ToUint32 only ONCE, when STORING
+  // the mapped value back — e.g. `x * 1.5` on an Int32Array element x=3 is
+  // f64(3)*1.5=4.5, ToInt32(4.5)=4, NOT 3 (rounding/truncating the constant to
+  // `x*1` first would silently compute the wrong answer, not merely reject).
+  // An integer-valued `c` needs no such guard: exact-integer f64 arithmetic and
+  // i32 wrapping arithmetic agree bit-for-bit (the same ring narrowI32 already
+  // relies on, src/ir.js), so the fast path stays safe and fires as before.
+  // Declined via the SAME `return null` idiom as the float×bitwise gate above,
+  // so the caller falls through to the SAME generic per-element lowering
+  // (module/typedarray.js), which computes in f64 and stores through
+  // elemStoreIR's real ToInt32/ToUint32 conversion — not reimplemented here.
+  // This is genSimdMap's single constant-shape gate for the family; analyzeSimd
+  // deliberately stays element-kind-agnostic (see its own comment) AND never
+  // inspects `c`'s value beyond "is it a number" — so, like the float×bitwise
+  // decision, this one lives in exactly one place too.
+  if ((elemType === 4 || elemType === 5) && ARITH_OPS.has(op) && !Number.isInteger(c))
+    return null
+
+  // A surviving bitwise/shift constant is embedded VERBATIM into `i32.const`/
+  // `i32x4.splat (i32.const …)` below (simdI32/scalarI32) — normalize it to
+  // ToInt32 first via toI32Const (see its comment above). Left as-is, the raw
+  // JS AST literal (`1.5`, `-1.5`, `Infinity`, `2147483648.7`, …) isn't even
+  // valid WAT integer syntax, so an unnormalized fractional/non-finite `c` is
+  // not merely a wrong-value bug but a compile failure ("Bad int 1.5") — a
+  // spurious REJECT of valid JS (`x & 1.5` ≡ `x & 1` per ECMAScript ToInt32).
+  if (BITWISE_OPS.has(op)) c = toI32Const(c)
 
   const stride = STRIDE[elemType]
   const shift = SHIFT[elemType]
