@@ -293,3 +293,122 @@ this close to a load-bearing, previously-audited soundness gate):
   called with a foreign `{push:...}` object silently returns 0, not a
   throw). Out of scope for both fixes; flagged here for visibility, not
   something either commit regresses.
+
+## Follow-up session: the possibleKinds census ordering fix (branch tip 594879e1)
+
+Implemented candidate (b) from "Root cause of the REMAINING ~16718-byte gap"
+above — deferred `trackKind` (the `possibleKinds` census join) out of every
+mid-fixpoint sweep and into the single, already-existing final hard-settle
+sweep (`runCallsiteLattice([mergeRule('val', ..., false, true)])`, the
+"Settle val HARD" comment) that runs only after every fact `inferValAtSite`
+depends on (val itself, arrayElemValType, schemaId, typedCtor, pointer-ABI
+enrichment) has reached its OWN fixed point. `src/compile/narrow.js`:
+`fixpointRules`' own `mergeRule('val', ..., true, true)` → `mergeRule('val',
+..., true)` (trackKind now defaults false there); the pre-existing final
+sweep already had `trackKind=true` and needed no change beyond a doc
+comment. No change to `paramValTrustworthy`, no watr-specific special-casing
+— every earlier `v == null` case still joins KIND_UNIVERSE exactly as
+before; the ONLY thing that changed is WHEN that join is allowed to happen
+for the trackKind mechanism, never what it joins.
+
+Verified sound and non-vacuous three ways (test/data.js, appended after
+"RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched"):
+1. **Positive pin** — the exact uleb/wleb repro (a closure-bearing sibling
+   function added so the shadow-probe machinery is confirmed live in the
+   same compiled unit): `uleb`'s `buffer` param now compiles to direct
+   `__arr_push1` array codegen, no `__dyn_get_expr` shadow probe. A/B
+   confirmed against the pre-fix narrow.js: the probe WAS present before
+   (full WAT 197539 chars vs 133088 after, at -O3).
+2. **Negative control** — a param forwarded from a GENUINELY (not merely
+   apparently) polymorphic source (`forward`'s own `x`, fed an array at one
+   call site and a closure-hijack object at another) still gets the shadow
+   probe: the fix narrows WHEN KIND_UNIVERSE gets joined, never removes a
+   real disagreement's poison.
+3. **Ordering-independence pin** — swapping `uleb`/`wleb`'s source
+   declaration order (which determines the worklist's initial seed order)
+   now yields byte-identical WAT at -O3. Confirmed this WAS order-dependent
+   pre-fix (40-line diff between the two orderings, same aggregate size).
+   (At O0/O2 the two orderings differ only in which order two UNRELATED
+   stdlib helper functions — `__ptr_offset` vs `__mkptr` — appear in the
+   module; `uleb`'s and `wleb`'s own function bodies are separately confirmed
+   byte-identical at every level. That helper-ordering variance is a
+   pre-existing, unrelated artifact of something else entirely, not part of
+   this bug — hence pinning strict whole-module equality only at O3, where
+   watr's own optimizer canonicalizes it away too.)
+
+Bonus, unplanned fix found via the battery: "bigint: shape #9 sibling —
+non-reassigned BOXED param" had an O3 leg pinned as KNOWN-WRONG (a
+corrupted-number misread, `f()` returning e.g. `3.5e-323` instead of `7n` —
+confirmed via A/B this is genuinely fixed by the SAME narrow.js change, not
+a coincidence). Traced to a DIFFERENT possibleKinds consumer than
+paramValTrustworthy: `src/compile/representation-plan.js`'s own
+`paramEntryExcludesBool` reads `rep.possibleKinds`/`kindsCoverage` directly
+to prove a forwarded param structurally excludes BOOL. Confirmed this is NOT
+gated by paramValTrustworthy itself (no distrust event fires for this
+program — `bigint` isn't in `PTR_TAGGED_KINDS` at all) — a second,
+independent consumer hit by the identical ordering-artifact family. Did not
+re-trace this one's exact premature-join call site with the same rigor as
+the primary repro (time-boxed); the test comment (test/data.js) says so
+plainly rather than asserting an unverified mechanism.
+
+### Product-proof measurements — before (594879e1) vs after (this fix)
+
+- `node cli.js /Users/div/projects/watr/watr.js -O3`: **603144 B → 597581 B**
+  (-5563 B). Target 586426 B — NOT met; ~11155 B of the diagnosed 16718 B gap
+  remains. Confirmed via a temporary debug counter on `paramValTrustworthy`
+  that this fix's own mechanism is now fully clean for this exact build: 2
+  DISTRUST events (both `val=array`, full-universe `possibleKinds`) before,
+  **0 after**. The residual ~11155 B is therefore attributable to something
+  ELSE — a separate, undiagnosed cause, not a partial fix of this one (this
+  mechanism's own contribution is fully closed, not partially).
+- `node scripts/bench-size.mjs watr --json` (optimize:'size' preset, the
+  SIZE_BUDGET gate's own build): **300640 B → 300640 B, unchanged**. Verified
+  why: `bench/watr/watr.js` is a SEPARATE, curated benchmark harness (bundles
+  only compile.js/encode.js/const.js/parse.js/util.js, drives a fixed WAT
+  micro-corpus through `compile()` in a loop) — NOT the same program as the
+  real watr.js CLI. Confirmed via the same debug counter: 0 DISTRUST events
+  in this harness's build, BOTH before and after this fix — the ordering bug
+  never manifested in this specific smaller call graph to begin with, so
+  "unchanged" is the correct, expected result here, not a sign the fix is
+  ineffective. This SIZE_BUDGET gate (watr: 298000) still fails at 300640 —
+  unrelated to and unmoved by this fix; was already failing at the same
+  value at the branch tip this session started from.
+- Kernel (`npm run build` → `dist/jz.wasm`, the self-hosted compiler
+  compiling itself — a different, much larger program than either watr
+  measurement above, sharing the same compiler internals): **17,992,062 B →
+  17,954,279 B** (-37,783 B). main (pre-STRING/ARRAY-retirement baseline):
+  17,941,790 B — was 50,272 B larger than main before this fix, now only
+  12,489 B larger. jz's own source apparently has forwarding-parameter
+  shapes structurally similar to watr's uleb/wleb, so this fix's benefit
+  compounds when the kernel compiles itself.
+
+### Battery — full, all green (this session, on top of the prior checkpoint)
+
+- `node test/index.js`: 3741 total / 3740 pass / 1 skip / 0 fail (+3 over the
+  594879e1 checkpoint's 3738 — exactly the 3 new test() groups).
+- `npm run build` + `JZ_TEST_TARGET=jz.wasm node test/index.js`: 2992 total /
+  2991 pass / 1 skip / 0 fail (+3 over 2989, same reconciliation).
+- `node test/kernel-parity.js`: 3/3 tests, 33/33 assertions.
+- `node test/kernel-oracle.js`: 14/14 tests, 605/605 assertions.
+- `node scripts/bench-size.mjs --json` (all cases): 23/24 budgeted cases
+  pass; `watr` fails at 300640 vs 298000 budget — same, pre-existing,
+  unmoved by this fix (see above).
+- Full `node test/bench.js` (size + speed + toolchain rivals): exceeded this
+  session's bounded-round time budget on this machine — consistent with the
+  prior session's own note that this specific run was "abandoned on this
+  machine." The size-gate portion of what it asserts was covered directly
+  via `scripts/bench-size.mjs` above instead.
+
+### What was explicitly NOT done (this follow-up session)
+
+- Did not investigate the residual ~11155 B (-O3) / unmoved 300640 B (size
+  preset) gap further — out of THIS task's precise scope (fix the diagnosed
+  ordering bug conceptually; do not hunt for watr-specific patches). Flagging
+  for a follow-up: since this fix's own mechanism is confirmed fully clean
+  (0 DISTRUST events) on the real watr.js -O3 build, the remaining gap is a
+  DIFFERENT, as-yet-undiagnosed cause.
+- Did not re-trace the shape-#9-sibling bonus fix's exact premature-join
+  call site (paramEntryExcludesBool's own consumption of possibleKinds) with
+  the same rigor as the primary repro — the value flip is empirically
+  A/B-confirmed real; the exact mid-fixpoint visit that used to pollute it
+  was not separately isolated.
