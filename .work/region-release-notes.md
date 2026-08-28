@@ -900,6 +900,50 @@ dynamic `ctx.core.stdlib[name] = …` writes documented earlier in this file —
 the `sum` trigger, all are real instances of "write into a permanently-excluded `ctx.core` field
 mid-round" worth closing eventually, none blocked this session's fix.
 
+### Battery with ALL rounds genuinely active (no bitmask, real O3 kernel, 246.7s, 15,782,676 bytes)
+
+`node test/kernel-oracle.js`: **11/14 test-blocks pass, 575 assertions, 3 fail** — the 3 failures
+are ALL "kernel parity: byte-identical WAT" (O0/O2/O3), reporting `sum O0: diverges (native 642B
+vs kernel 923B)` etc. — IDENTICAL byte counts to what this file's own EARLIER "front's round
+ALONE" bisection recorded (before this session, before emitIR's fix existed). Every AGREE-tier
+EXECUTION assertion — `sum`, `math`, `dict`, `arr`, `mfold`, `nestedtyped`, `fromnested`, and
+every other row this run reached — passes cleanly against the JS oracle, natively AND
+in-kernel, at every optimize level: this session's fix is semantically sound with EVERY round
+genuinely active, not just in isolation. `node test/kernel-parity.js` standalone: 3/3 FAIL, same
+cause (the test wraps its whole per-optimize-level corpus loop in one `test()` call, and `is()`
+throws on the first mismatch — `sum` being first in `CORPUS`, later rows never run).
+
+**Root cause of the WAT-size divergence, CONFIRMED independent of this session's fix**:
+`module/function.js`'s `init(ctx)` (called once per compile, the moment the `function`/`fn`
+module loads) unconditionally does `ctx.closure.types.add(1) // presence triggers $ftN type
+emission` — a Set that's checked for mere TRUTHINESS (`if (ctx.closure.types) {...}`,
+`src/compile/index.js` ~2786) by the code that emits the closure-call `$ftN` type + the (possibly
+zero-length, per `finalizeClosureTable`) closure table, regardless of whether the compile ever
+actually creates a closure. A native (non-region) compile of `sum` never loads `fn` (nothing in
+`sum` needs it) — but front's ALREADY-MERGED fix (this file, "FRONT'S ROUND FIX", `88e48378`)
+eagerly `includeMods(...)`-loads ALL 21 stdlib modules, `fn` included, whenever `regionHooks` is
+truthy, for EVERY compile regardless of guest content — necessarily for CORRECTNESS (that's what
+closes the mid-round-registration bug). Diffing native vs kernel WAT for `sum` at O0 (dumped via
+`compile(src,{wat:true})` / `compileViaKernel(src,{wat:true})`) confirms the `$sum` FUNCTION BODY
+is byte-IDENTICAL between the two; the only difference is the kernel's extra `(type $ftN …)` +
+`(table (export "__jz_table") 0 funcref)` preamble — dead scaffolding treeshake evidently doesn't
+strip (type/table sections aren't reachability-pruned the way functions are). This is a genuine,
+deterministic, MECHANICAL side effect of front's eager-module-load trade-off, predating this
+session (the exact same 923B number was already on record before emitIR's round was touched at
+all) — NOT a region-arena root-set/dangling-pointer defect, and NOT something this session's
+`lateSchema` fix caused or can close by itself. Fixing it for real would mean making
+`module/function.js`'s `$ftN`-emission trigger depend on an ACTUAL closure being minted (not mere
+module presence) — a separate, non-trivial change to a DIFFERENT module's architecture, out of
+this session's scope (apply the same root-set discipline to emitIR's round). Flagged, not fixed.
+
+**Consequence for the literal task targets**: `kernel-oracle.js 14/14` and `kernel-parity.js
+33/33` are NOT reachable while front's eager-load trade-off stands, independent of anything in
+emitIR's round — both test files abort their per-optimize-level loop on the FIRST byte-mismatch
+(`sum`, first in `CORPUS`), never reaching the other 10 rows. The achieved, verified state is:
+every row this session's fix allows the harness to REACH passes on EXECUTION correctness; the
+harness just can't get past row 1's byte-count check to try the rest. This is reported honestly
+rather than claimed as 14/14 / 33/33.
+
 **Actual next steps for this session**: (1) revert the bitmask/`__dbgCompile` diagnostic
 scaffolding from `scripts/self.js` and `src/compile/index.js` (its job — localizing the bug — is
 done; keep only the `lateSchema` fix). (2) Build a REAL region-enabled kernel the normal way
