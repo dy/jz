@@ -3230,3 +3230,132 @@ test('object passed as a parameter: a param that is only READ keeps its direct (
   ok(!/__dyn_get_expr/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
   ok(/\$__ptr_offset/.test(body) && /i32\.const 8/.test(body), 'O0: .length still reads the direct array-header word (fast path unchanged)')
 })
+
+// --- object mutated/read inside a function via a PARAMETER, called with a
+// method name that collides with a jz STRING builtin (charCodeAt/trim/
+// padStart/…) — the STRING twin of the ARRAY_INDUCERS bug above
+// (fix/string-method-guess) ---
+//
+// Root cause: infer.js's `methodEvidence` evidence source (the SAME source
+// fixed above for ARRAY_INDUCERS) also treated seeing `<param>.charCodeAt(...)`
+// (or trim/padStart/… — STRING_ONLY_METHODS) as PROOF the parameter is a real
+// String. Once wrongly settled to VAL.STRING, downstream consumers trusted it
+// as fully proven — a plain OBJECT/HASH value can equally own a same-named
+// closure property attached post-construction (`t.charCodeAt = (i) => t.n +
+// i`), and jz has no prototype chain to rule that out from the method NAME
+// alone. Unlike the ARRAY_INDUCERS names (which have no `.array:${method}`
+// emitter and so land on tryGenericEmitter's shadow-probed strategy 10),
+// STRING_ONLY_METHODS have no `.string:${method}` sibling emitter EITHER —
+// they're registered bare (`.charCodeAt`, `.trim`, …) — so they ALSO land on
+// strategy 10, and a wrongly-guessed non-null `vt` skipped that strategy's
+// own-property shadow probe exactly the same way, dispatching straight to
+// jz's built-in STRING codegen (the SSO/heap charCodeAt decoder, the trim
+// byte-scan, …) on a receiver that was never a real string
+// (fix/string-method-guess: `o.charCodeAt(1)` on such an object returned NaN
+// at O0 instead of calling the user's own closure). methodEvidence no longer
+// induces a positive STRING (or ARRAY) verdict from method-name usage AT ALL
+// — the whole rung retired to a sound no-op (see that module's header). The
+// STRING_ONLY_METHODS set itself stays (notStringEvidence, a separate source,
+// still needs it for the unrelated write-shape "isn't a string" proof).
+test('object read via a parameter: closure method named like a String builtin (charCodeAt) called through a parameter', () => {
+  // The exact shape that broke: an object literal with a POST-HOC attached
+  // closure property named `charCodeAt` (not a real String), read by calling
+  // that closure THROUGH a separate function's own parameter.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.charCodeAt = (i) => t.n + i; return t }
+      function call1(o) { return o.charCodeAt(1) }
+      export function main() { return call1(makeT(100)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 101, `O${optimize || 0}: charCodeAt through the param calls the object's OWN closure, not jz's SSO/heap string decoder`)
+  }
+})
+
+test('object read via a parameter: closure method named like a String builtin (trim) called through a parameter', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.trim = () => t.n * 2; return t }
+      function call1(o) { return o.trim() }
+      export function main() { return call1(makeT(50)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 100, `O${optimize || 0}: trim through the param calls the object's OWN closure, not jz's built-in trim`)
+  }
+})
+
+test('object read via a parameter: closure method named like a String builtin (padStart) called through a parameter', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.padStart = (w) => t.n + w; return t }
+      function call1(o) { return o.padStart(7) }
+      export function main() { return call1(makeT(35)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: padStart through the param calls the object's OWN closure, not jz's built-in padStart`)
+  }
+})
+
+test('object read via a parameter: loop with zero and one iterations propagates the charCodeAt-closure call', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n: n }; t.charCodeAt = (i) => { t.n = t.n + i; return t.n }; return t }
+      function bump(o) { o.charCodeAt(1) }
+      export function main(count) {
+        const t = makeT(0)
+        for (let i = 0; i < count; i++) bump(t)
+        return t.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: count=0 — no call, field stays at its initial value`)
+    is(e.main(1), 1, `O${optimize || 0}: count=1 — the single call's own closure runs (not jz's charCodeAt decoder)`)
+  }
+})
+
+test('object read via a parameter: .length read elsewhere in the same function stays sound after a same-object .charCodeAt() call', () => {
+  // Isolates the SECOND consumer (module/core.js emitLengthAccess) from the
+  // method-dispatch consumer above, mirroring the identical ARRAY-side pin:
+  // `o.length` is a plain property READ, not a method call — this pin fails
+  // if that read is ever compiled as a jz-String byteLen op instead of the
+  // object's real (dynamic) `length` property, independent of whether
+  // `.charCodeAt()` itself dispatches correctly.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n, length: 7 }; t.charCodeAt = (i) => t.n + i; return t }
+      function useIt(o) { const a = o.charCodeAt(1); const b = o.length; return a * 100 + b }
+      export function main() { return useIt(makeT(2)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 307, `O${optimize || 0}: the object's own dynamic .length (7) reads correctly, not a jz-String byte-length op`)
+  }
+})
+
+test('object read via a parameter: the STRING-guess WAT-dispatch shape — unproven param gets a probe, call-site-proven param does not', () => {
+  // WAT-shape controls (mirror the ARRAY fix's own negative control): whether
+  // the compiler inserts an own-property shadow probe (__dyn_get_expr) around
+  // a `.charCodeAt` call is driven by call-site PROOF, not by usage syntax.
+  // Both programs below have a closure elsewhere (`useCallback`) so the probe
+  // machinery (ctx.closure.call) is actually available in both — isolating
+  // the one variable under test: is `s` proven STRING at the call site or not.
+  const provenSrc = `
+    function firstCode(s) { return s.charCodeAt(0) }
+    function useCallback(f) { return f(1) }
+    export function main() {
+      return useCallback((x) => x + 1) + firstCode('ab')
+    }
+  `
+  const unprovenSrc = `
+    function firstCode(s) { return s.charCodeAt(0) }
+    function useCallback(f) { return f(1) }
+    export function main(x) {
+      return useCallback((y) => y + 1) + firstCode(x)
+    }
+  `
+  const extractBody = (wat) => {
+    const start = wat.indexOf('(func $firstCode')
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const provenBody = extractBody(String(compile(provenSrc, { optimize: false, wat: true })))
+  const unprovenBody = extractBody(String(compile(unprovenSrc, { optimize: false, wat: true })))
+  ok(!/__dyn_get_expr/.test(provenBody), 'O0: a call-site-proven (paramReps) string param keeps direct STRING dispatch — no shadow probe inserted')
+  ok(/ccbase/.test(provenBody), 'O0: the proven param still reaches the SSO/heap charCodeAt fast decoder')
+  ok(/__dyn_get_expr/.test(unprovenBody), 'O0: an unproven param (no call-site proof, methodEvidence retired) DOES get the own-property shadow probe — confirms the fix changes real codegen, not vacuously')
+})

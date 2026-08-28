@@ -65,14 +65,30 @@ test('deopt D1: .length in + narrows to number (no string-concat dispatch)', () 
   is(count(wat, /\$__str_concat/g), 0, 'two numbers — + emits f64.add, not __str_concat')
 })
 
-test('deopt D1: all sized kinds narrow — typed/plain/string .length in +', () => {
+test('deopt D1: all sized kinds narrow — typed/plain .length in +', () => {
   if (belowOpt(1)) return
   const typed = compile('export let f=(x)=>{let b=new Float64Array(x);let s=0;for(let i=0;i<b.length;i++)s+=b[i]+b.length;return s}', { wat: true })
   const plain = compile('export let f=(x)=>{let b=[1,2,3,4,5];let s=0;for(let i=0;i<b.length;i++)s+=b[i]+b.length;return s}', { wat: true })
-  const str = compile('export let f=(s)=>{let n=0;for(let i=0;i<s.length;i++)n+=s.charCodeAt(i)+s.length;return n}', { wat: true })
   is(count(typed, /\$__str_concat/g), 0, 'typed-array .length + : no concat')
   is(count(plain, /\$__str_concat/g), 0, 'plain-array .length + : no concat')
-  is(count(str, /\$__str_concat/g), 0, 'string .length + : no concat')
+})
+
+// Was folded into the sized-kinds test above as "string .length + : no concat",
+// asserting `s.charCodeAt(i) + s.length` narrowed `s` to STRING (via
+// methodEvidence's `.charCodeAt` induce) and so skipped __str_concat. That
+// induce is unsound and retired (fix/string-method-guess — see infer.js's
+// header): a plain OBJECT/HASH can own a same-named `.charCodeAt` closure,
+// so usage alone never proves STRING. `s` here is exported with no
+// call-site proof, so `propValType`'s `.length` narrow is correctly gated
+// off (objType unknown — same soundness rule as the "untyped receiver
+// .length stays conservative" pin below) and `+` keeps the string-capable
+// dispatch. This is the D1 sibling of that soundness pin, over a param
+// whose ONLY prior evidence was the retired guess rather than a bare
+// unused param — same conclusion either way.
+test('deopt D1: SOUNDNESS — an unproven string-shaped param keeps .length + conservative (methodEvidence retired)', () => {
+  if (belowOpt(1)) return
+  const str = compile('export let f=(s)=>{let n=0;for(let i=0;i<s.length;i++)n+=s.charCodeAt(i)+s.length;return n}', { wat: true })
+  ok(count(str, /\$__str_concat/g) >= 1, 'unproven param: .length + stays on the string-capable dispatch, not falsely narrowed to NUMBER')
 })
 
 test('deopt D1: sibling numeric props narrow too — .byteLength/.byteOffset/.size', () => {

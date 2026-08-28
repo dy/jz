@@ -7,11 +7,14 @@
  *
  * Aspects covered (src/infer.js evidence ladder):
  *   • notStringEvidence   — write-shape disproves STRING → drops __length poly
- *   • methodEvidence STR  — STRING_ONLY method induces STRING → drops __length
- *   • methodEvidence ARR  — `.push` et al. proves NOT-STRING only, never
- *                            induces ARRAY (fix/param-mutation-propagation:
- *                            a plain OBJECT/HASH can own a same-named
- *                            closure property — `.push` alone is not proof)
+ *   • methodEvidence      — RETIRED: `.charCodeAt` et al. (STRING_ONLY) and
+ *                            `.push` et al. (ARRAY_ONLY_POISON) neither induce
+ *                            a positive val anymore (fix/string-method-guess,
+ *                            fix/param-mutation-propagation) — a plain
+ *                            OBJECT/HASH can own a same-named closure
+ *                            property, so method-name usage alone is never
+ *                            proof of either kind. The sound replacement is
+ *                            the cross-function paramReps call-site census.
  *   • extractRefinements  — flow `typeof x === 'string'` → return; → notString
  *
  * Call-site facts (infer* family):
@@ -78,30 +81,37 @@ test('notStringEvidence: stringy-evidence (typeof) disqualifies even with write'
   ok(count(wat, /\$__length\b/g) >= 1, 'expected __length when stringy disqualifies')
 })
 
-test('methodEvidence STRING: charCodeAt induces STRING (no __length poly)', () => {
-  // `.charCodeAt` is a STRING_ONLY method → method source emits {val: STRING}.
-  // STRING-typed receiver routes .length through the string byte-length op
-  // (__str_byteLen, possibly inlined by splitCharScan), never polymorphic
-  // __length or the array-element __len.
-  const wat = jz.compile(`
-    export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }
-  `, { wat: true })
-  is(count(wat, /\$__length\b/g), 0, 'no polymorphic __length for STRING receiver')
-  is(count(wat, /\$__len\b/g), 0, 'no array-element __len for STRING receiver')
+// Was: "methodEvidence STRING: charCodeAt induces STRING (no __length poly)" —
+// asserted `.charCodeAt` usage alone made methodEvidence emit {val: STRING},
+// so a same-name `.length` read skipped every polymorphic/array-ish length
+// helper. fix/string-method-guess found that's unsound in general: a plain
+// OBJECT/HASH value can own a same-named `.charCodeAt` closure property
+// (`t.charCodeAt = (i) => t.n + i`) the exact same way the ARRAY twin's
+// `.push` idiom does, so usage alone is NOT proof of STRING (no
+// String/Array/Object equivalent exists for the disambiguation that claim
+// relied on). methodEvidence no longer induces a `val` from method-name
+// usage at all (see that module's header) — `s` here is genuinely unproven
+// (exported, no call-site evidence), so `.length` and `.charCodeAt` must
+// both stay on the general runtime-dispatch path. What must NOT regress:
+// a REAL string still computes the JS-correct answer through that path —
+// verified directly (see test/data.js's own-closure-collision pins for the
+// hijack-object side of this fix).
+test('methodEvidence STRING: charCodeAt usage alone no longer proves STRING (unproven param stays runtime-dispatched, still correct for a real string)', () => {
+  const src = `export const hd = (s) => { const c = s.charCodeAt(0); return c + s.length }`
+  for (const optimize of [false, 2, 3]) {
+    is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: "AB".charCodeAt(0)=65 + "AB".length=2`)
+  }
 })
 
-test('methodEvidence STRING: expression-bodied arrow narrows too', () => {
-  // Regression for the `inferLocals` block-only gate. Before the lift,
-  // `analyzeFuncForEmit` ran inferLocals only when `isBlockBody(body)` —
-  // an expression-bodied arrow like `(s) => s.charCodeAt(0) + s.length`
-  // skipped the pre-emit evidence pass and emit defaulted to polymorphic
-  // __length. Now inferLocals walks any AST, so the expression body
-  // narrows `s: VAL.STRING` the same as its block-bodied equivalent.
-  const wat = jz.compile(`
-    export const hd = (s) => s.charCodeAt(0) + s.length
-  `, { wat: true })
-  is(count(wat, /\$__length\b/g), 0, 'expr-body should not fall back to polymorphic __length')
-  is(count(wat, /\$__len\b/g), 0, 'no array-element __len for STRING receiver')
+test('methodEvidence STRING: expression-bodied arrow — same retirement, same correctness floor', () => {
+  // Sibling of the block-bodied case above, over an expression body (the
+  // original test's own regression target: `inferLocals` must still run for
+  // an expression-bodied arrow, not just a block-bodied one — unrelated to,
+  // and unaffected by, methodEvidence's retirement).
+  const src = `export const hd = (s) => s.charCodeAt(0) + s.length`
+  for (const optimize of [false, 2, 3]) {
+    is(jz(src, { optimize }).exports.hd('AB'), 67, `O${optimize || 0}: expr-body — "AB".charCodeAt(0)=65 + "AB".length=2`)
+  }
 })
 
 test('Array.isArray flow refinement outranks an unrelated durable rep for .length', () => {
