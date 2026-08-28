@@ -3667,3 +3667,127 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
   for (const optimize of [false, 2, 3])
     is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
 })
+
+// --- inferValAtSite: `.`-property-read call arguments (narrow.js) ---
+//
+// Prior sessions closed the CLOSED-COMPUTED-DISPATCH-TABLE class (the pins
+// above) but left `id`/`blockid`/`reftype`'s watr-shaped residual diagnosed,
+// not fixed: `inferValAtSite` had no case AT ALL for a `.`-member-read
+// argument (`c.type`, `rows[i].x`) — only bare names and `[]`-element reads
+// (.work/string-method-guess-notes.md, sixth session, "Why the originally-
+// diagnosed 24-case partial rescue... never paid off"). This resolves the
+// receiver to a proven schemaId (inferSchemaId — the SAME resolver the
+// `schemaId` mergeRule already runs per call-site argument) and reads that
+// field's program-wide-monomorphic kind off ctx.schema's existing SlotFact
+// census (module/schema.js's new slotVTBySid, the by-sid sibling of the
+// slotVT kind.js's own VT['.'] already trusts for a live receiver).
+
+test('RepresentationPlan: a param fed only a `.`-property read of a proven-schema ARRAY field gets direct array codegen (positive)', () => {
+  // CTX is a genuine `{}`-literal schema (unlike watr's own real ctx, which
+  // is `const ctx = []` with STRING keys attached via a `for...in`-driven
+  // computed write — never schema-registered at all; see this session's own
+  // notes for why the fix's schema-backed mechanism can prove THIS shape but
+  // not watr's). grab's `list` param is fed ONLY `c.items` (dispatch's own
+  // param `c`, forwarded — never a bare name at the call site into grab), so
+  // this exercises the NEW `.`-property-read case specifically, not the
+  // pre-existing bare-name/`[]`-element cases.
+  // useUnproven keeps the shadow-probe/`__dyn_get_expr` machinery live in
+  // this exact compiled unit (a genuinely unprovable dynamic-key read) — so
+  // grab's clean codegen below isn't vacuously "nothing needs the probe."
+  const src = `
+    const CTX = { items: [10, 20, 30], tag: 1 }
+    function grab(nm, list) { return list[nm] }
+    function dispatch(nm, c) { return grab(nm, c.items) }
+    export function useProp() { return dispatch(1, CTX) }
+    export function useUnproven(o, k) { return o[k] }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
+})
+
+test('RepresentationPlan: a `.`-property read chained off a proven array-element read also proves the field (positive, array-element-chained receiver)', () => {
+  // The second proof source the `.`-property-read case supports: the
+  // receiver itself is `rows[i]` (a proven-array-element read, not a bare
+  // name) — `grab`'s list param is fed `rows[i].items`, two hops from a
+  // literal. Exercises receiverSchemaId's arrayElemSchema fallback, not just
+  // its primary inferSchemaId(bare-name) path.
+  const src = `
+    function grab(nm, list) { return list[nm] }
+    function visit(i, rows) { return grab(0, rows[i].items) }
+    export function useArrElem() {
+      const rows = [{ items: [10, 20, 30], tag: 1 }, { items: [40, 50], tag: 2 }]
+      return visit(1, rows)
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
+})
+
+test('RepresentationPlan: a `.`-property read of a genuinely mixed-kind field stays runtime-dispatched (negative control)', () => {
+  // Negative control for the positive pin above: A and B share the identical
+  // schema (`{items, tag}` dedupes to one schemaId), but their `items` field
+  // disagrees in KIND (ARRAY vs STRING) — a real, whole-program disagreement,
+  // not merely unproven. `pick`'s branch is a runtime PARAMETER (not a
+  // compile-time constant), so B's construction can't be constant-folded
+  // away before the census runs — both constructions stay genuinely live,
+  // so the SlotFact census must see the real disagreement (an earlier,
+  // constant-foldable version of this repro was checked and rejected during
+  // this session: with a compile-time-constant branch, B's whole `{}`-
+  // literal got folded away before the census ever ran, silently leaving
+  // only A's ARRAY observation live — a vacuous, not a real, negative
+  // control; this shape avoids that pitfall). dispatch's `c` param still
+  // correctly proves schemaId (A/B share one schema) — only the FIELD's own
+  // kind is unprovable, confirming the fix declines at the right precision:
+  // "receiver's schema is known" is not "this field's kind is known."
+  const src = `
+    const A = { items: [10, 20, 30], tag: 1 }
+    const B = { items: 'oops', tag: 2 }
+    function grab(nm, list) { return list[nm] }
+    function dispatch(nm, c) { return grab(nm, c.items) }
+    export function useA() { return dispatch(1, A) }
+    export function pick(flag) { return (flag ? B : A).items }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param stays runtime-dispatched — A and B share one schema but genuinely disagree on items' kind, so the SlotFact census is (correctly) poisoned and the fix must decline, not guess")
+  is(jz(src, { optimize: false }).exports.useA(), 20, 'O0: the declined param still computes the JS-correct answer through the (slower) runtime-dispatch path')
+})
+
+test("RepresentationPlan: `.`-property-read schemaId resolution is pass-order-independent — swapping a 3-function forwarding chain's declaration order yields byte-identical WAT", () => {
+  // Mirrors the existing possibleKinds-census ordering pin's discipline
+  // (above) for this fix's own two dependencies (schemaId, ctx.schema's
+  // SlotFact kind census): a 3-hop chain (grab <- relay <- outer, outer's
+  // OWN param c2 must itself settle to CTX's schemaId before relay's `c`
+  // can resolve it) checked across every declaration-order permutation.
+  const grabSrc = 'function grab(nm, list) { return list[nm] }\n'
+  const relaySrc = 'function relay(nm, c) { return grab(nm, c.items) }\n'
+  const outerSrc = 'function outer(nm, c2) { return relay(nm, c2) }\n'
+  const tailSrc = 'const CTX = { items: [10, 20, 30], tag: 1 }\nexport function useIt() { return outer(1, CTX) }\n'
+  const perms = [
+    [grabSrc, relaySrc, outerSrc],
+    [outerSrc, relaySrc, grabSrc],
+    [relaySrc, outerSrc, grabSrc],
+    [grabSrc, outerSrc, relaySrc],
+  ]
+  const outs = perms.map(p => String(compile(p.join('') + tailSrc, { optimize: 3, wat: true })))
+  ok(outs.every(o => o === outs[0]), 'O3: every declaration-order permutation of the 3-hop forwarding chain compiles to byte-identical WAT')
+})
