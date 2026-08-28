@@ -1,4 +1,4 @@
-import { ASSIGN_OPS } from '../../ast.js'
+import { ASSIGN_OPS, walkAst } from '../../ast.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 
 // RepresentationPlan v2 uses compact scalar facts. The low two bits describe
@@ -152,18 +152,16 @@ export const isBigintOrigin = node => Array.isArray(node) && (
  *  guard — a rare shadow-name imprecision, not new to this pass. */
 export function collectLocalClosures(body) {
   const closures = new Map()
-  const collect = node => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
-        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-      const init = node[1][2]
-      if (Array.isArray(init) && init[0] === '=>' && !closures.has(node[1][1])) {
+  const collect = node => walkAst(node, { enter: n => {
+    if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 &&
+        Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+      const init = n[1][2]
+      if (Array.isArray(init) && init[0] === '=>' && !closures.has(n[1][1])) {
         const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
-        if (ps.every(p => typeof p === 'string')) closures.set(node[1][1], { params: ps, body: init[2] })
+        if (ps.every(p => typeof p === 'string')) closures.set(n[1][1], { params: ps, body: init[2] })
       }
     }
-    for (let i = 1; i < node.length; i++) collect(node[i])
-  }
+  } })
   collect(body)
   return closures
 }

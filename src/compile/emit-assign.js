@@ -12,7 +12,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
-import { T } from '../ast.js'
+import { T, walkAst } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
@@ -196,12 +196,9 @@ function tryHashRmwFusion(arr, idx, val) {
   if (!keyStr && !keyUnknown) return null
   const readNode = ['[]', arr, idx]
   let reads = 0
-  const scan = (n) => {
-    if (!Array.isArray(n)) return
-    if (n[0] === '[]' && _rmwStructEq(n, readNode)) { reads++; return }
-    for (let i = 1; i < n.length; i++) scan(n[i])
-  }
-  scan(val)
+  walkAst(val, { enter: n => {
+    if (n[0] === '[]' && _rmwStructEq(n, readNode)) { reads++; return false }
+  } })
   if (!reads || !_rmwSafe(val, readNode)) return null
   const subst = (n) => !Array.isArray(n) ? n
     : (n[0] === '[]' && _rmwStructEq(n, readNode)) ? oldT

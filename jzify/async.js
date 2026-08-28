@@ -24,6 +24,7 @@
  */
 
 import { FN_BOUNDARY_OPS } from './generators.js'
+import { some } from '../src/ast.js'
 
 // The runtime, as readable jz source — parsed + spliced ahead of user code
 // when async is present. Exported entries are the host-boundary contract.
@@ -320,18 +321,11 @@ export function createAsyncLowering({ genTemp, err }) {
       err('try/catch across `await` is outside the v1 async surface — let the rejection reject the async function, or move the try into a sync helper')
     return node.map((n, i) => i === 0 ? n : mapAwait(n))
   }
-  function refsAwait(node) {
-    if (!Array.isArray(node)) return false
-    if (FN_OPS.has(node[0])) return false
-    if (node[0] === 'await' || node[0] === 'for await') return true
-    return node.some(refsAwait)
-  }
-  function refsSuspend(node) {
-    if (!Array.isArray(node)) return false
-    if (FN_OPS.has(node[0])) return false
-    if (node[0] === 'await' || node[0] === 'for await' || node[0] === 'yield' || node[0] === 'yield*') return true
-    return node.some(refsSuspend)
-  }
+  function fnBoundary(n) { return FN_OPS.has(n[0]) }
+  function isAwait(n) { return n[0] === 'await' || n[0] === 'for await' }
+  function isSuspend(n) { return isAwait(n) || n[0] === 'yield' || n[0] === 'yield*' }
+  function refsAwait(node) { return some(node, isAwait, { boundary: fnBoundary }) }
+  function refsSuspend(node) { return some(node, isSuspend, { boundary: fnBoundary }) }
 
   // async generator body → tagged-yield machine body: `await E` suspends as
   // { a: 1, v: E } (driver resumes with the resolved value), `yield E` as

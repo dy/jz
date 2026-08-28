@@ -1,4 +1,4 @@
-import { ASSIGN_OPS, commaList, returnExprs } from '../../ast.js'
+import { ASSIGN_OPS, commaList, returnExprs, walkAst } from '../../ast.js'
 import { nullishArm } from '../../kind.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
 import {
@@ -27,11 +27,10 @@ const EMPTY_SEEN = new Set()
  *  uncovered rather than guessed at. */
 function collectDispatchTableClosures(roots) {
   const tables = new Map()
-  const collect = node => {
-    if (!Array.isArray(node)) return
-    if ((node[0] === 'let' || node[0] === 'const') && node.length === 2 &&
-        Array.isArray(node[1]) && node[1][0] === '=' && typeof node[1][1] === 'string') {
-      const init = node[1][2]
+  const collect = node => walkAst(node, { enter: n => {
+    if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 &&
+        Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+      const init = n[1][2]
       // Match module/object.js's own ctx.core.emit['{}'] flattening EXACTLY
       // (not ast.js's descriptorProps, which assumes a different, pre-
       // compile bundler-stage shape): at THIS stage a multi-property
@@ -54,14 +53,13 @@ function collectDispatchTableClosures(roots) {
         // the same helper this file's own call-argument sites use.
         const ps = commaList(value[1]?.[1])
         if (!ps.every(p => typeof p === 'string')) continue
-        const name = node[1][1]
+        const name = n[1][1]
         let list = tables.get(name)
         if (!list) { list = []; tables.set(name, list) }
         list.push({ params: ps, body: value[2] })
       }
     }
-    for (let i = 1; i < node.length; i++) collect(node[i])
-  }
+  } })
   for (const root of roots) collect(root)
   return tables
 }
@@ -706,17 +704,15 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
 
 export function deriveLocalProvenance(sig, body, localReps, program) {
   const names = new Set(), params = new Set(), storage = new Set()
-  const scanStorage = (node, root = false) => {
-    if (!Array.isArray(node)) return
-    if (!root && node[0] === '=>') return
-    const cm = callMember(node)
+  const scanStorage = node => walkAst(node, { enter: (n, parent) => {
+    if (parent !== null && n[0] === '=>') return false
+    const cm = callMember(n)
     if (cm && typeof cm[1] === 'string' &&
         (STORAGE_READ_METHODS.has(cm[2]) || STORAGE_WRITE_METHODS.has(cm[2]))) storage.add(cm[1])
-    if (ASSIGN_OPS.has(node[0]) && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string')
-      storage.add(node[1][1])
-    for (let i = 1; i < node.length; i++) scanStorage(node[i])
-  }
-  scanStorage(body, true)
+    if (ASSIGN_OPS.has(n[0]) && Array.isArray(n[1]) && n[1][0] === '[]' && typeof n[1][1] === 'string')
+      storage.add(n[1][1])
+  } })
+  scanStorage(body)
   const localExprMay = expr => {
     const recv = memberReceiver(expr), cm = callMember(expr)
     if (recv != null && storage.has(recv)) return true

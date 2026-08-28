@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -85,14 +85,12 @@ export function findMutations(node, names, mutated) {
  */
 export function boxedCaptures(body) {
   const outerScope = new Set()
-  ;(function collectDecls(node) {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     const [op, ...args] = node
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === 'let' || op === 'const')
       collectParamNames(args, outerScope)
-    for (const a of args) collectDecls(a)
-  })(body)
+  } })
   if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
   if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
 
@@ -482,8 +480,7 @@ function selfPreservingWrittenKeys(body, name, written) {
   }
   const safe = new Map()  // key → observed-safe-so-far (absent = unobserved)
   const observe = (key, ok) => { if (safe.get(key) !== false) safe.set(key, ok) }
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(body, { enter: n => {
     const op = n[0]
     if (op === '=' && Array.isArray(n[1])) {
       const key = keyOf(n[1])
@@ -496,9 +493,7 @@ function selfPreservingWrittenKeys(body, name, written) {
       const key = keyOf(n[1])
       if (key != null && written.has(key)) observe(key, preserves(_effectiveWriteValue(op, n[1], n[2]), key))
     }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  walk(body)
+  } })
   const out = new Set()
   for (const k of written) if (safe.get(k) === true) out.add(k)
   return out
@@ -984,17 +979,14 @@ const mathFnName = (callee) =>
 // that stops there. See collectBareEscapes' own crossClosure doc.
 function collectComparedNames(body, crossClosure) {
   let names = null
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>') { if (crossClosure) walk(node[2]); return }
-    if (CMP_OPS_SET.has(op)) {
+  const enter = (node) => {
+    if (node[0] === '=>') { if (crossClosure) walkAst(node[2], { enter }); return false }
+    if (CMP_OPS_SET.has(node[0])) {
       if (typeof node[1] === 'string') (names ||= new Set()).add(node[1])
       if (typeof node[2] === 'string') (names ||= new Set()).add(node[2])
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  walk(body)
+  walkAst(body, { enter })
   return names || EMPTY_SCAN_SET
 }
 
@@ -1271,8 +1263,7 @@ function collectConstStep(node, name) {
  *  processDecl only stamps non-reassigned names and this only considers
  *  MUTATE_OPS-written ones). */
 export function stampCoInductionRanges(body) {
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     if (node[0] === 'for' && node.length === 5) {
       const [, init, cond, step, loopBody] = node
       const counterName = guardCounterName(cond)
@@ -1298,13 +1289,18 @@ export function stampCoInductionRanges(body) {
         }
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
 }
 
 const isDynamicIndexNode = n => n[0] === '[]' && !isLiteralStr(n[2])
-export function collectI32SafeIndexVars(body, locals) {
+// `bareEscapesOf` (optional): a zero-arg thunk returning `collectBareEscapes(body,
+// locals)`, for a caller (widenLocalTypes) that ALSO needs that same fact for its
+// own Pass D and would otherwise trigger it twice — collectBareEscapes is itself a
+// full-body walk plus a collectComparedNames sub-walk, so a shared, once-computed
+// value (the caller's thunk typically memoizes) avoids a real duplicate traversal
+// whenever both consumers fire. Defaults to a fresh call, matching prior behavior
+// exactly for any other caller.
+export function collectI32SafeIndexVars(body, locals, bareEscapesOf = () => collectBareEscapes(body, locals)) {
   if (!some(body, isDynamicIndexNode)) return EMPTY_SCAN_SET
   const safe = new Set()
   // Collect names reachable from `node` through affine ops only, into `sink`.
@@ -1320,7 +1316,6 @@ export function collectI32SafeIndexVars(body, locals) {
   const defs = new Map()
   const addDef = (name, rhs) => { (defs.get(name) ?? defs.set(name, []).get(name)).push(rhs) }
   const collect = (node) => {
-    if (!Array.isArray(node)) return
     const op = node[0]
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -1329,10 +1324,9 @@ export function collectI32SafeIndexVars(body, locals) {
       }
     } else if (op === '=' && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], node[2]) }
     else if ((op === '+=' || op === '-=' || op === '*=') && typeof node[1] === 'string') { edges.push([node[1], node[2]]); addDef(node[1], [op[0], node[1], node[2]]) }
-    if (op === '=>') return
-    for (let i = 1; i < node.length; i++) collect(node[i])
+    if (op === '=>') return false
   }
-  collect(body)
+  walkAst(body, { enter: collect })
 
   // Integer-shaped AND i32-representable: provably an integer through `+ - * << u-`
   // (AFFINE_INDEX_OPS — excludes `/`/`**`/fractional ops) over leaves that are
@@ -1365,13 +1359,11 @@ export function collectI32SafeIndexVars(body, locals) {
   // (`mem[y*w+x]` with fractional `w`) is not integer-shaped → still truncs per
   // access and is left to widen, preserving the prior guard.
   const seed = (node) => {
-    if (!Array.isArray(node)) return
     const op = node[0]
     if (op === '[]' && !isLiteralStr(node[2]) && (exprType(node[2], locals) === 'i32' || isIntShaped(node[2], new Set()))) addAffine(node[2], safe)
-    if (op === '=>') return
-    for (let i = 1; i < node.length; i++) seed(node[i])
+    if (op === '=>') return false
   }
-  seed(body)
+  walkAst(body, { enter: seed })
 
   // Back-propagate to a fixpoint: feeders of a bounded index var are bounded.
   let changed = true
@@ -1396,7 +1388,7 @@ export function collectI32SafeIndexVars(body, locals) {
   // role, not on some other excluded var's escape status (a plain local
   // copy `e = id` already routes through the SAME edge-exemption regardless
   // of id's verdict, so e's own qualification — if any — is unaffected).
-  for (const n of collectBareEscapes(body, locals)) safe.delete(n)
+  for (const n of bareEscapesOf()) safe.delete(n)
   // Promote integer-shaped index feeders the type pass left at f64 (a hoisted
   // `o = y*w`). The byte offset must fit i32-addressable memory, so the i32-wrap
   // residue reproduces the true in-bounds value — same contract as inline `a[y*w+x]`.
@@ -1421,18 +1413,9 @@ export function collectF64StridedIndexVars(body, locals) {
     if (typeof node === 'string') { (set ||= new Set()).add(node); return }
     if (Array.isArray(node) && AFFINE_INDEX_OPS.has(node[0])) for (let i = 1; i < node.length; i++) addAffine(node[i])
   }
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     if (node[0] === '[]' && !isLiteralStr(node[2]) && exprType(node[2], locals) === 'f64') addAffine(node[2])
-    if (node[0] === '=>') return
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+    if (node[0] === '=>') return false
+  } })
   return set || EMPTY_SCAN_SET
 }
-
-/**
- * Returns the cached facts object directly — DO NOT MUTATE the returned maps.
- * Callers that need to extend (e.g. add params to locals) must clone explicitly
- * before mutating. Slice reads via `analyzeBody(body).<slice>`.
- */

@@ -15,7 +15,7 @@ import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some } from '../src/ast.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -390,13 +390,8 @@ export default (ctx) => {
   // side effect of its own, and whatever produced its value was already
   // emitted in full at its own (separate, unconditionally-evaluated)
   // declaration or assignment site.
-  const hasUnsafeLiteralValueEffect = (n) => {
-    if (!Array.isArray(n)) return false
-    const op = n[0]
-    if (op === '()' || op === '?.()' || op === 'new' || op === '=>' || MUTATE_OPS.has(op)) return true
-    for (let i = 1; i < n.length; i++) if (hasUnsafeLiteralValueEffect(n[i])) return true
-    return false
-  }
+  const hasUnsafeLiteralValueEffect = (n) =>
+    some(n, m => m[0] === '()' || m[0] === '?.()' || m[0] === 'new' || m[0] === '=>' || MUTATE_OPS.has(m[0]))
   // Shared by Object.keys and __keys_ro. `ro` marks the for-in path: its result
   // is read-only by construction (the lowering only reads ks[i]/ks.length), so
   // the HASH arms may serve the shared enum-cache array (core.js __hash_keys_ro)
