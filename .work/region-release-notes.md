@@ -1358,3 +1358,197 @@ not just a size nit. The native byte-identity pin below deliberately does NOT as
 `dvnested`-shaped byte-identity or even validity under eager load — see the pin file's own
 `[known-gap]`-style comment — so it stays green while this is tracked, rather than silently
 skipping coverage of everything ELSE that IS fixed.
+
+## Pin landed (`80ec0155`), then a real regression caught by the pin's own parent suite (`72eddaee`)
+
+`test/eager-stdlib-parity.js` landed — the native byte-identity pin the task asked for
+(`compile(src,opts)` vs `compile(src,{...opts,_eagerStdlib:true})`, diffed, over kernel-parity's
+CORPUS at both hosts; frobnicate reject-pin included). Standalone (`node test/index.js
+eager-stdlib-parity`) was green in isolation (20/20, 54 assertions).
+
+Running the FULL native suite (`node test/index.js`, no filter) immediately caught a real
+regression the standalone run couldn't see: **71 failures**, all `'ftN' is not in scope` — a
+genuine break in NATIVE (lazy) compiles, not just an eager-load byte gap. Root cause: the
+`ctx.closure.types.add(1)`→`ctx.closure.mint` relocation (`31ce2aa6`) was built on a wrong premise
+— `$ftN` (the closure `call_indirect` type) is needed whenever ANYTHING emits `call_indirect
+(type $ftN)`, which includes the GENERIC dynamic-dispatch fallback (`tryGenericEmitter`'s shadow
+probe, `tryDynamicPropCall`) and timer's `__invoke_closure`/`__invoke_closure1` trampolines —
+NEITHER of which literally mints a closure via `ctx.closure.mint`. Gating on `.size` (mint-count)
+undercounted every one of those. Reverted `module/function.js`/`src/compile/index.js` to their
+EXACT pre-session shape (bare `ctx.closure.types` truthy, `.add(1)` back at module init) — that
+premise was never actually broken: natively, EVERY real trigger for `fn` loading (literal
+closures, generic dispatch, `includeForTimerRuntime`'s own `includeModule('fn')` for timer
+callbacks) already implies `$ftN` might be needed, so "fn loaded" already correctly tracked "might
+need `$ftN`" before this session touched anything — eager preload is the ONLY thing that breaks
+that correlation, and the fix belongs downstream, in the consumer that has the actual ground truth.
+
+That downstream fix (kept, `31ce2aa6`'s other change): `finalizeClosureTable`
+(src/wat/assemble.js) already scans the ACTUALLY-COMPILED output for real `call_indirect` usage
+(this branch's earlier, correctly-scoped-to-`ctx.core.includes` fix) — restructured to compute
+that scan (`callIndirectSeen`) UNCONDITIONALLY, never seeded by `ctx.transform.targetProfile.
+preserveClosureTable` (host:'wasi's "keep the table alive for an external embedder" flag) the way
+the OLD `indirectUsed` was. Reasoning: an embedder calling `exports.__jz_table.get(i)(...)` from
+OUTSIDE the module never touches this module's OWN `call_indirect` instruction, so preserving the
+table for that reason never implies the `$ftN` TYPE must exist — only an IN-MODULE call_indirect
+does. `$ftN`'s presence in `sec.types` is now driven by `callIndirectSeen` alone, applied
+unconditionally at the end of the function, independent of the (unchanged) `indirectUsed = 
+callIndirectSeen || preserveClosureTable` decision that still correctly gates table/elem/
+per-closure-ABI-shrink preservation. This closes a SECOND regression the reverted `compile/
+index.js` change reintroduced: with the push back to bare-truthy (fires for EVERY compile once
+`fn` eager-loads) and `preserveClosureTable` short-circuiting `finalizeClosureTable`'s old
+`indirectUsed` before it ever reached the stripping branch, EVERY host:'wasi' corpus entry (not
+just zero-closure ones) picked up a phantom `$ftN` type under eager preload — caught by re-running
+the byte-identity probe immediately after the first revert (wasi went from 7/11-identical back to
+0/11, `sum` alone: 97B→106B, a bare 9-byte `(type $ftN ...)` with no matching table).
+
+**Verified**: byte-identity probe back to 7/11 identical per host (both js and wasi, matching the
+pre-regression state); `eager-stdlib-parity` pin green standalone. Full native suite (`node
+test/index.js`, no filter) re-launched after this fix — result to be recorded once it completes.
+Region-enabled kernel (`REGION_HOOKS_ACTIVE=true` in `scripts/self.js`, uncommitted — flip is
+provisional pending the full hooks-on battery) rebuilt a second time with this corrected source
+(first build, 246.9s/15,788,742B, was against the REGRESSED `.size`-gated source and is now
+stale — do not trust any kernel-oracle/kernel-parity/kernel-target number measured against it;
+rebuild in flight, see below for the result once available).
+
+**Lesson for whoever continues past this session**: a standalone pin-file run is not sufficient
+evidence a fix is regression-free — this session's OWN new pin passed cleanly in isolation while
+the fix it was pinning had just broken 71 unrelated tests elsewhere in the suite. Always run the
+FULL suite (or at minimum the neighboring files most likely to share the touched code path) before
+trusting a "the pin is green" signal.
+
+## `dvnested` residual, FULLY LOCALIZED (not fixed) — a watr-optimizer dead-code reliability gap, NOT a module-purity bug
+
+Continuing the earlier "narrowed further, NOT closed" section: found `wasm2wat` (wabt,
+`/Users/div/projects/wabt/bin/wasm2wat`) available in the sandbox — a far better tool than
+counting `(func $name` lines in WAT-text-order (this session's earlier failed attempt) for
+matching V8's own function-index error report. `--no-check` disassembles the invalid module
+without refusing to emit output; the raw instruction stream (not watr's own S-expr printer, which
+folds nested exprs and can visually hide a shape like this) makes the bug obvious immediately.
+
+**Function `(;33;)` (0-indexed, confirmed against V8's own "Compiling function #33" — wasm2wat's
+synthetic numeric names ARE the wasm function-index space directly, no imports to offset by) IS
+`$f` itself** — this session's EARLIER conclusion ("the corruption is in a DIFFERENT function, not
+`$f`") was wrong, an artifact of miscounting via the wrong tool. Reading its raw instructions: the
+whole function body is ONE `block` (no `(result ...)` — i.e. it's a STATEMENT/void block) whose
+LAST inner instruction is `f64.store` (address+value in, nothing out — a genuinely void op), and
+the function's VERY LAST instruction, textually AFTER that block's implicit `end`, is a bare
+`f64.convert_i32_s` with nothing left on the stack — exactly V8's "need 1, got 0". This is NOT a
+dispatch-tier issue (Class 2 is confirmed fully closed — `$f`'s dispatch shape, and now its full
+raw instruction stream, matches native's own DataView-direct emission byte-for-byte in every way
+that matters) and NOT a stdlib-registration-purity issue (Class 1's territory) — it is a
+**dead-instruction-elimination gap**: `$f = (dv) => dv.setFloat64(...)` — `setFloat64` returns
+`undefined` in real JS (a void method), so the emitter's own IR for `.setFloat64` is legitimately
+void-shaped (a `f64.store`), and the SURROUNDING "coerce this arrow's implicit-return expression
+to the function's f64 return slot" wrapper (`f64.convert_i32_s`, expecting an i32-shaped
+"undefined" sentinel to convert) is DEAD — its result is never consumed by anything real, since
+this whole expression is a STATEMENT in return position, not a value flowing anywhere.
+
+**Native (lazy) `dvnested` — the exact same "wrapping f64.convert_i32_s around a void block" shape
+is present in watr's own pre-encode IR** (confirmed by re-reading this session's EARLIER
+`dvnested-lazy.wat` dump, captured via `compile({wat:true})` i.e. watr's OWN printer, before ANY
+of this session's fixes — literally `(f64.convert_i32_s (block (local.set ...) (f64.store ...)))`
+at the function's top level) — and it compiles to VALID wasm (764B, passes the existing
+kernel-parity/kernel-oracle `dvnested` row today). So watr's own DCE/simplify pass (index.js's own
+doc: "watOptimize — the SOLE, FINAL optimizer... Runs ONCE, as a fixpoint") DOES eliminate this
+exact dead-wrapper shape — SOMETIMES. Under eager load, the SAME source, producing a STRUCTURALLY
+IDENTICAL `$f` (confirmed: no dispatch-tier or type-inference difference reaches this function
+anymore, per every fix landed this session), ends up with 5-8× more OTHER functions sharing the
+module (33-52 vs 6, from eagerly-registered-but-never-actually-needed stdlib helpers — Class 1's
+territory, genuinely still-open for other modules beyond function.js/timer.js, see the earlier
+audit-not-exhaustive note) — and AT THAT SCALE, watr's elimination of `$f`'s own dead wrapper
+fails to fire. This is consistent with the "KNOWN OPEN ISSUE... deterministic... at [jz×jz] scale
+only" pattern flagged elsewhere in this file's history (a different bug, same GENERAL shape: an
+optimizer correctness/completeness property that holds at small scale and silently stops holding
+at a larger one) — plausibly a genuine watr bug (iteration budget, working-set size, or a
+threshold in its own fixpoint/CSE/inline pass), NOT anything in jz's own module-loading code.
+
+**Out of this session's scope to fix**: this lives in watr (a separate package/repo — see the
+environment's own `/Users/div/projects/watr` working directory), not in jz's stdlib modules or
+compile pipeline, and is a genuinely different bug CLASS (optimizer reliability at scale) from
+everything else in this task (module-init purity / dispatch-tier demand-gating). It is real, and
+it is a correctness risk independent of region-arena or eager-loading specifically — ANY
+sufficiently large/complex native jz program could in principle trip the same "watr fails to strip
+a dead wrapper once enough OTHER code is around it" gap; eager-loading is simply the easiest,
+smallest known repro that happens to trigger it (5-8× function-count inflation from otherwise-tiny
+`dvnested`). Flagged, not fixed, not pinned as an expected-invalid-forever case — the
+`test/eager-stdlib-parity.js` known-gap test for it says exactly this and points here.
+**Concrete next step for whoever picks this up**: reproduce NATIVELY without eager-loading at all
+(no region-arena, no `_eagerStdlib`) — write or find a plain jz program whose `--wat` dump shows
+the same `f64.convert_i32_s`-wrapping-a-void-block shape AND is large/complex enough that watr's
+DCE doesn't collapse it; if that reproduces, this is a watr bug independent of jz's eager-loading
+work entirely and belongs in that repo, not this one.
+
+## Second real regression, caught the same way (`4b37da79`) — `ctx.closure.floor` cannot be lazy
+
+Re-ran the FULL native suite (not just the pin) after `72eddaee`'s ftN fix — clean (see below),
+BUT: **7 new failures, all `Command failed: wasmtime .../jz_timer_test.wasm`** (`test/timers.js`,
+which compiles with `{nativeTimers:true, host:'wasi'}` and actually EXECUTES the result via a real
+`wasmtime` subprocess — the ONE test file in the whole suite that does this, which is exactly why
+neither the standalone pin nor kernel-oracle/kernel-parity's byte/JS-oracle checks could have
+caught it). Reproduced directly: `wasmtime` rejects the compiled module — `Invalid input
+WebAssembly code: type mismatch: expected i32, found f64`. Root cause: `610d44c7` moved ALL FOUR
+of `setupWasi`'s unconditional effects into the lazy `ensureWasiTimerRuntime()` thunk, but
+`ctx.closure.floor = MAX_CLOSURE_ARITY` is not like the other three (inc/hostImport/declGlobal,
+all genuinely about REACHABILITY/INCLUSION) — it is a WIDTH-POLICY decision shared by the whole
+compile's closure ABI (`$ftN`'s param list), and it must be set BEFORE any closure literal in the
+program is compiled, since a closure's param-list width is fixed at MINT time. Deferring it to
+"whenever `setTimeout`'s own handler happens to run" is too late the moment ANYTHING else in the
+program's emission order doesn't cooperate. Fix: moved `ctx.closure.floor` back to `setupWasi`'s
+own unconditional top level (module init time — where it was pre-session, and where it needs to
+stay), keeping only the other three in the lazy thunk. Verified this does NOT reopen the
+byte-identity gap `610d44c7` closed: `72eddaee`'s `finalizeClosureTable` fix already means `$ftN`
+never gets emitted at all for a program with no reachable `call_indirect`, so this width value is
+inert dead data exactly whenever it would otherwise cost bytes — byte-identity probe unchanged
+(7/11 per host, same as immediately before this fix). All 5 `test/timers.js` assertions (fires
+callback, callback executes code, clearTimeout cancels, setInterval repeats, multiple timers all
+fire) now pass via a real `wasmtime` execution, not just a compile-succeeds check.
+
+**Second lesson, same shape as the first**: this regression was ALSO invisible to the standalone
+pin (`eager-stdlib-parity.js` never sets `nativeTimers` or shells out to `wasmtime`) and would have
+shipped past kernel-oracle/kernel-parity too (neither exercises real `wasmtime` execution either).
+The FULL native suite is the only thing in this whole battery that actually caught it. Two
+regressions in one session, both from this exact same category of gap — worth naming explicitly:
+**"demand-gate this effect" is not a safe default move for EVERY unconditional module-init
+side-effect; some (WIDTH/ABI-shape policies, in general) are inherently module-load-time-scoped and
+must stay that way — only REACHABILITY/INCLUSION effects (inc/hostImport/declGlobal, the ones the
+task named) are safe to defer.** Audit each candidate against "does moving this to demand-time
+change what an EARLIER-compiled sibling observes", not just "does this cost bytes when unused".
+
+### Battery status at this point (before the final full-suite re-run below)
+
+- `node test/kernel-oracle.js` (against the `72eddaee`-era kernel, built BEFORE `4b37da79`'s
+  closure.floor fix — irrelevant to it, floor's native-timers repro is a `host:'wasi'` +
+  `nativeTimers` shape kernel-oracle's own corpus doesn't use): **11/14 test-blocks, 581
+  assertions, 3 fail — all `dict` byte-parity** (same known gap as native). Every EXECUTION
+  assertion passes at O0/O2/O3, matching the task's own stated bar for that file exactly.
+- `node test/kernel-parity.js` (same kernel): **sum/math byte-identical at every level (O0/O2/O3)
+  — the ORIGINAL bug this whole investigation chased ("sum O0: native 642B vs kernel 923B") is
+  CLOSED** — aborts at `dict` (3rd corpus entry, `is()` throws on first mismatch) with the same
+  known byte-parity gap; `arr`/`fold`/`mfold`/`boolconst`/`nestedtyped`/`subviewtyped`/`dvnested`/
+  `fromnested` not individually re-checked past that abort point this run (kernel-oracle's own
+  non-aborting per-row structure already covers most of them at the EXECUTION level).
+- `node test/index.js` (native, full, no filter): 71-fail ftN regression → fixed (`72eddaee`) →
+  7-fail closure.floor/wasmtime regression → fixed (`4b37da79`) → re-running now for a clean final
+  count (see below once available).
+- `goal-probe` (hooks-on, this session's fixes, against the `72eddaee`-era kernel — the
+  `4b37da79` closure.floor fix is `host:'wasi'`+`nativeTimers`-specific and this probe compiles
+  jz's own source via `compileSelf`, host:'js'-shaped, so it was never expected to be affected by
+  that fix specifically): **`TRAP "unreachable", peakBytes 3999662080, elapsedMs 684846, 163
+  modules`** — 93.1% of the wasm32 ceiling (4,294,967,296), essentially IDENTICAL in shape to the
+  prior session's own hooks-on measurement recorded above (`peakBytes 3998613504, elapsedMs
+  601108`) — same trap kind ("unreachable", not a clean OOM at exactly the ceiling), same ~93%
+  peak, same 163 modules. This session's fixes (module-init purity, dispatch-tier demand-gating)
+  did NOT change this number in any material way — expected and correct: this is the
+  ALREADY-DOCUMENTED, SEPARATE "KNOWN OPEN ISSUE... deterministic... at jz×jz scale only" defect
+  this file's own much earlier section banked rather than chased (a genuinely different bug class
+  from everything this session touched — this session never claimed to move this number, only to
+  close the module-purity/dispatch-tier gaps blocking a clean hooks-on kernel-oracle/kernel-parity
+  battery). elapsedMs is ~14% higher than the prior measurement (685s vs 601s) — plausibly just
+  this session's own fixes making the compile do marginally more real work before failing (more
+  demand-driven registration bookkeeping), or heavy concurrent multi-agent load on the shared
+  machine this measurement ran on; not further isolated.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: running in background, result pending.
+- `node test/index.js` (native, full, no filter), re-run after the `4b37da79` closure.floor fix:
+  running in background, result pending — see above for the two regressions found and fixed
+  earlier in this same investigation (71-fail ftN → fixed `72eddaee`; 7-fail wasmtime/closure.floor
+  → fixed `4b37da79`).
