@@ -604,6 +604,28 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
     return changed ? out : node
   }
 
+  // A resolved arrow member's body was ALREADY reached once before, by the
+  // ordinary call-site walker (collectProgramFacts's own walkFacts, which
+  // descends into every object-literal property value including an inline
+  // arrow — it has no reason not to, since resolveComputed didn't exist yet
+  // to tell it this arrow is a table member). Any `NAMED_FUNC(...)` call
+  // inside that arrow body it found is ALREADY sitting in
+  // `programFacts.callSites`, but attributed `callerFunc: null` (module
+  // scope — the arrow itself has no identity) with its RAW, unsubstituted
+  // arg names — e.g. the arrow's own `out`, which is not a module global
+  // and not resolvable under a null caller. That raw entry can never
+  // contribute anything but an unresolvable (null) observation — under the
+  // SOFT mid-fixpoint rule it's a harmless skip, but the FINAL hard-settle
+  // sweep (narrow.js "Settle val HARD") re-visits it and POISONS on the
+  // first null it sees, on this exact call, EVERY TIME — permanently
+  // undoing whatever this synthesis just proved with the properly-
+  // substituted version below, regardless of how sound that version is.
+  // Every inner-call node this pass visits is tracked here so the raw twin
+  // can be dropped afterward — never leave both a correct and a
+  // permanently-poisoning observation of the SAME call site's OWN node
+  // standing side by side.
+  const claimedNodes = new Set()
+
   for (const site of programFacts.computedCallSites) {
     const members = resolveComputed(site.objName)
     if (!members) continue
@@ -611,7 +633,10 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
       if (!Array.isArray(member)) {
         // Named-function member: has its own real paramReps identity —
         // synthesize directly, the outer site's argList unchanged, exactly
-        // like an ordinary bare-name call would.
+        // like an ordinary bare-name call would. Nothing to claim: the
+        // OUTER computed-dispatch call itself was never registered by the
+        // ordinary walker (isFuncRef declines a computed callee), so there
+        // is no raw twin of THIS site to remove.
         programFacts.callSites.push({
           callee: member.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
         })
@@ -631,6 +656,7 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
         if (!Array.isArray(n)) return
         if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
         if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
+          claimedNodes.add(n)
           const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
           if (innerArgList.every(a => !mentionsAny(a, bound)))
             programFacts.callSites.push({
@@ -642,6 +668,9 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
       walkInner(member[2])
     }
   }
+
+  if (claimedNodes.size)
+    programFacts.callSites = programFacts.callSites.filter(cs => cs.synthetic || !claimedNodes.has(cs.node))
 }
 
 // ─────────────────────── writeVT: dict-write RHS kind resolver ───────────────────────
