@@ -2557,6 +2557,88 @@ test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding
   }
 })
 
+test('bigint: one-authority fix — valTypeOf itself resolves a `.`-member callee (large magnitude, tag-aliasing-prone)', () => {
+  // Root-cause residual found landing the one-authority fix (kind.js's
+  // valTypeOf, VT['()'], now consults the frozen call-target index for a
+  // `.`-member callee directly — the SAME Tier-1 answer calleeValType's
+  // bare-name tail already gives, mirrored exactly): applyBigintRepresenta-
+  // tionAction (ir.js) and edgeMaterializable's BOX/UNBOX gate (representation-
+  // plan.js) previously had their OWN separate `.`-member widenings
+  // (calleeSourceProvenBigint / memberCalleeResultProvenBigint) standing in
+  // for `valTypeOf(node) === VAL.BIGINT` — both removed now that valTypeOf
+  // answers the `.`-member case directly. This magnitude
+  // (0xaf00f0000_9999 / 3078696982321561, watr's own int_literals.wast
+  // "i64-hex-sep1" case) has bits that alias PTR.BIGINT's own NaN-box tag
+  // pattern (tag=5) when the reassigned `n = i64.parse(n)` result is left
+  // UNBOXED and mistaken for a real payload downstream — the exact "box-
+  // tag-shaped i64 constant" hazard this file documents elsewhere. Small
+  // magnitudes (900) don't collide with the tag and passed even before
+  // this fix; this one didn't.
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const e = jz(`
+      function i64(n) { if (typeof n === 'string') n = i64.parse(n); return leb(n) }
+      i64.parse = n => BigInt(n)
+      function leb(n) { n >>= 7n; return n }
+      export let f = () => i64("3078696982321561")
+    `, { optimize }).exports
+    is(e.f(), 24052320174387n, `${lbl}: large tag-aliasing magnitude survives i64.parse's .-member boundary correctly`)
+  }
+})
+
+test('bigint: one-authority fix — `.`-member callee result as a ternary arm feeding bitwise |/&/<<', () => {
+  // plannedOf/semanticOf (representation-plan.js buildBodyData) had their
+  // OWN separate gap from calleeNameOf/directCallBoundary: both used only
+  // a callee's coarse PRE-BODY boundary guess (`directCallBoundary(...)
+  // .result.target`/`.semantic`), never upgrading to the callee's own
+  // SETTLED body result once materialized — an asymmetry with currentOf,
+  // which already had this upgrade (Shape #7's own documented pattern).
+  // Reachable once a `.`-member callee's call node starts flowing through
+  // plannedOf/semanticOf's call-node branch at all (this fix). Without the
+  // upgrade, a ternary joining a closed-RAW literal against a `.`-member
+  // call whose result is ALSO proven closed-RAW emitted the two arms
+  // ASYMMETRICALLY (the literal stayed raw, the call's result got
+  // independently, incorrectly boxed at the call site) — found via watr's
+  // real f64() NaN-payload encoder (`value = flag ? QUIET : i64.parse(tail);
+  // value |= NAN`), reduced here to the minimal shape. Sign-bit-safe
+  // magnitudes only (0x00ff... not 0xff...) — a value with the i64 sign bit
+  // set hits a SEPARATE, pre-existing, unrelated BigInt boundary-decode gap
+  // (confirmed identical on the bare-name control sibling below, so it is
+  // not this fix's own regression) not exercised by this pin.
+  const BODY = `
+    export let trueOr = () => pick(true, '123') | 0x1n
+    export let trueAnd = () => pick(true, '123') & 0xffn
+    export let trueShl = () => pick(true, '123') << 1n
+    export let falseOr = () => pick(false, '123456789') | 0x1n
+    export let falseAnd = () => pick(false, '123456789') & 0xffn
+    export let falseShl = () => pick(false, '123456789') << 1n
+  `
+  const memberSrc = `
+    const MASK = 0x00ff000000000000n
+    function i64(n) { return n }
+    i64.parse = n => BigInt(n)
+    function pick(flag, tail) { return flag ? MASK : i64.parse(tail) }
+    ${BODY}
+  `
+  const bareSrc = `
+    const MASK = 0x00ff000000000000n
+    function parseIt(n) { return BigInt(n) }
+    function pick(flag, tail) { return flag ? MASK : parseIt(tail) }
+    ${BODY}
+  `
+  const expect = { trueOr: 71776119061217281n, trueAnd: 0n, trueShl: 143552238122434560n,
+    falseOr: 123456789n, falseAnd: 21n, falseShl: 246913578n }
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    const member = jz(memberSrc, { optimize }).exports
+    for (const [fn, want] of Object.entries(expect))
+      is(member[fn](), want, `${lbl}: .-member callee ternary arm, ${fn}`)
+    const bare = jz(bareSrc, { optimize }).exports
+    for (const [fn, want] of Object.entries(expect))
+      is(bare[fn](), want, `${lbl}: bare-name control ternary arm, ${fn}`)
+  }
+})
+
 test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 pre-existing KNOWN-WRONG)', () => {
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s

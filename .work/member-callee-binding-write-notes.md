@@ -766,3 +766,250 @@ remains the watr-downstream regression (float_memory family +
 run kernel build/kernel-parity/kernel-oracle/bench-size this session —
 correctly gated on resolving the watr regression first per this file's own
 "NOT mergeable as-is" disposition.
+
+## SESSION 3 (2026-08-28): ONE AUTHORITY — kind.js valTypeOf itself resolves
+## `.`-member callees. Per-site widenings removed. Watr 604/626, 0 fail.
+
+New agent, continuing from dadce8ce (session 2's WIP: ir.js's
+`memberCalleeResultProvenBigint`, regressing watr float_memory family to
+600/626). Task brief redirected the approach: instead of one more per-site
+widening, make kind.js's `valTypeOf` (the kind oracle EVERY consumer
+already trusts) itself resolve a `.`-member callee via the frozen
+call-target index — so every existing AND future consumer inherits the fix
+for free, and the per-site widenings become removable.
+
+### Ordering audit (done first, per the brief's own caution)
+
+Confirmed via reading plan/index.js: `buildCallTargetIndex` runs at line
+230, published on `ctx.types.callTargets` (the SAME object also on
+`programFacts.callTargets`) — AFTER every early-plan AST-mutating pass but
+BEFORE `narrowSignatures`/`solveRepresentationBoundaries` (both callers
+further down the same function). kind.js's `valTypeOf` is queried at many
+points across the whole pipeline (infer.js during prepare-adjacent passes,
+narrow.js throughout its own fixpoint, representation-plan.js, ir.js at
+emission) — some BEFORE the index exists, most after. Confirmed this is
+SAFE, not the ordering hazard that sank the shelved fix/shape8-member-callee
+branch: (1) `valTypeOf` itself has no memoization/cache — it recomputes
+fresh from the AST + `ctx` every call, so an early "no index yet" query
+never poisons a later one; (2) narrow.js's own comment
+(line 2376: "during the first D pass have stale (null) valTypeOf(call)
+results") confirms this whole pipeline is ALREADY designed as a converging,
+multi-pass fixpoint that tolerates valTypeOf returning a coarser answer
+early and a better one later — this is the established pattern, not a new
+risk; (3) crucially, the shelved branch's OWN hazard was that its
+member-callee resolution was pass-order-dependent (re-derived from
+"prepare's tryFnPropCall", itself still-mutating) — call-target-index.js
+was specifically built to replace exactly that with ONE frozen, computed-
+once-before-any-consumer index (its own header comment says so). Once
+`ctx.types.callTargets` exists it is Object.freeze'd and never mutated
+again; only the RESOLVED FUNCTION's OWN fields (e.g. `.valResult`) keep
+converging afterward — identical in kind and timing to what bare-name
+`calleeValType` already tolerates (`ctx.funcs.map.get(callee).valResult`,
+kind-traits.js:153-154). Also found a DIRECT, ALREADY-ON-MAIN precedent for
+the exact pattern (`ctx.types.callTargets?.resolveMember(expr,
+method)?.valResult`) already in emit.js's `bigintMethodTargets` (line
+4467) — proof this shape is already trusted in production.
+
+### The fix (src/kind.js, VT['()']'s `.`-member branch)
+
+Added, BEFORE the existing `methodValType` builtin-method dispatch (a
+same-module function resolution is a strictly stronger proof than a
+name-only builtin-method-name guess):
+```js
+const resolved = ctx.types.callTargets?.resolveMember(obj, method)
+if (resolved?.valResult) return resolved.valResult
+```
+Mirrors `calleeValType`'s own bare-name tail exactly (same field, same
+tier). `resolveMember` already unifies BOTH Shape #8 (object-literal
+`ns.parse`) and Shape #7-residual (lifted function-property `fn.prop =
+arrow`) cases — one call covers both, satisfying the task's "(and
+prepare-lifted function-property) callees" clause with no extra code.
+
+### Per-site widenings: removed two, kept two (with reasons)
+
+**Removed** (src/compile/representation-plan.js's `edgeMaterializable`
+BOX/UNBOX gate, `calleeSourceProvenBigint`; src/ir.js's
+`applyBigintRepresentationAction` gate, `memberCalleeResultProvenBigint`):
+both were literally standing in for `valTypeOf(node) === VAL.BIGINT` /
+`!== VAL.BIGINT` — the EXACT question valTypeOf answers — so once valTypeOf
+itself resolves `.`-member calls, both gates revert byte-for-byte to their
+21bcfc57 baseline form (`return valTypeOf(node) === VAL.BIGINT`; `if
+(valTypeOf(node) !== VAL.BIGINT) return ir`) and inherit the fix for free.
+`ir.js`'s now-unused `BIGINT_REP_RAW` import reverted too. This ALSO
+retired the dadce8ce mechanism that had regressed watr: it reused
+`representationActiveMaterializedRep`'s CARRIER verdict (a call-site-
+insensitive `resultTarget` fact) as a stand-in for "is this proven BigInt"
+— a mismatched abstraction (carrier-choice fact used as a semantic-kind
+proof). Confirmed empirically that removing it and routing straight
+through fixed valTypeOf does NOT by itself reproduce that mismatch (the
+regression's real cause turned out to be one layer deeper — see below).
+
+**Kept** (buildBodyData's `calleeNameOf` helper feeding
+`directCallBoundary`-gated `semanticOf`/`currentOf`/`plannedOf`/
+`walkEdges`/`emittedCandidate`; `structurallyNeverBoolExpr`'s own
+`.`-member resolution; `representationActiveMaterializedRep`'s own `()`
+branch, consumed by `isPlanTaggedBigint`/`readI64`) — each needs something
+valTypeOf structurally cannot express:
+- `directCallBoundary` returns a callee's FULL representation-plan
+  boundary record (per-param BOXED/RAW carrier targets, `.result.current`/
+  `.target`, not just `.semantic`) — a representation-plan-internal
+  carrier/materialization concept entirely outside kind.js's VAL-kind
+  vocabulary. `calleeNameOf` only resolves a NAME so this record can be
+  looked up; valTypeOf answers a different question (what KIND, not what
+  CARRIER).
+- `structurallyNeverBoolExpr` recursively walks a callee's OWN return
+  tails to prove "never produces a boolean across every path" — a
+  whole-body structural walk, not a single-expression kind query.
+- `representationActiveMaterializedRep` resolves a callee's own
+  `resultTarget`/`materializedResult` — again a carrier fact, not a kind.
+
+Net diff vs 21bcfc57 baseline shrank from 152 changed lines (dadce8ce) to
+108 (this session's end state) — the branch got smaller as the task asked,
+even after adding two new (unrelated, see below) upgrades.
+
+### Blast-radius check (done early, per the brief's explicit instruction)
+
+`node test/index.js` (full native suite) run early after the kind.js
+change — **PASS, exit 0** (background job confirmed, see below for the
+exact count once the current run finishes). No unrelated call site
+regressed from touching kind.js this session — unlike the earlier shelved
+branch, because this fix routes through the frozen index rather than
+re-deriving anything pass-order-dependent.
+
+### A SEPARATE, deeper bug found and fixed: plannedOf/semanticOf's own
+### boundary-vs-materialized-body asymmetry (NOT `.`-member-specific)
+
+Rebuilding watr.wasm with ONLY the kind.js fix + the two widenings removed
+still reproduced the EXACT SAME regression dadce8ce had (600/626, same 4
+fails) — proof the mismatched-abstraction theory above wasn't the whole
+story. Root-caused via WAT inspection + targeted, temporary (added and
+fully removed this session, never committed) console.error instrumentation
+in `plannedOf`, `representationJoinArmAction`, and the per-name
+`targetNames` computation loop:
+
+1. `plannedOf`'s call-node branch used ONLY
+   `directCallBoundary(ctx, calleeName).result.target` — the callee's
+   coarse, PRE-BODY boundary guess — with NO upgrade to the callee's own
+   settled `calleeBody.resultTarget` once materialized, UNLIKE `currentOf`
+   (which already has this exact upgrade, Shape #7's own documented
+   pattern). This asymmetry is PRE-EXISTING on baseline too (a bare-name
+   callee hits it identically) — merely newly REACHABLE once a `.`-member
+   callee's call node starts flowing through `plannedOf`'s call-node branch
+   at all. Fixed: mirrored currentOf's exact upgrade.
+2. `semanticOf`'s call-node branch had the IDENTICAL gap for
+   `.result.semantic` vs a settled `calleeBody.resultSemantic` (the latter
+   already stored on the body record, verified present:
+   `resultSemantic: bodyResultSemantic` at buildBodyData's own packing
+   step) — required because `targetRepFor`'s `definiteBigint(sem)` gate
+   needs the PRECISE semantic to ever prefer a closed-RAW `current` over
+   the BOXED default. Fixed the same way.
+
+Verified via WAT diff (scratchpad/dump-wat2.mjs + scratchpad/
+probe-faithful3.mjs, a hand-written reduction using the REAL aliased-
+ArrayBuffer/BigInt64Array `i64.parse` shape watr actually uses — a naive
+`i64.parse = n => BigInt(n)` reduction, tried first, does NOT reproduce
+the regression at all, matching session 2's own finding): before this fix
+the ternary's two arms emitted ASYMMETRICALLY (F64_QUIET stayed raw,
+`i64.parse(tail)`'s call result got independently, incorrectly boxed
+right at the call site via `__alloc`+`i64.store`+`__mkptr`); after, the
+ternary is symmetric (both arms raw, boxed exactly once after the
+if/then/else picks one) — a real, confirmed improvement in the emitted
+shape, though NOT by itself sufficient to fix the reduction's own final
+value (see below — a third, deeper issue).
+
+### Third layer found in the SAME reduction, NOT fixed, but NOT product-
+### blocking either (confirmed via the real watr build — see next section)
+
+Continuing to trace why the reduction's OWN final byte sequence stayed
+wrong even after fix #1/#2 above: `representationJoinArmAction` REJECTS
+this ternary outright (`materializedJoins.has(join)` is false) because the
+JOIN_OPS materialization fixpoint (buildBodyData, ~line 1899) only ever
+admits a join whose OWN `target === BOXED_BIGINT` — a RAW-target join
+(which fix #1/#2 above correctly produce once `value`'s semantic proves
+definiteBigint) is structurally never a materialization candidate, so
+emission falls through to a DIFFERENT, representation-plan-unaware,
+purely-`valTypeOf`-driven generic ternary merge path in emit.js. Traced
+one level further (per-name trace on `targetNames` computation): `value`'s
+OWN semantic never actually reaches `definiteBigint` in the isolated
+reduction — `semanticOf`'s `NUMERIC_VALUE_OPS` branch, for the
+self-referential compound-reassignment `value |= F64_NAN`, computes
+`operands = [semanticOf('value'), semanticOf('F64_NAN')]`; on any
+fixpoint round where `value`'s OWN self-reference hasn't yet converged to
+definiteBigint, `anyBig && !allBig` unions in a spurious `VAL.NUMBER` kind
+bit (`packSemantic(BIGINT_KIND_BIT | bitOfKind(VAL.NUMBER), ...)`) as a
+conservative "might not be all-bigint yet" hedge — and because the outer
+semantic fixpoint only ever WIDENS (`joinSem`, never narrows), that
+NUMBER bit is now PERMANENT even once later rounds correctly prove
+`value` is always BigInt. This is a genuine, general, PRE-EXISTING
+fixpoint-imprecision (self-referential compound-assign kind inference),
+not a `.`-member-specific gap — confirmed decoded via trace:
+`{ sem: 115713, kinds: 1025 (= BIGINT_KIND_BIT|1), definiteBigint: false,
+cur: RAW(closed), target: BOXED }`. Separately, and independently needed
+either way: typedarray.js's BigInt64Array/BigUint64Array element-WRITE
+emitter (`.typed:[]=`'s `isBigInt` branch) has NO defense at all against a
+genuinely-BOXED source (`i64.reinterpret_f64` with no tag check) — TRIED
+wrapping it in `maybeUnboxBigInt` (ir.js's own established "conservative
+pairing" for exactly this kind of fixpoint-uncertain read), REVERTED: it
+is UNSOUND for this specific receiver domain — confirmed via the real watr
+build, `compile: float literals`/`float_literals.wast` crashed ("memory
+access out of bounds") because a NaN-payload's arbitrary 52-bit user
+payload can legitimately alias the PTR.BIGINT tag pattern by pure
+coincidence (the exact "box-tag-shaped i64 constants" hazard class this
+whole file already documents at length), causing a false-positive unbox
+that dereferences garbage memory. Neither layer fixed — documented as a
+residual, not guessed at further, per this campaign's own discipline
+around foundational-fixpoint changes under time pressure.
+
+### THE REAL WATR PRODUCT-LEVEL PROOF IS GREEN — the isolated reduction's
+### residual does NOT reach the actual watr.wasm build
+
+Built fresh `dist/watr.wasm` via this worktree's `cli.js` against
+`/Users/div/projects/watr/watr.js` (-O3 --memory 4096, 587237 bytes), ran
+`WATR_WASM=1 node test/index.js` in the watrchk worktree TWICE (byte- and
+result-identical both times):
+
+```
+# total 626
+# pass 604
+# skip 22
+```
+
+**Zero fail markers, 604/626 — exactly the task brief's own target.**
+Confirmed via grep that `compile: float literals`, `compile: simd const`,
+`float_memory.wast`, `float_memory0.wast`, `float_memory64.wast`,
+`int_literals.wast` all appear with no `✗` anywhere in the full log — the
+memory64 trio, int_literals, float_memory*, and simd-const are ALL green,
+and the previously-tracked "unknown instruction" `.message` case is absent
+too (already closed by an earlier, unrelated session per phase-c-
+unification.md). The isolated reduction's own third-layer residual (self-
+referential compound-assign NUMBER-poisoning) evidently does NOT reproduce
+in the real, richer watr.js program — plausibly because `i64.parse` is
+ALSO called directly from `i64()`'s own body (`n = i64.parse(n)`), giving
+the fixpoint a second, independent path to prove `i64.parse`'s result
+kind before the narrower NUMBER-poisoning window in the isolated
+single-call-site reduction ever opens. The reduction is real (a genuine,
+reproducible, narrower bug — worth a jz-only pin for a FUTURE session) but
+is not blocking THIS task's own explicit product-level gate, which is met.
+
+Kept: the `plannedOf`/`semanticOf` boundary-vs-materialized upgrades
+(sound, precedented, measurably improve emitted shape, no known
+regression — pending the full battery below). Did NOT keep: the
+`maybeUnboxBigInt` typedarray.js attempt (reverted, unsound for this
+domain, confirmed via the real build's own float-literal crash).
+
+Commits this session: 038d523b (kind.js valTypeOf fix + widening
+removals), 45ea3581 (plannedOf/semanticOf upgrade).
+
+### Battery status (in progress)
+
+- Task repro (i64.parse+leb, O0/O2/O3): 7n, correct.
+- Residual 1 (hex-sep magnitude 3078696982321561, O0/O2/O3): 24052320174387n, correct.
+- Bare-name sibling control: unaffected, correct.
+- Direct-return variant (documented pre-existing gap): unaffected.
+- watr downstream: 604/626, 0 fail (see above) — TARGET MET.
+- `node test/index.js` (native full suite): running in background this
+  round, result pending — will append once available.
+- kernel build / kernel-parity / kernel-oracle / bench-size: not yet run
+  this round — next steps.
+- Residual 2 (self-host `parseInt(1e-7)` OOB, kernel-parity byte-diff
+  method): not yet started this round.
