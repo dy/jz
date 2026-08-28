@@ -596,3 +596,195 @@ session rather than landing a partial/unverified version.
   (budget 298000, still failing), watr.js -O3 = 597581 B (target 586426 B),
   kernel = 17,954,279 B (main 17,941,790 B). Battery not re-run this
   session (no source changed since it was last confirmed green).
+
+## Third follow-up session: corrected the mechanism — HANDLER's members are
+## INLINE ARROWS, not nameable functions; resolveComputed alone is not enough
+
+Branch tip still 77cf6f69 (worktree scratchpad/sm) — no source changes this
+round either; empirical verification only (temporary instrumentation in
+plan/index.js, reverted via `git show HEAD:src/compile/plan/index.js >
+src/compile/plan/index.js` — confirmed byte-identical to HEAD afterward).
+
+### The assumption the task brief's item (1)/(2) rests on does NOT hold
+
+The brief frames the fix as: `resolveComputed(objName) → [funcEntry...]`,
+then "synthesize one call site per member function" — treating each HANDLER
+property as if it already had a `ctx.funcs.list`-shaped identity, exactly
+like `resolveMember`'s existing `ns.parse = parseNum` case (test/data.js
+"shape #8" pin), where the property's VALUE is a bare-name reference to an
+**already-declared top-level function**.
+
+Verified against real watr (`/Users/div/projects/watr/src/compile.js:971`,
+`const HANDLER = { reversed: (n,c) => {...}, block: (n,c,op,out) => {...},
+... }`) that this is **not that shape**: every one of HANDLER's ~30
+properties is an **inline arrow literal**, not a reference to a declared
+function. Built a minimal repro (`repro/handler-table.mjs`, scratch, not
+committed) with the same shape and instrumented `plan/index.js` right after
+`programFacts = facts()` (line 211) to dump `ctx.funcs.names` and
+`buildCallTargetIndex(...).resolveMember('HANDLER','block')`:
+```
+ALL funcs.names: [ 'instr', 'useIt' ]
+resolveMember(HANDLER,block): null
+```
+`ctx.funcs.list`/`.names`/`.map` (populated by prepare.js, fixed before
+plan() ever runs) contains only genuinely top-level `function`/`const-arrow`
+DECLARATIONS — an arrow embedded as an object-literal property value is
+never registered there. There is no "prepare-lifted function properties"
+mechanism for this shape (that phrase in the task brief does not correspond
+to anything in the current code — `call-target-index.js`'s own header
+comment doesn't use it either; likely a mischaracterization by whoever
+drafted the brief, possibly conflating it with the `ns.parse = parseNum`
+bare-name-reference case, which needs no lifting because the referenced
+function already exists). Confirmed also that `foldWrite`
+(call-target-index.js) already POISONS any object-literal property whose
+value isn't `isFuncRef` — i.e. it already looks at HANDLER's inline arrows
+and gives up on every one of them today, for `resolveMember` too, not just
+for the missing `resolveComputed`.
+
+Consequence: a `resolveComputed` built naively on top of the EXISTING
+`collectMemberWrites`/`foldWrite` table (my original plan, before this
+verification) would see zero non-poisoned properties for `HANDLER` and
+return `null` unconditionally — a correct-but-inert no-op against the actual
+target program. This would pass every pin I could write against a
+`ns.parse`-shaped table but do nothing for watr's bench-size numbers, i.e.
+exactly the kind of "looking-done" gap CLAUDE.md warns against — flagging
+before building the wrong thing further.
+
+### Re-derived the actual poison mechanism with this correction in hand
+
+Re-read the "Root cause" section above (`uleb`'s `buffer`,
+`memargEnc`'s `out`, `wleb`'s `out` all resolve `v=null` at their
+"HANDLER-forwarded" call sites) against the real call graph
+(`/Users/div/projects/watr/src/{compile,encode}.js`):
+
+```
+const instr = (nodes, ctx) => {
+  let out = [], meta = []
+  ...
+  const b = HANDLER[imm](nodes, ctx, op, out)   // instr's own out: a real `let out = []` literal
+  ...
+}
+const HANDLER = {
+  memarg: (n, c, op, out) => memargEnc(n, op, <computed>, out),   // inline arrow; out is ITS OWN 4th param
+  labelidx: (n, c, op, out) => wleb(blockid(n.shift(), c.block), out),
+  ...
+}
+```
+
+`memargEnc`/`wleb`/`uleb` ARE real top-level `const`-declared functions
+(confirmed: `grep '^const memargEnc\|^export const uleb'` in watr src) —
+they DO have real `paramReps` entries, and `narrowSignatures` DOES already
+try to narrow them. Traced why their `out`/`buffer` params still see a null
+observation, precisely:
+
+- `HANDLER[imm](nodes, ctx, op, out)` (the OUTER computed call, inside
+  `instr`) is indeed invisible to `walkFacts`'s `op==='()' &&
+  isFuncRef(args[0],...)` gate, exactly as the root-cause section says.
+- But `memargEnc(n, op, ..., out)` (the INNER call, inside `HANDLER.memarg`'s
+  OWN arrow body) is a call to a literal bare name — `isFuncRef` succeeds —
+  so `walkFacts` DOES register a call site for it today, already, with no
+  fix needed to see the call itself. Confirmed by hand-tracing `walkFacts`'s
+  `'let'/'const'` branch → generic fallback → `'=>'` branch: `HANDLER`'s
+  decl is TRUE module-top-level, so walking into its property values reaches
+  `HANDLER.memarg`'s arrow body with `caller` still `null` (module scope,
+  never reassigned across the `=>` boundary) — the walker already descends
+  into inline arrow bodies and finds calls made from inside them.
+- The actual gap: at THIS site, the argument is the bare name `out` —
+  `memarg`'s OWN 4th parameter, not a module global and not a param of any
+  named function. `inferValAtSite('out', state)` (narrow.js ~1953) tries (in
+  order) `inferValType` against `state.callerValTypes` (= module globals,
+  since `state.callerFunc === null` here) → miss; the array-element/typed
+  branches (arg isn't `[]`-shaped) → skip; `state.callerParamFacts('val')`
+  → `paramFactsOf(paramReps, null, 'val')` → `null` immediately
+  (`paramFactsOf`'s own `if (!callerFunc) return null`, param-reps.js:32) —
+  there is no "caller" to have param facts, because the true caller
+  (`memarg`, the arrow) has no identity in this system at all; `def =
+  state.callerFunc?.defaults?.[arg]` → `null?.defaults` → undefined. Returns
+  `null`. This is the site the notes above call "HANDLER-forwarded";
+  confirmed it's null for exactly this structural reason, not because the
+  call site is missing.
+
+So the fix target is real (uleb/memargEnc/wleb's `paramReps` entries), and
+the walker already sees the INNER call — what's missing is a way to resolve
+`out` at that inner site to what it actually, always is: `instr`'s own
+`out`. That requires reaching back through TWO hops (inner call ← arrow's
+own param ← outer dispatch call's argument), not one.
+
+### Revised design (not yet implemented — next round)
+
+Two sub-mechanisms, both still living in call-target-index.js +
+program-facts.js ("one authority", per the brief) but shaped by the above:
+
+(A) **`resolveComputed` returns member ARROWS, not just named funcEntries.**
+    `foldWrite`'s poison-on-non-funcRef is right for `resolveMember` (whose
+    contract is "the resolved function's `ctx.funcs.list` entry" — must stay
+    exactly as strict, nothing here should change `resolveMember`'s own
+    behavior or its existing pins) but too strict for the new call. Track a
+    second table (or a tagged value: `{kind:'named', fn}` vs
+    `{kind:'arrow', node}`) so a same-module inline arrow property is a
+    legitimate "known member" too, under the identical closedness rules
+    (`safeReceiver` — shadowed/rebound/escapes/dynWriteVars — unchanged).
+    `resolveComputed(objName)` succeeds only when EVERY property folds to
+    one or the other (no POISON at all) — "all members known" stays literal.
+
+(B) **program-facts.js's walker, when it resolves a computed dispatch call
+    to a set of arrow members, does NOT try to give the arrows themselves a
+    call site** (there is nowhere in the paramReps/narrow.js model to put
+    one — that whole machinery is funcName-keyed). Instead, for each
+    resolved arrow member and each real, outer call site of
+    `TABLE[key](args)`: walk the arrow's OWN body only (stop at any nested
+    `=>`, same discipline as every other closure-scoped walk in this
+    codebase — collectDispatchTableClosures/collectMemberWrites/
+    collectNestedBoundNames all already draw this exact line), find every
+    call to a literal bare-name (real, named) function, and synthesize ONE
+    call site per (outer call site × arrow member × inner call): `{callee:
+    innerCalleeName, argList: <arrow's own body argList, with any bare-name
+    arg that is literally one of the arrow's OWN param names substituted by
+    the OUTER site's corresponding argument expression — plain positional
+    substitution, one hop, no recursion>, callerFunc: outerSite.callerFunc,
+    node: innerCallNode}`. This is what actually gets `memargEnc`'s/`wleb`'s
+    `out` to resolve: at the synthesized site, the argument is no longer the
+    bare name `out` (unresolvable, no caller) but `instr`'s own `out`
+    expression (a literal `[]`), evaluated with `callerFunc = instr` (a
+    REAL function whose `callerParamFacts`/defaults do resolve it).
+
+    A member whose value IS already a plain named-function reference (the
+    `ns.parse` shape, `kind:'named'` from (A)) needs no substitution —
+    synthesize directly with the outer site's own `argList`, matching the
+    task brief's original, simpler description for that sub-case.
+
+Explicitly NOT part of (A)/(B): a member arrow's OWN direct (non-forwarded)
+use of its own param — e.g. HANDLER's `block: (n,c,op,out) => { ...; if
+(out) { for (...) out.push(b[i]); return } ...}`, where `out.push` happens
+INSIDE the arrow, no named-function forwarding at all. That path never
+reaches paramReps/narrow.js regardless of (A)/(B) — the codegen for a
+closure body's OWN param reads is governed by a wholly separate mechanism
+(emit.js's closure-call param lattice; for TABLE-dispatched closures
+specifically, `dyn-closure-tables.js`'s `scanClosureTableLatticeCandidates`,
+currently scoped to array-literal tables only). The task brief's own item
+(3) asks to "consider whether dyn-closure-tables.js should now be fed from
+the index too" — tentatively: NOT a clean feed-from-the-index replacement
+(different question — "one funcIdx always" vs "one of N known members" —
+and a different consumer, emit-time per-closure paramTypes vs plan-time
+paramReps), but extending ITS OWN candidate scan
+(`scanClosureTableLatticeCandidates`/`everyUseIsIndexedCall`) from array
+literals to object literals looks like the right, structurally-analogous
+move for THIS residual (member's own direct param usage) — separate work
+from (A)/(B) above, only worth attempting after (A)/(B) are landed and
+measured, to see how much of the ~23-count class each half actually closes.
+
+### What was explicitly NOT done (this session)
+
+- No source fix landed (reverted the one temporary debug edit). This session
+  was spent correcting a wrong assumption before building on it — see
+  CLAUDE.md's "optimize the tool, never the input" / "don't leave half-done"
+  read together with "beware optimizing a proxy... name the substitution":
+  the proxy here would have been "ship a resolveComputed that type-checks
+  and has green pins" while the real goal (move the watr byte count) stayed
+  unmet, because the pins I'd have reached for naturally (a `ns.parse`-
+  shaped closed table) don't exercise the inline-arrow shape that's actually
+  in watr.
+- Did not implement (A)/(B) above — next round.
+- Sizes/battery unchanged from the 594879e1 checkpoint (no source edits this
+  session): `bench-size.mjs watr` = 300640 B (budget 298000), watr.js -O3 =
+  597581 B (target 586426 B), kernel = 17,954,279 B (main 17,941,790 B).
