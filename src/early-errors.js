@@ -260,6 +260,34 @@ const previousSourceToken = (src, from) => {
   }
 }
 
+const sourceTrivia = (src, from) => {
+  let i = from, newline = false
+  for (;;) {
+    while (i < src.length && isWhitespaceCode(src.charCodeAt(i))) {
+      const c = src.charCodeAt(i)
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i++
+    }
+    if (src[i] === '/' && src[i + 1] === '/') {
+      i += 2
+      while (i < src.length && src[i] !== '\n' && src[i] !== '\r' &&
+          src.charCodeAt(i) !== 0x2028 && src.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (src[i] === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      if (end < 0) return [src.length, newline]
+      for (let k = i; k < end; k++) {
+        const c = src.charCodeAt(k)
+        if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) { newline = true; break }
+      }
+      i = end + 2
+      continue
+    }
+    return [i, newline]
+  }
+}
+
 const nextSourceToken = (src, from) => {
   let i = from
   for (;;) {
@@ -476,6 +504,7 @@ const validateLexicalSource = (src, strict) => {
         const lhsReady = letReference || (decl ? forGroup[P_FOR_TOKENS] >= 2 : forGroup[P_FOR_TOKENS] >= 1)
         if ((word === 'in' || word === 'of') && lhsReady && !forGroup[P_FOR_CONSEQUENT]) {
           forGroup[P_FOR_INOF] = word
+          if (letReference && strict) fail("'let' cannot be a for-in assignment target in strict mode")
           if (letReference) decl = forGroup[P_FOR_DECL] = false
           if ((decl === 'let' || decl === 'const') &&
               (forGroup[P_FOR_COMMAS] || forGroup[P_FOR_INIT]))
@@ -645,6 +674,44 @@ const isUseStrict = body => {
     break
   }
   return false
+}
+
+const functionBodyOpen = (source, node) => {
+  if (typeof node?.loc !== 'number') return -1
+  let i = node.loc, paren = 0, sawParams = false
+  while (i < source.length) {
+    const trivia = sourceTrivia(source, i)
+    i = trivia[0]
+    const ch = source[i]
+    if (ch === '"' || ch === "'") { i = lexicalQuoted(source, i, ch, false); continue }
+    if (ch === '`') { i = lexicalTemplate(source, i, false); continue }
+    if (ch === '(') { sawParams = true; paren++; i++; continue }
+    if (ch === ')') { paren--; i++; continue }
+    if (ch === '{' && sawParams && paren === 0) return i
+    i++
+  }
+  return -1
+}
+
+// A later "use strict" directive applies to the complete Directive Prologue,
+// including raw escape spellings in strings that precede it. The AST knows
+// that this function has an own strict directive; rescan only that prologue so
+// a same-looking string in an ordinary block or sloppy sibling stays legal.
+const validateStrictDirectivePrologue = (source, bodyOpen) => {
+  if (bodyOpen < 0) return
+  let i = bodyOpen + 1
+  for (;;) {
+    const before = sourceTrivia(source, i)
+    i = before[0]
+    const quote = source[i]
+    if (quote !== '"' && quote !== "'") return
+    i = lexicalQuoted(source, i, quote, true)
+    const after = sourceTrivia(source, i)
+    i = after[0]
+    if (source[i] === ';') { i++; continue }
+    if (after[1]) continue
+    return
+  }
 }
 
 const patternItems = pattern => {
@@ -1507,7 +1574,8 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'function' || op === 'function*') {
       const generator = op === 'function*'
       const body = node[3]
-      const strict = cx.strict || isUseStrict(body)
+      const ownStrict = isUseStrict(body)
+      const strict = cx.strict || ownStrict
       // GeneratorExpression's own BindingIdentifier is parameterized [+Yield]
       // UNCONDITIONALLY (its own generator-ness) — `var g = function*
       // yield(){}` is forbidden even in sloppy, non-generator-enclosing
@@ -1525,7 +1593,8 @@ export function validateEarlyErrors(ast, source) {
       const params = paramsOf(node[2])
       if (params.some(hasRest)) needsLexical = true
       const simple = isSimpleParams(params)
-      if (strict && !simple && isUseStrict(body)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict && !simple) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict) validateStrictDirectivePrologue(source, functionBodyOpen(source, node))
       const names = []
       for (let i = 0; i < params.length; i++) {
         const p = params[i]
@@ -1567,6 +1636,8 @@ export function validateEarlyErrors(ast, source) {
       const ownStrict = isUseStrict(fnBody)
       const strict = cx.strict || ownStrict
       if (ownStrict && !isSimpleParams(params)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict && isNode(body) && body[0] === '{}')
+        validateStrictDirectivePrologue(source, body.loc)
       const names = []
       for (let i = 0; i < params.length; i++) {
         const p = params[i]
@@ -1599,6 +1670,7 @@ export function validateEarlyErrors(ast, source) {
       }
       const dup = duplicateName(names)
       if (ownStrict && !isSimpleParams(params)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict) validateStrictDirectivePrologue(source, functionBodyOpen(source, fn))
       if (dup && (strict || !isSimpleParams(params))) fail(`duplicate parameter '${dup}'`)
       const fnBody = body
       const fnCx = { ...cx, strict, async: true, generator, functionDepth: cx.functionDepth + 1,

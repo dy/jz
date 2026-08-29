@@ -758,6 +758,7 @@ test('for headers keep classic clauses separate from for-in/of heads (asi-and-li
     rejects('for (false\nfalse\nfalse) {}', 'semicolons')
     rejects('export let f = () => { for (let x = 3 in {}) {} }', 'uninitialized binding')
     rejects('export let f = () => { for (let x, y = 4 in {}) {} }', 'uninitialized binding')
+    rejects("'use strict'; let o = {}; for (let in o) {}", 'strict mode')
     rejects('for (true ? 0 : 0 in {}; false; ) ;', 'classic for initializer')
     rejects('export let f = () => { for (let i = 0; i < 1; { i++; }) {} }', 'object literal')
     rejects('export let f = () => { for ({ let i = 0; } i < 1; i++) {} }', 'object literal')
@@ -772,6 +773,8 @@ test('for headers keep classic clauses separate from for-in/of heads (asi-and-li
       "the contextual word 'of' remains a valid classic-for binding")
     ok(Array.isArray(parse('for (let of of [1]) {}')),
       "a binding named 'of' is distinct from the following for-of keyword")
+    ok(Array.isArray(parse("'use strict'; let x, o = {}; for (x in o) {}")),
+      'strict for-in remains valid with an ordinary assignment target')
 })
 
 test('restricted statement boundaries honor ASI and every line terminator (asi-and-line-terminator-context)', () => {
@@ -877,4 +880,19 @@ test('semicolon-sensitive export forms cannot absorb a same-line literal sibling
       'exported function declarations need no separator before a sibling statement')
     ok(Array.isArray(parse('export default class {} 0;')),
       'exported class declarations keep their declaration boundary')
+})
+
+test('an own strict directive validates every raw string in its Directive Prologue (nested-strict-legacy-escape)', () => {
+    rejects('function f() { "\\1"; "use strict"; }', 'legacy escape')
+    rejects('(function() { "\\052"; "use strict"; });', 'legacy escape')
+    rejects('function f() { "use strict"; "\\8"; }', 'legacy escape')
+    rejects('function outer() { function inner() { "\\9"; "use strict"; } }', 'legacy escape')
+
+    ok(Array.isArray(parse('function f() { "\\1"; }')), 'the same legacy escape remains legal in a sloppy function')
+    ok(Array.isArray(parse('if (true) { "\\1"; "use strict"; }')),
+      'a string in an ordinary block is not a directive')
+    ok(Array.isArray(parse('function a() { "\\1"; } function b() { "ok"; "use strict"; }')),
+      'a strict sibling does not retroactively make a sloppy sibling strict')
+    ok(Array.isArray(parse('function f() { "plain"; "use strict"; }')),
+      'an escape-free directive prologue remains valid')
 })
