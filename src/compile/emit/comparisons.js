@@ -29,7 +29,7 @@ import { REF_EQ_KINDS, foldOperandPure, isLit1, stringOps } from './shared.js'
 const NEG_NAN_MASK = 0xFFF0000000000000n
 
 /** Emit typeof comparison: typeof x == typeCode → type-aware check. */
-export function emitTypeofCmp(a, b, cmpOp) {
+function emitTypeofCmp(a, b, cmpOp) {
   let typeofExpr, code
   if (Array.isArray(a) && a[0] === 'typeof' && typeof b === 'number') { typeofExpr = a[1]; code = b }
   else if (Array.isArray(a) && a[0] === 'typeof' && Array.isArray(b) && b[0] == null) { typeofExpr = a[1]; code = b[1] }

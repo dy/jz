@@ -285,7 +285,7 @@ const extractHoistableLiterals = (body) => {
  * stores the initializer into this cell rather than re-allocating (see
  * `frame.loopFresh`). Returns the alloc IR to splice at loop-body entry.
  */
-export function emitLoopFreshBoxed(body, frame) {
+function emitLoopFreshBoxed(body, frame) {
   if (!ctx.func.boxed?.size) return []
   const names = new Set()
   ;(function scan(node) {
