@@ -790,3 +790,15 @@ test('restricted statement boundaries honor ASI and every line terminator (asi-a
     ok(Array.isArray(parse('do { { } }\nwhile (false)')),
       'a do block is followed directly by while, including nested sibling blocks')
 })
+
+test('adjacent string literals require a real statement boundary (other-jessie-context-loss)', () => {
+    rejects("0;\nvar s = '''';", 'adjacent string literals')
+    rejects('0;\nvar s = """";', 'adjacent string literals')
+    rejects("if (false) { let s = ''/*same line*/''; }")
+
+    is(jz("export let f = () => ''").exports.f(), '')
+    is(jz("export let f = () => 'a' + 'b'").exports.f(), 'ab')
+    is(jz("export let f = () => ['a', 'b'].join('')").exports.f(), 'ab')
+    ok(Array.isArray(parse("'a'\n'b'")), 'a LineTerminator can ASI-split sibling string ExpressionStatements')
+    ok(Array.isArray(parse("{ 'a'; } { 'b'; }")), 'sibling block scopes keep independent string statements')
+})

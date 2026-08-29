@@ -295,14 +295,14 @@ const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   // An unterminated block comment, or a raw LineTerminator inside a quoted
   // string, both need the full token-aware scan below to catch correctly
   // (strings/regexes must be skipped as such, not textually).
-  src.includes('/*') || hasNewlineInQuote(src)
+  src.includes('/*') || src.includes("''") || src.includes('""') || hasNewlineInQuote(src)
 )
 
 /** Lightweight lexical validation for spellings jessie's value AST erases. */
 const validateLexicalSource = (src, strict) => {
   if (typeof src !== 'string') return
   let i = 0, canRegex = true, pendingControl = null, expectStatement = false, lastPunct = '', optionalDepth = -1, nesting = 0
-  let pendingDo = false
+  let pendingDo = false, quotedToken = false
   // True while a genuine LineTerminator (directly, or inside a multi-line
   // comment) has been crossed since the last real token — consumed once,
   // right before a real token is processed below, by the arrow-token check.
@@ -337,6 +337,9 @@ const validateLexicalSource = (src, strict) => {
     const hadNewline = sawNewline
     sawNewline = false
     if (ch !== '{') pendingDo = false
+    if ((ch === '"' || ch === "'") && quotedToken && !hadNewline)
+      fail('adjacent string literals require an operator or statement terminator')
+    if (ch !== '"' && ch !== "'") quotedToken = false
     // ArrowFunction's own grammar carries a "[no LineTerminator here]"
     // between ArrowParameters and `=>` — unlike a restricted-production
     // token (postfix ++/--, break/continue's label, return/yield's operand),
@@ -353,7 +356,10 @@ const validateLexicalSource = (src, strict) => {
       restGroup[P_REST] = false
       restGroup[P_REST_COMMA] = false
     }
-    if (ch === '"' || ch === "'") { i = lexicalQuoted(src, i, ch, strict); canRegex = false; continue }
+    if (ch === '"' || ch === "'") {
+      i = lexicalQuoted(src, i, ch, strict)
+      quotedToken = true; canRegex = false; continue
+    }
     if (ch === '`') {
       if (!canRegex && optionalDepth >= 0) fail('optional chain cannot be used as a tagged template')
       i = lexicalTemplate(src, i, strict, !canRegex)
