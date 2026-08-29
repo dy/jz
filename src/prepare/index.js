@@ -45,6 +45,7 @@ import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
 import { VAL } from '../reps.js'
 import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../static.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
+import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
 import { boundSafeCalls, mintLocal, normalizeIdents, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, seedStaticGlobalAssignments, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
 import { bindAssignSchema, bindDeclSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
@@ -644,25 +645,6 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// `,` is the ordinary pattern separator; `;` appears when a `{…}` pattern parsed
-// in STATEMENT position (for-of head cover grammar: `for ({ x = 1 } of …)`) —
-// same items, block-shaped node.
-const patternItems = (node) => (node?.[0] === ',' || node?.[0] === ';') ? node.slice(1) : [node]
-const isDestructPattern = (node) => Array.isArray(node) && (node[0] === '[]' || node[0] === '{}')
-
-const simpleArrayPatternItems = (pattern) => {
-  if (!Array.isArray(pattern) || pattern[0] !== '[]' || pattern.length !== 2) return null
-  const items = patternItems(pattern[1])
-  return items.every(item => typeof item === 'string') ? items : null
-}
-
-const arrayLiteralItems = (expr) => {
-  if (!Array.isArray(expr) || expr[0] !== '[]' || expr.length !== 2) return null
-  if (expr[1] == null) return []
-  const items = patternItems(expr[1])
-  return items.every(item => item != null && !(Array.isArray(item) && item[0] === '...')) ? items : null
-}
-
 function scalarArrayDestruct(pattern, rhs) {
   const targets = simpleArrayPatternItems(pattern)
   const values = arrayLiteralItems(rhs)
@@ -676,26 +658,6 @@ function scalarArrayDestruct(pattern, rhs) {
     assigns.push(['=', targets[i], tmp])
   }
   return prep([';', ['let', ...decls], ...assigns])
-}
-
-/** Rename BINDING positions of a destructure pattern per `map`, preserving
- *  property keys: `{x}` shorthand becomes `{x: x@1}` (the key stays the source
- *  prop name), `{k: v}` keys stay, defaults rename by ordinary ident rules
- *  (a default may reference a sibling pattern binding — `{a, b = a}`).
- *  Object items need their OWN walk: the parser comma-groups multi-prop
- *  patterns (`['{}', [',', 'a', 'b']]`), and a bare string INSIDE an object
- *  pattern is shorthand (its spelling IS the property key) while inside an
- *  array pattern it is a plain target — renaming a shorthand string directly
- *  turned `{a}` into `{a@1}` and read a nonexistent property. */
-function substPattern(p, map) {
-  if (typeof p === 'string') return map.get(p) ?? p
-  if (!Array.isArray(p)) return p
-  if (p[0] === '{}') return ['{}', ...p.slice(1).map(it => substObjItem(it, map))]
-  if (p[0] === ':') return [':', p[1], substPattern(p[2], map)]
-  if (p[0] === '...') return ['...', substPattern(p[1], map)]
-  if (p[0] === '=') return ['=', substPattern(p[1], map), substIdents(p[2], map)]
-  if (p[0] === '[]' || p[0] === ',') return [p[0], ...p.slice(1).map(it => substPattern(it, map))]
-  return p
 }
 /** Resolve computed property keys inside a decl pattern: `{[k]: x}`'s key is
  *  an ordinary EXPRESSION read from outer scope, not a binding position — it
@@ -716,20 +678,6 @@ function prepPatternKeys(p) {
   if (p[0] === '=') return ['=', prepPatternKeys(p[1]), p[2]]
   if (p[0] === '...') return ['...', prepPatternKeys(p[1])]
   return p
-}
-
-function substObjItem(it, map) {
-  if (typeof it === 'string') return map.has(it) ? [':', it, map.get(it)] : it
-  if (!Array.isArray(it)) return it
-  if (it[0] === ',') return [',', ...it.slice(1).map(x => substObjItem(x, map))]
-  if (it[0] === ':') return [':', it[1], substPattern(it[2], map)]
-  // shorthand-with-default `{ a = 1 }` — expand to keyed form so the key
-  // keeps the source spelling while the target renames
-  if (it[0] === '=' && typeof it[1] === 'string')
-    return map.has(it[1]) ? [':', it[1], ['=', map.get(it[1]), substIdents(it[2], map)]]
-      : ['=', it[1], substIdents(it[2], map)]
-  if (it[0] === '...') return ['...', substPattern(it[1], map)]
-  return substPattern(it, map)
 }
 
 function pushPatternAssign(target, valueExpr, out, decls = null) {
