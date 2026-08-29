@@ -6,7 +6,7 @@
 
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
-  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams,
+  PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, T, classifyParam, commaList, extractParams, walkAst,
 } from '../../ast.js'
 import { LAYOUT, OPTF, PTR, ctx, err } from '../../ctx.js'
 import {
@@ -226,13 +226,11 @@ function tryDirectClosureCall(callee, parsed) {
  *  the site (receiver name), and the rewrite runs in optimizeFunc where the
  *  facts are complete. */
 export const tagFnArrayDispatch = (ir, arrName) => {
-  const findCI = (n) => {
-    if (!Array.isArray(n)) return null
-    if (n[0] === 'call_indirect') return n
-    for (let i = 1; i < n.length; i++) { const f = findCI(n[i]); if (f) return f }
-    return null
-  }
-  const ci = findCI(ir)
+  let ci = null
+  walkAst(ir, { enter: (n) => {
+    if (ci) return false
+    if (n[0] === 'call_indirect') { ci = n; return false }
+  } })
   if (ci) ci.dvArr = arrName
   return ir
 }

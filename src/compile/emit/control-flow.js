@@ -6,7 +6,7 @@
 
 import { encodePtrHi, i64Hex } from '../../../layout.js'
 import {
-  T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some,
+  T, constLiteralHoistable, hasLabeledContinueTo, hasOwnBreakOrContinue, hasOwnContinue, isConstLiteral, isReassigned, mutatesArrayLength, some, walkAst,
 } from '../../ast.js'
 import { LAYOUT, PTR, ctx, err, inc } from '../../ctx.js'
 import {
@@ -46,18 +46,18 @@ import { emitFinalizers } from './statements.js'
 function freshenUnrolledScalarBindings(body, ir) {
   if (ctx.transform.optimize?.splitScratch !== true) return ir
   const names = new Set()
-  const collect = n => {
-    if (!Array.isArray(n) || n[0] === '=>') return
-    if (n[0] === 'let' || n[0] === 'const') {
-      for (let i = 1; i < n.length; i++) {
-        const d = n[i]
-        const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
-        if (typeof name === 'string') names.add(name)
+  walkAst(body, {
+    boundary: (n) => n[0] === '=>',
+    enter: (n) => {
+      if (n[0] === 'let' || n[0] === 'const') {
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
+          if (typeof name === 'string') names.add(name)
+        }
       }
-    }
-    for (let i = 1; i < n.length; i++) collect(n[i])
-  }
-  collect(body)
+    },
+  })
   if (!names.size) return ir
 
   const rename = new Map()
@@ -85,22 +85,22 @@ function freshenUnrolledScalarBindings(body, ir) {
   // carried through the SAME rename map — `plan` (the frozen HIR-side facts) is NEVER touched
   // (a rename is backend metadata, not a fact HIR proved). Metadata-only —
   // never touches `ir`'s own content, so this cannot affect emitted bytes.
-  const rewrite = n => {
-    if (!Array.isArray(n)) return
-    if ((n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && rename.has(n[1]))
-      n[1] = rename.get(n[1])
-    else if (n[0] === 'block') {
-      const link = ctx.plans.loweringLinks.get(n)
-      if (link) {
-        const { lowering } = link
-        const ivKey = lowering.ivName != null ? `$${lowering.ivName}` : null
-        if (ivKey && rename.has(ivKey)) lowering.ivName = rename.get(ivKey).slice(1)
-        const gKey = lowering.guardName != null ? `$${lowering.guardName}` : null
-        if (gKey && rename.has(gKey)) lowering.guardName = rename.get(gKey).slice(1)
+  const rewrite = n => walkAst(n, {
+    enter: (node) => {
+      if ((node[0] === 'local.get' || node[0] === 'local.set' || node[0] === 'local.tee') && rename.has(node[1]))
+        node[1] = rename.get(node[1])
+      else if (node[0] === 'block') {
+        const link = ctx.plans.loweringLinks.get(node)
+        if (link) {
+          const { lowering } = link
+          const ivKey = lowering.ivName != null ? `$${lowering.ivName}` : null
+          if (ivKey && rename.has(ivKey)) lowering.ivName = rename.get(ivKey).slice(1)
+          const gKey = lowering.guardName != null ? `$${lowering.guardName}` : null
+          if (gKey && rename.has(gKey)) lowering.guardName = rename.get(gKey).slice(1)
+        }
       }
-    }
-    for (let i = 1; i < n.length; i++) rewrite(n[i])
-  }
+    },
+  })
   for (const n of ir) rewrite(n)
   return ir
 }
@@ -288,19 +288,19 @@ const extractHoistableLiterals = (body) => {
 function emitLoopFreshBoxed(body, frame) {
   if (!ctx.func.boxed?.size) return []
   const names = new Set()
-  ;(function scan(node) {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=>' || op === 'for' || op === 'for-of' || op === 'for-in' || op === 'while' || op === 'do') return
-    if (op === 'let' || op === 'const') {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
-        const nm = Array.isArray(d) && d[0] === '=' ? d[1] : d
-        if (typeof nm === 'string' && ctx.func.boxed.has(nm)) names.add(nm)
+  walkAst(body, {
+    boundary: (node) => ['=>', 'for', 'for-of', 'for-in', 'while', 'do'].includes(node[0]),
+    enter: (node) => {
+      const op = node[0]
+      if (op === 'let' || op === 'const') {
+        for (let i = 1; i < node.length; i++) {
+          const d = node[i]
+          const nm = Array.isArray(d) && d[0] === '=' ? d[1] : d
+          if (typeof nm === 'string' && ctx.func.boxed.has(nm)) names.add(nm)
+        }
       }
-    }
-    for (let i = 1; i < node.length; i++) scan(node[i])
-  })(body)
+    },
+  })
   if (!names.size) return []
   frame.loopFresh = names
   const inits = []
