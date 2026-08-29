@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
 import { instantiate } from '../interop.js'
 import jz from '../index.js'   // native compiler — the correctness reference for the kernel's output
+import { EQ_ZERO_KERNEL, EQ_ZERO_REUSE_B } from './_optimizer-kernels.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUILD = join(ROOT, 'scripts/self-compile-build.mjs')
@@ -216,6 +217,32 @@ test('self-compile: f64x2 lane vectorizer is sound (tone-map ctx-shape + late st
   // instantiate would throw "Unknown func $math.log_v" if appendLateStdlib were missing; the
   // |0 truncation in the kernel absorbs the f64x2 poly's sub-ULP lane noise, so the checksum is exact.
   is(instantiate(bytes, { memory: 256 }).exports.main(), native, 'kernel SIMD tone-map === native')
+})
+
+test('self-compile: eq-zero optimizer is stable across reusable A→A and A→B state', () => {
+  getSelf()
+  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  const compileWarm = (src) => {
+    const opt = warm.memory.String(JSON.stringify({ level: 2 }))
+    const out = warm.exports.default(warm.memory.String(src), 0, opt)
+    const bin = warm.memory.read(out)
+    return (bin instanceof Uint8Array ? bin : new Uint8Array(bin)).slice()
+  }
+  const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
+
+  const a1 = compileWarm(EQ_ZERO_KERNEL)
+  const a2 = compileWarm(EQ_ZERO_KERNEL)
+  const b = compileWarm(EQ_ZERO_REUSE_B)
+  const a3 = compileWarm(EQ_ZERO_KERNEL)
+  const nativeA = jz.compile(EQ_ZERO_KERNEL, { optimize: 2 })
+  const nativeB = jz.compile(EQ_ZERO_REUSE_B, { optimize: 2 })
+
+  ok(same(a1, a2), 'A→A on one hosted compiler instance is byte-identical')
+  ok(!same(a1, b), 'A→B on one hosted compiler instance produces B, not stale A')
+  ok(same(a1, a3), 'A after B recovers the original byte-identical artifact')
+  ok(same(a1, nativeA) && same(b, nativeB), 'reused hosted output stays byte-identical to native output')
+  is(instantiate(a3, { memory: 256 }).exports.main(), 404, 'recovered A executes correctly')
+  is(instantiate(b, { memory: 256 }).exports.main(), 48, 'B executes correctly after A')
 })
 
 // Warm-instance reuse: instantiate ONCE, `_clear()` the bump arena between compiles,

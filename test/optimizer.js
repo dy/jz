@@ -14,7 +14,9 @@ import { almost, is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onKernel } from './_matrix.js'
 import { collectReachableGlobalWrites, optimizeFunc, resolveOptimize, PASS_NAMES, propagateSingleUse } from '../src/optimize/index.js'
+import { fusedRewrite } from '../src/optimize/peephole.js'
 import { compile } from '../index.js'
+import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
@@ -775,6 +777,54 @@ test('peephole: f64 multiply by two uses addition for cheap operands', () => {
   const s = JSON.stringify(fn)
   is(s.includes('f64.mul'), false)
   ok(s.includes('f64.add'))
+})
+
+test('peephole: eq-zero canonicalizes computed operands and preserves bare-local switch candidates', () => {
+  const fn = ['func', '$p',
+    ['param', '$x', 'i32'],
+    ['result', 'i32'],
+    ['drop', ['i32.eq', ['i32.and', ['local.get', '$x'], ['i32.const', 7]], ['i32.const', 0]]],
+    ['drop', ['i32.eq', ['i32.const', '0'], ['i32.mul', ['local.get', '$x'], ['i32.const', 3]]]],
+    ['drop', ['i32.eq', ['local.get', '$x'], ['i32.const', 0]]],
+    ['drop', ['i32.eq', ['i32.const', 0], ['local.get', '$x']]],
+    ['local.get', '$x']]
+  fusedRewrite(fn)
+  is(JSON.stringify(fn.slice(4, 8)), JSON.stringify([
+    ['drop', ['i32.eqz', ['i32.and', ['local.get', '$x'], ['i32.const', 7]]]],
+    ['drop', ['i32.eqz', ['i32.mul', ['local.get', '$x'], ['i32.const', 3]]]],
+    ['drop', ['i32.eq', ['local.get', '$x'], ['i32.const', 0]]],
+    ['drop', ['i32.eq', ['i32.const', 0], ['local.get', '$x']]],
+  ]), 'both computed orders use eqz; both bare-local orders retain the switch-candidate form')
+})
+
+test('peephole: eq-zero keeps dense-switch lowering and non-switch values across O0/O2/O3', () => {
+  const ops = (fn, op) => count(fn, n => n[0] === op)
+  for (const optimize of [0, 2, 3]) {
+    const pre = parse(EQ_ZERO_KERNEL, preWatr(optimize))
+    const dispatch = findFunc(pre, '$dispatch')
+    const masked = findFunc(pre, '$masked')
+    const reversed = findFunc(pre, '$reversed')
+    is(ops(dispatch, 'i32.eq'), 5, `O${optimize}: all five dense-chain arms retain i32.eq(local,const)`)
+    is(ops(dispatch, 'i32.eqz'), 0, `O${optimize}: the zero arm is not split from the dense chain`)
+    if (optimize === 0) {
+      is(ops(masked, 'i32.eq'), 1, 'O0: disabled peephole leaves the right-zero value comparison unchanged')
+      is(ops(reversed, 'i32.eq'), 1, 'O0: disabled peephole leaves the left-zero value comparison unchanged')
+    } else {
+      is(ops(masked, 'i32.eqz'), 1, `O${optimize}: right-zero computed comparison uses eqz before watr`)
+      is(ops(reversed, 'i32.eqz'), 1, `O${optimize}: left-zero computed comparison uses eqz before watr`)
+      is(count(parse(EQ_ZERO_KERNEL, optimize), n => n[0] === 'br_table'), 1,
+        `O${optimize}: the complete dense chain reaches one br_table`)
+    }
+
+    const { chain, masked: runMasked, reversed: runReversed, main } = jz(EQ_ZERO_KERNEL, { optimize }).exports
+    is(chain(0, 9), 0, `O${optimize}: zero-trip chain`)
+    is(chain(7, 9), 439, `O${optimize}: all dense arms plus default execute correctly`)
+    is(runMasked(-8), 101, `O${optimize}: computed right-zero true`)
+    is(runMasked(7), 202, `O${optimize}: computed right-zero false`)
+    is(runReversed(0), 303, `O${optimize}: computed left-zero true`)
+    is(runReversed(-1), 404, `O${optimize}: computed left-zero false`)
+    is(main(), 404, `O${optimize}: combined non-switch result`)
+  }
 })
 
 test('unknown coercions still use __to_num', () => {

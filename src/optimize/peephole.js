@@ -693,6 +693,21 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     }
   }
 
+  // eq-vs-zero → eqz: the dedicated opcode produces the same i32 0/1 value as
+  // `(i32.eq X (i32.const 0))` in every context, at two fewer encoded bytes.
+  // Preserve a BARE local comparison, though: the downstream dense-chain pass
+  // recognizes switch candidates as `i32.eq(local.get, const)` at every arm.
+  // Rewriting only its zero arm would split one table into an outer if plus a
+  // smaller table. This node-local walk has no parent-chain proof, so it defers
+  // all bare locals and canonicalizes every other operand, in either order.
+  if (op === 'i32.eq' && node.length === 3) {
+    const a = node[1], b = node[2]
+    if (Array.isArray(b) && b[0] === 'i32.const' && (b[1] === 0 || b[1] === '0') &&
+        !(Array.isArray(a) && a[0] === 'local.get' && typeof a[1] === 'string')) return ['i32.eqz', a]
+    if (Array.isArray(a) && a[0] === 'i32.const' && (a[1] === 0 || a[1] === '0') &&
+        !(Array.isArray(b) && b[0] === 'local.get' && typeof b[1] === 'string')) return ['i32.eqz', b]
+  }
+
   // if→select for a value-producing f64 `if` with PURE arms: (if (result f64) COND (then A)
   // (else B)) → (select A B COND). This is the branchless `cmov` lowering LLVM/clang apply to
   // every `cond ? a : b` — it removes the conditional branch (and its misprediction cost on

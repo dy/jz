@@ -11,6 +11,7 @@ import { is } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { compileViaKernel } from './kernel-target.js'
 import { onWasi } from './_matrix.js'
+import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 
 // Exported for test/kernel-oracle.js — the ORACLE tier reuses these same source
 // strings (byte identity alone certifies identically-wrong output just as easily
@@ -28,6 +29,9 @@ export const CORPUS = {
   // fold ordering (0.1+0.2-0.3 bit pattern) and pure-Math folding at O0.
   fold: `export let f = () => 0.1 + 0.2 - 0.3`,
   mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
+  // Generic peephole handoff: computed eq-zero expressions canonicalize to eqz,
+  // while a bare-local zero arm stays visible to dense-switch recognition.
+  eqzero: EQ_ZERO_KERNEL,
   // Self-compile miscompile #4 (audit re-hunt, 2026-07-30): a helper whose return
   // tails mix a NUMBER with a bare `false` literal, tested via `=== false` /
   // `!== false` at the call site — module/typedarray.js's `isConst` is this

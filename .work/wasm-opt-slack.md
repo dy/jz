@@ -338,11 +338,11 @@ session.
 
 ---
 
-## 7. Landed fix: redundant bitmask after `i32.shr_u`
+## 7. Landed fix 1: redundant bitmask after `i32.shr_u`
 
 `src/optimize/peephole.js`, `walkRewrite`: new rule, `(i32.and (i32.shr_u X K)
 M) → (i32.shr_u X K)` when `M`'s low `(32-K)` bits are all set (checked both
-operand orders; `i32` only — no measured `i64` evidence, not spec-ulatively
+operand orders; `i32` only — no measured `i64` evidence, not speculatively
 added). Context-free, per-function, rides the existing fused walk (zero extra
 pass).
 
@@ -361,14 +361,15 @@ pass).
     (`(key >>> shift) & digitMask`) is the same idiom class, confirming this
     generalizes beyond the one case it was diagnosed on.
   - `kernel-parity:dvnested` — O2 616→612 (-4), O3 624→620 (-4), size 617→613 (-4)
-- Full battery: `npm run build`, `node test/index.js`,
+- Full battery (commit `790bbb7e`): `npm run build` (clean exit),
+  `node test/index.js` (3864 specs / 28541 assertions, pass 3863, skip 1 —
+  pre-existing skip, unrelated),
   `node test/kernel-parity.js` (3 specs / 33 assertions, pass 3),
   `node test/kernel-oracle.js` (14 specs / 605 assertions, pass 14),
   `node test/pointers.js` (73 specs / 132 assertions, pass 73),
-  `node test/data.js` (209 specs / 1098 assertions, pass 209),
-  `JZ_TEST_TARGET=jz.wasm node test/index.js` — **[see final report for the
-  two `test/index.js` runs' counts once they complete; both were still
-  running under heavy concurrent-agent machine load at doc-write time]**.
+  `node test/data.js` (209 specs / 1098 assertions, pass 209).
+  `JZ_TEST_TARGET=jz.wasm node test/index.js` re-run once against the final
+  combined state — see §9.
 
 `shapes`'s own wasm-opt slack ratio moves 0.9047→0.9059 (still the corpus's
 worst case) — most of the local win this rule finds is bytes watr's own
@@ -383,6 +384,99 @@ at speed — the redundant-mask shape doesn't recur there.
 
 ---
 
+## 7b. Landed fix 2: computed `i32.eq X, 0` → `i32.eqz X`
+
+Found while hand-diffing `optimize-instructions`: WASM has a dedicated
+compare-to-zero opcode, so
+
+```
+(i32.eq X (i32.const 0))  →  (i32.eqz X)
+(i32.eq (i32.const 0) X)  →  (i32.eqz X)
+```
+
+produces the same i32 0/1 value in every context and removes two encoded
+bytes. The rule lives in `walkRewrite`, next to fix 1, and handles both
+operand orders. It is not limited to a boolean consumer: mask tests feeding a
+`select`, global flags, and arithmetic predicates all qualify. This measured
+slice is i32-only; no unmeasured i64 sibling was added speculatively.
+
+One structural handoff must remain visible. The downstream dense-chain pass
+recognizes switch candidates only as `i32.eq(local.get, const)` at every arm.
+Changing the zero arm alone to `eqz` hides that arm and can split one
+`br_table` into an outer `if` plus a smaller table. Because this peephole is
+node-local and cannot prove whether its parent chain will satisfy the later
+density/cost gates, it conservatively leaves **bare named-local** comparisons
+unchanged and canonicalizes every other operand. The first broad draft did
+not have that exclusion: the refactor oracle caught two +4 B O2/O3 outputs
+from one fragmented dense chain. That draft was rejected; the final rule has
+zero growth and preserves the single table. Extending the downstream matcher
+to accept `eqz(local.get)` is watr-owned follow-up, not a benchmark exception.
+
+`test/_optimizer-kernels.js` pins the general class, not a corpus specimen:
+
+- the minimum five-arm same-local dense chain remains five literal
+  `i32.eq(local,const)` conditions before watr and one `br_table` after watr
+  at O2/O3;
+- right-zero mask and left-zero arithmetic value expressions become `eqz` at
+  O2/O3 and remain unoptimized at O0;
+- all exports execute against fixed edge inputs at O0/O2/O3;
+- native and JZ-hosted WAT are byte-identical at all three levels and both
+  agree with the plain-JS oracle;
+- one hosted compiler instance is exercised A→A, A→B, then B→A: A is
+  byte-identical on every visit, B differs and executes as B.
+
+**Size-preset bench output vs `790bbb7e`**: 6 shrink, 52 equal, zero grow (the
+two graph-only cases retain their pre-existing single-file-harness failures):
+
+| case | before | after | delta |
+|---|---:|---:|---:|
+| lz | 2126 | 2124 | -2 |
+| noise | 2168 | 2152 | -16 |
+| qoi | 2796 | 2794 | -2 |
+| trace | 1908 | 1904 | -4 |
+| watr | 299383 | 299373 | -10 |
+| wordcount | 16372 | 16370 | -2 |
+
+The wasm-opt slack geomean is 0.971394; the floor remains 0.905929
+(`shapes`, 3019→2735 through wasm-opt), so the 0.90 ratchet remains sound.
+
+**Refactor oracle vs `790bbb7e`**: 141 specs × O0/O2/O3/size, 67 changed
+outputs across 23 specs; every one is a byte reduction, with zero growth and
+zero compile/error-class changes. O0 is byte-identical throughout. Totals:
+O2 -101 B (23 rows), O3 -167 B (23), size -78 B (21), -346 B combined.
+Every changed row is listed below; each WAT diff starts at an eligible
+non-local eq-zero site. Later watr CSE/local reuse can amplify or partially
+offset the direct two-byte deletion (hence the -1/-5/-80 net rows), but no
+unrelated opcode or semantic path initiates a delta.
+
+| specimen | O2 | O3 | size |
+|---|---:|---:|---:|
+| bench:lz | 3901→3899 (-2) | 4578→4576 (-2) | 2126→2124 (-2) |
+| bench:noise | 2550→2534 (-16) | 4549→4469 (-80) | 2168→2152 (-16) |
+| bench:qoi | 3266→3264 (-2) | 3988→3986 (-2) | 2796→2794 (-2) |
+| bench:trace | 2664→2660 (-4) | 2785→2781 (-4) | 1908→1904 (-4) |
+| bench:watr | 368366→368356 (-10) | 540785→540773 (-12) | 299383→299373 (-10) |
+| bench:wordcount | 16480→16478 (-2) | 16996→16994 (-2) | 16372→16370 (-2) |
+| example:apollonian | 23686→23684 (-2) | 24699→24697 (-2) | 22881→22879 (-2) |
+| example:bz | 26893→26885 (-8) | 28695→28689 (-6) | 22491→22486 (-5) |
+| example:cloth | 25764→25762 (-2) | 26946→26944 (-2) | — |
+| example:diffusion | 28624→28618 (-6) | 30880→30874 (-6) | 22224→22220 (-4) |
+| example:lbm | 30920→30906 (-14) | 32737→32723 (-14) | — |
+| example:magnet | 26016→26014 (-2) | 27274→27272 (-2) | 24270→24268 (-2) |
+| example:maze | 29090→29088 (-2) | 30838→30836 (-2) | 24749→24747 (-2) |
+| example:ocean | 36134→36132 (-2) | 40257→40255 (-2) | 26476→26474 (-2) |
+| example:pathtracer | 26658→26656 (-2) | 28387→28385 (-2) | 25105→25103 (-2) |
+| example:pendulum | 27050→27046 (-4) | 29438→29434 (-4) | 25031→25027 (-4) |
+| example:penrose | 27324→27320 (-4) | 28502→28498 (-4) | 24035→24033 (-2) |
+| example:raytrace | 30707→30705 (-2) | 32627→32625 (-2) | 25670→25668 (-2) |
+| example:sand | 22764→22762 (-2) | 23441→23439 (-2) | 21470→21468 (-2) |
+| example:slime | 26351→26350 (-1) | 28429→28428 (-1) | 22862→22861 (-1) |
+| example:wireworld | 42987→42985 (-2) | 50418→50416 (-2) | 35179→35177 (-2) |
+| kernel-parity:eqzero | 750→746 (-4) | 972→968 (-4) | 754→750 (-4) |
+| watr:watr.js | 419756→419750 (-6) | 624316→624308 (-8) | 338221→338215 (-6) |
+
+---
+
 ## 8. Ratchet
 
 New worst-case measured slack ratio (size preset, post-fix-1): **0.9059**
@@ -393,3 +487,51 @@ own-era worst case). `CONTRIBUTING.md`'s "~25-30% slack... target is 0.95+"
 prose corrected to match this session's measurement in the same commit —
 leaving stale, disproven numbers in a doc that explicitly claims to be the
 enforced invariant is worse than no doc.
+
+Fix 2 shrinks six more size-preset cases (§7b) without changing the worst
+case (`shapes` remains 3019 B raw / 2735 B after wasm-opt, ratio 0.905929).
+No second ratchet bump is available beyond fix 1's 0.90 floor; if a later fix
+changes the minimum, re-measure and ratchet again then.
+
+---
+
+## 9. Final verification (both fixes landed)
+
+All commands below ran from `perf/wasm-opt-slack`; no broad speed benchmark
+was run and no benchmark source was edited.
+
+- `npm run build`: pass; wat-strip parity 3/3; final self-host artifact
+  `dist/jz.wasm` validates at 17,904,176 B. Rebuilding the exact `790bbb7e`
+  graph/config in memory produced 17,902,007 B, so the optimizer
+  implementation itself costs +2,169 B in this unpublished/non-golden
+  compiler artifact. That footprint is attributed here rather than hidden;
+  generated-program artifacts are the product gate and none grows.
+- `node test/optimizer.js`: 222 specs / 4,152 assertions, all pass, including
+  the raw IR rule, O0/O2/O3 shape checks, one-table handoff, and native
+  execution.
+- `node test/kernel-parity.js`: 3 specs / 36 assertions, all pass;
+  `node test/kernel-oracle.js`: 14 specs / 668 assertions, all pass. The new
+  source is native/JZ-hosted WAT-identical and both execute identically to JS
+  at O0/O2/O3.
+- Targeted reset/determinism: `test/determinism.js` 5/37,
+  `test/session-reentrancy.js` 20/61, `test/refactor-oracle.js` 2/50, all
+  pass. The dedicated self-host A→A/A→B/B→A test also passes 6/6.
+- `node test/self-compile.js`: 22 specs / 212 assertions, all pass, including
+  build, fresh and reusable hosted compilers, and execution of their output.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: 3,040 specs / 14,675
+  assertions, pass 3,039, skip 1 (the existing skip).
+- `npm test`: 3,868 specs / 28,642 assertions, pass 3,867, skip 1.
+  Matrix default/opt0/opt3 legs also pass respectively at 28,642 / 28,521 /
+  28,644 assertions. The WASI leg reaches one pre-existing structural failure
+  in `optimizer.js` (`charCodeAt` WAT contains one `__to_num` under the WASI
+  host); the same targeted test fails identically at clean `790bbb7e` (1 vs
+  expected 0). No gate was changed or loosened.
+- `npm run test:262`: pass 2,976, negative-reject 3,908, fail 0;
+  `npm run test:262:builtins`: pass 858, fail 0 (tracked skips/xfails remain).
+- Size/golden gates: `bench-size.mjs --json` gives the six reductions in §7b,
+  52 equal and zero growth; all four `golden size:` tests pass and an exact
+  `790bbb7e` A/B compile shows all four byte-identical; `npm run test:ratchet`
+  passes 10/10.
+- `refactor-oracle.mjs check --ref 790bbb7e`: 141 specs × four levels,
+  67/564 outputs differ exactly as listed in §7b; all 67 shrink, O0 is wholly
+  identical, and there are no growth or error-class changes.
