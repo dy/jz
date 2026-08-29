@@ -26,9 +26,9 @@
  * @module timer
  */
 
-import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, temp, tempI64 } from '../src/ir.js'
+import { typed, asF64, asI64, UNDEF_NAN, MAX_CLOSURE_ARITY, tempI64 } from '../src/ir.js'
 import { emit, deps, hostImport } from '../src/bridge.js'
-import { inc, err, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
+import { inc, err, LAYOUT, declGlobal } from '../src/ctx.js'
 
 const MAX_TIMERS = 64
 const ENTRY_SIZE = 40

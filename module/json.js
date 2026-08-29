@@ -8,14 +8,13 @@
  * @module json
  */
 
-import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, extractF64Bits, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
+import { typed, asF64, asI64, toStrI64, temp, tempI32, nullExpr, undefExpr, allocPtr, slotAddr, mkPtrIR, NULL_WAT, UNDEF_NAN, UNDEF_WAT, FALSE_NAN, TRUE_NAN, FALSE_IR, TRUE_IR } from '../src/ir.js'
 import { emit, bool, deps, storedValue } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { T } from '../src/ast.js'
 import { VAL } from '../src/reps.js'
 import { err, inc, PTR, LAYOUT, declGlobal } from '../src/ctx.js'
 import { i64Hex } from '../layout.js'
-import { strHashLiteral, heapResetWat } from './collection.js'
+import { heapResetWat } from './collection.js'
 import { RESERVED as ATOM_RESERVED } from './symbol.js'
 import { ERR } from '../err-codes.js'
 

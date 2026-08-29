@@ -6,7 +6,7 @@ import { DERIVED_PROP_MODULES } from './prop-modules.generated.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
   // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
   f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
@@ -32,7 +32,7 @@ export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', S
 // don't guess); a plain "this module's `.name`/`.kind:name` key is missing"
 // fix belongs in the module that owns the key, then `node
 // scripts/gen-prop-modules.mjs` picks it up automatically.
-export const PROP_MODULES = Object.assign(Object.create(null), {
+const PROP_MODULES = Object.assign(Object.create(null), {
   push: ['core', 'array'], pop: ['core', 'array'], shift: ['core', 'array'], unshift: ['core', 'array'],
   splice: ['core', 'array'], reverse: ['core', 'array', 'typedarray'], sort: ['core', 'array', 'typedarray'],
   fill: ['core', 'array', 'typedarray'],
@@ -117,7 +117,7 @@ export const RESOLVED_PROP_MODULES = (() => {
   return out
 })()
 
-export const OP_MODULES = {
+const OP_MODULES = {
   '?.': ['core', 'string', 'collection'],
   '?.[]': ['core', 'array', 'collection'],
   '?.()': ['core', 'fn'],
@@ -136,9 +136,9 @@ export const OP_MODULES = {
   '**=': ['math'],  // desugars to `name = name ** val` at emit — needs the same module
 }
 
-export const TYPED_CTORS = ['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
+const TYPED_CTORS =['Float64Array','Float32Array','Float16Array','Int32Array','Uint32Array','Int16Array','Uint16Array','Int8Array','Uint8Array','Uint8ClampedArray','BigInt64Array','BigUint64Array','ArrayBuffer','DataView']
 
-export const CALL_MODULES = dict({
+const CALL_MODULES = dict({
   ArrayBuffer: ['core', 'typedarray'],
   DataView: ['core', 'typedarray'],
   BigInt64Array: ['core', 'typedarray'],
@@ -215,7 +215,7 @@ export const CALL_MODULES = dict({
   '__is_typed': ['core', 'typedarray'],
 })
 
-export const GENERIC_METHOD_MODULES = dict({
+const GENERIC_METHOD_MODULES = dict({
   toString: ['core', 'string', 'number'],
   toFixed: ['core', 'string', 'number'],
   toPrecision: ['core', 'string', 'number'],
@@ -385,7 +385,7 @@ export const includeForProperty = prop => {
   else includeMods('core', 'object', 'array', 'string', 'collection')
 }
 
-export const runtimeCtorKind = name =>
+const runtimeCtorKind = name =>
   TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : name === 'Date' ? 'date' : name === 'Array' ? 'array' : null
 
 export const includeForRuntimeCtor = name => {

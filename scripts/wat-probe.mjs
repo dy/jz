@@ -46,7 +46,7 @@ export const callsOutside = (tree, names, skip) => {
   }
   return c
 }
-export const call = (re) => (n) => n[0] === 'call' && typeof n[1] === 'string' && re.test(n[1])
+const call = (re) =>(n) => n[0] === 'call' && typeof n[1] === 'string' && re.test(n[1])
 // f64 arithmetic OR an int↔f64 round-trip. SOUND only over ToInt32-disciplined
 // code (every product via Math.imul, every result `|0`): there, any loop-body f64
 // is a lost narrowing. NOT sound for arbitrary integer code — a bare `a * b` on

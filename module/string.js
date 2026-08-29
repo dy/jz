@@ -44,7 +44,7 @@ const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + 
 // (SLICE_BIT at 45 stays 0). 6 chars fit (6*7=42, + 3-bit len). ASCII-only — a byte
 // ≥0x80 falls back to a heap string. The 7-bit-uniform layout makes equal short strings
 // content-bit-equal (so `op === 'tag'` is a bare i64.eq) and never touches memory.
-export const MAX_SSO = 6
+const MAX_SSO =6
 const SSO_LEN_SHIFT = 10  // length occupies aux bits 10-12 (= payload bits 42-44)
 const SSO_CHAR_MASK = '0x3ffffffffff'  // payload bits 0-41: the 6 × 7-bit char lanes
 // JS: ASCII string → { aux, offset }, or null when ineligible (too long / non-ASCII).

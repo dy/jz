@@ -7,7 +7,7 @@
 // (i<n) acc = f(acc,i,p…); return acc }` across int / float / mixed categories.
 
 // ── seeded PRNG (LCG) ────────────────────────────────────────────────────────
-export const mkRng = (s) => {
+const mkRng =(s) => {
   let x = s >>> 0
   const r = () => (x = (Math.imul(x, 1664525) + 1013904223) >>> 0) / 4294967296
   r.int = n => (r() * n) | 0

@@ -99,7 +99,7 @@ export const withForLoopBody = (stmt, body) =>
  *  Excluded: Float32Array (Math.fround pulls module), Uint32Array (range > i32),
  *  Uint8ClampedArray (round-half-even clamp). Coerced (truthy) types are only
  *  scalarized when fully local. */
-export const SCALAR_TYPED_COERCE = {
+const SCALAR_TYPED_COERCE = {
   'new.Float64Array': '',
   'new.Int32Array': 'i32',
   'new.Int16Array': 'i16', 'new.Uint16Array': 'u16',
@@ -128,7 +128,7 @@ export const fixedScalarTypedArray = (expr) => {
  *  `new Float64Array(N)` with N a compile-time integer? Excludes view ctors
  *  (`new Float64Array(someBuffer)` — the arg is a buffer ref, not an int), so the
  *  result provably aliases no other buffer. Used by param-distinctness. */
-export const isFreshTypedArrayAlloc = (expr) => {
+const isFreshTypedArrayAlloc = (expr) => {
   if (typedElemCtor(expr) == null) return false
   const args = callArgs(expr)
   return !!args && args.length === 1 && constIntExpr(args[0]) != null

@@ -8,12 +8,12 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, isUndef, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
-import { VAL, lookupValType, repOf, updateRep } from '../src/reps.js'
+import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
 import { isReassigned, MUTATE_OPS, some } from '../src/ast.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'

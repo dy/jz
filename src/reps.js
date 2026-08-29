@@ -336,11 +336,8 @@ export const lookupNotString = name => {
  * INVARIANT: this stays a FROZEN ARRAY, not a Set — an exported mutable Set
  * would let any consumer shrink/grow the universe globally and Object.freeze cannot
  * freeze Set contents. Consumers build their own local sets from it
- * (spread/filter) or iterate it for a universe join — membership tests go
- * through `isKind` below. */
+ * (spread/filter) or iterate it for a universe join. */
 export const KIND_UNIVERSE = Object.freeze(Object.values(VAL))
-const KIND_UNIVERSE_SET = new Set(KIND_UNIVERSE)
-export const isKind = k => KIND_UNIVERSE_SET.has(k)
 
 /**
  * `isDisjointFrom(name, kindSet)` — sound iff `name`'s possible-kind set is

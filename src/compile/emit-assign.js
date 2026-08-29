@@ -21,11 +21,11 @@ import { valTypeOf, shapeOf } from '../kind.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import {
   typed, asF64, asI32, asI64, temp, tempI32, withTemp, block64,
-  ptrOffsetIR, ptrTypeEq, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
-  usesDynProps, needsDynShadow, boolBoxIR, mkPtrIR, isNumericIR, undefExpr,
+  ptrOffsetIR, boxedAddr, writeVar, isGlobal, isBoundName, isLiteralStr,
+  usesDynProps, needsDynShadow, mkPtrIR, isNumericIR, undefExpr,
   freshId, boxBigInt,
 } from '../ir.js'
-import { emit, emitIdentitySafe, storedValue, storedValueNarrow } from '../bridge.js'
+import { emit, storedValue, storedValueNarrow } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
 

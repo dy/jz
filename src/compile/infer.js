@@ -53,7 +53,7 @@ import { collectParamNames, ASSIGN_OPS, typeofPredicate } from '../ast.js'
 import { analyzeValTypes, analyzeIntCertain } from './analyze.js'
 import { staticObjectProps, staticArrayElems } from '../static.js'
 import { isNullishLit } from '../ir.js'
-import { typedElemCtor, typedStaticLen } from '../type.js'
+import { typedStaticLen } from '../type.js'
 import { typedStorageCtorFromContext, typedStorageCtorFromMaps } from '../typed-context.js'
 import { shapeOfObjectLiteralAst, valTypeOf, valTypeOfWithLocals } from '../kind.js'
 import { includeForStringValue } from '../autoload.js'
@@ -65,9 +65,7 @@ import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 // typeofPredicate now lives in ast.js (a cycle-free leaf both this file and
 // flow-types.js/module/function.js need — moving it there closed a real
 // cycle: module/function.js → flow-types.js → infer.js → autoload.js →
-// module/index.js → module/function.js) — re-exported (via the import above)
-// so existing importers of infer.js keep working unchanged.
-export { typeofPredicate }
+// module/index.js → module/function.js); this file still uses it below.
 
 // === paramReps lattice =====================================================
 //
@@ -80,7 +78,7 @@ const SOURCES = []
 
 /** Register an evidence source. Insertion order = precedence: earlier sources
  *  win the merge for a given name. */
-export const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
+const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
 
 /** Infer per-name facts by running every registered evidence source.
  *  Returns Map<name, fact>; callers pass `fact` straight to updateRep.

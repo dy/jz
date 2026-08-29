@@ -202,7 +202,7 @@ export const joinKinds = (fact, key, observedSet) => {
  * re-audit item 9(c): a Set field added anywhere else without a line here is
  * a clone-aliasing leak waiting to happen, caught by the drift assert below.
  */
-export const REP_SET_FIELDS = Object.freeze(['possibleKinds', 'dictValueValType', 'mapValueValType'])
+const REP_SET_FIELDS =Object.freeze(['possibleKinds', 'dictValueValType', 'mapValueValType'])
 const REP_SET_FIELDS_SET = new Set(REP_SET_FIELDS)
 
 const DBG_CLONE = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'

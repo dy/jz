@@ -20,7 +20,7 @@
 // Run: node scripts/bench-self-compile.mjs            (level 0, the default)
 //      JZ_LEVEL=2 node scripts/bench-self-compile.mjs (once the level-2 self-compile path is sound)
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'

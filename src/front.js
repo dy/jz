@@ -33,7 +33,7 @@ import { includeAllMods } from './autoload.js'
 // position on the RAW parse (before jzify, which legitimately mints T-prefixed
 // temps of its own). String-literal nodes are `[null, …]` and skipped, so
 // `"……"` data is fine; only walked when the char is present in source.
-export const rejectReservedPrefix = (node) => {
+const rejectReservedPrefix = (node) => {
   if (!Array.isArray(node)) return
   if (node.length === 2 && node[0] == null) return   // [null, X] — value literal, not an identifier
   for (let i = 1; i < node.length; i++) {
