@@ -124,16 +124,13 @@ export function hoistIndexedConstLiterals(root) {
   // content. Post-order rewrites children before the parent assign is visible, so
   // collect banned '[]' nodes in a first pass over every assignment-target subtree.
   const banned = new Set()
-  const banIn = (t) => { if (!Array.isArray(t)) return; if (t[0] === '[]') banned.add(t); for (let i = 1; i < t.length; i++) banIn(t[i]) }
-  const collectBans = (node) => {
-    if (!Array.isArray(node)) return
+  const banIn = (t) => walkAst(t, { enter: (n) => { if (n[0] === '[]') banned.add(n) } })
+  walkAst(root, { enter: (node) => {
     const op = node[0]
     if (typeof op === 'string' && (op === '++' || op === '--' || op === 'delete' || op === '=' ||
         (op.length >= 2 && op.endsWith('=') && !['==', '===', '!=', '!==', '<=', '>='].includes(op))))
       banIn(node[1])
-    for (let i = 1; i < node.length; i++) collectBans(node[i])
-  }
-  collectBans(root)
+  } })
   walkAst(root, { exit: node => {
     if (node[0] !== '[]' || node.length !== 3 || banned.has(node)) return
     const lit = node[1]
