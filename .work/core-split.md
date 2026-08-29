@@ -185,21 +185,90 @@ Pre-existing dead imports (not caused by this split — confirmed present at
 baseline `c520a39a`, matching `.work/dead-exports-sweep.md`'s held-file
 finding for this exact file, same line numbers): `updateRep` (reps.js,
 line 20), `STR_INTERN_BIT` (layout.js, line 23), `SET_ENTRY` (collection.js,
-line 26) — zero uses anywhere in core.js, before or after this split. Swept
-in the cleanup commit alongside the split-caused drops above.
+line 26) — zero uses anywhere in core.js, before or after this split. Removed
+in the final import-only cleanup `6e2d09dc`; its immediate-parent oracle was
+CLEAN 560/560 and rebuilding produced the exact same kernel hash.
 
 ## Gate per commit
 
 Leaf-first pure moves, one commit per family. After every move: cycle check
 (`resolveModuleGraph('bench/jz/jz.js', {resolveNode:true})`), `node
-scripts/refactor-oracle.mjs check --ref c520a39a` (560/560), `node
-test/kernel-parity.js` (33/33), `node test/self-compile-includes.js`, `node
-test/eager-stdlib-parity.js`. Commit only when all are clean. Extracted body
-diffed byte-identical (modulo leading-whitespace de-indent, verified via a
-strip-compare) against a fresh `sed`-extraction of the same line range from
-the pristine `c520a39a` baseline before assembling each new file.
+scripts/refactor-oracle.mjs check --ref <immediate-parent>` (560/560),
+`npm run build`, `node test/kernel-parity.js`, `node test/kernel-oracle.js`,
+minimal-output/autoload/eager-stdlib checks, and a JZ-hosted leg. Commit only
+when all correctness checks are clean. Extracted bodies were diffed
+byte-identical (modulo mechanical leading-whitespace de-indent; region-arena
+also re-derives the pure `lane` value) against the immediately preceding
+committed `core.js` before each file was wired in.
 
 ## Status — landed
 
-Filled in as commits land (sha, family, battery result) — see the end of
-this document for the final record.
+Base: `c520a39a`. All four planned families were accepted; no attempted
+family was rejected or reverted.
+
+| commit | family | moved body | result |
+|---|---|---:|---|
+| `005f3216` | binary16 → `core/f16.js` | 61 lines | CLEAN 560/560; cycle graph 280 modules; kernel parity 33/33; self-compile includes 6/6; eager parity 55/55 |
+| `5868a446` | Error objects → `core/error-object.js` | 195 lines | immediate-parent oracle CLEAN 560/560; graph 281; build clean; native Error/minimal/autoload battery 804 assertions; kernel oracle 605/605; JZ-hosted Error battery 324 assertions |
+| `4b15ef7d` | durable heap log → `core/durable-log.js` | 274 lines | immediate-parent oracle CLEAN 560/560; graph 282; build clean; native targeted battery 1,686 assertions; kernel parity/oracle 33/605; self-host 206 assertions including warm `_clear()` reuse |
+| `51ef4a31` | region arena → `core/region-arena.js` | 752 lines | immediate-parent oracle CLEAN 560/560; graph 283; build clean; native targeted battery 1,786 assertions (including region relocation); kernel parity/oracle 33/605; self-host 206 assertions; JZ-hosted layout/region battery 100 assertions |
+| `6e2d09dc` | dead-import cleanup | 3 names | immediate-parent oracle CLEAN 560/560; build and kernel SHA byte-identical to pre-cleanup; minimal/autoload/eager battery 355 assertions |
+
+The f16 move's recorded oracle used `c520a39a`; its immediate parent
+`d9de7ed6` changes only this ledger, so the compiler tree compared is
+identical. Final cumulative oracle against `c520a39a`: CLEAN 560/560.
+
+### Final shape
+
+| file | lines | role |
+|---|---:|---|
+| `module/core.js` | 2,261 | foundational primitives, allocator, collection-order helpers, dispatch/property/schema wiring |
+| `module/core/f16.js` | 76 | binary16 conversion registrations |
+| `module/core/error-object.js` | 217 | Error-class emit registrations and message conversion |
+| `module/core/durable-log.js` | 300 | own-memory `_clear()` durable heal registrations |
+| `module/core/region-arena.js` | 782 | own-memory round-compaction registrations |
+| **total** | **3,636** | baseline was 3,535; +101 lines are module docs/imports/wrappers |
+
+`core.js` itself fell from 3,535 to 2,261 lines: **−1,274 lines
+(−36.0%)**. Registration/declaration order is unchanged: the own-memory arm
+still runs `__alloc`/`__clear`, then durable-log, then region-arena, then
+closes before `__coll_order`; the five region scratch globals remain in
+their original pre-`__alloc` position.
+
+Final battery:
+
+- Native full suite excluding prohibited `bench-c`: 3,862 pass, 1 skip,
+  0 fail; 28,540 assertions across 94 files.
+- JZ-hosted full suite: 3,039 pass, 1 skip, 0 fail; 14,676 assertions.
+- `test/self-compile.js`: 21/21 tests, 206 assertions, including warm and
+  no-clear reuse; `kernel-parity`: 33/33; `kernel-oracle`: 605/605.
+- Minimal-output/autoload/self-include/eager checks passed throughout;
+  final focused run: 108 tests, 355 assertions.
+- `scripts/bench-size.mjs --json`: all 60 rows byte-identical to a fresh
+  archived `c520a39a` run.
+- `npm run build`: clean after every family. Fresh baseline/final kernels:
+  17,908,577 → 17,904,847 bytes (−3,730). The self-host bundle gains four
+  registration functions (function section +4 bytes) while its code/data
+  sections shrink 1,333/2,400 bytes; target-program Wasm remains exactly
+  identical under the oracle.
+
+The local stopwatch-only `self-compile-perf` gate ran under severe concurrent
+load (observed averages 22–66, with 8–10-core test262 plus several builds).
+Its three deterministic structural pins passed. Timing was visibly unusable:
+a fresh archived `c520a39a` baseline failed the same warm and fresh caps;
+the final tree's fresh rerun later passed at 0.807× while its warm samples
+still swung 1.099–1.274×. A direct order-alternated final/baseline comparison
+of the production warm mode measured 1.001× geomean (six pinned cases), i.e.
+no measurable split regression. The noisy standalone warm-cap failure is
+reported, not treated as a product result.
+
+### Remaining map
+
+No further pure-move seam was found. The retained trunk is the dependency
+map, NaN-box/allocator/header/collection-order foundation, and the mutually
+connected dispatch/property/schema block described above. Deliberately
+retained: the five region globals at their order-sensitive pre-allocator
+site and `__typed_idx`/`__typed_idx_tagged` inside the author-drawn NaN-box
+section. No outlier decomposition or walker rewrite was justified; doing
+one would invent a semantic refactor rather than finish this navigation
+slice.
