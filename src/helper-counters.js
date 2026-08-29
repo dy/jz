@@ -57,7 +57,7 @@ const LABEL_BY_WAT_HELPER = new Map(HELPER_COUNTERS.map(([helper, label]) => [`$
 
 export const HELPER_SITE_PREFIX = '__hcs_'
 
-export const helperCounterName = helper => COUNTER_BY_HELPER.get(helper)
+const helperCounterName = helper => COUNTER_BY_HELPER.get(helper)
 
 export function installHelperCounters() {
   if (!ctx.transform.helperCounters) return
