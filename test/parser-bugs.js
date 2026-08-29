@@ -722,3 +722,28 @@ test('yield/await as a binding name admits no trailing operand (nested-strict-le
     is(jz('export let f = () => { let yield; return 5 }').exports.f(), 5)
     is(jz('export let f = () => { let await; return 6 }').exports.f(), 6)
 })
+
+test('expression-only grammar slots retain their statement/list context (destructuring-cover-grammar / asi / other-jessie-context-loss)', () => {
+    // Jessie reuses the same nodes for parenthesized statement lists and
+    // expressions, array elisions and argument lists, and object literals and
+    // statement-leading blocks. The surrounding grammar slot disambiguates
+    // each pair without rejecting the valid sibling shape.
+    rejects('f(1,,2)', 'arguments')
+    rejects('if (false) f(,1)', 'arguments')
+    rejects('(debugger)', 'statement')
+    rejects('if (false) (debugger)', 'statement')
+    rejects('({};) * 1', 'parenthesized expression')
+    rejects('{} * 1', 'block statement')
+    rejects('{} = 1', 'block statement')
+    rejects('() => {} = 1', 'arrow function block')
+    rejects('let f = () => {} * 1', 'arrow function block')
+
+    is(jz('export let f = () => { let g = (a) => a; return g(7,) }').exports.f(), 7)
+    is(jz('export let f = () => [1,,3].length').exports.f(), 3)
+    is(jz('debugger; export let f = () => 1').exports.f(), 1)
+    is(jz('export let f = () => ({ a: 4 }).a').exports.f(), 4)
+    is(jz('export let f = (o) => ({} = o, 1)').exports.f({}), 1)
+    ok(Array.isArray(parse('{} + 1')), 'a block may be followed by a unary-plus sibling without a semicolon')
+    ok(Array.isArray(parse('{}\n[1]')), 'a block may be followed by an array-expression sibling across ASI')
+    ok(Array.isArray(parse('for (let i = 0; i < 1; i++) { ; }')), 'semicolons remain valid in control parens and blocks')
+})

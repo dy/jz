@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 81,
+  "count": 74,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -42,17 +42,12 @@
     "destructuring-cover-grammar": [
       "test/language/expressions/assignment/dstr/array-rest-before-elision.js",
       "test/language/expressions/assignment/dstr/array-rest-elision-invalid.js",
-      "test/language/expressions/assignmenttargettype/direct-arrowfunction-0.js",
-      "test/language/expressions/assignmenttargettype/direct-primaryexpression-objectliteral.js",
       "test/language/statements/for-in/dstr/array-rest-before-elision.js",
       "test/language/statements/for-in/dstr/array-rest-elision-invalid.js",
       "test/language/statements/for-of/dstr/array-rest-before-elision.js",
       "test/language/statements/for-of/dstr/array-rest-elision-invalid.js"
     ],
     "asi-and-line-terminator-context": [
-      "test/language/asi/S7.9_A10_T2.js",
-      "test/language/asi/S7.9_A10_T4.js",
-      "test/language/asi/S7.9_A10_T6.js",
       "test/language/asi/S7.9_A11_T4.js",
       "test/language/asi/S7.9_A11_T8.js",
       "test/language/asi/S7.9_A5.1_T1.js",
@@ -89,11 +84,9 @@
     "other-jessie-context-loss": [
       "test/language/block-scope/syntax/for-in/disallow-initialization-assignment.js",
       "test/language/block-scope/syntax/for-in/disallow-multiple-lexical-bindings-without-and-with-initializer.js",
-      "test/language/expressions/call/S11.2.4_A1.3_T1.js",
       "test/language/expressions/conditional/in-branch-2.js",
       "test/language/expressions/object/method-definition/early-errors-object-method-async-lineterminator.js",
       "test/language/reserved-words/await-module.js",
-      "test/language/statements/debugger/expression.js",
       "test/language/statements/let/syntax/identifier-let-allowed-as-lefthandside-expression-strict.js",
       "test/language/types/string/S8.4_A13_T3.js",
       "test/language/types/string/S8.4_A14_T3.js"

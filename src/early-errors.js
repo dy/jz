@@ -777,6 +777,28 @@ const isAssignmentTarget = (node, allowPattern) => {
   return false
 }
 
+// Jessie can continue a leading `{}` through an infix/access operator even
+// where ECMAScript has already committed that token to a BlockStatement (at
+// statement start) or an arrow function body. Follow only operators whose
+// source starts at their first operand; an explicit `(...)` is a hard stop.
+const LEFT_EDGE_OPS = new Set([
+  ...ASSIGN_OPS, ',', '?', '.', '[]', '()', '?.', '?.[]', '?.()', '``',
+  '+', '-', '*', '/', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
+  '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'in', 'of', 'instanceof',
+])
+const BLOCK_CANNOT_PREFIX = new Set([
+  ...ASSIGN_OPS, '*', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
+  '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'in', 'of', 'instanceof', '.', '?.',
+])
+const leftEdgeIsObject = node => {
+  if (!isNode(node)) return false
+  if (node[0] === '{}') return true
+  if (node[0] === '()' && node.length === 2) return false
+  if ((node[0] === '[]' || node[0] === '()') && node.length < 3) return false
+  if ((node[0] === '++' || node[0] === '--') && node.length < 3) return false
+  return LEFT_EDGE_OPS.has(node[0]) && leftEdgeIsObject(node[1])
+}
+
 const hasIncompleteNamedBackref = pattern => {
   for (let i = 0; i < pattern.length; i++) {
     if (pattern[i] !== '\\') continue
@@ -1079,6 +1101,29 @@ export function validateEarlyErrors(ast, source) {
       return
     }
 
+    // Parentheses contain an Expression, never a statement list. Jessie uses
+    // the same `';'` node for both and otherwise accepts `(a; b)`/`({};)`.
+    if (op === '()' && node.length === 2 && isSeq(node[1]))
+      fail('semicolon is not allowed in a parenthesized expression')
+
+    // Arguments may have a trailing comma, but never an elision. Array
+    // literals deliberately share the comma-list shape and remain exempt.
+    if (op === '()' && node.length > 2 && isNode(node[2]) && node[2][0] === ',' &&
+        node[2].slice(1).some(arg => arg == null))
+      fail('call arguments cannot contain an elision')
+
+    if (op === 'debugger') {
+      if (!statementPosition) fail('debugger is only valid as a statement')
+      return
+    }
+
+    // At statement start `{` is unconditionally a block. An operator with no
+    // prefix-expression form cannot continue it (`{} * 1`, `{} = rhs`).
+    // Operators such as `+`, `-`, `/`, `(` and `[` are intentionally absent:
+    // each can begin a valid sibling statement immediately after a block.
+    if (statementPosition && BLOCK_CANNOT_PREFIX.has(op) && leftEdgeIsObject(node))
+      fail('block statement cannot be used as an expression operand')
+
     if (op === ';') {
       for (let i = 1; i < node.length; i++) {
         const stmt = node[i]
@@ -1185,6 +1230,11 @@ export function validateEarlyErrors(ast, source) {
       const arrow = op === 'async' ? node[1] : node
       const isAsync = op === 'async'
       const params = paramsOf(arrow[1]), body = arrow[2]
+      // A leading `{` after `=>` is always the function body, never an object
+      // literal concise body. Jessie can absorb a following operator into that
+      // body (`() => {} = 1`); only explicit parens may choose the expression.
+      if (isNode(body) && body[0] !== '{}' && leftEdgeIsObject(body))
+        fail('arrow function block cannot continue as an expression')
       if (params.some(hasRest)) needsLexical = true
       const fnBody = isNode(body) && body[0] === '{}' ? body[1] : body
       const ownStrict = isUseStrict(fnBody)
