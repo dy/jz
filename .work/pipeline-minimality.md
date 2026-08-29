@@ -209,11 +209,13 @@ Merged into main as ffac902c via a subset branch: everything except the
 conversions in emit.js, compile/index.js, narrow.js, early-errors.js and
 prepare/index.js, which main's working tree held uncommitted edits in (git would
 refuse to overwrite them, and nothing here stashes or commits someone else's
-in-progress work). Those ~26 conversions wait on `refactor/pipeline-minimality-rest`
-(tip b2ed11ff = full branch incl. the merge of main 3149278d): once those five
-files are committed, `git merge refactor/pipeline-minimality-rest` lands them
-(trial-merged clean). The three split plans (emit/narrow/prepare) wait on the same
-event for the same reason.
+in-progress work). Those conversions landed the same day as ba77ce78 once the owner committed the
+five files (e79fc619): a revert of the subset's revert, 3-way clean over the new
+edits, oracle CLEAN vs 47edac89, battery green (native/O0/O3/wasi 3803, kernel
+3000, self 21/21). The walker retrofit is now fully on main; the branch is
+deleted. The three split plans (emit/narrow/prepare) are unblocked but not
+started — a new campaign, to be sequenced after jz-45's dead-exports sweep
+(it edits the same import lines).
 
 ## Queue after M1d (same campaign)
 
