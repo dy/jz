@@ -21,19 +21,19 @@ export const COMPOUND_NUMERIC_OPS = new Set([
   '-=', '*=', '/=', '%=', '**=', '&=', '|=', '^=', '<<=', '>>=', '>>>=',
 ])
 
-export const STRING_METHODS = new Set([
+const STRING_METHODS = new Set([
   'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'trim', 'trimStart', 'trimEnd',
   'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring',
 ])
 
-export const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
+const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
 
 // Methods whose result is a boolean. Classifying them VAL.BOOL lets the export
 // boundary materialize the 0/1 carrier as a real boolean (host sees true/false,
 // not 1/0) and lets typeof/String/JSON observe it faithfully — internal branch/
 // arithmetic positions still ride the cheap 0/1 carrier. (`has`/`delete` are
 // guarded on a proven Map/Set receiver below, like `add`/`set`.)
-export const BOOL_METHODS = new Set([
+const BOOL_METHODS = new Set([
   'includes', 'some', 'every', 'startsWith', 'endsWith', 'test',
 ])
 
