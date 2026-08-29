@@ -78,21 +78,26 @@ function applyArenaRewind(func, fn, safeCallees) {
   // even where the return was a statement, leaving a phantom value on the stack
   // of a void enclosing frame (a `return` inside try_table failed validation:
   // "expected 0 elements on the stack for fallthru, found 1").
-  const rewriteReturns = node => {
-    if (!Array.isArray(node)) return node
+  const endsWithReturn = fn.at(-1)?.[0] === 'return' || fn.at(-1)?.[0] === 'return_call'
+  // Retired onto walkAst (pipeline-minimality slice, `.work/assemble-outliers.md`
+  // §5): a `return` node is replaced wholesale, never recursed into — its own
+  // value can't itself contain a nested statement-position `return`, so
+  // there is nothing further to rewrite inside it; every other node recurses
+  // normally. `enter`'s `(parent, index)` gives a valid slot to reassign even
+  // for a bare top-level `return` (walkAst visits every `fn[i]` from index 1,
+  // a strict superset of the original `bodyStart`-based loop — `fn[i]` for
+  // `i < bodyStart` are `local`/`param` decls, never `return`-shaped, so
+  // visiting them too is a no-op).
+  walkAst(fn, { enter: (node, parent, index) => {
     if (node[0] === 'return' && node.length > 1) {
-      return ['return', ['block',
+      parent[index] = ['return', ['block',
         ['result', resultType],
         ['local.set', ret, node[1]],
         restore(),
         ['local.get', ret]]]
+      return false
     }
-    for (let i = 1; i < node.length; i++) node[i] = rewriteReturns(node[i])
-    return node
-  }
-
-  const endsWithReturn = fn.at(-1)?.[0] === 'return' || fn.at(-1)?.[0] === 'return_call'
-  for (let i = bodyStart; i < fn.length; i++) fn[i] = rewriteReturns(fn[i])
+  } })
   const newBodyStart = findBodyStart(fn)
   fn.splice(newBodyStart, 0,
     ['local', save, 'i32'],
