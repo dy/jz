@@ -136,6 +136,7 @@ test('passes: emission tier never writes durable analysis state (slice-4 exit gr
     }
   }
   walkDir(join(ROOT, 'module'))
+  walkDir(join(ROOT, 'src/compile/emit'))
   files.push(join(ROOT, 'src/compile/emit.js'))
   const offenders = []
   for (const p of files) {
