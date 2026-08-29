@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 95,
+  "count": 81,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -66,11 +66,7 @@
       "test/language/asi/S7.9_A6.3_T6.js",
       "test/language/asi/S7.9_A6.3_T7.js",
       "test/language/asi/S7.9_A9_T8.js",
-      "test/language/line-terminators/S7.3_A2.1_T2.js",
-      "test/language/line-terminators/S7.3_A2.2_T2.js",
       "test/language/line-terminators/invalid-comment-single-cr.js",
-      "test/language/line-terminators/invalid-string-cr.js",
-      "test/language/line-terminators/invalid-string-lf.js",
       "test/language/statements/for/S12.6.3_A8.1_T1.js",
       "test/language/statements/for/S12.6.3_A8.1_T3.js"
     ],
@@ -79,8 +75,6 @@
       "test/language/expressions/async-arrow-function/escaped-async.js"
     ],
     "nested-strict-legacy-escape": [
-      "test/language/literals/string/S7.8.4_A1.1_T2.js",
-      "test/language/literals/string/S7.8.4_A1.2_T2.js",
       "test/language/literals/string/legacy-non-octal-escape-sequence-1-strict-explicit-pragma.js",
       "test/language/literals/string/legacy-non-octal-escape-sequence-2-strict-explicit-pragma.js",
       "test/language/literals/string/legacy-non-octal-escape-sequence-3-strict-explicit-pragma.js",
@@ -95,17 +89,9 @@
     "other-jessie-context-loss": [
       "test/language/block-scope/syntax/for-in/disallow-initialization-assignment.js",
       "test/language/block-scope/syntax/for-in/disallow-multiple-lexical-bindings-without-and-with-initializer.js",
-      "test/language/comments/S7.4_A2_T2.js",
       "test/language/expressions/call/S11.2.4_A1.3_T1.js",
       "test/language/expressions/conditional/in-branch-2.js",
       "test/language/expressions/object/method-definition/early-errors-object-method-async-lineterminator.js",
-      "test/language/literals/boolean/false-with-unicode.js",
-      "test/language/literals/boolean/true-with-unicode.js",
-      "test/language/literals/null/null-with-unicode.js",
-      "test/language/literals/numeric/numeric-separators/numeric-separator-literal-dil-dot-nsl-dd-err.js",
-      "test/language/literals/numeric/numeric-separators/numeric-separator-literal-dil-dot-nsl-ep-err.js",
-      "test/language/literals/numeric/numeric-separators/numeric-separator-literal-dil-dot-nsl-err.js",
-      "test/language/literals/regexp/S7.8.5_A1.2_T1.js",
       "test/language/reserved-words/await-module.js",
       "test/language/statements/debugger/expression.js",
       "test/language/statements/let/syntax/identifier-let-allowed-as-lefthandside-expression-strict.js",

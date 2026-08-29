@@ -668,6 +668,49 @@ test("a GeneratorDeclaration's own name inherits the ENCLOSING scope's generator
     is(jz('function outer() { function* yield(){ return 1 } return 1 }\nexport let f = () => outer()').exports.f(), 1)
 })
 
+test('escaped reserved word cannot be a bare identifier reference used as a whole statement (other-jessie-context-loss)', () => {
+    // walk()'s per-child loop validates escaped-reserved-word identifiers
+    // that are CHILDREN of some parent node, but a lone identifier used as
+    // an entire statement (`f\u{61}lse;`) IS the node, not a listed child —
+    // that call site the per-child loop covers never sees it. Scoped
+    // narrowly to this one unambiguous IdentifierReference position
+    // (checkIdentifierRef), not folded into walk()'s general dispatch,
+    // which also reaches property names and import/export specifier
+    // externals through the same bare-string shape.
+    // (A for-in/of target — `for (let in o)` in strict mode — is the exact
+    // same kind of gap and checkIdentifierRef closes it natively too, but a
+    // confirmed self-host-only divergence there (the self-compiled kernel
+    // accepts it regardless) means that specific wiring stays reverted —
+    // see early-errors.js's own NOTE at the for-in/of head handler.)
+    rejects('export let f = () => { f\\u{61}lse; return 1 }', 'escaped reserved word')
+    rejects('export let f = () => { tru\\u{65}; return 1 }', 'escaped reserved word')
+    rejects('export let f = () => { n\\u{75}ll; return 1 }', 'escaped reserved word')
+    is(jz('export let f = () => { let x = 5; x; return x }').exports.f(), 5)
+    is(jz('export let f = () => { let o = { a: 1 }; for (let in o) { } return 1 }').exports.f(), 1)
+})
+
+test('lexical-risk pre-filter reaches unterminated comments, dot-adjacent separators, and raw newlines in quotes (other-jessie-context-loss / nested-strict-legacy-escape)', () => {
+    // Three independent gaps in sourceHasLexicalRisk's fast pre-filter, each
+    // starving validateLexicalSource's (already-correct) scanner of a
+    // reason to run: an unterminated block comment anywhere in the source
+    // (`src.includes('/*')`); a numeric separator directly after the
+    // decimal point (`10._1` — the existing digit-before-underscore pattern
+    // never anchors on a DOT before the underscore); and a raw LineTerminator
+    // inside a single/double-quoted string (hasNewlineInQuote, a tight
+    // quote-tracking scan — anchoring only on "quote+newline+quote" would
+    // false-positive on any file with 2+ same-line-separated strings).
+    // (a trailing unterminated comment at true top level — nested inside an
+    // unclosed brace, subscript's own bracket matcher reports first instead)
+    rejects('export let f = () => 1;\n/*unterminated', 'unterminated block comment')
+    rejects('export let f = () => 10._1', 'separator')
+    rejects('export let f = () => 10._', 'separator')
+    rejects('export let f = () => "\n"', 'line terminator')
+    is(jz('export let f = () => { /* fine */ return 1 }').exports.f(), 1)
+    is(jz('export let f = () => 10.5').exports.f(), 10.5)
+    is(jz('export let f = () => globalThis._nonexistent === undefined ? 1 : 0').exports.f(), 1)
+    is(jz('export let f = () => "a" + "b"').exports.f(), 'ab')
+})
+
 test('yield/await as a binding name admits no trailing operand (nested-strict-legacy-escape sibling / async-generator-and-parameter-context)', () => {
     // `let yield;`/`let await;` tokenize with a null operand (a bare binding
     // name); a real trailing expression (`let\nawait 0;`) means the source

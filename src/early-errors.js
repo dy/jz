@@ -209,6 +209,25 @@ lexicalTemplateExpr = (src, start, strict) => {
 const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
 const REST_BINDING = 1, REST_EXPRESSION = 2
 
+// Cheap, single-pass, deliberately approximate: tracks only quote/backslash
+// state (no need to also recognize comments/regexes/templates \u2014 a false
+// positive here just costs an extra, fully-correct validateLexicalSource
+// pass; only a false NEGATIVE would be unsound). Used to catch a raw
+// LineTerminator inside a single/double-quoted string
+// (`"\nmulti\nline\n"`), which the risk regexes below never anchor on.
+const hasNewlineInQuote = src => {
+  let quote = 0
+  for (let i = 0; i < src.length; i++) {
+    const c = src.charCodeAt(i)
+    if (quote) {
+      if (c === 92) { i++; continue }
+      if (c === quote) { quote = 0; continue }
+      if (c === 10 || c === 13) return true
+    } else if (c === 34 || c === 39) quote = c
+  }
+  return false
+}
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
   src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') ||
@@ -217,7 +236,16 @@ const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
   /(^|[^A-Za-z0-9_$])[0-9][0-9_.]*n\b/m.test(src) ||
   /(^|[^A-Za-z0-9_$])[0-9](?![0-9.eEnN])[A-Za-z_$]/m.test(src) ||
-  strict && /(^|[^A-Za-z0-9_$])0[0-9]/m.test(src)
+  strict && /(^|[^A-Za-z0-9_$])0[0-9]/m.test(src) ||
+  // `10._1`/`10._`/`10._e1`: a numeric separator directly after the decimal
+  // point \u2014 the digit-before-underscore risk pattern above only anchors on
+  // `[0-9]_`, missing this one. Anchored on a digit before the dot too, so
+  // it doesn't fire on ordinary `obj._private` member access.
+  /[0-9]\._/.test(src) ||
+  // An unterminated block comment, or a raw LineTerminator inside a quoted
+  // string, both need the full token-aware scan below to catch correctly
+  // (strings/regexes must be skipped as such, not textually).
+  src.includes('/*') || hasNewlineInQuote(src)
 )
 
 /** Lightweight lexical validation for spellings jessie's value AST erases. */
@@ -516,6 +544,27 @@ const checkBindingName = (name, cx) => {
   if (name === 'yield' && (cx.strict || cx.generator)) fail(`'yield' cannot be bound in this context`)
   if (cx.strict && (STRICT_RESERVED.has(name) || name === 'eval' || name === 'arguments'))
     fail(`'${name}' cannot be bound in strict mode`)
+}
+
+// IdentifierReference legality for a bare-string node reached where walk()'s
+// normal per-child loop cannot see it — a lone identifier used as a WHOLE
+// statement (`f\u{61}lse;`) or as a for-in/of target (`for (let in o)`) is
+// never a listed CHILD of a parent node the loop iterates; it IS the node.
+// Scoped to exactly those two call sites (both unambiguous
+// IdentifierReference positions) rather than folded into walk()'s dispatch,
+// which also reaches property names, import/export specifier externals, and
+// object-literal keys through the very same bare-string shape — contexts
+// where this check must NOT run.
+const checkIdentifierRef = (name, cx) => {
+  if (name.startsWith('#') && !cx.privateNames?.has(name)) fail(`private name '${name}' is not declared in this class`)
+  if (cx.async && name === 'await') fail("'await' cannot be an identifier reference in an async function")
+  if (name.includes('\\u')) {
+    const decoded = decodeIdentifier(name)
+    if (ALWAYS_RESERVED.has(decoded) || cx.strict && (STRICT_RESERVED.has(decoded) || decoded === 'let' || decoded === 'yield') ||
+        cx.async && decoded === 'await') fail(`escaped reserved word '${decoded}' cannot be an identifier reference`)
+  } else if (cx.strict && (STRICT_RESERVED.has(name) || name === 'let' || name === 'yield')) {
+    fail(`'${name}' cannot be used as an identifier reference in strict mode`)
+  }
 }
 
 const validatePatternTree = (pattern, cx, binding, inRest = false) => {
@@ -1031,7 +1080,12 @@ export function validateEarlyErrors(ast, source) {
     }
 
     if (op === ';') {
-      for (let i = 1; i < node.length; i++) if (node[i] != null) walk(node[i], cx, true)
+      for (let i = 1; i < node.length; i++) {
+        const stmt = node[i]
+        if (stmt == null) continue
+        if (typeof stmt === 'string') checkIdentifierRef(stmt, cx)
+        else walk(stmt, cx, true)
+      }
       return
     }
     if (op === 'case') {
@@ -1319,6 +1373,19 @@ export function validateEarlyErrors(ast, source) {
       const next = { ...cx, loop: cx.loop + 1 }
       if (isNode(head) && (head[0] === 'in' || head[0] === 'of')) {
         const lhs = head[1]
+        // NOTE: a checkIdentifierRef(lhs, cx) call belongs here too (closing
+        // test262's identifier-let-allowed-as-lefthandside-expression-
+        // strict.js — strict-mode `for (let in o)`) and is sound natively
+        // (verified), but reverted: the self-compiled kernel accepts it
+        // regardless (confirmed via test/kernel-target.js direct calls, not
+        // a guess) — a genuine native/kernel divergence, not a logic bug in
+        // this file (checkIdentifierRef's other two call sites, statement-
+        // position, are confirmed correct in-kernel; restructuring this one
+        // out of its if/else-if chain into a standalone check first did not
+        // change the outcome either). Left reverted rather than shipping a
+        // mismatch against STABILITY.md's "natively and in jz.wasm" claim;
+        // root-causing which val-fact the self-hosted compiler mistrusts
+        // here is compiler-internals work outside this pass's scope.
         if (isNode(lhs) && (lhs[0] === 'let' || lhs[0] === 'const' || lhs[0] === 'var')) {
           if (lhs.length !== 2 || isNode(lhs[1]) && lhs[1][0] === '=')
             fail('for-in/of declaration must have one uninitialized binding')
@@ -1384,7 +1451,10 @@ export function validateEarlyErrors(ast, source) {
     if (ALWAYS_RESERVED.has(name)) fail(`escaped reserved word '${name}' cannot be an identifier reference`)
   }
   validateScopeNames(ast, root, 'global')
-  for (const stmt of statements(ast)) walk(stmt, root, true)
+  for (const stmt of statements(ast)) {
+    if (typeof stmt === 'string') checkIdentifierRef(stmt, root)
+    else walk(stmt, root, true)
+  }
   if (needsLexical) validateLexicalSource(source, root.strict)
   return ast
 }
