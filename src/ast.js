@@ -347,8 +347,6 @@ function spreadArgs(args) {
   return args
 }
 
-export const isSeq = node => Array.isArray(node) && node[0] === ';'
-
 /** Statement list inside a block `{…}`; null when `body` is not a block. */
 export function blockStmts(body) {
   if (!Array.isArray(body) || body[0] !== '{}') return null
