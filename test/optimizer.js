@@ -18,6 +18,7 @@ import { fusedRewrite } from '../src/optimize/peephole.js'
 import { compile } from '../index.js'
 import { EQ_ZERO_KERNEL } from './_optimizer-kernels.js'
 import { optimize as watOptimize } from 'watr/optimize'
+import parseWat from 'watr/parse'
 import { run } from './util.js'
 import { belowOpt, onWasi } from './_matrix.js'
 import { parse, loopCount, count, walk } from '../scripts/wat-probe.mjs'
@@ -1784,9 +1785,15 @@ test('charCodeAt: returns i32 — no f64 widen/truncate of the char code itself'
       return n | 0
     }
   `, { wat: true, optimize: { watr: false } })
+  const main = findFunc(parseWat(wat), '$main')
+  ok(main, 'expected compiled $main function')
   ok(/\(local \$c i32\)/.test(wat), 'expected $c declared as i32')
-  is((wat.match(/\(call \$__to_num/g) || []).length, 0)
-  is((wat.match(/i64\.trunc_sat_f64_s/g) || []).length, 1, 'one trunc at the final n|0 (the accumulator itself, not the char code)')
+  is(count(main, n => n[0] === 'call' && n[1] === '$__to_num'), 0,
+    'the user function does not coerce the i32 char code')
+  is(count(main, n => /^f64\.convert_i32_[su]$/.test(n[0]) && n[1]?.[0] === 'local.get' && n[1]?.[1] === '$c'), 0,
+    'the char code itself is never widened to f64')
+  is(count(main, n => n[0] === 'i64.trunc_sat_f64_s' && n[1]?.[0] === 'local.get' && n[1]?.[1] === '$n'), 1,
+    'one final n|0 trunc consumes the accumulator; unrelated host-boundary conversions do not count')
 })
 
 test('charCodeAt: runtime correctness — digit parse', () => {
