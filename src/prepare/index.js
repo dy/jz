@@ -31,163 +31,22 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode, walkAst } from '../ast.js'
-import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook } from '../ctx.js'
-import { T } from '../ast.js'
-import {
-  extractParams, collectParamNames, classifyParam, PARAM_KIND, PARAM_NAME, PARAM_DEFAULT, PARAM_PATTERN,
-} from '../ast.js'
-import { observeNodeFacts } from '../compile/program-facts.js'
-import { staticObjectProps, staticPropertyKey, staticValue, NO_VALUE } from '../static.js'
-import { VAL } from '../reps.js'
-import { STMT_OPS } from '../ast.js'
-import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
-import { recordGlobalRep } from '../compile/infer.js'
-import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
-import { isFuncRef } from '../ir.js'
-import { censusShapedNode } from '../kind.js'
-import {
-  CTORS, COLLECTION_CTORS, TIMER_NAMES,
-  hasModule, includeModule, includeMods,
-  includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue,
-  includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion,
-  includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor,
-  includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime,
-} from '../autoload.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
+import { ASSIGN_OPS, JZ_UNDEF, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, REFS_THROUGH_ARROWS, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, refsName, walkAst } from '../ast.js'
+import { COLLECTION_CTORS, CTORS, TIMER_NAMES, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeForTimerRuntime, includeMods, includeModule } from '../autoload.js'
+import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
+import { recordGlobalRep } from '../compile/infer.js'
+import { observeNodeFacts } from '../compile/program-facts.js'
+import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
+import { isFuncRef } from '../ir.js'
+import { censusShapedNode } from '../kind.js'
+import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
+import { VAL } from '../reps.js'
+import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../static.js'
+import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, assignSid, assignedStaticGlobals, builtinMemberKey, declInitUnknown, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, resetPrepState, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
+export { GLOBALS } from './state.js'
 
-// SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
-const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
-// prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
-// error classes (.work/todo.md §deletion-sweep §2).
-const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
-
-// `instanceof` RHS allowlist (.work/todo.md §deletion-sweep §4). jz has no prototype chain, so
-// RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
-// TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
-// 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
-// distinct sid per class). Deliberately NARROWER than
-// layout.js's full TYPED_CTORS (14 names): excluded here —
-//   - BigInt64Array / BigUint64Array: layout.js's encodeTypedElemAux collapses BOTH to
-//     the identical aux (base code 7 | TYPED_ELEM_BIGINT_FLAG) — no bit distinguishes
-//     them once the static ctor is unknown, so a runtime aux-compare can't tell them
-//     apart. Same "tag-indistinguishable → reject" call this file already makes for
-//     WeakMap/WeakSet below, extended here to a collision the design doc's own RHS
-//     table didn't flag.
-//   - Float16Array / Uint8ClampedArray: not a collision (their extra flag bit IS unique),
-//     simply out of the shipped scope — omitted for symmetry with the two ctors above
-//     rather than partially widening TYPED_ELEM_NAMES.
-//   - DataView: layout.js encodes a DataView descriptor as PTR.TYPED with aux=
-//     TYPED_ELEM_VIEW_FLAG alone (base code 0) — bit-identical to a VIEW Int8Array
-//     (`new Int8Array(buffer)`, aux = TYPED_ELEM_CODE.Int8Array(0) | VIEW_FLAG). Same
-//     tag-indistinguishable reasoning; the design doc's table never listed DataView as
-//     supported RHS in the first place, so this is a confirmation, not a new cut.
-const INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
-
-// Module-level prepare state. Six independent stacks/scalars that together form
-// the prepare-pass working set. Lifecycle: reinitialized by `resetPrepState()`,
-// registered below as a ctx.js reset-hook —
-// every reset()/beginSession() call clears it, so a throw inside a PRIOR prepare()
-// can never leak into the next compile either. Kept at module scope (rather than
-// ctx.prepare.*) because 78 read sites would mean a single indirection on every
-// scope query; the consolidated reset documents the set.
-let depth          // arrow nesting depth (0=top-level, >0=inside function)
-let scopes         // block scope stack: [{names: Set, renames: Map}]
-let staticConstScopes  // lexical const facts: [[strings?, arrays?, consts?]]
-const STATIC_STRINGS = 0, STATIC_ARRAYS = 1, STATIC_CONSTS = 2
-let assignedStaticGlobals
-let mutatedArrayNames  // raw names with any indexed/.length/mutating-method op anywhere (census)
-// Per-arrow set of names already declared anywhere in the function body. Used
-// to force a rename when the same identifier is declared in two sibling blocks
-// (else-if arms, separate { ... } chunks): without renaming, both decls lower
-// to the same WASM local, but downstream optimizations (directClosures) gate
-// on per-decl `isReassigned`, not per-WASM-local — they'd read a stale binding.
-let funcLocalNames
-// Per-arrow set of local names bound to a function literal (`let g = () => …`).
-// Lets the `.`-handler tell a function receiver — where `.caller`/`.callee` are
-// prohibited introspection — from a data object that merely has such a field.
-let funcValueNames
-// Names bound directly to jz's own Promise-runtime helper CALLS (jzify/
-// async.js's ASYNC_RUNTIME + jzify/transform.js's Promise canonicalization —
-// `new Promise(fn)` → __p_exec(fn), `Promise.withResolvers()` →
-// __p_withResolvers()): the ONE static proof the `.`-handler's isFuncValueRecv
-// check (below) needs to recognize `.then`/`.resolve`/`.reject` read off THESE
-// SPECIFIC receivers as function-valued too, alongside the existing bound-name
-// case. FLAT (not a per-scope stack like funcValueNames): safe because it's
-// keyed by the SAME post-rename-unique spelling every OTHER name-based fact in
-// this file already relies on (mintForScope never reuses a spelling across
-// live scopes; a module-level name is unique by construction). Populated once,
-// at decl-processing time, right where funcValueNames gets its own entries.
-let promiseRecvNames  // `.then`/`.catch`/`.finally` are function-valued
-let withResolversRecvNames  // `.resolve`/`.reject` are function-valued
-// Per-module set of top-level names WRITTEN beyond their declaration (bare-name
-// assign/compound/++ anywhere in the module, locals-shadowed writes excluded).
-// Gates defFunc: a depth-0 `let g = (…) => …` lifts into a fixed NAMED FUNCTION,
-// sound only while the binding is immutable — JS lets a `let`/`var` function
-// binding be reassigned (even from inside a function), and lifting such a
-// binding froze callers onto the first value (reads resolved to the minted
-// function; the write targeted a binding that no longer existed — "'g' is not
-// in scope" / silently-stale first arrow). Mirror of fn-namespace's multiProp
-// demotion: a reassigned name stays an ordinary closure-valued global
-// (writable, indirect-callable); devirtGlobalCalls re-devirts the init-order-
-// resolvable cases afterward. Stacked per module (recursive imports swap it).
-let reassignedTopLevel
-let assignSid      // name → sid|null of the agreed literal shape across `=` assignments (consensus/poison; vars binding is module-scope only)
-let declInitUnknown  // Set<name> — bindings whose value source the `=`-assignment consensus
-                     // never sees (explicit non-literal decl initializer, params, catch,
-                     // destructure targets). BindingId totality makes this a plain
-                     // per-binding fact — the old owner-scoped reachability + bar census
-                     // (bindSites/assignBindOwners) existed only because bare names could
-                     // collide across functions, which is now unrepresentable.
-let ownerStack     // arrow-nesting ids: [0] = module scope; '=>' pushes a fresh id. A
-                   // binding's owner is the arrow that declares it; an assignment can reach
-                   // any binding whose owner id is on the assignment's stack (shadows are
-                   // renamed by prep, so reachable-same-name ⇒ same binding).
-let ownerUniq
-let renameSerial   // per-arrow mint counters for BindingId names (parallel to ownerStack)
-// ES §14.7.4.7 per-iteration bindings at MODULE scope (depth 0): names of
-// let/const declared directly in a loop BODY (for/for-of/for-in's desugared
-// bind, or the for-head captured-let copy-in) that a nested closure inside
-// THAT loop captures. `depth` alone can't gate this — it only tracks
-// function/arrow nesting, not loop nesting, so a module-top-level loop is
-// still "depth 0" and its body-lets would otherwise take the single-instance
-// global fast path (declareGlobal) that every OTHER depth-0 binding correctly
-// wants (module init runs once). A loop body doesn't: each iteration is its
-// own lexical environment, so a captured loop-local needs the SAME per-
-// binding-instance treatment a function-scope loop already gets for free
-// (its body-lets are always wasm locals, never globals). Pushed/popped
-// around a loop's body in the 'for' handler; consulted by declareGlobal,
-// prescanBlockDecls, and prepDecl's depth-0 promotion checks so a marked
-// name mints a fresh local (mintLocal) instead of a shared global — routing
-// it through the EXACT mechanism a function-scope loop-let already uses
-// (mintLocal's per-arrow ownerStack id defaults to 0 = module scope, so it
-// mints safely with no function context). Once local, the existing emit-time
-// per-iteration-cell machinery (emitLoopFreshBoxed/emitDecl, gated on
-// ctx.func.boxed) takes over exactly as it does inside a function — value-
-// capture-at-closure-creation already gives correct per-iteration semantics
-// for the common (unmutated) case with zero extra machinery.
-let loopLocalNames
-
-const resetPrepState = () => {
-  depth = 0
-  scopes = []
-  staticConstScopes = []
-  assignedStaticGlobals = new Set()
-  mutatedArrayNames = new Set()
-  funcLocalNames = [new Set()]
-  funcValueNames = [new Set()]
-  promiseRecvNames = new Set()
-  withResolversRecvNames = new Set()
-  reassignedTopLevel = new Set()
-  assignSid = new Map()
-  declInitUnknown = new Set()
-  ownerStack = [0]
-  ownerUniq = 0
-  renameSerial = [0]
-  loopLocalNames = new Set()
-}
-registerResetHook(resetPrepState)
 
 /** BindingId totality: every function-local binding renames to the
  *  module-wide-unique `name<T>f<fnId>_<serial>` — fnId = the owning arrow's
@@ -771,8 +630,6 @@ function validateCoalesceMixing(n) {
   for (let i = 1; i < n.length; i++) validateCoalesceMixing(n[i])
 }
 
-const freshPrepareId = () => ctx.names.prepare++
-
 export default function prepare(node) {
   // This direct call must stay even though reset()'s RESET_HOOKS (ctx.js) also
   // clears this working set before every prepare() call (beginSession, raw-reset
@@ -802,7 +659,7 @@ export default function prepare(node) {
   fuseSparseMapReads(node)  // AST-level fusion; needs pre-resolution shape — defined at end of file
   seedStaticGlobalAssignments(node)
   node = hoistIndexedConstLiterals(node)
-  reassignedTopLevel = scanReassignedTopLevel(node)
+  prepState.reassignedTopLevel = scanReassignedTopLevel(node)
   const ast = prep(node)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
@@ -909,16 +766,6 @@ export default function prepare(node) {
   return ast
 }
 
-// Named constants → numeric literals. The JZ_NULL/JZ_UNDEF atom sentinels live
-// in ast.js — shared with emit without crossing the prepare↔compile boundary.
-// Prototype-less (Object.create(null)): a plain `{}` inherits Object.prototype in V8, so
-// `'valueOf' in CONSTANTS` / `CONSTANTS['toString']` would hit an inherited method and
-// mis-resolve a user identifier named like an Object method (jz.js-only — kernel objects
-// are already prototype-less). Same reason on F64_CONSTANTS / GLOBALS / REJECT_IDENTS.
-const CONSTANTS = Object.assign(Object.create(null), { 'true': true, 'false': false, 'null': JZ_NULL, 'undefined': JZ_UNDEF })
-// NaN/Infinity stay as special f64 values in emit()
-const F64_CONSTANTS = Object.assign(Object.create(null), { 'NaN': NaN, 'Infinity': Infinity })
-
 /** Resolve variable name through block scope chain (innermost rename wins). */
 function resolveScope(name) {
   for (let i = scopes.length - 1; i >= 0; i--)
@@ -959,7 +806,7 @@ function prescanBlockDecls(node) {
         // (see its declaration) — mint it exactly like a depth!==0 local instead
         // of letting it fall through to the single-instance global spelling.
         const isLL = loopLocalNames.has(name)
-        top.set(name, (depth !== 0 || isLL) ? mintForScope(name, isLL)
+        top.set(name, (prepState.depth !== 0 || isLL) ? mintForScope(name, isLL)
           : (isDeclared(name) || fnNames?.has(name)) ? `${name}${T}${freshPrepareId()}` : name)
       }
     }
@@ -1157,11 +1004,6 @@ function staticTypeofString(x) {
   if (typeof px === 'string' && px.includes('.') && emitArity(ctx.core.emit?.[px]) > 0) return 'function'
   return null
 }
-// Builtin-namespace constructors expose `prototype`/`length`/`name` as own
-// properties; plain namespaces (Math, JSON, Reflect, Atomics) do not.
-const NS_CTORS = new Set(['Number', 'String', 'Boolean', 'BigInt', 'Object',
-  'Array', 'Symbol', 'Error', 'Date', 'RegExp', 'Function', 'Map', 'Set',
-  'Promise', 'ArrayBuffer', 'DataView', 'WeakMap', 'WeakSet'])
 // `NS.hasOwnProperty("member")` is a compile-time question: jz models a
 // builtin namespace as a set of emit keys, so a member is owned iff jz emits
 // it — plus the universal constructor trio for constructor namespaces.
@@ -1459,54 +1301,6 @@ function prep(node) {
   return handler ? handler(...args) : [op, ...args.map(prep)]
 }
 
-// Identifier prohibitions: op-policy.js REJECT_IDENTS (prep string nodes).
-
-// Predefined globals seeded into scope.chain at ctx.reset().
-// used in ctx.core.emit[]. Dotted lookups (Math.sin) go through the '.' handler which
-// resolves via scope.chain → module 'math' → registers 'math.sin' emitter.
-// Not actually "implicit imports" — these are ambient globals that exist in every jz/JS
-// program (they do not live in any module). jzify auto-injecting imports would still
-// need a list of these names to know what to emit, so the table lives here either way.
-export const GLOBALS = Object.assign(Object.create(null), {
-  Math: 'math',
-  fs: 'fs',
-  fetch: 'web',
-  Number: 'Number',
-  Array: 'Array',
-  Object: 'Object',
-  Symbol: 'Symbol',
-  JSON: 'JSON',
-  Date: 'Date',
-  isNaN: 'number',
-  isFinite: 'number',
-  parseInt: 'number',
-  parseFloat: 'number',
-  encodeURIComponent: 'encodeURIComponent',
-  decodeURIComponent: 'decodeURIComponent',
-  encodeURI: 'encodeURI',
-  decodeURI: 'decodeURI',
-  atob: 'atob',
-  btoa: 'btoa',
-  crypto: 'crypto',
-  navigator: 'navigator',
-  Error: 'Error',
-  // Error subclasses: distinct names in JS, but jz doesn't carry typed error
-  // info — `throw` accepts any value and stringification goes through the
-  // host. Treat them all as Error-shaped passthrough constructors so user
-  // code that throws specific subclasses (`throw new SyntaxError(msg)`) compiles
-  // identically. If we ever model `instanceof SyntaxError`, this is where to
-  // distinguish them; until then the surfaced message is what matters.
-  TypeError: 'Error',
-  SyntaxError: 'Error',
-  RangeError: 'Error',
-  ReferenceError: 'Error',
-  URIError: 'Error',
-  EvalError: 'Error',
-  BigInt: 'BigInt',
-  TextEncoder: 'TextEncoder',
-  TextDecoder: 'TextDecoder',
-})
-
 // `,` is the ordinary pattern separator; `;` appears when a `{…}` pattern parsed
 // in STATEMENT position (for-of head cover grammar: `for ({ x = 1 } of …)`) —
 // same items, block-shaped node.
@@ -1549,7 +1343,7 @@ function scalarArrayDestruct(pattern, rhs) {
 }
 
 function declareGlobal(name, user = true) {
-  if (depth !== 0 || typeof name !== 'string' || loopLocalNames.has(name)) return name
+  if (prepState.depth !== 0 || typeof name !== 'string' || loopLocalNames.has(name)) return name
   if (ctx.scope.globals.has(name)) err(`'${name}' conflicts with a compiler internal — choose a different name`)
   declGlobal(name, 'f64')
   if (user) ctx.scope.userGlobals.add(name)
@@ -1632,7 +1426,7 @@ function mintForScope(name, isLoopLocal) {
  *  loopLocalNames' own declaration for the full rationale. */
 function withLoopLocalNames(body, run) {
   let added = null
-  if (depth === 0) {
+  if (prepState.depth === 0) {
     for (const nm of collectLoopDeclNames(body)) {
       if (!loopLocalNames.has(nm) && bodyCapturesName(body, nm)) {
         (added ||= []).push(nm)
@@ -1834,32 +1628,6 @@ function expandDestruct(pattern, source, out, decls = null, srcLen = null) {
   }
 }
 
-// --- Builtin-namespace member aliasing --------------------------------------
-// `let/const name = NS.member` (`let sin = Math.sin`) and destructuring
-// (`let { sin, PI } = Math`, incl. rename `{ pow: myPow }`) bind straight to
-// the resolved emit key (`math.sin`) instead of materializing a real global —
-// there's no first-class "Math.sin" runtime value, only the compiler's own
-// dispatch table, so the alias makes every later reference to `name` behave
-// exactly as if the source had written `Math.sin` there directly:
-//   - `name(x)` — the bare-identifier branch in `prep()` (and `resolveCallee`)
-//     already returns a dotted `scope.chain`/block-scope entry bare, so the
-//     call lowers straight to `$math.sin`, no boxing, no arity ceiling (the
-//     general shape behind the `const alias = fn` fast path above).
-//   - a bare non-call reference falls through to the SAME first-class-value /
-//     constant-fold path a literal `Math.sin` reference hits at emit time
-//     (`builtinFunctionValue` / arity-0 constant fold) — succeeds or fails
-//     identically to the dotted form; never silently wrong.
-// Exports and reassignment are rejected with a clear error (see `registerBuiltinAlias`
-// and the reassignment guard in the main `prep()` dispatch) rather than
-// silently targeting no storage.
-
-/** `node` is the flat dotted emit key prep's own `.` handler would produce for
- *  `NS.member` (e.g. `'math.sin'`) — i.e. a real, already-resolved builtin
- *  reference, not an ordinary value/expression. */
-function builtinMemberKey(node) {
-  return typeof node === 'string' && node.includes('.') && ctx.core.emit[node] != null ? node : null
-}
-
 /** Pure syntactic extraction of `{ a, b: c }` → `[[target, member], …]` (handles
  *  rename). Returns null for any shape a plain namespace has no notion of: rest,
  *  defaults, computed keys, nested patterns. Shared by the declaration-form
@@ -1943,7 +1711,7 @@ function registerBuiltinAlias(name, key) {
     err(`'${name}' aliases builtin '${key}' and cannot be exported directly — export a wrapping function instead`)
   }
   if (emitArity(ctx.core.emit[key]) > 0) includeForCallableValue()
-  if (depth === 0) {
+  if (prepState.depth === 0) {
     ctx.scope.chain[name] = key
   } else {
     const fnNames = funcLocalNames[funcLocalNames.length - 1]
@@ -2035,7 +1803,7 @@ function prepDecl(op, ...inits) {
 
     if (!Array.isArray(i) || i[0] !== '=') {
       let declName = i
-      if (depth === 0 && typeof declName === 'string' && !loopLocalNames.has(declName)) {
+      if (prepState.depth === 0 && typeof declName === 'string' && !loopLocalNames.has(declName)) {
         if (ctx.module.currentPrefix) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[i] = declName
@@ -2053,7 +1821,7 @@ function prepDecl(op, ...inits) {
         if (scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(declName)) declName = top.get(declName)
-          else if ((depth !== 0 || loopLocalNames.has(declName)) && !declName.includes(T)) {
+          else if ((prepState.depth !== 0 || loopLocalNames.has(declName)) && !declName.includes(T)) {
             const m = mintForScope(declName, loopLocalNames.has(declName))
             top.set(declName, m)
             declName = m
@@ -2074,7 +1842,7 @@ function prepDecl(op, ...inits) {
     // cross-module callee resolves to the bare, unmangled name → "not in scope".
     // Module scope + `const` only: depth>0 aliases already work as closure values,
     // and a reassignable `let` is a genuine value binding, not an alias.
-    if (op === 'const' && depth === 0 && typeof name === 'string' && typeof init === 'string') {
+    if (op === 'const' && prepState.depth === 0 && typeof name === 'string' && typeof init === 'string') {
       const fn = hasFunc(init) ? init : (hasFunc(ctx.scope.chain[init]) ? ctx.scope.chain[init] : null)
       if (fn) {
         ctx.scope.chain[name] = fn
@@ -2137,7 +1905,7 @@ function prepDecl(op, ...inits) {
             // init assignment rides `rest` into module init like any destructure.
             declareGlobal(target)
             let declName = target
-            if (depth === 0 && ctx.module.currentPrefix) {
+            if (prepState.depth === 0 && ctx.module.currentPrefix) {
               declName = `${ctx.module.currentPrefix}$${target}`
               ctx.scope.chain[target] = declName
             }
@@ -2164,7 +1932,7 @@ function prepDecl(op, ...inits) {
         // target a nested closure captures mints like any depth!==0 local
         // instead of taking the single-instance global path below.
         const isLoopLocal = typeof n === 'string' && loopLocalNames.has(n)
-        if ((depth !== 0 || isLoopLocal) && typeof n === 'string' && scopes.length > 0) {
+        if ((prepState.depth !== 0 || isLoopLocal) && typeof n === 'string' && scopes.length > 0) {
           const top = scopes[scopes.length - 1]
           if (top.has(n)) declName = top.get(n)
           else if (!n.includes(T)) {
@@ -2181,8 +1949,8 @@ function prepDecl(op, ...inits) {
         // as non-literal binding sites (raw + module-prefixed key for depth-0
         // globals; whichever spelling later consumers resolve through is barred).
         censusUnknownInitDecl(declName)
-        if (depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
-        if ((depth !== 0 || isLoopLocal) && typeof declName === 'string' && fnNames) fnNames.add(declName)
+        if (prepState.depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
+        if ((prepState.depth !== 0 || isLoopLocal) && typeof declName === 'string' && fnNames) fnNames.add(declName)
       }
       if (patRenames.size) name = substPattern(name, patRenames)
       name = prepPatternKeys(name)
@@ -2237,7 +2005,7 @@ function prepDecl(op, ...inits) {
       if (typeof name === 'string' && scopes.length > 0) {
         const top = scopes[scopes.length - 1]
         if (top.has(name)) declName = top.get(name)
-        else if ((depth !== 0 || isLoopLocal) && !name.includes(T)) {
+        else if ((prepState.depth !== 0 || isLoopLocal) && !name.includes(T)) {
           declName = mintForScope(name, isLoopLocal)
           top.set(name, declName)
         } else if (isDeclared(name) || fnNames?.has(name)) {
@@ -2272,7 +2040,7 @@ function prepDecl(op, ...inits) {
       if (op === 'const' && typeof declName === 'string' && scopes.length)
         (staticConstScopes[staticConstScopes.length - 1][STATIC_CONSTS] ||= new Set()).add(declName)
       // Track const for reassignment checks — only module-scope consts (depth 0)
-      if (typeof declName === 'string' && depth === 0 && !isLoopLocal) {
+      if (typeof declName === 'string' && prepState.depth === 0 && !isLoopLocal) {
         if (ctx.module.currentPrefix) {
           declName = `${ctx.module.currentPrefix}$${declName}`
           ctx.scope.chain[name] = declName
@@ -2363,7 +2131,7 @@ function prepDecl(op, ...inits) {
       // Module-scope variable → WASM global (mark as user-declared). Skipped
       // for a captured loop-local (isLoopLocal): it already minted a fresh
       // local above and must stay one — see loopLocalNames' declaration.
-      if (depth === 0 && !isLoopLocal && typeof declName === 'string') {
+      if (prepState.depth === 0 && !isLoopLocal && typeof declName === 'string') {
         if (ctx.scope.globals.has(declName)) err(`'${declName}' conflicts with a compiler internal — choose a different name`)
         declGlobal(declName, 'f64')
         ctx.scope.userGlobals.add(declName)
@@ -2565,7 +2333,7 @@ function resolveCallee(callee, args) {
       if (hasModule(resolved) && !ctx.module.imports.some(i => i[3]?.[1] === `$${resolved}`)) includeModule(resolved)
       return callee
     }
-    if (depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
+    if (prepState.depth > 0 && !resolved && !INTRINSIC_CALLEES.has(callee) && !ctx.funcs.exports[callee] && !ctx.module.imports.some(i => i[3]?.[1] === `$${callee}`))
       includeForCallableValue()
     return callee
   }
@@ -2680,7 +2448,7 @@ const handlers = {
     // (mangled to `_mod$fn`) is recognised the same as a local one — the
     // subscript parser's plugin model mutates `parse.step` etc. across modules,
     // and a reassignment in module B must mark module A's call sites mutable.
-    if (depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
+    if (prepState.depth === 0 && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string'
       && Array.isArray(rhs) && rhs[0] === '=>') {
       const fnBase = ctx.scope.chain[lhs[1]] || lhs[1]
       if (hasFunc(fnBase)) {
@@ -2721,7 +2489,7 @@ const handlers = {
     // Element/length writes mutate the array behind a static-array fact.
     if (Array.isArray(plhs) && (plhs[0] === '[]' || (plhs[0] === '.' && plhs[2] === 'length')))
       invalidateMutatedArray(plhs[1])
-    if (depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs)) {
+    if (prepState.depth === 0 && typeof plhs === 'string' && ctx.scope.globals.has(plhs)) {
       // First assignment fixes the global's representation + object schema.
       if (!ctx.scope.globalReps?.has(plhs)) {
         recordGlobalRep(plhs, prhs)
@@ -2803,7 +2571,7 @@ const handlers = {
       const scope = new Map()
       if (typeof cParam === 'string') {
         const fnNames = funcLocalNames[funcLocalNames.length - 1]
-        if (depth !== 0) {
+        if (prepState.depth !== 0) {
           const renamed = mintLocal(cParam)
           scope.set(cParam, renamed)
           cParam = renamed
@@ -3145,18 +2913,18 @@ const handlers = {
 
   // Arrow: don't prep params. Track depth for nested function detection.
   '=>': (params, body) => {
-    if (depth > 0) { includeForCallableValue() }
+    if (prepState.depth > 0) { includeForCallableValue() }
     const raw = extractParams(params)
     // Owner id + serial counter FIRST: param mints (totality) belong to THIS
     // arrow's BindingId space, and the fnScope mapping must exist before any
     // default-value prep (a default may reference an earlier param).
-    ownerStack.push(++ownerUniq)   // binding-owner id for this arrow (census scoping)
+    ownerStack.push(++prepState.ownerUniq)   // binding-owner id for this arrow (census scoping)
     renameSerial.push(0)
     const fnScope = new Map()
     for (const n of collectParamNames(raw)) fnScope.set(n, mintLocal(n))
     const pName = (n) => fnScope.get(n) ?? n
 
-    depth++
+    prepState.depth++
     pushScope(fnScope)
     funcLocalNames.push(new Set(fnScope.values()))
     funcValueNames.push(new Set())
@@ -3212,7 +2980,7 @@ const handlers = {
     renameSerial.pop()
     funcLocalNames.pop()
     funcValueNames.pop()
-    depth--
+    prepState.depth--
     return result
   },
 
@@ -3608,7 +3376,7 @@ const handlers = {
       // mint-vs-identity), pay-per-capture like the for-head sibling above:
       // an uncaptured loop var keeps the cheaper global.
       let addedLoopLocals = null
-      if (depth === 0) {
+      if (prepState.depth === 0) {
         for (const nm of collectLoopDeclNames(body)) {
           if (!loopLocalNames.has(nm) && bodyCapturesName(body, nm)) {
             (addedLoopLocals ||= []).push(nm)
@@ -3977,11 +3745,11 @@ function inferAssignSchema(callNode) {
 function defFunc(name, node) {
   if (!Array.isArray(node) || node[0] !== '=>') return false
   // Only extract top-level functions, not nested (closures stay as values)
-  if (depth > 0) return false
+  if (prepState.depth > 0) return false
   // A reassigned binding must stay a mutable closure-valued global — lifting it
   // into a fixed named function froze callers onto the first value (see
   // reassignedTopLevel). 'default' can't be reassigned (export default).
-  if (name !== 'default' && reassignedTopLevel?.has(name)) return false
+  if (name !== 'default' && prepState.reassignedTopLevel?.has(name)) return false
   let [, rawParams, body] = node
   const raw = extractParams(rawParams)
 
@@ -4147,12 +3915,12 @@ function prepareModule(specifier, source) {
   }
   if (ctx.transform.jzify) ast = ctx.transform.jzify(ast)
   ast = hoistIndexedConstLiterals(ast)
-  const savedDepth = depth; depth = 0
-  const savedReassigned = reassignedTopLevel
-  reassignedTopLevel = scanReassignedTopLevel(ast)
+  const savedDepth = prepState.depth; prepState.depth = 0
+  const savedReassigned = prepState.reassignedTopLevel
+  prepState.reassignedTopLevel = scanReassignedTopLevel(ast)
   const moduleInit = prep(ast)
-  reassignedTopLevel = savedReassigned
-  depth = savedDepth
+  prepState.reassignedTopLevel = savedReassigned
+  prepState.depth = savedDepth
 
   // Collect exports: rename exported funcs with prefix
   const moduleExports = new Map()
