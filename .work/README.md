@@ -1,36 +1,35 @@
 # .work — working documents index
 
-## Living (the plan)
-- `handoff-2026-08-22.md` — THE cross-session plan: state, remaining queue,
-  process rules, reference-refresh commands. Dated name, current content.
-- `v1-architecture-campaign.md` — active campaign record + 4 GiB strategies
-  (streaming encoder vs region release-behind-the-cursor).
-- `research.md` — append-only evidence ledger (measurements, attributions).
+## Living
+- `plan.md` — THE plan: current state, seven-gate scorecard, 4 GiB
+  strategies, remaining queue, process rules, reference-refresh commands.
+- `audit.md` — v1 readiness (CI truth table, per-case leadership,
+  self-compile) + core simplification (measured shape, expert review,
+  simplification plan) + Porffor adapter/ranked optimizations; one gap table.
+- `evidence.md` — append-only measurement ledger (was `research.md`).
+- `memcheck-results.csv` — memory-goal evidence in CSV, next to evidence.md.
+- `ledger-correctness.md` — every wrong-value family: symptom, root
+  cause, fix or pin, gate.
+- `ledger-performance.md` — size/speed/memory/compile-time campaigns.
+- `ledger-refactor.md` — the pipeline-minimality record: every split,
+  retirement, and traversal-combinator conversion.
 - `adr-0001-bigint-representation.md` — the architecture decision record.
-- `todo.md`, `todo-original.md` — session/user working notes.
-- `memcheck-results.csv` — memory-goal evidence (regenerated at reference
-  refresh).
-- `porffor-alpha3-audit.md`: Porffor source/self-host comparison, compiler-core
-  adapter contract, and ranked transferable optimizations.
+- `todo-original.md` — the owner's own working notes; not touched.
 
-## Refactor ledgers — pipeline minimality (every slice byte-identical under `refactor-oracle.md`)
-`refactor-oracle.md` (the gate: 140 specs × 4 levels), `vectorize-split.md`,
-`optimize-split.md`, `analyze-traversals.md`, `program-facts-split.md` (§7
-facts lifecycle), `representation-plan-split.md`, `type-split.md`,
-`assemble-outliers.md`, `ir-split.md`, `stdlib-generators.md`,
-`stdlib-math.md`, `stdlib-string-array.md` — landed. `emit-split.md`,
-`narrow-split.md`, `prepare-split.md` — structure maps (base b900cd09; line
-numbers stale, family plans current), splits not yet cut.
+## Pending fold-in (other agents mid-flight — do not move or merge)
+- `emit-split.md`, `prepare-split.md` — structure maps for splits not yet
+  cut; fold into `ledger-refactor.md` once landed.
+- `wasm-opt-slack.md` — not present in this snapshot; fold into
+  `ledger-performance.md` when it lands.
+- `perf/self-compile-memory`'s own notes — branch is live (see `plan.md`)
+  but has landed no `.work` file yet; fold into `ledger-performance.md`.
 
-## Historical but cited from code comments (do not move; citations would dangle)
-carrier-representation-design, lattice-design, bigint-retirement-design,
-printer-trio, compile-session-design, closure-plan-design, ctxfunc-survey,
-compat-handoff (§BigInt superseded by ADR-0001), dyn-reach-slice,
-context-sensitivity-survey, session-survey, vectorizer-generality-design,
-walk-count-design, phase-c-unification (Shape pins reference it),
-marketing/strategy/ecosystem (product docs — user's).
+## Product docs (the owner's, untouched)
+- `marketing.md`, `strategy.md`, `ecosystem.md` — audience, positioning,
+  expansion map.
 
-## archive/ — executed or superseded, zero code references
-representation-plan-v2-design (ratified into ADR-0001),
-pipeline-audit-2026-08-20, heap-epoch-design, retained-set-census,
-feature-reach-census.
+## `archive/`
+Superseded and purely historical sources: every session log and design
+doc the living docs above were built from, plus the split/family "notes"
+files that fed `ledger-refactor.md`/`ledger-correctness.md`. Kept for the
+trail, not for citation — code comments now cite the living docs.
