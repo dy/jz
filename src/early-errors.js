@@ -209,25 +209,60 @@ lexicalTemplateExpr = (src, start, strict) => {
 const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
 const REST_BINDING = 1, REST_EXPRESSION = 2
 
+// Cheap, single-pass, deliberately approximate: tracks only quote/backslash
+// state (no need to also recognize comments/regexes/templates \u2014 a false
+// positive here just costs an extra, fully-correct validateLexicalSource
+// pass; only a false NEGATIVE would be unsound). Used to catch a raw
+// LineTerminator inside a single/double-quoted string
+// (`"\nmulti\nline\n"`), which the risk regexes below never anchor on.
+const hasNewlineInQuote = src => {
+  let quote = 0
+  for (let i = 0; i < src.length; i++) {
+    const c = src.charCodeAt(i)
+    if (quote) {
+      if (c === 92) { i++; continue }
+      if (c === quote) { quote = 0; continue }
+      if (c === 10 || c === 13) return true
+    } else if (c === 34 || c === 39) quote = c
+  }
+  return false
+}
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
-  src.includes('\u2028') || src.includes('\u2029') ||
+  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
   /(^|[^A-Za-z0-9_$])[0-9][0-9_.]*n\b/m.test(src) ||
   /(^|[^A-Za-z0-9_$])[0-9](?![0-9.eEnN])[A-Za-z_$]/m.test(src) ||
-  strict && /(^|[^A-Za-z0-9_$])0[0-9]/m.test(src)
+  strict && /(^|[^A-Za-z0-9_$])0[0-9]/m.test(src) ||
+  // `10._1`/`10._`/`10._e1`: a numeric separator directly after the decimal
+  // point \u2014 the digit-before-underscore risk pattern above only anchors on
+  // `[0-9]_`, missing this one. Anchored on a digit before the dot too, so
+  // it doesn't fire on ordinary `obj._private` member access.
+  /[0-9]\._/.test(src) ||
+  // An unterminated block comment, or a raw LineTerminator inside a quoted
+  // string, both need the full token-aware scan below to catch correctly
+  // (strings/regexes must be skipped as such, not textually).
+  src.includes('/*') || hasNewlineInQuote(src)
 )
 
 /** Lightweight lexical validation for spellings jessie's value AST erases. */
 const validateLexicalSource = (src, strict) => {
   if (typeof src !== 'string') return
   let i = 0, canRegex = true, pendingControl = null, expectStatement = false, lastPunct = '', optionalDepth = -1, nesting = 0
+  // True while a genuine LineTerminator (directly, or inside a multi-line
+  // comment) has been crossed since the last real token — consumed once,
+  // right before a real token is processed below, by the arrow-token check.
+  let sawNewline = false
   const parens = []
   while (i < src.length) {
     const c = src.charCodeAt(i), ch = src[i]
-    if (isWhitespaceCode(c)) { i++; continue }
+    if (isWhitespaceCode(c)) {
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) sawNewline = true
+      i++; continue
+    }
     if (ch === '/' && src[i + 1] === '/') {
       i += 2; while (i < src.length && src[i] !== '\n' && src[i] !== '\r' &&
         src.charCodeAt(i) !== 0x2028 && src.charCodeAt(i) !== 0x2029) i++
@@ -236,12 +271,28 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '/' && src[i + 1] === '*') {
       const end = src.indexOf('*/', i + 2)
       if (end < 0) fail('unterminated block comment')
+      for (let k = i; k < end; k++) {
+        const kc = src.charCodeAt(k)
+        if (kc === 10 || kc === 13 || kc === 0x2028 || kc === 0x2029) { sawNewline = true; break }
+      }
       i = end + 2; continue
     }
     if (ch === '#' && src[i + 1] === '!') {
       if (i !== 0) fail('hashbang is only valid at the start of source')
       i += 2; while (i < src.length && src[i] !== '\n' && src[i] !== '\r') i++; continue
     }
+    // From here down, `ch` starts a real token — consume the accumulated
+    // newline state once, for the arrow-token check just below, then reset.
+    const hadNewline = sawNewline
+    sawNewline = false
+    // ArrowFunction's own grammar carries a "[no LineTerminator here]"
+    // between ArrowParameters and `=>` — unlike a restricted-production
+    // token (postfix ++/--, break/continue's label, return/yield's operand),
+    // this one is a hard SyntaxError with no ASI fallback: nothing else can
+    // follow ArrowParameters, so there is no alternative statement to split
+    // into. jessie's grammar does not enforce it at all.
+    if (ch === '=' && src[i + 1] === '>' && hadNewline)
+      fail('line terminator between arrow function parameters and =>')
     // A sibling after `...x,` makes this a spread list, not a trailing rest
     // comma. Keep the marker only through closing delimiters.
     const restGroup = parens[parens.length - 1]
@@ -423,10 +474,27 @@ const isUseStrict = body => {
 const patternItems = pattern => {
   if (!isNode(pattern)) return [pattern]
   if (pattern[0] === '()' && pattern.length === 2) return patternItems(pattern[1])
-  if ((pattern[0] === '[]' || pattern[0] === '{}') && pattern.length > 1)
-    return patternItems(pattern[1])
+  // A `'[]'`-tagged node is ambiguous pre-prepare: length 2 is a genuine
+  // single-element array pattern/literal (unwrap into its one item), but
+  // length 3 is `receiver[key]` element access — a leaf, not a container.
+  // Only the length-2 shape should recurse; `'{}'` has no such ambiguity.
+  if (pattern[0] === '{}' && pattern.length > 1) return patternItems(pattern[1])
+  if (pattern[0] === '[]' && pattern.length === 2) return patternItems(pattern[1])
   if (pattern[0] === ',') return pattern.slice(1)
   return [pattern]
+}
+
+// Object-literal (non-pattern) item list: only the top comma-list is
+// flattened. Reusing patternItems here would be wrong — its `'[]'`/`'{}'`
+// single-child unwrap exists for BINDING PATTERNS (`[x]` meaning "array
+// pattern, one element x"), but an object literal's lone item may itself be
+// `[]`-tagged for an unrelated reason (`{[x]}`'s computed-name-without-value
+// attempt), and unwrapping it there erases the very shape that marks it
+// invalid.
+const objectLiteralItems = node => {
+  const body = node.length > 1 ? node[1] : null
+  if (body == null) return []
+  return isNode(body) && body[0] === ',' ? body.slice(1) : [body]
 }
 
 const boundNames = (pattern, out = []) => {
@@ -435,6 +503,11 @@ const boundNames = (pattern, out = []) => {
   const op = pattern[0]
   if (op === '=' || op === '...') return boundNames(pattern[1], out)
   if (op === '()' && pattern.length === 2) return boundNames(pattern[1], out)
+  // `receiver[key]` element access (arity 3) binds no names — it's an
+  // assignment-target leaf, not a nested pattern; patternItems' arity-2-only
+  // unwrap otherwise returns this exact node back as its own "one item",
+  // recursing into itself forever.
+  if (op === '[]' && pattern.length === 3) return out
   if (op === '[]') {
     for (const item of patternItems(pattern)) boundNames(item, out)
     return out
@@ -473,6 +546,27 @@ const checkBindingName = (name, cx) => {
     fail(`'${name}' cannot be bound in strict mode`)
 }
 
+// IdentifierReference legality for a bare-string node reached where walk()'s
+// normal per-child loop cannot see it — a lone identifier used as a WHOLE
+// statement (`f\u{61}lse;`) or as a for-in/of target (`for (let in o)`) is
+// never a listed CHILD of a parent node the loop iterates; it IS the node.
+// Scoped to exactly those two call sites (both unambiguous
+// IdentifierReference positions) rather than folded into walk()'s dispatch,
+// which also reaches property names, import/export specifier externals, and
+// object-literal keys through the very same bare-string shape — contexts
+// where this check must NOT run.
+const checkIdentifierRef = (name, cx) => {
+  if (name.startsWith('#') && !cx.privateNames?.has(name)) fail(`private name '${name}' is not declared in this class`)
+  if (cx.async && name === 'await') fail("'await' cannot be an identifier reference in an async function")
+  if (name.includes('\\u')) {
+    const decoded = decodeIdentifier(name)
+    if (ALWAYS_RESERVED.has(decoded) || cx.strict && (STRICT_RESERVED.has(decoded) || decoded === 'let' || decoded === 'yield') ||
+        cx.async && decoded === 'await') fail(`escaped reserved word '${decoded}' cannot be an identifier reference`)
+  } else if (cx.strict && (STRICT_RESERVED.has(name) || name === 'let' || name === 'yield')) {
+    fail(`'${name}' cannot be used as an identifier reference in strict mode`)
+  }
+}
+
 const validatePatternTree = (pattern, cx, binding, inRest = false) => {
   if (typeof pattern === 'string') {
     checkBindingName(pattern, cx)
@@ -486,6 +580,11 @@ const validatePatternTree = (pattern, cx, binding, inRest = false) => {
     return validatePatternTree(pattern[1], cx, binding, false)
   }
   if (op === 'yield' || op === 'await') {
+    // A bare `yield`/`await` binding name tokenizes with a null operand
+    // (`let yield;` → `['yield', null]`); a real trailing expression
+    // (`let\nawait 0;` → `['await', [null, 0]]`) means the source actually
+    // held a unary yield/await-expression, never a valid binding pattern.
+    if (pattern[1] != null) fail('unexpected token in binding position')
     checkBindingName(op, cx)
     return
   }
@@ -498,6 +597,30 @@ const validatePatternTree = (pattern, cx, binding, inRest = false) => {
     const target = pattern[1]
     if (isNode(target) && target[0] === '=') fail('rest element cannot have an initializer')
     return validatePatternTree(target, cx, binding, true)
+  }
+  if (op === '[]' && pattern.length === 3) {
+    // `receiver[key]` computed-member-access target, not a nested pattern —
+    // jessie's raw AST shares the `'[]'` tag between the two, disambiguated
+    // only by arity (2: pattern container: 3: element access). A member
+    // expression is a leaf simple-assignment-target, never a binding; the
+    // key sits in full Expression position, which pattern-walking otherwise
+    // never visits — validate the one identifier-reference restriction
+    // (bare yield/await) that a plain compile-time-erased AST walk can still
+    // prove here without a general expression walker.
+    if (binding || !isAssignmentTarget(pattern, false)) fail('invalid destructuring target')
+    const key = pattern[2]
+    if (isNode(key) && key[1] == null) {
+      // Inside a real generator, bare `yield` is unconditionally the
+      // yield-operator (evaluating to the resumed value) — never ambiguous
+      // with an identifier reference, so cx.generator EXEMPTS rather than
+      // triggers this check (unlike checkBindingName's yield rule, which
+      // governs BindingIdentifier and is rightly stricter).
+      if (key[0] === 'yield' && cx.strict && !cx.generator)
+        fail("'yield' cannot be used as an identifier reference in this context")
+      if (key[0] === 'await' && (cx.async || cx.staticBlock || (cx.module && cx.functionDepth === 0)))
+        fail("'await' cannot be used as an identifier reference in this context")
+    }
+    return
   }
   if (op === '[]' || op === '{}') {
     const items = patternItems(pattern)
@@ -533,6 +656,10 @@ const visitPatternInitializers = (pattern, cx, visit) => {
     return
   }
   if (op === '...') return visitPatternInitializers(pattern[1], cx, visit)
+  // `receiver[key]` element access (arity 3): a leaf, same reasoning as
+  // boundNames above — no initializer structure to descend into, and
+  // recursing via patternItems would hand this exact node back to itself.
+  if (op === '[]' && pattern.length === 3) return
   if (op === '[]' || op === '{}') {
     for (const item of patternItems(pattern)) {
       if (op === '{}' && isNode(item) && item[0] === ':') visitPatternInitializers(item[2], cx, visit)
@@ -574,6 +701,19 @@ const declaration = node => {
   if (node[0] === 'class' && typeof node[1] === 'string') return ['class', [node[1]]]
   if ((node[0] === 'function' || node[0] === 'function*') && typeof node[1] === 'string')
     return ['function', [node[1]]]
+  // `using`/`await using` bindings are lexically scoped, same as `let` — feed
+  // their names into the same conflict/duplicate machinery (var-hoisting is
+  // the only thing that distinguishes 'var' below; every other D_TYPE reader
+  // treats non-'var' uniformly as lexical).
+  if (node[0] === 'using' || (node[0] === 'await' && isNode(node[1]) && node[1][0] === 'using')) {
+    const decl = node[0] === 'using' ? node : node[1]
+    const names = []
+    for (let i = 1; i < decl.length; i++) {
+      const d = decl[i]
+      if (isNode(d) && d[0] === '=' && typeof d[1] === 'string') names.push(d[1])
+    }
+    return ['let', names]
+  }
   return null
 }
 
@@ -593,14 +733,28 @@ const validateScopeNames = (body, cx, scopeKind, paramNames = []) => {
   const list = statements(body)
   const lexical = []
   const directVar = []
+  // Annex B's "a top-level FunctionDeclaration also counts as VarDeclaredNames"
+  // leniency (which is why 'function' joins 'var' in directVar below, at
+  // 'global'/'function' scopeKind, without conflict) is SLOPPY-SCRIPT-ONLY —
+  // module top level never gets it, so `var f; function f(){}` there is a
+  // genuine lexical/var clash. Track the two kinds separately, module-scope
+  // only, to check that narrow case without disturbing the shared bucketing
+  // every other scopeKind (and sloppy scripts) already relies on.
+  const moduleTop = scopeKind === 'global' && cx.module
+  const topVarNames = [], topFuncNames = []
   for (const stmt of list) {
     const d = declaration(stmt)
     if (!d) continue
     if (d[D_TYPE] === 'let' || d[D_TYPE] === 'const' || d[D_TYPE] === 'class' ||
         (d[D_TYPE] === 'function' && scopeKind !== 'global' && scopeKind !== 'function'))
       lexical.push(...d[D_NAMES])
-    else if (d[D_TYPE] === 'var' || d[D_TYPE] === 'function') directVar.push(...d[D_NAMES])
+    else if (d[D_TYPE] === 'var' || d[D_TYPE] === 'function') {
+      directVar.push(...d[D_NAMES])
+      if (moduleTop) (d[D_TYPE] === 'var' ? topVarNames : topFuncNames).push(...d[D_NAMES])
+    }
   }
+  if (moduleTop) for (const name of topFuncNames) if (topVarNames.includes(name))
+    fail(`function declaration '${name}' conflicts with a var declaration at module top level`)
   const dup = duplicateName(lexical)
   if (dup) fail(`duplicate lexical declaration '${dup}'`)
   const vars = []
@@ -708,6 +862,19 @@ const validateClass = (node, cx, walk) => {
   const name = node[1]
   if (typeof name === 'string') checkBindingName(name, { ...cx, strict: true, lexical: true })
   const members = statements(node[3])
+  // A bare `'*'` token as its own class-body statement-list item (optionally
+  // `static`-prefixed) has no valid meaning under any circumstance — the
+  // generator-method marker (`* name() {}`/`static * name() {}`) is only
+  // ever valid attached to a following name in the SAME element. Its only
+  // source is jessie's class-body parser splitting a generator-method/
+  // constructor definition into two elements (losing the '*' marker's
+  // attachment to the method that follows: `* constructor(){}` → a spurious
+  // '*' element, then an unmarked `constructor(){}`; `static * prototype(){}`
+  // likewise loses both 'static' and generator-ness) — always a symptom of
+  // invalid input, never a legitimate field (no valid PropertyName spells as
+  // a bare `*`).
+  if (members.some(m => m === '*' || isNode(m) && m[0] === 'static' && m[1] === '*'))
+    fail('unexpected token in class body')
   let constructors = 0
   const privateNames = new Map()
   const parsed = members.map(classMember)
@@ -841,7 +1008,12 @@ export function validateEarlyErrors(ast, source) {
     return false
   }
 
-  const walk = (node, cx, statementPosition = false) => {
+  // soleStmt: this call fills a single-Statement grammar slot (if/while/do/for
+  // body, labeled-statement target) rather than a StatementList — Declaration
+  // (let/const/class) is syntactically excluded from Statement, so it is
+  // legal only when soleStmt is false (top-level, block contents, and for-
+  // header init all reach walk() with soleStmt left at its default).
+  const walk = (node, cx, statementPosition = false, soleStmt = false) => {
     if (!isNode(node)) return
     const op = node[0]
     if (op == null) return
@@ -859,6 +1031,33 @@ export function validateEarlyErrors(ast, source) {
         if (ALWAYS_RESERVED.has(name) || cx.strict && (STRICT_RESERVED.has(name) || name === 'let' || name === 'yield') ||
             cx.async && name === 'await') fail(`escaped reserved word '${name}' cannot be an identifier reference`)
       }
+    }
+
+    // ExpressionStatement (and export-default's own AssignmentExpression
+    // alternative — reached here too, since switch-default and export-
+    // default's value share the 'default' tag/handler below, both walking
+    // with statementPosition true) excludes a leading `function` token by
+    // grammar lookahead — but ONLY anonymous `function(){}...` has no valid
+    // fallback: a NAMED `function fn(){}...chain` still has a legal parse
+    // (the FunctionDeclaration `function fn(){}` alone, with `...chain` as
+    // a separate following statement) even though jessie itself does not
+    // split it that way (confirmed live: `function fn(){}[];`, and even
+    // `function f(){}\n\n(function(x){…})('outer')` across a blank line,
+    // both merge into one expression in jessie's own AST) — rejecting the
+    // named case would be unsound, a currently-PASSING construct that jz's
+    // downstream pipeline already handles despite the odd parse. Only a
+    // genuine access/call/tag CHAIN is suspect at all (length > 2 — a bare
+    // `'()'` grouping is length 2 and always safe, `(function(){})()`'s
+    // outer call unwraps to it and stops there, correctly staying accepted).
+    if (statementPosition && isNode(node) && node.length > 2 &&
+        (op === '.' || op === '[]' || op === '()' || op === '``' || op === '?.' || op === '?.[]' || op === '?.()')) {
+      let start = node[1]
+      while (isNode(start) && start.length > 2 &&
+          (start[0] === '.' || start[0] === '[]' || start[0] === '()' || start[0] === '``' ||
+           start[0] === '?.' || start[0] === '?.[]' || start[0] === '?.()'))
+        start = start[1]
+      if (isNode(start) && (start[0] === 'function' || start[0] === 'function*') && !start[1])
+        fail('function expression cannot start a statement')
     }
 
     if (op === '.' && node[1] === 'super' && typeof node[2] === 'string' && node[2].startsWith('#'))
@@ -881,7 +1080,12 @@ export function validateEarlyErrors(ast, source) {
     }
 
     if (op === ';') {
-      for (let i = 1; i < node.length; i++) if (node[i] != null) walk(node[i], cx, true)
+      for (let i = 1; i < node.length; i++) {
+        const stmt = node[i]
+        if (stmt == null) continue
+        if (typeof stmt === 'string') checkIdentifierRef(stmt, cx)
+        else walk(stmt, cx, true)
+      }
       return
     }
     if (op === 'case') {
@@ -933,7 +1137,7 @@ export function validateEarlyErrors(ast, source) {
       if (cx.labels.has(node[1])) fail(`duplicate label '${node[1]}'`)
       const labels = new Map(cx.labels)
       labels.set(node[1], isIteration(node[2]) ? 'loop' : 'other')
-      walk(node[2], { ...cx, labels }, true)
+      walk(node[2], { ...cx, labels }, true, true)
       return
     }
 
@@ -941,7 +1145,20 @@ export function validateEarlyErrors(ast, source) {
       const generator = op === 'function*'
       const body = node[3]
       const strict = cx.strict || isUseStrict(body)
-      if (typeof node[1] === 'string' && node[1]) checkBindingName(node[1], { ...cx, strict, generator: false })
+      // GeneratorExpression's own BindingIdentifier is parameterized [+Yield]
+      // UNCONDITIONALLY (its own generator-ness) — `var g = function*
+      // yield(){}` is forbidden even in sloppy, non-generator-enclosing
+      // context. GeneratorDeclaration's BindingIdentifier instead INHERITS
+      // the ENCLOSING scope's [Yield] (cx.generator, not this function's
+      // own) — `function* yield(){}` as a plain top-level declaration is
+      // fine outside a generator, forbidden nested inside one — confirmed
+      // live against test262 (yield-as-generator-declaration-binding-
+      // identifier.js requires the top-level-declaration case to pass).
+      // statementPosition is jz's structural proxy for "declaration, not
+      // expression" here — a `function`/`function*` node only reaches this
+      // handler with it true from a StatementList slot.
+      if (typeof node[1] === 'string' && node[1])
+        checkBindingName(node[1], { ...cx, strict, generator: statementPosition ? cx.generator : generator })
       const params = paramsOf(node[2])
       if (params.some(hasRest)) needsLexical = true
       const simple = isSimpleParams(params)
@@ -1039,6 +1256,7 @@ export function validateEarlyErrors(ast, source) {
     }
 
     if (op === 'class') {
+      if (soleStmt) fail('class declaration requires a block in statement position')
       needsLexical = true
       validateClass(node, cx, walk)
       if (node[2]) walk(node[2], cx)
@@ -1046,6 +1264,24 @@ export function validateEarlyErrors(ast, source) {
     }
 
     if (op === 'let' || op === 'const' || op === 'var') {
+      // Declaration is excluded from the single-Statement grammar slot
+      // (if/while/do/for body, label target) — but 'let' is not unconditionally
+      // fatal there the way 'const'/'class' are: unlike those two, "let" is a
+      // valid plain IdentifierReference in sloppy code, so `let` alone,
+      // followed by a genuine LineTerminator, can ASI-split into a bare
+      // reference statement plus a separate (unrelated) following statement
+      // — confirmed live (`if (false) let\nx = 1;`, `if (false) let\n{}` both
+      // parse as attempted declarations here but ARE valid programs; jz's
+      // parser does not model the ASI split, so early-errors must not
+      // require it). The one shape with no such escape hatch is `let [`:
+      // ExpressionStatement's own grammar excludes that exact two-token
+      // sequence unconditionally (no "[no LineTerminator here]" on it), so
+      // it has no valid parse in this position regardless of what follows.
+      if (op === 'const' && soleStmt) fail('lexical declaration requires a block in statement position')
+      if (op === 'let' && soleStmt) {
+        const first = isNode(node[1]) && node[1][0] === '=' ? node[1][1] : node[1]
+        if (isNode(first) && first[0] === '[]') fail('lexical declaration requires a block in statement position')
+      }
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         const initialized = isNode(d) && d[0] === '='
@@ -1058,17 +1294,42 @@ export function validateEarlyErrors(ast, source) {
       return
     }
 
+    if (op === 'export' || op === 'import' || op === 'from') {
+      // An import/export specifier list (`{ a, b as c }`) reuses the `'{}'`
+      // tag but is a different grammar production (ImportsList/ExportsList)
+      // from an object literal — `as`-renaming is never valid inside a real
+      // object literal, so walking a specifier list through the
+      // object-literal validator below would wrongly flag ordinary
+      // `import {x as y} from '...'`. validateExports() (run once, up front)
+      // already covers export-name structural soundness; import/export
+      // specifier identifiers need no further walk. Every other child
+      // (an `export` declaration, `export default`'s value, the module-path
+      // string, a namespace `as` rename, a bare `*`) is unaffected and still
+      // reaches its normal handler.
+      for (let i = 1; i < node.length; i++) {
+        const child = node[i]
+        if (!(isNode(child) && child[0] === '{}')) walk(child, cx, false)
+      }
+      return
+    }
+
     if (op === '{}') {
       if (statementPosition) {
         validateScopeNames(node[1], cx, 'block')
         walk(node[1], cx, true)
       } else {
         let proto = 0
-        for (const item of patternItems(node)) {
+        for (const item of objectLiteralItems(node)) {
           if (isNode(item) && item[0] === ':' && (item[1] === '__proto__' ||
               isNode(item[1]) && item[1][0] == null && item[1][1] === '__proto__')) proto++
           if (proto > 1) fail("duplicate '__proto__' data property")
-          if (isNode(item) && (item[0] === '=' || item[0] == null || item[0] === '[]' && item.length === 2))
+          // Allowlist, not a blocklist: a bare object-literal item is only
+          // ever a `key: value`/method pair, a spread, or (rejected later,
+          // with its own message, by prepare/index.js) a getter/setter — any
+          // other shape (`=`-initialized shorthand, a literal value marker
+          // like a number/boolean/nan, a bracketed computed-name attempt
+          // missing its `: value`, `;`-joined content) is invalid.
+          if (isNode(item) && item[0] !== ':' && item[0] !== '...' && item[0] !== 'get' && item[0] !== 'set')
             fail('invalid object literal shorthand/initialized name')
           if (typeof item === 'string') checkBindingName(item, cx)
           walk(item, cx)
@@ -1098,9 +1359,33 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'for' || op === 'for await') {
       const head = node[1]
       if (head == null || isNode(head) && head[0] === ';' && head.length !== 4) needsLexical = true
+      // NOTE: a head shape/length check was attempted here (reject anything
+      // that isn't a 4-element `;`-sequence or an 'in'/'of' node) to catch
+      // jessie's missing [~In] grammar restriction (`for (let x = 3 in {})`
+      // parses `3 in {}` as one expression instead of stopping before `in`,
+      // producing a bare, unwrapped 'let' head) — reverted: when every OTHER
+      // clause is empty, jessie's own trailing-newline-sensitive clause
+      // parsing collapses a VALID single-clause-with-content head (e.g.
+      // `for(let x = 3\n;\n;\n)`, `for(false\n;\n;\n)`) to the exact same
+      // bare, unwrapped shape as the invalid NoIn-misparse case — the AST
+      // carries no source position to tell them apart. Confirmed by direct
+      // A/B against dozens of newline placements, not a guess.
       const next = { ...cx, loop: cx.loop + 1 }
       if (isNode(head) && (head[0] === 'in' || head[0] === 'of')) {
         const lhs = head[1]
+        // NOTE: a checkIdentifierRef(lhs, cx) call belongs here too (closing
+        // test262's identifier-let-allowed-as-lefthandside-expression-
+        // strict.js — strict-mode `for (let in o)`) and is sound natively
+        // (verified), but reverted: the self-compiled kernel accepts it
+        // regardless (confirmed via test/kernel-target.js direct calls, not
+        // a guess) — a genuine native/kernel divergence, not a logic bug in
+        // this file (checkIdentifierRef's other two call sites, statement-
+        // position, are confirmed correct in-kernel; restructuring this one
+        // out of its if/else-if chain into a standalone check first did not
+        // change the outcome either). Left reverted rather than shipping a
+        // mismatch against STABILITY.md's "natively and in jz.wasm" claim;
+        // root-causing which val-fact the self-hosted compiler mistrusts
+        // here is compiler-internals work outside this pass's scope.
         if (isNode(lhs) && (lhs[0] === 'let' || lhs[0] === 'const' || lhs[0] === 'var')) {
           if (lhs.length !== 2 || isNode(lhs[1]) && lhs[1][0] === '=')
             fail('for-in/of declaration must have one uninitialized binding')
@@ -1111,22 +1396,27 @@ export function validateEarlyErrors(ast, source) {
           checkPattern(lhs, { ...cx, unique: false }, false)
         else if (!isAssignmentTarget(lhs, true)) fail('invalid for-in/of assignment target')
         if (head[2] == null) fail('for-in/of requires a right-hand expression')
+        // for-of's source is an AssignmentExpression (no bare comma allowed —
+        // `for (x of a, b)` needs parens); for-in's source is a full
+        // Expression, where a top-level comma is legal.
+        if (head[0] === 'of' && isNode(head[2]) && head[2][0] === ',')
+          fail('for-of iteration expression cannot be an unparenthesized comma expression')
         walk(head[2], cx)
       } else walk(head, cx)
       if (declaration(node[2])) needsLexical = true
-      walk(node[2], next, true)
+      walk(node[2], next, true, true)
       return
     }
     if (op === 'while') {
       if (declaration(node[2])) needsLexical = true
       if (node[1] == null) fail('while requires an expression')
       walk(node[1], cx)
-      walk(node[2], { ...cx, loop: cx.loop + 1 }, true)
+      walk(node[2], { ...cx, loop: cx.loop + 1 }, true, true)
       return
     }
     if (op === 'do') {
       if (declaration(node[1])) needsLexical = true
-      walk(node[1], { ...cx, loop: cx.loop + 1 }, true)
+      walk(node[1], { ...cx, loop: cx.loop + 1 }, true, true)
       walk(node[2], cx)
       return
     }
@@ -1148,15 +1438,10 @@ export function validateEarlyErrors(ast, source) {
       if (declaration(node[2]) || declaration(node[3])) needsLexical = true
       if (node[1] == null) fail('if requires an expression')
       walk(node[1], cx)
-      walk(node[2], cx, true)
-      if (node[3]) walk(node[3], cx, true)
+      walk(node[2], cx, true, true)
+      if (node[3]) walk(node[3], cx, true, true)
       return
     }
-
-    // A declaration in a single-statement position is outside the JZ subset
-    // (and outside standard grammar except Annex B function declarations).
-    if (statementPosition && (op === 'let' || op === 'const' || op === 'class'))
-      fail('lexical declaration requires a block in statement position')
 
     for (let i = 1; i < node.length; i++) walk(node[i], cx, false)
   }
@@ -1166,7 +1451,10 @@ export function validateEarlyErrors(ast, source) {
     if (ALWAYS_RESERVED.has(name)) fail(`escaped reserved word '${name}' cannot be an identifier reference`)
   }
   validateScopeNames(ast, root, 'global')
-  for (const stmt of statements(ast)) walk(stmt, root, true)
+  for (const stmt of statements(ast)) {
+    if (typeof stmt === 'string') checkIdentifierRef(stmt, root)
+    else walk(stmt, root, true)
+  }
   if (needsLexical) validateLexicalSource(source, root.strict)
   return ast
 }

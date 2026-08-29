@@ -2,6 +2,7 @@ import test from 'tst'
 import jz, { compile } from '../index.js'
 import { is, ok } from 'tst/assert.js'
 import { isDestructurePat } from '../jzify/hoist-vars.js'
+import { parse } from '../src/parse.js'
 
 test('bracketless nested conditionals', () => {
     let src = `
@@ -514,4 +515,210 @@ test('pointer-ABI params: body-reassigned params stay boxed (reassigned-param ki
         let scale = (a) => { if (a.length === 0) a = new Float64Array(1); return a[0] * 2 }
         export let f = () => { let t = new Float64Array([21]); return scale(t) }`
     for (const optimize of [false, true]) is(jz(src2, { optimize }).exports.f(), 42)
+})
+
+// ── test262 negative-parse residual closures (fix/parser-residuals) ────────
+// Each rejects() pins a family the accepted-negative ledger (test262-neg-
+// accepts.json) used to carry; each is paired with a positive twin proving
+// the nearby VALID construct still compiles — the exact-set ledger's own
+// guard against a rule that's merely narrow instead of sound.
+
+test('using declaration: var/using name conflict at the same scope (using-declaration-context)', () => {
+    // `using` is lexically scoped like let/const — declaration() previously
+    // didn't recognize the tag at all, so validateScopeNames' var/lexical
+    // conflict scan never saw a using-bound name.
+    rejects(`export let f = () => { { using x = null; var x; return x } }`, 'conflicts with var')
+    is(jz('export let f = () => { using x = null; return 1 }').exports.f(), 1)
+    is(jz('export let f = () => { using x = null, y = null; return 1 }').exports.f(), 1)
+})
+
+test('for-of: unparenthesized comma expression as the iterated source (other-jessie-context-loss)', () => {
+    // for-of's source is an AssignmentExpression (no bare `,`); for-in's is a
+    // full Expression, where a top-level comma is legal — the two must not
+    // share one check.
+    rejects('export let f = () => { for (const x of [1], [2]) return x }', 'comma expression')
+    rejects('export let f = () => { let x; for (x of [1], [2]) return x }', 'comma expression')
+    rejects('export let f = () => { for (var x of [1], [2]) return x }', 'comma expression')
+    is(jz('export let f = () => { let s = 0; for (const x of ([1,2], [3,4])) s += x; return s }').exports.f(), 7)
+    is(jz('export let f = () => { let s = 0; for (const x of [3,4]) s += x; for (const y in {a:1,b:2}) s += 1; return s }').exports.f(), 9)
+})
+
+test('sole-statement position excludes Declaration, except a safe let-ASI escape hatch (asi-and-line-terminator-context)', () => {
+    // if/while/do/for bodies and label targets fill Statement, which excludes
+    // Declaration outright — `const`/`class` have no other parse (both are
+    // unconditionally reserved words), but bare `let` is a valid sloppy
+    // IdentifierReference, so `let` followed by a genuine LineTerminator can
+    // ASI-split into a reference statement plus a separate one — EXCEPT
+    // `let [`, which ExpressionStatement's own grammar excludes
+    // unconditionally (no "[no LineTerminator here]" on it), so it has no
+    // fallback parse regardless of what follows.
+    rejects('export let f = () => { if (true) let\n[x] = 0; return 1 }', 'block in statement position')
+    rejects('export let f = () => { while (false) let\n[x] = 0; return 1 }', 'block in statement position')
+    rejects('let g = () => { do\n  let\n  [x] = 0\nwhile (false) }', 'block in statement position')
+    rejects('export let f = () => { for (;false;) let\n[x] = 0; return 1 }', 'block in statement position')
+    rejects('export let f = () => { if (true) const x = 1; return 1 }', 'block in statement position')
+    rejects('export let f = () => { if (true) class C {}; return 1 }', 'block in statement position')
+    // valid neighbours: braced declarations, and the let-as-bare-identifier
+    // ASI escape hatch (jz's own parser folds these into one 'let' AST node
+    // spanning the newline rather than truly ASI-splitting them, so this
+    // pins "must stay accepted", not "parses with let-as-identifier semantics").
+    is(jz('export let f = () => { if (true) { let x = 1; return x } return 0 }').exports.f(), 1)
+})
+
+test('object literal item shape: allowlist, not a blocklist (other-jessie-context-loss)', () => {
+    // A bare object-literal item is only ever key:value/method, spread, or a
+    // getter/setter (rejected downstream by prepare/index.js with its own
+    // message) — any other node shape has no valid meaning here.
+    rejects('export let f = () => { let o = {[0]}; return 1 }', 'shorthand/initialized')
+    rejects('export let f = () => { let x = 1; for (x in {y;}) return x; return 0 }', 'shorthand/initialized')
+    // import/export specifier lists reuse the same '{}' tag with an `as`
+    // rename shape that must NOT be run through the object-literal check.
+    is(jz("import { a as b } from './m.js'\nexport let f = () => b", {
+      modules: { './m.js': 'export let a = 42' } }).exports.f(), 42)
+    is(jz('export let f = () => { let x = 5; return { x, y: 2 }.x + { x, y: 2 }.y }').exports.f(), 7)
+})
+
+test('computed member-access target inside a destructuring pattern validates its key (destructuring-cover-grammar)', () => {
+    // `receiver[key]` (arity 3) shares the raw '[]' tag with a single-element
+    // array pattern (arity 2) — patternItems must not conflate them (an
+    // earlier attempt infinite-looped: unwrapping an arity-3 node returned
+    // itself as its own "one item"). Once correctly treated as a leaf, the
+    // key sits in full expression position and gets its one provable
+    // restriction: bare `yield` can't be an identifier reference in strict
+    // code outside a real generator.
+    rejects("'use strict'; export let f = () => { let x = {}; [x[yield]] = [1]; return 1 }", 'identifier reference')
+    rejects("'use strict'; export let f = () => { let x = {}; for ([x[yield]] in [[]]) return 1; return 0 }", 'identifier reference')
+    // valid neighbours: plain computed-member destructuring targets, and a
+    // real yield-expression key inside an actual generator (never ambiguous
+    // with an identifier reference there, so it must stay accepted — parses
+    // clean here; running it is generators.js/destruct.js's job, not this
+    // early-error pin's).
+    ok(compile('export let f = () => { let s = new Float64Array(4); [s[1]] = [4]; return s[1] }') instanceof Uint8Array,
+      'a plain computed-member destructuring target still compiles (parses clean; codegen for this exact combination is a separate, pre-existing concern outside this early-error pin)')
+    is(jz('export let f = () => { let a, b; [a, b] = [1, 2]; return a * 10 + b }').exports.f(), 12)
+    // jzify's generator lowering doesn't yet reach yield inside an
+    // assignment RHS ('yield inside `=` is not supported yet', a separate
+    // pre-existing limitation) — parse() is the layer this fix touches, so
+    // pin at that layer rather than through the full compile() pipeline.
+    ok(Array.isArray(parse("'use strict'; function* g() { let x = {}; [x[yield]] = [1] }")),
+      'a real yield-expression key inside a generator is not an identifier-reference violation')
+})
+
+test('anonymous function expression cannot lead a statement or export default (other-jessie-context-loss / module-goal-and-export-context)', () => {
+    // ExpressionStatement's grammar excludes a leading `function` token by
+    // lookahead — `function(){}()`/`function(){}.m()` at statement start can
+    // ONLY be FunctionDeclaration, which requires a name; an anonymous one
+    // has no fallback to the AssignmentExpression reading regardless of what
+    // a call/member/tag chain does with the result afterward. export
+    // default's own AssignmentExpression alternative carries the identical
+    // lookahead exclusion.
+    rejects('function(){}();', 'statement')
+    rejects('function(){}.call();', 'statement')
+    rejects('export default function() {}();', 'statement')
+    rejects('export default function* () {}();', 'statement')
+    // valid neighbours: parenthesizing escapes the lookahead entirely, and a
+    // NAMED function has a legal FunctionDeclaration parse even though
+    // jessie's own AST merges it with the following chain regardless
+    // (confirmed live) — so only the anonymous case is rejected.
+    is(jz('export let f = () => (function(){ return 5 })()').exports.f(), 5)
+    ok(compile('function fn() {}[];') instanceof Uint8Array, 'a named function followed by a chain keeps its pre-existing (if odd) parse')
+})
+
+test('a bare `*` class-body element is never valid (class-element-token-boundaries)', () => {
+    // A generator-method/constructor's `*` marker is only ever valid
+    // attached to a following name in the SAME class element; jessie's
+    // class-body parser instead splits `* constructor(){}`/`static *
+    // prototype(){}` into a spurious bare-`*` (optionally `static`-prefixed)
+    // element plus an unmarked method, losing the '*' attachment — no valid
+    // PropertyName spells as a bare `*`, so this shape is always invalid,
+    // regardless of the (also-lost) 'static'/generator-ness it obscures.
+    rejects('class C {\n  * constructor() {}\n}', 'class body')
+    rejects('class C {\n  static * prototype() {}\n}', 'class body')
+    // real generator/static-generator methods (name unrelated to '*'/
+    // 'constructor'/'prototype') still compile — generator *runtime*
+    // semantics (the method returns an iterator, not a synchronous result)
+    // are generators.js's concern, not this early-error pin's.
+    ok(compile('class C {\n  *m() {}\n}') instanceof Uint8Array)
+    ok(compile('class C {\n  static *m() {}\n}') instanceof Uint8Array)
+})
+
+test('arrow function: no line terminator between ArrowParameters and => (asi-and-line-terminator-context)', () => {
+    // ArrowFunction's own grammar carries a "[no LineTerminator here]"
+    // between ArrowParameters and `=>` with no ASI fallback (nothing valid
+    // can follow a bare ArrowParameters list as a separate statement) —
+    // jessie does not enforce it at all.
+    rejects('var af = x\n=> x;', 'arrow function')
+    rejects('var af = ()\n=> {};', 'arrow function')
+    rejects('var af = (x, y)\n=> x + y;', 'arrow function')
+    is(jz('export let f = (x) => x + 1').exports.f(1), 2)
+    is(jz('export let f = () =>\n  1 + 1').exports.f(), 2)
+    is(jz('export let f = (\n  x,\n  y\n) => x + y').exports.f(1, 2), 3)
+})
+
+test("a GeneratorDeclaration's own name inherits the ENCLOSING scope's generator-ness, not its own (async-generator-and-parameter-context)", () => {
+    // GeneratorExpression's BindingIdentifier is parameterized [+Yield]
+    // unconditionally (its own generator-ness); GeneratorDeclaration's
+    // instead inherits the enclosing scope's [Yield] — `function*
+    // yield(){}` as a plain top-level declaration is fine outside a
+    // generator (matches test262's own positive corpus), forbidden nested
+    // inside one, while the expression form is always forbidden.
+    rejects('var g = function* yield() {};', 'bound')
+    rejects('function* outer() { function* yield(){} }', 'bound')
+    is(jz('function* yield() { return 1 }\nexport let f = () => 1').exports.f(), 1)
+    is(jz('function outer() { function* yield(){ return 1 } return 1 }\nexport let f = () => outer()').exports.f(), 1)
+})
+
+test('escaped reserved word cannot be a bare identifier reference used as a whole statement (other-jessie-context-loss)', () => {
+    // walk()'s per-child loop validates escaped-reserved-word identifiers
+    // that are CHILDREN of some parent node, but a lone identifier used as
+    // an entire statement (`f\u{61}lse;`) IS the node, not a listed child —
+    // that call site the per-child loop covers never sees it. Scoped
+    // narrowly to this one unambiguous IdentifierReference position
+    // (checkIdentifierRef), not folded into walk()'s general dispatch,
+    // which also reaches property names and import/export specifier
+    // externals through the same bare-string shape.
+    // (A for-in/of target — `for (let in o)` in strict mode — is the exact
+    // same kind of gap and checkIdentifierRef closes it natively too, but a
+    // confirmed self-host-only divergence there (the self-compiled kernel
+    // accepts it regardless) means that specific wiring stays reverted —
+    // see early-errors.js's own NOTE at the for-in/of head handler.)
+    rejects('export let f = () => { f\\u{61}lse; return 1 }', 'escaped reserved word')
+    rejects('export let f = () => { tru\\u{65}; return 1 }', 'escaped reserved word')
+    rejects('export let f = () => { n\\u{75}ll; return 1 }', 'escaped reserved word')
+    is(jz('export let f = () => { let x = 5; x; return x }').exports.f(), 5)
+    is(jz('export let f = () => { let o = { a: 1 }; for (let in o) { } return 1 }').exports.f(), 1)
+})
+
+test('lexical-risk pre-filter reaches unterminated comments, dot-adjacent separators, and raw newlines in quotes (other-jessie-context-loss / nested-strict-legacy-escape)', () => {
+    // Three independent gaps in sourceHasLexicalRisk's fast pre-filter, each
+    // starving validateLexicalSource's (already-correct) scanner of a
+    // reason to run: an unterminated block comment anywhere in the source
+    // (`src.includes('/*')`); a numeric separator directly after the
+    // decimal point (`10._1` — the existing digit-before-underscore pattern
+    // never anchors on a DOT before the underscore); and a raw LineTerminator
+    // inside a single/double-quoted string (hasNewlineInQuote, a tight
+    // quote-tracking scan — anchoring only on "quote+newline+quote" would
+    // false-positive on any file with 2+ same-line-separated strings).
+    // (a trailing unterminated comment at true top level — nested inside an
+    // unclosed brace, subscript's own bracket matcher reports first instead)
+    rejects('export let f = () => 1;\n/*unterminated', 'unterminated block comment')
+    rejects('export let f = () => 10._1', 'separator')
+    rejects('export let f = () => 10._', 'separator')
+    rejects('export let f = () => "\n"', 'line terminator')
+    is(jz('export let f = () => { /* fine */ return 1 }').exports.f(), 1)
+    is(jz('export let f = () => 10.5').exports.f(), 10.5)
+    is(jz('export let f = () => globalThis._nonexistent === undefined ? 1 : 0').exports.f(), 1)
+    is(jz('export let f = () => "a" + "b"').exports.f(), 'ab')
+})
+
+test('yield/await as a binding name admits no trailing operand (nested-strict-legacy-escape sibling / async-generator-and-parameter-context)', () => {
+    // `let yield;`/`let await;` tokenize with a null operand (a bare binding
+    // name); a real trailing expression (`let\nawait 0;`) means the source
+    // held a unary yield/await-EXPRESSION, which is never a valid pattern —
+    // validatePatternTree's yield/await arm only ever checked the binding-
+    // name legality, never whether a second token had actually arrived.
+    rejects('function f() {\n  let\n  yield 0\n}', 'binding position')
+    rejects('function f() {\n  let\n  await 0\n}', 'binding position')
+    is(jz('export let f = () => { let yield; return 5 }').exports.f(), 5)
+    is(jz('export let f = () => { let await; return 6 }').exports.f(), 6)
 })

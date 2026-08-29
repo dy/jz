@@ -24,7 +24,7 @@ representation or value. Any unlisted silent wrong value is release-blocking.
 The parser now validates structural scopes/targets/control flow plus lexical
 numeric, string, template, RegExp, identifier, class, and module errors before
 jzify, natively and in `jz.wasm`. On the pinned test262 language corpus it
-rejects 3,908 applicable negative-parse files and still accepts exactly 137;
+rejects 3,964 applicable negative-parse files and still accepts exactly 81;
 every residual path is family-classified and exact-set-gated in
 `test/test262-neg-accepts.json`. Those residuals have no compatibility guarantee
 and remain a v1 release gate, never a supported extension.
