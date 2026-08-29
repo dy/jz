@@ -15,23 +15,33 @@ import { typed } from './tag.js'
 /** Whole-fn structural refcount: walks `fn`, counting how many times each
  *  array node is referenced. Used by optimizer passes to skip shared subtrees
  *  (watr CSE may leave them) — mutating a node with refcount > 1 would also
- *  affect references outside the current region. Single-pass O(N). */
+ *  affect references outside the current region. Single-pass O(N).
+ *  Retired onto walkAst (.work/ir-split.md): `enter` returning `false` exactly
+ *  when a node's count exceeds 1 reproduces the original's own early-return
+ *  (no re-counting an already-seen subtree's children) — walkAst's own
+ *  `if (!Array.isArray(value)) return` guard ahead of `enter` matches the
+ *  original hand-walk's identical guard, so non-array nodes are never counted
+ *  either way. walkAst's children loop starts at index 1 (skips the opcode
+ *  slot) where the original started at 0 — a no-op difference: `node[0]` is
+ *  always a string opcode or `null`, never an array, so visiting it hits the
+ *  same "not an array" guard and contributes nothing either way. */
 export function buildRefcount(fn) {
   const refcount = new Map()
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(fn, { enter: (node) => {
     const n = (refcount.get(node) || 0) + 1
     refcount.set(node, n)
-    if (n > 1) return  // already counted children below
-    for (let i = 0; i < node.length; i++) walk(node[i])
-  }
-  walk(fn)
+    if (n > 1) return false  // already counted children below
+  } })
   return refcount
 }
 
 /** Pick the next free `$__<prefix><id>` local-name id by collecting all
  *  existing ids in a single walk. Replaces the per-pass
- *  `while (fn.some(... === $__prefixK)) k++` (O(K·N)) with one O(N) scan. */
+ *  `while (fn.some(... === $__prefixK)) k++` (O(K·N)) with one O(N) scan.
+ *  Retired onto walkAst (.work/ir-split.md): unconditional full descent, no
+ *  pruning — `enter` never returns `false`, matching the original's own
+ *  unconditional recursion into every child (same index-0-is-never-an-array
+ *  argument as buildRefcount's identical retirement, just above). */
 export function nextLocalId(fn, prefix) {
   // HIGH-WATER mark (max existing + 1), NOT the first free id. Callers allocate sequentially
   // (id++), so a first-gap start would walk straight into an existing higher local once watr's
@@ -39,15 +49,12 @@ export function nextLocalId(fn, prefix) {
   // mint 3,4,5 and collide on $__pe5 = "Duplicate local"). High-water is always collision-free.
   const needle = `$__${prefix}`
   let id = 0
-  const walk = (n) => {
-    if (!Array.isArray(n)) return
+  walkAst(fn, { enter: (n) => {
     if (n[0] === 'local' && typeof n[1] === 'string' && n[1].startsWith(needle)) {
       const tail = n[1].slice(needle.length)
       if (/^\d+$/.test(tail)) { const k = +tail; if (k >= id) id = k + 1 }
     }
-    for (let i = 0; i < n.length; i++) walk(n[i])
-  }
-  walk(fn)
+  } })
   return id
 }
 
