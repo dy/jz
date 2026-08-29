@@ -1036,7 +1036,7 @@ export default (ctx) => {
     ;; unconditionally reads the propsPtr word at off-16 for every ARRAY
     ;; receiver (module/collection.js); a short header leaves it aliasing
     ;; whatever memory preceded the allocation (FOURTH mechanism,
-    ;; .work/research.md §Region arena). $ptr is the DATA pointer
+    ;; .work/evidence.md §Region arena). $ptr is the DATA pointer
     ;; __alloc_hdr returns (already past the 16-byte header) — every store
     ;; site below drops the old scheme's extra +8 offset.
     (local.set $ptr (call $__alloc_hdr (i32.const 0) (local.get $cap)))
@@ -1323,7 +1323,7 @@ export default (ctx) => {
       // BigInt use, leaving ToNumber(BigInt) on its unguarded arm, which returns
       // the raw i64 carrier bits reinterpreted as f64 instead of converting —
       // producing a malformed `(i32.const 9.06...e-315)` WAT literal (banked,
-      // .work/todo.md "JSON SHAPED-PARSER 'Bad int 9.067910317e-315'"). Avoiding
+      // .work/archive/todo.md "JSON SHAPED-PARSER 'Bad int 9.067910317e-315'"). Avoiding
       // BigInt entirely for the ≤4-byte packer sidesteps that arm rather than
       // fixing it (the general fix is a separate, larger architectural task).
       // Plain loop, NOT `arr.reduce((a, b, k) => …, 0n)`: a reduce routes the 0n
@@ -1425,7 +1425,7 @@ export default (ctx) => {
     ;; unconditionally reads the propsPtr word at off-16 for every ARRAY
     ;; receiver (module/collection.js); a short header leaves it aliasing
     ;; whatever memory preceded the allocation (FOURTH mechanism,
-    ;; .work/research.md §Region arena). $ptr is the DATA pointer
+    ;; .work/evidence.md §Region arena). $ptr is the DATA pointer
     ;; __alloc_hdr returns (already past the 16-byte header) — every store
     ;; site below drops the old scheme's extra +8 offset.
     (local.set $${ptr} (call $__alloc_hdr (i32.const 0) (local.get $${cap})))

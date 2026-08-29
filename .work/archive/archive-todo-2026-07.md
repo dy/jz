@@ -456,7 +456,7 @@
     BONUS: scripts/battery.mjs — the battery as a parallel DAG
     (native/O0/O3/wasi/fuzz ∥, build → kernel+self), ~3× wall-clock.
   * STAGE 1a FOUNDATION — THREE SHADOW-BINDING MISCOMPILE CLASSES KILLED
-    (2026-07-20h, .work/stage1-bindingid.md is the stage design): prepare's
+    (2026-07-20h, .work/archive/stage1-bindingid.md is the stage design): prepare's
     shadow rename decided at DECL TRAVERSAL, so anything that referenced the
     binding before the decl statement — or bound outside prepDecl — resolved
     to the WRONG binding. (1) FORWARD-CLOSURE CAPTURE: `let x = 100; { let f
@@ -508,7 +508,7 @@
     1.22 = edt1d `f[v[k]]` loaded-value range class (needs value hulls
     THROUGH memory, recorded).
   * ARCHITECTURE STAGE 0 — PASS REGISTRY COMPLETE + FORMATTING INVARIANCE
-    (2026-07-20f, first unit of .work/architecture-plan.md): (1) REGISTRY:
+    (2026-07-20f, first unit of .work/archive/architecture-plan.md): (1) REGISTRY:
     PASS_NAMES gained the audit's six unregistered flags (loadCSE,
     intDivLower, forInUnroll, versionTypedBounds, hoistConstLit,
     rationalConst) + unrollScalarChain + NINE more the new coverage gate
@@ -2949,7 +2949,7 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 
 ## Language coverage / correctness
 - [x] **Extension-surface plan (2026-07-10 → CLOSED 2026-07-12)** — every ordered item
-  landed; the plan doc (`.work/extension-surface.md`) is deleted, this entry is the
+  landed; the plan doc (`.work/archive/extension-surface.md`) is deleted, this entry is the
   archive. Start → close: language 1462/0 → **2331/0** (+ 2494 negative-rejects
   counted, 1551 silent-accepts tracked), builtins 719/12 RED → **737/0**, full unit
   suite **2864/0**. Permanently-out canon lives in README FAQ ("What will JZ never
@@ -3057,7 +3057,7 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 - [ ] **Math-kernel precision** — sin/cos/exp ~1e-9 absolute vs libm (~30-bit); filter-design
   math amplifies it (biquad `(1−cosω)/2` cancellation → ~1.3e-6 relative coefficient error at
   fc=1000/fs=44100; high-Q/low-fc pole placement sensitive). Lever: compile-time rational
-  simplification (research.md) — carry `2πfc/fs` exactly, emit the cancellation-free form.
+  simplification (.work/evidence.md) — carry `2πfc/fs` exactly, emit the cancellation-free form.
 - [x] **Metacircularity** — extract a minimal jz parser from subscript (jz-jessie fork: no
   class/async/regex, ~30 lines); jzify uses jessie, pure jz uses the internal parser; true bootstrap.
 - [ ] **Self-host-only miscompiles, open** (transplanted from the deleted groundtruth doc —
@@ -3728,7 +3728,7 @@ correctness risk for zero measured benefit:
 - [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
   wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
   builtin actually appearing in a kernel. Owner: module/math.js (+ siblings), test/math.js.
-- [ ] **Representation carriers** (design: .work/research.md) — jsstring internal-locals flow;
+- [ ] **Representation carriers** (design: .work/evidence.md) — jsstring internal-locals flow;
   boundary string cache (interop.js, by identity); schema-object field packing (i32/ptr, not
   f64-tag); typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32
   cell, not nanbox). Each blocked on a converging carrier fact + no current workload;
@@ -4506,7 +4506,7 @@ Supersedes the former Deferred › "Boolean ATOM tag" entry. Suite: 1813 → 182
 
 
 #### Product / measurement (needs a measurement+product session, not a compiler edit)
-* [x] **AS ecosystem audit.** Done → [.work/ecosystem-audit.md](ecosystem-audit.md).
+* [x] **AS ecosystem audit.** Done → [.work/archive/ecosystem-audit.md](ecosystem-audit.md).
   Verdict: **don't port AS's test suite** (it asserts a different language;
   test262 + differential fuzzer + bench gate are the right targets). DO mine AS's
   showcase compute kernels (path tracer, emulator core, codec, hash) into
@@ -4517,11 +4517,11 @@ Supersedes the former Deferred › "Boolean ATOM tag" entry. Suite: 1813 → 182
 ### Representation carriers — foundation + done workstreams (2026-05-19/20)
 
 Per-site carrier inference. Design narrative (user surface, evidence ladder,
-what-ships-vs-what-drops, open policy questions) moved to `.work/research.md` ›
+what-ships-vs-what-drops, open policy questions) moved to `.work/evidence.md` ›
 "Representation -> per-site, inferred". Open carriers stay live under `#### Representation`.
 
 * [x] **Narrowing investigation (primary).** Survey (`.work/narrow-survey.mjs`,
-  `narrow-watr-hotspots.mjs`; findings `.work/narrow-findings.md`): every numeric /
+  `narrow-watr-hotspots.mjs`; uncommitted `narrow-findings.md`, summarized here): every numeric /
   typed-array bench already at zero fallbacks; only watr (self-hosted WAT compiler) has
   any — 1289 emits, 47.5 % in its top 10 funcs. Conclusion: remaining dynamic-shape wins
   are codegen-layout + SSO-peephole, not narrower gaps. Follow-ups: C.1 (`Array.isArray`
@@ -4812,7 +4812,8 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
 * [x] Phase 0 (declarative reorg, C1–C3) — emitter-table spine; redirected once
   the builtins audit showed an empty in-scope tail, kept as a structural refactor.
 * [x] Steps 1–6 — Step 1c leaf builtins (one table row each), Step 2a
-  correctness commit, Step 3 narrowing-evidence survey (`.work/narrow-findings.md`:
+  correctness commit, Step 3 narrowing-evidence survey (uncommitted
+  `narrow-findings.md`, summarized here):
   numeric/typed-array benches at zero fallbacks, only watr has any). Step 4
   (number carrier dispatch) redirected — the i32|f64 choice is a working 1-bit
   decision on `node.type`; a carrier table would re-encode it with one consumer.
@@ -4867,7 +4868,7 @@ tests: 1759/1759 unit; 81/81 bench-shape; bench parity holds.
   layout-aware rewrites of every uniform-slot walk. Revisit only if a bench
   demands it.
 
-### Jessie compilation blockers (see [.work/jessie-wasm.md](jessie-wasm.md))
+### Jessie compilation blockers
 
 * [x] #1 spread in `?.()` — `fn?.(...args)`
 * [x] #2 Error subclasses (`SyntaxError`/`TypeError`/`RangeError`/`ReferenceError`/`URIError`/`EvalError`)

@@ -4,7 +4,7 @@
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
- * `.work/assemble-outliers.md` §3-4: this is the one file in the split with
+ * `.work/archive/assemble-outliers.md` §3-4: this is the one file in the split with
  * a real cross-seam call (`appendLateStdlib`, the late f64x2-vectorizer
  * stdlib top-up, lives in `./stdlib-pull.js`) — every other assemble/*.js
  * pair is fully independent.
@@ -79,7 +79,7 @@ function applyArenaRewind(func, fn, safeCallees) {
   // of a void enclosing frame (a `return` inside try_table failed validation:
   // "expected 0 elements on the stack for fallthru, found 1").
   const endsWithReturn = fn.at(-1)?.[0] === 'return' || fn.at(-1)?.[0] === 'return_call'
-  // Retired onto walkAst (pipeline-minimality slice, `.work/assemble-outliers.md`
+  // Retired onto walkAst (pipeline-minimality slice, `.work/archive/assemble-outliers.md`
   // §5): a `return` node is replaced wholesale, never recursed into — its own
   // value can't itself contain a nested statement-position `return`, so
   // there is nothing further to rewrite inside it; every other node recurses

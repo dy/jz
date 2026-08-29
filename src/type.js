@@ -39,7 +39,7 @@
  *    storage commitments consult.
  *
  * Stable barrel — every name below lived directly in this file before the
- * `type/` split (`.work/type-split.md`); every consumer import is unchanged.
+ * `type/` split (`.work/archive/type-split.md`); every consumer import is unchanged.
  * The real implementations live in `type/*.js`, grouped by family:
  * `canonical-bounds.js` (charCodeAt/array-idx canonical single-loop proof),
  * `interval-proof.js` (the interval abstract interpreter), `loop-unroll.js`

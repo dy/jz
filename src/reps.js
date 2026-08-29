@@ -83,7 +83,7 @@ export const VAL = {
  *   `=== undefined` constant-fold even when `val` is a definite non-null kind.
  * @property {boolean} [mayBeUndefined]   binding's value can be real JS `undefined`
  *   at runtime despite a definite `val` kind claim — the container-read
- *   generalization of `nullable` (.work/todo.md §deletion-sweep
+ *   generalization of `nullable` (.work/archive/todo.md §deletion-sweep
  *   §2). Slice 1 (decl-time producer, analyze.js analyzeValTypes' `let`/
  *   `const`/`=` sites): true when the RHS is itself a dict/Map maybeUndefined-
  *   shaped read (censusMaybeUndefinedKind(rhs) != null) or a bare name that
@@ -113,7 +113,7 @@ export const VAL = {
  *   claim that never touches `val`. Whether any given chokepoint above also
  *   needs its own outer `valTypeOf(node) === VAL.SOMETHING` gate widened to
  *   consult `presentVal` as a fallback (not just this REP-fallback arm
- *   reaching a non-null claim) is open — see .work/todo.md §deletion-sweep
+ *   reaching a non-null claim) is open — see .work/archive/todo.md §deletion-sweep
  *   for scope. func.valResultMayBeUndefined / ctx.closure.
  *   valResultMayBeUndefined (Map<closureBodyName, true>) carry the return-
  *   kind join's result alongside func.valResult / ctx.closure.valResult —
@@ -123,7 +123,7 @@ export const VAL = {
  *   `mayBeUndefined`: the boolean alone stays positive-evidence-only, so
  *   `presence` exists to distinguish "never observed maybe-undef" from
  *   "positively proven present" — a full 4-point lattice or coverage bit is
- *   future scope (.work/todo.md). Absent = UNKNOWN (not-yet-analyzed — the SAME
+ *   future scope (.work/archive/todo.md). Absent = UNKNOWN (not-yet-analyzed — the SAME
  *   silence `mayBeUndefined`'s `false`/absent already conflates with
  *   "proven present", which is exactly the gap this field closes: `!mayBeUndefined(name)`
  *   remains NOT a definitelyPresent proof (the standing ruling — the boolean
@@ -152,7 +152,7 @@ export const VAL = {
  *   consumer does yet — safe to wire up later, same as `kindsCoverage`.
  * @property {string}  [presentVal]       VAL.* kind the census claims for a
  *   binding's value WHEN PRESENT — the opt-in KIND-carrying sibling of
- *   `mayBeUndefined` (.work/todo.md §deletion-sweep §14's opt-in
+ *   `mayBeUndefined` (.work/archive/todo.md §deletion-sweep §14's opt-in
  *   re-enablement gate, superseding an earlier global-VT-promotion path).
  *   NEVER a substitute
  *   for `val` and NEVER consulted by `valTypeOf`/`lookupValType` — `val` stays
@@ -214,18 +214,18 @@ export const VAL = {
  *   observed for a value written through `name[key] = v` (any key, HASH
  *   dict-mode local or global). Product-lattice Slice 7: UNION lattice, not
  *   first-wins-then-clash (this is an existential fact, per
- *   .work/lattice-design.md §thesis — disagreeing writes widen the Set, an
+ *   .work/archive/lattice-design.md §thesis — disagreeing writes widen the Set, an
  *   unresolved write unions in the full KIND_UNIVERSE/TOP instead of a null
  *   sentinel). `dictValueKindOf` (kind.js) projects the EXACT-OR-NULL answer
  *   consumers historically got (`size===1` → that kind, else `null`) —
  *   byte-identical to the old poison-to-null field. `censusKindsOf` (kind.js,
  *   opt-in only, per the COORDINATOR RULING on OQ1) exposes the raw union.
- *   Additive-only fact (dict-value-census design, .work/todo.md §deletion-sweep):
+ *   Additive-only fact (dict-value-census design, .work/archive/todo.md §deletion-sweep):
  *   NEVER a substitute for `val`, never mutated alongside it. Two producers
  *   remain live — analyze.js's same-body scan (local half, updateRep) and
  *   observeProgramSlots' dictValueTypes census (global half, updateGlobalRep)
  *   — the fact itself stays additive-only, never a `val` substitute. Two
- *   consumers, two different re-enablement states (.work/todo.md
+ *   consumers, two different re-enablement states (.work/archive/todo.md
  *   §deletion-sweep, Slice 1 of §8): `dictValueKindOf` (kind.js) — the
  *   helper VT['[]']/VT['.']'s dict-mode fold used to call to promote a dict
  *   read to an EXACT `val` — stays DORMANT, called from nowhere; re-enabling
@@ -235,20 +235,20 @@ export const VAL = {
  *   SAME `dictValueKindOf` helper directly (bypassing VT/valTypeOf entirely)
  *   and is RE-ENABLED (Slice 1), now also answering a bare NAME whose rep
  *   carries `mayBeUndefined` (reps.js, this file). See
- *   .work/todo.md §deletion-sweep for the `mayBeUndefined` REP
+ *   .work/archive/todo.md §deletion-sweep for the `mayBeUndefined` REP
  *   field this needs and full re-enablement criteria for the VT-side
  *   consumer. Do not wire dictValueKindOf back into VT['[]']/VT['.'] without
  *   first meeting §5.
  * @property {Set<string>} [mapValueValType] Set<VAL.*> — every kind ever
  *   observed for a value written through a proven-VAL.MAP receiver's
  *   `recv.set(k, v)` (any key) — dictValueValType's Map-census Tier 1
- *   sibling (.work/todo.md §deletion-sweep), same union lattice (product-
+ *   sibling (.work/archive/todo.md §deletion-sweep), same union lattice (product-
  *   lattice Slice 7), additive-only, NEVER a substitute for `val`. Two producers remain live — analyze.js's same-body
  *   scan (local half, updateRep) and observeProgramSlots' mapValueTypes
  *   census (global half, updateGlobalRep). Same two-consumer split as
  *   dictValueValType above: `mapValueKindOf` (kind.js) — VT['()']'s `.get`
  *   short-circuit — stays DORMANT (re-enabling it is Slice 4,
- *   .work/todo.md §deletion-sweep §5); `censusMaybeUndefinedKind`'s
+ *   .work/archive/todo.md §deletion-sweep §5); `censusMaybeUndefinedKind`'s
  *   Map arm (kind.js), calling the SAME helper directly, is RE-ENABLED
  *   (Slice 1) alongside a bare-name REP fallback consulting the new
  *   `mayBeUndefined` field (this file). Do not wire mapValueKindOf back into
@@ -332,7 +332,7 @@ export const lookupNotString = name => {
 }
 
 /** Full domain of VAL.* kinds — the powerset universe `possibleKinds`/
- * `isDisjointFrom` range over (`.work/lattice-design.md` §1.1, §1.6).
+ * `isDisjointFrom` range over (`.work/archive/lattice-design.md` §1.1, §1.6).
  * INVARIANT: this stays a FROZEN ARRAY, not a Set — an exported mutable Set
  * would let any consumer shrink/grow the universe globally and Object.freeze cannot
  * freeze Set contents. Consumers build their own local sets from it
@@ -341,7 +341,7 @@ export const KIND_UNIVERSE = Object.freeze(Object.values(VAL))
 
 /**
  * `isDisjointFrom(name, kindSet)` — sound iff `name`'s possible-kind set is
- * PROVABLY disjoint from `kindSet` (`.work/lattice-design.md` §3's
+ * PROVABLY disjoint from `kindSet` (`.work/archive/lattice-design.md` §3's
  * projection catalog: true only if `kindsOf(name) ∩ kindSet = ∅`). Slice 2's
  * first-consumer precedent: re-expresses the EXISTING `recvArrTyped` class
  * proof (this file's doc above — "every live call site proves ARRAY or
@@ -356,7 +356,7 @@ export const isDisjointFrom = (name, kindSet) => {
 }
 
 /**
- * `mayBeUndefined(name)` — Fact.`presence` projection (`.work/lattice-
+ * `mayBeUndefined(name)` — Fact.`presence` projection (`.work/archive/lattice-
  * design.md` §1.2, §3's catalog row): true iff `name`'s binding has ever
  * been observed to possibly be real JS `undefined` (monotone OR — "false =
  * PRESENT, true = MAYBE_UNDEF" per the Fact JSDoc in param-reps.js). Slice

@@ -21,7 +21,7 @@ const buildMatchArr = (strLocal, msLocal, meLocal, nGroups, groupNames = []) => 
   const N = nGroups + 1
   // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8, cap@-4),
   // NOT a hand-rolled 8-byte alloc — __dyn_get_t_h's ARRAY branch always
-  // reads the propsPtr word at off-16 (FOURTH mechanism, .work/research.md
+  // reads the propsPtr word at off-16 (FOURTH mechanism, .work/evidence.md
   // §Region arena: a short header aliases whatever memory preceded the
   // allocation). This array is an especially direct instance: a named-group
   // match result feeds STRAIGHT into `$__dyn_set` below (`.groups`), so a
@@ -1386,7 +1386,7 @@ export default (ctx) => {
       scan([['local.set', `$${cnt}`, ['i32.add', ['local.get', `$${cnt}`], ['i32.const', 1]]]]),
       // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8, cap@-4),
       // not a hand-rolled 8-byte alloc — __dyn_get_t_h's ARRAY branch always
-      // reads the propsPtr word at off-16 (FOURTH mechanism, .work/research.md
+      // reads the propsPtr word at off-16 (FOURTH mechanism, .work/evidence.md
       // §Region arena: a short header aliases whatever memory preceded the
       // allocation, safe only while that memory is untouched/zero).
       ['local.set', `$${outArr}`, ['call', '$__alloc_hdr', ['local.get', `$${cnt}`], ['local.get', `$${cnt}`]]],
@@ -1445,7 +1445,7 @@ export default (ctx) => {
         ;; leaves it aliasing whatever memory preceded the allocation,
         ;; silently correct only on virgin (zeroed) linear memory, wrong
         ;; once region-arena compaction reuses address ranges (FOURTH
-        ;; mechanism, .work/research.md §Region arena). $arrOff is now the
+        ;; mechanism, .work/evidence.md §Region arena). $arrOff is now the
         ;; DATA pointer __alloc_hdr returns (already past the 16-byte
         ;; header), so every store site below drops the old scheme's extra
         ;; +8 offset. $len passed as 0 (nothing written yet); the real

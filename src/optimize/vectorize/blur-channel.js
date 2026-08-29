@@ -61,7 +61,7 @@ function matchChannelGroup(body) {
   return null
 }
 
-// Class-A hoist (.work/research.md §BodyModel §1a/§5 slice 3): the init+inner-loop-locate scan
+// Class-A hoist (.work/evidence.md §BodyModel §1a/§5 slice 3): the init+inner-loop-locate scan
 // tryBlurMultiPixel and tryChannelReduce each ran over their pixel-loop body — locate four
 // consecutive `acc_c = 0` inits, then the `(block (loop))` immediately after them, then the
 // channel-accumulation group inside it via matchChannelGroup, then verify the summed

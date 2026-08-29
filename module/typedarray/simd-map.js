@@ -14,7 +14,7 @@
  * Pure move out of module/typedarray.js (stdlib-generators minimality pass):
  * `.typed:map`'s one call site there now imports analyzeSimd/genSimdMap from
  * here instead of defining them inline — same call, same arguments, same
- * emitted WAT. See .work/stdlib-generators.md for the extraction boundary
+ * emitted WAT. See .work/archive/stdlib-generators.md for the extraction boundary
  * and the byte-identity verification method.
  *
  * Imports STRIDE/SHIFT/LOAD/STORE from the `./elem-tables.js` sibling (not
@@ -319,7 +319,7 @@ function genSimdMap(name, elemType, pattern) {
     ;; 16-byte [propsPtr@-16,len@-8,cap@-4] header every other ARRAY/
     ;; OBJECT/TYPED/SET/MAP allocation gets, or that word aliases whatever
     ;; memory preceded this allocation (FOURTH mechanism class,
-    ;; .work/research.md §Region arena). __typed_slice_rt (below) already
+    ;; .work/evidence.md §Region arena). __typed_slice_rt (below) already
     ;; establishes the canonical shape for TYPED results: stride=1 (raw
     ;; bytes), len=cap=byteLen — mirrored here exactly.
     (local.set $dstOff (call $__alloc_hdr_n (i32.shl (local.get $len) (i32.const ${shift})) (i32.shl (local.get $len) (i32.const ${shift})) (i32.const 1)))

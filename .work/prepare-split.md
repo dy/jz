@@ -11,7 +11,7 @@ spans tile the file contiguously from line 34 (first import) to EOF with no gaps
 ## Methodology (so the numbers below are checkable, not asserted)
 
 A throwaway Node script in the scratchpad (not committed, not in the repo) did the
-same class of analysis `vectorize-split.md` describes, adapted for two things that
+same class of analysis `.work/archive/vectorize-split.md` describes, adapted for two things that
 script didn't need: **template-literal `${…}` expressions had to stay live** (this
 file uses them — e.g. `mintLocal`'s `` `${name}${T}f${ownerStack[…]}_${…}` `` — a
 naive "blank every backtick span" pass corrupts the scan the moment it hits one,
@@ -111,7 +111,7 @@ grepping every reassignment site, not assumed:
 
 ES modules forbid assigning through an imported binding (a `let` import is a
 read-only live view in the importing module) — exactly the constraint
-`vectorize-split.md`'s `vecState` note hit. Same fix, same minimal scope: these
+`.work/archive/vectorize-split.md`'s `vecState` note hit. Same fix, same minimal scope: these
 three, and *only* these three, bundle into one exported mutable object —
 `export const prepState = { depth: 0, ownerUniq: 0, reassignedTopLevel: null }` —
 with every read/write site at the 3 external call sites above (plus
@@ -204,7 +204,7 @@ back into the cycle is a call to `prep` (the universal recursion primitive — a
 function that processes an AST subtree must call it); `handlers`' body is what
 calls out to (nearly) all of them. This is inherent to a dispatch-table
 interpreter, not a design smell — and neither prior split in this campaign hit
-it (`vectorize-split.md`: "0 cycles"; `narrow-split.md`: "66 edges, 0 cycles" —
+it (`.work/archive/vectorize-split.md`: "0 cycles"; `.work/archive/narrow-split.md`: "66 edges, 0 cycles" —
 this is the first genuine one in the campaign).
 
 A strict DAG (matching both priors' invariant, "later modules import earlier,
@@ -351,7 +351,7 @@ committed and mechanically re-diffed against the moved files.
 
 1. `node scripts/refactor-oracle.mjs check --ref main` — must report **clean**
    (byte-identical WASM across the whole corpus at O0/O2/O3/size; see
-   `.work/refactor-oracle.md`). This is the primary gate for a pure-move split:
+   `.work/archive/refactor-oracle.md`). This is the primary gate for a pure-move split:
    it proves the split changed no compiled output, not just "tests still pass."
    Run it after *each* module extraction, not only at the end — cheaper to
    isolate a mistake to one move.
@@ -380,7 +380,7 @@ committed and mechanically re-diffed against the moved files.
 
 - **The `handlers.js` ↔ `handler-helpers.js` circular import is a real
   deviation from this campaign's established invariant** (both
-  `vectorize-split.md` and `narrow-split.md` report zero cycles). It is argued
+  `.work/archive/vectorize-split.md` and `.work/archive/narrow-split.md` report zero cycles). It is argued
   safe above (no TDZ read, existing coupling made visible not created), but it
   is a judgment call, not a mechanical fact like the rest of this plan — if the
   executing session or a reviewer prefers a strict DAG, the fallback is merging
@@ -416,7 +416,7 @@ committed and mechanically re-diffed against the moved files.
 
 ## Outlier decomposition candidates (a later phase, after the pure-move split)
 
-Mirroring `vectorize-split.md`'s own deferral: these are candidates once each
+Mirroring `.work/archive/vectorize-split.md`'s own deferral: these are candidates once each
 file is isolated, not attempted now.
 
 - `handlers.js`'s `handlers` object (1,308 ln, 45 keys) — the keys don't call
@@ -435,4 +435,4 @@ file is isolated, not attempted now.
 
 Plan authored before any code was moved; decomposition specifics get filled in
 as each module is actually split (later-phase commits) — same discipline as
-`vectorize-split.md`'s phase 3 note.
+`.work/archive/vectorize-split.md`'s phase 3 note.

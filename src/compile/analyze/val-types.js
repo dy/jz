@@ -3,7 +3,7 @@
  * per-name helpers, plus the nullability predicates it shares with
  * narrow.js. Split out of analyze.js along the "value types" seam
  * (pipeline-minimality slice); see analyze.js's module header for the full
- * split rationale and `.work/analyze-traversals.md` for the traversal
+ * split rationale and `.work/archive/analyze-traversals.md` for the traversal
  * inventory.
  *
  * @module compile/analyze/val-types
@@ -60,7 +60,7 @@ export function mayBeNullish(n, nameNullable = (name) => !!repOf(name)?.nullable
 }
 
 // Decl-time producer for the `mayBeUndefined` REP field
-// (.work/todo.md §deletion-sweep §2/§3 Slice 1) — the
+// (.work/archive/todo.md §deletion-sweep §2/§3 Slice 1) — the
 // container-read sibling of `mayBeNullish` above, deliberately NOT folded
 // into it: `mayBeNullish` answers "could this expression itself be a nullish
 // LITERAL/merge", or with a Map/dict a `.get()`/`[]` call already fails
@@ -214,7 +214,7 @@ function dictDomainOf(body, name) {
  * and schema resolution.
  */
 // Strict write-kind resolver for the dict-value-type census (local half,
-// design .work/todo.md §deletion-sweep §1a) — a local mirror of
+// design .work/archive/todo.md §deletion-sweep §1a) — a local mirror of
 // program-facts.js's writeVT/effectiveWriteValue. Not imported: program-facts.js
 // already imports analyzeBody from this module, so importing back would cycle.
 // Kept in exact lockstep with the program-facts.js pair — any resolver change
@@ -264,7 +264,7 @@ function dictEffectiveWriteValue(op, lhs, rhs) {
 // consumer path (kind.js dictValueKindOf), not those leaner direct-index ones.
 //
 // PRODUCT-LATTICE Slice 7: union-join instead of first-wins-then-clash
-// poison-to-null (.work/lattice-design.md §thesis — this is an EXISTENTIAL
+// poison-to-null (.work/archive/lattice-design.md §thesis — this is an EXISTENTIAL
 // fact, "which kinds has this dict been written with," and existential facts
 // compose by union, not meet). Returns the raw Set (possibly empty = BOTTOM/
 // unobserved): a disagreeing write ADDS to the set instead of nulling it; an
@@ -294,7 +294,7 @@ function dictValueTypeOf(body, name) {
   return kinds
 }
 
-// Map-value-type census, local half (design .work/todo.md §deletion-sweep
+// Map-value-type census, local half (design .work/archive/todo.md §deletion-sweep
 // §1) — mirrors dictValueTypeOf above but matches `recv.set(k, v)` CALL nodes
 // instead of `[]=` writes (Map has no bracket-write form). No self-read/
 // paramVts handling here, same as dictValueTypeOf's own local half (those are
@@ -332,7 +332,7 @@ export function analyzeValTypes(body) {
     (n) => updateRep(n, { val: undefined }),
   )
   const getVal = name => ctx.func.localReps?.get(name)?.val
-  // presentVal slice: decl-time producer (.work/todo.md §deletion-sweep
+  // presentVal slice: decl-time producer (.work/archive/todo.md §deletion-sweep
   // §14 Slice 6, reps.js `presentVal` doc comment). Own
   // makeValTracker instance — a SEPARATE poison set from `setVal`'s (this
   // function is called fresh per analyzeValTypes invocation, exactly like
@@ -533,7 +533,7 @@ export function analyzeValTypes(body) {
           const dvt = dictValueTypeOf(body, a[1])
           if (dvt.size) updateRep(a[1], { dictValueValType: dvt })
         }
-        // Map-value-type census, local half (design .work/todo.md
+        // Map-value-type census, local half (design .work/archive/todo.md
         // §deletion-sweep §1) — sibling of the dict census above, gated on decl
         // vt === VAL.MAP instead of the HASH-literal `dict` shape check
         // (new Map() is a hard classification, valTypeOf(a[2]) already

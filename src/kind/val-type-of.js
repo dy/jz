@@ -11,9 +11,9 @@
  * `shapeOfObjectLiteralAst` lives here rather than in `kind/shape.js` —
  * relocated during the split, not textually adjacent originally — because
  * it is the one JSON-shape-family function whose scalar-literal-property-leaf
- * branch calls the general `valTypeOf` (.work/kind-split.md §4).
+ * branch calls the general `valTypeOf` (.work/archive/kind-split.md §4).
  *
- * Split out of kind.js (pipeline-minimality slice, .work/kind-split.md).
+ * Split out of kind.js (pipeline-minimality slice, .work/archive/kind-split.md).
  *
  * @module kind/val-type-of
  */
@@ -87,7 +87,7 @@ VT['?:'] = (args) => {
   // ToNumber image, so the claim is benign and keeps `num + (cond ? num : num>k)`
   // off the polymorphic string-concat dispatch (which pins the whole number→string
   // formatter — __str_concat → __to_str → __static_str, a pure-int program
-  // ballooning 1 → ~19 funcs; see test/wat-invariants.js, .work/todo.md).
+  // ballooning 1 → ~19 funcs; see test/wat-invariants.js, .work/archive/todo.md).
   // Any OTHER mix is null: both ternary arms are "the value", so claiming the
   // non-bool arm's kind would let strict-eq's differing-class fold constant-fold
   // `x === true` on a value that IS sometimes a boolean (watr's `i ? true :
@@ -133,7 +133,7 @@ VT['&&'] = VT['||'] = VT['??'] = (args) => {
   return null
 }
 
-// .work/todo.md §deletion-sweep — pure structural predicate: true exactly
+// .work/archive/todo.md §deletion-sweep — pure structural predicate: true exactly
 // where a `?:`/`&&`/`||`/`??` node's own VT rule above takes the BOOL-vs-NUMBER
 // benign coercion branch (142-179's `?:` "the raw 0/1 bool carrier IS its
 // ToNumber image" lie, mirrored by `&&`/`||`/`??` above) — sound for arithmetic,
@@ -423,7 +423,7 @@ VT['.'] = (args) => {
 const numericBinaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || valTypeOf(args[1]) === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_BINARY_OPS) VT[op] = numericBinaryVT
-// The binary sibling of censusBigintUnaryVT below (.work/todo.md
+// The binary sibling of censusBigintUnaryVT below (.work/archive/todo.md
 // §deletion-sweep §14) — generalizes VT['+']'s own both-census-BIGINT branch
 // (kept there, unchanged) to the other 8 arithmetic/bitwise ops: emit.js's
 // `bigIntJointDispatch` (see its own doc comment) makes their WASM
@@ -448,7 +448,7 @@ const numericUnaryVT = (args) =>
   valTypeOf(args[0]) === VAL.BIGINT || (args[1] != null && valTypeOf(args[1]) === VAL.BIGINT) ? VAL.BIGINT : VAL.NUMBER
 for (const op of NUMERIC_UNARY_OPS) VT[op] = numericUnaryVT
 // …while `>>>` and unary-plus throw on bigint operands so they always yield Number.
-// `u-`/`~` census-BIGINT hardening (.work/todo.md §deletion-sweep §14):
+// `u-`/`~` census-BIGINT hardening (.work/archive/todo.md §deletion-sweep §14):
 // numericBinaryVT/numericUnaryVT's shared "unknown operand → optimistic
 // NUMBER default" (same class as VT['+']'s own accepted imprecision, see
 // valTypeOfWithLocals's SOUND-`+`/SOUND-unary doc comments) is wrong for a
@@ -482,7 +482,7 @@ VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])
   if (ta === VAL.STRING || tb === VAL.STRING) return VAL.STRING
   if (ta === VAL.BIGINT || tb === VAL.BIGINT) return VAL.BIGINT
-  // Honest boundary (.work/todo.md §deletion-sweep §14/§15): BOTH operands'
+  // Honest boundary (.work/archive/todo.md §deletion-sweep §14/§15): BOTH operands'
   // census independently claiming BIGINT upgrades
   // this static claim too — the binary sibling of censusBigintUnaryVT above,
   // same AND (never OR) requirement as emit.js's bigIntDomainsCanMix (a
@@ -820,7 +820,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
  *  traversal only) lets `Object.assign(a, …)` extend `a`'s schema without
  *  locking a static jsonShape onto it.
  *
- *  Scalar-literal property leaf (.work/bigint-
+ *  Scalar-literal property leaf (.work/archive/bigint-
  *  retirement-design.md §5 residual-site rule 1): a property whose VALUE is
  *  itself a compile-time-decidable scalar expression (`NAN_PREFIX_BITS:
  *  0x7FF8000000000000n`, or any other literal/arithmetic form `valTypeOf`

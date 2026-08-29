@@ -93,7 +93,7 @@ const paramNeedsHostTag = (node, name, localClosures, seen, root = true) => {
   // host bigint there should box and pass through BigInt()'s identity
   // case, not be rejected as zero-evidence (phase-c C4b coordinator fix).
   if (node[0] === '()' && node[1] === 'BigInt' && commaList(node[2]).includes(name)) return true
-  // Local-closure forwarding (closure-forwarding slice, .work/phase-c-
+  // Local-closure forwarding (closure-forwarding slice, .work/archive/phase-c-
   // unification.md §C4b queue): `name` passed positionally into a SAME-BODY
   // closure (`let parse = (x) => …`) whose own param needs the tag —
   // watr's own uleb/limits shape, `f(v){ let parse = x => typeof x ===
@@ -409,7 +409,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         // storage provenance back to the caller's bare receiver argument.
         for (let k = 0; k < args.length && k < callee.sig.params.length; k++)
           if (storage.has(callee.sig.params[k].name) && typeof args[k] === 'string' && mark(storage, args[k])) changed = true
-        // Shape #6 (.work/phase-c-unification.md, watr's actual manifestation
+        // Shape #6 (.work/archive/phase-c-unification.md, watr's actual manifestation
         // — compile.js's `i64: (n,…) => encode.i64(n.shift(), out)` handler
         // passing its OWN array param one level further before any read):
         // the MIRROR of the backward rule just above. A caller passing its
@@ -544,7 +544,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
       if (scan(init, null, globals)) graphChanged = true
   }
 
-  // Shape #6 layer 5 (.work/phase-c-unification.md): a COVERED function's
+  // Shape #6 layer 5 (.work/archive/phase-c-unification.md): a COVERED function's
   // param semantic (makeBoundaryData's boundaryParamSemantic) trusts the
   // legacy whole-program paramReps census's `possibleKinds` as-is whenever
   // it's closed — but that census has no notion of a storage-read call

@@ -1,5 +1,5 @@
 // Standalone watr-optimize wasm entry for the codegen differential (.work
-// scratch — see .work/todo.md shaped-parser hunt). WAT text + pass list JSON →
+// scratch — see .work/archive/todo.md shaped-parser hunt). WAT text + pass list JSON →
 // optimized WAT text. Mirrors the jzify-diff harness that cracked the
 // generator-machine class: node-watr vs jz-compiled-watr, diffed per pass.
 import { optimize, resetNameUids } from 'watr/optimize'

@@ -27,7 +27,7 @@ the matrix rather than compiled twice: `bench/jessie/jessie.js` (jessie parser, 
 `bench/watr/watr.js` (watr-graph, resolves `node_modules/watr/src/compile.js` — an 11.5 MB
 WAT / 6-module graph). `jzify-entry` has no bench counterpart so it's its own `real-input`
 row (24 MB WAT, 71 modules). All three use `resolveModuleGraph` exactly as
-`.work/research.md`'s own kernel-memory-curve entry names them (`§CompileSession`-adjacent
+`.work/evidence.md`'s own kernel-memory-curve entry names them (`§CompileSession`-adjacent
 record, 2026-08-12): "jessie = `bench/jessie/jessie.js`, watr = `bench/watr/watr.js`,
 jzify-entry = `.work/jzify-entry.mjs`" — `bench/jz/jz.js` (jz×jz self-compile) is the fourth
 point in that same record and is the excluded self-compile kernel subject here.

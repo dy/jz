@@ -6,7 +6,7 @@
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
- * `.work/assemble-outliers.md` §4. `syncImports` (host-import merge, runs
+ * `.work/archive/assemble-outliers.md` §4. `syncImports` (host-import merge, runs
  * just before `pullStdlib` — compile/index.js:2892/2991) shares this file as
  * a small `sec.imports`/`sec.stdlib` bookkeeping sibling with no other
  * natural home.
@@ -42,7 +42,7 @@ const parseTemplate = (str) => {
 // backing table is itself an arena allocation `_clear` invalidates). Must run every
 // compile in a warm-instance loop (see scripts/self.js setupSelf).
 export const clearStdlibParseCache = () => { stdlibParseCache = new Map() }
-// Region-arena EMISSION rounds (re-landing .work/research.md §Emission
+// Region-arena EMISSION rounds (re-landing .work/evidence.md §Emission
 // rounds): same non-`ctx` module-scope hazard as DOLLAR (src/ir.js,
 // dollarMap/setDollarMap) — stdlibParseCache lives entirely outside `ctx`,
 // invisible to any ctx.*-based region-round root array. `parseTemplate`

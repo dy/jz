@@ -1,6 +1,5 @@
 /**
- * Heap-kind registry — DOC-SIDE prose (audit-#16 registry finding, .work/
- * research.md §Heap-kind registry Slice 4: production dist cost fix).
+ * Heap-kind registry — DOC-SIDE prose (audit-#16 registry finding, .work/evidence.md §Heap-kind registry Slice 4: production dist cost fix).
  *
  * EXTENDS layout-kinds.js's compact KIND_REGISTRY with the full per-kind
  * prose (allocShape, childPointers, forwarding, identityNote, auxNote,
@@ -119,7 +118,7 @@ const PROSE = {
   SET: {
     allocShape: '16B header + cap*16B (SET_ENTRY) slots [hash i64 @0][elem f64 @8] + normally a trailing cap*4B (LANE) probe array; the self-compile compact profile omits LANE',
     childPointers: 'each occupied slot contributes ONE boxed child: elem @8',
-    forwarding: 'relocatable — in FORWARDING_MASK, but grow-in-place forwarding is moot: growth always rebuilds fresh at a new address (the header IS left as a normal forward stub at the old site so other referents self-heal). __region_copy_rec (regionArmSetMap, layout-kinds.js — .work/research.md §Region arena, regionArmSetMap\'s durable short-circuit) rebuilds fresh via __coll_order insertion order + reinsert ONLY when the table is ephemeral OR holds at least one occupied key whose own hash can change this round (a movable pointer-kind key — ARRAY/OBJECT/HASH/SET/MAP/TYPED/BUFFER/CLOSURE — that is itself ephemeral); a durable table whose every occupied key is hash-stable (durable, or content-hashed STRING/BIGINT, or immediate NUMBER/ATOM/EXTERNAL) is value-patched in place instead — bucket layout provably unchanged, no rehash',
+    forwarding: 'relocatable — in FORWARDING_MASK, but grow-in-place forwarding is moot: growth always rebuilds fresh at a new address (the header IS left as a normal forward stub at the old site so other referents self-heal). __region_copy_rec (regionArmSetMap, layout-kinds.js — .work/evidence.md §Region arena, regionArmSetMap\'s durable short-circuit) rebuilds fresh via __coll_order insertion order + reinsert ONLY when the table is ephemeral OR holds at least one occupied key whose own hash can change this round (a movable pointer-kind key — ARRAY/OBJECT/HASH/SET/MAP/TYPED/BUFFER/CLOSURE — that is itself ephemeral); a durable table whose every occupied key is hash-stable (durable, or content-hashed STRING/BIGINT, or immediate NUMBER/ATOM/EXTERNAL) is value-patched in place instead — bucket layout provably unchanged, no rehash',
     identityNote: 'pointer-bits (REF_EQ_KINDS) container identity; per-ELEMENT dedup inside the table is SameValueZero via $__same_value_zero (content for STRING elements, pointer-bits for everything else — see the BIGINT finding)',
     interopDecode: 'mem.read t===8: walks cap slots, Set() of mem.read(elem) per occupied slot',
     typeofArm: '"object"',
@@ -189,7 +188,7 @@ const PROSE = {
     allocShape: '8B payload cell — the BigInt\'s raw two\'s-complement i64 bits, no header at all (module/core.js __alloc(8), not __alloc_hdr — ir.js boxBigInt)',
     childPointers: 'none (leaf, like a heap string byte run)',
     forwarding: 'GROWTH forwarding: never (not in FORWARDING_MASK — fixed 8B cell, content never changes post-allocation). REGION relocation is a distinct axis (audit-#14 item 4): __region_copy_rec fresh-copies an ephemeral BigInt cell like any leaf allocation — "no growth forwarding" must not be read as "region-immovable"',
-    identityNote: 'CONTENT identity (CARRIER PROGRAM Slice 3, .work/carrier-representation-design.md — closes the divergence FINDINGS[eq-identity] documented): $__eq/$__eq_strict (module/core.js) and $__same_value_zero/$__map_hash (module/collection.js) all carry a PTR.BIGINT arm now — two independently-boxed equal-value BigInts compare EQUAL and hash to the same bucket, matching src/compile/emit.js\'s REF_EQ_KINDS comment\'s stated intent ("BIGINT needs __eq (heap-allocated, content compare)")',
+    identityNote: 'CONTENT identity (CARRIER PROGRAM Slice 3, .work/archive/carrier-representation-design.md — closes the divergence FINDINGS[eq-identity] documented): $__eq/$__eq_strict (module/core.js) and $__same_value_zero/$__map_hash (module/collection.js) all carry a PTR.BIGINT arm now — two independently-boxed equal-value BigInts compare EQUAL and hash to the same bucket, matching src/compile/emit.js\'s REF_EQ_KINDS comment\'s stated intent ("BIGINT needs __eq (heap-allocated, content compare)")',
     interopDecode: 'mem.read t===5 (CARRIER PROGRAM Slice 3): reads the payload cell directly (`m.getBigInt64(off, true)`) and returns a real host `bigint` — closes FINDINGS[interop-decode]. Distinct from the UNBOXED raw-i64 jz:i64exp `s`-lane sentinel machinery (decodeBigintSentinel) — a separate, already-shipped mechanism for a different representation crossing the boundary, untouched by this fix',
     typeofArm: '"bigint" dynamically too now (CARRIER PROGRAM Slice 3): $__typeof (module/core.js) carries a PTR.BIGINT tag arm, landed ALONGSIDE emit.js\'s magnitude-heuristic TYPEOF.bigint arm (not replacing it yet — Slice 5 retires the heuristic once every R-recovery arm is independently verified). A PROVEN-bigint operand still statically folds to the literal "bigint" and never reaches $__typeof at all; the dynamic arm is what a boxed-but-unproven value (the test-only __box_bigint intrinsic, or a live carrier-box consumer) now hits, closing FINDINGS[typeof]',
     findings: [],
@@ -254,7 +253,7 @@ export const KIND_REGISTRY = Object.fromEntries(
  * interop.js, now named in one place instead of being independently
  * rediscovered per audit.
  */
-// RESOLVED (CARRIER PROGRAM Slice 3, .work/carrier-representation-design.md
+// RESOLVED (CARRIER PROGRAM Slice 3, .work/archive/carrier-representation-design.md
 // §7): the three BIGINT-only findings this table originally recorded here —
 // 'typeof' ($__typeof gained a PTR.BIGINT tag arm), 'eq-identity' ($__eq/
 // $__eq_strict/$__same_value_zero/$__map_hash gained content-compare/hash
@@ -265,7 +264,7 @@ export const KIND_REGISTRY = Object.fromEntries(
 // arms (Heap-kind registry Slice 2), and CLOSURE — the one kind that needed
 // a genuinely new mechanism (a funcIdx-keyed env-length/cell-mode side
 // table, since its capture count isn't recoverable from a bare box) —
-// landed too (.work/research.md §Region arena, the front-boundary's own
+// landed too (.work/evidence.md §Region arena, the front-boundary's own
 // forcing case). Every real heap kind now has a real arm; kept here, not
 // deleted, per this table's own "RESOLVED stays on record" precedent
 // (identity-arm-divergence below).
@@ -273,12 +272,12 @@ export const FINDINGS = [
   {
     id: 'region-forwarding',
     kinds: ['OBJECT', 'HASH', 'CLOSURE'],
-    status: 'RESOLVED (Heap-kind registry Slice 2 — OBJECT/HASH/TYPED/BUFFER/EXTERNAL landed real __region_copy_rec arms; CLOSURE landed via the $__closure_env_len/$__closure_env_mask side table, .work/research.md §Region arena)',
+    status: 'RESOLVED (Heap-kind registry Slice 2 — OBJECT/HASH/TYPED/BUFFER/EXTERNAL landed real __region_copy_rec arms; CLOSURE landed via the $__closure_env_len/$__closure_env_mask side table, .work/evidence.md §Region arena)',
     summary:
       'module/core.js\'s __region_copy_rec (the region-arena Cheney-copy tracer) originally had dispatch arms for ' +
       'ATOM/STRING/ARRAY/SET/MAP/BIGINT only; OBJECT, HASH, CLOSURE, TYPED, BUFFER, and EXTERNAL fell to a ' +
       'trailing `(unreachable)` trap, EXPLICITLY documented in-source as "out of Slice-1 scope" (the region ' +
-      'program\'s own Slice 1, .work/research.md §Region arena — a DIFFERENT Slice 1 than this file\'s). All six ' +
+      'program\'s own Slice 1, .work/evidence.md §Region arena — a DIFFERENT Slice 1 than this file\'s). All six ' +
       'now have real arms: OBJECT/HASH/TYPED/BUFFER/EXTERNAL via Slice 2\'s registry-generated arms (schema-slot ' +
       'lookup, dyn-props delegation, view-rebase, memo\'d leaf copy, host-index passthrough); CLOSURE via a ' +
       'dedicated funcIdx-keyed side table (env slot count + per-slot boxed/raw mode, captured at ' +

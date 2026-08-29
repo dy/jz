@@ -4,7 +4,7 @@
  * class, where every dimension folds to a literal and every index is a chain
  * of decls over induction variables. `scanIntervalIdx` is one function by
  * necessity (~15 mutually-closing helpers sharing threaded env state across a
- * 2-round widening fixpoint) — see `.work/type-split.md` for why it stays
+ * 2-round widening fixpoint) — see `.work/archive/type-split.md` for why it stays
  * whole. `intervalProvenIdx`/`intervalIdxRanges` are the memoized per-body
  * accessors every other bounds-proof family (loop-versioning, clone) consults.
  *

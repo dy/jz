@@ -2,7 +2,7 @@
  * Pure IR construction helpers for WAT-as-array output — barrel module.
  *
  * The implementation lives in src/ir/*.js, split by family (see
- * .work/ir-split.md for the full family map and dependency-order
+ * .work/archive/ir-split.md for the full family map and dependency-order
  * rationale); this file re-exports the same public names every one of its
  * ~76 importers across src/, module/, and test/ already depends on, so no
  * call site needs to change.
@@ -22,7 +22,7 @@
  *   - control.js   — whole-IR-tree structural utilities + control-flow/tail-call helpers
  *   - numeric.js   — f64/i32/i64 coercions + int-narrowing range analysis
  *   - bigint.js    — BigInt carrier box/unbox (the phase-C representation campaign's
- *                    pairing family — .work/phase-c-unification.md)
+ *                    pairing family — .work/archive/phase-c-unification.md)
  *   - vars.js      — variable storage abstraction (boxed/global/local dispatch)
  *   - arrays.js    — array-layout IR (slot/elem loads, allocPtr, arrayLoop)
  *   - sentinels.js — NaN-boxed sentinels, boxed-boolean carriers, truthiness testing

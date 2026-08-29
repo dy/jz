@@ -696,7 +696,7 @@ test('codegen: nested-loop index seeded from an outer counter narrows transitive
   // P0-2 ledger (2026-08-02): `ix = 2*(id-1)`'s `2*(id-1)` used to admit `i32.mul`
   // by bounding only the literal `2` side (the old, unsound `mulFitsI32` rule) —
   // `id` itself is an unbounded compound-multiplied accumulator (`id *= 4` — see
-  // .work/todo.md for the SEPARATE, still-open finding that `compoundAssign`'s own
+  // .work/archive/todo.md for the SEPARATE, still-open finding that `compoundAssign`'s own
   // `*=`/`+=`/`-=` fast path has NO magnitude gate at all). The corrected,
   // bilateral-bound `mulFitsI32` can't prove `2*(id-1)` fits i32 from `id`'s
   // (nonexistent) range fact, so that ONE outer-loop-only assignment now round-
@@ -874,7 +874,7 @@ test('codegen: integer-global inference narrows numeric globals, demoting only o
   // file's own payoff a few lines down: `i < N` pure-i32, `mem[y*w]` a fully-i32
   // index), not a bare, uncompared sum. A bare, ungoverned read of an unbounded
   // param-derived global (the ORIGINAL `N + half + bSi + width + offset + scale`
-  // accessor here) is exactly the module-global bare-escape shape .work/todo.md's
+  // accessor here) is exactly the module-global bare-escape shape .work/archive/todo.md's
   // 2026-08-03 fix demotes to f64 (the module-global twin of KNOWN GAP #1,
   // src/compile/plan/scope.js `inferModuleIntGlobals`) — this test asserted on
   // that now-corrected-unsound behavior, so the accessor is rewritten to the
@@ -1520,7 +1520,7 @@ test('perf: watr WAT compiler — WASM competitive with JS', async () => {
   // memory: 4096 — pre-allocate 256MB so the bench loop's bump-allocator growth
   // never triggers memory.grow during measurement (prior `memoryPages` key was
   // a silent no-op; jz reads `memory` for the page count shorthand).
-  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): watr
+  // BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §5/§9): watr
   // (external npm dependency) has 4 of its own genuinely-unprovable BigInt
   // sites, unreachable from this repo — see test/watr.js's own
   // withRawCarrier for the full rationale; same escape hatch, scoped to
@@ -1796,7 +1796,7 @@ golden('known-shape object', 'export let f = (x) => { let p = { x: x, y: x * 2, 
 // Correctness/behavior unchanged below the tier (every table this program
 // or the kernel-oracle/parity corpus builds stays far under 8192 entries);
 // a self-hosted compiler's own multi-hundred-thousand-entry tables are
-// exactly what the tier targets (.work/research.md, map-growth campaign).
+// exactly what the tier targets (.work/evidence.md, map-growth campaign).
 golden('unknown/dynamic object', 'export let f = (k) => { let p = {}; p[k] = 1; p.b = 2; return p[k] + p.b }', 13689)
 // 3719→6736: this parser reads chars from an untyped string receiver and does
 // `c >= '0'` / `c <= '9'` on them. Two fixes net out here. (1) The NUMBER-keyed

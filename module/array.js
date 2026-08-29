@@ -29,7 +29,7 @@ import { registerEarlyExit } from './array/early-exit.js'
 
 
 // Complement of {ARRAY, TYPED} in the VAL domain — the kindSet argument
-// recvArrTyped's isDisjointFrom check (reps.js, lattice-design.md §5 Slice 2
+// recvArrTyped's isDisjointFrom check (reps.js, .work/archive/lattice-design.md §5 Slice 2
 // precedent) tests against. Computed once, module-level (not per-call).
 const NOT_ARRAY_OR_TYPED = new Set(KIND_UNIVERSE.filter(k => k !== VAL.ARRAY && k !== VAL.TYPED))
 
@@ -630,7 +630,7 @@ export default (ctx) => {
       inc('__is_str_key', '__to_str')
       const kt = temp()
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (.work/todo.md §deletion-sweep Finding #2) — an ambiguous BOOL∪NUMBER
+      // (.work/archive/todo.md §deletion-sweep Finding #2) — an ambiguous BOOL∪NUMBER
       // merge key must reach __to_str/__hash_get_local boxed, or ToPropertyKey
       // normalizes the wrong (collapsed-number) bits. storedValue already
       // returns f64-typed IR, so no asF64 wrap is needed.
@@ -743,7 +743,7 @@ export default (ctx) => {
       const keyTmp = temp()
       inc('__is_str_key', '__to_str')
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (.work/todo.md §deletion-sweep Finding #2) — same ambiguous-merge-key
+      // (.work/archive/todo.md §deletion-sweep Finding #2) — same ambiguous-merge-key
       // producer bypass as the HASH/OBJECT dyn-get sites below.
       return typed(['block', ['result', 'f64'],
         ['local.set', `$${keyTmp}`, storedValue(idx)],
@@ -794,7 +794,7 @@ export default (ctx) => {
       if (useRuntimeKeyDispatch) {
         inc('__hash_get_local', '__is_str_key', '__dyn_get_expr')
         const keyTmp = temp()
-        // storedValue: READ-side sibling of MECHANISM A (.work/todo.md
+        // storedValue: READ-side sibling of MECHANISM A (.work/archive/todo.md
         // §deletion-sweep Finding #2).
         return typed(['block', ['result', 'f64'],
           ['local.set', `$${keyTmp}`, storedValue(idx)],
@@ -804,7 +804,7 @@ export default (ctx) => {
       }
       inc('__dyn_get_expr')
       // storedValue (not asI64(emit(idx))): same MECHANISM A read-side sibling —
-      // the HASH-receiver __dyn_get_expr fallthrough (.work/todo.md §deletion-sweep
+      // the HASH-receiver __dyn_get_expr fallthrough (.work/archive/todo.md §deletion-sweep
       // Finding #2). storedValue returns f64-typed IR; asI64 wraps it for the i64 arg.
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
@@ -813,7 +813,7 @@ export default (ctx) => {
     // see the numeric-index design note below, which stays scoped to UNKNOWN receivers).
     if (vt === VAL.OBJECT && keyType !== VAL.STRING) {
       inc('__dyn_get_expr')
-      // storedValue: same MECHANISM A read-side sibling (.work/todo.md
+      // storedValue: same MECHANISM A read-side sibling (.work/archive/todo.md
       // §deletion-sweep Finding #2) — the OBJECT-receiver __dyn_get_expr fallthrough.
       return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', ['i64.reinterpret_f64', ptrExpr], asI64(storedValue(idx))]], 'f64')
     }
@@ -1007,7 +1007,7 @@ export default (ctx) => {
     // AND the STRING ptrTypeEq check) are dead — the receiver can never take
     // either's other arm. Collapses straight to the bare `__typed_idx` call,
     // same shape a single-kind-proven `vt` receiver gets. Expressed via
-    // isDisjointFrom (reps.js, lattice-design.md §5 Slice 2 precedent) —
+    // isDisjointFrom (reps.js, .work/archive/lattice-design.md §5 Slice 2 precedent) —
     // same computation, now through the projection idiom later slices reuse.
     const recvArrTyped = typeof arr === 'string' && isDisjointFrom(arr, NOT_ARRAY_OR_TYPED)
     // A provably-NUMBER key can never be a string key, so the `__is_str_key`
@@ -1089,7 +1089,7 @@ export default (ctx) => {
       // discipline `emitDynamicKeyDispatch`'s sibling arm above already uses
       // for its own single `emit(idx)`.
       // storedValue (not asF64(emit(idx))): READ-side sibling of MECHANISM A
-      // (.work/todo.md §deletion-sweep Finding #2) — this arm fires exactly
+      // (.work/archive/todo.md §deletion-sweep Finding #2) — this arm fires exactly
       // when keyType === VAL.NUMBER, which is what an ambiguous BOOL∪NUMBER
       // merge key statically collapses to; the cold arm must see the boxed
       // atom, not the raw collapsed bits.
@@ -2331,7 +2331,7 @@ export default (ctx) => {
     ;; hand-rolled 8-byte header left it out entirely, silently relying on
     ;; the following bytes being untouched (zero) fresh linear memory — true
     ;; before region-arena's compaction starts reusing already-written
-    ;; address ranges, false after (FOURTH mechanism, .work/research.md
+    ;; address ranges, false after (FOURTH mechanism, .work/evidence.md
     ;; §Region arena: the "stale receiver" was never stale or unrooted — it
     ;; was a genuine, freshly-built .flatMap() result whose off-16 word
     ;; aliased a neighboring allocation's leftover bytes).

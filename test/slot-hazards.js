@@ -102,7 +102,7 @@ export let main = () => {
 })
 
 test('slot-hazards: §21 counter-example — computed-key write through an untyped param still poisons the slot KIND (pointsTo===\'ALL\' load-bearing after the hz→pointsTo swap)', () => {
-  // .work/carrier-representation-design.md §21's own counter-example, verbatim
+  // .work/archive/carrier-representation-design.md §21's own counter-example, verbatim
   // shape: `corrupt`'s `obj[key]=val` has an unresolvable receiver (obj: plain
   // param, no schemaId) AND an unresolvable key (key: plain param, not a
   // literal, not repOf(key)?.intCertain) — collectSlotWriteHazards can name

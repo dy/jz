@@ -141,7 +141,7 @@ const NO_BOUNDED_CC = new Set()  // shared immutable empty result
 
 /** Set of `['.', recv, 'charCodeAt']` callee nodes in the current function whose
  *  index argument is provably within `[0, recv.length)`. Memoised per body
- *  (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap on body identity,
+ *  (AdHocMemo retirement — .work/archive/ctxfunc-survey.md §2/§5: WeakMap on body identity,
  *  getFactStore().ccInBounds, same session-ownership idiom as kind.js's
  *  mayBeUndefinedTrace — persists across enterFunc by design, self-
  *  invalidating on body identity, cleared fresh every beginSession). */

@@ -2,7 +2,7 @@
  * Per-function body fact collection — analyzeBody, its cache seam, and the
  * post-walk wasm-type widening it drives. Split out of analyze.js along the
  * "body facts" seam (pipeline-minimality slice); see analyze.js's module
- * header for the full split rationale and `.work/analyze-traversals.md` for
+ * header for the full split rationale and `.work/archive/analyze-traversals.md` for
  * the traversal inventory.
  *
  * @module compile/analyze/body-facts
@@ -43,7 +43,7 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
  * "everywhere". A recompute-vs-cache assertion was tried (JZ_DEBUG_CACHE) and
  * abandoned: it fires on benign staleness (the suite stays green through the
  * divergence), so it can't tell a real missing-invalidation from a harmless
- * one. See .work/todo.md.
+ * one. See .work/archive/todo.md.
  *
  * Ownership: callers no longer
  * call invalidateLocalsCache directly — it stays exported only because the
@@ -61,7 +61,7 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
  * left to forget. A narrower, targeted safety net catches what fusion can't:
  * a signature retype (param .type/.ptrKind/.ptrAux, sig.results/.ptrKind/
  * .ptrAux/.unsignedResult) surviving under a stale cache HIT is caught LIVE,
- * on every read (walk-count design B1, .work/walk-count-design.md §2.4/§5
+ * on every read (walk-count design B1, .work/archive/walk-count-design.md §2.4/§5
  * item 3 — promoted from a JZ_DEBUG_INVARIANTS-only assert-and-crash to an
  * always-on cache-coherence gate): a `sigFingerprint` mismatch on a hit
  * transparently invalidates and recomputes once inline instead of returning
@@ -222,7 +222,7 @@ export function analyzeBody(body) {
     // — kind.js's generic valTypeOf can't see this walk's in-progress facts, only
     // settled localReps, so a receiver that's a LOCAL (not a param) with no rep
     // yet fell through to null here and poisoned the pushed-to array (the class
-    // reverted before: see .work/todo.md "WORDCOUNT TRUE ROOT"). Deterministic
+    // reverted before: see .work/archive/todo.md "WORDCOUNT TRUE ROOT"). Deterministic
     // and safe to read mid-walk: the receiver's own decl is processed earlier in
     // this same forward, program-order pass (`arrElemValTypes` is a fresh Map per
     // analyzeBody call, so re-walks after a caller-side fact settles converge to
@@ -686,7 +686,7 @@ export function analyzeBody(body) {
   // never-relocated array bindings (reads may skip the realloc-forwarding
   // follow) are independent post-overlay facts over the same body — no
   // cross-dependency between the three (walk-count design A1,
-  // .work/walk-count-design.md §1.3/§5 item 1) — so one fused scan computes
+  // .work/archive/walk-count-design.md §1.3/§5 item 1) — so one fused scan computes
   // all three instead of three separate full-body scans.
   const [flatObjects, sliceViews, neverGrown] = doSchemas
     ? scanObjectArrayFacts(body)
@@ -727,12 +727,12 @@ export function analyzeBody(body) {
  *  shape every hypothesis-probe / emit-time site in narrow.js and index.js
  *  used to pair an invalidate with an immediate re-read to avoid (see
  *  reanalyzeBody below) before this gate went live (walk-count design B1,
- *  .work/walk-count-design.md §2.4/§5 item 3 — promoted from a
+ *  .work/archive/walk-count-design.md §2.4/§5 item 3 — promoted from a
  *  JZ_DEBUG_INVARIANTS-only assert-and-crash to an always-on check whose
  *  mismatch now self-heals via recompute instead of throwing).
  *
  *  Deliberately NARROW, not a full recompute-and-compare: JZ_DEBUG_CACHE
- *  tried that and was abandoned (.work/todo.md) because it fired on ambient
+ *  tried that and was abandoned (.work/archive/todo.md) because it fired on ambient
  *  staleness the design accepts as benign (ctx.func.localReps /
  *  ctx.func.typedElem overlay swaps, ctx.schema.slotI32Certain rounds — the
  *  bodyFacts row's own "intentionally staleable" comment above analyzeBody).
@@ -825,7 +825,7 @@ function widenLocalTypes(body, locals) {
   // UNBOUNDED magnitude — `id *= 100000`, `id += d`) rests on the SAME
   // magnitude-blind "every read re-applies ToInt32" premise
   // collectI32SafeIndexVars' back-propagation does, and Pass D below closes
-  // the identical gap for it (see .work/todo.md KNOWN GAP #1 sibling note).
+  // the identical gap for it (see .work/archive/todo.md KNOWN GAP #1 sibling note).
   const intLevels = intLevelMap(body, nestedNames)
   const f64IdxVars = collectF64StridedIndexVars(body, locals)  // counters that trunc anyway — don't keep i32
   const keepI32 = (name) => i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))

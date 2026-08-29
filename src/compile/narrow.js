@@ -1,7 +1,7 @@
 /**
  * Signature narrowing — fixpoint analysis that mutates each user func's `sig`
  * based on call-site observations. Barrel module: the implementation lives in
- * src/compile/narrow/*.js, split by family (see .work/narrow-split.md for the
+ * src/compile/narrow/*.js, split by family (see .work/archive/narrow-split.md for the
  * full family map and dependency-order rationale); this file re-exports the
  * same public names every one of its 3 importers already depends on, so no
  * call site needs to change.

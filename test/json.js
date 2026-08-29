@@ -186,7 +186,7 @@ test('JSON.parse: nested chains stay on OBJECT fast path', () => {
 // rather than fixing it generally — the general fix (scrub the ~17-file
 // self-compiled-reachable BigInt surface, or redesign the carrier
 // disambiguation off one whole-program boolean) is a separate, larger,
-// out-of-scope architectural task; see .work/todo.md "JSON SHAPED-PARSER
+// out-of-scope architectural task; see .work/archive/todo.md "JSON SHAPED-PARSER
 // 'Bad int 9.067910317e-315'" for the full hunt and that larger scope.
 test('JSON.parse: stable let source uses shaped runtime parser', () => {
   const src = `

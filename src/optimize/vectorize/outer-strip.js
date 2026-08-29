@@ -551,7 +551,7 @@ function tryConvColumn(blockNode, fnLocals, freshIdRef, enabled, outer) {
 // current dispatch chain's total order (divergent-escape, per-pixel-color, outer-strip,
 // iterated-reduce, conv-column): tryIteratedReduce sits BETWEEN tryOuterStrip and
 // tryConvColumn, interleaved with the "straight-line" group, not adjacent to
-// tryDivergentEscapeVectorize. Ledger decision (.work/research.md): grouping by the
+// tryDivergentEscapeVectorize. Ledger decision (.work/evidence.md): grouping by the
 // design's semantic split was tried first and FAILED the byte-identity gate —
 // examples/interference (tryOuterStrip's sole specimen) started matching
 // tryIteratedReduce instead once iterated-reduce moved earlier (both produce the identical

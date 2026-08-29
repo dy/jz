@@ -3,7 +3,7 @@
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
- * `.work/assemble-outliers.md` §4 for why these two phases share a file
+ * `.work/archive/assemble-outliers.md` §4 for why these two phases share a file
  * (adjacent in call order: dedup runs immediately before finalize,
  * compile/index.js:2894-2896).
  */
@@ -24,7 +24,7 @@ import { MAX_CLOSURE_ARITY } from '../../ir.js'
 // function-scoped consts captured by the nested walk closures: a function-
 // scoped binding captured 2-3 arrow levels deep tripped a latent self-compile
 // closure-capture defect (reference emitted without declaration,
-// 'SENTINELf..._N is not in scope'; banked in .work/todo.md 2026-08-19).
+// 'SENTINELf..._N is not in scope'; banked in .work/archive/todo.md 2026-08-19).
 // Module-scope bindings never enter the capture machinery.
 const dedupIsSentinel = (v) => v === undefined || v === null ||
   (typeof v === 'number' && !Number.isFinite(v))
@@ -40,7 +40,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
   // The previous key was JSON.stringify of every closure's fully-renamed tree
   // -- measured at 810.76 MB of transient string churn on the jz x jz
   // region-live self-compile, 99.2% of the buildStartFn window
-  // (.work/research.md 2026-08-19 attribution verdict). The hash walk
+  // (.work/evidence.md 2026-08-19 attribution verdict). The hash walk
   // allocates nothing and the exact comparator runs only within a hash
   // bucket, so dedup GROUPS stay bit-identical while the churn dies.
   // INVARIANT (grouping parity with the old stringify key): undefined, null,
@@ -130,7 +130,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
     const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
     return !name || !redirect.has(name)
   })
-  // Retired onto walkAst (pipeline-minimality slice, `.work/assemble-outliers.md`
+  // Retired onto walkAst (pipeline-minimality slice, `.work/archive/assemble-outliers.md`
   // §5): the hand-rolled recursion only ever rewrote bare `$name` STRING
   // children in place, never needed to see a node's own opcode slot as
   // anything but an inert string — an `enter` scan over every child
@@ -177,7 +177,7 @@ export function finalizeClosureTable(sec) {
   // resolveIncludes() runs here, ahead of its normal call inside pullStdlib
   // (below, in compile/index.js): emission has already finished by this point
   // (this function's own caller sits right before the pre-assemble invariant
-  // checkpoint, which asserts exactly that — .work/region-release-notes.md),
+  // checkpoint, which asserts exactly that — .work/archive/region-release-notes.md),
   // so ctx.core.includes' DIRECT set is already final and only needs the
   // transitive-deps expansion resolveIncludes() performs; that expansion is a
   // pure, monotonic fixpoint over names (src/ctx.js), so calling it again

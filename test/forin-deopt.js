@@ -78,7 +78,7 @@ test('for-in deopt: a heavy body stays a pooled loop, not an N× unroll (size bu
   // — `ctx.schema.resolve(o)` under-resolves the 8-key shape once the kernel's
   // schema list has grown, so keys.length drops and the gate unrolls. Benign
   // (values above are exact either way); it's the self-compile-row kernel-
-  // statefulness class (.work/todo.md), not a codegen regression — so pin the
+  // statefulness class (.work/archive/todo.md), not a codegen regression — so pin the
   // heuristic where it's stable and let the native leg own it.
   if (onKernel()) return
   const body = funcWat(compile(heavy, { wat: true }), 'run')

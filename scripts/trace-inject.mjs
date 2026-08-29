@@ -7,7 +7,7 @@
 // edited regions are spliced back into the full text in one pass. A tiny
 // top-level `(import "dbg" "trace" ...)` line is prepended once.
 //
-// Built for .work/carrier-representation-design.md §28→§29: the carrier
+// Built for .work/archive/carrier-representation-design.md §28→§29: the carrier
 // kernel's `NULL_NAN`/`UNDEF_NAN`/`FALSE_NAN`/`TRUE_NAN` globals — each
 // `atomNanHex(id)` tail-called into `i64Hex(bits)` — bake WRONG string
 // content for the first two of every four back-to-back `$__start`

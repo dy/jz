@@ -113,7 +113,7 @@ const MINIMAL = `export let f = () => 1`
 // stale-plan HIT exactly where every reader here fails open on a miss. The
 // fix made all three session-owned (fresh WeakMap per reset()/beginSession());
 // folded into the session-owned `ctx.plans` subtree,
-// rebuilt directly by reset(), by architecture re-audit item 3 (.work/todo.md).
+// rebuilt directly by reset(), by architecture re-audit item 3 (.work/archive/todo.md).
 // CLOSURE_LOOP_A/B are STRUCTURALLY parallel —
 // same shape/position for a zero-capture closure, a heap-capture closure, a
 // boxed-cell closure (a reassigned-inside-closure counter), and two loops
@@ -471,11 +471,11 @@ test('session-reentrancy: order-reversed — minimal then prepare-heavy, regex-f
   ok(eq(warmRegexHeavy, compileFresh(REGEX_HEAVY)), 'regex-heavy (compiled second) differs from fresh-process compile')
 })
 
-// CompileSession-as-value (Slice B, .work/compile-session-design.md §2.3 row
+// CompileSession-as-value (Slice B, .work/archive/compile-session-design.md §2.3 row
 // 1/3) reassigned `ctx` by identity every reset() instead of mutating fields
 // in place, so a caller holding a `ctx` reference from before a later
 // compile() would keep observing that older compile's own coherent
-// snapshot. SWAP-REVERTED (stack-test-2026-08-15, .work/research.md
+// snapshot. SWAP-REVERTED (stack-test-2026-08-15, .work/evidence.md
 // b8f802b8's half-bisection: the const→let identity-swap conversion was
 // isolated as the SOLE guilty mechanism for a deterministic region-live
 // kernel-oracle regression, `facts` absorption proven innocent) — `ctx` is

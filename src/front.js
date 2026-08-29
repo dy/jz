@@ -45,7 +45,7 @@ const rejectReservedPrefix = (node) => {
 }
 
 /** source → preEval'd prepared AST (the tree compileAst consumes).
- *  `regionHooks` (region-arena FRONT boundary, .work/research.md §Region
+ *  `regionHooks` (region-arena FRONT boundary, .work/evidence.md §Region
  *  arena): optional `{ mark, exit }` pair, the same optimizeTail-shaped
  *  contract the round boundary (scripts/self.js's own `regionHooks` on
  *  `watrTail`) already uses — supplied ONLY by the self-compile kernel entry
@@ -53,8 +53,8 @@ const rejectReservedPrefix = (node) => {
  *  passes this option). When present, wraps parse→liftIIFE→jzify→prepare in
  *  one region round: every allocation that span makes gets reclaimed at
  *  `exit` EXCEPT what's reachable from the root.
- *  UNION-FIELD ROOT (see `.work/compile-session-design.md` §2.1/§3 and
- *  `.work/research.md`'s region-arena entry): the root MUST be the UNION of
+ *  UNION-FIELD ROOT (see `.work/archive/compile-session-design.md` §2.1/§3 and
+ *  `.work/evidence.md`'s region-arena entry): the root MUST be the UNION of
  *  every `ctx.*` field ANY region round needs (`funcs, module, schema,
  *  closure, scope, types, warnings, plans, inspect, func, transform, facts`
  *  — 12 fields), applied UNIFORMLY at every round-exit call site — never
@@ -68,7 +68,7 @@ const rejectReservedPrefix = (node) => {
  *  against. `ctx` itself is NEVER a root element here — only its individual
  *  fields are, so no `setSession()` rebind seam is needed. Any later read
  *  through a stale `ast`/`ctx.*` binding is a use-after-free.
- *  PRE-MARK MODULE LOAD (`.work/region-release-notes.md` "ROOT CAUSE FOUND"):
+ *  PRE-MARK MODULE LOAD (`.work/archive/region-release-notes.md` "ROOT CAUSE FOUND"):
  *  `prepare()`'s own first line unconditionally calls `includeModule('core')`,
  *  and several later, source-dependent branches call `includeModule(mod)` for
  *  other stdlib modules. `includeModule` runs a module's `init(ctx)` on first

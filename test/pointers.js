@@ -237,7 +237,7 @@ test("carrier: boxPtrIR's re-box template (asF64 via applyPointerParamAbi devirt
     "boxPtrIR's re-box template must be byte-identical to i64Hex(ptrBits(PTR.BUFFER,0))")
 })
 
-// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/carrier-
+// === BigInt carrier boxing (CARRIER PROGRAM Slice 1, .work/archive/carrier-
 // representation-design.md §7) — dormant primitives, unit-level pins.
 // __box_bigint/__unbox_bigint are test-only jz-source intrinsics (module/
 // core.js, mirroring __mkptr/__ptr_type/__ptr_offset above) exposing ir.js's
@@ -420,7 +420,7 @@ for (const optimize of [false, 2, 3]) {
 // runtime pairing — only a genuinely OPEN/uncertain verdict earns that).
 //
 // Traced live (four rounds of source-literal warn() instrumentation via
-// disposable self-compile probes, .work/todo.md's selfhost-fixpoint-
+// disposable self-compile probes, .work/archive/todo.md's selfhost-fixpoint-
 // divergence entry) against the fix/shape8-member-callee branch's own
 // self-compiled kernel, which DOES fail this exact repro at every optimize
 // level: every representation-plan.js/ir.js decision for `n` traced BYTE-
@@ -511,7 +511,7 @@ test('carrier: PTR.BIGINT (5) is disjoint from every other pointer tag', () => {
   is(new Set(liveTags).size, liveTags.length)
 })
 
-test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullish-BIGINT-arm ternary (.work/carrier-representation-design.md §13/§14)', () => {
+test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullish-BIGINT-arm ternary (.work/archive/carrier-representation-design.md §13/§14)', () => {
   // isTernaryBoxedBigint (ir.js) exists for the ternary-NULLISH-merge shape
   // (`cond ? BigInt(x) : null`) — the ONE decl-init form whose OWN storage IS
   // a real box. emitDecl (emit.js) used to register a decl as ternary-boxed
@@ -548,7 +548,7 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
   is(run(src, { optimize: { level: 3 } }).f(), '5')
 })
 
-// audit-#14 finding (.work/carrier-representation-design.md §15), FIXED §16:
+// audit-#14 finding (.work/archive/carrier-representation-design.md §15), FIXED §16:
 // a heap object's BOXED BigInt schema field, read back via STATIC dot-access
 // (`obj.prop`, compiled to emitSchemaSlotRead's fixed-offset load,
 // module/core.js), used to never unbox — readI64 (ir.js) only recognizes a
@@ -567,10 +567,10 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // emitSchemaSlotRead's read side at SCHEMA granularity, so a proven-BIGINT
 // slot unboxes unconditionally instead of handing every consumer the box's
 // raw pointer bits.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§5/§9):
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§5/§9):
 // this fixture imports the REAL layout.js, exercising `i64Hex`'s `bits`
 // param — the ONE jz-own-source site Slice 0's own rewrite could not
-// resolve (".work/research.md 'BigInt retirement Slice 0'": both rewrite
+// resolve (".work/evidence.md 'BigInt retirement Slice 0'": both rewrite
 // techniques tried either miscompiled the self-compiled kernel for unrelated
 // programs or broke this very test; reverted, banked not forced). Under
 // Slice 1's flip, this residual "call-arg" ambiguity is (under JZ_BIGINT_STRICT, opt-in) a compile-time
@@ -580,7 +580,7 @@ test('carrier: JZ_CARRIER_BOX ternaryBoxedNames false-positive on two-non-nullis
 // not deleted: the shape (a genuinely unprovable BigInt schema field read
 // through layout.js's real i64Hex) remains valuable coverage that Slice 0's
 // documented gap surfaces as a NAMED diagnostic, not a silent miscompile.
-test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
+test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and decode raw-exact (.work/archive/carrier-representation-design.md §15/§16 → decl-literal raw slots + const-field staticValue fold)', () => {
   if (onKernel()) return
   // Third era of this pin. Era 1: asserted the boxed payload unboxed
   // correctly. Era 2 [RETIRED]: asserted the shape REFUSED under strict
@@ -597,8 +597,8 @@ test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and 
   is(exp.ptrHex(), '0x7FFB000300000400')
 })
 
-// CONSERVATIVE PAIRING (.work/carrier-representation-design.md — the §15/§16
-// chain's closing move, .work/context-sensitivity-survey.md's COORDINATOR
+// CONSERVATIVE PAIRING (.work/archive/carrier-representation-design.md — the §15/§16
+// chain's closing move, .work/archive/context-sensitivity-survey.md's COORDINATOR
 // RULING): §16 closed the PROVEN half of the read-side gap (a schema slot
 // whose write-side census uniformly, provably resolves BIGINT unboxes
 // unconditionally) but left the UNPROVEN half open whenever `pointsTo==='ALL'`
@@ -617,12 +617,12 @@ test('carrier: LAYOUT-class schema bigint fields compile CLEAN under strict and 
 // arithmetic-core BigInt operand dispatch (readI64's own naive `asI64`
 // fallback, `typeof node === 'string'` never matching a `.`-node) — verified
 // live via a disposable pre-fix diff before landing the fix, not assumed.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§5/§9):
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§5/§9):
 // same class as the §15/§16 test just above — CONSERVATIVE PAIRING's
 // read-side dispatch has no remaining input to exercise once the
 // write-side ambiguity it existed to cover is a compile-time refusal
 // instead. Converted to expect-error.
-test('carrier: LAYOUT-class bigint fields stay provable-raw UNDER the pointsTo=ALL blanket (.work/carrier-representation-design.md CONSERVATIVE PAIRING → decl-literal discipline survives the hazard blanket)', () => {
+test('carrier: LAYOUT-class bigint fields stay provable-raw UNDER the pointsTo=ALL blanket (.work/archive/carrier-representation-design.md CONSERVATIVE PAIRING → decl-literal discipline survives the hazard blanket)', () => {
   if (onKernel()) return
   // Third era (see the sibling test above). The load-bearing extra here: the
   // fixture's `corrupt(obj, key, val)` trips the whole-program pointsTo='ALL'

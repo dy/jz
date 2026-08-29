@@ -8,7 +8,7 @@
  * induction against a moving JIT on a noisy stopwatch. You CAN prove "no waste":
  * a negative, statically checkable property of the output, independent of any
  * competitor or machine. That is the strongest guarantee actually available, and
- * the honest surrogate for speed (see .work/research.md §"minimal theoretical WASM").
+ * the honest surrogate for speed (see .work/evidence.md §"minimal theoretical WASM").
  *
  * Two oracles over the same WAT facts:
  *
@@ -217,7 +217,7 @@ for (const [name, gen] of [
 // value-correct — every seed differentially matches JS, see test/fuzz.js). This
 // is a real, broad lost optimization (every seed hits it: 200/200) — recovering
 // it needs a genuine "loop counter ranged by its own literal bound" fact, which
-// doesn't exist yet (see .work/todo.md P0-2 ledger follow-up). Ratchet, not a
+// doesn't exist yet (see .work/archive/todo.md P0-2 ledger follow-up). Ratchet, not a
 // hard zero, so a fix can tighten this without a test edit — but it must never
 // regress past today's baseline.
 const MINMAX_IVSR_F64_BASELINE = SWEEP  // every seed hits it today — see comment above

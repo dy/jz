@@ -11,7 +11,7 @@ import { cloneMapView, isMapOverlay, makeMapOverlay, mapOrOverlaySize } from './
  *  backing table. The pre-2026-08-18 form (`out={}` + per-key computed
  *  writes, and `new Map([...value].map(...))` with its 2N intermediate
  *  arrays) built every cloned ValueRep by incremental dictionary growth —
- *  measured as the m86 goal-gate wall (.work/research.md §Creator NAMED). */
+ *  measured as the m86 goal-gate wall (.work/evidence.md §Creator NAMED). */
 function clonePlanValue(value) {
   if (value == null || typeof value !== 'object') return value
   if (value.mapOverlay === true) return cloneMapView(value)

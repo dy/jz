@@ -1,7 +1,7 @@
 import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 
-// CallTargetIndex (.work/v1-architecture-campaign.md finish-order item 1) —
+// CallTargetIndex (.work/archive/v1-architecture-campaign.md finish-order item 1) —
 // the canonical, frozen, same-module resolver for a `.`-member call's
 // callee, mirroring closure-plan.js's ClosureEnvPlan idiom: a fact computed
 // ONCE from the parsed program, before any analysis consumer, never mutated
@@ -13,7 +13,7 @@ import { staticObjectProps } from '../static.js'
 // `typeof node[1] === 'string'` exclusively, so a real, same-module, user-
 // defined function reached through an object property is invisible to
 // analysis even though emission's dynamic dispatch calls it correctly at
-// the VALUE level (Shape #8, test/data.js "ns.parse" pin, phase-c-
+// the VALUE level (Shape #8, test/data.js "ns.parse" pin, .work/archive/phase-c-
 // unification.md's Shape #8 section). This module closes that gap with one
 // general proof, not a name-specific guess:
 //
@@ -327,7 +327,7 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
    * (`resolveMember`'s own shape) or an inline arrow literal (the `['=>',
    * params, body]` node — watr's actual `HANDLER` shape, every property an
    * arrow literal, none a reference to a pre-existing declared function;
-   * see .work/string-method-guess-notes.md "Third follow-up session" for
+   * see .work/archive/string-method-guess-notes.md "Third follow-up session" for
    * the empirical trace that ruled out treating these as funcEntries
    * directly) — or `null` when even ONE property is unresolved (a non-
    * function value, a `++`/compound write, or two disagreeing writes to

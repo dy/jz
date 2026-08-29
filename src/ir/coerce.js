@@ -232,7 +232,7 @@ export function toNumF64(node, v) {
   if (typeof node === 'string' && ctx.func.maybeNullish?.has(node)) return coerceNullishToNum(asF64(v))
   const vt = valTypeOf(node)
   if (vt === VAL.BOOL) return typed(['f64.convert_i32_s', truthyIR(v)], 'f64')
-  // Slice 7 widening (.work/todo.md §deletion-sweep §14/§15's own
+  // Slice 7 widening (.work/archive/todo.md §deletion-sweep §14/§15's own
   // honest-boundary gap): `vt` stays permanently null for a decl/param/capture-
   // hopped census-NUMBER claim (§14 point 3 — `val` never carries a census
   // claim, by construction) even though `presentVal` (Slice 6, kind.js
@@ -246,7 +246,7 @@ export function toNumF64(node, v) {
   // permissively unsound for BIGINT as it always was, not newly closed here).
   const censusNum = vt == null && censusMaybeUndefinedKind(node) === VAL.NUMBER
   if (vt === VAL.NUMBER || vt === VAL.BIGINT || censusNum) {
-    // maybeUndefined join (.work/todo.md §deletion-sweep §1a): a dict-census
+    // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1a): a dict-census
     // NUMBER claim is a "every value ever WRITTEN" fact, not a "this key
     // exists" proof — an absent key reads real `undefined` at runtime. Gated
     // on VAL.NUMBER only (never BIGINT: real JS THROWS mixing BigInt and
@@ -263,7 +263,7 @@ export function toNumF64(node, v) {
       // Map direct-read shape (censusShapedNode) and a bare name (a local
       // read) — both pure. NOT true for kind.js's call-result arm
       // (censusMaybeUndefinedKind's `callResultMayBeUndefinedKind` fallback,
-      // .work/todo.md §deletion-sweep §5 criterion 3): an arbitrary
+      // .work/archive/todo.md §deletion-sweep §5 criterion 3): an arbitrary
       // function call can have real side effects, and cloneIR's triplication
       // would fire them 3x — a captured-mutation counter would increment 3x
       // instead of once when its value flows through a non-inlined callee's
@@ -412,7 +412,7 @@ export function toNumF64(node, v) {
  *  an abrupt completion through the closure call. */
 export function toStrI64(node, v) {
   const vt = valTypeOf(node)
-  // STRING-census widening (.work/todo.md §deletion-sweep):
+  // STRING-census widening (.work/archive/todo.md §deletion-sweep):
   // mirrors toNumF64's NUMBER-census widening for the
   // STRING case. Two shapes both currently fall all the way through to the
   // fully generic `__to_str` dynamic dispatch at the bottom of this function
@@ -449,7 +449,7 @@ export function toStrI64(node, v) {
   // generic __to_str dispatch, dragging its NUMBER arm's Ryu float formatter
   // (__ftoa/__ftoa_shortest/__ryu_*) into any module with a dynamic template
   // literal — even one that never stringifies a number.
-  // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5): a
+  // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1/Slice 5): a
   // dict-census STRING claim (every value ever WRITTEN through `name[k]=v`
   // was a string) is, same as the NUMBER claim toNumF64 already guards,
   // "every value ever written" — NOT "this key exists". An absent key reads
@@ -469,7 +469,7 @@ export function toStrI64(node, v) {
   // THIS chokepoint (not the caller) so every caller (String(), strcat's
   // per-part loop) inherits it.
   if (vt === VAL.STRING && !censusMaybeUndefined(node)) return asI64(v)
-  // Error-schema special case (.work/todo.md §deletion-sweep §Consequence): `${e}`/
+  // Error-schema special case (.work/archive/todo.md §deletion-sweep §Consequence): `${e}`/
   // String(e) on a real Error object must format via spec's Error.prototype.toString
   // (name if message empty / message if name empty / name+': '+message otherwise /
   // 'Error' if both empty — ECMA-262 20.5.3.4), not the generic OBJECT

@@ -702,7 +702,7 @@ test('array-destructure kind: assignment-form (no `let`) already preserved it �
   is(localVal(locals, 'b'), VAL.BIGINT)
 })
 
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): this
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4): this
 // test used to document a KNOWN, ACCEPTED gap — a heterogeneous array
 // literal (`[1, BigInt(v)]`, element 0 NUMBER, element 1 an unprovable
 // BigInt) passed as a call argument, whose per-index kind param
@@ -1123,7 +1123,7 @@ test('intCertain: transitive — j = i + 1 follows i', () => {
 
 // ============================================================================
 // mayBeUndefined REP field — pure analysis, no codegen impact YET
-// (.work/todo.md §deletion-sweep Slice 1). Honest boundary,
+// (.work/archive/todo.md §deletion-sweep Slice 1). Honest boundary,
 // stated up front so a future reader doesn't mistake this for a black-box
 // regression suite: VT['[]']/VT['.']/VT['()'] (dictValueKindOf/mapValueKindOf's
 // OWN exact-kind fold) stay DORMANT until design §8 Slice 4 — every existing
@@ -1341,7 +1341,7 @@ test('presentVal and val are mutually exclusive by construction — never both n
 
 // ============================================================================
 // mayBeUndefined Slice 2 — whole-program propagation (param/return/closure)
-// (.work/todo.md §deletion-sweep §3 remaining, §8 Slice 2).
+// (.work/archive/todo.md §deletion-sweep §3 remaining, §8 Slice 2).
 // Same honest-boundary framing as Slice 1 above: every consumer still gates
 // behind `valTypeOf(node) === VAL.SOMETHING` first, and `valTypeOf` for a
 // name/argument/return that traces to a census-shaped read stays null at
@@ -1616,7 +1616,7 @@ test('untyped receiver: own-property toFixed closure shadows the builtin', () =>
 })
 
 // ============================================================================
-// hasAmbiguousBoolMerge — pure structural predicate (.work/todo.md
+// hasAmbiguousBoolMerge — pure structural predicate (.work/archive/todo.md
 // §deletion-sweep), mirroring kind.js VT['?:']/VT['&&']/['||']/['??']'s own truth
 // table branch-for-branch. No ctx/reset() needed: every case below is a
 // literal AST shape or a bare-name cond whose literalTruthiness is unresolved

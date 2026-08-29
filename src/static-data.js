@@ -6,7 +6,7 @@
  * claim (aliasing of a ctx field is unprovable), so in the kernel every append
  * fresh-copied the ENTIRE accumulated segment — O(segment) per append,
  * triangular in total. Measured as 100.00% of the jz×jz goal-gate wall
- * (.work/research.md §EXHAUSTIVE ATTRIBUTION: 64,243 fresh concats /
+ * (.work/evidence.md §EXHAUSTIVE ATTRIBUTION: 64,243 fresh concats /
  * 3,128,053,048 bytes inside one emitFunc call). Native V8 hid the same cost
  * behind rope strings.
  *

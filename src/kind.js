@@ -3,7 +3,7 @@
  *
  * Cycle-free w.r.t. analyze.js body walkers — reads ctx + reps only.
  *
- * Barrel re-export only (pipeline-minimality slice, .work/kind-split.md) —
+ * Barrel re-export only (pipeline-minimality slice, .work/archive/kind-split.md) —
  * every name below is defined in one of the family modules under `kind/`:
  *   kind/lattice.js      — literal-lattice helpers + the nullish-arm join predicate
  *   kind/dict-census.js  — whole-program dict/Map value-kind census

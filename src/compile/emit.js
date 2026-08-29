@@ -295,7 +295,7 @@ function builtinFunctionValue(name) {
   }
   // ctx.closure.mint (not a bare table.push) — keeps ctx.closure.envMeta
   // aligned with ctx.closure.table by funcIdx; see module/function.js's
-  // ctx.closure.mint doc (.work/research.md §Region arena, funcIdx skew).
+  // ctx.closure.mint doc (.work/evidence.md §Region arena, funcIdx skew).
   // A builtin-as-value closure is always zero-capture, so the default
   // {len:0, cellMask:0} meta is correct here.
   const idx = ctx.closure.mint(fn)
@@ -314,7 +314,7 @@ const emitNeg = (a, self) => {
   // NUMBER literal here — see parse.js). No magnitude heuristic needed for
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
-  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/todo.md
+  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/archive/todo.md
   // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
   // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
   // promotion (kind.js) — a SEPARATE mechanism from the census helpers
@@ -496,7 +496,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
   if (typeof code !== 'number') return null
 
   const t = temp()
-  // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep): the
+  // Ambiguous BOOL-merge operand (.work/archive/todo.md §deletion-sweep): the
   // collapsed NUMBER kind is unsound for typeof, which must tell a genuine
   // number apart from a coerced-to-0/1 boolean — emitIdentitySafe re-emits
   // the merge with its own BOOL arm boxed to its atom, so the dynamic bit
@@ -581,7 +581,7 @@ export function emitTypeofCmp(a, b, cmpOp) {
     if (planTaggedBigint) return isPtrKind(PTR.BIGINT)
     // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
     // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
-    // Slice 3, .work/carrier-representation-design.md §7 — the registry's
+    // Slice 3, .work/archive/carrier-representation-design.md §7 — the registry's
     // 'typeof' finding, layout-kinds.js). Landed ALONGSIDE, not replacing,
     // the magnitude fallback: round-3's own "verify every R-recovery arm
     // independently before deleting the heuristic" discipline — Slice 5
@@ -638,7 +638,7 @@ const selectCondOK = (cond) => !dataDependentFlag(cond)
 // Eager boolean chains win in leaf numeric kernels but regress orchestration/
 // compiler code whose first guard usually rejects before a costly RHS. Keep
 // the latency trade in call-free bodies; nested closures are separate bodies.
-// Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+// Memoised per body (AdHocMemo retirement — .work/archive/ctxfunc-survey.md §2/§5: WeakMap
 // on body identity, getFactStore().boolEager, same idiom as type.js's
 // inBoundsCharCodeAt). The cached value is a boolean, so the lookup uses
 // `.has()`, not truthiness — `false` is a valid cached result. A non-array
@@ -1103,7 +1103,7 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
-  // HIR provenance link upkeep (.work/research.md §BodyModel slice 4 — found via its own
+  // HIR provenance link upkeep (.work/evidence.md §BodyModel slice 4 — found via its own
   // shadow-assert, vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
   // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission minted a
   // LoopPlan for — the block's IDENTITY survives (same array), so loopPlanLink still resolves
@@ -2070,7 +2070,7 @@ export function emitDecl(...inits) {
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
     // INVARIANT: this site must NOT switch to storedValue/argIR — the
     // decl-init carrier-width interaction breaks dict rows at O2/O3 (full
-    // hunt record: .work/research.md §Carrier invariant, DECL-INIT WALL).
+    // hunt record: .work/evidence.md §Carrier invariant, DECL-INIT WALL).
     // Related past fix kept for context (ir.js boxPtrIR/asF64): a
     // ptrKind-tagged i32 pointer reboxing via
     // carrierF64→asF64→boxPtrIR rebuilt its result through `typed()`,
@@ -2151,7 +2151,7 @@ export function emitDecl(...inits) {
     // getting exercised for the first time with storedValue live at every
     // decl. NOT chased further this session (separate root, separate hunt).
     //
-    // STILL BANKED (see .work/research.md §Carrier invariant for the hunt).
+    // STILL BANKED (see .work/evidence.md §Carrier invariant for the hunt).
     // The dict-O2/O3 divergence ABOVE was in fact
     // named and DISSOLVED: it is `storedValue`'s carrier WIDTH, not the
     // decl-init site itself — `storedValue(init)` boxes EVERY VAL.BOOL-typed
@@ -2237,7 +2237,7 @@ export function emitDecl(...inits) {
     // Found live: jz compiling watr/src/optimize.js's own `_i64Canon`
     // (`neg ? -BigInt(mag) : BigInt(mag)` inlined as `_i64Hex16`'s argument)
     // under JZ_CARRIER_BOX=1 at O3 — `fold()` returned 5.826595490514274e+252
-    // instead of 2.000000000000001 (.work/carrier-representation-design.md
+    // instead of 2.000000000000001 (.work/archive/carrier-representation-design.md
     // §13/§14). See isTernaryBoxedBigint's own doc comment (ir.js) for the
     // full "why the local's own storage isn't raw here" reasoning and the
     // earlier live incident (`.bigint:toString` on a genuinely ternary-boxed
@@ -2935,7 +2935,7 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // the identical reason: an unwritten key reads back the same undefined —
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/todo.md §deletion-sweep) — REACHABLE but not yet
+// .work/archive/todo.md §deletion-sweep) — REACHABLE but not yet
 // LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
 // was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
 // for a dict/Map read stays null and this function's callers never reach a
@@ -2963,7 +2963,7 @@ const nullableOperand = (n) => {
   return false
 }
 
-// .work/todo.md §deletion-sweep — identity-safe re-emission of an
+// .work/archive/todo.md §deletion-sweep — identity-safe re-emission of an
 // ambiguous BOOL-merge node (hasAmbiguousBoolMerge, src/kind.js). Generalizes
 // the '?:'/'&&'/'||'/'??' handlers' own per-arm box-then-select shape below
 // (the "materialize it per-arm here, BEFORE the raw-bit collapses below erase
@@ -3185,7 +3185,7 @@ function emitLooseEq(a, b, negate, strict) {
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
   const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
-  // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5): "either
+  // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1/Slice 5): "either
   // side known-pure NUMBER" above is only TRUE when that side's exact-kind
   // claim can't be falsified at runtime. `nullableOperand` (this file, above)
   // already unifies the two ways a NUMBER claim can lie — an unproven typed-
@@ -3224,7 +3224,7 @@ function emitLooseEq(a, b, negate, strict) {
   // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_byteLen into
   // a module with no string at all, e.g. a pure Uint8Array match loop:
   // `src[j+len] === src[ip+len]` — bisected live to this exact gap,
-  // .work/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
+  // .work/archive/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
   // when BOTH sides are nullish (IEEE-754: f64.eq is false for any NaN
   // operand, even a bit-identical one) — NOT a blind i64 bit-eq (a genuine
   // NaN payload, e.g. a literal `NaN` stored through the same slot, can
@@ -3370,7 +3370,7 @@ function emitStrictEq(a, b, negate) {
   const sa = sentinelOf(a), sb = sentinelOf(b)
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
-  // Ambiguous BOOL-merge operand(s) (.work/todo.md §deletion-sweep):
+  // Ambiguous BOOL-merge operand(s) (.work/archive/todo.md §deletion-sweep):
   // kind.js's collapsed static kind for a `?:`/`&&`/`||`/`??` merge with one
   // BOOL arm and one NUMBER arm is NUMBER (the deliberate benign arithmetic-
   // context coercion) — trusting it here, either for the differing-class fold
@@ -4156,7 +4156,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
     const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
     if (builtin) {
       includeForRuntimeKeyIteration()
-      // Date carve-out, unresolved receivers only (.work/printer-trio.md
+      // Date carve-out, unresolved receivers only (.work/archive/printer-trio.md
       // residual): a PROVEN vt reaching this arm is ARRAY/TYPED/OBJECT,
       // never DATE — strategy 7's tryStaticDispatch already owns any
       // proven-Date receiver before this fork ever runs — so dateAuxFallback
@@ -4263,7 +4263,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // closure property, but always wrong for a built-in prototype intrinsic
     // no runtime value ever stores as an own hash-keyed property (silently
     // yields `undefined` / an invalid call target instead of the real
-    // result — see .work/literal-method-typed-index-notes.md). Falling back
+    // result — see .work/archive/literal-method-typed-index-notes.md). Falling back
     // to the SAME dynamic-property-call / external-call strategies the chain
     // would try next — rather than requiring a generic emitter to exist —
     // keeps this fork's STRING/TYPED cases correct while the "genuinely
@@ -4288,7 +4288,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     if (strEmitter) cases.push([PTR.STRING, callMethod(t, strEmitter)])
     if (typedEmitter) cases.push([PTR.TYPED, callMethod(t, typedEmitter)])
     // Date carve-out — see dateAuxFallback's doc for the discrimination
-    // rationale (.work/printer-trio.md residual). `tt` is already computed
+    // rationale (.work/archive/printer-trio.md residual). `tt` is already computed
     // below (the ptr-type local this fork uses for its own STRING/TYPED
     // dispatch), so pass it through instead of paying for a second
     // `$__ptr_type` call.
@@ -4847,7 +4847,7 @@ function tryDirectClosureCall(callee, parsed) {
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
   // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
-  // arg (.work/todo.md §deletion-sweep) needs emitIdentitySafe in place of
+  // arg (.work/archive/todo.md §deletion-sweep) needs emitIdentitySafe in place of
   // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
   recordClosureCallRepresentations(ctx, bodyName, parsed.normal)
   const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
@@ -5129,7 +5129,7 @@ const numLiteralNode = (n) =>
   (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 function bigintMixReject(op, a, b) {
   if (b === undefined) return
-  // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
+  // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
   // §4 — the "NEWLY added to that list" gap): a BIGINT claim whose only proof
   // is a maybeUndefined-flagged dict/Map census read (arm 1/2, censusMaybeUndefined's
   // direct node shapes) or a bare name that copies one through (arm 3, the REP
@@ -5149,7 +5149,7 @@ function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
-// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
+// §14 point 4 (audit #10, .work/archive/todo.md §deletion-sweep §14):
 // JOINT runtime-domain dispatch for binary arithmetic/bitwise ops, superseding
 // the old per-op OR-gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`, live
 // at every op below through 38dd0dca/f1c1256b) and Slice 7's `+`-only AND-gate
@@ -5303,7 +5303,7 @@ function bigIntDomainsCanMix(a, b, allowUnresolved) {
 // carrier; BOX materializes only the runtime BigInt branch.
 const computedBoxOf = (self) => self != null && representationComputedExprAction(ctx, self) === REP_EDGE_BOX
 
-// `box` (funded-deletion item 4, .work/todo.md WALL 2026-08-22): true when
+// `box` (funded-deletion item 4, .work/archive/todo.md WALL 2026-08-22): true when
 // RepresentationPlan proved the OUTER node's target BOXED_BIGINT — only ever
 // passed true when `domA`/`domB` are BOTH 'census' (representation-plan.js's
 // census admission mirrors kind.js censusBigintResultShape's joint shape
@@ -5464,7 +5464,7 @@ function bigIntOperand(node) {
 // overwhelming common case) takes `mkI64` directly through the untouched
 // `fromI64` path — byte-identical to before (same structural pin as
 // bigIntOperand's own non-maybeUndefined fast path).
-// `box` (funded-deletion item 4, .work/todo.md WALL 2026-08-22): true when
+// `box` (funded-deletion item 4, .work/archive/todo.md WALL 2026-08-22): true when
 // RepresentationPlan proved the OUTER node's target BOXED_BIGINT (a real
 // present-key BigInt result crossing a tagged consumer — an export return,
 // chiefly). undefined/false is the untouched, byte-identical default: the
@@ -5542,7 +5542,7 @@ function bigintMemberAssignTarget(a) {
     (a[1][0] === '.' || a[1][0] === '[]') && valTypeOf(a[1]) === VAL.BIGINT ? a : null
 }
 
-// === instanceof (.work/todo.md §deletion-sweep §4) ===
+// === instanceof (.work/archive/todo.md §deletion-sweep §4) ===
 // Reached only from raw `instanceof` AST nodes surviving to emit — i.e. strict-mode
 // source (prepare's 'instanceof' handler is the sole producer; jzify's default-mode
 // lowering rewrites every `instanceof` shape to something else before compile ever
@@ -5643,7 +5643,7 @@ function emitTypedInstanceof(a, rhs) {
       ['else', ['i32.const', 0]]]], 'i32')
 }
 
-/** Error family (7 classes, .work/todo.md §deletion-sweep §4's error-family arm). `Error`
+/** Error family (7 classes, .work/archive/todo.md §deletion-sweep §4's error-family arm). `Error`
  *  itself is the base every one of the 7 extends (jz's flat one-level hierarchy — no
  *  deeper chain to walk), so it matches ANY Error-schema object regardless of which
  *  concrete class built it; a specific subclass (TypeError, …) must match exactly
@@ -5651,7 +5651,7 @@ function emitTypedInstanceof(a, rhs) {
  *  over jz's non-overlapping prototype set). */
 function emitErrorInstanceof(a, rhs) {
   // Fold, tier 1: LHS is a literal `new X(...)`/`X(...)` call node — prepare's generic
-  // "unknown ctor → plain call" path (.work/todo.md §deletion-sweep §2) keeps the literal
+  // "unknown ctor → plain call" path (.work/archive/todo.md §deletion-sweep §2) keeps the literal
   // class name as the callee string, so no schema/rep lookup is even needed.
   const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
   if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
@@ -5670,7 +5670,7 @@ function emitErrorInstanceof(a, rhs) {
   // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
   // INVARIANT: no numeric-range arm may live here — one was deleted
   // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
-  // …) is caught as a raw NUMBER (.work/todo.md §deletion-sweep §3(b)), bit-identical to
+  // …) is caught as a raw NUMBER (.work/archive/todo.md §deletion-sweep §3(b)), bit-identical to
   // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
   // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
   // caller-supplied number landing in a class's internal range answered `true`
@@ -5678,7 +5678,7 @@ function emitErrorInstanceof(a, rhs) {
   // sits in the derived range — a real repro, not a hypothetical). No numeric
   // range can distinguish "the compiler threw this code" from "the user threw
   // this number"; recovering `instanceof` for a caught internal code needs a
-  // materialized Error object at the catch site instead (.work/todo.md §deletion-sweep
+  // materialized Error object at the catch site instead (.work/archive/todo.md §deletion-sweep
   // §7 Slice C, deliberately deferred — not landed here). Until then, internal-
   // code catches are honestly `instanceof`-false for every Error class, same as
   // any other non-Error value (§3(c)).
@@ -5919,7 +5919,7 @@ export const emitter = {
     // self-compiled kernel, at every optimize level 0-2, treats a value produced by a call
     // repeated textually across both arms of a ternary differently from one materialized
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
-    // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
+    // the kernel's own call/branch codegen. See .work/archive/todo.md (groundtruth archive).
     // Closure-convention bodies return into a boxed-value position (the ftN f64
     // slot): a BOOL value must cross as its true/false atom — the result-side
     // mirror of closure.call's carrierF64 args. Raw funcs keep the plain 0/1
@@ -5942,7 +5942,7 @@ export const emitter = {
     // (or any non-bool-mixed) funcs are untouched.
     //
     // An ambiguous BOOL-merge return (`s => cond ? 1 : false`,
-    // .work/todo.md §deletion-sweep) needs the SAME box but carrierF64
+    // .work/archive/todo.md §deletion-sweep) needs the SAME box but carrierF64
     // is post-hoc powerless for it: `expr`'s own valTypeOf collapses to NUMBER
     // (the merge's benign coercion), so carrierF64 never recognizes it as
     // BOOL-carrying — by the time `emitted` exists, the coerced false and a
@@ -5959,7 +5959,7 @@ export const emitter = {
     let emitted = resultBool ? toBool(expr) : ambiguous ? emitIdentitySafe(expr) : emit(expr)
     if (!resultBool)
       emitted = applyBigintRepresentationAction(emitted, expr, representationReturnAction(ctx, expr))
-    // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
+    // Slice 2 (CARRIER PROGRAM, .work/archive/carrier-representation-design.md §7)
     // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
     // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an
     // unconditional inline-BIGINT box is wrong at ANY return position (a
@@ -6245,7 +6245,7 @@ export const emitter = {
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)
-    // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
+    // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
     // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
     // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
     // that copies one through) is "every value ever WRITTEN was a string", not
@@ -7712,7 +7712,7 @@ export const emitter = {
     // only the resulting UPPER half is installed here.
     const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
     const guardBoundRange = guardName ? intExprRange(cond[2]) : null
-    // HIR provenance link fact (.work/research.md §BodyModel slice 4): the guard's RHS is a
+    // HIR provenance link fact (.work/evidence.md §BodyModel slice 4): the guard's RHS is a
     // provable COMPILE-TIME CONSTANT exactly when its proven range collapses to a single point —
     // the WAT-level bound the vectorizer later sees must be that SAME i32.const when so (see
     // ir.js's loopPlanLink doc + vectorize.js's assertLoopPlanAgrees). No new semantics:
@@ -7739,7 +7739,7 @@ export const emitter = {
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
-    // HIR provenance link (.work/research.md §BodyModel slice 4; pre-
+    // HIR provenance link (.work/evidence.md §BodyModel slice 4; pre-
     // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
     // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the
     // {plan, lowering} split and the identity/fail-open contract. `plan` (id/hull/
@@ -8014,7 +8014,7 @@ export function emit(node, expect) {
           // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8,
           // cap@-4), NOT a hand-rolled (n*8+8) alloc — __dyn_get_t_h's
           // ARRAY branch always reads the propsPtr word at off-16 (FOURTH
-          // mechanism, .work/research.md §Region arena: a short header
+          // mechanism, .work/evidence.md §Region arena: a short header
           // aliases whatever memory preceded the allocation).
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc_hdr (i32.const ${n}) (i32.const ${n}))) ${stores} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${arr})))`
           inc(trampolineName, '__alloc_hdr', '__mkptr')

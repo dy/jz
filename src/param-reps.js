@@ -126,12 +126,12 @@ export const ensureParamRep = (paramReps, funcName, k) => {
 }
 
 /**
- * Fact — the product-lattice record (`.work/lattice-design.md` §1). Each field
+ * Fact — the product-lattice record (`.work/archive/lattice-design.md` §1). Each field
  * gets the algebra its OWN question requires instead of one poison-on-disagreement
  * meet forced onto everything (mergeParamFact above is that meet — correct for
  * `numeric`'s universal "does every write fit i32" question, wrong for an
  * existential "which kinds was this ever observed as" question — FINDING-7 /
- * lattice-design.md §thesis). Landed as a shape + primitive precondition
+ * .work/archive/lattice-design.md §thesis). Landed as a shape + primitive precondition
  * (design §5, Slice 0); `possibleKinds` itself is populated for paramReps'
  * `val` as of Slice 4a (narrow.js's `mergeRule('val', …, trackKind=true)` +
  * the two typed-clone override sites) — `val` keeps its own meet/sticky-null

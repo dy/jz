@@ -27,7 +27,7 @@ export const freshLoopId = () => ctx.transform.loopXformId++
 // primitives (pre-emission), while the link connects an EMITTED WAT block node back to HIR facts
 // — a different layer. It now lives in ir.js (WAT-node-level helpers, the neutral module both
 // emit.js and vectorize.js already import) — see the doc there for the {plan, lowering} split and
-// the identity/fail-open contract (.work/research.md §BodyModel slice 4).
+// the identity/fail-open contract (.work/evidence.md §BodyModel slice 4).
 
 // Post-prepare number literals are sparse-array holes `[<hole>, v]` (length 2, the op
 // slot `n[0]` is the elided hole == null). `loopLitVal` returns the numeric value or
@@ -161,7 +161,7 @@ export function rewriteBlocks(body, tryStmt) {
 // only piece common to both loop kinds. emit.js captures this same identity as
 // `bodyNode0` at its handler's own entry, "survives the hoist rebind below" —
 // this WeakMap uses that identical anchor.
-// COMPILE-SESSION-OWNED (folded into ctx.plans — .work/todo.md; see
+// COMPILE-SESSION-OWNED (folded into ctx.plans — .work/archive/todo.md; see
 // src/compile/closure-plan.js's sibling doc comment for the full
 // stale-plan-HIT hazard under self-compiling). Lives at `ctx.plans.loops`,
 // a fresh WeakMap every reset() (src/ctx.js).

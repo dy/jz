@@ -60,10 +60,10 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
 // prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
-// error classes (.work/todo.md §deletion-sweep §2).
+// error classes (.work/archive/todo.md §deletion-sweep §2).
 const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 
-// `instanceof` RHS allowlist (.work/todo.md §deletion-sweep §4). jz has no prototype chain, so
+// `instanceof` RHS allowlist (.work/archive/todo.md §deletion-sweep §4). jz has no prototype chain, so
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
 // 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one
@@ -785,7 +785,7 @@ export default function prepare(node) {
   // some closure reachable only indirectly through RESET_HOOKS; the exact
   // mechanism is not otherwise documented. resetPrepState() is idempotent and
   // cheap, so keeping BOTH the direct call and the registration is correct, not
-  // a half-migration — see .work/session-survey.md for the full account.
+  // a half-migration — see .work/archive/session-survey.md for the full account.
   resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
   // modules (e.g. object → collection) without importing autoload.js — that
@@ -1255,7 +1255,7 @@ function prep(node) {
   // later emit-time reader. Consumed by ir.js's toNumF64 (inlineToNum fast path) to
   // scope the runtime "is this a boxed BigInt carrier" magnitude check to programs
   // that can actually produce one — everywhere else stays the original cheap
-  // NaN-only check (see .work/todo.md).
+  // NaN-only check (see .work/archive/todo.md).
   if (Array.isArray(node) && (node[0] === 'bigint' || (node[0] === '()' && node[1] === 'BigInt')))
     setFeature('bigint', true)
   // Whole-program "does a jz Error object ever get constructed" flag — mirrors the
@@ -1264,7 +1264,7 @@ function prep(node) {
   // arm, can textually precede the `new Error(...)`/`Error(...)` call site that
   // proves the schema exists at all). Catches BOTH the `new X(...)` raw shape
   // (before the 'new' handler rewrites it) and the bare-call `X(...)` shape — one
-  // of the 7 built-in classes (.work/todo.md §deletion-sweep §2: `Error(x)` without `new`
+  // of the 7 built-in classes (.work/archive/todo.md §deletion-sweep §2: `Error(x)` without `new`
   // also constructs a fresh Error, same as `new Error(x)`). A shadowed `Error`
   // identifier (`function Error(x){…}`) can false-positive this flag — harmless:
   // ir.js's guard is a runtime tag+schema compare that simply never fires for a
@@ -1279,7 +1279,7 @@ function prep(node) {
   // identically with or without `new`), so a scan that only checked the bare
   // shape would still be correct in default mode — but STRICT mode skips jzify
   // and the raw nested parser shape survives to prepare, where it needs this
-  // explicit unwrap (.work/todo.md §deletion-sweep).
+  // explicit unwrap (.work/archive/todo.md §deletion-sweep).
   const ctorCallee = Array.isArray(node) && node[0] === 'new' && Array.isArray(node[1]) && node[1][0] === '()' ? node[1][1]
     : Array.isArray(node) && (node[0] === 'new' || node[0] === '()') ? node[1] : null
   if (typeof ctorCallee === 'string' && ERR_CLASS_SET.has(ctorCallee)) {
@@ -3919,7 +3919,7 @@ const handlers = {
     return ['new', prep(ctor), ...args.map(prep)]
   },
 
-  // instanceof (.work/todo.md §deletion-sweep §4) — jz has no prototype chain, so RHS support
+  // instanceof (.work/archive/todo.md §deletion-sweep §4) — jz has no prototype chain, so RHS support
   // is a closed allowlist (INSTANCEOF_ALLOW above), not general reflection. Strict-mode
   // source (which skips jzify) reaches this handler directly on every raw `instanceof`
   // node. Default-mode source reaches it too, for every RHS this file's INSTANCEOF_ALLOW

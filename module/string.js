@@ -1417,7 +1417,7 @@ export default (ctx) => {
     ;; propsPtr word at off-16; a short header leaves it aliasing whatever
     ;; memory preceded the allocation, which reads as zero on fresh linear
     ;; memory but not after region-arena's compaction reuses address ranges
-    ;; (FOURTH mechanism, .work/research.md §Region arena).
+    ;; (FOURTH mechanism, .work/evidence.md §Region arena).
     (if (i32.eqz (local.get $limit)) (then
       (return (call $__mkptr (i32.const 1) (i32.const 0) (call $__alloc_hdr (i32.const 0) (i32.const 0))))))
     (if (i32.eqz (local.get $plen)) (then
@@ -1938,7 +1938,7 @@ export default (ctx) => {
     for (let i = 0; i < parts.length; i++) {
       if (lits[i] != null) { litTotal += lits[i].length; continue }
       const vt = valTypeOf(parts[i])
-      // argIR (not emit): an ambiguous BOOL∪NUMBER merge (.work/todo.md
+      // argIR (not emit): an ambiguous BOOL∪NUMBER merge (.work/archive/todo.md
       // §deletion-sweep) must come back f64-typed (emitIdentitySafe) so the i32-
       // PROVEN fast-path check below structurally can't fire on it — that
       // check is an IR-shape test, so this alone fixes it, no extra guard.
@@ -2060,7 +2060,7 @@ export default (ctx) => {
   // String.fromCharCode(code) → 1-char SSO string
   bind('String', (value) => {
     if (value === undefined) return emit(['str', ''])
-    // Ambiguous BOOL∪NUMBER merge (.work/todo.md §deletion-sweep, MECHANISM A
+    // Ambiguous BOOL∪NUMBER merge (.work/archive/todo.md §deletion-sweep, MECHANISM A
     // family): valTypeOf already collapsed it to NUMBER, so the VAL.NUMBER
     // branch below would __ftoa the raw collapsed bits directly, never
     // reaching toStrI64/__to_str's already-correct atom formatting. This is
@@ -2068,7 +2068,7 @@ export default (ctx) => {
     // skip it — needs the explicit early exit, boxed via emitIdentitySafe.
     if (hasAmbiguousBoolMerge(value))
       return typed(['f64.reinterpret_i64', toStrI64(value, emitIdentitySafe(value))], 'f64')
-    // maybeUndefined join (.work/todo.md §deletion-sweep §1b): a dict-census
+    // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1b): a dict-census
     // NUMBER claim on a `[]`/`.` read is "every value ever WRITTEN", not "this
     // key exists" — an absent key is real `undefined` at runtime, and
     // String(undefined) === "undefined" (22.1.3.6 String(value)), not the

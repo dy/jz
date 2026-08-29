@@ -388,7 +388,7 @@ test('invariant: packed FunctionPlan materialization is deep, order-preserving, 
 // The data segment accumulates as parts + a maintained length
 // (src/static-data.js) because member-target `+=` fresh-copies the whole
 // segment per append in the self-compiled kernel (the jz×jz goal-gate wall,
-// .work/research.md §EXHAUSTIVE ATTRIBUTION). Offsets, alignment padding, and
+// .work/evidence.md §EXHAUSTIVE ATTRIBUTION). Offsets, alignment padding, and
 // the final joined bytes must be byte-equivalent to the old string form.
 test('invariant: static-data parts accumulator matches string-form bytes and offsets', async () => {
   const { dataAlign, dataPush, dataLen, dataString, dataReset, pushStaticSlots } = await import('../src/static-data.js')
@@ -473,7 +473,7 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
 
 // ============================================================================
 // program-facts freeze discipline (v1 architecture-convergence, "facts frozen
-// before consumers" — .work/program-facts-split.md §7 has the full lifecycle
+// before consumers" — .work/archive/program-facts-split.md §7 has the full lifecycle
 // table: paramReps/callSites are STAGED facts, published empty/raw by
 // collectProgramFacts and settled by plan()'s own round 3; programFacts
 // itself is closed-shape once callTargets is stapled on). All three pins

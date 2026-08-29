@@ -66,7 +66,7 @@ export let f = (s) => g(s) === false`,
   // `copyFromTyped(src)`, which itself closes over `elemType`/`aux`/`stride`/
   // `name` from the SAME loop — a nested emit() call between a closure's
   // capture and its later re-read is the ledger's "closure-capture-after-
-  // nested-emit" self-compile class (.work/todo.md 2026-07-23, TYPED-INDEX
+  // nested-emit" self-compile class (.work/archive/todo.md 2026-07-23, TYPED-INDEX
   // KERNEL MISCOMPILE): once compiled by the kernel, the outer closure's
   // read of elemType AFTER the nested call observed the INNER (Float64Array,
   // elemType=7) iteration's value instead of its own (Int32Array, elemType=4)

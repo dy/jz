@@ -1,19 +1,19 @@
 # jz — TODO archive (2026-08)
 
-Working history archived from .work/todo.md (audit-#11 architectural-bank
-item 6, ledger trim — todo.md had grown to 643KB). Covers Status entries
+Working history archived from .work/archive/todo.md (audit-#11 architectural-bank
+item 6, ledger trim — .work/archive/todo.md had grown to 643KB). Covers Status entries
 from 2026-08-05 (§14 point 4) back through 2026-07-28 (re-audit #3
 reconciled) — everything already landed and reflected in commits at the
 time each entry was written. Grep this file before re-deriving anything;
 every kernel bug class, perf frontier, and audit finding in this window has
 a banked dissection here. Older history (through 2026-07-25) is in
-.work/archive-todo-2026-07.md. Still-open items and current goals stay live
-in .work/todo.md's own "## Goals"/"## Open" sections — this file is
+.work/archive/archive-todo-2026-07.md. Still-open items and current goals stay live
+in .work/archive/todo.md's own "## Goals"/"## Open" sections — this file is
 historical narrative only, not a tracker.
 
 ## Status (2026-08-05, §14 point 4 landed — JOINT runtime-domain dispatch for
 ## binary BigInt⊕Number mixing; full design writeup
-## .work/represented-maybe-undefined-design.md §19)
+## .work/archive/represented-maybe-undefined-design.md §19)
 
 Closed audit #10's own last named item: `bigintMixReject`/the old per-op
 gates are OPERAND-LOCAL, unable to jointly tell "both absent" (Number NaN,
@@ -74,12 +74,12 @@ sha256 `fc6d006d…`, `dist/interop.js` sha256 `fcda069b…`).
 
 Files: src/compile/emit.js, src/kind.js, src/type.js, src/compile/narrow.js,
 src/compile/index.js, interop.js, test/dyn-keys.js. Full detail:
-.work/represented-maybe-undefined-design.md §19.
+.work/archive/represented-maybe-undefined-design.md §19.
 
 ## Status (2026-08-04, audit-#10 kind-specific table closed — member access
 ## and calls on a genuinely-undefined receiver now throw a real, catchable
 ## TypeError instead of trapping/reading garbage/host-dispatch-erroring; full
-## design writeup in .work/represented-maybe-undefined-design.md §17)
+## design writeup in .work/archive/represented-maybe-undefined-design.md §17)
 
 Closed the five `KNOWN-FAIL (audit #10, future work)` rows §14 of the
 maybeUndefined design named: `m.get('missing').length` (ARRAY/STRING
@@ -136,7 +136,7 @@ unchanged); fresh build ×2 byte-identical (`dist/jz.js` sha256 `8a8fb7be…`,
 symlinked, package.json deps unchanged across the range — confirmed via `git
 diff 2aaeaa19 HEAD -- package.json`, empty). Ran `scripts/bench-size.mjs --json`
 at both revisions over the full 49-case corpus that has both a jz and an `as`
-row (the scope `.work/todo.md`'s own tracked "1.0550" figure and
+row (the scope `.work/archive/todo.md`'s own tracked "1.0550" figure and
 `test/bench-claims.js`'s size test use — WIDER than `test/bench.js`'s formal
 `SIZE_GEOMEAN_MAX` assertion, which only gates the 13 `win`/`tie`-pinned
 cases and was never actually red, 0.879x throughout; the 1.055x/1.05 cap
@@ -282,7 +282,7 @@ If the 1.05 cap needs more headroom later, these are the next dig, in that
 order (base64/radixsort/levenshtein are the largest of the unbisected set).
 
 **Files touched**: `src/compile/emit.js` (`emitLooseEq`, one new branch,
-~35 lines, comment-heavy per this codebase's convention); `.work/todo.md`
+~35 lines, comment-heavy per this codebase's convention); `.work/archive/todo.md`
 (this entry). No test file changes — the existing `test/index.js` "dict:
 strict/loose equality between two independently-maybe-undefined reads
 (Slice 5 LEAK A)" pins already cover the fixed shape's value correctness
@@ -337,7 +337,7 @@ bun/jsc band, size-vs-AS-snapshot 1.057× > 1.05×) are ALL downstream of the
 SAME static, unmeasured bench/results.json — test/bench-claims.js reads
 committed JSON, it does not re-run rivals, so these numbers are the
 f704a077 snapshot's numbers verbatim, carrying zero information about this
-stack's actual runtime behavior. Exactly the ".work/todo.md 'REFRESHED AT
+stack's actual runtime behavior. Exactly the ".work/archive/todo.md 'REFRESHED AT
 HEAD 2026-08-03'" pending-re-measure condition, documented before this
 stack's first commit (cc78bf56). Coverage-floor axis (11/11 rivals ≥ 0.7
 corpus) and the tight-integer-loop exception (vm/dict/crc32 vs bun/jsc,
@@ -357,7 +357,7 @@ fix. Recommend push. (Note: task brief said "17 commits ahead"; measured
 `git log --oneline origin/main..HEAD` gives 15 — reported as measured.)
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 7 landed — "widen
-## the consumer chokepoints", .work/represented-maybe-undefined-design.md §16
+## the consumer chokepoints", .work/archive/represented-maybe-undefined-design.md §16
 ## — most named acceptance rows were already green; one real BigInt-binary
 ## export-boundary bug found and fixed, three related gaps found and scoped
 ## out with precise repros)
@@ -420,10 +420,10 @@ byte identical; perf-ratchet 10/10 at +0 every category; kernel-parity
 (seeds 1-8000, four foreground runs) zero divergence; size sweep geomean
 1.055× unchanged; fresh build ×2 byte-identical (sha256-verified).
 
-Full detail: .work/represented-maybe-undefined-design.md §16.
+Full detail: .work/archive/represented-maybe-undefined-design.md §16.
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 6 landed — "begin
-## the presentVal opt-in model", .work/represented-maybe-undefined-design.md
+## the presentVal opt-in model", .work/archive/represented-maybe-undefined-design.md
 ## §14/§15, audit-#10's re-enablement path)
 
 §14's first slice: a new `presentVal` REP field (reps.js) — the census's
@@ -476,7 +476,7 @@ perf-ratchet 10/10 at +0 every category; selfhost.js 21/21; fuzz 2000×4
 (seeds 1-8000) zero divergence; size sweep geomean 1.055× unchanged; fresh
 build ×2 byte-identical (sha256-verified).
 
-Full detail: .work/represented-maybe-undefined-design.md §15.
+Full detail: .work/archive/represented-maybe-undefined-design.md §15.
 
 ## Status (2026-08-04, audit-#10 Error bundle — four findings closed,
 ## error-object-design.md's "Brand redesign" section gains a new
@@ -562,7 +562,7 @@ Object.assign onto an EMPTY `{}` target hits a SEPARATE, pre-existing,
 general, Error-unrelated bug — Object.assign never GROWS a target's schema
 with new source keys, confirmed with a non-Error repro `Object.assign({},
 {a:1})` → `[]` in jz vs `['a']` in JS; pinned KNOWN-FAIL, flagged not fixed).
-README's `.work/error-object-design.md` gains this session's own section
+README's `.work/archive/error-object-design.md` gains this session's own section
 recording the call; README.md unaffected (never described the old
 enumerability split in the first place).
 
@@ -621,7 +621,7 @@ module ~22.3KB at O2, includes the Error/instanceof/toStrI64 machinery,
 gated — never paid by a program that doesn't construct one).
 
 ## Status (2026-08-04, audit #10 — Slice 4's VT re-enablement REVERTED,
-## .work/represented-maybe-undefined-design.md §14, opt-in `presentVal` is
+## .work/archive/represented-maybe-undefined-design.md §14, opt-in `presentVal` is
 ## the new re-enablement gate — supersedes §5)
 
 Audit #10's prescribed immediate safe move: Slice 4 (3782a692) wired
@@ -707,10 +707,10 @@ zero divergence; size sweep geomean 1.055× unchanged (`dict`'s own sized
 case back to 1.3 kB, the pre-Slice-4 figure, confirming the win vanished
 cleanly with no residue).
 
-Full detail: .work/represented-maybe-undefined-design.md §14.
+Full detail: .work/archive/represented-maybe-undefined-design.md §14.
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 5 LANDED — BigInt
-## export-lane class closed, .work/represented-maybe-undefined-design.md §13,
+## export-lane class closed, .work/archive/represented-maybe-undefined-design.md §13,
 ## the LAST named value-wrong family from the audit campaign)
 
 Landed Slice 5: `presentKindUnboxed` (§2/§6) closed with a LANE/KIND-
@@ -800,10 +800,10 @@ explicitly (541/541 assertions in that chunk); selfhost.js 21/21; fuzz
 2000×4 (seeds 1-8000) zero divergence; size sweep geomean 1.055× unchanged;
 fresh build ×2 byte-identical (jz.js/jz.wasm/interop.js, sha256-verified).
 
-Full detail: .work/represented-maybe-undefined-design.md §13.
+Full detail: .work/archive/represented-maybe-undefined-design.md §13.
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 4 LANDED — VT
-## re-enablement, .work/represented-maybe-undefined-design.md §8 point 4, §5
+## re-enablement, .work/archive/represented-maybe-undefined-design.md §8 point 4, §5
 ## criteria all met)
 
 Landed Slice 4: kind.js's `dictValueKindOf`/`mapValueKindOf` — restored as
@@ -1069,7 +1069,7 @@ identical (sha256) both rounds, native AND the self-host kernel leg.
 Commit: local only (not pushed).
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 3 landed —
-## chokepoint sweep completion, .work/represented-maybe-undefined-design.md §11)
+## chokepoint sweep completion, .work/archive/represented-maybe-undefined-design.md §11)
 
 Landed Slice 3: `bigintMixReject` and the `+` STRING-concat fast path
 (emit.js, both the raw-concat branch and its `coercionFree` sibling) now
@@ -1131,7 +1131,7 @@ criteria — every fact Slices 1-3 built is now representationally complete
 AND consumption-wired; Slice 4 is what makes all of it load-bearing at once.
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 2 landed —
-## whole-program propagation, .work/represented-maybe-undefined-design.md §10)
+## whole-program propagation, .work/archive/represented-maybe-undefined-design.md §10)
 
 Landed Slice 2: `mayBeUndefined` now propagates through params, returns, and
 closure captures — the same whole-program machinery `nullable`/`bigintBoxed`
@@ -1188,7 +1188,7 @@ Slice 3 (chokepoint-sweep gaps) and Slice 4 (VT re-enablement) remain
 unstarted, both gated on design §5's full criteria.
 
 ## Status (2026-08-04, represented-maybe-undefined Slice 1 landed — REP_FIELDS
-## + decl-time producer, .work/represented-maybe-undefined-design.md §8)
+## + decl-time producer, .work/archive/represented-maybe-undefined-design.md §8)
 
 Landed Slice 1 of the represented-maybe-undefined build (design banked at
 7288b69b): a `mayBeUndefined` REP_FIELDS entry (reps.js), a decl+reassignment
@@ -1452,7 +1452,7 @@ dynamic path already handles undefined correctly once nothing falsely claims
 an exact kind). REPRO 5 still fails post-disable (unchanged from pre-disable —
 confirmed the SAME 2.5e-323, not worsened) — the deeper, pre-existing
 export-boundary bug, out of scope for this P0 (see
-.work/represented-maybe-undefined-design.md §6 for the full root-cause
+.work/archive/represented-maybe-undefined-design.md §6 for the full root-cause
 citation: compile/index.js synthesizeBoundaryWrappers ~1595-1601's
 resultBigint/resultDynamic lane split, plus an apparent gap in the
 bigintBoxed producer wiring not firing for Map/dict writes even for a named
@@ -1486,7 +1486,7 @@ it): full 88-file battery run in 13 chunks of ~7 files each, foreground,
 1). kernel-parity 33/33 (post-rebuild). kernel-oracle 451/451 assertions
 (post-rebuild; surfaced no NEW pending-fix rows — the existing
 "generic-scalar-decl BOOL∪NUMBER carrier collapse" PENDING-FIX row is the
-SAME decl-init-wall class .work/carrier-invariant-design.md already banked,
+SAME decl-init-wall class .work/archive/carrier-invariant-design.md already banked,
 cited in the new design doc §6 as the parallel case, not caused by this
 session). perf-ratchet 10/10, every category (+0) delta from baseline — this
 disable cost ZERO measured codegen-shape regression (none of the 10 ratchet
@@ -1500,7 +1500,7 @@ unchanged to 4 decimal places — no size cost from this disable on the
 standard corpus (the `dict` case itself: jz=1313B/wasmopt=1249B, in line
 with its pre-existing size).
 
-DESIGN BANKED: .work/represented-maybe-undefined-design.md — the single
+DESIGN BANKED: .work/archive/represented-maybe-undefined-design.md — the single
 propagated invariant the audit demands (`mayBeUndefined` + `presentKindUnboxed`
 as REP_FIELDS entries, modeled directly on the existing `nullable`/
 `bigintBoxed` fields' OWN propagation mechanisms — narrow.js already proves a
@@ -1511,7 +1511,7 @@ bigintMixReject, the `+` STRING-concat fast path — that were never on the
 chokepoint list even when Slice 1-4 was live), re-enablement criteria for
 dictValueKindOf/mapValueKindOf, and explicit connections to two related,
 independently-tracked issues: the decl-init wall
-(.work/carrier-invariant-design.md — same symptom, different root
+(.work/archive/carrier-invariant-design.md — same symptom, different root
 mechanism) and the BigInt export-boundary gap (repro 5's class — same
 symptom family, needs its own bigintBoxed-wiring investigation). 5 ordered
 landing slices, smallest-first.
@@ -3233,7 +3233,7 @@ errors stay raw numeric codes, `.message`/`.name` undefined, `instanceof`
 honestly `false` (consistent with the P0-2 correction).
 
 GATES (all before commit, all green): repro table (3 repros × both modes,
-before→after, JS-authority values) — see .work/error-object-design.md's
+before→after, JS-authority values) — see .work/archive/error-object-design.md's
 "As-landed corrections" section for the exact table. test/errors.js:
 124/124 (276 assertions) native, both-mode instanceof truth table (isBoth
 helper, extends the harness per the task brief) plus new __errcls__ pins.
@@ -3365,7 +3365,7 @@ dist/jz.wasm, dist/interop.js byte-identical both builds.
 
 ## Status (2026-08-03, DECL-INIT WALL export-loss mechanism ROOT-CAUSED AND
 ## FIXED — src/compile/emit.js's decl-init local-storage coercion ladder;
-## full details .work/carrier-invariant-design.md "EXPORT-LOSS MECHANISM
+## full details .work/archive/carrier-invariant-design.md "EXPORT-LOSS MECHANISM
 ## ROOT-CAUSED AND FIXED" entry)
 
 The kernel-scale "total export loss for every program" miscompile banked
@@ -3402,10 +3402,10 @@ method as this hunt (extract+diff the compiled function, don't guess).
 
 ## Status (2026-08-03, Error-object model Slice B LANDED — `instanceof` subset;
 ## internal-code `.message` (optional Slice C) is the only thing left, per
-## .work/error-object-design.md — its own §Open-questions verdict: a pure
+## .work/archive/error-object-design.md — its own §Open-questions verdict: a pure
 ## priority call, not an engineering one)
 
-Implemented the design's Slice B scope: `.work/error-object-design.md` §4/§7.
+Implemented the design's Slice B scope: `.work/archive/error-object-design.md` §4/§7.
 `instanceof` is a real op now — `src/op-policy.js`'s blanket `REJECT_OPS`
 entry is gone; `src/prepare/index.js` validates the RHS against a closed
 allowlist (`INSTANCEOF_ALLOW`) and `src/compile/emit.js` folds a
@@ -3446,7 +3446,7 @@ RHS — no divergence there):
 | any of the 7 | internal coded throw in a DIFFERENT class's range, or a non-error throw (`42`, `"s"`) | false | false | range/schema both miss — NaN-boxed pointers fail ordered f64 compares "for free" (IEEE754), no extra guard needed |
 | `Object`/`Function`/`RegExp`/`Promise`/user binding/computed expr | — | (real JS: usually true/false via prototype chain) | **compile-time reject** | jz has no prototype chain — see divergences |
 
-**Documented divergences** (all cite `.work/error-object-design.md`):
+**Documented divergences** (all cite `.work/archive/error-object-design.md`):
 1. **`BigInt64Array`/`BigUint64Array` excluded from RHS entirely** — a wall the
    design doc's own table didn't flag. `layout.js`'s `encodeTypedElemAux`
    collapses BOTH to the *identical* aux (base code 7 | `TYPED_ELEM_BIGINT_FLAG`
@@ -3544,9 +3544,9 @@ instanceof-free/Error-free programs.
 
 ## Status (2026-08-03, Error-object model Slice A LANDED — real in-wasm Error
 ## objects + host-decode upgrade; instanceof (Slice B) and internal-code
-## .message (optional Slice C) remain, per .work/error-object-design.md)
+## .message (optional Slice C) remain, per .work/archive/error-object-design.md)
 
-Implemented exactly the design's Slice A scope: `.work/error-object-design.md`
+Implemented exactly the design's Slice A scope: `.work/archive/error-object-design.md`
 (read-only deliverable landed alongside this commit as the design record).
 
 **What landed:**
@@ -3811,7 +3811,7 @@ the correct, documented case to satisfy a mischaracterized fuzz finding.
 
 ## Status (2026-08-03, maybeUndefined Slice 2 landed — Number.isNaN census gate, the last named item in "STILL OPEN" #1 below)
 
-SLICE 2 — `emitIsNaN` sentinel exclusion (.work/maybe-undefined-design.md §4/
+SLICE 2 — `emitIsNaN` sentinel exclusion (.work/archive/maybe-undefined-design.md §4/
 §5), the item Slices 3-5 explicitly named as never-assigned-to-that-campaign.
 Live repro confirmed red at session start (native, no dist rebuild):
 `const m = new Map(); m.set("a",1); export let f = () => Number.isNaN(m.get("zz"))`
@@ -3918,7 +3918,7 @@ this slice); item 6 is new, added by this slice's fuzz gate.
 
 ## Status (2026-08-03, maybeUndefined Slices 3-5 landed — nameEscapes gate, site survey, Map re-enable)
 
-CONTAINER VALUE-CENSUS SOUNDNESS CAMPAIGN CLOSED (.work/maybe-undefined-
+CONTAINER VALUE-CENSUS SOUNDNESS CAMPAIGN CLOSED (.work/archive/maybe-undefined-
 design.md, Slices 3-5; audit-#7 P0 revert f8f61591 and Slice 1 061e2c6e are
 the prerequisites this closes out). All three remaining slices landed
 together (one combined effort, staged as described below); `mapValueKindOf`
@@ -4527,7 +4527,7 @@ spot-check: mat4 1543B (+15B baseline, unrecovered — see vectorizer
 verdict above), fft/crc32/biquad byte-identical (2368/1107/1861).
 
 REPROS (live at HEAD, confirmed before any edit, both via the `run`/`jz.compile`
-harness — see .work/todo.md's own P0-2 entry above for the sibling audit that
+harness — see .work/archive/todo.md's own P0-2 entry above for the sibling audit that
 found these):
 
 - Bare `+`: `export let f = (a,b) => { let x=a|0,y=b|0; return x+y }`,
@@ -4872,7 +4872,7 @@ fix) — matches the perf-ratchet +0 result.
 
 ## Status (2026-08-02, maybeUndefined Slice 1 landed — dict absent-key value join)
 
-DICT ABSENT-KEY VALUE JOIN LANDED (.work/maybe-undefined-design.md Slice 1):
+DICT ABSENT-KEY VALUE JOIN LANDED (.work/archive/maybe-undefined-design.md Slice 1):
 closes the dict-census KNOWN-FAIL the audit-#7 P0 revert left pinned
 (test/dyn-keys.js, "dict: .get()-equivalent read on an absent key is WRONG
 today") — `dictValueKindOf`'s exact-kind claim ("every value ever WRITTEN
@@ -5022,7 +5022,7 @@ as predicted).
 
 ## Status (2026-08-02, formatter carrier-dispatch fix landed)
 
-FORMATTER/TOPROPERTYKEY CARRIER-DISPATCH FIXED (.work/formatter-dispatch-
+FORMATTER/TOPROPERTYKEY CARRIER-DISPATCH FIXED (.work/archive/formatter-dispatch-
 design.md): closed the 3 remaining kernel-oracle.js PENDING-FIX rows
 (String(), template literal, computed member key) — the same MECHANISM A/
 argIR producer-side collapse un-swept at three consumer chokepoints, NOT
@@ -5338,7 +5338,7 @@ that narrow grep is what let both pollution sources through undetected.
 ## Status (2026-08-01, prior truth -- reference refresh session reconciled)
 
 MAP-VALUE CENSUS TIER 1: LANDED (108604fc census, 1db8e55e consumer;
-.work/map-value-census-design.md). Scalar mapValueValType only — Tier 2
+.work/archive/map-value-census-design.md). Scalar mapValueValType only — Tier 2
 (schema-id fact, the actual fftplan/provenance OBJECT-edge fix) stays a
 separate later design; both provenance KNOWN-OPEN pins (memo, map) verified
 STILL PINNED (test/provenance-inference.js green) — Tier 1 doesn't touch
@@ -5936,7 +5936,7 @@ coverage + receiver classification, all landed+gated); jessie 1.85x
 needs a FRESH PROFILE-DRIVEN dissection next (no more hypothesis
 inheritance — measure where time actually goes at current HEAD).
 
-MODULEINIT DICT-CENSUS GAP FIXED 2026-07-31 (.work/dict-census-moduleinit-fix.md
+MODULEINIT DICT-CENSUS GAP FIXED 2026-07-31 (.work/archive/dict-census-moduleinit-fix.md
 implemented; Fix A 1f4fe762, Fix B a003ecd9; battery 3152/0/6 incl.
 JZ_DEBUG_INVARIANTS leg, kernel-parity 33/33, kernel-oracle 9/9, watr
 self-host 35/35, each gate re-run at both commits): Fix A unconditionally
@@ -5984,7 +5984,7 @@ future standalone bug hunt: bisect module/object.js's dict-mode branch vs.
 for-of loop lowering under optimize>=1 to find the actual unsound
 transformation (likely in watr's own generic WAT optimizer, which jz uses as
 its backend for optimize>=1 — optimize:0/false is unaffected).
-Also found: an untracked `.work/dict-receiver-hash-design.md` (receiver-HASH
+Also found: an untracked `.work/archive/dict-receiver-hash-design.md` (receiver-HASH
 classification follow-on design) appeared in the tree during this session,
 authored by a spawned research subagent exceeding its research-only brief —
 not part of this task, left untouched (untracked, not committed) for the
@@ -6011,7 +6011,7 @@ p>=lvl blocked by two PRE-EXISTING general gaps (VT['[]'] literal-
 string-key early-null gate fires before the dict branch for
 prec[';']; VT['??'] general table still naive ta===tb join) — out
 of census scope, candidates only if receiver-HASH design needs
-them. MODULEINIT GAP DIAGNOSED (.work/dict-census-moduleinit-fix.md
+them. MODULEINIT GAP DIAGNOSED (.work/archive/dict-census-moduleinit-fix.md
 — read before implementing): the dynWriteVars exclusion is an
 OVERSIGHT not a guard (git archaeology: ffda6f86 touched 3 of 4
 merge sites; c37111ee extended the block and missed it again), AND
@@ -6070,7 +6070,7 @@ sound carve-out, real fixtures proving it fires for the
 independently-resolvable shape — a literal counter or constant) but
 delivers no measured win on either named target as of this pass.
 
-DICT-VALUE CENSUS DESIGNED 2026-07-31 (.work/dict-value-census-
+DICT-VALUE CENSUS DESIGNED 2026-07-31 (.work/archive/dict-value-census-
 design.md — read it before implementing; implementation order+gates
 inside): value-kind fact (`dictValueValType`) as a wholly ADDITIVE
 ValueRep field, censused inside observeProgramSlots' existing

@@ -81,7 +81,7 @@ export default (ctx) => {
     __durable_slot_cancel: [],
     __durable_slot_heal: [],
     __is_eph_bits: [],
-    // Region-arena Slice 1 (.work/research.md §Region arena) — see the definitions below
+    // Region-arena Slice 1 (.work/evidence.md §Region arena) — see the definitions below
     // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
     // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
     __region_mark: [],
@@ -93,7 +93,7 @@ export default (ctx) => {
     // registers core before collection), so a plain array would eagerly bake
     // in `false` and permanently under-declare.
     // '__memgrow'/'__ptr_offset' unconditional now — memo-lane fix
-    // (.work/research.md §Region arena — negative-reclaim root cause
+    // (.work/evidence.md §Region arena — negative-reclaim root cause
     // 476c88cd): __region_exit makes one direct __memgrow call of its own
     // (reserving the memo's scratch lane) and one direct __ptr_offset call
     // (reading the memo's own final cap to seed the NEXT call's reservation
@@ -104,14 +104,14 @@ export default (ctx) => {
     __region_exit_force: ['__region_exit'],
     __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__memgrow_exact', '__ptr_offset',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
-    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
+    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): no
     // longer gated on __dyn_props — a bare PTR.HASH region-root value
     // (regionArmHash, layout-kinds.js) reaches this helper independently of
     // whether the array/object dynamic-property sidecar machinery exists at
     // all (module/collection.js's dict/JSON.parse machinery can mint a HASH
     // with no __dyn_props global anywhere in the build). __region_memo_get/
     // __region_memo_set/__is_nullish added for this function's OWN memo
-    // hardening (see its definition below) — memo-lane fix (.work/research.md
+    // hardening (see its definition below) — memo-lane fix (.work/evidence.md
     // §Region arena — negative-reclaim root cause 476c88cd): every memo touch
     // now goes through the scratch-redirecting wrappers, not raw __map_get/
     // __map_set, so the memo's own doubling-chain growth never lands in
@@ -124,7 +124,7 @@ export default (ctx) => {
     // key so a cell shared by two closures relocates to ONE address, not
     // two) rather than routing through __region_copy_rec's f64 dispatch.
     __region_relocate_cell: ['__region_memo_get', '__region_memo_set', '__is_nullish', '__region_copy_rec', '__alloc'],
-    // Memo-lane wrappers (.work/research.md §Region arena — negative-reclaim
+    // Memo-lane wrappers (.work/evidence.md §Region arena — negative-reclaim
     // root cause 476c88cd / memo-lane fix): every OTHER touch of $memo
     // throughout __region_copy_rec's own arms (layout-kinds.js) and
     // __region_relocate_props/__region_relocate_cell above routes through
@@ -135,7 +135,7 @@ export default (ctx) => {
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
       '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__region_memo_get', '__region_memo_set', '__set_add', '__coll_order',
       '__len', '__region_relocate_props', '__region_relocate_cell',
-      // SET/MAP rebuild fix (.work/research.md §Region arena, front-boundary
+      // SET/MAP rebuild fix (.work/evidence.md §Region arena, front-boundary
       // hunt): regionArmSetMap (layout-kinds.js) now hashes a relocated
       // entry's key itself (via $__map_hash, on whichever bits are currently
       // safe to dereference) and inserts with the STRICT prehashed siblings
@@ -535,7 +535,7 @@ export default (ctx) => {
     (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
-  // Exact-fit grow — no geometric floor (.work/research.md §Footprint levers —
+  // Exact-fit grow — no geometric floor (.work/evidence.md §Footprint levers —
   // geometric-floor tier boundary): used ONLY by __region_exit's own scratch-lane
   // reservation below, never by ordinary __alloc/string bump-extend growth (which
   // keep calling plain $__memgrow, unchanged, so their amortization is untouched).
@@ -625,7 +625,7 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
-    // Region-arena memo-lane (.work/research.md §Region arena — negative-
+    // Region-arena memo-lane (.work/evidence.md §Region arena — negative-
     // reclaim root cause 476c88cd): __region_exit's own compaction memo (a
     // throwaway, per-call dedup table — never part of `root`, never returned)
     // used to grow inside the SAME [T, heap) span the round's real survivors
@@ -965,10 +965,10 @@ export default (ctx) => {
     // the bump pointer at round start, then at round end Cheney-copy the round's
     // SURVIVING tree (`root`) down to the mark, compacting away everything else the
     // round allocated (churn/live measured 574x-2495x on the design's own corpora —
-    // .work/research.md §Region arena; .work/research.md §Region arena is the design).
+    // .work/evidence.md §Region arena; .work/evidence.md §Region arena is the design).
     //
     // NO in-place forwarding-header convention (boundary-arithmetic audit,
-    // .work/research.md §Region arena — window B; this section originally read
+    // .work/evidence.md §Region arena — window B; this section originally read
     // like the durable machinery's __durable_fwd_log/heal above and array/hash/
     // set/map growth's grow-in-place stub, module/array.js arrGrow/module/
     // collection.js genUpsertGrow: leave `[-8:newOffset][-4:-1 sentinel]` at the
@@ -1008,7 +1008,7 @@ export default (ctx) => {
     // survives the boundary intact, not just "safely degrades" to always-dirty).
     // OBJECT/HASH/TYPED/BUFFER/EXTERNAL gained real arms in Slice 2
     // (layout-kinds.js's regionCopyRecBody/KIND_REGISTRY); CLOSURE gained one
-    // too (the front-boundary forcing case, .work/research.md §Region arena)
+    // too (the front-boundary forcing case, .work/evidence.md §Region arena)
     // via the `$__closure_env_len`/`$__closure_env_mask` side table — see
     // layout-kinds.js regionArmClosure.
     //
@@ -1028,7 +1028,7 @@ export default (ctx) => {
     // __region_memo_get/__region_memo_set — the ONLY two places $memo's
     // backing bytes are ever touched, throughout every arm in layout-kinds.js
     // and __region_relocate_props/__region_relocate_cell below (mechanical
-    // rename from raw __map_get/__map_set — .work/research.md §Region arena,
+    // rename from raw __map_get/__map_set — .work/evidence.md §Region arena,
     // memo-lane fix). Pure passthrough wrappers: $memo's own content,
     // hashing, probing and growth semantics (genUpsert, module/collection.js)
     // are completely untouched — the ONLY thing these change is WHERE a grow
@@ -1136,7 +1136,7 @@ export default (ctx) => {
       (local $scratchBase64 i64) (local $memoReserve64 i64) (local $neededCeil64 i64)
       ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
       (local.set $mark (i32.trunc_f64_u (local.get $markF)))
-      ;; Adaptive exit-skip (.work/research.md §Region arena — THE MEMORY
+      ;; Adaptive exit-skip (.work/evidence.md §Region arena — THE MEMORY
       ;; ENDGAME): the walk below is a Cheney-copy over EVERYTHING reachable
       ;; from \`root\`, not just this round's own new allocations —
       ;; regionArmSetMap (layout-kinds.js) has no cheap durable/off<mark
@@ -1179,7 +1179,7 @@ export default (ctx) => {
       ;; misfire on a small graph's own high-value round the way the ratio
       ;; did.
       ;;
-      ;; Result (.work/research.md §Region arena — THE MEMORY ENDGAME):
+      ;; Result (.work/evidence.md §Region arena — THE MEMORY ENDGAME):
       ;; jessie/watr real-graph peaks hold at their pre-fix baseline exactly
       ;; (536.9 MB / 1073.7 MB, zero regression), jzify-entry HALVES
       ;; (4295.0→2147.5 MB), and jz×jz's own AFE loop survives from 6 exits
@@ -1218,7 +1218,7 @@ export default (ctx) => {
       ;; still read call N's address, no longer safely disjoint from
       ;; anything).
       (global.set $__scratch_base (i32.const 0))
-      ;; Memo scratch-lane reservation (.work/research.md §Region arena —
+      ;; Memo scratch-lane reservation (.work/evidence.md §Region arena —
       ;; negative-reclaim root cause 476c88cd / memo-lane fix): reserve a
       ;; disjoint address range for the memo BEFORE creating it, so every
       ;; __region_memo_get/__region_memo_set call below (transitively, via
@@ -1268,7 +1268,7 @@ export default (ctx) => {
       ;; case for small compiles, matching this lever's own established
       ;; "small compiles rarely even reach here" discipline), a genuine
       ;; (correctly-sized) grow only when it doesn't.
-      ;; LANE-BELOW-SURVIVORS (2026-08-19, .work/research.md §survivorMargin
+      ;; LANE-BELOW-SURVIVORS (2026-08-19, .work/evidence.md §survivorMargin
       ;; unsoundness): the lane sits AT the current heap cursor and survivor
       ;; copies start ABOVE its reserved end — collision is impossible by
       ;; construction. The previous layout (lane at heap+survivorMargin with
@@ -1312,7 +1312,7 @@ export default (ctx) => {
       ;; __region_memo_get/__region_memo_set fall straight through to the
       ;; unmodified, pre-fix behavior for this ONE call, never worse than
       ;; before this fix landed.
-      ;; __memgrow_exact, not __memgrow (.work/research.md §Footprint levers —
+      ;; __memgrow_exact, not __memgrow (.work/evidence.md §Footprint levers —
       ;; geometric-floor tier boundary): neededCeil64 IS the caller's own
       ;; final, precisely-computed ceiling — growing to it exactly (page-
       ;; rounded) instead of $__memgrow's amortization-for-unplanned-callers
@@ -1351,7 +1351,7 @@ export default (ctx) => {
       ;; above; the offset keys here are always immediate/plain numbers though,
       ;; so a verbatim key copy is fine either way).
       ;;
-      ;; VALUE relocation (root-completeness fix, .work/research.md §Region
+      ;; VALUE relocation (root-completeness fix, .work/evidence.md §Region
       ;; arena — "durable-ARRAY off-16 heisenbug", the [1n]/O1 minimal trigger):
       ;; every entry's VALUE is a per-receiver props HASH — __dyn_set's global-
       ;; table fallback (module/collection.js) mints one FRESH each time a
@@ -1464,7 +1464,7 @@ export default (ctx) => {
     // needs __region_copy_rec, container structure doesn't need rehash"
     // split regionArmSetMap (layout-kinds.js) already applies to VALUES,
     // just for the KEY side this time. Front-boundary front-boundary audit
-    // (.work/research.md §Region arena, "second still-unfound mechanism"):
+    // (.work/evidence.md §Region arena, "second still-unfound mechanism"):
     // this function's original write relocated the VALUE at slot+16 (both
     // branches below) but left the KEY at slot+8 as a verbatim bit-copy —
     // correct ONLY for the compiler-internal dyn-props sidecar's own keys
@@ -1484,7 +1484,7 @@ export default (ctx) => {
     // genUpsertGrow's $entrySize, not the allocation stride: normal outputs
     // append an i32-per-slot lane AFTER all cap slots, while the compact
     // self-compile profile omits it. The bulk copy below uses the resolved stride.
-    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): memo
+    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): memo
     // hardening added. Originally safe without one (each ARRAY/OBJECT dyn-props
     // sidecar is a freshly-minted, never-shared HASH — one container per
     // owner, so no call site could ever revisit the SAME $propsF bits within
@@ -1503,7 +1503,7 @@ export default (ctx) => {
       (local $bits i64) (local $hit i64) (local $out f64)
       (if (f64.eq (local.get $propsF) (f64.const 0)) (then (return (local.get $propsF))))
       (local.set $bits (i64.reinterpret_f64 (local.get $propsF)))
-      ;; Ordering audit (.work/research.md §Region arena, __region_copy_rec ORDERING
+      ;; Ordering audit (.work/evidence.md §Region arena, __region_copy_rec ORDERING
       ;; AUDIT): memo hit-check BEFORE any work, matching every other kind's arm —
       ;; this was previously missing on THIS function's durable path (see below).
       ;; A bare PTR.HASH region-root CAN be diamond-shared (unlike an ARRAY/OBJECT
@@ -1564,8 +1564,7 @@ export default (ctx) => {
       (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
       (local.set $out (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
       (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-      ;; Idempotency self-map (fixes a real double-relocation hazard, .work/
-      ;; research.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
+      ;; Idempotency self-map (fixes a real double-relocation hazard, .work/evidence.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
       ;; root cause): memo only ever mapped ORIGINAL bits -> final bits, so a
       ;; SECOND caller that re-derives $out (not $propsF) and calls this function
       ;; AGAIN on it — e.g. a durable receiver's off-16/$__dyn_props slot that a
@@ -1621,7 +1620,7 @@ export default (ctx) => {
     // closures silently stop seeing each other's writes post-relocation.
     //
     // Durable branch carries the SAME memo-BEFORE-mutate ordering the TYPED
-    // view-rebase audit fix required (.work/research.md §Region arena,
+    // view-rebase audit fix required (.work/evidence.md §Region arena,
     // ordering audit): without it, a diamond-shared durable cell revisited a
     // second time in the same traversal would re-read its OWN already-
     // relocated (delta-adjusted, not-yet-physically-valid) payload as if it
@@ -1652,7 +1651,7 @@ export default (ctx) => {
       ;; layout-kinds.js — both its durable and ephemeral branches) persisted
       ;; a not-yet-final address, valid to dereference only AFTER this
       ;; round's closing copy — a real, confirmed-by-comparison-to-every-
-      ;; sibling-arm's-own-convention bug, fixed here (.work/research.md
+      ;; sibling-arm's-own-convention bug, fixed here (.work/evidence.md
       ;; §Region arena, __region_relocate_cell delta-adjustment entry).
       ;; NOT the sole cause of the front-boundary's own garbage-cellOff wall:
       ;; a debug-global trace (same entry) caught the SAME symptom (a
@@ -1682,7 +1681,7 @@ export default (ctx) => {
     // `(if (i32.ne $__schema_tbl 0) ...)` check degrades to "0 slots" safely
     // rather than referencing an undeclared global.
     //
-    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): the
+    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): the
     // function BODY (locals + preamble + every kind's arm) is generated from
     // layout-kinds.js's regionCopyRecBody — BIGINT/STRING/ARRAY/SET+MAP
     // extracted verbatim from the pre-Slice-2 hand-written text (byte-identity
@@ -1724,7 +1723,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   // right before return. Every caller that treats the returned buffer as a bound
   // list MUST read this (not the table's own header length word at off-8) as its
   // iteration bound — the header and the real gathered count are NOT guaranteed to
-  // agree (audit: .work/research.md §Region arena's 5e77f814 entry — a `new
+  // agree (audit: .work/evidence.md §Region arena's 5e77f814 entry — a `new
   // Map(existingMap)` copy trusting the header length read a zeroed slot past
   // __coll_order's actual output, decoding the kernel's own static string-table
   // data at address 0). A single caller-local capture right after the call (the
@@ -2289,7 +2288,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
    *  `va.type === 'f64'` call-site check (bc48ac02), enumerated once and
    *  enforced explicitly: both call sites below consult it before even
    *  building a guard, and emitSchemaSlotGuarded itself asserts it at entry
-   *  (.work/research.md §lane-4 re-land spec) so a future third call site
+   *  (.work/evidence.md §lane-4 re-land spec) so a future third call site
    *  can't silently reopen the gap. `va` must be a genuine per-instance
    *  NaN-boxed carrier — the ONE representation `ctx.schema.guardedSlotOf`'s
    *  mask compare and the write-side slot census (module/object.js's
@@ -2400,7 +2399,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // no unbox belongs here. (A future dedicated arm COULD unbox both sides at
     // once by wrapping the whole `if` post-hoc, but no such consumer exists
     // today — left as a documented no-op rather than adding unused plumbing.)
-    // CONSERVATIVE PAIRING (coordinator ruling, .work/context-sensitivity-
+    // CONSERVATIVE PAIRING (coordinator ruling, .work/archive/context-sensitivity-
     // survey.md) — re-verified, explicitly excluded, not just left alone:
     // this arm's OWN output stays box-or-raw either way (unchanged above),
     // and the new dispatch lives one layer up, at readI64 (src/ir.js) — it
@@ -2464,7 +2463,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       : useUntyped(receiver)
   }
 
-  // Slice C of the error-object model (.work/todo.md): a .message/.name read
+  // Slice C of the error-object model (.work/archive/todo.md): a .message/.name read
   // whose receiver's kind isn't proven reaches the dynamic dispatch below,
   // which is also the ONLY place a real-number receiver (a catch(e)-bound
   // internal $__jz_err code, never boxed into an Error object) can decode its
@@ -2727,7 +2726,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
         // (bench/provenance's module-memo, fftplan's cache-through-getPlan)
         // always reach this arm with a plain boxed f64 receiver — confirmed
         // via WAT diff — so the gate costs them nothing. RE-LAND PROBE
-        // (.work/research.md §lane-4): is this gate tighter than necessary —
+        // (.work/evidence.md §lane-4): is this gate tighter than necessary —
         // could a narrowed (ptrKind-tagged) receiver be adapted instead of
         // bailing? No profitable case exists: the one narrowed shape that IS
         // sound (`.ptrAux` names the exact schema) already resolves better,
@@ -3237,7 +3236,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
-      // 'bigint': CARRIER PROGRAM Slice 3 (.work/carrier-representation-design.md
+      // 'bigint': CARRIER PROGRAM Slice 3 (.work/archive/carrier-representation-design.md
       // §7, layout-kinds.js registry's 'typeof' finding) — a boxed BigInt the
       // static analysis can't prove (the ONLY way $__typeof's dynamic dispatch
       // below ever sees a PTR.BIGINT tag; a proven-BIGINT operand statically
@@ -3249,7 +3248,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
     setLinkDemand('closure')
-    // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep):
+    // Ambiguous BOOL-merge operand (.work/archive/todo.md §deletion-sweep):
     // valTypeOf(a) reads NUMBER here (the merge's benign coercion), so the
     // VAL.BOOL fold above correctly stays silent — but plain `emit(a)` still
     // collapses the merge's own BOOL arm to a raw 0/1 bit (the '?:'/'&&' handlers'
@@ -3315,7 +3314,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
 
-  // CARRIER PROGRAM Slice 1 (.work/carrier-representation-design.md §7) unit-
+  // CARRIER PROGRAM Slice 1 (.work/archive/carrier-representation-design.md §7) unit-
   // level pins: __box_bigint/__unbox_bigint expose ir.js's boxBigInt/
   // unboxBigInt the same way __mkptr/__ptr_type/__ptr_offset above expose
   // their own ir.js primitives — callable ONLY when a test's jz source
@@ -3355,7 +3354,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
 
   // Same "closed OrdinaryToPrimitive chain" fact as above, generalized from
   // "AST is literally a `{}` node" to "a bound name whose OWN declaration
-  // schema is closed" (.work/todo.md §deletion-sweep finding-2: `let o = {}; new
+  // schema is closed" (.work/archive/todo.md §deletion-sweep finding-2: `let o = {}; new
   // Error(o).message` fell through the literal-only check to toStrI64's
   // generic OBJECT path, which — unlike the Error-schema arm right above it
   // — has no case for a plain user OBJECT and mis-renders it, a pre-existing,
@@ -3446,7 +3445,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   //       valueOf (e.g. `new Error({})`) has a closed, empty method chain —
   //       toStrI64's generic OBJECT arm can't make that closed-world claim
   //       for an arbitrary (possibly dynamic) receiver, so it falls through
-  //       to __to_str's raw-pointer-bits fallback (.work/todo.md §deletion-sweep's
+  //       to __to_str's raw-pointer-bits fallback (.work/archive/todo.md §deletion-sweep's
   //       "Consequence" section, a PRE-EXISTING gap for any dynamic object,
   //       left as-is). The literal shape alone is enough to prove it here.
   //   (3) A genuinely dynamic dict (VAL.HASH — JSON.parse or a computed-key
@@ -3502,7 +3501,7 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   }
 
   // Error(msg)/new Error(msg) — a real PTR.OBJECT, schema ['message','name']
-  // (audit-#9 P0-2 brand redesign, .work/todo.md §deletion-sweep §1). Class identity
+  // (audit-#9 P0-2 brand redesign, .work/archive/todo.md §deletion-sweep §1). Class identity
   // lives in the SCHEMA ID (module/schema.js's ctx.schema.errorSid — one
   // DISTINCT id per class, minted with the class name as an internal dedupe
   // salt that never becomes a property), not in any slot: no hidden marker to

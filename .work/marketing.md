@@ -14,7 +14,7 @@ proof-credibility / discoverability) → synthesis → adversarial stress-test �
 **Canonical:** this doc is the project's single source of truth for audience & personas (§1).
 Sibling docs: [`ecosystem.md`](ecosystem.md) = expansion / integration / channel map;
 [`strategy.md`](strategy.md) = the promotion & adoption play (proof engines, sequence, Dream-100,
-objection→artifact map); [`../.work/research.md`](../.work/research.md) = technical design record.
+objection→artifact map); [`evidence.md`](evidence.md) = technical design and measurement record.
 
 > **2026-07-01 re-analysis.** §1 personas rebuilt on primary-source VOC (verbatim quotes from
 > GitHub issues / blogs / HN, all sourced); §3 positioning re-derived from a live competitor

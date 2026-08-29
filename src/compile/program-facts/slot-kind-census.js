@@ -42,7 +42,7 @@ import { effectiveWriteValue } from './shared.js'
 //     (analyzeBody.valTypes, installed as ctx.func.localValTypesOverlay below)
 //     — this is the missing PARAM-kind tier writeVT never had.
 //
-// Self-read neutrality (.work/todo.md §deletion-sweep): a read
+// Self-read neutrality (.work/archive/todo.md §deletion-sweep): a read
 // `d[...]`/`d.prop`/`d?.prop` (any nesting through further `[]`) whose root
 // is `wctx.root` contributes the JOIN IDENTITY, not a poison — subscript's
 // `prec[op] = !lookup[c] && prec[op] || p` shape's `prec[op]` self-read is
@@ -82,7 +82,7 @@ const isSelfDictRead = (n, root) => {
 // bigintMixReject to catch downstream.
 
 // ── truthy/falsy/nonNullish value-set semantics for &&/||/?? (and only
-// there — see .work/todo.md §deletion-sweep) ──────────────────────────
+// there — see .work/archive/todo.md §deletion-sweep) ──────────────────────────
 // A value-set is an array of `{ kind, bool }` elements: `kind` is a VAL.*
 // string or the pseudo-kind 'atom' (a provably undefined/null literal —
 // always falsy, never a real VAL); `bool` narrows a VAL.BOOL element's
@@ -540,7 +540,7 @@ export function observeProgramSlots(ast, opts) {
       }
     } else if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' &&
         typeof node[1][1] === 'string' && node[1][2] === 'set') {
-      // Map-value-type census (Tier 1, global half, design .work/todo.md
+      // Map-value-type census (Tier 1, global half, design .work/archive/todo.md
       // §deletion-sweep §1): `recv.set(k, v)` — Map's only write form (no
       // `[]=` shape exists), so this branch is a CALL-shape sibling of the
       // dict `[]=` branch above, not a MUTATE_OPS variant. Receiver gate is a
@@ -579,7 +579,7 @@ export function observeProgramSlots(ast, opts) {
   }
   teOverlay = null
   // hasMapSet joins hasSchemaLiterals as the moduleInit-walk trigger (design
-  // .work/todo.md §deletion-sweep §1): a bundled sub-module whose init
+  // .work/archive/todo.md §deletion-sweep §1): a bundled sub-module whose init
   // code is PURELY `const M = new Map(); M.set(...)` has no `{}` anywhere to
   // trip hasSchemaLiterals on its own — see hasMapSet's own doc comment
   // (observeNodeFacts, above) for the matching pre-scan.

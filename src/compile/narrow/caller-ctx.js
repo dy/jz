@@ -20,7 +20,7 @@ export const PTR_ABI_KINDS = new Set([VAL.OBJECT, VAL.SET, VAL.MAP, VAL.BUFFER])
 // its inputs' i32-ness (`f(n - 1)`), so it carries no independent type evidence.
 export const RECUR_INT_OPS = new Set(['+', '-', '*', 'u-', 'u+', '&', '|', '^', '<<', '>>', '>>>', '~'])
 
-// DBG-only (product-lattice Slice 4a, .work/lattice-design.md §1.6): `val`
+// DBG-only (product-lattice Slice 4a, .work/archive/lattice-design.md §1.6): `val`
 // (the meet, sticky-null-poisonable) and `possibleKinds` (the existential
 // union) must never contradict — whenever a param's `val` has resolved to a
 // concrete kind, `possibleKinds` must contain it (a wider set is fine; the
@@ -232,7 +232,7 @@ export function createPhaseState() {
       return callerTypedCtx
     },
 
-    // Renamed from invalidateBodyFacts (FINDING-5, lattice-design.md §4): the
+    // Renamed from invalidateBodyFacts (FINDING-5, .work/archive/lattice-design.md §4): the
     // product-lattice design reserves that name for a future module-level
     // `invalidateBodyFacts(body, reason)` entry point (research.md:704-708) —
     // this phase-local, bulk, no-args method is a different shape and had to

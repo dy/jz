@@ -52,7 +52,7 @@ const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e
 // bare-name call always did — one authority, not a second proof re-derived
 // from `source`'s own representation bits (the prior approach here, and
 // ir.js's independent applyBigintRepresentationAction widening, both
-// removed with kind.js's own fix: .work/member-callee-binding-write-notes.md).
+// removed with kind.js's own fix: .work/archive/member-callee-binding-write-notes.md).
 //
 // Already fully self-contained (every dependency an explicit parameter or a
 // module-level import) before this slice — buildBodyData's own materialization
@@ -95,14 +95,14 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
   const mayCarryBigint = node => localStorageRead(node) || !provenance || provenance.exprMay(node, identity, taintedNames)
   const params = new Map((sig?.params || []).map((p, i) => [p.name, i]))
-  // Closure-forwarding slice (.work/phase-c-unification.md §C4b queue):
+  // Closure-forwarding slice (.work/archive/phase-c-unification.md §C4b queue):
   // same-body local closures, structurally (name → {params, body}) — a call
   // to one of these is invisible to directCallBoundary (closures never enter
   // ctx.funcs.map), so currentOf/plannedOf's ordinary callee lookup always
   // misses it. Used below to recognize the specific shape that needs a
   // representation verdict OTHER than the generic unresolved-call fallback.
   const localClosures = collectLocalClosures(body)
-  // Shape #9 sibling (.work/shape9-boxed-arg-raw-callee.md residual 2): every
+  // Shape #9 sibling (.work/archive/shape9-boxed-arg-raw-callee.md residual 2): every
   // directCallBoundary consumer below (semanticOf/currentOf/plannedOf/
   // walkEdges/emittedCandidate) resolved ONLY a bare-name callee
   // (`typeof node[1] === 'string'`) — a `.`-member callee the frozen
@@ -283,7 +283,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   }
   nodeSemantic.clear()
 
-  // Closure-forwarding slice (.work/phase-c-unification.md §C4b queue): a
+  // Closure-forwarding slice (.work/archive/phase-c-unification.md §C4b queue): a
   // call to a SAME-BODY local closure whose callee has a return tail that's
   // the bare forwarded param (paramForwardsToReturn), fed here by an
   // argument that isn't itself provably bigint-free. The value flowing back

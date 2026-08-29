@@ -1,7 +1,7 @@
 /**
  * "Module load = registration only" — the region-arena front round (src/front.js
  * includeAllMods()) loads every stdlib module BEFORE `mark()`, so no first-ever
- * module init(ctx) can allocate into an unrooted region round (.work/region-
+ * module init(ctx) can allocate into an unrooted region round (.work/archive/region-
  * release-notes.md "ROOT CAUSE FOUND"). That fix is necessary for region-arena
  * correctness, but it only holds the compiler's OWN observable behavior steady
  * if loading a module has NO effect beyond registering its ctx.core.emit/
@@ -9,7 +9,7 @@
  * else unconditionally (write ctx.closure/ctx.types/ctx.scope state, call
  * hostImport/inc/declGlobal outside a lazily-invoked emit handler), eager
  * loading changes emitted bytes for programs that never asked for that
- * module's feature at all (.work/region-release-notes.md "Class 1"), or worse,
+ * module's feature at all (.work/archive/region-release-notes.md "Class 1"), or worse,
  * changes which dispatch tier a method call resolves through ("Class 2").
  *
  * This file proves the invariant NATIVELY — no region-arena mark/exit
@@ -37,7 +37,7 @@ const bytesEqual = (a, b) => a.length === b.length && Buffer.compare(Buffer.from
 // the region-arena kernel itself only ever builds at a fixed optimize level
 // per run, so this is the comparison that actually matters for that consumer).
 // Every CORPUS entry EXCEPT the three named below (tracked as a known gap —
-// see .work/region-release-notes.md "dict/mfold/subviewtyped root-caused" and
+// see .work/archive/region-release-notes.md "dict/mfold/subviewtyped root-caused" and
 // the "dvnested residual" section right after it). `mfold` was a THIRD
 // instance of the "module loaded ⇒ feature demanded" false-equivalence
 // (canSkipWholeProgramNarrowing's `!ctx.closure.make`, src/compile/plan/
@@ -94,7 +94,7 @@ test('eager-stdlib parity [known-gap]: dict/subviewtyped diverge, execution-corr
     const lazy = compile(src, { host: 'js', optimize: 0 })
     const eager = compile(src, { host: 'js', optimize: 0, _eagerStdlib: true })
     if (bytesEqual(lazy, eager)) { ok(true, `${name} no longer diverges — remove from KNOWN_GAP above and this test`); continue }
-    ok(true, `KNOWN GAP: ${name} still diverges (${lazy.length}B → ${eager.length}B) — see .work/region-release-notes.md`)
+    ok(true, `KNOWN GAP: ${name} still diverges (${lazy.length}B → ${eager.length}B) — see .work/archive/region-release-notes.md`)
   }
 })
 test('eager-stdlib parity [known-gap]: dvnested still compiles to invalid wasm under eager load', () => {
@@ -103,7 +103,7 @@ test('eager-stdlib parity [known-gap]: dvnested still compiles to invalid wasm u
   let valid = true
   try { new WebAssembly.Module(eager) } catch { valid = false }
   if (valid) { ok(true, 'dvnested eager output is valid again — remove this test and add dvnested to the main parity loop above'); return }
-  ok(true, 'KNOWN GAP: dvnested eager output is still invalid wasm — see .work/region-release-notes.md "dvnested residual"')
+  ok(true, 'KNOWN GAP: dvnested eager output is still invalid wasm — see .work/archive/region-release-notes.md "dvnested residual"')
 })
 
 // Class 2 (dispatch-tier eager-load divergence, this session's other finding,

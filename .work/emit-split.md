@@ -482,7 +482,7 @@ export const emitter = {
   correctness (itself checked by: the stripped file being `node
   --check`-clean end-to-end, and the zero-violation result surviving two
   rounds of `shared`/`bigint` reordering that WOULD have surfaced a
-  scan bug as a contradiction). Same epistemic status vectorize-split.md's
+  scan bug as a contradiction). Same epistemic status .work/archive/vectorize-split.md's
   own scan carried — a static scan, not a type system.
 - **`comparisons.js` (995 ln) is the largest family module** and contains
   three genuinely distinct sub-concerns (typeof-compare, char/substring-eq
@@ -497,7 +497,7 @@ export const emitter = {
   handles every `let`/`const` initializer shape (plain, destructured,
   array/object literal, spread, string-buffer SRoA, closure). Look for a
   per-shape dispatch table once it's isolated in its own file — the same
-  match/rewrite seam vectorize-split.md flagged for its own largest
+  match/rewrite seam .work/archive/vectorize-split.md flagged for its own largest
   function (`tryDivergentEscapeVectorize`, 567 ln).
 - `'for'` (529 ln, `control-flow.js`) — the single biggest AST-op handler;
   unroll-dispatch, typed-bounds versioning, and the plain walk are three
@@ -511,4 +511,4 @@ export const emitter = {
 
 Plan authored before any code was moved; decomposition specifics get filled
 in as each module is actually split (phase 3 commits), matching
-vectorize-split.md's own closing convention.
+.work/archive/vectorize-split.md's own closing convention.

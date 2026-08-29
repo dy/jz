@@ -27,7 +27,7 @@ export function findFreeVars(node, bound, free, scope) {
     // while that closure's own body still contains the bare reference with
     // no local, no param, no capture and no inherited fold to resolve it: a
     // reference emitted with no declaration behind it (2026-08-19 banked
-    // defect, .work/todo.md — self-compile closure-capture depth≥2 repro).
+    // defect, .work/archive/todo.md — self-compile closure-capture depth≥2 repro).
     // A name that's a real int constant one level up is exactly as
     // "in scope" here as one that's a real local — same value, just a
     // different (slot-free) storage decision upstream.
@@ -498,7 +498,7 @@ function selfPreservingWrittenKeys(body, name, written) {
 }
 
 // Per-binding classification shared by scanFlatObjects and scanObjectArrayFacts
-// (walk-count design A1, .work/walk-count-design.md §5 item 1) — the exact
+// (walk-count design A1, .work/archive/walk-count-design.md §5 item 1) — the exact
 // per-candidate logic scanFlatObjects always ran, factored out so the fused
 // scan can run it inline inside one scanBindingUses(body) loop instead of a
 // second one. Returns the `{names, values, written, selfPreserving}` entry,
@@ -690,7 +690,7 @@ export function scanNeverGrown(body) {
 
 /**
  * Fused single-traversal replacement for scanFlatObjects + scanSliceViews +
- * scanNeverGrown (walk-count design A1, .work/walk-count-design.md §5 item 1
+ * scanNeverGrown (walk-count design A1, .work/archive/walk-count-design.md §5 item 1
  * / §1.3: three independent post-overlay scans over the same
  * scanBindingUses(body) summary, no cross-dependency found between them).
  * Each per-name classification below is the exact original function's own
@@ -886,7 +886,7 @@ const AFFINE_INDEX_OPS = new Set(['+', '-', '*', '<<', 'u-'])
  * widening; the assignment fixpoint that follows still widens any local with an
  * f64-typed RHS (`i = i / 3`), overriding membership here.
  *
- * THIRD requirement, layered on top of both sources above (.work/todo.md
+ * THIRD requirement, layered on top of both sources above (.work/archive/todo.md
  * KNOWN GAP #1): membership alone is NOT sufficient — a var is
  * excluded from the returned set if `collectBareEscapes` finds it in an
  * unresolved bare-escape position anywhere in `body`. Both sources' proofs
@@ -999,7 +999,7 @@ function collectComparedNames(body, crossClosure) {
  * the instant it's read bare (`return id` after `id *= 100000`) even though
  * some OTHER, earlier use of the same var (feeding an array index) was
  * perfectly sound at that point of use. See collectI32SafeIndexVars' own doc
- * and .work/todo.md's KNOWN GAP #1 entry for the full diagnosis.
+ * and .work/archive/todo.md's KNOWN GAP #1 entry for the full diagnosis.
  *
  * Occurrences exempt from the proof requirement (mirrors the three-source
  * contract in collectI32SafeIndexVars' doc):
@@ -1099,7 +1099,7 @@ export function collectBareEscapes(body, locals, crossClosure) {
 // own trip count is provable (static.js's forCounterRange). base64's
 // `encode`/`decode` `op` (`let op = 0` before `for(let i=0;i+3<=n;i+=3)`,
 // stepped `op += 4` once per iteration, its final value bare-`return`ed) is
-// the motivating shape — see .work/todo.md's design entry for the full
+// the motivating shape — see .work/archive/todo.md's design entry for the full
 // rationale.
 //
 // STAMPED HERE (analyze time, via `updateRep`, the SAME durable channel

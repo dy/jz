@@ -167,7 +167,7 @@ consistent, not independently reconciled this session). Full pipeline
 (everything through encode): **RSS 3049 MB / heapUsed 1207 MB**.
 
 **Per-pass corroboration, citing prior work directly** (0ae75f07's own
-fine-grained dormant breadcrumb table, `.work/research.md`, already
+fine-grained dormant breadcrumb table, `.work/evidence.md`, already
 documents the self-compiled-side number for the single hottest sub-phase):
 `narrowSignatures`' own internal fixpoint (`narrowPointerResults`) costs
 **+1564.9 MB self-compiled** (0ae75f07's table). This session's fresh native
@@ -184,7 +184,7 @@ census has for "why 2×+."
 ## 4. The mechanism — churn, not retention, and *why* region-arena doesn't reach it
 
 Reconciling §2's two instruments with §3 and prior sessions' own dormant
-fine-grained table (`.work/research.md`, the `analyzeFuncForEmit` checkpoint
+fine-grained table (`.work/evidence.md`, the `analyzeFuncForEmit` checkpoint
 curve: heap already at 4089.1 MB at call #1 of 1435, trapping around call
 #98) gives one coherent, mechanistic story:
 
@@ -453,7 +453,7 @@ sufficient to answer the measurement-first gate; time-boxed).
 
 ### Lever 4 — bitfield-pack `ctx.schema`'s per-sid census tables (post-heap-epoch-design.md's own "RepresentationPlan" note)
 
-`.work/heap-epoch-design.md` names the shape directly: `ctx.schema` stores
+`.work/archive/heap-epoch-design.md` names the shape directly: `ctx.schema` stores
 `slotFacts`/`slotIntCertain`/`slotI32Certain`/`slotConstInts`/
 `slotIntLevels` as **five separate `Map<SchemaId, …>`** (`ctx.js:520-546`,
 cited verbatim in that design doc). Each is a *separate* MAP-shaped

@@ -25,7 +25,7 @@ import { isArr } from './node-utils.js'
 // from scalar reduction by ulps. Acceptable when bit-exact equality is not
 // required (which it isn't, by spec, in JS engines either).
 //
-// REDUCTION unification (.work/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
+// REDUCTION unification (.work/archive/vectorizer-generality-design.md §2 "REDUCTION (#5-6) → 1
 // general recognizer"): this is the reassociating (tree-reduce + horizontal-sum) fold-order
 // tier of the ONE reduction transform — a single scalar accumulator, `S = OP(S, EXPR(arr[i]))`.
 // `tryReduceBitExact` below is the other fold-order tier (scalar-order-preserving f64x2
@@ -462,7 +462,7 @@ function tryReduceBitExact(bl, fnLocals, freshIdRef) {
   // f64x2.load (16 bytes) covers iterations j and j+1 — consecutive elements. BodyModel fact
   // (bl.siteAccess, see buildSiteAccess) — computed once at the dispatch instead of a private
   // per-site matchLaneAddr(e[1], incVar, new Map(), bl.offsetTees) call — shadow-assert-proven
-  // equivalent to that plain query (.work/research.md §BodyModel).
+  // equivalent to that plain query (.work/evidence.md §BodyModel).
 
   // f64x2 lift: load → f64x2.load (2 consecutive), const/invariant → splat, a lane local
   // → its f64x2 temp, sub/mul/add/div → f64x2.OP, sqrt → f64x2.sqrt. Anything else bails.
@@ -548,7 +548,7 @@ export function tryReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
 // Generalizes `tryReduce`'s (`tryReduceReassoc`) shape-specific address proof — `matchLaneAddr`'s
 // literal post-lowering WAT-pattern list — to an AST-level affine-in-IV proof, the SAME lever
 // `tryGeneralMap` already applied to the MAP class (design §2/§3 step 3, REDUCTION slice —
-// .work/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
+// .work/archive/vectorizer-generality-design.md). `ivCoeff`/`matchAddr` below are a PORT of
 // `tryGeneralMap`'s own (itself ported from `tryStencil`) — not a literal import, matching
 // `tryGeneralMap`'s own "port, don't share" precedent so `tryReduceReassoc`'s already-gated
 // corpus behavior stays byte-for-byte untouched. One difference from `tryGeneralMap`'s copy:

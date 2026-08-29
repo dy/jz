@@ -286,7 +286,7 @@ export function typedValueExprRange(n) {
 // a same-direction rewrite of `name`'s own motion — same exclusion
 // forCounterRange's own step-matcher already applies below. Lets a SHIFTED
 // guard (`i + 3 <= n`, base64's `encode`/`decode` shape — INDUCTION-VARIABLE
-// FACT project, see .work/todo.md) reuse the identical lo/hi arithmetic as a
+// FACT project, see .work/archive/todo.md) reuse the identical lo/hi arithmetic as a
 // bare-name guard, just against a bound pre-shifted by `-K`.
 function nameShift(expr, name) {
   if (expr === name) return 0
@@ -320,7 +320,7 @@ const pureIntLiteral = (e) => {
 // `name` to a full linear form `K*name (+/- shift)`, K a compile-time
 // integer SCALE. Returns {name, scale, shift} or null (scale=1 covers
 // nameShift's own shape exactly). Needed by the co-induction bounds prover
-// (narrow.js's mayBeUndefined join, .work/todo.md "colorlog — the co-
+// (narrow.js's mayBeUndefined join, .work/archive/todo.md "colorlog — the co-
 // induction prover"): a loop-local index (`const j = 3 * i`) used at a call
 // site (`decode(src[j])`) is a SCALED reference to the enclosing loop's own
 // counter, not a bare shift of it — nameShift alone can't see through the

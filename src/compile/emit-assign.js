@@ -224,7 +224,7 @@ function tryHashRmwFusion(arr, idx, val) {
   // anyway pulled __dyn_set's ToPropertyKey (→ __to_str → the whole Ryu formatter)
   // into every module with a proven-HASH counting idiom (`counts[w] = (counts[w]|0)+1`
   // on a dictionary-mode `{}`), even in a module that otherwise never stringifies a
-  // number. STRATIFICATION lever retry (.work/todo.md): a genuine __dyn_set/
+  // number. STRATIFICATION lever retry (.work/archive/todo.md): a genuine __dyn_set/
   // __dyn_get_t core-split was built, verified correct (two real dep-graph gate
   // bugs found+fixed: assemble.js's tblConsumed/__clear-reset enumerations and
   // array.js's needsArrayDynMove hardcode function names by exact string, so new
@@ -571,7 +571,7 @@ export function emitElementAssign(arr, idx, val) {
   const useRuntimeKeyDispatch = !idxNumericName &&
     (keyType == null || (typeof idx === 'string' && keyType !== VAL.STRING))
   // storedValue (not asF64(emit(idx))): the universal computed-key emit site
-  // feeding $__dyn_set — an 18th unswept MECHANISM A site (.work/todo.md
+  // feeding $__dyn_set — an 18th unswept MECHANISM A site (.work/archive/todo.md
   // §deletion-sweep). storedValue already returns f64-typed IR in every
   // branch, so no asF64 wrap is needed; the non-ambiguous fallback
   // (carrierF64) is byte-identical to the asF64(emit(idx)) call it replaces.
@@ -603,7 +603,7 @@ export function emitElementAssign(arr, idx, val) {
   // number from a boxed bigint apart.
   const arrProvenBigintElems = typeof arr === 'string' && valTypeOf(arr) === VAL.ARRAY &&
     repOf(arr)?.arrayElemValType === VAL.BIGINT
-  // BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): a
+  // BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4): a
   // PROVEN TYPED receiver (BigInt64Array/BigUint64Array, `lookupValType(arr)
   // === 'typed'`, mirroring branch 5's own proven-ctor check below) is the
   // design's own explicit exemption — "each element's kind is fixed by the

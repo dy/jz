@@ -2,7 +2,7 @@
  * Whole-program function-namespace SRoA analysis (a user function used as a
  * property bag). Split out of analyze.js (pipeline-minimality slice); see
  * analyze.js's module header for the full split rationale and
- * `.work/analyze-traversals.md` for the traversal inventory.
+ * `.work/archive/analyze-traversals.md` for the traversal inventory.
  *
  * @module compile/analyze/func-namespaces
  */

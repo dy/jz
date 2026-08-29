@@ -119,7 +119,7 @@ if (spraeEntry) {
 // Config resolution (CARRIER_BOX injection, region-arena × inlinePtrOffsetFast
 // gate, compiler-runtime collection compaction) lives in
 // scripts/build-profile.mjs's resolveSelfCompileBuild — shared
-// with scripts/self-compile-build.mjs (architecture re-audit item 2, .work/todo.md)
+// with scripts/self-compile-build.mjs (architecture re-audit item 2, .work/archive/todo.md)
 // so the two self-compile build entry points cannot drift on either mechanism.
 // Match self-compile-build.mjs's measured release profile: this artifact is a
 // compiler executable, not a size-distributed web asset. O3 keeps its warm

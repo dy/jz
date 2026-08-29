@@ -330,7 +330,7 @@ export function tryStencil(node, fnLocals, freshIdRef, enabled, bl) {
   return { wrapper, newLocalDecls }
 }
 
-// ---- General STENCIL base layer (layer 4, .work/vectorizer-generality-design.md §2-3
+// ---- General STENCIL base layer (layer 4, .work/archive/vectorizer-generality-design.md §2-3
 // step 4) — tryStencil's own affine-offset proof, generalized to every LOAD_OPS/STORE_OPS
 // lane type + runtime alias versioning ---------------------------------------------------
 //

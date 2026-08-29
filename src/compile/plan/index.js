@@ -58,13 +58,13 @@ import {
 
 /**
  * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena
- *  PLAN-TAIL boundaries (.work/research.md §Region arena, per-pass slice):
+ *  PLAN-TAIL boundaries (.work/evidence.md §Region arena, per-pass slice):
  *  supplied ONLY by the self-compile kernel, forwarded from compile()'s own
  *  `regionHooks` (Slice 3) — never passed by the native host (plan() is
  *  called with 2 args everywhere else, so this stays undefined and every
  *  `regionHooks?.mark()` / `if (regionHooks)` below is dead code there).
  *  `narrowSignatures` itself (and its own internal narrow.js machinery,
- *  the single largest cost in this function — .work/research.md §Region
+ *  the single largest cost in this function — .work/evidence.md §Region
  *  arena "jz×jz phase-localized") is deliberately OUTSIDE every boundary
  *  here: narrow.js's O(functions×params×callSites) census is a separately-
  *  banked cost, not a churn-vs-retain shape a region round can help —
@@ -73,7 +73,7 @@ import {
  *  zero reclaim (its own allocations ARE the fixpoint's live state, not
  *  garbage). Every boundary below starts AFTER narrowSignatures returns.
  *  Five rounds, one per named pass-group from the diffuse-cost phase map
- *  (.work/research.md §Region arena "analyzeFuncForEmit's OWN clone-shape
+ *  (.work/evidence.md §Region arena "analyzeFuncForEmit's OWN clone-shape
  *  instances FIXED"): each pass's
  *  own working state (siteState-shaped temporaries, per-call scratch
  *  objects, body-walk locals) is garbage the instant the pass returns —
@@ -93,7 +93,7 @@ export default function plan(ast, profiler, regionHooks) {
   const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
   // One round shape shared by all five plan-tail boundaries below — mark,
   // run `body`, exit rooting `ast`/`programFacts` (phase-local, not durable
-  // ctx state) + the UNION-FIELD root (Slice C-v2, `.work/compile-session-
+  // ctx state) + the UNION-FIELD root (Slice C-v2, `.work/archive/compile-session-
   // design.md` §2.1/§3, front.js's own doc has the full rationale for why
   // this is the union of every `ctx.*` field ANY round needs — `funcs,
   // module, schema, closure, scope, types, warnings, plans, inspect, func,
@@ -168,7 +168,7 @@ export default function plan(ast, profiler, regionHooks) {
   t('inferModuleIntGlobals', () => inferModuleIntGlobals(ast))
 
   facts()
-  // Receiver-HASH global classification (.work/todo.md §deletion-sweep):
+  // Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep):
   // fill `ctx.scope.globalValTypes` with VAL.HASH for module-level `{}`-decl
   // dict globals module/object.js's allocator already tags HASH at the
   // pointer level (identical predicate — target's merged schema empty +
@@ -245,7 +245,7 @@ export default function plan(ast, profiler, regionHooks) {
   // contract this function's own header already documents for
   // narrowSignatures' paramReps writes.
   t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts))
-  // Shape check (program-facts-split.md §7.1): this is the ONLY staple-on
+  // Shape check (.work/archive/program-facts-split.md §7.1): this is the ONLY staple-on
   // site anywhere in src/compile/ that adds a top-level key to `programFacts`
   // after `collectProgramFacts` publishes it — the moment it lands is the
   // right place to assert no OTHER, undocumented key has snuck on too.
@@ -287,7 +287,7 @@ export default function plan(ast, profiler, regionHooks) {
   // contract).
   exitRound(__earlyMark)
   if (canSkipWholeProgramNarrowing(programFacts)) {
-    // Freeze point (program-facts-split.md §7): narrowSignatures never runs
+    // Freeze point (.work/archive/program-facts-split.md §7): narrowSignatures never runs
     // on this branch, so collectProgramFacts is paramReps/callSites' ONLY
     // producer here — already fully settled the moment we reach this check.
     // callSites is frozen for good (no writer anywhere ever touches it
@@ -377,7 +377,7 @@ export default function plan(ast, profiler, regionHooks) {
   // Plan-tail round 3: five more passes, small individually (refineDynKeys is
   // the largest at +15 MB) — bundled for the same reason as round 2.
   round(() => {
-    // VAL-kind landslide specialization (context-sensitivity-survey.md §3-4): a
+    // VAL-kind landslide specialization (.work/archive/context-sensitivity-survey.md §3-4): a
     // pure precision/perf slice, sized/gated the same as speculateTypedParams.
     if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
     if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
@@ -389,7 +389,7 @@ export default function plan(ast, profiler, regionHooks) {
     t('refineFieldProvenance', () => refineFieldProvenance(ast))
     t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
   })
-  // Freeze point (program-facts-split.md §7): paramReps/callSites' true last
+  // Freeze point (.work/archive/program-facts-split.md §7): paramReps/callSites' true last
   // producer WITHIN plan() is this round just above — specializeValKindDichotomy/
   // speculateTypedParams when optimizing() (both write through materializeVariant),
   // else round 2's unconditional specializeBimorphicTyped; refineDynKeys right

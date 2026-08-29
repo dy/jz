@@ -8,7 +8,7 @@
  * the fixpoint) rather than via a carrier-bundle dispatch. The single-carrier
  * `ctx.abi` infrastructure is scaffold for the architectural cleanup that
  * would migrate those narrowed cases into named carriers here. See
- * `.work/todo.md` "Boundary protocol and internal representation".
+ * `.work/archive/todo.md` "Boundary protocol and internal representation".
  *
  * Carriers:
  *   - `nanboxF64`  default. f64 carrier with NaN-boxed pointers. Owns the

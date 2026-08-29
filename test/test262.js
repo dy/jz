@@ -509,7 +509,7 @@ function shouldSkipBase(content, rel = '') {
     return 'for-of live-iteration mutation contract (documented divergence: snapshot/index iteration)'
   // Member-expression targets in for-of heads / destructuring patterns
   // (`for (obj.x of …)`, `[o.x] = arr` inside a for-of head) — recorded
-  // small-lowering gap (.work/todo.md, extension-surface archive).
+  // small-lowering gap (.work/archive/todo.md, extension-surface archive).
   if (rel.includes('put-prop-ref') || rel.includes('/for-of/head-lhs-member') || rel.includes('/for-of/head-lhs-cover'))
     return 'member-expression for-of/destructure target outside current lowering (recorded)'
   // for-of over astral code points walks UTF-8 bytes (documented string model).
@@ -1066,7 +1066,7 @@ const EXPECTED_FAIL_PREFIXES = [
 //     short-circuit dead-code elision reaching identity-safe emission too, so
 //     `x` is never touched and the comparison folds to the correct `true`/
 //     `false` at compile time) is a separate, un-scoped optimizer gap — see
-//     .work/todo.md if picked up.
+//     .work/archive/todo.md if picked up.
 // [WRONG-VALUE] tag below = release-blocking per STABILITY.md's semantics
 // contract; [REJECT]/[DIALECT] = acceptable (structurally out of scope /
 // matches README "What differs from JS?").

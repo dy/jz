@@ -1,6 +1,6 @@
-// machineState() — audit-#13 evidence-validity metadata (.work/todo.md
+// machineState() — audit-#13 evidence-validity metadata (.work/archive/todo.md
 // §deletion-sweep hygiene item 2b). The WARM/MEMORY-FLOOR false-red campaign
-// (.work/todo.md's "WARM + MEMORY-FLOOR reds RESOLVED as ENVIRONMENT" status,
+// (.work/archive/todo.md's "WARM + MEMORY-FLOOR reds RESOLVED as ENVIRONMENT" status,
 // 2026-08-06) found LIVE that timing evidence recorded under swap pressure
 // reads as a code regression until someone manually correlates it with
 // `vm.swapusage` — captured into every timing write's meta.machineState so

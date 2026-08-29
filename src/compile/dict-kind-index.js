@@ -13,7 +13,7 @@ import { valTypeOf } from '../kind.js'
 // where OBJ is a same-or-cross-module CONSTANT object literal (every key
 // statically named — staticObjectProps) and VALUE's kind is loop-invariant
 // (the SAME static AST shape every iteration — never depends on K). This is
-// .work/string-method-guess-notes.md's own "seventh session" FOURTH
+// .work/archive/string-method-guess-notes.md's own "seventh session" FOURTH
 // limitation, closed generally: watr's real
 // `for (let kind in SECTION) (ctx[SECTION[kind]] = ctx[kind] = []).name = kind`
 // (src/compile.js ~91) is the ONE concrete instance, but nothing here is

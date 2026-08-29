@@ -10,7 +10,7 @@
  * closures): it deliberately reuses ONE mutable `sharedSiteState` object
  * across every call-site visit — see the comment at its own declaration for
  * why (a measured self-hosted memory constraint, not a readability choice).
- * Flagged, not solved, by .work/narrow-split.md §6 — the driver and its
+ * Flagged, not solved, by .work/archive/narrow-split.md §6 — the driver and its
  * shared state stay in this one module.
  *
  * @module compile/narrow/index
@@ -340,7 +340,7 @@ export default function narrowSignatures(programFacts, ast) {
   // an omitted arg with no default is undefined at runtime, a real reason not to
   // specialize, and must stay sticky.
   //
-  // `trackKind` (val only — product-lattice Slice 4a, .work/lattice-design.md
+  // `trackKind` (val only — product-lattice Slice 4a, .work/archive/lattice-design.md
   // §3.2/§1.1): also union every per-site observation into `possibleKinds`,
   // `val`'s existential twin. Computed UNCONDITIONALLY, even once `field` has
   // already gone sticky-TOP — possibleKinds exists precisely to keep the kinds
@@ -364,7 +364,7 @@ export default function narrowSignatures(programFacts, ast) {
   // OWN fixed point — see the sole trackKind=true call below (~"Settle val
   // HARD"), and keep it the only one. Do not add trackKind=true to `fixpointRules`
   // or any other mid-convergence sweep (root-caused + traced in
-  // .work/string-method-guess-notes.md, "Root cause of the REMAINING
+  // .work/archive/string-method-guess-notes.md, "Root cause of the REMAINING
   // ~16718-byte gap"; the shape: a recursive `uleb(n, buffer = [])` forwarded
   // through a second function `wleb(v, out) { uleb(v, out) }` — `buffer`'s val
   // genuinely converges to ARRAY, but a premature visit of the `wleb→uleb`
@@ -707,7 +707,7 @@ export default function narrowSignatures(programFacts, ast) {
   // as null. observeSlot's first-wins-then-clash rule lets a later precise
   // observation upgrade `undefined` → NUMBER without poisoning earlier
   // monomorphic observations.
-  // hasMapSet joins hasSchemaLiterals (design .work/todo.md §deletion-sweep
+  // hasMapSet joins hasSchemaLiterals (design .work/archive/todo.md §deletion-sweep
   // §1) — same reasoning as program-facts.js's own gate widening: a Map-only
   // program has no `{}` to trip hasSchemaLiterals, but still needs this re-
   // observation pass for its own census (methodValType 'get' consumer wants
@@ -1057,7 +1057,7 @@ export default function narrowSignatures(programFacts, ast) {
     }
     return false
   }
-  // mayBeUndefined param propagation (Slice 2, .work/todo.md
+  // mayBeUndefined param propagation (Slice 2, .work/archive/todo.md
   // §deletion-sweep §3 "Param lattice") — the inter-procedural half of
   // the same fact Slice 1 (analyze.js analyzeValTypes) already seeds at decl
   // time. Uses the shared fail-closed destructured-param default (isDestructuredParamBody, reused verbatim —
@@ -1102,7 +1102,7 @@ export default function narrowSignatures(programFacts, ast) {
         if (k >= cs.argList.length) continue
         const argNode = cs.argList[k]
         // Co-induction + interprocedural bounds proof (colorlog project,
-        // .work/todo.md "the co-induction prover") — see
+        // .work/archive/todo.md "the co-induction prover") — see
         // arrayReadProvenInBounds's own doc above: censusShapedNode (inside
         // exprMayBeUndefinedIn below) over-approximates ANY `arr[idx]`
         // call-argument as possibly undefined, even a read that's PROVABLY

@@ -47,7 +47,7 @@ const JIT_RIVALS = ['v8', 'deno', 'bun', 'jsc']
 // decides which claim it's held to.
 const V8_FAMILY_RIVALS = ['v8', 'deno']
 const JSC_FAMILY_RIVALS = ['bun', 'jsc']
-// DECIDED CLAIM SCOPING 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
+// DECIDED CLAIM SCOPING 2026-08-01 (.work/archive/todo.md "DECISIONS EXECUTED 2026-08-01" +
 // evidence "VM + DICT DISSECTED: HARD TAILS, ~0% CLOSABLE" 2026-07-31): the
 // tight-integer-loop class (register-VM dispatch, hash-probe chains, checksum
 // accumulation) is where JSC's adaptive JIT specializes hot integer loops beyond
@@ -75,7 +75,7 @@ const JSC_EXCEPTION_BAND_TOL = 1.5
 const COVERAGE_FLOOR = 0.7
 // SUPERSEDED 2026-08-28 (perf/size-leadership campaign — the owner's literal
 // bar is "ALWAYS smaller than AssemblyScript, ×1, per case"): the geomean-only
-// scoping decided 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
+// scoping decided 2026-08-01 (.work/archive/todo.md "DECISIONS EXECUTED 2026-08-01" +
 // evidence "SIZE BAND DIAGNOSED: HONEST FLOOR" 2026-07-30) is kept below as an
 // aggregate backstop, but strict per-case leadership is now ALSO asserted
 // (see "claims: size — jz strictly smaller..." below) — geomean alone let
@@ -209,7 +209,7 @@ test('claims: partial (mixed-vintage) evidence requires a passing anchors check 
 
 // VALIDITY — machine-state sanity for timing evidence (audit-#13 hygiene item
 // 2b, bench/machine-state.mjs). The WARM/MEMORY-FLOOR false-red campaign
-// (.work/todo.md §deletion-sweep "WARM + MEMORY-FLOOR reds RESOLVED as
+// (.work/archive/todo.md §deletion-sweep "WARM + MEMORY-FLOOR reds RESOLVED as
 // ENVIRONMENT" status, 2026-08-06) found LIVE that swap pressure alone
 // explains multi-percent timing drift with zero code change — every fresh
 // timing write now carries meta.machineState; this gate holds it to a sane

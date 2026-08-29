@@ -79,12 +79,12 @@ export default (ctx) => {
   if (!ctx.closure.types) ctx.closure.types = new Set()
   if (!ctx.closure.table) ctx.closure.table = []
   if (!ctx.closure.bodies) ctx.closure.bodies = []
-  // Region arena CLOSURE relocation (.work/research.md §Region arena, the
+  // Region arena CLOSURE relocation (.work/evidence.md §Region arena, the
   // FRONT-BOUNDARY-forcing "give CLOSURE a real region-copy arm" lever) —
   // one {len, cellMask} record per funcIdx (ctx.closure.table index),
   // captured HERE, at the one site that unconditionally knows the real env
   // it allocates for THIS closure, regardless of whether a ClosureEnvPlan
-  // covered it (.work/closure-plan-design.md's 90.6%/57.9% mint coverage) or
+  // covered it (.work/archive/closure-plan-design.md's 90.6%/57.9% mint coverage) or
   // fell open to the legacy inline derivation below — both paths converge on
   // the SAME `envCaptures`/`ctx.func.boxed` facts before reaching this push,
   // so recording it here (not from the plan) is 100% coverage by
@@ -94,7 +94,7 @@ export default (ctx) => {
   // (layout-kinds.js regionArmClosure) looks up by funcIdx (aux).
   if (!ctx.closure.envMeta) ctx.closure.envMeta = []
   // Republished for src/compile/closure-plan.js's mintClosureEnvPlans (Slice 1,
-  // .work/closure-plan-design.md) — via ctx.closure rather than a direct
+  // .work/archive/closure-plan-design.md) — via ctx.closure rather than a direct
   // cross-import, so this module-factory file and the plan mint it feeds don't
   // form an import cycle (matches ctx.closure.make/.call's own module→ctx→src
   // publication channel).
@@ -102,7 +102,7 @@ export default (ctx) => {
 
   ctx.closure.types.add(1) // presence triggers $ftN type emission
 
-  // Region arena side table mint (.work/research.md §Region arena, funcIdx
+  // Region arena side table mint (.work/evidence.md §Region arena, funcIdx
   // skew) — the ONE place that grows ctx.closure.table. Every OTHER minter
   // (emit.js's builtinFunctionValue and its top-level-function-used-as-value
   // trampoline path) must route through this too, so envMeta grows in
@@ -133,7 +133,7 @@ export default (ctx) => {
     const fnName = `${T}closure${ctx.closure.table.length}`
 
     // ClosureEnvPlan (src/compile/closure-plan.js's mintClosureEnvPlans,
-    // see .work/todo.md) — the frozen pre-emission
+    // see .work/archive/todo.md) — the frozen pre-emission
     // capture classification (free vars, constant folds, boxed cells), keyed
     // on THIS closure's own body node, or — a destructured-param closure
     // only, see that module's own doc — on `rawParams` (untouched by the
@@ -215,8 +215,8 @@ export default (ctx) => {
     // that fact inside the body, or the body's own write facts (val = NUMBER)
     // would let `x == null` fold to a constant false and skip the guard.
     const captureNullables = new Set()
-    // Propagate the parent's `mayBeUndefined` mark (Slice 2, .work/represented-
-    // .work/todo.md §deletion-sweep §3 "Closure captures") — the container-read
+    // Propagate the parent's `mayBeUndefined` mark (Slice 2,
+    // .work/archive/represented-maybe-undefined-design.md §3 "Closure captures") — the container-read
     // sibling of captureNullables just above, same reasoning: a capture whose
     // parent binding can be real JS `undefined` despite a definite `val` claim
     // must keep that fact inside the body, or the body's own write facts
@@ -246,7 +246,7 @@ export default (ctx) => {
     // program-wide schema table to get that interface, at O(program schema-
     // table size) PER CLOSURE LITERAL (fires for every arrow/function
     // expression seen while ANY body emits, not just ones that end up
-    // capturing anything — .work/research.md's MapOverlay fix targets the
+    // capturing anything — .work/evidence.md's MapOverlay fix targets the
     // same shape-class one level down, at closure-body-EMISSION time; this
     // site is the more frequent, likely-dominant sibling, at closure-CREATION
     // time). `scopeOwn` below is the SAME two-layer split MapOverlay uses —
@@ -307,7 +307,7 @@ export default (ctx) => {
     // the store loop below also uses — same source of truth, computed once
     // here instead of re-derived twice. Bit i set ⇒ slot i holds a raw i32
     // cell pointer (boxed/mutable capture); clear ⇒ a NaN-boxed f64 value.
-    // >31 captures (unobserved on any measured corpus — .work/closure-plan-
+    // >31 captures (unobserved on any measured corpus — .work/archive/closure-plan-
     // design.md §1.5's histogram tops out at 27) can't fit the i32 mask;
     // region_copy_rec's CLOSURE arm traps that one case by name rather than
     // silently truncating which slots it treats as pointers.

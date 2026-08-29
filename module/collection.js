@@ -494,7 +494,7 @@ export default (ctx) => {
   // compares against TRUE_NAN). A raw 0.0/1.0 number can never equal a NaN payload, so
   // every unproven `.has()/.delete() === true` silently read false regardless of the
   // real answer (self-compile's own `ctx.func.ternaryBoxedNames?.has(name) === true` hit
-  // this exact gap — .work/carrier-representation-design.md §33/§34). The FAST (real
+  // this exact gap — .work/archive/carrier-representation-design.md §33/§34). The FAST (real
   // Map/Set) branch below is the only one that produced the bare number; the call_indirect
   // branch (a genuine custom `.has` closure) already returns a properly boxed value via
   // the normal call-return convention.
@@ -517,7 +517,7 @@ export default (ctx) => {
       // family (bool -> atom bits, plan-tagged bigints -> the same tag), so
       // the probe must produce the SAME bits or SameValueZero misses. (An
       // unproven-receiver O0 miss exists independently of this — banked in
-      // .work/todo.md 2026-08-19, all key kinds, pre-dates this slice.)
+      // .work/archive/todo.md 2026-08-19, all key kinds, pre-dates this slice.)
       ['local.set', `$${k}`, asI64(taggedColl(key))],
       boolBoxIR(typed(['if', ['result', 'i32'],
         ptrTypeEq(['local.get', `$${o}`], PTR.MAP),
@@ -624,7 +624,7 @@ export default (ctx) => {
 
   // Generated Set probe functions
   ctx.core.stdlib['__set_add'] = () => genUpsert('__set_add', SET_ENTRY, '$__map_hash', sameValueZeroEqG, PTR.SET, false, ctx.linkDemand.external)
-  // Region-arena rebuild fix (.work/research.md §Region arena, front-boundary
+  // Region-arena rebuild fix (.work/evidence.md §Region arena, front-boundary
   // hunt): __region_copy_rec's SET/MAP arm (layout-kinds.js regionArmSetMap)
   // rebuilds a relocated Set/Map into a fresh cap-sized table (never grows,
   // same assumption $outPhys staying canonical already relies on). The plain
@@ -1201,7 +1201,7 @@ export default (ctx) => {
   // the pointer and hand this same span back for a later allocation (see
   // __hash_reuse_eph's own doc, this file, for the confirmed live trap this
   // exact assumption caused — closure4232/wasm-function[3757] OOB,
-  // .work/research.md §Region arena). Clear the full entry region (not just
+  // .work/evidence.md §Region arena). Clear the full entry region (not just
   // the lane) so a recycled span reads as genuinely empty to EVERY consumer,
   // not only lane-aware ones — cheap at the small caps this path allocates.
   ctx.core.stdlib['__alloc_hash_eph'] = `(func $__alloc_hash_eph (param $len i32) (param $cap i32) (result i32)
@@ -1240,7 +1240,7 @@ export default (ctx) => {
   // iterations. First execution allocates, later executions reuse the same
   // capacity and avoid bump-allocation/page traffic.
   //
-  // Region-arena front-boundary mechanism (.work/research.md §Region arena,
+  // Region-arena front-boundary mechanism (.work/evidence.md §Region arena,
   // 475a202d's own next-lead — closure4232/wasm-function[3757] OOB, root-caused
   // this session via a WAT-level breadcrumb): this used to clear ONLY the
   // normal layout's occupancy lane (cap*4 bytes right after the entry table),
@@ -1378,7 +1378,7 @@ export default (ctx) => {
   // original bug here) both misreads garbage as a props pointer AND, on write,
   // clobbers 8 bytes of unrelated heap data with a props-hash pointer — observed
   // natively as a deterministic `memory access out of bounds` a few stores later
-  // (.work/research.md §Region arena, __region_relocate_props durable dyn-props
+  // (.work/evidence.md §Region arena, __region_relocate_props durable dyn-props
   // WRITE-path root cause). A VIEW must fall through to the global $__dyn_props
   // table (keyed by offset) exactly like CLOSURE/shifted-ARRAY/static-OBJECT do.
   const hasPropsSidecarWat = (typeExpr, objExpr) =>
@@ -1889,7 +1889,7 @@ export default (ctx) => {
               (else ${extArm})))))))`
   }
 
-  // Slice C of the error-object model (.work/todo.md): .message/.name on a
+  // Slice C of the error-object model (.work/archive/todo.md): .message/.name on a
   // real-number receiver that a catch(e) bound to an in-wasm-caught INTERNAL
   // $__jz_err code (err-codes.js's ERR/ERR_INFO -- module/json.js's JSON.parse
   // throw is one of ~48 sites). A user-thrown Error is a real PTR.OBJECT with
@@ -2075,7 +2075,7 @@ export default (ctx) => {
     ;; TYPED only when OWNED (aux&8==0): a VIEW's off-16 is foreign memory, not
     ;; a header slot — writing a props pointer there clobbers whatever precedes
     ;; the VIEW's bare 16-byte descriptor in the bump arena (see
-    ;; hasPropsSidecarWat's doc, .work/research.md §Region arena). Falls
+    ;; hasPropsSidecarWat's doc, .work/evidence.md §Region arena). Falls
     ;; through to the global-table path below instead, same as CLOSURE/shifted
     ;; ARRAY/static OBJECT.
     (if (i32.and (i32.and (i32.ge_u (local.get $off) (i32.const 16)) (i32.ge_u (local.get $off) ${heapResetWat()}))

@@ -8,7 +8,7 @@
  * p=1.7·2523/32, their inverses, sRGB 2.4/±) over its value range; general
  * log-spaced grids across ±extremes; 3k random (x,y) pairs; 400 MINED hard
  * cases (exact result nearest to a rounding boundary out of 30k candidates).
- * Regeneration recipe lives in .work/todo.md (CR-pow session).
+ * Regeneration recipe lives in .work/archive/todo.md (CR-pow session).
  *
  * Baselines at bake time: V8 Math.pow misses 3/5152 (0.058%, all in the mined
  * tail); jz runtime $math.pow missed 424 (8.2%); jz const-exponent fold missed

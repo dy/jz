@@ -8,9 +8,9 @@
  * parsed JSON string) stays in `kind/val-type-of.js` instead — it is the
  * one function in this family whose scalar-literal-property-leaf branch
  * calls the general `valTypeOf`, which would otherwise force a cycle here
- * (.work/kind-split.md §4).
+ * (.work/archive/kind-split.md §4).
  *
- * Split out of kind.js (pipeline-minimality slice, .work/kind-split.md).
+ * Split out of kind.js (pipeline-minimality slice, .work/archive/kind-split.md).
  *
  * @module kind/shape
  */
@@ -176,7 +176,7 @@ function spreadSchema(obj) {
     return ctx.schema?.resolve?.(obj)
   }
   // Literal `new X(...)`/`X(...)` Error-constructor call — mirrors module/
-  // object.js `resolveSchema`'s identical branch (.work/todo.md §deletion-sweep
+  // object.js `resolveSchema`'s identical branch (.work/archive/todo.md §deletion-sweep
   // finding-1/3). INVARIANT: this closes an analyze/emit disagreement — a
   // BOUND Error name already agreed via ctx.schema.resolve above,
   // but this literal shape fell through to `shapeOf` below, which doesn't

@@ -243,7 +243,7 @@ function buildInternTable() {
   // fresh-copies the whole accumulated string per iteration in the kernel
   // (no rope strings), and `slots.length` runs into the tens of thousands on
   // a self-compile — measured 207.6 MB / 39,216 $__str_concat_raw calls of
-  // Window-A churn (.work/research.md §elephant attribution). Same
+  // Window-A churn (.work/evidence.md §elephant attribution). Same
   // remediation class as the ctx.runtime.data parts-array and the dedup
   // rolling-hash fixes.
   const parts = []
@@ -406,7 +406,7 @@ function captureFuncInspect(func, facts, programFacts) {
     results: sig.results.slice(),
     ...(sig.ptrKind != null ? { resultPtrKind: sig.ptrKind } : {}),
     ...(sig.ptrAux != null ? { resultPtrAux: sig.ptrAux } : {}),
-    // valResult/valResultMayBeUndefined (Slice 2, .work/todo.md
+    // valResult/valResultMayBeUndefined (Slice 2, .work/archive/todo.md
     // §deletion-sweep §3 "Return kinds") — narrowValResults' joined VAL
     // kind across every return site, and the mayBeUndefined OR-join riding
     // alongside it. Exposed for the same reason params/locals are: the pure-
@@ -596,7 +596,7 @@ function analyzeFuncForEmit(func, programFacts) {
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
       if (r.neverGrown) updateRep(pname, { neverGrown: true })
-      // mayBeUndefined (Slice 2, .work/todo.md §deletion-sweep
+      // mayBeUndefined (Slice 2, .work/archive/todo.md §deletion-sweep
       // §3) — narrow.js's inter-procedural join already proved this param's
       // ENTRY value can be a census-shaped read at some live call site.
       // Unconditional (no `!reassigned` guard, unlike r.val/r.recvArrTyped
@@ -671,7 +671,7 @@ function analyzeFuncForEmit(func, programFacts) {
     seedLocalIntConsts(body)
   }
   // A plain analyzeBody read, not a forced reanalyzeBody (walk-count design
-  // B1, .work/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
+  // B1, .work/archive/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
   // have cached this body's locals slice before our pre-seed, when params
   // still had no inferred VAL.TYPED — but analyzeBody's own live
   // sigFingerprint gate now catches that mismatch on the read itself and
@@ -839,7 +839,7 @@ function analyzeFuncForEmit(func, programFacts) {
     // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
     // undefined isn't a reference, so no i64 is needed and wrapping every void export
     // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-    // `censusSafe` (.work/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
+    // `censusSafe` (.work/archive/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
     // not just the `valResult == null` one, because `valTypeOf(e)`/`func.valResult`
     // for a bare census-BIGINT node, a `-`/`~` unary wrapping one, or a BINARY
     // arithmetic/bitwise node whose operands `valTypeOfWithLocals` can't locally
@@ -864,14 +864,14 @@ function analyzeFuncForEmit(func, programFacts) {
       (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
   }
 
-  // LoopPlan pre-emission mint (.work/research.md §BodyModel /
+  // LoopPlan pre-emission mint (.work/evidence.md §BodyModel /
   // LoweredLoopPlan): last, so it sees this function's FINAL AST (every loop-
   // AST-rewrite pass above has already run) and maximally-settled `repOf`
   // facts (every updateRep call above has already landed) — the same two
   // preconditions emit.js's own (separately, locally computed) counter/guard
   // range facts enjoy today, just at analyze time instead of emit time.
   mintLoopPlans(body)
-  // ClosureEnvPlan pre-emission mint (Slice 1, .work/closure-plan-design.md)
+  // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md)
   // — same call site, same "last, sees final AST + settled ctx.func.boxed"
   // guarantee; ctx.closure.make reads astClosurePlan back at each closure
   // literal's own emission.
@@ -1441,7 +1441,7 @@ function emitFunc(func, functionPlan, programFacts) {
   // Requiring a SECOND return statement restricts boxing to genuine syntactic
   // joins (≥2 `return` sites in one body) — exactly the boolconst repro's
   // shape — and leaves every real single-return function, provable or not,
-  // untouched. ADDITIVE single-return admission (.work/todo.md
+  // untouched. ADDITIVE single-return admission (.work/archive/todo.md
   // §deletion-sweep): a single-expression arrow body whose lone return IS itself an
   // ambiguous BOOL-merge (`s => cond ? 1 : false`) is STRUCTURAL evidence of
   // genuine mixing, not "unproven" — categorically unlike the ≥2-return gate's
@@ -1588,7 +1588,7 @@ function emitFunc(func, functionPlan, programFacts) {
     if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
     // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
-    // emit.js's 'return' handler. See .work/todo.md (groundtruth archive).
+    // emit.js's 'return' handler. See .work/archive/todo.md (groundtruth archive).
     const emittedDefVal = emit(defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
@@ -1701,7 +1701,7 @@ function emitFunc(func, functionPlan, programFacts) {
     // same reason as those two sites — the merge's own valTypeOf already
     // collapsed to NUMBER, so a post-hoc box (there is none on this path
     // today) would be powerless; the box has to happen while the merge's own
-    // arms are still separately known (.work/todo.md §deletion-sweep).
+    // arms are still separately known (.work/archive/todo.md §deletion-sweep).
     // Guarded on sig.results[0] === 'f64': a proven-uniform-BOOL (or numeric)
     // result already narrows to i32 and needs no boxing here (the boundary
     // wrapper's own resultBool arm handles that crossing).
@@ -2234,7 +2234,7 @@ function emitClosureBody(cb, functionPlan) {
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
  * @param {Object} [profiler] - host-only per-phase timing sink (timePhase)
  * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena EMIT
- *  boundary (.work/research.md §Region arena, Slice 3): supplied ONLY by the
+ *  boundary (.work/evidence.md §Region arena, Slice 3): supplied ONLY by the
  *  self-compile kernel entry (scripts/self.js), mirroring frontHalf's own
  *  `regionHooks` contract (src/front.js) one boundary later in the pipeline —
  *  never passed by the native host (index.js calls `compile(ast, profiler)`,
@@ -2270,7 +2270,7 @@ function emitClosureBody(cb, functionPlan) {
  *  Rooting `ctx.transform` requires `__region_relocate_props` to be
  *  idempotent under re-application to its own output — otherwise
  *  `__region_copy_rec` corrupts a durable-but-unreached receiver's dyn-props
- *  on a second pass (see `module/core.js`, .work/research.md §Region arena
+ *  on a second pass (see `module/core.js`, .work/evidence.md §Region arena
  *  "REGION MACHINERY SOUND"). `REGION_HOOKS_ACTIVE` still stays `false` as
  *  the committed default (scripts/self.js) — this boundary and its
  *  PLAN-TAIL children (`src/compile/plan/index.js`'s own five inner region
@@ -2294,7 +2294,7 @@ function emitClosureBody(cb, functionPlan) {
  *  `ctx.schema.namedUses` (a plain array `module/core.js`'s
  *  `__throw_property_nullish` populates for nearly every compile, read
  *  ~40 lines after this round's own exit by the `usedSchemaIds` walk —
- *  region-emitir-round session, `.work/region-release-notes.md`). Neither
+ *  region-emitir-round session, `.work/archive/region-release-notes.md`). Neither
  *  bug was a fault in `__region_exit`'s own relocation walk (that
  *  machinery is sound and unconditionally correct for whatever root it's
  *  given) — both were root-COMPLETENESS gaps at the JS call site. `ctx.core`
@@ -2429,11 +2429,11 @@ export default function compile(ast, profiler, regionHooks) {
   // only, dead code otherwise) rebinds this from its own `exit()` return.
   let programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, regionHooks))
 
-  // Region-arena plan-tail round 6 (.work/research.md §Region arena, per-pass
+  // Region-arena plan-tail round 6 (.work/evidence.md §Region arena, per-pass
   // slice): the three closure-table scans below are pure AST walks producing
   // three ctx.scope fields (+~61 MB combined, dominated by
   // scanClosureTableLatticeCandidates's own +61 MB)
-  // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/compile-
+  // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/archive/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale
   // for why this is the union of every field any round has ever needed,
   // applied uniformly, rather than a wholesale `[ast, ctx]` root).
@@ -2477,7 +2477,7 @@ export default function compile(ast, profiler, regionHooks) {
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
-  // Region-arena analyzeFuncs BATCHED round (.work/research.md §Region arena,
+  // Region-arena analyzeFuncs BATCHED round (.work/evidence.md §Region arena,
   // Lever 1 — the retained-set census's own top lever: ~70% MAP/HASH-shaped
   // churn, up to 1435 calls for jz×jz). Iteration below is index-based,
   // re-reading `ctx.funcs.list[i]` FRESH every access rather than holding
@@ -2506,7 +2506,7 @@ export default function compile(ast, profiler, regionHooks) {
   // divides that cost by the batch size while still reclaiming per-function
   // churn (the actual target) far more often than the status quo (never).
   // AFE_ROUND_BATCH is a tunable constant, sized from jessie/watr/jzify-entry
-  // measurement (`.work/research.md` §Region arena, this entry), not guessed.
+  // measurement (`.work/evidence.md` §Region arena, this entry), not guessed.
   const AFE_ROUND_BATCH = 32
   // Fixed-shape closure records closed the former `cb.params` relocation
   // corruption, but full closure-round jz×jz still reaches wasm32's copying
@@ -2529,7 +2529,7 @@ export default function compile(ast, profiler, regionHooks) {
       }
       const lastFunc = i === ctx.funcs.list.length - 1
       if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
-        // Union-field root (Slice C-v2, `.work/compile-session-design.md`
+        // Union-field root (Slice C-v2, `.work/archive/compile-session-design.md`
         // §2.1/§3, front.js's own doc has the full rationale): covers every
         // container this loop writes — `ctx.plans` (publishFunctionPlan's
         // per-iteration `.set()`) and `ctx.inspect` (captureFuncInspect)
@@ -2568,7 +2568,7 @@ export default function compile(ast, profiler, regionHooks) {
       }
     })
   }
-  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): every per-function
+  // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
   // above) — this is the freeze point after which NO ctx.features key may change
   // (uniform, no exceptions; typedView — the one key that used to keep flipping
@@ -2616,7 +2616,7 @@ export default function compile(ast, profiler, regionHooks) {
     out.splice(rootLen, 1)
     return out
   }
-  // Region rounds through EMISSION (re-landing .work/research.md §Emission
+  // Region rounds through EMISSION (re-landing .work/evidence.md §Emission
   // rounds — same batching rationale and iterator discipline as the
   // analyzeFuncs loop above: index-based fresh reads, roots rebound at every
   // exit, batch size shared with AFE_ROUND_BATCH). Nothing reclaimed here
@@ -2641,7 +2641,7 @@ export default function compile(ast, profiler, regionHooks) {
   // reverted) — 7085cb57 rooted `ctx.core`/`ctx.abi`/`ctx.bridge` wholesale to
   // fix exactly this under-coverage and made the regression WORSE ("phantom
   // pair GROWN", third failure mode), and a dedicated prior investigation unrelated
-  // to this file (.work/research.md §CompileSession Slice D, two direct
+  // to this file (.work/evidence.md §CompileSession Slice D, two direct
   // experiments) independently proved wholesale-rooting these same nine
   // fields reproduces real WASM traps (`unreachable`, `memory access out of
   // bounds`) neither hypothesis closed — walking a several-hundred-entry
@@ -2673,8 +2673,7 @@ export default function compile(ast, profiler, regionHooks) {
   // specifically — the one structural difference between this round and
   // AFE's own proven-safe use of the same 12-field union), not a simple
   // root-completeness gap. Needs dedicated WAT-breadcrumb forensics (the
-  // campaign's own established method for this exact class, .work/
-  // research.md §CompileSession Slice B) — banked, not chased further this
+  // campaign's own established method for this exact class, .work/evidence.md §CompileSession Slice B) — banked, not chased further this
   // session, per the same campaign's repeated precedent of not spot-fixing
   // an unconfirmed mechanism.
   let funcs = timePhase(profiler, 'emitFuncs', () => {
@@ -2905,7 +2904,7 @@ export default function compile(ast, profiler, regionHooks) {
 
   buildInternTable()
 
-  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): emission is done —
+  // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): emission is done —
   // asserts ctx.features' SESSION+PROGRAM+ANALYSIS strata are present and unchanged
   // since their post-prepare/post-analyze snapshots, right before pullStdlib's
   // resolveIncludes() starts reading the DEMAND stratum (module template factories
@@ -2913,7 +2912,7 @@ export default function compile(ast, profiler, regionHooks) {
   assertCtxInvariants('pre-assemble')
 
   // Stage region round: pullStdlib realizes every stdlib helper's WAT
-  // template (+927 MB churn measured on jz×jz, .work/research.md §Parts-fix
+  // template (+927 MB churn measured on jz×jz, .work/evidence.md §Parts-fix
   // verified) via resolveIncludes()/includeModule() — module registration,
   // which is ALSO where ctx.core.emit/ctx.core.stdlib (the closure-bearing
   // dicts excluded from every round's root, see the emitFuncs round's own
@@ -3026,7 +3025,7 @@ export default function compile(ast, profiler, regionHooks) {
     // undefined (reading 'length')` on EVERY region-live compile, including
     // the trivial single-function AGREE-tier corpus — this was the emitIR-
     // round crash this whole investigation chased (region-emitir-round
-    // session, .work/region-release-notes.md).
+    // session, .work/archive/region-release-notes.md).
     let lateSchema = { list: ctx.schema.list, namedUses: ctx.schema.namedUses }
     // pullStdlib only mutates these section arrays. Root them individually;
     // traversing `sec` would also walk every already-durable user function,
@@ -3386,7 +3385,7 @@ export default function compile(ast, profiler, regionHooks) {
   // `new TypeError(...)`/`new SyntaxError(...)`/etc. reached the host as a
   // generic `Error("[object Object]")` — right fields (verified via
   // `e.thrown`: `{message, name}` both correct), wrong class/message
-  // (region-emitir-round session, `.work/region-release-notes.md`). Same
+  // (region-emitir-round session, `.work/archive/region-release-notes.md`). Same
   // fix shape as `lateSchema.namedUses` just above: consume the
   // already-captured snapshot instead of re-deriving through a field this
   // round's narrowing removed.
@@ -3444,11 +3443,11 @@ export default function compile(ast, profiler, regionHooks) {
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
   let builtModule = ['module', ...sections]
-  // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/compile-
+  // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/archive/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale):
   // exit the emit round here, rebinding `builtModule` (phase-local, not
   // durable ctx state) and every `ctx.*` field any round needs, including
-  // both `ctx.func` AND `ctx.funcs` (see .work/research.md §Region arena for
+  // both `ctx.func` AND `ctx.funcs` (see .work/evidence.md §Region arena for
   // the root-completeness requirement), without exposing `ctx.core`/
   // `ctx.bridge`/etc to the relocator, which don't need it. Any later read
   // through a stale `ctx.*` or the pre-relocation `builtModule` reference is

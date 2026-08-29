@@ -1,7 +1,7 @@
 # Heap-epoch effect model — design (architecture re-audit item 5, 2026-08-12)
 
 Design only — no `src/` changes. Grounded in `.work/session.js`'s existing
-DEPS table (`src/session.js:141-266`), `.work/lattice-design.md`'s Fact
+DEPS table (`src/session.js:141-266`), `.work/archive/lattice-design.md`'s Fact
 record and key-space taxonomy (§1-§2), `src/param-reps.js`, and a direct
 read of `src/ctx.js`'s `ctx.schema` census storage and
 `src/compile/program-facts.js`'s `pf.gen` mechanism. `src/compile/narrow.js`
@@ -10,7 +10,7 @@ into a `RepresentationPlan`/whole-graph `FeaturePlan`) — every claim below
 about it is stated as an assumption, not a line-pinned fact, per that
 constraint.
 
-**Motivating gap, cited directly**: `lattice-design.md`'s own risk register
+**Motivating gap, cited directly**: `.work/archive/lattice-design.md`'s own risk register
 (§6 item 1) already names this design's target and marks it out of scope:
 *"a site that reads `possibleKinds` through a CACHED/copied reference taken
 before a later join widened it (a staleness bug, not an algebra bug) — not
@@ -40,7 +40,7 @@ retroactively covers every sid, including ones registered *after* the bump
 folds in the current `epochTop`, so it can never look "cleaner" than the
 program's true hazard state at the moment it was minted).
 
-**Key space is not invented — it is `lattice-design.md` §2's own
+**Key space is not invented — it is `.work/archive/lattice-design.md` §2's own
 `SlotFacts: Map<sid, Fact[]>` table, unchanged.** FINDING-6 already ruled
 against a new grand identity ("three cooperating tables... no unifying ID is
 minted"); this design keeps that ruling and rides the *one* table among the
@@ -57,7 +57,7 @@ epoch under it would duplicate a soundness proof that already exists (§3
 below spells this out per-analysis).
 
 `epochTop` is the counter form of today's `hz.all` (`program-facts.js`'s
-whole-program hazard boolean) — `lattice-design.md` §1.3/§21 already proved
+whole-program hazard boolean) — `.work/archive/lattice-design.md` §1.3/§21 already proved
 this exact role load-bearing and non-narrowable ("the coarsest possible TOP
 … NOT narrowable"). This design does not invent a new escape hatch; it
 promotes an already-proven-necessary boolean to a counter, so a fact stamped
@@ -124,7 +124,7 @@ Equality, not "E' ≥ E is fine" — this is a memoization-validity check
 required, not merely sufficient, tied to concrete jz facts:
 
 - **Monotone/union facts still need it.** `possibleKinds`/`dictValueTypes`/
-  `mapValueTypes` only ever grow (join = ∪, `lattice-design.md` §1.1/§1.5),
+  `mapValueTypes` only ever grow (join = ∪, `.work/archive/lattice-design.md` §1.1/§1.5),
   so a stale cached set is always a *sound subset* of the truth — safe for
   an inclusion query (`kindsOf(key).has(X)` under-approximating "maybe" is
   conservative), but **unsound for the `kindsCoverage: 'closed'` exclusion
@@ -135,7 +135,7 @@ required, not merely sufficient, tied to concrete jz facts:
   lets a 'closed' claim be re-validated cheaply instead of re-derived.
 - **Non-monotone facts need it more obviously.** `slotIntCertain`/
   `slotI32Certain`'s poison-on-disagreement meet (`numeric`,
-  `lattice-design.md` §1.4) can flip `true → false` on a later write; a
+  `.work/archive/lattice-design.md` §1.4) can flip `true → false` on a later write; a
   stale hit under the old epoch is not a safe under-approximation, it is
   simply wrong.
 
@@ -161,7 +161,7 @@ be redundant machinery, not wrong, just unnecessary):
 |---|---|---|
 | `bodyFacts` (`analyze.js`) | `WeakMap<bodyNode, …>` | `setFuncBody` always assigns a fresh `func.body` reference on rewrite (`session.js:165-207`'s own DEPS entry) — a stale key can never be looked up; the soundness statement (§2) holds trivially because E' can only ever equal E (no other E is reachable through that key). |
 | `bindingUses`, `mayBeUndefinedTrace`, `mapGetShapedTrace`, `presentValTrace` | body-identity-keyed `WeakMap`s (`analyze-scans.js`, `kind.js`) | Same identity argument; `session.js:208-250` already documents this explicitly ("no surgical invalidation exists, and this is fine, not a gap"). |
-| `LoopPlan` (`astLoopPlan`), `ClosureEnvPlan` (`astClosurePlan`) | AST-node-identity-keyed `WeakMap`s, session-reset via `registerResetHook` (architecture re-audit items 4/7, `.work/closure-plan-design.md`) | Same identity argument. **Composition point, not exemption**: if either plan comes to carry a field *derived from* a schema fact (e.g. "this loop's array elements are schema S, slot K is int-certain" — plausible once `RepresentationPlan` composes loop/schema evidence), the epoch check belongs on the *schema fact being read at plan-construction time*, not on the plan record itself — the plan is a **consumer** of an epoch-stamped fact, not itself epoch-stamped storage. Stated as an assumption for whichever agent lands that composition, since `narrow.js`'s restructuring is in flight and not read past its current public shape here. |
+| `LoopPlan` (`astLoopPlan`), `ClosureEnvPlan` (`astClosurePlan`) | AST-node-identity-keyed `WeakMap`s, session-reset via `registerResetHook` (architecture re-audit items 4/7, `.work/archive/closure-plan-design.md`) | Same identity argument. **Composition point, not exemption**: if either plan comes to carry a field *derived from* a schema fact (e.g. "this loop's array elements are schema S, slot K is int-certain" — plausible once `RepresentationPlan` composes loop/schema evidence), the epoch check belongs on the *schema fact being read at plan-construction time*, not on the plan record itself — the plan is a **consumer** of an epoch-stamped fact, not itself epoch-stamped storage. Stated as an assumption for whichever agent lands that composition, since `narrow.js`'s restructuring is in flight and not read past its current public shape here. |
 | `paramReps` scalar fields (`val`, `wasm`, `intConst`, `nullable`, `range`, …) | `Map<funcName, Map<paramIdx, …>>` (`param-reps.js:2`) | Binding-scoped, cross-call but settled by the fixpoint's own `latticeMeet.changed` convergence signal — the fixpoint visits every write site itself, so there is no "reader outside the fixpoint" hazard to guard against. Becomes an epoch **consumer**, not stamped storage, exactly where a merge step reads a schema-keyed fact (e.g. a param's kind inferred from `obj.prop` — `infer.js`'s evidence producers) — flagged as the same open composition question as `kindsCoverage` above, §7. |
 
 ---
@@ -187,7 +187,7 @@ the affected key's dependents recompute, not the whole `walkCache`/
 
 ## 5. Migration slices
 
-Mirrors `lattice-design.md` §5's own convention: independently gated, each
+Mirrors `.work/archive/lattice-design.md` §5's own convention: independently gated, each
 slice's gate is the project's standard triad (bench-corpus byte-identity ×10
 O2 + full battery + `kernel-parity`), shadow-assert before any behavioral
 switch, single-commit revert boundary per slice.
@@ -211,8 +211,8 @@ battery.
 **Slice 2 — first real consumer: retrofit `pf.gen`'s own 3 call sites**
 (`program-facts.js:230,1015,1678` — `walkCache`/`moduleInitSlot`/
 `bodyIntCertain` hit checks). Shadow-assert first, per the project's own
-"prove equality, then move the source of truth" method (`lattice-design.md`
-§5 Slice 3, `research.md:862-871`): compute both the old `hit.gen===pf.gen`
+"prove equality, then move the source of truth" method (`.work/archive/lattice-design.md`
+§5 Slice 3, `.work/evidence.md:862-871`): compute both the old `hit.gen===pf.gen`
 check and the new `hit.epoch===epochEff(sid)` check for one full battery run
 under `JZ_DEBUG_INVARIANTS`, assert the new check is **at least as
 conservative** — i.e. old-check-valid ⟹ epoch-would-also-consider-valid is
@@ -222,7 +222,7 @@ NOT required (the new model is intentionally finer, so it may accept a hit
 against a clean rebuild. Gate: shadow-assert clean + standard triad. Cannot
 change output bytes (still a caching mechanism only) but can change cache
 hit rates — flag for a compile-time budget check alongside the correctness
-gates, same caveat `lattice-design.md` §6 item 3 raises for its own Slice 4a.
+gates, same caveat `.work/archive/lattice-design.md` §6 item 3 raises for its own Slice 4a.
 
 **Slice 3 — switch program-facts.js's 3 caches fully onto the new model**,
 retire `pf.gen` (or keep it as a derived `epochEff(⊤)` alias for any

@@ -1,10 +1,10 @@
 /**
  * BigInt carrier boxing — the phase-C representation campaign's box/unbox
- * pairing family (.work/phase-c-unification.md). PTR.BIGINT (layout.js, tag 5)
+ * pairing family (.work/archive/phase-c-unification.md). PTR.BIGINT (layout.js, tag 5)
  * is the representation for an unprovable BigInt flow: an 8-byte cell holding
  * the raw i64 payload, NaN-boxed like every other heap kind. Moved verbatim —
  * same relative order, same conditional structure, same doc comments — this is
- * the file .work/phase-c-unification.md names as load-bearing (readI64's
+ * the file .work/archive/phase-c-unification.md names as load-bearing (readI64's
  * maybeUnboxBigInt-vs-unboxBigInt dispatch, the i64Hex hazard notes elsewhere
  * in ir/pointers.js). No logic touched.
  *
@@ -20,7 +20,7 @@ import { temp, tempI32, blockTyped } from './locals.js'
 import { mkPtrIR, ptrOffsetIR } from './pointers.js'
 import { asF64, asI64, fromI64 } from './numeric.js'
 
-// === BigInt carrier boxing (.work/carrier-representation-design.md) —
+// === BigInt carrier boxing (.work/archive/carrier-representation-design.md) —
 // PTR.BIGINT (layout.js, tag 5) is THE representation for an unprovable
 // BigInt flow: an 8-byte cell holding the raw i64 payload, NaN-boxed the
 // same way every other heap kind (STRING/OBJECT/…) is. Boxing is
@@ -123,7 +123,7 @@ export function unboxBigInt(f64expr) {
 // CARRIER verdict — REP_EDGE_BOX/UNBOX-shaped, call-site-insensitive — as a
 // stand-in for "is this proven BigInt"; that mismatched abstraction (a
 // carrier-choice fact used as a semantic-kind proof) is what regressed
-// watr's float_memory family, see .work/member-callee-binding-write-notes.md.
+// watr's float_memory family, see .work/archive/member-callee-binding-write-notes.md.
 // valTypeOf asks the plain semantic question directly and needs no proxy.)
 export function applyBigintRepresentationAction(ir, node, action) {
   if (valTypeOf(node) !== VAL.BIGINT) return ir
@@ -134,7 +134,7 @@ export function applyBigintRepresentationAction(ir, node, action) {
 
 /** Runtime twin of unboxBigInt for a value with no STATIC boxed-or-raw proof
  *  either way (CONSERVATIVE PAIRING — coordinator ruling, see
- *  .work/context-sensitivity-survey.md): tag-checks
+ *  .work/archive/context-sensitivity-survey.md): tag-checks
  *  the value at runtime via `$__ptr_type` (the same primitive every
  *  registry-aware dynamic reader — $__dyn_get/$__typeof/$__to_num/$__eq's
  *  own PTR.BIGINT arms — already dispatches on) and unboxes through
@@ -206,7 +206,7 @@ export function readI64(node, emitted) {
     // call sites' doc comments already document, so a body built (or, under
     // self-host, a KERNEL BUILT from source containing an order-hazardous
     // consumer of this same fixpoint elsewhere — traced live, see
-    // .work/todo.md's selfhost-fixpoint-divergence entry) before this proof
+    // .work/archive/todo.md's selfhost-fixpoint-divergence entry) before this proof
     // has genuinely settled can reach here with `node` truly RAW while the
     // verdict claims BOXED. unboxBigInt trusts its input completely and
     // dereferences unconditionally; maybeUnboxBigInt tag-checks first and

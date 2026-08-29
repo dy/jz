@@ -49,7 +49,7 @@ export function initSchema(ctx) {
     return id
   }
 
-  // === Error-class brand (see .work/todo.md §deletion-sweep redesign) ===
+  // === Error-class brand (see .work/archive/todo.md §deletion-sweep redesign) ===
   //
   // Class identity lives in the SCHEMA ID itself — the NaN-box aux bits every
   // OBJECT pointer already carries — not in a source-visible/spellable slot.
@@ -245,7 +245,7 @@ export function initSchema(ctx) {
   // (intCertain, elem-ctors) always fail closed on kind-safe sids: the JSON
   // parser writes arbitrary doubles/values within the sample's kinds.
   // Grow-free read of the unified SlotFact record at (sid, idx) — product-
-  // lattice design Slice 6a (.work/lattice-design.md §5), ctx.js's
+  // lattice design Slice 6a (.work/archive/lattice-design.md §5), ctx.js's
   // `slotFacts` doc. Every projection below reads exactly ONE field off the
   // SAME shared record instead of its own separately-grown array.
   const factAt = (id, idx) => ctx.schema.slotFacts.get(id)?.[idx]
@@ -279,7 +279,7 @@ export function initSchema(ctx) {
   // receiver) or an extern-registered sid (host-side layout, never derived
   // from program literals) — both checked below.
   //
-  // GOTCHA (product-lattice design OQ2 verdict, .work/lattice-design.md
+  // GOTCHA (product-lattice design OQ2 verdict, .work/archive/lattice-design.md
   // "LATTICE OQ2+OQ4 VERDICTS" — Slice 6b's own named pitfall): this check
   // MUST stay `pointsTo !== 'ALL' && pointsTo.has(id)`, never
   // `pointsTo === 'ALL' || pointsTo.has(id)`. The latter is slotHazarded's

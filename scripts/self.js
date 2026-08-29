@@ -34,7 +34,7 @@ import jzify from '../jzify/index.js'
 // (missing ifset tiering, inlineWrappers, watr LICM, guard policy, the
 // large-module unroll2 rule, boundary pins, and the pointer repair), so
 // kernel O2/O3 output diverged from native on identical source.
-// Region-arena Slice 1 (.work/research.md §Region arena): this file is the ONLY
+// Region-arena Slice 1 (.work/evidence.md §Region arena): this file is the ONLY
 // caller that supplies watrTail's `regionHooks` — it is NEVER imported/run as
 // native JS (npm run build feeds it to jz's OWN compiler as source text, to
 // become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
@@ -68,7 +68,7 @@ import jzify from '../jzify/index.js'
 // regression above. Turning this flag on requires root-causing both the O3
 // ptr-helper interaction and the O2 heisenbug first, then flipping this flag
 // AND the regionHooks line inside optimizeTail together (see the marker
-// comment below). See .work/research.md §Region arena for the full
+// comment below). See .work/evidence.md §Region arena for the full
 // investigation.
 //
 // REGION_HOOKS_ACTIVE is read as a literal string match by
@@ -150,7 +150,7 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
 // prepare -> preEval. preEval must run: without it, statically-foldable
 // programs (e.g. the `0.1+0.2-0.3` constant fold, `Math.sqrt(9)` at O0)
 // compile to different bits than native.
-// Region-arena FRONT boundary (.work/research.md §Region arena): mirrors
+// Region-arena FRONT boundary (.work/evidence.md §Region arena): mirrors
 // optimizeTail's own regionHooks line above verbatim — same REGION_HOOKS_ACTIVE
 // marker, same ternary shape, same literal __region_mark()/__region_exit()
 // calls that only ever compile to real wasm calls (this file is never run
@@ -164,7 +164,7 @@ function front(source, strict) {
   })
 }
 
-// Region-arena EMIT/ENCODE boundary (Slice 3, .work/research.md §Region arena):
+// Region-arena EMIT/ENCODE boundary (Slice 3, .work/evidence.md §Region arena):
 // wraps compileAst itself, one region round later than front's own boundary —
 // mirrors front()'s wiring verbatim (same REGION_HOOKS_ACTIVE marker, same
 // ternary shape, same literal __region_mark()/__region_exit() calls). The
@@ -238,7 +238,7 @@ export function compileWat(source, strict, optJSON, modulesJSON, host) {
  * record what they resolved) and return the records as JSON. Running this
  * HOST-side and KERNEL-side on the same input and diffing the two JSON
  * strings names the first divergent fact behind a host/kernel byte drift —
- * the archaeology channel for the parity work (.work/todo.md, jz.wasm item).
+ * the archaeology channel for the parity work (.work/archive/todo.md, jz.wasm item).
  * @returns {string} JSON of { resolve: [...], sweep: {...} }
  */
 export function compileDiag(source, strict, optJSON) {

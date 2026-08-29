@@ -217,7 +217,7 @@ export const registerBase64 = () => {
   // be filled at alloc time — $base reserves 16 header bytes + $max
   // scratch (the base64-decode upper bound) up front, decode writes into
   // $base+16, then propsPtr/len/cap are patched in afterward. Still fixes
-  // the FOURTH-mechanism defect class (.work/research.md §Region arena):
+  // the FOURTH-mechanism defect class (.work/evidence.md §Region arena):
   // the OLD 8-byte-header version left the propsPtr word at off-16
   // entirely unallocated, aliasing whatever memory preceded this call.
   wat('__b64_from', `(func $__b64_from (param $v i64) (param $url i32) (result f64)
@@ -280,7 +280,7 @@ export const registerBase64 = () => {
   // Canonical 16-byte header, hand-written (NOT __alloc_hdr) — same reason
   // and same fix shape as __b64_from above (the real length is only known
   // after decoding); closes the same FOURTH-mechanism defect class
-  // (.work/research.md §Region arena) for Uint8Array.fromHex.
+  // (.work/evidence.md §Region arena) for Uint8Array.fromHex.
   wat('__hex_from', `(func $__hex_from (param $v i64) (result f64)
     (local $s i64) (local $base i32) (local $rw i64) (local $n i32)
     (local.set $s (call $__to_str (local.get $v)))

@@ -39,8 +39,7 @@ const _numericName = (s) => /^(0|[1-9][0-9]*)$/.test(String(s))
 const KEYED_EXEMPT_VALS = new Set([VAL.ARRAY, VAL.TYPED, VAL.HASH, VAL.MAP, VAL.SET, VAL.STRING])
 /** Program-wide slot-write hazard scan → `{ pointsTo, dynPointsTo, props,
  *  numeric, kindSafeSids }`, stashed on `ctx.schema.slotWriteHazards` for the
- *  census readers' belt checks. `pointsTo` (product-lattice design .work/
- *  lattice-design.md §1.3/§5) is one field replacing what used to be a
+ *  census readers' belt checks. `pointsTo` (product-lattice design .work/archive/lattice-design.md §1.3/§5) is one field replacing what used to be a
  *  separate `hz.all: boolean`/`hz.sids: Set` pair: `Set<SchemaId>` for every
  *  narrowed write, or the literal string `'ALL'` — an ABSTRACT top sentinel
  *  (never a materialized snapshot of every sid known so far — new sids can mint mid-scan,
@@ -103,7 +102,7 @@ export function collectSlotWriteHazards(ast, opts) {
   // emit (plan/index.js's refineSlotKindCensus) ever reaches codegen, so
   // precision here is free to start late.
   //
-  // Resolution per call-site argument (.work/dyn-reach-slice.md's own 3-way
+  // Resolution per call-site argument (.work/archive/dyn-reach-slice.md's own 3-way
   // split): a `{}` literal with static keys resolves via the SAME
   // objLiteralSchemaId/register path collectProgramFacts already registers it
   // through (idempotent re-resolution — never mints a new schema); a bare

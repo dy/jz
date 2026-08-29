@@ -4,7 +4,7 @@
  * (kind/val-type-of.js) consults for its BIGINT+nullish-literal merge rule.
  * Zero ctx dependency; pure AST pattern matching only.
  *
- * Split out of kind.js (pipeline-minimality slice, .work/kind-split.md).
+ * Split out of kind.js (pipeline-minimality slice, .work/archive/kind-split.md).
  *
  * @module kind/lattice
  */

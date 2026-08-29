@@ -216,7 +216,7 @@ test('bigint: compares full unsigned 64-bit bounds', () => {
   // collapse a literal this large into a plain float before the compare even ran).
   is(jz('export let f = () => 0x7fffffffffffffffn > 0xffffffffffffffffn').exports.f(), false)
   is(jz('export let f = () => 0xffffffffffffffffn > 0x7fffffffffffffffn').exports.f(), true)
-  is(jz('export let f = () => -1n < 0n').exports.f(), true)   // un-curated 2026-07-25: string-compare misproof wave (see .work/todo.md)
+  is(jz('export let f = () => -1n < 0n').exports.f(), true)   // un-curated 2026-07-25: string-compare misproof wave (see .work/archive/todo.md)
 })
 
 // === Number/Error builtins ===
@@ -1514,7 +1514,7 @@ test('statements: bitwise compound-assign on BigInt rejects a Number mix like th
 // unrelated to compound-assign, and NOW FIXED: a bare `return arr[i]` on a
 // BigInt array element was wrong with no write at all (`let a = [1n]; return
 // a[0]` mis-decoded as a raw-bit-reinterpreted Number) — was banked in
-// .work/todo.md, now pinned as fixed directly below (no `+ 0n` sidestep
+// .work/archive/todo.md, now pinned as fixed directly below (no `+ 0n` sidestep
 // needed). Boundary values 2^62±1, host-JS-authority — same convention as
 // the sibling tests above.
 test('statements: member (obj.prop / arr[i]) BigInt ++/--/compound-assign uses i64 arithmetic', () => {

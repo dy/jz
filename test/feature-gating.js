@@ -1,5 +1,5 @@
 // Feature gating: verify ctx.linkDemand.* (the DEMAND stratum — external,
-// typedarray, set, map, closure, f16, clamped; .work/research.md §FeaturePlan
+// typedarray, set, map, closure, f16, clamped; .work/evidence.md §FeaturePlan
 // freeze) flips on iff usage/producer site fires, and off-state code omits the
 // gated imports/branches. WAT-level inspection — each probe asserts specific
 // symbols present/absent. Test names below keep the pre-extraction

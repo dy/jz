@@ -186,6 +186,7 @@ not supported
 
 </details>
 
+<a id="what-differs-from-js"></a>
 <details>
 <summary><strong>What differs from JS?</strong></summary>
 

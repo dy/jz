@@ -6,7 +6,7 @@
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
- * `.work/assemble-outliers.md` §4. `hoistConstGlobalInits` runs much later
+ * `.work/archive/assemble-outliers.md` §4. `hoistConstGlobalInits` runs much later
  * in the real compile/index.js pipeline (after pullStdlib/optimizeModule),
  * but shares this file because both operate exclusively on `sec.start`'s
  * `$__start` function.
@@ -79,7 +79,7 @@ function analyzeStartForEmit(ast) {
 /** Auto-box init: schema.autoBox entries (`let` globals whose schema was
  *  minted after their declaration) — alloc+init+ptr-box each hoisted global.
  *  Collect step (buildStartFn splices the returned IR at a fixed position —
- *  pipeline-minimality slice, `.work/assemble-outliers.md` §5).
+ *  pipeline-minimality slice, `.work/archive/assemble-outliers.md` §5).
  */
 function buildBoxInit() {
   const boxInit = []
@@ -103,7 +103,7 @@ function buildBoxInit() {
 /** Schema name-table init: static data-segment layout when every key folds
  *  to a constant, else a runtime alloc+store fallback. Collect step
  *  (buildStartFn splices the returned IR at a fixed position — pipeline-
- *  minimality slice, `.work/assemble-outliers.md` §5).
+ *  minimality slice, `.work/archive/assemble-outliers.md` §5).
  */
 function buildSchemaInit() {
   const schemaInit = []
@@ -133,7 +133,7 @@ function buildSchemaInit() {
     // `$__schema_tbl != 0`, so a write-only module (no `__dyn_get*`) must still
     // build the table. (needsSchemaTbl below skips it when every schema is empty.)
     ctx.core.includes.has('__dyn_set') ||
-    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry):
+    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry):
     // __region_copy_rec's OBJECT arm (layout-kinds.js regionArmObject) derives
     // slot COUNT from `$__schema_tbl[sid]` — same `(if $__schema_tbl != 0 ...)`
     // guard every other reader here uses, but if the table were never actually
@@ -235,7 +235,7 @@ function buildSchemaInit() {
 /** Region-arena closure-env side table: funcIdx -> {env slot count,
  *  cell-mode bitmask}, sourced from ctx.closure.envMeta. Collect step
  *  (buildStartFn splices the returned IR at a fixed position — pipeline-
- *  minimality slice, `.work/assemble-outliers.md` §5).
+ *  minimality slice, `.work/archive/assemble-outliers.md` §5).
  */
 function buildClosureEnvInit() {
   const closureEnvInit = []
@@ -312,7 +312,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       typeofInit.push(['global.set', `$__tof_${s}`, emit(['str', s])])
   }
 
-  // Region arena CLOSURE relocation side table (.work/research.md §Region
+  // Region arena CLOSURE relocation side table (.work/evidence.md §Region
   // arena, the front-boundary's own forcing case) — funcIdx → {env slot
   // count, cell-mode bitmask}, sourced from ctx.closure.envMeta (module/
   // function.js's ctx.closure.make captures both facts at its own

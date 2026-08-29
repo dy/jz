@@ -1,17 +1,13 @@
-# evidence.md — design record + measurement ledger
+# evidence.md: design record + measurement ledger
 
-Formerly `research.md` (renamed, history preserved via `git mv`); still
-append-only. The decided architecture and design rationale behind JZ:
-representation, allocator, type inference, the native pipeline, and the
-principles that fix them, followed by the dated, append-only measurement
-log — attributions, hunts, and evidence entries — that is this file's
-primary growth. Status markers in headings: **[x]** = decided / reflected
-in the code, **[ ]** = designed or deferred. `memcheck-results.csv` sits
-next to this file as the memory-goal evidence in CSV form (data, not
-prose); regenerated per plan.md's reference-refresh commands.
+Formerly `research.md`; `git mv` preserves its history. This append-only
+file contains architecture rationale and the dated measurement log.
+Headings use **[x]** for decisions reflected in code and **[ ]** for
+planned or deferred work. `memcheck-results.csv` holds memory-goal data and
+is regenerated with the commands in `plan.md`.
 
-Audience & persona material lives in [`.work/marketing.md`](../.work/marketing.md)
-(canonical) and the expansion map in [`.work/ecosystem.md`](../.work/ecosystem.md);
+Audience and persona material lives in [`marketing.md`](marketing.md)
+(canonical) and the expansion map in [`ecosystem.md`](ecosystem.md);
 this document is the technical record.
 
 ---
@@ -575,7 +571,7 @@ and a check with teeth):
     bare `*`/`+`/`%` — that is the integer-overflow contract, not a deopt.)
 
 **Surfaced by building this** (now ratcheted, can't worsen, shrink when fixed; see
-`.work/todo.md`): nested-conditional int → f64 round-trip under the vectorizer;
+`.work/archive/todo.md`): nested-conditional int → f64 round-trip under the vectorizer;
 param typed-array base re-decoded per iteration (the flagship DSP shape); narrowLoopBound
 handling only `i < n` (not `<=`/`>`/`>=` or non-const counters). None were visible to
 the net-output bench — exactly why the proof lives at the construct level, not the
@@ -691,9 +687,9 @@ Generic folds watr lacked, migrated in: rebox-fold `wrap∘reinterpret∘reinter
 
 Full design docs were deleted per the one-record policy; every full text is
 recoverable via `git log --diff-filter=D -- .work/<name>.md` → `git show
-<sha>^:.work/<name>.md`. The living execution ledger is `.work/todo.md`
+<sha>^:.work/<name>.md`. The living execution ledger is `.work/archive/todo.md`
 (+ its two archives, grep-first). The ONLY standalone design doc kept is
-`.work/carrier-representation-design.md` — its program is in flight (an
+`.work/archive/carrier-representation-design.md` — its program is in flight (an
 agent appends findings sections live); fold it here when the program closes.
 
 ## [ ] Middle-end consolidation plan (was architecture-plan.md; audit-#13 critical path)
@@ -824,7 +820,7 @@ byte-identical across both runs.
 `buildSiteAccess` no longer collects `baseKeys` (a `JSON.stringify`
 structural key per load/store site) — dead production cost since
 `buildAliasClass` became the single-universal-class constant map (audit-#14
-item 6, .work/research.md above). `baseKeyOf` (baseKeys' sole consumer)
+item 6, .work/evidence.md above). `baseKeyOf` (baseKeys' sole consumer)
 removed with it. `buildAliasClass` now takes no input; the constant-lookup
 API (`ALIAS_CLASS_UNIVERSAL`) and the doc pointing at the future points-to
 consumer are kept as-is — collection is to be REINTRODUCED alongside that
@@ -1063,12 +1059,12 @@ path (if one is ever needed) mints/registers/retargets a variant.
 ## [ ] Heap-epoch effect model (was heap-epoch-design.md; architecture re-audit item 5)
 
 Design only, no `src/` changes. Model: one monotone counter per `SchemaId`
-(`lattice-design.md` §2's own `SlotFacts` key space, no new identity type)
+(`.work/archive/lattice-design.md` §2's own `SlotFacts` key space, no new identity type)
 plus a shared "unknown-target" `⊤` counter that promotes today's `hz.all`
 whole-program hazard boolean into a generation stamp — a fact stamped at
 epoch E for key `sid` is valid to consume at read time iff E equals
 `epochEff(sid) = max(epoch(sid), epochTop)`, closing the exact gap
-`lattice-design.md` §6 risk item 1 named and left uncovered (a cached
+`.work/archive/lattice-design.md` §6 risk item 1 named and left uncovered (a cached
 `possibleKinds` reference read stale after a later join widened it).
 Rejects a pure-global counter (schema census storage is already
 per-`SchemaId`, `ctx.schema.slotFacts` et al., and per-sid locality is
@@ -1084,7 +1080,7 @@ sites). 6 migration slices, Slices 0-4 byte-identical throughout (pure
 caching-layer infra, mirrors `pf.gen`'s existing but coarser mechanism in
 `program-facts.js`), Slice 5 the first to unlock a new consumer
 (`kindsCoverage` exclusion, re-audit item 9(a)'s own stated blocker). Full
-account: `.work/heap-epoch-design.md`.
+account: `.work/archive/heap-epoch-design.md`.
 
 ## [ ] Heap-kind registry (was heap-kind-registry-design.md; audit-#13 item 3)
 
@@ -1367,7 +1363,7 @@ fixture run, STILL BLOCKED** (2026-08-09). The slice list above named item 4
 as "bigint stays a frozen PROGRAM fact gating stdlib arm size" — i.e. the
 open question is whether `bigint`'s freeze can be made GRAPH-complete (not
 just phase-complete within one `prep()` pass) without reopening the carrier
-tension §6 of carrier-representation-design.md already named. audit-#16
+tension §6 of .work/archive/carrier-representation-design.md already named. audit-#16
 asked for the differential fixture directly: a cross-module case with
 BigInt use ONLY in a later-imported module, an earlier-imported module
 materializing `$__to_num`. Built and run (`test/kernel-oracle.js`, KNOWN-
@@ -1376,7 +1372,7 @@ confirming the gap is real and CURRENT, not historical. Root unchanged from
 the original hunt (prep()'s per-node `includeForOp` vs bigint-construction
 check ordering, now confirmed cross-module via `prepareModule`'s separate
 per-module `prep(ast)` calls). NOT re-attempted: the whole-tree-prescan fix
-was already verified+reverted in the original hunt (`.work/todo.md`, "JSON
+was already verified+reverted in the original hunt (`.work/archive/todo.md`, "JSON
 SHAPED-PARSER … BANKED NOT FIXED") because layout.js's real BigInt syntax
 (re-confirmed present today) makes the self-compiled compiler's own source
 non-bigint-free, so a graph-complete scan flips the kernel build's flag
@@ -1386,11 +1382,11 @@ hi/lo-split Number arithmetic first (removes the false "compiler source has
 BigInt" signal, letting a graph-complete scan freeze correctly for BOTH
 target programs and the compiler's own self-compiled build), or (b) a non-
 boolean carrier-disambiguation redesign. Full root-cause + fixture detail:
-`.work/todo.md` §"FeaturePlan whole-graph oracle: differential fixture
+`.work/archive/todo.md` §"FeaturePlan whole-graph oracle: differential fixture
 BANKED, not fixed (audit-#16)".
 
 **Post-carrier-flip retirement attempt — ATTEMPTED, WALL HIT, REVERTED
-(2026-08-10, carrier-representation-design.md §36).** After §35's default
+(2026-08-10, .work/archive/carrier-representation-design.md §36).** After §35's default
 flip, a SECOND angle was tried: not the graph-completeness fix above, but
 retiring the AMBIGUITY-HEURISTIC half of `ctx.features.bigint`'s job
 (narrower than full freeze — keep the STDLIB-ARM-SIZE half as-is, gate only
@@ -1416,7 +1412,7 @@ before landing (`src/ir.js`, `src/compile/emit.js`, `module/number.js`,
 Slice 4 stays BLOCKED — now on TWO independent, named blockers (the
 pre-existing ordering-scan gap above, AND this session's provenance-
 discrimination gap) — full detail + what a sound next attempt needs:
-carrier-representation-design.md §36.
+.work/archive/carrier-representation-design.md §36.
 
 ## [ ] Region arena (was region-arena-design.md + slice1-build + slice1-liveness + kernel-memory-curve; DORMANT)
 
@@ -2301,7 +2297,7 @@ Decoded LE byte-for-byte: `key` bytes = `i,t,y,-,I,n,f,i` = **`"ity-Infi"`**,
 exactly the data segment's own bytes at offset 8 (`…Infin`**`ity-Infi`**`nity…`,
 i.e. the tail of "Infinity" + "-Infi" of "-Infinity"); `val` bytes land a few
 bytes further into the same literal (`"…nitytrue…"` region). This is the
-SAME corruption signature class the carrier-representation-design.md §29
+SAME corruption signature class the .work/archive/carrier-representation-design.md §29
 session found for a completely different bug (`i64Hex` reading
 `i64.load(address 0)`) — reading the static string pool because a decoded
 "pointer" was zero, not a real heap offset. **Provenance class, named per the
@@ -3113,7 +3109,7 @@ still-referenced pass-internal value), the scoped fix is almost certainly
 "treat forwardPropagate's own `known` as an explicit implicit root at the
 `runRounds` regionExit call site" — the SAME shape as the `$__dyn_props`
 implicit-root fix already landed for a structurally identical gap
-(`.work/research.md`, `__region_exit`'s own header comment); if instead the
+(`.work/evidence.md`, `__region_exit`'s own header comment); if instead the
 STRING is the stale side, the fix target moves to whatever allocates
 strings during watr's own pass execution.
 
@@ -3475,7 +3471,7 @@ off the allocator axis entirely, onto genUpsert/genDelete's own writes
 "colliding-pair session" (allocator proven clean across 2.36M records; 33
 positive +8/+16 gaps in an earlier phase) as already-banked prior work. No
 such entry exists anywhere in this file — `grep -n "colliding-pair\|2.36M\|33
-positive"` over `.work/research.md` before this session returned nothing.
+positive"` over `.work/evidence.md` before this session returned nothing.
 Rather than build on an unverifiable citation, this session ran the
 experiment itself from `ed70f36a`'s own actual last-recorded state (the
 EVENT-SEQUENCE VERDICT above) and independently landed within 0.001% of the
@@ -5013,7 +5009,7 @@ preemptively next time since it's now proven twice in one chain).
 ## §CompileSession — `ctx.func` decomposition prerequisite surveyed (2026-08-12)
 
 Read-only HEAD survey (`14c4f7a2`), full record in
-`.work/compile-session-func-survey.md`. jz-parser census replaces the old
+`.work/archive/compile-session-func-survey.md`. jz-parser census replaces the old
 regex-era “410 writes” estimate: 43 real files touch `ctx.func`, 25 write it;
 65 live fields carry 654 reads / 443 direct writes. The bag is six records
 wearing one name, not one function context: ProgramFunctions (222R/29W),
@@ -5058,7 +5054,7 @@ independently reproduces that one's, not a new artifact. Dormant: SHA-256
 exact checkpoint to compare against — new this session).
 
 **Method — the archived kernel-memory-curve recipe, unchanged** (`git show
-6bbe75a8:.work/kernel-memory-curve.md`): `instantiate(wasm, {memory: 8192})`
+6bbe75a8:.work/archive/kernel-memory-curve.md`): `instantiate(wasm, {memory: 8192})`
 (compile-time-baked, confirmed irrelevant, kept for parity with the
 archived invocation), `exports.default(memory.String(code), 0, optJSON,
 modulesJSON, 0)` — the exact ABI `test/kernel-target.js` uses —
@@ -5369,14 +5365,14 @@ session's base (`14553f2b`): fresh run, `dist/jz.wasm` auto-built from
 current source (gitignored, not committed — `kernel-target.js` rebuilds it
 on first use when missing), **2730 total (12869 assertions), 2724 pass, 6
 skip, 0 fail**. Confirmed twice: once here, and independently corroborated
-by TODAY's own `.work/todo.md` line 82 (the `arr[arr.length]=x` kernel-
+by TODAY's own `.work/archive/todo.md` line 82 (the `arr[arr.length]=x` kernel-
 codegen-class entry, same date): "`JZ_TEST_TARGET=jz.wasm node test/index.js`
 (full test:wasm, rebuilt kernel) | 2716/2722 pass, **0 fail**, 6 skip" — same
 verdict, small count drift (2716→2730, +14) from tests added between that
 entry's rebuild and this one, not a regression.
 
 **Where the 3417/3425/2 tally actually comes from**: the **native** leg.
-Same `.work/todo.md` line 81, same date: "Native `node test/index.js`
+Same `.work/archive/todo.md` line 81, same date: "Native `node test/index.js`
 (default O2) | 3419/3427 pass, 6 skip — 2 fails, both the pre-existing
 documented flakes (`interval walk…`, `typed RMW…`), 0 new". Re-ran it here
 independently (`node test/index.js optimizer`, the single file both live
@@ -6141,7 +6137,7 @@ base `054d3642`.
 
 ## §FeatureReachCensus — strategic audit: which complexity engines does the real corpus exercise (2026-08-12/13)
 
-Measurement-only census, full record in `.work/feature-reach-census.md`. Compiled all 130
+Measurement-only census, full record in `.work/archive/feature-reach-census.md`. Compiled all 130
 non-test, non-self-compile corpus programs (59 `bench/*`, 68 `examples/*` + the SIMD
 raymarcher variant + a generated jukebox beat, plus the jzify-entry real-input subject —
 `bench/jz/jz.js` self-compile and `test/**`/test262 excluded per the audit's own scope) at
@@ -6712,7 +6708,7 @@ across sessions; 63a5551e's own FOURTH is NOT 41024dd6's FOURTH).
 
 **Prior diagnosis, row 2 (PENDING-FIX carrier collapse) — established as
 region-agnostic, NOW CONTRADICTED by this session's own reproduction.**
-The 63a5551e session's own final characterization table (research.md,
+The 63a5551e session's own final characterization table (.work/evidence.md,
 "Oracle characterization table (final, this session)") records this row
 as `pass (tripwire, asserts the still-wrong value) | pass (same) |
 pre-existing-unrelated ... unaffected by region-liveness either way`.
@@ -6862,7 +6858,7 @@ itself is still not 13/13.
 
 Implements the re-audit's four accepted findings on `FunctionPlan`
 (function-plan.js) / the active-function swap (active-function.js) /
-`isInactiveFunction`, in the audit's own order, on top of `7b07a810`. `.work/
+`isInactiveFunction`, in the audit's own order, on top of `7b07a810`. `.work/archive/
 compile-session-func-survey.md`'s six-record decomposition (§CompileSession
 above) and the whole `narrow.js`/`program-facts.js` FlowState-overlay program
 (finding 4 of the ORIGINAL audit, a different numbering than this session's
@@ -7255,7 +7251,7 @@ bytes).
   (`Int32Array.from([Float64Array.from([5])[0], 2])`) at O2 — this is
   **NOT** this session's mechanism: `ab2f2f40`'s own predecessor ledger
   entry ("wall2", `computed member key`/`fromnested` investigation, grep
-  `.work/research.md` for "fromnested") already root-checked this EXACT
+  `.work/evidence.md` for "fromnested") already root-checked this EXACT
   row against a plain unpadded regionHooks-wired control and found it
   **traps there too, pre-existing, region-unrelated, disqualified as a
   discriminator** — a genuinely separate, harder, still-open wall (watr
@@ -7592,7 +7588,7 @@ pad/pin session, the SAFEPOINT FIX PUBLISHED entry, the LAST HOP entry, and
 
 ### Step 1 — the pin-verify convention has a blind spot, and it already bit
 
-Every session since the LAST HOP entry (`.work/research.md`, "REAL WALL
+Every session since the LAST HOP entry (`.work/evidence.md`, "REAL WALL
 FOUND+FIXED… THE LAST HOP", 2026-08-12) reports "`node_modules/watr`
 reconfirmed byte-identical to `/Users/div/projects/watr` (`895ca5b`/5.7.14,
 `watr.js`+`package.json` diff clean)" as its watr-pin verification. That
@@ -7851,7 +7847,7 @@ gate builds (worktree-local overlay, not committed, discarded): region-live
 SHA-256 `ffb6e45a…` (×2 identical).
 
 ## §Region arena — TARGET-PASS ABLATION RECORD (2026-08-11, carried over from
-main 9447f78d for continuity — this branch's own research.md predates that
+main 9447f78d for continuity — this branch's own .work/evidence.md predates that
 commit)
 
 The untried axis: TARGET optimize-pass ablation through a FIXED region-live
@@ -8253,7 +8249,7 @@ lever precisely: "(1) give CLOSURE a real region-copy arm — needs a
 capture-count/env-length side table … now with a concrete forcing case
 (front-boundary module registration)". This session built exactly that —
 audit-#19's own architecture-review record shape (`{id, storage, captures:
-[{name, bindingId, mode, constant}]}`, `.work/closure-plan-design.md`'s
+[{name, bindingId, mode, constant}]}`, `.work/archive/closure-plan-design.md`'s
 LANDED ClosureEnvPlan) already carries every per-capture fact the arm
 needs; the side table just needed materializing at assembly time.
 
@@ -8274,8 +8270,8 @@ pointer to a shared, independently-heap-allocated boxed-capture cell (the
 mutable-capture mechanism, `ctx.func.boxed`) rather than a NaN-boxed f64
 value — read off the SAME `ctx.func.boxed?.has(envCaptures[i])` test the
 env-population store loop already uses, computed once instead of derived
-twice. >31-capture closures (unobserved on every measured corpus — .work/
-closure-plan-design.md §1.5 tops out at 27) can't fit the i32 bitmask — a
+twice. >31-capture closures (unobserved on every measured corpus — .work/archive/
+.work/archive/closure-plan-design.md §1.5 tops out at 27) can't fit the i32 bitmask — a
 single NAMED trap for that one case, not a silent truncation.
 
 Built via a runtime alloc+store sequence in `$__start` (mirrors
@@ -8559,8 +8555,8 @@ at `42bfc90f`). 7 replayed commits, 3 real conflicts, all resolved:
   file post-merge-base) conflicted as a phantom edit-vs-delete. Resolved by
   deleting the stale tail wholesale — verified byte-identical to
   `git show 0c47e1ac:module/core.js` at that exact span.
-- `.work/research.md` (×2, at the `0d089b49`/`bba45c0d` replay steps) and
-  `.work/todo.md` (×1, at `16f1f701`): pure divergent-append conflicts —
+- `.work/evidence.md` (×2, at the `0d089b49`/`bba45c0d` replay steps) and
+  `.work/archive/todo.md` (×1, at `16f1f701`): pure divergent-append conflicts —
   main and the branch both appended NEW sections at the same anchor line
   after diverging at `9d0e3384`. Resolved by concatenation (ours' content,
   then the branch commit's own new content, in commit order) — no ledger
@@ -9067,7 +9063,7 @@ them that could mutate `ctx.func.boxed`, so a source-level mask/store
 mismatch looks structurally ruled out for THIS call shape, though not
 exhaustively verified against every closure-creation path (`storage ===
 'none'` short-circuits before either loop; the destructured-param/
-ClosureEnvPlan-vs-legacy-fallback split, `.work/closure-plan-design.md`,
+ClosureEnvPlan-vs-legacy-fallback split, `.work/archive/closure-plan-design.md`,
 was not independently re-audited this session).
 
 **Candidate (b) — not reached.** "The env itself already relocated and the
@@ -9252,7 +9248,7 @@ via the length-mismatch (unconditionally dispositive: assemble.js's `||
 minted after the first phantom entry, regardless of what that record's
 bits happen to be) rather than chasing one specific `aux` value, since no
 harness for a byte-identical repro of the ORIGINAL `aux=1015/n=6` instance
-survived between sessions (`.work/research.md`'s own prior entry: "its own
+survived between sessions (`.work/evidence.md`'s own prior entry: "its own
 literal fixture wasn't preserved").
 
 ### The fix — `ctx.closure.mint`, one mint point instead of three
@@ -9314,7 +9310,7 @@ these three fixtures never got far enough to reach it). Native jz×jz
 (`scripts/self.js`'s own 154-module graph, fed to itself via the region-live
 kernel): still fails, `memory access out of bounds`, 2.8s — notably FAST,
 not the ~8.5s/exactly-4,294,967,296-byte signature the design doc's own
-memory-ceiling wall produces (`.work/research.md`'s MEMORY-CURVE-MEASURED
+memory-ceiling wall produces (`.work/evidence.md`'s MEMORY-CURVE-MEASURED
 entry), so this is the SAME residual mechanism as jessie/watr, not the
 already-documented, by-design Slice-3 ceiling.
 
@@ -9330,7 +9326,7 @@ failures are NOT new: `subviewtyped` WAT-parity divergence at O0/O2/O3 (a
 self-compile CODEGEN SHAPE gap — native emits more bytes than the kernel,
 not a trap — orthogonal to region arena) and the row explicitly
 self-labeled `kernel oracle: PENDING-FIX — generic-scalar-decl BOOL∪NUMBER
-carrier collapse (research.md §Carrier invariant — not yet fixed...)` — a
+carrier collapse (.work/evidence.md §Carrier invariant — not yet fixed...)` — a
 DIFFERENT, already-tracked, already-named work item, not a region-arena
 regression. 13/13 not reached this session.
 
@@ -9491,7 +9487,7 @@ the KEY field (`slot+8`, `MAP_ENTRY=24` layout `[hash,key,value]`) was
 copied verbatim, bits unchanged. Safe for the sidecar's own SSO-only keys
 (no address inside an inline value to fix). **Wrong for `regionArmHash`'s
 later, broader reuse of this same function for ANY reachable `PTR.HASH`
-value** (Heap-kind registry Slice 2, `.work/research.md` — the comment at
+value** (Heap-kind registry Slice 2, `.work/evidence.md` — the comment at
 that call site even names the widened-reuse risk for diamond-sharing but
 not for non-SSO keys): jessie's own `err(msg, at, lines, last, before,
 ptr, chr, after)`-shaped default-param dict has several keys (`before`,
@@ -9557,7 +9553,7 @@ hashed SET/MAP.
   so a different relocation arm is implicated; not chased further this
   session, banked as the next wall). The 4th is the pre-existing, already-
   tracked, unrelated `PENDING-FIX — generic-scalar-decl BOOL∪NUMBER carrier
-  collapse` row (research.md §Carrier invariant).
+  collapse` row (.work/evidence.md §Carrier invariant).
 - **Native ladder, dormant rebuild**: `node test/index.js` 3428/3436 pass
   — the SAME 2 pre-existing documented flakes (interval-walk, typed-RMW),
   0 new regressions. `JZ_TEST_TARGET=jz.wasm node test/index.js` (dormant
@@ -10184,7 +10180,7 @@ gap found and set aside; WALL NOT CLOSED, next lead narrowed (2026-08-13)
 (detached). `node_modules/watr` reinstalled via `npm ci` and verified
 byte-identical to the local `watr` repo at `895ca5b` (both `watr.js` and
 `package.json` diff clean) — confirmed again at session end, unchanged.
-Read `.work/research.md` §Region arena in full, including the 63a5551e/
+Read `.work/evidence.md` §Region arena in full, including the 63a5551e/
 41024dd6/ab2f2f40 entries the brief named.
 
 **Method fix (this is the session's first real finding): the predecessors'
@@ -10430,7 +10426,7 @@ build-profile choice, not the default. **REGION FRONT COMPLETE.**
    `70cf7315`, 22 commits, merge-base `14c4f7a2`) into `main` (`53b17654`
    + the pin-bump commit). **Two conflicts, both in `.work/` logs, zero
    conflicts in source.**
-   - `.work/research.md`: took MAIN's version per policy, then diffed
+   - `.work/evidence.md`: took MAIN's version per policy, then diffed
      `## §` section headers both sides (`grep '^## §'`, 33 main / 38
      branch) — 14 branch-only entries (the branch's own post-divergence
      region-arena narrative: TARGET-PASS ABLATION RECORD, BOUNDARY-
@@ -10444,11 +10440,11 @@ build-profile choice, not the default. **REGION FRONT COMPLETE.**
      census, stdlib dedup, test262 re-pin, guard-coalesce, combined-tip
      validation — were already present in the taken MAIN base, no action
      needed.)
-   - `.work/todo.md`: same take-MAIN policy. Branch's own todo entries are
+   - `.work/archive/todo.md`: same take-MAIN policy. Branch's own todo entries are
      rolling-status duplicates of material already captured in full inside
-     `research.md` (each branch todo entry points back to its own
-     `research.md §Region arena` entry by name) — all substantive content
-     already carried by the research.md merge above, so no branch-only
+     `.work/evidence.md` (each branch todo entry points back to its own
+     `.work/evidence.md §Region arena` entry by name) — all substantive content
+     already carried by the .work/evidence.md merge above, so no branch-only
      todo content was lost by taking main's version wholesale.
    - **Zero conflicts** in `layout-kinds.js`, `layout-kinds-doc.js`,
      `module/collection.js`, `module/core.js`, `module/function.js`,
@@ -10506,13 +10502,13 @@ legs) are gitignored scratch, not committed. Worktree removed at session
 end.
 ## BigInt retirement design (2026-08-13)
 
-`.work/bigint-retirement-design.md` — design-only (no `src/` changes),
-answering the user decision made on `.work/feature-reach-census.md`'s
+`.work/archive/bigint-retirement-design.md` — design-only (no `src/` changes),
+answering the user decision made on `.work/archive/feature-reach-census.md`'s
 evidence (BigInt, all 3 paths, 0/130 real-corpus reach): retire the boxed
 `PTR.BIGINT` carrier and every runtime-discrimination mechanism built to
 cover an unproven BigInt flow (both the legacy magnitude-heuristic/
 sentinel-export-lane machinery and the newer boxed-tag carrier from
-`.work/carrier-representation-design.md` — confirmed still coexisting,
+`.work/archive/carrier-representation-design.md` — confirmed still coexisting,
 live, in the current tree), keeping only statically-proven raw i64
 lowering. Full inventory (~1,440-1,460 lines across `src/ir.js`, `emit.js`,
 `kind.js`, `layout.js`, `interop.js`, `module/*.js`, `test/pointers.js`,
@@ -10533,7 +10529,7 @@ plus (Slices 0-2 specifically) self-compile build/kernel-parity survival.
 ## §VectorizerGenerality — recognizer taxonomy + consolidation design (2026-08-13)
 
 Assessment + design only (no source change), full write-up:
-`.work/vectorizer-generality-design.md`. Answers: can `src/optimize/
+`.work/archive/vectorizer-generality-design.md`. Answers: can `src/optimize/
 vectorize.js`'s 19-recognizer chain (feature-reach-census.md §9: 2
 zero-reach, 6 single-specimen) be generalized or should it be cut, and is
 shape-recognizer vectorization a valid strategy against LLVM-backed rivals
@@ -10572,7 +10568,7 @@ after, aggregate SHA-256 `383d173f…`, `watr@5.7.14`).
 
 **Seven repro attempts, all negative.** Each variant was built to the
 letter of the ledger's own bisection description (`registerName`'s doc
-comment, `.work/research.md` lines ~7416-7457 as of the previous entry),
+comment, `.work/evidence.md` lines ~7416-7457 as of the previous entry),
 scaled up, and verified live (not dead-code-eliminated) before being
 declared a non-repro:
 
@@ -11159,9 +11155,9 @@ infrastructure (`regionCopyRecBody` import/call in `module/core.js`, the
 `SNAP_PROTOCOL` set and the arena-rewind/dyn-props machinery in
 `src/wat/assemble.js`) sits at different call sites than the heal chain's own
 insertions, so git's line-based merge never had to choose between them.
-`.work/research.md` per the stated policy: took main's version, both chain
+`.work/evidence.md` per the stated policy: took main's version, both chain
 entries auto-appended verbatim after main's own tail (confirmed:
-`diff <(git show main:.work/research.md) <(sed -n '1,10711p' .work/research.md)`
+`diff <(git show main:.work/evidence.md) <(sed -n '1,10711p' .work/evidence.md)`
 byte-identical apart from a trailing newline).
 
 **Semantic check (the auto-merge being textually clean doesn't mean
@@ -11364,7 +11360,7 @@ captured cleanly via the lighter-weight, targeted runs above instead.
 **Files landed** (pathspec commit onto main, preserving all unrelated
 uncommitted work in the user's own checkout untouched): `module/core.js`,
 `module/collection.js`, `module/array.js`, `src/wat/assemble.js`,
-`test/mem.js`, `test/perf-ratchet.json`, `.work/research.md`. Source branches
+`test/mem.js`, `test/perf-ratchet.json`, `.work/evidence.md`. Source branches
 `heal-length-2026-08-13`/`splice-heal-2026-08-13` and their worktrees deleted
 after the landing commit.
 
@@ -12622,7 +12618,7 @@ Driver verified correct (sanity-checked against a trivial single-file
 compile and a trivial 2-module compile through the SAME kernel/ABI, both
 succeeded cleanly) — and the exact "unreachable @ 4,295.0 MB" shape matches
 a PRE-259cd4fc session's own documented dormant-kernel jz×jz row exactly
-(`.work/research.md` "§Region arena — BOTH standing rows are ONE
+(`.work/evidence.md` "§Region arena — BOTH standing rows are ONE
 mechanism", the jz×jz row: "FAIL — `unreachable` @ 4,295.0 MB", both
 dormant and region-live, "Slices 2/3 unbuilt"). This is the SAME trap,
 reproduced, not a new one.
@@ -12780,7 +12776,7 @@ confirmed by matching module ordinals in BOTH kernels' WAT byte-for-byte:
 (narrowSignatures/applyPointerParamAbi/narrowPointerResults/
 narrowI32Results), `m133_index` (plan), `m137_scope`/`m138_inline`
 identical across dormant and region-live builds). A small Node script
-(`splice.mjs`, disposable) declared 24 new `(mut i64)`/`(mut i32)` globals
+(`.work/archive/frontier2/splice.mjs`, disposable) declared 24 new `(mut i64)`/`(mut i32)` globals
 (sentinel `-1`, exported) appended AFTER every pre-existing module field
 (so no PRE-EXISTING global's positional index shifts — `$__heap`'s own
 already-exported index 3, read via `(global.get 3)` since WABT strips
@@ -13929,8 +13925,8 @@ gates the TYPED arm) auto-merged clean, hand-verified both compose;
 onto main's post-`0487cde4` `ctx.funcs`/`ctx.func` split (registry accessors
 renamed; `ctx.func.localTypedElemsOverlay`, an active-FRAME field, correctly
 left alone) and onto `fa5775b4`'s `withTypedElemOverlay` helper (replaces
-the branch's own raw stash/restore, now redundant); `.work/research.md`/
-`todo.md` — append-only ledger merge, main's full history plus the branch's
+the branch's own raw stash/restore, now redundant); `.work/evidence.md`/
+`.work/archive/todo.md` — append-only ledger merge, main's full history plus the branch's
 unique tail (verified by header-list diff, not eyeballed).
 
 **perf-ratchet re-baseline, root-caused, not rubber-stamped.** Post-merge
@@ -14269,7 +14265,7 @@ named.
   bounded by program size and dropped at the next reset", deliberately
   retained for the WHOLE compile because later passes reuse it) plus a dozen
   sibling WeakMap-lowered-to-Map caches consolidated onto the same object
-  (ctxfunc-survey.md §2/§5). `narrowBoolResults` (round 1) is confirmed to
+  (.work/archive/ctxfunc-survey.md §2/§5). `narrowBoolResults` (round 1) is confirmed to
   populate `bodyFacts` on first touch per function (0ae75f07's own
   "FIRST-TIME population cost… later passes will legitimately reuse"
   finding) — without this in root, that population dangles at round 1's own
@@ -14914,7 +14910,7 @@ chained rounds reclaiming, meaning region-arena needs MORE/finer-grained
 round boundaries than the current six, or (b) some large structure is
 durable when it could be made ephemeral-and-reclaimable. Measuring WHICH
 round's own peak dominates (the `MEMORY-CURVE-MEASURED` methodology this
-campaign already has, .work/research.md's own archived recipe) is the
+campaign already has, .work/evidence.md's own archived recipe) is the
 natural next step — this session's own budget did not extend to that
 separate investigation.
 
@@ -14944,7 +14940,7 @@ session end — none committed.
 
 **Task**: attribute jz×jz's retained bytes by structure class (self-compiled
 region-arena census + native phase-by-phase cross-check) and design the
-compaction program — full writeup: **`.work/retained-set-census.md`**.
+compaction program — full writeup: **`.work/archive/retained-set-census.md`**.
 
 **Method**: two independent WAT-level breadcrumb instruments spliced into a
 region-live (`REGION_HOOKS_ACTIVE` hand-flipped true, disposable, reverted),
@@ -15015,7 +15011,7 @@ runtime-built mangled names (today's `STR_INTERN_BIT` covers only the
 static literal pool) — estimated **150–340 MB** (a stated range, not
 measured this session); (4) bitfield-pack `ctx.schema`'s five separate
 per-sid `Map`s (`slotFacts`/`slotIntCertain`/`slotI32Certain`/
-`slotConstInts`/`slotIntLevels`, cited in `.work/heap-epoch-design.md`) into
+`slotConstInts`/`slotIntLevels`, cited in `.work/archive/heap-epoch-design.md`) into
 one struct-of-arrays record — real, directly on the dominant MAP/HASH
 mechanism, deliberately left unquantified (schema count for jz×jz wasn't
 measured — no fabricated number). **Verdict: none of these, alone or
@@ -15033,7 +15029,7 @@ removed. Full attribution table, per-lever arithmetic, native phase table,
 and stated methodology caveats (region-round identity not independently
 named; STRING/BIGINT/BUFFER/TYPED-owned durable counting has a known
 fan-in-proportional overcount bias, documented not glossed; no native
-per-constructor heap snapshot taken) in `.work/retained-set-census.md`.
+per-constructor heap snapshot taken) in `.work/archive/retained-set-census.md`.
 **Next named lead**: measure lever (1)'s real savings with the same
 per-call breadcrumb method 0ae75f07 already proved out on this exact loop,
 then solve the `ctx.funcs.list` relocation hazard before attempting to wire
@@ -15056,7 +15052,7 @@ left unattempted. Worktree `git worktree add … d08d5968`, branch
 
 ### 1. The hazard, understood precisely
 
-e640e77a's own design note (`.work/research.md`, the per-pass plan-tail
+e640e77a's own design note (`.work/evidence.md`, the per-pass plan-tail
 entry): *"A per-iteration or batched round inside that loop would need to
 re-fetch `ctx.funcs.list[i]` by INDEX after every inner exit (a plain `for…of`
 iterator holds the array reference ONCE at loop start — if a nested exit
@@ -15284,7 +15280,7 @@ retained-set census's own splice-and-instrument method against the
 now-modified kernel): the IDENTICAL peak byte count and near-identical wall
 time (5.9s/6.8s here vs. 5.7s/6.5s pre-fix) are themselves the signal, cross-
 referenced against 0ae75f07's own dormant fine-grained checkpoint table
-(`.work/research.md`, cited in the retained-set census §4): **`analyzeFuncForEmit`
+(`.work/evidence.md`, cited in the retained-set census §4): **`analyzeFuncForEmit`
 call #1 was ALREADY at 4,089.1 MB** in that measurement — i.e. by the time
 this loop's very FIRST iteration begins, ~99.8% of the 4,096 MB budget was
 already consumed by phases upstream of it (front, `plan()`'s 5 rounds
@@ -15365,12 +15361,12 @@ produced (`.work/gate-driver.mjs`, `.work/run-region-live-gates.sh`,
 deleted at session end — none committed (`.work/*.mjs` is gitignored;
 `.work/*.sh` is not, deleted explicitly before the commit below).
 
-## [x] BigInt retirement Slice 0 — self-compile kernel-source rewrite (per `.work/bigint-retirement-design.md` §5/§9)
+## [x] BigInt retirement Slice 0 — self-compile kernel-source rewrite (per `.work/archive/bigint-retirement-design.md` §5/§9)
 
 Design's own site inventory (measured 2026-08-06/08-13) re-verified against
 current tip (274b6bd8) via its own repro command (erasure-diag.js +
 bigint-boxed-stats.js against `scripts/self.js`'s 149→156-module graph,
-`.work/carrier-box-baseline.md`'s command, verbatim): **still 11 real box
+`.work/archive/carrier-box-baseline.md`'s command, verbatim): **still 11 real box
 sites, same shape, module ids drifted** (`m113_assemble`→`m116_assemble`,
 `bif176_4`→`bif175_4` — pure registration-order drift, not a scope change).
 
@@ -15444,7 +15440,7 @@ dropped:
    is safe for the KERNEL (kernel-parity/oracle clean) but **broke a
    DIFFERENT, still-live mechanism**: `test/pointers.js`'s "carrier: a boxed
    BigInt schema field read via static dot-access unboxes to its payload"
-   pin (`.work/carrier-representation-design.md` §15/§16) — a NATIVE
+   pin (`.work/archive/carrier-representation-design.md` §15/§16) — a NATIVE
    (non-self-compile) test that deliberately imports the REAL `layout.js` to
    exercise its own export shape against the still-live (Slice 0 deletes no
    carrier code) schema-field census machinery
@@ -15529,7 +15525,7 @@ not committed): succeeds, not SHA-pinned this session. Every scratch build
 artifact and debug instrumentation (temporary `console.error` probes in
 `src/compile/narrow.js`, since reverted) was removed before commit; `dist/`
 is gitignored and not part of the commit.
-## [x] BigInt retirement Slice 1 — flip the fixpoint's consequence: box → compile-time diagnostic (per `.work/bigint-retirement-design.md` §4/§9)
+## [x] BigInt retirement Slice 1 — flip the fixpoint's consequence: box → compile-time diagnostic (per `.work/archive/bigint-retirement-design.md` §4/§9)
 
 Per the design's own framing: the SAME fixpoint that decided "insert a
 PTR.BIGINT box" (`markBigintSink`/`bigintBoxedVerdict`/`needsBigintBox`/
@@ -15750,7 +15746,7 @@ just a semantically clean one. No recognizer needed re-deriving for a
 session's merges were disjoint by construction, not by luck reconciled
 after the fact. Nothing banked from the rebase step itself.
 
-**Gate 1 — 130-program census corpus byte-identity** (method: `.work/feature-reach-census.md`,
+**Gate 1 — 130-program census corpus byte-identity** (method: `.work/archive/feature-reach-census.md`,
 `node cli.js <entry> --wat -O3 --resolve -o <out>.wat` per program, base =
 main tip `243e5b6e` unmodified vs branch = rebased `vec-land-2026-08-14`
 HEAD, same source input read from the base tree for both compiles so only
@@ -16044,7 +16040,7 @@ narrow.js/analyze code paths. If a third holder appeared or the fix needed
 - **`getFactStore()`'s WeakMap-lowered-to-Map siblings**
   (`bindingUses`/`mayBeUndefinedTrace`/`ccInBounds`/`ipProven`/etc.,
   ctx.js:353-379): each field's own comment names the `ctx.func._xBody`
-  field it REPLACED (the ctxfunc-survey.md §2/§5 retirement). Grepped for
+  field it REPLACED (the .work/archive/ctxfunc-survey.md §2/§5 retirement). Grepped for
   every one of those old field names across src/+module/ — zero live code
   references remain (only the historical comments in ctx.js itself and one
   cross-reference in module/typedarray.js's own comment). Retirement
@@ -16179,14 +16175,14 @@ container (`ctx.plans`/`ctx.inspect` didn't exist as concepts until
 Fixing today's instance doesn't fix the shape of the bug.
 
 **The canonical fix**: the full `CompileSession` record, per
-`.work/session-survey.md` §5(d) and the coordinator's own 2026-08-09 ruling,
+`.work/archive/session-survey.md` §5(d) and the coordinator's own 2026-08-09 ruling,
 gated on `ctx.func`'s six-lifetime decomposition (surveyed at
-`.work/compile-session-func-survey.md`, 2026-08-12: ProgramFunctions,
+`.work/archive/compile-session-func-survey.md`, 2026-08-12: ProgramFunctions,
 ActiveFunction, FunctionAnalysis/FunctionPlan, EmitFrame, FlowState,
 BodyMemo — 443 direct writes, 654 reads, 65 live fields, 25 direct writer
 files). Slices (a) module-scope-state fold, (b) `linkDemand` setter, and (c)
 read-only view facades over the 7 already-disciplined subtrees are ALL
-LANDED (2026-08-09, session-survey.md's own "AS-LANDED" sections) — only (d),
+LANDED (2026-08-09, .work/archive/session-survey.md's own "AS-LANDED" sections) — only (d),
 the full record, remains, explicitly gated on the func decomposition FIRST
 (coordinator's ruling: "do not attempt [the full record] by embedding or
 renaming today's `ctx.func`; that preserves the ambiguity this gate exists
@@ -16211,7 +16207,7 @@ automatically be reachable from every round's root the instant it becomes a
 `session` field, with no separate "remember to add it to all 9 call sites"
 step to forget.
 
-**Migration cost** (session-survey.md's own FeaturePlan-slice cost model,
+**Migration cost** (.work/archive/session-survey.md's own FeaturePlan-slice cost model,
 cost ∝ write-site count, not subtree complexity): dominated by `ctx.func`'s
 own decomposition — 443 writes / 25 files, six distinct lifetimes needing
 independent ownership pins before wrapping means anything (the coordinator's
@@ -16318,11 +16314,11 @@ deleted at session end, none committed.
 ## closed, five slices A-E, ns-round branch reconciliation named as a
 ## prerequisite for Slice C
 
-Design pass only (`.work/compile-session-design.md`; no `src/` changes),
-answering `.work/session-survey.md` §5(d) and the `b3cb4f8b` ledger entry's
+Design pass only (`.work/archive/compile-session-design.md`; no `src/` changes),
+answering `.work/archive/session-survey.md` §5(d) and the `b3cb4f8b` ledger entry's
 own recommendation ("CompileSession record... recommended as the fix for
 the whole recurring root-completeness defect class... not a fourth
-spot-fix"). Headline finding: `.work/ctxfunc-survey.md`'s gating estimate
+spot-fix"). Headline finding: `.work/archive/ctxfunc-survey.md`'s gating estimate
 ("~30-40× linkDemand's extraction cost") priced decomposing `ctx.func`
 itself — Slices 1-4f (2026-08-12) plus `ea423728` (2026-08-13) already did
 that; what remains (fold `getFactStore()`'s one surviving module-scope
@@ -16366,7 +16362,7 @@ registry/frame naming collision the prerequisite campaign closed).
 ## §CompileSession — Slices A/B landed, Slice C banked with a region-live
 ## regression traced to Slice B (2026-08-14)
 
-Executed `.work/compile-session-design.md`'s Slices A-C. **A and B landed
+Executed `.work/archive/compile-session-design.md`'s Slices A-C. **A and B landed
 clean on every one of their own specified gates; C is banked** — its
 mechanical work is done and described below, but activating it (which
 requires exercising the region-live axis for the first time in this
@@ -16905,7 +16901,7 @@ verification rebuild). No other src/ changes.
 
 Full dormant gate suite, re-verified against a clean rebuild carrying ONLY the
 landed diff: `npm test` 3451 total / 3440 pass / 0 fail / 11 skip (5 more skips
-than the `.work/research.md` baseline's own recurring "3451/3445/0/6" figure --
+than the `.work/evidence.md` baseline's own recurring "3451/3445/0/6" figure --
 isolated to 5 pre-existing `setTimeout`/`setInterval`/`clearTimeout` real-timer
 tests, environment/Node-version-sensitive, unrelated to this diff -- zero
 FAILURES either way); self-build ×2 CONVERGED byte-identical SHA-256
@@ -17239,7 +17235,7 @@ own whole-program fixpoint cost), not a re-run of this session's own
 ## (2026-08-15): `tryGeneralMap`, dispatch-chain terminal, integer-lane
 ## generalization of tryStencil's affine-offset proof
 
-Design refresh + implementation of `.work/vectorizer-generality-design.md`
+Design refresh + implementation of `.work/archive/vectorizer-generality-design.md`
 §2-3 step 3 ("promote MAP class... to an AST/affine-level proof"), scoped
 per this session's brief to the MAP transform class only (92/130 census
 reach — design's step-1 slice), on top of the already-landed §2 step-1
@@ -17328,7 +17324,7 @@ IV at coefficient 1, for any operand order and any nesting of the offset
 arithmetic — a strict superset of `matchLaneAddr`/`matchLaneOffset`'s
 literal-shape acceptance.
 
-**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s
+**Gate 1 — 130-corpus sweep** (method: `.work/archive/feature-reach-census.md`'s
 own convention — `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`,
 base = main tip `71156204` unmodified (`/Users/div/projects/jz`) vs
 branch = this worktree, same source read from the base tree for both):
@@ -17461,7 +17457,7 @@ worktree deleted post-land per process instructions).
 ## proof generalization of the consolidated `tryReduce`'s single-accumulator
 ## fold
 
-Implements `.work/vectorizer-generality-design.md` §2/§3 step 3's REDUCTION
+Implements `.work/archive/vectorizer-generality-design.md` §2/§3 step 3's REDUCTION
 slice — the follow-up seam `tryGeneralMap`'s own landing entry (this file,
 above) explicitly banked ("REDUCTION/STENCIL-proper generalization past
 their current syntactic matchers"). Scoped per this session's brief to a
@@ -17633,7 +17629,7 @@ process instructions).
 ## runtime-dependence-checking answer wired onto the same-array `elemKey`
 ## mismatch gate a4726c5a already ported from tryStencil (2026-08-16)
 
-Design + implementation of `.work/vectorizer-generality-design.md`'s named
+Design + implementation of `.work/archive/vectorizer-generality-design.md`'s named
 follow-up (§3, "rivals get graceful degradation, jz's chain is 0-or-nothing"):
 when two accesses to the SAME array can't be proven disjoint STATICALLY (a
 runtime-parameter offset), emit a cheap runtime disjointness check and branch
@@ -17748,7 +17744,7 @@ call reaches it via the default, unmodified) without touching that file.
 `tryGeneralReduce` untouched (confirmed unnecessary above — no store sites,
 no hazard to version).
 
-**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s own
+**Gate 1 — 130-corpus sweep** (method: `.work/archive/feature-reach-census.md`'s own
 convention, `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`; base =
 main tip `15c6a940` unmodified vs branch = this worktree; 129-entry list =
 the census's 127 dir-matched `bench/*/*.js`+`examples/*/*.js` files, plus
@@ -17902,7 +17898,7 @@ process instructions).
 ## Slice-0 residual sites (watr fully un-hatched, jz's own i64Hex param
 ## narrowed but banked, jessie's own gap diagnosed as genuinely irreducible)
 
-Task: strengthen cross-call BigInt kind proof (per `.work/bigint-retirement-
+Task: strengthen cross-call BigInt kind proof (per `.work/archive/bigint-retirement-
 design.md` §5, Slice 0's `38f1259a` ledger entry) so the 5 residual boxed
 sites become raw-provable, un-hatching jessie/watr as inputs. Worked in
 worktree `bigint-infer-2026-08-15` off tip `71156204`; landed here (main
@@ -18033,7 +18029,7 @@ has the `n` suffix). This is a real, live Number|BigInt union at a single
 AST position across control flow inside ONE function — not a missing
 static proof, a GENUINE runtime ambiguity, matching the design's own
 "collection" flow-class definition of what SHOULD become a diagnostic
-(`.work/bigint-retirement-design.md` §4's table, "collection" row) rather
+(`.work/archive/bigint-retirement-design.md` §4's table, "collection" row) rather
 than something an engine fix can soundly silence. Confirmed via a direct
 `JZ_BIGINT_STRICT=1` compile of `bench/jessie/jessie.js`: still throws
 (`"BigInt value at this collection can't be proven a single, uniform kind
@@ -18080,7 +18076,7 @@ would be unsound — the two branches genuinely disagree).
   any of the 4 rules per the diagnosis above) stays byte-identical, as
   expected.
 
-### Slices 2-5 (`.work/bigint-retirement-design.md` §9) — status
+### Slices 2-5 (`.work/archive/bigint-retirement-design.md` §9) — status
 
 **NOT unblocked this session.** The design's own acceptance bar for
 proceeding to the deletion slices is jessie AND watr compiling clean under
@@ -18586,7 +18582,7 @@ class already recorded above. Final self-compile artifact SHA-256:
 ## dropped) generalized to every lane type, plus layer-3 alias-versioning
 ## reused for tryStencil's own in-place hazard (2026-08-16)
 
-Design + implementation of `.work/vectorizer-generality-design.md`'s STENCIL
+Design + implementation of `.work/archive/vectorizer-generality-design.md`'s STENCIL
 slice — the follow-up seam both `tryGeneralMap`'s (`a4726c5a`) and
 `tryGeneralReduce`'s own landing entries banked ("REDUCTION/STENCIL-proper
 generalization... the float-domain grid-index branch tryStencil's own
@@ -18722,7 +18718,7 @@ extension of the existing affine solver — same disposition
 `tryGeneralMap`'s own landing entry already recorded for this exact item;
 still out of scope here, for the same reason.
 
-**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s
+**Gate 1 — 130-corpus sweep** (method: `.work/archive/feature-reach-census.md`'s
 own convention, `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`,
 129-entry list = the census's 128 dir-matched `bench/*/*.js` +
 `examples/*/*.js` files [confirmed 128 via direct enumeration this
@@ -18832,7 +18828,7 @@ attempted here, same precedent).
 
 **Files touched**: `src/optimize/vectorize.js` (+~360:
 `tryGeneralStencil` and its dispatch-chain wiring), `test/simd.js` (+~190:
-7 new tests), `.work/research.md` (this entry). Nothing else —
+7 new tests), `.work/evidence.md` (this entry). Nothing else —
 `README.md`, `src/static.js`, `src/compile/narrow.js`,
 `src/compile/plan/index.js`, `module/**`, `bench/**`, `.work/strategy.md`,
 `.work/todo-original.md` all untouched (verified via `git diff --stat`
@@ -19099,7 +19095,7 @@ not an unresolved ownership question.
 ## §IfConversionAndCostModel — layer 5 (final layer), if-conversion + profitability gate:
 ## GENERIC VECTORIZER PROGRAM COMPLETE (2026-08-17)
 
-Design + implementation of `.work/vectorizer-generality-design.md`'s two remaining follow-up
+Design + implementation of `.work/archive/vectorizer-generality-design.md`'s two remaining follow-up
 seams — IF-CONVERSION (predicated execution for loops with internal branches) and a COST MODEL
 (profitability gate for the base layers). Worktree `.../scratchpad/vec-ifconv`, branch
 `vec-ifconv-2026-08-16`, off main tip `6adde429`; landed after a rebase onto `2e4072df` (4
@@ -19226,7 +19222,7 @@ control case with the SAME shape but a real neighbour-data value (`out[i]=a[i-1]
 stays PROFITABLE and still vectorizes — proves the gate isn't declining everything reaching it,
 only the genuinely unprofitable degenerate shape.
 
-**Gate 1 — 130-corpus sweep** (method: `.work/feature-reach-census.md`'s own convention,
+**Gate 1 — 130-corpus sweep** (method: `.work/archive/feature-reach-census.md`'s own convention,
 `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`; base = main tip `6adde429` unmodified
 (`/Users/div/projects/jz`) vs branch = this worktree; 134-entry list = every `bench/*/*.js` +
 `examples/*/*.js` file plus `examples/raymarcher/raymarcher.simd.js`): **131/134 comparable
@@ -19280,7 +19276,7 @@ same precedent.
 **Files touched**: `src/optimize/vectorize.js` (+~180: `LANE_COMPARE.i8`/`.i16`, the if-store
 mask-ordering fix + unconditional-side-effect guard, the cost-model block —
 `COST_WEIGHT`/`opCostWeight`/`weighTree`/`COST_OVERHEAD_*`/`isProfitable` — and its 3 call sites),
-`test/simd.js` (+~180: 7 if-conversion tests + 2 cost-model tests), `.work/research.md` (this
+`test/simd.js` (+~180: 7 if-conversion tests + 2 cost-model tests), `.work/evidence.md` (this
 entry). Nothing else touched — `README.md`, `src/static.js`, `module/**`, `.work/strategy.md`,
 `.work/todo-original.md` all untouched (verified via `git diff --stat` against main before
 landing).
@@ -19305,13 +19301,13 @@ geomean 1.020×, inside band. Main tip at landing: `2e4072df` (branch `vec-ifcon
 rebased from `6adde429`, worktree deleted post-land per process instructions).
 
 **GENERIC VECTORIZER PROGRAM COMPLETE.** All five layers of
-`.work/vectorizer-generality-design.md`'s promotion path are now landed: MAP (`a4726c5a`),
+`.work/archive/vectorizer-generality-design.md`'s promotion path are now landed: MAP (`a4726c5a`),
 REDUCTION (`15c6a940`), runtime alias versioning (`f2012e2c`), STENCIL (`6adde429`), and
 if-conversion + cost model (this entry). Every general-layer recognizer now proves its own
 affine/dependence/speculation-safety obligations at the AST level instead of matching a fixed
 syntactic WAT shape, handles internal branches via predicated bitselect execution, and gates
 itself on a profitability estimate before committing to SIMD codegen — the strategic gap named in
-`.work/vectorizer-generality-design.md` §3 ("a novel user loop... gets zero vectorization, not
+`.work/archive/vectorizer-generality-design.md` §3 ("a novel user loop... gets zero vectorization, not
 degraded vectorization") is closed for the ordinary data-parallel MAP/REDUCTION/STENCIL classes
 that make up the majority of real programs, while every idiom fuser (`tryDivergentEscapeVectorize`,
 `tryBlurMultiPixel`, `tryButterfly`, etc.) keeps its own structurally-stronger-than-LLVM edge
@@ -19337,7 +19333,7 @@ A body-only attempt to force those params boxed produced an unbox OOB because
 recursive/indirect edges were not normalized—direct evidence that this must be
 an edge-complete solver, not another local flag.
 
-`.work/representation-plan-v2-design.md` specifies the replacement: separate
+`.work/archive/representation-plan-v2-design.md` specifies the replacement: separate
 semantic kinds, BigInt representation, and backward tag demand; model every
 call/storage/closure/host edge with an explicit keep/box/unbox/variant/reject
 action; forbid RAW-BigInt-or-Number at a tag-required consumer; specialize raw
@@ -20161,12 +20157,12 @@ batch), not a substitute for `2a40d7b2`'s own named next steps. Eight
 numbered slices proposed (A1/A2 site 1, B1/B2 site 2, C1/C2 site 3, two
 explicitly rejected/deferred with reasons), each independently gated,
 byte-identity-required. Full write-up, measurement tables, dependency
-graphs, and the RepPlan-v2 collision/sequencing map: **`.work/walk-count-
+graphs, and the RepPlan-v2 collision/sequencing map: **`.work/archive/walk-count-
 design.md`**.
 
 ## §Walk-count reduction — B1 + A1 landed (2026-08-17)
 
-Implements `.work/walk-count-design.md`'s two highest-priority slices, per
+Implements `.work/archive/walk-count-design.md`'s two highest-priority slices, per
 its own sequencing rule ("B1 before RepPlan v2 begins any code"). Surfaces:
 `src/compile/analyze.js`, `src/compile/analyze-scans.js`,
 `src/compile/index.js`, `src/session.js` (comment-only) — RepPlan v2's own
@@ -20244,7 +20240,7 @@ site 1's sum is only 1.06-2.62% of total wall time and site 2's repeat-share
 cost is a fraction of that — walk-fusion was never framed as a dominant
 lever (`narrowSignatures` alone is ~25% of `plan()`'s own total).
 
-**Byte-identity.** 130-corpus method (`.work/feature-reach-census.md`):
+**Byte-identity.** 130-corpus method (`.work/archive/feature-reach-census.md`):
 `node cli.js <entry> --wat -O3 --resolve -o <out>.wat` per program, base
 `8d716609` unmodified vs branch, same corpus construction (bench 59 +
 examples 68 + `raymarcher.simd.js` + generated jukebox beat-0). **129/129
@@ -20929,7 +20925,7 @@ control build (verified same-session, not a cross-session comparison). With
 longer exhausts memory at all on this graph — it runs the AFE loop far
 enough (well past wherever the control's own 51-of-53-exit survival from
 `bb493138` topped out) to reach a code path that has, per direct
-cross-reference against `.work/research.md`'s own `§CompileSession` entry,
+cross-reference against `.work/evidence.md`'s own `§CompileSession` entry,
 NEVER been exercised by ANY self-compiled compile in this campaign's history
 before now: `functionPlanOf`'s "FunctionPlan missing" assertion is a KNOWN
 failure SIGNATURE for a documented, UNRELATED region-live-only defect class
@@ -21276,7 +21272,7 @@ plan region, never the import block or `constIntExpr` call sites this touches):*
 - `npm run test:wasm`: 2759 total (12866 assertions), 2753 pass, **0 fail**,
   6 skip — exact match to this repo's own most recent pre-existing baseline
   tally (`2,759/2,753/0/6`, RepresentationPlan v2 Slice 2 entry above)
-- 130-corpus sweep (method: `.work/feature-reach-census.md`'s own convention —
+- 130-corpus sweep (method: `.work/archive/feature-reach-census.md`'s own convention —
   `node cli.js <entry> --wat -O3 --resolve -o <out>.wat`, base = live main
   tree vs branch = this worktree): **128/128 `bench/*/*.js` + `examples/*/*.js`
   + `raymarcher.simd.js` byte-identical**, re-confirmed fresh at every rebase
@@ -21689,8 +21685,8 @@ Re-measured the full jz×jz per-round frontier on current main (`a3b500a5` —
 post `d58ef517` stale-$i fix, post-rename), WAT-splice method per fa9fcc1a
 (12 anchor edits in the decompiled kernel, never JS source; worktree
 disposable, `REGION_HOOKS_ACTIVE` flip uncommitted). Raw event log, per-round
-table, and the splice script archived at `.work/frontier2/`
-(`rounds.json`/`trace-result.json`/`splice.mjs`).
+table, and the splice script archived at `.work/archive/frontier2/`
+(`.work/archive/frontier2/rounds.json`/`.work/archive/frontier2/trace-result.json`/`.work/archive/frontier2/splice.mjs`).
 
 **Trap point**: `unreachable` @ exactly 4,294,967,296 B, wall 32.7 s —
 `afe_calls=1711` of 2,219 ground-truth (53 complete 32-func batches + 15
@@ -21718,7 +21714,7 @@ trapping SOONER this campaign); the cost framing is untried.
 
 **The finding that voids the recorded inventory**
 (`274b6bd8`/`627cf92a`/`c8246307` reclaim-depth tradeoff, C1/C2 [separately
-voided — see walk-count-design.md §7], `refineSlotIntCensus` skip [real but
+voided — see .work/archive/walk-count-design.md §7], `refineSlotIntCensus` skip [real but
 ~192 MB once, insufficient vs 626 MB]): every real compaction now shows
 **negative reclaim** — floor EXCEEDS peak by 150–230 MB while true churn is
 17–44 MB and setmap fallbacks are 6–9 per batch. Compacted output larger
@@ -21737,7 +21733,7 @@ compaction tax (memo-retention hypothesis) in `$__region_exit`/
 Follow-on to the frontier re-trace above, same worktree/method (one added WAT
 probe: memo final cap + $__dyn_props fired-flag logged before the tail
 `memory.copy`; rerun byte-identical trap point, zero perturbation —
-artifacts `rounds2.json`/`trace-result2.json` in `.work/frontier2/`).
+artifacts `.work/archive/frontier2/rounds2.json`/`.work/archive/frontier2/trace-result2.json` in `.work/archive/frontier2/`).
 
 **Mechanism, proven not hypothesized.** `$__region_exit` snapshots `$T`
 right after the memo Map's cap-8 initial header, then sweeps EVERYTHING in
@@ -21867,7 +21863,7 @@ legitimate there — the question is what makes it ~3.5 GB.
 
 Instrumented the post-AFE climb (738 MB → 4 GiB) at three altitudes
 (region rounds / timePhase stages / per-emitFunc-call breadcrumbs;
-artifacts `trace-result-emitfunc.json` in `.work/frontier2/`). Per-stage:
+artifacts `.work/archive/frontier2/trace-result-emitfunc.json` in `.work/archive/frontier2/`). Per-stage:
 structInline +2.27 MB, unionInline +1.83 MB, then `emitFuncs` calls 1-725
 cost ~172 MB total (~0.24 MB/function, flat, healthy), then **call #726 —
 `m86_math$default`, module math.js's synthetic default/init, 175,694-char
@@ -22512,7 +22508,7 @@ provably cannot see this class.
 
 Ratified order (compat-handoff): watr-provability FIRST, then slice-0
 finish, then strict flip, then the ~1450-line deletion. Read + banked:
-dc6139d9 post-mortem (todo.md:10044-10097) and retirement-design §5.
+dc6139d9 post-mortem (.work/archive/todo.md:10044-10097) and retirement-design §5.
 
 THE MECHANISM TO BUILD: internal/transient BigInt flows (arithmetic
 results, bare returns, params fed from BigInt(str) — values that never
@@ -23543,7 +23539,7 @@ restoration. Fixes, one layer-wide primitive each:
 Pinned: 7 positive shapes + the named reject (test/async.js). Doc drift from
 the re-aim swept: 19 "[RETIRED: …now a compile-time diagnostic]" comments →
 "under JZ_BIGINT_STRICT (opt-in)"; README's "always-correct dynamic path" →
-honest KNOWN-WRONG-pins wording; bigint-retirement-design.md carries a
+honest KNOWN-WRONG-pins wording; .work/archive/bigint-retirement-design.md carries a
 SUPERSEDED-IN-DIRECTION header pointing at the ratified re-aim.
 
 ## §Bench refresh attempt: partial-only on this machine (2026-08-20)
@@ -24253,7 +24249,7 @@ calls, member/element reads and globals—preferably stable HIR IDs plus a
 revisioned analysis manager. Only after that fact exists can local points-to
 consume it without duplicating another mini type system.
 
-## §Porffor alpha 3 — same-machine measurements (2026-08-27)
+## §Porffor alpha 3: same-machine measurements (2026-08-27)
 
 Reference: Porffor `alpha-3`, commit `03b6b54f`, released 2026-08-27. JZ
 reference: `4c38662f`. Apple M4 Max, Node 25.9.0, Homebrew clang 19.1.6.
@@ -24311,7 +24307,7 @@ The original verifier reported 50.73–54.54 s total wall at up to 1.14 GB
 peak RSS, covering 24 compiler-core executions (7 unadapted Node, 7
 adapted Node, 10 Wasm). Split timing on one current run: 53.897 s
 compiling, 4.6 ms instantiating, 55.0 ms verifying (53.9 ms across all 24
-executions) — the old total approximated JZ compile time but cannot be
+executions): the old total approximated JZ compile time but cannot be
 divided by Porffor's 1.95 s self-host C-emission time (inputs and output
 stages differ). All three tiers (unadapted Node core, adapted Node core,
 JZ-compiled core) emitted identical C for:
@@ -24341,7 +24337,7 @@ Measured generation: 0.741 s compiler phases / 1.20 s process, 301 MB
 peak. The resulting `builtins_precompiled.js` is 1.19 MB and replaces
 688 KB / 18,404 lines of builtin source during normal compilation.
 
-### Competitive gates — anchored alpha-3 refresh
+### Competitive gates: anchored alpha-3 refresh
 
 The anchored alpha-3 refresh produced 43 accepted-checksum rows, including
 `synth`'s documented FMA result. Against the `4c38662f` JZ-row refresh, JZ
@@ -24350,12 +24346,12 @@ won all 43: `porf-native/jz` runtime geomean **21.722×**, narrowest win
 `porf-native/jz` artifact-byte geomean **63.865×**, narrowest margin
 **4.981×** (`provenance`). Larger ratios favor JZ. Porffor had 14
 checksum-divergent rows and three failed lab rows (`watr`, `jessie`,
-`jz`) — retained as failures, never counted as wins.
+`jz`): retained as failures, never counted as wins.
 
 The long JZ self-lab compile pushed system swap to 4.20 GB, beyond the
 committed 4 GB validity bound. Anchor rows still passed and the Porffor
 margin is far outside noise, but the mixed snapshot is not
 release-certified. Compiler source advanced after the JZ rows were
 measured, so freshness is also red. Remeasure after reboot and source
-freeze (plan.md's reference-refresh commands) — no validity threshold was
+freeze (plan.md's reference-refresh commands): no validity threshold was
 loosened.

@@ -1,6 +1,6 @@
 // bench.svg renderer contract — the README's headline performance chart.
 // Pure string assertions, no toolchain, so it runs in the default `npm test`.
-// Guards the two ways the chart used to mislead (.work/todo.md): a bare ratio
+// Guards the two ways the chart used to mislead (.work/archive/todo.md): a bare ratio
 // with no "geomean of N cases" caption, and jz labeled "→ wasm" (a pipeline)
 // while every rival showed its optimization tier (clang/rustc/asc -O3). The
 // corpus headline keeps native C as the lone reference row; per-case cards mix

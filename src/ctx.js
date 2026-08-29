@@ -1,5 +1,5 @@
 /**
- * CompileSession record, reset per jz() call (see .work/compile-session-design.md
+ * CompileSession record, reset per jz() call (see .work/archive/compile-session-design.md
  * for the fuller design). `ctx` IS the CompileSession: 20 named subtrees below,
  * one lifecycle phase each, writer/reader tables documented per-field. See
  * src/session.js's `beginSession()` — "the ONE owner of per-compile
@@ -79,7 +79,7 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // `reset()` below mutates each subtree field in place (`ctx.X = {...}`)
 // instead of replacing the whole binding, because swapping identity corrupts
 // the region arena's relocation walk (`__region_relocate_props`'s
-// value-relocation path — see .work/research.md §CompileSession Slice B). A
+// value-relocation path — see .work/evidence.md §CompileSession Slice B). A
 // reference to a ctx subtree held across a `reset()` call is therefore not
 // safe to keep using afterward — reset() replaces fields, not the container.
 //
@@ -188,7 +188,7 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *  mistake and never a legitimate generic→specific override, unlike what
  *  CONTRIBUTING used to claim (the `date.js`-over-`string.js` `.valueOf`
  *  "override" was this exact silent-collision class, not a specialization
- *  idiom — see .work/printer-trio.md).
+ *  idiom — see .work/archive/printer-trio.md).
  *
  *  `order`/`siteDialect`/`siteModule`/`siteValue` MUST stay plain ARRAYS
  *  (insertion-ordered names, three parallel attribution arrays) — never a
@@ -201,7 +201,7 @@ export const emitArity = (h) => h?.argc ?? h?.length
  *  string-concatenating `${module}|${dialect}` at this call volume
  *  (~150-600 registrations) corrupts the same warm-instance reuse even with
  *  zero dicts involved. Root cause lives in the self-compiled dyn-props/
- *  string runtime (see .work/research.md); this function sidesteps both
+ *  string runtime (see .work/evidence.md); this function sidesteps both
  *  hazards by only ever `.push()`-ing already-existing references
  *  (`dialect`, `ctx.core.currentModule`, `value` itself — a function
  *  reference, not a new allocation) into plain arrays. Every `+`/template
@@ -341,7 +341,7 @@ export function resolveIncludes() {
  * every one of those already depends on with nothing importing back, so
  * ownership of WHERE the store lives sits here.
  *
- * CompileSession field, not a second singleton (Slice B, .work/compile-
+ * CompileSession field, not a second singleton (Slice B, .work/archive/compile-
  * session-design.md §1.1/§3): used to be its OWN module-scope `_factStore`
  * binding, sibling to `ctx` in lifecycle (reset()'s own resetFactStore()
  * call) but not a field of it — the one piece of compile-lifetime state that
@@ -598,7 +598,7 @@ export function reset(proto, globals, bridge) {
                           // single-write and non-escaping by construction — read by
                           // kind.js valTypeOf's VT['[]'] to recover an element's kind
                           // through `let [a, b] = [1, BigInt(v)]`-shaped destructuring.
-    // SlotFact unification (product-lattice design .work/lattice-design.md
+    // SlotFact unification (product-lattice design .work/archive/lattice-design.md
     // §1/§5 Slice 6a, OQ2 6a/6b split): schemaId → Array<SlotFact | undefined>,
     // one record per (sid, idx) replacing 4 formerly-parallel Maps that shared
     // the IDENTICAL clash-poison/OR-join write discipline (FINDING-2) —
@@ -612,7 +612,7 @@ export function reset(proto, globals, bridge) {
     //     `+`/`===`/method dispatch elide `__is_str_key` checks on numeric
     //     properties of known shapes.
     //   .objSid:    childSchemaId | null | undefined — PROPERTY-KIND TRACING
-    //     (§19/§20, .work/carrier-representation-design.md): the nested-sid
+    //     (§19/§20, .work/archive/carrier-representation-design.md): the nested-sid
     //     sibling of .kind's VAL-kind lattice, one level up. undefined: no
     //     `r.p = {...}` write observed, null: ≥2 distinct literal shapes (or
     //     a non-literal RHS) — poisoned, childSid: EVERY resolvable write to
@@ -701,7 +701,7 @@ export function reset(proto, globals, bridge) {
     dictValueTypes: new Map(),  // name → Set<VAL.*> — dict-value-census global
                                 //   half (product-lattice Slice 7, retiring the
                                 //   old first-wins-then-clash poison-to-null
-                                //   algebra per .work/lattice-design.md §thesis:
+                                //   algebra per .work/archive/lattice-design.md §thesis:
                                 //   this is an EXISTENTIAL fact — "which kinds
                                 //   was this dict ever written with" — so
                                 //   disagreeing writes UNION into the Set
@@ -895,7 +895,7 @@ export function reset(proto, globals, bridge) {
                         // (loop-model freshLoopId). Per-compile (reset here), not a module-global —
                         // so compile(P) is deterministic regardless of prior compiles in the process.
     loopPlanId: 0,      // monotonic id for loop-model's HIR provenance LoopPlan records
-                        // (.work/research.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
+                        // (.work/evidence.md §BodyModel slice 4, freshLoopPlanId) — a SEPARATE
                         // space from loopXformId: identifies a loop RECORD, never names anything
                         // emitted. Per-compile (reset here) for the same determinism reason.
     closureId: 0,       // monotonic id for src/compile/closure-plan.js's ClosureId — a SEPARATE
@@ -911,7 +911,7 @@ export function reset(proto, globals, bridge) {
   // Advisory sink. Populated when compile() receives opts.warnings.
   ctx.warnings = null
 
-  // Feature flags: the frozen FeaturePlan (.work/research.md §FeaturePlan freeze).
+  // Feature flags: the frozen FeaturePlan (.work/evidence.md §FeaturePlan freeze).
   // Every key here MUST be seeded, not an absent key: the self-compiled kernel's
   // absent-dyn-key read misfires truthy, so a missing key silently turns a gate ON
   // (the original bigint bug — pure-number programs exported subnormals as bigint
@@ -934,7 +934,7 @@ export function reset(proto, globals, bridge) {
   //     shaped in practice (module/typedarray.js's view-constructing EMIT
   //     handlers keep flipping it false→true past post-analyze, not just
   //     analyze.js's static tracker) and was reclassified onto ctx.linkDemand
-  //     (.work/research.md §FeaturePlan freeze). Kept as a named stratum for
+  //     (.work/evidence.md §FeaturePlan freeze). Kept as a named stratum for
   //     the next genuinely analyze-settled fact, not deleted.
   ctx.abi = makeAbi()
 
@@ -969,7 +969,7 @@ export function reset(proto, globals, bridge) {
     // ANALYSIS — currently no members, see the stratum doc above ctx.abi.
   }
 
-  // linkDemand: the DEMAND stratum of the frozen FeaturePlan (.work/research.md
+  // linkDemand: the DEMAND stratum of the frozen FeaturePlan (.work/evidence.md
   // §FeaturePlan freeze) — reachability facts
   // EMISSION discovers ("this program's output will need EXTERNAL dispatch /
   // a typed-array kind / Set / Map / closures / f16 / clamped stores"), as
@@ -990,8 +990,7 @@ export function reset(proto, globals, bridge) {
   // stdlib templates that read them (module/collection.js's EXTERNAL-arm
   // elision is the canonical example).
   //
-  // `typedView` (reclassified from ctx.features' ANALYSIS stratum, .work/
-  // research.md §FeaturePlan freeze): written by analyze.js's static `.view`-
+  // `typedView` (reclassified from ctx.features' ANALYSIS stratum, .work/evidence.md §FeaturePlan freeze): written by analyze.js's static `.view`-
   // ctor tracker (mid-analyze, ANALYSIS-shaped) AND by module/typedarray.js's
   // view-constructing EMIT handlers (`new.*`'s buffer-reinterpret/unknown-arg
   // branches, `.typed:subarray` — genuinely DEMAND-shaped, only known once
@@ -1073,7 +1072,7 @@ export function reset(proto, globals, bridge) {
  *   - `post-reset`     : every sub-context exists; Maps/Sets initialized.
  *   - `post-prepare`   : module + scope populated; func.list possibly empty.
  *                        Also snapshots ctx.features' SESSION+PROGRAM strata
- *                        (FeaturePlan freeze, .work/research.md) for the
+ *                        (FeaturePlan freeze, .work/evidence.md) for the
  *                        post-analyze/pre-assemble drift check below.
  *   - `pre-emit`       : func.current set; locals Map present — the per-
  *                        function-frame boundary right where `repsFrozen`
@@ -1141,7 +1140,7 @@ export const DBG_INVARIANTS = typeof process !== 'undefined' && process.env?.JZ_
 // instead of as a distant stale-state failure.
 const PHASE_ORDER = ['post-reset', 'post-prepare', 'post-compile']
 
-// FeaturePlan freeze (.work/research.md §FeaturePlan freeze): ctx.features'
+// FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): ctx.features'
 // SESSION+PROGRAM+ANALYSIS strata must not drift after their settling phase.
 // Snapshotted at 'post-prepare' (SESSION+PROGRAM, when wired) and extended at
 // 'post-analyze' (+ANALYSIS, always); compared at 'pre-assemble'. Module-scope
@@ -1163,7 +1162,7 @@ const snapFeatureEq = (a, b) => Array.isArray(a)
   : a === b
 const snapshotFeatures = (keys, into) => { for (const k of keys) into[k] = snapFeatureVal(ctx.features[k]); return into }
 
-/** Emission-time write tripwire for ctx.features (.work/research.md §FeaturePlan
+/** Emission-time write tripwire for ctx.features (.work/evidence.md §FeaturePlan
  *  freeze, Slice 2): every writer of a SESSION/PROGRAM/ANALYSIS key routes through
  *  here instead of assigning directly, so a write that lands after 'post-analyze'
  *  throws AT THE CALL SITE under JZ_DEBUG_INVARIANTS — naming the offending write
@@ -1234,7 +1233,7 @@ export function assertCtxInvariants(phase) {
   // scan and autoload.js, both mid-prepare); ANALYSIS is currently empty (its one
   // former member, typedView, turned out to be DEMAND-shaped — module/typedarray.js's
   // view-constructing EMIT handlers kept flipping it past post-analyze — and was
-  // reclassified onto ctx.linkDemand, .work/research.md §FeaturePlan freeze).
+  // reclassified onto ctx.linkDemand, .work/evidence.md §FeaturePlan freeze).
   if (phase === 'post-reset') { _featureSnapshot = null; _postAnalyze = false; _preAssemble = false }
   if (phase === 'post-prepare') _featureSnapshot = snapshotFeatures([...FEATURE_STRATA.SESSION, ...FEATURE_STRATA.PROGRAM], {})
   if (phase === 'post-analyze') { snapshotFeatures(FEATURE_STRATA.ANALYSIS, _featureSnapshot ??= {}); _postAnalyze = true }
