@@ -10,7 +10,7 @@ import tagged, { packedI32 } from './object.js'
 import taggedLinear, { structInline } from './array.js'
 
 /** All carriers per value type — keyed by stable id for rep.carrier lookup. */
-export const CARRIERS = Object.freeze({
+const CARRIERS = Object.freeze({
   number: Object.freeze({ nanboxF64 }),
   string: Object.freeze({ sso, jsstring }),
   object: Object.freeze({ tagged }),
@@ -25,7 +25,7 @@ const DEFAULT_ID = Object.freeze({
 })
 
 /** Pick carrier bundle for `type` given optional binding rep hints. */
-export function resolveCarrier(type, rep) {
+function resolveCarrier(type, rep) {
   const table = CARRIERS[type]
   if (!table) return null
   const id = rep?.carrier ?? DEFAULT_ID[type]
