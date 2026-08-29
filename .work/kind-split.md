@@ -172,3 +172,52 @@ one (the `shapeOfObjectLiteralAst` relocation avoided it by construction).
 ir.js/type.js/kind-traits.js relationships unchanged (kind.js's submodules
 import from kind-traits.js only, never the reverse; ir.js and
 src/type/expr-type.js import FROM kind.js's barrel only).
+
+## 6. Merge with main + final battery
+
+Mid-slice, main advanced (33aafd82 → 9da6a37c: the assemble.js outlier
+split landing + the repo owner's own tree: compiler scope/dispatch/parser
+fixes, the Porffor adapter, bench-evidence fail-closed). None of those
+commits touch `src/kind.js` or `src/kind/*.js`. `git merge 9da6a37c`
+(merge commit `a18f0027`) applied clean — no conflicts, nothing to
+re-apply by hand.
+
+Full battery on the merged tree (`a18f0027`):
+- `node scripts/refactor-oracle.mjs check --ref 9da6a37c` — CLEAN, 560/560.
+- `node test/index.js` (TESTS minus `bench-c`, 92 names) — 3802/3803 pass,
+  1 pre-existing skip, 0 fail (28,301 assertions).
+- Kernel rebuilt fresh on the merged tree (`dist/jz.wasm`, same compile
+  call `scripts/build-dist.mjs` itself uses via `resolveSelfCompileBuild`).
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (plain invocation) —
+  3000/3001 pass, 1 skip, 0 fail (14,509 assertions).
+- `test/kernel-parity.js` — 3/3 (33/33 byte-identical WAT O2/O3).
+- `test/kernel-oracle.js` — 14/14 (605 assertions).
+- `test/data.js` standalone — 171/171 (935 assertions).
+- `scripts/bench-size.mjs --json` — exit 0, no anomalies across all 60
+  bench cases (jz/jz+wasmopt/AssemblyScript columns).
+
+**Kernel bytes, investigated in detail**: 17,817,535 → 17,817,536 (+1
+byte; baseline built fresh from a detached `9da6a37c` worktree using the
+identical build path, confirmed run-to-run DETERMINISTIC — rebuilding the
+unmodified baseline twice produced byte-identical hashes). The diff is
+NOT random: `cmp`/section-walking isolated it entirely to the `jz:schema`
+custom section content (same total length both sides, 330 differing bytes
+inside it — property-list registrations, e.g. an `enter` entry and a
+cluster of numeric-placeholder salted-dedup ids, appear at shifted
+positions) — every other section (types, imports, functions, code
+LENGTH, etc.) is byte-identical. Root cause: `jz:schema`'s ids are
+assignment-order-dependent ("entry index === schema id" per
+compile/index.js's own writer comment), and the self-host bundle's
+module-discovery order (`resolveModuleGraph`, DFS over imports) does not
+preserve a single file's internal top-to-bottom order once that file's
+functions are spread across several new modules — so the SET of
+registered shapes is unchanged, only when-first-encountered shifts for
+entries downstream of kind.js's split point. This is the same class of
+effect `.work/pipeline-minimality.md`'s own battery reports already show
+as normal slice-to-slice drift (kernel size fluctuating a few KB across
+otherwise behavior-preserving slices), not something specific to a
+mistake here. Confirmed inert, not just plausible: the full
+kernel-target suite (14,509 assertions, including every schema/object/
+Error-class-decoding test in the corpus) and kernel-oracle (605
+assertions targeting exactly this class of BigInt/shape mismatch) both
+passed 100% against the rebuilt kernel.
