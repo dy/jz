@@ -6,7 +6,7 @@
  * @module prepare/scope
  */
 
-import { REFS_THROUGH_ARROWS, T, refsName } from '../ast.js'
+import { REFS_THROUGH_ARROWS, T, refsName, walkAst } from '../ast.js'
 import { ctx, declGlobal, err } from '../ctx.js'
 import { mintLocal } from './ident-purity.js'
 import { freshPrepareId, funcLocalNames, loopLocalNames, prepState, scopes, staticConstScopes } from './state.js'
@@ -115,16 +115,17 @@ export function bodyCapturesName(node, name) {
  *  actually being marked, so an uncaptured loop var still takes the cheaper
  *  single-instance global path. */
 export function collectLoopDeclNames(node, out = new Set()) {
-  if (!Array.isArray(node)) return out
-  const op = node[0]
-  if (op === '=>') return out
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < node.length; i++) {
-      const d = node[i]
-      bindingNames(Array.isArray(d) && d[0] === '=' ? d[1] : d, out)
-    }
-  }
-  for (let i = 1; i < node.length; i++) collectLoopDeclNames(node[i], out)
+  walkAst(node, {
+    enter: (n) => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'let' || n[0] === 'const') {
+        for (let i = 1; i < n.length; i++) {
+          const d = n[i]
+          bindingNames(Array.isArray(d) && d[0] === '=' ? d[1] : d, out)
+        }
+      }
+    },
+  })
   return out
 }
 
