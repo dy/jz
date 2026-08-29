@@ -253,3 +253,108 @@ is a separate, already-existing module (the prior slice), not part of
 but contains no program-facts.js code. Recorded per this file's own
 convention (§1's dead-import note, `analyze-traversals.md`'s "both readings
 recorded" precedent) rather than silently reconciled or invented.
+
+## 7. Freeze audit (`refactor/program-facts-freeze` slice) — fact lifecycle table
+
+v1 architecture-convergence "facts frozen before consumers" (handoff's second-
+audit gate 5/finish-order item 1's sibling finding: "call-target authority +
+program-facts separation block v1 — they cause wrong-value classes"). Scope:
+`programFacts.paramReps`, `.callSites`, `.callTargets` — the three fields §3
+above named as mutated/stapled after publication. Method: grep-verified
+producer call graph (every `.set(`/`.push(`/`.length =`/`eligibleSites`
+retarget site across `src/`, plus every reader), not inferred from doc
+comments alone — several of §3's own claims turned out incomplete once
+checked against `plan/index.js`'s actual round structure (see 7.2).
+
+### 7.1 Fact lifecycle table
+
+| fact | producers, in true execution order | last producer WITHIN `plan()` | freeze point chosen | mechanism |
+|---|---|---|---|---|
+| `paramReps` | (1) `collectProgramFacts` publishes empty (`walk-facts.js:356`) → (2) `narrowSignatures` fixpoint (`narrow.js`, via `param-reps.js:122 ensureParamRep`) → (3) `analyzeParamNeverGrown` IFF `optimizing()` (`param-never-grown.js:143-147`, sets `.neverGrown`, can even mint a fresh per-func Map) → (4) `specializeBimorphicTyped`, UNCONDITIONAL, last stmt of plan round 2 (`variant.js:112` via `materializeVariant`) → (5) `specializeValKindDichotomy` IFF `optimizing()`, plan round 3 → (6) `speculateTypedParams` IFF `optimizing()`, plan round 3, right before the always-run-but-read-only `refineDynKeys` → **(7) `specializeUnionCursorParams`, called NOT from `plan()` but from `src/compile/index.js:2556` (off-limits file), during EMIT's `unionClones` phase, AFTER `plan()` has already returned** | end of plan round 3 (after step 6, or step 4 if `!optimizing()`) | end of plan round 3, i.e. between the round-3 `round(()=>{...refineModuleLetTypes})` call and round 4's `round(()=>{refineSlotIntCensus})` | read-only VIEW `{ get: k => paramReps.get(k) }` installed on `programFacts.paramReps` for rounds 4-5 + `solveRepresentationBoundaries`, then **restored to the real Map right before `plan()` returns** (both return points) so step (7)'s later legitimate write keeps working unchanged — see 7.2 |
+| `callSites` | (1) `collectProgramFacts` builds via the whole-program walk (`walk-facts.js` `f.callSites.push`, ×2) → (2) `narrowSignatures` entry: `filterLiveCallSites` truncates in place (`narrow.js:63-87`, `callSites.length = w`) → (3) entry-level `.callee`/`node[1]` retarget via `materializeVariant`'s `eligibleSites`, from `specializeFixedRestCalls` (early-plan, pre-narrowing — reads the PRE-filter census, legitimately), `specializeBimorphicTyped` (round 2), `specializeValKindDichotomy` (round 3) — `speculateTypedParams` passes `eligibleSites:[]`, no retarget | end of plan round 3 | same point as `paramReps` | `Object.freeze(callSites)` (array) + `Object.freeze()` each entry — **permanent, no restore needed**: grep-confirmed `specializeUnionCursorParams` (the one later EMIT-phase writer) never destructures/touches `programFacts.callSites` at all, so unlike `paramReps` this fact IS fully closeable for the whole program run, not just within `plan()` |
+| `callTargets` | (1) `buildCallTargetIndex` (`call-target-index.js:261-306`) returns `Object.freeze({resolveMember})` — value already sound/frozen at construction | `plan/index.js:230`, the ONLY `programFacts.X = ` staple-on site anywhere in `src/compile/` (grep-verified — zero others, including inside `narrow.js`) | immediately at `plan/index.js:230-231` | value was already frozen; the actual defect is the CONTAINER (`programFacts` itself has no closed shape) — fixed via a `DBG_INVARIANTS`-gated `assertProgramFactsShape` allowlist check, not a container freeze (see 7.3 for why `Object.seal` is unusable here) |
+
+### 7.2 Readers, and the premise this audit corrected
+
+Full-repo grep of every `paramReps`/`callSites` reader outside `narrow.js`
+(`src/compile/plan/scope.js`, `program-facts/slot-kind-census.js`,
+`program-facts/slot-int-census.js`+`shared.js`, `inplace-store.js`,
+`representation-plan.js`, `analyze/struct-inline.js`, `analyze/union-inline.js`,
+`plan/inline.js`, `plan/literals.js`, `dyn-closure-tables.js`,
+`plan/advise.js`, emit-time `compile/index.js`) — **no reader was found
+reading either fact before its relevant producer settled**. The two
+early-plan `callSites` readers (`inlineHotInternalCalls`,
+`specializeFixedRestCalls`, both pre-narrowing) legitimately want the raw,
+pre-filter census (inlining off the original call graph); every
+post-narrowing reader already runs in plan round 2+ or later. So this audit
+found no live wrong-VALUE bug — the finding is that the architecture is
+sound today only by pass-ORDERING DISCIPLINE, not by construction, which is
+exactly gate 5's complaint ("a shared mutable bag" that the next edit can
+silently misuse).
+
+The one place this audit's own evidence corrected the task brief's premise:
+the brief named `narrowSignatures` as `paramReps`'s last producer. Tracing
+every `materializeVariant({..., paramReps, ...})` call site
+(`variant.js:95-113` writes `paramReps.set(cloneName, cloneReps)` whenever
+`paramReps` is passed) shows FOUR more writers after `narrowSignatures`
+returns: `specializeBimorphicTyped` (round 2, unconditional),
+`specializeValKindDichotomy` + `speculateTypedParams` (round 3, both
+`optimizing()`-gated), and **`specializeUnionCursorParams`**, which is not
+called from `plan()` at all — its one call site is `src/compile/index.js:2556`
+(`unionClones`, inside `analyzeFuncForEmit`'s post-`plan()` batch), an
+off-limits file per this slice's own scope. `paramReps`'s true lifecycle
+therefore spans TWO pipeline stages (PLAN, closed at round 3; EMIT, reopened
+by union-cursor specialization for newly-materialized clone functions only)
+— "one documented producer phase" holds for PLAN's own contribution but not
+for the whole program run. This is reported, not papered over: the freeze
+below protects the portion this slice can reach (plan()'s own rounds 4-5 +
+`solveRepresentationBoundaries`) and hands back the live, mutable Map,
+unwrapped, before `plan()` returns, so the EMIT-phase writer is unaffected.
+`callSites` has no such second stage (7.1) and is frozen for good.
+
+### 7.3 Why the mechanism is a plain read-only view, not `Proxy`/`Object.seal`
+
+`src/compile/plan/index.js` and everything it imports (`program-facts/*.js`,
+`narrow.js`, `variant.js`) are reachable from `scripts/self.js` →
+`src/compile/index.js` → `plan()`, i.e. part of the self-hosted kernel's own
+module graph — this slice's code is itself compiled BY jz when building
+`dist/jz.wasm`, not just run by it. Three subset limits, grep-verified before
+picking a mechanism (the wrong pick would either silently no-op or break the
+kernel build outright):
+
+- **No `Proxy`.** `src/session-views.js:12-13`: "jz registers no Proxy global
+  at all, in any module/*.js"; `src/ctx.js:173-175` (`registerName`'s own doc):
+  "Proxy traps aren't in the self-compilable subset." A throw-on-write Proxy
+  wrapper is not merely costly here, it is inexpressible.
+- **`Object.freeze` is a no-op under self-host.** `module/object.js:294-299`:
+  "Object.freeze: identity passthrough — jz objects have no per-property
+  [protection]"; `src/compile/function-plan.js:135` names the exact same
+  asymmetry as an ALREADY-ACCEPTED tradeoff elsewhere ("logical deep
+  immutability in native JS and the self-compile, where Object.freeze is
+  identity"). Freezing `callSites` (7.1) is real under native `node
+  test/index.js` and inert-but-harmless self-hosted — matching
+  `call-target-index.js`'s own precedent (`Object.freeze({resolveMember})`,
+  already shipping), not a new risk.
+- **`Object.seal`/`Object.preventExtensions` are not implemented at all** —
+  zero registrations anywhere in `module/*.js` (grep-verified). Calling
+  either from kernel-reachable code risks an outright self-host compile
+  failure (the `Object.defineProperty` precedent at `module/object.js:745-746`
+  shows an unregistered-shape builtin becomes a hard `err(...)`), so
+  `programFacts`'s "closed shape" (7.1's `callTargets` row) cannot be
+  enforced via seal.
+
+The chosen `paramReps` mechanism — a plain frozen object exposing only
+`{ get }` — sidesteps all three: it needs no Proxy trap and no freeze
+semantics, because its protection comes from ordinary property lookup (a
+caller reaching for `.set` finds no such method and gets a plain "not a
+function" TypeError) — identical behavior natively and self-hosted, and the
+same idiom `call-target-index.js` already proves self-hostable
+(`Object.freeze({resolveMember})`). `programFacts`'s shape check is a
+`DBG_INVARIANTS`-gated `Object.keys(programFacts)` allowlist scan (`Object.keys`
+IS implemented, `module/object.js:429`) — mirrors the existing
+`assertValKindConsistent`/`assertMidCompile` convention
+(`narrow.js:2891` etc., `session-views.js:43-46`) exactly: opt-in via
+`JZ_DEBUG_INVARIANTS=1`, zero cost when unset, real value in dev/CI.
+
+Implementation follows in `src/compile/program-facts/freeze.js` +
+`src/compile/plan/index.js` call sites (this slice's own commits).
