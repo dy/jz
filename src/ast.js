@@ -342,7 +342,7 @@ export function setCallArgs(node, args) {
 }
 
 /** Unwrap handler/rest `args` when the sole element is a comma-group. */
-export function spreadArgs(args) {
+function spreadArgs(args) {
   if (args.length === 1 && Array.isArray(args[0]) && args[0][0] === ',') return args[0].slice(1)
   return args
 }
