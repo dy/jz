@@ -238,7 +238,7 @@ function constPropAliases() {
 }
 
 /** Map a call-callee shape to the VAL kind it asserts under positive sense, or null. */
-export function predicateRefinement(callee) {
+function predicateRefinement(callee) {
   if (callee === 'Array.isArray') return VAL.ARRAY
   if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Array' && callee[2] === 'isArray')
     return VAL.ARRAY
