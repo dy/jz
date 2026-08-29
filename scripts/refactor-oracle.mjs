@@ -135,6 +135,25 @@ const KERNEL_PARITY_CORPUS = {
   arr: `export let rev = (n) => { let a = []; for (let i = 0; i < n; i++) a.push(i * 2); let s = 0; for (let i = a.length - 1; i >= 0; i--) s += a[i]; return s }`,
   fold: `export let f = () => 0.1 + 0.2 - 0.3`,
   mfold: `export let g = () => Math.sqrt(9) + Math.abs(-2)`,
+  eqzero: `
+const dispatch = (op, x, out) => {
+  if (op === 0) out[0] = x + 11
+  else if (op === 1) out[0] = x - 7
+  else if (op === 2) out[0] = Math.imul(x, 3)
+  else if (op === 3) out[0] = x ^ 85
+  else if (op === 4) out[0] = x | 256
+  else out[0] = -1
+  return out[0]
+}
+export let chain = (n, x) => {
+  let out = new Int32Array(1), sum = 0
+  for (let i = 0; i < n; i++) sum += dispatch(i % 6, x + i, out)
+  return sum
+}
+export let masked = (x) => (x & 7) === 0 ? 101 : 202
+export let reversed = (x) => 0 === Math.imul(x, 3) ? 303 : 404
+export let main = () => masked(8) + reversed(0)
+`,
   boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
 export let f = (s) => g(s) === false`,
   nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,

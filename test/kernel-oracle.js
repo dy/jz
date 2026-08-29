@@ -70,6 +70,12 @@ const AGREE = [
   { name: 'dict', src: CORPUS.dict, calls: [{ fn: 'count', args: ['banana'] }, { fn: 'count', args: [''] }] },
   { name: 'arr', src: CORPUS.arr, calls: [{ fn: 'rev', args: [0] }, { fn: 'rev', args: [7] }] },
   { name: 'mfold', src: CORPUS.mfold, calls: [{ fn: 'g', args: [] }] },
+  { name: 'eqzero', src: CORPUS.eqzero, calls: [
+    { fn: 'chain', args: [0, 9] }, { fn: 'chain', args: [7, 9] }, { fn: 'chain', args: [12, -4] },
+    { fn: 'masked', args: [-8] }, { fn: 'masked', args: [7] }, { fn: 'masked', args: [8] },
+    { fn: 'reversed', args: [-1] }, { fn: 'reversed', args: [0] }, { fn: 'reversed', args: [1] },
+    { fn: 'main', args: [] },
+  ] },
   // Self-compile miscompile #4/#5 (kernel-parity.js's audit-#5 shapes): nested
   // same-family typed-array construction and TypedArray.from with a nested
   // literal element. Both were fixed at the closure-capture-before-nested-emit

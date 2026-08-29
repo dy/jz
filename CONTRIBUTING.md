@@ -150,9 +150,10 @@ fast and at least as small as the alternatives.** Concretely, enforced by
   on every comparable case, and ≤ it on geomean. (Porffor left this axis with its
   wasm target; its native binary sizes read on the bench page's native band.)
 - **Codegen slack**: `wasm-opt -Oz` should find little to remove in JZ's own
-  output — whatever it shrinks is latent size headroom. Gated with margin today
-  (`WASMOPT_SLACK_MIN=0.70` in `test/bench.js` — ~25–30% slack on size builds);
-  target is 0.95+, ratcheted down as codegen tightens.
+  output — whatever it shrinks is latent size headroom. Gated
+  (`WASMOPT_SLACK_MIN=0.90` in `test/bench.js` — geomean ~3% slack on size
+  builds, worst case ~9%; see `.work/wasm-opt-slack.md` for the per-class
+  attribution); target is 0.95+, ratcheted down as codegen tightens.
 - **Correctness floor**: `test/differential.js` fuzzes jz-compiled wasm against
   the same source run as plain JS — "smallest/fastest" never via a wrong answer.
 - **Compiler-efficiency floor** *(v1 release blocker)*: full recursive jz×jz must

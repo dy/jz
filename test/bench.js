@@ -190,8 +190,10 @@ const NATIVE_GEOMEAN_MAX = 1.05
 // what's marked here. Promote an entry win→(delete comment) as fixes land; the
 // prose stays useful as attribution even after the pin itself is redundant.
 // jz now runs ~1% larger than `asc -Oz` (geomean) on the kernels; only `biquad`,
-// `mat4`, `tokenizer` still trail (~1.1–1.2×). wasm-opt finds ~25-30% slack —
-// single-use runtime-helper inlining + merging `$f$exp` wrappers is the next lever.
+// `mat4`, `tokenizer` still trail (~1.1–1.2×). wasm-opt finds ~3% slack (geomean,
+// worst case `shapes` ~9%; see `.work/wasm-opt-slack.md` for the per-class
+// attribution — no single dominant lever on the bench-kernel corpus, mostly
+// diffuse and concentrated in the largest/most-complex specimens).
 const SIZE = {
   slices:         { as: 'todo' },
   trace:          { as: 'todo' },
@@ -266,9 +268,13 @@ const SIZE = {
 }
 const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
-// remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
-// with margin — shrink the budget as codegen tightens.
-const WASMOPT_SLACK_MIN = 0.70
+// remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Ratcheted 0.70→0.90
+// (`.work/wasm-opt-slack.md`): the 0.70 floor was set 2026-05-15 and never
+// revisited — fresh `scripts/bench-size.mjs --json` measurement at the time of
+// this ratchet found geomean slack already down to ~3% and worst case (`shapes`)
+// at 0.906, three-plus months of codegen work after the constant was set. 0.90
+// sits just below that measured worst case — shrink further as codegen tightens.
+const WASMOPT_SLACK_MIN = 0.90
 
 // Absolute byte backstop — catches gross codegen bloat independent of competitors.
 // (Sizes here are the default-optimize bench.mjs build, not `optimize:'size'`.)
