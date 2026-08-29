@@ -137,3 +137,50 @@ a5146de8` (140 specs × O0/O2/O3/size) + `node test/kernel-parity.js`
 box-tag-shaped BigInt pins) before their commit, given phase-c-unification's
 explicit warning that this exact family decides self-host box-tag
 constants.
+
+## Status — what actually landed (updated post-execution)
+
+All 11 families landed as 11 separate pure-move commits, leaf-first
+(`068b3743`…`328df592`), each individually gated clean (oracle 560/560,
+kernel-parity 33/33; `bigint.js`/`sentinels.js`/`coerce.js` additionally
+`test/data.js` 171/171). Every member's text was diffed directly against a
+fresh extraction from `a5146de8` before assembling its new file — zero
+drift beyond a handful of orphaned `// === section ===` divider comments
+(artifacts of earlier moves stripping away what used to sit between a
+divider and the next surviving declaration), all tracked and swept.
+
+Two real bugs were caught by the process, not the corpus: numeric.js
+shipped once without `isLeaf` (§2 export list above expected it to be a
+non-issue; the used-vs-imported symbol audit is now mandatory *before*
+building each new file, not just after a test failure surfaces it) and a
+regex-`lastIndex`-reuse bug in the scratch dependency-graph script produced
+false negatives on the first pass (fixed before it drove any real
+decision — see the session's own tool history, not committed since it's
+throwaway tooling).
+
+Barrel cleanup landed as `8998c700`: every `import {...}; export {...}`
+pair collapsed to a single `export {...} from` once `src/ir.js`'s own body
+reached zero declarations (nothing left to consume a local binding), the
+~15 now-fully-unused top-of-file imports dropped, and 9 orphaned section
+dividers swept (4 kept — still accurate in their new home). Exported-name
+SET verified byte-identical before/after (116 names).
+
+`buildRefcount`/`nextLocalId` retired onto `walkAst` in `93cfcf50`,
+independently verified beyond the oracle's 140-spec corpus by a 1012-case
+differential harness (deliberate shared-subtree aliasing, non-contiguous
+ids, fuzz) — 0 mismatches. `isNullLit`/`isUndefLit` dropped from the
+barrel's public re-export list in `8697e400` (grep-verified zero external
+importers repo-wide; `package.json`'s own `exports` map already excludes
+`src/` from the published subpath surface) — the underlying functions are
+untouched, still used internally by `isNullishLit`.
+
+Final battery (full detail in the session's closing report): native suite
+excl. bench-c 3782/3781/0/1 (28044 assertions); kernel build succeeds
+(17,787,829 bytes vs baseline 17,788,852 — a ~0.006% delta from the
+self-compiled program's own module-graph gaining 11 files, i.e. jz's own
+bundler now concatenates in a different file order, shifting some
+LEB128-encoded function-index widths; not a behavior change — kernel-parity
+and kernel-oracle both fully green against this exact binary); kernel-target
+plain suite; kernel-parity 33/33; kernel-oracle 14/14 (605 assertions);
+`bench-size.mjs --json` byte-identical to baseline; `test/pointers.js`
+73/73 and `test/data.js` 171/171 standalone.
