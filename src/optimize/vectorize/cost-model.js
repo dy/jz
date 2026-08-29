@@ -1,6 +1,5 @@
-import { cloneNode, nodeEqual as exprEq, walkAst } from '../../ast.js'
-import { normTee } from './idioms.js'
-import { LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
+import { walkAst } from '../../ast.js'
+import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
 // ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2): a
@@ -218,51 +217,3 @@ export const gmNodeCount = (n) => {
   for (let i = 1; i < n.length; i++) c += gmNodeCount(n[i])
   return c
 }
-
-// The runtime-alias-versioning scan itself (see the doc above) — shared verbatim by tryVectorize
-// and tryStencil (they differed only in HOW each proves a same-base element delta constant-
-// foldable: tryVectorize substitutes the IV at 0, tryStencil peels a trailing +/- k and structurally
-// compares the rest — `foldDelta` is that one piece, passed in). Returns `{ bail: true }` when the
-// caller must decline outright (a mismatch that is provably NOT a disjoint runtime distance, or an
-// unrepresentable memarg, or an oversized body); otherwise `{ bail: false, aliasGuards }`, where
-// `aliasGuards` is null (every access pair matched cleanly, or folded disjoint for free — no
-// versioning needed) or the array of `i32.or` disjointness clauses to AND together into the guard.
-export function computeAliasGuards(sites, stride, laneType, body, aliasVersion, foldDelta) {
-  const elemKey = (s) => `${JSON.stringify(normTee(s.idx))}@${s.memBytes / stride}`
-  const lanesForGuard = LANE_INFO[laneType].lanes
-  const guards = [], seenPairs = new Set()
-  let sawMismatch = false, unversionable = false, bodyTooBig = null   // lazy: only sized once actually needed
-  for (let i = 0; i < sites.length; i++) {
-    const st = sites[i]
-    if (st.kind !== 'store') continue
-    for (let j = 0; j < sites.length; j++) {
-      if (i === j) continue
-      const s = sites[j]
-      if (!exprEq(normTee(s.base), normTee(st.base)) || elemKey(s) === elemKey(st)) continue
-      const pk = i < j ? `${i}|${j}` : `${j}|${i}`
-      if (seenPairs.has(pk)) continue
-      seenPairs.add(pk)
-      if ((st.memBytes - s.memBytes) % stride !== 0) { sawMismatch = true; unversionable = true; continue }
-      const constDelta = (s.memBytes - st.memBytes) / stride
-      const foldedDelta = foldDelta(s.idx, st.idx)
-      if (foldedDelta != null) {
-        // Fully compile-time: resolve now, never touches `aliasVersion`/size gates — a
-        // provably-disjoint constant offset costs NOTHING (no guard, no clone), matching the
-        // zero-cost path every ordinary elemKey MATCH already gets.
-        if (Math.abs(foldedDelta + constDelta) >= lanesForGuard) continue
-        sawMismatch = true; unversionable = true; continue
-      }
-      sawMismatch = true
-      if (bodyTooBig == null) bodyTooBig = body.reduce((n, stmt) => n + gmNodeCount(stmt), 0) > ALIAS_VERSION_MAX_BODY_NODES
-      if (!aliasVersion || bodyTooBig) { unversionable = true; continue }
-      let delta = ['i32.sub', cloneNode(s.idx), cloneNode(st.idx)]
-      if (constDelta !== 0) delta = ['i32.add', delta, ['i32.const', String(constDelta)]]
-      guards.push(['i32.or',
-        ['i32.le_s', delta, ['i32.const', String(-lanesForGuard)]],
-        ['i32.ge_s', delta, ['i32.const', String(lanesForGuard)]]])
-    }
-  }
-  if (sawMismatch && unversionable) return { bail: true }
-  return { bail: false, aliasGuards: sawMismatch ? guards : null }
-}
-
