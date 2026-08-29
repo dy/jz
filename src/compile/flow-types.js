@@ -38,7 +38,6 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 // closure param disambiguates BigInt-vs-Number (watr's uleb/limits `v => {
 // if (typeof v === 'bigint') return v; … return BigInt(str) }`).
 const TYPEOF_CODE_TO_VAL = { [TYPEOF.number]: VAL.NUMBER, [TYPEOF.string]: VAL.STRING, [TYPEOF.function]: VAL.CLOSURE, [TYPEOF.bigint]: VAL.BIGINT }
-export { TYPEOF_CODE_TO_VAL }
 
 /** Walk a boolean condition gathering refinements implied for the `sense` branch
  *  (sense=true = then-branch, sense=false = else-branch). `out` is a Map mutated
@@ -258,7 +257,7 @@ export function predicateRefinement(callee) {
  *  (.work/todo.md §deletion-sweep §3(b)) — a positive `instanceof` here proves OBJECT,
  *  but that's not new information a generic OBJECT-kind receiver didn't already
  *  have, so there's no refinement value in adding it. */
-export function instanceofRefinement(rhs) {
+function instanceofRefinement(rhs) {
   if (rhs === 'Array') return VAL.ARRAY
   if (rhs === 'Map') return VAL.MAP
   if (rhs === 'Set') return VAL.SET
