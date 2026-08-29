@@ -75,7 +75,7 @@ const SOURCES = []
 
 /** Register an evidence source. Insertion order = precedence: earlier sources
  *  win the merge for a given name. */
-export const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
+const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
 
 /** Infer per-name facts by running every registered evidence source.
  *  Returns Map<name, fact>; callers pass `fact` straight to updateRep.
