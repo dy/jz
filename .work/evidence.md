@@ -1,8 +1,14 @@
-# JZ — design & architecture
+# evidence.md — design record + measurement ledger
 
-The decided architecture and design rationale behind JZ: representation, allocator,
-type inference, the native pipeline, and the principles that fix them. Status markers
-in headings: **[x]** = decided / reflected in the code, **[ ]** = designed or deferred.
+Formerly `research.md` (renamed, history preserved via `git mv`); still
+append-only. The decided architecture and design rationale behind JZ:
+representation, allocator, type inference, the native pipeline, and the
+principles that fix them, followed by the dated, append-only measurement
+log — attributions, hunts, and evidence entries — that is this file's
+primary growth. Status markers in headings: **[x]** = decided / reflected
+in the code, **[ ]** = designed or deferred. `memcheck-results.csv` sits
+next to this file as the memory-goal evidence in CSV form (data, not
+prose); regenerated per plan.md's reference-refresh commands.
 
 Audience & persona material lives in [`.work/marketing.md`](../.work/marketing.md)
 (canonical) and the expansion map in [`.work/ecosystem.md`](../.work/ecosystem.md);
@@ -24246,3 +24252,110 @@ is no longer "walk local defs": it is scope-stable result/kind provenance for
 calls, member/element reads and globals—preferably stable HIR IDs plus a
 revisioned analysis manager. Only after that fact exists can local points-to
 consume it without duplicating another mini type system.
+
+## §Porffor alpha 3 — same-machine measurements (2026-08-27)
+
+Reference: Porffor `alpha-3`, commit `03b6b54f`, released 2026-08-27. JZ
+reference: `4c38662f`. Apple M4 Max, Node 25.9.0, Homebrew clang 19.1.6.
+Same-machine local diagnostics, not a replacement for the full paired
+release evidence. Analysis, transfer recommendations, and the ranked work
+list this data supports are in `audit.md` §10.
+
+### Self-compilation
+
+| operation | input | result | wall | peak RSS |
+|---|---:|---:|---:|---:|
+| Porffor module bundling (`node selfhosted/build.mjs`) | source graph | 2,102,661 B bundle | 0.38 s | 208 MB |
+| Porffor selfhost → C (`porf c --compress-data`) | 2,102,661 B / 105,069 AST nodes | 11,230,057 B C | 1.94–1.95 s (7/7) | 251 MB |
+| Porffor selfhost → native (`porf native --compress-data`) | same | 5.9 MB executable | 203.77 s | 1.89 GB |
+| JZ hosted build → executable Wasm (`self-compile-build.mjs`) | 6,594,483 B / 411,488 AST nodes / 162 modules | 17,786,782 B Wasm | 344.02 s baseline; 348.42 s profiled | 4.33–4.34 GB peak footprint |
+| JZ Wasm-hosted full jz×jz | same 162 modules | **trap, zero output** | 10.465–11.448 s in compile; 12.93–14.21 s process | Wasm memory reached 4 GiB |
+
+```json
+{"modules":162,"outcome":"trap","error":"unreachable","outputBytes":0,"memoryBytes":4294967296,"heap":-32,"wallMs":11448}
+```
+
+JZ currently has no successful self-compilation time. It fails after
+roughly 10.5–11.5 s at the wasm32 ceiling. Even before completion, its
+source-normalized self-host rate is about 1.9× slower than Porffor's
+C-emission rate and its resident memory per input byte is about 3.3×
+worse. The hosted shipping-artifact build is about 1.7× slower and
+2.1–2.3× heavier than Porffor's full native build, depending on RSS vs
+peak-footprint accounting. Input scale does not explain the compiler gap:
+JZ has 3.14× the source bytes and 3.92× the parsed nodes, not the roughly
+176× hosted wall ratio versus Porffor's C-emission phase.
+
+### Where JZ spends the hosted 348 seconds
+
+A diagnostic run passed the existing host-only phase sink to `compile()`
+and produced byte-identical `dist/jz.wasm` (`341fdfcf…`):
+
+| phase | wall | share of 348.42 s process wall |
+|---|---:|---:|
+| `watOptimize` | 119.25 s | 34.2% |
+| `snapshotInit` | 100.40 s | 28.8% |
+| final `watrCompile` | 82.25 s | 23.6% |
+| semantic `compile` total | 42.15 s | 12.1% |
+| └ `optimizeModule` | 26.82 s | nested in `compile` |
+| └ planning | 4.52 s | nested in `compile` |
+| prepare | 0.90 s | 0.3% |
+| pull stdlib | 0.68 s | 0.2% |
+
+About 87% is after JZ has already built its semantic module: whole-WAT
+optimization, the snapshot probe encode/run/rewrite, and final binary
+encoding.
+
+### Compiler-core adapter verification (`npm run test:porffor-core`)
+
+The original verifier reported 50.73–54.54 s total wall at up to 1.14 GB
+peak RSS, covering 24 compiler-core executions (7 unadapted Node, 7
+adapted Node, 10 Wasm). Split timing on one current run: 53.897 s
+compiling, 4.6 ms instantiating, 55.0 ms verifying (53.9 ms across all 24
+executions) — the old total approximated JZ compile time but cannot be
+divided by Porffor's 1.95 s self-host C-emission time (inputs and output
+stages differ). All three tiers (unadapted Node core, adapted Node core,
+JZ-compiled core) emitted identical C for:
+
+| input | C bytes | SHA-256 |
+|---|---:|---|
+| empty source | 93,415 | `4189c1fa84714e79c109b61b9984c65158effa2f220e2e08ba7bd5969b9aabb9` |
+| `let x = 40 + 2; x` | 93,490 | `3e8ddb7ba1c31520597c4de17f2390a7049afaff087aca5d410afad2beeae594` |
+| `let x = 6 * 8; x` | 93,490 | `df42aa8b120018db2eb7482f294131463472d0a776439f0d888d2a9f97df67bf` |
+| `var x = 1; var x = 2; x` | 93,513 | `db8914715ed849a6a52425e6c476d472c9066cd097d5e4420a7809014faf54e3` |
+| `let value = /a+/` | 93,651 | `a714c3545431ab1c1363eea78b4d46e87b54bf06e49271994370790964ddac1e` |
+| module `export default 1` | 93,571 | `154fa1faf6010b0368c89b770a57d6ec4a475f0a08f518e5d90bd55b6f8ad1b8` |
+
+A to A was stable, A to B changed output, and module mode reset before
+the next script compile. Invalid `/a{2,1}/` raised SyntaxError in all
+three tiers. The same instance then compiled A to its original bytes. The
+generated adapter is deterministic, SHA-256
+`c2c1bb379ad069e8d64cfca6a5b267ad11fe7b29443bca9f9588a4e6b9f74a6f`. At
+`45987028`, a clean build measured 17,777,844 bytes; the same revision
+plus the working-tree compiler changes measured 17,820,098 bytes, a
+42,254-byte increase. The hot-loop ratchet stayed at +0 and every golden
+output-size gate passed.
+
+### Precompiled-builtins generation
+
+Measured generation: 0.741 s compiler phases / 1.20 s process, 301 MB
+peak. The resulting `builtins_precompiled.js` is 1.19 MB and replaces
+688 KB / 18,404 lines of builtin source during normal compilation.
+
+### Competitive gates — anchored alpha-3 refresh
+
+The anchored alpha-3 refresh produced 43 accepted-checksum rows, including
+`synth`'s documented FMA result. Against the `4c38662f` JZ-row refresh, JZ
+won all 43: `porf-native/jz` runtime geomean **21.722×**, narrowest win
+**1.865×** (`synth`). JZ artifacts were smaller on all 43:
+`porf-native/jz` artifact-byte geomean **63.865×**, narrowest margin
+**4.981×** (`provenance`). Larger ratios favor JZ. Porffor had 14
+checksum-divergent rows and three failed lab rows (`watr`, `jessie`,
+`jz`) — retained as failures, never counted as wins.
+
+The long JZ self-lab compile pushed system swap to 4.20 GB, beyond the
+committed 4 GB validity bound. Anchor rows still passed and the Porffor
+margin is far outside noise, but the mixed snapshot is not
+release-certified. Compiler source advanced after the JZ rows were
+measured, so freshness is also red. Remeasure after reboot and source
+freeze (plan.md's reference-refresh commands) — no validity threshold was
+loosened.
