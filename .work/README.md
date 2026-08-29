@@ -13,6 +13,15 @@
 - `porffor-alpha3-audit.md`: Porffor source/self-host comparison, compiler-core
   adapter contract, and ranked transferable optimizations.
 
+## Refactor ledgers — pipeline minimality (every slice byte-identical under `refactor-oracle.md`)
+`refactor-oracle.md` (the gate: 140 specs × 4 levels), `vectorize-split.md`,
+`optimize-split.md`, `analyze-traversals.md`, `program-facts-split.md` (§7
+facts lifecycle), `representation-plan-split.md`, `type-split.md`,
+`assemble-outliers.md`, `ir-split.md`, `stdlib-generators.md`,
+`stdlib-math.md`, `stdlib-string-array.md` — landed. `emit-split.md`,
+`narrow-split.md`, `prepare-split.md` — structure maps (base b900cd09; line
+numbers stale, family plans current), splits not yet cut.
+
 ## Historical but cited from code comments (do not move; citations would dangle)
 carrier-representation-design, lattice-design, bigint-retirement-design,
 printer-trio, compile-session-design, closure-plan-design, ctxfunc-survey,
