@@ -8,8 +8,8 @@
 //   peak          max V8/jz speedup (the best single-case SIMD win)
 //   assize        MEDIAN of jz.wasm / as.wasm bytes (apples-to-apples binary↔binary)
 //   *mem          geomean of target.memKb / jz.memKb (peak process RSS per run)
-// Parity-DIFF runs (a target that produced the WRONG answer) are excluded — speed on a
-// wrong result isn't a fair comparison (matters for Porffor, which miscompiles several).
+// Rows count only with `ok` or the documented `fma` checksum. Failed, wrong, and
+// unclassified rows are not evidence for speed, size, or memory comparisons.
 // The LAB set — jz-internal probe cases: the self-compile compiler rows (jz/watr/
 // jessie compiling code) and the JS-only intrinsic probes (color* — pow/cbrt/
 // exp2/atan2 gap trackers with no cross-language ports). They answer jz-internal
@@ -19,22 +19,32 @@
 // (README aggregate table), and headlineStats below (hero + strip).
 export const LAB = new Set(['watr', 'jessie', 'jz', 'colorconv', 'colorlch', 'colorlog', 'colorpq', 'deltae'])
 
+export const classifyBenchmarkChecksum = (checksum, reference, fma) =>
+  fma != null && checksum === fma ? 'fma'
+    : reference == null ? 'unclassified'
+      : checksum === reference ? 'ok' : 'DIFF'
+
+export const correctBenchmarkRow = row => !!row && row.status == null &&
+  (row.parity === 'ok' || row.parity === 'fma')
+
+export const timedBenchmarkRow = row => correctBenchmarkRow(row) &&
+  row.medianUs > 0 && Number.isFinite(row.medianUs)
+
 export function headlineStats(results) {
   const cases = Object.entries(results.cases || {}).filter(([id]) => !LAB.has(id)).map(([, c]) => c)
   const geo = a => { let p = 1, n = 0; for (const x of a) if (x > 0 && isFinite(x)) { p *= x; n++ } return n ? Math.pow(p, 1 / n) : null }
   const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[s.length >> 1] : null }
   const f = (x, d = 1) => x == null ? null : x.toFixed(d).replace(/\.0$/, '') + '×'
-  // A target row counts only when it actually ran (a self-compile row can carry a
-  // valid v8 but a failed jz — `medianUs` undefined — which would poison the math).
-  const ran = x => x && x.status !== 'fail' && isFinite(x.medianUs)
-  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t[tgt]) && t[tgt].parity !== 'DIFF') a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
+  // A row counts only after it ran and produced an accepted checksum. This applies
+  // to JZ too: a fast wrong JZ row must not inflate the headline.
+  const ratio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t[tgt])) a.push(t[tgt].medianUs / t.jz.medianUs) } return geo(a) }
   let peak = 0
-  for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t.v8) && t.v8.parity !== 'DIFF') peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
-  const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (t.jz?.bytes && t[tgt]?.bytes) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
+  for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t.v8)) peak = Math.max(peak, t.v8.medianUs / t.jz.medianUs) }
+  const sizeRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (correctBenchmarkRow(t.jz) && correctBenchmarkRow(t[tgt]) && t.jz.bytes > 0 && t[tgt].bytes > 0) a.push(t.jz.bytes / t[tgt].bytes) } return median(a) }
   // memory: geomean of target peak-RSS ÷ jz peak-RSS over correct cases (memKb —
   // whole-process footprint per run, see results.json meta.memory). Same shape as
   // the speed ratio so the strip/hero cells read identically: >1× = jz lighter.
-  const memRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (ran(t.jz) && ran(t[tgt]) && t[tgt].parity !== 'DIFF' && t.jz.memKb && t[tgt].memKb) a.push(t[tgt].memKb / t.jz.memKb) } return geo(a) }
+  const memRatio = tgt => { const a = []; for (const c of cases) { const t = c.targets; if (timedBenchmarkRow(t.jz) && timedBenchmarkRow(t[tgt]) && t.jz.memKb && t[tgt].memKb) a.push(t[tgt].memKb / t.jz.memKb) } return geo(a) }
   return {
     v8: f(ratio('v8')), peak: f(peak || null), porf: f(ratio('porf-native')), rust: f(ratio('rust-wasm')),
     jsc: f(ratio('jsc')),                    // jz vs JavaScriptCore (Safari's engine)

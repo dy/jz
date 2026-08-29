@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, execSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { cpus, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -7,14 +7,15 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { compile } from '../index.js'
 import { resolveModuleGraph } from '../src/resolve.js'
-import { renderBenchSvg } from '../scripts/bench-svg.mjs'
-import { LAB } from '../assets/headline.js'
+import { completeBenchSvgRun, renderBenchSvg } from '../scripts/bench-svg.mjs'
+import { classifyBenchmarkChecksum, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from './machine-state.mjs'
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(BENCH_DIR, '..')
 const LIB = join(BENCH_DIR, '_lib')
 const BUILD = process.env.JZ_BENCH_BUILD_DIR || join(tmpdir(), 'jz-bench')
+const WEB_DIR = process.env.JZ_BENCH_WEB_DIR || join(BENCH_DIR, 'web')
 const WABT_W2C_DIR = process.env.WABT_W2C_DIR || '/Users/div/projects/wabt/wasm2c'
 // wasm2c lowers v128/SIMD ops through the SIMDe header set (`#include <simde/wasm/simd128.h>`),
 // vendored in wabt's third_party. Without it on the include path, every SIMD-emitting
@@ -61,8 +62,8 @@ const SCRIPTC_BIN = process.env.SCRIPTC_BIN || 'scriptc'
 const GRAALJS_BIN = process.env.GRAALJS_BIN || 'graaljs'
 const SPIDERMONKEY_BIN = process.env.SPIDERMONKEY_BIN || ''
 const JSC_BIN = process.env.JSC_BIN || ''
-// Porffor: prefer the git checkout — the 2026 rewrite ("pre-alpha 1") lives on git
-// main and moves weekly, while npm's 0.61.x is the frozen pre-rewrite line. Same
+// Porffor: prefer the current git/release line (alpha 3 at the 2026-08-27
+// reference refresh), while npm's 0.61.x is the frozen pre-rewrite engine. Same
 // committed-absolute-path pattern as WABT_W2C_DIR; override via PORF_BIN.
 const PORF_GIT = '/Users/div/projects/porffor/porf'
 const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_GIT) ? PORF_GIT : 'porf')
@@ -73,10 +74,7 @@ const PORF_BIN = process.env.PORF_BIN || (existsSync(PORF_GIT) ? PORF_GIT : 'por
 // npm 0.61.x line prints a bare version number, so (pre-)alpha is the discriminator.
 let _porfNew = null
 const porfIsNew = () => {
-  if (_porfNew === null) {
-    try { _porfNew = /\b(pre-)?alpha\b/.test(execSync(`${PORF_BIN} --version 2>&1 || true`, { encoding: 'utf8', shell: true })) }
-    catch { _porfNew = false }
-  }
+  if (_porfNew === null) _porfNew = /\b(pre-)?alpha\b/.test(versionText(PORF_BIN))
   return _porfNew
 }
 
@@ -229,6 +227,36 @@ const versionText = cmd => {
     return ''
   }
 }
+// Porffor checkout identity for evidence metadata and the prep cache. Alpha 3's
+// `porf --version` still prints alpha 1, so clean checkouts use git HEAD. Dirty
+// checkouts are labeled and bypass persistent caching.
+let _porfIdentity
+let _porfCheckoutDirty = false
+const porfIdentity = () => {
+  if (_porfIdentity !== undefined) return _porfIdentity
+  const version = versionText(PORF_BIN).trim().split('\n')[0] || null
+  if (!version || !PORF_BIN.includes('/')) {
+    // Version text alone is not an artifact identity. A PATH entry can change
+    // between runs without changing that string, so never reuse its binary.
+    _porfCheckoutDirty = true
+    return (_porfIdentity = version)
+  }
+  try {
+    const git = args => execFileSync('git', ['-C', dirname(PORF_BIN), ...args],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    const head = git(['rev-parse', '--short', 'HEAD'])
+    _porfCheckoutDirty = !!git(['status', '--porcelain'])
+    let tag = null
+    try { tag = git(['describe', '--tags', '--exact-match', 'HEAD']) } catch { tag = null }
+    const release = tag ? tag.replaceAll('-', ' ') : version
+    return (_porfIdentity = `${release} [git ${head}${_porfCheckoutDirty ? ' dirty' : ''}${tag && version !== release ? `; cli ${version}` : ''}]`)
+  } catch {
+    // A path-backed compiler with no readable Git identity can change without
+    // changing its version text. Rebuild instead of trusting a persistent stamp.
+    _porfCheckoutDirty = true
+    return (_porfIdentity = version)
+  }
+}
 const canRun = cmd => {
   try { return spawnSync(cmd, ['--help'], { stdio: 'ignore' }).status === 0 }
   catch { return false }
@@ -295,6 +323,8 @@ const parseMaxRss = stderr => {
   m = stderr.match(/Maximum resident set size \(kbytes\): (\d+)/)   // GNU (linux): KB
   return m ? +m[1] : null
 }
+const positiveTiming = row => row?.medianUs > 0 && Number.isFinite(row.medianUs)
+
 const runProc = (argv, opts = {}) => {
   // Caveat for future opts.timeout users: with the wrapper, a timeout kill hits
   // time(1), which does not forward signals — the bench child would orphan and
@@ -321,12 +351,17 @@ const runProc = (argv, opts = {}) => {
 const pairedBuilt = new Set()
 let PAIRED_REUSE = false
 // Persistent cross-run prep cache: a rival toolchain rebuild (rustc/zig/asc/go,
-// seconds each) is pure waste when the case's sources haven't changed — with the
-// cache a measurement run is warmup + counted runs (~1s/case-target). Keyed on
-// the max mtime of the case's source dir vs a per-(target,case) stamp written
-// after a successful prep. jz* rows are NEVER cached (the compiler under
-// development changes constantly; its compiles are cheap). JZ_BENCH_REBUILD=1
-// forces every prep.
+// seconds each) is pure waste when neither case source nor the shared harness has
+// changed. Keyed on the max mtime of the case source, this file and bench/_lib,
+// plus a target identity where needed, vs a per-(target,case) stamp written after
+// successful prep. (The harness input matters: otherwise changing writeFlat or
+// benchlib silently reuses an old binary.) jz* rows are NEVER cached (the compiler
+// under development changes constantly; its compiles are cheap).
+// JZ_BENCH_REBUILD=1 forces every prep.
+const BENCH_HARNESS_MTIME = Math.max(
+  statSync(fileURLToPath(import.meta.url)).mtimeMs,
+  ...readdirSync(LIB).map(name => statSync(join(LIB, name))).filter(st => st.isFile()).map(st => st.mtimeMs),
+)
 const _srcMtimeMemo = new Map()
 const maxSrcMtime = (c) => {
   let m = _srcMtimeMemo.get(c.id)
@@ -343,15 +378,24 @@ const maxSrcMtime = (c) => {
 const tryRun = (id, c, prep, argv, opts = {}) => {
   try {
     mkdirSync(caseBuild(c), { recursive: true })
+    const { cacheInputMtime = 0, ...runOpts } = opts
     const key = `${id}:${c.id}`
     if (prep && !(PAIRED_REUSE && pairedBuilt.has(key))) {
       const stamp = join(caseBuild(c), `.prep-${id}`)
-      const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz')
-      const fresh = cacheable && existsSync(stamp) && statSync(stamp).mtimeMs > maxSrcMtime(c)
-      if (!fresh) { prep(); if (cacheable) writeFileSync(stamp, '') }
+      const identity = id === 'porf-native' ? porfIdentity() : ''
+      const cacheable = !process.env.JZ_BENCH_REBUILD && !id.startsWith('jz') &&
+        !(id === 'porf-native' && _porfCheckoutDirty)
+      const artifact = targets[id]?.bin?.(c)
+      let fresh = false
+      try {
+        fresh = cacheable && existsSync(stamp) && (!artifact || existsSync(artifact)) &&
+          statSync(stamp).mtimeMs > Math.max(maxSrcMtime(c), BENCH_HARNESS_MTIME, cacheInputMtime) &&
+          readFileSync(stamp, 'utf8') === (identity || '')
+      } catch { fresh = false }
+      if (!fresh) { prep(); if (cacheable) writeFileSync(stamp, identity || '') }
       pairedBuilt.add(key)
     }
-    const parsed = runProc(argv, opts)
+    const parsed = runProc(argv, runOpts)
     return parsed.error ? { id, error: parsed.error } : { id, ...parsed }
   } catch (e) {
     return { id, error: e.message }
@@ -366,6 +410,7 @@ const jzHostWasmPath = c => join(caseBuild(c), `${c.id}-host.wasm`)
 // a real deployment picks -Os for footprint-critical and speed for hot paths.
 const jzSizeWasmPath = c => join(caseBuild(c), `${c.id}-size.wasm`)
 const flatPath = c => join(caseBuild(c), `${c.id}-flat.js`)
+const porfFlatPath = c => join(caseBuild(c), `${c.id}-porf-flat.js`)
 const shermesBinPath = c => join(caseBuild(c), `${c.id}-shermes`)
 const porfNatPath = c => join(caseBuild(c), `${c.id}-porfnat`)
 const scriptcBinPath = c => join(caseBuild(c), `${c.id}-scriptc`)
@@ -533,7 +578,11 @@ const compileJzSelfIsolated = c => {
     throw new Error(`jz×jz self-compile compile failed: ${(r.stderr || r.stdout || '').trim().slice(0, 500)}`)
 }
 
-const writeFlat = c => {
+const flatInputs = new Set()
+const writeFlat = (c, { nativePerformance = false } = {}) => {
+  const path = nativePerformance ? porfFlatPath(c) : flatPath(c)
+  if (flatInputs.has(path)) return path
+  mkdirSync(caseBuild(c), { recursive: true })
   let out = `const __benchGlobal = typeof globalThis !== 'undefined' ? globalThis : this
 // Ambient shell globals, declared so TS-checked AOT hosts (scriptc) resolve the
 // bare names: a no-initializer top-level var never overwrites an existing
@@ -544,7 +593,13 @@ var print, preciseTime, dateNow
 // (scriptc) ship console natively so this branch never runs there, and a var
 // binding would shadow their builtin with an untyped alias behind dynamic fences.
 if (typeof __benchGlobal.console === 'undefined' && typeof print === 'function') __benchGlobal.console = { log: print }
-// Timer: JSC's shell exposes high-res preciseTime() (seconds) but a Spectre-clamped
+`
+  // Porffor already provides a high-resolution `performance`. Its alpha-3
+  // global-var lowering writes `undefined` into the existing global property
+  // before evaluating `var performance = globalThis.performance`, selecting
+  // this shim's Date.now fallback and quantizing sub-ms rows to 0/1000 µs.
+  // Omit the shell-only shim for that target; benchmark source is unchanged.
+  if (!nativePerformance) out += `// Timer: JSC's shell exposes high-res preciseTime() (seconds) but a Spectre-clamped
 // performance.now (~0.2ms) — too coarse for µs kernels; prefer preciseTime where present
 // (JSC, SpiderMonkey). Else the engine's own performance.now, else dateNow / Date.now.
 // Shims install as top-level var bindings, never globalThis property stores:
@@ -616,7 +671,15 @@ if (typeof TextEncoder === 'undefined') {
   } else {
     body += src.replace(/\bexport let main\b/, 'const main') + '\nmain()\n'
   }
-  writeFileSync(flatPath(c), out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') + body)
+  const contents = out + (/\bText(?:En|De)coder\b/.test(body) ? textCodecShim : '') + body
+  if (!existsSync(path) || readFileSync(path, 'utf8') !== contents) writeFileSync(path, contents)
+  flatInputs.add(path)
+  return path
+}
+const runFlat = (id, c, argv, prep = null, options) => {
+  const src = writeFlat(c, options)
+  return tryRun(id, c, prep ? () => prep(src) : null, argv(src),
+    prep ? { cacheInputMtime: statSync(src).mtimeMs } : {})
 }
 // esbuild is a devDependency used only by the flat-file writer for module-graph
 // cases — loaded lazily so plain corpus runs never touch it.
@@ -847,13 +910,13 @@ const targets = {
     name: 'JavaScriptCore (jsc)',
     available: () => !!jscBin(),
     bin: flatPath,
-    run: c => tryRun('jsc', c, () => writeFlat(c), [jscBin(), flatPath(c)]),
+    run: c => runFlat('jsc', c, src => [jscBin(), src]),
   },
   spidermonkey: {
     name: 'SpiderMonkey shell',
     available: () => !!spiderMonkeyBin(),
     bin: flatPath,
-    run: c => tryRun('spidermonkey', c, () => writeFlat(c), [spiderMonkeyBin(), flatPath(c)]),
+    run: c => runFlat('spidermonkey', c, src => [spiderMonkeyBin(), src]),
   },
   // Static Hermes — AOT JS → native via C/LLVM. Hand-run reference point:
   // build `shermes` from facebook/hermes (needs the LLVM toolchain) and point
@@ -862,10 +925,9 @@ const targets = {
     name: 'Static Hermes (shermes -O → native)',
     available: () => has(SHERMES_BIN),
     bin: shermesBinPath,
-    run: c => tryRun('shermes', c, () => {
-      writeFlat(c)
-      execFileSync(SHERMES_BIN, ['-O', flatPath(c), '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
-    }, [shermesBinPath(c)]),
+    run: c => runFlat('shermes', c, () => [shermesBinPath(c)], src => {
+      execFileSync(SHERMES_BIN, ['-O', src, '-o', shermesBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }),
   },
   // The ONE Porffor lane: `porf native` AOT-compiles JS through its C backend
   // and links a standalone binary (cc/clang, -flto) — the rewrite's shipping
@@ -877,10 +939,9 @@ const targets = {
     name: 'Porffor → native (porf native)',
     available: () => has(PORF_BIN) && porfIsNew(),
     bin: porfNatPath,
-    run: c => tryRun('porf-native', c, () => {
-      writeFlat(c)
-      execFileSync(PORF_BIN, ['native', flatPath(c), '-o', porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
-    }, [porfNatPath(c)]),
+    run: c => runFlat('porf-native', c, () => [porfNatPath(c)], src => {
+      execFileSync(PORF_BIN, ['native', src, '-o', porfNatPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
+    }, { nativePerformance: true }),
   },
   // scriptc (vercel-labs) — TS/JS AOT via the TypeScript checker + LLVM, the
   // native-band sibling of shermes/porf-native. Static by default: NO embedded
@@ -893,8 +954,7 @@ const targets = {
     name: 'scriptc → native (static)',
     available: () => has(SCRIPTC_BIN),
     bin: scriptcBinPath,
-    run: c => tryRun('scriptc', c, () => {
-      writeFlat(c)
+    run: c => runFlat('scriptc', c, () => [scriptcBinPath(c)], src => {
       // scriptc drives bare `clang` from PATH with no flag passthrough, so
       // macSysrootArgs' fix rides in as env instead: SDKROOT pins the real SDK
       // and CLANG_NO_DEFAULT_CONFIG drops Homebrew LLVM's baked config, whose
@@ -903,14 +963,14 @@ const targets = {
       const env = macSysrootArgs.length && !process.env.SDKROOT
         ? { ...process.env, SDKROOT: macSysrootArgs[1], CLANG_NO_DEFAULT_CONFIG: '1' }
         : process.env
-      execFileSync(SCRIPTC_BIN, ['build', flatPath(c), '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
-    }, [scriptcBinPath(c)]),
+      execFileSync(SCRIPTC_BIN, ['build', src, '-o', scriptcBinPath(c)], { cwd: BENCH_DIR, stdio: 'pipe', env })
+    }),
   },
   graaljs: {
     name: 'GraalJS',
     available: () => !!graalJsBin(),
     bin: flatPath,
-    run: c => tryRun('graaljs', c, () => writeFlat(c), [graalJsBin(), flatPath(c)]),
+    run: c => runFlat('graaljs', c, src => [graalJsBin(), src]),
   },
   jz: {
     name: 'jz → V8 wasm',
@@ -1046,10 +1106,9 @@ const targets = {
     name: 'Javy (QuickJS-in-wasm)',
     available: () => has('javy'),
     bin: javyWasmPath,
-    run: c => tryRun('javy', c, () => {
-      writeFlat(c)
-      execFileSync('javy', ['compile', flatPath(c), '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })
-    }, ['node', '--no-warnings', join(LIB, 'run-javy.mjs'), javyWasmPath(c)]),
+    run: c => runFlat('javy', c,
+      () => ['node', '--no-warnings', join(LIB, 'run-javy.mjs'), javyWasmPath(c)],
+      src => execFileSync('javy', ['compile', src, '-o', javyWasmPath(c)], { cwd: BENCH_DIR, stdio: 'pipe' })),
   },
   // TinyGo — the same .go sources as `go`/`go-wasm`, through LLVM instead of the gc
   // runtime: a much smaller/leaner wasm than `GOOS=wasip1`. A real wasm-band rival
@@ -1102,7 +1161,7 @@ const TARGET_CMDS = {
   jsc: 'jsc <case>-flat.js',
   shermes: 'shermes -O <case>-flat.js -o <case>',
   graaljs: 'graaljs <case>-flat.js',
-  'porf-native': 'porf native <case>-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
+  'porf-native': 'porf native <case>-porf-flat.js -o <case>-porfnat  (AOT via C, cc -flto) → run binary',
   scriptc: 'scriptc build <case>-flat.js -o <case>-scriptc  (static AOT: TS-checker typing + LLVM, no engine) → run binary',
   jz: "time: compile(src, { optimize: 'speed' }); size: compile(src, { optimize: 'size' }) → node (V8 wasm)",
   as: 'time: asc <case>.as.ts -O3; size: asc <case>.as.ts -Osize (--runtime stub --noAssert)',
@@ -1203,10 +1262,9 @@ for (const id of selectedCases) if (!caseById[id]) { console.error(`unknown case
 // Stored evidence, loaded once up front (cheap — one small JSON read):
 //   PREV   — the file already at JSON_PATH, if any. --merge's own scope: it
 //            only activates "when results.json already exists at the target
-//            path" (design Piece 1). Also the parity TRUTH for merge's
-//            refCs override below — a partial re-measure of one target must
-//            score against the established reference checksum, not a
-//            majority vote over the few rows this run happens to touch.
+//            path" (design Piece 1). Also the first parity authority below;
+//            every refresh scores against an established reference checksum,
+//            never a majority vote over the rows this run happens to touch.
 //   ANCHOR_BASE — PREV if present, else the canonical committed
 //            bench/results.json — --verify-anchors' drift baseline (design
 //            Piece 2: "the fresh results.json at HEAD is the anchor
@@ -1245,15 +1303,18 @@ if (EMIT_WEB) {
 
 // Per-(case, target) valid medians, collected to drive the geomean bench.svg.
 const grid = {}
+const FMA_CHECKSUMS = {
+  biquad: 3650557234, fft: 4196606268, synth: 1018085448,
+  nbody: 587496398, lorenz: 1903597547, raytrace: 2776628753,
+}
 // The engines in bench/bench.svg — the corpus headline: jz vs the WASM field
 // (Rust/Go/C/Zig compiled to wasm, AssemblyScript — all run in node's V8,
 // apples-to-apples with jz), V8 (plain JS), and Porffor (the 2026 rewrite:
 // an AOT engine through its own C backend — no wasm). native C is the lone
-// reference row, kept as a labeled speed-of-light ceiling, never
-// a beat-claim. Per case (bench/index.html) native gets its OWN fair lane —
-// jz-w2c (jz → wasm2c → clang) vs the native toolchains — so a native binary
-// never races jz-wasm directly; this corpus headline keeps native C as the
-// ceiling. A target with no data on a run is simply skipped.
+// reference row, kept as a labeled speed-of-light ceiling, never a beat-claim.
+// The per-case page labels each substrate and includes jz-w2c (jz → wasm2c →
+// clang) as the peer for native toolchains. This corpus headline keeps native C
+// as the ceiling. A target with no data on a run is simply skipped.
 const SVG_TARGETS = [
   { id: 'jz', label: 'JZ', sub: '-O3' },
   { id: 'c-wasm', label: 'C', sub: 'clang → wasm' },
@@ -1262,9 +1323,9 @@ const SVG_TARGETS = [
   { id: 'zig-wasm', label: 'Zig', sub: 'zig → wasm' },
   { id: 'moonbit', label: 'MoonBit', sub: 'moonrun → wasm' },
   { id: 'as', label: 'AssemblyScript', sub: 'asc -O3' },
-  { id: 'porf-native', label: 'Porffor', sub: 'JS → C · AOT' },
+  { id: 'porf-native', label: 'Porffor', sub: 'JS → C, AOT' },
   { id: 'v8', label: 'V8', sub: 'Node (JS)' },
-  { id: 'nat', label: 'native C', sub: 'clang -O3 · ref' },
+  { id: 'nat', label: 'native C', sub: 'clang -O3, ref' },
 ]
 
 for (const cid of selectedCases) {
@@ -1275,6 +1336,9 @@ for (const cid of selectedCases) {
   // compile or run — the honest "did not compile" signal. Distinct from a skip
   // (toolchain absent / no source for this case), which is simply not measured.
   const failures = []
+  const recordFailure = (id, reason) => {
+    if (!failures.some(f => f.id === id)) failures.push({ id, reason })
+  }
   let pairedInfo = null   // per-pair {ratios, median} when --paired (persisted into cases[id].paired)
   if (PAIRED) {
     // Order-aware paired rounds (see --paired above): reverse the target order
@@ -1290,7 +1354,7 @@ for (const cid of selectedCases) {
     pairedBuilt.clear()
     for (const tid of avail) {
       const r = targets[tid].run(c)
-      if (r.error) failures.push({ id: tid, reason: r.error })
+      if (r.error) console.log(`[warm] ${tid.padEnd(targetIdWidth)} FAIL: ${r.error}; retrying in counted rounds`)
     }
     for (let round = 0; round < PAIRED; round++) {
       // ABBA: forward then reverse within the round; per-target round value =
@@ -1299,17 +1363,29 @@ for (const cid of selectedCases) {
       const acc = new Map()
       for (const tid of seq) {
         const r = targets[tid].run(c)
-        if (r.error) continue
+        if (r.error) { recordFailure(tid, r.error); continue }
+        if (!positiveTiming(r)) { recordFailure(tid, `counted run returned invalid median_us=${r.medianUs}`); continue }
         const a = acc.get(tid)
         if (a) a.push(r); else acc.set(tid, [r])
       }
       const m = new Map()
-      for (const [tid, rs] of acc)
+      for (const [tid, rs] of acc) {
+        if (rs.some(r => r.checksum !== rs[0].checksum)) {
+          recordFailure(tid, `counted run checksums differ: ${rs.map(r => r.checksum).join(', ')}`)
+          continue
+        }
         m.set(tid, { ...rs[0], medianUs: Math.round(rs.reduce((s, r) => s + r.medianUs, 0) / rs.length) })
+      }
       rounds.push(m)
     }
-    PAIRED_REUSE = false
     for (const tid of avail) {
+      const checksums = new Set(rounds.map(m => m.get(tid)?.checksum).filter(x => x != null))
+      if (checksums.size > 1) recordFailure(tid, `counted round checksums differ: ${[...checksums].join(', ')}`)
+    }
+    PAIRED_REUSE = false
+    const failedIds = new Set(failures.map(f => f.id))
+    for (const tid of avail) {
+      if (failedIds.has(tid)) continue
       const rs = rounds.map(m => m.get(tid)).filter(Boolean)
       if (!rs.length) continue
       const med = [...rs].sort((a, b) => a.medianUs - b.medianUs)[rs.length >> 1]
@@ -1321,6 +1397,7 @@ for (const cid of selectedCases) {
     }
     const base = avail[0]
     for (const tid of avail.slice(1)) {
+      if (failedIds.has(base) || failedIds.has(tid)) continue
       const ratios = rounds
         .filter(m => m.has(base) && m.has(tid))
         .map(m => m.get(base).medianUs / m.get(tid).medianUs)
@@ -1339,12 +1416,22 @@ for (const cid of selectedCases) {
     }
     process.stdout.write(`[run]  ${tid.padEnd(targetIdWidth)} ${t.name} … `)
     const r = t.run(c)
-    if (r.error) { console.log(`FAIL — ${r.error}`); failures.push({ id: tid, reason: r.error }); continue }
+    if (r.error) { console.log(`FAIL: ${r.error}`); recordFailure(tid, r.error); continue }
     console.log(`${r.medianUs} µs  cs=${r.checksum}`)
     results.push(r)
   }
 
-  if (!results.length) continue
+  // A target-only refresh can legitimately have zero successful rows (for
+  // example the full jz×jz lab cell). Persist the attempted failure anyway:
+  // the old early-continue silently carried a months-old failure + measuredAt,
+  // making the page and provenance lie about what this run just observed.
+  if (!results.length) {
+    if (JSON_PATH && failures.length) jsonOut.cases[c.id] = {
+      name: c.name,
+      targets: Object.fromEntries(failures.map(f => [f.id, { status: 'fail', reason: f.reason }])),
+    }
+    continue
+  }
 
   const fmtSize = bytes => {
     if (bytes == null) return '—'
@@ -1365,26 +1452,29 @@ for (const cid of selectedCases) {
   // FMADDD — no flag to disable it — so its recurrence/butterfly rounding differs
   // by the last ulp; still IEEE-correct, same algorithm). One alternate checksum
   // per case, measured on arm64.
-  const fmaChecksums = { biquad: 3650557234, fft: 4196606268, synth: 1018085448, nbody: 587496398, lorenz: 1903597547, raytrace: 2776628753 }
-  const fmaCs = fmaChecksums[c.id]
+  const fmaCs = FMA_CHECKSUMS[c.id]
 
-  const csCounts = {}
-  for (const r of results) {
-    if (r.checksum === fmaCs) continue
-    csCounts[r.checksum] = (csCounts[r.checksum] || 0) + 1
+  // A checksum becomes evidence only against an established reference. Full
+  // refreshes retain the prior canonical answer just like partial merges; a
+  // new case with no reference stays unclassified until its oracle is pinned.
+  const refCs = PREV?.cases?.[cid]?.ref ?? ANCHOR_BASE?.cases?.[cid]?.ref ?? null
+  const parityOf = checksum => classifyBenchmarkChecksum(checksum, refCs, fmaCs)
+  const correctResults = results.filter(r => {
+    const parity = parityOf(r.checksum)
+    return parity === 'ok' || parity === 'fma'
+  })
+  const correctTimedResults = correctResults.filter(positiveTiming)
+  if (pairedInfo) {
+    const correctIds = new Set(correctTimedResults.map(r => r.id))
+    for (const key of Object.keys(pairedInfo))
+      if (key.split('/').some(tid => !correctIds.has(tid))) delete pairedInfo[key]
+    if (!Object.keys(pairedInfo).length) pairedInfo = null
   }
-  // --merge: score parity against the ESTABLISHED reference checksum (PREV,
-  // the file's existing evidence for this case) rather than a majority vote
-  // over the few rows this partial run happens to touch — a lone re-measured
-  // target would otherwise always vote for itself and mask a real DIFF.
-  const storedRef = MERGE ? PREV?.cases?.[cid]?.ref : null
-  const refCs = storedRef != null ? storedRef
-    : +(Object.entries(csCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? results[0].checksum)
   // Record correct-result medians for the geomean SVG (a DIFF result is excluded).
   grid[cid] = {}
-  for (const r of results) if (r.checksum === refCs || r.checksum === fmaCs) grid[cid][r.id] = r.medianUs
-  const nat = results.find(r => r.id === 'nat')
-  const baseline = nat || [...results].sort((a, b) => a.medianUs - b.medianUs)[0]
+  for (const r of correctTimedResults) grid[cid][r.id] = r.medianUs
+  const nat = correctTimedResults.find(r => r.id === 'nat')
+  const baseline = nat || [...correctTimedResults].sort((a, b) => a.medianUs - b.medianUs)[0]
 
   if (JSON_PATH) {
     jsonOut.cases[c.id] = {
@@ -1396,7 +1486,7 @@ for (const cid of selectedCases) {
           medianUs: r.medianUs,
           bytes: r.bytes ?? null,
           memKb: r.memKb ?? null,
-          parity: r.checksum === refCs ? 'ok' : r.checksum === fmaCs ? 'fma' : 'DIFF',
+          parity: parityOf(r.checksum),
         }]),
         // Attempted-but-failed targets carry their reason (no medianUs) so the page
         // can render coverage honestly instead of silently dropping the row.
@@ -1415,12 +1505,10 @@ for (const cid of selectedCases) {
   console.log(`  ${'-'.repeat(28)}  ${'-'.repeat(10)}  ${'-'.repeat(8)}  ${'-'.repeat(10)}  ${'-'.repeat(10)}  ${'-'.repeat(9)}  ${'-'.repeat(8)}`)
   for (const r of [...results].sort((a, b) => a.medianUs - b.medianUs)) {
     const ms = (r.medianUs / 1000).toFixed(2) + ' ms'
-    const ratio = (r.medianUs / baseline.medianUs).toFixed(2) + '×'
-    const throughput = (r.samples / r.medianUs).toFixed(2)
+    const ratio = baseline && positiveTiming(r) ? (r.medianUs / baseline.medianUs).toFixed(2) + '×' : '–'
+    const throughput = positiveTiming(r) ? (r.samples / r.medianUs).toFixed(2) : '–'
     const size = fmtSize(r.bytes)
-    const parity = r.checksum === refCs ? 'ok'
-      : r.checksum === fmaCs ? 'fma'
-      : 'DIFF'
+    const parity = parityOf(r.checksum)
     console.log(`  ${targets[r.id].name.padEnd(28)}  ${ms.padStart(10)}  ${ratio.padStart(8)}  ${throughput.padStart(10)}  ${size.padStart(10)}  ${fmtMem(r.memKb).padStart(9)}  ${parity.padStart(8)}`)
   }
 }
@@ -1464,8 +1552,8 @@ if (VERIFY_ANCHORS) {
       pairs.push({ case: cid, target: tid, storedUs: null, freshUs: null, ratio: null, pass: false })
       continue
     }
-    if (!storedRow || !(storedRow.medianUs > 0)) {
-      driftLines.push(`${key}: no stored baseline to compare against (run a full --json refresh first)`)
+    if (!timedBenchmarkRow(storedRow)) {
+      driftLines.push(`${key}: no accepted stored baseline to compare against (run a full --json refresh first)`)
       pairs.push({ case: cid, target: tid, storedUs: null, freshUs: null, ratio: null, pass: false })
       continue
     }
@@ -1477,9 +1565,19 @@ if (VERIFY_ANCHORS) {
     process.stdout.write(`[anchor] ${key.padEnd(targetIdWidth + 12)} … `)
     const r = t.run(c)
     if (r.error) {
-      console.log(`FAIL — ${r.error}`)
-      driftLines.push(`${key}: re-measure failed — ${r.error}`)
+      console.log(`FAIL: ${r.error}`)
+      driftLines.push(`${key}: re-measure failed: ${r.error}`)
       pairs.push({ case: cid, target: tid, storedUs: storedRow.medianUs, freshUs: null, ratio: null, pass: false })
+      continue
+    }
+    const ref = ANCHOR_BASE.cases[cid]?.ref
+    if (!positiveTiming(r) || ref == null || (r.checksum !== ref && r.checksum !== FMA_CHECKSUMS[cid])) {
+      const reason = !positiveTiming(r) ? `invalid median_us=${r.medianUs}`
+        : ref == null ? 'missing checksum reference' : `checksum ${r.checksum} differs from reference ${ref}`
+      console.log(`FAIL: ${reason}`)
+      driftLines.push(`${key}: ${reason}`)
+      pairs.push({ case: cid, target: tid, storedUs: storedRow.medianUs,
+        freshUs: positiveTiming(r) ? r.medianUs : null, ratio: null, pass: false })
       continue
     }
     const ratio = Math.max(r.medianUs, storedRow.medianUs) / Math.min(r.medianUs, storedRow.medianUs)
@@ -1498,13 +1596,14 @@ if (VERIFY_ANCHORS) {
   }
 }
 
-// Regenerate bench/bench.svg from freshly measured geomeans — only when every
-// non-hidden case ran (a filtered run can't clobber the committed artifact with
-// partial data). The SVG geomean excludes the self-referential cases anyway, so
-// the slow self-compile rows need not run to refresh it. ratio = geomean(engine / jz)
+// Regenerate bench/bench.svg only when every non-hidden case and every chart
+// target were selected. A case-filtered or target-filtered run must not clobber
+// the committed artifact with a partial chart. The SVG geomean excludes the
+// self-referential cases, so the slow self-compile rows need not run to refresh
+// it. ratio = geomean(engine / jz)
 // over correct-result cases both ran.
 const svgCases = allCases.map(c => c.id).filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
-if (svgCases.every(cid => selectedCases.includes(cid))) {
+if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases)) {
   const geoCases = selectedCases.filter(cid => !HIDDEN_FROM_GEOMEAN.has(cid))
   const rows = []
   for (const t of SVG_TARGETS) {
@@ -1515,9 +1614,9 @@ if (svgCases.every(cid => selectedCases.includes(cid))) {
     }
     if (!ratios.length) continue
     const geo = Math.exp(ratios.reduce((s, r) => s + Math.log(r), 0) / ratios.length)
-    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf-native' ? `runs ${ratios.length} / ${geoCases.length}` : t.sub })
+    rows.push({ label: t.label, ratio: geo, sub: t.id === 'porf-native' ? `native, runs ${ratios.length} / ${geoCases.length}` : t.sub })
   }
-  if (rows.length > 1 && rows.some(r => r.label === 'JZ')) {
+  if (completeBenchSvgRun(SVG_TARGETS, selectedTargets, svgCases, selectedCases, rows)) {
     renderBenchSvg(rows, geoCases.length)
     console.log(`\nwrote bench/bench.svg — ${rows.map(r => `${r.label} ${r.ratio.toFixed(2)}×`).join('  ')}`)
   }
@@ -1530,8 +1629,7 @@ if (svgCases.every(cid => selectedCases.includes(cid))) {
 // { built:[ids], compileMs:{id} }; callers pass the playable set, so the hidden
 // self-compile rows' multi-MB wasm is never written.
 function emitWebWasm(caseIds) {
-  const webDir = join(BENCH_DIR, 'web')
-  mkdirSync(webDir, { recursive: true })
+  mkdirSync(WEB_DIR, { recursive: true })
   const built = []
   const compileMs = {}
   for (const cid of caseIds) {
@@ -1558,7 +1656,7 @@ function emitWebWasm(caseIds) {
         wasm = compile(code, opts)
         times.push(performance.now() - t0)
       }
-      writeFileSync(join(webDir, `${c.id}.wasm`), wasm)
+      writeFileSync(join(WEB_DIR, `${c.id}.wasm`), wasm)
       compileMs[cid] = +times.sort((a, b) => a - b)[1].toFixed(1)
       built.push(cid)
     } catch (e) {
@@ -1584,15 +1682,8 @@ if (JSON_PATH) {
       watr: JSON.parse(readFileSync(join(ROOT, 'node_modules/watr/package.json'), 'utf8')).version,
       node: process.version,
       asc: has('asc') && ver('asc'),
-      // Porffor's own --version stamps its last release commit, not the checkout's
-      // HEAD — append the actual git HEAD when PORF_BIN lives in a checkout, so
-      // the evidence names the exact compiler that produced it.
-      porffor: has(PORF_BIN) && (() => {
-        const v = ver(PORF_BIN)
-        if (!v || !PORF_BIN.includes('/')) return v
-        try { return `${v} [git ${execFileSync('git', ['-C', dirname(PORF_BIN), 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim()}]` }
-        catch { return v }
-      })(),
+      // Includes checkout HEAD when available; also invalidates the prep cache.
+      porffor: has(PORF_BIN) && porfIdentity(),
       scriptc: has(SCRIPTC_BIN) && ver(SCRIPTC_BIN),
       bun: has(BUN_BIN) && ver(BUN_BIN),
       deno: has(DENO_BIN) && ver(DENO_BIN),
@@ -1635,14 +1726,23 @@ if (JSON_PATH) {
     const mergedCases = { ...PREV.cases }
     for (const [cid, fresh] of Object.entries(jsonOut.cases)) {
       const prevCase = mergedCases[cid]
-      mergedCases[cid] = prevCase
-        // case already in PREV: overlay only the freshly measured target
-        // rows onto its existing targets — everything else (other targets,
-        // and any case-level field `fresh` doesn't carry, e.g. `paired`)
-        // passes through from prevCase untouched.
-        ? { ...prevCase, ...fresh, targets: { ...prevCase.targets, ...stampRows(fresh.targets) } }
-        // brand-new case (not in PREV at all): take it whole, stamp every row.
-        : { ...fresh, targets: stampRows(fresh.targets) }
+      if (!prevCase) {
+        mergedCases[cid] = { ...fresh, targets: stampRows(fresh.targets) }
+        continue
+      }
+      // A paired ratio belongs to both target rows. Replacing either row
+      // invalidates the old ratio; unrelated pairs remain byte-preserved.
+      const touched = new Set(Object.keys(fresh.targets))
+      const paired = Object.fromEntries([
+        ...Object.entries(prevCase.paired || {}).filter(([key]) =>
+          key.split('/').every(tid => !touched.has(tid))),
+        ...Object.entries(fresh.paired || {}),
+      ])
+      const merged = { ...prevCase, ...fresh,
+        targets: { ...prevCase.targets, ...stampRows(fresh.targets) } }
+      if (Object.keys(paired).length) merged.paired = paired
+      else delete merged.paired
+      mergedCases[cid] = merged
     }
     // partial: true the moment any surviving row's measuredAt isn't THIS run's
     // commit — includes rows with no measuredAt at all (pre-dating --merge

@@ -16,11 +16,11 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { LAB } from '../assets/headline.js'
+import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const RESULTS = join(ROOT, 'bench', 'results.json')
-const README = join(ROOT, 'bench', 'README.md')
+const RESULTS = process.env.JZ_BENCH_RESULTS_JSON || join(ROOT, 'bench', 'results.json')
+const README = process.env.JZ_BENCH_README || join(ROOT, 'bench', 'README.md')
 const check = process.argv.includes('--check')
 
 const r = JSON.parse(readFileSync(RESULTS, 'utf8'))
@@ -43,8 +43,8 @@ const targetOf = (label) => LABELS.find(([re]) => re.test(label))?.[1] ?? null
 
 const fmtMs = (us) => (us / 1000).toFixed(2) + ' ms'
 const fmtBytes = (b) => b < 1024 ? `${b} B` : `${(b / 1024).toFixed(1)} kB`
-const fmtX = (n) => n.toFixed(2) + '×'
-const geomean = (a) => Math.exp(a.reduce((s, x) => s + Math.log(x), 0) / a.length)
+const fmtX = (n) => n == null ? '–' : n.toFixed(2) + '×'
+const geomean = (a) => a.length ? Math.exp(a.reduce((s, x) => s + Math.log(x), 0) / a.length) : null
 
 const warnings = []
 let changed = false
@@ -56,13 +56,14 @@ const out = []
 let curCase = null
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i]
-  const h = line.match(/^###\s+([A-Za-z0-9_-]+)\s+—/)
+  const h = line.match(/^###\s+([A-Za-z0-9_-]+)\s+[\u2013\u2014]/)
   if (h) { curCase = h[1]; out.push(line); continue }
 
   if (line.trim() === STD_HEADER && lines[i + 1]?.trim().startsWith('| ---')) {
     out.push(line, lines[i + 1])                 // header + separator: unchanged
     const tcase = C[curCase]
-    const v8us = tcase?.targets?.v8?.medianUs
+    const v8 = tcase?.targets?.v8
+    const v8us = timedBenchmarkRow(v8) ? v8.medianUs : null
     let j = i + 2
     for (; j < lines.length && lines[j].trim().startsWith('|'); j++) {
       const row = lines[j]
@@ -70,15 +71,22 @@ for (let i = 0; i < lines.length; i++) {
       const label = cells[1]
       const tid = targetOf(label)
       const t = tid ? tcase?.targets?.[tid] : null
-      if (!t || t.medianUs == null) {                     // not in this run → keep verbatim (earlier-run reference, per the doc note); warn
-        out.push(row)
-        if (curCase && tid) warnings.push(`${curCase}: "${label}" (${tid}) not in results.json — kept as earlier-run reference`)
-        continue
-      }
       const bold = tid === 'jz' || /\*\*/.test(cells[2])
       const wrap = (s) => (bold ? `**${s}**` : s)
-      const x = v8us ? fmtX(v8us / t.medianUs) : '—'
-      const newRow = `| ${label} | ${wrap(fmtMs(t.medianUs))} | ${wrap(x)} | ${wrap(t.bytes != null ? fmtBytes(t.bytes) : '—')} | ${wrap(t.parity || 'ok')} |`
+      if (t?.status === 'fail' || (t?.status != null && t.medianUs == null)) {
+        const statusRow = `| ${label} | ${wrap('–')} | ${wrap('–')} | ${wrap('–')} | ${wrap(t.status)} |`
+        if (statusRow !== row) changed = true
+        out.push(statusRow)
+        continue
+      }
+      if (!t || t.medianUs == null) {                     // not in this run → keep verbatim (earlier-run reference, per the doc note); warn
+        out.push(row)
+        if (curCase && tid) warnings.push(`${curCase}: "${label}" (${tid}) not in results.json; kept as earlier-run reference`)
+        continue
+      }
+      const x = v8us && timedBenchmarkRow(t) ? fmtX(v8us / t.medianUs) : '–'
+      const classification = t.status || t.parity || 'unclassified'
+      const newRow = `| ${label} | ${wrap(fmtMs(t.medianUs))} | ${wrap(x)} | ${wrap(t.bytes != null ? fmtBytes(t.bytes) : '–')} | ${wrap(classification)} |`
       if (newRow !== row) changed = true
       out.push(newRow)
     }
@@ -92,26 +100,26 @@ let text = out.join('\n')
 // ── aggregate geomean table (V8 + AssemblyScript rows; Porffor needs its own subset, left alone) ──
 // LAB (imported — one definition in assets/headline.js): the jz-internal probe
 // cases sit out the aggregate.
-const okCases = Object.keys(C).filter((c) => !LAB.has(c) && C[c].targets?.jz?.parity === 'ok')
+const okCases = Object.keys(C).filter((c) => !LAB.has(c) && correctBenchmarkRow(C[c].targets?.jz))
 const ratios = (t, metric) => okCases.map((c) => {
   const jz = C[c].targets.jz, o = C[c].targets[t]
-  if (!o) return null
+  if (!correctBenchmarkRow(o)) return null
   return metric === 'speed'
-    ? (jz.medianUs && o.medianUs ? jz.medianUs / o.medianUs : null)
+    ? (timedBenchmarkRow(jz) && timedBenchmarkRow(o) ? jz.medianUs / o.medianUs : null)
     : (jz.bytes && o.bytes ? jz.bytes / o.bytes : null)
 }).filter((x) => x != null)
 
-const aggV8 = `| V8 (node) | **${fmtX(geomean(ratios('v8', 'speed')))}** | — |`
+const aggV8 = `| V8 (node) | **${fmtX(geomean(ratios('v8', 'speed')))}** | – |`
 const aggAS = `| AssemblyScript | **${fmtX(geomean(ratios('as', 'speed')))}** | **${fmtX(geomean(ratios('as', 'size')))}** |`
-for (const [re, repl] of [[/^\| V8 \(node\) \| .*\| — \|$/m, aggV8], [/^\| AssemblyScript \| [^(]*\|.*\|$/m, aggAS]]) {
+for (const [re, repl] of [[/^\| V8 \(node\) \| .*\| [\u2013\u2014] \|$/m, aggV8], [/^\| AssemblyScript \| [^(]*\|.*\|$/m, aggAS]]) {
   if (re.test(text) && text.match(re)[0] !== repl) { text = text.replace(re, repl); changed = true }
 }
 
 // ── best-effort prose drift warning (does NOT auto-edit prose) ──
 for (const c of Object.keys(C)) {
   const t = C[c]?.targets, jz = t?.jz?.medianUs, v8 = t?.v8?.medianUs
-  if (!jz || !v8) continue
-  const sec = text.split(`### ${c} —`)[1]?.split('\n### ')[0]
+  if (!timedBenchmarkRow(t?.jz) || !timedBenchmarkRow(t?.v8)) continue
+  const sec = text.split(new RegExp(`### ${c} [\\u2013\\u2014]`))[1]?.split('\n### ')[0]
   if (!sec) continue
   const m = sec.match(/jz (?:is ([\d.]+)× faster|beats V8(?: raw JS)? by ([\d.]+)×)/)   // "faster"/"beats", not "slower"
   const proseX = m ? parseFloat(m[1] || m[2]) : null

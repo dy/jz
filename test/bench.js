@@ -4,8 +4,9 @@
 //   • at least as fast as V8 and AssemblyScript (speed-tuned build),
 //   • within the native-parity band of `clang -O3` (geomean jz/C ≈ parity),
 //   • at least as small as AssemblyScript (-Oz), and
-//   • faster than Porffor's native artifact by geomean (committed evidence —
-//     the 2026 rewrite emits no wasm, so Porffor pins moved off the wasm field).
+//   • no slower or larger than Porffor's native artifact by case or geomean
+//     (committed evidence; the 2026 rewrite emits no wasm, so Porffor pins moved
+//     off the wasm field).
 // Plus a self-check: `wasm-opt -Oz` should not be able to meaningfully shrink
 // jz's own output (any slack it finds is a codegen-size bug).
 //
@@ -25,6 +26,8 @@ import { ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { instantiate } from '../interop.js'
 import { FLOATBEATS, moduleSrc } from '../examples/jukebox/floatbeats.js'
+import { timedBenchmarkRow } from '../assets/headline.js'
+import { PORFFOR_REV, porfforFloor } from './_porffor-floor.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -411,7 +414,7 @@ function parseBenchOutput(text) {
     // Attempted-but-failed builds — captured with their reason so the coverage
     // gate can compare succeeded vs attempted AND say WHY a toolchain is
     // broken instead of silently ignoring it.
-    const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL(?:\s*—\s*(.*))?$/)
+    const fail = line.match(/^\[run\]\s+(\w[\w-]*)\s+.*…\s*FAIL(?:\s*[:\u2013\u2014]\s*(.*))?$/)
     if (fail) { parsed[cur][fail[1]] = { failed: true, reason: fail[2]?.trim() }; continue }
     // table row: label  median  ×base  throughput  size  mem  parity — capture size
     // (first byte-unit column), then skip the mem column (`NN kB` / `N.N MB` / `—`)
@@ -424,6 +427,19 @@ function parseBenchOutput(text) {
   }
   return parsed
 }
+
+test('bench parser: current and legacy failure delimiters retain reasons', () => {
+  const parsed = parseBenchOutput(`# fixture (edge)
+[run]  colon  target … FAIL: current
+[run]  en     target … FAIL \u2013 legacy-en
+[run]  em     target … FAIL \u2014 legacy-em
+[run]  bare   target … FAIL`)
+  ok(parsed.edge.colon.failed && parsed.edge.colon.reason === 'current', 'colon-delimited failure')
+  ok(parsed.edge.en.failed && parsed.edge.en.reason === 'legacy-en', 'legacy en-dash failure')
+  ok(parsed.edge.em.failed && parsed.edge.em.reason === 'legacy-em', 'legacy em-dash failure')
+  ok(parsed.edge.bare.failed && parsed.edge.bare.reason == null, 'failure without a reason')
+})
+
 const runs = parseBenchOutput(speedOut)
 // Cases that actually ran (full corpus minus whatever the harness skipped). The fastest-wasm
 // gate iterates these; the curated v8/as SPEED table iterates its own keys (∩ runs).
@@ -639,7 +655,7 @@ test('bench: jz-w2c native lowering within regression bands (committed evidence)
   const ratios = []
   for (const [name, c] of Object.entries(res.cases)) {
     const jz = c.targets?.jz, w2c = c.targets?.['jz-w2c']
-    if (jz?.medianUs && w2c?.medianUs && jz.parity === 'ok' && w2c.parity === 'ok')
+    if (timedBenchmarkRow(jz) && timedBenchmarkRow(w2c))
       ratios.push([name, w2c.medianUs / jz.medianUs])
   }
   ok(ratios.length >= 20, `too few jz-w2c rows in results.json (${ratios.length}) — native lane missing from the evidence refresh`)
@@ -660,21 +676,27 @@ test('bench: memKb present in committed evidence', () => {
   ok(n >= 40, `only ${n} cases carry jz memKb — the peak-RSS measurement pipeline broke (expected ≥ 40 of ~60)`)
 })
 
-// ── Porffor pin (committed evidence): the 2026 rewrite is an AOT-native engine
-// (no wasm target), benched as its shipping artifact via the `porf-native` lane.
-// The invariant leg: jz wasm stays at least as fast as Porffor's native binary
-// by geomean over parity-ok cases. Per-case Porffor detail lives on the bench
-// page; a per-case pin column would cross substrates for no extra signal.
-test('bench: faster than Porffor native by geomean (committed evidence)', () => {
+// ── Porffor pins (committed evidence): the 2026 rewrite is an AOT-native
+// engine (no wasm target), benched as its shipping artifact via `porf-native`.
+// No fast row may hide a JZ loss. Artifact bytes are pinned by case and geomean.
+test('bench: JZ does not lose to Porffor native by case or geomean (committed evidence)', () => {
   const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
-  const ratios = []
-  for (const c of Object.values(res.cases)) {
-    const jz = c.targets?.jz, p = c.targets?.['porf-native']
-    if (jz?.medianUs && p?.medianUs && jz.parity === 'ok' && p.parity === 'ok') ratios.push(p.medianUs / jz.medianUs)
-  }
-  if (!ratios.length) return console.log('  ⊘ no porf-native rows in results.json yet — refresh the evidence')
-  const gm = Math.exp(ratios.reduce((s, x) => s + Math.log(x), 0) / ratios.length)
-  ok(gm >= 1.0, `porf-native/jz geomean ${gm.toFixed(3)}× < 1 over ${ratios.length} cases — Porffor's native artifact leads jz on average`)
+  const revision = PORFFOR_REV.slice(0, 8)
+  const porfforVersion = res.meta?.versions?.porffor || ''
+  ok(porfforVersion.includes(revision), `Porffor evidence ${porfforVersion || 'missing'}; required alpha 3 ${revision}`)
+  ok(readFileSync(join(ROOT, '.github/workflows/bench.yml'), 'utf8').includes(PORFFOR_REV),
+    `bench workflow Porffor pin drifted from ${PORFFOR_REV}`)
+  const { speed, size, speedLosses, sizeLosses, speedGeomean, sizeGeomean } = porfforFloor(res.cases)
+  ok(speed.length >= 40, `${speed.length} comparable porf-native speed rows (need 40)`)
+  ok(speedLosses.length === 0, speedLosses.length
+    ? `Porffor speed wins: ${speedLosses.map(([name, ratio]) => `${name} ${(1 / ratio).toFixed(3)}×`).join(', ')}`
+    : `JZ leads all ${speed.length} comparable Porffor speed rows`)
+  ok(speedGeomean >= 1, `porf-native/jz runtime geomean ${speedGeomean?.toFixed(3) ?? 'missing'}×`)
+  ok(size.length >= 40, `${size.length} comparable porf-native artifact-size rows (need 40)`)
+  ok(sizeLosses.length === 0, sizeLosses.length
+    ? `Porffor artifact-size wins: ${sizeLosses.map(([name, ratio]) => `${name} ${(1 / ratio).toFixed(3)}×`).join(', ')}`
+    : `JZ is smaller on all ${size.length} comparable Porffor rows`)
+  ok(sizeGeomean >= 1, `porf-native/jz artifact-byte geomean ${sizeGeomean?.toFixed(3) ?? 'missing'}×`)
 })
 
 // ── Assertions: size ────────────────────────────────────────────────────────

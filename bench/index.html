@@ -115,7 +115,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
 .bar { height: 15px; position: relative; background: transparent; }
 .bar i { position: absolute; inset: 0 auto 0 0; border: 1px solid var(--mid); background: transparent; min-width: 2px; }   /* competitors: transparent fill + mid-gray border — darker than the page's whites so it can't read as an empty input; the solid-ink JZ bar stays dominant */
 .bar i.solid { background: var(--ink); }
-.bar i.diff { border-color: var(--red); }
 /* class glyph (.cico base + themed cls-* colours live in assets/site.css) — here just its
    placement before each per-row label and on the corpus group headers (.bandlab). */
 .bandlab .cico { vertical-align: -1.5px; margin-right: 6px; }
@@ -123,6 +122,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--ink); outline-o
   border-left: 1px solid var(--ink); border-right: 1px solid var(--ink); transform: skewX(-20deg); }
 .row.strong .lab, .row.strong .val { font-weight: 700; }
 .row .par { font-family: var(--mono); font-size: 10px; color: var(--red); margin-left: 6px; }
+.row.unranked { opacity: .65; }
 /* attempted-but-failed target — muted, no bar; the reason rides a hover tooltip */
 .row.fail { opacity: .5; }
 .row.fail .val { color: var(--mid); font-style: italic; cursor: help; }
@@ -238,7 +238,7 @@ h2 .cnt { font-weight: 400; letter-spacing: 0; color: var(--mid); font-variant-n
 <noscript><p style="padding:0 32px">This page renders measured data with JavaScript – the raw snapshot is <a href="results.json">results.json</a>.</p></noscript>
 
 <script type="module">
-import { headlineStats, CLS_ICO, LAB } from '../assets/headline.js'
+import { headlineStats, correctBenchmarkRow, timedBenchmarkRow, CLS_ICO, LAB } from '../assets/headline.js'
 const $ = id => document.getElementById(id)
 
 // ── targets: band = substrate class (JS / WASM / Native) ─────────────────────
@@ -351,7 +351,10 @@ const issueHref = (tid, caseId, reason) => {
 // breaks the wasm ceiling. Perf / size / × and the exact command are NOT repeated here — those
 // already ride the row, and the invocations live in results.json.
 const rowTip = (tid, parity, note) => {
-  const status = parity === 'DIFF' ? '⚠ different result – not ranked' : '✓ matches jz'
+  const status = parity === 'ok' ? '✓ matches reference'
+    : parity === 'fma' ? '✓ documented FMA result'
+    : parity === 'DIFF' ? '⚠ different result; not ranked'
+    : '? unclassified result; not ranked'
   return [
     [DESC[tid], status].filter(Boolean).join('\n'),
     note || null,
@@ -480,8 +483,9 @@ const ENGINE = (() => {
 
 // ── data ─────────────────────────────────────────────────────────────────────
 let DATA = null
-let CORPUS = []     // cases with a jz row — geomeans, stats
-let CASES = []      // all cases — the per-case grid
+let BENCHMARKS = [] // every non-lab case: coverage and run-all
+let CORPUS = []     // cases with a correct JZ timing: ratios and stats
+let CASES = []      // all cases: the per-case grid
 const local = {}    // caseId → { js, jzwasm }
 let filter = 'all'
 // Corpus sort column — every row shows all three multipliers (speed · mem · size,
@@ -509,20 +513,21 @@ const stripClassSub = (label, sub) =>
 
 // Linear, zero-based bars; rows past BREAK× the chart anchor are cut (full bar
 // + cut glyph) with the exact number printed. maxLin = largest uncut ratio.
-const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, cls, tip, href }) => {
-  const cut = rel > BREAK
-  const w = cut ? 100 : (rel / maxLin * 100)
-  const barCls = `${solid ? 'solid' : ''}${parity === 'DIFF' ? ' diff' : ''}`
+const rowHtml = ({ label, sub, rel, maxLin, text, cells, solid, strong, parity, cls, tip, href, unranked }) => {
+  const cut = !unranked && rel > BREAK
+  const w = unranked ? 0 : cut ? 100 : (rel / maxLin * 100)
+  const barCls = solid ? 'solid' : ''
   const icon = cls && CLS_ICO[cls] ? CLS_ICO[cls] : ''
   // The tooltip rides the whole row so it fires wherever you hover; the label doubles as
   // the link to that target's source. No tip → no data-tip (no empty ghost bubble).
   const inner = `${icon}${esc(label)}${sub ? `<span class="sub">${esc(sub)}</span>` : ''}`
   const lab = href ? `<a class="lab lnk" href="${esc(href)}" target="_blank" rel="noopener">${inner}</a>` : `<span class="lab">${inner}</span>`
   // cells = pre-built column HTML (the corpus' three fixed-width slots); text = a plain string
-  return `<div class="row${strong ? ' strong' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
+  const parityTag = unranked ? parity || 'unclassified' : null
+  return `<div class="row${strong ? ' strong' : ''}${unranked ? ' unranked' : ''}"${tip ? ` data-tip="${esc(tip)}"` : ''}>
     ${lab}
-    <span class="bar"><i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}</span>
-    <span class="val">${cells ?? esc(text ?? '')}${parity === 'DIFF' ? '<span class="par">DIFF</span>' : ''}</span>
+    <span class="bar">${unranked ? '' : `<i class="${barCls}" style="width:${w.toFixed(2)}%"></i>${cut ? '<span class="cut"></span>' : ''}`}</span>
+    <span class="val">${cells ?? esc(text ?? '')}${parityTag ? `<span class="par">${esc(parityTag)}</span>` : ''}</span>
   </div>`
 }
 
@@ -556,18 +561,18 @@ const failRow = (label, sub, cls, reason, href) => {
 // Porffor fewer still (it crashes on several). Surfaces the gap instead of hiding the misses.
 const coverage = tid => {
   let ran = 0
-  for (const c of CORPUS) { const r = c.targets[tid]; if (r && r.status !== 'fail') ran++ }
-  return { ran, attempted: CORPUS.length }
+  for (const c of BENCHMARKS) if (timedBenchmarkRow(c.targets[tid])) ran++
+  return { ran, attempted: BENCHMARKS.length }
 }
 
 // ── headline: banded rows, three geomean columns (speed · mem · size) vs JZ ──
-// Same parity gate for every column: a wrong-result run did different work, so
-// its memory/size aren't comparable either.
+// Same accepted-checksum gate for every column. Failed, wrong, and unclassified
+// rows provide no comparable speed, memory, or size evidence.
 const geoRatio = (tid, m) => {
   const rs = []
   for (const c of CORPUS) {
     const r = c.targets[tid], j = c.targets.jz
-    if (r && j && r.status !== 'fail' && j.status !== 'fail' && r.parity !== 'DIFF' && mval(r, m) && mval(j, m)) rs.push(mval(r, m) / mval(j, m))
+    if (correctBenchmarkRow(r) && correctBenchmarkRow(j) && mval(r, m) > 0 && mval(j, m) > 0) rs.push(mval(r, m) / mval(j, m))
   }
   return rs.length ? { geo: geo(rs), n: rs.length } : null
 }
@@ -576,7 +581,7 @@ const geoRatio = (tid, m) => {
 const localGeo = () => {
   const rs = []
   for (const r of Object.values(local))
-    if (r.js?.medianUs && r.jzwasm?.medianUs && r.js.parity !== 'DIFF') rs.push(r.js.medianUs / r.jzwasm.medianUs)
+    if (timedBenchmarkRow(r.js) && timedBenchmarkRow(r.jzwasm)) rs.push(r.js.medianUs / r.jzwasm.medianUs)
   return rs.length ? { n: rs.length, geo: geo(rs) } : null
 }
 
@@ -618,11 +623,11 @@ const renderGeomean = () => {
       // in the corpus, so they'd read 0/N; they just show their case count.
       const cov = TARGETS[r.tid] && coverage(r.tid)
       const partial = cov && cov.ran < cov.attempted
-      const sub = partial ? `${cov.ran} / ${cov.attempted} cases` : nCases(r.n)
+      const sub = partial ? `${cov.ran} / ${cov.attempted} valid cases` : nCases(r.n)
       // Corpus tooltip: engine line, then — when it didn't cover the whole corpus — why (two lines,
       // terse). The geomean averages only the cases it ran correctly; the misses show as muted cards.
       const tip = [DESC[r.tid], partial
-        ? `ran ${cov.ran} of ${cov.attempted} – the rest failed or have no ${stripClassSub(r.label, r.sub)} port (see the cards)`
+        ? `valid on ${cov.ran} of ${cov.attempted}; remaining cases failed, are missing, or returned an unaccepted checksum (see the cards)`
         : null].filter(Boolean).join('\n')
       // All three multipliers per row (vs JZ itself, so JZ = 1× in every column and
       // a better row reads <1×); the bar draws the SORTED column, scaled against
@@ -702,14 +707,17 @@ const cardRows = c => {
     .map(([tid, r]) => ({ tid, ...TARGETS[tid], ...r }))
   // split attempted-but-failed targets out of the speed math — they have no median
   const failed = entries.filter(r => r.status === 'fail')
-  const ran = entries.filter(r => r.status !== 'fail').sort((a, b) => a.medianUs - b.medianUs)
-  const ok = ran.filter(r => r.parity !== 'DIFF')
-  if (!ok.length) return ''
+  const measured = entries
+    .filter(r => r.status !== 'fail' && Number.isFinite(r.medianUs))
+    .sort((a, b) => a.medianUs - b.medianUs)
+  const unmeasured = entries.filter(r => r.status !== 'fail' && !Number.isFinite(r.medianUs))
+  const ranked = measured.filter(timedBenchmarkRow)
+  const unranked = measured.filter(r => !timedBenchmarkRow(r))
   // anchor = fastest non-hatch row (≈ jz / browser-class), so a freak-fast native
   // binary can't crush the scale; jz's bar reads ≈ full and a faster native
   // simply overshoots. Sort is by absolute time.
-  const anchor = Math.min(...ok.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
-  const base = anchor < Infinity ? anchor : ok[0].medianUs
+  const anchor = Math.min(...ranked.filter(r => !r.hatch).map(r => r.medianUs), Infinity)
+  const base = anchor < Infinity ? anchor : ranked[0]?.medianUs || 1
   const lab = r => stripClassSub(r.label, r.sub)
   // row value = the measured facts, plain: time · peak RSS · artifact bytes
   // (each only when measured — the bar already carries the relative story)
@@ -725,29 +733,43 @@ const cardRows = c => {
   // your-machine rows, normalized to their own fastest (different machine, different µs)
   const l = local[c.id]
   const lrows = l && (l.js || l.jzwasm)
-    ? [['jzwasm', 'JZ', 'wasm'], ['js', 'JS', 'js']].filter(([k]) => l[k]?.medianUs).map(([k, label, cls]) => ({ k, label, cls, ...l[k] }))
+    ? [['jzwasm', 'JZ', 'wasm'], ['js', 'JS', 'js']]
+      .filter(([k]) => Number.isFinite(l[k]?.medianUs))
+      .map(([k, label, cls]) => ({ k, label, cls, ...l[k] }))
     : []
-  const lbase = lrows.length ? Math.min(...lrows.map(r => r.medianUs)) : 1
+  const lranked = lrows.filter(timedBenchmarkRow)
+  const lunranked = lrows.filter(r => !timedBenchmarkRow(r))
+  const lbase = lranked.length ? Math.min(...lranked.map(r => r.medianUs)) : 1
   // one shared scale across reference + local rows, so an equal ratio is an equal
   // bar length everywhere in the card (each ratio is relative to its group's fastest)
-  const maxLin = Math.max(...[...ran.map(r => r.medianUs / base), ...lrows.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
+  const maxLin = Math.max(...[...ranked.map(r => r.medianUs / base), ...lranked.map(r => r.medianUs / lbase)].filter(r => r <= BREAK), 1)
   // reference + your-browser rows in ONE list, sorted by bar ratio — so the just-measured
   // rows land in their proper place (each ratio is vs its group's fastest ≈ jz, machine-
   // independent), not dumped at the end. The raw µs differs by machine; the bar is the compare.
   const all = [
-    ...ran.map(r => ({ rel: r.medianUs / base, p: {
+    ...ranked.map(r => ({ rel: r.medianUs / base, p: {
       label: lab(r), rel: r.medianUs / base, maxLin, cls: r.band,
       tip: rowTip(r.tid, r.parity, simdTip(r)), href: srcHref(r.tid, c.id),
       text: vals(r), solid: r.strong, strong: r.strong, parity: r.parity } })),
-    ...lrows.map(r => ({ rel: r.medianUs / lbase, p: {
+    ...lranked.map(r => ({ rel: r.medianUs / lbase, p: {
       label: `${r.label} browser`, rel: r.medianUs / lbase, maxLin, cls: r.cls,
       text: fmtMs(r.medianUs), solid: r.k === 'jzwasm', parity: r.parity } })),
   ]
-  // attempted-but-failed targets close the card as muted rows (reason in tooltip),
-  // so a missing competitor reads as "tried, couldn't" — not silently absent.
+  const unrankedHtml = [
+    ...unranked.map(r => ({ label: lab(r), cls: r.band,
+      tip: rowTip(r.tid, r.status || r.parity), href: srcHref(r.tid, c.id),
+      text: vals(r), parity: r.status || r.parity, unranked: true })),
+    ...unmeasured.map(r => ({ label: lab(r), cls: r.band,
+      tip: rowTip(r.tid, r.status || r.parity), href: srcHref(r.tid, c.id),
+      text: vals(r), parity: r.status || r.parity || 'unclassified', unranked: true })),
+    ...lunranked.map(r => ({ label: `${r.label} browser`, cls: r.cls,
+      text: fmtMs(r.medianUs), parity: r.parity, unranked: true })),
+  ].map(rowHtml).join('')
+  // Attempted failures close the card as muted rows with the reason in a tooltip.
+  // A missing competitor reads as "tried, couldn't" instead of disappearing.
   const failHtml = failed.sort((a, b) => lab(a).localeCompare(lab(b)))
     .map(r => failRow(lab(r), r.sub, r.band, r.reason, issueHref(r.tid, c.id, r.reason))).join('')
-  return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('') + failHtml
+  return all.sort((a, b) => a.rel - b.rel).map(x => rowHtml(x.p)).join('') + unrankedHtml + failHtml
 }
 
 const renderCards = () => {
@@ -845,7 +867,7 @@ const runCase = async cid => {
   for (const key of ['js', 'jzwasm']) {
     try {
       const r = await RUNNERS[key](cid)
-      r.parity = ref == null || (r.checksum >>> 0) === (ref >>> 0) ? 'ok' : 'DIFF'
+      r.parity = ref == null ? 'unclassified' : (r.checksum >>> 0) === (ref >>> 0) ? 'ok' : 'DIFF'
       local[cid][key] = r
       renderAll()
       await new Promise(res => setTimeout(res, 30))   // let the bars paint
@@ -859,9 +881,9 @@ const runCase = async cid => {
 
 $('runAll').addEventListener('click', async () => {
   $('runAll').disabled = true
-  for (let i = 0; i < CORPUS.length; i++) {
-    $('globalstat').textContent = `${i + 1}/${CORPUS.length} – ${CORPUS[i].id}`
-    await runCase(CORPUS[i].id)
+  for (let i = 0; i < BENCHMARKS.length; i++) {
+    $('globalstat').textContent = `${i + 1}/${BENCHMARKS.length}: ${BENCHMARKS[i].id}`
+    await runCase(BENCHMARKS[i].id)
   }
   $('globalstat').textContent = 'done'
   $('runAll').disabled = false
@@ -877,8 +899,9 @@ try {
   // CORPUS = aggregate cases: jz actually RAN (a {status:'fail'} jz entry carries
   // no median, so it must not seed the geomeans) and not LAB — the jz-internal
   // probes stay out of geomeans/strip/coverage/run-all but render as cards.
-  const jzRan = c => c.targets.jz && c.targets.jz.status !== 'fail'
-  CORPUS = all.filter(c => jzRan(c) && !LAB.has(c.id))
+  const jzRan = c => timedBenchmarkRow(c.targets.jz)
+  BENCHMARKS = all.filter(c => !LAB.has(c.id))
+  CORPUS = BENCHMARKS.filter(jzRan)
   CASES = CORPUS.concat(all.filter(c => LAB.has(c.id) || !jzRan(c)))
   renderMeta(); renderChips(); renderAll()
 } catch {
