@@ -394,6 +394,64 @@ export function foldStaticConstArrayReads(fn) {
   walkAst(fn, { enter: n => { if (Array.isArray(n) && n.saArr != null) rewrite(n) } })
 }
 
+// A closure body compiled for the generic f64-boxed calling convention checks
+// each parameter against the "argument omitted" sentinel (an f64.const the
+// calling convention reserves — never a value f64.convert_i32_s can produce)
+// before consuming it. The unboxing template (module/function.js) computes
+// the guarded i32 AND the guard's operand from the SAME `local.tee`:
+//   select(i32.wrap_i64(i64.trunc_sat_f64_s(local.tee L E)), 0,
+//          f64.ne(local.get L, SENTINEL))
+// (`select` pops (trueVal, falseVal, cond) — wasm returns trueVal when
+// cond ≠ 0.) devirtConstFnArrayCalls below substitutes call-site argument
+// expressions for `E`; when the substituted `E` is f64.convert_i32_s(_), the
+// tee'd local can only ever hold an EXACT integer in [-2^31, 2^31-1] — so a
+// SENTINEL outside that range makes the guard a compile-time-decidable
+// tautology in its new context. Nothing re-folds it there: this pass runs
+// before hoistConstantPool (so SENTINEL is still a literal f64.const, not
+// yet a global) and watr's downstream fixpoint has no reason to know this
+// jz-specific ABI fact. Fold it here, once, on the freshly-substituted arm —
+// drop the select (it always picks trueVal), keeping trueVal's own tee
+// intact (it still has to run: it both produces the guarded i32 AND, in
+// this now-dead-guard case, an unread local write a later dead-local sweep
+// can clean up). Mirrors the intK range test the f64.eq/ne peephole rule
+// already applies the other direction (constant IS producible) — see
+// optimize/peephole.js.
+//
+// Signedness-specific ranges: f64.convert_i32_s's exact-integer output range
+// is [-2^31, 2^31-1]; f64.convert_i32_u's is [0, 2^32-1] — a DIFFERENT range
+// (unsigned). Mixing them up would be a real wrong-answer bug (e.g. treating
+// 3_000_000_000 as "unreachable" — it's outside i32_s's range but a genuine
+// f64.convert_i32_u output), so the reachability test takes the op and picks
+// its own range, mirroring how the peephole.js f64.eq/ne rule keeps its own
+// intK-based fold scoped to literally `f64.convert_i32_s` rather than either
+// convert op.
+const convertI32Range = { 'f64.convert_i32_s': [-2147483648, 2147483647], 'f64.convert_i32_u': [0, 4294967295] }
+const isUnreachableByConvertI32 = (constNode, convertOp) => {
+  const range = convertI32Range[convertOp]
+  return Array.isArray(constNode) && constNode[0] === 'f64.const' && range != null &&
+    !(typeof constNode[1] === 'number' && Number.isInteger(constNode[1]) && constNode[1] >= range[0] && constNode[1] <= range[1])
+}
+const foldImpossibleConvertGuards = (n) => {
+  if (!Array.isArray(n)) return n
+  const out = n.map((c, k) => k === 0 ? c : foldImpossibleConvertGuards(c))
+  if (out[0] === 'select' && out.length === 4) {
+    const trueVal = out[1], cond = out[3]
+    const tee = Array.isArray(trueVal) && trueVal[0] === 'i32.wrap_i64' &&
+      Array.isArray(trueVal[1]) && trueVal[1][0] === 'i64.trunc_sat_f64_s' &&
+      Array.isArray(trueVal[1][1]) && trueVal[1][1][0] === 'local.tee' && typeof trueVal[1][1][1] === 'string'
+      ? trueVal[1][1] : null
+    const convertOp = tee && Array.isArray(tee[2]) && tee[2].length === 2 ? tee[2][0] : null
+    if (convertOp && convertI32Range[convertOp] && Array.isArray(cond) && cond[0] === 'f64.ne' && cond.length === 3) {
+      const L = tee[1]
+      const isL = (v) => Array.isArray(v) && v[0] === 'local.get' && v[1] === L
+      if ((isL(cond[1]) && isUnreachableByConvertI32(cond[2], convertOp)) ||
+          (isL(cond[2]) && isUnreachableByConvertI32(cond[1], convertOp)))
+        return trueVal
+    }
+  }
+  return out
+}
+
 /** `constOps[idx](args)` — data-driven dispatch through a module-const array of
  *  capture-free arrows (operator tables, strategy maps, bytecode handlers). The
  *  generic lowering pays call_indirect's bounds + signature checks per call and
@@ -521,7 +579,7 @@ export function devirtConstFnArrayCalls(fn, cfg) {
       let armVal = null
       const bodyFn = armInline ? bodies?.get(`$${cand.name}`) : null
       if (bodyFn && nodeCount(bodyFn) <= 96)
-        armVal = inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', '$__dvi')
+        armVal = foldImpossibleConvertGuards(inlinePureCallExpr(call, bodies, inlRef, newDecls, 'f64', '$__dvi'))
       const armExpr = armVal ?? call
       const arm = ['br', out, narrow ? intOf(armExpr) : armExpr]
       const nextLabel = k + 1 < armOffsets.length ? labels[armOffsets[k + 1]] : dflt
