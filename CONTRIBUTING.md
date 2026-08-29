@@ -129,13 +129,15 @@ fast and at least as small as the alternatives.** Concretely, enforced by
 `test/bench.js` (run by CI on every push/PR — `.github/workflows/bench.yml`):
 
 - **Speed** (`-O` speed-tuned build): JZ median ≤ V8 and AssemblyScript (`asc -O3`)
-  on every comparable case, and ≤ them on geomean; ≤ Porffor's native artifact by
-  geomean (the `porf-native` lane, asserted from committed evidence — the 2026
-  Porffor rewrite emits no wasm, so it left the per-case wasm field). *Timing ratios are
-  asserted off-CI only (local `npm run test:bench` on stable hardware — the
-  release discipline); on CI they print informational, since a shared 2-core
-  runner reads identical builds up to 15× slower. Checksums, sizes and compile
-  success stay hard-gated on CI.*
+  on every comparable case, and ≤ them on geomean; ≤ Porffor's native artifact on
+  every comparable case and geomean. The `porf-native` lane uses committed
+  evidence because the 2026 Porffor rewrite has no wasm target. JZ wasm must
+  be no larger than the corresponding Porffor native artifact per case and by
+  geomean. *Live timing ratios are asserted off-CI only (local
+  `npm run test:bench` on stable hardware); on CI they print informational
+  because a shared 2-core runner reads identical builds up to 15× slower.
+  Checksums, sizes, compile success, and the committed-evidence Porffor floor
+  stay hard-gated on CI.*
 - **Native parity** *(asserted only when `clang` is on PATH — i.e. locally; CI
   runners have no clang, so this pin is printed but not gated there)*: JZ wasm runs
   at `clang -O3` speed — geomean jz/C ≈ 0.86–0.98×
@@ -153,6 +155,12 @@ fast and at least as small as the alternatives.** Concretely, enforced by
   target is 0.95+, ratcheted down as codegen tightens.
 - **Correctness floor**: `test/differential.js` fuzzes jz-compiled wasm against
   the same source run as plain JS — "smallest/fastest" never via a wrong answer.
+- **Compiler-efficiency floor** *(v1 release blocker)*: full recursive jz×jz must
+  produce bytes below wasm32's 4 GiB ceiling, then match or beat the pinned
+  Porffor self-host on same-machine wall time and peak memory. A trap is a
+  failure. Record Porffor's JS→C time and its full JS→native build time; JZ's
+  executable-Wasm output sits between those stages. See
+  `.work/porffor-alpha3-audit.md`.
 
 Run locally (needs `asc` and `wasm-opt` on PATH for the full picture; the
 `porf-native` lane picks up a Porffor git checkout via `PORF_BIN`):
