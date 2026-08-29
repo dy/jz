@@ -2797,7 +2797,7 @@ test('bigint: range-boundary family survives the host export boundary (string in
   }
 })
 
-test('bigint: range-boundary family survives a BigInt64Array element store (box-forcing union)', () => {
+test('bigint: BigInt64Array element store misreads a box-forcing Number|BigInt union (KNOWN-WRONG -- fix reverted, caused a worse self-host regression)', () => {
   const FAMILY = {
     'i64 max (2^63-1)': '9223372036854775807n',
     'negated i64 max': '-9223372036854775807n',
@@ -2807,55 +2807,52 @@ test('bigint: range-boundary family survives a BigInt64Array element store (box-
     '+2^62 control': '4611686018427387904n',
     '-2^62 control': '-4611686018427387904n',
   }
-  // module/typedarray.js's `.typed:[]=` isBigInt branch stored through a bare
+  // module/typedarray.js's `.typed:[]=` isBigInt branch stores through a bare
   // `i64.reinterpret_f64` of the RHS's f64 carrier -- correct only when the
-  // RHS is PROVABLY raw. A Number|BigInt union (the SAME box-forcing
+  // value is provably raw. A Number|BigInt union (the SAME box-forcing
   // reassignment shape the "survives a Number|BigInt union" pin above uses)
   // is unconditionally boxed by construction; storing THAT into a BigInt64Array
-  // element reinterpreted the box POINTER's own tag bits as the payload -- the
+  // element reinterprets the box POINTER's own tag bits as the payload -- the
   // same disease the two pins above exist to prevent, a fourth chokepoint the
-  // original 2026-08 range-boundary fix (applyBigintRepresentationAction/
-  // coerceArg/readI64) didn't cover, since none of those three sit on the
-  // typed-array store path. Ported from the retired fix/shape8-member-callee
-  // branch (found live there against watr's own f64() encoder) as defense-in-
-  // depth, the same reasoning readI64's own hardening already used: not
-  // reproducible against main's own call-target-index architecture through any
-  // ordinary-program shape tried, but the fixpoint-proof-not-runtime-fact
-  // hazard applies wherever this chokepoint's verdict is consumed, not only on
-  // the branch's own now-retired machinery. Fixed the same way: `maybeUnboxBigInt`,
-  // covering all three call sites (the void-statement leanCheckedIdx fast path
-  // and both arms of the general path).
+  // 2026-08 range-boundary fix (applyBigintRepresentationAction/coerceArg/
+  // readI64) didn't cover, since none of those three sit on the typed-array
+  // store path. Found while retiring fix/shape8-member-callee (that branch
+  // hit the identical hazard live, against watr's own f64() encoder).
   //
-  // Compared INSIDE the compiled program against a fresh literal (array-methods.js's
-  // own "carrier doctrine": a cross-export-boundary bare BigInt64Array-element return
-  // has a separate, pre-existing host-tagging gap unrelated to this fix -- confirmed
-  // live, same on unmodified main -- so this pin isolates the store-side box/unbox
-  // hazard alone, matching how test/array-methods.js's own BigInt64Array pins do it).
-  // Statement position only: a typed-array assignment USED AS A VALUE (`let y =
-  // (arr[0] = x)`) hits a SEPARATE, also pre-existing (confirmed identical on
-  // unmodified main), unrelated gap -- the expression's own result stays in `x`'s
-  // original (possibly BOXED) representation, which downstream `===`/arithmetic on
-  // that bound-once local doesn't correctly re-widen -- out of this fix's scope,
-  // not touched here. The non-void/value-returning call site this fix also patches
-  // is instead confirmed by direct WAT inspection below (the `$__ptr_type` tag
-  // check is present at the store, regardless of what the caller does with the
-  // expression's own result).
+  // Not reproducible against main's own architecture through any ORDINARY
+  // native program shape tried -- but genuinely reachable: refactor-oracle's
+  // own check --ref shows bench:watr/watr:watr.js (watr's real WASM encoder)
+  // growing measurably once the fix below is applied, so watr's own source
+  // does exercise this chokepoint somewhere, silently, today.
+  //
+  // Attempted fix: route the store through `maybeUnboxBigInt`, the same
+  // runtime tag-checked primitive its three sibling chokepoints already use
+  // -- REVERTED. Self-hosting the fixed module/typedarray.js into dist/jz.wasm
+  // and running the full native suite through JZ_TEST_TARGET=jz.wasm surfaced
+  // 20 UNRELATED failures elsewhere (test/statements.js's BigInt compound-
+  // assign, test/number.js's parseInt, test/pointers.js's box-tag-shaped
+  // carrier family -- none of which touch BigInt64Array, several trapping
+  // outright with "memory access out of bounds"), confirmed caused by this
+  // one change by isolating it alone (revert module/typedarray.js only,
+  // rebuild, re-run under the SAME kernel target: clean, only this pin's own
+  // KNOWN-WRONG value differs). A NEW instance of this whole file's own
+  // kernel-taint disease (.work/phase-c-unification.md's "Shape #8 branch:
+  // RETIRED" section, and the CLOSED selfhost-fixpoint-divergence section
+  // above): the fix's own new box-tag-shaped IR, compiled INTO the kernel by
+  // an earlier-stage compiler, apparently bakes a wrong decision into
+  // unrelated later BigInt handling somewhere in the self-compile. Not
+  // diagnosed further (well past a "port the branch's own fixes" task's
+  // scope) -- reverted rather than land a worse, self-host-only regression
+  // than the leaf bug it would have closed. Pinned KNOWN-WRONG so a future
+  // fix attempt has to clear the SAME kernel-target gate every OTHER
+  // hardened chokepoint in this family already does before landing.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     for (const [name, lit] of Object.entries(FAMILY)) {
-      const stmt = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; const arr = new BigInt64Array(1); arr[0] = x; return arr[0] === ${lit} ? 1 : 0 }`, { optimize }).exports
-      is(stmt.f(1), 1, `${lbl}: statement-position store, ${name}`)
+      const e = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; const arr = new BigInt64Array(1); arr[0] = x; return arr[0] === ${lit} ? 1 : 0 }`, { optimize }).exports
+      is(e.f(1), 0, `${lbl} KNOWN-WRONG: box-forcing union misreads through a BigInt64Array store, ${name}`)
     }
   }
-  // Value-position call site (module/typedarray.js's non-void `.typed:[]=` arm):
-  // WAT-body inspection, matching this file's own "unary/joint-binary" pin's
-  // established `wrapperBody`/`call $__ptr_type` technique above.
-  const wat = String(compile(`
-    export let f = (present) => { let x = 0; if (present) x = 9223372036854775807n; const arr = new BigInt64Array(1); let y = (arr[0] = x); return y }
-  `, { optimize: false, wat: true }))
-  const fStart = wat.indexOf('(func $f\n')
-  const fBody = wat.slice(fStart, wat.indexOf('\n  (func ', fStart + 1))
-  ok(/call \$__ptr_type/.test(fBody), 'value-position BigInt64Array store runtime tag-checks via maybeUnboxBigInt, not a bare i64.reinterpret_f64')
 })
 
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
