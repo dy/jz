@@ -14,7 +14,6 @@
  * @module kind
  */
 
-export { typedCtorElemValType } from './kind-traits.js'
 export { nullishArm } from './kind/lattice.js'
 export {
   dictValueKindOf, mapValueKindOf, censusKindsOf, censusShapedNode,

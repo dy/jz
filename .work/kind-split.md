@@ -136,5 +136,39 @@ edit:
 
 ## 5. Status
 
-Filled in as each commit lands (shas, line counts, oracle/battery results,
-cycle-checker output, dead-code deletions).
+All 5 commits landed on `refactor/kind-split` (base 45987028):
+
+| commit | sha | change |
+|---|---|---|
+| 1 | dcd6d1f7 | `kind/lattice.js` extracted |
+| 2 | 23deeaf6 | `kind/dict-census.js` extracted (+ the required `lookupValType` substitution) |
+| 3 | d7cf9c7c | `kind/shape.js` extracted |
+| 4 | aac31710 | `kind/val-type-of.js` extracted; `kind.js` becomes a pure barrel |
+| 5 | (next)  | dead-code deletion: `export { typedCtorElemValType } from './kind-traits.js'` — zero consumers via the barrel path (verified: every real importer, `narrow.js`, already imports it directly from `kind-traits.js`; val-type-of.js's own internal use also imports it directly, not through the barrel) |
+
+Final module map:
+
+| file | lines |
+|---|---:|
+| `src/kind.js` (barrel) | 27 |
+| `src/kind/lattice.js` | 98 |
+| `src/kind/dict-census.js` | 569 |
+| `src/kind/shape.js` | 221 |
+| `src/kind/val-type-of.js` | 879 |
+| **total** | **1,794** (was 1,692 — net +102 from 5 module-doc headers/import blocks instead of 1; same logic, same behavior) |
+
+Gate results, every commit: refactor oracle `check --ref 45987028` CLEAN
+(560/560); kernel rebuilt fresh (`dist/jz.wasm`, confirms each intermediate
+state is a buildable DAG under jz's own self-host module graph — this is
+the check that actually matters, not `resolveModuleGraph` alone, see §4's
+correction); `test/kernel-parity.js` 3/3 (33/33 byte-identical WAT O2/O3).
+
+Cycle-checker (`resolveModuleGraph(bench/jz/jz.js, {resolveNode:true})`,
+custom DFS): confirms zero cycles in the final tree — `dict-census.js`'s
+`lookupValType` substitution eliminated the one cycle that would otherwise
+exist (`val-type-of.js` → `dict-census.js` for `censusMaybeUndefinedKind`,
+`dict-census.js` → `val-type-of.js` for `valTypeOf`); `shape.js` never had
+one (the `shapeOfObjectLiteralAst` relocation avoided it by construction).
+ir.js/type.js/kind-traits.js relationships unchanged (kind.js's submodules
+import from kind-traits.js only, never the reverse; ir.js and
+src/type/expr-type.js import FROM kind.js's barrel only).
