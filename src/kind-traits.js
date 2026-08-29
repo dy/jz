@@ -37,7 +37,7 @@ const BOOL_METHODS = new Set([
   'includes', 'some', 'every', 'startsWith', 'endsWith', 'test',
 ])
 
-export const CALLEE_VAL = {
+const CALLEE_VAL = {
   'new.Set': VAL.SET,
   'new.Map': VAL.MAP,
   'new.Date': VAL.DATE,
