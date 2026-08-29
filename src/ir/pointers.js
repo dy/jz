@@ -204,8 +204,6 @@ export function extractF64Bits(node) {
   return null
 }
 
-// === Literal / purity checks ===
-
 /** Single-kind ptr-tag predicate: `__ptr_type(bits) == ptr`. Takes the f64
  *  carrier expression and the PTR constant. Use this when guarding one branch;
  *  use `dispatchByPtrType` for multi-case forks. Stamps `inc('__ptr_type')`. */
@@ -232,8 +230,6 @@ export function dispatchByPtrType(typeLocal, cases, fallback, resultType = 'f64'
   }
   return out
 }
-
-// === Numeric helpers ===
 
 /** WASM has no f64.rem — implement as a - trunc(a/b) * b.
  *  Both `a` and `b` appear twice in the expansion; cache non-pure operands

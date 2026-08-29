@@ -90,5 +90,3 @@ export function allocPtr({ type, aux = 0, len, cap, stride = 8, tag = 'ap' }) {
   const ptr = mkPtrIR(type, aux, ['local.get', `$${local}`])
   return { local, init, ptr }
 }
-
-// === Multi-value + control-flow reads ===

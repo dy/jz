@@ -39,8 +39,6 @@ export const SPREAD_MUTATORS = new Set(['push', 'add', 'set', 'unshift'])
 
 export const BOXED_MUTATORS = new Set(['push', 'pop', 'shift', 'unshift', 'splice', 'reverse', 'sort'])
 
-// === Pointer construction ===
-
 /** Check if emitted node is a compile-time constant. */
 export const isLit = n => (n[0] === 'i32.const' || n[0] === 'f64.const') && typeof n[1] === 'number'
 
@@ -161,5 +159,3 @@ export const emitNum = v => isI32(v)
   // identical fix watr's own optimize.js (getConst/makeConst) already carries for the
   // same root cause.
   : typed(['f64.const', Number.isNaN(v) ? 'nan' : v], 'f64')
-
-// === Fresh ids / temp locals ===

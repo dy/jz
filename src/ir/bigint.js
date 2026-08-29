@@ -217,5 +217,3 @@ export function readI64(node, emitted) {
   if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
 }
-
-// === Nullish sentinels ===

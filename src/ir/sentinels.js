@@ -127,8 +127,6 @@ export function unboxBoolIR(f64expr) {
   return typed(['i32.and', ['i32.wrap_i64', ['i64.shr_u', ['i64.reinterpret_f64', f64expr], ['i64.const', String(LAYOUT.AUX_SHIFT)]]], ['i32.const', 1]], 'i32')
 }
 
-// === Constants ===
-
 // f64 ops whose result is always a plain NUMBER (never a NaN-boxed carrier) and can
 // be NaN — their truthiness must test NaN by value, not by bit pattern (see truthyIR).
 const NUM_F64_TRUTHY_OPS = new Set([
@@ -231,8 +229,6 @@ export function truthyIR(e) {
 }
 
 export const toBoolFromEmitted = truthyIR
-
-// === Value-type classification ===
 
 // Shared peephole for the NaN-box sentinel checks. When the operand's bits are
 // statically known — an unboxed pointer (never an atom → 0), a numeric `f64.const`
@@ -353,5 +349,3 @@ export const isBoolAtom = (f64expr) => matchF64Bits(f64expr,
   (e) => typed(['i64.eq',
     ['i64.and', ['i64.reinterpret_f64', e], ['i64.const', BOOL_ATOM_MASK]],
     ['i64.const', FALSE_NAN]], 'i32'))
-
-// === Array layout helpers — routed through the array carrier (abi/array.js) ===
