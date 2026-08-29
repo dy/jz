@@ -823,6 +823,22 @@ const checkPattern = (pattern, cx, binding = true) => {
   return names
 }
 
+// Jessie drops a final comma from both `[...x,]` and `[...x]`. In a plain
+// array/object literal the comma is valid; once the same cover node occupies
+// an AssignmentPattern slot it is forbidden. The following operator's source
+// offset gives an exact, local boundary without guessing from decoded values.
+const patternHasTrailingRestComma = (pattern, source, boundary) => {
+  if (!isNode(pattern) || (pattern[0] !== '[]' && pattern[0] !== '{}') ||
+      typeof boundary !== 'number') return false
+  const items = patternItems(pattern)
+  const last = items[items.length - 1]
+  if (!isNode(last) || last[0] !== '...') return false
+  const close = previousSourceToken(source, boundary)[0]
+  if (close < 0 || source[close] !== (pattern[0] === '[]' ? ']' : '}')) return false
+  const comma = previousSourceToken(source, close)[0]
+  return comma >= 0 && source[comma] === ','
+}
+
 const visitPatternInitializers = (pattern, cx, visit) => {
   if (!isNode(pattern)) return
   const op = pattern[0]
@@ -1416,6 +1432,8 @@ export function validateEarlyErrors(ast, source) {
         fail(`cannot assign to '${node[1]}' in strict mode`)
       if (op === '=' && isNode(node[1]) && node[1].length === 2 &&
           (node[1][0] === '[]' || node[1][0] === '{}')) {
+        if (patternHasTrailingRestComma(node[1], source, node.loc))
+          fail('rest element in an assignment pattern cannot have a trailing comma')
         checkPattern(node[1], { ...cx, unique: false }, false)
         walk(node[2], cx)
         return
@@ -1728,9 +1746,11 @@ export function validateEarlyErrors(ast, source) {
           if (lhs[0] !== 'var' && boundNames(lhs[1]).some(name => decodeIdentifier(name) === 'let'))
             fail("for-in/of lexical declaration cannot bind 'let'")
           walk(lhs, { ...cx, forBinding: true })
-        } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}'))
+        } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}')) {
+          if (patternHasTrailingRestComma(lhs, source, head.loc))
+            fail('rest element in a for-in/of assignment pattern cannot have a trailing comma')
           checkPattern(lhs, { ...cx, unique: false }, false)
-        else if (!isAssignmentTarget(lhs, true)) fail('invalid for-in/of assignment target')
+        } else if (!isAssignmentTarget(lhs, true)) fail('invalid for-in/of assignment target')
         if (head[2] == null) fail('for-in/of requires a right-hand expression')
         // for-of's source is an AssignmentExpression (no bare comma allowed —
         // `for (x of a, b)` needs parens); for-in's source is a full

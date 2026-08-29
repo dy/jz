@@ -846,3 +846,18 @@ test('class element modifiers and field boundaries survive jessie splitting (cla
     ok(Array.isArray(parse('class A { x } class B { y }')),
       'sibling class scopes do not share field-boundary state')
 })
+
+test('rest trailing commas depend on assignment-pattern context (destructuring-cover-grammar)', () => {
+    rejects('0, [...x,] = []', 'trailing comma')
+    rejects('0, {...x,} = {}', 'trailing comma')
+    rejects('for ([...x,] in [[]]) ;', 'trailing comma')
+    rejects('for ([...x,] of [[]]) ;', 'trailing comma')
+    rejects('export let f = () => { if (false) { 0, [...x,] = [] } return 1 }', 'trailing comma')
+
+    ok(Array.isArray(parse('0, [...x] = []')), 'assignment rest without a trailing comma remains valid')
+    ok(Array.isArray(parse('for ([...x] of [[]]) ;')), 'for-of assignment rest without the comma remains valid')
+    ok(Array.isArray(parse('let a = [...x,]')), 'array-literal spread still permits a trailing comma')
+    ok(Array.isArray(parse('let o = {...x,}')), 'object-literal spread still permits a trailing comma')
+    ok(Array.isArray(parse('{ 0, [...x] = []; } { let y = [...x,]; }')),
+      'sibling block scopes keep pattern and literal contexts independent')
+})
