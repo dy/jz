@@ -61,6 +61,7 @@
     "test:fuzz": "node test/fuzz.js --count=5000",
     "test:ratchet": "node test/perf-ratchet.js",
     "test:self": "node test/self-compile.js && node test/self-compile-perf.js",
+    "test:porffor-core": "node scripts/porffor-core-adapter.mjs --verify",
     "test:262": "node test/test262.js",
     "test:262:builtins": "node test/test262-builtins.js",
     "test:all": "npm run test:matrix && npm run test:262 && npm run test:262:builtins && npm run test:bench && npm run test:self",

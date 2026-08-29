@@ -36,12 +36,64 @@ test('Read property from external object via literal bracket key', () => {
   is(getBracket(mockNode), 1, 'literal-key bracket access must match dot')
 })
 
-test('Read nested property from external object via bracket keys', () => {
+test('Read nested properties through every opaque host-object carrier', () => {
   if (onWasi()) return  // wasi: external object
-  const { f } = run(`
-    export const f = (obj) => obj['a']['b']
+  const { alias, bracket, dot, helper, identityResult, predicate, propertyResult, recursive } = run(`
+    let read = obj => obj.a.b
+    let identity = obj => obj
+    let property = obj => obj.a
+    export const alias = obj => { let copy = obj; return copy.a.b }
+    export const bracket = obj => obj['a']['b']
+    export const dot = obj => obj.a.b
+    export const helper = obj => read(obj)
+    export const identityResult = obj => identity(obj).a.b
+    export const propertyResult = obj => property(obj).b
+    export const predicate = obj => obj.type === 'node' && obj.property.type === 'private'
+    export const recursive = obj =>
+      (obj.type === 'node' && obj.property.type === 'private') ||
+      (obj.type === 'chain' && recursive(obj.expression))
   `)
-  is(f({ a: { b: 42 } }), 42, 'chained literal-key bracket reads match dot chain')
+  const value = { a: { b: 42 }, type: 'node', property: { type: 'private' } }
+  is(bracket(value), 42, 'chained literal-key bracket reads')
+  is(dot(value), 42, 'chained dot reads retain the host-object branch')
+  is(alias(value), 42, 'an opaque local alias retains host-object provenance')
+  is(helper(value), 42, 'an internal helper parameter accepts the host object')
+  is(identityResult(value), 42, 'an opaque identity return remains externally dispatched')
+  is(propertyResult(value), 42, 'a helper-returned property can itself be a host object')
+  is(predicate(value), true, 'nested host property participates in boolean predicates')
+  is(recursive(value), true, 'recursive boolean result preserves the external nested read')
+  is(recursive({ type: 'chain', expression: value }), true, 'recursive nested input')
+  let reads = 0
+  const withGetter = { get a() { reads++; return { b: 42 } } }
+  is(dot(withGetter), 42, 'nested getter result')
+  is(reads, 1, 'nested host getter runs once')
+})
+
+test('Nested external dispatch follows imported results and remains ingress-gated', () => {
+  if (onWasi()) return
+  let calls = 0
+  const { imported } = run(`
+    import { load } from 'host'
+    export let imported = () => load().a.b
+  `, { imports: { host: { load: () => { calls++; return { a: { b: 42 } } } } } })
+  is(imported(), 42, 'an imported function result carries a nested host object')
+  is(calls, 1, 'the imported receiver expression runs once')
+
+  const ingressWat = compile(`
+    let internal = value => value.a.b
+    export let f = value => internal(value)
+  `, { wat: true, optimize: 0 })
+  const start = ingressWat.indexOf('(func $internal')
+  const end = ingressWat.indexOf('\n  (func $', start + 1)
+  const body = ingressWat.slice(start, end < 0 ? ingressWat.length : end)
+  is((body.match(/\$__dyn_get_any/g) || []).length, 2,
+    'both reads in an unknown helper chain retain runtime tag dispatch')
+  ok(!body.includes('$__dyn_get_expr'),
+    'an unknown helper chain does not commit its nested result to the internal dispatcher')
+
+  const nativeWat = compile(`export let f = () => ({ a: { b: 42 } }).a.b`, { wat: true, optimize: 0 })
+  ok(!nativeWat.includes('$__ext_prop'),
+    'a program with no host ingress does not link external property dispatch')
 })
 
 test('Literal-key bracket on a primitive arg stays undefined (no narrowing)', () => {

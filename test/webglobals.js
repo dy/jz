@@ -120,6 +120,30 @@ test('queueMicrotask: drains at export boundary, orders with promise jobs', asyn
   is(await e2.f(), '1,2')
 })
 
+test('web builtin shadows do not suppress lowering in sibling scopes', async () => {
+  if (onKernel()) return
+  const { exports } = jz(`
+    function useParams(URLSearchParams) { return URLSearchParams('x').x }
+    function usePromise(Promise) { return Promise.resolve(3) }
+    function useMicrotask(queueMicrotask) { queueMicrotask(); return 9 }
+    let queued = 0
+    export let localParams = () => useParams(x => ({ x }))
+    export let localPromise = () => usePromise({ resolve: x => x + 1 })
+    export let localMicrotask = () => useMicrotask(() => 0)
+    export let params = () => new URLSearchParams('a=1').get('a')
+    export let promise = () => Promise.resolve(7)
+    export let schedule = () => { queueMicrotask(() => { queued = 11 }); return queued }
+    export let scheduled = () => queued
+  `)
+  is(exports.localParams(), 'x', 'shadowed URLSearchParams uses the supplied local function')
+  is(exports.localPromise(), 4, 'shadowed Promise uses the supplied local object')
+  is(exports.localMicrotask(), 9, 'shadowed queueMicrotask uses the supplied local callback')
+  is(exports.params(), '1', 'a nested URLSearchParams shadow leaves the sibling builtin enabled')
+  is(await exports.promise(), 7, 'a nested Promise shadow leaves the sibling builtin enabled')
+  is(exports.schedule(), 0, 'queueMicrotask remains deferred inside the export turn')
+  is(exports.scheduled(), 11, 'the sibling queueMicrotask drains at the export boundary')
+})
+
 // === requestAnimationFrame ===
 
 test('requestAnimationFrame: fires with timestamp; cancel works', async () => {

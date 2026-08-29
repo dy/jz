@@ -99,16 +99,17 @@ jobs:
         run: rustup target add wasm32-wasip1 || true
       # Competitor toolchains + binaryen (provides wasm-opt).
       - run: npm install --no-save assemblyscript@~0.27.0 binaryen
-      # Porffor: the 2026 rewrite (fixes typed-array OOB, module-scope refs, JSON - bench
-      # coverage 13/52 -> full sweep) lives on git main only (npm 0.61.x is the old engine,
-      # and the restructured repo is not npm-installable yet). Pin a known-good commit
-      # (2026-07-24 head — full-corpus sweep validated on the reference machine, 42
-      # parity-ok + porf-native lane); bench.mjs probes the CLI shape via --version,
-      # so either vintage works.
-      - name: porffor (git, pinned)
+      # Porffor's npm 0.61.x is the frozen pre-rewrite engine. Pin the latest
+      # tested release commit instead: alpha 3 (2026-08-27). Exact SHA keeps the
+      # comparison reproducible; unlike the old best-effort clone/checkout, a
+      # failed rival install is fatal rather than silently weakening coverage.
+      - name: porffor alpha 3 (git, pinned)
+        env:
+          PORFFOR_REV: 03b6b54fda4bdf242e085d23768a6e31490fa58d
         run: |
-          git clone https://github.com/CanadaHonk/porffor.git "$RUNNER_TEMP/porffor" || true
-          git -C "$RUNNER_TEMP/porffor" checkout 8ef8aaaad9199de14a35bd1aa214f4d3e23bf97a || true
+          git clone https://github.com/CanadaHonk/porffor.git "$RUNNER_TEMP/porffor"
+          git -C "$RUNNER_TEMP/porffor" checkout "$PORFFOR_REV"
+          test "$(git -C "$RUNNER_TEMP/porffor" rev-parse HEAD)" = "$PORFFOR_REV"
           echo "PORF_BIN=$RUNNER_TEMP/porffor/porf" >> "$GITHUB_ENV"
       - name: expose toolchains on PATH
         run: echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
@@ -116,7 +117,8 @@ jobs:
         run: |
           node --version
           asc --version || true
-          "$PORF_BIN" --version || true
+          "$PORF_BIN" --version
+          git -C "$(dirname "$PORF_BIN")" describe --tags --always --dirty
           wasm-opt --version || true
       - run: npm run test:bench
       # ── native-lane smoke gate (audit-#12 step 4) ──────────────────────────

@@ -1107,7 +1107,8 @@ const isNamespaceAliasScoped = name => {
   return typeof key === 'string' && key !== name && (hasModule(key) || !!builtinMemberKey(key))
 }
 const shadowsBuiltin = name => typeof name === 'string' &&
-  ((scopes.length && isDeclared(name) && !isNamespaceAliasScoped(name)) || hasFunc(name) || ctx.scope.userGlobals?.has?.(name))
+  ((scopes.length && isDeclared(name) && !isNamespaceAliasScoped(name)) || hasFunc(name) ||
+    ctx.scope.userGlobals?.has?.(name) || ctx.module.imports.some(i => i[3]?.[1] === `$${name}`))
 // A local bound to a function literal in any active arrow scope (the nested-
 // closure counterpart to `hasFunc`, which only knows depth-0 lifted functions).
 const isFuncValueLocal = name => typeof name === 'string' && funcValueNames.some(s => s.has(name))
@@ -2396,6 +2397,11 @@ function foldImportMetaResolve(callee, args) {
   return staticString(resolveImportMeta(spec))
 }
 
+// Scope-aware Array()/new Array() literal fold. A single argument keeps the
+// length-constructor path; zero or multiple arguments have literal semantics.
+const prepareArrayConstructor = args => args.length === 0 ? handlers['[]'](null)
+  : args.length > 1 ? handlers['[]']([',', ...args]) : undefined
+
 // String-callee constructor / named-builtin folds: `Array(n)` and the `CTORS`
 // set redirect to the `new` handler; `BigInt64Array`/`BigUint64Array` build a
 // direct module call. `includeForNamedCall` is probed for every string callee
@@ -2408,7 +2414,9 @@ function dispatchConstructorCall(callee, args) {
   if (shadowsBuiltin(callee)) return undefined
   if (callee === 'Array') {
     const callArgs = handlerArgs(args)
-    if (callArgs.length === 1) return handlers['new'](['()', callee, callArgs[0]])
+    const literal = prepareArrayConstructor(callArgs)
+    if (literal !== undefined) return literal
+    return handlers['new'](['()', callee, callArgs[0]])
   }
   if (CTORS.includes(callee)) return handlers['new'](['()', callee, ...args])
   if (includeForNamedCall(callee) && (callee === 'BigInt64Array' || callee === 'BigUint64Array'))
@@ -2977,6 +2985,12 @@ const handlers = {
 
     // Tier 3: Host imports (non-built-in modules)
     if (hostMod) {
+      if (typeof specifiers === 'string') {
+        const spec = hostMod.default
+        if (!spec) err(`'default' not declared in host module '${mod}'; add it to { imports: { '${mod}': { default: ... } } }`)
+        addHostImport(mod, 'default', specifiers, spec)
+        return null
+      }
       if (Array.isArray(specifiers) && specifiers[0] === '{}') {
         const inner = specifiers[1]
         if (inner == null) return null
@@ -3837,25 +3851,39 @@ const handlers = {
   'new'(ctor, ...args) {
     let name = ctor, ctorArgs = args
     if (Array.isArray(ctor) && ctor[0] === '()') { name = ctor[1]; ctorArgs = ctor.slice(2) }
-    // No GC → weakness is unobservable. Default (compat) mode renames WeakSet/
-    // WeakMap to Set/Map in jzify (pure sugar, never reaches here); reaching this
-    // site means jzify was skipped — reject: a deviation (accepts primitive keys,
-    // exposes .size/iteration) is not a subset member. Use Set/Map directly.
-    if (name === 'WeakSet' || name === 'WeakMap') {
+    while (Array.isArray(name) && name[0] === '()' && name.length === 2) name = name[1]
+    const builtinCtor = typeof name === 'string' && !shadowsBuiltin(name)
+    // No GC makes weakness unobservable. Default mode treats the unshadowed
+    // builtins as Set/Map; strict mode rejects the documented deviation. This
+    // belongs here, where scope facts are available, so a user-defined WeakMap
+    // constructor is not rewritten by the earlier syntax-only jzify walk.
+    if (builtinCtor && (name === 'WeakSet' || name === 'WeakMap')) {
       const concrete = name === 'WeakSet' ? 'Set' : 'Map'
-      err(`strict mode: ${name} is not in the canonical subset — use ${concrete} (jz has no GC, so weak references are unobservable).`)
+      if (ctx.transform.strict)
+        err(`strict mode: ${name} is not in the canonical subset; use ${concrete} (jz has no GC, so weak references are unobservable).`)
+      name = concrete
     }
+    // Sharedness belongs to the linked memory, not an individual buffer.
+    // Canonicalize only the genuine builtin; a same-name user binding is an
+    // ordinary constructor call.
+    if (builtinCtor && name === 'SharedArrayBuffer') name = 'ArrayBuffer'
     // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and
     // `new Map(null)`/`new Map(undefined)` are spec-equivalent to it (null/undefined
     // → empty collection). Drop it so the emit hits the empty-collection fast path
     // rather than lowering `prep(null)` → `[, 0]` and routing through `__map_from`.
     // Typed arrays keep the sentinel: there `[, 0]` is a legitimate zero length.
-    if (ctorArgs.length === 1 && ctorArgs[0] == null && (name === 'Date' || COLLECTION_CTORS.includes(name))) ctorArgs = []
+    if (ctorArgs.length === 1 && ctorArgs[0] == null &&
+        (name === 'Array' || name === 'Date' || COLLECTION_CTORS.includes(name))) ctorArgs = []
     // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
 
-    if (name === 'URL') {
+    if (builtinCtor && name === 'Array') {
+      const literal = prepareArrayConstructor(ctorArgs)
+      if (literal !== undefined) return literal
+    }
+
+    if (builtinCtor && name === 'URL') {
       const literalArgs = ctorArgs.filter(a => a != null)
       if (literalArgs.length === 2 && isImportMetaProp(literalArgs[1], 'url')) {
         const spec = stringValue(literalArgs[0])
@@ -3867,7 +3895,7 @@ const handlers = {
     // `new RegExp("pattern", "flags?")` with string-literal pattern → compile
     // like a regex literal `/pattern/flags`. Dynamic pattern is not supported
     // (would require a runtime regex interpreter). Reported as build blocker #6.
-    if (name === 'RegExp') {
+    if (builtinCtor && name === 'RegExp') {
       const literalArgs = ctorArgs.filter(a => a != null)
       const pattern = staticStringExpr(literalArgs[0])
       if (pattern == null)
@@ -3883,14 +3911,19 @@ const handlers = {
     const wrapArgs = (args) => args.length === 0 ? [null]
       : args.length === 1 ? [prep(args[0])]
       : [[',', ...args.map(prep)]]
-    if (includeForRuntimeCtor(name)) {
+    if (builtinCtor && includeForRuntimeCtor(name)) {
       return ['()', `new.${name}`, ...wrapArgs(ctorArgs)]
     }
 
     const mod = ctx.scope.chain[name]
-    if (typeof name === 'string' && mod && !mod.includes('.')) includeModule(mod)
-    // Unknown constructor: treat as function call (jzify already strips new for known safe ones)
-    if (typeof name === 'string') return ['()', name, ...ctorArgs.map(prep)]
+    if (typeof name === 'string' && mod && mod !== name && !mod.includes('.')) includeModule(mod)
+    // Unknown or shadowed constructor: route through normal call preparation so
+    // host-import ABI boxing and local resolution are preserved. jzify already
+    // strips `new` from known safe constructors.
+    if (typeof name === 'string') {
+      const callArgs = ctorArgs.length === 0 ? null : ctorArgs.length === 1 ? ctorArgs[0] : [',', ...ctorArgs]
+      return handlers['()'](name, callArgs)
+    }
     return ['new', prep(ctor), ...args.map(prep)]
   },
 
@@ -3910,13 +3943,15 @@ const handlers = {
   // RHS may arrive as a bare name ('Array') or, if parenthesized (`x instanceof (Array)`),
   // as a length-2 grouping call node (['()', 'Array']) — same shape 'new' unwraps above.
   'instanceof'(lhs, rhs) {
-    const name = typeof rhs === 'string' ? rhs
+    const rawName = typeof rhs === 'string' ? rhs
       : (Array.isArray(rhs) && rhs[0] === '()' && rhs.length === 2 && typeof rhs[1] === 'string') ? rhs[1]
       : null
-    if (name == null || shadowsBuiltin(name) || !INSTANCEOF_ALLOW.has(name))
-      err(`instanceof: unsupported right-hand side (got ${JSON.stringify(name ?? rhs)}) — ` +
+    const shadowed = rawName != null && shadowsBuiltin(rawName)
+    const name = rawName === 'SharedArrayBuffer' && !shadowed ? 'ArrayBuffer' : rawName
+    if (name == null || shadowed || !INSTANCEOF_ALLOW.has(name))
+      err(`instanceof: unsupported right-hand side (got ${JSON.stringify(rawName ?? rhs)}); ` +
           `jz has no prototype chain; instanceof works only for Array, Map, Set, ` +
-          `the TypedArray (${TYPED_ELEM_NAMES.join('/')}) and ArrayBuffer constructors, and ` +
+          `the TypedArray (${TYPED_ELEM_NAMES.join('/')}) and ArrayBuffer/SharedArrayBuffer constructors, and ` +
           `Error/${ERR_CLASS_NAMES.slice(1).join('/')}`)
     return ['instanceof', prep(lhs), name]
   }

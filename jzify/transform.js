@@ -26,6 +26,8 @@ const TYPED_ARRAYS = new Set(['Float64Array','Float32Array','Float16Array','Int3
 const CORE_INSTANCEOF_ALLOW = new Set(['Array', 'Map', 'Set', 'ArrayBuffer', ...TYPED_ELEM_NAMES, ...ERR_CLASS_NAMES])
 
 const isProto = n => Array.isArray(n) && n[0] === '.' && Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'prototype'
+const groupedName = node => typeof node === 'string' ? node
+  : Array.isArray(node) && node[0] === '()' && node.length === 2 ? groupedName(node[1]) : null
 
 function staticInstanceofFold(val, ctor) {
   if (typeof ctor !== 'string' || !Array.isArray(val)) return null
@@ -38,9 +40,8 @@ function staticInstanceofFold(val, ctor) {
   if (val[0] === '//') return ctor === 'RegExp' || ctor === 'Object'
   if (val[0] === 'new') {
     const inner = val[1]
-    const cname = typeof inner === 'string' ? inner
-      : (Array.isArray(inner) && inner[0] === '()' && typeof inner[1] === 'string') ? inner[1]
-      : null
+    const cname = Array.isArray(inner) && inner[0] === '()' && inner.length > 2
+      ? groupedName(inner[1]) : groupedName(inner)
     if (cname) return cname === ctor || (cname !== 'Object' && ctor === 'Object')
   }
   if (val[0] == null && val.length === 2) {
@@ -86,7 +87,8 @@ const arrowParams = params => Array.isArray(params) && params[0] === '()' ? para
  * @param {Function} opts.transformSwitch
  * @param {() => Function} opts.lowerClass
  * @param {() => Function} opts.lowerObjectLiteralThis
- * @param {() => Function} opts.lowerArrayConstructor
+ * @param {(name:string) => boolean} opts.shadowsBuiltin
+ * @param {(node:Array, fn:Function) => any} opts.withBuiltinScope
  */
 let _gen = null
 export const bindGenerators = (g) => { _gen = g }
@@ -95,7 +97,8 @@ export function createTransform(opts) {
   const { names, lowerArguments, transformPattern, normalizeCaseBody, transformSwitch } = opts
   const lowerClass = (...a) => opts.lowerClass()(...a)
   const lowerObjectLiteralThis = (...a) => opts.lowerObjectLiteralThis()(...a)
-  const lowerArrayConstructor = (...a) => opts.lowerArrayConstructor()(...a)
+  const shadowsBuiltin = opts.shadowsBuiltin
+  const withBuiltinScope = opts.withBuiltinScope
 
   const methodOverrideHasOwn = (a, b) => {
     const proto = isProto(a) ? a : isProto(b) ? b : null
@@ -152,6 +155,10 @@ export function createTransform(opts) {
     usesArguments(body) ? lowerArguments(params, functionBodyBlock(body)) : [params, body]
 
   function transformScope(node) {
+    return withBuiltinScope(node, () => transformScopeInner(node))
+  }
+
+  function transformScopeInner(node) {
     if (!Array.isArray(node)) return transform(node)
 
     const [op, ...args] = node
@@ -290,25 +297,26 @@ export function createTransform(opts) {
       // Promise API rides the async runtime: new Promise(fn) arrives here as a
       // plain call (the `new` handler unwraps unknown ctors), statics by name.
       if (_gen?.noteAsync) {
-        if (callee === 'Promise' && rest.length) {
+        if (callee === 'Promise' && !shadowsBuiltin('Promise') && rest.length) {
           _gen.noteAsync()
           return ['()', '__p_exec', ...rest.map(a => a == null ? a : transform(a))]
         }
-        if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Promise' && P_STATIC[callee[2]]) {
+        if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Promise' &&
+            !shadowsBuiltin('Promise') && P_STATIC[callee[2]]) {
           _gen.noteAsync()
           return ['()', P_STATIC[callee[2]], ...rest.map(a => a == null ? a : transform(a))]
         }
         // queueMicrotask(fn) IS the runtime's job queue: push onto __mt, drained
         // at the same host boundaries promise jobs are. Evaluates to undefined
         // per spec (push's return length is discarded by the comma).
-        if (callee === 'queueMicrotask' && rest.length) {
+        if (callee === 'queueMicrotask' && !shadowsBuiltin('queueMicrotask') && rest.length) {
           _gen.noteAsync()
           return [',', ['()', ['.', '__mt', 'push'], ...rest.map(a => a == null ? a : transform(a))], 'undefined']
         }
       }
       // URLSearchParams rides a spliced jz-source runtime (jzify/webrt.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
-      if (callee === 'URLSearchParams' && _gen?.webrt) {
+      if (callee === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && _gen?.webrt) {
         _gen.webrt.usp = true
         return ['()', '__usp_new', ...rest.map(a => a == null ? a : transform(a))]
       }
@@ -320,10 +328,6 @@ export function createTransform(opts) {
           const fused = _gen.fuseTerminal(chain, names.genTemp)
           if (fused) return transform(fused)
         }
-      }
-      if (callee === 'Array') {
-        const lit = lowerArrayConstructor(rest[0])
-        if (lit) return lit
       }
       // `[…literal][Symbol.iterator]()` / `'s'[Symbol.iterator]()` — mint a
       // decorated indexed iterator (array/string values as iterators). Literal
@@ -340,7 +344,7 @@ export function createTransform(opts) {
       // protocol values materialize via __it_arr; arrays copy; array-likes
       // build by length. `Array.from(x, fn)` maps the materialized array.
       if (_gen?.iterProto?.on && Array.isArray(callee) && callee[0] === '.' &&
-          callee[1] === 'Array' && callee[2] === 'from' && rest.length === 1) {
+          callee[1] === 'Array' && !shadowsBuiltin('Array') && callee[2] === 'from' && rest.length === 1) {
         _gen.iterProto.arr = true
         const args = Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0].slice(1) : [rest[0]]
         const drained = ['()', '__it_arr', transform(args[0])]
@@ -475,30 +479,18 @@ export function createTransform(opts) {
     '!=='(a, b) { const own = methodOverrideHasOwn(a, b); if (own) return own; if (isProto(a) || isProto(b)) return 0 },
 
     'new'(ctor, ...cargs) {
-      if (Array.isArray(ctor) && ctor[0] === '()' && ctor[1] === 'Array') {
-        const lit = lowerArrayConstructor(ctor[2])
-        if (lit) return lit
-      }
-      const name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-      // SharedArrayBuffer canonicalizes to ArrayBuffer: within one module the
-      // buffer IS jz's linear memory — sharedness is a jz.pool linking concern
-      // (sharedMemory: true), not a per-buffer object property. Atomics accept
-      // proven Int32Array views either way. (`new X(args)` parses with the
-      // args INSIDE the ctor call node — rename the callee, keep the rest.)
-      if (name === 'SharedArrayBuffer') {
-        const ctor2 = Array.isArray(ctor) && ctor[0] === '()'
-          ? ['()', 'ArrayBuffer', ...ctor.slice(2).map(transform)]
-          : 'ArrayBuffer'
-        return ['new', ctor2, ...cargs.map(transform)]
-      }
+      const name = Array.isArray(ctor) && ctor[0] === '()' && ctor.length > 2
+        ? groupedName(ctor[1]) : groupedName(ctor)
       // Preserve `new` for native constructors the compiler resolves under its own
       // `new` handler (prepare/index.js): typed arrays/Array/RegExp need the `new`
       // form, and `new URL(rel, import.meta.url)` lowers to a static href string there.
       // User classes (lowered to factory arrows by jzify) become plain calls below.
-      if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' || name === 'RegExp' || name === 'URL')) return ['new', transform(ctor), ...cargs.map(transform)]
+      if (typeof name === 'string' && (TYPED_ARRAYS.has(name) || name === 'Array' ||
+          name === 'SharedArrayBuffer' || name === 'RegExp' || name === 'URL'))
+        return ['new', transform(ctor), ...cargs.map(transform)]
       // paren-less `new URLSearchParams` (ctor arrives as a bare string —
       // the call-node form unwraps through the '()' handler below)
-      if (name === 'URLSearchParams' && typeof ctor === 'string' && _gen?.webrt) {
+      if (name === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && typeof ctor === 'string' && _gen?.webrt) {
         _gen.webrt.usp = true
         return ['()', '__usp_new']
       }
@@ -507,6 +499,11 @@ export function createTransform(opts) {
     },
 
     'instanceof'(val, ctor) {
+      const rawName = groupedName(ctor)
+      // A syntax-only shape fold has no prototype authority for a shadowed RHS.
+      // Preserve the operation so prepare can reject it cleanly.
+      if (typeof rawName === 'string' && shadowsBuiltin(rawName))
+        return ['instanceof', transform(val), transform(ctor)]
       // promise-shape probe — promises are fixed-shape objects, no ctor chain
       if (ctor === 'Promise' && _gen?.noteAsync) {
         _gen.noteAsync()
@@ -532,12 +529,12 @@ export function createTransform(opts) {
         return ['===', ['typeof', t0], [null, 'function']]
       }
       const t = transform(val)
-      let name = typeof ctor === 'string' ? ctor : (Array.isArray(ctor) && ctor[0] === '()' ? ctor[1] : null)
-      if (name === 'SharedArrayBuffer') name = 'ArrayBuffer'   // same canonicalization as `new`
+      const name = rawName
       // Array/Map/Set/TypedArray/ArrayBuffer/Error-family: hand off to the sound
       // core machinery instead of guessing here (see CORE_INSTANCEOF_ALLOW above)
       // — same op, same RHS, same answer as strict mode.
-      if (typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name)) return ['instanceof', t, name]
+      if (name === 'SharedArrayBuffer' || typeof name === 'string' && CORE_INSTANCEOF_ALLOW.has(name))
+        return ['instanceof', t, name]
       const fold = staticInstanceofFold(val, name)
       if (fold != null) return [null, fold]
       return ['===', ['typeof', t], [null, 'object']]
@@ -653,6 +650,10 @@ export function createTransform(opts) {
   }
 
   function transform(node) {
+    return withBuiltinScope(node, () => transformInner(node))
+  }
+
+  function transformInner(node) {
     if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
     const [op, ...args] = node
     if (op == null) return node

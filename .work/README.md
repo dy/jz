@@ -10,6 +10,8 @@
 - `todo.md`, `todo-original.md` — session/user working notes.
 - `memcheck-results.csv` — memory-goal evidence (regenerated at reference
   refresh).
+- `porffor-alpha3-audit.md`: Porffor source/self-host comparison, compiler-core
+  adapter contract, and ranked transferable optimizations.
 
 ## Historical but cited from code comments (do not move; citations would dangle)
 carrier-representation-design, lattice-design, bigint-retirement-design,

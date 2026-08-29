@@ -354,17 +354,7 @@ function lowerClass(name, heritage, body) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
-// Array(a, b, …) / new Array(a, b, …) → array literal [a, b, …]; Array() → [].
-// The single-argument Array(n) is a length constructor (n holes), not a
-// literal — return null there so the caller keeps it as a constructor call.
-function lowerArrayConstructor(arg) {
-  if (arg == null) return ['[]', null]
-  if (Array.isArray(arg) && arg[0] === ',' && arg.length > 2)
-    return ['[]', [',', ...arg.slice(1).map(transform)]]
-  return null
-}
-
-  return { lowerClass, lowerObjectLiteralThis, lowerArrayConstructor }
+  return { lowerClass, lowerObjectLiteralThis }
 }
 
 // ── Pseudo-classical fold ────────────────────────────────────────────────────

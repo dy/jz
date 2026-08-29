@@ -282,7 +282,9 @@ export default (ctx) => {
     __dyn_get_expr_t: ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
     __dyn_get_expr_t_h: () => ['__dyn_get_t_h', '__hash_get_local_h', ...errPropDep()],
     __dyn_get_expr: ['__dyn_get_expr_t', '__ptr_type'],
+    __dyn_get_expr_h: ['__dyn_get_expr_t_h', '__ptr_type'],
     __dyn_get_any: ['__dyn_get_any_t', '__ptr_type'],
+    __dyn_get_any_h: ['__dyn_get_any_t_h', '__ptr_type'],
     __dyn_get_any_t: () => ctx.linkDemand.external
       ? ['__dyn_get_t', '__hash_get_local', '__ext_prop', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd']
       : ['__dyn_get_t', '__hash_get_local', '__is_str_key', '__to_str', '__ptr_offset', '__ptr_offset_fwd'],
@@ -1786,6 +1788,9 @@ export default (ctx) => {
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.
   // Thunked (not a plain string) so errPropArm reads ctx.core.includes at pull
   // time, after emission has settled whether .message/.name was ever reached.
+  ctx.core.stdlib['__dyn_get_expr_h'] = `(func $__dyn_get_expr_h (param $obj i64) (param $key i64) (param $h i32) (result i64)
+    (call $__dyn_get_expr_t_h (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (local.get $h)))`
+
   ctx.core.stdlib['__dyn_get_expr_t_h'] = () => `(func $__dyn_get_expr_t_h (param $obj i64) (param $key i64) (param $t i32) (param $h i32) (result i64)
     ;; Real-number receiver -- no props; guard the HASH arm OOB, see __dyn_get_expr_t.
     ;; err_prop decodes .message/.name for a caught internal error code below.
@@ -1853,6 +1858,9 @@ export default (ctx) => {
               (then (local.get $val))
               (else ${extArm})))))))`
   }
+
+  ctx.core.stdlib['__dyn_get_any_h'] = `(func $__dyn_get_any_h (param $obj i64) (param $key i64) (param $h i32) (result i64)
+    (call $__dyn_get_any_t_h (local.get $obj) (local.get $key) (call $__ptr_type (local.get $obj)) (local.get $h)))`
 
   // Prehashed variant of __dyn_get_any_t for constant string keys: the FNV hash
   // is folded at compile time (strHashLiteral), so no __str_hash call at runtime.

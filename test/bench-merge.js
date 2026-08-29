@@ -141,6 +141,21 @@ test('bench --verify-anchors=1: takes the first N of the seed list', () => {
   ok(merged.meta.anchors.pairs.length === 1, `--verify-anchors=1 should check exactly 1 pair, got ${merged.meta.anchors.pairs.length}`)
 })
 
+test('bench --verify-anchors: a wrong stored checksum row cannot certify timing', () => {
+  const scratch = freshAnchorBaseline()
+  const stored = JSON.parse(readFileSync(scratch, 'utf8'))
+  stored.cases.mat4.targets['c-wasm'].parity = 'DIFF'
+  writeFileSync(scratch, JSON.stringify(stored, null, 1))
+  const { status, out } = runExpectFail([
+    '--cases=mat4', '--targets=jz', `--json=${scratch}`, '--merge',
+    '--verify-anchors=1', '--allow-unanchored',
+  ])
+  ok(status !== 0 && /no accepted stored baseline/.test(out),
+    `wrong-result anchor row should fail closed:\n${out.slice(-1500)}`)
+  const pair = JSON.parse(readFileSync(scratch, 'utf8')).meta.anchors.pairs[0]
+  ok(pair.pass === false && pair.ratio == null, `wrong-result anchor produced a ratio: ${JSON.stringify(pair)}`)
+})
+
 // ── --verify-anchors: fail path (perturbed scratch copy) ────────────────────
 test('bench --verify-anchors: detects drift, exits nonzero, and now REFUSES the write (audit-#13 hygiene item 2a)', () => {
   // Start from a just-measured baseline (see freshAnchorBaseline above) so the

@@ -6,8 +6,9 @@
  * gate reads only committed evidence and hard-fails — wired into
  * `prepublishOnly`, run explicitly via `npm run test:claims`.
  *
- *   1. FRESH    — no compiler-source commit may postdate the snapshot's
- *                 meta.commit: stale evidence proves nothing about HEAD.
+ *   1. FRESH: no compiler-source commit may postdate any JZ row's
+ *                 measuredAt (or meta.commit for a full snapshot): a partial
+ *                 rival-only merge must not make carried JZ evidence look fresh.
  *   2. COMPLETE — every named rival (wasm, JIT, porf-native) contributes
  *                 parity-valid rows over ≥ COVERAGE_FLOOR of the corpus;
  *                 an absent or token lane is an uncontested (= unproven) claim.
@@ -17,12 +18,14 @@
  *                 never leads; red rows void the claim outright.
  */
 import test from 'tst'
-import { ok } from 'tst/assert.js'
+import { is, ok } from 'tst/assert.js'
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { correctBenchmarkRow, LAB, timedBenchmarkRow } from '../assets/headline.js'
 import { machineState } from '../bench/machine-state.mjs'
+import { PORFFOR_REV, porfforFloor } from './_porffor-floor.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const WASM_BAND_TOL = 1.05   // keep in lockstep with test/bench.js
@@ -92,19 +95,86 @@ const SOURCE_SCOPE = ['src', 'module', 'jzify', 'index.js', 'interop.js', 'layou
 const res = JSON.parse(readFileSync(join(ROOT, 'bench/results.json'), 'utf8'))
 const cases = res.cases
 
-test('claims: reference evidence is fresh (no compiler commits past meta.commit)', () => {
-  const base = res.meta?.commit
-  ok(typeof base === 'string' && base.length >= 7, `results.json meta.commit missing/malformed: ${base}`)
-  let stale
-  try {
-    stale = execFileSync('git', ['log', '--oneline', `${base}..HEAD`, '--', ...SOURCE_SCOPE],
-      { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }).trim()
-  } catch (e) {
-    ok(false, `freshness check failed to run (bad meta.commit ${base}?): ${String(e.message).slice(0, 120)}`)
-    return
+const collectJzEvidence = snapshot => {
+  const byBase = new Map()
+  const missing = []
+  let evidencedRows = 0
+  for (const [name, c] of Object.entries(snapshot.cases)) {
+    const row = c.targets?.jz
+    if (!timedBenchmarkRow(row)) continue
+    evidencedRows++
+    const base = row.measuredAt || (!snapshot.meta?.partial ? snapshot.meta?.commit : null)
+    if (!base) { missing.push(name); continue }
+    const names = byBase.get(base)
+    if (names) names.push(name)
+    else byBase.set(base, [name])
   }
-  const n = stale ? stale.split('\n').length : 0
-  ok(n === 0, `reference dataset is STALE: ${n} compiler-source commit(s) postdate its meta.commit ${base} — re-run the reference bench at HEAD:\n${stale.split('\n').slice(0, 8).join('\n')}`)
+  return { byBase, missing, evidencedRows }
+}
+
+test('claims freshness: partial snapshots use each valid JZ row, not the merge commit', () => {
+  const partial = collectJzEvidence({
+    meta: { commit: 'new-head', partial: true },
+    cases: {
+      valid: { targets: { jz: { parity: 'ok', medianUs: 1, measuredAt: 'old-run' } } },
+      missing: { targets: { jz: { parity: 'ok', medianUs: 1 } } },
+      wrong: { targets: { jz: { parity: 'DIFF', medianUs: 1, measuredAt: 'old-run' } } },
+      failed: { targets: { jz: { status: 'fail', measuredAt: 'old-run' } } },
+      zero: { targets: { jz: { parity: 'ok', medianUs: 0, measuredAt: 'old-run' } } },
+    },
+  })
+  is(partial.evidencedRows, 2, 'only positive parity-valid JZ rows support the claim')
+  is(partial.byBase.get('old-run')?.join(','), 'valid', 'row provenance wins over meta.commit')
+  is(partial.byBase.has('new-head'), false, 'partial meta.commit is not used as measurement provenance')
+  is(partial.missing.join(','), 'missing', 'partial rows without measuredAt are rejected')
+
+  const full = collectJzEvidence({
+    meta: { commit: 'full-run' },
+    cases: { valid: { targets: { jz: { parity: 'ok', medianUs: 1 } } } },
+  })
+  is(full.byBase.get('full-run')?.join(','), 'valid', 'full snapshots fall back to meta.commit')
+  is(full.missing.length, 0, 'full snapshot fallback leaves no missing provenance')
+})
+
+test('claims: compiler inputs are committed before evidence can be fresh', () => {
+  const dirty = execFileSync('git', ['status', '--porcelain', '--', ...SOURCE_SCOPE],
+    { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }).trim()
+  ok(!dirty, dirty ? `compiler inputs have uncommitted changes:\n${dirty}` : 'compiler inputs are committed')
+})
+
+test('claims: reference evidence is fresh (no compiler commits past any JZ row)', () => {
+  const metaBase = res.meta?.commit
+  const validMetaBase = typeof metaBase === 'string' && metaBase.length >= 7
+  ok(validMetaBase, validMetaBase ? `results.json meta.commit ${metaBase}` : `results.json meta.commit missing/malformed: ${metaBase}`)
+
+  // A partial merge's meta.commit names the write, not every carried JZ run.
+  // Full snapshots have no row stamps and use meta.commit.
+  const { byBase, missing, evidencedRows } = collectJzEvidence(res)
+  ok(evidencedRows >= Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR),
+    `${evidencedRows} parity-valid JZ rows carry the performance claim`)
+  ok(missing.length === 0, missing.length
+    ? `partial reference has ${missing.length} JZ row(s) with no measuredAt provenance: ${missing.slice(0, 12).join(', ')}`
+    : 'every partial JZ evidence row has measuredAt provenance')
+
+  const staleGroups = []
+  for (const [base, names] of byBase) {
+    try {
+      const stale = execFileSync('git', ['log', '--oneline', `${base}..HEAD`, '--', ...SOURCE_SCOPE],
+        { cwd: ROOT, encoding: 'utf8', timeout: 30_000 }).trim()
+      if (stale) staleGroups.push({ base, names, stale, n: stale.split('\n').length })
+    } catch (e) {
+      ok(false, `freshness check failed to run (bad JZ row measuredAt ${base}?): ${String(e.message).slice(0, 120)}`)
+      return
+    }
+  }
+  const staleRows = staleGroups.reduce((n, x) => n + x.names.length, 0)
+  const detail = staleGroups.map(x =>
+    `${x.names.length} row(s) @ ${x.base}: ${x.n} compiler commit(s) newer\n${x.stale.split('\n').slice(0, 4).join('\n')}`
+  ).join('\n')
+  ok(staleRows === 0, staleRows
+    ? `reference dataset is STALE: ${staleRows} JZ row(s) predate compiler-source changes; re-run those rows at HEAD:\n${detail}`
+    : 'all JZ evidence rows postdate compiler-source changes')
+
   // The dependency axis the path scope can't see from inside the snapshot: the
   // watr that produced the evidence must be the watr installed now.
   const snapWatr = res.meta?.versions?.watr
@@ -195,7 +265,7 @@ const parityRows = rival => {
   let rows = 0
   for (const c of Object.values(cases)) {
     const t = c.targets?.[rival]
-    if (t && t.medianUs > 0 && t.parity === 'ok') rows++
+    if (timedBenchmarkRow(t)) rows++
   }
   return rows
 }
@@ -209,6 +279,54 @@ test('claims: every named rival is contested (coverage ≥ floor of the corpus)'
   }
 })
 
+test('claims: every non-lab JZ timing has correct-result parity', () => {
+  const invalid = Object.entries(cases)
+    .filter(([id, c]) => !LAB.has(id) && !timedBenchmarkRow(c.targets?.jz))
+    .map(([id, c]) => `${id}:${c.targets?.jz?.parity || c.targets?.jz?.status || 'missing'}`)
+  ok(invalid.length === 0, invalid.length
+    ? `non-lab JZ rows without correct timing evidence: ${invalid.join(', ')}`
+    : 'every non-lab JZ timing has correct-result parity')
+})
+
+test('Porffor floor: ties pass, losses surface, and invalid rows do not compare', () => {
+  const row = (jz, porf) => ({ targets: { jz, 'porf-native': porf } })
+  const floor = porfforFloor({
+    tie: row({ parity: 'ok', medianUs: 10, bytes: 20 }, { parity: 'ok', medianUs: 10, bytes: 20 }),
+    loss: row({ parity: 'ok', medianUs: 10, bytes: 20 }, { parity: 'ok', medianUs: 5, bytes: 10 }),
+    fma: row({ parity: 'ok', medianUs: 10, bytes: 20 }, { parity: 'fma', medianUs: 20, bytes: 40 }),
+    wrong: row({ parity: 'ok', medianUs: 10, bytes: 20 }, { parity: 'DIFF', medianUs: 1, bytes: 1 }),
+    failed: row({ parity: 'ok', medianUs: 10, bytes: 20 }, { status: 'fail', parity: 'ok', medianUs: 1, bytes: 1 }),
+    zero: row({ parity: 'ok', medianUs: 0, bytes: 0 }, { parity: 'ok', medianUs: 1, bytes: 1 }),
+  })
+  is(floor.speed.map(([name]) => name).join(','), 'tie,loss,fma', 'FMA rows count; wrong, failed, and zero rows do not')
+  is(floor.size.map(([name]) => name).join(','), 'tie,loss,fma', 'the same validity boundary governs artifact size')
+  is(floor.speedLosses.map(([name]) => name).join(','), 'loss', 'an exact tie passes and a speed loss is named')
+  is(floor.sizeLosses.map(([name]) => name).join(','), 'loss', 'an exact tie passes and a size loss is named')
+  is(+floor.speedGeomean.toFixed(6), 1, 'runtime geomean includes the tie, loss, and FMA row')
+  is(+floor.sizeGeomean.toFixed(6), 1, 'size geomean includes the tie, loss, and FMA row')
+  const empty = porfforFloor({})
+  is(empty.speedGeomean, null, 'zero comparable speed rows produce null, not NaN')
+  is(empty.sizeGeomean, null, 'zero comparable size rows produce null, not NaN')
+})
+
+test('claims: JZ does not lose to pinned Porffor native by case or geomean', () => {
+  const revision = PORFFOR_REV.slice(0, 8)
+  const version = res.meta?.versions?.porffor || ''
+  ok(version.includes(revision), `Porffor evidence ${version || 'missing'}; required alpha 3 ${revision}`)
+  const { speed, size, speedLosses, sizeLosses, speedGeomean, sizeGeomean } = porfforFloor(cases)
+  const need = Math.ceil(Object.keys(cases).length * COVERAGE_FLOOR)
+  ok(speed.length >= need, `${speed.length} comparable Porffor speed rows (need ${need})`)
+  ok(size.length >= need, `${size.length} comparable Porffor size rows (need ${need})`)
+  ok(speedLosses.length === 0, speedLosses.length
+    ? `Porffor speed wins: ${speedLosses.map(([name, ratio]) => `${name} ${(1 / ratio).toFixed(3)}×`).join(', ')}`
+    : `JZ leads all ${speed.length} comparable Porffor speed rows`)
+  ok(sizeLosses.length === 0, sizeLosses.length
+    ? `Porffor artifact-size wins: ${sizeLosses.map(([name, ratio]) => `${name} ${(1 / ratio).toFixed(3)}×`).join(', ')}`
+    : `JZ is smaller on all ${size.length} comparable Porffor rows`)
+  ok(speedGeomean >= 1, `porf-native/jz runtime geomean ${speedGeomean?.toFixed(3) ?? 'missing'}×`)
+  ok(sizeGeomean >= 1, `porf-native/jz artifact-byte geomean ${sizeGeomean?.toFixed(3) ?? 'missing'}×`)
+})
+
 // Per-case jz-vs-best-rival ratios for a rival set: [id, ratio, who]. `ids`
 // (optional Set) restricts which cases are considered — used to carve the
 // JSC tight-integer-loop exception out of the general bun/jsc claim.
@@ -217,11 +335,11 @@ const caseRatios = (rivals, ids = null) => {
   for (const [id, c] of Object.entries(cases)) {
     if (ids && !ids.has(id)) continue
     const jz = c.targets?.jz
-    if (!jz || !(jz.medianUs > 0)) continue
+    if (!timedBenchmarkRow(jz)) continue
     let best = null, who = null
     for (const rival of rivals) {
       const t = c.targets?.[rival]
-      if (!t || !(t.medianUs > 0) || t.parity !== 'ok') continue
+      if (!timedBenchmarkRow(t)) continue
       if (best == null || t.medianUs < best) { best = t.medianUs; who = rival }
     }
     if (best != null) out.push([id, jz.medianUs / best, who])
@@ -277,7 +395,7 @@ test(`claims: size — jz geomean bytes vs AssemblyScript stays within the ${SIZ
   const ratios = []
   for (const c of Object.values(cases)) {
     const jz = c.targets?.jz, as = c.targets?.as
-    if (!jz || !as || !(jz.bytes > 0) || !(as.bytes > 0) || as.parity !== 'ok') continue
+    if (!correctBenchmarkRow(jz) || !correctBenchmarkRow(as) || !(jz.bytes > 0) || !(as.bytes > 0)) continue
     ratios.push(jz.bytes / as.bytes)
   }
   ok(ratios.length > 0, 'no jz/as size-comparable cases found')

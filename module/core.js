@@ -2448,6 +2448,22 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     return ['call', '$__ptr_type', cloneIR(receiver)]
   }
 
+  // Typed dynamic dispatch consumes an unknown receiver twice: once as the
+  // value and once to read its tag. Leaf reads are safe to clone. Effectful
+  // receivers use an untyped wrapper that computes the tag from its parameter.
+  const repeatableReceiver = receiver => {
+    let node = receiver
+    if (Array.isArray(node) && node[0] === 'i64.reinterpret_f64') node = node[1]
+    return Array.isArray(node) && (node[0] === 'local.get' || node[0] === 'global.get' ||
+      node[0] === 'i64.const' || node[0] === 'f64.const' || node[0] === 'i32.const')
+  }
+  const withReceiverTag = (base, vt, useTyped, useUntyped) => {
+    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+    return valKindToPtr(vt) != null || repeatableReceiver(receiver)
+      ? useTyped(receiver, emitTypeTag(receiver, vt))
+      : useUntyped(receiver)
+  }
+
   // Slice C of the error-object model (.work/todo.md): a .message/.name read
   // whose receiver's kind isn't proven reaches the dynamic dispatch below,
   // which is also the ONLY place a real-number receiver (a catch(e)-bound
@@ -2464,7 +2480,6 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
   const maybeIncErrProp = (prop) => { if ((prop === 'message' || prop === 'name') && !ctx.memory.shared) inc('__err_prop') }
 
   function emitDynGetExprTyped(base, key, vt, prop) {
-    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access.
     if (typeof prop === 'string') {
@@ -2472,43 +2487,64 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       ctx.module.include('array')
       inc('__dyn_get_expr_t_h')
       maybeIncErrProp(prop)
-      const call = ['call', '$__dyn_get_expr_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
-      // Schema-set devirt marker — same contract as emitDynGetAnyTyped below
-      // (identical 4-arg layout); without it the wasi host (linkDemand.external
-      // off routes reads here) never devirtualizes megamorphic prop reads.
-      // A branch-versioned fallback is already dominated by a failed exact-sid
-      // guard; rebuilding per-read schema tables there is dead overhead.
-      if ((ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
-        call.dvProp = prop
-        call.dvObject = vt === VAL.OBJECT
-      }
-      return typed(['f64.reinterpret_i64', call], 'f64')
+      return withReceiverTag(base, vt, (receiver, typeTag) => {
+        const call = ['call', '$__dyn_get_expr_t_h', receiver, key, typeTag, ['i32.const', strHashLiteral(prop)]]
+        // Schema-set devirt marker, with the same contract as emitDynGetAnyTyped below
+        // (identical 4-arg layout); without it the wasi host (linkDemand.external
+        // off routes reads here) never devirtualizes megamorphic prop reads.
+        // A branch-versioned fallback is already dominated by a failed exact-sid
+        // guard; rebuilding per-read schema tables there is dead overhead.
+        if ((ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
+          call.dvProp = prop
+          call.dvObject = vt === VAL.OBJECT
+        }
+        return typed(['f64.reinterpret_i64', call], 'f64')
+      }, receiver => {
+        inc('__dyn_get_expr_h')
+        return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_h', receiver, key,
+          ['i32.const', strHashLiteral(prop)]]], 'f64')
+      })
     }
     inc('__dyn_get_expr_t')
-    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
+    return withReceiverTag(base, vt, (receiver, typeTag) =>
+      typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t', receiver, key, typeTag]], 'f64'),
+    receiver => {
+      inc('__dyn_get_expr')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', receiver, key]], 'f64')
+    })
   }
 
-  function emitDynGetAnyTyped(base, key, vt, prop) {
-    const receiver = asI64(base?.type ? base : typed(base, 'f64'))
+  function emitDynGetAnyTyped(base, key, vt, prop, devirt = true) {
     // Constant string key: fold the FNV hash at compile time and call the
     // prehashed body — no __str_hash on every access (hot for `parse.step` etc).
     if (typeof prop === 'string') {
       inc('__dyn_get_any_t_h')
       maybeIncErrProp(prop)
-      const call = ['call', '$__dyn_get_any_t_h', receiver, key, emitTypeTag(receiver, vt), ['i32.const', strHashLiteral(prop)]]
-      // Schema-set devirt marker: the optimizer (devirtSchemaReads) rewrites this
-      // megamorphic probe into a br_table over the module's registered schemas —
-      // direct slot loads per schema, this call as the always-sound default arm.
-      // Tagged here (not built) because schema.list is still growing while
-      // function bodies emit; the pass runs after module init completes.
-      if ((ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
-        call.dvProp = prop
-        call.dvObject = vt === VAL.OBJECT
-      }
-      return typed(['f64.reinterpret_i64', call], 'f64')
+      return withReceiverTag(base, vt, (receiver, typeTag) => {
+        const call = ['call', '$__dyn_get_any_t_h', receiver, key, typeTag, ['i32.const', strHashLiteral(prop)]]
+        // Schema-set devirt marker: the optimizer (devirtSchemaReads) rewrites this
+        // megamorphic probe into a br_table over the module's registered schemas,
+        // direct slot loads per schema, this call as the always-sound default arm.
+        // Tagged here (not built) because schema.list is still growing while
+        // function bodies emit; the pass runs after module init completes.
+        if (devirt && (ctx.transform.optFlags & OPTF.devirtDynProps) && !ctx.func._schemaSpecSlow) {
+          call.dvProp = prop
+          call.dvObject = vt === VAL.OBJECT
+        }
+        return typed(['f64.reinterpret_i64', call], 'f64')
+      }, receiver => {
+        inc('__dyn_get_any_h')
+        return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_h', receiver, key,
+          ['i32.const', strHashLiteral(prop)]]], 'f64')
+      })
     }
     inc('__dyn_get_any_t')
-    return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t', receiver, key, emitTypeTag(receiver, vt)]], 'f64')
+    return withReceiverTag(base, vt, (receiver, typeTag) =>
+      typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any_t', receiver, key, typeTag]], 'f64'),
+    receiver => {
+      inc('__dyn_get_any')
+      return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_any', receiver, key]], 'f64')
+    })
   }
 
   // Walk an AST expression that may resolve to an OBJECT literal at compile
@@ -2572,6 +2608,24 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
     for (const p of flat) if (Array.isArray(p) && p[0] === ':') names.push(p[1])
     return ctx.schema.register(names)
   }
+
+  // An unknown chain can carry a host object through aliases, helpers, and
+  // imported results. Keep that branch only when the program has a host-object
+  // ingress; known native roots retain the smaller internal path.
+  let externalIngress
+  const hasExternalIngress = () => {
+    if (externalIngress == null) externalIngress = ctx.transform.targetProfile.envImports && (
+      ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
+      ctx.funcs.list.some(f => f.exported && f.sig?.params?.some(p => p.type === 'f64'))
+    )
+    return externalIngress
+  }
+  const opaquePropertyRoot = node => {
+    while (Array.isArray(node) && (node[0] === '.' || node[0] === '?.' || node[0] === '[]' || node[0] === '?.[]'))
+      node = node[1]
+    return node
+  }
+  const nestedMayBeExternal = node => hasExternalIngress() && valTypeOf(opaquePropertyRoot(node)) == null
 
   /** Emit .prop access for a WASM f64 node using schema or HASH fallback. */
   function emitPropAccess(va, obj, prop) {
@@ -2731,13 +2785,20 @@ ${regionCopyRecBody({ hasDynProps: ctx.scope.globals.has('__dyn_props'), lane })
       inc('__hash_get', '__str_hash', '__str_eq')
       return typed(['f64.reinterpret_i64', ['call', '$__hash_get', asI64(va), key]], 'f64')
     }
-    // Non-string receiver: route through HASH fast path when valTypeOf can
-    // resolve the chain to a known HASH (e.g. `o.meta.bias` where `o.meta` is
-    // a HASH per the parsed JSON shape). Falls back to dynamic dispatch
-    // otherwise.
-    if (valTypeOf(obj) === VAL.HASH) {
-      return emitHashGetLocalConst(va, key, prop)
+    // Route through HASH fast path when valTypeOf can resolve the chain to a
+    // known HASH (e.g. `o.meta.bias` where `o.meta` is a HASH per the parsed
+    // JSON shape).
+    if (valTypeOf(obj) === VAL.HASH) return emitHashGetLocalConst(va, key, prop)
+    // An earlier read in an opaque chain may have returned a host object even
+    // when structural property inference labels that result OBJECT. Preserve
+    // runtime tag dispatch. Keep this fallback out of schema devirtualization:
+    // the shared dispatcher is smaller than cloning a schema switch at every
+    // uncertain site.
+    if (nestedMayBeExternal(obj)) {
+      setLinkDemand('external')
+      return emitDynGetAnyTyped(va, key, null, prop, false)
     }
+    // A proven-native non-HASH receiver uses internal dynamic dispatch.
     inc('__dyn_get_expr')
     return typed(['f64.reinterpret_i64', ['call', '$__dyn_get_expr', asI64(va), key]], 'f64')
   }

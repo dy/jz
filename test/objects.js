@@ -9,6 +9,125 @@ import { i64ToF64 } from '../interop.js'
 import { onWasi, belowOpt } from './_matrix.js'
 import { run } from './util.js'
 
+test('user constructors shadow built-in new lowering', () => {
+  const source = `
+    function RegExp(x) { return { x } }
+    function URL(x) { return { x } }
+    function Map(x) { return { x } }
+    function WeakMap(x) { return { x } }
+    function Date() { return { x: 9 } }
+    function Array(a, b) { return { x: a == null ? 'empty' : a + b } }
+    function SharedArrayBuffer(x) { return { x } }
+    function URLSearchParams(x) { return { x } }
+    function Promise(x) { return { x } }
+    export let regexp = x => new RegExp(x).x
+    export let url = () => new URL('u').x
+    export let map = () => new Map('m').x
+    export let weakMap = () => new WeakMap(7).x
+    export let date = () => new Date().x
+    export let array0 = () => new Array().x
+    export let array2 = () => new Array(3, 4).x
+    export let shared = () => new SharedArrayBuffer(7).x
+    export let params = () => new URLSearchParams('q').x
+    export let promise = () => new Promise(11).x
+  `
+  const { regexp, url, map, weakMap, date, array0, array2, shared, params, promise } = jz(source).exports
+  is(regexp('r'), 'r')
+  is(url(), 'u')
+  is(map(), 'm')
+  is(weakMap(), 7)
+  is(date(), 9)
+  is(array0(), 'empty', 'zero-argument shadowed Array remains a constructor call')
+  is(array2(), 7, 'multi-argument shadowed Array remains a constructor call')
+  is(shared(), 7, 'shadowed SharedArrayBuffer is not canonicalized')
+  is(params(), 'q', 'shadowed URLSearchParams does not pull in the web runtime')
+  is(promise(), 11, 'shadowed Promise does not pull in the async runtime')
+  is(jz(`export let f = () => {
+    function Array(a, b) { return { x: a + b } }
+    return new Array(3, 4).x
+  }`).exports.f(), 7, 'a nested constructor declaration suppresses syntax-only lowering')
+  is(jz(source).exports.array2(), 7, 'A to A compile resets and reproduces the shadow census')
+  is(jz(`export let f = () => new URLSearchParams('a=1').get('a')`).exports.f(), '1',
+    'A to different B compile does not retain the prior URLSearchParams shadow')
+})
+
+test('jzify builtin shadows stay inside their lexical scope', () => {
+  const { builtinArray, builtinFunction, builtinIterator, builtinSymbol, local, loop } = jz(`
+    function shadow(Array, Symbol, Function, Iterator) {
+      let obj = { x: 7 }
+      return Array.from([1])[0] + obj[Symbol.iterator] + Function + Iterator
+    }
+    function* values() { yield 4 }
+    export let local = () => shadow({ from: x => [x[0] + 1] }, { iterator: 'x' }, 10, 20)
+    export let builtinArray = () => Array.from(values())[0]
+    export let builtinSymbol = () => [8][Symbol.iterator]().next().value
+    export let builtinFunction = () => (() => 1) instanceof Function
+    export let builtinIterator = () => values() instanceof Iterator
+    export let loop = () => {
+      let local = 0
+      for (let Array = { from: x => [x[0] + 1] }, i = 0; i < 1; i++) local = Array.from([1])[0]
+      return local + Array.from([2])[0]
+    }
+  `).exports
+  is(local(), 39, 'shadowed names retain ordinary local calls and computed access')
+  is(builtinArray(), 4, 'a nested Array shadow does not suppress sibling Array.from lowering')
+  is(builtinSymbol(), 8, 'a nested Symbol shadow does not suppress sibling well-known-symbol lowering')
+  is(builtinFunction(), true, 'a nested Function shadow does not suppress sibling instanceof lowering')
+  is(builtinIterator(), true, 'a nested Iterator shadow does not suppress sibling iterator lowering')
+  is(loop(), 4, 'a for-head shadow applies to its body and ends after the loop')
+})
+
+test('SharedArrayBuffer builtin canonicalization remains scope-aware', () => {
+  const { length, instance, groupedArray, groupedShared } = jz(`
+    export let length = () => new SharedArrayBuffer(7).byteLength
+    export let instance = () => new SharedArrayBuffer(7) instanceof SharedArrayBuffer
+    export let groupedArray = () => new (Array)().length
+    export let groupedShared = () => new (SharedArrayBuffer)(8).byteLength
+  `).exports
+  is(length(), 7)
+  is(instance(), true)
+  is(groupedArray(), 0, 'parenthesized Array constructor')
+  is(groupedShared(), 8, 'parenthesized SharedArrayBuffer constructor')
+  throws(() => compile(`
+    function SharedArrayBuffer(x) { return { x } }
+    export let f = value => value instanceof SharedArrayBuffer
+  `), /unsupported right-hand side/, 'shadowed instanceof rejects instead of testing ArrayBuffer')
+})
+
+test('recursive boolean results keep truthiness and declare final coercion temps', () => {
+  const source = `
+    let isPrivateFieldAccess = node =>
+      (node.type === 'MemberExpression' && node.property.type === 'PrivateIdentifier') ||
+      (node.type === 'ChainExpression' && isPrivateFieldAccess(node.expression))
+    let isPrivateFieldAccessBlock = node => {
+      return (node.type === 'MemberExpression' && node.property.type === 'PrivateIdentifier') ||
+        (node.type === 'ChainExpression' && isPrivateFieldAccessBlock(node.expression))
+    }
+    let reads = 0
+    let effectful = node =>
+      ((reads += 1) > 0 && node.type === 'MemberExpression' && node.property.type === 'PrivateIdentifier') ||
+      (node.type === 'ChainExpression' && effectful(node.expression))
+    let privateMember = { type: 'MemberExpression', property: { type: 'PrivateIdentifier' } }
+    export let member = () => isPrivateFieldAccess(privateMember)
+    export let chain = () => isPrivateFieldAccess({ type: 'ChainExpression', expression: privateMember })
+    export let other = () => isPrivateFieldAccess({ type: 'Identifier' })
+    export let block = () => isPrivateFieldAccessBlock(privateMember)
+    export let effects = () => {
+      reads = 0
+      let yes = effectful({ type: 'ChainExpression', expression: privateMember })
+      return reads * 10 + yes
+    }
+  `
+  for (const optimize of [0, 2, 3]) {
+    const { member, chain, other, block, effects } = jz(source, { optimize }).exports
+    is(member(), 1, `O${optimize}: direct recursive predicate`)
+    is(chain(), 1, `O${optimize}: nested recursive predicate`)
+    is(other(), 0, `O${optimize}: false arm`)
+    is(block(), 1, `O${optimize}: block-return sibling`)
+    is(effects(), 21, `O${optimize}: recursive predicate evaluates each level once`)
+  }
+})
+
 test('opaque .length uses ordinary property Get without i32 truncation', () => {
   const { f, numeric, optional, alias, nested, caught, union } = jz(`
     export let f = x => x.length
