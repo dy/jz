@@ -76,33 +76,12 @@ function analyzeStartForEmit(ast) {
   }
 }
 
-export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
-  const start = analyzeStartForEmit(ast)
-  const startPlan = functionPlanOf(ctx, start)
-  const outerFrame = enterPreparedFunction(ctx, startPlan)
-  try {
-  const moduleInits = []
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
-    ctx.func.repsFrozen = true
-    assertCtxInvariants('pre-emit')
-    moduleInits.push(...normalizeEmittedIR(emit(mi)))
-  }
-  // __start has no result: emit the top-level program in void context so a
-  // single bare expression cannot leave a value on the start stack.
-  ctx.func.repsFrozen = true
-  assertCtxInvariants('pre-emit')
-  const init = emitVoid(ast)
-  ctx.func.repsFrozen = false
-  ctx.func.atModuleScope = false
-
-  // Module-scope object literals can create closure bodies while `emit(ast)`
-  // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
-  // that affect __start setup, so flush them before deciding which runtime
-  // tables __start must initialize. Closure plans transfer their complete
-  // prepared records, so no selected-field snapshot is needed here.
-  const beforeLateClosures = closureFuncs.length
-  compilePendingClosures()
-
+/** Auto-box init: schema.autoBox entries (`let` globals whose schema was
+ *  minted after their declaration) — alloc+init+ptr-box each hoisted global.
+ *  Collect step (buildStartFn splices the returned IR at a fixed position —
+ *  pipeline-minimality slice, `.work/assemble-outliers.md` §5).
+ */
+function buildBoxInit() {
   const boxInit = []
   if (ctx.schema.autoBox) {
     const bt = `${T}box`
@@ -118,7 +97,15 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
         ['global.set', `$${name}`, mkPtrIR(PTR.OBJECT, schemaId, ['local.get', `$${bt}`])])
     }
   }
+  return boxInit
+}
 
+/** Schema name-table init: static data-segment layout when every key folds
+ *  to a constant, else a runtime alloc+store fallback. Collect step
+ *  (buildStartFn splices the returned IR at a fixed position — pipeline-
+ *  minimality slice, `.work/assemble-outliers.md` §5).
+ */
+function buildSchemaInit() {
   const schemaInit = []
   const hasJpObj = ctx.core.includes.has('__jp_obj') || ctx.core.includes.has('__jp')
   const hasStringify = ctx.core.includes.has('__stringify')
@@ -242,6 +229,72 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
       }
     }
   }
+  return schemaInit
+}
+
+/** Region-arena closure-env side table: funcIdx -> {env slot count,
+ *  cell-mode bitmask}, sourced from ctx.closure.envMeta. Collect step
+ *  (buildStartFn splices the returned IR at a fixed position — pipeline-
+ *  minimality slice, `.work/assemble-outliers.md` §5).
+ */
+function buildClosureEnvInit() {
+  const closureEnvInit = []
+  if (ctx.core.includes.has('__region_exit') && ctx.closure.table?.length) {
+    const nClosures = ctx.closure.table.length
+    const lenT = `${T}cenvlen`
+    const maskT = `${T}cenvmask`
+    ctx.func.locals.set(lenT, 'i32')
+    ctx.func.locals.set(maskT, 'i32')
+    inc('__alloc')
+    if (!ctx.scope.globals.has('__closure_env_len')) declGlobal('__closure_env_len', 'i32')
+    if (!ctx.scope.globals.has('__closure_env_mask')) declGlobal('__closure_env_mask', 'i32')
+    closureEnvInit.push(
+      ['local.set', `$${lenT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
+      ['global.set', '$__closure_env_len', ['local.get', `$${lenT}`]],
+      ['local.set', `$${maskT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
+      ['global.set', '$__closure_env_mask', ['local.get', `$${maskT}`]],
+    )
+    for (let i = 0; i < nClosures; i++) {
+      const meta = ctx.closure.envMeta[i] || { len: 0, cellMask: 0 }
+      closureEnvInit.push(
+        ['i32.store', ['i32.add', ['local.get', `$${lenT}`], ['i32.const', i * 4]], ['i32.const', meta.len]],
+        ['i32.store', ['i32.add', ['local.get', `$${maskT}`], ['i32.const', i * 4]], ['i32.const', meta.cellMask]],
+      )
+    }
+  }
+  return closureEnvInit
+}
+
+export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
+  const start = analyzeStartForEmit(ast)
+  const startPlan = functionPlanOf(ctx, start)
+  const outerFrame = enterPreparedFunction(ctx, startPlan)
+  try {
+  const moduleInits = []
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
+    ctx.func.repsFrozen = true
+    assertCtxInvariants('pre-emit')
+    moduleInits.push(...normalizeEmittedIR(emit(mi)))
+  }
+  // __start has no result: emit the top-level program in void context so a
+  // single bare expression cannot leave a value on the start stack.
+  ctx.func.repsFrozen = true
+  assertCtxInvariants('pre-emit')
+  const init = emitVoid(ast)
+  ctx.func.repsFrozen = false
+  ctx.func.atModuleScope = false
+
+  // Module-scope object literals can create closure bodies while `emit(ast)`
+  // runs. Those late closures may pull in stdlib helpers (notably JSON.parse)
+  // that affect __start setup, so flush them before deciding which runtime
+  // tables __start must initialize. Closure plans transfer their complete
+  // prepared records, so no selected-field snapshot is needed here.
+  const beforeLateClosures = closureFuncs.length
+  compilePendingClosures()
+
+  const boxInit = buildBoxInit()
+
+  const schemaInit = buildSchemaInit()
 
   const strPoolInit = []
   if (strPoolLen()) {
@@ -294,30 +347,7 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   // the fast path schemaInit only gets to when every key folds statically)
   // — not done here; this is the same O(n) instruction cost schemaInit's
   // own fallback already accepts, paid only by region-live builds.
-  const closureEnvInit = []
-  if (ctx.core.includes.has('__region_exit') && ctx.closure.table?.length) {
-    const nClosures = ctx.closure.table.length
-    const lenT = `${T}cenvlen`
-    const maskT = `${T}cenvmask`
-    ctx.func.locals.set(lenT, 'i32')
-    ctx.func.locals.set(maskT, 'i32')
-    inc('__alloc')
-    if (!ctx.scope.globals.has('__closure_env_len')) declGlobal('__closure_env_len', 'i32')
-    if (!ctx.scope.globals.has('__closure_env_mask')) declGlobal('__closure_env_mask', 'i32')
-    closureEnvInit.push(
-      ['local.set', `$${lenT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
-      ['global.set', '$__closure_env_len', ['local.get', `$${lenT}`]],
-      ['local.set', `$${maskT}`, ['call', '$__alloc', ['i32.const', nClosures * 4]]],
-      ['global.set', '$__closure_env_mask', ['local.get', `$${maskT}`]],
-    )
-    for (let i = 0; i < nClosures; i++) {
-      const meta = ctx.closure.envMeta[i] || { len: 0, cellMask: 0 }
-      closureEnvInit.push(
-        ['i32.store', ['i32.add', ['local.get', `$${lenT}`], ['i32.const', i * 4]], ['i32.const', meta.len]],
-        ['i32.store', ['i32.add', ['local.get', `$${maskT}`], ['i32.const', i * 4]], ['i32.const', meta.cellMask]],
-      )
-    }
-  }
+  const closureEnvInit = buildClosureEnvInit()
 
   const wasiTimers = ctx.features.timers && ctx.transform.targetProfile.timerModel === 'blocking'
   if (moduleInits.length || init?.length || boxInit.length || schemaInit.length || typeofInit.length || strPoolInit.length || closureEnvInit.length || wasiTimers) {
