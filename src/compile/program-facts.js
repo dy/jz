@@ -38,7 +38,8 @@
  *      cross-function array-growth-freedom proof for raw-base param reads.
  *      Independent of the whole slot-census family (array facts, not schema
  *      facts) — depends only on `shared.js`.
- *   5. `program-facts/walk-facts.js` — `observeNodeFacts` / `collectProgramFacts`:
+ *   5. `program-facts/walk-facts.js` — `observeNodeFacts` / `collectProgramFacts` /
+ *      `synthesizeComputedDispatchCallSites`:
  *      the whole-program AST walk (dyn keys, escapes, call sites) and its
  *      orchestrator. `collectProgramFacts` conditionally calls
  *      `observeProgramSlots` (3) and, in turn, `analyzeSchemaSlotIntCertain`
@@ -46,6 +47,12 @@
  *      pass, kind census before int census (int census's hazard call is a
  *      cache hit as a result, not a correctness order — see analyzeBody call
  *      graph in that file for the exact `hasSchemaLiterals`/`hasMapSet` gates).
+ *      `synthesizeComputedDispatchCallSites` is a separate, later entry point
+ *      (plan/index.js, immediately after `buildCallTargetIndex`) that resolves
+ *      `collectProgramFacts`'s own stashed `computedCallSites` candidates
+ *      through the call-target index and enriches `callSites` in place — see
+ *      its own doc comment for the two-hop (named-member / inline-arrow-member)
+ *      resolution it performs.
  *   6. `program-facts/freeze.js` — `readonlyParamReps`/`freezeCallSites`/
  *      `assertProgramFactsShape`: the freeze discipline for the two STAGED
  *      facts (`paramReps`/`callSites`, settled by `plan/index.js`'s own round
@@ -69,7 +76,7 @@
  *
  * @module program-facts
  */
-export { observeNodeFacts, collectProgramFacts } from './program-facts/walk-facts.js'
+export { observeNodeFacts, collectProgramFacts, synthesizeComputedDispatchCallSites } from './program-facts/walk-facts.js'
 export { resetProgramFactsCache, invalidateProgramFactsCache } from './program-facts/cache.js'
 export { observeProgramSlots } from './program-facts/slot-kind-census.js'
 export { analyzeSchemaSlotIntCertain } from './program-facts/slot-int-census.js'

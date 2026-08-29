@@ -1847,6 +1847,15 @@ export default function narrowSignatures(programFacts, ast) {
   const typedValueRanges = inferTypedValueRanges(paramReps)
   const internalArrayLengths = inferInternalArrayLengths(paramReps)
   const callerArrValTypes = phase.callerElems('arrElemValTypes')
+  // Same hoist-once-early idiom as callerArrValTypes above (its own long-
+  // standing acceptable staleness applies identically here: phase.refreshValTypes/
+  // clearNarrowingBodyState rebuild the underlying map later, but this captured
+  // reference stays whatever it resolved at hoist time — never WRONG, only
+  // possibly missing a later-provable win, same as every other consumer of
+  // this exact pattern already accepts). Used by inferValAtSite's `.`-read
+  // case to resolve `arr[i].prop`'s receiver schemaId through a proven
+  // array-element read, one hop beyond a bare-name/param receiver.
+  const callerArrSchemas = phase.callerElems('arrElemSchemas')
   const intConstArg = (arg) => {
     let raw = null
     if (typeof arg === 'number') raw = arg
@@ -1928,6 +1937,31 @@ export default function narrowSignatures(programFacts, ast) {
   }
 
   const poison = field => r => { if (r[field] !== null) { r[field] = null; latticeMeet.changed = true } }
+  // Resolve a `.`-read's RECEIVER to a proven schemaId, from settled facts
+  // only — never a guess. Two sources, both already-audited primitives used
+  // elsewhere in this exact fixpoint, not new machinery:
+  //   - inferSchemaId (infer.js) — the SAME resolver the `schemaId` mergeRule
+  //     (below) already runs per call-site argument: a bare name settles via
+  //     the caller's OWN already-narrowed param schemaId census
+  //     (state.callerParamFacts('schemaId')) or a module-level ctx.schema.vars
+  //     binding; a compound expr recurses through `{}`/`()`/`?:`/`&&`/`||`.
+  //   - one hop through a proven ARRAY-element read (`rows[i].x`): the SAME
+  //     arrayElemSchema census runArrFixpoint settles (caller body census via
+  //     callerArrSchemas, or the caller's own arrayElemSchema param fact).
+  // Returns null on anything unproven (receiver kind unknown, or a schema-
+  // less/hazarded/OBJECT-free value) — inferValAtSite's caller then simply
+  // contributes nothing for this site, exactly like any other unclassifiable
+  // argument shape below.
+  const receiverSchemaId = (recv, state) => {
+    const sid = inferSchemaId(recv, state.callerParamFacts('schemaId'))
+    if (sid != null) return sid
+    if (Array.isArray(recv) && recv[0] === '[]' && typeof recv[1] === 'string') {
+      return callerArrSchemas.get(state.callerFunc)?.get(recv[1])
+        ?? state.callerParamFacts('arrayElemSchema')?.get(recv[1])
+        ?? null
+    }
+    return null
+  }
   // Default-aware val inference. Adds two fallbacks beyond inferValType's
   // body-local `callerValTypes` lookup so a hot recursive helper like
   // `uleb(n, buffer = []) { ... return uleb(n, buffer) }` resolves the
@@ -1967,6 +2001,35 @@ export default function narrowSignatures(programFacts, ast) {
       if (Array.isArray(arg) && arg[0] === '[]' && arg.length === 3 && typeof arg[1] === 'string' &&
           (state.callerValTypes?.get(arg[1]) || ctx.scope.globalValTypes?.get(arg[1])) === VAL.TYPED)
         return typedCtorElemValType(state.callerTypedElems?.get(arg[1])) || VAL.NUMBER
+      // Property read (`c.type`, `rows[i].x`): resolve the receiver to a
+      // proven schemaId (never guessed — receiverSchemaId above) and read
+      // that field's program-wide-monomorphic kind off the SAME SlotFact
+      // census kind.js's VT['.'] trusts for a live receiver (ctx.schema.
+      // slotVT) — slotVTBySid is the by-sid sibling for exactly this caller:
+      // a call-site-resolved sid, never a live ctx.func/repOf frame (mirrors
+      // slotTypedCtorAt/slotTypedCtorBySid's existing split, module/schema.js).
+      // A genuinely mixed-kind field declines for free: SlotFact.kind is
+      // itself null on any whole-program disagreement, no separate check
+      // needed here.
+      if (Array.isArray(arg) && arg[0] === '.' && typeof arg[2] === 'string') {
+        const sid = receiverSchemaId(arg[1], state)
+        if (sid != null) {
+          const v = ctx.schema.slotVTBySid(sid, arg[2])
+          if (v != null) return v
+        }
+        // Sibling source for a receiver that is never schema-registered at all —
+        // an ARRAY-declared local/module target only ever used as a static
+        // string-keyed dictionary (dict-kind-index.js's own doc has the full
+        // mechanism: a `for (k in OBJ) T[k] = …` unroll over a constant object
+        // literal). `arg[1]` is looked up by its OWN exact (alpha-renamed, if
+        // local) spelling — the index itself already resolves every alias this
+        // receiver could be forwarded through, so a direct name lookup here is
+        // exactly as sound as the schemaId path above, just keyed differently.
+        if (typeof arg[1] === 'string') {
+          const v = ctx.types.dictKinds?.resolveDictKind(arg[1], arg[2])
+          if (v != null) return v
+        }
+      }
       return null
     }
     const fromParam = state.callerParamFacts('val')?.get(arg)
@@ -2038,6 +2101,30 @@ export default function narrowSignatures(programFacts, ast) {
   // val's poison threw away, so it must not inherit val's early-return. `val`
   // itself is untouched by this: the mergeParamFact call and the
   // `r[field]===null` early-return still fire exactly where they did before.
+  //
+  // CALLER DISCIPLINE (must hold wherever trackKind=true is passed): `infer`'s
+  // `v == null` means EITHER "genuinely unclassifiable" (join KIND_UNIVERSE —
+  // real uncertainty) OR "this site's argument is a forwarding reference to
+  // some OTHER param whose own val hasn't settled on THIS sweep yet" (an
+  // ordering artifact, not uncertainty) — `joinKinds` can't tell those apart,
+  // and being a monotone union with no retraction, a KIND_UNIVERSE joined for
+  // the second reason on one premature sweep can never be undone by a later,
+  // correctly-resolved re-visit (unlike `val` itself, whose per-visit
+  // mergeParamFact call OVERWRITES rather than accumulates, so it self-heals
+  // from the identical ordering hazard for free). The only way to make every
+  // `v == null` mean the first case is to run trackKind=true exactly ONCE, as
+  // a final pass, after every fact `infer` reads (val itself, arrayElemValType,
+  // schemaId, typedCtor, pointer-ABI enrichment, …) has already reached ITS
+  // OWN fixed point — see the sole trackKind=true call below (~"Settle val
+  // HARD"), and keep it the only one. Do not add trackKind=true to `fixpointRules`
+  // or any other mid-convergence sweep (root-caused + traced in
+  // .work/string-method-guess-notes.md, "Root cause of the REMAINING
+  // ~16718-byte gap"; the shape: a recursive `uleb(n, buffer = [])` forwarded
+  // through a second function `wleb(v, out) { uleb(v, out) }` — `buffer`'s val
+  // genuinely converges to ARRAY, but a premature visit of the `wleb→uleb`
+  // site, before `wleb`'s own `out` had settled, used to permanently
+  // pessimize its possibleKinds to the full universe, making
+  // paramValTrustworthy distrust a genuinely monomorphic param).
   const mergeRule = (field, infer, soft = false, trackKind = false) => ({
     // INVARIANT: an UNRESOLVED live observation (v == null — a call-site
     // argument the inferrer cannot classify, or a missing arg with no default)
@@ -2126,7 +2213,12 @@ export default function narrowSignatures(programFacts, ast) {
     // sticky-poison it (the old clearStickyNull undid that). Soft leaves it BOTTOM;
     // the post-enrichment rerun fills it in. applyPointerParamAbi re-validates via
     // hardParamVal; a final hard sweep settles val for emit + late consumers.
-    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), true, true),
+    // trackKind=false (not true): this rule rides EVERY sweep of the worklist
+    // fixpoint below, most of them mid-convergence — see mergeRule's own
+    // "CALLER DISCIPLINE" comment above for why possibleKinds must not be
+    // touched here. The ~"Settle val HARD" sweep near the end of this function
+    // is the one and only trackKind=true pass.
+    mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), true),
     {
       missing: poison('wasm'),
       apply(r, arg, _k, state) {
@@ -2626,6 +2718,21 @@ export default function narrowSignatures(programFacts, ast) {
   // whose val isn't unanimous (a site left BOTTOM = genuinely untyped). After this,
   // r.val is sound for emit + the late/post-return consumers (applyI32ParamSpecial-
   // ization's skipTyped guard, specializeBimorphicTyped) — which read it directly.
+  // trackKind=true: this is ALSO the one and only place `possibleKinds` gets
+  // populated (every earlier fixpointRules sweep above runs trackKind=false —
+  // see that rule's comment). Since every fact `inferValAtSite` reads is
+  // already at its final, fully-converged value by this point — including
+  // its `.`-property-read case's own two dependencies: `schemaId` (this
+  // exact runFixpointConverged, just above) and ctx.schema's SlotFact kind
+  // census (observeProgramSlots' mid-function re-observation, well before
+  // this line — see that call site's own comment) — (this sweep
+  // itself only ever moves a param BOTTOM→null, never disturbs an
+  // already-settled concrete val — a hard rule's `v == null` poisons
+  // regardless of WHY it's null, so a not-yet-visited-this-pass source and a
+  // genuinely-unresolvable one poison identically either way), a single plain
+  // sweep over `callSites` — no worklist, no re-queueing — suffices: every
+  // site's classification is final before the census ever reads it, so the
+  // result cannot depend on visit order.
   runCallsiteLattice([mergeRule('val', (arg, _k, state) => inferValAtSite(arg, state), false, true)])
   // recvArrTyped: same final-sweep timing as the val hard-settle just above (every
   // producer — results, typedCtor, enrichment — has run). A param whose exact `val`

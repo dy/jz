@@ -8,9 +8,14 @@
  * ## Evidence ladder (strongest first, registration order = precedence)
  *
  *   1. Literal use         — `let x = 0`, `let s = ''`, `let xs = []`.    [done: analyzeValTypes]
- *   2. Operator use        — `s.charCodeAt(...)` → STRING.                 [done: method source]
- *   3. Member access       — `.push` / `.pop` → ARRAY; index/length-write
- *                            → notString.                                 [done: method + notString sources]
+ *   2. Operator use        — `s.charCodeAt(...)` used to induce STRING;
+ *                            retired (fix/string-method-guess) — a plain
+ *                            OBJECT/HASH can own a same-named closure
+ *                            property, so usage alone never proves it.     [retired: see paramReps census]
+ *   3. Member access       — `.push` / `.pop` used to induce ARRAY; retired
+ *                            for the identical reason (fix/param-mutation-
+ *                            propagation). index/length-write still proves
+ *                            notString.                                   [retired ARRAY half; notString: done]
  *   4. `typeof` guard      — `typeof x === 'string'` flow-refines.         [done: extractRefinements + B3]
  *   5. Assignment flow     — `x = y` propagates y's evidence to x.        [done: analyzeValTypes]
  *   6. Comparison shape    — `x === null` proves nullable.                [out of scope: no nullable rep field, see C2]
@@ -81,8 +86,8 @@ export const registerEvidence = (name, fn) => { SOURCES.push({ name, fn }) }
  *  Returns Map<name, fact>; callers pass `fact` straight to updateRep.
  *
  *  Merge semantics: first source wins per FIELD. Sources contribute orthogonal
- *  facts (`methodEvidence` → `{val}`, future sources may add `{notString}`,
- *  `{intConst}`, etc.); a later source's field is only kept if no earlier
+ *  facts (`notStringEvidence` → `{notString}`; a future source may add
+ *  `{intConst}` etc.); a later source's field is only kept if no earlier
  *  source set the same key on the same name. */
 export const inferParams = (body, candidates) => {
   if (!candidates || candidates.length === 0) return new Map()
@@ -97,106 +102,57 @@ export const inferParams = (body, candidates) => {
   return merged
 }
 
-// === Source: method evidence (rungs 2-3, member-access shape) ==============
+// === Source: method evidence — RETIRED (rung 2/3, member-access shape) =====
 //
-// `name.method(...)` is the strongest cheap signal we get for the STRING vs
-// ARRAY distinction. The method-name partition is three sets:
+// `name.method(...)` used to be a cheap STRING/ARRAY signal: STRING_ONLY_METHODS
+// (charCodeAt, trim, padStart, …) induced VAL.STRING; ARRAY_INDUCERS (push, pop,
+// …) induced VAL.ARRAY (removed first — fix/param-mutation-propagation). Both
+// directions are the SAME unsoundness: a plain OBJECT/HASH value can own a
+// same-named closure property attached post-construction (`t.charCodeAt = (i)
+// => t.n + i`, `b.push = (v) => {...}` — the makeByteBuf/ByteBuf idiom,
+// pervasive in jz's own self-hosted parser/lexer). Every downstream consumer
+// trusted a settled `val` as a hard proof with no shadow check of its own —
+// emit.js's tryStaticDispatch (strategy 7) dispatches a "proven"-STRING
+// receiver straight to the `.string:${method}` builtin unconditionally, and
+// module/core.js's emitLengthAccess reads a "proven"-STRING receiver's byte
+// length unconditionally — so a param merely GUESSED into VAL.STRING from
+// method-name usage alone silently ran the wrong receiver's closure or read
+// the wrong memory shape (fix/string-method-guess: `t.charCodeAt(1)` on such
+// an object returned NaN at O0 instead of calling the user's own closure; the
+// ARRAY twin, fix/param-mutation-propagation, found the identical shape one
+// rung up — `.push()` dispatching to Array-growth codegen on a HASH, and a
+// same-object `.length` read landing on the wrong memory offset).
 //
-//   STRING_ONLY      — definite STRING (no Array/TypedArray equivalent)
-//   ARRAY_INDUCERS   — definite plain Array (absent on String + TypedArray)
-//   ARRAY_ONLY_POISON— Array + TypedArray (poisons tentative STRING, doesn't
-//                      induce ARRAY because the receiver may still be TYPED)
-//
-// Reassignment to an unambiguously-typed RHS (`x = 0`) poisons the inference
-// regardless of prior evidence — a later method call can't re-induce a shape
-// already contradicted by an earlier scalar assignment.
+// Seeing one of these method names on an otherwise-unproven parameter IS real
+// evidence the receiver isn't some OTHER kind (no String.prototype.push, no
+// Array.prototype.charCodeAt) — but "isn't kind X" for one candidate still
+// leaves every remaining kind on the table (a HASH with a colliding closure
+// property, chief among them), so it can never license a positive `val`
+// claim — the sound negative these names prove is exactly "not disprovable
+// any further," i.e. no claim at all. The module's own contract ("Default is
+// never wrong, only sometimes wider than necessary") means retiring this rung
+// to a genuine no-op (an eliminated evidence source contributes nothing, same
+// as if it had never run) IS the fix — there is no narrower guess to keep.
+// The sound REPLACEMENT for a genuinely string-typed parameter is the
+// cross-function paramReps call-site census (narrow.js): a real call-site
+// literal, a proven-STRING forwarded argument, or a `typeof` guard
+// (extractRefinements) all still narrow soundly — only the "usage alone"
+// shortcut is gone. STRING_ONLY_METHODS itself stays: notStringEvidence below
+// still needs it (seeing one of these disqualifies a WRITE-shape notString
+// proof on the same binding — that direction was always sound, and is
+// unrelated to the retired positive induce this rung used to run).
 
-// Methods that exist ONLY on String.prototype — seeing one on a bare binding proves
-// it is a string. `indexOf`/`includes`/`lastIndexOf`/`concat`/`slice`/`at` are NOT here:
-// Array.prototype has them too, so the receiver is genuinely ambiguous (and the argument
-// can't disambiguate — String coerces it, Arrays hold strings). Those keep the runtime
-// __ptr_type fork, which is correct for both; forcing `lastIndexOf` to string here used to
-// miscompile `arr.lastIndexOf(x)` to -1. A string-using param still narrows via any of the
-// real discriminators below (charCodeAt, a string assignment, a string-passing call site).
+// Methods that exist ONLY on String.prototype — `indexOf`/`includes`/
+// `lastIndexOf`/`concat`/`slice`/`at` are NOT here: Array.prototype has them
+// too, so the receiver is genuinely ambiguous there (and the argument can't
+// disambiguate — String coerces it, Arrays hold strings); those keep the
+// runtime __ptr_type fork, correct for both.
 const STRING_ONLY_METHODS = new Set([
   'charCodeAt', 'charAt', 'codePointAt', 'startsWith', 'endsWith',
   'toUpperCase', 'toLowerCase', 'toLocaleLowerCase', 'normalize', 'localeCompare',
   'padStart', 'padEnd', 'repeat', 'trimStart', 'trimEnd', 'trim',
   'matchAll', 'match', 'replace', 'replaceAll', 'split',
 ])
-const ARRAY_ONLY_POISON = new Set([
-  'push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'fill', 'reverse',
-  'flat', 'flatMap', 'copyWithin',
-])
-const ARRAY_INDUCERS = new Set([
-  'push', 'pop', 'shift', 'unshift', 'splice', 'flat', 'flatMap',
-])
-
-const methodEvidence = (body, names) => {
-  const scope0 = new Set(names)
-  const evidence = new Map() // name → 'string' | 'array' | 'conflict'
-  const induce = (name, kind) => {
-    const prev = evidence.get(name)
-    if (prev === 'conflict') return
-    if (prev && prev !== kind) return evidence.set(name, 'conflict')
-    evidence.set(name, kind)
-  }
-  function walk(node, scope) {
-    if (!Array.isArray(node) || scope.size === 0) return
-    const op = node[0]
-    if (op === '=>') {
-      // Nested arrow: drop shadowed names so an inner param of the same name
-      // is treated independently. Captured names retain their outer evidence.
-      const shadowed = collectParamNames([node[1]])
-      let inner = scope
-      for (const s of shadowed) {
-        if (inner.has(s)) {
-          if (inner === scope) inner = new Set(scope)
-          inner.delete(s)
-        }
-      }
-      walk(node[2], inner)
-      return
-    }
-    if (op === '.' && typeof node[1] === 'string' && scope.has(node[1])) {
-      const name = node[1]
-      const m = node[2]
-      if (typeof m === 'string') {
-        if (STRING_ONLY_METHODS.has(m)) induce(name, 'string')
-        else if (ARRAY_INDUCERS.has(m)) induce(name, 'array')
-        else if (ARRAY_ONLY_POISON.has(m) && evidence.get(name) === 'string') {
-          evidence.set(name, 'conflict')
-        }
-      }
-    }
-    // Runtime type-discrimination — `typeof x`, `Array.isArray(x)` — proves the
-    // binding is polymorphic: the body itself branches on its tag. Narrowing it
-    // to a single pointer kind erases the very tag the check reads (`typeof`
-    // would fold to a constant, `Array.isArray` likewise), miscompiling a
-    // soundly-mixed caller. Force `conflict` so the param stays boxed.
-    if (op === 'typeof' && typeof node[1] === 'string' && scope.has(node[1]))
-      evidence.set(node[1], 'conflict')
-    if (op === '()' && node[1] === 'Array.isArray' && typeof node[2] === 'string' && scope.has(node[2]))
-      evidence.set(node[2], 'conflict')
-    if (op === '=' && typeof node[1] === 'string' && scope.has(node[1])) {
-      const name = node[1]
-      const vt = valTypeOf(node[2])
-      if (vt && vt !== VAL.STRING && vt !== VAL.ARRAY) evidence.set(name, 'conflict')
-      else if (vt === VAL.STRING && evidence.get(name) === 'array') evidence.set(name, 'conflict')
-      else if (vt === VAL.ARRAY && evidence.get(name) === 'string') evidence.set(name, 'conflict')
-    }
-    for (let i = 1; i < node.length; i++) walk(node[i], scope)
-  }
-  walk(body, scope0)
-  const out = new Map()
-  for (const [n, ev] of evidence) {
-    if (ev === 'string') out.set(n, { val: VAL.STRING })
-    else if (ev === 'array') out.set(n, { val: VAL.ARRAY })
-  }
-  return out
-}
-
-registerEvidence('method', methodEvidence)
 
 // === Source: not-string evidence (rung 3, write-shape) =====================
 //
@@ -211,10 +167,11 @@ registerEvidence('method', methodEvidence)
 //
 // So we require a *conservative* discharge: ANY string-shape evidence on the
 // same name (typeof string check, STRING_ONLY_METHODS call, string-literal
-// assignment) disables the narrow. Method evidence promoting to VAL.ARRAY
-// (push/pop/etc.) wins via the merge regardless and subsumes notString. The
-// remaining win: pure write+length-only params (e.g. `fill(buf, v)`) skip
-// the runtime `__ptr_type==STRING` gate at every read.
+// assignment) disables the narrow. (The sibling 'method' source above is
+// retired — it never contributes a `val` fact for this merge to race against
+// — so this discharge is the ONLY thing standing between a write-shape
+// param and a false notString claim.) The win: pure write+length-only params
+// (e.g. `fill(buf, v)`) skip the runtime `__ptr_type==STRING` gate at every read.
 
 const isLengthAccess = (n) =>
   Array.isArray(n) && n[0] === '.' && typeof n[1] === 'string' && n[2] === 'length'

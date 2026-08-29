@@ -2639,7 +2639,7 @@ test('bigint: one-authority fix — `.`-member callee result as a ternary arm fe
   }
 })
 
-test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 pre-existing KNOWN-WRONG)', () => {
+test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2/O3 all correct)', () => {
   // Same edge class with the BOXED source coming from a genuine call-site
   // union (Number|BigInt) on a param that is NEVER reassigned — `relay`'s
   // own `n` — rather than from a reassignment inside the caller. `relay`
@@ -2653,28 +2653,39 @@ test('bigint: shape #9 sibling — non-reassigned BOXED param (O0/O2 FIXED, O3 p
   // `argStructurallyNeverBool`'s param-entry branch (this fix) proves `n`
   // never-bool from that same census, same as the primary pin.
   //
-  // O3 KNOWN-WRONG, confirmed PRE-EXISTING and IDENTICAL on unmodified
-  // fb2dec2e (this fix reverted) — not introduced or fixed by this change.
-  // Matches the class test/data.js's own "storage-read forwarded through
-  // TWO plain named functions... shape #7 sibling" pin already documents
-  // (`inlineHotInternalCalls` splices `f`'s call to `relay` away at -O3
-  // before provenance/census analysis runs, degrading the evidence that
-  // shape's own LANDED fix covers for a storage-read argument) — this is
-  // the same inliner-vs-analysis-ordering class for a bare bigint-literal
-  // argument instead, still open.
+  // O3 used to be KNOWN-WRONG (a corrupted-number misread — `f()` returned
+  // the raw bigint bits reinterpreted as a plain f64, e.g. 3.5e-323 — not
+  // merely a typeof cosmetic): confirmed PRE-EXISTING and IDENTICAL on
+  // unmodified fb2dec2e, unrelated to the argStructurallyNeverBool fix this
+  // test's siblings pin. Now fixed as a side effect of the possibleKinds
+  // census ordering fix (narrow.js mergeRule trackKind deferred to a single
+  // post-convergence pass — see "RepresentationPlan: a forwarded, genuinely
+  // monomorphic array param is trusted" above): verified via direct A/B
+  // against the pre-fix narrow.js on this exact source — 3.5e-323 (wrong)
+  // before, 7n (correct) after — and NOT gated by paramValTrustworthy
+  // (confirmed no distrust event fires for this program; 'bigint' isn't in
+  // PTR_TAGGED_KINDS). representation-plan.js's OWN, separate
+  // paramEntryExcludesBool reads `rep.possibleKinds`/`kindsCoverage`
+  // directly (the census this file's comment above calls "the legacy
+  // census") to decide whether `relay`'s param `n`, forwarded into `leb`,
+  // structurally excludes BOOL — the same class of consumer as
+  // paramValTrustworthy (trusting a closed-coverage possibleKinds snapshot),
+  // just a different call site than the one this fix's primary repro traces
+  // in full; not independently re-traced to its exact premature-join site
+  // with the same rigor, but the mechanism (a stale KIND_UNIVERSE surviving
+  // in possibleKinds from before this fix) is the same family and the value
+  // flip is real and reproduced, not assumed.
   const src = `
     function leb(n) { n >>= 7n; return n }
     function relay(n) { return typeof n === 'bigint' ? leb(n) : n }
     export let f = () => relay(900n)
     export let g = () => relay(5)
   `
-  for (const [optimize, lbl] of [[false, 'O0'], [2, 'O2']]) {
+  for (const [optimize, lbl] of [[false, 'O0'], [2, 'O2'], [3, 'O3']]) {
     const e = jz(src, { optimize }).exports
     is(e.f(), 7n, `${lbl}: non-reassigned BOXED union param crosses into leb(n)'s argument as a real BigInt`)
     is(e.g(), 5, `${lbl}: the Number arm stays untouched (never reaches leb)`)
   }
-  const e3 = jz(src, { optimize: 3 }).exports
-  is(typeof e3.f(), 'number', 'O3 KNOWN-WRONG (pre-existing, unrelated inliner/census-ordering gap): non-reassigned BOXED union param still misreads at -O3')
 })
 
 test('bigint: shape #9 negative control — RAW-to-RAW bare call stays a plain i64 pass, no unbox inserted', () => {
@@ -2959,6 +2970,132 @@ test('RepresentationPlan: a polymorphic-receiver param stays runtime-dispatched,
   }
 })
 
+// --- possibleKinds census ordering (src/compile/narrow.js mergeRule
+// trackKind) — a forwarding argument used to permanently pessimize the
+// census if the worklist visited it before its own source had settled ---
+
+test('RepresentationPlan: a forwarded, genuinely monomorphic array param is trusted (possibleKinds census ordering)', () => {
+  // Root cause: paramReps' possibleKinds census (param-reps.js — the wide,
+  // existential cross-check paramValTrustworthy gates on) used to ride EVERY
+  // sweep of the soft `val` worklist fixpoint (narrow.js mergeRule's
+  // trackKind flag). uleb's `buffer` param (default `= []`; every call site —
+  // direct, its own recursive self-call, AND a second function `wleb`
+  // FORWARDING its own still-unsettled `out` param into uleb) genuinely
+  // converges to one val: ARRAY. But a premature worklist visit of the
+  // wleb->uleb call site — before wleb's OWN `out` had itself settled — used
+  // to permanently join the full KIND_UNIVERSE into possibleKinds (joinKinds
+  // is a monotone union, no retraction), so paramValTrustworthy wrongly
+  // distrusted a genuinely monomorphic param and forced it onto the runtime
+  // shadow-probe path (mirrors watr's actual encode.js uleb/wleb shape —
+  // .work/string-method-guess-notes.md's "Root cause of the REMAINING
+  // ~16718-byte gap"). `pushInto` (exported — no in-program call sites at
+  // all, genuinely unprovable) shares this compiled unit so the shadow-probe
+  // machinery (ctx.closure.call, pulled in by makeCounter's own-property
+  // closure) is definitely available — the uleb result below isn't a vacuous
+  // "no closures anywhere, so nothing can ever probe."
+  const src = `
+    const uleb = (n, buffer = []) => {
+      let byte = n & 0x7f
+      n >>>= 7
+      if (n === 0) { buffer.push(byte); return buffer }
+      buffer.push(byte | 0x80)
+      return uleb(n, buffer)
+    }
+    const wleb = (v, out) => { if (out) { uleb(v, out); return } return uleb(v) }
+    function makeCounter() {
+      const c = { n: 0 }
+      c.push = (v) => { c.n += v; return c.n }
+      return c
+    }
+    function useClosure() { return makeCounter().push(7) }
+    export function pushInto(o, v) { o.push(v); return o.length }
+    export function useIt() {
+      const b = []
+      wleb(5, b)
+      return uleb(300).length + useClosure()
+    }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const extractBody = (fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    return wat.slice(start, wat.indexOf('\n  (func ', start + 1))
+  }
+  ok(!/__dyn_get_expr/.test(extractBody('uleb')), "O0: uleb's forwarded, genuinely-monomorphic array param keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody('pushInto')), 'O0: pushInto (exported, genuinely unprovable) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the uleb result above is not vacuous')
+  is(jz(src, { optimize: false }).exports.useIt(), 9, 'O0: uleb(300) ULEB128-encodes to 2 bytes (0xAC,0x02) — .length=2, plus useClosure()=7')
+})
+
+test('RepresentationPlan: a forwarded param stays untrusted when its OWN source is genuinely polymorphic (not merely an ordering artifact)', () => {
+  // Negative control for the fix above: sink's `buf` has one direct,
+  // concrete-ARRAY call site (useDirect) AND one forwarding call site
+  // (forward -> sink) whose SOURCE (forward's own param `x`) is genuinely
+  // polymorphic — ARRAY at one of forward's own call sites, a closure-bearing
+  // hash-shaped object at the other — so forward.x's val never settles to a
+  // single kind (real disagreement, not an ordering artifact). sink.buf's
+  // narrow val fold still reads as pure ARRAY (the forwarding site
+  // contributes no vote under the soft merge — mirrors the existing
+  // "RepresentationPlan: a polymorphic-receiver param stays
+  // runtime-dispatched" pin above, one forwarding hop deeper): the fix above
+  // must not weaken this — sink.buf has to stay runtime-dispatched.
+  const src = `
+    function makeHijack() {
+      const h = { n: 0 }
+      h.push = (v) => { h.n += v }
+      return h
+    }
+    function sink(buf) { buf.push(1); return buf.length }
+    function forward(x) { return sink(x) }
+    function useDirect() { return sink([7]) }
+    function useForwardArr() { return forward([1, 2]) }
+    function useForwardHijack() { return forward(makeHijack()) }
+    export function polyUse() {
+      return useDirect() + useForwardArr() + useForwardHijack()
+    }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const start = wat.indexOf('(func $sink')
+  const body = wat.slice(start, wat.indexOf('\n  (func ', start + 1))
+  ok(/__dyn_get_expr/.test(body), "O0: sink's buf param stays runtime-dispatched — the wider census still catches the genuine polymorphism reaching it through forward, not just the ordering artifact the positive pin above fixes")
+  for (const optimize of [false, 2, 3]) {
+    // makeHijack's object has no .length — buf.length legitimately reads
+    // undefined -> NaN through the real (runtime-dispatched) property read,
+    // consistently across optimize levels, not a garbage jz-Array header word.
+    ok(Number.isNaN(jz(src, { optimize }).exports.polyUse()), `O${optimize || 0}: the hijack leg's real (dynamic) .length is undefined -> NaN, not a misread ARRAY header`)
+  }
+})
+
+test("RepresentationPlan: possibleKinds census is pass-order-independent — swapping two forwarding functions' declaration order yields byte-identical WAT", () => {
+  // The bug was specifically an ordering artifact of narrow.js's worklist
+  // (which call site the fixpoint happens to visit first) — the strongest
+  // direct proof it's gone is that source-level declaration order (which
+  // determines the worklist's initial seed order) no longer affects the
+  // compiled output at all.
+  const ulebSrc = `
+    const uleb = (n, buffer = []) => {
+      let byte = n & 0x7f
+      n >>>= 7
+      if (n === 0) { buffer.push(byte); return buffer }
+      buffer.push(byte | 0x80)
+      return uleb(n, buffer)
+    }
+  `
+  const wlebSrc = `
+    const wleb = (v, out) => { if (out) { uleb(v, out); return } return uleb(v) }
+  `
+  const tailSrc = `
+    export function useIt() {
+      const b = []
+      wleb(5, b)
+      return uleb(300).length
+    }
+  `
+  const shapeUlebFirst = ulebSrc + wlebSrc + tailSrc
+  const shapeWlebFirst = wlebSrc + ulebSrc + tailSrc
+  const watUlebFirst = String(compile(shapeUlebFirst, { optimize: 3, wat: true }))
+  const watWlebFirst = String(compile(shapeWlebFirst, { optimize: 3, wat: true }))
+  is(watUlebFirst, watWlebFirst, 'O3: declaring uleb before wleb or after compiles to byte-identical WAT — the census no longer depends on which function the worklist happens to visit first')
+})
+
 // --- .subarray() after a same-property dynamic-index write elsewhere in the
 // unit (tryRuntimePtrTypeFork's genEmitter gate — was KNOWN-WRONG) ---
 //
@@ -3088,6 +3225,706 @@ test('typed array: .subarray() stays sound across a real (zero-iteration-at-runt
   }
 })
 
+// --- object mutated inside a function via a PARAMETER did not propagate
+// back (src/compile/infer.js methodEvidence guessing ARRAY from usage) ---
+//
+// Root cause: infer.js's `methodEvidence` evidence source (part of
+// `inferParams`, seeded into a parameter's `val` fact whenever the
+// cross-function call-site fixpoint had no proof of its own — see that
+// module's header, rung 2/3 of its evidence ladder) treated seeing
+// `<param>.push(...)` (or pop/shift/unshift/splice/flat/flatMap —
+// ARRAY_INDUCERS, kind-traits.js) as PROOF the parameter is a real Array.
+// That is only sound for the STRING-vs-non-STRING question (no
+// String.prototype method of those names exists) — it is NOT proof of
+// ARRAY specifically: a plain OBJECT/HASH value can equally own a
+// same-named closure property (`b.push = (v) => {...}`, attached to an
+// object literal post-construction — the makeByteBuf/ByteBuf idiom: a
+// growable byte buffer built from push/ensure/growth, exactly what watr's
+// streaming WASM code-section encoder uses). Once wrongly settled to
+// VAL.ARRAY, every downstream consumer trusted it as fully proven:
+//   - src/compile/emit.js's tryGenericEmitter (method-call dispatch,
+//     strategy #10) only shadow-probes an own property when `vt == null`;
+//     a non-null (but merely guessed) ARRAY skipped the probe and
+//     dispatched `.push(v)` straight to jz's built-in Array-growth codegen
+//     (__arr_grow_known et al) instead of the user's own closure, so the
+//     write landed on the wrong memory shape entirely — silently a no-op
+//     for a small buffer, an out-of-bounds trap for a larger one.
+//   - module/core.js's emitLengthAccess (property READ, not a method call)
+//     unconditionally reads a jz Array's length HEADER WORD for any
+//     VAL.ARRAY receiver — sound for a REAL array (no own-property shadow
+//     is ever possible there), unsound here: a `.length` read elsewhere in
+//     the SAME function silently read the wrong memory offset instead of
+//     the object's real (dynamic, hash-keyed) `length` property.
+// Two consumers independently broken by one bad fact, with no way to
+// enumerate every consumer with confidence — fixed at the source instead:
+// methodEvidence no longer induces a positive ARRAY verdict from usage
+// syntax at all. `ARRAY_ONLY_POISON` (a strict superset of the names) still
+// proves the sound negative ("not a STRING"), restoring the module's own
+// documented contract ("Default is never wrong, only sometimes wider than
+// necessary" — infer.js header). emit.js's tryGenericEmitter also gained a
+// narrower, defense-in-depth widening of its own shadow probe for the same
+// shape, kept as a second layer.
+test('object mutated via a parameter: plain field reassignment propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function bump(o) { o.n = o.n + 1 }
+      export function main() {
+        const o = { n: 0 }
+        bump(o)
+        bump(o)
+        return o.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 2, `O${optimize || 0}: two calls through a parameter each reassign the caller's own field`)
+  }
+})
+
+test('object mutated via a parameter: typed-array field growth (reassignment) propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function grow(o) {
+        const nb = new Uint8Array(o.buf.length * 2)
+        nb.set(o.buf)
+        nb[0] = 99
+        o.buf = nb
+      }
+      export function main() {
+        const o = { buf: new Uint8Array(4) }
+        o.buf[0] = 1
+        grow(o)
+        return o.buf.length + o.buf[0]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 107, `O${optimize || 0}: a callee reassigning a typed-array field (growth) is visible through the caller's own reference`)
+  }
+})
+
+test('object mutated via a parameter: nested call depth 2 propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function inner(o, v) { o.buf[o.n] = v; o.n = o.n + 1 }
+      function outer(o, v) { inner(o, v) }
+      export function main() {
+        const o = { buf: new Uint8Array(8), n: 0 }
+        outer(o, 5)
+        outer(o, 9)
+        return o.n * 100 + o.buf[0] * 10 + o.buf[1]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 259, `O${optimize || 0}: a mutation two call-frames deep (main -> outer -> inner) still reaches the original object`)
+  }
+})
+
+test('object mutated via a parameter: loop with zero and one iterations propagates back', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function bump(o) { o.n = o.n + 1 }
+      export function main(count) {
+        const o = { n: 0 }
+        for (let i = 0; i < count; i++) bump(o)
+        return o.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: zero iterations — no mutation, field stays at its initial value`)
+    is(e.main(1), 1, `O${optimize || 0}: one iteration — the single call's mutation propagates back`)
+  }
+})
+
+test('object mutated via a parameter: closure method named like an Array builtin (.push) called through a parameter', () => {
+  // The exact shape that broke: an object literal with a POST-HOC attached
+  // closure property named `push` (not a real Array), mutated by calling
+  // that closure THROUGH a separate function's own parameter — the
+  // minimal core of the makeByteBuf/writeItem idiom below.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      const makeBuf = (cap) => {
+        const b = { buf: new Uint8Array(cap), n: 0 }
+        b.push = (v) => { b.buf[b.n] = v; b.n = b.n + 1 }
+        return b
+      }
+      function writeOne(out, v) { out.push(v) }
+      export function main(count) {
+        const buf = makeBuf(64)
+        for (let i = 0; i < count; i++) writeOne(buf, i + 1)
+        return buf.n * 1000 + buf.buf[0] * 10 + buf.buf[1]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: count=0 — no push, buffer stays empty`)
+    is(e.main(1), 1010, `O${optimize || 0}: one push through the param calls the object's OWN closure, not the Array builtin`)
+    is(e.main(3), 3012, `O${optimize || 0}: three pushes through the param, each one visible to the next`)
+  }
+})
+
+test('object mutated via a parameter: .length read elsewhere in the same function stays sound after a same-object .push() call', () => {
+  // Isolates the SECOND consumer (module/core.js emitLengthAccess) from the
+  // method-dispatch consumer above: `out.length` is a plain property READ,
+  // not a method call, computed BEFORE any push — this pin fails if that
+  // read is ever compiled as a jz-Array header load (ptr-8) instead of the
+  // object's real dynamic `length` property, independent of whether
+  // `.push()` itself dispatches correctly.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      const makeByteBuf = (cap) => {
+        const buf0 = new Uint8Array(cap)
+        const b = { buf: buf0, length: 0 }
+        b.ensure = (n) => {
+          if (b.length + n <= b.buf.length) return
+          let cap2 = b.buf.length * 2 || 1024
+          while (cap2 < b.length + n) cap2 *= 2
+          const nb = new Uint8Array(cap2)
+          nb.set(b.buf.subarray(0, b.length))
+          b.buf = nb
+        }
+        b.push = (...xs) => { b.ensure(xs.length); for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+        b.set = (i, v) => { b.buf[i] = v }
+        b.inc = (i) => { b.buf[i]++ }
+        b.toBytes = () => b.buf.subarray(0, b.length)
+        return b
+      }
+      const uleb5 = (value) => {
+        const result = []
+        for (let i = 0; i < 5; i++) {
+          let byte = value & 0x7f
+          value >>>= 7
+          if (i < 4) byte |= 0x80
+          result.push(byte)
+        }
+        return result
+      }
+      const patchUleb5 = (buf, at, value) => { const bytes = uleb5(value); for (let i = 0; i < 5; i++) buf.set(at + i, bytes[i]) }
+      function writeItem(out, seed) {
+        const sizeAt = out.length
+        out.push(0x80, 0x80, 0x80, 0x80, 0x00)
+        const bodyStart = out.length
+        const n = (seed % 37) + 1
+        for (let i = 0; i < n; i++) out.push((seed + i) & 0xff)
+        patchUleb5(out, sizeAt, out.length - bodyStart)
+      }
+      export function main() {
+        const buf = makeByteBuf(64)
+        writeItem(buf, 0)
+        return buf.buf[0] * 1000000 + buf.buf[1] * 100000 + buf.buf[2] * 10000 + buf.buf[3] * 1000 + buf.buf[4]
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(), 143208000, `O${optimize || 0}: the ULEB128 size-prefix backpatch (first byte 0x81) lands correctly — sizeAt/.length reads stayed sound`)
+  }
+})
+
+test('object mutated via a parameter: the real watr-shaped repro (makeByteBuf/writeItem/uleb5/patchUleb5) matches native JS for every count', () => {
+  // The original repro this whole investigation traced back to (watr's
+  // streaming WASM code-section encoder, isolated as scratch/diff/
+  // snippet-bytebuf.js by the sibling agent that first hit this).
+  const src = `
+    const makeByteBuf = (cap) => {
+      const buf0 = new Uint8Array(cap)
+      const b = { buf: buf0, length: 0 }
+      b.ensure = (n) => {
+        if (b.length + n <= b.buf.length) return
+        let cap2 = b.buf.length * 2 || 1024
+        while (cap2 < b.length + n) cap2 *= 2
+        const nb = new Uint8Array(cap2)
+        nb.set(b.buf.subarray(0, b.length))
+        b.buf = nb
+      }
+      b.push = (...xs) => { b.ensure(xs.length); for (let i = 0; i < xs.length; i++) b.buf[b.length++] = xs[i]; return b.length }
+      b.set = (i, v) => { b.buf[i] = v }
+      b.inc = (i) => { b.buf[i]++ }
+      b.toBytes = () => b.buf.subarray(0, b.length)
+      return b
+    }
+    const uleb5 = (value) => {
+      const result = []
+      for (let i = 0; i < 5; i++) {
+        let byte = value & 0x7f
+        value >>>= 7
+        if (i < 4) byte |= 0x80
+        result.push(byte)
+      }
+      return result
+    }
+    const patchUleb5 = (buf, at, value) => { const bytes = uleb5(value); for (let i = 0; i < 5; i++) buf.set(at + i, bytes[i]) }
+    function writeItem(out, seed) {
+      const sizeAt = out.length
+      out.push(0x80, 0x80, 0x80, 0x80, 0x00)
+      const bodyStart = out.length
+      const n = (seed % 37) + 1
+      for (let i = 0; i < n; i++) out.push((seed + i) & 0xff)
+      patchUleb5(out, sizeAt, out.length - bodyStart)
+    }
+    export function main(count) {
+      const buf = makeByteBuf(64)
+      for (let i = 0; i < count; i++) writeItem(buf, i)
+      const bytes = buf.toBytes()
+      let sum = 0
+      for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i % 251 + 1)) | 0
+      return (sum ^ bytes.length) | 0
+    }
+  `
+  const expected = { 0: 0, 1: 1287, 2: 5688, 3: 13824, 5: 44452 }
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(src, { optimize }).exports
+    for (const count of [0, 1, 2, 3, 5]) {
+      is(e.main(count), expected[count], `O${optimize || 0} count=${count}: matches native JS`)
+    }
+  }
+})
+
+test('object passed as a parameter: a param that is only READ keeps its direct (non-shadow-probed) codegen — WAT shape', () => {
+  // Negative control for the fix above: a parameter proven ARRAY through a
+  // real construction/call-site proof (a literal array argument, resolved
+  // by the cross-function paramReps fixpoint — never through the removed
+  // methodEvidence guess) and used only for `.length`/index READS must
+  // keep the direct, fast array-header codegen — no own-property shadow
+  // probe, no dynamic dispatch. Confirms the fix is scoped to the unsound
+  // guess and doesn't tax the common, already-sound proven-array path.
+  const src = `
+    function sumArr(a) {
+      let s = 0
+      for (let i = 0; i < a.length; i++) s += a[i]
+      return s
+    }
+    export function main() {
+      return sumArr([1, 2, 3, 4, 5])
+    }
+  `
+  is(jz(src, { optimize: false }).exports.main(), 15, 'O0: sum of a literal-array argument through a read-only parameter')
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  const start = wat.indexOf('(func $sumArr')
+  const next = wat.indexOf('\n  (func ', start + 1)
+  const body = wat.slice(start, next)
+  ok(!/__dyn_get_expr/.test(body), 'O0: sumArr never probes for an own-property shadow — a.length/a[i] compile straight through')
+  ok(/\$__ptr_offset/.test(body) && /i32\.const 8/.test(body), 'O0: .length still reads the direct array-header word (fast path unchanged)')
+})
+
+// --- object mutated/read inside a function via a PARAMETER, called with a
+// method name that collides with a jz STRING builtin (charCodeAt/trim/
+// padStart/…) — the STRING twin of the ARRAY_INDUCERS bug above
+// (fix/string-method-guess) ---
+//
+// Root cause: infer.js's `methodEvidence` evidence source (the SAME source
+// fixed above for ARRAY_INDUCERS) also treated seeing `<param>.charCodeAt(...)`
+// (or trim/padStart/… — STRING_ONLY_METHODS) as PROOF the parameter is a real
+// String. Once wrongly settled to VAL.STRING, downstream consumers trusted it
+// as fully proven — a plain OBJECT/HASH value can equally own a same-named
+// closure property attached post-construction (`t.charCodeAt = (i) => t.n +
+// i`), and jz has no prototype chain to rule that out from the method NAME
+// alone. Unlike the ARRAY_INDUCERS names (which have no `.array:${method}`
+// emitter and so land on tryGenericEmitter's shadow-probed strategy 10),
+// STRING_ONLY_METHODS have no `.string:${method}` sibling emitter EITHER —
+// they're registered bare (`.charCodeAt`, `.trim`, …) — so they ALSO land on
+// strategy 10, and a wrongly-guessed non-null `vt` skipped that strategy's
+// own-property shadow probe exactly the same way, dispatching straight to
+// jz's built-in STRING codegen (the SSO/heap charCodeAt decoder, the trim
+// byte-scan, …) on a receiver that was never a real string
+// (fix/string-method-guess: `o.charCodeAt(1)` on such an object returned NaN
+// at O0 instead of calling the user's own closure). methodEvidence no longer
+// induces a positive STRING (or ARRAY) verdict from method-name usage AT ALL
+// — the whole rung retired to a sound no-op (see that module's header). The
+// STRING_ONLY_METHODS set itself stays (notStringEvidence, a separate source,
+// still needs it for the unrelated write-shape "isn't a string" proof).
+test('object read via a parameter: closure method named like a String builtin (charCodeAt) called through a parameter', () => {
+  // The exact shape that broke: an object literal with a POST-HOC attached
+  // closure property named `charCodeAt` (not a real String), read by calling
+  // that closure THROUGH a separate function's own parameter.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.charCodeAt = (i) => t.n + i; return t }
+      function call1(o) { return o.charCodeAt(1) }
+      export function main() { return call1(makeT(100)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 101, `O${optimize || 0}: charCodeAt through the param calls the object's OWN closure, not jz's SSO/heap string decoder`)
+  }
+})
+
+test('object read via a parameter: closure method named like a String builtin (trim) called through a parameter', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.trim = () => t.n * 2; return t }
+      function call1(o) { return o.trim() }
+      export function main() { return call1(makeT(50)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 100, `O${optimize || 0}: trim through the param calls the object's OWN closure, not jz's built-in trim`)
+  }
+})
+
+test('object read via a parameter: closure method named like a String builtin (padStart) called through a parameter', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n }; t.padStart = (w) => t.n + w; return t }
+      function call1(o) { return o.padStart(7) }
+      export function main() { return call1(makeT(35)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: padStart through the param calls the object's OWN closure, not jz's built-in padStart`)
+  }
+})
+
+test('object read via a parameter: loop with zero and one iterations propagates the charCodeAt-closure call', () => {
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n: n }; t.charCodeAt = (i) => { t.n = t.n + i; return t.n }; return t }
+      function bump(o) { o.charCodeAt(1) }
+      export function main(count) {
+        const t = makeT(0)
+        for (let i = 0; i < count; i++) bump(t)
+        return t.n
+      }
+    `
+    const e = jz(src, { optimize }).exports
+    is(e.main(0), 0, `O${optimize || 0}: count=0 — no call, field stays at its initial value`)
+    is(e.main(1), 1, `O${optimize || 0}: count=1 — the single call's own closure runs (not jz's charCodeAt decoder)`)
+  }
+})
+
+test('object read via a parameter: .length read elsewhere in the same function stays sound after a same-object .charCodeAt() call', () => {
+  // Isolates the SECOND consumer (module/core.js emitLengthAccess) from the
+  // method-dispatch consumer above, mirroring the identical ARRAY-side pin:
+  // `o.length` is a plain property READ, not a method call — this pin fails
+  // if that read is ever compiled as a jz-String byteLen op instead of the
+  // object's real (dynamic) `length` property, independent of whether
+  // `.charCodeAt()` itself dispatches correctly.
+  for (const optimize of [false, 2, 3]) {
+    const src = `
+      function makeT(n) { const t = { n, length: 7 }; t.charCodeAt = (i) => t.n + i; return t }
+      function useIt(o) { const a = o.charCodeAt(1); const b = o.length; return a * 100 + b }
+      export function main() { return useIt(makeT(2)) }
+    `
+    is(jz(src, { optimize }).exports.main(), 307, `O${optimize || 0}: the object's own dynamic .length (7) reads correctly, not a jz-String byte-length op`)
+  }
+})
+
+test('object read via a parameter: the STRING-guess WAT-dispatch shape — unproven param gets a probe, call-site-proven param does not', () => {
+  // WAT-shape controls (mirror the ARRAY fix's own negative control): whether
+  // the compiler inserts an own-property shadow probe (__dyn_get_expr) around
+  // a `.charCodeAt` call is driven by call-site PROOF, not by usage syntax.
+  // Both programs below have a closure elsewhere (`useCallback`) so the probe
+  // machinery (ctx.closure.call) is actually available in both — isolating
+  // the one variable under test: is `s` proven STRING at the call site or not.
+  const provenSrc = `
+    function firstCode(s) { return s.charCodeAt(0) }
+    function useCallback(f) { return f(1) }
+    export function main() {
+      return useCallback((x) => x + 1) + firstCode('ab')
+    }
+  `
+  const unprovenSrc = `
+    function firstCode(s) { return s.charCodeAt(0) }
+    function useCallback(f) { return f(1) }
+    export function main(x) {
+      return useCallback((y) => y + 1) + firstCode(x)
+    }
+  `
+  const extractBody = (wat) => {
+    const start = wat.indexOf('(func $firstCode')
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const provenBody = extractBody(String(compile(provenSrc, { optimize: false, wat: true })))
+  const unprovenBody = extractBody(String(compile(unprovenSrc, { optimize: false, wat: true })))
+  ok(!/__dyn_get_expr/.test(provenBody), 'O0: a call-site-proven (paramReps) string param keeps direct STRING dispatch — no shadow probe inserted')
+  ok(/ccbase/.test(provenBody), 'O0: the proven param still reaches the SSO/heap charCodeAt fast decoder')
+  ok(/__dyn_get_expr/.test(unprovenBody), 'O0: an unproven param (no call-site proof, methodEvidence retired) DOES get the own-property shadow probe — confirms the fix changes real codegen, not vacuously')
+})
+
+test('closed computed-dispatch table: a member forwarded into a named function gets its param proven from the table\'s own callers (positive) vs stays runtime-dispatched once the table escapes (negative control)', () => {
+  // watr's real shape (.work/string-method-guess-notes.md "Third follow-up
+  // session"): `const HANDLER = { a: (buf,v) => push2(buf,v), ... }`, invoked
+  // ONLY as `HANDLER[key](buf, v)`. Nobody ever calls `push2` by a bare name
+  // anywhere in the program — before this fix its `buf` param had ZERO
+  // observations (the outer computed dispatch is invisible to the call-site
+  // walker; program-facts.js's own doc on synthesizeComputedDispatchCallSites
+  // has the full mechanism). `instr`'s own `out` literal is genuinely,
+  // monomorphically an array at the one real call site — call-target-index.js's
+  // resolveComputed proves HANDLER closed (every property a same-module
+  // arrow, no escape/dynWrite/shadow/rebind), and the synthesis walks `a`'s
+  // own body for its call to push2, substituting `a`'s formal params with
+  // `instr`'s actual arguments.
+  const closedSrc = `
+    const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      return out.length
+    }
+  `
+  // Negative control: byte-identical shape, except HANDLER is also handed to
+  // an unrelated function (`leak`) — a genuine value-escaping use (passed as
+  // an argument, not a `[]`-receiver/`__keys_ro` read) — so resolveComputed
+  // must decline the whole table, same as resolveMember already would.
+  // push2's `buf` stays exactly as unprovable as it always was: real runtime
+  // dispatch, not a wrong guess.
+  const escapedSrc = `
+    const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+    function leak(h) { return h }
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      leak(HANDLER)
+      return out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const closedWat = String(compile(closedSrc, { optimize: false, wat: true }))
+  const escapedWat = String(compile(escapedSrc, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(closedWat, 'push2')), "O0: push2's buf param, forwarded through a closed HANDLER table member reached only by computed dispatch, keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody(escapedWat, 'push2')), 'O0: identical shape, but HANDLER also escapes via leak(HANDLER) — push2 stays runtime-dispatched, confirms the fix never guesses through an unsafe receiver')
+  for (const optimize of [false, 2, 3]) {
+    is(jz(closedSrc, { optimize }).exports.main(), 2, `O${optimize || 0}: closed-table computed dispatch still computes the correct value (push2 pushes 5 then 6)`)
+  }
+})
+
+test('closed computed-dispatch table: declaration order relative to its caller does not affect the compiled output', () => {
+  // Same discipline as the possibleKinds ordering-independence pin above
+  // (test "possibleKinds census is pass-order-independent"): the strongest
+  // direct proof the fix isn't an accidental worklist-order artifact is that
+  // source declaration order (table before vs after the function that
+  // dispatches through it) doesn't change the compiled bytes at all.
+  const push2Src = `const push2 = (buf, v) => { buf.push(v); buf.push(v + 1); return buf }\n`
+  const handlerSrc = `
+    const HANDLER = {
+      a: (buf, v) => push2(buf, v),
+      b: (buf, v) => { buf.push(v); return buf },
+    }
+  `
+  const instrSrc = `
+    function instr(buf, key, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      instr(out, 'a', 5)
+      return out.length
+    }
+  `
+  const watTableFirst = String(compile(push2Src + handlerSrc + instrSrc, { optimize: 3, wat: true }))
+  const watTableLast = String(compile(push2Src + instrSrc + handlerSrc, { optimize: 3, wat: true }))
+  is(watTableFirst, watTableLast, 'O3: declaring the dispatch table before vs after its caller compiles to byte-identical WAT')
+})
+
+test('closed computed-dispatch table: an unresolvable SIBLING argument no longer poisons the whole synthesized call', () => {
+  // watr's real residual (.work/string-method-guess-notes.md "Fifth
+  // session"): `grab`'s inner call is `grab(lookup(idx, list), buf)` — arg0
+  // nests a reference to `a`'s OWN body-local `idx` (from `list.shift()`,
+  // never statically resolvable — genuinely unknown, not absent), arg1 is
+  // `a`'s OWN param `buf`, forwarded cleanly from `instr`'s own array. The
+  // OLD all-or-nothing gate declined the WHOLE call over arg0 alone, losing
+  // arg1's perfectly good observation too. The fix keeps synthesizing
+  // regardless — each argument POSITION is independent in narrow.js's own
+  // fold (applySiteRules folds one call-site argument per parameter index,
+  // never coupled to a sibling) — so `grab`'s `buf` param (2nd position)
+  // still proves ARRAY even though `x` (1st position) stays correctly
+  // unresolvable.
+  const src = `
+    const lookup = (k, m) => m[k]
+    const grab = (x, buf) => { buf.push(x); return buf }
+    const HANDLER = {
+      a: (buf, list) => { const idx = list.shift(); return grab(lookup(idx, list), buf) },
+      b: (buf, list) => { buf.push(list.shift()); return buf },
+    }
+    function instr(buf, key, list) { return HANDLER[key](buf, list) }
+    export function main() {
+      let out = []
+      instr(out, 'a', [7])
+      return out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's buf param (2nd position) proves ARRAY and keeps direct codegen even though its sibling argument (lookup(idx, list)) only resolves through a genuinely-unknown body-local — one unresolvable position no longer poisons the whole synthesized call")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 1, `O${optimize || 0}: list.shift() empties the array (idx=7, list=[]), lookup(7,[]) is undefined, grab pushes it once — computes the JS-correct length regardless of which positions the census could prove`)
+})
+
+test('closed computed-dispatch table: a member reached by a SHORT outer call declines its own unsuppliable trailing param instead of forwarding it as a false "merely unknown" fact', () => {
+  // The regression this fix corrects (.work/string-method-guess-notes.md
+  // "Fifth session"): watr's real `for (const k in HANDLER) SIZE_HANDLER[k]
+  // = (n,c,op) => HANDLER[k](n,c,op).length` idiom calls every HANDLER
+  // member with 3 args, one short of the table's own 4-param convention —
+  // mirrored here by `short(key, buf, v)` calling `HANDLER[key](buf, v)`
+  // (2 args) against members declared `(buf, v, out)` (3 params). The
+  // member's own `out` is genuinely, provably ABSENT at that call — not
+  // merely unknown — so forwarding `relay`'s internal call `relay(buf, v)`
+  // (2 args, missing its own `out`) would hand narrow.js's `missing()` rule
+  // a call site with NO default for the missing position, which poisons
+  // UNCONDITIONALLY (soft or hard, no self-heal possible — unlike an
+  // ordinary unresolved VALUE) — permanently swamping the CLEAN observation
+  // `a`'s own fully-supplied call already proved for that exact same
+  // parameter. The fix declines synthesizing the whole under-arity call
+  // instead: `relay.out` stays cleanly ARRAY from `a`'s site alone, and
+  // `write`'s own `buf` param (fed ONLY by relay's internal, `if(out)`-
+  // guarded call to `write`) inherits that clean proof.
+  const src = `
+    const write = (buf, x) => { buf.push(x); return buf }
+    const relay = (buf, v, out) => { buf.push(v); if (out) write(out, v); return buf }
+    const HANDLER = {
+      a: (buf, v, out) => relay(buf, v, out),
+      b: (buf, v) => relay(buf, v),
+    }
+    function instr(buf, key, v, out) { return HANDLER[key](buf, v, out) }
+    function short(key, buf, v) { return HANDLER[key](buf, v) }
+    export function main() {
+      let out = []
+      let scratch = []
+      instr(out, 'a', 5, scratch)
+      short('b', out, 9)
+      return scratch.length + out.length
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'write')), "O0: write's buf param, fed only by relay's own if(out)-guarded internal call, proves ARRAY and keeps direct codegen — relay.out stays clean because the SHORT 2-arg call from `short`/`b` (relay's own out unsuppliable there) is declined outright instead of poisoning relay.out with a false 'missing, no default' fact")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 3, `O${optimize || 0}: instr(a) pushes 5 into out and 5 into scratch (out.length=1, scratch.length=1); short(b) pushes 9 into out with no 3rd arg, out param undefined so write never runs (out.length=2) — total scratch(1)+out(2)=3, JS-correct regardless of which positions the census could prove`)
+})
+
+// --- inferValAtSite: `.`-property-read call arguments (narrow.js) ---
+//
+// Prior sessions closed the CLOSED-COMPUTED-DISPATCH-TABLE class (the pins
+// above) but left `id`/`blockid`/`reftype`'s watr-shaped residual diagnosed,
+// not fixed: `inferValAtSite` had no case AT ALL for a `.`-member-read
+// argument (`c.type`, `rows[i].x`) — only bare names and `[]`-element reads
+// (.work/string-method-guess-notes.md, sixth session, "Why the originally-
+// diagnosed 24-case partial rescue... never paid off"). This resolves the
+// receiver to a proven schemaId (inferSchemaId — the SAME resolver the
+// `schemaId` mergeRule already runs per call-site argument) and reads that
+// field's program-wide-monomorphic kind off ctx.schema's existing SlotFact
+// census (module/schema.js's new slotVTBySid, the by-sid sibling of the
+// slotVT kind.js's own VT['.'] already trusts for a live receiver).
+
+test('RepresentationPlan: a param fed only a `.`-property read of a proven-schema ARRAY field gets direct array codegen (positive)', () => {
+  // CTX is a genuine `{}`-literal schema (unlike watr's own real ctx, which
+  // is `const ctx = []` with STRING keys attached via a `for...in`-driven
+  // computed write — never schema-registered at all; see this session's own
+  // notes for why the fix's schema-backed mechanism can prove THIS shape but
+  // not watr's). grab's `list` param is fed ONLY `c.items` (dispatch's own
+  // param `c`, forwarded — never a bare name at the call site into grab), so
+  // this exercises the NEW `.`-property-read case specifically, not the
+  // pre-existing bare-name/`[]`-element cases.
+  // useUnproven keeps the shadow-probe/`__dyn_get_expr` machinery live in
+  // this exact compiled unit (a genuinely unprovable dynamic-key read) — so
+  // grab's clean codegen below isn't vacuously "nothing needs the probe."
+  const src = `
+    const CTX = { items: [10, 20, 30], tag: 1 }
+    function grab(nm, list) { return list[nm] }
+    function dispatch(nm, c) { return grab(nm, c.items) }
+    export function useProp() { return dispatch(1, CTX) }
+    export function useUnproven(o, k) { return o[k] }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed only dispatch's own `c.items` property read, proves ARRAY through the receiver's schemaId + SlotFact kind census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the grab result above is not vacuous')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.useProp(), 20, `O${optimize || 0}: dispatch(1, CTX) -> grab(1, CTX.items) -> CTX.items[1] === 20, JS-correct`)
+})
+
+test('RepresentationPlan: a `.`-property read chained off a proven array-element read also proves the field (positive, array-element-chained receiver)', () => {
+  // The second proof source the `.`-property-read case supports: the
+  // receiver itself is `rows[i]` (a proven-array-element read, not a bare
+  // name) — `grab`'s list param is fed `rows[i].items`, two hops from a
+  // literal. Exercises receiverSchemaId's arrayElemSchema fallback, not just
+  // its primary inferSchemaId(bare-name) path.
+  const src = `
+    function grab(nm, list) { return list[nm] }
+    function visit(i, rows) { return grab(0, rows[i].items) }
+    export function useArrElem() {
+      const rows = [{ items: [10, 20, 30], tag: 1 }, { items: [40, 50], tag: 2 }]
+      return visit(1, rows)
+    }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param, fed rows[i].items (an array-element read chained with a property), proves ARRAY and keeps direct array codegen")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.useArrElem(), 40, `O${optimize || 0}: rows[1].items[0] === 40, JS-correct`)
+})
+
+test('RepresentationPlan: a `.`-property read of a genuinely mixed-kind field stays runtime-dispatched (negative control)', () => {
+  // Negative control for the positive pin above: A and B share the identical
+  // schema (`{items, tag}` dedupes to one schemaId), but their `items` field
+  // disagrees in KIND (ARRAY vs STRING) — a real, whole-program disagreement,
+  // not merely unproven. `pick`'s branch is a runtime PARAMETER (not a
+  // compile-time constant), so B's construction can't be constant-folded
+  // away before the census runs — both constructions stay genuinely live,
+  // so the SlotFact census must see the real disagreement (an earlier,
+  // constant-foldable version of this repro was checked and rejected during
+  // this session: with a compile-time-constant branch, B's whole `{}`-
+  // literal got folded away before the census ever ran, silently leaving
+  // only A's ARRAY observation live — a vacuous, not a real, negative
+  // control; this shape avoids that pitfall). dispatch's `c` param still
+  // correctly proves schemaId (A/B share one schema) — only the FIELD's own
+  // kind is unprovable, confirming the fix declines at the right precision:
+  // "receiver's schema is known" is not "this field's kind is known."
+  const src = `
+    const A = { items: [10, 20, 30], tag: 1 }
+    const B = { items: 'oops', tag: 2 }
+    function grab(nm, list) { return list[nm] }
+    function dispatch(nm, c) { return grab(nm, c.items) }
+    export function useA() { return dispatch(1, A) }
+    export function pick(flag) { return (flag ? B : A).items }
+  `
+  const extractBody = (wat, fname) => {
+    const start = wat.indexOf(`(func $${fname}`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return wat.slice(start, next)
+  }
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractBody(wat, 'grab')), "O0: grab's list param stays runtime-dispatched — A and B share one schema but genuinely disagree on items' kind, so the SlotFact census is (correctly) poisoned and the fix must decline, not guess")
+  is(jz(src, { optimize: false }).exports.useA(), 20, 'O0: the declined param still computes the JS-correct answer through the (slower) runtime-dispatch path')
+})
+
+test("RepresentationPlan: `.`-property-read schemaId resolution is pass-order-independent — swapping a 3-function forwarding chain's declaration order yields byte-identical WAT", () => {
+  // Mirrors the existing possibleKinds-census ordering pin's discipline
+  // (above) for this fix's own two dependencies (schemaId, ctx.schema's
+  // SlotFact kind census): a 3-hop chain (grab <- relay <- outer, outer's
+  // OWN param c2 must itself settle to CTX's schemaId before relay's `c`
+  // can resolve it) checked across every declaration-order permutation.
+  const grabSrc = 'function grab(nm, list) { return list[nm] }\n'
+  const relaySrc = 'function relay(nm, c) { return grab(nm, c.items) }\n'
+  const outerSrc = 'function outer(nm, c2) { return relay(nm, c2) }\n'
+  const tailSrc = 'const CTX = { items: [10, 20, 30], tag: 1 }\nexport function useIt() { return outer(1, CTX) }\n'
+  const perms = [
+    [grabSrc, relaySrc, outerSrc],
+    [outerSrc, relaySrc, grabSrc],
+    [relaySrc, outerSrc, grabSrc],
+    [grabSrc, outerSrc, relaySrc],
+  ]
+  const outs = perms.map(p => String(compile(p.join('') + tailSrc, { optimize: 3, wat: true })))
+  ok(outs.every(o => o === outs[0]), 'O3: every declaration-order permutation of the 3-hop forwarding chain compiles to byte-identical WAT')
+})
 test('bigint: typeof-guarded normalizer reached through a `.`-member call attached to a NAMED FUNCTION, not an object literal (shape #7-residual — FIXED)', () => {
   // Shape #8 (above) resolves a `.`-member call through an OBJECT-LITERAL
   // receiver (`const ns = {}; ns.parse = parseNum`). watr's REAL shape
@@ -3142,5 +3979,218 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
     is(e.f(), 7n, `${lbl}: identical callee reached via a NAMED-FUNCTION .member call now crosses as a real BigInt`)
     is(e.g(), 5n, `${lbl}: the base function itself, called directly elsewhere, is unaffected`)
   }
+})
+
+// --- DictKindIndex (src/compile/dict-kind-index.js): per-key kind facts for a
+// `let/const T = []` receiver used as a static string-keyed dictionary via a
+// `for (k in OBJ) T[k] = VALUE` unroll over a constant object literal — the
+// FOURTH limitation .work/string-method-guess-notes.md's seventh session
+// diagnosed (`T` is never schema-registered: that mechanism only fires on a
+// `{}`-literal AST node, never `[]`). Watr's real shape:
+//   for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+// with `ctx.type`/`ctx.table`/… read elsewhere, often through a same-module
+// named-function or computed-dispatch-table forwarding chain.
+const extractFnBody = (wat, fname) => {
+  const start = wat.indexOf(`(func $${fname}`)
+  if (start < 0) return null
+  const next = wat.indexOf('\n  (func ', start + 1)
+  return next >= 0 ? wat.slice(start, next) : wat.slice(start)
+}
+
+test('DictKindIndex: a for-in-unrolled array-as-dictionary proves a direct `.`-property-read argument (positive)', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2, table: 3 }
+    function id(nm, list) { return list[nm] }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.type.push(42)
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, fed only assemble's own ctx.type read, proves ARRAY through the for-in-unroll census and keeps direct array codegen — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: useUnproven (a genuinely unprovable dynamic-key read) DOES get the shadow probe — confirms the probe machinery is live in this exact compiled unit, so the id result above is not vacuous')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 42, `O${optimize || 0}: assemble() -> ctx.type.push(42); id(0, ctx.type) === 42, JS-correct`)
+})
+
+test('DictKindIndex: the for-in-unroll census survives a same-module named-function AND a computed-dispatch-table forwarding chain (positive, watr\'s real shape)', () => {
+  // Mirrors watr's real `instr(nodes, ctx) { ... HANDLER[imm](nodes, ctx, op, out) }`
+  // exactly: ctx is forwarded once through an ORDINARY named-function call
+  // (instr), then once more through a computed-dispatch table's own inline
+  // arrow member (HANDLER[op]) — both closed-forwarding channels this file's
+  // alias-closure walk follows, chained.
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    const HANDLER = {
+      funcidx: (n, c, op, out) => id(n.shift(), c.func),
+      typeidx: (n, c, op, out) => id(n.shift(), c.type),
+    }
+    function instr(nodes, ctx) {
+      let op = nodes.shift()
+      return HANDLER[op](nodes, ctx, op, null)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.func.push(11)
+      ctx.func.push(22)
+      return instr(['funcidx', 1], ctx)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through instr's named-function forward THEN HANDLER's computed-dispatch forward, still proves ARRAY — no shadow probe")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 22, `O${optimize || 0}: instr(['funcidx',1], ctx) -> id(1, ctx.func) === 22, JS-correct`)
+})
+
+test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
+  // resolveComputed (call-target-index.js) resolves ONLY object-literal
+  // tables (its own header: property writes are `{}`-literal only) — watr's
+  // real `build[SECTION.code](item, ctx)` is a numerically-indexed ARRAY of
+  // arrows instead (needed for a real WASM call_indirect), which this file's
+  // own sibling resolver (constArrayMembers) covers. Two members, deliberately
+  // different arity, to also exercise arrowParamNameAt's "extra argument
+  // beyond a member's own declared arity is provably unreachable, not
+  // ambiguous" rule (the first member never even declares a 2nd parameter).
+  const src = `
+    function id(nm, list) { return list[nm] }
+    const TABLE = [
+      (onlyOneParam) => onlyOneParam.length,
+      (item, ctx) => id(0, ctx.type),
+    ]
+    function dispatch(idx, item, ctx) { return TABLE[idx](item, ctx) }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      const SECTION = { type: 1, func: 2 }
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.type.push(77)
+      return dispatch(1, [1, 2, 3], ctx)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param, reached through TABLE's array-of-arrows forward (position 1, past a shorter-arity sibling member), still proves ARRAY")
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'useUnproven')), 'O0: sanity — the shadow-probe machinery is live in this exact compiled unit')
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 77, `O${optimize || 0}: dispatch(1,[1,2,3],ctx) -> id(0, ctx.type) === 77, JS-correct`)
+})
+
+test('DictKindIndex: `??=`/`||=`/`&&=` fold their RHS the same as a plain `=` write (positive, watr\'s real metadata idiom)', () => {
+  // watr's real `(ctx.metadata ??= {})[type] ??= []` — a logical-assignment
+  // write must not be treated as an opaque compound mutation (which would
+  // poison the WHOLE target): its short-circuit branch never introduces a
+  // kind beyond what other writes to the same key already establish, so
+  // folding its RHS is exactly as sound as `=`.
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function useUnproven(o, k) { return o[k] }
+    export function main() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      ctx.meta ??= {}
+      ctx.meta ??= {}
+      ctx.type.push(9)
+      return id(0, ctx.type)
+    }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: id's list param proves ARRAY even though its target's `meta` key is only ever ??='d, never poisoning the OTHER, unrelated `type` key")
+  for (const optimize of [false, 2, 3])
+    is(jz(src, { optimize }).exports.main(), 9, `O${optimize || 0}: JS-correct through the ??= write`)
+})
+
+test('DictKindIndex negative: a target that escapes through an unrelated function keeps runtime dispatch', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function leak(x) { return x }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      const alias = leak(ctx)
+      alias.type = [5]
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), "O0: ctx escapes through leak()'s own return, an unaccounted alias could write ANY key — must decline, not guess")
+  is(jz(src, { optimize: false }).exports.main(), 5, 'O0: still JS-correct through the declined, slower runtime-dispatch path')
+})
+
+test('DictKindIndex negative: a same-key kind disagreement declines only that key, a sibling key from the same target stays clean', () => {
+  const src = `
+    const SECTION = { type: 1, func: 2 }
+    function idA(nm, list) { return list[nm] }
+    function idB(nm, list) { return list[nm] }
+    function assemble(flag) {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      if (flag) ctx.type = 42
+      const a = idA(0, ctx.type)
+      const b = idB(0, ctx.func)
+      return a + b
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main(flag) { return assemble(flag) }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'idA')), "O0: idA reads ctx.type, the KEY a conditional write disagrees with — must decline (precise, per-key poison, never guess)")
+  ok(!/__dyn_get_expr/.test(extractFnBody(wat, 'idB')), 'O0: idB reads ctx.func, a SIBLING key of the SAME target that never disagreed — must stay clean, proving the poison is per-key, not whole-target')
+})
+
+test('DictKindIndex negative: a non-constant (reassignable) source object declines the whole target', () => {
+  const src = `
+    let SECTION = { type: 1, func: 2 }
+    function id(nm, list) { return list[nm] }
+    function corrupt() { SECTION = { other: 9 } }
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      return id(0, ctx.type)
+    }
+    function useUnproven(o, k) { return o[k] }
+    export function main() { corrupt(); return assemble() }
+    export function otherUse(o, k) { return useUnproven(o, k) }
+  `
+  const wat = String(compile(src, { optimize: false, wat: true }))
+  ok(/__dyn_get_expr/.test(extractFnBody(wat, 'id')), 'O0: SECTION is reassigned elsewhere (corrupt()) — a stale key-name snapshot could misreport PRESENCE, not just kind — must decline')
+})
+
+test('DictKindIndex: pass-order-independent — swapping the target/reader declaration order yields byte-identical codegen for the reader', () => {
+  const idSrc = `function id(nm, list) { return list[nm] }\n`
+  const assembleSrc = `
+    function assemble() {
+      const ctx = []
+      for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
+      return id(0, ctx.type)
+    }
+  `
+  const constSrc = `const SECTION = { type: 1, func: 2 }\n`
+  const tailSrc = `export function main() { return assemble() }\n`
+  const perms = [
+    idSrc + constSrc + assembleSrc + tailSrc,
+    constSrc + assembleSrc + idSrc + tailSrc,
+    assembleSrc + idSrc + constSrc + tailSrc,
+    constSrc + idSrc + assembleSrc + tailSrc,
+  ]
+  const bodies = perms.map(src => extractFnBody(String(compile(src, { optimize: 3, wat: true })), 'id'))
+  ok(bodies.every(b => b === bodies[0]), "O3: id()'s own compiled body is byte-identical across every declaration-order permutation of SECTION/ctx/id/assemble")
+  ok(!/__dyn_get_expr/.test(bodies[0]), 'O3: and the census genuinely resolved (no shadow probe), not vacuously identical because every permutation declined equally')
 })
 

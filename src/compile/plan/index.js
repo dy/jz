@@ -30,9 +30,10 @@ import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import {
   collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown,
-  readonlyParamReps, freezeCallSites, assertProgramFactsShape,
+  synthesizeComputedDispatchCallSites, readonlyParamReps, freezeCallSites, assertProgramFactsShape,
 } from '../program-facts.js'
 import { buildCallTargetIndex, releaseLiftedValueUsed } from '../call-target-index.js'
+import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
   applyJsstringBoundaryCarrierStandalone, narrowBoolResults,
@@ -232,10 +233,25 @@ export default function plan(ast, profiler, regionHooks) {
   // never `programFacts`) can read it too.
   programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
   ctx.types.callTargets = programFacts.callTargets
+  // Computed-dispatch call-site synthesis (program-facts.js's own doc on
+  // synthesizeComputedDispatchCallSites has the full reasoning): must run
+  // AFTER callTargets exists (it resolves through resolveComputed) and
+  // BEFORE anything reads programFacts.callSites for real — narrowSignatures
+  // below is the first and primary reader, but materializeAutoBoxSchemas/
+  // resolveClosureWidth/canSkipWholeProgramNarrowing all run first in this
+  // function, so this sits right at the earliest safe point, immediately
+  // after the index itself. Mutates programFacts.callSites in place (pushes
+  // only) — the same "enrich in place, never re-collected past here"
+  // contract this function's own header already documents for
+  // narrowSignatures' paramReps writes.
+  t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts))
   // Shape check (program-facts-split.md §7.1): this is the ONLY staple-on
   // site anywhere in src/compile/ that adds a top-level key to `programFacts`
   // after `collectProgramFacts` publishes it — the moment it lands is the
   // right place to assert no OTHER, undocumented key has snuck on too.
+  // Placed after synthesizeComputedDispatchCallSites (which only enriches
+  // the existing `callSites` array, never stapling a new key) so this same
+  // check also covers that call — not just callTargets above.
   // DBG_INVARIANTS-gated (JZ_DEBUG_INVARIANTS=1), zero cost otherwise.
   assertProgramFactsShape(programFacts, 'post-callTargets')
   // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
@@ -251,6 +267,16 @@ export default function plan(ast, profiler, regionHooks) {
   // solveRepresentationBoundaries/narrowSignatures below, both of which read
   // `programFacts.valueUsed` to decide exactly that.
   t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.callTargets))
+  // DictKindIndex (dict-kind-index.js): per-key kind facts for an array-literal
+  // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
+  // …` unroll over a constant object literal — never schema-registered, since
+  // that mechanism only fires on a `{}`-literal AST node). Depends on
+  // callTargets.resolveComputed (the HANDLER-forwarding alias channel), so it
+  // must run after the index above; independent of synthesizeComputedDispatch-
+  // CallSites/releaseLiftedValueUsed (neither reads nor feeds it), placed here
+  // only to keep every "built once, right after callTargets" fact together.
+  programFacts.dictKinds = t('buildDictKindIndex', () => buildDictKindIndex(ctx, programFacts, ast, programFacts.callTargets))
+  ctx.types.dictKinds = programFacts.dictKinds
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))

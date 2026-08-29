@@ -51,17 +51,32 @@
  */
 import { DBG_INVARIANTS } from '../../ctx.js'
 
-/** The exact 19 names `collectProgramFacts` publishes (walk-facts.js's own
- *  return statement — program-facts-split.md §1's table cites the same list)
- *  plus `callTargets`, the one staple-on `plan/index.js` adds afterward
- *  (§7.1 — grep-verified the ONLY such site anywhere in src/compile/). Any
- *  OTHER top-level key appearing on `programFacts` is an undocumented
- *  producer that bypassed this file's own contract. */
+/** The exact 20 names `collectProgramFacts` publishes (walk-facts.js's own
+ *  return statement — program-facts-split.md §1's table cites the same list,
+ *  minus `computedCallSites`, added after that doc's own snapshot ref by
+ *  fix/string-method-guess's computed-dispatch-table synthesis: the raw
+ *  `TABLE[key](args)` candidates `synthesizeComputedDispatchCallSites`
+ *  resolves into real `callSites` entries — see that function's own doc)
+ *  plus two staple-on keys `plan/index.js` adds afterward, both right after
+ *  `buildCallTargetIndex`: `callTargets` itself (§7.1 — at the time of that
+ *  audit, grep-verified the ONLY such site) and `dictKinds`
+ *  (`buildDictKindIndex`, dict-kind-index.js — added later, same
+ *  fix/string-method-guess branch, same shape: a whole-program index built
+ *  once and stapled on for emit.js/narrow.js to read via `ctx.types`, never
+ *  read back off `programFacts` itself past this file's own return). `plan/
+ *  index.js`'s own `assertProgramFactsShape` call sits BETWEEN the two
+ *  staples (right after `callTargets`, before `dictKinds`), so it only ever
+ *  checks the `callTargets`-only snapshot today — `dictKinds` is listed here
+ *  for the allowlist's own accuracy, not because any call currently checks a
+ *  state where it's present. Any OTHER top-level key appearing on
+ *  `programFacts` is an undocumented producer that bypassed this file's own
+ *  contract. */
 export const FACT_KEYS = new Set([
   'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'valueUsed', 'callSites',
+  'computedCallSites',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasMapSet', 'hasBigint', 'writtenProps', 'literalWriteKeys', 'arrResized',
-  'nameEscapes', 'literalObjectVars', 'callTargets',
+  'nameEscapes', 'literalObjectVars', 'callTargets', 'dictKinds',
 ])
 
 /** Read-only view of a `paramReps`-shaped `Map<funcName, Map<paramIdx, rep>>`

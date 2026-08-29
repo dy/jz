@@ -4414,6 +4414,25 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
     // a program that never demanded 'string' has no string literal to probe
     // with, and one that never demanded 'fn' has no closure value that could
     // ever occupy the shadowing property.
+    //
+    // Was additionally widened here (fix/param-mutation-propagation) to also
+    // fire for `vt === VAL.ARRAY && ARRAY_INDUCERS.has(method)` on a bare
+    // parameter — defense-in-depth against infer.js's methodEvidence source,
+    // which back then still guessed VAL.ARRAY from `<param>.push(...)` usage
+    // alone. fix/string-method-guess retired methodEvidence's positive
+    // induce entirely (both the ARRAY half and the STRING half — see that
+    // module's header): a parameter's `vt` can no longer reach a pointer
+    // kind from body-usage syntax, only from real proof (paramReps' sound
+    // cross-function call-site census, or a genuine local-construction
+    // proof). With the guess itself gone, `vt == null` is once again the
+    // COMPLETE unproven-receiver test — the widening had no other purpose
+    // and cost a real, measured size/speed regression on proven-array
+    // parameters reached only through a recursive or forwarding call chain
+    // (every such site now re-triggered the probe on a receiver that was
+    // actually soundly ARRAY). Removed; confirmed the makeByteBuf-idiom
+    // repro (test/data.js) still passes on `vt == null` alone, same as the
+    // STRING twin — nothing downstream can hand this branch a wrongly-proven
+    // ARRAY/STRING `vt` anymore.
     if (vt == null && ctx.closure.call && !parsed.hasSpread && ctx.core.emit.str
       && ctx.module.demanded.has('string') && ctx.module.demanded.has('fn')) {
       // HOISTED override probe: for a stable module-global receiver (the same

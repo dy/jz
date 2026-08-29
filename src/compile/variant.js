@@ -115,6 +115,15 @@ export function materializeVariant({
   }
 
   for (const site of eligibleSites || []) {
+    // A `synthetic` site (program-facts.js's synthesizeComputedDispatchCallSites)
+    // may share its `.node` with other synthesized sites, or — for a
+    // named-function member of a resolved computed-dispatch table — with the
+    // OUTER `TABLE[key](...)` call itself, whose `node[1]` is a computed-
+    // member expression, not a plain callee string. Retargeting it would
+    // either corrupt an unrelated sibling's call or silently collapse a
+    // genuine runtime dispatch into one hardcoded target. These sites exist
+    // only to feed the read-only census; skip them here, never rewrite.
+    if (site.synthetic) continue
     site.node[1] = cloneName
     site.callee = cloneName
   }

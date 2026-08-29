@@ -178,22 +178,33 @@ function collectValueEscapes(ast, moduleInits, funcsList) {
   return out
 }
 
-/** Fold one observed write's value into `table.get(name).get(prop)`. A
- *  same-module named-function reference is the only fact this index ever
- *  claims; anything else (a non-function value, or a `++`/compound
- *  mutation whose "value" isn't a single reference at all) poisons the
- *  slot. A SECOND, DIFFERENT function reference also poisons — sticky,
+/** Fold one observed write's value into `table.get(name).get(prop)`. Two
+ *  shapes resolve: a same-module named-function reference (`fn`, a
+ *  `ctx.funcs.list` entry — the ONLY thing `resolveMember` ever hands out,
+ *  its existing contract, unchanged), or an inline arrow literal (the
+ *  node itself — `resolveComputed`'s addition, see its own doc; NOT a
+ *  `ctx.funcs.list` entry, since prepare.js never lifts an object-literal
+ *  property's arrow into one — verified empirically, not assumed: a
+ *  property value is either a bare name in `funcsNames` or it stays a
+ *  plain `=>` AST node all the way through this file). Anything else (a
+ *  non-function value, or a `++`/compound mutation whose "value" isn't a
+ *  single reference at all) poisons the slot. A SECOND, DIFFERENT
+ *  reference (function OR a different arrow node) also poisons — sticky,
  *  meet-style, matching param-reps.js's mergeParamFact/paramBigintOnly's
- *  own "disagreement → permanently unresolved" rule. */
+ *  own "disagreement → permanently unresolved" rule. Discriminating the
+ *  two resolved shapes needs no tag: a `ctx.funcs.list` entry is a plain
+ *  object, an arrow node is `['=>', params, body]` — `Array.isArray`
+ *  tells them apart everywhere this table is read. */
 function foldWrite(table, funcsMap, funcsNames, name, prop, valueNode) {
   let props = table.get(name)
   if (!props) { props = new Map(); table.set(name, props) }
   const prior = props.get(prop)
   if (prior === POISON) return
-  const fn = isFuncRef(valueNode, funcsNames) ? funcsMap.get(valueNode) : null
-  if (!fn) { props.set(prop, POISON); return }
-  if (prior === undefined) { props.set(prop, fn); return }
-  if (prior !== fn) props.set(prop, POISON)
+  const resolved = isFuncRef(valueNode, funcsNames) ? funcsMap.get(valueNode)
+    : (Array.isArray(valueNode) && valueNode[0] === '=>') ? valueNode : null
+  if (!resolved) { props.set(prop, POISON); return }
+  if (prior === undefined) { props.set(prop, resolved); return }
+  if (prior !== resolved) props.set(prop, POISON)
 }
 
 /** Collect every top-level write to NAME.PROP / NAME['PROP'] / an inline
@@ -251,12 +262,14 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
  * the identical, already-closed snapshot. Never re-derived, never mutated:
  * requirement (1) of the finish-order item this file implements.
  *
- * @returns {{resolveMember: (objName: string, prop: string) => object|null}}
+ * @returns {{resolveMember: (objName: string, prop: string) => object|null,
+ *   resolveComputed: (objName: string) => Array<object|Array>|null}}
  *  `resolveMember` returns the resolved function's `ctx.funcs.list` entry
  *  (same shape `ctx.funcs.map.get(name)` returns for a bare-name call) or
  *  `null` when the index cannot prove a single same-module target — callers
  *  MUST treat `null` exactly like an ordinary unresolved/dynamic callee,
- *  never guess (requirement 2).
+ *  never guess (requirement 2). `resolveComputed` is `resolveMember`'s
+ *  computed-key sibling — see its own doc below.
  */
 export function buildCallTargetIndex(ctx, programFacts, ast) {
   const shadowed = collectShadowedNames(ast, ctx.module.moduleInits, ctx.funcs.list)
@@ -288,7 +301,12 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
     const isFuncBase = ctx.funcs.names.has(objName)
     if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return null
     const fn = table.get(objName)?.get(prop)
-    if (fn === POISON) return null
+    // Only a named-function resolution is `resolveMember`'s contract — an
+    // arrow-node resolution (foldWrite's other resolved shape, added for
+    // resolveComputed below) is deliberately declined here, unchanged from
+    // before that addition: nothing that calls resolveMember expects (or
+    // could use) a bare AST node in place of a ctx.funcs.list entry.
+    if (fn === POISON || Array.isArray(fn)) return null
     if (fn) return fn
     if (!isFuncBase) return null
     // Lifted function-property fallback (see header) — no write survived for
@@ -302,7 +320,44 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
     return ctx.funcs.map.get(`${objName}$${prop}`) ?? null
   }
 
-  return Object.freeze({ resolveMember })
+  /**
+   * Computed-member-call sibling of `resolveMember`: `TABLE[key](args)`
+   * where `key` is not statically known. Resolves to the closed SET of
+   * every one of `objName`'s properties — a same-module named function
+   * (`resolveMember`'s own shape) or an inline arrow literal (the `['=>',
+   * params, body]` node — watr's actual `HANDLER` shape, every property an
+   * arrow literal, none a reference to a pre-existing declared function;
+   * see .work/string-method-guess-notes.md "Third follow-up session" for
+   * the empirical trace that ruled out treating these as funcEntries
+   * directly) — or `null` when even ONE property is unresolved (a non-
+   * function value, a `++`/compound write, or two disagreeing writes to
+   * the same property: `foldWrite`'s POISON). "Closed" here means what it
+   * means throughout this file: every property this walk can see is
+   * accounted for, under the IDENTICAL `safeReceiver` eligibility
+   * (shadowed/rebound/escapes/dynWriteVars) `resolveMember` already
+   * applies — a table with even one dynamically-written or non-function
+   * property, or that itself escapes/reassigns/shadows, resolves nothing,
+   * same fail-closed discipline as everywhere else in this file. An empty
+   * table (no property ever statically folded — e.g. a non-static-key
+   * object literal, `staticObjectProps` returning null) also resolves
+   * nothing: `resolveComputed` never claims a set it has zero evidence
+   * for. Callers get back a MIXED array (funcInfo objects and/or arrow
+   * nodes) and must discriminate with `Array.isArray` per element, exactly
+   * as `foldWrite`'s own doc above does.
+   */
+  const resolveComputed = (objName) => {
+    if (typeof objName !== 'string' || !safeReceiver(objName)) return null
+    const props = table.get(objName)
+    if (!props || !props.size) return null
+    const members = []
+    for (const v of props.values()) {
+      if (v === POISON) return null
+      members.push(v)
+    }
+    return members
+  }
+
+  return Object.freeze({ resolveMember, resolveComputed })
 }
 
 /**

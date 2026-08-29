@@ -7,9 +7,10 @@
  * `../program-facts.js` for the full module map and build order.
  * @module program-facts/walk-facts
  */
-import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, walkAst } from '../../ast.js'
+import { commaList, isFuncRef, isLiteralStr, MUTATE_OPS, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, walkAst } from '../../ast.js'
 import { ctx, err, getFactStore } from '../../ctx.js'
 import { VAL } from '../../reps.js'
+import { nullishArm } from '../../kind.js'
 import { staticObjectProps } from '../../static.js'
 import { observeProgramSlots } from './slot-kind-census.js'
 import { analyzeSchemaSlotIntCertain } from './slot-int-census.js'
@@ -84,10 +85,37 @@ export function observeNodeFacts(node, f) {
     const skip = ESCAPE_SKIP[op]
     if (skip !== true && op != null) {
       const declEq = op === '=' && f._declEq?.has(node)
+      // `__keys_ro(src)` is prepare's OWN `for…in` lowering (src/prepare/
+      // index.js, "for-in's read-only key list") — never written by a user
+      // program directly, and by the time this walk ever sees a call to it,
+      // that's the ONLY shape it can be in: strict mode ERRORS on `for…in`
+      // before this walk runs at all, and every other program has already
+      // had it rewritten into exactly this call. Its one argument is read
+      // ONLY for its enumerable key STRINGS (Object.keys semantics, "sound
+      // only because for-in reads ks[i]/ks.length and never mutates") — the
+      // identical "queried, not exposed" shape `'in'`'s RHS is already
+      // exempted for above, one call-argument position instead of an
+      // operator's own fixed slot (a per-OP `ESCAPE_SKIP['for-in']` entry
+      // would never fire — the `'for-in'` op itself never reaches here).
+      const keysRoArg = op === '()' && args[0] === '__keys_ro'
+      // A bare-name operand of an equality/inequality comparison against a
+      // STATICALLY nullish literal (`x === null`, `x != undefined`) is a
+      // nullish TEST, not a value-escaping read — comparing a reference to
+      // null/undefined never aliases or exposes it, the same "queried, not
+      // exposed" shape as `__keys_ro`'s argument and `in`'s RHS above. This
+      // is exactly the shape prepare's OWN `for…in` lowering introduces (the
+      // `src == null` runtime guard ahead of `__keys_ro`, src/prepare/
+      // index.js "for-in over null/undefined is a no-op") — without this, a
+      // receiver used ONLY as a `[]`/for-in-lowered `__keys_ro` argument
+      // still marks via THIS comparison alone.
+      const nullishEqOperand = (op === '==' || op === '===' || op === '!=' || op === '!==')
+        ? (nullishArm(args[1]) ? 0 : nullishArm(args[0]) ? 1 : -1) : -1
       for (let i = 0; i < args.length; i++) {
         if (typeof args[i] !== 'string') continue
         if (skip instanceof Set && skip.has(i)) continue
         if (declEq && i === 0) continue
+        if (keysRoArg && i === 1) continue
+        if (i === nullishEqOperand) continue
         f.nameEscapes.add(args[i])
       }
     }
@@ -192,7 +220,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
-    propMap: new Map(), valueUsed: new Set(), callSites: [],
+    propMap: new Map(), valueUsed: new Set(), callSites: [], computedCallSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -225,6 +253,7 @@ function mergeWalkFacts(into, from) {
   }
   for (const v of from.valueUsed) into.valueUsed.add(v)
   into.callSites.push(...from.callSites)
+  into.computedCallSites.push(...from.computedCallSites)
 }
 
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
@@ -290,6 +319,21 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           else walkFacts(a, true, inArrow, caller)
         }
         return
+      }
+      // Computed-member call `TABLE[key](args)` — candidate for
+      // call-target-index.js's `resolveComputed`. Stashed here, resolved
+      // LATER (plan/index.js's synthesizeComputedDispatchCallSites, after
+      // buildCallTargetIndex runs — this walk happens BEFORE the index
+      // exists, so it can only record the candidate, never resolve it).
+      // No `return`: every existing fact this call's own subtree would
+      // otherwise contribute (nameEscapes on `key`, whatever the args
+      // walk marks) still runs exactly as before this branch existed —
+      // purely additive, changes no other observation.
+      if (op === '()' && Array.isArray(args[0]) && args[0][0] === '[]' &&
+          args[0].length === 3 && typeof args[0][1] === 'string') {
+        const a = args[1]
+        const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+        acc.computedCallSites.push({ objName: args[0][1], argList, callerFunc: caller, node })
       }
       if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
@@ -450,10 +494,240 @@ export function collectProgramFacts(ast) {
   ctx.module.writtenProps = f.writtenProps
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
+    computedCallSites: f.computedCallSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
     hasBigint: f.hasBigint, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
   }
+}
+
+/** For each stashed computed-member call candidate (`TABLE[key](args)`,
+ *  `programFacts.computedCallSites` — collected above, during the same walk
+ *  as `callSites`, since `resolveComputed` didn't exist yet to resolve them
+ *  on sight), resolve `TABLE` through the call-target index and, when it
+ *  proves closed, synthesize call-site observations into
+ *  `programFacts.callSites` so paramReps/narrowSignatures' census sees what
+ *  a bare-name call would — see call-target-index.js's `resolveComputed`
+ *  doc and .work/string-method-guess-notes.md "Third follow-up session" for
+ *  why this needs two hops, not one. Must run after `programFacts.
+ *  callTargets` is built and before narrowSignatures ever reads
+ *  `programFacts.callSites` (plan/index.js wires the ordering, right after
+ *  `buildCallTargetIndex`).
+ *
+ *  Two resolved-member shapes, per call-target-index.js's `foldWrite`:
+ *   - a same-module named function (`resolveMember`'s own shape — e.g. an
+ *     `ns.parse = parseNum`-style property): synthesized DIRECTLY, one call
+ *     site per outer site, reusing that site's own `argList` verbatim — the
+ *     member function receives exactly what a bare-name call to it would.
+ *   - an inline arrow literal (watr's actual `HANDLER` shape — every
+ *     property an arrow, none a reference to a pre-existing declared
+ *     function): the arrow itself has no paramReps identity to feed
+ *     (prepare.js never lifts an object-literal property's arrow into a
+ *     named function — verified empirically, see the notes above), so this
+ *     reaches one hop further: walks the arrow's OWN direct body (never
+ *     descending into a nested `=>` for DISCOVERING calls — the same scope
+ *     boundary every other closure-aware walk in this file/call-target-
+ *     index.js already draws) for calls to real, named functions,
+ *     substitutes the arrow's OWN formal parameters with the outer site's
+ *     actual argument expressions wherever they textually occur (plain,
+ *     referentially-transparent AST rewriting — no evaluation, so it's
+ *     sound regardless of side effects), and synthesizes ONE call site per
+ *     such inner call — ALWAYS, per POSITION, never declining the whole
+ *     call over one unresolvable sibling argument. An argument the arrow
+ *     itself computes (a body-local from a destructuring/`.shift()`
+ *     extraction, e.g. HANDLER.stringidx's `idx`) has no substitution
+ *     entry and is left as its own arrow-local name verbatim — sound, not
+ *     just "forfeit precision," because of a whole-pipeline invariant:
+ *     prepare/index.js's `mintLocal` (its own doc: "BindingId totality:
+ *     every function-local binding renames to the module-wide-unique
+ *     `name<T>f<fnId>_<serial>`") guarantees this leftover name can never
+ *     collide with any OTHER binding anywhere in the module, so every
+ *     name-keyed lookup this call site's `callerFunc` (a real, unrelated
+ *     function — e.g. `instr`, not the arrow) is later checked against
+ *     (narrow.js's `inferValAtSite`'s `callerValTypes`/`callerParamFacts`
+ *     lookups, inplace-store.js's `callSiteElemInfo`) misses cleanly and
+ *     falls back to its own conservative "unproven" default — the same
+ *     outcome a normal, non-synthesized unresolvable argument already
+ *     produces everywhere else in this codebase, never a fabricated claim.
+ *     A SIBLING argument at the same call that substitutes cleanly (e.g.
+ *     the forwarded `out`/`buffer` position) is completely unaffected by
+ *     an unresolvable neighbor: narrow.js's `applySiteRules` folds each
+ *     parameter POSITION independently (one `rule.apply` per `k`), so this
+ *     is strictly more precise than an all-or-nothing decline without
+ *     being any less sound.
+ *
+ *  Every synthesized site is tagged `synthetic: true` and may reuse an AST
+ *  node another synthesized site (same inner call reached from a different
+ *  outer caller, or the SAME outer computed-dispatch node for two different
+ *  resolved members) already points at — `.node` here exists only so the
+ *  census's own read-only consumers (evidenceOfArg, containment checks) can
+ *  use it exactly like a real site's; nothing may ever WRITE through it.
+ *  variant.js's `materializeVariant` (the one place a call edge gets
+ *  retargeted — `site.node[1] = cloneName`) and plan/inline.js's
+ *  `specializeFixedRestCalls` (the one place `setCallArgs` rewrites a call
+ *  node's own arguments) both skip `synthetic` sites for exactly this
+ *  reason — see their own comments at the skip. */
+export function synthesizeComputedDispatchCallSites(programFacts) {
+  const resolveComputed = programFacts.callTargets?.resolveComputed
+  if (!resolveComputed || !programFacts.computedCallSites.length) return
+
+  // Does `node` contain a bare-string reference to any name in `names`,
+  // anywhere — INCLUDING inside a further-nested `=>` (a captured reference
+  // inside a callback ARGUMENT is still a live use at the moment this call
+  // executes). Runs only over one already-small inner-call argument
+  // subtree, never a whole function body.
+  const mentionsAny = (node, names) => {
+    if (typeof node === 'string') return names.has(node)
+    if (!Array.isArray(node)) return false
+    for (let i = 1; i < node.length; i++) if (mentionsAny(node[i], names)) return true
+    return false
+  }
+  // Substitute every bare-string occurrence of a mapped param name with its
+  // outer-site argument expression, recursing everywhere (including nested
+  // `=>` bodies, for the same reason mentionsAny does). Pure — returns a
+  // NEW node when anything changed, never mutates `node` itself: the
+  // original AST is still the live tree emission compiles from.
+  const substitute = (node, subst) => {
+    if (typeof node === 'string') return subst.has(node) ? subst.get(node) : node
+    if (!Array.isArray(node)) return node
+    let changed = false
+    const out = new Array(node.length)
+    out[0] = node[0]
+    for (let i = 1; i < node.length; i++) {
+      const c = substitute(node[i], subst)
+      if (c !== node[i]) changed = true
+      out[i] = c
+    }
+    return changed ? out : node
+  }
+
+  // Does calling `calleeName` with only `argc` arguments leave one of ITS
+  // OWN trailing params both unsupplied AND undefault-able? `narrow.js`'s
+  // `missing()` rule (mergeRule) treats that shape as a DEFINITIVE fact —
+  // "this exact call always hands the callee `undefined` here" — and
+  // poisons `val` for it UNCONDITIONALLY, in EVERY fixpoint pass including
+  // the soft ones (unlike an ordinary unresolvable-VALUE observation, which
+  // the soft pass safely no-ops on and a later re-visit can still heal).
+  // That poison is real and correct when this shape is the program's own
+  // TRUE, permanent behavior (an ordinary same-arity-shortfall call site
+  // elsewhere in the program pays the identical price) — but synthesizing
+  // ONE MORE such site here would only ever GUARANTEE that permanent
+  // poison, with no possible upside for the position it poisons, so
+  // there's nothing to gain by including it: any OTHER position the same
+  // inner call would have proven is still provable from its next-cleanest
+  // source (a real member forwarding the same callee's SAME position with
+  // a full argument list), while this position was never going to resolve
+  // to anything but null regardless — declining the WHOLE call is strictly
+  // no worse than synthesizing it, every time this shape is detected.
+  const calleeArityShortfalls = (calleeName, argc) => {
+    const fn = ctx.funcs.map.get(calleeName)
+    const params = fn?.sig?.params
+    if (!params || argc >= params.length) return false
+    // A REST param left unsupplied is a real default too — an empty array,
+    // never `undefined` — so it never triggers narrow.js's own `missing()`
+    // poison in the first place; only checked here to keep this function's
+    // own verdict consistent with that (a redundant-safe skip either way).
+    const restIdx = fn.rest ? params.length - 1 : -1
+    for (let i = argc; i < params.length; i++)
+      if (i !== restIdx && fn.defaults?.[params[i].name] == null) return true
+    return false
+  }
+
+  // A resolved arrow member's body was ALREADY reached once before, by the
+  // ordinary call-site walker (collectProgramFacts's own walkFacts, which
+  // descends into every object-literal property value including an inline
+  // arrow — it has no reason not to, since resolveComputed didn't exist yet
+  // to tell it this arrow is a table member). Any `NAMED_FUNC(...)` call
+  // inside that arrow body it found is ALREADY sitting in
+  // `programFacts.callSites`, but attributed `callerFunc: null` (module
+  // scope — the arrow itself has no identity) with its RAW, unsubstituted
+  // arg names — e.g. the arrow's own `out`, which is not a module global
+  // and not resolvable under a null caller. That raw entry can never
+  // contribute anything but an unresolvable (null) observation — under the
+  // SOFT mid-fixpoint rule it's a harmless skip, but the FINAL hard-settle
+  // sweep (narrow.js "Settle val HARD") re-visits it and POISONS on the
+  // first null it sees, on this exact call, EVERY TIME — permanently
+  // undoing whatever this synthesis just proved with the properly-
+  // substituted version below, regardless of how sound that version is.
+  // Every inner-call node this pass visits is tracked here so the raw twin
+  // can be dropped afterward — never leave both a correct and a
+  // permanently-poisoning observation of the SAME call site's OWN node
+  // standing side by side.
+  const claimedNodes = new Set()
+
+  for (const site of programFacts.computedCallSites) {
+    const members = resolveComputed(site.objName)
+    if (!members) continue
+    for (const member of members) {
+      if (!Array.isArray(member)) {
+        // Named-function member: has its own real paramReps identity —
+        // synthesize directly, the outer site's argList unchanged, exactly
+        // like an ordinary bare-name call would. Nothing to claim: the
+        // OUTER computed-dispatch call itself was never registered by the
+        // ordinary walker (isFuncRef declines a computed callee), so there
+        // is no raw twin of THIS site to remove.
+        programFacts.callSites.push({
+          callee: member.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
+        })
+        continue
+      }
+      // Inline-arrow member: no identity of its own — reach one hop
+      // further, into calls the arrow's OWN body makes to real functions.
+      const arrowParams = extractParams(member[1])
+      const subst = new Map()
+      // Params THIS outer site simply doesn't supply (site.argList shorter
+      // than the arrow's own arity — e.g. watr's `for (const k in HANDLER)
+      // SIZE_HANDLER[k] = (n,c,op) => HANDLER[k](n,c,op).length` idiom,
+      // calling every member with only 3 args) are genuinely, provably
+      // `undefined` at THIS call — not "unknown," which is a different,
+      // weaker fact. Forwarding the bare param name onward would misrepresent
+      // "definitely absent here" as "an opaque unresolvable expression,"
+      // and since narrow.js's `possibleKinds` join treats every `v==null`
+      // observation as "join the full universe" REGARDLESS of which of the
+      // two it actually was, the practical effect is identical either way —
+      // so there is nothing to gain from modeling it more precisely, only a
+      // real cost: a genuinely-supplied SIBLING call (the same member
+      // reached via an outer site that DOES pass every argument, e.g.
+      // `instr`'s own `HANDLER[imm](nodes, ctx, op, out)`) would have its
+      // OWN clean observation permanently swamped by this unrelated site's
+      // forced full-universe join, the moment both feed the same callee's
+      // same parameter position. Declining ONLY the inner calls that
+      // mention one of these specifically-unsuppliable names (never the
+      // whole outer site, never a call that only touches an in-range
+      // param) keeps every other position — including a body-local the
+      // arrow computes at runtime (`let t = n.shift()`), which unlike an
+      // out-of-range param really is supplied, just not statically known,
+      // and safely resolves to the same conservative "unknown" outcome via
+      // ordinary lookup-miss, no special-casing needed (see the doc above).
+      const unsuppliable = new Set()
+      for (let i = 0; i < arrowParams.length; i++) {
+        const p = arrowParams[i]
+        const name = typeof p === 'string' ? p : classifyParam(p)[PARAM_NAME]
+        if (typeof name !== 'string') continue
+        if (i < site.argList.length) subst.set(name, site.argList[i])
+        else unsuppliable.add(name)
+      }
+      const walkInner = (n) => {
+        if (!Array.isArray(n)) return
+        if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
+        if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
+          claimedNodes.add(n)
+          const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
+          const ok = (!unsuppliable.size || innerArgList.every(a => !mentionsAny(a, unsuppliable))) &&
+            !calleeArityShortfalls(n[1], innerArgList.length)
+          if (ok)
+            programFacts.callSites.push({
+              callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
+            })
+        }
+        for (let i = 1; i < n.length; i++) walkInner(n[i])
+      }
+      walkInner(member[2])
+    }
+  }
+
+  if (claimedNodes.size)
+    programFacts.callSites = programFacts.callSites.filter(cs => cs.synthetic || !claimedNodes.has(cs.node))
 }

@@ -858,6 +858,14 @@ const rewriteRestBody = (node, restName, restParams) => {
 export const specializeFixedRestCalls = (programFacts) => {
   const sitesByKey = new Map()
   for (const site of programFacts.callSites) {
+    // Synthesized sites (program-facts.js's synthesizeComputedDispatchCallSites)
+    // may share `.node` with a sibling synthesized site or the outer
+    // computed-dispatch call itself — setCallArgs below rewrites a call
+    // node's own arguments in place, which would corrupt whichever of those
+    // it doesn't own exclusively. These sites exist only to feed the
+    // read-only census; never select them for a rewrite (mirrors variant.js's
+    // identical retarget-loop skip, for the same reason).
+    if (site.synthetic) continue
     const func = ctx.funcs.map.get(site.callee)
     if (!func?.rest || func.exported || func.raw || !func.body) continue
     if (programFacts.valueUsed.has(func.name)) continue
