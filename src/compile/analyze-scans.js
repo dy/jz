@@ -183,8 +183,6 @@ export const BINDING_USE_KEY = 1
 export const BINDING_USE_OPTIONAL = 2
 export const BINDING_USE_COMPUTED = 3
 export const BINDING_USE_COMPOUND = 4
-export const BINDING_USE_CALLEE = 5
-export const BINDING_USE_ARG_INDEX = 6
 export const BINDING_USE_NULL_CMP = 7
 export const BINDING_USE_OP = 8
 const SIMPLE_USE = Array.from({ length: 13 }, (_, kind) => [kind])
