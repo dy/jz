@@ -802,3 +802,20 @@ test('adjacent string literals require a real statement boundary (other-jessie-c
     ok(Array.isArray(parse("'a'\n'b'")), 'a LineTerminator can ASI-split sibling string ExpressionStatements')
     ok(Array.isArray(parse("{ 'a'; } { 'b'; }")), 'sibling block scopes keep independent string statements')
 })
+
+test('async contextual keywords retain arrow/method line boundaries (async-generator-and-parameter-context / other-jessie-context-loss)', () => {
+    rejects('async\n(x) => x', 'async')
+    rejects('if (false) { let f = async /*\n*/ () => 1 }', 'async')
+    rejects('\\u0061sync () => {}', 'arrow parameters')
+    rejects('({ async\nmethod() {} })', 'object method')
+
+    ok(compile('export let f = async (x) => x + 1') instanceof Uint8Array,
+      'same-line async arrow parameters still compile')
+    ok(compile('export let f = async /* no newline */ (x) => x') instanceof Uint8Array,
+      'a same-line comment does not violate the async boundary')
+    ok(Array.isArray(parse('({ async method() {} })')), 'same-line async object methods remain syntactically valid')
+    ok(Array.isArray(parse('class C { async\nmethod() {} }')),
+      'a class field named async may ASI-split from an ordinary method')
+    ok(Array.isArray(parse('{}() => 1')),
+      'a leading block and following zero-param arrow remain separate valid statements')
+})

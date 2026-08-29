@@ -278,6 +278,22 @@ const nextSourceToken = (src, from) => {
   }
 }
 
+// Method nodes carry the opening-paren offset. Recover a plain `async name(`
+// prefix without pretending to parse computed property names; the returned
+// newline bit is exactly AsyncMethod's no-LineTerminator boundary.
+const asyncMethodPrefix = (src, parenAt) => {
+  if (typeof parenAt !== 'number' || src[parenAt] !== '(') return false
+  const nameEnd = previousSourceToken(src, parenAt)[0]
+  if (nameEnd < 0 || !isIdentCode(src.charCodeAt(nameEnd))) return false
+  let nameStart = nameEnd
+  while (nameStart > 0 && isIdentCode(src.charCodeAt(nameStart - 1))) nameStart--
+  const beforeName = previousSourceToken(src, nameStart)
+  let asyncStart = beforeName[0]
+  if (asyncStart < 0 || !isIdentCode(src.charCodeAt(asyncStart))) return false
+  while (asyncStart > 0 && isIdentCode(src.charCodeAt(asyncStart - 1))) asyncStart--
+  return src.slice(asyncStart, beforeName[0] + 1) === 'async' && beforeName[1]
+}
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
   src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do)\b/.test(src) ||
@@ -1272,6 +1288,10 @@ export function validateEarlyErrors(ast, source) {
     }
     if (op === 'default') { walk(node[1], cx, true); return }
 
+    if (op === ':' && !statementPosition && isNode(node[2]) && node[2][0] === 'async' &&
+        asyncMethodPrefix(source, node.loc))
+      fail("line terminator is not allowed between 'async' and an object method name")
+
     if (ASSIGN_OPS.has(op)) {
       const specialIdentifier = isNode(node[1]) && (
         (node[1][0] === 'yield' && !cx.strict && !cx.generator) ||
@@ -1375,6 +1395,15 @@ export function validateEarlyErrors(ast, source) {
     if (op === '=>' || (op === 'async' && isNode(node[1]) && node[1][0] === '=>')) {
       const arrow = op === 'async' ? node[1] : node
       const isAsync = op === 'async'
+      if (isAsync && typeof node.loc === 'number') {
+        const firstFormal = nextSourceToken(source, node.loc + 5)
+        if (previousSourceToken(source, firstFormal)[1])
+          fail("line terminator is not allowed between 'async' and arrow parameters")
+      }
+      if (!isAsync && isNode(arrow[1]) && arrow[1][0] === '()' && arrow[1].length > 2 &&
+          typeof arrow[1][1] === 'string' && arrow[1][1].includes('\\u') &&
+          decodeIdentifier(arrow[1][1]) === 'async')
+        fail("escaped contextual keyword 'async' cannot introduce arrow parameters")
       const params = paramsOf(arrow[1]), body = arrow[2]
       // A leading `{` after `=>` is always the function body, never an object
       // literal concise body. Jessie can absorb a following operator into that

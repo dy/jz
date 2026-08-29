@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 55,
+  "count": 52,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -51,10 +51,6 @@
       "test/language/asi/S7.9_A11_T4.js",
       "test/language/asi/S7.9_A11_T8.js"
     ],
-    "async-generator-and-parameter-context": [
-      "test/language/expressions/async-arrow-function/early-errors-arrow-formals-lineterminator.js",
-      "test/language/expressions/async-arrow-function/escaped-async.js"
-    ],
     "nested-strict-legacy-escape": [
       "test/language/literals/string/legacy-non-octal-escape-sequence-1-strict-explicit-pragma.js",
       "test/language/literals/string/legacy-non-octal-escape-sequence-2-strict-explicit-pragma.js",
@@ -68,7 +64,6 @@
       "test/language/literals/string/legacy-octal-escape-sequence-prologue-strict.js"
     ],
     "other-jessie-context-loss": [
-      "test/language/expressions/object/method-definition/early-errors-object-method-async-lineterminator.js",
       "test/language/reserved-words/await-module.js",
       "test/language/statements/let/syntax/identifier-let-allowed-as-lefthandside-expression-strict.js"
     ]
