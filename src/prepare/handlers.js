@@ -18,9 +18,9 @@
 
 import { ctx, declGlobal, derive, emitArity, err, setFeature } from '../ctx.js'
 import { JZ_UNDEF, MUTATE_OPS, PARAM_DEFAULT, PARAM_KIND, PARAM_NAME, PARAM_PATTERN, STMT_OPS, T, TYPEOF, classifyParam, cloneNode, collectParamNames, extractParams, handlerArgs, walkAst } from '../ast.js'
-import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForKnownKeyIteration, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForRuntimeKeyIteration, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
+import { COLLECTION_CTORS, CTORS, hasModule, includeForArrayAccess, includeForArrayLiteral, includeForArrayPattern, includeForCallableValue, includeForGenericMethod, includeForNamedCall, includeForNumericCoercion, includeForObjectLiteral, includeForObjectPattern, includeForOp, includeForProperty, includeForRuntimeCtor, includeForStringOnly, includeForStringValue, includeMods, includeModule } from '../autoload.js'
 import { censusShapedNode } from '../kind.js'
-import { REJECT_IDENTS, REJECT_OPS, rejectHandlers } from '../op-policy.js'
+import { REJECT_IDENTS, rejectHandlers } from '../op-policy.js'
 import { recordGlobalRep } from '../compile/infer.js'
 import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../static.js'
 import { TYPED_ELEM_NAMES } from '../../layout.js'
