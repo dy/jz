@@ -38,6 +38,9 @@ export { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef }
 import { typed } from './ir/tag.js'
 export { typed }
 
+import { freshId, temp, tempI32, tempI64, block64, blockTyped, withTemp } from './ir/locals.js'
+export { freshId, temp, tempI32, tempI64, block64, blockTyped, withTemp }
+
 // === Type helpers ===
 /** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
 function ptrBoxPrefix(ptrType, aux = 0) {
@@ -988,44 +991,6 @@ export const emitNum = v => isI32(v)
   : typed(['f64.const', Number.isNaN(v) ? 'nan' : v], 'f64')
 
 // === Fresh ids / temp locals ===
-
-/** Backward-compatible name for the EmitFrame id authority. */
-export function freshId(ctx) { return freshEmitId(ctx) }
-
-/** Allocate a fresh local name with the given tag, registered as `type`. The
- *  selfhost compiler doesn't yet handle exported-const arrow factories returning
- *  closures, so the three temp() helpers stay as `function` declarations and
- *  delegate to this shared core. */
-function freshLocal(type, tag) {
-  let name
-  do { name = `${T}${tag}${freshId(ctx)}` } while (ctx.func.locals.has(name))
-  return declareLocal(ctx, name, type)
-}
-export function temp    (tag = '') { return freshLocal('f64', tag) }
-export function tempI32 (tag = '') { return freshLocal('i32', tag) }
-export function tempI64 (tag = '') { return freshLocal('i64', tag) }
-
-// === IR scaffolds ===
-
-/** Wrap a sequence of statements as a typed `(block (result <type>) …)`.
- *  Default result is `f64` (the value-type for most jz emissions).
- *  Shorthand for the `typed(['block', ['result', T], …stmts], T)` pattern that
- *  appears in nearly every emitter — keeps call sites focused on the body. */
-export const block64 = (...stmts) => typed(['block', ['result', 'f64'], ...stmts], 'f64')
-export const blockTyped = (type, ...stmts) => typed(['block', ['result', type], ...stmts], type)
-
-/** Allocate an f64 temp, set it to `val`, run `body(name)` and yield its result.
- *  `body` may return either a single IR node (used as the block result) or an
- *  array of nodes whose last expression becomes the result. Eliminates the
- *  repetitive `const t = temp(); …['local.set', $t, val]; …['local.get', $t]`
- *  scaffold around tee-and-use patterns. */
-export function withTemp(val, body, tag = '') {
-  const t = temp(tag)
-  const out = body(t)
-  const tail = Array.isArray(out) && out.every(n => Array.isArray(n)) ? out : [out]
-  return block64(['local.set', `$${t}`, val], ...tail)
-}
-
 /** Whole-fn structural refcount: walks `fn`, counting how many times each
  *  array node is referenced. Used by optimizer passes to skip shared subtrees
  *  (watr CSE may leave them) — mutating a node with refcount > 1 would also
