@@ -24,7 +24,29 @@
  * @param {number|string|object|false} [p.optimize] optimize.level (or full
  *   per-pass object, or `false` to disable). Default 3 (both builders' existing
  *   measured self-compile profile — see self-compile-build.mjs's own comment on why).
- * @param {boolean} [p.snapshot]  optimize.snapshotInit. Default true.
+ * @param {boolean} [p.snapshot]  optimize.snapshotInit. Default false
+ *   (self-compile-memory campaign, .work/self-compile-memory.md, measured
+ *   2026-08-29): snapshotInit's own probe — a FULL extra watrCompile() of the
+ *   ~18 MB kernel, instantiated and run just to read back __start's post-init
+ *   values — adds its own +478.9 MB local RSS bump (fully reclaimed by the
+ *   time the real final encode finishes, so it never becomes retained state)
+ *   and 90.6 s of pure overhead to the hosted self-compile build. Measured
+ *   effect of turning it off: wall time −22% (314.29s → 245.34s, clean
+ *   `/usr/bin/time -l npm run build`). Peak RSS was NOT measurably reduced
+ *   (4212.1 MB → 4202.1 MB, within noise) — the process's true peak sits
+ *   earlier, inside watOptimize, so trimming this later/smaller bump doesn't
+ *   lower an already-higher ceiling; reported honestly rather than oversold
+ *   as a memory win. It never runs inside the self-hosted kernel's own
+ *   execution (scripts/self.js's compileSelf() has no snapshotInit call at
+ *   all), so this has zero effect on the in-wasm jz×jz recursive ceiling —
+ *   confirmed empirically too (goal-probe bit-identical trap with it off).
+ *   The instantiation cost this trades away (__start now runs once per
+ *   kernel instantiation instead of zero times) is excluded from every
+ *   self-compile timing gate by design (both test/self-compile-perf.js and
+ *   scripts/bench-self-compile.mjs explicitly time compile() only, with
+ *   instantiate() outside the timed region — see their own header comments).
+ *   Override per-build with `snapshot: true` or `JZ_SELF_COMPILE_SNAPSHOT=1`
+ *   to restore the baked-snapshot artifact.
  * @param {boolean} [p.watrGuard] optimize.watrGuard. Default false (both
  *   builders already skip watr's size-revert guard on this controlled artifact).
  * @param {number} [p.memory]     memory pages — the kernel's declared INITIAL commitment; $__memgrow extends on demand (no max). Default 1024 (64 MiB): small graphs stay near their true need instead of paying the old flat 8192-page/512 MiB floor (census 2026-08-18: jessie's real working set is ~150 MB, 70.7% of the old commitment was never touched).
@@ -63,7 +85,7 @@ export function resolveSelfCompileBuild({
   debugInvariants = false,
   regionArena = null,
   optimize = 3,
-  snapshot = true,
+  snapshot = false,
   watrGuard = false,
   memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',

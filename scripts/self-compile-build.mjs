@@ -44,8 +44,18 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // rettail off — measured on the 22-case corpus: geomean 1.433→1.316, 22/22; +19%
 // kernel bytes, irrelevant for the compiler artifact). No special config needed.
 // Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
-// watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
-// time and ships as pure data; __start is deleted. JZ_SELF_COMPILE_SNAPSHOT=0 opts out.
+// watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — could run once at
+// BUILD time and ship as pure data (__start deleted), but its own probe (a full
+// extra watrCompile + instantiate + run of the ~18 MB kernel, just to read back
+// __start's post-init values) cost a clean, measured 90.6s / a transient
+// (non-retained) +478.9MB local RSS bump on this hosted build. Measured net
+// effect of disabling it: wall time -22% (314.29s->245.34s, clean `/usr/bin/time
+// -l npm run build`); peak RSS unchanged (the process's true peak sits earlier,
+// inside watOptimize -- not oversold as a memory win). Zero effect on the in-wasm
+// jz×jz ceiling (self.js's own compileSelf() never calls snapshotInit; confirmed
+// by a bit-identical goal-probe trap with it off). Self-compile-memory campaign,
+// .work/self-compile-memory.md. Off by default; JZ_SELF_COMPILE_SNAPSHOT=1
+// restores the baked-snapshot artifact for A/B comparison.
 // watrGuard:false — skip watr's size-revert guard (two full encodes of the
 // 6.6MB kernel ≈ 12s of the build, measured by CPU profile: instrSize/
 // localidx/codeItemSize self-time). The kernel is a controlled artifact
@@ -53,7 +63,7 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // redundant here. No-op until watr >5.2.3 lands the option.
 const profile = resolveSelfCompileBuild({
   optimize: selfOptLevel,
-  snapshot: !/^(0|false|no)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '1'),
+  snapshot: /^(1|true|yes)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '0'),
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
