@@ -35,11 +35,10 @@ import { objLiteralSchemaId } from './static.js'
 
 export { I32_MIN, I32_MAX, isI32, isLiteralStr, isFuncRef }
 
+import { typed } from './ir/tag.js'
+export { typed }
+
 // === Type helpers ===
-
-/** Tag a WASM node with its result type. */
-export const typed = (node, type) => (node.type = type, node)
-
 /** NaN-box prefix for a pointer of VAL kind K with aux bits: `0x7FF8 | type<<47 | aux<<32`. */
 function ptrBoxPrefix(ptrType, aux = 0) {
   return ptrBoxPrefixBigInt(ptrType, aux)
