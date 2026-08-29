@@ -98,6 +98,7 @@ import {
 } from '../wat/assemble.js'
 import { instrumentHelperCallsites } from '../helper-counters.js'
 import { isExported, exportNamesOf } from './func-exports.js'
+import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
 
 const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, fn) : fn()
 
@@ -370,29 +371,6 @@ function captureFuncInspect(func, facts, programFacts) {
     locals,
     ...(Object.keys(callerReps).length ? { callerReps } : {}),
   }
-}
-
-// Replace the complete active-function authority at a real function boundary.
-// Top-level funcs start `uniq` at 0; closures pass a higher base so their
-// synthetic labels cannot collide with the displaced parent frame.
-function enterFunc(sig, body, options = {}) {
-  return enterActiveFunction(ctx, { sig, body, ...options })
-}
-
-// Allocate + null-init a heap cell for every boxed local that isn't seeded
-// from an incoming param/capture value. Registers the cell as an i32 local
-// and marks the name preboxed; `isSeeded(name)` skips the already-seeded.
-function emitPreboxedLocalInits(isSeeded) {
-  const inits = []
-  for (const [name, cell] of ctx.func.boxed) {
-    if (isSeeded(name)) continue
-    ctx.func.locals.set(cell, 'i32')
-    ctx.func.preboxed.add(name)
-    inits.push(
-      ['local.set', `$${cell}`, ['call', '$__alloc', ['i32.const', 8]]],
-      ['f64.store', ['local.get', `$${cell}`], nullExpr()])
-  }
-  return inits
 }
 
 function analyzeFuncForEmit(func, programFacts) {
