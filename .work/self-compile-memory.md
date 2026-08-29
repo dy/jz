@@ -1,4 +1,4 @@
-# Self-compile memory campaign — hosted-build attribution + snapshotInit removal (2026-08-29)
+# Self-compile memory campaign — hosted-build attribution (2026-08-29)
 
 Base `8986c2e2` (v1-readiness-audit's own ref). Worktree, never the main
 checkout. Companion to `.work/v1-architecture-campaign.md` (the two
@@ -170,60 +170,145 @@ the output-identical constraint. Per the task's explicit instruction, this
 session did not flip `REGION_HOOKS_ACTIVE` or attempt to close its banked
 defects.
 
-**What this session DID land** — the "third, cheaper" lever the attribution
-surfaced: `snapshotInit`'s own probe (§1) is a fully self-contained, easily
-disabled, ALREADY-FLAGGED-OPT-OUT mechanism
-(`JZ_SELF_COMPILE_SNAPSHOT`/`resolveSelfCompileBuild`'s own `snapshot`
-parameter, both pre-existing) that:
-- **never reaches the in-wasm recursive kernel at all** — `scripts/self.js`'s
-  `compileSelf()` pipeline (`front → emitIR → optimizeTail → watrCompile`)
-  has no `snapshotInit` call anywhere, structurally, confirmed by direct
-  reading AND by the goal-probe result below (bit-for-bit identical trap
-  signature with the mechanism off);
-- is **excluded from every existing self-compile timing gate by
-  construction** — both `test/self-compile-perf.js` and
-  `scripts/bench-self-compile.mjs` explicitly measure `compile()` only, with
-  `instantiate()` (and therefore any un-baked `__start`) outside the timed
-  region, by their own header comments;
-- costs a real, measured, fully wasted 90.6 s / a transient (not
-  peak-defining, see below) 478.9 MB on every hosted build for a benefit
-  (baked `__start`) nothing downstream needs for THIS artifact — `dist/jz.wasm`
-  is a build tool's output, not a warm-reuse service; the campaign's own
-  `STABILITY.md` explicitly lists "kernel (dist/jz.wasm) byte identity
-  between releases" as NOT a stability promise.
+**Correction (coordinator review, same day): the snapshot-off default flip
+below was WRONG and has been reverted.** First pass reasoning: `snapshotInit`
+costs the hosted build 90.6 s / a transient 478.9 MB and never reaches the
+in-wasm kernel either way, so disabling it looked like a clean, one-sided
+win. That reasoning only weighed the ONE-TIME build cost against the wasm32
+ceiling (which it never touched either way) — it never weighed the cost on
+the OTHER side of the trade: disabling the bake means `__start` (watr's
+OPCODE/IMM tables, atom interning, GLOBALS registry) now runs at **every**
+instantiation of `dist/jz.wasm` instead of zero times after the first build
+— paid by the website REPL, every kernel test file, and
+`scripts/bench-self-compile.mjs`, forever, not once. That every self-compile
+TIMING GATE happens to exclude `instantiate()` from its timed region
+(`test/self-compile-perf.js`, `scripts/bench-self-compile.mjs` — both time
+`compile()` only, by their own header comments) is a gap in what those gates
+measure, not evidence the recurring cost is free — optimizing to what a gate
+excludes instead of the real cost was exactly the mistake. `snapshot`
+reverted to its original default (`true`) in a follow-up commit; the
+90.6s / 478.9MB build-time cost stands, unresolved, below.
 
-Implemented as a default flip: `resolveSelfCompileBuild`'s `snapshot`
-parameter (`scripts/build-profile.mjs`) `true → false`, mirrored in
-`scripts/self-compile-build.mjs`'s own env-var fallback default. Fully
-reversible per-build via `JZ_SELF_COMPILE_SNAPSHOT=1` / `{snapshot:true}`.
-Touches only the two self-compile-build entry points — zero effect on any
-ordinary (non-self-compile) `compile()` call, since `snapshotInit` stays
-available and default-configured however `resolveOptimize`'s normal presets
-already set it for regular programs.
+### Instantiate→first-compile time, snapshot ON vs OFF (measured, not assumed)
 
-### Before/after (hosted build, `/usr/bin/time -l npm run build`, clean — no
-### profiling instrumentation on either side)
+Method: matches `test/kernel-target.js`'s own pattern (the SAME pattern
+`test/kernel-parity.js`/`scripts/bench-self-compile.mjs` use) — compile the
+`WebAssembly.Module` bytecode ONCE (an expensive parse/validate, identical
+cost either way, excluded from the timed region), then hand a FRESH
+`Instance` (`{memory: 8192}`, matching every real caller's own convention) to
+each timed run, timing from `instantiate()` through the first successful
+compile of a one-line program (`export let f = () => 1`). Two real kernels
+built (`scripts/self-compile-build.mjs`, snapshot default ON vs
+`JZ_SELF_COMPILE_SNAPSHOT=0`), 268 modules each.
 
-| | before (snapshot on, task's own cited baseline, `a15ec98c`) | after (snapshot off, this session, `8986c2e2`+patch) |
-|---|---:|---:|
-| wall | 314.29 s | **245.34 s (−22%, −69 s)** |
-| max RSS | 4,212,146,176 B (3.923 GiB) | 4,202,135,552 B (3.914 GiB) — **unchanged, −0.24%, within noise** |
-| dist/jz.wasm | 17,481.3 kB | 16,276.1 kB (−6.9%, smaller: baked data segments cost more bytes than the equivalent live init code, empirically) |
+```
+snapshot-ON  (17,898,864 B), 5 runs (ms):  9.638  9.821 31.520 62.220 804.572   median 31.520
+snapshot-OFF (16,666,691 B), 5 runs (ms): 10.627 10.869 19.516 34.445 651.270   median 19.516
+snapshot-ON,  15 runs: median 9.956 ms  (best-8 cluster: 6.5-14.3 ms; one 699 ms outlier)
+snapshot-OFF, 15 runs: median 11.603 ms (best-8 cluster: 6.1-12.7 ms; one 552 ms outlier)
+```
 
-**Honest result, stated plainly because it contradicts the working
-hypothesis from §1's boundary-sampled phase table**: disabling `snapshotInit`
-is a real, verified, **22% wall-time win** and removes a genuinely wasteful
-duplicate encode+instantiate+run — but it did **NOT** measurably reduce peak
-RSS. This is consistent with §1's own finding that the true process peak
-occurs BEFORE `snapshotInit` even starts (mid-`watOptimize`, which runs
-first) — removing a smaller, later, transient bump doesn't lower a ceiling
-already set by an earlier, larger one. Reported honestly rather than claimed
-as a memory win the data doesn't support: the goal here was output-identity
-and a real measured improvement, not a flattering peak-RSS number.
+**Honest reading**: at N=5 the median favors OFF (matching the trade-off
+hypothesis's DIRECTION); at N=15 it flips — ON is marginally faster at the
+median, and the bulk of both distributions (the lower 8-9 of 15 runs)
+overlap heavily in the 6-15 ms band. Every run of both kernels has one
+extreme outlier (550-800 ms), almost certainly a major GC or memory-commit
+stall from the shared 512 MB `{memory:8192}` allocation under this session's
+own machine contention (confirmed earlier: concurrent agent builds, ~11 GB
+swap in use), not `__start` itself. **At this sample size, on this
+contended machine, the wall-clock cost of `__start` re-running is not
+cleanly distinguishable from instantiation noise** — the architectural
+concern (a real recurring cost was introduced by turning the bake off) is
+still correct on its own terms, but the measured MAGNITUDE of that recurring
+cost, at least for a single one-line-program compile immediately after
+instantiation, is small relative to the fixed cost of standing up a fresh
+512 MB instance at all. Reported both ways rather than picking the number
+that flatters either conclusion.
 
-### Goal-probe (in-wasm recursive jz×jz), before vs. after
+### Bake-cheaply attempt: encode once, patch the binary — investigated, not landed
 
-| | before (cited, `.work/porffor-alpha3-audit.md`, `4c38662f`, 2026-08-27) | after (this session, `8986c2e2`+patch, fresh) |
+Goal: keep the bake (snapshot ON, kept — see above) but stop paying for
+`snapshotInit`'s own SECOND full `watrCompile()` (the 90.6 s / 478.9 MB
+probe-only encode, §1) by encoding the probe ONCE, running `__start` on
+those exact bytes, then patching the captured heap image + global values
+directly into the already-encoded binary's own data/global sections instead
+of re-running the whole optimizer+encoder pipeline a second time.
+
+**Feasibility investigation, empirical, before committing to the risky part**:
+confirmed by direct WAT inspection (`compile(src,{wat:true,optimize:{level,
+snapshotInit:false}})` on several small/representative programs, including
+one with a real runtime closure table) that `__start` is reliably the
+HIGHEST-numbered function in the module — it and the snapshot probe's own
+getter functions are synthesized and appended strictly after every real
+function, so removing them from the tail of the function/code sections never
+renumbers any other function, and neither is ever referenced from an
+`elem`/table entry (confirmed: no closure ever captures the init function).
+Built a prototype (`src/wasm-section-patch.js`, a plain LEB128/section-frame
+reader-writer — no third-party wasm tooling exists for this; checked
+`node_modules/watr` first, per the task's own suggestion, and it exposes no
+section-level API, only the monolithic `compile()`/`assemble()` encoder) that
+drops the `start` section, truncates the function/code sections' tails,
+drops the probe getters' export entries, and splices the captured heap
+image + global values into the data/global sections directly — wired into
+`src/snapshot.js` behind a fast-path gate (only the plain js-host
+`(start $fn)` form, falls back to the original AST-mutate-then-reencode path
+for anything else or on any exception).
+
+**Validated the FAST way, before spending an expensive full self-compile
+cycle**: generated reference bytes for 5 small representative programs (a
+plain-globals case, a real-closure-table case, all-numeric-global-types
+including i32/i64/f32/f64, a string/array-heavy case, a dict-heavy case) at
+optimize levels 2 and 3 using the UNMODIFIED `snapshotInit`, then compared
+byte-for-byte against the new fast-path implementation. Caught and fixed one
+real bug this way (a data-section insertion computed its splice position
+against a stale, non-index-aligned array, reordering sections) — exactly the
+value of a cheap, fast, small-scale differential harness before trusting a
+binary patcher on an 18 MB artifact.
+
+**Blocking finding**: 4 of 5 cases still mismatch after that fix, isolated to
+the `type` section being LARGER in the patched output (e.g. 31 vs 23 bytes
+for the smallest case) — every other section (func, code, export, global,
+data) matched exactly. Root cause: the probe encode's `type` section
+necessarily includes signatures used ONLY by `__start` and the probe getters
+(their `() -> ()` / `() -> i64` / `() -> i32` shapes); the ORIGINAL
+AST-mutate-then-reencode path never creates these entries at all, because it
+deletes those functions from the AST BEFORE encoding, so watr's own
+type-deduplication (`ctx.type[idx] ??= ...`) simply never registers a type
+nothing remaining needs. Removing those orphaned type entries from an
+ALREADY-ENCODED binary requires renumbering every reference to any type
+after them — and type indices are referenced not only from simple vectors
+(the `import`/`function` sections) but from `call_indirect` operands embedded
+directly in function BYTECODE, which jz's own closure/dispatch-table
+mechanism emits pervasively (confirmed present in the closure-table test
+case). Finding every `call_indirect` safely requires walking every
+function's instructions as a real disassembler — knowing every opcode jz can
+emit and its exact operand width, including the SIMD (`0xFD`-prefixed,
+multi-byte) instruction set jz's own vectorizer emits — misjudging any
+single opcode's width would silently corrupt bytecode into a still-valid,
+wrong module: exactly the silent-miscompile risk this whole codebase's
+architecture is built to avoid, not a small addition to what's already
+working.
+
+**Disposition, per the task's own explicit instruction**: not a small gap,
+a genuinely separate, substantial engineering task (a WASM instruction-level
+disassembler for jz's emitted subset) that this session cannot responsibly
+implement and fully verify. Not landed. `src/snapshot.js`, `index.js`, and
+the new `src/wasm-section-patch.js` prototype were fully reverted — the
+committed tree carries none of this attempt, only the finding, here. The
+90.6 s / 478.9 MB build-time cost of `snapshotInit`'s duplicate encode
+remains open; closing it needs either that disassembler (bounding the
+type-section-pruning renumbering safely) or a different mechanism entirely,
+not attempted.
+
+### Goal-probe (in-wasm recursive jz×jz), snapshot ON — unaffected, confirmed
+
+`snapshotInit` structurally never runs inside the self-hosted kernel
+(`scripts/self.js`'s `compileSelf()` pipeline has no call to it at all), so
+this whole investigation — landed or not — has zero bearing on the wasm32
+ceiling. Confirmed empirically earlier this session (before the revert, with
+snapshot OFF) and unaffected by the revert:
+
+| | cited, `.work/porffor-alpha3-audit.md`, `4c38662f`, 2026-08-27 | this session, fresh |
 |---|---|---|
 | modules | 162 | **268** (source has grown; see §1's staleness note) |
 | outcome | trap / unreachable | trap / unreachable — **identical** |
@@ -231,10 +316,7 @@ and a real measured improvement, not a flattering peak-RSS number.
 | heap offset | −32 | −32 — **bit-identical** |
 | wallMs | 11,448 | 11,197 |
 
-Confirms the structural prediction exactly: the hosted-build-only
-`snapshotInit` change has **zero** effect on the in-wasm ceiling, at every
-observable digit. This milestone does not move STABILITY.md's release gate;
-it was never expected to.
+Does not move STABILITY.md's release gate; was never expected to.
 
 ## 3. Battery — all green
 
@@ -280,3 +362,31 @@ No honest single "when" — the evidence (dozens of dated sessions already
 spent on strategy A alone, per `.work/region-release-notes.md`'s own length)
 says this is a multi-session engineering program at the SAME depth already
 invested, not a remaining afternoon.
+
+## 5. What remains for the hosted-build competitiveness bar (CONTRIBUTING.md)
+
+Separate from §4 — this is about matching/beating Porffor's self-host
+wall+RSS once the wasm32 gate closes, not the gate itself. `snapshotInit`'s
+own duplicate encode (90.6 s / a transient 478.9 MB, §1) is real, open, and
+now precisely diagnosed rather than guessed at:
+
+1. A WASM instruction-level disassembler for jz's own emitted opcode subset
+   (enough to safely find and adjust `call_indirect` type-index operands —
+   the one remaining piece the §2 bake-cheaply attempt needed). Sized at "a
+   genuinely separate engineering task," not further broken down here —
+   attempting a partial/unverified version was explicitly rejected this
+   session as a real corruption risk, not a shortcut worth taking.
+2. Once that exists, the fast path prototyped in this session's (reverted)
+   `src/wasm-section-patch.js` needs only one more piece (type-section
+   pruning + renumbering, using the disassembler from (1) to patch
+   `call_indirect` operands) to reach byte-identity — everything else
+   (function/code truncation, export/global/data patching, the js-host-only
+   eligibility gate, the small-corpus differential harness) is already
+   built, reverted, and described in §2 in enough detail to resume from.
+3. Independent of (1)/(2): re-measure instantiate→ready cost on an
+   UNCONTENDED machine — this session's own numbers (§2) were noisy enough
+   (550-800 ms outliers on every run) that the true magnitude of the
+   recurring per-instantiation cost snapshotInit exists to avoid is not
+   pinned down; worth doing before investing in (1)/(2), since it directly
+   answers whether the 90.6 s build-time cost is actually worth engineering
+   around at all.
