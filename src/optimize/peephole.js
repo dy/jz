@@ -669,6 +669,30 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     if (Array.isArray(a) && a[0] === 'i32.const' && a[1] === 0) return b
   }
 
+  // and-redundant-after-shr_u: (i32.and (i32.shr_u X K) M) → (i32.shr_u X K) when M's low
+  // (32-K) bits are all set. `X >>> K` is bounded to [0, 2^(32-K)-1] by the shift alone (it
+  // zero-fills the top K bits), so a mask that already covers every bit the shift can ever
+  // produce is a no-op — extra HIGH bits set in M beyond that range are harmless (the shift
+  // never sets them either way). K and M are both compile-time constants, so this is a pure
+  // identity, sound for every runtime X — not a proof-dependent fold. Flagship idiom: bit-field
+  // extraction after a hash/PRNG mix, `(state >>> 23) & 511` (xorshift32-style channel/lane
+  // split) — the mask is a leftover source-level safety habit, not a real constraint once the
+  // shift amount is known. wasm-opt's optimize-instructions finds this generically; jz didn't
+  // have an i32.and rule at all before this one.
+  if (op === 'i32.and' && node.length === 3) {
+    const isConstShrU = (n) => Array.isArray(n) && n[0] === 'i32.shr_u' && n.length === 3 &&
+      Array.isArray(n[2]) && n[2][0] === 'i32.const' && typeof n[2][1] === 'number'
+    const a = node[1], b = node[2]
+    const shr = isConstShrU(a) ? a : isConstShrU(b) ? b : null
+    const mask = shr === a ? b : a
+    if (shr && Array.isArray(mask) && mask[0] === 'i32.const' && typeof mask[1] === 'number') {
+      const k = ((shr[2][1] % 32) + 32) % 32
+      const bits = 32 - k
+      const lowMask = bits >= 32 ? 0xFFFFFFFF : (1 << bits) - 1
+      if (((mask[1] & lowMask) >>> 0) === (lowMask >>> 0)) return shr
+    }
+  }
+
   // if→select for a value-producing f64 `if` with PURE arms: (if (result f64) COND (then A)
   // (else B)) → (select A B COND). This is the branchless `cmov` lowering LLVM/clang apply to
   // every `cond ? a : b` — it removes the conditional branch (and its misprediction cost on
