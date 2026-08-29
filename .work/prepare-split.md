@@ -451,8 +451,12 @@ below.
 12 families landed as 12 separate pure-move commits, leaf-first (`375b1f85`
 … `e93e794a`), each individually gated clean (oracle 560/560, kernel-parity
 33/33) before the next. Three more commits followed: the dead-imports cleanup
-(`a6c074b7`), and two walker retirements (`4429a606`, `3025e898`) — 15 commits
-total, HEAD `3025e898`.
+(`a6c074b7`), two walker retirements (`4429a606`, `3025e898`), this doc's own
+landed-record update (`f952056f`), and one fix (`b9e3403c` — see deviation #4;
+its content was already present, uncommitted, in the working tree for every
+battery run below through the kernel-target suite, so nothing needed
+re-running once it was actually committed, only the commit itself was
+missing) — 17 commits total, HEAD `b9e3403c`.
 
 ### Final module table
 
@@ -660,12 +664,15 @@ gaps, not a stand-in for a missing feature):
 
 - `resolveModuleGraph('bench/jz/jz.js', { resolveNode: true })` — ran after
   every one of the 12 moves (module count climbed 270→282, 1:1 with the 12
-  new files) plus after each of the 3 follow-up commits; never threw.
+  new files) plus after each of the follow-up commits; never threw.
 - `node scripts/refactor-oracle.mjs check --ref a45ce6ca` — CLEAN 560/560
-  (140 specs × O0/O2/O3/size) after every one of the 15 commits individually,
-  and once more at HEAD (`3025e898`) as the closing gate.
+  (140 specs × O0/O2/O3/size) after every one of the 14 code-bearing commits
+  individually (the 12 moves + dead-imports + both walker retirements), and
+  once more at commit `3025e898` (the tip at that time) as the closing gate —
+  that run's working-tree content is identical to final HEAD (see the note
+  on `b9e3403c` above), so it stands as the gate for HEAD too.
 - `node test/kernel-parity.js` — 33/33 (3 programs × O0/O2/O3, 33 assertions)
-  after every one of the 15 commits.
+  after every one of those same 14 commits.
 - `node test/index.js` (native, excl. `test/bench-c.js`) — 3,858/3,859 pass,
   1 pre-existing skip, 0 fail (28,505 assertions) at HEAD.
 - `JZ_TEST_TARGET=jz.wasm node test/index.js` (kernel target, drives the
@@ -708,7 +715,8 @@ for any file-count change.
 - The outlier and further-walker surveys above are a manual read of all 12
   files, not an exhaustive mechanical sweep the way the family map itself
   was — a real but small residual risk that a further candidate exists
-  somewhere unexamined. The 15-commit battery (oracle + kernel-parity on
-  every commit, full native suite + bench-size + kernel build at HEAD)
+  somewhere unexamined. The battery (oracle + kernel-parity on every
+  code-bearing commit, full native suite + kernel-target suite + bench-size +
+  kernel build at HEAD)
   bounds the cost of that risk to "a missed opportunity," not "a correctness
   gap," since nothing was changed without its own gate passing first.
