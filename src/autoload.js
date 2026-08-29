@@ -6,7 +6,7 @@ import { DERIVED_PROP_MODULES } from './prop-modules.generated.js'
 
 const dict = obj => Object.assign(Object.create(null), obj)
 
-export const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
+const MOD_ALIAS = { Number: 'number', Array: 'array', Object: 'object', Symbol: 'symbol', JSON: 'json', Date: 'date', BigInt: 'number', Error: 'core', TextEncoder: 'string', TextDecoder: 'string', Atomics: 'atomics',
   // SIMD intrinsic namespaces (f32x4/i32x4/f64x2/v128) all live in the `simd` module.
   f32x4: 'simd', i32x4: 'simd', f64x2: 'simd', v128: 'simd' }
 
@@ -385,7 +385,7 @@ export const includeForProperty = prop => {
   else includeMods('core', 'object', 'array', 'string', 'collection')
 }
 
-export const runtimeCtorKind = name =>
+const runtimeCtorKind = name =>
   TYPED_CTORS.includes(name) ? 'typedarray' : COLLECTION_CTORS.includes(name) ? 'collection' : name === 'Date' ? 'date' : name === 'Array' ? 'array' : null
 
 export const includeForRuntimeCtor = name => {
