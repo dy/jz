@@ -202,6 +202,34 @@ test('invariant: null pointer uses NaN pattern', () => {
 // Layout invariants — layout.js is the sole source of NaN-box carrier i64 hex
 // ============================================================================
 const ROOT = join(import.meta.dirname, '..')
+
+const COMPILE_FAMILY_OWNERS = [
+  ['func-exports.js', ['isExported', 'exportNamesOf']],
+  ['func-entry.js', ['enterFunc', 'emitPreboxedLocalInits']],
+  ['param-numeric.js', ['NUM_BIN_OPS', 'REL_OPS', 'isStrLiteral', 'paramAllUsesNumeric', 'STRING_RECV_METHODS', 'paramNeverString']],
+  ['throw-runtime.js', ['ensureThrowRuntime', 'pruneUnusedThrowRuntime']],
+  ['intern-table.js', ['buildInternTable']],
+  ['func-inspect.js', ['repView', 'captureFuncInspect']],
+  ['boundary-wrap.js', ['isBoundaryWrapped', 'synthesizeBoundaryWrappers']],
+  ['coercion-hoist.js', ['hoistInvariantParamCoercions', 'hoistUnionCursorUnbox']],
+  ['analyze-for-emit.js', ['freshCseName', 'cloneRepMap', 'analyzeFuncForEmit', 'seedLocalIntConsts']],
+  ['emit-func.js', ['emitFunc']],
+  ['closure-emit.js', ['normalizeClosureBody', 'closureSig', 'enterClosureFrame', 'seedClosureFrame', 'analyzeClosureBodyForEmit', 'emitClosureBody']],
+]
+
+test('architecture: compile-session families have one declaration owner outside the driver', () => {
+  const driver = readFileSync(join(ROOT, 'src/compile/index.js'), 'utf8')
+  for (const [file, names] of COMPILE_FAMILY_OWNERS) {
+    const owner = readFileSync(join(ROOT, 'src/compile', file), 'utf8')
+    ok(driver.includes(`from './${file}'`), `compile/index.js imports ${file}`)
+    for (const name of names) {
+      const declaration = new RegExp(`^(?:export\\s+)?(?:const\\s+${name}\\b|function\\s+${name}\\b)`, 'gm')
+      is([...owner.matchAll(declaration)].length, 1, `${name} is declared exactly once in ${file}`)
+      is([...driver.matchAll(declaration)].length, 0, `${name} has no duplicate authority in compile/index.js`)
+    }
+  }
+})
+
 const SCAN = [join(ROOT, 'module'), join(ROOT, 'src')]
 const ALLOW = new Set([join(ROOT, 'layout.js')])
 
