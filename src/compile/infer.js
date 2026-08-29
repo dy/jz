@@ -60,9 +60,7 @@ import { VAL, updateRep, updateGlobalRep } from '../reps.js'
 // typeofPredicate now lives in ast.js (a cycle-free leaf both this file and
 // flow-types.js/module/function.js need — moving it there closed a real
 // cycle: module/function.js → flow-types.js → infer.js → autoload.js →
-// module/index.js → module/function.js) — re-exported (via the import above)
-// so existing importers of infer.js keep working unchanged.
-export { typeofPredicate }
+// module/index.js → module/function.js); this file still uses it below.
 
 // === paramReps lattice =====================================================
 //
