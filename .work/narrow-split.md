@@ -1,4 +1,4 @@
-# narrow.js structure map and module plan (pre-split)
+# narrow.js structure map and module plan (landed)
 
 Base: `b900cd09` (`refactor/pipeline-minimality`, merge-base with `main` @
 `0d785f9c` — the same commit that merged the vectorize split). `src/compile/narrow.js`
@@ -615,3 +615,249 @@ identical"*):
    check: after the move, `grep -rn "from '\.\./narrow\.js'\|from '\./narrow\.js'"`
    across `src/compile/` should still show exactly the same 3 files/lines
    as §1, unchanged.
+
+## Status — what actually landed (updated post-execution)
+
+Executed on branch `refactor/narrow-split`, base `a45ce6ca` (this document's own
+base had already drifted from `b900cd09`/3,934 lines to 4,027 lines by
+execution time — a walker-retrofit batch and unrelated fixes landed on `main`
+in between; re-verified mechanically against the current file before cutting,
+per this document's own risk §7 item 2 instruction. Every family/line-range
+claim in §2/§5 above was re-derived fresh — not copied — from the current
+4,027-line file using a comment/string-stripped dependency scanner and a
+structural (brace-matching) boundary detector; see "Corrections found during
+re-verification" below for the one place that scanner caught a real bug in
+itself before it could mislead the plan).
+
+All 9 families landed as 9 separate pure-move commits, leaf-first in exactly
+this document's §5 order (`caller-ctx → param-abi → results → summaries →
+jsstring-carrier → strict-boundary → index → specialize → dyn-keys`), each
+individually gated clean before the next: `resolveModuleGraph('bench/jz/jz.js',
+{resolveNode:true})` cycle check, `node scripts/refactor-oracle.mjs check --ref
+a45ce6ca` (560/560 identical every time), `node test/kernel-parity.js` (33/33
+every time, against a freshly rebuilt `dist/jz.wasm` each time — kernel-parity
+reuses an existing `dist/jz.wasm` if present, so a stale one would silently
+skip re-verifying the kernel; every gate forced `rm -rf dist && npm run build`
+first).
+
+```
+322f3592  caller-ctx.js       (family A, 14 decls)
+7b922be7  param-abi.js        (family B,  8 decls)
+d9394116  results.js          (family C, 13 decls)
+70144486  summaries.js        (family D,  9 decls)
+3f6718da  jsstring-carrier.js (family F,  6 decls)
+ff8a567a  strict-boundary.js  (family G,  3 decls)
+3b201729  index.js            (family E,  1 decl — narrowSignatures)
+25cc42cc  specialize.js       (family H,  5 decls)
+4ad9659a  dyn-keys.js         (family I,  3 decls) — narrow.js becomes the barrel
+```
+HEAD: `4ad9659ab21f558c330b97349a075147ea4b67f6`.
+
+| # | file | lines (landed) | family | notes |
+|---|------|-----------------|--------|-------|
+| 1 | `caller-ctx.js` | 255 | A | matches plan exactly |
+| 2 | `param-abi.js` | 276 | B | matches plan exactly |
+| 3 | `results.js` | 739 | C | matches plan exactly, incl. `narrowBoolResults` |
+| 4 | `summaries.js` | 637 | D | `inferTypedValueRanges`'s 3 phases stayed nested, per §6's own verdict |
+| 5 | `jsstring-carrier.js` | 193 | F | 2 extra `export`s vs. plan (see below) |
+| 6 | `strict-boundary.js` | 97 | G | matches plan exactly |
+| 7 | `index.js` | 1,224 | E | the outlier; see below |
+| 8 | `specialize.js` | 667 | H | matches plan exactly |
+| 9 | `dyn-keys.js` | 97 | I | matches plan exactly |
+| — | `narrow.js` (shim) | 30 | — | 6-line barrel, exactly as §5 specified |
+
+Total 4,215 lines vs. the pre-split 4,027 (+188, +4.7%) — each new file's own
+import block, same overhead class §5 predicted from the `vectorize.js`
+precedent (that split went +2%).
+
+### Corrections found during re-verification
+
+1. **A stripper bug in the re-verification's own dependency scanner**, caught
+   before it could mislead the plan: a naive char-by-char comment/string
+   stripper blanks `${...}` template-literal interpolations as if they were
+   inert string content — but they're live code. This hid `kindName`'s real
+   call site inside `strictBoundaryTypeCheck`'s error-message template
+   (`` `strict mode: ${kindName(want)} parameter...` ``), making `kindName`
+   look like a dead, fan-in-0 export. Fixed with a proper stack-based
+   stripper that treats `${...}` content as code; re-run confirmed 66 edges
+   (matching this document's own §4 count) and the correct family placement
+   (both `kindName` and `strictBoundaryTypeCheck` stay in family G, no export
+   needed — `kindName` is never called from outside `strictBoundaryTypeCheck`
+   in the same family). Had this not been caught, `kindName` would have been
+   incorrectly left un-exported in a scenario where it was actually needed
+   elsewhere — it wasn't, here, but the bug class is real and worth recording.
+2. **`export { default } from './narrow/index.js'`, this document's own §5
+   suggested shim line, fails jz's self-host build.** Standard JS (Node's
+   parser accepts it fine), but jz's own `early-errors.js` treats the bare
+   `default` specifier as a reserved-word BINDING and rejects it: `Early
+   error: reserved word 'default' cannot be a binding` — thrown from
+   `checkBindingName` via the same code path that validates object-pattern
+   binding lists (jz's parser represents an export-specifier list with the
+   same node shape as a destructuring pattern, and doesn't special-case
+   `default` in specifier position the way the ECMAScript grammar does).
+   Caught by the commit-7 (`index.js`) kernel rebuild — the first commit
+   whose shim state includes this line. Fixed with
+   `export { default as default } from './narrow/index.js'`, verified first
+   against `src/parse.js` directly (fast, no full rebuild) before re-running
+   the full battery: the `as` form re-exports the identical binding without
+   the bare-identifier check ever firing. Applies to commits 7, 8, 9 (every
+   shim state from `index.js` onward); the final barrel (commit 9) uses it
+   too. Not anticipated by this document's own risk §7 (a genuinely new
+   finding, not a documented landmine) — recorded here for the next split
+   that needs to re-export a default binding through a barrel.
+3. **`jsstringEnabled` and `applyJsstringBoundaryCarrier` need `export`
+   added** in `jsstring-carrier.js` — both module-private in the original,
+   both called directly from `narrowSignatures` (confirmed by the
+   dependency scanner's fan-out list for `narrowSignatures`: 22 targets,
+   including both of these). §5's module-plan table didn't enumerate
+   individual cross-file exports (by design — "an unused-import lint pass
+   after the move catches any miscopy faster... than a hand-typed list
+   would"), so this isn't a plan error, just a gap the mechanical
+   verification closed before cutting family F.
+
+None of the three corrections above changed the family assignment, the
+9-module boundary, or the topological order — all of §5's structure held.
+
+### `narrowSignatures` (family E) — outlier disposition
+
+Landed whole in `index.js` (1,224 lines including its own header and
+imports; the function body itself is ~1,180 lines), exactly as §6
+recommended: the driver and its `sharedSiteState` mutable-closure-reuse
+stay in one module, untouched. Not decomposed — per the task's own
+instruction, decomposition is only in scope "along real phase seams that
+are byte-identical... the driver may only shrink if the extraction is a
+pure move of a contiguous block with the same closure environment —
+otherwise decline and say why." `narrowSignatures`'s ~20 nested closures
+all close over the single shared `sharedSiteState` object across every
+call-site visit (the load-bearing self-host memory optimization §6's own
+comment-reading identified); none of them is a contiguous, self-contained
+block with an independent closure environment — extracting any one would
+either (a) require passing `sharedSiteState` as an explicit parameter
+(a behavior-neutral but real signature change to a currently-implicit
+closure capture, arguably still "pure" but unverified against the
+self-host memory ratio cap `test/self-compile-perf.js` guards, and out of
+this slice's mandate) or (b) still leave the closure sharing the outer
+scope by reference, in which case it hasn't actually left `index.js`'s
+top-level function at all — just been given its own name inside it, which
+is a readability change, not a pure move. Declined; flagged for a
+dedicated follow-up slice with its own closure-matrix analysis, same
+treatment `vectorize-split.md` gave `tryDivergentEscapeVectorize`.
+
+### Dead-code sweep — held-file finding resolution
+
+`.work/dead-exports-sweep.md`'s one narrow.js-specific finding —
+`src/compile/narrow.js:23 staticObjectProps (../static.js)`, an unused
+import — is moot post-split, not fixed: every new file's import list was
+derived fresh from actual whole-word usage in its own body (never copied
+verbatim from the original 17-line header block), so a name with zero real
+callers anywhere in the file was never carried into any of the 9 new
+files in the first place. Verified by grep across all 9:
+`grep -rn staticObjectProps src/compile/narrow/*.js` — zero hits. No commit
+needed; nothing to delete that a pure mechanical extraction would ever have
+reintroduced.
+
+### Hand-rolled walker survey (not retired this slice)
+
+Surveyed every remaining hand-rolled recursive-descent helper across the
+9 landed files (most of the file's walkers were already retired onto
+`walkAst` by the M1b batch this document's own §7 risk 2 describes — this
+survey covers what's left). Classified, none retired:
+
+- **`inferInternalArrayLengths`'s `collect`/`verify` pair** (`summaries.js`):
+  both are unconditional-descent-with-early-abort shapes (`if (!ok) return`
+  at the top of every call) that plausibly map onto `walkAst`'s
+  `enter() === false` prune contract, but `verify`'s abort is a GLOBAL
+  stop-everything flag (not a per-branch prune) — provably equivalent under
+  careful reading, but "provably" here means a differential harness, not a
+  read. Declined for this slice.
+- **`inferTypedValueRanges`'s `computeDirectEffects`'s inner `walk(n,
+  inClosure)`** (`summaries.js`): closer read shows `inClosure` never
+  actually reaches a recursive call as `true` (the closure-detected branch
+  returns before recursing), so the second parameter is functionally dead
+  and this is likely a clean, single-`enter`-callback retirement candidate —
+  the most promising one found. Declined anyway, for the same
+  differential-harness-verification reason as above; flagged as the best
+  starting point for a follow-up.
+- **`paramAllUsesJsstringMappable`'s `refsParam`/`walk` pair**
+  (`jsstring-carrier.js`): `walk` explicitly branches on
+  `typeof node === 'string'`, i.e. it visits bare string leaves —
+  `walkAst`'s own `visit` returns immediately on any non-array value
+  (`enter` is never called on a leaf string). This is exactly the pitfall
+  this task's own instructions named ahead of time. Clear decline, not just
+  time-boxed: retiring this one would silently change behavior (the leaf
+  check would never fire), not just cost verification time.
+- **`speculateTypedParams`'s `arrowPathTo`'s inner `walk`**
+  (`specialize.js`): a find-with-backtracking-path-stack walker
+  (`path.push`/`path.pop` around the recursive call, short-circuiting
+  sibling iteration the instant the target is found via `return true`).
+  Neither `walkAst` (no short-circuit, no path-stack) nor `some` (boolean
+  fold, no path accumulation) has a matching contract. Declined —
+  structurally not a fit, not just unverified.
+- **`speculateTypedParams`'s `findBind`/`findCalls`/`findDecl`**
+  (`specialize.js`): plain unconditional-descent collectors into an outer
+  accumulator, no pruning; the early-exit guards present (`&& !bindName`)
+  are pure perf optimizations, not correctness-relevant, since `walkAst`
+  visiting a few extra already-decided nodes changes nothing observable.
+  Along with the `computeDirectEffects` walker above, these are the
+  cleanest candidates in the file. Declined for this slice on the same
+  differential-harness-verification-cost basis, not because they look
+  unsafe.
+
+None of the four "clean/plausible" candidates above were retired: this
+task's own instruction requires "verify any retirement with a differential
+harness like ir-split's" before landing one, and building that harness
+(ir-split's own precedent needed a 1,012-case fuzz-plus-aliasing harness for
+just two functions) is a properly-scoped follow-up, not a same-slice
+addendum to an already-large pure-move campaign. The one hard decline
+(`paramAllUsesJsstringMappable`) and the one structural non-fit
+(`arrowPathTo`) are not time-boxed — they're genuinely not walkAst-shaped.
+
+### Final battery
+
+- `node scripts/refactor-oracle.mjs check --ref a45ce6ca` at HEAD: **CLEAN —
+  560/560 identical** (140 specs × O0/O2/O3/size).
+- `node test/index.js` (native, full default suite incl. `bench-c`): **3859
+  total (28,505 assertions), 3858 pass, 1 skip, 0 fail.**
+- `node test/kernel-parity.js`: **3/3 (33 assertions).**
+- `node test/kernel-oracle.js`: **14/14 (605 assertions).**
+- `node test/pointers.js`: **73/73 (132 assertions).**
+- `node test/data.js`: **204/204 (1,062 assertions).**
+- `node test/eager-stdlib-parity.js`: **22/22 (55 assertions).**
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: **3035 total (14,639
+  assertions), 3034 pass, 1 skip, 0 fail.**
+- `node scripts/bench-size.mjs --json`, diffed against a baseline run at
+  `a45ce6ca` captured before any file changed: **byte-identical, zero
+  diff** across all 61 benchmark programs.
+- Kernel size: baseline (`a45ce6ca`, built fresh in a throwaway detached
+  worktree) `dist/jz.wasm` is 17,898,864 bytes; HEAD's is also 17,898,864
+  bytes — **net zero byte delta**, though `cmp`/`shasum` confirm the two
+  binaries are NOT byte-identical internally (differ starting at byte
+  32,329; different SHA-256). Expected and explained, same mechanism
+  ir-split's own report named: the self-hosted kernel's own module graph
+  now has 9 more files in a different concatenation order, shifting
+  internal LEB128-encoded name/index widths — here the shifts happen to
+  net to exactly zero total bytes rather than ir-split's small nonzero
+  delta. Confirmed behaviorally identical (not just size-coincidental) by
+  kernel-parity 33/33 and kernel-oracle 14/14 both passing against this
+  exact binary, plus the oracle's own 560/560 WAT-level identity check.
+
+All 10 battery legs green, zero regressions, zero unexplained deltas.
+
+### Unverified / not run this session
+
+- `test/kernel-target.js` and other individual `KERNEL_EXCLUDE`d files
+  were not run standalone — they're excluded from the wasm-target leg by
+  design (host-bridge/CLI/WASI-specific, per that file's own header
+  comment) and this split touches none of them.
+- The 1 skip in both `test/index.js` runs was not root-caused — it's
+  present in both the native and wasm-target legs at the same count (1),
+  consistent with a pre-existing, environment-conditional skip unrelated
+  to this split, but not independently confirmed against a fresh
+  `a45ce6ca` native run in this session (the oracle's WAT-level 560/560
+  identity and the two full-suite pass counts were treated as sufficient
+  regression evidence instead).
+- `main` advanced to a newer tip during this session (observed via
+  `git worktree list` showing the primary checkout past `a45ce6ca`); per
+  the task's own instruction this branch was not rebased or merged onto
+  it, and stays based on `a45ce6ca` throughout, matching every commit's
+  own oracle `--ref a45ce6ca` baseline.
