@@ -229,9 +229,58 @@ const hasNewlineInQuote = src => {
   return false
 }
 
+const previousSourceToken = (src, from) => {
+  let i = from - 1, newline = false
+  for (;;) {
+    while (i >= 0 && isWhitespaceCode(src.charCodeAt(i))) {
+      const c = src.charCodeAt(i)
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i--
+    }
+    if (i > 0 && src[i] === '/' && src[i - 1] === '*') {
+      const start = src.lastIndexOf('/*', i - 2)
+      if (start < 0) return [i, newline]
+      for (let k = start; k <= i; k++) {
+        const c = src.charCodeAt(k)
+        if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) { newline = true; break }
+      }
+      i = start - 1
+      continue
+    }
+    // Once whitespace crossed a line boundary, any `//...` text at the end
+    // of the preceding line is trivia too. This helper is only entered from a
+    // known token boundary, so the last `//` on that line is unambiguous.
+    if (newline && i >= 1) {
+      const lineStart = Math.max(src.lastIndexOf('\n', i), src.lastIndexOf('\r', i),
+        src.lastIndexOf('\u2028', i), src.lastIndexOf('\u2029', i)) + 1
+      const slash = src.lastIndexOf('//', i)
+      if (slash >= lineStart) { i = slash - 1; continue }
+    }
+    return [i, newline]
+  }
+}
+
+const nextSourceToken = (src, from) => {
+  let i = from
+  for (;;) {
+    while (i < src.length && isWhitespaceCode(src.charCodeAt(i))) i++
+    if (src[i] === '/' && src[i + 1] === '/') {
+      i += 2
+      while (i < src.length && src[i] !== '\n' && src[i] !== '\r' &&
+          src.charCodeAt(i) !== 0x2028 && src.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (src[i] === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      return end < 0 ? src.length : nextSourceToken(src, end + 2)
+    }
+    return i
+  }
+}
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
-  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\bfor\b/.test(src) ||
+  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do)\b/.test(src) ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
@@ -253,11 +302,12 @@ const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
 const validateLexicalSource = (src, strict) => {
   if (typeof src !== 'string') return
   let i = 0, canRegex = true, pendingControl = null, expectStatement = false, lastPunct = '', optionalDepth = -1, nesting = 0
+  let pendingDo = false
   // True while a genuine LineTerminator (directly, or inside a multi-line
   // comment) has been crossed since the last real token — consumed once,
   // right before a real token is processed below, by the arrow-token check.
   let sawNewline = false
-  const parens = []
+  const parens = [], doBlocks = [], doBlockEnds = new Set()
   while (i < src.length) {
     const c = src.charCodeAt(i), ch = src[i]
     if (isWhitespaceCode(c)) {
@@ -286,6 +336,7 @@ const validateLexicalSource = (src, strict) => {
     // newline state once, for the arrow-token check just below, then reset.
     const hadNewline = sawNewline
     sawNewline = false
+    if (ch !== '{') pendingDo = false
     // ArrowFunction's own grammar carries a "[no LineTerminator here]"
     // between ArrowParameters and `=>` — unlike a restricted-production
     // token (postfix ++/--, break/continue's label, return/yield's operand),
@@ -348,6 +399,15 @@ const validateLexicalSource = (src, strict) => {
         i++
       }
       const word = src.slice(start, i)
+      pendingDo = false
+      if (word === 'while') {
+        const prev = previousSourceToken(src, start)
+        if (prev[0] >= 0 && src[prev[0]] === ';') {
+          const beforeSemi = previousSourceToken(src, prev[0])
+          if (doBlockEnds.has(beforeSemi[0]))
+            fail('semicolon is not allowed between a do body and while')
+        }
+      }
       // A classic for head needs exactly two semicolons; a for-in/of head
       // needs a top-level `in`/`of` and none. Record only the outermost header
       // group, so `(key in obj)` remains a valid parenthesized classic-for
@@ -404,6 +464,7 @@ const validateLexicalSource = (src, strict) => {
       if (!(pendingControl === 'for' && word === 'await'))
         pendingControl = lastPunct !== '.' && /^(if|while|for|with)$/.test(word) ? word : null
       if (word === 'else' || word === 'do') expectStatement = true
+      if (word === 'do' && lastPunct !== '.') pendingDo = true
       canRegex = /^(return|throw|case|delete|void|typeof|new|in|instanceof|yield|await|else|do)$/.test(word)
       lastPunct = ''
       continue
@@ -481,7 +542,9 @@ const validateLexicalSource = (src, strict) => {
       const group = parens[parens.length - 1]
       if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
           group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_TOKENS]++
-      nesting++; expectStatement = false; pendingControl = null
+      nesting++
+      if (pendingDo) doBlocks.push(nesting)
+      pendingDo = false; expectStatement = false; pendingControl = null
     }
     else if (ch === '[') {
       const group = parens[parens.length - 1]
@@ -490,7 +553,12 @@ const validateLexicalSource = (src, strict) => {
       nesting++
     }
     else if (ch === '}' || ch === ']') {
+      if (ch === '}' && doBlocks[doBlocks.length - 1] === nesting) {
+        doBlocks.pop()
+        doBlockEnds.add(i)
+      }
       nesting--
+      pendingDo = false
       const group = parens[parens.length - 1]
       if (group && group[P_REST] && nesting < group[P_REST_DEPTH]) {
         if (group[P_REST] === REST_EXPRESSION) group[P_REST_COMMA] = false
@@ -1221,6 +1289,19 @@ export function validateEarlyErrors(ast, source) {
         (node[1][0] == null && typeof node[1][1] === 'number' && !Number.isFinite(node[1][1])))
       const asiStatement = isNode(node[1]) && (node[1][0] === 'switch' || node[1][0] === 'if')
       if (!specialIdentifier && !asiStatement && !isAssignmentTarget(node[1], false)) fail(`invalid update target for '${op}'`)
+      // Postfix update has a hard no-LineTerminator restriction. Across a
+      // newline it must instead be parsed as a new prefix update; if the
+      // operator reaches a statement/final boundary, that fallback has no
+      // operand and the program is invalid. Do not blanket-reject the newline:
+      // `x\n++y` is valid (the AST currently cannot reconstruct its meaning).
+      if (node.length > 2 && node[2] == null && typeof node.loc === 'number') {
+        const prev = previousSourceToken(source, node.loc)
+        if (prev[1]) {
+          const next = nextSourceToken(source, node.loc + 2)
+          if (next >= source.length || /[;})\],:]/.test(source[next]))
+            fail(`line terminator before '${op}' leaves prefix update without an operand`)
+        }
+      }
     }
 
     if (op === 'await' && node[1] == null && (cx.async || cx.staticBlock))

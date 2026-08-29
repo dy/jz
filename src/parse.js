@@ -65,7 +65,12 @@ const parse = (src) => {
     const nl = src.indexOf('\n')
     src = nl < 0 ? '' : src.slice(nl)
   }
-  const ast = jessieParse(src)
+  // subscript's line-comment terminator is hard-coded to LF. ECMAScript gives
+  // a lone CR the same line-terminator meaning; normalize only lone CR (CRLF
+  // already reaches subscript's LF) and preserve string length/AST offsets.
+  // The original spelling still goes to lexical validation below.
+  const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
+  const ast = jessieParse(parseSource)
   validateEarlyErrors(ast, src)
   return ast
 }

@@ -773,3 +773,20 @@ test('for headers keep classic clauses separate from for-in/of heads (asi-and-li
     ok(Array.isArray(parse('for (let of of [1]) {}')),
       "a binding named 'of' is distinct from the following for-of keyword")
 })
+
+test('restricted statement boundaries honor ASI and every line terminator (asi-and-line-terminator-context)', () => {
+    rejects('export let f = () => { let x = 0; if (false) { x\n++ } return x }', 'without an operand')
+    rejects('let x = 0; x\n--', 'without an operand')
+    rejects('let x = 0; x /*\n*/ ++;', 'without an operand')
+    rejects('do {};\nwhile (false)', 'between a do body and while')
+    rejects('//\rthis text is not one expression', 'this')
+
+    is(jz('export let f = () => { let x = 0; x++; return x }').exports.f(), 1)
+    is(jz('export let f = () => { let x = 0; do { x++ } while (x < 1); return x }').exports.f(), 1)
+    is(jz('// lone CR ends this comment\rexport let f = () => 7').exports.f(), 7)
+    is(jz('export let f = () => "a\\\rb"').exports.f(), 'ab')
+    ok(Array.isArray(parse('let x = 0, y = 0; x\n++y;')),
+      'a newline before ++ remains valid when the prefix-update fallback has an operand')
+    ok(Array.isArray(parse('do { { } }\nwhile (false)')),
+      'a do block is followed directly by while, including nested sibling blocks')
+})

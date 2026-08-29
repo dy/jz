@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 61,
+  "count": 57,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -49,11 +49,7 @@
     ],
     "asi-and-line-terminator-context": [
       "test/language/asi/S7.9_A11_T4.js",
-      "test/language/asi/S7.9_A11_T8.js",
-      "test/language/asi/S7.9_A5.1_T1.js",
-      "test/language/asi/S7.9_A5.3_T1.js",
-      "test/language/asi/S7.9_A9_T8.js",
-      "test/language/line-terminators/invalid-comment-single-cr.js"
+      "test/language/asi/S7.9_A11_T8.js"
     ],
     "async-generator-and-parameter-context": [
       "test/language/expressions/async-arrow-function/early-errors-arrow-formals-lineterminator.js",
