@@ -142,7 +142,7 @@ export function mintTypedStoragePlan(ctx, identity, sig, body, localReps, option
   return handle
 }
 
-export function typedStoragePlanOf(ctx, identity = ctx.func.current) {
+function typedStoragePlanOf(ctx, identity = ctx.func.current) {
   const handle = identity && ctx.plans.typedStorage.get(identity)
   if (!dataOf(ctx, handle))
     throw new Error(`TypedStoragePlan missing for ${identity?.name || '<anonymous>'}`)
