@@ -42,6 +42,7 @@ const TESTS = [
   'external',
   'watr',
   'optimizer',
+  'interval-proof',
   'passes',
   'dyn-closure-tables',
   'preeval',
