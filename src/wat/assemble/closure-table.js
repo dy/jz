@@ -131,13 +131,19 @@ export function dedupClosureBodies(closureFuncs, sec) {
     const name = typeof fn[1] === 'string' && fn[1][0] === '$' ? fn[1].slice(1) : null
     return !name || !redirect.has(name)
   })
-  const redirectRefs = node => {
-    if (typeof node === 'string') return node[0] === '$' && redirect.has(node.slice(1)) ? `$${redirect.get(node.slice(1))}` : node
-    if (!Array.isArray(node)) return node
-    for (let i = 0; i < node.length; i++) node[i] = redirectRefs(node[i])
-    return node
-  }
-  for (const fn of kept) redirectRefs(fn)
+  // Retired onto walkAst (pipeline-minimality slice, `.work/assemble-outliers.md`
+  // §5): the hand-rolled recursion only ever rewrote bare `$name` STRING
+  // children in place, never needed to see a node's own opcode slot as
+  // anything but an inert string — an `enter` scan over every child
+  // (including index 0, matching the original's unconditional loop; index 0
+  // is always the opcode string here, never a redirect-map hit) is the same
+  // single top-down pass, byte-identical.
+  for (const fn of kept) walkAst(fn, { enter: n => {
+    for (let i = 0; i < n.length; i++) {
+      const c = n[i]
+      if (typeof c === 'string' && c[0] === '$' && redirect.has(c.slice(1))) n[i] = `$${redirect.get(c.slice(1))}`
+    }
+  } })
   ctx.closure.table = ctx.closure.table.map(n => redirect.get(n) || n)
   sec.funcs.length = 0
   sec.funcs.push(...kept)
