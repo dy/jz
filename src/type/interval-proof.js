@@ -11,11 +11,12 @@
  * @module type/interval-proof
  */
 import {
-  isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS, walkAst, some, someDeep,
-  REFS_THROUGH_ARROWS,
+  I32_MIN, I32_MAX, isI32, isReassigned, MUTATE_OPS, ASSIGN_OPS as WRITE_OPS,
+  walkAst, some, someDeep, REFS_THROUGH_ARROWS,
 } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
+import { exprType } from './expr-type.js'
 import { idxKey, redeclaresName, collectDecls, isUnitDecrement } from './canonical-bounds.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
@@ -29,14 +30,36 @@ import { idxKey, redeclaresName, collectDecls, isUnitDecrement } from './canonic
 
 const IP_LIM = 0x40000000   // endpoints beyond ±2^30 widen to unknown (i32 headroom)
 const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
+// Initializer roots whose true result can carry range facts through a named const.
+const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
 
 /** Walk one function body, recording proven `recv[idx]` keys into `out`.
- *  `lens(name)` → static element count or null. Soundness posture: `out` only ever
- *  ADDS proofs, so every unknown/bail direction is safe — the sharp edges are all
- *  in keeping `env` honest (kills before loops/switch, closure-captured writes,
- *  assignments embedded in expressions). */
+ *  `lens(name)` → static element count or null. Guard-seeded proofs fail closed
+ *  across repeated structural keys; the other sharp edge is keeping `env` honest
+ *  (kills before loops/switch, closure writes, embedded assignments). */
 function scanIntervalIdx(body, out, lens, ranges) {
   const env = new Map()   // name → [lo, hi] | null (unknown)
+  // A guard-seeded proof may not enter the legacy structural-key channel when
+  // that key occurs elsewhere: one guarded site would bless its unguarded twin.
+  // Count lazily (normally one key/function) so unaffected functions pay no walk.
+  const uniqueGuardKeyMemo = new Map()
+  const uniqueGuardKey = (key) => {
+    if (uniqueGuardKeyMemo.has(key)) return uniqueGuardKeyMemo.get(key)
+    let count = 0
+    walkAst(body, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === '[]' && n.length === 3 && typeof n[1] === 'string' && idxKey(n[1], n[2]) === key) count++
+    } })
+    const unique = count === 1
+    uniqueGuardKeyMemo.set(key, unique)
+    return unique
+  }
+  let guardProofContext = 0
+  const underGuardProof = (guarded, fn) => {
+    if (!guarded) return fn()
+    guardProofContext++
+    try { return fn() } finally { guardProofContext-- }
+  }
   // While-body fixpoint passes walk EXPLORATORILY — env may be transiently too
   // narrow, so proof/hull recording is suppressed until the stable final pass.
   let recording = true
@@ -63,7 +86,25 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
   const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
+  // Preserve range facts through an immutable named guard:
+  // `const inside = x >= 0 && x < W; if (inside) out[x] = 1`.
+  // A definition is usable only while every referenced binding is unchanged;
+  // writes and potentially-mutating calls retire it before a later branch.
+  const boolDefs = new Map()
+  const invalidateBool = (name) => { for (const [k, e] of boolDefs) if (e.free.has(name)) boolDefs.delete(k) }
+  // Do not replay an effectful initializer as a theorem: a call/update can
+  // change a compared name after an earlier conjunct observed it. Typed reads
+  // and fixed typed lengths are effect-free even when receivers alias.
+  const stableRangeExpr = (def) => !some(def, n => {
+    const op = n[0]
+    if ((op === '()' && n.length !== 2) || op === 'new' || MUTATE_OPS.has(op)) return true
+    if (op === '[]') return typeof n[1] !== 'string' || !ctx.func.typedElem?.has(n[1])
+    if (op === '.' || op === '?.')
+      return n[2] !== 'length' || typeof n[1] !== 'string' || !ctx.func.typedElem?.has(n[1])
+    return false
+  }, REFS_THROUGH_ARROWS)
   const setEnv = (name, v) => {
+    invalidateBool(name)
     if (closureWrites.has(name) || !ipOk(v)) v = null
     const f = activeFacts.get(name)
     if (f) v = v ? [Math.max(v[0], f[0]), Math.min(v[1], f[1])] : f
@@ -168,7 +209,18 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const pureExpr = (e) => !some(e,
     n => n[0] === '[]' || n[0] === '()' || n[0] === 'new' || n[0] === '?:' || n[0] === '=' || WRITE_OPS.has(n[0]),
     REFS_THROUGH_ARROWS)
-  const refine = (c, negate) => {
+  // A comparison can establish the first finite interval for an otherwise
+  // unbounded machine-i32 name. Pointer locals also use i32 storage, so exclude
+  // them: their numeric comparison semantics are not an integer-value proof.
+  const fullI32Range = (name) => {
+    if (exprType(name, ctx.func.locals) !== 'i32') return null
+    if (ctx.func.localReps?.get(name)?.ptrKind != null) return null
+    const p = ctx.func.current?.params?.find(q => q.name === name)
+    return p?.ptrKind == null ? [I32_MIN, I32_MAX] : null
+  }
+  // Raw facts may exceed IP_LIM while separate conjuncts are being intersected
+  // (`x >= 0` and `x < W`). Only refine()/refineAll() publish an ipOk interval.
+  const refineRaw = (c, negate, seedUnknown = false) => {
     if (!Array.isArray(c) || c.length !== 3) return null
     let [op, l, r] = c
     // rhs: an int literal/module const, a body-known interval (`xi >= ww`, or a
@@ -198,13 +250,18 @@ function scanIntervalIdx(body, out, lens, ranges) {
         if (lo != null) return [name, [lo, hi]]
       }
     }
+    let affineLhs = false
     if (Array.isArray(l) && l.length === 3 && (l[0] === '+' || l[0] === '-')) {
       const cR = intLiteralValue(l[2]), cL = intLiteralValue(l[1])
-      if (typeof l[1] === 'string' && cR != null) { rLo = l[0] === '+' ? rLo - cR : rLo + cR; rHi = l[0] === '+' ? rHi - cR : rHi + cR; l = l[1] }
-      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rLo = rLo - cL; rHi = rHi - cL; l = l[2] }
+      if (typeof l[1] === 'string' && cR != null) { rLo = l[0] === '+' ? rLo - cR : rLo + cR; rHi = l[0] === '+' ? rHi - cR : rHi + cR; l = l[1]; affineLhs = true }
+      else if (l[0] === '+' && typeof l[2] === 'string' && cL != null) { rLo = rLo - cL; rHi = rHi - cL; l = l[2]; affineLhs = true }
     }
     if (typeof l !== 'string') return null
-    const v = env.get(l)
+    // A pre-existing finite env range proves affine +/- cannot wrap. A fresh
+    // full-i32 seed does not, so only seed bare-name comparisons here.
+    const known = env.get(l)
+    const fresh = seedUnknown && !affineLhs ? fullI32Range(l) : null
+    const v = known ?? fresh
     if (!v) return null
     if (negate) op = op === '<' ? '>=' : op === '<=' ? '>' : op === '>' ? '<=' : op === '>=' ? '<'
       : op === '===' ? '!==' : op === '!==' ? '===' : null
@@ -218,16 +275,54 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '!==' && rLo === rHi) return [l, [v[0] === rLo ? rLo + 1 : v[0], v[1] === rLo ? rLo - 1 : v[1]]]
     return null
   }
-  // every conjunct of an `&&` chain holds where the whole condition held
-  const refineAll = (c2) => Array.isArray(c2) && c2[0] === '&&'
-    ? [...refineAll(c2[1]), ...refineAll(c2[2])]
-    : (() => { const r = refine(c2, false); return r ? [r] : [] })()
+  const refine = (c, negate) => {
+    const r = refineRaw(c, negate)
+    return r && r[1][0] <= r[1][1] && ipOk(r[1]) ? r : null
+  }
+  // Every conjunct holds on the positive path. Intersect repeated facts for
+  // the same name before applying IP_LIM: either half of `x >= 0 && x < W`
+  // is too wide alone, while their meet is the useful finite theorem.
+  const refineAll = (c2, namedSeed = false) => {
+    // The new full-i32 seed is deliberately limited to a positive `if (name)`
+    // use of a stable const definition. Every older inline/refinement path keeps
+    // its prior finite-env-only behavior.
+    const seedUnknown = namedSeed && typeof c2 === 'string' && boolDefs.has(c2)
+    if (!seedUnknown) {
+      const out = []
+      const gatherKnown = (c3) => {
+        if (Array.isArray(c3) && c3[0] === '&&') { gatherKnown(c3[1]); gatherKnown(c3[2]); return }
+        const r = refineRaw(c3, false, false)
+        if (r && r[1][0] <= r[1][1] && ipOk(r[1])) out.push(r)
+      }
+      gatherKnown(c2)
+      return out
+    }
+    const facts = new Map()
+    const add = (r) => {
+      if (!r || facts.get(r[0]) === null) return
+      const prev = facts.get(r[0])
+      const next = prev
+        ? [Math.max(prev[0], r[1][0]), Math.min(prev[1], r[1][1])]
+        : r[1]
+      facts.set(r[0], next[0] <= next[1] ? next : null)
+    }
+    const gather = (c3) => {
+      if (typeof c3 === 'string') {
+        const bd = boolDefs.get(c3)
+        if (bd) gather(bd.def)
+      } else if (Array.isArray(c3) && c3[0] === '&&') {
+        gather(c3[1]); gather(c3[2])
+      } else add(refineRaw(c3, false, seedUnknown))
+    }
+    gather(c2)
+    return [...facts].filter(([, v]) => v && ipOk(v)).map(([name, v]) => [name, v])
+  }
   // descend into closures too — capture-writes stay dead
   const killAssigned = (n) => walkAst(n, { enter: n2 => {
     if (MUTATE_OPS.has(n2[0])) {
-      if (typeof n2[1] === 'string') env.set(n2[1], null)
+      if (typeof n2[1] === 'string') { invalidateBool(n2[1]); env.set(n2[1], null) }
       else if (Array.isArray(n2[1]) && n2[1][0] !== '[]' && n2[1][0] !== '.' && n2[1][0] !== '?.') {
-        const s = new Set(); collectNames(n2[1], s); for (const x of s) env.set(x, null)
+        const s = new Set(); collectNames(n2[1], s); for (const x of s) { invalidateBool(x); env.set(x, null) }
       }
     }
   } })
@@ -357,21 +452,24 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '[]' && n.length === 3 && typeof n[1] === 'string') {
       const idxV = ev(n[2])
       if (!recording) return   // exploratory fixpoint pass: env effects only
-      const L = lens(n[1])
+      const L = lens(n[1]), k = idxKey(n[1], n[2])
+      const proven = L != null && idxV && idxV[0] >= 0 && idxV[1] < L
       if (typeof process !== 'undefined' && process.env.JZ_DBG_IP) console.error('IPW', n[1], JSON.stringify(n[2]).slice(0,50), JSON.stringify(idxV), 'len', L)
-      if (L != null && idxV && idxV[0] >= 0 && idxV[1] < L) out.add(idxKey(n[1], n[2]))
-      // a bounded idx against an UNKNOWN length is half a proof — export the hull
+      if (proven && (!guardProofContext || uniqueGuardKey(k))) out.add(k)
+      // A bounded idx against an UNKNOWN length is half a proof — export the hull
       // (joined over every sighting of this key) for the versioning guard to close
-      // with a runtime `hi < len` conjunct (the wrap-cursor + dynamic-table class)
-      else if (idxV && idxV[0] >= 0 && ranges) {
-        const k = idxKey(n[1], n[2]), prev = ranges.get(k)
+      // with a runtime `hi < len` conjunct (the wrap-cursor + dynamic-table class).
+      // Provisional guard-seeded hulls stay local; structural export would let
+      // one guarded occurrence bless an unrelated same-key access.
+      if (!proven && !guardProofContext && idxV && idxV[0] >= 0 && ranges) {
+        const prev = ranges.get(k)
         ranges.set(k, prev ? [Math.min(prev[0], idxV[0]), Math.max(prev[1], idxV[1])] : idxV)
       }
       // symbolic wrap hull (`seq[si]` with si ∈ [0, SEQLEN-1], SEQLEN mutable):
       // exported only while the cursor's pre-increment window is open; a numeric
       // or conflicting prior sighting voids the key (one symbolic form per key)
-      else if (idxV == null && typeof n[2] === 'string' && symEnv.has(n[2]) && ranges) {
-        const k = idxKey(n[1], n[2]), h = symEnv.get(n[2]).h, prev = ranges.get(k)
+      else if (!proven && !guardProofContext && idxV == null && typeof n[2] === 'string' && symEnv.has(n[2]) && ranges) {
+        const h = symEnv.get(n[2]).h, prev = ranges.get(k)
         if (prev == null) ranges.set(k, h)
         else if (prev.hiName !== h.hiName || prev.hiBias !== h.hiBias) ranges.set(k, null)
       }
@@ -380,9 +478,16 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === 'let' || op === 'const') {
       for (let k = 1; k < n.length; k++) {
         const d = n[k]
-        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') setEnv(d[1], ev(d[2]))
-        else if (typeof d === 'string') env.set(d, null)
-        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) env.set(x, null) }
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+          setEnv(d[1], ev(d[2]))
+          // Bare-name conditions resolve through stable, single-assignment guards.
+          if (op === 'const' && Array.isArray(d[2]) && RANGE_GUARD_OPS.has(d[2][0]) && stableRangeExpr(d[2])) {
+            const free = new Set(); collectNames(d[2], free)
+            if (![...free].some(f => closureWrites.has(f))) boolDefs.set(d[1], { def: d[2], free })
+          }
+        }
+        else if (typeof d === 'string') { invalidateBool(d); env.set(d, null) }
+        else if (Array.isArray(d)) { visit(d); const s = new Set(); collectNames(d[0] === '=' ? d[1] : d, s); for (const x of s) { invalidateBool(x); env.set(x, null) } }
       }
       return
     }
@@ -415,7 +520,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       else {
         visit(n[1])   // records the member-write access proof (`out[idx] = …`)
         if (Array.isArray(n[1]) && n[1][0] !== '[]' && n[1][0] !== '.' && n[1][0] !== '?.') {
-          const s = new Set(); collectNames(n[1], s); for (const x of s) env.set(x, null)
+          const s = new Set(); collectNames(n[1], s); for (const x of s) { invalidateBool(x); env.set(x, null) }
         }
       }
       return
@@ -858,8 +963,10 @@ function scanIntervalIdx(body, out, lens, ranges) {
       const save = new Map(env)
       // every `&&` conjunct holds on the then path (`if (child+1 < n && a[child] <
       // a[child+1]) child++` — the ++ under BOTH bounds)
-      for (const rT of refineAll(c)) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
-      visit(thenB)
+      const namedGuard = typeof c === 'string' && boolDefs.has(c)
+      const thenRefs = refineAll(c, namedGuard)
+      for (const rT of thenRefs) if (!closureWrites.has(rT[0])) env.set(rT[0], rT[1])
+      underGuardProof(namedGuard && thenRefs.length, () => visit(thenB))
       const afterThen = new Map(env)
       env.clear(); for (const [k2, v2] of save) env.set(k2, v2)
       // the fall-through state refines by ¬cond whether or not an else arm exists
@@ -897,7 +1004,12 @@ function scanIntervalIdx(body, out, lens, ranges) {
     if (op === '()' && n.length === 2) { visit(n[1]); return }   // grouping, not a call
     if (op === '()' || op === 'new') {   // a call may reassign module globals
       for (let k = 1; k < n.length; k++) visit(n[k])
-      for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.func?.typedElem?.has?.(k2))) env.set(k2, null)
+      for (const [name, bd] of boolDefs) {
+        for (const free of bd.free) if (ctx.scope?.globalTypes?.has?.(free)) { boolDefs.delete(name); break }
+      }
+      for (const [k2] of env) if (!closureWrites.has(k2) && (ctx.scope?.globalTypes?.has?.(k2) || ctx.func?.typedElem?.has?.(k2))) {
+        invalidateBool(k2); env.set(k2, null)
+      }
       return
     }
     for (let k = 1; k < n.length; k++) visit(n[k])
