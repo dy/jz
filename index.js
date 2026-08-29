@@ -116,18 +116,57 @@ const defineBindings = (define) => {
 
 const nowMs = () => globalThis.performance?.now ? globalThis.performance.now() : Date.now()
 
+// profile.memory (diagnostic opt-in, self-compile-memory campaign,
+// .work/self-compile-memory.md): also samples process.memoryUsage() around
+// every named phase, forcing a GC first (--expose-gc) so the reading is a
+// true live-set snapshot, not accumulated-not-yet-collected garbage. Never
+// set by any real caller (build/test/CLI) — inert (zero extra work, zero new
+// fields) unless a diagnostic script opts in explicitly. Purely additive to
+// the existing entries/totals shape, so it cannot change any existing
+// consumer's behavior, and it never touches compiled output bytes (this
+// function only wraps host-side wall-clock/memory bookkeeping around calls
+// that already happen).
 const compileProfiler = (profile) => {
   if (profile == null) return null
   if (typeof profile !== 'object') throw new TypeError('opts.profile must be an object sink (populated with compile-phase entries/totals); for a wasm name section use opts.names')
   profile.entries ||= []
   profile.totals ||= {}
+  const sampleMem = !!profile.memory
+  // Cheap structural counts from the shared ctx singleton — answers "what is
+  // live" (function/schema/scope table sizes), not just "how many bytes":
+  // guarded per-field since ctx's subkeys populate progressively through the
+  // pipeline (empty/absent early on is expected, not a bug).
+  const counts = () => {
+    if (!sampleMem) return undefined
+    const sz = (m) => m instanceof Map || m instanceof Set ? m.size : Array.isArray(m) ? m.length : undefined
+    return {
+      funcs: sz(ctx.funcs?.list), schemas: sz(ctx.schema?.list),
+      slotFacts: sz(ctx.schema?.slotFacts), slotConstInts: sz(ctx.schema?.slotConstInts),
+      slotIntLevels: sz(ctx.schema?.slotIntLevels), slotIntCertain: sz(ctx.schema?.slotIntCertain),
+      slotI32Certain: sz(ctx.schema?.slotI32Certain),
+      globals: sz(ctx.scope?.globals), warnings: sz(ctx.warnings),
+    }
+  }
+  // Forcing a full GC before every reading is precise but costly on a multi-GB
+  // heap; restrict it to top-level phase names (no ':' — the fine-grained
+  // sub-phases like 'plan:narrowSignatures'/'optMod:optimizeFuncs' already
+  // share the SAME allocations their parent phase will also see collected) so
+  // one diagnostic run stays a bounded, one-off cost, not a multiplied one.
+  const snap = (forceGc) => {
+    if (sampleMem && forceGc && typeof global.gc === 'function') global.gc()
+    return { mem: process.memoryUsage(), counts: counts() }
+  }
   return {
     time(name, fn) {
+      const forceGc = !name.includes(':')
+      const before = sampleMem ? snap(forceGc) : null
       const start = nowMs()
       try { return fn() }
       finally {
         const ms = nowMs() - start
-        profile.entries.push({ name, ms })
+        const entry = { name, ms }
+        if (sampleMem) { entry.before = before; entry.after = snap(forceGc) }
+        profile.entries.push(entry)
         profile.totals[name] = (profile.totals[name] || 0) + ms
       }
     },
