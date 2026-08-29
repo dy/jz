@@ -43,6 +43,7 @@ import { CORPUS } from './kernel-parity.js'
 import { compileViaKernel } from './kernel-target.js'
 import { instantiate } from '../interop.js'
 import { onWasi, withBigintStrict } from './_matrix.js'
+import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 
 // The oracle: the exact same source, imported as a plain ES module. Valid jz
 // source IS valid JS (export syntax, no jz-only sugar in any row below), so
@@ -76,6 +77,9 @@ const AGREE = [
   // correct, not just byte-stable.
   { name: 'nestedtyped', src: CORPUS.nestedtyped, calls: [{ fn: 'f', args: [3] }, { fn: 'f', args: [-1.5] }, { fn: 'f', args: [2 ** 33] }] },
   { name: 'fromnested', src: CORPUS.fromnested, calls: [{ fn: 'f', args: [] }] },
+  // Store-side BigInt carrier pairing: both compiler hosts must match Node on
+  // the materialized and raw-tag-shaped paths, not merely emit equal bytes.
+  { name: 'biginttypedstore', src: CORPUS.biginttypedstore, calls: BIGINT_TYPED_STORE_CALLS },
   // New (oracle-only): the SUBVIEW branch of the same new.${name} closure family
   // as nestedtyped/fromnested (module/typedarray.js's per-iteration emitter) —
   // `new T(buffer, off, len)` with the len argument itself a nested typed-array
@@ -474,6 +478,24 @@ for (const opt of [0, 2, 3]) {
     }
   })
 }
+
+test('kernel oracle: BigInt typed-array stores reject a Number before in-range or OOB writes', async () => {
+  if (onWasi()) return
+  const src = BIGINT_TYPED_STORE_ERROR_SOURCE
+  const mod = await oracle(src)
+  const caught = await oracle(BIGINT_TYPED_STORE_CATCH_SOURCE)
+  is(caught.caughtMismatch(), 11, 'JS oracle catches the OOB Number-to-BigInt conversion after the index effect')
+  for (const opt of [0, 2, 3]) {
+    const nat = runNative(src, opt), ker = runKernel(src, opt)
+    throws(() => runNative(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
+    throws(() => runKernel(BIGINT_TYPED_STORE_CATCH_SOURCE, opt), /inside try\/catch is not supported/)
+    for (const { fn, args } of BIGINT_TYPED_STORE_THROW_CALLS) {
+      throws(() => mod[fn](...args), error => error instanceof TypeError)
+      throws(() => nat[fn](...args), error => error instanceof TypeError)
+      throws(() => ker[fn](...args), error => error instanceof TypeError)
+    }
+  }
+})
 
 // ── DIVERGENT tier: documented departures from naive JS, not bugs ─────────
 

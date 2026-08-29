@@ -11,6 +11,7 @@ import { is } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { compileViaKernel } from './kernel-target.js'
 import { onWasi } from './_matrix.js'
+import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
 
 // Exported for test/kernel-oracle.js — the ORACLE tier reuses these same source
 // strings (byte identity alone certifies identically-wrong output just as easily
@@ -76,6 +77,10 @@ export let f = (s) => g(s) === false`,
   // call — same final IR tree, reordered so the vulnerable closure reads
   // happen before the recursive compile, not after.
   nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
+  // A boxed Number|BigInt local must be unboxed at a known BigInt typed-array
+  // store, while a raw i64 payload with identical PTR.BIGINT tag bits must not
+  // be probed. This pair caught the unconditional-unbox kernel taint.
+  biginttypedstore: BIGINT_TYPED_STORE_SOURCE,
   // Class-wide sweep (2026-07-30, ledger-directed): three more capture-after-
   // nested-emit sites found and fixed alongside nestedtyped, all in
   // module/typedarray.js's per-iteration `for (const [...] of Object.entries(...))`

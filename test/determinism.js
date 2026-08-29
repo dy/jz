@@ -7,6 +7,7 @@ import test from 'tst'
 import { ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { OPT_LEVEL } from './_matrix.js'
+import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
 
 const PROGRAMS = [
   'export let add = (a, b) => a + b',
@@ -15,6 +16,7 @@ const PROGRAMS = [
   'export let str = (s) => s.length + s.charCodeAt(0)',
   'export let poly = (a, b, c) => { let s = 0; for (let i = 0; i < 100; i++) s += a*i*i + b*i + c; return s }',
   'let N = 0; let buf; export let init = (k) => { N = k; buf = new Float64Array(k); return buf }; export let run = () => { let i = 0; while (i < N) { buf[i] = buf[i] * 2.0 + i; i++ } }',
+  BIGINT_TYPED_STORE_SOURCE,
 ]
 
 const eq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i])
@@ -57,10 +59,13 @@ test('determinism: compilation is independent of prior compiles (no ctx leak)', 
       return s + g + o.b + o.c
     }`
   const refB = compile(B)
+  const refTypedStore = compile(BIGINT_TYPED_STORE_SOURCE)
   compile(A);           const afterA = compile(B)
   compile(PROGRAMS[4]); const afterPoly = compile(B)
+  compile(A);           const typedStoreAfterA = compile(BIGINT_TYPED_STORE_SOURCE)
   ok(eq(refB, afterA), 'compile(B) changed after compile(A) — prior ctx state leaked through reset()')
   ok(eq(refB, afterPoly), 'compile(B) changed after compile(poly) — prior ctx state leaked through reset()')
+  ok(eq(refTypedStore, typedStoreAfterA), 'BigInt typed-store compile changed after compile(A) — A→B reset leaked into the carrier proof')
 })
 
 // α-rename invariance (Stage-1 BindingId): renaming every USER binding must
