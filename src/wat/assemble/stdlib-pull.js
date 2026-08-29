@@ -401,21 +401,6 @@ export function pullStdlib(sec) {
       // the OBJECT-arm fill sites are inline IR (no named helper to count).
       if (ctx.runtime.enumcConsumed)
         resets.push(`(global.set $__enumc_off (i32.const 0))`)
-      // Durable-state heal on demand: three sites, same mechanical shape
-      // (fuses what were three near-identical guard blocks — pipeline-
-      // minimality slice, `.work/assemble-outliers.md` §5). `inc()`, not a
-      // raw `ctx.core.includes.add()`: the former is what
-      // test/self-compile-includes.js's source-scan recognizes as an
-      // explicit (self-compile-safe) edge — none of these heal helpers has
-      // any OTHER call site for reachableStdlib (already run) to have found
-      // it through, unlike each trigger helper's own deps() edges at every
-      // grow/shift call site (e.g. __durable_fwd_log's — see
-      // test/self-compile-includes.js). No further resolveIncludes() needed:
-      // each heal helper's body calls nothing else (raw i32 loads/stores +
-      // global get/set only).
-      const healOnDemand = (trigger, heal) => {
-        if (ctx.core.includes.has(trigger)) { inc(heal); resets.push(`(call $${heal})`) }
-      }
       // Durable relocation heal (collection.js's durableFwdLogIR / core.js's
       // __durable_fwd_log/__durable_fwd_heal): only reachable when some growable
       // ARRAY/HASH/SET/MAP relocation site actually logged a durable→ephemeral
@@ -425,19 +410,41 @@ export function pullStdlib(sec) {
       // (order vs the rewind itself doesn't matter — `_clear` never zeroes memory,
       // only moves the bump pointer — but keeping it grouped with the other resets
       // reads as "finish with this round's bookkeeping, then reclaim its arena").
-      healOnDemand('__durable_fwd_log', '__durable_fwd_heal')
+      if (ctx.core.includes.has('__durable_fwd_log')) {
+        // __durable_fwd_heal is called ONLY from this injected `__clear` text — it has
+        // no OTHER call site for reachableStdlib (line ~582, already run) to have found
+        // it through, so (unlike __durable_fwd_log itself, whose deps() edges at every
+        // grow/shift call site make it self-compile-robust — see test/self-compile-includes.js)
+        // it needs an explicit include here, mirroring the `__alloc`/`__alloc_hdr`/
+        // `__clear` late-add just above. `inc()`, not a raw `ctx.core.includes.add()`:
+        // the former is what test/self-compile-includes.js's source-scan recognizes as an
+        // explicit (self-compile-safe) edge. No further resolveIncludes() needed:
+        // __durable_fwd_heal's body calls nothing else (raw i32 loads/stores + global
+        // get/set only).
+        inc('__durable_fwd_heal')
+        resets.push(`(call $__durable_fwd_heal)`)
+      }
       // Durable ARRAY element-data heal (module/collection.js's durableArrSnapIR/
       // durableArrSnapNode, core.js's __durable_arr_snap/__durable_arr_heal — the
       // per-array-element sibling of the header-only fwd heal above; see either
-      // helper's doc comment for the full rationale).
-      healOnDemand('__durable_arr_snap', '__durable_arr_heal')
+      // helper's doc comment for the full rationale). Same explicit-include
+      // reasoning as __durable_fwd_heal just above (its only call site is this
+      // injected text).
+      if (ctx.core.includes.has('__durable_arr_snap')) {
+        inc('__durable_arr_heal')
+        resets.push(`(call $__durable_arr_heal)`)
+      }
       // Durable SLOT heal (core.js __durable_slot_log/__durable_slot_heal — the
       // entry/value sibling of the relocation heal above): every logged durable
       // collection slot written this round is healed (inserted entries zombied +
       // len decremented, overwritten values read undefined) before the arena
       // rewinds. Ordered AFTER the fwd heal: a grown-then-healed table's len must
       // already be its restored pre-grow value when the zombie decrements land.
-      healOnDemand('__durable_slot_log', '__durable_slot_heal')
+      // Same explicit-include pattern (its ONLY call site is this injected text).
+      if (ctx.core.includes.has('__durable_slot_log')) {
+        inc('__durable_slot_heal')
+        resets.push(`(call $__durable_slot_heal)`)
+      }
       // Global-snapshot restores (see the sweep above) join the same rebuilt body.
       // Order is free — restores touch only globals + the durable slab, which the
       // rewind never moves — but bookkeeping-then-rewind-then-restore reads naturally.
