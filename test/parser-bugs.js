@@ -861,3 +861,20 @@ test('rest trailing commas depend on assignment-pattern context (destructuring-c
     ok(Array.isArray(parse('{ 0, [...x] = []; } { let y = [...x,]; }')),
       'sibling block scopes keep pattern and literal contexts independent')
 })
+
+test('semicolon-sensitive export forms cannot absorb a same-line literal sibling (module-goal-and-export-context)', () => {
+    rejects('0;\nexport default null null;', 'export declaration')
+    rejects("0;\nexport * from 'x' null;", 'export declaration')
+    rejects("0;\nexport * as ns from 'x' null;", 'export declaration')
+    rejects("0;\nexport {} from 'x' null;", 'export declaration')
+    rejects('0;\nexport {} null;', 'export declaration')
+
+    ok(Array.isArray(parse('export default null; null;')), 'an explicit semicolon separates export-default expression')
+    ok(Array.isArray(parse('export default null\nnull;')), 'a LineTerminator supplies export-default ASI')
+    ok(Array.isArray(parse("export * from 'x'; null;")), 'export-from accepts an explicit boundary')
+    ok(Array.isArray(parse('export {}\nnull;')), 'a named export accepts a newline boundary')
+    ok(Array.isArray(parse('export default function() {} 0;')),
+      'exported function declarations need no separator before a sibling statement')
+    ok(Array.isArray(parse('export default class {} 0;')),
+      'exported class declarations keep their declaration boundary')
+})

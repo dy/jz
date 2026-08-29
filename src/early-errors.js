@@ -1211,6 +1211,28 @@ const validateClass = (node, cx, walk, source) => {
   }
 }
 
+const exportEndsInDeclaration = node => {
+  if (!isNode(node)) return false
+  if (node[0] === 'export' || node[0] === 'default') return exportEndsInDeclaration(node[1])
+  if (node[0] === 'async' && isNode(node[1])) return exportEndsInDeclaration(node[1])
+  return node[0] === 'function' || node[0] === 'function*' || node[0] === 'class'
+}
+
+const validateModuleStatementBoundaries = (ast, source) => {
+  const list = statements(ast)
+  for (let i = 1; i < list.length; i++) {
+    const prev = list[i - 1], next = list[i]
+    if (!isNode(prev) || prev[0] !== 'export' || exportEndsInDeclaration(prev)) continue
+    // Value literals retain their exact token offset. If one immediately
+    // follows a semicolon-sensitive export form, the shared ASI layer may
+    // split it into a sibling despite there being no legal insertion point.
+    if (!isNode(next) || next[0] != null || typeof next.loc !== 'number') continue
+    const boundary = previousSourceToken(source, next.loc)
+    if (!boundary[1] && source[boundary[0]] !== ';')
+      fail('export declaration and following literal require a semicolon or LineTerminator')
+  }
+}
+
 const validateExports = ast => {
   const names = new Set(), locals = new Set(), localExports = new Set()
   const add = name => {
@@ -1287,6 +1309,7 @@ const validateExports = ast => {
 
 export function validateEarlyErrors(ast, source) {
   validateExports(ast)
+  validateModuleStatementBoundaries(ast, source)
   // No `=>` boundary here (unlike `some`'s default): a nested arrow can still
   // contain top-level-only import/export syntax that hasn't been rejected yet.
   const rootModule = some(ast, n => n[0] === 'import' || n[0] === 'export', { skipArrow: false })

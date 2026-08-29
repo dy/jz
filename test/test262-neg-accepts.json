@@ -1,17 +1,12 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 26,
+  "count": 21,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
       "test/language/module-code/parse-err-hoist-lex-fun.js",
-      "test/language/module-code/parse-err-hoist-lex-gen.js",
-      "test/language/module-code/parse-err-semi-dflt-expr.js",
-      "test/language/module-code/parse-err-semi-export-star.js",
-      "test/language/module-code/parse-err-semi-name-space-export.js",
-      "test/language/module-code/parse-err-semi-named-export-from.js",
-      "test/language/module-code/parse-err-semi-named-export.js"
+      "test/language/module-code/parse-err-hoist-lex-gen.js"
     ],
     "class-element-token-boundaries": [
       "test/language/expressions/class/class-name-ident-await-escaped-module.js",
