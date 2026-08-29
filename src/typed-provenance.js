@@ -7,7 +7,7 @@
  * compiler's canonical form (`new.Float32Array`, optional `.view`).
  */
 
-export const TYPED_FAMILY_CTORS = new Set([
+const TYPED_FAMILY_CTORS = new Set([
   'Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
   'Int32Array', 'Uint32Array', 'Float16Array', 'Float32Array', 'Float64Array',
   'BigInt64Array', 'BigUint64Array', 'ArrayBuffer', 'DataView',
@@ -24,7 +24,7 @@ const RECEIVER_TYPED_RESULT_METHODS = new Set([
  * trackers consume it to poison a binding instead of retaining stale width. */
 export const TYPED_CTOR_CONFLICT = Symbol('typed ctor conflict')
 
-export const stripTypedView = ctor =>
+const stripTypedView = ctor =>
   typeof ctor === 'string' && ctor.endsWith('.view') ? ctor.slice(0, -5) : ctor
 
 export const typedCtorName = ctor => {
@@ -32,7 +32,7 @@ export const typedCtorName = ctor => {
   return typeof base === 'string' && base.startsWith('new.') ? base.slice(4) : null
 }
 
-export const isTypedArrayCtor = ctor => {
+const isTypedArrayCtor = ctor => {
   const name = typedCtorName(ctor)
   return !!name && name.endsWith('Array') && name !== 'ArrayBuffer' && TYPED_FAMILY_CTORS.has(name)
 }
