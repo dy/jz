@@ -73,15 +73,21 @@ const JSC_EXCEPTION_BAND_TOL = 1.5
 // least-portable maintained lanes (go/zig families) genuinely port 43/60 =
 // 0.72 of cases; a healthy lane clears 0.7, a token lane cannot.
 const COVERAGE_FLOOR = 0.7
-// DECIDED CLAIM SCOPING 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
-// evidence "SIZE BAND DIAGNOSED: HONEST FLOOR" 2026-07-30): the size claim is
-// par-or-smaller than AssemblyScript BY GEOMEAN, not strict-smaller — a control
-// experiment proved the 1.02-1.05x band is dominantly the JS-SEMANTICS TAX: AS's
-// bench ports wrap every array access in `unchecked()` (compiling them WITH
-// assertions is byte-identical output, i.e. AS's baseline assumes zero bounds
-// checking unconditionally), while jz pays real guards because JS out-of-bounds
-// semantics are load-bearing (an OOB read yields `undefined`, a write drops
-// silently — ir.js's rationale). Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
+// SUPERSEDED 2026-08-28 (perf/size-leadership campaign — the owner's literal
+// bar is "ALWAYS smaller than AssemblyScript, ×1, per case"): the geomean-only
+// scoping decided 2026-08-01 (.work/todo.md "DECISIONS EXECUTED 2026-08-01" +
+// evidence "SIZE BAND DIAGNOSED: HONEST FLOOR" 2026-07-30) is kept below as an
+// aggregate backstop, but strict per-case leadership is now ALSO asserted
+// (see "claims: size — jz strictly smaller..." below) — geomean alone let
+// roughly half the corpus run larger than AS while staying green. The
+// JS-SEMANTICS-TAX finding from that control experiment still explains WHERE
+// the bytes go (AS's bench ports wrap every array access in `unchecked()` —
+// compiling them WITH assertions is byte-identical output, i.e. AS's baseline
+// assumes zero bounds checking unconditionally — while jz pays real guards
+// because JS out-of-bounds semantics are load-bearing: an OOB read yields
+// `undefined`, a write drops silently, ir.js's rationale) — that's the shape-
+// class the engine fixes below have to close, not a reason to excuse it.
+// Mirrors test/bench.js's SIZE_GEOMEAN_MAX.
 const SIZE_GEOMEAN_MAX = 1.05
 // Compiler-source scope for freshness: a commit touching only tests/docs/site
 // doesn't invalidate perf evidence; one touching these does.
@@ -388,9 +394,26 @@ test('claims: documented exception — tight-integer-loop cases (vm/dict/crc32) 
   ok(red.length === 0, `tight-integer-loop exception exceeded its ${JSC_EXCEPTION_BAND_TOL}× sanity band on ${red.length} case(s): ${red.join(', ')} — a real regression, not the documented rival-execution-model gap`)
 })
 
-// SIZE — par-or-smaller by geomean vs AssemblyScript, not strict-smaller (see
-// SIZE_GEOMEAN_MAX above). Scoped to the `optimize:'size'` byte counts every
-// case with a parity-valid `as` row carries.
+// SIZE — the owner's bar (2026-08-28 tightened; supersedes the par-or-geomean-
+// only scoping this block used to carry): jz wasm must be strictly smaller
+// than AssemblyScript's on EVERY comparable case, ×1, not just by geomean. The
+// JS-semantics-tax rationale in the removed comment here explained WHY some
+// cases trail (AS's bench ports assume unchecked array access; jz pays for
+// real OOB semantics) — that's a real cost model, not license to trail: it
+// names the shape-class an engine fix has to close, same as any other gap.
+// Both checks read only committed evidence (bench/results.json), consistent
+// with this file's own architecture (test/bench.js is the live-measurement
+// counterpart).
+test('claims: size — jz strictly smaller than AssemblyScript on every comparable case', () => {
+  const notLed = []
+  for (const [id, c] of Object.entries(cases)) {
+    const jz = c.targets?.jz, as = c.targets?.as
+    if (!correctBenchmarkRow(jz) || !correctBenchmarkRow(as) || !(jz.bytes > 0) || !(as.bytes > 0)) continue
+    if (jz.bytes >= as.bytes) notLed.push(`${id} ${(jz.bytes / as.bytes).toFixed(3)}× (${jz.bytes}B / ${as.bytes}B)`)
+  }
+  ok(notLed.length === 0, `strict size leadership unproven on ${notLed.length} case(s): ${notLed.join(', ')}`)
+})
+
 test(`claims: size — jz geomean bytes vs AssemblyScript stays within the ${SIZE_GEOMEAN_MAX}× par band`, () => {
   const ratios = []
   for (const c of Object.values(cases)) {
