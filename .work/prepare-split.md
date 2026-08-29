@@ -1,4 +1,4 @@
-# prepare/index.js structure map (pre-split)
+# prepare/index.js split (pipeline-minimality slice)
 
 Base: `b900cd09` (this worktree, `refactor/pipeline-minimality`). `src/prepare/index.js`
 is 4,417 lines: 172 top-level statements — 16 `import`s, 1 bare side-effecting call
@@ -436,3 +436,287 @@ file is isolated, not attempted now.
 Plan authored before any code was moved; decomposition specifics get filled in
 as each module is actually split (later-phase commits) — same discipline as
 `vectorize-split.md`'s phase 3 note.
+
+## Status — what actually landed (updated post-execution)
+
+Base `a45ce6ca` (main tip at execution time — the "pending-edit regions" below
+had already landed by then, so nothing was actually pending against this base;
+see §Deviations). Re-derived the full family map independently against this
+current file, using the repo's own `typescript` devDependency (real parser +
+checker symbol resolution, not a regex scan) for exact declaration boundaries
+and ground-truth cross-reference edges — not by trusting this doc's stale line
+numbers. Agreement with this doc's plan was total except the two deviations
+below.
+
+12 families landed as 12 separate pure-move commits, leaf-first (`375b1f85`
+… `e93e794a`), each individually gated clean (oracle 560/560, kernel-parity
+33/33) before the next. Three more commits followed: the dead-imports cleanup
+(`a6c074b7`), two walker retirements (`4429a606`, `3025e898`), this doc's own
+landed-record update (`f952056f`), and one fix (`b9e3403c` — see deviation #4;
+its content was already present, uncommitted, in the working tree for every
+battery run below through the kernel-target suite, so nothing needed
+re-running once it was actually committed, only the commit itself was
+missing) — 17 commits total, HEAD `b9e3403c`.
+
+### Final module table
+
+| # | file | lines | contents |
+|---|------|-------|----------|
+| 1 | `state.js` | 250 | module state (13 plain `export let`s + the bundled `prepState`) + freshPrepareId/GLOBALS/NS_CTORS/builtinMemberKey/CONSTANTS/F64_CONSTANTS/SIMD_NS/ERR_CLASS_SET/INSTANCEOF_ALLOW |
+| 2 | `ident-purity.js` | 139 | mintLocal, scanReassignedTopLevel, IDESC/decodeIdent, callFree/boundSafeCalls/writesReceiver, normalizeIdents |
+| 3 | `const-fold.js` | 102 | stripBoolNot…truncateUnreachable, MUTATING_ARRAY_METHODS, litTruth/alwaysTruthy/alwaysFalsy |
+| 4 | `scope.js` | 213 | resolveScope/isDeclared/prescanBlockDecls/push·popScope, bindingNames, loop-local family, substIdents, declareGlobal, hasLoopJump/retargetLoopJumps (dead, parked) |
+| 5 | `literals.js` | 297 | static-string(-array) extraction cluster, hoistIndexedConstLiterals, bindStaticConst family |
+| 6 | `schema.js` | 111 | objLiteralSid, bindAssignSchema, censusUnknownInitDecl, bindDeclSchema, conditionalSpreadGroupPrepare, inferAssignSchema |
+| 7 | `destructure.js` | 64 | isDestructPattern/patternItems/simpleArrayPatternItems/arrayLiteralItems + substPattern↔substObjItem |
+| 8 | `closure-lift.js` | 78 | hasFunc/isNamespaceAliasScoped/shadowsBuiltin/isFuncValueLocal/renameFunc/isUnresolvableBareIdent |
+| 9 | `module-resolve.js` | 299 | host-import ABI, import.meta, module-init facts, builtin-alias resolution, namespace destructuring/introspection, module-source lookup |
+| 10 | `handlers.js` | 2727 | **merged**: prep + renestSoleCommaArg + handlers + all 21 handler-helper functions (see §Deviations) |
+| 11 | `sparse-map.js` | 156 | fuseSparseMapReads + tryFuseInBlock/tryFusePair + purity/shape predicates + substSparse/cloneAndBind |
+| 12 | `entry.js` | 181 | `prepare` (default export) + the original file-header stage-contract doc comment |
+| — | `index.js` | 3 | barrel: `import prepare from './entry.js'; export default prepare; export { GLOBALS } from './state.js'` |
+
+Total 4,617 lines across 13 files (was 4,452 in one file; +165 lines / +3.7% —
+12 fresh per-family header comments + import-line restructuring, expected for
+a mechanical fan-out; verified content-preserving, not padding, by the
+byte-identity proof below). Largest: `handlers.js` at 2,727 (the merged
+cluster). Second largest `module-resolve.js` at 299.
+
+### Deviations from the plan (documented, not silent)
+
+1. **`handlers.js` and `handler-helpers.js` merged into one file — 12 modules
+   landed, not 13.** The doc's primary plan accepted a circular import between
+   these two. jz's own self-hosted kernel build feeds jz's OWN compiler over
+   its own source (`scripts/self.js` → `npm run build`); prepare/index.js's
+   own `prepareModule()` throws `"Circular import"` (src/prepare/handlers.js,
+   the same guard that lived at the original file's ~line 4103) the moment a
+   circular import lands in that bundle — stricter than Node's ESM loader,
+   which tolerates the cycle. This isn't a hypothetical: it was independently
+   re-derived via a Tarjan SCC over the ground-truth (checker-resolved, not
+   regex) dependency graph before any file was written — all ~25 declarations
+   (`prep`, `renestSoleCommaArg`, `handlers`, plus the ~21 "handler-helpers"
+   functions this doc's §Cycles already named, plus `prepareArrayConstructor`
+   and `isLit`, both landed/found after this doc's own edge scan — see #2
+   below) form one strongly-connected component; no 2-way split of it is
+   acyclic, by definition of "strongly connected." This is this doc's own
+   stated fallback ("merging all 18 cycle members into one module"), just
+   with 7 more members (25 vs 18) than counted when this doc's §Cycles was
+   written, and named `handlers.js` (this doc's own name for the hub) rather
+   than a fresh name.
+2. **`isLit`** (`n => Array.isArray(n) && n[0] == null`, a same-named but
+   different-purpose shadow of ir.js's own `isLit`) wasn't in this doc's
+   handler-helpers.js prose list — a one-line, easy-to-miss grab-bag member.
+   Its sole caller is `handlers`, so it joins the merged `handlers.js` as the
+   SCC's 25th member. Caught by an automated coverage check (every one of the
+   file's 156 top-level declarations assigned to exactly one family, checked
+   programmatically, not by inspection) rather than being missed silently.
+3. **The three "pending-edit regions"** this doc flagged as blocking
+   (`shadowsBuiltin`'s `ctx.module.imports.some(...)` clause, the new
+   `prepareArrayConstructor` + `dispatchConstructorCall`'s array-literal case,
+   `handlers['new']`/`['instanceof']`'s builtinCtor/SharedArrayBuffer gating)
+   had already landed on `main` by the time this session started (main
+   advanced from this doc's `b900cd09` base to `a45ce6ca`, +35 lines) — none
+   were actually pending against the base this split cuts from.
+   `prepareArrayConstructor`'s resolution matches exactly what this doc
+   predicted: `handlers.js` (handler-helpers.js's would-be home), not
+   `module-resolve.js`, confirmed by its real callers
+   (`dispatchConstructorCall`, `handlers['new']`).
+4. **`export { default } from './entry.js'`** — this doc's own prescribed
+   barrel form — is valid Node ESM but is NOT valid jz-self-host source: jz's
+   own early-errors.js flags the bare word `default` inside a `{}` specifier
+   list as a reserved-word binding (no other file in the repo used this exact
+   shorthand, so the gap was never exercised before). Found by `npm run
+   build`'s self-compile step, not by any of the native-side checks (syntax
+   check, module load, oracle, kernel-parity all passed against it, since none
+   of them run jz's OWN parser over jz's OWN source the way self-compilation
+   does). Fixed to the pattern already proven working elsewhere in the repo
+   (`src/abi/{number,object,array,string}.js`): `import prepare from
+   './entry.js'; export default prepare`. `export { GLOBALS } from
+   './state.js'` (a non-`default` named re-export) needed no change — that
+   shorthand is exercised throughout ir.js's/vectorize.js's own barrels
+   already and self-compiles fine.
+5. **Methodology**: re-derived the full family map independently using the TS
+   compiler's own parser + checker (real scope-resolved symbol references,
+   not a comment/string-stripped regex scan), available via the repo's own
+   `typescript` devDependency — gives exact declaration boundaries (byte
+   offsets, not line-number heuristics) and eliminates the false-positive
+   class this doc's own methodology section names (property-access text
+   matching a top-level name). A from-scratch Tarjan SCC over this
+   ground-truth graph independently reproduced this doc's central claim (the
+   one large cycle, its exact membership modulo #1/#2 above) before trusting
+   it enough to cut against.
+
+### Documentation-preservation notes (not covered by this doc, found during extraction)
+
+- `depth`/`ownerUniq`/`reassignedTopLevel` bundle into `export const prepState
+  = { depth: undefined, ownerUniq: undefined, reassignedTopLevel: undefined }`
+  in state.js — mirrors `vectorize-split.md`'s `vecState` precedent exactly,
+  including matching each field's ORIGINAL bare-`let` initializer (`undefined`
+  for all three, since none had one) rather than inventing a value. All 35
+  non-declaration read/write sites across handlers.js, scope.js,
+  module-resolve.js, and entry.js were rewritten to `prepState.x` at exact
+  byte offsets located via the checker (every occurrence individually
+  confirmed to resolve to the true top-level symbol, not a shadowing local of
+  the same name) — not a blind regex replace.
+- Doing the bundling naively (dropping the 3 `let` spans wholesale) would have
+  silently discarded real documentation: `reassignedTopLevel`'s own 11-line
+  design rationale (why `defFunc` needs reassignment-tracking at all) and
+  `ownerStack`'s own multi-line trailing comment (textually located in what
+  would become `ownerUniq`'s leading gap, under this file's own "a comment
+  attaches to the declaration that follows it" convention — the same
+  convention this doc's own §Methodology relies on for span boundaries).
+  Both relocated verbatim (byte-sliced from the original, not retyped) — the
+  rationale into the new `prepState` block, the trailing comment reattached
+  to `ownerStack`'s own emission. Found by an automated "does any same-line
+  trailing comment cross a family boundary" sweep across all 156
+  declarations, not by inspection — it found exactly these 2 cases (plus one
+  more of the same shape: the bare top-level `registerResetHook(resetPrepState)`
+  expression statement, which isn't a named declaration so is invisible to a
+  per-declaration accounting, had its text swept into `mintLocal`'s leading
+  gap by the same convention; stripped from there and emitted explicitly
+  right after `resetPrepState` in state.js instead).
+- The file's own module header (the "AST preparation… Stage contract…
+  Concerns… Forward seeding…" doc comment) moved verbatim to `entry.js` (the
+  file holding `prepare`, the stage's actual entry point) — following the
+  `vectorize-split.md` precedent exactly (`vectorize.js`'s own header moved
+  wholesale to `vectorize/index.js`, not the barrel; `ir.js`'s barrel kept a
+  header only because `ir.js` has no single entry point, unlike
+  prepare/vectorize). The barrel (`index.js`) carries no header at all,
+  matching `vectorize.js`'s barrel.
+
+### Dead-code / outlier / walker dispositions
+
+**Dead exports/imports (phase 1, commit `a6c074b7`)**: the 3 names
+`.work/dead-exports-sweep.md` flagged as unused imports specific to
+prepare/index.js — `REJECT_OPS` (`../op-policy.js`), `includeForKnownKeyIteration`
+and `includeForRuntimeKeyIteration` (`../autoload.js`) — confirmed still
+genuinely unused post-split (grepped `src/prepare/` for each; the only hit
+each time was the now-dead import line itself, carried into `handlers.js` by
+the move), removed with grep proof. Cross-checked independently: a full
+per-family external-import-usage recomputation (via the checker, not by
+trusting the prior sweep) landed on the exact same 3-name gap between "what
+the original 16 import statements bound" and "what any of the 156
+declarations actually reference" — same finding, reached two different ways.
+
+**Outlier functions (phase 2, declined — no code change)**: the doc's own
+candidates, `handlers` (1,308 ln / 45 keys) and `prep` (222 ln), stay whole.
+Declining is no longer just "a bigger transform than a move" (this doc's
+original framing) but structurally forced: `handlers`' 45 keys don't call each
+other, so a spread-merge split across files is mechanically possible — but
+every fragment would need `prep` (the only way to recurse into a child node),
+and `handlers` itself would need every fragment back (14 of the 45 keys call
+a handler-helper directly) — i.e. splitting `handlers` further only
+multiplies the one cycle this split already had to merge away into several
+smaller ones, each *also* forced into `handlers.js` by the same
+resolveModuleGraph rejection that drove deviation #1. `prep` (222 ln) is a
+linear sequence of whole-program feature-detection checks (bigint/Error-class
+flags, …) feeding one dispatch — not decomposable into smaller `prep`s
+without breaking "the one entry every recursive call goes through."
+
+**Hand-rolled walkers (phase 3)**: surveyed every hand-rolled recursive
+tree-walk across all 12 new files against `walkAst`'s actual contract
+(`src/ast.js:121` — pre-order `enter`, `enter() === false` prunes a subtree
+INCLUDING its own exit, primitive/string leaves are never visited, children
+start at index 1). Two were genuine, provable retirements — verified with a
+standalone differential harness (not the oracle corpus, which doesn't isolate
+this one function) before touching the file, matching `ir-split.md`'s own
+`buildRefcount`/`nextLocalId` precedent:
+- `collectLoopDeclNames` (scope.js, commit `4429a606`) — unconditional
+  descent that prunes at `=>` boundaries, collecting `let`/`const` binding
+  names along the way; retired onto `walkAst({enter})` directly. 22-case
+  harness (arrow pruning, destructuring patterns, a shared-subtree reference,
+  a 50-declaration stress case) — 22/22 match. Also re-verified against the
+  real pipeline: `test/closures.js` (114/114, 258 assertions) and a
+  hand-written per-iteration-capture program, both exercising exactly this
+  function's only caller (`withLoopLocalNames`).
+- `hoistIndexedConstLiterals`'s `banIn`/`collectBans` closures (literals.js,
+  commit `3025e898`) — unconditional descent with NO pruning at all (marks
+  every `[]` node it sees; `collectBans` additionally launches a `banIn`
+  sub-walk from every assignment-target subtree it finds) — an even more
+  direct fit than the first. 16-case harness (assign/compound/++/--/delete
+  targets, comparison ops correctly excluded, a shared literal reference
+  compared by object identity, a 30-declaration stress case) — 16/16 match.
+
+Declined (not walker-shaped — each hits one of `walkAst`'s own documented
+gaps, not a stand-in for a missing feature):
+- `recordModuleInitFacts`'s internal `walk` (module-resolve.js) — inspects
+  BARE STRING LEAVES (`TIMER_NAMES.has(node)` when `node` is a plain string),
+  which `walkAst`'s `enter` never sees by design (primitive operands aren't
+  visited; only their containing node is). Its sibling `visitFuncValue` stops
+  the ENTIRE search the instant one match is found (`if (facts.hasFuncValue)
+  return` at every call), an early-exit-the-whole-walk shape `walkAst` has no
+  hook for.
+- `bodyCapturesName` (scope.js) — at an `=>` boundary it doesn't prune, it
+  DISPATCHES to a different function (`refsName(node[2], name,
+  REFS_THROUGH_ARROWS)`) and returns that result directly, short-circuiting
+  the whole OR-fold search on first match — `walkAst` has no "stop everything,
+  return this value" contract, only prune-this-subtree.
+- `expandDestruct`, `substPattern`/`substObjItem`, `substSparse`/`cloneAndBind`,
+  `substIdents`, `retargetLoopJumps` — all structural TRANSFORMS (build and
+  return a new/rewritten tree) or match-and-emit-into-an-output-array
+  functions, not visits; same declined class as `ir-split.md`'s `cloneIR`.
+- `hasLoopJump` — zero callers anywhere (confirmed independently, matching
+  this doc's own §Risks flag), left untouched: deleting dead code was never
+  one of this pass's three authorized post-move phases, and the doc itself
+  declined to delete it for the same reason.
+
+### Battery (exact counts)
+
+- `resolveModuleGraph('bench/jz/jz.js', { resolveNode: true })` — ran after
+  every one of the 12 moves (module count climbed 270→282, 1:1 with the 12
+  new files) plus after each of the follow-up commits; never threw.
+- `node scripts/refactor-oracle.mjs check --ref a45ce6ca` — CLEAN 560/560
+  (140 specs × O0/O2/O3/size) after every one of the 14 code-bearing commits
+  individually (the 12 moves + dead-imports + both walker retirements), and
+  once more at commit `3025e898` (the tip at that time) as the closing gate —
+  that run's working-tree content is identical to final HEAD (see the note
+  on `b9e3403c` above), so it stands as the gate for HEAD too.
+- `node test/kernel-parity.js` — 33/33 (3 programs × O0/O2/O3, 33 assertions)
+  after every one of those same 14 commits.
+- `node test/index.js` (native, excl. `test/bench-c.js`) — 3,858/3,859 pass,
+  1 pre-existing skip, 0 fail (28,505 assertions) at HEAD.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (kernel target, drives the
+  self-compiled `dist/jz.wasm` built by `npm run build` above) —
+  3,034/3,035 pass, 1 pre-existing skip, 0 fail (14,639 assertions).
+- `node test/closures.js` — 114/114 (258 assertions), run standalone against
+  the `collectLoopDeclNames` retirement specifically.
+- `node scripts/bench-size.mjs --json` — byte-identical to a fresh run at
+  `a45ce6ca` across all 60 bench-corpus programs (diffed directly, zero
+  lines differ) — the compiled-output half of "byte-identical," for programs
+  the compiler itself compiles (not the self-hosted kernel).
+- `npm run build` (self-compile) — succeeds at HEAD; see deviation #4 for the
+  one real bug this step caught that nothing else did.
+
+### Kernel size before/after
+
+`dist/jz.wasm`: baseline (`a45ce6ca`, built fresh in an isolated worktree)
+17,898,864 bytes → HEAD 17,905,943 bytes, **+7,079 bytes (+0.040%)**. Same
+class of delta `ir-split.md` reports for the identical reason (there: +11
+files, "a ~0.006% delta from the self-compiled program's own module-graph
+gaining 11 files, i.e. jz's own bundler now concatenates in a different file
+order, shifting some LEB128-encoded function-index widths; not a behavior
+change") — here it's +12 files instead of +11, plus this split's fresh
+per-family header comments and internal cross-file import lines are
+themselves new SOURCE TEXT the self-hosted compiler parses (even though they
+compile to no runtime code), which the ir-split delta didn't have to account
+for in the same proportion. Not a behavior change: `bench-size.mjs --json`
+(the compiled-output size for 60 real programs, using the NATIVE compiler)
+is byte-identical to baseline, proving zero drift in what the compiler
+produces for any given input — the kernel-size delta is pure self-compiled
+bundling structure, exactly as this doc's own §Cycles precedent predicted
+for any file-count change.
+
+### Unverified / left as-is
+
+- `hasLoopJump`/`retargetLoopJumps` remain confirmed dead code (zero callers,
+  not exported, so zero possible external callers either) — moved verbatim
+  into scope.js per this doc's own placement, not deleted (out of scope for
+  the three authorized post-move phases; the doc itself made the same call).
+- The outlier and further-walker surveys above are a manual read of all 12
+  files, not an exhaustive mechanical sweep the way the family map itself
+  was — a real but small residual risk that a further candidate exists
+  somewhere unexamined. The battery (oracle + kernel-parity on every
+  code-bearing commit, full native suite + kernel-target suite + bench-size +
+  kernel build at HEAD)
+  bounds the cost of that risk to "a missed opportunity," not "a correctness
+  gap," since nothing was changed without its own gate passing first.
