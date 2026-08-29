@@ -33,7 +33,7 @@ import { enterActiveFunction, restoreActiveFunction } from './active-function.js
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
 import { i64Hex } from '../../layout.js'
-import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo } from '../ast.js'
+import { T, isBlockBody, isReassigned, returnExprs, MUTATE_OPS, beginAssignedMemo, endAssignedMemo, walkAst } from '../ast.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusBigintResultShape } from '../kind.js'
 import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
@@ -950,18 +950,17 @@ function seedLocalIntConsts(body) {
     }
   }
   const decls = []
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    const [op, ...args] = node
-    if (op === '=>') return
+  walkAst(body, { enter: node => {
+    const op = node[0]
+    if (op === '=>') return false
     if (op === 'let' || op === 'const') {
-      for (const decl of args)
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
         if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string' && !isReassigned(body, decl[1])) decls.push(decl)
-      return
+      }
+      return false
     }
-    for (const arg of args) walk(arg)
-  }
-  walk(body)
+  } })
   const seeded = new Set()
   let changed = true
   while (changed) {

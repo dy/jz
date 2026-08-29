@@ -31,7 +31,7 @@
  * @module prepare
  */
 
-import { handlerArgs, refsName, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode } from '../ast.js'
+import { handlerArgs, refsName, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, JZ_NULL, JZ_UNDEF, TYPEOF, cloneNode, walkAst } from '../ast.js'
 import { ctx, err, derive, emitArity, declGlobal, setFeature, registerResetHook } from '../ctx.js'
 import { T } from '../ast.js'
 import {
@@ -207,9 +207,8 @@ const scanReassignedTopLevel = (root) => {
   const isWriteOp = (op) => op === '++' || op === '--' ||
     (typeof op === 'string' && op.endsWith('=') && ASSIGN_OPS.has(op))
   const declaredIn = (body, bound) => {
-    const walk = (n) => {
-      if (!Array.isArray(n)) return
-      if (n[0] === '=>') return
+    walkAst(body, { enter: n => {
+      if (n[0] === '=>') return false
       if ((n[0] === 'let' || n[0] === 'const' || n[0] === 'var') && n.length >= 2) {
         for (let i = 1; i < n.length; i++) {
           const d = n[i]
@@ -218,9 +217,7 @@ const scanReassignedTopLevel = (root) => {
         }
       }
       if (n[0] === 'catch' && typeof n[1] === 'string') bound.add(n[1])
-      for (let i = 1; i < n.length; i++) walk(n[i])
-    }
-    walk(body)
+    } })
   }
   const walk = (n, bound) => {
     if (!Array.isArray(n)) return
@@ -552,9 +549,7 @@ function hoistIndexedConstLiterals(root) {
     for (let i = 1; i < node.length; i++) collectBans(node[i])
   }
   collectBans(root)
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
-    for (let i = 1; i < node.length; i++) walk(node[i])
+  walkAst(root, { exit: node => {
     if (node[0] !== '[]' || node.length !== 3 || banned.has(node)) return
     const lit = node[1]
     if (!Array.isArray(lit) || lit[0] !== '[]' || lit.length !== 2) return
@@ -571,8 +566,7 @@ function hoistIndexedConstLiterals(root) {
       decls.push(['const', ['=', name, lit]])
     }
     node[1] = name
-  }
-  walk(root)
+  } })
   if (!decls.length) return root
   if (Array.isArray(root) && root[0] === ';') { root.splice(1, 0, ...decls); return root }
   return [';', ...decls, root]
@@ -891,8 +885,11 @@ export default function prepare(node) {
   // those are decl-initializers, not reassignments.
   if (ctx.scope.shapeStrs?.size || ctx.scope.shapeStrArrays?.size) {
     const writes = new Set()
-    const scan = (n, inDecl) => {
-      if (!Array.isArray(n)) return
+    // inDecl only ever depends on the DIRECT parent's op (never accumulates past one
+    // level — a nested '=' inside a decl's own init expression is a real reassignment
+    // again), so it's read off walkAst's `parent` argument instead of threaded state.
+    const scan = (n, parent) => {
+      const inDecl = parent != null && (parent[0] === 'let' || parent[0] === 'const' || parent[0] === 'var' || parent[0] === 'export')
       const [op, lhs] = n
       if (op === '=' && typeof lhs === 'string' && !inDecl) writes.add(lhs)
       if (op === '=' && Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && !inDecl) writes.add(lhs[1])
@@ -900,11 +897,9 @@ export default function prepare(node) {
       if ((op === '++' || op === '--') && typeof lhs === 'string') writes.add(lhs)
       if ((op === '++' || op === '--') && Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string') writes.add(lhs[1])
       if (op === '()' && Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && MUTATING_ARRAY_METHODS.has(lhs[2])) writes.add(lhs[1])
-      const childInDecl = (op === 'let' || op === 'const' || op === 'var' || op === 'export')
-      for (let i = 1; i < n.length; i++) scan(n[i], childInDecl)
     }
-    scan(ast, false)
-    for (const f of ctx.funcs.list) if (f.body) scan(f.body, false)
+    walkAst(ast, { enter: scan })
+    for (const f of ctx.funcs.list) if (f.body) walkAst(f.body, { enter: scan })
     for (const name of writes) {
       ctx.scope.shapeStrs?.delete(name)
       ctx.scope.shapeStrArrays?.delete(name)
@@ -1385,17 +1380,14 @@ function prep(node) {
     }
     if (params.length) {
       const paramSet = new Set(params)
-      const scanExecutorAlias = (n) => {
-        if (!Array.isArray(n)) return
+      walkAst(execBody, { enter: n => {
         const nop = n[0]
         if (nop === '=' && typeof n[1] === 'string' && typeof n[2] === 'string' && paramSet.has(n[2])) {
           const outer = scopes.length && isDeclared(n[1]) ? resolveScope(n[1]) : n[1]
           funcValueNames[funcValueNames.length - 1]?.add(outer)
         }
-        if (nop === '=>') return  // the executor's own nested closures are a separate scope
-        for (let i = 1; i < n.length; i++) scanExecutorAlias(n[i])
-      }
-      scanExecutorAlias(execBody)
+        if (nop === '=>') return false  // the executor's own nested closures are a separate scope
+      } })
     }
   }
   if (Array.isArray(node) && node.loc != null) ctx.error.loc = node.loc
@@ -4329,12 +4321,7 @@ function prepareModule(specifier, source) {
  *  consumer for-loop. Preserves observable behavior because the arrow's pure-expression body has no
  *  order-dependent effects. */
 function fuseSparseMapReads(root) {
-  walkSparse(root)
-}
-function walkSparse(node) {
-  if (!Array.isArray(node)) return
-  for (let i = 1; i < node.length; i++) walkSparse(node[i])
-  if (node[0] === ';') tryFuseInBlock(node)
+  walkAst(root, { exit: node => { if (node[0] === ';') tryFuseInBlock(node) } })
 }
 function tryFuseInBlock(seq) {
   for (let i = 1; i < seq.length - 1; i++) {
