@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 74,
+  "count": 61,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -52,18 +52,8 @@
       "test/language/asi/S7.9_A11_T8.js",
       "test/language/asi/S7.9_A5.1_T1.js",
       "test/language/asi/S7.9_A5.3_T1.js",
-      "test/language/asi/S7.9_A6.2_T7.js",
-      "test/language/asi/S7.9_A6.3_T1.js",
-      "test/language/asi/S7.9_A6.3_T2.js",
-      "test/language/asi/S7.9_A6.3_T3.js",
-      "test/language/asi/S7.9_A6.3_T4.js",
-      "test/language/asi/S7.9_A6.3_T5.js",
-      "test/language/asi/S7.9_A6.3_T6.js",
-      "test/language/asi/S7.9_A6.3_T7.js",
       "test/language/asi/S7.9_A9_T8.js",
-      "test/language/line-terminators/invalid-comment-single-cr.js",
-      "test/language/statements/for/S12.6.3_A8.1_T1.js",
-      "test/language/statements/for/S12.6.3_A8.1_T3.js"
+      "test/language/line-terminators/invalid-comment-single-cr.js"
     ],
     "async-generator-and-parameter-context": [
       "test/language/expressions/async-arrow-function/early-errors-arrow-formals-lineterminator.js",
@@ -82,9 +72,6 @@
       "test/language/literals/string/legacy-octal-escape-sequence-prologue-strict.js"
     ],
     "other-jessie-context-loss": [
-      "test/language/block-scope/syntax/for-in/disallow-initialization-assignment.js",
-      "test/language/block-scope/syntax/for-in/disallow-multiple-lexical-bindings-without-and-with-initializer.js",
-      "test/language/expressions/conditional/in-branch-2.js",
       "test/language/expressions/object/method-definition/early-errors-object-method-async-lineterminator.js",
       "test/language/reserved-words/await-module.js",
       "test/language/statements/let/syntax/identifier-let-allowed-as-lefthandside-expression-strict.js",

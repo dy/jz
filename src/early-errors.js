@@ -207,6 +207,7 @@ lexicalTemplateExpr = (src, start, strict) => {
 }
 
 const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
+const P_FOR_INOF = 7, P_FOR_DECL = 8, P_FOR_COMMAS = 9, P_FOR_INIT = 10, P_FOR_TOKENS = 11, P_FOR_CONSEQUENT = 12
 const REST_BINDING = 1, REST_EXPRESSION = 2
 
 // Cheap, single-pass, deliberately approximate: tracks only quote/backslash
@@ -230,7 +231,7 @@ const hasNewlineInQuote = src => {
 
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
-  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') ||
+  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\bfor\b/.test(src) ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
@@ -347,6 +348,35 @@ const validateLexicalSource = (src, strict) => {
         i++
       }
       const word = src.slice(start, i)
+      // A classic for head needs exactly two semicolons; a for-in/of head
+      // needs a top-level `in`/`of` and none. Record only the outermost header
+      // group, so `(key in obj)` remains a valid parenthesized classic-for
+      // initializer. Lexical for-in/of declarations have exactly one
+      // uninitialized binding; commas/defaults nested inside a pattern do not
+      // count because `nesting` differs there.
+      const forGroup = parens[parens.length - 1]
+      if (forGroup && forGroup[P_CONTROL] === 'for' && forGroup[P_BASE_DEPTH] === nesting &&
+          forGroup[P_SEMIS] === 0 && !forGroup[P_FOR_INOF] && lastPunct !== '.') {
+        let decl = forGroup[P_FOR_DECL]
+        // In sloppy code `let` alone is a valid IdentifierReference on the
+        // left of for-in. Treat this one-token spelling as an expression LHS,
+        // not an incomplete LexicalDeclaration; strict-context validation is
+        // deliberately left to the AST walker (whose kernel caveat is noted
+        // at the for handler below).
+        const letReference = decl === 'let' && forGroup[P_FOR_TOKENS] === 1 && word === 'in'
+        const lhsReady = letReference || (decl ? forGroup[P_FOR_TOKENS] >= 2 : forGroup[P_FOR_TOKENS] >= 1)
+        if ((word === 'in' || word === 'of') && lhsReady && !forGroup[P_FOR_CONSEQUENT]) {
+          forGroup[P_FOR_INOF] = word
+          if (letReference) decl = forGroup[P_FOR_DECL] = false
+          if ((decl === 'let' || decl === 'const') &&
+              (forGroup[P_FOR_COMMAS] || forGroup[P_FOR_INIT]))
+            fail('for-in/of lexical declaration must have one uninitialized binding')
+        } else {
+          if (!forGroup[P_FOR_TOKENS] && (word === 'let' || word === 'const' || word === 'var'))
+            forGroup[P_FOR_DECL] = word
+          forGroup[P_FOR_TOKENS]++
+        }
+      }
       if (word === 'catch') {
         let k = i
         while (isWhitespaceCode(src.charCodeAt(k))) k++
@@ -403,6 +433,13 @@ const validateLexicalSource = (src, strict) => {
     if (src.slice(i, i + 3) === '???') fail('invalid question-mark token sequence')
     if (expectStatement && ch !== '{') expectStatement = false
     if (ch === '?' && src[i + 1] === '.') optionalDepth = parens.length
+    const forConditional = parens[parens.length - 1]
+    if (forConditional && forConditional[P_CONTROL] === 'for' &&
+        forConditional[P_BASE_DEPTH] === nesting && forConditional[P_SEMIS] === 0 &&
+        !forConditional[P_FOR_INOF]) {
+      if (ch === '?' && src[i + 1] !== '.' && src[i + 1] !== '?') forConditional[P_FOR_CONSEQUENT]++
+      else if (ch === ':' && forConditional[P_FOR_CONSEQUENT]) forConditional[P_FOR_CONSEQUENT]--
+    }
     if (src.slice(i, i + 3) === '...') {
       const group = parens[parens.length - 1]
       if (group) {
@@ -414,13 +451,21 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '(') {
       const parent = parens[parens.length - 1]
       parens.push([pendingControl, 0, false, false, -1, nesting,
-        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1])
+        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1, false, false, 0, false, 0, 0])
       pendingControl = null
     }
     else if (ch === ')') {
       const group = parens.pop()
-      if (group && group[P_CONTROL] === 'for' && group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2)
-        fail('for header has the wrong number of semicolons')
+      if (group && group[P_CONTROL] === 'for') {
+        if ((group[P_SEMIS] === 0 && !group[P_FOR_INOF]) ||
+            (group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2))
+          fail('for header has the wrong number of semicolons')
+        if (group[P_SEMIS] === 2 && group[P_FOR_INOF])
+          fail("'in'/'of' is not allowed in an unparenthesized classic for initializer")
+      }
+      const parent = parens[parens.length - 1]
+      if (parent && parent[P_CONTROL] === 'for' && parent[P_BASE_DEPTH] === nesting &&
+          parent[P_SEMIS] === 0 && !parent[P_FOR_INOF]) parent[P_FOR_TOKENS]++
       if (group && group[P_REST_COMMA] && !group[P_CONTROL]) {
         let k = i + 1
         while (isWhitespaceCode(src.charCodeAt(k))) k++
@@ -432,8 +477,18 @@ const validateLexicalSource = (src, strict) => {
       }
       if (group && group[P_CONTROL]) expectStatement = true
       if (optionalDepth > parens.length) optionalDepth = -1
-    } else if (ch === '{') { nesting++; expectStatement = false; pendingControl = null }
-    else if (ch === '[') nesting++
+    } else if (ch === '{') {
+      const group = parens[parens.length - 1]
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_TOKENS]++
+      nesting++; expectStatement = false; pendingControl = null
+    }
+    else if (ch === '[') {
+      const group = parens[parens.length - 1]
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_TOKENS]++
+      nesting++
+    }
     else if (ch === '}' || ch === ']') {
       nesting--
       const group = parens[parens.length - 1]
@@ -446,6 +501,8 @@ const validateLexicalSource = (src, strict) => {
     else if (ch === ';' || ch === ',') {
       const group = parens[parens.length - 1]
       if (ch === ';' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting) group[P_SEMIS]++
+      if (ch === ',' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_COMMAS]++
       if (ch === ',' && group && group[P_REST] && group[P_REST_DEPTH] === nesting) group[P_REST_COMMA] = true
       if (ch === ',' && group && group[P_EXPR_DEPTH] >= nesting) group[P_EXPR_DEPTH] = -1
       optionalDepth = -1
@@ -453,6 +510,8 @@ const validateLexicalSource = (src, strict) => {
         !/[=!<>+\-*/%&|^?]/.test(src[i - 1] || '')) {
       const group = parens[parens.length - 1]
       if (group && group[P_EXPR_DEPTH] < 0) group[P_EXPR_DEPTH] = nesting
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_INIT] = true
     }
     canRegex = !(/[)\]}]/.test(ch))
     lastPunct = ch
@@ -1452,6 +1511,15 @@ export function validateEarlyErrors(ast, source) {
         if (head[0] === 'of' && isNode(head[2]) && head[2][0] === ',')
           fail('for-of iteration expression cannot be an unparenthesized comma expression')
         walk(head[2], cx)
+      } else if (isSeq(head)) {
+        // A classic for header's three slots are expression/declaration
+        // grammar, not a StatementList. Walking the shared `';'` node through
+        // its ordinary handler marks every child statement-position and turns
+        // an invalid block in init/test/update into an accepted block statement.
+        for (let i = 1; i < head.length; i++) {
+          if (typeof head[i] === 'string') checkIdentifierRef(head[i], cx)
+          else walk(head[i], cx, false)
+        }
       } else walk(head, cx)
       if (declaration(node[2])) needsLexical = true
       walk(node[2], next, true, true)

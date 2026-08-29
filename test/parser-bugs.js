@@ -747,3 +747,29 @@ test('expression-only grammar slots retain their statement/list context (destruc
     ok(Array.isArray(parse('{}\n[1]')), 'a block may be followed by an array-expression sibling across ASI')
     ok(Array.isArray(parse('for (let i = 0; i < 1; i++) { ; }')), 'semicolons remain valid in control parens and blocks')
 })
+
+test('for headers keep classic clauses separate from for-in/of heads (asi-and-line-terminator-context / other-jessie-context-loss)', () => {
+    // Newlines never replace either of a classic for header's two semicolons.
+    // Conversely, top-level in/of commits to the iteration grammar and cannot
+    // coexist with classic clauses. Header slots are expressions/declarations,
+    // not blocks or a StatementList.
+    rejects('for () {}', 'semicolons')
+    rejects('for (false\n;\n) {}', 'semicolons')
+    rejects('for (false\nfalse\nfalse) {}', 'semicolons')
+    rejects('export let f = () => { for (let x = 3 in {}) {} }', 'uninitialized binding')
+    rejects('export let f = () => { for (let x, y = 4 in {}) {} }', 'uninitialized binding')
+    rejects('for (true ? 0 : 0 in {}; false; ) ;', 'classic for initializer')
+    rejects('export let f = () => { for (let i = 0; i < 1; { i++; }) {} }', 'object literal')
+    rejects('export let f = () => { for ({ let i = 0; } i < 1; i++) {} }', 'object literal')
+
+    is(jz('export let f = () => { let n = 0; for (let i = 0; i < 4; i++) n += i; return n }').exports.f(), 6)
+    is(jz('export let f = () => { let n = 0; for (;;) { n++; break } return n }').exports.f(), 1)
+    is(jz('export let f = () => { let o = { a: 1 }; for (let in o) { } return 1 }').exports.f(), 1)
+    is(jz('export let f = () => { let n = 0; for (const x of [2,3]) n += x; return n }').exports.f(), 5)
+    ok(Array.isArray(parse("for (let seen = ('x' in {x:1}); !seen; ) {}")),
+      'parenthesized in remains a valid classic-for initializer')
+    ok(Array.isArray(parse('for (let of = 0; of < 1; of++) {}')),
+      "the contextual word 'of' remains a valid classic-for binding")
+    ok(Array.isArray(parse('for (let of of [1]) {}')),
+      "a binding named 'of' is distinct from the following for-of keyword")
+})
