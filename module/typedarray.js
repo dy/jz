@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, maybeUnboxBigInt } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -1832,15 +1832,33 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
+      // `val` may be a bare name RepresentationPlan has proven BOXED (found live:
+      // watr's real f64() -- `value = tag ? F64_QUIET : i64.parse(tail)` then
+      // `_i64[value's own idx] = value`, a BigInt64Array element write of a param
+      // whose OWN write-site is a top-level bigint const / member-callee result) --
+      // a plain `i64.reinterpret_f64` of THAT reads the box POINTER's own tag bits
+      // as if they were the payload (the box-pointer-bits-as-value disease this
+      // file's sibling Shape #6/#7/#8 doc comments already name, one layer
+      // downstream: at the point a proven-typed receiver's element type fixes RAW
+      // as the ONLY legal wire format, so nothing downstream of this write would
+      // ever unbox it). `maybeUnboxBigInt` is the established, already-audited
+      // (CONSERVATIVE PAIRING, src/ir/bigint.js's own doc comment) runtime twin for
+      // exactly this "no static boxed-or-raw proof" shape -- the same defense-in-
+      // depth reasoning readI64's own isPlanTaggedBigint arm already applies (this
+      // file's phase-c-unification.md, "Shape #8 branch: RETIRED"): a tag check
+      // unboxes a real pointer and passes a genuine raw payload through unchanged,
+      // so the overwhelmingly common already-raw case (arithmetic results, fresh
+      // BigInt() literals) still stores correctly, at the cost of one runtime tag
+      // check this proven-typed fast path previously skipped entirely.
       if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
-        guard(['i64.store', off, ['i64.reinterpret_f64', asF64(valIR)]])], 'void')
+        guard(['i64.store', off, maybeUnboxBigInt(asF64(valIR))])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]])]
+        guard(['i64.store', off, maybeUnboxBigInt(['local.get', `$${vt}`])])]
         : ['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]),
+        guard(['i64.store', off, maybeUnboxBigInt(['local.get', `$${vt}`])]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (et === 7) { // Float64Array

@@ -2797,6 +2797,67 @@ test('bigint: range-boundary family survives the host export boundary (string in
   }
 })
 
+test('bigint: range-boundary family survives a BigInt64Array element store (box-forcing union)', () => {
+  const FAMILY = {
+    'i64 max (2^63-1)': '9223372036854775807n',
+    'negated i64 max': '-9223372036854775807n',
+    'i64 min (-2^63)': '-9223372036854775808n',
+    '2^64-1 wrapped': '18446744073709551615n',
+    'negated 2^64-1 wrapped': '-18446744073709551615n',
+    '+2^62 control': '4611686018427387904n',
+    '-2^62 control': '-4611686018427387904n',
+  }
+  // module/typedarray.js's `.typed:[]=` isBigInt branch stored through a bare
+  // `i64.reinterpret_f64` of the RHS's f64 carrier -- correct only when the
+  // RHS is PROVABLY raw. A Number|BigInt union (the SAME box-forcing
+  // reassignment shape the "survives a Number|BigInt union" pin above uses)
+  // is unconditionally boxed by construction; storing THAT into a BigInt64Array
+  // element reinterpreted the box POINTER's own tag bits as the payload -- the
+  // same disease the two pins above exist to prevent, a fourth chokepoint the
+  // original 2026-08 range-boundary fix (applyBigintRepresentationAction/
+  // coerceArg/readI64) didn't cover, since none of those three sit on the
+  // typed-array store path. Ported from the retired fix/shape8-member-callee
+  // branch (found live there against watr's own f64() encoder) as defense-in-
+  // depth, the same reasoning readI64's own hardening already used: not
+  // reproducible against main's own call-target-index architecture through any
+  // ordinary-program shape tried, but the fixpoint-proof-not-runtime-fact
+  // hazard applies wherever this chokepoint's verdict is consumed, not only on
+  // the branch's own now-retired machinery. Fixed the same way: `maybeUnboxBigInt`,
+  // covering all three call sites (the void-statement leanCheckedIdx fast path
+  // and both arms of the general path).
+  //
+  // Compared INSIDE the compiled program against a fresh literal (array-methods.js's
+  // own "carrier doctrine": a cross-export-boundary bare BigInt64Array-element return
+  // has a separate, pre-existing host-tagging gap unrelated to this fix -- confirmed
+  // live, same on unmodified main -- so this pin isolates the store-side box/unbox
+  // hazard alone, matching how test/array-methods.js's own BigInt64Array pins do it).
+  // Statement position only: a typed-array assignment USED AS A VALUE (`let y =
+  // (arr[0] = x)`) hits a SEPARATE, also pre-existing (confirmed identical on
+  // unmodified main), unrelated gap -- the expression's own result stays in `x`'s
+  // original (possibly BOXED) representation, which downstream `===`/arithmetic on
+  // that bound-once local doesn't correctly re-widen -- out of this fix's scope,
+  // not touched here. The non-void/value-returning call site this fix also patches
+  // is instead confirmed by direct WAT inspection below (the `$__ptr_type` tag
+  // check is present at the store, regardless of what the caller does with the
+  // expression's own result).
+  for (const optimize of [false, 2, 3]) {
+    const lbl = `O${optimize || 0}`
+    for (const [name, lit] of Object.entries(FAMILY)) {
+      const stmt = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; const arr = new BigInt64Array(1); arr[0] = x; return arr[0] === ${lit} ? 1 : 0 }`, { optimize }).exports
+      is(stmt.f(1), 1, `${lbl}: statement-position store, ${name}`)
+    }
+  }
+  // Value-position call site (module/typedarray.js's non-void `.typed:[]=` arm):
+  // WAT-body inspection, matching this file's own "unary/joint-binary" pin's
+  // established `wrapperBody`/`call $__ptr_type` technique above.
+  const wat = String(compile(`
+    export let f = (present) => { let x = 0; if (present) x = 9223372036854775807n; const arr = new BigInt64Array(1); let y = (arr[0] = x); return y }
+  `, { optimize: false, wat: true }))
+  const fStart = wat.indexOf('(func $f\n')
+  const fBody = wat.slice(fStart, wat.indexOf('\n  (func ', fStart + 1))
+  ok(/call \$__ptr_type/.test(fBody), 'value-position BigInt64Array store runtime tag-checks via maybeUnboxBigInt, not a bare i64.reinterpret_f64')
+})
+
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {
   // The retired sentinel export lane could not be disabled until these
   // producer shapes materialized through the generic tagged decode; doing so
