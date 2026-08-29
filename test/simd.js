@@ -441,6 +441,43 @@ test('SIMD - f32 reduction widens to f64x2 accumulate, bit-identical', () => {
   is(jz(`export let m = () => { let a = new Float32Array(16); for (let i=0;i<16;i++) a[i]=i+1; let s=0; for (let i=0;i<16;i++) s+=a[i]; return s }`, { optimize: 'speed' }).exports.m(), 136)
 })
 
+// === SIMD map bitwise-on-float — genSimdMap declines the fast path ===
+// ECMAScript ToInt32 has no SIMD-lane form (WASM SIMD's only float→int lanes —
+// i32x4.trunc_sat_f32x4_*/f64x2_*_zero — SATURATE out-of-range magnitudes,
+// they don't wrap mod 2^32 like ToInt32), so a Float32Array/Float64Array
+// `.map(x => x & c)`-shaped callback (& | ^ << >> >>>) declines the SIMD/
+// scalar fast path in module/typedarray/simd-map.js's genSimdMap and falls
+// through to the generic per-element map (module/typedarray.js), which
+// already threads the callback through the real ToInt32 (src/ir.js toI32,
+// via emit.js's operator handlers) and stores back through elemStoreIR
+// (f32.demote_f64/f64.store) — same as `x & 1` on 1.5 === 1, NaN === 0.
+// Differential against the host's own Float32Array/Float64Array (the
+// authoritative oracle for TypedArray.prototype.map + ToInt32) at O0/O2/O3,
+// element-by-element (not summed, so a compensating-error pair can't hide).
+const BW_VALUES = [
+  1.5, -2.5, 3, 4, 0, -0, -7, NaN, 0.4, 0.9999999,
+  2147483647, 2147483648, -2147483648, -2147483649, // INT32 boundary ±1
+  4294967296, 3e9, -3e9, 1e15, -1e15, Infinity, -Infinity, // beyond UINT32, well within toI32's ±2^63 wrap range
+]
+const bwLit = v => Number.isNaN(v) ? 'NaN' : v === Infinity ? 'Infinity' : v === -Infinity ? '-Infinity'
+  : Object.is(v, -0) ? '-0' : String(v)
+const BW_JS_OPS = { '&': x => x & 1, '|': x => x | 1, '^': x => x ^ 1, '<<': x => x << 1, '>>': x => x >> 1, '>>>': x => x >>> 1 }
+
+for (const Kind of ['Float64Array', 'Float32Array']) {
+  for (const [jsOp, fn] of Object.entries(BW_JS_OPS)) {
+    test(`SIMD map bitwise decline - ${Kind} x ${jsOp} 1 matches native ToInt32 semantics, O0/O2/O3`, () => {
+      const assigns = BW_VALUES.map((v, i) => `a[${i}]=${bwLit(v)}`).join('; ')
+      const src = `export let main = () => { let a = new ${Kind}(${BW_VALUES.length}); ${assigns}; return a.map(x => x ${jsOp} 1) }`
+      const want = Array.from(new globalThis[Kind](BW_VALUES).map(fn))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < BW_VALUES.length; i++)
+          is(got[i], want[i], `${Kind} x${jsOp}1 O${optimize} elem[${i}] (src=${BW_VALUES[i]})`)
+      }
+    })
+  }
+}
+
 // === SIMD Int32Array (i32x4 — 4 elements per vector) ===
 
 test('SIMD i32x4 - map multiply', () => {
@@ -459,6 +496,250 @@ test('SIMD i32x4 - map add', () => {
     let r = buf.map(x => x + 5)
     return r[0]+r[1]+r[2]+r[3]
   }`).main(), 120)
+})
+
+test('SIMD i32x4 - map bitwise still takes the SIMD lane path (unaffected by the float decline)', () => {
+  // Regression guard for the fix above: genSimdMap's float-only decline
+  // (elemType 6/7) must not spill onto Int32Array/Uint32Array (elemType 4/5) —
+  // WAT-shape pin, not just value correctness, so a regression is caught even
+  // if it happens to still compute the right number via the scalar fallback.
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    const w = wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })
+    ok(/i32x4\.and|v128\.and/.test(w), `${Kind}: bitwise .map() still vectorizes (v128.and present)`)
+  }
+  for (const [jsOp, watOp] of [['<<', 'i32x4.shl'], ['>>', 'i32x4.shr_s'], ['>>>', 'i32x4.shr_u']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 1) }`, { optimize: 0 })
+    ok(w.includes(watOp), `Int32Array x${jsOp}1: ${watOp} present`)
+  }
+  is(run(`export let main = () => {
+    let buf = new Int32Array(4)
+    buf[0]=5; buf[1]=-6; buf[2]=255; buf[3]=-1
+    let r = buf.map(x => x & 15)
+    return r[0]+r[1]+r[2]+r[3]
+  }`).main(), (5 & 15) + (-6 & 15) + (255 & 15) + (-1 & 15))
+})
+
+// === SIMD map bitwise/arithmetic CONSTANT normalization (genSimdMap's i32.const
+// site) — fix/simd-map-const-toint32 ===
+// Companion to the float×bitwise decline above: the bitwise/shift arms
+// (module/typedarray/simd-map.js's simdI32/scalarI32) embed the JS AST
+// literal `c` verbatim into `i32.const`/`i32x4.splat (i32.const c)`. Left
+// unnormalized, any non-integer or non-finite `c` (`1.5`, `-1.5`, `0.9`,
+// `2147483648.7`, `Infinity`, `-Infinity`) isn't even valid WAT integer
+// syntax — `new Int32Array(4).map(x => x & 1.5)` used to throw "Bad int 1.5"
+// at compile time, a spurious REJECT of valid JS (ECMAScript ToInt32:
+// `x & 1.5` ≡ `x & 1`). genSimdMap now normalizes `c` via toI32Const — the
+// same `Number.isFinite(v) ? v | 0 : 0` fold src/ir.js's toI32 applies to a
+// literal f64.const — for BOTH the value family (and/or/xor) and the
+// shift-count family (shl/shr/shru: no separate `&31` needed, WASM's own
+// shl/shr_s/shr_u — scalar and i32x4 lane-wise alike — already reduce the
+// shift-count operand modulo 32 at the instruction level).
+// Differential against the host's own TypedArray.prototype.map (the
+// authoritative oracle) at O0/O2/O3, element-by-element. Int16Array/Uint8Array
+// included as a CONTROL: elemType < 4 never reaches genSimdMap's SIMD i32
+// path at all (declines unconditionally, "no SIMD path" below), so these two
+// kinds exercise the SAME constants purely through the pre-existing generic
+// lowering — confirms the differential harness itself (and that path) is
+// sound, independent of this fix.
+const INT_BW_CONSTS = [1.5, -0, 33, 0.9, 2147483648.7, NaN, Infinity, -1.5]
+const INT_BW_ELEMS = {
+  Int32Array: [0, 1, -1, 5, -6, 255, -255, 2147483647, -2147483648, 1000000],
+  Uint32Array: [0, 1, 5, 255, 2147483647, 2147483648, 4294967295, 3000000000],
+  Int16Array: [0, 1, -1, 5, -6, 255, -255, 32767, -32768],
+  Uint8Array: [0, 1, 5, 255, 128, 254],
+}
+const INT_BW_JS_OPS = { '&': (x, c) => x & c, '|': (x, c) => x | c, '^': (x, c) => x ^ c, '<<': (x, c) => x << c, '>>': (x, c) => x >> c, '>>>': (x, c) => x >>> c }
+
+for (const [Kind, vals] of Object.entries(INT_BW_ELEMS)) {
+  for (const [jsOp, fn] of Object.entries(INT_BW_JS_OPS)) {
+    test(`SIMD map bitwise constant - ${Kind} x ${jsOp} c matches native ToInt32/shift-mask for c in {1.5,-0,33,0.9,2147483648.7,NaN,Infinity,-1.5}, O0/O2/O3`, () => {
+      const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+      for (const c of INT_BW_CONSTS) {
+        const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${bwLit(c)}) }`
+        const want = Array.from(new globalThis[Kind](vals).map(x => fn(x, c)))
+        for (const optimize of [0, 2, 3]) {
+          const got = Array.from(jz(src, { optimize }).exports.main())
+          for (let i = 0; i < vals.length; i++)
+            is(got[i], want[i], `${Kind} x${jsOp}${bwLit(c)} O${optimize} elem[${i}] (src=${vals[i]})`)
+        }
+      }
+    })
+  }
+}
+
+// Arithmetic (mul/add/sub) on an INTEGER element (Int32Array/Uint32Array) with
+// a FRACTIONAL constant: JS computes `x OP c` in f64 (the loaded int32 value
+// promoted to double) and applies ToInt32/ToUint32 only once, when STORING
+// the result — `x * 1.5` on an Int32Array is NOT `x * 1` (x=3 → f64 4.5 →
+// ToInt32 4, not 3). genSimdMap declines the fast path for this shape (same
+// `return null` idiom as the float×bitwise/i8/i16/u8/u16 declines) rather
+// than round/truncate the constant, falling through to the generic
+// per-element lowering, which stores through elemStoreIR's real conversion.
+// An integer-valued constant (`x * 3`) needs no decline — exact-integer f64
+// arithmetic and i32 wrapping arithmetic agree bit-for-bit — verified by the
+// WAT-shape control below alongside this value differential.
+test('SIMD map arithmetic decline - Int32Array/Uint32Array fractional constant (x*1.5, x+0.5, x-1.5) matches native ToInt32/ToUint32-on-store, O0/O2/O3', () => {
+  const ARITH_JS_OPS = { '*': (x, c) => x * c, '+': (x, c) => x + c, '-': (x, c) => x - c }
+  const cases = [['*', 1.5], ['+', 0.5], ['-', 1.5]]
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    const vals = INT_BW_ELEMS[Kind]
+    const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+    for (const [jsOp, c] of cases) {
+      const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x ${jsOp} ${c}) }`
+      const want = Array.from(new globalThis[Kind](vals).map(x => ARITH_JS_OPS[jsOp](x, c)))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < vals.length; i++)
+          is(got[i], want[i], `${Kind} x${jsOp}${c} O${optimize} elem[${i}] (src=${vals[i]})`)
+      }
+    }
+  }
+})
+
+test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fractional-arithmetic constants decline', () => {
+  // Positive: an INTEGER constant (unchanged by toI32Const) keeps taking the
+  // SIMD lane path for every recognized op family, on both Int32Array and
+  // Uint32Array — this fix's normalization/decline gates must not spill onto
+  // the ordinary, already-correct integer-constant case.
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    ok(/v128\.and/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })), `${Kind} x&255: v128.and present`)
+    ok(/i32x4\.mul/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x * 3) }`, { optimize: 0 })), `${Kind} x*3: i32x4.mul present`)
+    ok(/i32x4\.add/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x + 3) }`, { optimize: 0 })), `${Kind} x+3: i32x4.add present`)
+  }
+  for (const [jsOp, watOp] of [['<<', 'i32x4.shl'], ['>>', 'i32x4.shr_s'], ['>>>', 'i32x4.shr_u']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 33) }`, { optimize: 0 })
+    ok(w.includes(watOp), `Int32Array x${jsOp}33: ${watOp} present (out-of-range integer shift count still vectorizes)`)
+    ok(w.includes('i32.const 33'), `Int32Array x${jsOp}33: constant embeds unchanged (WASM masks mod-32 at the instruction level)`)
+  }
+  // Negative: a FRACTIONAL arithmetic constant must decline (no i32x4.mul/add
+  // in the output at all — proves the generic fallback fired, not merely that
+  // the final number happens to be right).
+  for (const [jsOp, watOp] of [['*', 'i32x4.mul'], ['+', 'i32x4.add']]) {
+    const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x ${jsOp} 1.5) }`, { optimize: 0 })
+    ok(!w.includes(watOp), `Int32Array x${jsOp}1.5: ${watOp} ABSENT (fast path declined)`)
+  }
+  // A bitwise constant that was ALREADY valid WAT integer syntax before this
+  // fix (e.g. -0 stringifies to "0") must produce byte-identical WAT to
+  // before — normalization is idempotent on already-normalized constants.
+  const w = wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => x & -0) }`, { optimize: 0 })
+  ok(w.includes('i32.const 0'), `Int32Array x&-0: normalizes to i32.const 0 (ToInt32(-0) === 0)`)
+})
+
+// === SIMD map op-validity table (fix/simd-map-op-validity) ===
+// Same bug CLASS as the two decline gates above (float×bitwise,
+// integer×fractional-arithmetic-constant), now unified into ONE table,
+// SIMD_MAP_VALID_KINDS (module/typedarray/simd-map.js), consulted once by
+// genSimdMap: not every (op, elemType) pair genSimdMap was asked to lower
+// actually has a WASM instruction for it. Three more holes in that space,
+// found by probing every (op, elemType) pair analyzeSimd can produce
+// against the host's own TypedArray.prototype.map (.work/simd-map-op-
+// validity.md has the full matrix):
+//   1. `x / c` on Int32Array/Uint32Array for ANY constant (not just a
+//      fractional one) — WASM SIMD has no integer lane div (nor a scalar
+//      i32.div — not even a real instruction mnemonic); "Unknown
+//      instruction i32x4.div" was a compile-time crash.
+//   2. Math.sqrt/ceil/floor on Int32Array/Uint32Array — no integer lane or
+//      scalar form exists (float-only WASM instructions); same crash shape.
+//   3. Math.abs on Uint32Array — compiles fine but computes the WRONG
+//      VALUE: the lane op is SIGNED abs (negate if the sign bit is set),
+//      but a Uint32Array's ECMAScript value is already non-negative by
+//      construction, so Math.abs on it is the identity. Element
+//      4294967295 used to silently misreport as 1.
+
+const DIV_CONSTS = [3, 4, -1, 0, 7, -7, 1.5] // non-exact, pow2, overflow-trap risk, div-by-zero-trap risk, ..., fractional
+for (const Kind of ['Int32Array', 'Uint32Array']) {
+  test(`SIMD map div decline - ${Kind} x/c for c in {3,4,-1,0,7,-7,1.5} matches native TypedArray.map, O0/O2/O3`, () => {
+    const vals = INT_BW_ELEMS[Kind]
+    const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+    for (const c of DIV_CONSTS) {
+      const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => x / ${c}) }`
+      const want = Array.from(new globalThis[Kind](vals).map(x => x / c))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < vals.length; i++)
+          is(got[i], want[i], `${Kind} x/${c} O${optimize} elem[${i}] (src=${vals[i]})`)
+      }
+    }
+  })
+}
+
+for (const method of ['sqrt', 'ceil', 'floor']) {
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    test(`SIMD map Math.${method} decline - ${Kind} matches native TypedArray.map, O0/O2/O3`, () => {
+      const vals = INT_BW_ELEMS[Kind]
+      const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+      const src = `export let main = () => { let a = new ${Kind}(${vals.length}); ${assigns}; return a.map(x => Math.${method}(x)) }`
+      const want = Array.from(new globalThis[Kind](vals).map(x => Math[method](x)))
+      for (const optimize of [0, 2, 3]) {
+        const got = Array.from(jz(src, { optimize }).exports.main())
+        for (let i = 0; i < vals.length; i++)
+          is(got[i], want[i], `${Kind} Math.${method} O${optimize} elem[${i}] (src=${vals[i]})`)
+      }
+    })
+  }
+}
+
+test('SIMD map Math.abs decline - Uint32Array high-bit-set elements match native TypedArray.map (was silently wrong: 4294967295 -> 1), O0/O2/O3', () => {
+  const vals = [0, 1, 5, 255, 2147483647, 2147483648, 3000000000, 4294967295]
+  const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+  const src = `export let main = () => { let a = new Uint32Array(${vals.length}); ${assigns}; return a.map(x => Math.abs(x)) }`
+  const want = Array.from(new Uint32Array(vals).map(x => Math.abs(x)))
+  for (const optimize of [0, 2, 3]) {
+    const got = Array.from(jz(src, { optimize }).exports.main())
+    for (let i = 0; i < vals.length; i++)
+      is(got[i], want[i], `Uint32Array Math.abs O${optimize} elem[${i}] (src=${vals[i]})`)
+  }
+})
+
+test('SIMD map Math.abs - Int32Array signed case unaffected by the Uint32Array exclusion (still SIMD, still correct), O0/O2/O3', () => {
+  const vals = INT_BW_ELEMS.Int32Array
+  const assigns = vals.map((v, i) => `a[${i}]=${v}`).join('; ')
+  const src = `export let main = () => { let a = new Int32Array(${vals.length}); ${assigns}; return a.map(x => Math.abs(x)) }`
+  const want = Array.from(new Int32Array(vals).map(x => Math.abs(x)))
+  for (const optimize of [0, 2, 3]) {
+    const got = Array.from(jz(src, { optimize }).exports.main())
+    for (let i = 0; i < vals.length; i++)
+      is(got[i], want[i], `Int32Array Math.abs O${optimize} elem[${i}] (src=${vals[i]})`)
+  }
+  ok(/i32x4\.abs/.test(wat(`export let f = (n) => { let a = new Int32Array(n); return a.map(x => Math.abs(x)) }`, { optimize: 0 })),
+    'Int32Array Math.abs: i32x4.abs present (still SIMD)')
+})
+
+test('SIMD map i32x4 - WAT-shape control: div/sqrt/ceil/floor decline on integer elements, abs declines only on Uint32Array', () => {
+  // Negative: none of these ever appear for Int32Array/Uint32Array — proves
+  // the fast path actually declined, not merely that the final number
+  // happens to be right (e.g. via the generic path coincidentally agreeing).
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    for (const [expr, badOps] of [
+      ['x / 3', ['i32x4.div', 'i32.div']],
+      ['Math.sqrt(x)', ['i32x4.sqrt', 'i32.sqrt']],
+      ['Math.ceil(x)', ['i32x4.ceil', 'i32.ceil']],
+      ['Math.floor(x)', ['i32x4.floor', 'i32.floor']],
+    ]) {
+      const w = wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => ${expr}) }`, { optimize: 0 })
+      for (const bad of badOps) ok(!w.includes(bad), `${Kind} ${expr}: ${bad} ABSENT (fast path declined)`)
+    }
+  }
+  {
+    const w = wat(`export let f = (n) => { let a = new Uint32Array(n); return a.map(x => Math.abs(x)) }`, { optimize: 0 })
+    ok(!w.includes('i32x4.abs'), 'Uint32Array Math.abs: i32x4.abs ABSENT (fast path declined)')
+  }
+  // Positive: the SAME ops still vectorize on Float32Array/Float64Array
+  // (unaffected by the integer-only exclusion) — regression guard for the
+  // table refactor itself, not just the new rows.
+  for (const [Kind, prefix] of [['Float32Array', 'f32x4'], ['Float64Array', 'f64x2']]) {
+    for (const [expr, opName] of [['x / 3', 'div'], ['Math.sqrt(x)', 'sqrt'], ['Math.ceil(x)', 'ceil'], ['Math.floor(x)', 'floor'], ['Math.abs(x)', 'abs']]) {
+      const w = wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => ${expr}) }`, { optimize: 0 })
+      ok(w.includes(`${prefix}.${opName}`), `${Kind} ${expr}: ${prefix}.${opName} present (unaffected)`)
+    }
+  }
+  // mul/add/sub/bitwise/neg on integer elements still vectorize too — the
+  // table lookup must not have accidentally narrowed the already-correct rows.
+  for (const Kind of ['Int32Array', 'Uint32Array']) {
+    ok(/i32x4\.mul/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x * 3) }`, { optimize: 0 })), `${Kind} x*3: i32x4.mul present`)
+    ok(/v128\.and/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => x & 255) }`, { optimize: 0 })), `${Kind} x&255: v128.and present`)
+    ok(/i32x4\.neg/.test(wat(`export let f = (n) => { let a = new ${Kind}(n); return a.map(x => -x) }`, { optimize: 0 })), `${Kind} -x: i32x4.neg present`)
+  }
 })
 
 // === SIMD ramp-map (out[i] = f(i), induction var as DATA) — tryRampMap ===

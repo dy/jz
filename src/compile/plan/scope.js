@@ -23,7 +23,7 @@
 import { ctx, warn, declGlobal } from '../../ctx.js'
 import { withValueOverlay } from '../flow-state.js'
 import { warningsView } from '../../session-views.js'
-import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames } from '../../ast.js'
+import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
 import { VAL, updateGlobalRep } from '../../reps.js'
 import { intLevelMap } from '../../type.js'
 import { TYPED_CTOR_CONFLICT, typedStorageFact } from '../../typed-provenance.js'
@@ -211,8 +211,10 @@ export const inferModuleLetTypes = (ast) => {
  *  bound first (bench: provenance, fftplan). */
 export const refineFieldProvenance = (ast) => {
   if (!ctx.scope.userGlobals || !ctx.schema?.vars) return
-  const visitDecl = (node) => {
-    if (!Array.isArray(node)) return
+  // Structural descent, not generic: only `;`/`export` wrappers are transparent —
+  // everything else (including a matched let/const's own declarators) is a leaf,
+  // so `enter` prunes with `return false` everywhere but those two op types.
+  walkAst(ast, { enter: node => {
     if (node[0] === 'let' || node[0] === 'const') {
       for (const d of node.slice(1)) {
         if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string') continue
@@ -225,14 +227,10 @@ export const refineFieldProvenance = (ast) => {
           if (sid != null) ctx.schema.vars.set(name, sid)
         }
       }
-      return
+      return false
     }
-    if (node[0] === ';' || node[0] === 'export') for (let i = 1; i < node.length; i++) visitDecl(node[i])
-  }
-  if (Array.isArray(ast)) {
-    if (ast[0] === ';') for (let i = 1; i < ast.length; i++) visitDecl(ast[i])
-    else visitDecl(ast)
-  }
+    if (node[0] !== ';' && node[0] !== 'export') return false
+  }})
 }
 
 // Receiver-HASH global classification (.work/todo.md §deletion-sweep).
@@ -292,17 +290,15 @@ export const classifyHashDictGlobals = (ast, programFacts) => {
     if (ctx.schema.resolve?.(name)?.length) return                  // non-empty merged schema — not dict-mode
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.HASH)
   }
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  const enter = (node) => {
     const [op, ...args] = node
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === 'let' || op === 'const') {
       for (const a of args) if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') mark(a[1], a[2])
     }
-    for (const a of args) walk(a)
   }
-  walk(ast)
-  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walk(mi)
+  walkAst(ast, { enter })
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) walkAst(mi, { enter })
 }
 
 // A module global whose every write anywhere in the program (any function body,
@@ -431,14 +427,11 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
     // local mutation, not a global one — it must not pollute the global's kind.
     const bound = new Set()
     for (const p of paramNames) if (p) bound.add(p)
-    const collectDecls = (node) => {
-      if (!Array.isArray(node)) return
-      const op = node[0]
-      if (op === '=>') return
-      if (op === 'let' || op === 'const') collectParamNames(node.slice(1), bound)
-      if (op === 'catch' && typeof node[2] === 'string') bound.add(node[2])
-      for (let i = 1; i < node.length; i++) collectDecls(node[i])
-    }
+    const collectDecls = (node) => walkAst(node, { enter: n => {
+      if (n[0] === '=>') return false
+      if (n[0] === 'let' || n[0] === 'const') collectParamNames(n.slice(1), bound)
+      if (n[0] === 'catch' && typeof n[2] === 'string') bound.add(n[2])
+    } })
     collectDecls(body)
 
     // Overlay: this scope's own let/const locals (analyzeBody — the same
@@ -482,11 +475,9 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
   // walk exists only to reach closures DEFINED at module-init time (an inline
   // `.forEach(x => { g = x })` at top level) whose BODIES don't run until
   // called — invisible to the depth-0 walk, visible to this one.
-  const findArrows = (node) => {
-    if (!Array.isArray(node)) return
-    if (node[0] === '=>') { walkFn(node[2], paramNamesOf(node[1]), null); return }
-    for (let i = 1; i < node.length; i++) findArrows(node[i])
-  }
+  const findArrows = (node) => walkAst(node, { enter: n => {
+    if (n[0] === '=>') { walkFn(n[2], paramNamesOf(n[1]), null); return false }
+  } })
   findArrows(ast)
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) findArrows(init)
   for (const f of ctx.funcs.list) {
@@ -655,21 +646,22 @@ export const inferModuleIntGlobals = (ast) => {
     if (scope && !fromParam.has(name) && refsAny(rhs, scope.params, { skipBindingPositions: true }))
       fromParam.set(name, scope.fn)
   }
-  const walk = (node, scope) => {
-    if (!Array.isArray(node)) return
-    const op = node[0]
-    if (op === '=' && typeof node[1] === 'string') record(node[1], node[2], scope)
-    else if ((op === 'let' || op === 'const') && node.length > 1) {
-      for (let i = 1; i < node.length; i++) {
-        const d = node[i]
+  // `scope` is fixed for the whole call (never changes mid-tree, not even at
+  // `=>` — the only variation is which top-level root it's invoked on below),
+  // so it closes over `enter` rather than threading through a boundary param.
+  const walk = (node, scope) => walkAst(node, { enter: n => {
+    const op = n[0]
+    if (op === '=' && typeof n[1] === 'string') record(n[1], n[2], scope)
+    else if ((op === 'let' || op === 'const') && n.length > 1) {
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') record(d[1], d[2], scope)
       }
-    } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof node[1] === 'string' && candidates.has(node[1])) {
-      if (FRAC_COMPOUND.has(op)) fractional.add(node[1])               // `/=`, `**=` → fractional outright
-      else if (!INT_COMPOUND.has(op)) record(node[1], node[2], scope)  // `+= -= *= %= ||= &&= ??=` → as their rhs
+    } else if (ASSIGN_OPS.has(op) && op !== '=' && typeof n[1] === 'string' && candidates.has(n[1])) {
+      if (FRAC_COMPOUND.has(op)) fractional.add(n[1])               // `/=`, `**=` → fractional outright
+      else if (!INT_COMPOUND.has(op)) record(n[1], n[2], scope)  // `+= -= *= %= ||= &&= ??=` → as their rhs
     }
-    for (let i = 1; i < node.length; i++) walk(node[i], scope)
-  }
+  }})
   walk(ast, null)
   // DEP-module top-level inits live in ctx.module.moduleInits, NOT the entry ast —
   // without walking them a dep's `export const TWO_PI = Math.PI * 2` records no
@@ -1177,7 +1169,27 @@ export const canSkipWholeProgramNarrowing = (programFacts) =>
   !programFacts.anyDyn &&
   programFacts.propMap.size === 0 &&
   !programFacts.hasSchemaLiterals &&
-  !ctx.closure.make &&
+  // `ctx.closure.make` truthiness means "has the `fn` module's init(ctx) run",
+  // NOT "does this program have closures" — front.js's eager includeMods()
+  // (region-arena builds) and index.js's `_eagerStdlib` test hook both load
+  // `fn` for EVERY compile regardless of source content (the established
+  // "module load = registration only" invariant, .work/region-release-
+  // notes.md Class 1/2), so the bare-truthy check silently forced the full
+  // whole-program narrowing fixpoint to run for programs with zero closures —
+  // observable eager-vs-lazy divergence even on `() => 5` (no call sites, no
+  // value-used names, nothing else that would ever disqualify the skip path):
+  // narrowI32Results, unreached on the lazy skip path, narrowed the literal
+  // return to i32 + a boundary-wrap trampoline once the full pass ran, purely
+  // because `fn` happened to be loaded. `ctx.module.demanded` (src/ctx.js) is
+  // the real, AST-content-driven ledger the Class 2 fix already established
+  // for exactly this "loaded vs demanded" distinction — `includeModule` marks
+  // it unconditionally (even on the already-loaded early return) while the
+  // eager bulk preload (`includeAllMods` → `loadModule` directly) never does,
+  // so under normal (non-eager) compiles `demanded` and `ctx.closure.make`
+  // always coincide (the only path that loads `fn` at all IS a real
+  // `includeModule('fn')` call — no MOD_DEPS edge lists `fn` as a dependency)
+  // and this is a pure narrowing of the proxy, not a behavior change.
+  !ctx.module.demanded.has('fn') &&
   // Typed default-arg annotations (`arr = new Int32Array(0)`) feed the param
   // lattice even with zero call sites — a host-called SPMD kernel (Workers v1)
   // gets its pointer-ABI lane and Atomics receiver proof from exactly this.

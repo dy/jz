@@ -41,11 +41,12 @@ node bench/bench.mjs mat4 --targets=nat,v8,jz
 for a full corpus run, a hazard for a targeted one: a `--cases=`/`--targets=`
 run against an existing file silently drops every row it didn't just measure.
 
-For a jz-only refresh (compiler changed, rivals didn't — no rival toolchain
-rebuilds happen anyway, see the prep cache below), use `--merge`: only the
-selected `(case,target)` rows are updated in place, every other row is
-byte-preserved, and each touched row gains `measuredAt: <short-sha>`
-provenance. Mixing vintages this way sets `meta.partial: true`.
+For a targeted refresh, use `--merge`: only the selected `(case,target)` rows
+are updated in place, every other row is byte-preserved, and each touched row
+gains `measuredAt: <short-sha>` provenance. Mixing vintages this way sets
+`meta.partial: true`. Claims freshness is checked from every JZ row's
+`measuredAt`, not the merge write's `meta.commit`; a rival-only refresh cannot
+launder carried JZ timings into apparently fresh evidence.
 
 A partial refresh trusts the untouched rival rows without re-measuring them —
 `--verify-anchors[=N]` (default 3) is the check that trust is still earned: it
@@ -77,6 +78,11 @@ bound.
 # fast refresh: jz + jz-w2c only, full corpus, ~10-15 min instead of hours
 node bench/bench.mjs --targets=jz,jz-w2c --json --merge --verify-anchors
 ```
+
+Rival prep artifacts are cached only while the case source, generated flat
+input, `bench.mjs`, and `bench/_lib/` are unchanged. Porffor also stamps its
+exact git HEAD; dirty checkouts bypass the cache. `JZ_BENCH_REBUILD=1` forces
+all prep steps to run.
 
 ## Cases
 
@@ -163,61 +169,43 @@ lead for free without answering a question a user actually has. Javy
 (embedded-QuickJS) is wired as a **fenced reference** — it appears per case as a
 hatched row so the cost of the "ship a JS interpreter in wasm" approach is
 visible, but it is excluded from `SVG_TARGETS` so it never moves the headline
-number. The headline field is wasm-vs-wasm, apples-to-apples: JZ against the
-other languages compiled to the same target — WebAssembly run in V8 — i.e. Rust,
-Go, C, and Zig (`wasm32-wasi`), AssemblyScript, Porffor, and MoonBit (the last on
-moonrun, MoonBit's V8 wasm runner), plus the JS JITs it replaces
-(V8/Bun/Deno/SpiderMonkey/GraalJS). Native C/Rust/Zig/Go and NumPy's
-vectorized C are the corpus reference band — the aggregate "what you give up by
-not rewriting", with native C the speed-of-light ceiling.
+number. The Wasm field compares JZ with Rust, Go, C, Zig, AssemblyScript, and
+MoonBit on the same target, plus the JS JITs JZ replaces. Porffor has no Wasm
+target in its current alpha line; its native artifact is a separate hard speed
+and size floor. Native C is the speed-of-light reference.
 
-**Coverage is reported, not hidden.** A target that is present but cannot compile
-or run a case (Porffor OOMs on most typed-array kernels; TinyGo's stdlib subset
-rejects some `.go`) records a `{ status: 'fail', reason }` entry in
-`results.json`, and the page renders it as a muted row with the reason — and as a
-`ran / attempted` count on the headline row. The geomean still averages only the
-cases a target completed correctly (you cannot ratio a run that never produced a
-number), but the gap is no longer invisible.
+Coverage includes failures. A present target that cannot compile or run a case
+records `{ status: 'fail', reason }` in `results.json`. The page shows a muted
+row with the reason and includes the attempt in its coverage count. Geomeans use
+only cases that completed with an accepted checksum.
 
-The **per-case** view splits into two **same-class lanes**, so every bar in a
-card is a fair peer:
+The per-case view is one speed-sorted list. Substrate glyphs distinguish
+Wasm, JavaScript, and native rows. Wrong or unclassified results keep their
+measurements but receive no relative bar.
 
-- **WASM** — JZ vs Rust/Go/C/Zig→wasm, AssemblyScript, Porffor, and raw JS, all
-  run in this V8.
-- **Native** — JZ lowered to a native binary (`jz-w2c`: JZ wasm → `wasm2c` →
-  `clang -O3`) against the native toolchains (C/Rust/Go/Zig). This is the *fair*
-  native comparison — native-vs-native, not jz-wasm against a native binary — and
-  it's the axis for optimizing JZ's compile-to-native path. The lane hides where
-  no `jz-w2c` build is available (it needs wabt's wasm2c runtime + SIMDe headers).
-  It builds with `--no-tail-call` (audit-#12): wasm2c hard-fails
-  (`unexpected opcode: 0x12`) translating `return_call` combined with
-  multi-value results, so the lane's wasm input is a separate, ordinary-`call`
-  build from `jz-wasmtime`'s (which keeps tail calls — wasmtime supports the
-  proposal). A second translator, `jz-w2c2` (JZ wasm → `w2c2` → `clang -O3`),
-  exists as a CI-smoke cross-check but is not part of the published corpus:
-  w2c2 implements no SIMD proposal at all, so it structurally can't translate
-  any case whose loops vectorize to v128 (confirmed on ~40% of the corpus) —
-  wasm2c (with the SIMDe polyfill headers) stays the one native-lane row.
+`jz-w2c` lowers JZ Wasm through `wasm2c` and `clang -O3` for the native comparison.
+It uses `--no-tail-call` because wasm2c rejects `return_call` combined with
+multi-value results. `jz-wasmtime` keeps tail calls. A second translator,
+`jz-w2c2`, remains a CI smoke check rather than a published row because w2c2 has
+no SIMD support.
 
 ### Parity classes
 
-The `parity` column is `ok` when the run's checksum matches the most common
-checksum across all targets, `DIFF` when it diverges in a way that suggests
-a bug, and `fma` when the divergence is the documented FMA-fusion class.
-The Go arm64 backend auto-fuses `a*b + c` to `FMADDD` (mandatory in ARMv8,
-no compiler flag to disable it), which alters bit-level rounding on
-recurrence-style loops like `biquad`. Result is still IEEE-754
-correctly-rounded; cascade is the same algorithm.
+The `parity` column is `ok` when the run's checksum matches the case reference,
+`DIFF` when it diverges in a way that suggests a bug, and `fma` when the
+checksum matches the documented FMA-fusion alternate for that case.
+Native backends can fuse `a*b + c`, which changes bit-level rounding on
+recurrence-style loops such as `biquad` and `synth`. The `fma` label is accepted
+only when the checksum matches the pinned alternate for that case.
 
 ## The guarantee
 
 The suite's claim is precise and falsifiable: **for every kernel class arising in
 JZ's target domains, jz emits the fastest wasm in the field** — per case, against
-every rival compiled to the same substrate (C/Rust/Go/Zig → wasm32-wasi,
-AssemblyScript, Porffor, all run in V8), enforced by `test/bench.js` (the
-fastest-wasm gate over the full corpus, required-rival availability, per-rival
-coverage floors). Size is the second axis, on the `-Os` build — but not a
-strict-smaller claim: jz holds a par-or-smaller geomean band (≤1.05× vs
+every rival compiled to the same substrate (C/Rust/Go/Zig → wasm32-wasi and
+AssemblyScript, all run in V8), enforced by `test/bench.js`. Porffor's native
+artifact is a separate per-case and geomean speed-and-size floor. The `-Os`
+build carries the size claim. JZ holds a par-or-smaller geomean band (≤1.05× vs
 AssemblyScript) because AS's bench ports assume unchecked array access
 (`unchecked()` throughout) while jz pays real guards for JS's out-of-bounds
 read/write semantics. Native C stays a labeled ceiling, never a beat-claim.
@@ -290,13 +278,13 @@ counts so a fast path that stops firing reds CI machine-independently, while
 | `go-wasm` | Go → `wasm32-wasip1` (`GOOS=wasip1 GOARCH=wasm go build`), run in node's V8 |
 | `c-wasm` | C → `wasm32-wasi` via clang/LLVM (`zig cc -target wasm32-wasi -O3` — zig supplies the wasi-libc that plain clang lacks; no emcc/wasi-sdk install), run in node's V8 |
 | `jz-wasmtime` | JZ output on wasmtime |
-| `jz-w2c` | JZ wasm translated by wabt `wasm2c`, then clang `-O3` (built with `--no-tail-call` — see the Native-lane note above) |
+| `jz-w2c` | JZ Wasm translated by wabt `wasm2c`, then clang `-O3`; built with `--no-tail-call` as described above |
 | `jz-w2c2` | JZ wasm translated by `w2c2` (turbolent/w2c2), then clang `-O3` — a second translator on the same wasm input, CI-smoke only (no SIMD support, so it self-gates out of any vectorized case); set `W2C2_DIR`/`W2C2_BIN` if not built at `../w2c2` next to this repo |
 | `wat` | hand-written WAT baseline when a case provides `run-wat.mjs` |
-| `porf-native` | Porffor (git-main 2026 rewrite — an AOT engine through its own C backend, no wasm target): `porf native <case>-flat.js -o <bin>`, then the standalone binary is measured — its shipping artifact, the native-band sibling of `shermes`. The engine-style `porf <file>` run mode measures its in-process compiler alongside the workload and ships nothing, so it has no lane |
+| `porf-native` | Porffor alpha 3 at an exact git revision, compiled through its C backend: `porf native <case>-porf-flat.js -o <bin>`. The lane measures the standalone native artifact. Its flat source uses Porffor's high-resolution `performance`; the generic shell shim would be shadowed by alpha 3's global-var lowering and fall back to millisecond `Date.now`. The engine-style `porf <file>` mode includes compilation in the measurement and produces no artifact, so it has no lane. |
 | `scriptc` | scriptc (vercel-labs, npm `scriptc`): TS/JS AOT-compiled to a **static** native binary (TypeScript-checker typing + LLVM; constructs outside its LLVM tier fall back to its C emitter, still static). `scriptc build <case>-flat.js -o <bin>`, then the binary is measured. Its `--dynamic` island (embedded quickjs-ng) is never passed: the lane measures the engine-less shipping artifact, and a case its static tier can't swallow records an honest fail. Set `SCRIPTC_BIN` to override |
 | `jawsm` | jawsm (JS → WasmGC) when installed |
-| `javy` | Javy (`javy build` — JS in embedded QuickJS) when installed — fenced interpreter reference, never in the headline geomean |
+| `javy` | Javy (`javy compile`, JS in embedded QuickJS) when installed; fenced interpreter reference, never in the headline geomean |
 | `tinygo` | TinyGo → `wasm32-wasip1` (`tinygo build -target=wasip1 -opt=2`) — the Go corpus through LLVM, leaner wasm than `go-wasm`; run in node's V8 |
 | `moonbit` | MoonBit → `wasm` (`moon build --target wasm --release`), run on `moonrun` (MoonBit's V8 wasm runner, which supplies the monotonic clock) — a wasm-first-language rival, when `moon`/`moonrun` are installed |
 
@@ -359,36 +347,35 @@ node bench/bench.mjs --targets=bun,deno,spidermonkey,shermes,graaljs,porf-native
 
 ## Reading the numbers (darwin/arm64, M-class)
 
-Snapshots from `node bench/bench.mjs --targets=v8,jz,as` (the WASM lane).
-Where JZ lands relative to **V8 raw JS** (`v8/node`) and **AssemblyScript**
-(`as`) is the headline comparison; the hand-WAT row is the wasm-in-V8 floor.
-The fair native comparison lives in the page's separate **Native lane** (`jz-w2c`
-vs the native toolchains), not in these wasm snapshots — a native binary against
-wasm-in-V8 would be a wrong-class single-case compare.
+Snapshots from `node bench/bench.mjs --targets=v8,jz,as` show the Wasm rows.
+JZ against **V8 raw JS** (`v8/node`) and **AssemblyScript** (`as`) is the
+headline comparison; a successful hand-WAT row supplies the wasm-in-V8 floor.
+A `fail` row records the latest attempt and retains no stale timing. The page
+also shows `jz-w2c` and the native toolchains as native rows. Compare those rows
+with each other, not with wasm-in-V8.
 
 ### biquad — f64 typed-array DSP cascade
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **4.71 ms** | **1.89×** | **1.8 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.48 ms | 1.37× | 1.8 kB | ok |
-| V8 (node) raw JS | 8.89 ms | 1.00× | 3.2 kB | ok |
-| hand-WAT → V8 wasm | 6.49 ms | 1.90× | 767 B | ok |
+| **JZ → V8 wasm** | **4.74 ms** | **1.98×** | **1.8 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.43 ms | 1.46× | 1.8 kB | ok |
+| V8 (node) raw JS | 9.38 ms | 1.00× | 3.2 kB | ok |
+| hand-WAT → V8 wasm | – | – | – | fail |
 
-JZ beats V8 raw JS by 2.1× and AS by 1.4×. The typed-array scalarization,
-offset-fusion, and base-hoisting pipeline delivers dense-f64 loop codegen
-that matches the hand-WAT floor.
+JZ beats V8 raw JS by 2.0× and AS by 1.4×. Typed-array scalarization,
+offset fusion, and base hoisting produce the dense f64 loop.
 
 ### mat4 — fixed-size Float64Array multiply
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.75 ms** | **11.43×** | **1.5 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 6.71 ms | 1.28× | 1.4 kB | ok |
-| V8 (node) raw JS | 8.57 ms | 1.00× | 1.2 kB | ok |
-| hand-WAT → V8 wasm | 8.12 ms | 1.47× | 414 B | ok |
+| **JZ → V8 wasm** | **0.78 ms** | **10.97×** | **1.5 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 6.69 ms | 1.27× | 1.4 kB | ok |
+| V8 (node) raw JS | 8.50 ms | 1.00× | 1.2 kB | ok |
+| hand-WAT → V8 wasm | – | – | – | fail |
 
-JZ is 5.9× faster than V8 raw JS and 4.6× faster than AS. The scalarized
+JZ is 10.9× faster than V8 raw JS and 8.6× faster than AS. The scalarized
 SIMD hot path (unrolled 4×4 multiply) is the win; V8's JIT doesn't vectorize
 this from JS source.
 
@@ -396,11 +383,11 @@ this from JS source.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.13 ms** | **12.32×** | **1.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.79 ms | 2.07× | 1.3 kB | ok |
-| V8 (node) raw JS | 1.64 ms | 1.00× | 1014 B | ok |
+| **JZ → V8 wasm** | **0.14 ms** | **12.20×** | **1.1 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.83 ms | 2.04× | 1.3 kB | ok |
+| V8 (node) raw JS | 1.70 ms | 1.00× | 1014 B | ok |
 
-JZ is 12.9× faster than V8 raw JS and 5.9× faster than AS. The bimorphic
+JZ is 12.2× faster than V8 raw JS and 6.0× faster than AS. The bimorphic
 `sum` (called with both `Float64Array` and `Int32Array`) stays on typed
 paths without falling back to generic dispatch.
 
@@ -408,12 +395,12 @@ paths without falling back to generic dispatch.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.93 ms** | **4.09×** | **1.0 kB** | **ok** |
-| V8 (node) raw JS | 3.81 ms | 1.00× | 1005 B | ok |
+| **JZ → V8 wasm** | **0.95 ms** | **4.03×** | **1.1 kB** | **ok** |
+| V8 (node) raw JS | 3.83 ms | 1.00× | 1005 B | ok |
 | AssemblyScript (asc -O3 --runtime stub) | 9.12 ms | 0.42× | 1.3 kB | ok |
-| hand-WAT → V8 wasm | 3.56 ms | 1.07× | 355 B | ok |
+| hand-WAT → V8 wasm | 3.51 ms | 1.09× | 355 B | ok |
 
-JZ is 4.0× faster than V8 raw JS and 8.8× faster than AS. The i32 hot path
+JZ is 4.0× faster than V8 raw JS and 9.6× faster than AS. The i32 hot path
 (`Math.imul`, `|0`, `>>>0`) now lowers to raw `i32` ops without NaN-box
 overhead on every operation.
 
@@ -421,22 +408,22 @@ overhead on every operation.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.05 ms** | **2.81×** | **2.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.24× | 1.5 kB | ok |
+| **JZ → V8 wasm** | **0.05 ms** | **2.78×** | **2.0 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 0.06 ms | 2.06× | 1.5 kB | ok |
 | V8 (node) raw JS | 0.13 ms | 1.00× | 2.0 kB | ok |
 
-JZ is 2.4× faster than V8 raw JS and now edges out AS by ~1.2× on this
+JZ is 2.8× faster than V8 raw JS and 1.3× faster than AS on this
 `charCodeAt`-heavy scan. Both are well ahead of V8.
 
 ### callback — `Array.map` closure + i32 fold
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.26 ms** | **2.35×** | **1.5 kB** | **ok** |
+| **JZ → V8 wasm** | **0.35 ms** | **1.77×** | **1.6 kB** | **ok** |
 | V8 (node) raw JS | 0.62 ms | 1.00× | 1.3 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 0.78 ms | 0.79× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 0.81 ms | 0.76× | 1.8 kB | ok |
 
-JZ is 2.3× faster than V8 raw JS and 2.9× faster than AS. Closure +
+JZ is 1.8× faster than V8 raw JS and 2.3× faster than AS. Closure +
 `Array.map` lowers to a preallocated typed loop with no per-iteration alloc.
 V8's JIT does not inline the closure across the `map` boundary.
 
@@ -444,9 +431,9 @@ V8's JIT does not inline the closure across the `map` boundary.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **0.67 ms** | **1.97×** | **1.8 kB** | **ok** |
-| V8 (node) raw JS | 1.31 ms | 1.00× | 1.1 kB | ok |
-| AssemblyScript (asc -O3 --runtime stub) | 1.36 ms | 0.96× | 1.9 kB | ok |
+| **JZ → V8 wasm** | **0.68 ms** | **1.87×** | **1.9 kB** | **ok** |
+| V8 (node) raw JS | 1.28 ms | 1.00× | 1.1 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 1.37 ms | 0.93× | 1.9 kB | ok |
 
 JZ is 1.9× faster than V8 raw JS and 2.0× faster than AS. Schema-slot
 reads are direct field offsets; the gap is small because the workload is
@@ -456,43 +443,43 @@ memory-bound.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| AssemblyScript (asc -O3 --runtime stub) | 8.30 ms | 1.09× | 1.3 kB | ok |
-| **JZ → V8 wasm** | **4.51 ms** | **1.99×** | **1.0 kB** | **ok** |
-| V8 (node) raw JS | 9.00 ms | 1.00× | 1.8 kB | ok |
+| AssemblyScript (asc -O3 --runtime stub) | 8.43 ms | 1.10× | 1.3 kB | ok |
+| **JZ → V8 wasm** | **4.83 ms** | **1.92×** | **1.1 kB** | **ok** |
+| V8 (node) raw JS | 9.27 ms | 1.00× | 1.8 kB | ok |
 
-JZ is 1.1× faster than V8 raw JS and ties AS. The dense f64 hot loop with
-conditional break compacts to 1.0 kB — the smallest wasm in the suite.
+JZ is 1.9× faster than V8 raw JS and 1.7× faster than AS. The dense f64 hot
+loop uses a direct conditional-break path.
 
 ### json — runtime `JSON.parse` plus stable-shape walk
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
 | **JZ → V8 wasm** | **0.13 ms** | **2.02×** | **7.9 kB** | **ok** |
-| V8 (node) raw JS | 0.26 ms | 1.00× | 1.2 kB | ok |
+| V8 (node) raw JS | 0.27 ms | 1.00× | 1.2 kB | ok |
 
-JZ is 1.3× faster than V8 raw JS. The runtime parser is specialized to the
+JZ is 2.0× faster than V8 raw JS. The runtime parser is specialized to the
 inferred JSON shape; AS is skipped because it cannot parse JSON at runtime.
 
 ### sort — in-place heapsort over typed array
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **5.38 ms** | **1.35×** | **1.6 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 7.78 ms | 0.93× | 1.8 kB | ok |
-| V8 (node) raw JS | 7.26 ms | 1.00× | 1.6 kB | ok |
+| **JZ → V8 wasm** | **6.27 ms** | **1.10×** | **1.6 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 7.73 ms | 0.89× | 1.8 kB | ok |
+| V8 (node) raw JS | 6.90 ms | 1.00× | 1.6 kB | ok |
 
-JZ is 1.6× faster than V8 raw JS and 1.4× faster than AS. Call-heavy
+JZ is 1.1× faster than V8 raw JS and 1.2× faster than AS. Call-heavy
 nested loops with typed-array index propagation stay on the i32 path.
 
 ### crc32 — table-driven CRC-32 over byte buffer
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| **JZ → V8 wasm** | **8.09 ms** | **1.17×** | **1.0 kB** | **ok** |
-| AssemblyScript (asc -O3 --runtime stub) | 8.66 ms | 1.10× | 1.3 kB | ok |
-| V8 (node) raw JS | 9.50 ms | 1.00× | 1.8 kB | ok |
+| **JZ → V8 wasm** | **8.80 ms** | **1.09×** | **1.1 kB** | **ok** |
+| AssemblyScript (asc -O3 --runtime stub) | 8.64 ms | 1.11× | 1.3 kB | ok |
+| V8 (node) raw JS | 9.57 ms | 1.00× | 1.8 kB | ok |
 
-JZ is 1.2× faster than V8 raw JS and ties AS. Integer narrowing and
+JZ is 1.1× faster than V8 raw JS and ties AS. Integer narrowing and
 typed-array parameter propagation keep the LUT lookup on raw i32.
 
 ### Audio + image showcase (cross-language, bit-exact)
@@ -635,11 +622,11 @@ pinned red in `WASM_TODO` — the deopt work list, loudest first.
 
 | target | median | ×v8 | size | parity |
 | --- | ---: | ---: | ---: | --- |
-| V8 (node) raw JS | 0.82 ms | 1.00× | 2.6 kB | ok |
-| **JZ → V8 wasm** | **0.89 ms** | **0.91×** | **235.6 kB** | **ok** |
+| V8 (node) raw JS | 0.86 ms | 1.00× | 2.6 kB | ok |
+| **JZ → V8 wasm** | **1.12 ms** | **0.77×** | **284.2 kB** | **ok** |
 
-JZ is 1.07× slower than V8 raw JS on this large compiler bundle. The size
-(144 kB) is the full jz-compiled watr parser + encoder + optimizer; V8's JIT
+JZ is 1.30× slower than V8 raw JS on this large compiler bundle. The 284 kB
+artifact contains the jz-compiled watr parser, encoder, and optimizer; V8's JIT
 has the advantage of profile-guided tiering on a long-running compiler.
 
 ### Lab-case native coverage: JS→native compilers and the no-EH build variant
@@ -678,8 +665,8 @@ the small-kernel corpus's Go/Zig 43/60 rows use.
 **No-EH build variant for the native lab rows (`jz-w2c`).** The lab cases'
 compiled wasm carries a wasm-exceptions tag section (jz lowers `try`/`catch`/
 bare `throw` through it), which neither `wasm2c` nor `w2c2` translates
-("invalid section code: 13") — the same `NEEDS_EH` gate documented in the
-Native-lane note above, extended to `jessie`/`jz`/`watr`. `pruneUnusedThrowRuntime`
+("invalid section code: 13"); the same `NEEDS_EH` gate is documented in the
+`jz-w2c` note above and extended to `jessie`/`jz`/`watr`. `pruneUnusedThrowRuntime`
 (`src/compile/index.js`) already lowers every throw to `unreachable` and
 drops the tag when NO catch is reachable anywhere — but it only fires when
 `userThrows` is false, and `userThrows` goes true the moment source has ANY
@@ -733,17 +720,17 @@ Aggregate geomean (JZ / target):
 
 | target | speed | size |
 | --- | ---: | ---: |
-| V8 (node) | **0.46×** | — |
-| AssemblyScript | **0.48×** | **1.02×** |
+| V8 (node) | **0.46×** | – |
+| AssemblyScript | **0.49×** | **1.04×** |
 
 JZ wins or ties V8 on every dense kernel case; the open V8 losses are the
 self-compile lab rows (`watr`, `jessie`) and the deliberate deopt probes above
 (`dispatch`, `shapes`, `wordcount`, `immutable`, `strbuild` — the dynamic-JS
 work list). AS is beaten on speed across the shared cases except the tracked
 gather/probe gaps (`dict`, `noise`, `levenshtein`) and the deopt probes
-(`shapes`, `immutable`, `strbuild`; `wordcount` is a tie). On size JZ is
-par-or-smaller than AS by geomean (1.02×, 27/49 cases smaller) — not a
-strict-smaller claim: AS's bench ports wrap every array access in
+(`shapes`, `immutable`, `strbuild`; `wordcount` is a tie). On size JZ stays
+within the 1.05× AS geomean release band. AS's bench ports wrap every array
+access in
 `unchecked()` (its baseline assumes zero bounds checking), while jz pays
 real guards for JS's out-of-bounds read/write semantics.
 

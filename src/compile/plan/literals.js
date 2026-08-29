@@ -25,7 +25,7 @@
 
 import { ctx } from '../../ctx.js'
 import {
-  some, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
+  some, walkAst, T, stmtList, refsName, REFS_IN_EXPR, REFS_THROUGH_ARROWS, ASSIGN_OPS, MUTATE_OPS, isReassigned, hasControlTransfer,
 } from '../../ast.js'
 import { freshId } from '../../ir.js'
 import {
@@ -220,15 +220,12 @@ const refsAsValue = (node, name) => {
 // never reaches `name`'s scalar slots (and vice-versa) — the array must stay memory-backed.
 // A bare `name` passed only as a call ARGUMENT is transient (the callee touches it during
 // the call, already covered by the surrounding sync), so it is NOT a capture.
-const createsTypedArrayAlias = (node, name) => {
-  if (!Array.isArray(node)) return false
-  if (node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.'
-      && node[1][1] === name && node[1][2] === 'subarray') return true           // zero-copy view
-  if (node[0] === '=' && refsAsValue(node[2], name)) return true                  // let b = name / x = name
-  if ((node[0] === '[' || node[0] === '{}') && node.slice(1).some(e => refsAsValue(e, name))) return true  // [name] / {k:name}
-  for (let i = 1; i < node.length; i++) if (createsTypedArrayAlias(node[i], name)) return true
-  return false
-}
+const createsTypedArrayAlias = (node, name) => some(node, node =>
+  (node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.'
+      && node[1][1] === name && node[1][2] === 'subarray') ||                     // zero-copy view
+  (node[0] === '=' && refsAsValue(node[2], name)) ||                              // let b = name / x = name
+  ((node[0] === '[' || node[0] === '{}') && node.slice(1).some(e => refsAsValue(e, name))), // [name] / {k:name}
+  REFS_THROUGH_ARROWS)
 const rewriteScalarTypedArrayUses = (node, arrays) => {
   if (!Array.isArray(node)) return node
   const op = node[0]
@@ -1301,25 +1298,22 @@ const _registerIfDerived = (d, candidates, derived) => {
 // Found live: `var [...b] = [4, 5]; Array.isArray(b)` (audit-#12 Family A,
 // test262 for/var-ary-ptrn-rest-id-* — the `let [...a]`/`const [...x]` forms
 // alone didn't exercise this path, so it shipped unnoticed initially).
-const _collectDerivedArrayNames = (node, candidates, derived) => {
-  if (!Array.isArray(node)) return
+const _collectDerivedArrayNames = (node, candidates, derived) => walkAst(node, { enter: node => {
   const op = node[0]
-  if (op === '=>') return
+  if (op === '=>') return false
   if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) _registerIfDerived(node[i], candidates, derived)
   } else if (op === '=') {
     _registerIfDerived(node, candidates, derived)
   }
-  for (let i = 1; i < node.length; i++) _collectDerivedArrayNames(node[i], candidates, derived)
-}
+} })
 
 // Walk `body` to collect every `let X = [intLit, …]` candidate. Each entry
 // carries the exact init-decl AST node so the disqualifier can skip the
 // binding's own LHS reference (which would otherwise look like a reassign).
-const _collectIntArrayCandidates = (node, candidates) => {
-  if (!Array.isArray(node)) return
+const _collectIntArrayCandidates = (node, candidates) => walkAst(node, { enter: node => {
   const op = node[0]
-  if (op === '=>') return
+  if (op === '=>') return false
   if (op === 'let' || op === 'const') {
     for (let i = 1; i < node.length; i++) {
       const d = node[i]
@@ -1332,8 +1326,7 @@ const _collectIntArrayCandidates = (node, candidates) => {
       candidates.set(d[1], { initDecl: d, elems })
     }
   }
-  for (let i = 1; i < node.length; i++) _collectIntArrayCandidates(node[i], candidates)
-}
+} })
 
 // Rewrite `let name = [...]` → `let name = new Int32Array([...])` for every
 // validated candidate. Preserves the original element AST nodes so the

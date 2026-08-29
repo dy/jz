@@ -2045,3 +2045,234 @@ correctness gate is green (native 3759/0, kernel-target 3011/0, kernel-parity 33
 this attribution in test/bench.js (that file is held uncommitted by a concurrent session at the time
 of writing, which is the only reason the branch is not yet on main); the remaining precision items
 (for-in-derived wrapper tables, `Object.assign` batch writes) stay as post-v1 inference work.
+
+## Merge to main @ 9da6a37c (2026-08-28) — landed, oracle-verified
+
+`git merge 9da6a37c` in the scratchpad/sm worktree. Two conflicts, exactly
+where the coordinator's brief predicted (`src/compile/plan/index.js`,
+`src/compile/program-facts.js`); `call-target-index.js`, `emit.js`,
+`narrow.js`, `plan/inline.js` all auto-merged clean (verified no leftover
+`<<<<<<<`/`=======`/`>>>>>>>` anywhere in the tree after resolution).
+
+### `src/compile/program-facts.js` — main split it into a barrel +
+### `program-facts/*.js` (`.work/program-facts-split.md`, landed after this
+### branch was cut) while this branch kept editing the old monolith
+
+Resolved by discarding the "ours" conflict side ENTIRELY (it was just the
+pre-split whole file) and re-deriving each of this branch's 7 diff hunks
+against main's split, by function identity, not by line position:
+
+- Import line (`PARAM_NAME` added to the `ast.js` import) →
+  `program-facts/walk-facts.js`'s own import line (it already imports
+  `extractParams`/`classifyParam`/`PARAM_KIND` from `ast.js`); also added
+  `nullishArm` from `../../kind.js` (walk-facts.js never needed it before —
+  `slot-kind-census.js` already imports it from the same path, confirmed
+  matching import style).
+- `observeNodeFacts`'s `keysRoArg`/`nullishEqOperand` escape-exemptions →
+  `walk-facts.js` (that's where `observeNodeFacts` lives post-split).
+- `emptyWalkFacts`'s `computedCallSites: []`, `mergeWalkFacts`'s
+  `into.computedCallSites.push(...)`, `walkFactsRoot`'s computed-member-call
+  stash block, `collectProgramFacts`'s `computedCallSites: f.computedCallSites`
+  return field → all `walk-facts.js` (same file owns all four, per the split's
+  own §1 table: `emptyWalkFacts`/`mergeWalkFacts`/`walkFactsRoot`/
+  `collectProgramFacts` are one family there).
+- New export `synthesizeComputedDispatchCallSites` (didn't exist pre-split) →
+  appended to `walk-facts.js` at the same relative position it held in the
+  old monolith (right after `collectProgramFacts`, before the `writeVT`
+  section — which is now `slot-kind-census.js`, a different file, so no
+  ordering conflict). Diffed byte-for-byte against the branch's own
+  pre-merge version (doc comment + body) — identical, confirmed via a
+  throwaway `diff` after transcription.
+- `program-facts.js` itself reset to BYTE-IDENTICAL with main's barrel
+  (diffed to confirm), then given exactly one addition: `walk-facts.js`'s
+  export line gained `synthesizeComputedDispatchCallSites` (the branch adds
+  this export; barrel `export {}` lines are the only thing that ever
+  belonged in this file post-split). Module-map doc comment (top of file)
+  got a matching one-paragraph addition under the `walk-facts.js` bullet.
+
+### `src/compile/plan/index.js` — both sides add a pass right after
+### `buildCallTargetIndex`
+
+Import conflict: merged into one list (branch's `synthesizeComputedDispatchCallSites`
++ main's `readonlyParamReps`/`freezeCallSites`/`assertProgramFactsShape`, all
+from `../program-facts.js`).
+
+Call-site conflict: branch's `t('synthesizeComputedDispatchCallSites', ...)`
+kept at its own documented earliest-safe position (immediately after
+`ctx.types.callTargets = ...`); main's `assertProgramFactsShape(programFacts,
+'post-callTargets')` kept immediately after THAT, not before — so the shape
+check also covers `synthesizeComputedDispatchCallSites`'s own effect
+(enriching `callSites` in place; it staples no new key, so this reordering
+changes no behavior, only widens what the assert's position vouches for).
+`buildDictKindIndex`'s own staple-on (`programFacts.dictKinds = ...`,
+branch's dict-kind-index merge, auto-merged with no conflict) already sat
+right after in both trees — untouched.
+
+### A real staleness bug the merge surfaced, fixed alongside it
+
+`program-facts/freeze.js`'s `FACT_KEYS` allowlist (main's new
+`assertProgramFactsShape` gate, `JZ_DEBUG_INVARIANTS=1`-only) didn't know
+about `computedCallSites` (this branch's own field on the `collectProgramFacts`
+return object) — would throw `unexpected key 'computedCallSites'` the first
+time anyone ran with that flag on. Added it to `FACT_KEYS` + doc comment.
+Separately, `freeze.js`'s doc comment and `plan/index.js`'s own inline
+comment both asserted "`callTargets` is the ONLY staple-on site anywhere in
+`src/compile/`" (true pre-merge, since `dict-kind-index.js` — this branch's
+own eighth-session addition, merged in from a sibling branch — didn't exist
+when that claim was written). It's no longer true: `dictKinds` is a second,
+identically-shaped staple-on site 22 lines later in the same function.
+Corrected both comments and added `dictKinds` to `FACT_KEYS` too, for the
+allowlist's own accuracy (the one existing `assertProgramFactsShape` call
+still only fires between the two staples, so this doesn't change behavior
+today — just stops the allowlist/comments from asserting something false).
+
+### Fix verified still present and effective
+
+`methodEvidence`/`ARRAY_ONLY_POISON` (infer.js), `guessedArrayParam`/
+`ARRAY_INDUCERS` import (emit.js), `ARRAY_INDUCERS` export (kind-traits.js):
+all confirmed absent post-merge (grep). `resolveComputed` (call-target-index.js),
+`dict-kind-index.js`, the `possibleKinds` ordering fix's "Settle val HARD"
+sweep (narrow.js) — all confirmed present and unchanged in substance. Every
+pin this branch's own notes document (charCodeAt/trim/padStart hijack
+family, the uleb/wleb ordering-independence pin, the DictKindIndex family,
+the `.`-property-read pins) present in `test/data.js`/`test/inference.js`/
+`test/errors.js`/`test/deopt.js` — all four files merged clean (main never
+touched them), `node test/data.js` reproduces the exact 204/1062 the branch's
+own eighth-session checkpoint recorded, byte for byte.
+
+### Battery (all green, this worktree, post-merge)
+
+- `npm run build`: succeeds. `dist/jz.wasm` = **17,920,628 B**.
+- `node test/index.js` (native, full suite incl. bench-c — no hang in this
+  environment): **3838 total / 3837 pass / 1 skip / 0 fail** (28433
+  assertions), zero `✗`.
+- `JZ_TEST_TARGET=jz.wasm node test/index.js`: **3035 total / 3034 pass / 1
+  skip / 0 fail** (14639 assertions).
+- `node test/kernel-parity.js`: **3/3 tests, 33/33 assertions, 0 fail.**
+- `node test/kernel-oracle.js`: **14/14 tests, 605/605 assertions, 0 fail.**
+- `node test/pointers.js`: **73/73, 132/132 assertions, 0 fail.**
+- `node test/data.js`: **204/204, 1062/1062 assertions, 0 fail** — identical
+  counts to the pre-merge branch tip, confirming no pin lost or duplicated.
+- `node test/eager-stdlib-parity.js`: **22/22, 55/55 assertions, 0 fail.**
+- `node scripts/bench-size.mjs --json`: 23/24 cases pass; `watr` measures
+  **299383 B** against the (pre-merge) 298000 B budget — see below.
+- `node test/bench.js`: full suite (size + speed + toolchain rivals) run to
+  completion; see battery-numbers note at the tail of this file for the
+  landed pass/fail counts.
+
+### SIZE_BUDGET.watr recalibration
+
+`bench-size.mjs --json` watr on the merged tree: **299383 B**, over the
+298000 B budget by 1383 B — same root cause as every prior session's own
+watr measurement on this branch (sound inference costs bytes; see the
+Landing-decision table above: jz/v8 1.25×→1.06× is the trade). Raised
+`SIZE_BUDGET.watr` 298000 → 300000 in `test/bench.js`, matching the
+orchestrator's own pre-merge recommendation, with a 3-line attribution
+comment in the same "OLD → NEW: reason (measured delta)" style as the
+existing 245000→298000 comment above it.
+
+### `node scripts/refactor-oracle.mjs check --ref 9da6a37c` — 24 differences,
+### every one traced to a named function and attributed
+
+Corpus: 140 specs (bench + examples + kernel-parity CORPUS + watr's own
+entry) × {O0, O2, O3, size}. 24 (spec, level) pairs differ, covering 9
+distinct specimens. Diffed each via `node scripts/refactor-oracle.mjs diff
+<baseline> <spec> <level>` (a minimal `{meta:{commit:"9da6a37c..."}}` stood
+in for a full snapshot — `cmdDiff` only ever reads `meta.commit`), then
+isolated the exact differing FUNCTION(S) within each WAT pair by splitting
+on `(func $name ...)` boundaries and diffing by name (`diff -u` on the raw
+WAT was misleading here — a single function's body-size change shifts every
+following byte offset, which made `diff`'s block-alignment render unrelated,
+byte-identical neighboring functions as spurious wholesale deletes+re-adds;
+splitting by function identity cuts through that noise). Every isolated
+function-level diff below was read in full, not just skimmed for size.
+
+- **`bench:aos|O0`, `bench:callback|O0`, `bench:shapes|O0`** (+15, +19, +20 B):
+  all three isolate to their own `runKernel`, all three the SAME shape — a
+  forwarded array/typed-array receiver (reached `main → runKernel → <body>`,
+  never a direct literal at the read site) moves from generic `call $__len`
+  / `call $__typed_idx` dispatch to direct `call $__ptr_offset` + inline
+  `i32.load`/`f64.load` pointer arithmetic. This is the soundly-proven-
+  parameter-recovers-direct-codegen effect the branch's own fourth session
+  documented for `guessedArrayParam`'s removal ("the widening's ONLY effect
+  left was to force the shadow probe onto every SOUNDLY-proven ARRAY
+  parameter reached via a recursive/forwarding call chain") — O0-only
+  because O2/O3's optimizer already normalizes both shapes to the same
+  output (same pattern the branch's very first repro showed: "O2/O3 matched
+  by incidental optimizer reshaping").
+- **`bench:poly|O0`** (-114 B): isolates to `sum(arr)`, called only via
+  `runKernel(f64,i32) → sum(f64)` / `sum(i32)` — a forwarding-only parameter,
+  the exact shape the branch's `possibleKinds` census-ordering fix targets.
+  Before: `s += arr[i]` compiles the FULL polymorphic-`+` machinery
+  (`$__is_str_key` check, `$__str_concat` fallback, a 3-way NaN-sentinel
+  `select` chain) — `arr`'s element kind was falsely joined to
+  KIND_UNIVERSE by the pre-fix ordering artifact. After: a plain
+  `f64.add(s, $__typed_idx(...))`, the whole string/NaN-sentinel branch
+  gone — `arr`'s elements are now soundly proven NUMBER-only.
+- **`bench:immutable|{O0,O2,O3,size}`** (e.g. O0 +22 lines in `runKernel`;
+  O2 -533 B, O3 -549 B, size -522 B overall): same generic-→-direct pattern
+  as the aos/callback/shapes group, on `ps[i]` (forwarded from `main`
+  through `runKernel`), this time on the WRITE/read-with-bounds-check side —
+  `$__arr_typed_set_idx`/`$__typed_set_idx` (the generic indexed-write
+  dispatch helpers) become fully dead code and are eliminated outright; the
+  direct form inlines its own bounds check (`i32.lt_u` against the stored
+  length, `else` branch returns NaN) to preserve out-of-bounds read
+  semantics that the generic helper used to provide internally.
+- **`bench:wordcount|{O0,O2,O3,size}`**: same generic-→-direct pattern in
+  `runKernel`, on `words[toks[i]]` — `words` is an array of STRINGS
+  (`buildWords`'s `String.fromCharCode` output), forwarded the same
+  `main → runKernel` way; same direct `$__ptr_offset` + `f64.load` codegen
+  recovery, no functions added or removed (unlike immutable, wordcount's
+  generic helpers are still used elsewhere in the same unit).
+- **`bench:jessie|{O0,O2,O3,size}`** — 24 functions differ (`m3_number$strip`,
+  `m4_parse$token`, `m4_parse$parse$asi`, 21 more incl. `closure15..67`).
+  Spot-verified the two largest deltas: `m3_number$strip` (+276 lines) is
+  the textbook positive case — before, a parameter is dispatched straight to
+  `call $__str_indexof` (methodEvidence's retired STRING guess, from some
+  `.indexOf(...)` usage on it); after, a real `$__ptr_type` check branches
+  STRING (same `$__str_indexof` call, now conditional) vs. an ARRAY-like
+  case (a manual scan loop via `$__typed_get_idx`) vs. a NaN/nullish arm —
+  sound polymorphic dispatch replacing an unconditional, unsound assumption.
+  jessie is a JS-in-JS tokenizer/parser (module names `m4_parse$*`,
+  `m30_template$*`, `m40_switch$*`) — exactly the class of program with
+  heavy, genuinely-polymorphic string-vs-other dispatch on parser-internal
+  values that this whole branch exists to make sound; did not individually
+  re-trace all 24 functions (time-boxed) but every byte-count moves the SAME
+  direction (all four levels GREW: O0 +1224 B, O2 +1152 B, O3 +1382 B, size
+  +762 B) — consistent with "sound inference costs bytes here," not a mixed
+  signal that would suggest an unrelated cause mixed in.
+- **`bench:watr|{O0,O2,O3,size}` and `watr:watr.js|{O0,O2,O3,size}`**: the
+  flagship case, already exhaustively diagnosed across all eight sessions
+  above (HANDLER/SIZE_HANDLER dispatch-table resolution, dict-kind-index,
+  the possibleKinds ordering fix). `bench:watr|size` (299383 B) matches this
+  session's own direct `bench-size.mjs --json` measurement exactly,
+  cross-confirming the oracle's own corpus build is using the same inputs.
+
+No difference in the 24 traces to anything OTHER than this branch's own
+intentional mechanisms (methodEvidence/guessedArrayParam retirement, the
+possibleKinds ordering fix, computed-dispatch-table resolution,
+dict-kind-index) — none is attributable to a merge mistake, an accidental
+regression, or main's own unrelated 256-commit batch.
+
+### Kernel size, before/after this merge
+
+- main @ 9da6a37c alone (isolated `git worktree add --detach`, same
+  `npm run build`): **17,817,535 B**.
+- This branch merged onto it: **17,920,628 B** (+103,093 B, +0.58%) —
+  expected: this branch's own new compiler source (`resolveComputed`,
+  `synthesizeComputedDispatchCallSites`, all of `dict-kind-index.js`, the
+  `possibleKinds`-ordering fix, the `nameEscapes` exemptions) compiles into
+  the self-hosted kernel regardless of what it does for any other program —
+  same pattern every prior session's own kernel delta already showed
+  (e.g. eighth session: +53,375 B over a then-current main).
+
+### What was not independently re-verified this session
+
+- Did not individually re-trace all 24 of jessie's differing functions to
+  their own root cause (see above) — high confidence via the two spot-checks
+  plus the uniform grow-in-all-4-levels signal, not exhaustively proven
+  function by function.
+- Did not re-run `node test/refactor-oracle.js` (the oracle's own
+  determinism self-test) — not in this task's battery list; the `check`
+  command's own internal determinism (same corpus, same tree, twice) was
+  not independently re-verified this session, only trusted as-designed.

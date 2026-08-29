@@ -425,10 +425,11 @@ A heap-free numeric program emits no memory, allocator, or startup function; an
 empty program emits an empty module. Runtime helpers and standard-library kernels
 are included only when reachable.
 
-In the published benchmark corpus, size-optimized JZ modules are 1.02× the size
-of AssemblyScript modules by geometric mean. AssemblyScript's ports use unchecked
-array access while JZ retains JavaScript out-of-bounds guards. Most JZ modules in
-the corpus are single-digit kilobytes.
+In the published benchmark corpus, size-optimized JZ stays within the 1.05×
+AssemblyScript geomean band. The [bench page](https://dy.github.io/jz/bench/)
+carries the current ratio.
+AssemblyScript's ports use unchecked array access while JZ retains JavaScript
+out-of-bounds guards. Most JZ modules in the corpus are single-digit kilobytes.
 
 - `optimize: 'size'` disables unrolling and SIMD.
 - `alloc: false` omits allocator exports from numeric modules.
@@ -478,7 +479,10 @@ reasons a kernel remains slower or scalar.
 <details>
 <summary><strong>How does JZ compare with Porffor, AssemblyScript, scriptc etc.?</strong></summary>
 
-- **[Porffor](https://github.com/CanadaHonk/porffor)** pursues full spec coverage with an engine-replacement design – interpreter-class speed, tiny binaries. JZ inverts the tradeoff: near-native speed on a typed subset. Porffor compiles JS to C/native first with WASM as a secondary target; JZ emits WASM first and lowers it to native C.
+- **[Porffor](https://github.com/CanadaHonk/porffor)** targets broad engine
+  coverage with an AOT JS→IR→C/native compiler; its current alpha line has no
+  WASM target. JZ emits WASM first for an inferred typed subset. JZ may not lose
+  to Porffor's native artifact on speed or size per case or by geomean.
 - **[scriptc](https://github.com/vercel-labs/scriptc)** also AOT-compiles typed JS/TS without an engine (TS annotations → LLVM), embedding QuickJS only as an opt-in fallback for dynamic code. It is native-first with WASI as a target; JZ is WASM-first, infers types from idiomatic untyped JS, and keeps dynamic fallbacks inside the WASM module.
 - **[AssemblyScript](https://github.com/AssemblyScript/assemblyscript)** produces lean WASM, but is not directly executable JavaScript.
 - **Rust, C, Zig, Go, and MoonBit** offer explicit static types and mature native

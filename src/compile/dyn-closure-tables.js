@@ -44,7 +44,7 @@
  * @module compile/dyn-closure-tables
  */
 import { ctx } from '../ctx.js'
-import { isReassigned } from '../ast.js'
+import { isReassigned, walkAst } from '../ast.js'
 import {
   BINDING_USE_DECLS, BINDING_USE_INIT, BINDING_USE_USES,
   BINDING_USE_KIND, BINDING_USE_COMPOUND, BINDING_USE_COMPUTED, scanBindingUses, USE,
@@ -479,12 +479,10 @@ function extractReturnExprs(body) {
   if (!Array.isArray(last) || last[0] !== 'return') return null
   const rets = []
   let ok = true
-  const walk = (n) => {
-    if (!ok || !Array.isArray(n) || n[0] === '=>') return
-    if (n[0] === 'return') { if (n.length < 2) ok = false; else rets.push(n[1]); return }
-    for (let i = 1; i < n.length; i++) walk(n[i])
-  }
-  for (const s of stmts) walk(s)
+  for (const s of stmts) walkAst(s, { enter: n => {
+    if (!ok || n[0] === '=>') return false
+    if (n[0] === 'return') { if (n.length < 2) ok = false; else rets.push(n[1]); return false }
+  } })
   return ok ? rets : null
 }
 

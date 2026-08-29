@@ -162,7 +162,7 @@ params.
 
 Applicable test262 negative parses moved from 2507 reject / 1538 accept to
 3858 reject / 187 accept while retaining 3003 language passes and zero failures
-(an 88% reduction in accepted-invalid source). The remaining 187 are exact
+(an 88% reduction in accepted-invalid source). The 187 then remaining were
 path-gated and grouped by parser-context loss in
 `test/test262-neg-accepts.json`; a one-for-one swap now fails, unlike the old
 one-way count ceiling. They remain explicit v1 blockers, not a claimed zero.
@@ -177,6 +177,11 @@ trials stayed near parity; the fresh self compiler remains a strict win
 against its unchanged 1.03 cap, so no performance claim is made or cap loosened.
 `dist/jz.wasm` is 17,258.9 kB. The 162-module full jz×jz probe remains at
 exactly 2^32 bytes and traps (heap i32 -24).
+
+Subsequent parser and reachability fixes at `a47e3644` reject 50 more exact
+negative paths with no additions. The current split is 3908 reject / 137
+accept, 2976 language passes, zero failures, and 21 xfails. The reviewed ledger
+and baseline now pin 137.
 
 ## Slice 6 — compiler-fact compaction and final encoder wall
 
@@ -210,8 +215,9 @@ builtins 853/0/86. Warm remains red at 1.126–1.161x against the unchanged
 ## Remaining order
 
 Next: implement the streaming encoder/compact-IR path required for 4 GiB
-closure; close or explicitly defer the 187 parser-context residuals; refresh
-performance evidence + general loss fixes; then generic native legalization/tooling. Source maps and ecosystem demos are
+closure; reject the exact 137 parser-context residuals; refresh performance
+evidence and fix general loss classes; then add generic native legalization and
+tooling. Source maps and ecosystem demos are
 separate product-roadmap decisions, not substitutes for these gates.
 
 ## 4 GiB close — candidate strategy: release-behind-the-cursor (2026-08-26)

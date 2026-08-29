@@ -1,4 +1,4 @@
-import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames } from '../ast.js'
+import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 
 // CallTargetIndex (.work/v1-architecture-campaign.md finish-order item 1) —
@@ -115,12 +115,9 @@ const POISON = Symbol('call-target-index poison')
 // the module, so it is safe (and necessary) to hand the whole subtree,
 // unrestricted, straight to collectAllBoundNames from there.
 function collectNestedBoundNames(root, out) {
-  const walk = node => {
-    if (!Array.isArray(node)) return
-    if (node[0] === '=>') { collectAllBoundNames(node, out); return }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(root)
+  walkAst(root, { enter: node => {
+    if (node[0] === '=>') { collectAllBoundNames(node, out); return false }
+  } })
 }
 
 function collectShadowedNames(ast, moduleInits, funcsList) {
@@ -219,10 +216,9 @@ function foldWrite(table, funcsMap, funcsNames, name, prop, valueNode) {
  *  `=>`, the same scope collectDispatchTableClosures already uses for its
  *  own inline-property scan (representation-plan.js). */
 function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
-  const walk = node => {
-    if (!Array.isArray(node)) return
+  const enter = node => {
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') return false
     // A decl's OWN `['=', NAME, init]` child is a BINDING, not a reassignment
     // — handled explicitly here (seed inline object-literal properties, then
     // descend into the initializer only) so it never also reaches the
@@ -239,10 +235,10 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
             if (parsed) for (let k = 0; k < parsed.names.length; k++)
               foldWrite(table, funcsMap, funcsNames, d[1], parsed.names[k], parsed.values[k])
           }
-          walk(d[2])
-        } else walk(d)
+          walkAst(d[2], { enter })
+        } else walkAst(d, { enter })
       }
-      return
+      return false
     }
     if (MUTATE_OPS.has(op)) {
       const lhs = node[1], rhs = node[2]
@@ -254,9 +250,8 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
         foldWrite(table, funcsMap, funcsNames, lhs[1], lhs[2][1], op === '=' ? rhs : null)
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
   }
-  walk(root)
+  walkAst(root, { enter })
 }
 
 /**

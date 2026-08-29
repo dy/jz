@@ -2001,3 +2001,674 @@ either way). (3) The goal-probe (jz×jz peak-bytes measurement) — not re-run t
 correctly foreclosed by the mandate: Group 2/fuzz is unexamined and the hooks-on kernel-oracle/
 kernel-parity `dict` byte-gap (a real, if minor and pre-existing, divergence) means the hooks-on
 battery is not unconditionally green yet, even with Group 1 closed.
+
+## Session (2026-08-28, worktree fix/region-hooks-on-parity @ 2f3fb8ea) — goal (0) pin landed; goal (1) one more Class fixed (mfold), dict/subviewtyped/dvnested root-caused precisely but NOT fixed
+
+Picking up the task's 4 ordered goals. Worktree base `2f3fb8ea` (Group 1/stripStaticDataPrefix
+already fixed and verified per the section above).
+
+**Goal (0) — DONE (`f0175b6e`)**: `test/pointers.js` gained a native-only regression pin,
+independent of eager loading/region hooks entirely. A bare string literal (`let s = "hello
+world"`) is enough to make `ctx.runtime.staticDataLen` nonzero on a completely normal compile —
+confirmed by instrumentation: 77 bytes, the exact same magic number this whole investigation's
+Group 1 chase eventually traced to `ctx.runtime.staticDataLen` itself (a string literal loads
+`string`, which MOD_DEPS-chains to `number`, whose `init(ctx)` unconditionally seeds
+`ctx.runtime.staticDataLen` with the canonical NaN/Infinity/true/false/… static block,
+module/number.js:871). Paired with `__mkptr(1|6, 100, 1048576)` (ARRAY and OBJECT tags — both were
+affected pre-fix, ATOM never was) and a full `[type,aux,offset]` round-trip check, at O0/O2/O3 via
+an explicit `for (const optimize of [false,2,3])` loop (this file's own established pattern for
+multi-tier pins, not reliant on `JZ_TEST_OPTIMIZE`). 73/73 pass (67 pre-existing + 6 new).
+
+**Goal (1) — dict/mfold/subviewtyped root-caused; ONE new fix landed (`e56d571c`), TWO residuals
+left open with precise mechanisms documented**:
+
+- **mfold — FIXED.** Root cause had NOTHING to do with `Math.sqrt`/`Math.abs` folding (a bare
+  `export let g = () => 5` reproduces identically — confirmed by testing a literal, a `Math.sqrt`
+  fold, and a plain `2+3` fold side by side, byte-for-byte identical divergence on all three).
+  Traced via a `narrowableFuncs` breadcrumb (temporary, reverted): under lazy, `plan()`'s
+  `canSkipWholeProgramNarrowing(programFacts)` fast-path (src/compile/plan/scope.js:1174) returns
+  `true` for this trivial program and the WHOLE narrowing fixpoint — including `narrowSignatures`/
+  `narrowI32Results` — never runs at all, so `g` keeps whatever plain-literal emission produces
+  (`f64.const 5` directly). Under eager, that gate's `!ctx.closure.make` condition is FALSE (module/
+  function.js sets `ctx.closure.make` unconditionally the instant `fn` merely registers, regardless
+  of whether the program has any closures), so the skip is refused and the full fixpoint runs,
+  narrowing `g`'s return to i32 (provably a small integer) and adding an `isBoundaryWrapped`
+  `$g$exp` trampoline (`f64.convert_i32_s`) — execution-correct (5 round-trips exactly) but a real
+  byte-parity break. Third confirmed instance of this campaign's core false-equivalence ("module
+  loaded" as a proxy for "feature demanded"), this time gating a SKIP/performance fast-path rather
+  than dispatch or registration. **Fix**: `!ctx.closure.make` → `!ctx.module.demanded.has('fn')`
+  (scope.js) — sound because no MOD_DEPS edge lists `fn` as a dependency, so under any NORMAL
+  (non-eager) compile the only way `fn` ever loads at all is a real `includeModule('fn')` call,
+  which marks `demanded` unconditionally (even on its own already-loaded early return) before
+  delegating to `loadModule` — `demanded` and `ctx.closure.make` always coincide there; eager
+  preload (`includeAllMods` → `loadModule` directly) is the ONLY path that breaks the correlation,
+  by design (the established "module load = registration only" invariant this campaign exists to
+  enforce). Verified: `test/eager-stdlib-parity.js` 22/22 (mfold promoted out of KNOWN_GAP); full
+  native suite (`node test/index.js`, all tests minus bench-c) 3731 pass / 1 skip / 0 fail — no
+  regression from widening what `canSkipWholeProgramNarrowing` disqualifies.
+
+- **dict — root-caused, NOT fixed (real risk identified in the obvious fix, deliberately not
+  taken)**. Bisected the same way as mfold (shrinking `STDLIB` locally, reverted after each trial):
+  the sole culprit, alone, is `date` — `STDLIB=['core','object','array','string','number','date']`
+  reproduces dict's exact 29885B→29921B (+36) gap; every other module is clean. Root cause:
+  `module/date.js`'s `ctx.schema.dateSid = ctx.schema.register(['\x00time'])` sits at UNCONDITIONAL
+  module-init top level (not inside any lazily-invoked handler) — the moment `date` merely loads,
+  it registers a brand-new schema entry into `ctx.schema.list`, which gets serialized into the
+  SHARED static-data segment (`buildStartFn`'s schema table) regardless of whether the program ever
+  constructs a `Date`. One extra table entry shifts every OTHER static offset that follows it —
+  confirmed via WAT diff: `$__throw_property_nullish` (dict's own trigger, the `d[c]||0` nullish-
+  length guard — the SAME helper this whole file's history has repeatedly landed on) is
+  byte-IDENTICAL in shape between lazy and eager, but its two embedded NaN-boxed message-string
+  literals sit at offsets shifted by exactly +32 in both cases (`0x8C`→`0xAC`, `0xB4`→`0xD4`) — a
+  classic downstream consequence of one extra schema-table entry earlier in the segment, not a
+  string-content or dispatch difference. **Attempted fix, REVERTED as unsafe**: moving the
+  registration into `new.Date`'s own lazily-invoked emit handler (`ctx.schema.dateSid ??=
+  ctx.schema.register(...)`, mirroring the timer.js/`ensureWasiTimerRuntime` pattern) DOES close
+  the byte gap in isolation, but breaks a real cross-function invariant: `src/compile/emit.js`'s
+  `dateAuxFallback` (~line 4097, `.date:${method}` dispatch on an unresolved receiver) bakes
+  `ctx.schema.dateSid` as a WAT `i32.const` the instant IT emits — which can happen for a function
+  compiled BEFORE any `new Date()` call site elsewhere in the same program (e.g. `function
+  getT(d){return d.getTime()}` defined ahead of `main(){let d=new Date(); getT(d)}`). Under the
+  CURRENT (unconditional, module-init-time) registration this is always already resolved by the
+  time ANY function's emission starts, because `date`'s `init(ctx)` runs during `prepare()`'s
+  whole-AST scan, strictly before per-function emission begins — moving registration to emission
+  time reintroduces exactly the ordering hole the eager module-init-time design was unknowingly
+  also protecting against, and would silently bake `i32.const undefined` (malformed WAT) for that
+  ordering. Confirmed no MOD_DEPS/other-module shortcut avoids this (json.js's OWN two consumers of
+  `dateSid`, module/json.js:172/568, are both genuinely late — `pullStdlib`-time lazy thunks, safe
+  either way). **The real fix needs a new hook**: something that runs strictly AFTER `prepare()`
+  finishes (when `ctx.module.demanded` is a fully-resolved, AST-content-driven fact, independent of
+  what eager-preloaded) but strictly BEFORE any per-function emission begins (front.js's `frontHalf`
+  return point, or the very top of `compile()`/`emitIR`) — general enough to let a module like
+  date.js defer a MUST-BE-EARLY-BUT-ONLY-IF-DEMANDED decision safely. No such hook exists yet; this
+  is a genuinely different, harder shape than the timer.js/function.js Class-1 fixes (those had a
+  natural emission-time home for their deferred effect; a cross-function-referenced compile-time
+  CONSTANT does not). Left as a documented `test/eager-stdlib-parity.js` KNOWN_GAP row.
+
+- **subviewtyped — SHRANK but not closed, different mechanism than dict's, not root-caused**.
+  Pre-session: 1007B→1015B (+8). Post mfold's fix: 1007B→1007B — same LENGTH now, but
+  `bytesEqual` still fails: a direct byte diff shows 138 differing bytes despite equal total
+  length, and a `--wat` diff confirms it's a pure FUNCTION-EMISSION-ORDER difference (e.g. lazy's
+  WAT has `$__mkptr` where eager's has `$__ptr_offset` at the identical text offset — same final
+  reachable function SET per earlier sessions' Class 1/2 audits, just a different relative order).
+  Plausibly `ctx.core.stdlib`/`ctx.core.includes` object-key or Set insertion order leaking into
+  `pullStdlib`'s emission order, itself a function of which modules registered which stdlib names
+  in which sequence — NOT investigated further this session (a real but low-severity, byte-only,
+  execution-correct gap). Stayed in `KNOWN_GAP`, comment updated with this precise characterization
+  for whoever continues.
+
+- **dvnested — unchanged, confirmed still the pre-existing watr DCE-at-scale gap, not this
+  session's concern.** Eager output shrank from the historically-recorded 25033B down to 20245B
+  (cumulative effect of every fix landed across sessions before this one — NOT from this session's
+  mfold fix specifically, which doesn't touch dispatch or dead-code elimination) but is STILL
+  invalid wasm with the byte-for-byte IDENTICAL failure signature recorded in the prior session's
+  "FULLY LOCALIZED" section (`WebAssembly.Module(): Compiling function #33 failed: not enough
+  arguments on the stack for f64.convert_i32_s (need 1, got 0) @+8888`) — re-verified directly
+  this session, not re-localized further (prior session's finding — a watr optimizer DCE
+  reliability gap at scale, out of this repo — already stands and was not revisited).
+
+**Consequence for the task's own literal target** ("the eager-vs-lazy pin... must then flip all
+four known-gap rows to byte-identical"): NOT reached. One of four (mfold) is closed. dict and
+subviewtyped are real, root-caused-to-differing-depths, NOT closed (dict has an identified-but-
+unsafe-to-apply fix needing a new architectural hook; subviewtyped needs more investigation before
+any fix is attempted). dvnested is confirmed the same pre-existing, out-of-repo watr issue as
+every prior session found. Time-boxed given the task's remaining goals (2, 3) still needed —
+continuing to goal (2)/(3) rather than chasing dict's new-hook design or subviewtyped's ordering
+question further this session.
+
+`REGION_HOOKS_ACTIVE` is still `false` in this worktree (`git diff HEAD -- scripts/self.js` empty)
+— no kernel-affecting source file was touched this session except `src/compile/plan/scope.js`
+(dormant-path-only effect confirmed: the `canSkipWholeProgramNarrowing` change only changes
+behavior when `ctx.module.demanded.has('fn')` differs from `ctx.closure.make`'s bare truthiness,
+which only happens under eager preload).
+
+### Goal (2)/(3), continued same session — hooks-on kernel rebuilt with this session's fix
+
+`REGION_HOOKS_ACTIVE` flipped `true` (uncommitted, this worktree only) and rebuilt the REAL O3
+production kernel (`node scripts/self-compile-build.mjs`, default config, no env overrides):
+**253.2s, 15,802,268 bytes** — matches the last recorded hooks-on size closely (15,801,936B in the
+prior session, +332B consistent with this session's `scope.js` source growth).
+
+- `node test/kernel-oracle.js`: **11/14 test-blocks pass, 581 assertions, 3 fail — all `dict`
+  WAT-byte-parity (O0/O2/O3)**, identical shape to every prior recording in this file (native
+  317703B vs kernel 317802B at O0, etc.) — every EXECUTION assertion passes. No regression, no
+  improvement from this session's mfold fix (expected: dict's gap is the SEPARATE, still-open
+  date.js/schema-table mechanism documented above, untouched by the `fn`/narrowing fix).
+- `node test/kernel-parity.js`: **sum/math byte-identical at O0/O2/O3** (the task's own originally-
+  cited repro stays closed), aborts at `dict` (3rd corpus entry) with the identical byte counts —
+  same as kernel-oracle's own numbers, cross-confirming.
+
+**Goal (2) — fuzz seed=84/opt=3 investigation, IN PROGRESS**: confirmed natively FIRST (cheapest
+check): `node test/fuzz.js --seed=84` compiles and matches JS at every opt level 0-3, cleanly,
+instantly — **no divergence, no slowness, no stack issue natively at all**. This rules out a
+semantic/miscompile explanation for the original kernel-side finding outright; whatever fails only
+fails inside the self-hosted kernel's own execution.
+
+Reproducing THIS specific repro against the kernel needed a small rig (documented for whoever
+continues, since it wasn't obvious): `node test/fuzz.js --seed=84` alone is ALWAYS native — the
+`JZ_TEST_TARGET=jz.wasm` env var is read ONLY by `test/index.js`'s own driver
+(`_setCompileTarget(compileViaKernel)`, called right before `for (const name of selected) await
+import(...)`), not automatically by `index.js`/`jz()` itself, and NOT by `test/fuzz.js` in
+isolation. Directly `import`-ing `test/fuzz.js`'s exported `fuzz()` to drive a targeted single-seed
+call is ALSO a trap: the file's `!isMain` branch (true whenever `import.meta.url` isn't
+`process.argv[1]`, i.e. true for anyone importing it as a library) registers 8 EXPENSIVE `test(...)`
+GATE blocks (the full 200×4 scalar sweep plus several 100-120-seed typed-array sweeps) that run for
+real the moment the module loads — the same general "importing a test file executes it" hazard this
+file's own "pure-stdlib-init" session already hit once for `kernel-parity.js`. Fix: `node --import=
+<preload.mjs> test/fuzz.js --seed=84 --opt=3`, where the preload module calls `_setCompileTarget
+(compileViaKernel)` BEFORE the main entry (`test/fuzz.js`) is ever loaded — Node's `--import` runs
+to completion before the main module resolves, so `test/fuzz.js` sees `isMain === true` (its own
+normal CLI path, `--seed=`) and every `jz(...)` call inside `check()` transparently routes through
+the kernel, with NO GATE blocks ever registered.
+
+**Result — genuinely slow or hung, not a fast throw**: unlike the ORIGINAL finding's "Maximum call
+stack size exceeded" (a fast, synchronous RangeError — stack overflows normally throw within
+milliseconds, not minutes), this session's repro run sat at 100% CPU, actively running (not
+blocked/stalled — confirmed via repeated `ps` ELAPSED/STAT checks, never zombied), for several
+minutes with no output and no crash. Whether it eventually throws the same stack-overflow or is
+actually a DIFFERENT failure mode (a genuine hang, in the same class as `transform`'s own
+documented "in-kernel infinite loop, 420s fence" — test/index.js's own `KERNEL-LEG DEBT` comment)
+was NOT resolved by session end — the run was still in flight; see the task-id/output-file pointer
+below for whoever picks this up. Notably, `test/index.js`'s own `KERNEL_EXCLUDE` comment records
+that `errors` and `parser-bugs` (two of the task's own three cited analogues) were BOTH fixed and
+UN-excluded on 2026-07-27 — only `transform` remains an actual current hang exclusion — so "self-
+hosted stack depth, permanent/unfixable" is NOT the only precedent in this codebase's own history;
+some of this exact failure CLASS turned out to be real, fixable bugs. This repro should not be
+assumed permanent without the same level of investigation those got.
+
+**Task ID / how to pick this back up**: background `Bash` task `bfflb8ux5` (this worktree, PID
+68858 at last check), command `node --import=<scratchpad>/kernel-preload.mjs test/fuzz.js
+--seed=84 --opt=3`, output file `<scratchpad>/tasks/bfflb8ux5.output`. If it completed after this
+session, read that file directly. If the worktree/process is gone, reproduce with the recipe above
+(needs a region-hooks-on kernel built first — `REGION_HOOKS_ACTIVE=true`,
+`node scripts/self-compile-build.mjs`, ~250s) — the preload script is `<scratchpad>/kernel-
+preload.mjs`, trivial to recreate (two imports + one `_setCompileTarget` call, shown in this
+section). If it turns out to be a genuine hang (not a fast stack-overflow throw), the concrete next
+step is bisecting seed=84's OWN generated program (shrink it — `test/fuzz.js`'s own `shrink()` +
+`report()` machinery, already wired for this exact purpose, just needs the SAME kernel-routed
+`check()` instead of the native one) to find the minimal nested shape that trips it, then compare
+against `errors`/`parser-bugs`'s ORIGINAL (now-fixed) root causes for a shared mechanism before
+concluding it's a new, unrelated one.
+
+**Goal (3) — goal-probe re-measurement, IN PROGRESS at session end**: launched
+(`<scratchpad>/goal-probe.mjs`, background task `b3ser1vkg`) against this session's freshly-built
+hooks-on kernel, reusing `resolveSelfCompileBuild({optimize:3, snapshot:true, helperCounters:false,
+helperCallsites:false})` (self-compile-build.mjs's own exact, unoverridden defaults) for
+`{graph.code, graph.modules}`, a fresh `interop.js` `instantiate(wasmBytes, {memory:65536})` (the
+wasm32 ceiling, 65536 pages), and `self.exports.default(codePtr, 0, optJSON, modulesPtr, 0)` —
+mirrors the recipe this file has used in every prior session. Result pending at session end — see
+task id `b3ser1vkg`, `<scratchpad>/tasks/b3ser1vkg.output`, or re-run `node <scratchpad>/goal-
+probe.mjs` fresh (script is self-contained, reads `dist/jz.wasm` from this worktree).
+
+### Goal (2) RESOLVED (disposition: documented + excluded, `dee8f64f`) and Goal (3) goal-probe RESOLVED
+
+**Fuzz repro concluded — genuine hang, not a fast throw, killed after 8m12s.** The background
+kernel repro (`bfflb8ux5`) never returned: sustained ~99-100% CPU, STABLE ~1.09 GB RSS (no runaway
+growth — rules out an unbounded-allocation OOM-style failure specifically), zero output past the
+preload confirmation + the printed source line, for the full 8+ minutes it ran before being killed
+— well past the 420s fence `test/index.js`'s own `KERNEL-LEG DEBT` comment documents for
+`transform`'s still-open in-kernel hang exclusion (the closest existing precedent in this
+codebase). **This is a DIFFERENT symptom than the task's own original report** ("Maximum call stack
+size exceeded", a fast synchronous RangeError) — that prior session's kernel predates EVERY fix
+landed this session (Group 1's `stripStaticDataPrefix` bound, this session's `fn`/narrowing demand-
+gate). The crash→hang shift between a pre-fix and post-fix kernel, for the IDENTICAL seed/opt, is
+itself real signal: something in this campaign's accumulated fixes plausibly changed which code
+path the self-hosted compiler takes for this exact generated program (a wide, ternary/ while-nest-
+heavy numeric kernel — see the source in this file's fuzz-fix commit) without closing whatever
+pathology sits underneath. NOT root-caused to a specific line (no stack trace obtainable from an
+unresponsive kernel instance in the time available) and therefore NOT fixable via the root-
+completeness rule this session — the honest disposition per the task's own OR clause is
+"document and exclude," matching `transform`'s own precedent exactly.
+
+**Fix landed (`dee8f64f`, `test/fuzz.js`)**: `KERNEL_HANG_SEEDS = new Set([84])`, skipped inside
+the `fuzz()` driver's own seed loop, gated on `onKernel()` (imported from `./_matrix.js`) — so
+native fuzzing keeps FULL 1..200 coverage (confirmed: `node test/index.js fuzz`, all 8 GATE test
+blocks including the exact one that named seed=84, **8/8 pass** natively) and only the kernel-
+target leg skips this one seed. `KNOWN_OPEN` (the existing ratchet) can't help here — it only
+filters an already-RETURNED finding, and this call never returns at all.
+
+**Goal-probe — RESOLVED, re-measured against this session's fixed hooks-on kernel**:
+
+```
+region-hooks-on (this session, post mfold/fn-demand-gate fix): TRAP "unreachable",
+  peakBytes 4013228032, elapsedMs 608792, 163 modules
+```
+
+93.4% of the wasm32 ceiling (4,294,967,296) — same trap kind ("unreachable"), same scale (~608s ≈
+10.1 min, within the 601-685s range every prior hooks-on session recorded), same module count
+(163) as every previous measurement in this file's history. **This session's fixes did not
+materially move this number** — expected and correct: this is the ALREADY-DOCUMENTED, SEPARATE
+"KNOWN OPEN ISSUE... deterministic... at jz×jz scale only" defect this file's much earlier section
+banked rather than chased (a different bug class from module-init purity/narrowing-skip demand-
+gating, everything this campaign's sessions have actually closed) — the mfold-class fix changes a
+handful of emitted bytes per function, nowhere near enough to move a peak that sits at 93%+ of a
+4 GiB ceiling after 10 minutes of real compiler work.
+
+### `JZ_TEST_TARGET=jz.wasm node test/index.js` — RESULT: 2797/2811 pass, 13 fail, 1 skip; 7 already-known/excluded-class, 6 GENUINE NEW hooks-on-specific regressions found
+
+**Methodology correction, worth recording precisely — do not repeat this mistake**: passing an
+explicit `argFilters` list to `test/index.js` (naming every test file) BYPASSES `KERNEL_EXCLUDE`
+entirely — the filter is `!(onKernelTarget && !argFilters.includes(name) && KERNEL_EXCLUDE.has(name))`,
+so a NAMED file runs even when kernel-excluded. The first attempt (task `bnoch62cq`) passed the
+full 91-name (minus bench-c) native list under `JZ_TEST_TARGET=jz.wasm` and crashed the WHOLE
+process with an uncaught rejection inside `imports.js`'s "host override: globalThis.fetch" test
+(a real `fetch('/api')` call — imports.js is kernel-excluded precisely because host-facing opts
+don't reach the kernel path at all). Fix: compute `TESTS ∖ KERNEL_EXCLUDE ∖ {bench-c}` and pass
+THAT as args. A first attempt at this computation (regex-extracting the `KERNEL_EXCLUDE` Set
+literal without stripping `//` comments first) also mis-scored — the block's own comments mention
+many ALREADY-CLEARED former exclusions by name in quotes (`'errors'`, `'objects'`, `'destruct'`,
+etc.), which a naive scan folds into the Set. Correct extraction (strip comments per line, THEN
+match quoted strings) gives the true set: **24 entries** — `abi, bench-c, cli, examples, external,
+imports, kernel-oracle, kernel-parity, native-lowering, never-grown, optimizer, perf-ratchet,
+self-compile-includes, self-compile-source, simd, slot-hazards, snapshot, timers, transform,
+unswitch-typed-param, warnings, wasi, watr, web-smoke` — giving **68** kernel-safe files (minus
+bench-c) out of 92 total. The run actually launched used a list computed with the flawed (comment-
+polluted) extraction — 64 files, including 2 that ARE genuinely kernel-excluded (`optimizer`,
+`slot-hazards` leaked through) and excluding several that should have run (no correctness impact,
+just narrower coverage than ideal). The CORRECT 68-name list is saved for whoever continues:
+`<scratchpad>/test-names-kernel-fixed.txt` (not re-run this session — time-boxed, see below).
+
+**Full result** (task `b4nnv2nhh`, the corrected-list run): **2797/2811 pass, 13 fail, 1 skip
+(18050 assertions)**. Every one of the 13 failures individually attributed to its source file by
+matching each `✗` line back to its nearest `[0m► ` test-block header:
+
+- **4 from `slot-hazards`, 1 from `simd`, 1 from `optimizer`** — all three files ARE genuinely
+  kernel-excluded (`KERNEL_EXCLUDE`'s own documented "Optimizer-shape class... kernel runs
+  optimize:false; shape asserts can't match"), only ran because of the listing bug above. Not
+  region-arena-related, not new, not investigated further — exactly the class their own exclusion
+  already exists for.
+- **1 from `pow-fold-ulp`** (`const-exponent pow fold — SIMD twin`) — this EXACT row was already
+  flagged as "1 pre-existing/unrelated... never investigated — orthogonal to this session's scope"
+  in an EARLIER session's own battery run recorded in this file (search "pow_fold_v" above) —
+  confirmed still present, still orthogonal, not re-investigated.
+- **6 GENUINE, NEW, hooks-on-specific findings** — confirmed NOT pre-existing by directly re-running
+  each one's OWN test file against a **freshly-built DORMANT kernel** (this session's own
+  17,960,197-byte/319.7s dormant build, see below): all 6 pass CLEANLY there (`mem`: 61/61;
+  `perf`+`passes`+`array-methods`+`objects`+`conditional-spread` together: 380/380) — proving these
+  are NOT general kernel-vs-native gaps, NOT caused by this session's fixes (which are all verified
+  no-ops on the dormant path), and NOT present in the historical dormant `JZ_TEST_TARGET` record
+  ("2977/2978 pass... 0 fail" from an earlier session) — they are **specific to region-hooks being
+  active**, undiscovered by any prior session (none reached a clean-enough hooks-on state to run
+  this leg to completion before). None investigated to root cause this session (time-boxed) —
+  recorded here precisely so the NEXT session starts with reproduction targets, not a re-discovery:
+  1. `test/array-methods.js` — **"runtime-polymorphic TypedArray writes tag computed named-method
+     results"**: `'parse' — jz dispatched this method call to the host, but the receiver is not a
+     host object (an unsupported builtin method, or a receiver type jz couldn't resolve)`. A
+     dispatch-tier REJECT firing where it shouldn't — same SHAPE as this file's own Class 2 fix
+     (`ctx.module.demanded`-gated tiers), worth checking whether ANOTHER dispatch tier has the same
+     "module loaded ⇒ feature demanded" false-equivalence for a computed/dynamic method name.
+  2. `test/mem.js` — **"shared memory: duplicate schemas not re-added"**: `same schema not
+     duplicated` — `is(memory.schemas.length, 1)` fails after two separate `jz(src, {memory})`
+     calls sharing one `jz.memory()`. Schema-table related — worth checking against this session's
+     OWN `dict`/date.js schema-table finding (Goal 1) for a shared mechanism (both are about schema
+     TABLE state under region/eager conditions), though the shapes differ (cross-compile dedup vs.
+     single-compile bloat).
+  3. `test/perf.js` — **"codegen: no-arg scalar allocator rewinds heap on return"**: `expected heap
+     save local` — a structural/WAT-shape assertion (looking for a specific local in the compiled
+     output), region-hooks apparently changes this codegen shape.
+  4. `test/passes.js` — **"passes: dead code never changes retained-code bytes (no hidden auto-
+     tuning)"**: `byte count stable under appended dead code (2)` — a BYTE-COUNT test, same general
+     CLASS as this session's whole Goal 1 investigation (output-neutrality under a structural
+     change) — worth checking first among the 6, likely fastest to connect to already-understood
+     mechanisms.
+  5. `test/objects.js` — **"spread copy: read-after-copy with no mutation resolves slots
+     correctly"**: plain `should be equal` — a VALUE mismatch, potentially the most concerning of
+     the 6 (an actual wrong-answer, not a shape/byte-count nit) — should be first priority to
+     confirm is real and understand before anything else here.
+  6. `test/conditional-spread.js` — **"conditional-spread: base props read correctly alongside a
+     conditional group"**: `Maximum call stack size exceeded` — on source as trivial as `{ a: 1, c:
+     3, ...(cond && { b: 2 }) }`. **This is the SAME error signature as Goal (2)'s fuzz seed=84
+     finding**, but on a tiny, non-fuzzed, hand-written program — far more suspicious than a stack
+     issue on a deeply-nested generated one. Given the mandate's own root-completeness rule (a
+     stack overflow this shallow is much more likely a genuine unbounded-recursion defect than a
+     depth LIMIT), **this is the single highest-priority lead for whoever continues this
+     investigation** — small enough to bisect quickly, and plausibly the SAME root cause as Goal
+     (2)'s hang (both are self-hosted-kernel-only, both are call-stack-shaped failures, both
+     involve object/spread-adjacent shapes to some degree). Repro: `node --import=<preload that
+     calls _setCompileTarget(compileViaKernel)> test/conditional-spread.js` (or add a direct
+     `compileViaKernel(src)` call) against a region-hooks-on kernel with the source literally
+     copied from this test.
+
+**Consequence**: `REGION_HOOKS_ACTIVE` correctly, definitively stays `false` — 6 new, real,
+unexplained hooks-on-only findings (one of them a stack overflow on trivial input) is decisively
+not a green battery. Reverted early this session (safe: the source flag doesn't affect an
+already-built/cached kernel binary) — confirmed `git diff HEAD -- scripts/self.js` empty.
+
+### Dormant-battery reverification (this session's changes: scope.js, fuzz.js, pointers.js, eager-stdlib-parity.js, module/date.js reverted to clean)
+
+- **Native full suite** (`node test/index.js`, all 91 files minus bench-c): **3731 pass, 1 skip, 0
+  fail (21725 assertions)** — re-run AFTER every commit this session (scope.js fix + fuzz.js fix +
+  pointers.js pin + eager-stdlib-parity.js restructure all included). Zero regressions.
+- **Fresh dormant kernel build** (`REGION_HOOKS_ACTIVE=false`, `node scripts/self-compile-build.mjs`,
+  default O3): **319.7s, 17,960,197 bytes** — in line with every prior dormant build recorded in
+  this file (304-320s, 17.87-17.96 MB).
+- **`node test/kernel-oracle.js`**: **14/14 pass, 605 assertions** — exact baseline match.
+- **`node test/kernel-parity.js`**: **3/3 pass, 33/33 assertions**, including `dvnested O3:
+  identical` and `subviewtyped O3: identical` — confirms Group 1's `ae5dc024` fix (and everything
+  since) is still fully intact on the dormant path.
+- **`node scripts/bench-size.mjs`**: exit 0, no budget failures (geomean jz/AS = 1.048×, jz/(jz+
+  wasmopt) = 0.971× — both within normal historical range, no size regression from this session's
+  source changes).
+- **`node test/eager-stdlib-parity.js`**: 22/22 pass (verified earlier this session, native-only,
+  independent of which kernel is built — see Goal 1 section above).
+- **The 7 files with hooks-on-only failures, spot-checked against this fresh dormant kernel under
+  `JZ_TEST_TARGET=jz.wasm`**: `mem` 61/61, and `perf`+`passes`+`array-methods`+`objects`+
+  `conditional-spread` together 380/380 — all clean, confirming the 6 new findings above are
+  hooks-on-specific, not dormant-path regressions from this session's work.
+- **NOT run this session**: the FULL `JZ_TEST_TARGET=jz.wasm node test/index.js` dormant leg (all
+  68 kernel-safe files) — time-boxed given the length of the hooks-on investigation above. The
+  targeted spot-check (previous bullet) plus native-full/kernel-oracle/kernel-parity all being
+  clean is strong, but not exhaustive, evidence it would still be clean; re-running it fresh is the
+  one remaining item to close out full certainty on the dormant mandate, expected ~10-20 min once
+  the machine is less contended (this session ran under heavy, confirmed multi-agent shared-machine
+  load throughout — every kernel operation took noticeably longer wall-clock than its own CPU-time
+  would suggest).
+
+## Session (2026-08-28, worktree fix/region-hooks-on-defects @ b05caa1a) — goal (a) `conditional-spread.js`: root cause FOUND (not yet fixed) — an INLINER rename gap, not a region-relocation bug
+
+Picking up the task's goal (1): root-cause `conditional-spread.js`'s "Maximum call stack size
+exceeded" crash (`{ a: 1, c: 3, ...(cond && { b: 2 }) }`).
+
+**Diagnostic infra landed (`4b5c66e2`, throwaway, WIP, must be reverted before any battery run or
+merge)**: `scripts/self.js` gained `__dbgCompile(mask, ...)` (like `compileSelf` but sets
+`ctx.transform._dbgRoundMask = mask` right after `setupSelf`'s reset) and `__dbgCompileWat(mask,
+...)` (same, via `watrPrint` instead of `watrCompile` — print doesn't validate local declarations
+the way encode does, so it can surface a corrupted-but-printable module). `src/compile/index.js`'s
+`compile()` gained a bit-per-round gate (`__M = ctx.transform._dbgRoundMask ?? ~0`, `__rh = bit =>
+(regionHooks && (__M & bit)) ? regionHooks : null`) threaded through all 8 of its own round
+boundaries in place of the bare `regionHooks` truthy-checks — same technique and same bit numbering
+(1=SCAN 2=AFE 4=emitFuncs 8=__buildMark 16=__stdlibMark 32=outermost/releaseSession 64=plan()'s own
+rounds 128=optimizeModule's round) as the prior "emitIR's round — ISOLATED to `__stdlibMark`"
+session above, reconstructed since that session's own scaffolding was fully reverted. Default mask
+(all-bits, `~0`) is behaviorally identical to bare `regionHooks` on every existing call path.
+
+**First finding — the bug needs the KERNEL itself built at O3, not just the guest optimize level.**
+A fast `JZ_SELF_COMPILE_OPT=0` diagnostic kernel (96.7s, 13,486,519 bytes) does NOT reproduce the
+crash at ANY guest optimize level (false/0/2/3, all clean) — confirmed via `__dbgCompile`. Only a
+REAL PRODUCTION kernel (`node scripts/self-compile-build.mjs`, default O3 self-compile, 241.9s,
+15,804,341 bytes) reproduces a failure on this source at guest `optimize:3` (guest 0/2/false all
+clean on this kernel too) — the defect is sensitive to the SELF-COMPILE's OWN optimize level (how
+the COMPILER's own source, e.g. module/object.js's conditional-spread handling, gets compiled INTO
+the kernel), not only to what optimize level the kernel then applies to a guest program.
+
+**Second finding — the observed SYMPTOM differs from the task's own recorded one, but is the SAME
+underlying defect class.** Against this session's O3 kernel, the guest source throws `Error:
+Unknown local $b` (a watr-level "reference to an undeclared local" validation error, from
+`self.exports.default(...)` AND `__dbgCompile` alike — confirmed via a raw, non-diagnostic
+`self.exports.default(...)` call too, so this is not an artifact of the bitmask scaffolding) rather
+than the task-recorded "Maximum call stack size exceeded". Both are exactly the kind of
+build-layout-sensitive symptom this campaign has repeatedly seen before (see the O2
+"heisenbug"/"address-boundary-sensitive" note at the top of scripts/self.js, and the `dvnested`
+watr-DCE-at-scale gap above) — a stale/corrupted-reference bug's OBSERVABLE surface (stack
+overflow vs. a bad local reference vs. a wrong value) plausibly depends on exactly what memory
+happens to sit where in a given build, not on the underlying root cause changing. Treating "Unknown
+local $b" as the same defect and continuing to root-cause IT (much more inspectable than a stack
+trace into unnamed wasm frames) rather than re-chasing the exact original symptom.
+
+**Root cause, precisely localized: `$__to_str` (module/core.js or module/string.js's shared
+number→string stdlib helper) has an INLINED Ryu float-formatting helper's body spliced into it
+(locals renamed with an `$__inl7_` prefix — `$__inl7_vr/vp/vm/roundUp/removed/ieeeE/e2/even/...`),
+and ONE instruction inside that inlined region reads a BARE, un-prefixed `local.get $b` instead of
+whatever `$__inl7_`-prefixed local it should be** (`src/compile/index.js`'s WAT dump, kernel build
+only — confirmed absent from the equivalent native WAT, which has no `$b` anywhere near this span).
+Found by: dumping the kernel's WAT via `__dbgCompileWat` (mask=255, optimize:3) — `watrPrint`
+happily prints the malformed tree that `watrCompile` refuses to encode — then writing a small
+script (parses the dump with watr's own NATIVE `parse.js`, walks every `(func ...)` form, collects
+its declared param/local names, and flags any `local.get/set/tee` referencing a name outside that
+set). Exactly ONE bad reference in the whole ~15,800-line dump: inside `$__to_str`, at
+```
+(local.set $__inl7_olen
+  (i32.add
+    (i64.ne (i64.and (local.get $b) (i64.const 0x0000400000000000)) (i64.const 0))
+    (i64.const 0)))
+```
+— every sibling instruction in this same block uses the `$__inl7_` prefix consistently; this one
+alone reads a bare `$b`. `$__inl7_e2`/`$__inl7_even` (both present in the function's OWN declared-
+locals list) are the likely intended target, by the shape of the surrounding Ryu rounding-decision
+code (an is-even mantissa bit test feeding an extra-digit decision) — not yet confirmed which.
+
+**Working hypothesis (not yet confirmed against source)**: some inliner (`$__inl<N>_` naming —
+grep hits so far: `src/session.js:344`'s comment "recompiles emit history-dependent WAT text
+(__inl5 → __inl15)", `src/optimize/vectorize.js:1574`'s "`$__inl7___li0`" LICM-hoisted-invariant-
+under-inlining comment — the actual renaming call site not yet located) builds its rename map from
+a callee's CURRENT/live declared-locals list and substitutes every reference in the callee's body
+accordingly. If the callee body being spliced in is a STALE snapshot (pre-dating some earlier
+pass's own rename of one local from `$b` to `$e2`/`$even` — i.e. two different-generation copies of
+the same logical function body coexisting, one used to BUILD the rename map, an older one actually
+WALKED and substituted) the walk would substitute every occurrence of the NEW name correctly while
+leaving an old `$b` occurrence untouched (not in the map, so passed through as-is) — a root-
+completeness-shaped bug, but in an INLINER's own before/after body pairing rather than in a region
+round's snapshot. Whether this pairing is itself something a region round's relocation could
+desync (e.g. one of the two copies riding in a round's root while the other is a stale reference
+NOT re-read after the round's exit) is the next thing to confirm — has NOT yet been traced to the
+actual inliner source or connected back to a specific region round via the bitmask infra already
+built. Next step: locate the actual `$__inl` rename call site (grep `src/optimize/*.js` more
+broadly, e.g. for the literal `__inl` prefix template or a rename-map-building loop near an inline
+pass), read it, and find where it could read two non-corresponding snapshots of the same callee.
+
+**UPDATE — traced to the actual source; it is WATR'S OWN self-hosted inliner (`node_modules/watr`
+/ `/Users/div/projects/watr`'s `src/optimize.js`), not any jz `src/*.js` file.** The `$__inlN_`
+prefix comes from `inline`/`inlineOnce`'s shared `buildInline`-shaped rename step
+(watr/src/optimize.js:5475-5511 and the near-duplicate inline copy inside `inlineOnce`,
+~6134-6178): `rename.set(p.name, \`$__inl${uid}_${p.name.slice(1)}\`)` for every PARAM and LOCAL the
+callee function node declares, then a recursive `sub(n)` substitutes every `local.get/set/tee`
+whose name is IN `rename` — critically, one whose name is NOT in `rename` (line ~5502/~6177's
+fallback `return n.map((c,i) => i===0 ? c : sub(c))`) passes through **completely unchanged, with
+no error** — so a callee body referencing a local NOT in its own declared params/locals list
+survives verbatim as a bare, unrenamed reference. Read both `inline` (multi-caller, watr:5544-5636)
+and `inlineOnce` (single-caller, watr:6070-6070+) in full: `params`/`locals`/`cBody` are ALL derived
+from the SAME `callee` node reference, synchronously, in one JS call with no region-hook call
+anywhere inside either function or inside `buildInline` itself — internally self-consistent,
+ruling out an "inliner reads two out-of-sync snapshots of the same callee" bug in watr's OWN logic.
+This means the callee's OWN declared-locals list, as scanned by the inliner, genuinely did not
+include `b` — the AST handed to the inliner was already inconsistent (a body reference to a local
+its own signature never declares) before any inlining touched it.
+
+**Where watr's OWN region round actually lives** (relevant since scripts/self.js's
+`optimizeTail`→`watrTail`(src/optimize/watr-tail.js:314-327)→`watrOpts.regionMark/regionExit`
+wires jz's SAME `__region_mark`/`__region_exit` intrinsics into it): `runRounds`
+(watr/src/optimize.js:8487-8588) is a SEPARATE, self-contained region round from anything in jz's
+`compile()` — one mark/exit pair PER OPTIMIZER ROUND (up to 6), rooting `[ast, dirty, snapshots,
+opts.constF64, SW]`. `dirty`/`snapshots` are PROGRAM-NODE-KEYED (pointer-keyed) `Set`/`Map` —
+exactly the shape this campaign's own doctrine flags as needing special rebuild-fresh handling
+during relocation (module/core.js's own comment, quoted earlier in this file: "EVERY exit that
+reaches a pointer-keyed Map/Set rebuilds it FRESH"). `inlineOnce` is MODULE_SCOPE (runs inside this
+loop, `ast = fn(ast, opts)`, watr:8482-8483/8538-8546) — genuinely region-round-adjacent, unlike
+plain `inline` (explicitly excluded from `runRounds`'s per-round PASSES loop, watr:8528, called
+from elsewhere entirely outside any region-round window).
+
+**Ruled out**: a `inlineUid`/`ctUid`/`outUid`/`tmUid` (watr's own module-scope name-uid counters,
+`resetNameUids`, watr:8667) corruption theory — considered (they live outside `runRounds`'s root,
+so a stale/reclaimed cell is structurally possible) but doesn't fit the evidence: uid=7's OWN value
+and NEARLY ALL of its own renames (`$__inl7_ieeeE/e2/even/q/sh/tbl/vmTZ/vrTZ/removed/last/roundUp/
+buf/scr/pos/olen/n/i/bits/mmShift/mv/vr/vp/vm/h0/t/d10/out` — dozens) are self-consistent and
+correct; only ONE reference (`$b`) in the whole ~15,800-line dump is wrong. A corrupted uid would
+plausibly wreck the WHOLE splice's renames, not leave dozens correct and exactly one bad — not
+pursued further as the leading hypothesis.
+
+**Bisection signal is genuinely noisy — read with a specific caveat**: forcing EACH of SCAN, AFE,
+`__stdlibMark`, outermost, or `optimizeModule` off INDIVIDUALLY (5 of `compile()`'s 8 rounds) each
+independently "clears" the symptom; `emitFuncs`/`plan()` off do NOT clear it (same error); and
+`__buildMark` off does NOT clear it either but instead FLIPS the symptom to the task's originally-
+recorded "Maximum call stack size exceeded". Five different, structurally-unrelated bits each
+"fixing" the same bug, plus one bit changing WHICH symptom appears, is the signature this
+campaign's own history already named for a different bug ("O2:... reproduction depends on
+unrelated static-layout changes... adding or removing debug globals can flip a failing build to
+passing and back — points at an address/layout-boundary-sensitive bug rather than a single clean
+cause") — read as "many of these bits shift heap layout enough to dodge the trigger," NOT as "five
+independent root causes." None of the 5 "clearing" bits has a DIRECT mechanistic link to watr's
+`runRounds`/`inlineOnce` (all 5 finish before `optimizeTail`/`watrTail` even starts) — the truer
+signal is that `runRounds`'s pointer-keyed `dirty`/`snapshots` root, or `__region_copy_rec`'s core
+walk applied to whatever shape a fully-realized stdlib-heavy module produces, is the most
+mechanistically-direct remaining suspect, not yet confirmed.
+
+**Disposition, given the time already spent**: root-caused as far as static reading and one
+kernel's bitmask can take it without many more build iterations — precisely localized to a
+watr-internal (`/Users/div/projects/watr`, vendored as `node_modules/watr`) region-round
+integration gap, structurally independent of jz's own `ctx.*` round doctrine (the task's "widen a
+round's snapshot" fix shape does not directly apply — nothing in jz's own root arrays is
+demonstrably missing here). This is the SAME "real bug, but lives in watr, not jz's compile
+pipeline" disposition this file already gave `dvnested`'s DCE-at-scale gap — NOT fixed this
+session. Whoever continues: (1) add `dirty`/`snapshots` relocation-correctness assertions directly
+in a throwaway watr build (does `__region_copy_rec` faithfully preserve the (funcNode → hash)
+pairing across an exit, checked against a fresh re-hash immediately after?); (2) or bypass watr
+entirely for this one hypothesis test — build a kernel with `inlineOnce`/`inline` both forced off
+(`watr: {inlineOnce: false, inline: false}` merged into every optimize preset for the self-compile
+profile only) and see if `$__to_str` still corrupts some OTHER way, which would rule watr's inliner
+out entirely and point back at `runRounds`'s other passes or jz's own `optimizeModule`/`pullStdlib`.
+Diagnostic scripts (scratchpad, not committed): `cs-eager-native.mjs` (native ± `_eagerStdlib`,
+clean at every level — rules out a Class-1/2-style eager-loading bug), `cs-mask-probe{,2,3}.mjs`
+(the bitmask sweeps above), `cs-wat-dump.mjs` (kernel vs. native `--wat` dump via the new
+`__dbgCompileWat` export), `cs-find-bad-local.mjs` (parses a WAT dump with watr's own native
+`parse.js` and flags any `local.get/set/tee` outside its enclosing func's declared names — the tool
+that found the exact bad reference; reusable for any future "Unknown local"-shaped repro).
+
+**All diagnostic scaffolding reverted (`df47b542`)**: `scripts/self.js`/`src/compile/index.js` are
+back to byte-identical with `b05caa1a` (`git diff b05caa1a --stat` shows only this notes file
+differs), `REGION_HOOKS_ACTIVE=false` confirmed. No kernel rebuild was needed to verify this — zero
+production source changed, so every previously-recorded dormant-battery result for `b05caa1a` still
+applies unchanged.
+
+## Goal (2), defects (b)/(d) — BOTH reproduce NATIVELY with `_eagerStdlib:true`, no kernel needed;
+## (b) narrowed to `fn` eager-load, root mechanism NOT fully closed; (d) not narrowed, same class
+
+Given (a)'s root cause turned out to live outside jz's own round doctrine entirely, tested the
+remaining 5 defects' repros the CHEAP way FIRST (native, `_eagerStdlib:true`, no kernel/no region
+hooks at all — the same test this campaign's Class-1/2/mfold/dict sessions always ran before
+assuming a defect needs self-hosted debugging) before spending another kernel build.
+
+**(b) `array-methods.js` — "runtime-polymorphic TypedArray writes tag computed named-method
+results"** (`(bigValue ? i64 : i32).parse()` where `i32`/`i64` are plain named functions each
+carrying a hand-attached `.parse` closure property): reproduces identically NATIVELY with
+`compile(src, {optimize, _eagerStdlib:true})` — `write(0,0)` throws `'parse' — jz dispatched this
+method call to the host, but the receiver is not a host object...` (the exact task-recorded
+message, verbatim — this error string lives in `interop.js:1181`, a HOST-SIDE throw fired when
+compiled code calls into a generic host-dispatch trampoline for a receiver the host side can't
+resolve — i.e. the COMPILED CODE itself, under eager load, emits a call to the wrong dispatch
+tier for this call site). **`STDLIB` bisection (same technique as the dvnested/Class-2 session,
+temporarily shrinking `src/autoload.js`'s `STDLIB` export, reverted after each trial — confirmed
+`git diff` clean before moving on): `['core','array','object','fn']` alone reproduces it — `fn`
+(the closures module) is necessary and, combined with `core`/`array`/`object`, sufficient.**
+
+This LOOKS like Class 2's already-fixed mechanism (`tryDynamicPropCall`'s `if (ctx.closure.call)` /
+now `ctx.module.demanded.has('fn')` gate, module/emit.js — "treats an unrecognized method as a
+possible dynamic closure-valued property whenever `fn` is loaded") but is NOT explained by it:
+`i32.parse = () => 7` is a REAL arrow-function literal in the source, so `fn` is genuinely
+DEMANDED here (a real `includeModule('fn')` fires during prepare, unconditionally marking
+`ctx.module.demanded` regardless of eager preload) — the already-landed fix's gate should still
+pass. The divergence must be a DIFFERENT tier or a receiver-type-proof difference (the same general
+shape as `dvnested`'s original root cause — eager loading perturbing WHICH dispatch tier intercepts
+a call, not the specific `ctx.module.demanded` gate already closed) — **not traced to the exact
+tier this session** (time-boxed). Next step for whoever continues: instrument
+`src/compile/emit.js`'s method-dispatch tier chain (`emitMethodCall`, the same tiers 1-12 read for
+Class 2) with the same throwaway `console.error`-per-tier technique that session used, comparing
+which tier fires for `.parse()` on a computed `(cond?i64:i32)` receiver, lazy vs.
+`_eagerStdlib:true` — likely one tier upstream of `tryDynamicPropCall` now intercepts first, or a
+receiver-type proof (`valTypeOf`-equivalent for a ternary-of-two-named-functions) resolves
+differently once every stdlib module is pre-loaded.
+
+**(d) `objects.js` — "spread copy: read-after-copy with no mutation resolves slots correctly"**
+(`let a = [{x:5,y:6}]; let c = {...a[0]}; return c.x*10+c.y`, expected 56): reproduces identically
+NATIVELY with `_eagerStdlib:true` — `go()` returns `NaN` instead of `56`, at both optimize 0 and 3.
+**Not yet narrowed by `STDLIB` bisection**: `['core','array','object']` alone is CLEAN (56, correct)
+at every optimize level tested; `['core','array','object','string','number','fn']` still clean too
+— the minimal triggering set was not found this session (time-boxed; whoever continues should keep
+growing from there, or binary-search the remaining 15 STDLIB names).
+
+Root mechanism, from a native `--wat` diff (`optimize:0`, lazy vs. `_eagerStdlib:true`, `d-wat-diff.mjs`):
+`$go`'s `__obj_clone(a[0])` call (the generic single-unknown-spread-source runtime clone —
+`emitObjectSpread`'s own shortcut for `{...expr}` when the source's static schema can't be proven,
+module/object.js ~1093) is BYTE-IDENTICAL lazy vs. eager (same construction, same mechanism, sound
+in both) — `mergeSpreadNames`/`resolveSchema(a[0])` legitimately fails to prove a static schema for
+an array-index expression in EITHER case (`sourceSchema`/`resolveSchema` only resolves a bare
+name/literal/JSON shape, not `a[0]`), so `emitObjectSpread` correctly takes the same generic-clone
+path both times — **this rules out `emitObjectSpread`'s own construction-time logic as the
+divergence** (confirmed identical). The DIVERGENCE is entirely on the READ side: lazy's `c.x` reads
+compile to a direct, static `f64.load` (proving `c`'s runtime schema despite `emitObjectSpread`
+itself not statically knowing it at the CONSTRUCTION site — some SEPARATE, more powerful analysis,
+not yet located, infers "a clone of a single-schema array's element is that same schema"); eager's
+`c.x` instead compiles to `call $__dyn_get_expr_t_h` (a fully dynamic, string-keyed property
+lookup) — and THAT dynamic lookup itself then fails to find `x`, yielding `NaN`. Two open questions,
+neither resolved this session: (i) which pass grants `c` a static schema in the lazy case (grep
+`arrayElemSchema` — used across `src/reps.js`, `src/param-reps.js`, `src/static.js`,
+`src/compile/{analyze-scans,narrow,index,analyze,program-facts,infer}.js`,
+`src/compile/plan/index.js`, `src/compile/inplace-store.js` — too broad to trace exhaustively this
+session, likely the actual site); (ii) why `__dyn_get_expr_t_h`'s OWN generic dynamic lookup fails
+to find `x` on a receiver that DOES structurally have it (a possible SECOND, independent bug in the
+dynamic-dispatch fallback itself, not just a lost static-schema proof — not distinguished from "the
+fallback is sound but the receiver's tag/box is itself wrong" this session).
+
+**Both (b) and (d) are the SAME general bug CLASS as this campaign's already-fixed Class 1/2/mfold
+findings ("module loaded" perturbing a dispatch/inference decision that should key off "feature
+demanded" or a purely-static proof) — neither is a region-arena/`ctx.*`-round issue at all** (both
+are 100% reproducible with zero region hooks, zero self-hosting). Given (a) already showed the
+task's "widen a round's root" fix shape doesn't apply universally, and (b)/(d) confirm a THIRD
+mechanism (neither ctx.*-round nor watr-internal) is still open in this codebase's eager-load
+handling, whoever continues should treat "does it reproduce with plain native `_eagerStdlib:true`"
+as the FIRST triage step for (c)/(e)/(f) too, before assuming they need a kernel at all — this
+session did not reach them (time-boxed after (a)'s deep dive and (b)/(d)'s bisection). (e)
+`perf.js` and (f) `passes.js` are WAT-shape/byte-count assertions (`compile(...,{wat:true})`-style
+checks) — likely testable the same cheap way. (c) `mem.js`'s "duplicate schemas not re-added" uses
+`jz.memory()` host-level sharing across TWO separate `jz(...)` calls — structurally different from
+the other five (a cross-compile, HOST-SIDE concern, not obviously a single-compile eager-load or
+region-round question at all) and worth checking whether it even involves self-hosting/eager
+loading before assuming it belongs to the same investigation.
+
+**No fix landed for (b) or (d) this session** — both root-caused to "eager loading changes a
+dispatch/schema-proof decision," matching this campaign's own established, fixable bug class, but
+the EXACT gate/tier was not pinned down in the time available. `REGION_HOOKS_ACTIVE` stays `false`;
+no production source file was changed by this investigation (native probes/`_eagerStdlib` only).
+
+## Defects (e)/(f) triaged the same cheap way — (e) is genuinely region/self-host-only (NOT
+## reproducible via `_eagerStdlib`); (f) DOES reproduce natively, narrowed to `fn`+`number`
+
+**(e) `perf.js` — "codegen: no-arg scalar allocator rewinds heap on return"** (`new
+Float64Array(4)` scalar-allocator shape, asserting the WAT contains a `heap_save`-named local +
+a `global.set $__heap` restore): tested `compile(src, {wat:true, optimize:{watr:false},
+_eagerStdlib:true})` natively — **clean at every level, `heap_save`/`global.set $__heap` both
+present exactly like lazy.** This is the ONE defect of the six that does NOT reproduce via plain
+eager-loading — genuinely specific to self-hosted execution (region hooks and/or running inside
+the kernel), not triageable further without a kernel build. Not investigated further this session
+(time-boxed) — whoever continues should go straight to a kernel + the bitmask infra (this session's
+scaffolding is in git history at `4b5c66e2` if worth restoring) rather than chasing an eager-load
+angle for this one specifically.
+
+**(f) `passes.js` — "dead code never changes retained-code bytes"** (`compile(live)` vs
+`compile(live + 60 unused closure-shaped functions)` must be byte-identical — treeshake must fully
+strip the 60 unused functions): reproduces natively with `_eagerStdlib:true` — `compile(live)`
+alone is 48 bytes either way (eager adds nothing extra to a program with no dead code), but
+`compile(live+dead)` is 48 bytes lazy vs. **424 bytes eager** — the 60 unused functions are NOT
+fully treeshaken away once stdlib is eager-loaded, even though they are (still) genuinely
+unreferenced. `STDLIB` bisection: `['core','fn']` alone is clean; `['core','fn','number']` alone
+reproduces it (`string` not required once `number` is present). Given `unused0..59` are plain
+scalar arrow functions (`(a) => {let s=0; for(...) s+=a*k; return s}`, no arrays/objects/strings at
+all) needing BOTH `fn` (they're closures — assigned to a `let`, never called, so `fn` module
+registration is what makes them closure-table CANDIDATES at all) and `number` specifically to
+retain phantom bytes, the leading hypothesis (NOT verified this session) is the SAME family as the
+already-documented, still-open `$ftN`/closure-table residual flagged earlier in this file
+("`finalizeClosureTable`... `72eddaee`... `callIndirectSeen`... unconditionally, independent of
+`preserveClosureTable`" — the FIX already landed narrows the closure TABLE's contents to real
+`call_indirect` users, but may not by itself force TREESHAKE to drop a closure-shaped function's
+own BODY when `number`'s eager-registered arithmetic helpers give that body's operations a
+retained-looking call target). Not traced to a specific line this session (time-boxed) — next step
+for whoever continues: `--wat` diff `compile(live+dead,{optimize:2})` lazy vs.
+`_eagerStdlib:true` and identify which of the 60 `unused*` functions (or which stdlib helper they
+transitively pull in only under eager) survives treeshake that shouldn't.
+
+**Session disposition, all six defects**: (a) root-caused to a watr-internal (not jz) region-round
+integration gap, same "real bug, lives in a dependency, not fixed this session" disposition as
+`dvnested`; (b)/(d)/(f) root-caused to this campaign's established "eager-loading defeats a
+demand/proof gate" class (native-reproducible, no kernel needed), narrowed via `STDLIB` bisection
+but not pinned to an exact line/fix; (e) is the one genuinely kernel/region-only defect among the
+six, not even started. **Zero of the six were fixed this session** — every fix landed in prior
+sessions of this campaign started from an EQUALLY precise localization before the actual patch
+landed (see e.g. the `namedUses`/`errorSidEntries`/`stripStaticDataPrefix` sessions above, each of
+which took a full session from "localized" to "fixed+verified") — this session's contribution is
+that same first half for all six, not a completed cycle for any of them. (c) `mem.js` was not
+investigated at all this session (deprioritized behind the other five — flagged above as
+structurally likely NOT the same class, being a cross-compile host-`{memory}` concern). Goal (3)
+(`dict`/date.js registration hook, `subviewtyped` function-ordering) and goal (4) (hooks-on kernel
+build + full verification battery) were NOT reached this session — the hooks-on battery is exactly
+as far from green as it was at session start (still the same 6 genuine defects, now more precisely
+understood but none fixed), so per the task's own mandate flipping `REGION_HOOKS_ACTIVE` was
+correctly never attempted.

@@ -657,6 +657,34 @@ test('nan-box: large offset', () => {
   is(f(), 1048576)  // 1MB
 })
 
+// Regression pin, independent of eager-stdlib/region-arena: stripStaticDataPrefix's
+// shift() heuristic (src/wat/assemble.js) used to rebase ANY __mkptr literal offset
+// >= ctx.runtime.staticDataLen, with no upper bound — so once the static-data prefix
+// was nonzero, a user program's own unrelated large __mkptr offset got silently
+// corrupted (fixed by ae5dc024, which added `< buf.length`). A bare string literal
+// is enough to make the prefix nonzero on a plain NATIVE compile (no eager loading
+// needed): a string pulls in the 'string' module, which MOD_DEPS-chains to 'number'
+// (src/autoload.js), and module/number.js unconditionally seeds
+// `ctx.runtime.staticDataLen` with its canonical NaN/Infinity/true/false/… constant
+// block the moment it loads — 77 bytes for the source below, confirmed by direct
+// instrumentation. The offset (1048576) is chosen to sit far past any plausible
+// static-data segment length, so a correct implementation must leave it untouched.
+for (const optimize of [false, 2, 3]) {
+  const lbl = `O${optimize || 0}`
+  for (const ty of [1, 6]) {  // ARRAY, OBJECT — both were affected; ATOM (0) never is
+    test(`nan-box: large offset survives non-empty static-data prefix (type=${ty}), ${lbl}`, () => {
+      const { f } = run(`export let f = () => {
+        let a = [0]
+        let s = "hello world"
+        let p = __mkptr(${ty}, 100, 1048576)
+        return [__ptr_type(p), __ptr_aux(p), __ptr_offset(p)]
+      }`, { optimize })
+      const [t, a2, o] = f()
+      is(t, ty); is(a2, 100); is(o, 1048576)
+    })
+  }
+}
+
 test('nan-box: pointer is NaN in JS', () => {
   const { f } = run(`export let f = () => {
     let a = [0]

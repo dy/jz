@@ -1254,11 +1254,32 @@ test('codegen: pure scalar function — minimal binary', () => {
   ok(wasm.byteLength < 150, `pure scalar add should be < 150 bytes, got ${wasm.byteLength}`)
 })
 
-test('compile profile reports phase timings', () => {
+test('compile profile reports timings without changing output bytes', () => {
   if (onKernel()) return  // kernel: host {profile} option doesn't reach the single-source self-compile
+  const src = 'export let add = (a, b) => a + b'
+  const otherSrc = 'export let mul = (a, b) => a * b'
+  const plain = compile(src)
+  const otherPlain = compile(otherSrc)
+  const emptyPlain = compile('')
+  const sameBytes = (actual, expected, label) => {
+    is(actual.byteLength, expected.byteLength, `${label} byte lengths match`)
+    ok(actual.every((byte, i) => byte === expected[i]), `${label} bytes match`)
+  }
   const profile = {}
-  const wasm = compile('export let add = (a, b) => a + b', { profile })
-  ok(wasm.byteLength > 0, 'compile still returns wasm bytes')
+  const profiled = compile(src, { profile })
+  sameBytes(profiled, plain, 'profiled A and plain A')
+  if (!onWasi()) is(new WebAssembly.Instance(new WebAssembly.Module(profiled)).exports.add(3, 4), 7,
+    'profiled A preserves its semantic output')
+  const entries = profile.entries.length
+  sameBytes(compile(src), plain, 'plain A after profiled A')
+  sameBytes(compile(otherSrc), otherPlain, 'plain B after profiled A')
+  if (!onWasi()) is(new WebAssembly.Instance(new WebAssembly.Module(otherPlain)).exports.mul(3, 4), 12,
+    'different B preserves its semantic output')
+  const emptyProfile = {}
+  const profiledEmpty = compile('', { profile: emptyProfile })
+  sameBytes(profiledEmpty, emptyPlain, 'profiled empty source and plain empty source')
+  ok(emptyProfile.entries.length > 0, 'zero-work source still reports compiler phases')
+  is(profile.entries.length, entries, 'later plain compiles do not reuse the prior profile sink')
   for (const name of ['parse', 'prepare', 'compile', 'plan', 'watrCompile'])
     ok(typeof profile.totals?.[name] === 'number', `expected ${name} timing`)
   ok(profile.totals.compile >= profile.totals.plan, 'compile timing should include plan timing')

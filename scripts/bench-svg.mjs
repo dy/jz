@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Renders bench/bench.svg — an animated "speed demo" of the benchmark corpus,
+// Renders bench/bench.svg: an animated "speed demo" of the benchmark corpus,
 // far more navigable than the big per-case table. Each engine is one lane with
 // a single ball that runs back and forth horizontally between a start tick and
-// a finish tick; the ball's TRAVERSAL SPEED is the metric — fast engines zip
+// a finish tick; the ball's TRAVERSAL SPEED is the metric. Fast engines zip
 // across, slow ones crawl. Driven by the per-engine GEOMEAN of median runtimes
 // across the corpus (one honest number per engine), printed as the "N×" label
 // so the chart still reads when the animation is frozen.
@@ -26,35 +26,50 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 // deterministically between runs.
 //   ratio = geomean(engine median / jz median) over the cases the engine ran
 //           (lower = faster; jz is the 1.00× baseline). These reproduce from the
-//           per-case table in README.md. The wasm rivals are the apples-to-apples
-//           field; native C is the lone non-wasm row, kept as a speed-of-light
-//           reference (jz holds geomean parity with it).
+//           committed results. The wasm rivals are the apples-to-apples field;
+//           native C is the speed-of-light reference and Porffor is the native
+//           AOT floor requested by the product contract.
 // SNAPSHOT_N = cases behind these geomeans; it drives BOTH the caption and the
 // Porffor denominator, so the offline render is internally consistent. The live
 // bench.mjs run passes its own current count (geoCases.length) instead.
-export const SNAPSHOT_N = 22
+export const SNAPSHOT_N = 52
 export const SNAPSHOT = [
   { label: 'JZ', sub: '-O3', ratio: 1.00 },
-  { label: 'native C', sub: 'clang -O3 · ref', ratio: 1.05 },
-  { label: 'C', sub: 'clang → wasm', ratio: 2.41 },
-  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.64 },
-  { label: 'V8', sub: 'Node (JS)', ratio: 2.66 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.76 },
-  { label: 'Porffor', sub: `runs 3 / ${SNAPSHOT_N}`, ratio: 3.43 },
-  { label: 'Go', sub: 'gc → wasm', ratio: 4.90 },
+  { label: 'native C', sub: 'clang -O3, ref', ratio: 0.96 },
+  { label: 'C', sub: 'clang → wasm', ratio: 1.88 },
+  { label: 'Rust', sub: 'rustc → wasm', ratio: 1.97 },
+  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.05 },
+  { label: 'Zig', sub: 'zig → wasm', ratio: 2.13 },
+  { label: 'V8', sub: 'Node (JS)', ratio: 2.16 },
+  { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.13 },
+  { label: 'Go', sub: 'gc → wasm', ratio: 4.36 },
+  { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 21.72 },
 ]
 
-// native C (clang -O3, native binary) — the lone speed-of-light reference, the only
-// non-wasm row on the chart. Always drawn: on a box without clang its committed
-// SNAPSHOT ratio stands in. Rust/Go/C race here as wasm rivals (wasm32-wasi, run in
-// V8) — competitors, not the reference. (Per case, native gets its own fair lane —
-// jz-w2c vs the native toolchains; this corpus headline keeps native C as the
-// ceiling — see bench/index.html.)
+// native C (clang -O3, native binary) is the speed-of-light reference. Porffor
+// remains a measured native competitor rather than a REFERENCE fallback.
+// Native C is always drawn: on a box without clang its committed SNAPSHOT ratio
+// stands in. Rust/Go/C race here as wasm rivals (wasm32-wasi, run in V8), not as
+// the reference. Per case, jz-w2c supplies the peer row for native toolchains.
+// This corpus headline keeps native C as the ceiling; see
+// bench/index.html.
 export const REFERENCE = new Set(['native C'])
+
+/** Complete nonempty selection plus one positive finite row per measured lane. */
+export function completeBenchSvgRun(targets, selectedTargets, cases, selectedCases, rows) {
+  if (!targets.length || !cases.length ||
+      !targets.every(t => selectedTargets.includes(t.id)) ||
+      !cases.every(id => selectedCases.includes(id))) return false
+  if (rows == null) return true
+  return targets.every(target => {
+    const row = rows.find(candidate => candidate.label === target.label)
+    return row ? row.ratio > 0 && Number.isFinite(row.ratio) : REFERENCE.has(target.label)
+  })
+}
 
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif"
 // Transparent chart that blends into either theme: every mark is `currentColor`, so it
-// inherits the host's text colour — the landing inlines it (→ follows the light/dark
+// inherits the host's text colour. The landing inlines it (→ follows the light/dark
 // toggle), and standalone/README falls back to the system text colour via `color-scheme`.
 // Opacity tiers replace the old fixed-gray hierarchy (jz = full ink, the one accent).
 const INK = 'currentColor'
@@ -80,7 +95,7 @@ export function benchSvg(rows, cases) {
   const lane = (r, i) => {
     const cy = top + i * rowH + rowH / 2
     const isJz = r.label === 'JZ'
-    const ballO = isJz ? 1 : O.ball   // jz at full ink, every other ball dimmed (native C/Rust included — labels carry the "native" cue)
+    const ballO = isJz ? 1 : O.ball   // jz at full ink; every other ball is dimmed and labeled by substrate
     const dur = period(r.ratio)
     const bx0 = (trackX + ballR).toFixed(1)
     const bx1 = (trackRight - ballR).toFixed(1)
@@ -102,9 +117,9 @@ export function benchSvg(rows, cases) {
   </g>`
   }
 
-  const caption = `geometric mean across ${cases ? `${cases} benchmark cases` : 'the bench corpus'} · lower is faster, JZ = 1.00× baseline`
-  const scope = `every rival compiled to WebAssembly, run in V8 · native C = reference`
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark — ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
+  const caption = `geometric mean on the ${cases ? `${cases}-case benchmark corpus` : 'benchmark corpus'}; lower is faster, JZ = 1.00× baseline`
+  const scope = `Wasm rivals run in V8; Porffor and native C are native targets`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="color-scheme:light dark" role="img" aria-label="JZ benchmark: ${scope}; ${caption}; each ball's speed is proportional to that engine's geometric-mean runtime across the corpus">
 ${rows.map(lane).join('')}
   <text x="${W / 2}" y="${H - 34}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="${INK}" fill-opacity="${O.scope}">${scope}</text>
   <text x="${W / 2}" y="${H - 16}" text-anchor="middle" font-family="${FONT}" font-size="11" fill="${INK}" fill-opacity="${O.cap}">${caption}</text>
@@ -122,7 +137,7 @@ export function renderBenchSvg(rows = SNAPSHOT, cases = SNAPSHOT_N) {
 
 /** Guarantee the native C reference row is present: a run that lacked clang
  *  drops it, so fall back to the committed SNAPSHOT ratio.
- *  Measured rows win — the fallback only fills genuine gaps. */
+ *  Measured rows win; the fallback only fills genuine gaps. */
 export function withReference(rows) {
   const have = new Set(rows.map(r => r.label))
   return [...rows, ...SNAPSHOT.filter(r => REFERENCE.has(r.label) && !have.has(r.label))]

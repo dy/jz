@@ -1,6 +1,6 @@
 import { ctx, warn, err } from '../../ctx.js'
 import { warningsView } from '../../session-views.js'
-import { refsName, REFS_IN_EXPR } from '../../ast.js'
+import { walkAst, some, refsName, REFS_IN_EXPR } from '../../ast.js'
 import { intLiteralValue } from '../../static.js'
 import { VAL } from '../../reps.js'
 import { adviseJsstringCarrier } from '../narrow.js'
@@ -33,13 +33,7 @@ function isHeapAlloc(node) {
   return false
 }
 
-function containsHeapAlloc(node) {
-  if (!Array.isArray(node)) return false
-  if (isHeapAlloc(node)) return true
-  for (let i = 1; i < node.length; i++)
-    if (containsHeapAlloc(node[i])) return true
-  return false
-}
+const containsHeapAlloc = (node) => some(node, isHeapAlloc, { skipArrow: false })
 
 function heapLoopBody(node) {
   if (!Array.isArray(node) || !HEAP_LOOP_OPS.has(node[0])) return null
@@ -48,16 +42,13 @@ function heapLoopBody(node) {
 
 function heapLoopAllocSites(body) {
   const sites = []
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     if (HEAP_LOOP_OPS.has(node[0])) {
       const lb = heapLoopBody(node)
       if (lb && containsHeapAlloc(lb))
         sites.push({ loc: node.loc ?? lb.loc })
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return sites
 }
 
@@ -150,8 +141,7 @@ function newSetMapKind(node) {
 
 function collectSetMapBindings(body) {
   const bindings = new Map()
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     const op = node[0]
     if (op === 'let' || op === 'const') {
       for (let i = 1; i < node.length; i++) {
@@ -161,9 +151,7 @@ function collectSetMapBindings(body) {
         if (kind) bindings.set(d[1], kind)
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return bindings
 }
 
@@ -191,8 +179,7 @@ function adviseSetMapIterationOrder() {
     const warnOrder = (msg, loc) => warn('set-map-order', msg, { fn }, loc)
     const label = (kind) => kind === 'set' ? 'Set' : 'Map'
 
-    const walk = (node) => {
-      if (!Array.isArray(node)) return
+    walkAst(func.body, { enter: node => {
       const op = node[0]
 
       if (SET_MAP_ITER_OPS.has(op)) {
@@ -215,10 +202,7 @@ function adviseSetMapIterationOrder() {
         const kind = exprSetMapKind(node[1], bindings)
         if (kind) warnOrder(`spread over a ${kind} follows slot order, not insertion order — element order may differ from JavaScript`, node.loc)
       }
-
-      for (let i = 1; i < node.length; i++) walk(node[i])
-    }
-    walk(func.body)
+    } })
   }
 }
 
@@ -253,10 +237,9 @@ const SIMD_REDUCE_OPS = new Set(['+=', '|=', '&=', '^=', '-=', '*=', '/=', '%=']
 
 function simdLoopIssues(body, iv) {
   let indexed = false, carried = false, maxStride = 1
-  const walk = (node) => {
-    if (!Array.isArray(node)) return
+  walkAst(body, { enter: node => {
     const op = node[0]
-    if (op === '=>') return
+    if (op === '=>') return false
     if (op === '[]' && node.length === 3) {
       const idx = node[2]
       if (idx === iv || (Array.isArray(idx) && refsName(idx, iv, REFS_IN_EXPR))) indexed = true
@@ -268,9 +251,7 @@ function simdLoopIssues(body, iv) {
       const rhs = node[2]
       if (rhs === node[1] || (Array.isArray(rhs) && refsName(rhs, node[1], REFS_IN_EXPR))) carried = true
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return { indexed, carried, maxStride }
 }
 
@@ -282,8 +263,7 @@ function adviseSimdLoops() {
     if (func.raw || !func.body) continue
     const fn = func.name
 
-    const walk = (node) => {
-      if (!Array.isArray(node)) return
+    walkAst(func.body, { enter: node => {
       if (node[0] === 'for' && node.length >= 5) {
         const [, , , step, body] = node
         const iv = forInductionVar(step)
@@ -301,9 +281,7 @@ function adviseSimdLoops() {
           }
         }
       }
-      for (let i = 1; i < node.length; i++) walk(node[i])
-    }
-    walk(func.body)
+    } })
   }
 }
 
@@ -329,16 +307,13 @@ function adviseGenericDispatch() {
   // the sound, conservative suppressor — a guard anywhere in the fn silences it.)
   const guarded = (body) => {
     const set = new Set()
-    const scan = (n) => {
-      if (!Array.isArray(n)) return
+    walkAst(body, { enter: n => {
       // Raw forms (strict mode skips jzify, so `instanceof`/`typeof` survive)…
       if ((n[0] === 'instanceof' || n[0] === 'typeof') && typeof n[1] === 'string') set.add(n[1])
       // …and the lowered predicate jzify emits — `g instanceof Float64Array` becomes
       // `__is_typed(g)`, `typeof g === 'string'` becomes `__is_str(g)`, etc.
       else if (n[0] === '()' && typeof n[1] === 'string' && n[1].startsWith('__is') && typeof n[2] === 'string') set.add(n[2])
-      for (let i = 1; i < n.length; i++) scan(n[i])
-    }
-    scan(body)
+    } })
     return set
   }
   for (const func of ctx.funcs.list) {

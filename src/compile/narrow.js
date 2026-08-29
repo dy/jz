@@ -3062,7 +3062,18 @@ export function narrowBoolResults() {
     // arr[i]` tail on a proven-BIGINT array element — installArrElemReps'
     // array sibling of the same install (see its own doc comment above).
     const evaluate = () => {
-      const isBool = exprs.every(e => vt(e) === VAL.BOOL)
+      // Solve a direct-recursive result coinductively through the existing
+      // valType authority. The provisional fact affects only self-call nodes;
+      // every other arm must still prove BOOL normally. Restore before testing
+      // BigInt or publishing the final answer.
+      const priorResult = func.valResult
+      let isBool
+      try {
+        func.valResult = VAL.BOOL
+        isBool = exprs.every(e => vt(e) === VAL.BOOL)
+      } finally {
+        func.valResult = priorResult
+      }
       return [isBool, !isBool && exprs.every(e => vt(e) === VAL.BIGINT)]
     }
     const [isBool, isBigint] = bodyFacts

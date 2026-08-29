@@ -88,6 +88,40 @@ test('early errors: scopes, parameters, targets, and control flow reject before 
     is(jz('export let g = () => { let s=0; for (const x of [1,2]) s+=x; return s }').exports.g(), 3)
 })
 
+test('early errors: nested spread commas do not masquerade as a trailing rest parameter', () => {
+    is(jz('export let f = (x = [...[]]) => x.length').exports.f(), 0,
+      'empty spread without a trailing comma stays valid')
+    is(jz('export let f = (x = [...[],]) => x.length').exports.f(), 0,
+      'empty spread at the final comma boundary stays valid')
+    is(jz('export let f = (x = { a: [...[],] }) => x.a.length').exports.f(), 0,
+      'the initializer marker survives nested object and array delimiters')
+    is(jz('export let f = ({ x = [...[],] } = {}) => x.length').exports.f(), 0,
+      'an object binding default starts expression context at its own nesting depth')
+    is(jz('export let f = ([x = [...[],]] = []) => x.length').exports.f(), 0,
+      'an array binding default starts expression context at its own nesting depth')
+    is(jz('export let f = (x = ([...[],])) => x.length').exports.f(), 0,
+      'a parenthesized initializer inherits expression context')
+    is(jz('let n = (...x) => x.length; export let f = (x = n(...[],)) => x').exports.f(), 0,
+      'call-spread trailing commas remain valid inside an initializer')
+    is(jz('export let f = (x = [...[], 1,]) => x[0]').exports.f(), 1,
+      'array spread followed by an element and trailing comma stays valid')
+    is(jz('let n = (...x) => x.length; export let f = () => n(...[],)').exports.f(), 0,
+      'call spread with a trailing comma stays valid')
+    is(jz("const base=['for']; export let f=(types=[...base,'switch','switch_typeswitch'])=>types.join(',')").exports.f(),
+      'for,switch,switch_typeswitch', 'Porffor default-parameter shape keeps all elements in order')
+    rejects('export let f = (...x,) => x.length', 'rest parameter')
+    rejects('export let f = ([...x,]) => x.length', 'rest parameter')
+    rejects('export let f = ({...x,}) => x', 'rest parameter')
+    // JZ cannot preserve this computed binding key yet. Keep it on the reject
+    // side of correct-or-reject instead of exposing an accepted undefined.
+    rejects('export let f = ({[([...[],]).length]: x}) => x', 'rest parameter')
+    // A call-spread trailing comma followed by a newline block is valid JS, but
+    // the source-only rest validator cannot distinguish that boundary yet.
+    // Keep it as a clean rejection until the parser retains the needed context.
+    rejects(`let n = (...x) => x.length
+      export let f = () => { n(...[],)\n{}\nreturn 1 }`, 'rest parameter')
+})
+
 test('early errors: erased lexical spellings are validated from source text', () => {
     rejects('export let f = () => 1__0', 'separator')
     rejects('export let f = () => 01n', 'leading zero')

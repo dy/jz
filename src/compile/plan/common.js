@@ -8,7 +8,7 @@
  */
 
 import { ctx } from '../../ctx.js'
-import { ASSIGN_OPS, some, callArgs } from '../../ast.js'
+import { ASSIGN_OPS, some, callArgs, walkAst } from '../../ast.js'
 import { constIntExpr } from '../../static.js'
 import { typedElemCtor } from '../../type.js'
 import { PASS_NAMES } from '../../optimize/index.js'
@@ -55,15 +55,10 @@ export const nodeSize = (node) => {
 
 /** Collect every binder name in `node` into `out` (lexical-scope set; doesn't
  *  descend into nested arrow bodies — those open a new scope). */
-export const collectBindings = (node, out) => {
-  if (!Array.isArray(node)) return
-  const op = node[0]
-  if (op === '=>') return
-  if (op === 'let' || op === 'const') {
-    for (let i = 1; i < node.length; i++) collectBindingTarget(node[i], out)
-  }
-  for (let i = 1; i < node.length; i++) collectBindings(node[i], out)
-}
+export const collectBindings = (node, out) => walkAst(node, { enter: n => {
+  if (n[0] === '=>') return false
+  if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) collectBindingTarget(n[i], out)
+} })
 
 const collectBindingTarget = (node, out) => {
   if (typeof node === 'string') { out.add(node); return }
@@ -144,17 +139,15 @@ export const isFreshTypedArrayAlloc = (expr) => {
  *  always holds that fresh buffer. Element writes (`a[i]=…`) don't reassign `a`, so they're fine. */
 export const freshTypedArrayLocals = (body) => {
   const fresh = new Set()
-  const walk = node => {
-    if (!Array.isArray(node) || node[0] === '=>') return
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') return false
     if (node[0] === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && isFreshTypedArrayAlloc(d[2])) fresh.add(d[1])
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return fresh
 }
 
@@ -162,8 +155,8 @@ export const freshTypedArrayLocals = (body) => {
  *  via `let`/`const` directly in `body` (no descent into nested arrows). */
 export const fixedTypedArraysInBody = (body) => {
   const out = new Map()
-  const walk = node => {
-    if (!Array.isArray(node) || node[0] === '=>') return
+  walkAst(body, { enter: node => {
+    if (node[0] === '=>') return false
     if (node[0] === 'let' || node[0] === 'const') {
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
@@ -172,8 +165,6 @@ export const fixedTypedArraysInBody = (body) => {
         if (fixed != null) out.set(d[1], fixed)
       }
     }
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(body)
+  } })
   return out
 }

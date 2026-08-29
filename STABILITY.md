@@ -24,7 +24,7 @@ representation or value. Any unlisted silent wrong value is release-blocking.
 The parser now validates structural scopes/targets/control flow plus lexical
 numeric, string, template, RegExp, identifier, class, and module errors before
 jzify, natively and in `jz.wasm`. On the pinned test262 language corpus it
-rejects 3,858 applicable negative-parse files and still accepts exactly 187;
+rejects 3,908 applicable negative-parse files and still accepts exactly 137;
 every residual path is family-classified and exact-set-gated in
 `test/test262-neg-accepts.json`. Those residuals have no compatibility guarantee
 and remain a v1 release gate, never a supported extension.
@@ -96,14 +96,17 @@ compiled-module internal layout (NaN-box bit patterns, schema ids, function
 names beyond exported ones — the name section is opt-in via `--names`);
 `.work/` documents; kernel (`dist/jz.wasm`) byte identity between releases.
 
-## Known limitations at v1
+## Remaining v1 release gate
 
 - **In-wasm self-compilation of jz itself** (jz.wasm compiling jz's own
-  6.4 MB source inside wasm32) exceeds the 4 GiB address space and traps.
-  The supported build path for jz's own kernel is the native (Node)
-  toolchain, which is how `dist/` ships. Measured attribution and the
-  scoped path to closing this (result-kind provenance) live in
-  `.work/research.md`; user programs do not approach this wall.
+  6.4 MB source inside wasm32) still exceeds the 4 GiB address space and traps.
+  V1 requires this run to produce bytes below that ceiling. The native (Node)
+  toolchain remains the shipping build path until then. Measured attribution
+  and the current closure plan live in `.work/v1-architecture-campaign.md` and
+  `.work/porffor-alpha3-audit.md`; user programs do not approach this wall.
+
+## Known limitations at v1
+
 - **Ambiguous `boolean∪number` locals** whose stored identity would escape
   reject at compile time (truthiness-only uses compile fine); full support
   needs a tagged Boolean carrier plan.

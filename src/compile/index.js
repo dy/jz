@@ -68,7 +68,7 @@ import {
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
-import { emit, emitter, emitVoid, emitBlockBody, emitIdentitySafe, resolveClosureTableParamLattice } from './emit.js'
+import { emit, emitter, emitVoid, emitBlockBody, emitIdentitySafe, resolveClosureTableParamLattice, toBool } from './emit.js'
 import { emitCharDecompPrologue, JSS_IMPORT_SIGS } from '../abi/string.js'
 import {
   typed, asF64, asI32, asPtrOffset, asParamType, toI32, asI64, fromI64, ptrTypeEq,
@@ -1706,16 +1706,25 @@ function emitFunc(func, functionPlan, programFacts) {
     // Guarded on sig.results[0] === 'f64': a proven-uniform-BOOL (or numeric)
     // result already narrows to i32 and needs no boxing here (the boundary
     // wrapper's own resultBool arm handles that crossing).
+    const resultBool = func.valResult === VAL.BOOL && sig.ptrKind == null && sig.results[0] === 'i32'
     const ambiguous = sig.ptrKind == null && sig.results[0] === 'f64' && hasAmbiguousBoolMerge(body)
-    let ir = ambiguous ? emitIdentitySafe(body) : emit(body)
-    ir = applyBigintRepresentationAction(ir, body, representationReturnAction(ctx, body))
+    // A uniformly boolean expression body crosses an i32 ABI as truthiness,
+    // not ToInt32 of its temporary f64 carrier. Choose toBool before emission
+    // so effects still execute once and short-circuit order stays intact.
+    let ir = resultBool ? toBool(body) : ambiguous ? emitIdentitySafe(body) : emit(body)
+    if (!resultBool)
+      ir = applyBigintRepresentationAction(ir, body, representationReturnAction(ctx, body))
     // dyn-closure-tables.js: an expression-bodied function whose return value
     // is unconditionally a closure literal (e.g. `mk = (n) => (x) => x + n`) —
     // a direct-return closure factory, no defaulted-param indirection needed.
     recordDirectReturnClosure(name, ir)
+    // Final carrier conversion can allocate a temp (for example ToInt32's
+    // evaluate-once Infinity guard). Build it before freezing the local
+    // declarations, just like default and parameter prologues above.
+    const finalIR = resultBool ? ir
+      : sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     const paramInits = collectParamInits()
     for (const [l, t] of ctx.func.locals) fn.push(['local', dollar(l), t])
-    const finalIR = sig.ptrKind != null ? asPtrOffset(ir, sig.ptrKind) : asParamType(ir, sig.results[0])
     fn.push(...paramInits, ...boxedParamInits, ...preboxedLocalInits, tcoTailRewrite(finalIR, sig.results[0]))
   }
 

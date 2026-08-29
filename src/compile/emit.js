@@ -5957,10 +5957,14 @@ export const emitter = {
     // replace `emit(expr)` itself here (not wrap its result) — single emission
     // preserved (still exactly one of emit/emitIdentitySafe runs).
     const boxes = pk == null && rt === 'f64' && (ctx.func.boxedResult || ctx.func.mixedAtomReturn)
+    const resultBool = pk == null && rt === 'i32' && ctx.func.valResult === VAL.BOOL
     const ambiguous = boxes && hasAmbiguousBoolMerge(expr)
-    const repAction = representationReturnAction(ctx, expr)
-    let emitted = ambiguous ? emitIdentitySafe(expr) : emit(expr)
-    emitted = applyBigintRepresentationAction(emitted, expr, repAction)
+    // A proven boolean i32 result needs truthiness conversion. ToInt32 on an
+    // opaque f64 boolean carrier turns every NaN-boxed true/false atom into 0.
+    // Select the boolean emitter up front so expr is still evaluated once.
+    let emitted = resultBool ? toBool(expr) : ambiguous ? emitIdentitySafe(expr) : emit(expr)
+    if (!resultBool)
+      emitted = applyBigintRepresentationAction(emitted, expr, representationReturnAction(ctx, expr))
     // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
     // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
     // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an
@@ -5983,7 +5987,8 @@ export const emitter = {
     // regardless of what it IS, but a proven-uniform-BIGINT export would take
     // the OTHER, `needsBox`-shaped ABI instead) — so its wrapper already takes
     // the dynamic/tagged result ABI a box is correct for.
-    const ir = pk != null ? asPtrOffset(emitted, pk)
+    const ir = resultBool ? emitted
+      : pk != null ? asPtrOffset(emitted, pk)
       : boxes ? (ambiguous ? emitted : carrierF64Narrow(expr, emitted, 'return'))
       : asParamType(emitted, rt)
     const ty = pk != null ? 'i32' : rt

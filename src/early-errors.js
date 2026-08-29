@@ -206,7 +206,8 @@ lexicalTemplateExpr = (src, start, strict) => {
   fail('unterminated template expression')
 }
 
-const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5
+const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
+const REST_BINDING = 1, REST_EXPRESSION = 2
 
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
@@ -240,6 +241,14 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '#' && src[i + 1] === '!') {
       if (i !== 0) fail('hashbang is only valid at the start of source')
       i += 2; while (i < src.length && src[i] !== '\n' && src[i] !== '\r') i++; continue
+    }
+    // A sibling after `...x,` makes this a spread list, not a trailing rest
+    // comma. Keep the marker only through closing delimiters.
+    const restGroup = parens[parens.length - 1]
+    if (restGroup && restGroup[P_REST_COMMA] && restGroup[P_REST_DEPTH] === nesting &&
+        ch !== ',' && ch !== ')' && ch !== ']' && ch !== '}') {
+      restGroup[P_REST] = false
+      restGroup[P_REST_COMMA] = false
     }
     if (ch === '"' || ch === "'") { i = lexicalQuoted(src, i, ch, strict); canRegex = false; continue }
     if (ch === '`') {
@@ -345,10 +354,18 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '?' && src[i + 1] === '.') optionalDepth = parens.length
     if (src.slice(i, i + 3) === '...') {
       const group = parens[parens.length - 1]
-      if (group) { group[P_REST] = true; group[P_REST_DEPTH] = nesting }
+      if (group) {
+        group[P_REST] = group[P_EXPR_DEPTH] >= 0 ? REST_EXPRESSION : REST_BINDING
+        group[P_REST_DEPTH] = nesting
+      }
       canRegex = true; lastPunct = '...'; i += 3; continue
     }
-    if (ch === '(') { parens.push([pendingControl, 0, false, false, -1, nesting]); pendingControl = null }
+    if (ch === '(') {
+      const parent = parens[parens.length - 1]
+      parens.push([pendingControl, 0, false, false, -1, nesting,
+        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1])
+      pendingControl = null
+    }
     else if (ch === ')') {
       const group = parens.pop()
       if (group && group[P_CONTROL] === 'for' && group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2)
@@ -357,6 +374,10 @@ const validateLexicalSource = (src, strict) => {
         let k = i + 1
         while (isWhitespaceCode(src.charCodeAt(k))) k++
         if (src.slice(k, k + 2) === '=>' || src[k] === '{') fail('rest parameter cannot have a trailing comma')
+        if (group[P_REST] !== REST_EXPRESSION) {
+          const parent = parens[parens.length - 1]
+          if (parent) parent[P_REST_COMMA] = true
+        }
       }
       if (group && group[P_CONTROL]) expectStatement = true
       if (optionalDepth > parens.length) optionalDepth = -1
@@ -365,13 +386,22 @@ const validateLexicalSource = (src, strict) => {
     else if (ch === '}' || ch === ']') {
       nesting--
       const group = parens[parens.length - 1]
-      if (group && group[P_REST] && nesting < group[P_REST_DEPTH]) group[P_REST] = false
+      if (group && group[P_REST] && nesting < group[P_REST_DEPTH]) {
+        if (group[P_REST] === REST_EXPRESSION) group[P_REST_COMMA] = false
+        group[P_REST] = false
+      }
+      if (group && group[P_EXPR_DEPTH] > nesting) group[P_EXPR_DEPTH] = -1
     }
     else if (ch === ';' || ch === ',') {
       const group = parens[parens.length - 1]
       if (ch === ';' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting) group[P_SEMIS]++
       if (ch === ',' && group && group[P_REST] && group[P_REST_DEPTH] === nesting) group[P_REST_COMMA] = true
+      if (ch === ',' && group && group[P_EXPR_DEPTH] >= nesting) group[P_EXPR_DEPTH] = -1
       optionalDepth = -1
+    } else if (ch === '=' && src[i + 1] !== '>' && src[i + 1] !== '=' &&
+        !/[=!<>+\-*/%&|^?]/.test(src[i - 1] || '')) {
+      const group = parens[parens.length - 1]
+      if (group && group[P_EXPR_DEPTH] < 0) group[P_EXPR_DEPTH] = nesting
     }
     canRegex = !(/[)\]}]/.test(ch))
     lastPunct = ch

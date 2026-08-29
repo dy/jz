@@ -14,7 +14,7 @@ import {
   calleeValType, methodValType, propValType, typedCtorElemValType,
 } from './kind-traits.js'
 import { ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
-import { isBlockBody, returnExprs, alwaysReturns } from './ast.js'
+import { isBlockBody, returnExprs, alwaysReturns, walkAst } from './ast.js'
 import { typedStorageCtorFromContext } from './typed-context.js'
 
 export { typedCtorElemValType } from './kind-traits.js'
@@ -654,8 +654,8 @@ export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {
   if (seen.has(name)) return false
   seen.add(name)
   let flagged = false
-  const walk = (node) => {
-    if (flagged || !Array.isArray(node)) return
+  walkAst(bodyRoot, { enter: node => {
+    if (flagged) return false
     const op = node[0]
     if ((op === 'let' || op === 'const') && node.length >= 2) {
       for (let i = 1; i < node.length; i++) {
@@ -667,9 +667,7 @@ export function nameMayBeUndefinedInBody(bodyRoot, name, seen = new Set()) {
     } else if (op === '=' && node[1] === name &&
       (censusShapedNode(node[2]) || (typeof node[2] === 'string' && nameMayBeUndefinedInBody(bodyRoot, node[2], seen))))
       flagged = true
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(bodyRoot)
+  } })
   m.set(name, flagged)
   return flagged
 }
@@ -723,8 +721,8 @@ function nameMapGetShapedInBody(bodyRoot, name, seen = new Set()) {
   if (seen.has(name)) return false
   seen.add(name)
   let flagged = false
-  const walk = (node) => {
-    if (flagged || !Array.isArray(node)) return
+  walkAst(bodyRoot, { enter: node => {
+    if (flagged) return false
     const op = node[0]
     if ((op === 'let' || op === 'const') && node.length >= 2) {
       for (let i = 1; i < node.length; i++) {
@@ -736,9 +734,7 @@ function nameMapGetShapedInBody(bodyRoot, name, seen = new Set()) {
     } else if (op === '=' && node[1] === name &&
       (mapGetShapedNode(node[2]) || (typeof node[2] === 'string' && nameMapGetShapedInBody(bodyRoot, node[2], seen))))
       flagged = true
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(bodyRoot)
+  } })
   m.set(name, flagged)
   return flagged
 }
@@ -792,8 +788,8 @@ export function namePresentValInBody(bodyRoot, name, seen = new Set()) {
   }
   const rhsKind = (rhs) => censusShapedNode(rhs) ? censusMaybeUndefinedKind(rhs)
     : typeof rhs === 'string' ? namePresentValInBody(bodyRoot, rhs, seen) : null
-  const walk = (node) => {
-    if (poisoned || !Array.isArray(node)) return
+  walkAst(bodyRoot, { enter: node => {
+    if (poisoned) return false
     const op = node[0]
     if ((op === 'let' || op === 'const') && node.length >= 2) {
       for (let i = 1; i < node.length; i++) {
@@ -801,9 +797,7 @@ export function namePresentValInBody(bodyRoot, name, seen = new Set()) {
         if (Array.isArray(d) && d[0] === '=' && d[1] === name) observe(rhsKind(d[2]))
       }
     } else if (op === '=' && node[1] === name) observe(rhsKind(node[2]))
-    for (let i = 1; i < node.length; i++) walk(node[i])
-  }
-  walk(bodyRoot)
+  } })
   const result = poisoned ? null : (claim ?? null)
   m.set(name, result)
   return result
