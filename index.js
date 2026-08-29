@@ -327,6 +327,10 @@ jz.pool = async function pool(source, opts = {}) {
  *   (so full-JS syntax like var/function/class is rejected, not lowered) and reject
  *   dynamic features (obj[k], for-in, unknown receiver method calls) at compile time.
  *   Avoids pulling dynamic-dispatch stdlib into output; large size win for static programs.
+ * @param {'jz'|'script'|'module'} [opts.sourceType='jz'] - Parse goal. `jz` keeps
+ *   the historical module-export ABI with Script strictness; `script` rejects
+ *   import/export syntax; `module` applies ECMAScript Module early errors and
+ *   implicit strict mode.
  * @param {WebAssembly.Memory|number} [opts.memory] - Owned memory's initial page
  *   count (`memory: N`, 64 KiB/page), or a `WebAssembly.Memory` to share across modules.
  * @param {number} [opts.maxMemory] - Maximum memory pages — emits a ceiling on the
@@ -482,6 +486,8 @@ const setupCtx = (code, opts) => {
   // Session lifecycle — shared verbatim with the self-compile kernel's setupSelf
   // (src/session.js): ctx reset, every cache clear, name-uids, warnings,
   // strict/host/optimize normalization, post-reset invariants.
+  if (opts.sourceType != null && opts.sourceType !== 'jz' && opts.sourceType !== 'script' && opts.sourceType !== 'module')
+    err(`Invalid sourceType '${opts.sourceType}'. Expected 'jz', 'script', or 'module'.`)
   if (opts.host && opts.host !== 'js' && opts.host !== 'wasi' && opts.host !== 'native') {
     if (opts.host === 'gc') err(`host:'gc' is reserved for a planned wasm-gc backend, not yet implemented. Use 'js' (default — JS host with externref/js-string interop), 'wasi' (standalone runtimes — no env imports), or 'native' (wasm2c/native-lowering lane).`)
     err(`Invalid host '${opts.host}'. Expected 'js' (default), 'wasi', or 'native'.`)
@@ -571,7 +577,7 @@ const jzCompileInner = (code, opts = {}) => {
   // every self-compile kernel entry, so the two pipelines cannot drift (they did:
   // the kernel skipped preEval — audit P0 2026-07-25).
   let ast = frontHalf(code, {
-    strict: opts.strict, jzify, time,
+    strict: opts.strict, sourceType: opts.sourceType || 'jz', jzify, time,
     afterPrepare: () => assertCtxInvariants('post-prepare'),
     // Test-only (test/eager-stdlib-parity.js): force every stdlib module's
     // init(ctx) to run up front, the same eager load the region-arena front

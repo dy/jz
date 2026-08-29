@@ -23,11 +23,12 @@ representation or value. Any unlisted silent wrong value is release-blocking.
 
 The parser now validates structural scopes/targets/control flow plus lexical
 numeric, string, template, RegExp, identifier, class, and module errors before
-jzify, natively and in `jz.wasm`. On the pinned test262 language corpus it
-rejects 4,035 applicable negative-parse files and still accepts exactly 10;
-every residual path is family-classified and exact-set-gated in
-`test/test262-neg-accepts.json`. Those residuals have no compatibility guarantee
-and remain a v1 release gate, never a supported extension.
+jzify, natively and in `jz.wasm`. Callers can select an explicit `script` or
+`module` parse goal through `sourceType`; the default `jz` goal preserves the
+export-as-ABI dialect. On the pinned test262 language corpus it rejects all
+4,045 applicable negative-parse files and accepts none. The exact empty ledger
+is gated in `test/test262-neg-accepts.json`; any future accepted-invalid path is
+a v1 release blocker, never a supported extension.
 
 ## Package surface (`jz` on npm)
 

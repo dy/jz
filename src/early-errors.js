@@ -351,7 +351,7 @@ const methodSourceInfo = (src, parenAt) => {
 
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
-  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do)\b/.test(src) ||
+  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do|else)\b/.test(src) ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
@@ -477,6 +477,32 @@ const validateLexicalSource = (src, strict) => {
       }
       const word = src.slice(start, i)
       pendingDo = false
+      if (word === 'else') {
+        const prev = previousSourceToken(src, start)
+        const prevCh = src[prev[0]]
+        const next = nextSourceToken(src, i)
+        const prefix = sourceWordBefore(src, start)
+        // IdentifierName admits `else` after `.`, as an object/class key, and
+        // after get/set/static/async method modifiers. Only a real Else token
+        // participates in the Statement boundary checks below.
+        const propertyName = lastPunct === '.' || prevCh === '{' || prevCh === ',' ||
+          src[next] === ':' || prefix && /^(get|set|static|async)$/.test(prefix[0])
+        if (!propertyName) {
+          // A semicolon after a block consequent is a separate EmptyStatement,
+          // so the following else has no matching if. Restrict the source-only
+          // check to a block alternate; other shapes remain with the parser
+          // rather than risking class/object method false positives.
+          if (prevCh === ';' && src[next] === '{') {
+            const beforeSemi = previousSourceToken(src, prev[0])
+            if (src[beforeSemi[0]] === '}') fail('empty statement is not allowed between an if consequent and else')
+          }
+          // A same-line non-block Statement needs its own explicit terminator.
+          // Across a LineTerminator ASI may supply it; blocks and declaration-
+          // shaped consequents end at `}` without ASI.
+          if (!prev[1] && prevCh !== ';' && prevCh !== '}')
+            fail('if consequent requires a semicolon or LineTerminator before else')
+        }
+      }
       if (word === 'while') {
         const prev = previousSourceToken(src, start)
         if (prev[0] >= 0 && src[prev[0]] === ';') {
@@ -1374,17 +1400,22 @@ const validateExports = ast => {
   for (const name of localExports) if (!locals.has(name)) fail(`export '${name}' has no local binding`)
 }
 
-export function validateEarlyErrors(ast, source) {
+export function validateEarlyErrors(ast, source, sourceType = 'jz') {
+  // `jz` preserves the historical dialect: export declarations form the ABI
+  // while the surrounding source keeps Script strictness rules. Callers that
+  // need ECMAScript parse-goal fidelity can select an explicit Script or Module
+  // goal; this fact must arrive before jessie erases it from the AST.
+  const syntaxModule = some(ast, n => n[0] === 'import' || n[0] === 'export', { skipArrow: false })
+  if (sourceType === 'script' && syntaxModule)
+    fail('import/export declarations require sourceType: module')
   validateExports(ast)
   validateModuleStatementBoundaries(ast, source)
-  // No `=>` boundary here (unlike `some`'s default): a nested arrow can still
-  // contain top-level-only import/export syntax that hasn't been rejected yet.
-  const rootModule = some(ast, n => n[0] === 'import' || n[0] === 'export', { skipArrow: false })
+  const rootModule = sourceType === 'module' || sourceType === 'jz' && syntaxModule
 
   const root = {
-    // JZ's export declarations are an ABI surface over Script semantics; they
-    // do not implicitly opt every nested function into Module strictness.
-    strict: isUseStrict(ast), module: rootModule,
+    // JZ's default export ABI does not imply Module strictness. An explicit
+    // Module goal does, exactly as ECMAScript requires.
+    strict: sourceType === 'module' || isUseStrict(ast), module: rootModule,
     functionDepth: 0, loop: 0, switchDepth: 0,
     labels: new Map(), async: false, generator: false, classBody: false,
   }

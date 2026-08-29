@@ -26,6 +26,7 @@ const bigintPointer: JzPointer = mem.BigInt64Array([1n])
 mem.write(pointer, ['updated'])
 
 const bytes: Uint8Array = compile('export let f = () => 1')
+const scriptBytes: Uint8Array = compile('let x = 1', { sourceType: 'script' })
 const inspected: InspectedWasm = compile('export let f = () => 1', { inspect: true })
 const source: string | null = transform('let x = 1', { onlyLowered: true })
 const sourceFromSubpath: string | null = transformSubpath('var x = 1')
@@ -35,4 +36,4 @@ const imports = wasi({ write(fd, text) { void fd; void text } })
 attachTimers(wrapped.instance)
 const rawInstance = instantiateWasi(bytes)
 
-void [rawBox, rawOffset, allocated, bigintPointer, inspected, source, sourceFromSubpath, result, imports, rawInstance]
+void [rawBox, rawOffset, allocated, bigintPointer, scriptBytes, inspected, source, sourceFromSubpath, result, imports, rawInstance]

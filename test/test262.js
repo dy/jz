@@ -861,7 +861,7 @@ function runTest(src, options = {}) {
   // valid function return and changes declaration/strict-directive scopes.
   // Compile the stripped source directly; no execution export is needed.
   if (options.compileOnly) {
-    try { compile(shebang + code, { jzify: true }); return { status: 'pass' } }
+    try { compile(shebang + code, { jzify: true, sourceType: options.sourceType || 'jz' }); return { status: 'pass' } }
     catch (e) { return { status: 'reject', error: (e.message || '').slice(0, 80) } }
   }
 
@@ -1276,8 +1276,9 @@ async function runChunk(items) {
       // exact accepted paths and their parser-context families are gated by
       // test262-neg-accepts.json; one-for-one swaps cannot hide.
       if (/negative:\s*\n\s+phase:\s+parse/.test(src)) {
-        const strictMode = /flags:\s*\[[^\]]*\b(onlyStrict|module)\b/.test(src)
-        const { status } = runTest(src, { compileOnly: true, strictMode })
+        const moduleGoal = /flags:\s*\[[^\]]*\bmodule\b/.test(src)
+        const strictMode = moduleGoal || /flags:\s*\[[^\]]*\bonlyStrict\b/.test(src)
+        const { status } = runTest(src, { compileOnly: true, strictMode, sourceType: moduleGoal ? 'module' : 'script' })
         if (status === 'reject') d.negpass++
         else { d.negaccept++; negaccepts.push(rel) }
         continue

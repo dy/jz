@@ -110,7 +110,7 @@ function optimizeTail(module, cfg) {
 // parse + lower. `optJSON` is the one options channel across the wasm ABI —
 // a JSON string of the host-facing `opts.optimize` value (level number, alias
 // string, or per-pass object via resolveOptimize), falsy → optimize off.
-// Every entry takes the same (source, strict, optJSON) triple.
+// Every public compile entry also accepts sourceType as its final ABI argument.
 //
 // clearDollar/clearStdlibParseCache: unlike resetProgramFactsCache (a WeakMap +
 // generation counter — stale entries just go unreachable), DOLLAR and
@@ -156,9 +156,9 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
 // calls that only ever compile to real wasm calls (this file is never run
 // natively — see this file's own header comment). frontHalf's own doc has the
 // root/rebind contract.
-function front(source, strict) {
+function front(source, strict, sourceType) {
   return frontHalf(source, {
-    strict, jzify,
+    strict, sourceType: sourceType || 'jz', jzify,
     afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants('post-prepare') : undefined,
     regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
@@ -191,9 +191,9 @@ function emitIR(ast) {
  * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
  * @returns {Uint8Array} compiled wasm bytes
  */
-export default function compileSelf(source, strict, optJSON, modulesJSON, host) {
+export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrCompile(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
+  return watrCompile(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
 }
 
 /**
@@ -218,18 +218,18 @@ export default function compileSelf(source, strict, optJSON, modulesJSON, host) 
  * Lets the self-compile leg satisfy the `warningsFor()` tests faithfully.
  * @returns {string} JSON array of `{ code, message, ... }` entries
  */
-export function compileWarnings(source, strict, optJSON, modulesJSON, host) {
+export function compileWarnings(source, strict, optJSON, modulesJSON, host, sourceType) {
   setupSelf(strict, optJSON, modulesJSON, host)
   const sink = { entries: [] }
   initWarnings(sink)
-  optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize)
+  optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize)
   initWarnings(null)
   return JSON.stringify(sink.entries)
 }
 
-export function compileWat(source, strict, optJSON, modulesJSON, host) {
+export function compileWat(source, strict, optJSON, modulesJSON, host, sourceType) {
   setupSelf(strict, optJSON, modulesJSON, host)
-  return watrPrint(optimizeTail(emitIR(front(source, strict)), ctx.transform.optimize))
+  return watrPrint(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
 }
 
 /**

@@ -1,25 +1,6 @@
 {
-  "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
+  "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every invalid ECMAScript input is now rejected under its explicit Script or Module parse goal. Any future addition is a release blocker and requires review.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 10,
-  "families": {
-    "module-goal-and-export-context": [
-      "test/language/global-code/export.js",
-      "test/language/module-code/parse-err-hoist-lex-fun.js",
-      "test/language/module-code/parse-err-hoist-lex-gen.js"
-    ],
-    "class-element-token-boundaries": [
-      "test/language/expressions/class/class-name-ident-await-escaped-module.js",
-      "test/language/expressions/class/class-name-ident-await-module.js",
-      "test/language/statements/class/class-name-ident-await-escaped-module.js",
-      "test/language/statements/class/class-name-ident-await-module.js"
-    ],
-    "asi-and-line-terminator-context": [
-      "test/language/asi/S7.9_A11_T4.js",
-      "test/language/asi/S7.9_A11_T8.js"
-    ],
-    "other-jessie-context-loss": [
-      "test/language/reserved-words/await-module.js"
-    ]
-  }
+  "count": 0,
+  "families": {}
 }

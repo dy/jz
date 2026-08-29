@@ -54,6 +54,8 @@ export interface CompileOptions {
   define?: Record<string, DefineValue>
   /** Skip jzify and reject dynamic fallback paths. */
   strict?: boolean
+  /** Parse goal. Default `jz` keeps export-as-ABI with Script strictness. */
+  sourceType?: 'jz' | 'script' | 'module'
   /** Set `false` to omit `_alloc`/`_clear`. */
   alloc?: boolean
   noSimd?: boolean

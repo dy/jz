@@ -60,7 +60,7 @@ jessieParse.space = () => {
   return cc
 }
 
-const parse = (src) => {
+const parse = (src, sourceType = 'jz') => {
   if (typeof src === 'string' && src.charCodeAt(0) === 35 && src.charCodeAt(1) === 33) {
     const nl = src.indexOf('\n')
     src = nl < 0 ? '' : src.slice(nl)
@@ -71,7 +71,7 @@ const parse = (src) => {
   // The original spelling still goes to lexical validation below.
   const parseSource = typeof src === 'string' && src.includes('\r') ? src.replace(/\r(?!\n)/g, '\n') : src
   const ast = jessieParse(parseSource)
-  validateEarlyErrors(ast, src)
+  validateEarlyErrors(ast, src, sourceType)
   return ast
 }
 

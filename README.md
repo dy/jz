@@ -47,6 +47,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 | `optimize` | `false`/`0` off, `1` minimal, `true`/`2` default (all stable passes), `3`/`'speed'` trades size for speed, `'size'` for smallest wasm, `'fast'` for fastest compile (default passes, final wat optimizer off). (Object form for per-pass overrides is internal/unstable.) |
 | `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
 | `strict: true` | Skip jzify lowering and reject dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
+| `sourceType: 'jz' \| 'script' \| 'module'` | Select the parse goal. `jz` is the default export-as-ABI dialect; `script` rejects imports/exports; `module` applies Module early errors and implicit strict mode. |
 | `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) from modules that never marshal heap values. |
 | `noSimd: true` | Disable auto-vectorization. Explicit `f32x4` and `i32x4` intrinsics still compile. |
 | `whyNotSimd: true` | Report the first operation that prevented each loop from being vectorized. Warnings go to the `warnings` sink. |

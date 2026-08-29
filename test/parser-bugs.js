@@ -896,3 +896,34 @@ test('an own strict directive validates every raw string in its Directive Prolog
     ok(Array.isArray(parse('function f() { "plain"; "use strict"; }')),
       'an escape-free directive prologue remains valid')
 })
+
+test('explicit sourceType preserves Script and Module parse-goal early errors', () => {
+    const rejectsGoal = (src, sourceType, match) => {
+      let error
+      try { compile(src, { sourceType }) } catch (e) { error = e }
+      ok(error, `${sourceType} goal should reject: ${src}`)
+      ok(error.message.includes(match), `error should mention '${match}': ${error && error.message}`)
+    }
+
+    rejectsGoal('export default null', 'script', 'sourceType: module')
+    rejectsGoal('var f; function f() {}', 'module', 'module top level')
+    rejectsGoal('var await;', 'module', 'await')
+    rejectsGoal('class await {}', 'module', 'await')
+    ok(compile('export let f = () => 1', { sourceType: 'jz' }) instanceof Uint8Array,
+      'the default jz export-as-ABI goal remains available explicitly')
+    ok(compile('let x = 1', { sourceType: 'script' }) instanceof Uint8Array,
+      'ordinary Script source remains valid')
+})
+
+test('else boundaries distinguish ASI, empty statements, and IdentifierName properties', () => {
+    rejects('if (false) x = 1 else x = -1', 'before else')
+    rejects('if (false) {}; else {}', 'between an if consequent and else')
+
+    ok(Array.isArray(parse('if (false) x = 1; else x = -1')), 'an explicit terminator before else remains valid')
+    ok(Array.isArray(parse('if (false) x = 1\nelse x = -1')), 'a LineTerminator may supply ASI')
+    ok(Array.isArray(parse('if (false) {} else {}')), 'a block consequent needs no semicolon')
+    ok(Array.isArray(parse('if (x) if (y) a(); else b();')), 'dangling else still binds to the nearest if')
+    ok(Array.isArray(parse('let o = { else: 1, else() {} }; o.else')), '`else` remains an IdentifierName in properties')
+    ok(Array.isArray(parse('class C { get else() { return 1 } set else(v) {} }')),
+      '`else` remains an IdentifierName in class methods')
+})
