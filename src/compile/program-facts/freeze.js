@@ -49,7 +49,6 @@
  *
  * @module program-facts/freeze
  */
-import { DBG_INVARIANTS } from '../../ctx.js'
 
 /** The exact 20 names `collectProgramFacts` publishes (walk-facts.js's own
  *  return statement — program-facts-split.md §1's table cites the same list,
@@ -117,14 +116,21 @@ export function freezeCallSites(callSites) {
   return Object.freeze(callSites)
 }
 
-/** Dev/test-only shape check (mirrors narrow.js's `assertValKindConsistent` /
- *  session-views.js's `assertMidCompile`: opt-in via JZ_DEBUG_INVARIANTS=1,
- *  zero cost otherwise). Throws if `programFacts` carries any top-level key
- *  outside `FACT_KEYS` — the container-level twin of the two Map/Array
- *  freezes above, catching a future undocumented staple-on the way
- *  `callTargets` itself was added deliberately (§7.1). */
+/** Always-on shape check (mirrors narrow.js's `assertValKindConsistent` /
+ *  session-views.js's `assertMidCompile` in spirit, but unlike those two this
+ *  one is cheap enough to run in every build, not just under
+ *  JZ_DEBUG_INVARIANTS=1 — measured `<0.03 ms` per compile, one `Object.keys`
+ *  scan over `programFacts`'s ~20 top-level keys, called exactly once per
+ *  `plan()` (core-simplification-audit.md §4(ii) slice 7: 0.02-0.024 ms
+ *  against 0.7-6.4 s whole-compile wall time across O0-O3/size on the watr
+ *  specimen, ≈0.003% even at O0 where the ratio is least favorable — nowhere
+ *  near the 0.5%-of-compile-time bar for staying debug-only). Throws if
+ *  `programFacts` carries any top-level key outside `FACT_KEYS` — the
+ *  container-level twin of the two Map/Array freezes above, catching a
+ *  future undocumented staple-on the way `callTargets` itself was added
+ *  deliberately (§7.1) — now a loud error in every build, not only under the
+ *  env flag. */
 export function assertProgramFactsShape(programFacts, label) {
-  if (!DBG_INVARIANTS) return
   for (const k of Object.keys(programFacts))
     if (!FACT_KEYS.has(k))
       throw new Error(`[program-facts] ${label}: unexpected key '${k}' on programFacts — every top-level fact needs a single documented producer (program-facts-split.md §7); add it to FACT_KEYS in program-facts/freeze.js if this is a genuine new staged fact`)
