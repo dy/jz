@@ -1,3 +1,13 @@
+# emit.js split (pipeline-minimality slice)
+
+Landed. See "Status — what actually landed" at the end of this document for
+the final module table, deviations from the plan below (one real one: the
+External-contract table's "toBool: none found" was wrong), retirements, and
+the closing battery. Everything above this note is the pre-split analysis,
+kept as the design rationale — its own "Snapshot basis" caveats about stale
+line numbers apply to it as historical record only; re-derive from source,
+don't trust the numbers below for anything post-landing.
+
 # emit.js structure map (pre-split)
 
 Base: HEAD `b900cd09` on `refactor/pipeline-minimality`, **plus working-tree
@@ -512,3 +522,209 @@ export const emitter = {
 Plan authored before any code was moved; decomposition specifics get filled
 in as each module is actually split (phase 3 commits), matching
 vectorize-split.md's own closing convention.
+
+## Status — what actually landed (updated post-execution)
+
+All 17 modules landed as 17 separate pure-move commits, leaf-first in the
+plan's own topological order (`bf286cbd`…`0ca70d59`), each individually
+gated clean (oracle `check --ref a45ce6ca` CLEAN 560/560, `test/kernel-parity.js`
+33/33) before the next. The central-deviation move (`src/compile/emit/index.js`
+assembling `emitter` from the 10 op-group spreads, `emit.js` collapsed to a
+pure barrel) landed as commit 18 (`236a9610`), immediately after
+`assignment.js` — the object's own inline body was already nothing but 10
+spreads by that point, so no separate "empty it out" step was needed. Three
+more commits followed: a test-infra coverage fix (`c1b3d0e2`), the
+dead-exports sweep (`610d6db3`), and hand-rolled-walker retirement
+(`ac890955`) — 21 commits total, HEAD `ac890955a0e85441ff0b4722db6eb583a0365681`.
+
+Line numbers throughout the plan above were stale by the time execution
+started (this doc's own "Snapshot basis" warning); re-verified against the
+actual file with a TypeScript-compiler-based scan (real parser, not a
+hand-rolled stripper) before cutting anything. The 188-declaration count and
+every name in the family map held exactly, with one addition: `I32_LOAD_MAG`
+(a small const the plan's prose didn't name individually) — i32-bounds.js
+territory, confirmed by its sole caller (`i32Mag`, already in that family)
+and its original position inside the plan's own 380-490 range.
+
+### Final module table (`src/compile/emit/`, actual line counts incl. each
+file's own header/import block)
+
+| file | lines | file | lines |
+|---|---|---|---|
+| `shared.js` | 107 | `comparisons.js` | 976 |
+| `i32-bounds.js` | 137 | `logical.js` | 628 |
+| `first-class.js` | 63 | `bitwise.js` | 155 |
+| `dispatch.js` | 1704 | `statements.js` | 348 |
+| `bigint.js` | 453 | `control-flow.js` | 993 |
+| `call-args.js` | 503 | `assignment.js` | 247 |
+| `method-dispatch.js` | 856 | `index.js` | 45 |
+| `call.js` | 438 | | |
+| `instanceof.js` | 163 | | |
+| `incdec.js` | 112 | | |
+| `arithmetic.js` | 538 | | |
+
+`src/compile/emit.js` itself: 51 lines (pure re-export shim). Sum incl. the
+shim: 8,517 lines, vs. 8,167 in the pre-split file — the ~350-line growth is
+entirely per-file header/import overhead (17 files × their own `@module`
+JSDoc + import block), not duplicated logic; every line of the original
+declarations region was accounted for exactly once (proved per-commit, see
+Verification below), plus the one documented identifier rename.
+`dispatch.js` landed at 1,704 lines, over the ~1,500 target for the same
+reason the plan called out in advance (the 15-member SCC + its
+only-caller-is-inside-the-SCC helpers) — not a new finding.
+
+### Deviations from the plan
+
+**One real one, worth flagging prominently**: the External-contract table's
+verdict of "`toBool`: none found" (external importers) was **wrong**, and so
+was `.work/dead-exports-sweep.md`'s corroborating "self-use only" finding for
+the same name. `src/compile/index.js:1713` (`resultBool ? toBool(body) : …`)
+imports and calls it directly (`src/compile/index.js:71`'s import line).
+Caught before it did damage: the dead-exports-sweep commit's own
+verification step re-derived the true external-consumer set from a fresh
+repo-wide grep of every real `from '.../emit.js'` import statement (8 call
+sites total) rather than trusting either document, found `toBool` in
+`src/compile/index.js`'s own import list, and kept it exported from the
+barrel — the other four names the sweep flagged (`emitTypeofCmp`,
+`materializeMulti`, `emitLoopFreshBoxed`, `emitDecl`) checked out fine
+against the same grep. Whether this was drift since the doc was written or a
+miss in the original scan wasn't determined; either way, don't trust a prior
+"zero external consumers" claim for a public export without re-deriving it
+against current source immediately before acting on it.
+
+Everything else matched the plan: the family assignments, the SCC
+membership, the shared/i32-bounds/bigint/first-class infra boundaries, the
+`emitter['for']` rename (3 sites once cut, not the 2 named in the plan — the
+third is a comment describing the same pattern, renamed too so it doesn't go
+stale relative to the code), and the topological order (verified
+programmatically before cutting anything: zero backward edges across all
+188 declarations' real cross-references, both external-import and
+intra-emit/-sibling).
+
+**Orphaned section-banner/comment artifacts** (the same class ir-split.md's
+own status section flagged and left for a later sweep): a few leading
+doc-comment blocks landed in a family module that isn't really what they're
+about, purely because of original textual adjacency to a declaration from a
+*different* family in an interleaved neighborhood (e.g. a paragraph about
+`ctx.func`'s "expect mode" — unrelated to either — sits at the top of
+`shared.js`'s `isI32Num`, its gap-inclusive textual predecessor). Left as
+mechanically placed, not hand-tidied — deleting or relocating comment text
+during a pure-move commit felt like scope creep past "no behavior edits";
+flagged here for a future cosmetic pass instead of guessed at now.
+
+### Dead-exports-sweep disposition (commit `610d6db3`)
+
+- `emitTypeofCmp`, `emitLoopFreshBoxed` — zero consumers anywhere (external
+  or intra-`emit/`): `export` dropped from the declaration itself
+  (`comparisons.js`, `control-flow.js`) and from the barrel.
+- `materializeMulti`, `emitDecl` — zero *external* consumers, but genuinely
+  cross-file within `src/compile/emit/` (`call.js` needs `materializeMulti`;
+  `statements.js` needs `emitDecl`): `export` stays on the declaration
+  (`call-args.js`/`dispatch.js`), only the barrel's re-export line drops them.
+- `toBool` — real external consumer, see Deviations above; stayed exported
+  everywhere, no change.
+- The "unused named imports" finding (`scanBoundedLoops`, `inBoundsArrIdx`,
+  `shapeOf`, `NULL_IR`, `ptrTypeIR`, `needsDynShadow`, `boxedAddr`,
+  `isFuncRef`) needed no action, verified by grep (zero hits across every
+  `src/compile/emit/*.js`): each file's import list was built from what that
+  file's own code actually references, so dead names never had anywhere to
+  land in the first place.
+
+### Outlier decomposition (declined, all five)
+
+Evaluated `emitDecl` (573 ln), `'for'` (529 ln), `tryRuntimePtrTypeFork`
+(112 ln), `emitLooseEq`/`emitStrictEq` (184/135 ln), and `tryConcatChain`
+(138 ln) against "decompose only along a real seam and only if
+byte-identical." All five share the same shape: a single hand-tuned,
+early-return-heavy decision procedure (or, for `tryConcatChain`, a
+flatten→classify→plan→emit pipeline) whose steps share mutable local state
+computed earlier in the same function and consumed later (`result`/
+`inLoop`/`loopPrebox` in `emitDecl`; `myLabel`/`bodyNode0`/`labeledContinue`
+in `'for'`; `va`/`vb`/`rawA`/`rawB`/`vta`/`vtb` in `emitLooseEq`; `leaves`/
+`lits`/the `bT`/`nT`/`lT` arrays in `tryConcatChain`). Splitting any of them
+into per-phase functions means threading that state through new parameters
+and return values — a real code transform, not a textual move, for
+functions this central to codegen correctness. Declined on all five, same
+risk calculus ir-split.md's own report used to decline `cloneIR`/`isPureIR`/
+`f64Range` for combinator-contract mismatches — "a real seam" reads as "an
+extractable piece with no shared-state entanglement," which none of these
+have.
+
+### Hand-rolled-walker retirements (commit `ac890955`)
+
+Full-repo scan (self-recursive-call analysis via the TS compiler API, not
+just a `walk`/`visit`/`scan`-name grep) found 6 locally-scoped recursive AST
+walkers across the split files. Four retired onto `walkAst`, byte-identical
+by construction and confirmed with a 1,603-case differential harness
+(hand-crafted nested-closure/nested-loop/aliasing cases + 400 seeded-fuzz
+trees per function, 0 mismatches):
+
+- `emitLoopFreshBoxed`'s `scan` (`control-flow.js`) → `walkAst({ boundary, enter })`
+- `freshenUnrolledScalarBindings`'s `collect` (`control-flow.js`) → same
+- `freshenUnrolledScalarBindings`'s `rewrite` (`control-flow.js`) → `walkAst({ enter })`,
+  one call per top-level statement (no pruning in the original, so
+  walkAst's default full-descent matches exactly)
+- `tagFnArrayDispatch`'s `findCI` (`call.js`) → `walkAst({ enter })` with an
+  outer found-flag short-circuit (later `enter()` calls become no-ops
+  instead of true early exits once found — same answer, slightly more
+  visited-but-inert nodes)
+
+Declined (not walker-shaped — the `walkAst enter` never sees a bare
+non-array leaf pitfall, or state threaded through recursion that `walkAst`
+has no hook for):
+- `bigintMethodTargets`'s `scan` (`method-dispatch.js`) and `control-flow.js`'s
+  `boundFreeNames` — both dispatch on bare STRING leaves directly.
+- `dispatch.js`'s `tryConcatChain`'s inner `walk` — same bare-leaf shape
+  (collects non-array leaves into a list).
+- `dispatch.js`'s `nestedWritesOf`'s `walk` — threads a mutable `inLoop`
+  flag down through recursion that varies per-subtree; no `walkAst` hook
+  carries extra per-call context, and the let/const special-casing at both
+  the top-level entry and inside the recursion isn't a clean enter/boundary
+  shape either.
+
+### Final battery (this worktree, HEAD `ac890955`)
+
+- `resolveModuleGraph('bench/jz/jz.js', { resolveNode: true })` — spot-checked
+  clean at several commits along the way (271 modules pre-split, 288 at
+  HEAD, zero resolution errors at any point it was run). The exhaustive
+  proof is every oracle run below succeeding: `loadRoot()` dynamically
+  imports `index.js`, which transitively resolves and evaluates the entire
+  graph including every new file, at every one of the 21 commits — and
+  `prepare()` never throws its own `Circular import:` error anywhere in
+  the battery, which is what actually walks the self-host module graph.
+- `node scripts/refactor-oracle.mjs check --ref a45ce6ca`: **CLEAN 560/560**,
+  run after every one of the 21 commits individually (not just at the end).
+- `node test/kernel-parity.js`: **33/33**, same — every commit.
+- `node test/kernel-oracle.js`: **14/14** (605 assertions).
+- `node test/pointers.js`: **73/73** (132 assertions).
+- `node test/data.js`: **204/204** (1,062 assertions).
+- `node test/eager-stdlib-parity.js`: **22/22** (55 assertions, incl. 1
+  pre-existing documented KNOWN GAP, not a regression).
+- `node test/index.js` (native): **3,858/3,859** (28,505 assertions, 1
+  pre-existing skip, 0 fail).
+- `JZ_TEST_TARGET=jz.wasm node test/index.js` (kernel target): **3,034/3,035**
+  (14,639 assertions, 1 pre-existing skip, 0 fail).
+- `test/invariants.js`: **28/28** (106 assertions) — exercises the barrel
+  re-export shape directly, run standalone after the barrel-collapse commit.
+- `test/types.js`: **178/178** (303 assertions).
+- `npm run build` (kernel self-compile): succeeds at every commit that
+  triggered a rebuild; final `dist/jz.wasm` = **17,902,856 bytes** vs. a
+  fresh `npm run build` at baseline `a45ce6ca` (separate worktree) =
+  **17,898,864 bytes** — **+3,992 bytes (+0.022%)**. Same order-of-file-
+  concatenation effect ir-split.md's own report explained for its own
+  kernel-size delta: the self-hosted kernel's own bundler concatenates
+  `src/compile/emit/`'s 18 new files in a different order/count than the
+  one monolithic `emit.js`, shifting some LEB128-encoded function-index
+  widths — not a behavior change. `kernel-parity`/`kernel-oracle` both green
+  against this exact binary, which is the actual correctness proof; the size
+  delta is cosmetic bundler-order noise.
+- `node scripts/bench-size.mjs --json`: byte-identical to a fresh baseline
+  run at `a45ce6ca` (separate worktree) — diffed directly, every `SIZE …`
+  line matches exactly, 60 cases.
+
+Nothing left unverified. The one thing this report can't independently
+confirm beyond the battery above: whether any *other* file outside
+`src/compile/emit.js`/`emit-assign.js` imports `ctx.func.typedElem`/
+`ctx.scope.globalTypedElem` with `.get(` in a way `test/invariants.js`'s
+"typed emitters" check should also cover — out of scope for this task
+(the check's file list was extended, not its regex).
