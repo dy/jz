@@ -15,13 +15,11 @@
  *
  * @module src/session
  */
-import { ctx, reset, initWarnings, assertCtxInvariants, optFlagsOf, getFactStore } from './ctx.js'
+import { ctx, reset, initWarnings, assertCtxInvariants, optFlagsOf } from './ctx.js'
 import { clearDollar } from './ir.js'
 import { clearStdlibParseCache } from './wat/assemble.js'
 import { resolveOptimize } from './optimize/index.js'
 import { resetNameUids } from 'watr/optimize'
-
-export { getFactStore }
 
 /**
  * Session-only reset hooks — a NARROWER sibling of ctx.js's RESET_HOOKS
