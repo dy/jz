@@ -18,7 +18,7 @@
  * @module symbol
  */
 
-import { typed, asF64, mkPtrIR } from '../src/ir.js'
+import { mkPtrIR } from '../src/ir.js'
 import { emit } from '../src/bridge.js'
 import { err, inc, PTR } from '../src/ctx.js'
 
