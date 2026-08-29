@@ -44,18 +44,22 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // rettail off — measured on the 22-case corpus: geomean 1.433→1.316, 22/22; +19%
 // kernel bytes, irrelevant for the compiler artifact). No special config needed.
 // Init snapshotting (pre-eval tier 3, src/snapshot.js): the kernel's module-init —
-// watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — could run once at
-// BUILD time and ship as pure data (__start deleted), but its own probe (a full
-// extra watrCompile + instantiate + run of the ~18 MB kernel, just to read back
-// __start's post-init values) cost a clean, measured 90.6s / a transient
-// (non-retained) +478.9MB local RSS bump on this hosted build. Measured net
-// effect of disabling it: wall time -22% (314.29s->245.34s, clean `/usr/bin/time
-// -l npm run build`); peak RSS unchanged (the process's true peak sits earlier,
-// inside watOptimize -- not oversold as a memory win). Zero effect on the in-wasm
-// jz×jz ceiling (self.js's own compileSelf() never calls snapshotInit; confirmed
-// by a bit-identical goal-probe trap with it off). Self-compile-memory campaign,
-// .work/self-compile-memory.md. Off by default; JZ_SELF_COMPILE_SNAPSHOT=1
-// restores the baked-snapshot artifact for A/B comparison.
+// watr's OPCODE/IMM tables, interned atoms, GLOBALS registry — runs once at BUILD
+// time and ships as pure data; __start is deleted. KEPT ON by default
+// (self-compile-memory campaign, .work/self-compile-memory.md, 2026-08-29):
+// snapshotInit's own probe (a full second watrCompile + instantiate + run of the
+// ~18 MB kernel, just to read back __start's post-init values) costs a measured
+// 90.6s / a transient +478.9MB RSS bump on the hosted build and has zero effect
+// on the in-wasm jz×jz ceiling either way (self.js's own compileSelf() never
+// calls snapshotInit). A first pass turned this off by default on that basis --
+// wrong: it trades a one-time BUILD cost for a per-INSTANTIATION cost every
+// consumer of dist/jz.wasm pays forever after (website REPL, every kernel test,
+// bench-self-compile.mjs). That self-compile timing gates exclude instantiate()
+// from their timed region is a gap in what they measure, not evidence the cost
+// is free. Reverted. The actual fix worth landing is making the bake cheap
+// (avoid the second full encode: patch the already-encoded module's data/start
+// sections instead of re-running the whole pipeline) -- tracked, not yet landed.
+// JZ_SELF_COMPILE_SNAPSHOT=0 remains available for diagnostic A/B use.
 // watrGuard:false — skip watr's size-revert guard (two full encodes of the
 // 6.6MB kernel ≈ 12s of the build, measured by CPU profile: instrSize/
 // localidx/codeItemSize self-time). The kernel is a controlled artifact
@@ -63,7 +67,7 @@ const selfOptLevel = SELF_OPT === 'false' ? false : (isNaN(+SELF_OPT) ? SELF_OPT
 // redundant here. No-op until watr >5.2.3 lands the option.
 const profile = resolveSelfCompileBuild({
   optimize: selfOptLevel,
-  snapshot: /^(1|true|yes)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '0'),
+  snapshot: !/^(0|false|no)$/i.test(process.env.JZ_SELF_COMPILE_SNAPSHOT || '1'),
   helperCounters: HELPER_COUNTERS || HELPER_SITES_ON,
   helperCallsites: HELPER_SITES_ON ? HELPER_SITE_FILTER : false,
 })
