@@ -69,7 +69,7 @@ escape hatch for a deliberate unverified write.
 
 Every `--json`/`--merge` write also captures `meta.machineState`
 (`swapUsedMB`/`uptimeDays`/`load1`/`powermode`, best-effort per-platform) —
-the WARM/MEMORY-FLOOR campaign (`.work/todo.md` "WARM + MEMORY-FLOOR"
+the WARM/MEMORY-FLOOR campaign (`.work/archive/todo.md` "WARM + MEMORY-FLOOR"
 status) found heavy swap alone explains multi-percent timing drift with zero
 code change; `test/bench-claims.js`'s VALIDITY gate checks it against a sane
 bound.
@@ -699,7 +699,7 @@ The `jz` CASE under the `jz` TARGET is the last uncovered cell in the lab
 grid: jz compiling itself (`bench/jz/jz.js` → `scripts/self.js`, the whole
 compiler) into a wasm module that, once run, itself compiles 3 more
 programs 45 times over. It is gated on the region-arena allocator
-(concurrent work, `.work/research.md §Region arena`) — today's bump-and-
+(concurrent work, `.work/evidence.md §Region arena`) — today's bump-and-
 never-free allocator has no bound on this workload's working set. The bench
 plumbing is ready for the moment it lands: this cell's PREP (the compile)
 runs in its own isolated child process (`bench/_lib/compile-jz-self.mjs`,

@@ -1708,7 +1708,7 @@ test('static closure env: re-entrant enclosing function with two call sites read
 })
 
 // closure-plan: deep-captured const loses its declaration (banked 2026-08-19,
-// .work/todo.md) — a function-scoped const captured by a closure nested 2+
+// .work/archive/todo.md) — a function-scoped const captured by a closure nested 2+
 // arrow levels deep, where the IMMEDIATE enclosing arrow ('mid') never
 // references the const itself (only a closure nested INSIDE mid does).
 // mid's own ClosureEnvPlan (src/compile/closure-plan.js) correctly folds the

@@ -6,7 +6,7 @@
  * unchecked, using the affine/monotone-cursor helper machinery below it. The
  * nest-level lift built on top of `versionableTypedFor` lives in
  * `loop-versioning-nest.js` (a one-directional dependency — see
- * `.work/type-split.md` for why the rest stays one file).
+ * `.work/archive/type-split.md` for why the rest stays one file).
  *
  * @module type/loop-versioning
  */

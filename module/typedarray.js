@@ -92,7 +92,7 @@ export default (ctx) => {
   // Unknown receiver for a buffer-family accessor: only BUFFER/TYPED own
   // `.buffer`/`.byteLength`/`.byteOffset` in JS — on everything else the name
   // is an ordinary own property (or undefined). Same dispatch shape as
-  // collection.js's `.size` (the dot-name hijack class, see .work/todo.md):
+  // collection.js's `.size` (the dot-name hijack class, see .work/archive/todo.md):
   // a PROVEN BUFFER/TYPED receiver keeps the direct helper call;
   // otherwise tag-dispatch at runtime — the NaN-check guards real numbers
   // whose bit pattern could false-match the tag compare, and the prehashed
@@ -247,7 +247,7 @@ export default (ctx) => {
         // recurse into a SIBLING `new.${name2}` closure instance (composing typed-
         // array/subview constructors, e.g. `new Int32Array(buf, 0, new
         // Float64Array(3).length)`): self-compile closure-capture-after-nested-emit
-        // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS) —
+        // class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS) —
         // a captured `stride`/`name` re-read after a nested emit can
         // observe the OTHER iteration's values once this file is kernel-compiled.
         // Eager construction pins this closure's own kind (byte-neutral natively).
@@ -306,7 +306,7 @@ export default (ctx) => {
         // Build copyFromTyped's IR BEFORE emit(lenExpr) recurses into a sibling
         // new.${name} closure instance (composing typed-array ctors, e.g.
         // `new Int32Array(new Float64Array(...))`) — self-compile closure-capture-
-        // after-nested-emit class (.work/todo.md §TYPED-INDEX KERNEL
+        // after-nested-emit class (.work/archive/todo.md §TYPED-INDEX KERNEL
         // MISCOMPILE): a free variable this closure captures (elemType/aux/
         // stride/name, from the `for (const [name, elemType] of ...)` loop
         // above) read AFTER a nested emit() call can observe the OTHER
@@ -739,7 +739,7 @@ export default (ctx) => {
       // call below (emit(off)/emit(val)/emit(leNode)) can recurse into a SIBLING
       // DataView closure from the SAME Object.entries(DV_SET) loop (e.g.
       // `dv.setFloat64(0, dv.setInt32(4, 1))`) — self-compile closure-capture-after-
-      // nested-emit class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO
+      // nested-emit class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO
       // FAILS): a captured storeOp/valType/size re-read after a
       // nested emit() can observe the OTHER iteration's values once this file is
       // kernel-compiled. The rest of this closure reads the locals, never the
@@ -821,7 +821,7 @@ export default (ctx) => {
       // call below (emit(off)/emit(leNode)) can recurse into a SIBLING DataView
       // closure from the SAME Object.entries(DV_GET) loop (e.g.
       // `dv.getFloat64(dv.getInt32(0), dv.getUint8(4))`) — self-compile closure-
-      // capture-after-nested-emit class (.work/todo.md §TYPED-INDEX /
+      // capture-after-nested-emit class (.work/archive/todo.md §TYPED-INDEX /
       // §KERNEL LEG ZERO FAILS): a captured loadOp/resultType/size/
       // signed re-read after a nested emit() can observe the OTHER iteration's
       // values once this file is kernel-compiled. toF64/beLoad below close over
@@ -980,7 +980,7 @@ export default (ctx) => {
         // and re-reading `stride`/`store`/`elemType` for a LATER element after that
         // nested emit would risk observing the OTHER iteration's values once this
         // file is kernel-compiled — self-compile closure-capture-after-nested-emit
-        // class (.work/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
+        // class (.work/archive/todo.md §TYPED-INDEX / §KERNEL LEG ZERO FAILS). The
         // loop below reads these locals, never the free variables.
         const strideS = stride, storeS = store, elemTypeS = elemType
         for (let k = 0; k < elems.length; k++) {
@@ -1451,7 +1451,7 @@ export default (ctx) => {
   // signed guard can therefore feed the whole adjacent bundle; negative pc
   // still yields each read's normal undefined arm. The dispatch/state body is
   // NOT cloned (unlike whole-loop versioning), so V8 sees one compact loop.
-  // Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+  // Memoised per body (AdHocMemo retirement — .work/archive/ctxfunc-survey.md §2/§5: WeakMap
   // on body identity, getFactStore().typedBundleGuards, same idiom as
   // src/type.js's inBoundsCharCodeAt — was ctx.func._typedBundleBody/
   // _typedBundleGuards). A non-array body can't be a WeakMap key and can't

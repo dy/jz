@@ -33,7 +33,7 @@ brief's premise. Fresh `scripts/bench-size.mjs --json` at `17bca77f` (unmodified
 2026-05-15 (commit `720831d5`), and never touched again — 3.5 months of daily
 engine work (the S2 loop-body fixpoint, watr 5.5.0 intguard checked-read
 collapse, the cross-function PARAM TYPEDLEN channel, etc. — see
-`.work/handoff-2026-08-22.md`, `.work/size-leadership.md`) closed most of the
+`.work/archive/handoff-2026-08-22.md`, `.work/archive/size-leadership.md`) closed most of the
 codegen-size gap as a side effect of correctness/speed work, but nobody
 re-ran the ratchet described in `CONTRIBUTING.md`: *"when you shrink codegen,
 tighten... the `wasm-opt` slack budget."* The "~25-30%" prose in
@@ -137,7 +137,7 @@ this table — see §4). New worst case: `shapes` 0.9059 (was 0.9047).
 `bezfit` (3624→3822 B, +198): Global section shrinks 191B→23B (18 mutable f64
 globals collapse to 4) while Code grows 3192B→3557B (+365) — `wasm-opt`
 un-hoists jz's `hoistConstantPool` globals back to inline `f64.const` at every
-read site. `.work/size-leadership.md` §4 item 1 already independently proved
+read site. `.work/archive/size-leadership.md` §4 item 1 already independently proved
 jz's hoist-vs-inline break-even policy (hoist wins once a constant is read
 ≥2 times: 12B decl + 2B/use vs 9B/use inline) is *correct* — `wasm-opt`
 disagrees and is worse here, not jz. This is the same category of confound
@@ -316,7 +316,7 @@ instructions), `branch` (≈cfg-cleanup), `constF64Globals` (≈module-level
 const-hoisting). The residual `wasm-opt` still finds is therefore best read
 as **watr's rule catalog being less complete than binaryen's mature, ~8+
 year-old, heavily-fuzzed catalog for the same conceptual classes** — not a
-missing jz-side pass. This matches `.work/core-simplification-audit.md` §5
+missing jz-side pass. This matches `.work/archive/core-simplification-audit.md` §5
 item 1's own prediction almost exactly ("whatever generic pass classes
 `wasm-opt -Oz` applies that neither jz's own `src/optimize/` nor watr's
 fixpoint yet reaches... candidates: more aggressive... propagation across
@@ -331,7 +331,7 @@ dependency, so each belongs in watr, external, not edited here:
 | **directize+dae** (dead/constant-argument elimination) | 400B / 7.9% on `colorpq.size` alone; 1041B/0.65% aggregate size, 15500B/1.95% aggregate speed | a parameter whose argument expression is syntactically identical (often a hoisted-global read) at every call site across the whole reachable call graph — §5(b) |
 | **const-hoisting** (function-local, distinct from jz's own module-level `hoistConstantPool`) | 863B/0.54% aggregate size (real gap); 79076B/9.97% aggregate speed (**mostly deliberate, §3** — do not conflate) | a constant repeated ≥2× within one function's own body, never module-wide, so it never qualifies for jz's own pooling pass |
 | **vacuum / dce / rse / local-cse / code-folding / cfg-cleanup / locals / inlining-optimizing** | 0.4-0.65% aggregate each; all concentrated in the 3 largest/most-real specimens (`watr`, `provenance`, `fftplan` — 30-300KB), near-zero on the small kernels | diffuse, overlapping, all dominated by the same single largest function (`main`/entry) in each big case — consistent with "smaller rule catalog on complex real programs," not a distinct per-class jz gap |
-| **precompute / gufa / simplify-globals-optimizing** | net *negative* on this corpus in isolation (2/47, 2/47, 22/47 cases improve; more cases regress) | low confidence either way — matches `.work/core-simplification-audit.md` §5 item 4's own "flagged for investigation, not asserted as a loss" precedent; needs a case that exposes genuine cross-block redundancy before ranking further |
+| **precompute / gufa / simplify-globals-optimizing** | net *negative* on this corpus in isolation (2/47, 2/47, 22/47 cases improve; more cases regress) | low confidence either way — matches `.work/archive/core-simplification-audit.md` §5 item 4's own "flagged for investigation, not asserted as a loss" precedent; needs a case that exposes genuine cross-block redundancy before ranking further |
 
 None of the above were touched in `src/optimize/` or `node_modules/watr` this
 session.

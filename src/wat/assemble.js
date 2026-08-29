@@ -9,7 +9,7 @@
  * "module assembly" concerns. All functions receive `sec` (the named-slots
  * section accumulator) and read/write ctx state as needed.
  *
- * Stable barrel (pipeline-minimality split, `.work/assemble-outliers.md`):
+ * Stable barrel (pipeline-minimality split, `.work/archive/assemble-outliers.md`):
  * every real phase now lives in `./assemble/*.js`, grouped by the seam each
  * one belongs to (per that doc's §4 module-split plan) — this file only
  * re-exports, in the actual compile/index.js assembly order (§1) by the

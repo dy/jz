@@ -93,7 +93,7 @@ export function extractRefinements(cond, out, sense = true) {
     if (val != null) { mergeRefinement(out, cond[2], { val }); return out }
   }
   // `x instanceof Array/Map/Set/<TypedCtor>/ArrayBuffer` under positive sense
-  // (.work/todo.md §deletion-sweep §4's sound instanceof op — src/prepare/index.js's
+  // (.work/archive/todo.md §deletion-sweep §4's sound instanceof op — src/prepare/index.js's
   // handler, reached in both strict source and default-mode source since jzify
   // passes these through instead of answering them itself). Same refinement as
   // the predicate-call arm above, keyed off the RHS class name instead of a
@@ -211,7 +211,7 @@ function excludeIntegerDiscriminant(a, b, out) {
 }
 
 /** Map immutable `const tag = obj.kind` aliases in the current function.
- *  Memoised per body (AdHocMemo retirement — ctxfunc-survey.md §2/§5: WeakMap
+ *  Memoised per body (AdHocMemo retirement — .work/archive/ctxfunc-survey.md §2/§5: WeakMap
  *  on body identity, getFactStore().constPropAliases, same idiom as
  *  type.js's inBoundsCharCodeAt). A non-array body (no active function) can't
  *  be a WeakMap key and can't contain any alias anyway — returns a fresh
@@ -250,11 +250,11 @@ function predicateRefinement(callee) {
 
 /** Map an `instanceof` RHS class name to the VAL kind it asserts under positive
  *  sense, or null. Mirrors predicateRefinement above for the real `instanceof`
- *  op (.work/todo.md §deletion-sweep §4) — every TYPED_ELEM_NAMES ctor narrows to the
+ *  op (.work/archive/todo.md §deletion-sweep §4) — every TYPED_ELEM_NAMES ctor narrows to the
  *  same generic VAL.TYPED tier __is_typed used to (element-type precision isn't
  *  a refinement fact this pass tracks). Error-family RHS names are deliberately
  *  NOT mapped: their LHS can be a real Error OBJECT or an internal NUMBER code
- *  (.work/todo.md §deletion-sweep §3(b)) — a positive `instanceof` here proves OBJECT,
+ *  (.work/archive/todo.md §deletion-sweep §3(b)) — a positive `instanceof` here proves OBJECT,
  *  but that's not new information a generic OBJECT-kind receiver didn't already
  *  have, so there's no refinement value in adding it. */
 function instanceofRefinement(rhs) {
@@ -505,7 +505,7 @@ export function closureBodyReturnKind(body, capturedKinds) {
 }
 
 /**
- * mayBeUndefined return-kind join (Slice 2, .work/todo.md
+ * mayBeUndefined return-kind join (Slice 2, .work/archive/todo.md
  * §deletion-sweep §3 "Return kinds") — the closureBodyReturnKind sibling:
  * same return-tail sites (closureReturnSites), OR-folded instead of unified —
  * any site whose expr is itself census-shaped, or a bare name tracing

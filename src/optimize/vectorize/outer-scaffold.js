@@ -57,7 +57,7 @@ export const writesName = (n, name) => {
   return found
 }
 
-// Epilogue safety (class-A hoist, .work/research.md §BodyModel §1a/§5 slice 3): the per-pixel
+// Epilogue safety (class-A hoist, .work/evidence.md §BodyModel §1a/§5 slice 3): the per-pixel
 // epilogue runs scalar per lane (each statement bumped to pixel j+k), so every in-loop read it
 // makes must be a lane local (per-lane source via `laneMap`), a pixel IV (`pivType`), or a value
 // the epilogue itself computes (`epiWritten` — incl. within-statement tees, e.g. an Infinity-guard

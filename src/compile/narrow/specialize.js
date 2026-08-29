@@ -176,7 +176,7 @@ export function specializeBimorphicTyped(programFacts) {
 
 /**
  * Phase: VAL-kind landslide specialization — the general-kind sibling of
- * specializeBimorphicTyped (`.work/context-sensitivity-survey.md` §3-4,
+ * specializeBimorphicTyped (`.work/archive/context-sensitivity-survey.md` §3-4,
  * COORDINATOR RULING). specializeBimorphicTyped only fires on
  * the `typedCtor` sub-lattice (`r.val === VAL.TYPED && r.typedCtor ===
  * null`); this fires on the general `val` field itself, for the params the

@@ -1,7 +1,7 @@
 # CompileSession prerequisite: `ctx.func` field-ownership survey
 
 **Status:** read-only survey at `14c4f7a2`; no compiler source changed. This is
-the prerequisite demanded by `.work/session-survey.md`'s coordinator ruling
+the prerequisite demanded by `.work/archive/session-survey.md`'s coordinator ruling
 before the full `CompileSession` record may proceed. It inventories what the old
 survey counted as “410 `ctx.func` write sites” at field/lifetime level and names
 the smallest decomposition that makes session ownership meaningful.

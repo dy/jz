@@ -65,7 +65,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   // Requiring a SECOND return statement restricts boxing to genuine syntactic
   // joins (≥2 `return` sites in one body) — exactly the boolconst repro's
   // shape — and leaves every real single-return function, provable or not,
-  // untouched. ADDITIVE single-return admission (.work/todo.md
+  // untouched. ADDITIVE single-return admission (.work/archive/todo.md
   // §deletion-sweep): a single-expression arrow body whose lone return IS itself an
   // ambiguous BOOL-merge (`s => cond ? 1 : false`) is STRUCTURAL evidence of
   // genuine mixing, not "unproven" — categorically unlike the ≥2-return gate's
@@ -212,7 +212,7 @@ export function emitFunc(func, functionPlan, programFacts) {
     if (p?.jsstring && p.jsstringDefault != null) continue
     const t = p?.type || 'f64'
     // emit(defVal) ONCE, before branching on t — same self-compile miscompile class as
-    // emit.js's 'return' handler. See .work/todo.md (groundtruth archive).
+    // emit.js's 'return' handler. See .work/archive/todo.md (groundtruth archive).
     const emittedDefVal = emit(defVal)
     // dyn-closure-tables.js: a default value that's provably a closure literal
     // (e.g. subscript's `dispatch(ops, tail, fn = (a, …) => {…})`) is the fact
@@ -325,7 +325,7 @@ export function emitFunc(func, functionPlan, programFacts) {
     // same reason as those two sites — the merge's own valTypeOf already
     // collapsed to NUMBER, so a post-hoc box (there is none on this path
     // today) would be powerless; the box has to happen while the merge's own
-    // arms are still separately known (.work/todo.md §deletion-sweep).
+    // arms are still separately known (.work/archive/todo.md §deletion-sweep).
     // Guarded on sig.results[0] === 'f64': a proven-uniform-BOOL (or numeric)
     // result already narrows to i32 and needs no boxing here (the boundary
     // wrapper's own resultBool arm handles that crossing).

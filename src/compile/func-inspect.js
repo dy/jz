@@ -46,7 +46,7 @@ export function captureFuncInspect(func, facts, programFacts) {
     results: sig.results.slice(),
     ...(sig.ptrKind != null ? { resultPtrKind: sig.ptrKind } : {}),
     ...(sig.ptrAux != null ? { resultPtrAux: sig.ptrAux } : {}),
-    // valResult/valResultMayBeUndefined (Slice 2, .work/todo.md
+    // valResult/valResultMayBeUndefined (Slice 2, .work/archive/todo.md
     // §deletion-sweep §3 "Return kinds") — narrowValResults' joined VAL
     // kind across every return site, and the mayBeUndefined OR-join riding
     // alongside it. Exposed for the same reason params/locals are: the pure-

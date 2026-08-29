@@ -1,4 +1,4 @@
-// Compile-time advisories (opts.warnings / ctx.warn). See .work/todo.md.
+// Compile-time advisories (opts.warnings / ctx.warn). See .work/archive/todo.md.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { belowOpt, onWasi } from './_matrix.js'
@@ -144,7 +144,7 @@ test('warnings: jz() surfaces advisories on the runtime result', () => {
 // Pre-audit-#8 (2026-08-03), jzify's default-mode 'instanceof' lowering answered
 // the 7 Error classes via a broad `typeof===object` guess and warned that the
 // answer couldn't discriminate classes ('untagged-instanceof'). P0-1 replaced
-// the guess with a pass-through to the sound core machinery (.work/todo.md
+// the guess with a pass-through to the sound core machinery (.work/archive/todo.md
 // §deletion-sweep §4) — the answer is now real, so there is nothing to warn about;
 // the 'untagged-instanceof' warning code is retired.
 test('warnings: instanceof on Error types is sound, no warning (jzify, audit-#8 P0-1)', () => {

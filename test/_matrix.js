@@ -89,7 +89,7 @@ export const onWasi = () => HOST === 'wasi'
 
 /** Force the BigInt retirement diagnostic (JZ_BIGINT_STRICT=1, src/ir.js
  *  bigintStrict()) for exactly the synchronous compile `fn` performs.
- *  Main-stabilization interim flip (2026-08-14, .work/bigint-retirement-
+ *  Main-stabilization interim flip (2026-08-14, .work/archive/bigint-retirement-
  *  design.md §9): an unprovable BigInt flow boxes by DEFAULT again (the
  *  pre-Slice-1 behavior — any input program legitimately reaching boxing,
  *  including watr/subscript's own bundled BigInt sites, must keep compiling

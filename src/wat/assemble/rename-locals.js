@@ -2,7 +2,7 @@
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. Standalone late-stage phase (compile/index.js:3430, well
  * after section ordering), unrelated to every other assemble/*.js group —
- * see `.work/assemble-outliers.md` §4.
+ * see `.work/archive/assemble-outliers.md` §4.
  */
 
 import { T, walkAst } from '../../ast.js'

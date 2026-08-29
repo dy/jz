@@ -6,7 +6,7 @@
  *
  * Split out of assemble.js (pipeline-minimality slice) — pure move, no
  * behavior change. See ../assemble.js for the stage contract and
- * `.work/assemble-outliers.md` §4: none of the three calls another in this
+ * `.work/archive/assemble-outliers.md` §4: none of the three calls another in this
  * file, but all three share the same `dataString`/`dataReset`/`dataAlign`/
  * `dataPush` substrate (../../static-data.js) and compile/index.js runs them
  * back-to-back (stripStaticDataPrefix, then optimizeModule, then

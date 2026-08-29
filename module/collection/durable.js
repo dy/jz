@@ -51,7 +51,7 @@ export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(glob
 // zeroes memory, so a forward written into a DURABLE header (offOld < __heap_reset,
 // i.e. the block predates this round) permanently points at an EPHEMERAL target that
 // the next round's allocations silently overwrite — any later chase through the
-// durable alias then lands on garbage or goes OOB (.work/todo.md groundtruth archive,
+// durable alias then lands on garbage or goes OOB (.work/archive/todo.md groundtruth archive,
 // "array-growth forwarding is not _clear-safe"). Growing an EPHEMERAL block needs no
 // protection: everything reachable from it is ephemeral too, so the whole chain (old
 // header, new header, and every durable-side reference to it — there are none, by
@@ -133,7 +133,7 @@ export const durableLenLogIR = (base) => {
 // grow-in-place refill re-entering indices a same-round shrink narrowed past)
 // mutates DURABLE data cells with no log at all, so `_clear()`'s header-only heal
 // restores the right LENGTH but round 2 still reads round 1's leftover bytes at
-// every surviving index (.work/research.md's own repro: `a.splice(1,2)` on
+// every surviving index (.work/evidence.md's own repro: `a.splice(1,2)` on
 // `[1,2,3,4,5]` gave `3` both rounds — length healed — but the SURVIVING elements
 // differed round to round). HASH/SET/MAP don't have this gap because their entries
 // are individually addressed and durableEntryLogIR/durableSlotLogIR already log

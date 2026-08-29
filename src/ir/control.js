@@ -16,7 +16,7 @@ import { typed } from './tag.js'
  *  array node is referenced. Used by optimizer passes to skip shared subtrees
  *  (watr CSE may leave them) — mutating a node with refcount > 1 would also
  *  affect references outside the current region. Single-pass O(N).
- *  Retired onto walkAst (.work/ir-split.md): `enter` returning `false` exactly
+ *  Retired onto walkAst (.work/archive/ir-split.md): `enter` returning `false` exactly
  *  when a node's count exceeds 1 reproduces the original's own early-return
  *  (no re-counting an already-seen subtree's children) — walkAst's own
  *  `if (!Array.isArray(value)) return` guard ahead of `enter` matches the
@@ -38,7 +38,7 @@ export function buildRefcount(fn) {
 /** Pick the next free `$__<prefix><id>` local-name id by collecting all
  *  existing ids in a single walk. Replaces the per-pass
  *  `while (fn.some(... === $__prefixK)) k++` (O(K·N)) with one O(N) scan.
- *  Retired onto walkAst (.work/ir-split.md): unconditional full descent, no
+ *  Retired onto walkAst (.work/archive/ir-split.md): unconditional full descent, no
  *  pruning — `enter` never returns `false`, matching the original's own
  *  unconditional recursion into every child (same index-0-is-never-an-array
  *  argument as buildRefcount's identical retirement, just above). */
@@ -134,7 +134,7 @@ export function verifyFn(fn) {
   return bad
 }
 
-// === HIR provenance link (.work/research.md §BodyModel slice 4) ===
+// === HIR provenance link (.work/evidence.md §BodyModel slice 4) ===
 //
 // Connects a WAT-level loop block node (the vectorizer's own scaffold — matchBlockLoop's
 // `blockNode`, src/optimize/vectorize.js) back to the facts proved about it at HIR-lowering time
@@ -162,7 +162,7 @@ export function verifyFn(fn) {
 //                freshenUnrolledScalarBindings, the one instance found so far — see its own doc)
 //                updates ONLY this half, keeping the fact synchronized without mutating an HIR
 //                fact after the fact.
-// SESSION-OWNED — folded into ctx.plans (.work/todo.md — see
+// SESSION-OWNED — folded into ctx.plans (.work/archive/todo.md — see
 // src/compile/closure-plan.js's sibling doc comment for the full
 // stale-plan-HIT hazard under self-hosting). Lives at
 // `ctx.plans.loweringLinks`, a fresh WeakMap every reset() (src/ctx.js).

@@ -492,7 +492,7 @@ export const emitter = {
   correctness (itself checked by: the stripped file being `node
   --check`-clean end-to-end, and the zero-violation result surviving two
   rounds of `shared`/`bigint` reordering that WOULD have surfaced a
-  scan bug as a contradiction). Same epistemic status vectorize-split.md's
+  scan bug as a contradiction). Same epistemic status .work/archive/vectorize-split.md's
   own scan carried — a static scan, not a type system.
 - **`comparisons.js` (995 ln) is the largest family module** and contains
   three genuinely distinct sub-concerns (typeof-compare, char/substring-eq
@@ -521,7 +521,7 @@ export const emitter = {
 
 Plan authored before any code was moved; decomposition specifics get filled
 in as each module is actually split (phase 3 commits), matching
-vectorize-split.md's own closing convention.
+.work/archive/vectorize-split.md's own closing convention.
 
 ## Status — what actually landed (updated post-execution)
 
@@ -577,7 +577,7 @@ only-caller-is-inside-the-SCC helpers) — not a new finding.
 
 **One real one, worth flagging prominently**: the External-contract table's
 verdict of "`toBool`: none found" (external importers) was **wrong**, and so
-was `.work/dead-exports-sweep.md`'s corroborating "self-use only" finding for
+was `.work/archive/dead-exports-sweep.md`'s corroborating "self-use only" finding for
 the same name. `src/compile/index.js:1713` (`resultBool ? toBool(body) : …`)
 imports and calls it directly (`src/compile/index.js:71`'s import line).
 Caught before it did damage: the dead-exports-sweep commit's own

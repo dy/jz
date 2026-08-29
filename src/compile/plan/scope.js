@@ -233,7 +233,7 @@ export const refineFieldProvenance = (ast) => {
   }})
 }
 
-// Receiver-HASH global classification (.work/todo.md §deletion-sweep).
+// Receiver-HASH global classification (.work/archive/todo.md §deletion-sweep).
 //
 // module/object.js's `{}`-literal emitter already allocates a module-level
 // dict global (`let X = {}` whose binding takes ONLY computed-key writes —
@@ -685,7 +685,7 @@ export const inferModuleIntGlobals = (ast) => {
   }
 
   // Bare-escape veto (module-global twin of widenLocalTypes Pass D,
-  // .work/todo.md's KNOWN GAP #1 sibling): `producesFraction` above only
+  // .work/archive/todo.md's KNOWN GAP #1 sibling): `producesFraction` above only
   // proves each candidate INTEGRAL — the same "level 1: integral-closed,
   // range-open" verdict intLevelMap gives a local's `+`/`-`/`*` chain, never
   // a magnitude bound. i32 storage is sound for a value ONLY as long as
@@ -1173,7 +1173,7 @@ export const canSkipWholeProgramNarrowing = (programFacts) =>
   // NOT "does this program have closures" — front.js's eager includeMods()
   // (region-arena builds) and index.js's `_eagerStdlib` test hook both load
   // `fn` for EVERY compile regardless of source content (the established
-  // "module load = registration only" invariant, .work/region-release-
+  // "module load = registration only" invariant, .work/archive/region-release-
   // notes.md Class 1/2), so the bare-truthy check silently forced the full
   // whole-program narrowing fixpoint to run for programs with zero closures —
   // observable eager-vs-lazy divergence even on `() => 5` (no call sites, no

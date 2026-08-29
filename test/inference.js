@@ -1176,8 +1176,7 @@ test('mulFitsI32 keeps the i32.mul fast path when the product is genuinely range
 // proof the exact SUM fits signed i32. Live at HEAD before the fix:
 // `(a|0)+(b|0)` for a=b=2147483647 returned -2; JS gives 4294967294 (exact,
 // f64-representable). FIX, three coordinated layers (all needed — verified
-// by isolating each and re-measuring the perf-ratchet corpus, see .work/
-// todo.md for the full bisection):
+// by isolating each and re-measuring the perf-ratchet corpus, see .work/archive/todo.md for the full bisection):
 //   1. emit.js primary fast path: `addFitsI32 = opBound(a)+opBound(b) <=
 //      0x7fffffff` (opBound machinery mulFitsI32 already uses; triangle
 //      inequality |a±b|<=|a|+|b| covers both + and - with one predicate).
@@ -1295,7 +1294,7 @@ test('compoundAssign requires the same bound proof as the binary operators when 
 //
 // TWO independent one-way storage commitments shared this exact flaw, found
 // via this repro's own two arms (`*=` vs `+=` took different paths through
-// the type pipeline — see .work/todo.md's Status entry for the full trace):
+// the type pipeline — see .work/archive/todo.md's Status entry for the full trace):
 //   1. collectI32SafeIndexVars' own back-propagation (src/compile/
 //      analyze-scans.js) — promotes an f64-typed feeder to i32 once it
 //      affinely reaches an array index, with no later-escape check. Root fix:
@@ -1472,7 +1471,7 @@ test('bare-escape scan: Math.imul multi-arg list passes idx-mode through its com
   ok(truncCount <= 25, `sieve kernel's i*i-guarded index chain must stay i32 (got ${truncCount} trunc_sat/i32.wrap ops, expected <=25 — the fixed compiler measures 21, the false-positive regression measures 34)`)
 })
 
-// MODULE-GLOBAL SIBLING (fixed 2026-08-03, .work/todo.md's own follow-up
+// MODULE-GLOBAL SIBLING (fixed 2026-08-03, .work/archive/todo.md's own follow-up
 // flag on the KNOWN GAP #1 ledger entry above): `plan/scope.js`'s
 // `inferModuleIntGlobals` — the module-global f64→i32 narrowing fixpoint —
 // shared the EXACT same one-way-storage-commitment flaw as the two local
@@ -2007,8 +2006,8 @@ test('flow-fact: for-of desugar keeps the array fast path (the win the guard mus
 // keeps rep.nullable (analyze.js mayBeNullish), and narrow.js re-derives it for
 // BIGINT params whose call sites can pass null (watr's `_i64Arith(r)` shape:
 // fold-miss null flows for real; the guard must return null, not hex-format
-// atom bits). Root of the speed-tier lab-row throw (.work/todo.md 2026-07-11).
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4): `const r
+// atom bits). Root of the speed-tier lab-row throw (.work/archive/todo.md 2026-07-11).
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4): `const r
 // = a > 0 ? BigInt(a) : null` is the design's OWN verbatim illustrative
 // example for the "ternary-nullish" flow class ("a `cond ? bigVal : null`
 // merge... 'the one kind with no runtime tag'"). This test's whole purpose
@@ -2437,7 +2436,7 @@ test('closure return-kind: BIGINT proven through an if/typeof-guarded closure at
   ok(!wat.includes('call_indirect'), 'parse(v) is direct-dispatched, not call_indirect')
   const { f } = run(src)
   is(f(5), 6n, 'fallthrough BigInt(...) arm proves the same')
-  // Closure-forwarding slice LANDED (.work/phase-c-unification.md §C4b):
+  // Closure-forwarding slice LANDED (.work/archive/phase-c-unification.md §C4b):
   // host-BigInt ingress through the CLOSURE-mediated normalizer now computes
   // correctly instead of rejecting. Two halves, both required (forcing
   // ingress evidence alone was PROVEN silent-wrong first: f(5n) →
@@ -2526,14 +2525,14 @@ test('closure return-kind: fails open when the return depends on an unsettled ca
 })
 
 // ───────────────────────────────────────────── dict-value-type census (global half)
-// .work/todo.md §deletion-sweep §1b/§5 step 2: observeProgramSlots' whole-
+// .work/archive/todo.md §deletion-sweep §1b/§5 step 2: observeProgramSlots' whole-
 // program census of `name[key] = rhs` value kinds, published onto
 // ctx.scope.globalReps as dictValueValType. These tests inspect the fact
 // directly, module-global HASH dict, comma-chained export let, filled through
 // a param-aliased (dynamic-key) write in one function, read in another.
 //
 // PRODUCT-LATTICE Slice 7: dictValueValType/mapValueValType are now
-// Set<VAL.*> (union lattice, .work/lattice-design.md §thesis — disagreeing
+// Set<VAL.*> (union lattice, .work/archive/lattice-design.md §thesis — disagreeing
 // writes widen the set instead of poisoning to null; an unresolved write
 // unions in the full KIND_UNIVERSE/TOP). soleKind() reproduces the OLD
 // exact-or-null field shape these fixtures assert against — the SAME
@@ -2628,7 +2627,7 @@ test('dict-value census: an unresolvable write poisons the fact', () => {
     '.prop-read RHS is not independently provable by writeVT — must poison, not guess')
 })
 
-// RE-REVERTED (.work/todo.md §deletion-sweep §14, audit #10 — Slice
+// RE-REVERTED (.work/archive/todo.md §deletion-sweep §14, audit #10 — Slice
 // 4's VT['[]']/['.']/['()'] wiring this "positive win" pin proved is dormant
 // again). Was: dictValueKindOf claiming the exact NUMBER kind at `OPCODE[nm]`
 // dropped `+`'s `$__str_concat` STRING-coercion fallback arm entirely for a
@@ -2668,7 +2667,7 @@ test('dict-value census: unproven dict read keeps the `+` STRING-coercion arm re
   is(run(escapingSrc).bigOp('add'), 1, 'functional result still correct via the generic path')
 })
 
-// RENAMED from "consumer wiring" (audit #9 P0-1, .work/todo.md "audit-#9
+// RENAMED from "consumer wiring" (audit #9 P0-1, .work/archive/todo.md "audit-#9
 // P0-1 closed": kind.js's dictValueKindOf, the consumer this test originally
 // meant to prove, is reverted/dormant). Verified this WAT shape is IDENTICAL
 // with the consumer on or off: cmpOp's relational family (emit.js ~2928-2931)
@@ -2714,7 +2713,7 @@ test('dict-value census: soundness carve-out — an unregistered key still ident
 
 // ─────────────────────────── writeVT strengthening: value-set &&/||/??, self-read
 // neutrality, parameter-kind channel (2026-07-31, subscript's real `prec[op] =
-// !lookup[c] && prec[op] || p` target — .work/todo.md §deletion-sweep's
+// !lookup[c] && prec[op] || p` target — .work/archive/todo.md §deletion-sweep's
 // primary target didn't fire until these three pieces landed; see the writeVT
 // docstring in src/compile/program-facts.js for the resolver rules).
 
@@ -2812,7 +2811,7 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 })
 
 // ─────────────────────────── dict-value census: moduleInit gap fix (Fix A/B)
-// .work/todo.md §deletion-sweep: bundled sub-module top-level init code
+// .work/archive/todo.md §deletion-sweep: bundled sub-module top-level init code
 // (ctx.module.moduleInits, OUTSIDE `ast`) is exactly watr's real shape
 // (`export const OPCODE = {}` then `OPCODE[nm] = code++` in a bare top-level
 // C-STYLE `for` loop, const.js:161) — the census's own fixtures above never
@@ -2832,7 +2831,7 @@ test('dict-value census: subscript\'s real target shape — `prec[op] = !lookup[
 // was a latent OOB miscompile (dict-mode alloc emitted a RUNTIME read of
 // the leanHashDomains hint array's length at the `{}` literal's emission
 // point — a def-before-use when the domain is a local declared after the
-// dict, which a for-of iterator temp always is; .work/todo.md
+// dict, which a for-of iterator temp always is; .work/archive/todo.md
 // §deletion-sweep) — FIXED by static-only sizing (repOf arrayLen, mirroring
 // emit-assign.js's RMW capHint) and pinned in the for-of tests below.
 
@@ -2910,23 +2909,23 @@ test('dict-value census: moduleInitSlot memo-cache replay is order-independent (
 })
 
 // ───────────────────────────────────────────── Map-value-type census (Tier 1)
-// .work/todo.md §deletion-sweep: dict-value census's Map sibling — scalar
+// .work/archive/todo.md §deletion-sweep: dict-value census's Map sibling — scalar
 // mapValueValType only (Tier 2 schema-id fact for the fftplan/provenance
 // OBJECT-valued edges is a separate, later design). Same first-wins-then-
 // clash lattice, published onto ctx.scope.globalReps as mapValueValType.
 //
 // The `.get()` read-side consumer (kind.js mapValueKindOf, VT['()']'s 'get'
-// short-circuit) was REVERTED (audit P0, external bisection, .work/todo.md
-// "audit-#7 P0 closed"), RE-ENABLED (.work/todo.md §deletion-sweep §3,
+// short-circuit) was REVERTED (audit P0, external bisection, .work/archive/todo.md
+// "audit-#7 P0 closed"), RE-ENABLED (.work/archive/todo.md §deletion-sweep §3,
 // Slice 4) once the absent-key case (censusMaybeUndefined's Map arm) and the
 // alias case (mapValueKindOf's nameEscapes gate) were closed at CONSUME
-// time, then REVERTED AGAIN (audit #9, .work/todo.md "audit-#9 P0-1
+// time, then REVERTED AGAIN (audit #9, .work/archive/todo.md "audit-#9 P0-1
 // closed"): both closures keyed off the READ NODE'S OWN AST SHAPE, not a
 // fact carried by the value — `let x = m.get(missing); x + 1` still gave
 // `undefined` instead of `NaN` (decl propagation evaporates the join), and
 // arithmetic sites outside the curated chokepoint list (the `+` STRING-
 // concat fast path, bigintMixReject's compile-time check) never consulted
-// it at all. See .work/todo.md §deletion-sweep for the
+// it at all. See .work/archive/todo.md §deletion-sweep for the
 // replacement (a REPRESENTED `{presentKind, mayBeUndefined}` fact) and its
 // re-enablement criteria. The miscompile repros this section's tests below
 // still functionally pin (now green via the generic dynamic path, not any
@@ -2986,7 +2985,7 @@ test('map-value census: an unresolvable write poisons the fact', () => {
 test('map-value census: soundness carve-out — an unregistered key still identity-compares as undefined', () => {
   // Was the design's carve-out test (§2) for kind.js mapValueKindOf /
   // censusMaybeUndefined's Map arm, RE-ENABLED at Slice 4 then REVERTED
-  // AGAIN (audit #9, .work/todo.md "audit-#9 P0-1 closed") — see this
+  // AGAIN (audit #9, .work/archive/todo.md "audit-#9 P0-1 closed") — see this
   // file's Map-value-census section header above. With no consumer at all,
   // `MEMO.get(k)` never gets a static kind claim to protect against in the
   // first place; kept as a plain baseline-correctness regression pin.
@@ -3001,7 +3000,7 @@ test('map-value census: soundness carve-out — an unregistered key still identi
   is(has('zz'), true, 'unregistered key still observes undefined at runtime — the fold must not fire')
 })
 
-// RE-RE-REVERTED (.work/todo.md §deletion-sweep §14, audit #10 —
+// RE-RE-REVERTED (.work/archive/todo.md §deletion-sweep §14, audit #10 —
 // mapValueKindOf's own VT['()'] wiring, Slice 4, is dormant again). nameEscapes
 // itself is still unconditionally checked (both cases — the fact is computed
 // regardless), but the codegen-shape consequence is GONE: with the census
@@ -3057,7 +3056,7 @@ test('map-value census: bundled moduleInit Map.set (watr\'s memo shape, C-style 
   if (onKernel()) return  // white-box: ctx.scope.globalReps (see section note above)
   // Cross-module coverage: bundled sub-module top-level init code
   // (ctx.module.moduleInits, OUTSIDE `ast`) — mirrors the dict census's own
-  // moduleInit fixture (.work/todo.md §deletion-sweep), but `new Map()` has
+  // moduleInit fixture (.work/archive/todo.md §deletion-sweep), but `new Map()` has
   // no `{}` literal to trip hasSchemaLiterals on its own, so this also
   // exercises the hasMapSet gate widening (program-facts.js observeNodeFacts
   // + narrow.js's own hasSchemaLiterals-gated re-observation pass).
@@ -3110,7 +3109,7 @@ test('map-value census: moduleInitSlot memo-cache replay is order-independent (c
 })
 
 // for-of/for-in dict population — the def-before-use OOB class
-// (.work/todo.md §deletion-sweep): the dict-mode `{}` alloc used to emit a
+// (.work/archive/todo.md §deletion-sweep): the dict-mode `{}` alloc used to emit a
 // RUNTIME `domain.length` read for the leanHashDomains preallocation hint;
 // a for-of/for-in iterator temp (or any local domain array) is declared in
 // the loop's own init — AFTER the dict decl — so the read hit an
@@ -3169,7 +3168,7 @@ test('dict-mode alloc: statically-provable domain still sizes the preallocation 
 })
 
 // ─────────────────────────── receiver-HASH global classification
-// .work/todo.md §deletion-sweep: module/object.js's `{}`-literal emitter
+// .work/archive/todo.md §deletion-sweep: module/object.js's `{}`-literal emitter
 // already allocates a module-level dict global (computed-key writes only, no
 // static prop, empty merged schema) as a real HASH pointer — but every OTHER
 // function's read/write site was blind to it (recordGlobalRep leaves the

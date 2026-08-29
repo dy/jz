@@ -36,7 +36,7 @@ const timeMin = (fn) => {
 }
 
 // Build a wasm module from a driver entry that imports the library graph.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): both
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §5/§9): both
 // callers pull in real ecosystem source (subscript's jessie parser, watr) —
 // independently-versioned npm dependencies with their own genuinely-
 // unprovable BigInt usage this repo can't fix (subscript/feature/number.js's

@@ -204,7 +204,7 @@ export function observeNodeFacts(node, f) {
     const cargs = commaList(args[1])
     if (cargs.some(x => Array.isArray(x) && x[0] === '...')) f.hasSpread = true
     if (cargs.length > f.maxCall) f.maxCall = cargs.length
-    // Map-value census pre-scan gate (design .work/todo.md §deletion-sweep
+    // Map-value census pre-scan gate (design .work/archive/todo.md §deletion-sweep
     // §1): cheap SYNTACTIC over-approximation — any 2-arg `.set(k,v)` call
     // shape, no VAL.MAP proof (that's the census's own job at OBSERVE time,
     // visit()/visitInit() below) — mirrors hasSchemaLiterals' own `{}`-on-
@@ -463,7 +463,7 @@ export function collectProgramFacts(ast) {
   // map (already populated with the same overlay-aware walk).
   //
   // Also entered on hasMapSet ALONE (no `{}` anywhere): the map-value census
-  // (design .work/todo.md §deletion-sweep §1) rides the SAME
+  // (design .work/archive/todo.md §deletion-sweep §1) rides the SAME
   // observeProgramSlots walk (visit()'s `.set(...)` branch) — a Map-only
   // program/moduleInit has no `{}` to trip hasSchemaLiterals on its own.
   // analyzeSchemaSlotIntCertain stays gated on hasSchemaLiterals strictly —
@@ -510,7 +510,7 @@ export function collectProgramFacts(ast) {
  *  proves closed, synthesize call-site observations into
  *  `programFacts.callSites` so paramReps/narrowSignatures' census sees what
  *  a bare-name call would — see call-target-index.js's `resolveComputed`
- *  doc and .work/string-method-guess-notes.md "Third follow-up session" for
+ *  doc and .work/archive/string-method-guess-notes.md "Third follow-up session" for
  *  why this needs two hops, not one. Must run after `programFacts.
  *  callTargets` is built and before narrowSignatures ever reads
  *  `programFacts.callSites` (plan/index.js wires the ordering, right after

@@ -8,9 +8,9 @@
  * here" comments for the soundness argument this family exists behind.
  * Three prior attempts to promote this census into the general dispatch were
  * reverted as unsound (censusKindsOf's own doc, below) — this logic is moved
- * verbatim from kind.js, unedited (.work/kind-split.md §3).
+ * verbatim from kind.js, unedited (.work/archive/kind-split.md §3).
  *
- * Split out of kind.js (pipeline-minimality slice, .work/kind-split.md).
+ * Split out of kind.js (pipeline-minimality slice, .work/archive/kind-split.md).
  *
  * @module kind/dict-census
  */
@@ -20,17 +20,17 @@ import { VAL, lookupValType, repOf, mayBeUndefined } from '../reps.js'
 import { isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
 
 // Dict-value-type census consumer — an INTERNAL HELPER ONLY
-// (.work/todo.md §deletion-sweep Slice 1).
+// (.work/archive/todo.md §deletion-sweep Slice 1).
 // `name[key]`/`name.prop` on a HASH dict-mode receiver: the VAL.* kind of
 // every value ever WRITTEN through `name[anyKey] = v`
-// (.work/todo.md §deletion-sweep §2, nameEscapes alias gate per
-// .work/todo.md §deletion-sweep §2 Slice 3). INVARIANT: this stays OUT of
+// (.work/archive/todo.md §deletion-sweep §2, nameEscapes alias gate per
+// .work/archive/todo.md §deletion-sweep §2 Slice 3). INVARIANT: this stays OUT of
 // VT['[]']/VT['.']'s own dict-mode fold — promoting a census read to an
 // exact VT globally would make every OTHER consumer of that VT — composed
 // expressions, container storage, kind-specific dispatch, string `+`,
 // BigInt joint ops — silently bypass the mayBeUndefined protection unless it
 // separately remembers to call censusMaybeUndefined too; opt-out instead of
-// opt-in, unsound by construction. .work/todo.md §deletion-sweep §14 is the
+// opt-in, unsound by construction. .work/archive/todo.md §deletion-sweep §14 is the
 // re-enablement path: an opt-in `presentVal` fact consumers must explicitly
 // ask for, not a global VT promotion. Called ONLY from
 // censusMaybeUndefinedKind below, which asks a narrower question ("is THIS
@@ -46,7 +46,7 @@ import { isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
 // TYPED-index read (kind.js:257-263 above). Identity (`===`/`==` against
 // null/undefined) and typeof MUST NOT const-fold on it: that carve-out lives
 // in emit.js's `nullableOperand`, which calls censusMaybeUndefined directly.
-// nameEscapes ALIAS GATE (.work/todo.md §deletion-sweep §2, Slice 3): the
+// nameEscapes ALIAS GATE (.work/archive/todo.md §deletion-sweep §2, Slice 3): the
 // census keys observations by SYNTACTIC receiver name (analyze.js's
 // dictValueTypeOf same-body scan, program-facts.js's observeDictValue global
 // half) — a write through an ALIAS (`const a = d; a[k] = v`) is invisible to
@@ -74,7 +74,7 @@ export function dictValueKindOf(name) {
   return s && s.size === 1 ? [...s][0] : null
 }
 
-// RECEIVER-KIND GUARD (.work/todo.md §deletion-sweep Slice 1; test/simd.js
+// RECEIVER-KIND GUARD (.work/archive/todo.md §deletion-sweep Slice 1; test/simd.js
 // pins the regression this guards against): the dict census's GLOBAL half
 // (program-facts.js) records a dictValueValType fact for ANY
 // `name[dynKey] = v`, receiver-kind-BLIND — a Float64Array named `a` written
@@ -113,7 +113,7 @@ const dictCensusReceiverIsLive = (name) => {
 // `return lookupValType(expr)` with no other logic in between. The
 // substitution breaks what would otherwise be a real kind.js ↔
 // kind/val-type-of.js import cycle — jz's own self-host module graph
-// rejects cycles outright, see .work/kind-split.md §4 — without touching
+// rejects cycles outright, see .work/archive/kind-split.md §4 — without touching
 // the census/promotion soundness logic this file's other comments guard.)
 // mapValueKindSet(name) — mapValueKindOf's raw-Set sibling, same shape as
 // dictValueKindSet above (product-lattice Slice 7).
@@ -131,14 +131,14 @@ export function mapValueKindOf(name) {
 }
 
 // censusKindsOf(name) — OPT-IN, set-valued sibling of dictValueKindOf/
-// mapValueKindOf (COORDINATOR RULING on OQ1, .work/lattice-design.md: a
+// mapValueKindOf (COORDINATOR RULING on OQ1, .work/archive/lattice-design.md: a
 // census-derived kind union must surface ONLY through its own opt-in
 // projection, never the general Fact.possibleKinds field a future slice
 // exposes for every OTHER kind question — mirrors the presentVal precedent:
 // a real, individually-gated consumer list built one caller at a time, never
 // a blanket promotion; three prior attempts to promote this exact axis
 // globally were reverted as unsound). ZERO consumers as of product-lattice Slice 1
-// (.work/lattice-design.md §5) — the structural landing only. Folds through
+// (.work/archive/lattice-design.md §5) — the structural landing only. Folds through
 // the SAME `joinKinds` union primitive (param-reps.js) every later
 // Fact-shaped field will use, so this is the primitive's first real caller,
 // not a bespoke Set construction.
@@ -163,7 +163,7 @@ export function censusKindsOf(name) {
   return s ? new Set(s) : new Set()
 }
 
-// maybeUndefined value-join (.work/todo.md §deletion-sweep §4/§8). Two
+// maybeUndefined value-join (.work/archive/todo.md §deletion-sweep §4/§8). Two
 // arms: a `name[key]`/`name.prop` dict-census READ node (arm 1) or a
 // `recv.get(key)` Map-census CALL node (arm 2) whose claimed kind comes
 // SOLELY from dictValueKindOf/mapValueKindOf's soundness carve-out. PLUS a
@@ -199,10 +199,10 @@ export function censusKindsOf(name) {
 // but never true for a census-shaped node itself — no optimistic default.
 // Widening those chokepoints' own outer gates to fall back to this function
 // when `valTypeOf` is null is separate, larger future work — see
-// .work/todo.md §deletion-sweep §15 for which consumers are live vs still
+// .work/archive/todo.md §deletion-sweep §15 for which consumers are live vs still
 // gated out.
 //
-// censusShapedNode (Slice 2, .work/todo.md §deletion-sweep §3)
+// censusShapedNode (Slice 2, .work/archive/todo.md §deletion-sweep §3)
 // factors OUT arms 1/2's pure AST-SHAPE test — no ctx lookup — so a whole-
 // program plan-time consumer can recognize the same two node shapes without
 // touching ctx.func.localReps/ctx.types.nameEscapes: narrow.js's param/
@@ -262,7 +262,7 @@ export function censusMaybeUndefinedKind(node) {
   if (typeof node === 'string') {
     const r = repOf(node)
     // presence check re-expressed via reps.js's mayBeUndefined(name) projection
-    // (lattice-design.md §5 Slice 3 precedent, the Fact.presence component
+    // (.work/archive/lattice-design.md §5 Slice 3 precedent, the Fact.presence component
     // formalized) — same underlying REP field, same computation.
     if (mayBeUndefined(node)) {
       // INVARIANT: check `presentVal` FIRST — the precise, poison-disciplined
@@ -289,7 +289,7 @@ export function censusMaybeUndefinedKind(node) {
 }
 
 // Present-key BigInt through the census — export-boundary sentinel kind
-// (.work/todo.md §deletion-sweep §6/§12 Slice 5, the `presentKindUnboxed`
+// (.work/archive/todo.md §deletion-sweep §6/§12 Slice 5, the `presentKindUnboxed`
 // family). A bare census-BIGINT node (dict/Map read, mayBeUndefined bare name, or
 // call-result — censusMaybeUndefinedKind's own three arms) crosses the JS boundary
 // as either its raw i64 bits (present key) or the UNDEF_NAN atom (absent key,
@@ -302,7 +302,7 @@ export function censusMaybeUndefinedKind(node) {
 // bare case (bigIntUnary's own doc comment) — only the absent-case BIT PATTERN
 // interop must recognize differs per operator, hence the distinct kind. Returns 0
 // when `node` isn't any of these shapes (not this export lane at all).
-// Binary sibling of kinds 1-3 (.work/todo.md §deletion-sweep §14/§15):
+// Binary sibling of kinds 1-3 (.work/archive/todo.md §deletion-sweep §14/§15):
 // emit.js's `bigIntJointDispatch` reaches its i64 arithmetic — for ANY of
 // the 9 binary arithmetic/bitwise ops, not just `+` — when BOTH operands'
 // census independently claim BIGINT (the SAME AND,
@@ -330,7 +330,7 @@ export function censusBigintResultShape(node) {
   // 2/3 above, covering the param-hop shape `const f = (v) => -v; return
   // f(m.get('x'))` (present-key BIGINT). Deliberately NOT built on
   // `func.valResult`/`valResultMayBeUndefined` (narrowValResults' own
-  // return-kind join, .work/todo.md §deletion-sweep §3 "Return kinds"):
+  // return-kind join, .work/archive/todo.md §deletion-sweep §3 "Return kinds"):
   // INVARIANT: that fixpoint runs BEFORE narrow.js's presentVal param
   // propagation (hardParamPresentVal) ever populates paramReps, so it can
   // never observe a param-sourced BIGINT claim through a unary wrapper —

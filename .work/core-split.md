@@ -8,7 +8,7 @@ Error-object construction. "Foundation for all heap types. Every module
 depends on this" (the file's own header doc) — auto-included by array/
 object/string and effectively every other stdlib module.
 
-## Shape (read before the plan below — matches `.work/stdlib-math.md`'s file, not ir.js/kind.js's)
+## Shape (read before the plan below — matches `.work/archive/stdlib-math.md`'s file, not ir.js/kind.js's)
 
 Like `math.js`, core.js is **one closure**: `export default (ctx) => {`
 opens at line 32 and does not close until line 3535, EOF. There is no
@@ -19,7 +19,7 @@ else {…}`).
 
 Because of this shape, a generic comment/string-stripped identifier-
 co-occurrence graph across "top-level declarations" is low-value here (as
-`.work/stdlib-math.md` found for the same reason) — there are only ~2 dozen
+`.work/archive/stdlib-math.md` found for the same reason) — there are only ~2 dozen
 closure-scoped `function`/`const` helpers among 3,535 lines, the rest is
 `ctx.core.stdlib['name'] = ` / `ctx.core.emit['name'] = ` WAT-template
 registrations. The methodology actually used, matching `stdlib-math.md`'s
@@ -182,7 +182,7 @@ have a SECOND, independent real use in the surviving trunk (verified per-name
 against the trunk range) and stay imported in core.js too.
 
 Pre-existing dead imports (not caused by this split — confirmed present at
-baseline `c520a39a`, matching `.work/dead-exports-sweep.md`'s held-file
+baseline `c520a39a`, matching `.work/archive/dead-exports-sweep.md`'s held-file
 finding for this exact file, same line numbers): `updateRep` (reps.js,
 line 20), `STR_INTERN_BIT` (layout.js, line 23), `SET_ENTRY` (collection.js,
 line 26) — zero uses anywhere in core.js, before or after this split. Removed

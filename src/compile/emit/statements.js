@@ -267,7 +267,7 @@ export const statementOps = {
     // self-compiled kernel, at every optimize level 0-2, treats a value produced by a call
     // repeated textually across both arms of a ternary differently from one materialized
     // to a local first" — pinned in test/parser-bugs.js rather than chased further into
-    // the kernel's own call/branch codegen. See .work/todo.md (groundtruth archive).
+    // the kernel's own call/branch codegen. See .work/archive/todo.md (groundtruth archive).
     // Closure-convention bodies return into a boxed-value position (the ftN f64
     // slot): a BOOL value must cross as its true/false atom — the result-side
     // mirror of closure.call's carrierF64 args. Raw funcs keep the plain 0/1
@@ -290,7 +290,7 @@ export const statementOps = {
     // (or any non-bool-mixed) funcs are untouched.
     //
     // An ambiguous BOOL-merge return (`s => cond ? 1 : false`,
-    // .work/todo.md §deletion-sweep) needs the SAME box but carrierF64
+    // .work/archive/todo.md §deletion-sweep) needs the SAME box but carrierF64
     // is post-hoc powerless for it: `expr`'s own valTypeOf collapses to NUMBER
     // (the merge's benign coercion), so carrierF64 never recognizes it as
     // BOOL-carrying — by the time `emitted` exists, the coerced false and a
@@ -307,7 +307,7 @@ export const statementOps = {
     let emitted = resultBool ? toBool(expr) : ambiguous ? emitIdentitySafe(expr) : emit(expr)
     if (!resultBool)
       emitted = applyBigintRepresentationAction(emitted, expr, representationReturnAction(ctx, expr))
-    // Slice 2 (CARRIER PROGRAM, .work/carrier-representation-design.md §7)
+    // Slice 2 (CARRIER PROGRAM, .work/archive/carrier-representation-design.md §7)
     // return def-side wiring — carrierF64Narrow (ir.js), NOT the plain
     // carrierF64 `boxes` used pre-Slice-2: see its own doc comment for why an
     // unconditional inline-BIGINT box is wrong at ANY return position (a

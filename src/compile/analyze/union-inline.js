@@ -3,7 +3,7 @@
  * bindings (the structInline union carrier, max-K-stride packed i32
  * cells). Split out of analyze.js along the "union-inline" seam (pipeline-
  * minimality slice); see analyze.js's module header for the full split
- * rationale and `.work/analyze-traversals.md` for the traversal inventory.
+ * rationale and `.work/archive/analyze-traversals.md` for the traversal inventory.
  *
  * @module compile/analyze/union-inline
  */

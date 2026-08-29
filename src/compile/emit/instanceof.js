@@ -16,7 +16,7 @@ import { plannedTypedStorageInfo } from '../typed-storage-plan.js'
 import { emit } from './dispatch.js'
 
 
-// === instanceof (.work/todo.md §deletion-sweep §4) ===
+// === instanceof (.work/archive/todo.md §deletion-sweep §4) ===
 // Reached only from raw `instanceof` AST nodes surviving to emit — i.e. strict-mode
 // source (prepare's 'instanceof' handler is the sole producer; jzify's default-mode
 // lowering rewrites every `instanceof` shape to something else before compile ever
@@ -89,7 +89,7 @@ function emitTypedInstanceof(a, rhs) {
       ['else', ['i32.const', 0]]]], 'i32')
 }
 
-/** Error family (7 classes, .work/todo.md §deletion-sweep §4's error-family arm). `Error`
+/** Error family (7 classes, .work/archive/todo.md §deletion-sweep §4's error-family arm). `Error`
  *  itself is the base every one of the 7 extends (jz's flat one-level hierarchy — no
  *  deeper chain to walk), so it matches ANY Error-schema object regardless of which
  *  concrete class built it; a specific subclass (TypeError, …) must match exactly
@@ -97,7 +97,7 @@ function emitTypedInstanceof(a, rhs) {
  *  over jz's non-overlapping prototype set). */
 function emitErrorInstanceof(a, rhs) {
   // Fold, tier 1: LHS is a literal `new X(...)`/`X(...)` call node — prepare's generic
-  // "unknown ctor → plain call" path (.work/todo.md §deletion-sweep §2) keeps the literal
+  // "unknown ctor → plain call" path (.work/archive/todo.md §deletion-sweep §2) keeps the literal
   // class name as the callee string, so no schema/rep lookup is even needed.
   const litClass = Array.isArray(a) && a[0] === '()' && typeof a[1] === 'string' && ERR_CLASS_NAMES.includes(a[1]) ? a[1] : null
   if (litClass) return foldInstanceof(emit(a), rhs === 'Error' || litClass === rhs)
@@ -116,7 +116,7 @@ function emitErrorInstanceof(a, rhs) {
   // A provably non-OBJECT LHS can never be our Error schema. This INCLUDES NUMBER:
   // INVARIANT: no numeric-range arm may live here — one was deleted
   // below — an internally-thrown coded value (JSON.parse failure, OOB Array#with,
-  // …) is caught as a raw NUMBER (.work/todo.md §deletion-sweep §3(b)), bit-identical to
+  // …) is caught as a raw NUMBER (.work/archive/todo.md §deletion-sweep §3(b)), bit-identical to
   // a user's own `throw <sameNumber>`. Comparing that NUMBER against err-codes.js's
   // ERR_CODE_RANGES and calling a match "instanceof SyntaxError" meant ANY
   // caller-supplied number landing in a class's internal range answered `true`
@@ -124,7 +124,7 @@ function emitErrorInstanceof(a, rhs) {
   // sits in the derived range — a real repro, not a hypothetical). No numeric
   // range can distinguish "the compiler threw this code" from "the user threw
   // this number"; recovering `instanceof` for a caught internal code needs a
-  // materialized Error object at the catch site instead (.work/todo.md §deletion-sweep
+  // materialized Error object at the catch site instead (.work/archive/todo.md §deletion-sweep
   // §7 Slice C, deliberately deferred — not landed here). Until then, internal-
   // code catches are honestly `instanceof`-false for every Error class, same as
   // any other non-Error value (§3(c)).

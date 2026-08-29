@@ -3,7 +3,7 @@
  *
  * Stable entry point / barrel: every name this module ever exported still
  * comes from here, unchanged, so no consumer import path changes (v1
- * architecture campaign, `.work/v1-architecture-campaign.md` — the
+ * architecture campaign, `.work/archive/v1-architecture-campaign.md` — the
  * program-facts.js split, second step after the frozen call-target index,
  * `call-target-index.js`). The actual builders live in `program-facts/`,
  * one small single-purpose module per fact family, each with its own
@@ -67,7 +67,7 @@
  * narrowed receivers), then `analyzeParamNeverGrown`, then
  * `analyzeSchemaSlotIntCertain` again (same late-mode rebuild). Every one of
  * these later calls is a REBUILD (clears and re-derives), never an
- * incremental patch of the earlier pass's output — see `.work/program-facts-split.md`
+ * incremental patch of the earlier pass's output — see `.work/archive/program-facts-split.md`
  * §7 for the full fact→producer→freeze-point→consumer table: `paramReps`/
  * `.callSites` are mutated in place after publication through plan's own
  * round 3 (`narrowSignatures` and its `specialize*` siblings), then frozen/

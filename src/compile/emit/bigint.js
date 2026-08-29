@@ -39,7 +39,7 @@ export const numLiteralNode = (n) =>
   (Array.isArray(n) && n[0] == null && typeof n[1] === 'number' && n[1] !== 0)
 export function bigintMixReject(op, a, b) {
   if (b === undefined) return
-  // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
+  // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
   // §4 — the "NEWLY added to that list" gap): a BIGINT claim whose only proof
   // is a maybeUndefined-flagged dict/Map census read (arm 1/2, censusMaybeUndefined's
   // direct node shapes) or a bare name that copies one through (arm 3, the REP
@@ -59,7 +59,7 @@ export function bigintMixReject(op, a, b) {
     err(`Cannot mix BigInt and other types in \`${op}\` (TypeError in JS) — convert explicitly with BigInt() or Number()`)
 }
 
-// §14 point 4 (audit #10, .work/todo.md §deletion-sweep §14):
+// §14 point 4 (audit #10, .work/archive/todo.md §deletion-sweep §14):
 // JOINT runtime-domain dispatch for binary arithmetic/bitwise ops, superseding
 // the old per-op OR-gate (`valTypeOf(a)===BIGINT||valTypeOf(b)===BIGINT`, live
 // at every op below through 38dd0dca/f1c1256b) and Slice 7's `+`-only AND-gate
@@ -213,7 +213,7 @@ export function bigIntDomainsCanMix(a, b, allowUnresolved) {
 // carrier; BOX materializes only the runtime BigInt branch.
 export const computedBoxOf = (self) => self != null && representationComputedExprAction(ctx, self) === REP_EDGE_BOX
 
-// `box` (funded-deletion item 4, .work/todo.md WALL 2026-08-22): true when
+// `box` (funded-deletion item 4, .work/archive/todo.md WALL 2026-08-22): true when
 // RepresentationPlan proved the OUTER node's target BOXED_BIGINT — only ever
 // passed true when `domA`/`domB` are BOTH 'census' (representation-plan.js's
 // census admission mirrors kind.js censusBigintResultShape's joint shape
@@ -374,7 +374,7 @@ export function bigIntOperand(node) {
 // overwhelming common case) takes `mkI64` directly through the untouched
 // `fromI64` path — byte-identical to before (same structural pin as
 // bigIntOperand's own non-maybeUndefined fast path).
-// `box` (funded-deletion item 4, .work/todo.md WALL 2026-08-22): true when
+// `box` (funded-deletion item 4, .work/archive/todo.md WALL 2026-08-22): true when
 // RepresentationPlan proved the OUTER node's target BOXED_BIGINT (a real
 // present-key BigInt result crossing a tagged consumer — an export return,
 // chiefly). undefined/false is the untouched, byte-identical default: the

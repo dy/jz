@@ -715,7 +715,7 @@ export function guardMaskedVectorSuffix(fn, reachableMemoryWrites) {
 // hoistLoopGlobalPtrOffset keeps its hand-rolled inspect/replace recursion on
 // purpose: the self-compiled kernel (dist/jz.wasm) miscompiles walkAst callbacks
 // that capture this pass's per-loop state — the same divergence the loop-hoist
-// trio hit (.work/handoff-2026-08-22.md §"Full test:wasm loop-hoist trio");
+// trio hit (.work/archive/handoff-2026-08-22.md §"Full test:wasm loop-hoist trio");
 // test/index.js's kernel leg pins it ("ablation: hoistLoopGlobalPtrOffset …").
 export function hoistLoopGlobalPtrOffset(fn, stablePtrGlobals, reachableWrites) {
   if (!Array.isArray(fn) || fn[0] !== 'func' || !stablePtrGlobals?.size) return

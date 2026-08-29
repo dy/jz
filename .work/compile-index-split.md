@@ -55,7 +55,7 @@ The task brief's "file's own header" states the root-completeness rule inside
   every one of this function's SIX-plus nested mark/exit pairs" is spelled out
   verbatim, plus two named historical bugs from getting it wrong (front's round
   missing `ctx.core`, `__stdlibMark`'s `lateSchema` missing `ctx.schema.namedUses` —
-  both documented in `.work/region-release-notes.md`'s "ROOT CAUSE FOUND" section).
+  both documented in `.work/archive/region-release-notes.md`'s "ROOT CAUSE FOUND" section).
 
 **Decision: `compile()` does not move.** The entire ~1,195-line function — every
 `mark()`/`exit()` pair, every root array (`[ast, programFacts, ctx.funcs, ctx.module,
@@ -86,7 +86,7 @@ to its only consumer, rather than manufacturing a one-line family file for it. (
 call sites, not a literal abbreviated token in the source — grepped for a bare `t(`
 call form and found none; every call site spells `timePhase(...)` in full.)
 
-## The `specializeUnionCursorParams` lifecycle leftover (`.work/program-facts-split.md` §7)
+## The `specializeUnionCursorParams` lifecycle leftover (`.work/archive/program-facts-split.md` §7)
 
 `specializeUnionCursorParams` is **defined in `narrow.js`**, imported at this file's
 line 55 (`import { specializeUnionCursorParams } from './narrow.js'`) — it is not
@@ -246,7 +246,7 @@ patch later.
   all comments.
 - `grep -n "^export "` on the file → exactly one line, the default export. Every
   helper is free to move.
-- The 23 dead `../ir.js` import names `.work/dead-exports-sweep.md` flagged
+- The 23 dead `../ir.js` import names `.work/archive/dead-exports-sweep.md` flagged
   (`toI32, asI64, fromI64, NULL_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, isLit,
   litVal, isNullishLit, emitNum, isConst, isNullish, slotAddr, elemLoad, elemStore,
   arrayLoop, allocPtr, multiCount, loopTop, reconstructArgsWithSpreads,

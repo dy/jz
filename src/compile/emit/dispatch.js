@@ -668,7 +668,7 @@ export function emitDecl(...inits) {
     if (isObjLit) ctx.schema.targetStack.push({ name, active: true })
     // INVARIANT: this site must NOT switch to storedValue/argIR — the
     // decl-init carrier-width interaction breaks dict rows at O2/O3 (full
-    // hunt record: .work/research.md §Carrier invariant, DECL-INIT WALL).
+    // hunt record: .work/evidence.md §Carrier invariant, DECL-INIT WALL).
     // Related past fix kept for context (ir.js boxPtrIR/asF64): a
     // ptrKind-tagged i32 pointer reboxing via
     // carrierF64→asF64→boxPtrIR rebuilt its result through `typed()`,
@@ -749,7 +749,7 @@ export function emitDecl(...inits) {
     // getting exercised for the first time with storedValue live at every
     // decl. NOT chased further this session (separate root, separate hunt).
     //
-    // STILL BANKED (see .work/research.md §Carrier invariant for the hunt).
+    // STILL BANKED (see .work/evidence.md §Carrier invariant for the hunt).
     // The dict-O2/O3 divergence ABOVE was in fact
     // named and DISSOLVED: it is `storedValue`'s carrier WIDTH, not the
     // decl-init site itself — `storedValue(init)` boxes EVERY VAL.BOOL-typed
@@ -835,7 +835,7 @@ export function emitDecl(...inits) {
     // Found live: jz compiling watr/src/optimize.js's own `_i64Canon`
     // (`neg ? -BigInt(mag) : BigInt(mag)` inlined as `_i64Hex16`'s argument)
     // under JZ_CARRIER_BOX=1 at O3 — `fold()` returned 5.826595490514274e+252
-    // instead of 2.000000000000001 (.work/carrier-representation-design.md
+    // instead of 2.000000000000001 (.work/archive/carrier-representation-design.md
     // §13/§14). See isTernaryBoxedBigint's own doc comment (ir.js) for the
     // full "why the local's own storage isn't raw here" reasoning and the
     // earlier live incident (`.bigint:toString` on a genuinely ternary-boxed
@@ -1282,7 +1282,7 @@ export function emitBlockBody(node) {
   return out
 }
 
-// .work/todo.md §deletion-sweep — identity-safe re-emission of an
+// .work/archive/todo.md §deletion-sweep — identity-safe re-emission of an
 // ambiguous BOOL-merge node (hasAmbiguousBoolMerge, src/kind.js). Generalizes
 // the '?:'/'&&'/'||'/'??' handlers' own per-arm box-then-select shape below
 // (the "materialize it per-arm here, BEFORE the raw-bit collapses below erase
@@ -1551,7 +1551,7 @@ export function emit(node, expect) {
           // Canonical 16-byte header (__alloc_hdr: propsPtr@-16, len@-8,
           // cap@-4), NOT a hand-rolled (n*8+8) alloc — __dyn_get_t_h's
           // ARRAY branch always reads the propsPtr word at off-16 (FOURTH
-          // mechanism, .work/research.md §Region arena: a short header
+          // mechanism, .work/evidence.md §Region arena: a short header
           // aliases whatever memory preceded the allocation).
           ctx.core.stdlib[trampolineName] = `(func $${trampolineName} ${paramDecls.join(' ')} (result f64) (local $${arr} i32) ${tempLocals} ${restLocals}${restPrelude}(call $${node} ${fwd}) ${capture} (local.set $${arr} (call $__alloc_hdr (i32.const ${n}) (i32.const ${n}))) ${stores} (call $__mkptr (i32.const ${PTR.ARRAY}) (i32.const 0) (local.get $${arr})))`
           inc(trampolineName, '__alloc_hdr', '__mkptr')

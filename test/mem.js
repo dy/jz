@@ -663,7 +663,7 @@ test('_clear() heals ephemeral values written into DURABLE collection slots', ()
 })
 
 test('_clear() heals a durable array header past IN-PLACE growth, not just relocation', () => {
-  // Root-caused from .work/research.md's banked lead 2 ("warm _clear() corruption
+  // Root-caused from .work/evidence.md's banked lead 2 ("warm _clear() corruption
   // non-repro… new durable-array heal length defect banked"): `site.length` read
   // 154 instead of 150 after one push-grow-clear-regrow round. `let site = []`
   // gets a __start capacity of 4 — the first 4 pushes of a round fit IN PLACE
@@ -764,7 +764,7 @@ test('_clear() does not corrupt a durable array whose header is mutated by MODUL
 // shifts, reverse/sort's swaps, fill's overwrite, and a `.length=` grow-in-place
 // refill re-entering indices a same-round shrink narrowed past) leak round 1's
 // bytes into round 2 even though the LENGTH reads back correct — banked lead from
-// .work/research.md's own heal-length entry (`a.splice(1,2)` on `[1,2,3,4,5]` gave
+// .work/evidence.md's own heal-length entry (`a.splice(1,2)` on `[1,2,3,4,5]` gave
 // `3` both rounds, length healed, but the SURVIVING elements differed round to
 // round). Each case below: mutate a durable array, `_clear()`, re-run the exact
 // same operation — a correct heal means round 2 gives the SAME answer as round 1

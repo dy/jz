@@ -932,7 +932,7 @@ test('Map: set returns same pointer (alias-safe)', () => {
 })
 
 test('Map/Set: receiver laundered through an identity call keeps its pointer identity (O0 regression)', () => {
-  // .work/todo.md "O0 unproven-receiver Map/Set total miss": at optimize:false, a Map/Set
+  // .work/archive/todo.md "O0 unproven-receiver Map/Set total miss": at optimize:false, a Map/Set
   // handle returned from `mk()` — where `mk` itself just forwards `new Map()` through a
   // generic identity function `pick(v) => v` — total-missed every .has()/.get() at the O0
   // call site. Root cause: narrowSignatures' E-phase numeric-result narrowing
@@ -1113,7 +1113,7 @@ test('Set: delete down to empty then re-add', () => {
 // Set/Map has/delete boundary: real JS booleans, not 1/0
 // ============================================
 // Regression for the banked ".has()/.delete() boundary returns 1/0, not
-// boolean" deviation (.work/todo.md, 2026-08-19): ECMA-262 Map.prototype.has/
+// boolean" deviation (.work/archive/todo.md, 2026-08-19): ECMA-262 Map.prototype.has/
 // Set.prototype.has/delete return a genuine boolean. kind-traits.js'
 // methodValType already claimed VAL.BOOL for these on a proven Map/Set
 // receiver, and the boundary wrapper's own resultBool/boolBoxIR mechanism
@@ -1162,7 +1162,7 @@ test('Map/Set: has() crosses the boundary as a real boolean through a genuinely 
 test('Map: has() on a receiver laundered across the export boundary itself', () => {
   // A Map returned from one export and passed as an argument into another
   // round-trips through interop's JS-Map materialize/re-encode path — hitting
-  // a SEPARATE, already-banked bug (.work/todo.md: Map/Set set/get/has "total
+  // a SEPARATE, already-banked bug (.work/archive/todo.md: Map/Set set/get/has "total
   // miss" on a boundary-round-tripped receiver, fix pending in a parallel
   // worktree), not this fix's own concern. This fix's own claim — that a
   // has() result, hit or miss, decodes as a genuine boolean rather than a
@@ -1594,7 +1594,7 @@ test('compound assign: undefined operands coerce to NaN, never leak the sentinel
   ok(Number.isNaN(m.oobAcc()), 'a[oob] += accumulates to NaN')
   ok(Number.isNaN(m.undefVar()), 'uninitialized rhs coerces to NaN')
   ok(Number.isNaN(m.undefLhs()), 'uninitialized lhs coerces to NaN')
-  // PARKED (maybe-miss i32-cell class, .work/todo.md): `let s=0; for(i<7) s+=a[i]`
+  // PARKED (maybe-miss i32-cell class, .work/archive/todo.md): `let s=0; for(i<7) s+=a[i]`
   // over len-3 — the i32-narrowed accumulator trunc_sats the miss's NaN to 0.
   // The emit-time widen pass that fixes this is parked with its patch — it
   // entangles with the arrayElemRange fixpoint convergence bug (vm row).
@@ -1605,7 +1605,7 @@ test('compound assign: undefined operands coerce to NaN, never leak the sentinel
 // NaN to 0. Proven shapes (canonical loop pair, literal idx vs static length)
 // must KEEP the fast i32 path — only unproven reads widen.
 test('int elem reads: proven shapes stay i32-exact', () => {
-  // PARKED (maybe-miss i32-cell class, .work/todo.md): the u8oob variant
+  // PARKED (maybe-miss i32-cell class, .work/archive/todo.md): the u8oob variant
   // (`for(i<7) s+=u8[i]` over len 3 → NaN) and the oobDecl variant
   // (`const x = a[5]` OOB → x must stay undefined, not trunc-sat 0) both
   // require the emit-time widen pass parked with the miss-class patch.
@@ -1636,7 +1636,7 @@ test('internal array length: arrow-captured mutation rejects the fact, values st
   ok(Number.isNaN(m.shrinkSum()), 'reads past the popped end are undefined -> NaN, not stale cells')
 })
 
-// PARKED (maybe-miss call-arg class, .work/todo.md): `use(u8[oob])` — the i32
+// PARKED (maybe-miss call-arg class, .work/archive/todo.md): `use(u8[oob])` — the i32
 // param spec trunc_sats the UNDEF box at the boundary (callee sees 0/1; JS:
 // undefined/NaN). The argWasmType veto + missArg param coercion are parked in
 // the miss-class patch alongside the cell-widen pass.
@@ -1927,7 +1927,7 @@ test('equality folds preserve operand effects, in source order (re-audit P0)', (
 })
 
 test('bigint: inlined mixed-entry callee keeps tag discipline (C5 gnorm probe)', () => {
-  // The banked 2-export shape (.work/phase-c-unification.md §inlined-union):
+  // The banked 2-export shape (.work/archive/phase-c-unification.md §inlined-union):
   // gnorm's result is a string|number-entry union with bigint via body write.
   // With few exports the callee is an inline candidate — the union must keep
   // its materialization (tag discipline) whether the call is kept or inlined,
@@ -2035,7 +2035,7 @@ test('bigint: C5b adjacent join gaps — bare params, nested nullish unions, and
 })
 
 test('bigint: storage-read box-pointer-bits leak through a reassigned param across a call (shape #6 — was corrupt)', () => {
-  // .work/phase-c-unification.md §"Shape #6": a storage-read BigInt (array
+  // .work/archive/phase-c-unification.md §"Shape #6": a storage-read BigInt (array
   // .at()/.get()/.pop()/.shift()) feeding a PARAM that's then REASSIGNED via
   // a compound op (`n >>= 7n`) and passed to a SECOND function doing
   // LEB128-style bitwise consumption — the exact shape CI's watr leg hit
@@ -2096,7 +2096,7 @@ test('bigint: storage-read method-family sweep — get/pop/shift/at/[]/.member c
   // cross-function (covered, reassigned) param. 900n >> 7n === 7n for every
   // cell. Pinned as one family so a regression in any single producer shape
   // shows up immediately, matching this fixpoint's own discipline
-  // (.work/phase-c-unification.md's falsified-predicate-forms note).
+  // (.work/archive/phase-c-unification.md's falsified-predicate-forms note).
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const single = (setup, read) => `export let f = (i) => { ${setup}; let n = ${read}; n >>= 7n; return n }`
@@ -2382,7 +2382,7 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
   // Found while validating shape #8's own real watr shape (i64.parse
   // attached to a NAMED FUNCTION, not an object literal — a distinct
   // resolver strategy from shape #8's own landed one, attempted and
-  // reverted after it regressed kernel-oracle; see .work/phase-c-
+  // reverted after it regressed kernel-oracle; see .work/archive/phase-c-
   // unification.md's own note on this pin for the trail). Isolated to a
   // MINIMAL repro with ZERO `.`-member calls anywhere — confirmed
   // pre-existing on unmodified main (aff67069), unrelated to the call-target
@@ -3079,7 +3079,7 @@ test('RepresentationPlan: a forwarded, genuinely monomorphic array param is trus
   // is a monotone union, no retraction), so paramValTrustworthy wrongly
   // distrusted a genuinely monomorphic param and forced it onto the runtime
   // shadow-probe path (mirrors watr's actual encode.js uleb/wleb shape —
-  // .work/string-method-guess-notes.md's "Root cause of the REMAINING
+  // .work/archive/string-method-guess-notes.md's "Root cause of the REMAINING
   // ~16718-byte gap"). `pushInto` (exported — no in-program call sites at
   // all, genuinely unprovable) shares this compiled unit so the shadow-probe
   // machinery (ctx.closure.call, pulled in by makeCounter's own-property
@@ -3724,7 +3724,7 @@ test('object read via a parameter: the STRING-guess WAT-dispatch shape — unpro
 })
 
 test('closed computed-dispatch table: a member forwarded into a named function gets its param proven from the table\'s own callers (positive) vs stays runtime-dispatched once the table escapes (negative control)', () => {
-  // watr's real shape (.work/string-method-guess-notes.md "Third follow-up
+  // watr's real shape (.work/archive/string-method-guess-notes.md "Third follow-up
   // session"): `const HANDLER = { a: (buf,v) => push2(buf,v), ... }`, invoked
   // ONLY as `HANDLER[key](buf, v)`. Nobody ever calls `push2` by a bare name
   // anywhere in the program — before this fix its `buf` param had ZERO
@@ -3811,7 +3811,7 @@ test('closed computed-dispatch table: declaration order relative to its caller d
 })
 
 test('closed computed-dispatch table: an unresolvable SIBLING argument no longer poisons the whole synthesized call', () => {
-  // watr's real residual (.work/string-method-guess-notes.md "Fifth
+  // watr's real residual (.work/archive/string-method-guess-notes.md "Fifth
   // session"): `grab`'s inner call is `grab(lookup(idx, list), buf)` — arg0
   // nests a reference to `a`'s OWN body-local `idx` (from `list.shift()`,
   // never statically resolvable — genuinely unknown, not absent), arg1 is
@@ -3849,7 +3849,7 @@ test('closed computed-dispatch table: an unresolvable SIBLING argument no longer
 })
 
 test('closed computed-dispatch table: a member reached by a SHORT outer call declines its own unsuppliable trailing param instead of forwarding it as a false "merely unknown" fact', () => {
-  // The regression this fix corrects (.work/string-method-guess-notes.md
+  // The regression this fix corrects (.work/archive/string-method-guess-notes.md
   // "Fifth session"): watr's real `for (const k in HANDLER) SIZE_HANDLER[k]
   // = (n,c,op) => HANDLER[k](n,c,op).length` idiom calls every HANDLER
   // member with 3 args, one short of the table's own 4-param convention —
@@ -3900,7 +3900,7 @@ test('closed computed-dispatch table: a member reached by a SHORT outer call dec
 // above) but left `id`/`blockid`/`reftype`'s watr-shaped residual diagnosed,
 // not fixed: `inferValAtSite` had no case AT ALL for a `.`-member-read
 // argument (`c.type`, `rows[i].x`) — only bare names and `[]`-element reads
-// (.work/string-method-guess-notes.md, sixth session, "Why the originally-
+// (.work/archive/string-method-guess-notes.md, sixth session, "Why the originally-
 // diagnosed 24-case partial rescue... never paid off"). This resolves the
 // receiver to a proven schemaId (inferSchemaId — the SAME resolver the
 // `schemaId` mergeRule already runs per call-site argument) and reads that
@@ -4076,7 +4076,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
 // --- DictKindIndex (src/compile/dict-kind-index.js): per-key kind facts for a
 // `let/const T = []` receiver used as a static string-keyed dictionary via a
 // `for (k in OBJ) T[k] = VALUE` unroll over a constant object literal — the
-// FOURTH limitation .work/string-method-guess-notes.md's seventh session
+// FOURTH limitation .work/archive/string-method-guess-notes.md's seventh session
 // diagnosed (`T` is never schema-registered: that mechanism only fires on a
 // `{}`-literal AST node, never `[]`). Watr's real shape:
 //   for (let kind in SECTION) ctx[SECTION[kind]] = ctx[kind] = []
@@ -4287,7 +4287,7 @@ test('DictKindIndex: pass-order-independent — swapping the target/reader decla
 })
 
 // The four pins below are ported from the shelved fix/shape8-member-callee
-// branch (.work/phase-c-unification.md's "Shape #8 branch" section, retired)
+// branch (.work/archive/phase-c-unification.md's "Shape #8 branch" section, retired)
 // as its own Tier-1/Tier-2 `.`-member resolver was never merged -- superseded
 // by call-target-index.js above, which fixes Shape #8 through a differently-
 // shaped proof. Each was re-run against MAIN's own fix (not the branch's) at

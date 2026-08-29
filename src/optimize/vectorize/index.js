@@ -66,7 +66,7 @@ import { tryGeneralStencil, tryStencil } from './stencil.js'
 import { tryStrengthReduceIV } from './strength-reduce.js'
 import { tryToneMap } from './tone-map.js'
 
-// ---- HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) ---------
+// ---- HIR provenance link shadow-assert (.work/evidence.md §BodyModel slice 4) ---------
 //
 // JZ_DEBUG_INVARIANTS-gated: `node` is the raw WAT block node the dispatch just matched `bl`
 // against; `loopPlanLink` (ir.js) maps it back to the HIR facts proved about this loop at
@@ -183,12 +183,12 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // (hasSideEffect-guarded) and cloned ahead of the SIMD block, so this only widens
       // which loops the recognizers see, never changes a lifted result.
       const bl = matchBlockLoop(node, { allowPreamble: true, allowInlinedLi: true })
-      // HIR provenance link shadow-assert (.work/research.md §BodyModel slice 4) — see
+      // HIR provenance link shadow-assert (.work/evidence.md §BodyModel slice 4) — see
       // assertLoopPlanAgrees's own doc. `bl`-scoped only (the IV/bound facts it exists to
       // cross-check); a null `bl` has nothing to compare. Runs BEFORE the consultation below
       // so it still checks the fresh WAT derivation, unmodified by the override.
       if (DBG_INVARIANTS && bl) assertLoopPlanAgrees(node, bl)
-      // FIRST REAL CONSUMPTION (.work/research.md §BodyModel): the shadow-assert above runs
+      // FIRST REAL CONSUMPTION (.work/evidence.md §BodyModel): the shadow-assert above runs
       // across the full battery with zero divergences, so wherever the link resolves an IV
       // name, it is PROVEN to equal `bl.incVar`'s WAT-derived one. Roles invert: the plan
       // becomes the primary source for the name every bl-based
@@ -201,7 +201,7 @@ export function vectorizeLaneLocal(fn, opts = {}) {
       // against `bl.bound` in the branch where `bl.bound` is ALREADY an `i32.const` node — i.e.
       // exactly the case where the WAT derivation is already the concrete number in one read: a
       // non-const (boundLocal) bound is never compared, so consulting the plan there would be
-      // unproven. Narrowed to the proven subset (banked finding, .work/research.md §BodyModel).
+      // unproven. Narrowed to the proven subset (banked finding, .work/evidence.md §BodyModel).
       if (bl) {
         const link = ctx.plans.loweringLinks.get(node)
         if (link && link.lowering.ivName != null) bl.incVar = dollar(link.lowering.ivName)

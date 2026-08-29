@@ -31,7 +31,7 @@
  *   - `analyze/func-namespaces.js`— analyzeFuncNamespaces
  * `src/compile/analyze-scans.js` (findFreeVars/findMutations/boxedCaptures/
  * scanBindingUses/etc.) is a separate, pre-existing, already-scoped module —
- * not moved. See `.work/analyze-traversals.md` for the full traversal
+ * not moved. See `.work/archive/analyze-traversals.md` for the full traversal
  * inventory and split rationale.
  *
  * @module analyze

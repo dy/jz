@@ -18,7 +18,7 @@ export { emitter } from './ctx.js'
 
 export const emit = (...a) => ctx.bridge.emit(...a)
 // Identity-safe re-emission of an ambiguous BOOL-merge node (kind.js
-// hasAmbiguousBoolMerge, .work/todo.md §deletion-sweep) — the
+// hasAmbiguousBoolMerge, .work/archive/todo.md §deletion-sweep) — the
 // escape-site twin of `emit` for consumers (container/closure-arg boxing)
 // that need a merge's own BOOL arm to keep its atom identity. Bridged the
 // same way `emit` is (module/*.js and emit-assign.js can't import emit.js
@@ -75,7 +75,7 @@ export const storedValueNarrow = (node) => hasAmbiguousBoolMerge(node) ? emitIde
 // `emit(node)`. Reinvented inline at src/compile/emit.js:1176 (that file owns
 // emit/emitIdentitySafe directly, no bridge round-trip needed there) and at
 // module/core.js's typeof operand — this is the bridged copy for module/*.js
-// consumers (.work/todo.md §deletion-sweep).
+// consumers (.work/archive/todo.md §deletion-sweep).
 export const argIR = (node) => hasAmbiguousBoolMerge(node) ? emitIdentitySafe(node) : emit(node)
 
 export const flat = (...a) => ctx.bridge.flat(...a)
@@ -94,7 +94,7 @@ export const spread = (...a) => ctx.bridge.spread(...a)
  *  specific module shadowing an earlier generic default (e.g. date.js's
  *  Date-specific `.valueOf` over string.js's generic Object.prototype
  *  fallback) was a load-bearing specialization idiom. It wasn't: that exact
- *  pair WAS the bug (.work/printer-trio.md) — date.js's handler is only
+ *  pair WAS the bug (.work/archive/printer-trio.md) — date.js's handler is only
  *  correct for a PROVEN Date receiver, but the flat `.valueOf` key is the
  *  fallback for every UNRESOLVED-type receiver, so the "override" silently
  *  broke `.valueOf()` on every array/object/map/set whose static type

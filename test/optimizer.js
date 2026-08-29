@@ -2984,7 +2984,7 @@ test('range-check fusion: recurses across a left-deep &&/|| chain — every adja
   // chain-recursion fix, only the FIRST (innermost) pair fused; every later pair kept
   // its two signed compares + i32.and. This is the 2D-bounds-check shape from trace.js
   // and any scanner/raster code with more than one range test chained
-  // (.work/todo.md §deletion-sweep, rival-wat TRANSFERABLE item 1, LANDED).
+  // (.work/archive/todo.md §deletion-sweep, rival-wat TRANSFERABLE item 1, LANDED).
   const wat = jz.compile(
     `export let f = (x, y) => { let xi = x|0, yi = y|0; let W = 512|0, H = 512|0; return (xi >= 0 && xi < W && yi >= 0 && yi < H) ? 1 : 0 }`,
     { wat: true, optimize: 'speed' })
@@ -4621,7 +4621,7 @@ test('scalar range facts: q16 chain stays i32 end-to-end (delayline class)', () 
   // never had to exercise (DSPAN's bound alone was always enough). `d` is
   // still computed in native i32 (`i32.add`/`i32.mul`, confirmed below) and
   // every value below is exact — this is a lost shift-strength-reduction, not
-  // a correctness gap. Flagged for a follow-up (see .work/todo.md ledger);
+  // a correctness gap. Flagged for a follow-up (see .work/archive/todo.md ledger);
   // not fixed here (would mean reordering or duplicating an existing
   // whole-function analysis pass, out of scope for the mulFitsI32 fix).
   const src = `

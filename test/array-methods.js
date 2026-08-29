@@ -1286,7 +1286,7 @@ test('every: typed-array field of heap-returned object', () => {
 // fd593164 control worktree): 2/2 clean. So the trigger needs this diff
 // present, but doesn't fire every time — consistent with tipping a MARGINAL,
 // pre-existing edge in the self-compile pipeline rather than this diff being
-// unconditionally wrong (this repo's own .work/research.md documents active,
+// unconditionally wrong (this repo's own .work/evidence.md documents active,
 // independent self-compile-build nondeterminism — §defect 2, 2026-08-20, the
 // day before this tip). The fix as designed is preserved, NOT committed to
 // src/compile/emit.js: full file + diff at .work-adjacent session scratchpad
@@ -1807,7 +1807,7 @@ export function g() { let a = [10, 20]; return a.map(s => mk(s)) }`)
 // Array.isArray answers from the STATIC kind when known — a rep-narrowed array
 // (raw base local, e.g. a slice() result) is not a NaN-box, so the runtime tag
 // test alone reads a plain number and says false. O2+ promotion-DERIVED arrays
-// remain a recorded gap (.work/todo.md, extension-surface archive) — pinned at O0 here.
+// remain a recorded gap (.work/archive/todo.md, extension-surface archive) — pinned at O0 here.
 test('Array.isArray: statically-known arrays (slice/rest results)', () => {
   const o = { optimize: false }
   is(jz(`export let f = () => { let a = [1, 2]; let s = a.slice(0); return Array.isArray(s) ? 1 : 0 }`, o).exports.f(), 1)

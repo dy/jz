@@ -1,4 +1,4 @@
-// Stage-0 architecture gates (see .work/research.md §Middle-end consolidation):
+// Stage-0 architecture gates (see .work/evidence.md §Middle-end consolidation):
 //   1. REGISTRY COVERAGE — every flag any call site reads off the optimize
 //      config must be declared in PASS_NAMES or TUNING_KEYS. An unlisted name
 //      reads `undefined !== false` and silently runs at O0, breaking the
@@ -246,7 +246,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   // init(ctx) returns). Uses src/ctx.js directly (not real module/*.js
   // sources) so this test pins the MECHANISM, independent of which real
   // stdlib names happen to collide today.
-  // NOTE (CompileSession Slice B, .work/compile-session-design.md §3): `ctx`
+  // NOTE (CompileSession Slice B, .work/archive/compile-session-design.md §3): `ctx`
   // is imported through the module namespace object (`m`) and read as `m.ctx`
   // at each use, NEVER destructured into a local binding — `reset()` now
   // reassigns the whole `ctx` export by identity (`export let ctx`) rather
@@ -295,7 +295,7 @@ test('passes: duplicate stdlib registration throws at registration time, both di
   ok(threw, 'reg-then-reg: registerName throws')
   ok(threw && /already registered/.test(threw.message) && /testModuleD/.test(threw.message), 'reg-then-reg: message names the original registering module')
 
-  // combo 4 (flat-key raw-vs-raw class, .work/printer-trio.md): bind() then
+  // combo 4 (flat-key raw-vs-raw class, .work/archive/printer-trio.md): bind() then
   // bind() again for the SAME flat key from a different module — caught
   // immediately, exactly like reg()-then-reg(). Before this guard, TWO
   // bind() writers for one flat name silently "last one wins" by design

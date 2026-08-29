@@ -632,7 +632,7 @@ test('SIMD map i32x4 - WAT-shape control: integer constants still vectorize, fra
 // genSimdMap: not every (op, elemType) pair genSimdMap was asked to lower
 // actually has a WASM instruction for it. Three more holes in that space,
 // found by probing every (op, elemType) pair analyzeSimd can produce
-// against the host's own TypedArray.prototype.map (.work/simd-map-op-
+// against the host's own TypedArray.prototype.map (.work/archive/simd-map-op-
 // validity.md has the full matrix):
 //   1. `x / c` on Int32Array/Uint32Array for ANY constant (not just a
 //      fractional one) — WASM SIMD has no integer lane div (nor a scalar
@@ -3170,7 +3170,7 @@ test('SIMD mirror store - symmetric log fill vectorizes with swapped lanes, bit-
   is(von.fill(), voff.fill(), 'odd-tail trip bit-exact')
 })
 
-// ---- General MAP base layer (tryGeneralMap) — .work/vectorizer-generality-design.md §2-3 ----
+// ---- General MAP base layer (tryGeneralMap) — .work/archive/vectorizer-generality-design.md §2-3 ----
 //
 // Runs LAST in the dispatch chain, after every idiom recognizer above (including tryVectorize/
 // tryMemCopyFill/tryRampMap/tryToneMap/tryStencil/tryButterfly). It exists for dependence-free
@@ -3317,7 +3317,7 @@ test('SIMD general-map safety - same-array recurrence at a RUNTIME offset never 
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the runtime-offset recurrence')
 })
 
-// ---- Runtime alias versioning (layer 3, .work/vectorizer-generality-design.md follow-up) ------
+// ---- Runtime alias versioning (layer 3, .work/archive/vectorizer-generality-design.md follow-up) ------
 //
 // The `elemKey` same-array dependence gate above used to be an unconditional decline on any
 // mismatch. It now tries LLVM's own answer first: when the mismatched pair's element distance is
@@ -3444,7 +3444,7 @@ ${pad}    }
     is(runVec(src, SIMD_OPT).main(k), runVec(src, NOVEC).main(k), `k=${k} result unaffected by vectorizer (oversized body declines cleanly)`)
 })
 
-// ---- General REDUCTION base layer (tryGeneralReduce) — .work/vectorizer-generality-design.md ----
+// ---- General REDUCTION base layer (tryGeneralReduce) — .work/archive/vectorizer-generality-design.md ----
 //
 // Runs LAST in the dispatch chain (after tryGeneralMap), only when the shape-specific `tryReduce`
 // (tryReduceReassoc/tryReduceBitExact) above it already declined. It generalizes REDUCTION's
@@ -3593,7 +3593,7 @@ test('SIMD general-reduce safety - second independent loop-carried accumulator n
   ok(!/i32x4\.add/.test(w), 'no i32x4.add lift of the two-accumulator loop (body.length===2 with two unrelated accumulators fails both the bodyLen===1 and the REDUCE_CANON bodyLen===2 shape match, so declines — the "single accumulator, no other loop-carried state" precondition holds)')
 })
 
-// ---- General STENCIL base layer (layer 4, .work/vectorizer-generality-design.md) ---------------
+// ---- General STENCIL base layer (layer 4, .work/archive/vectorizer-generality-design.md) ---------------
 //
 // Runs after tryGeneralMap (before tryGeneralReduce), only when tryGeneralMap's own narrower
 // i32-domain-only affine proof already declined — this pass ports tryStencil's FULL `ivCoeff`
@@ -3788,7 +3788,7 @@ test('SIMD general-stencil safety - true loop-carried recurrence across rows (ro
   ok(!/v128\.xor/.test(w), 'no v128.xor lift of the row-recurrence (W=2 < lanes=4 is compile-time-provably unsafe, not a runtime-unknown case to version)')
 })
 
-// ---- If-conversion (layer 5, .work/vectorizer-generality-design.md's named follow-up:
+// ---- If-conversion (layer 5, .work/archive/vectorizer-generality-design.md's named follow-up:
 // "loops with internal branches decline in the general layers") ------------------------
 //
 // The GENERAL MAP/STENCIL layers (tryGeneralMap/tryGeneralStencil) reach this shared

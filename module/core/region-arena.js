@@ -5,7 +5,7 @@
  * round's transient churn instead of retaining it for the whole compile: mark
  * the bump pointer at round start, Cheney-copy the round's surviving tree
  * (`root`) down to the mark at round end. See the design doc cited throughout
- * this file's own comments (`.work/research.md` §Region arena) for the full
+ * this file's own comments (`.work/evidence.md` §Region arena) for the full
  * rationale; every comment below is preserved verbatim from module/core.js.
  *
  * Pure move out of module/core.js (pipeline-minimality core split) — nested
@@ -36,10 +36,10 @@ export const registerRegionArena = () => {
   // the bump pointer at round start, then at round end Cheney-copy the round's
   // SURVIVING tree (`root`) down to the mark, compacting away everything else the
   // round allocated (churn/live measured 574x-2495x on the design's own corpora —
-  // .work/research.md §Region arena; .work/research.md §Region arena is the design).
+  // .work/evidence.md §Region arena; .work/evidence.md §Region arena is the design).
   //
   // NO in-place forwarding-header convention (boundary-arithmetic audit,
-  // .work/research.md §Region arena — window B; this section originally read
+  // .work/evidence.md §Region arena — window B; this section originally read
   // like the durable machinery's __durable_fwd_log/heal above and array/hash/
   // set/map growth's grow-in-place stub, module/array.js arrGrow/module/
   // collection.js genUpsertGrow: leave `[-8:newOffset][-4:-1 sentinel]` at the
@@ -79,7 +79,7 @@ export const registerRegionArena = () => {
   // survives the boundary intact, not just "safely degrades" to always-dirty).
   // OBJECT/HASH/TYPED/BUFFER/EXTERNAL gained real arms in Slice 2
   // (layout-kinds.js's regionCopyRecBody/KIND_REGISTRY); CLOSURE gained one
-  // too (the front-boundary forcing case, .work/research.md §Region arena)
+  // too (the front-boundary forcing case, .work/evidence.md §Region arena)
   // via the `$__closure_env_len`/`$__closure_env_mask` side table — see
   // layout-kinds.js regionArmClosure.
   //
@@ -99,7 +99,7 @@ export const registerRegionArena = () => {
   // __region_memo_get/__region_memo_set — the ONLY two places $memo's
   // backing bytes are ever touched, throughout every arm in layout-kinds.js
   // and __region_relocate_props/__region_relocate_cell below (mechanical
-  // rename from raw __map_get/__map_set — .work/research.md §Region arena,
+  // rename from raw __map_get/__map_set — .work/evidence.md §Region arena,
   // memo-lane fix). Pure passthrough wrappers: $memo's own content,
   // hashing, probing and growth semantics (genUpsert, module/collection.js)
   // are completely untouched — the ONLY thing these change is WHERE a grow
@@ -207,7 +207,7 @@ export const registerRegionArena = () => {
     (local $scratchBase64 i64) (local $memoReserve64 i64) (local $neededCeil64 i64)
     ${ctx.scope.globals.has('__dyn_props') ? '(local $dpBits i64) (local $dpOff i32) (local $dpCap i32) (local $dpNewOff i32) (local $dpOutPhys f64) (local $dpOrd i32) (local $dpN i32) (local $dpI i32) (local $dpSlot i32)' : ''}
     (local.set $mark (i32.trunc_f64_u (local.get $markF)))
-    ;; Adaptive exit-skip (.work/research.md §Region arena — THE MEMORY
+    ;; Adaptive exit-skip (.work/evidence.md §Region arena — THE MEMORY
     ;; ENDGAME): the walk below is a Cheney-copy over EVERYTHING reachable
     ;; from \`root\`, not just this round's own new allocations —
     ;; regionArmSetMap (layout-kinds.js) has no cheap durable/off<mark
@@ -250,7 +250,7 @@ export const registerRegionArena = () => {
     ;; misfire on a small graph's own high-value round the way the ratio
     ;; did.
     ;;
-    ;; Result (.work/research.md §Region arena — THE MEMORY ENDGAME):
+    ;; Result (.work/evidence.md §Region arena — THE MEMORY ENDGAME):
     ;; jessie/watr real-graph peaks hold at their pre-fix baseline exactly
     ;; (536.9 MB / 1073.7 MB, zero regression), jzify-entry HALVES
     ;; (4295.0→2147.5 MB), and jz×jz's own AFE loop survives from 6 exits
@@ -289,7 +289,7 @@ export const registerRegionArena = () => {
     ;; still read call N's address, no longer safely disjoint from
     ;; anything).
     (global.set $__scratch_base (i32.const 0))
-    ;; Memo scratch-lane reservation (.work/research.md §Region arena —
+    ;; Memo scratch-lane reservation (.work/evidence.md §Region arena —
     ;; negative-reclaim root cause 476c88cd / memo-lane fix): reserve a
     ;; disjoint address range for the memo BEFORE creating it, so every
     ;; __region_memo_get/__region_memo_set call below (transitively, via
@@ -339,7 +339,7 @@ export const registerRegionArena = () => {
     ;; case for small compiles, matching this lever's own established
     ;; "small compiles rarely even reach here" discipline), a genuine
     ;; (correctly-sized) grow only when it doesn't.
-    ;; LANE-BELOW-SURVIVORS (2026-08-19, .work/research.md §survivorMargin
+    ;; LANE-BELOW-SURVIVORS (2026-08-19, .work/evidence.md §survivorMargin
     ;; unsoundness): the lane sits AT the current heap cursor and survivor
     ;; copies start ABOVE its reserved end — collision is impossible by
     ;; construction. The previous layout (lane at heap+survivorMargin with
@@ -383,7 +383,7 @@ export const registerRegionArena = () => {
     ;; __region_memo_get/__region_memo_set fall straight through to the
     ;; unmodified, pre-fix behavior for this ONE call, never worse than
     ;; before this fix landed.
-    ;; __memgrow_exact, not __memgrow (.work/research.md §Footprint levers —
+    ;; __memgrow_exact, not __memgrow (.work/evidence.md §Footprint levers —
     ;; geometric-floor tier boundary): neededCeil64 IS the caller's own
     ;; final, precisely-computed ceiling — growing to it exactly (page-
     ;; rounded) instead of $__memgrow's amortization-for-unplanned-callers
@@ -422,7 +422,7 @@ export const registerRegionArena = () => {
     ;; above; the offset keys here are always immediate/plain numbers though,
     ;; so a verbatim key copy is fine either way).
     ;;
-    ;; VALUE relocation (root-completeness fix, .work/research.md §Region
+    ;; VALUE relocation (root-completeness fix, .work/evidence.md §Region
     ;; arena — "durable-ARRAY off-16 heisenbug", the [1n]/O1 minimal trigger):
     ;; every entry's VALUE is a per-receiver props HASH — __dyn_set's global-
     ;; table fallback (module/collection.js) mints one FRESH each time a
@@ -535,7 +535,7 @@ export const registerRegionArena = () => {
   // needs __region_copy_rec, container structure doesn't need rehash"
   // split regionArmSetMap (layout-kinds.js) already applies to VALUES,
   // just for the KEY side this time. Front-boundary front-boundary audit
-  // (.work/research.md §Region arena, "second still-unfound mechanism"):
+  // (.work/evidence.md §Region arena, "second still-unfound mechanism"):
   // this function's original write relocated the VALUE at slot+16 (both
   // branches below) but left the KEY at slot+8 as a verbatim bit-copy —
   // correct ONLY for the compiler-internal dyn-props sidecar's own keys
@@ -555,7 +555,7 @@ export const registerRegionArena = () => {
   // genUpsertGrow's $entrySize, not the allocation stride: normal outputs
   // append an i32-per-slot lane AFTER all cap slots, while the compact
   // self-compile profile omits it. The bulk copy below uses the resolved stride.
-  // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): memo
+  // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): memo
   // hardening added. Originally safe without one (each ARRAY/OBJECT dyn-props
   // sidecar is a freshly-minted, never-shared HASH — one container per
   // owner, so no call site could ever revisit the SAME $propsF bits within
@@ -574,7 +574,7 @@ export const registerRegionArena = () => {
     (local $bits i64) (local $hit i64) (local $out f64)
     (if (f64.eq (local.get $propsF) (f64.const 0)) (then (return (local.get $propsF))))
     (local.set $bits (i64.reinterpret_f64 (local.get $propsF)))
-    ;; Ordering audit (.work/research.md §Region arena, __region_copy_rec ORDERING
+    ;; Ordering audit (.work/evidence.md §Region arena, __region_copy_rec ORDERING
     ;; AUDIT): memo hit-check BEFORE any work, matching every other kind's arm —
     ;; this was previously missing on THIS function's durable path (see below).
     ;; A bare PTR.HASH region-root CAN be diamond-shared (unlike an ARRAY/OBJECT
@@ -635,8 +635,8 @@ export const registerRegionArena = () => {
     (memory.copy (local.get $newOff) (local.get $off) (i32.mul (local.get $cap) (i32.add (i32.const ${MAP_ENTRY}) (i32.const ${lane}))))
     (local.set $out (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0) (i32.sub (local.get $newOff) (local.get $delta))))
     (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
-    ;; Idempotency self-map (fixes a real double-relocation hazard, .work/
-    ;; research.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
+    ;; Idempotency self-map (fixes a real double-relocation hazard,
+    ;; .work/evidence.md §Region arena — the [1n]/O1 durable-ARRAY off-16 heisenbug's
     ;; root cause): memo only ever mapped ORIGINAL bits -> final bits, so a
     ;; SECOND caller that re-derives $out (not $propsF) and calls this function
     ;; AGAIN on it — e.g. a durable receiver's off-16/$__dyn_props slot that a
@@ -692,7 +692,7 @@ export const registerRegionArena = () => {
   // closures silently stop seeing each other's writes post-relocation.
   //
   // Durable branch carries the SAME memo-BEFORE-mutate ordering the TYPED
-  // view-rebase audit fix required (.work/research.md §Region arena,
+  // view-rebase audit fix required (.work/evidence.md §Region arena,
   // ordering audit): without it, a diamond-shared durable cell revisited a
   // second time in the same traversal would re-read its OWN already-
   // relocated (delta-adjusted, not-yet-physically-valid) payload as if it
@@ -723,7 +723,7 @@ export const registerRegionArena = () => {
     ;; layout-kinds.js — both its durable and ephemeral branches) persisted
     ;; a not-yet-final address, valid to dereference only AFTER this
     ;; round's closing copy — a real, confirmed-by-comparison-to-every-
-    ;; sibling-arm's-own-convention bug, fixed here (.work/research.md
+    ;; sibling-arm's-own-convention bug, fixed here (.work/evidence.md
     ;; §Region arena, __region_relocate_cell delta-adjustment entry).
     ;; NOT the sole cause of the front-boundary's own garbage-cellOff wall:
     ;; a debug-global trace (same entry) caught the SAME symptom (a
@@ -753,7 +753,7 @@ export const registerRegionArena = () => {
   // `(if (i32.ne $__schema_tbl 0) ...)` check degrades to "0 slots" safely
   // rather than referencing an undeclared global.
   //
-  // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): the
+  // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): the
   // function BODY (locals + preamble + every kind's arm) is generated from
   // layout-kinds.js's regionCopyRecBody — BIGINT/STRING/ARRAY/SET+MAP
   // extracted verbatim from the pre-Slice-2 hand-written text (byte-identity

@@ -58,7 +58,7 @@ test('Date object: proven-receiver .valueOf()/.getTime() compares correctly agai
   is(run('export let f = () => { let d = new Date(1234567890000); return d.getTime() === 1234567890000 }'), true)
 })
 
-test('Date object: unresolved-vt receiver .valueOf() discriminates Date from plain object/array (.work/printer-trio.md residual)', () => {
+test('Date object: unresolved-vt receiver .valueOf() discriminates Date from plain object/array (.work/archive/printer-trio.md residual)', () => {
   // The printer-trio fix (module/date.js) deleted date.js's flat `.valueOf`
   // override so every OTHER unresolved-type receiver's `.valueOf()` stopped
   // reading garbage (array[0]'s bits as f64) — but left an

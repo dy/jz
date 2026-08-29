@@ -37,7 +37,7 @@ export const registerErrorClasses = () => {
 
   // Same "closed OrdinaryToPrimitive chain" fact as above, generalized from
   // "AST is literally a `{}` node" to "a bound name whose OWN declaration
-  // schema is closed" (.work/todo.md §deletion-sweep finding-2: `let o = {}; new
+  // schema is closed" (.work/archive/todo.md §deletion-sweep finding-2: `let o = {}; new
   // Error(o).message` fell through the literal-only check to toStrI64's
   // generic OBJECT path, which — unlike the Error-schema arm right above it
   // — has no case for a plain user OBJECT and mis-renders it, a pre-existing,
@@ -128,7 +128,7 @@ export const registerErrorClasses = () => {
   //       valueOf (e.g. `new Error({})`) has a closed, empty method chain —
   //       toStrI64's generic OBJECT arm can't make that closed-world claim
   //       for an arbitrary (possibly dynamic) receiver, so it falls through
-  //       to __to_str's raw-pointer-bits fallback (.work/todo.md §deletion-sweep's
+  //       to __to_str's raw-pointer-bits fallback (.work/archive/todo.md §deletion-sweep's
   //       "Consequence" section, a PRE-EXISTING gap for any dynamic object,
   //       left as-is). The literal shape alone is enough to prove it here.
   //   (3) A genuinely dynamic dict (VAL.HASH — JSON.parse or a computed-key
@@ -184,7 +184,7 @@ export const registerErrorClasses = () => {
   }
 
   // Error(msg)/new Error(msg) — a real PTR.OBJECT, schema ['message','name']
-  // (audit-#9 P0-2 brand redesign, .work/todo.md §deletion-sweep §1). Class identity
+  // (audit-#9 P0-2 brand redesign, .work/archive/todo.md §deletion-sweep §1). Class identity
   // lives in the SCHEMA ID (module/schema.js's ctx.schema.errorSid — one
   // DISTINCT id per class, minted with the class name as an internal dedupe
   // salt that never becomes a property), not in any slot: no hidden marker to

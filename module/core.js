@@ -84,7 +84,7 @@ export default (ctx) => {
     __durable_slot_cancel: [],
     __durable_slot_heal: [],
     __is_eph_bits: [],
-    // Region-arena Slice 1 (.work/research.md §Region arena) — see the definitions below
+    // Region-arena Slice 1 (.work/evidence.md §Region arena) — see the definitions below
     // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
     // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
     __region_mark: [],
@@ -96,7 +96,7 @@ export default (ctx) => {
     // registers core before collection), so a plain array would eagerly bake
     // in `false` and permanently under-declare.
     // '__memgrow'/'__ptr_offset' unconditional now — memo-lane fix
-    // (.work/research.md §Region arena — negative-reclaim root cause
+    // (.work/evidence.md §Region arena — negative-reclaim root cause
     // 476c88cd): __region_exit makes one direct __memgrow call of its own
     // (reserving the memo's scratch lane) and one direct __ptr_offset call
     // (reading the memo's own final cap to seed the NEXT call's reservation
@@ -107,14 +107,14 @@ export default (ctx) => {
     __region_exit_force: ['__region_exit'],
     __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__memgrow_exact', '__ptr_offset',
       ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
-    // Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): no
+    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): no
     // longer gated on __dyn_props — a bare PTR.HASH region-root value
     // (regionArmHash, layout-kinds.js) reaches this helper independently of
     // whether the array/object dynamic-property sidecar machinery exists at
     // all (module/collection.js's dict/JSON.parse machinery can mint a HASH
     // with no __dyn_props global anywhere in the build). __region_memo_get/
     // __region_memo_set/__is_nullish added for this function's OWN memo
-    // hardening (see its definition below) — memo-lane fix (.work/research.md
+    // hardening (see its definition below) — memo-lane fix (.work/evidence.md
     // §Region arena — negative-reclaim root cause 476c88cd): every memo touch
     // now goes through the scratch-redirecting wrappers, not raw __map_get/
     // __map_set, so the memo's own doubling-chain growth never lands in
@@ -127,7 +127,7 @@ export default (ctx) => {
     // key so a cell shared by two closures relocates to ONE address, not
     // two) rather than routing through __region_copy_rec's f64 dispatch.
     __region_relocate_cell: ['__region_memo_get', '__region_memo_set', '__is_nullish', '__region_copy_rec', '__alloc'],
-    // Memo-lane wrappers (.work/research.md §Region arena — negative-reclaim
+    // Memo-lane wrappers (.work/evidence.md §Region arena — negative-reclaim
     // root cause 476c88cd / memo-lane fix): every OTHER touch of $memo
     // throughout __region_copy_rec's own arms (layout-kinds.js) and
     // __region_relocate_props/__region_relocate_cell above routes through
@@ -138,7 +138,7 @@ export default (ctx) => {
     __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
       '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__region_memo_get', '__region_memo_set', '__set_add', '__coll_order',
       '__len', '__region_relocate_props', '__region_relocate_cell',
-      // SET/MAP rebuild fix (.work/research.md §Region arena, front-boundary
+      // SET/MAP rebuild fix (.work/evidence.md §Region arena, front-boundary
       // hunt): regionArmSetMap (layout-kinds.js) now hashes a relocated
       // entry's key itself (via $__map_hash, on whichever bits are currently
       // safe to dereference) and inserts with the STRICT prehashed siblings
@@ -538,7 +538,7 @@ export default (ctx) => {
     (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
-  // Exact-fit grow — no geometric floor (.work/research.md §Footprint levers —
+  // Exact-fit grow — no geometric floor (.work/evidence.md §Footprint levers —
   // geometric-floor tier boundary): used ONLY by __region_exit's own scratch-lane
   // reservation below, never by ordinary __alloc/string bump-extend growth (which
   // keep calling plain $__memgrow, unchanged, so their amortization is untouched).
@@ -628,7 +628,7 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
-    // Region-arena memo-lane (.work/research.md §Region arena — negative-
+    // Region-arena memo-lane (.work/evidence.md §Region arena — negative-
     // reclaim root cause 476c88cd): __region_exit's own compaction memo (a
     // throwaway, per-call dedup table — never part of `root`, never returned)
     // used to grow inside the SAME [T, heap) span the round's real survivors
@@ -704,7 +704,7 @@ export default (ctx) => {
   // right before return. Every caller that treats the returned buffer as a bound
   // list MUST read this (not the table's own header length word at off-8) as its
   // iteration bound — the header and the real gathered count are NOT guaranteed to
-  // agree (audit: .work/research.md §Region arena's 5e77f814 entry — a `new
+  // agree (audit: .work/evidence.md §Region arena's 5e77f814 entry — a `new
   // Map(existingMap)` copy trusting the header length read a zeroed slot past
   // __coll_order's actual output, decoding the kernel's own static string-table
   // data at address 0). A single caller-local capture right after the call (the
@@ -1209,7 +1209,7 @@ export default (ctx) => {
    *  `va.type === 'f64'` call-site check (bc48ac02), enumerated once and
    *  enforced explicitly: both call sites below consult it before even
    *  building a guard, and emitSchemaSlotGuarded itself asserts it at entry
-   *  (.work/research.md §lane-4 re-land spec) so a future third call site
+   *  (.work/evidence.md §lane-4 re-land spec) so a future third call site
    *  can't silently reopen the gap. `va` must be a genuine per-instance
    *  NaN-boxed carrier — the ONE representation `ctx.schema.guardedSlotOf`'s
    *  mask compare and the write-side slot census (module/object.js's
@@ -1320,7 +1320,7 @@ export default (ctx) => {
     // no unbox belongs here. (A future dedicated arm COULD unbox both sides at
     // once by wrapping the whole `if` post-hoc, but no such consumer exists
     // today — left as a documented no-op rather than adding unused plumbing.)
-    // CONSERVATIVE PAIRING (coordinator ruling, .work/context-sensitivity-
+    // CONSERVATIVE PAIRING (coordinator ruling, .work/archive/context-sensitivity-
     // survey.md) — re-verified, explicitly excluded, not just left alone:
     // this arm's OWN output stays box-or-raw either way (unchanged above),
     // and the new dispatch lives one layer up, at readI64 (src/ir.js) — it
@@ -1384,7 +1384,7 @@ export default (ctx) => {
       : useUntyped(receiver)
   }
 
-  // Slice C of the error-object model (.work/todo.md): a .message/.name read
+  // Slice C of the error-object model (.work/archive/todo.md): a .message/.name read
   // whose receiver's kind isn't proven reaches the dynamic dispatch below,
   // which is also the ONLY place a real-number receiver (a catch(e)-bound
   // internal $__jz_err code, never boxed into an Error object) can decode its
@@ -1647,7 +1647,7 @@ export default (ctx) => {
         // (bench/provenance's module-memo, fftplan's cache-through-getPlan)
         // always reach this arm with a plain boxed f64 receiver — confirmed
         // via WAT diff — so the gate costs them nothing. RE-LAND PROBE
-        // (.work/research.md §lane-4): is this gate tighter than necessary —
+        // (.work/evidence.md §lane-4): is this gate tighter than necessary —
         // could a narrowed (ptrKind-tagged) receiver be adapted instead of
         // bailing? No profitable case exists: the one narrowed shape that IS
         // sound (`.ptrAux` names the exact schema) already resolves better,
@@ -2157,7 +2157,7 @@ export default (ctx) => {
     // boolean; isBoolExpr additionally catches `Boolean(x)` and parenthesized forms.
     if (valTypeOf(a) === VAL.BOOL || isBoolExpr(a)) return emit(['str', 'boolean'])
     if (!ctx.runtime.typeofStrs) {
-      // 'bigint': CARRIER PROGRAM Slice 3 (.work/carrier-representation-design.md
+      // 'bigint': CARRIER PROGRAM Slice 3 (.work/archive/carrier-representation-design.md
       // §7, layout-kinds.js registry's 'typeof' finding) — a boxed BigInt the
       // static analysis can't prove (the ONLY way $__typeof's dynamic dispatch
       // below ever sees a PTR.BIGINT tag; a proven-BIGINT operand statically
@@ -2169,7 +2169,7 @@ export default (ctx) => {
     inc('__typeof')
     // Receiver type unknown; enable branches that wouldn't otherwise be reachable.
     setLinkDemand('closure')
-    // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep):
+    // Ambiguous BOOL-merge operand (.work/archive/todo.md §deletion-sweep):
     // valTypeOf(a) reads NUMBER here (the merge's benign coercion), so the
     // VAL.BOOL fold above correctly stays silent — but plain `emit(a)` still
     // collapses the merge's own BOOL arm to a raw 0/1 bit (the '?:'/'&&' handlers'
@@ -2235,7 +2235,7 @@ export default (ctx) => {
   ctx.core.emit['__ptr_aux'] = (p) => (inc('__ptr_aux'), typed(['f64.convert_i32_s', ['call', '$__ptr_aux', asI64(emit(p))]], 'f64'))
   ctx.core.emit['__ptr_offset'] = (p) => (inc('__ptr_offset'), typed(['f64.convert_i32_s', ['call', '$__ptr_offset', asI64(emit(p))]], 'f64'))
 
-  // CARRIER PROGRAM Slice 1 (.work/carrier-representation-design.md §7) unit-
+  // CARRIER PROGRAM Slice 1 (.work/archive/carrier-representation-design.md §7) unit-
   // level pins: __box_bigint/__unbox_bigint expose ir.js's boxBigInt/
   // unboxBigInt the same way __mkptr/__ptr_type/__ptr_offset above expose
   // their own ir.js primitives — callable ONLY when a test's jz source

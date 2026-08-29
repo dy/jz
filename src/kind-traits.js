@@ -193,7 +193,7 @@ export function methodValType(method, obj, objType, ctx) {
   // `d.valueOf() === n` folded unsound even then, since tryStaticDispatch's
   // `.date:valueOf` never went through this receiver-passthrough path's
   // premise), just latent: nothing exercised `===` against a `.valueOf()`
-  // result until .work/printer-trio.md's Item 3 pins did. A genuinely
+  // result until .work/archive/printer-trio.md's Item 3 pins did. A genuinely
   // unresolved objType (null) stays null here either way — this only
   // narrows the PROVEN-DATE case from a false receiver-kind claim to the
   // correct NUMBER one. Two if-statements (not a nested ternary) purely for

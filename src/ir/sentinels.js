@@ -7,7 +7,7 @@
  * 'truthy.js': boolBoxIR calls truthyIR, and truthyIR calls isNullish -- a
  * genuine two-way dependency in the ORIGINAL code between sentinel
  * construction and truthiness testing, not a splitting artifact. See
- * .work/ir-split.md.
+ * .work/archive/ir-split.md.
  *
  * @module ir/sentinels
  */
@@ -283,7 +283,7 @@ export const isNull = (f64expr) => matchF64Bits(f64expr,
  *  receiver checks are the caller: a REAL schema-tagged Error object, not a
  *  bare numeric code, is what makes `catch (e) { e instanceof TypeError }`
  *  true in-wasm (the tag+schema arm of the Error model's truth table,
- *  .work/todo.md §deletion-sweep §4 — the numeric-code range arm is unsound
+ *  .work/archive/todo.md §deletion-sweep §4 — the numeric-code range arm is unsound
  *  and must not be reintroduced) and what lets interop.js's
  *  decodeThrown resolve an UNCAUGHT throw to a real host TypeError
  *  (errorSidClassOf) — no new decode machinery on either side, both paths

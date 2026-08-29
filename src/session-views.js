@@ -1,5 +1,5 @@
 /**
- * Phase-view facades (see .work/session-survey.md). Plain, read-only
+ * Phase-view facades (see .work/archive/session-survey.md). Plain, read-only
  * destructured views over the subtrees ctx.js's own header table (lines
  * 34-48) and the survey's §2 already document as phase-disciplined:
  * `memory`, `linkDemand` (upgraded to disciplined by slice (b)'s
@@ -28,7 +28,7 @@
  * warnings — survey §2).
  *
  * ADOPTION is selective, not mechanical (see call sites below and
- * .work/todo.md for the left-on-ctx list with reasons).
+ * .work/archive/todo.md for the left-on-ctx list with reasons).
  */
 import { ctx, derive, DBG_INVARIANTS } from './ctx.js'
 

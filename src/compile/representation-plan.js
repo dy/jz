@@ -7,7 +7,7 @@
  *
  * This file is a stable barrel: the implementation lives in
  * `representation-plan/` (common/boundaries/provenance/body-data/materialize/
- * call-args), split by phase — see `.work/representation-plan-split.md` for
+ * call-args), split by phase — see `.work/archive/representation-plan-split.md` for
  * the phase map and module-split rationale. Every name below is re-exported
  * unchanged so no consumer import path (`from './representation-plan.js'` /
  * `from '../representation-plan.js'`) needs to move.

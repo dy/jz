@@ -307,7 +307,7 @@ function trySidecarToPrimitive({ obj, method, parsed, vt, callMethod }) {
     const builtin = (vt && ctx.core.emit[`.${vt}:${method}`]) || ctx.core.emit[`.${method}`]
     if (builtin) {
       includeForRuntimeKeyIteration()
-      // Date carve-out, unresolved receivers only (.work/printer-trio.md
+      // Date carve-out, unresolved receivers only (.work/archive/printer-trio.md
       // residual): a PROVEN vt reaching this arm is ARRAY/TYPED/OBJECT,
       // never DATE — strategy 7's tryStaticDispatch already owns any
       // proven-Date receiver before this fork ever runs — so dateAuxFallback
@@ -414,7 +414,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     // closure property, but always wrong for a built-in prototype intrinsic
     // no runtime value ever stores as an own hash-keyed property (silently
     // yields `undefined` / an invalid call target instead of the real
-    // result — see .work/literal-method-typed-index-notes.md). Falling back
+    // result — see .work/archive/literal-method-typed-index-notes.md). Falling back
     // to the SAME dynamic-property-call / external-call strategies the chain
     // would try next — rather than requiring a generic emitter to exist —
     // keeps this fork's STRING/TYPED cases correct while the "genuinely
@@ -439,7 +439,7 @@ function tryRuntimePtrTypeFork({ obj, method, parsed, vt, callMethod }) {
     if (strEmitter) cases.push([PTR.STRING, callMethod(t, strEmitter)])
     if (typedEmitter) cases.push([PTR.TYPED, callMethod(t, typedEmitter)])
     // Date carve-out — see dateAuxFallback's doc for the discrimination
-    // rationale (.work/printer-trio.md residual). `tt` is already computed
+    // rationale (.work/archive/printer-trio.md residual). `tt` is already computed
     // below (the ptr-type local this fork uses for its own STRING/TYPED
     // dispatch), so pass it through instead of paying for a second
     // `$__ptr_type` call.

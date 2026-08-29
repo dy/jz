@@ -129,7 +129,7 @@ const AGREE = [
   // PENDING-FIX not()-tripwire.
   { name: 'boolconst', src: CORPUS.boolconst,
     calls: [{ fn: 'f', args: [5] }, { fn: 'f', args: ['hi'] }, { fn: 'f', args: [true] }] },
-  // FLIPPED from PENDING-FIX (.work/todo.md §deletion-sweep — the
+  // FLIPPED from PENDING-FIX (.work/archive/todo.md §deletion-sweep — the
   // ambiguous BOOL-merge identity fix): `cond ? 1 : false` used as a return
   // value, observed via `=== false` at a DIFFERENT function's call site (the
   // function-boundary mechanism, distinct from boolconst's own — this one
@@ -233,7 +233,7 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'parenthesized-&&',
     src: `export let f = (x) => { let a = [(x > 0) && 1]; return a[0] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // FLIPPED from PENDING-FIX (.work/todo.md §deletion-sweep — formatter/
+  // FLIPPED from PENDING-FIX (.work/archive/todo.md §deletion-sweep — formatter/
   // ToPropertyKey carrier-dispatch fix): the same MECHANISM A/argIR
   // producer-side collapse, un-swept at three consumer chokepoints.
   // String()'s VAL.NUMBER __ftoa fast path is a STATIC-VALTYPE check (not an
@@ -265,7 +265,7 @@ export let f = (x) => g(x > 0 && 1)`,
   { name: 'computed member key',
     src: `export let f = (x) => { let o = {}; o[x > 0 && 1] = 'v'; return o['0'] }`,
     calls: [{ fn: 'f', args: [1] }, { fn: 'f', args: [-1] }] },
-  // READ-side sibling family (.work/todo.md §deletion-sweep Finding #2, same
+  // READ-side sibling family (.work/archive/todo.md §deletion-sweep Finding #2, same
   // landing session, not a documented-then-flipped PENDING-FIX gap — a
   // proactive fix): module/array.js's dyn-get key sites had the identical
   // bare `emit(idx)`/`asI64(emit(idx))`/`asF64(emit(idx))` producer bypass
@@ -307,7 +307,7 @@ export let f = (x) => g(x > 0 && 1)`,
   // expression, not a named local of known VAL) — found chasing bba45c0d's
   // "self-compiled kernel's own array-write codegen for arr[arr.length]=x
   // takes a different path than .push()'s" note (region CLOSURE arm entry,
-  // .work/research.md). The instance there (ctx.closure.envMeta[tableIdx] =
+  // .work/evidence.md). The instance there (ctx.closure.envMeta[tableIdx] =
   // {…}) got a one-line .push() swap and the CLASS went uninvestigated;
   // this is the class, isolated and fixed at the root. Root cause: the
   // 'useRuntimeKeyDispatch' fork (Step 8, key-kind unknown at compile time —
@@ -349,7 +349,7 @@ export let f = (x) => g(x > 0 && 1)`,
       return ctx.closure.table.length + '|' + ctx.closure.envMeta.length + '|' + s
     }`,
     calls: [{ fn: 'f', args: [0] }, { fn: 'f', args: [1] }, { fn: 'f', args: [5] }, { fn: 'f', args: [64] }] },
-  // Chained-region-round coverage gap (task: .work/research.md §Region arena,
+  // Chained-region-round coverage gap (task: .work/evidence.md §Region arena,
   // e640e77a's entry, lead #3): NONE of the rows above exercise plan()'s
   // narrowSignatures or any of the per-pass plan-tail/scan region boundaries
   // that session designed — every one of them is small enough to take
@@ -594,13 +594,13 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // bigint literal is ever walked. Below, `a.jz` (imported first) contains
 // ONLY a numeric coercion, zero bigint syntax; `b.jz` (imported second) is
 // the ONLY module with bigint syntax anywhere in the program. Root class
-// matches the already-hunted JSON shaped-parser bug (.work/todo.md, "JSON
+// matches the already-hunted JSON shaped-parser bug (.work/archive/todo.md, "JSON
 // SHAPED-PARSER 'Bad int 9.067910317e-315' HUNTED — ROOT NAMED, BANKED NOT
 // FIXED") — same corrupted-carrier symptom (`Number()` of a boxed BigInt
 // printing its own raw i64 bits reinterpreted as f64), reproduced here via a
 // clean two-module fixture isolated from that bug's Map-value-census tangle.
 //
-// FIX ATTEMPTED PREVIOUSLY (that same todo.md entry) AND VERIFIED, THEN
+// FIX ATTEMPTED PREVIOUSLY (that same archived entry) AND VERIFIED, THEN
 // REVERTED: hoisting the bigint-construction scan to a standalone whole-tree
 // prescan run to completion before ANY module's stdlib template can
 // materialize (both for the top-level program and per-module, before each
@@ -628,7 +628,7 @@ test('kernel oracle: subnormal literal — AGREE (closed by audit-#11 P0-1, ctx.
 // corrupted value, both native AND kernel legs, both optimize tiers) so a
 // future close of either (a) or (b) flips this test's asserted values from
 // the corrupted carrier to `want` in one edit.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7):
 // STRUCTURALLY IMPOSSIBLE now, not merely re-pinned — same class as
 // test/data.js's audit-#11 P0-1 deletion the design itself calls out.
 // `bSrc`'s `const arr = [1.5, 123456789012345n, 2.5]` is a heterogeneous
@@ -660,7 +660,7 @@ test('kernel oracle: heterogeneous BigInt array element — strict-mode (opt-in)
 test('kernel oracle: ternary BOOL|NUMBER return — AGREE (closed by the ambiguous-BOOL-merge identity work)', async () => {
   // Was PENDING FIX: g(false) returned the `false` atom collapsed to raw 0.0,
   // so `g(s) === false` read false for both arguments. Closed by
-  // .work/todo.md §deletion-sweep — hasAmbiguousBoolMerge admits the
+  // .work/archive/todo.md §deletion-sweep — hasAmbiguousBoolMerge admits the
   // single-return ternary at the return tail, and emitStrictEq's differing-
   // class fold defers to the identity-safe path for ambiguous operands. The
   // former not() tripwire fired as designed; this is its designed rewrite.
@@ -792,8 +792,7 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
   }
 })
 
-// ── AGREE tier: carrier-built KERNEL console.log string constants (.work/
-// carrier-representation-design.md §16 finding 2 → §17 → §31) ─────────────
+// ── AGREE tier: carrier-built KERNEL console.log string constants (.work/archive/carrier-representation-design.md §16 finding 2 → §17 → §31) ─────────────
 //
 // FLIPPED from KNOWN-FAIL (2026-08-10, §31): a carrier-built KERNEL
 // (JZ_CARRIER_BOX=1, self-compiled — dist/jz.wasm compiled from scripts/
@@ -826,7 +825,7 @@ test('kernel oracle: captured BOOL∪NUMBER merge — AGREE (FLIPPED from PENDIN
 // their correct, undecorated value on the kernel leg, at every optimize
 // level (0/1/2/3), deterministically, across repeated fresh-process runs —
 // not a fluke of one run. Native was never affected (self-compile-only bug).
-test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/carrier-representation-design.md §16→§17→§31)', async () => {
+test('kernel oracle: console.log string constants — AGREE (closed incidentally by §24 CONSERVATIVE PAIRING, .work/archive/carrier-representation-design.md §16→§17→§31)', async () => {
   if (onWasi()) return
   const heapSrc = `export let start = () => { console.log('bare-fired'); return 1 }`  // 10 chars — heap string
   const ssoSrc = `export let start = () => { console.log('short'); return 1 }`        // 5 chars — SSO string
@@ -855,7 +854,7 @@ test('kernel oracle: console.log string constants — AGREE (closed incidentally
 // (`a[0] + 0n` already resolved right, through the separately-correct
 // emit-time path that embeds the element in a proven-BigInt expression);
 // only the JS-BOUNDARY RESULT KIND mis-resolved for a bare, unembedded tail.
-// Root (.work/todo.md "NOT FIXED, BANKED" entry, member-desugar landing
+// Root (.work/archive/todo.md "NOT FIXED, BANKED" entry, member-desugar landing
 // session): BigInt array literals never qualify for flat SRoA (static.js's
 // staticValue has no 'bigint' case), so the kind had to resolve through
 // rep.arrayElemValType — a whole-program fact store the return-kind

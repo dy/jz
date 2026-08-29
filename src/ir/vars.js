@@ -91,7 +91,7 @@ export const dollar = (name) => {
   return v
 }
 
-// Region-arena EMISSION rounds (re-landing .work/research.md §Emission rounds):
+// Region-arena EMISSION rounds (re-landing .work/evidence.md §Emission rounds):
 // DOLLAR is a module-scope Map, entirely outside `ctx` — invisible to any
 // ctx.*-based region-round root array. `dollar()` fires on effectively every
 // emitted IR node (every param/local/name reference), so it grows heavily

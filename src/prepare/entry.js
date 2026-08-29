@@ -57,7 +57,7 @@ export default function prepare(node) {
   // some closure reachable only indirectly through RESET_HOOKS; the exact
   // mechanism is not otherwise documented. resetPrepState() is idempotent and
   // cheap, so keeping BOTH the direct call and the registration is correct, not
-  // a half-migration — see .work/session-survey.md for the full account.
+  // a half-migration — see .work/archive/session-survey.md for the full account.
   resetPrepState()
   // Inject the module-include primitive so stdlib modules can pull dependency
   // modules (e.g. object → collection) without importing autoload.js — that

@@ -1,8 +1,8 @@
 # Self-compile memory campaign — hosted-build attribution (2026-08-29)
 
 Base `8986c2e2` (v1-readiness-audit's own ref). Worktree, never the main
-checkout. Companion to `.work/v1-architecture-campaign.md` (the two
-candidate strategies), `.work/region-release-notes.md` (region-arena's own,
+checkout. Companion to `.work/archive/v1-architecture-campaign.md` (the two
+candidate strategies), `.work/archive/region-release-notes.md` (region-arena's own,
 much more complete, freshly-dated measurements — cited directly below rather
 than re-derived), and `.work/archive/retained-set-census.md` (the prior
 self-hosted allocator-class census this session's native table corroborates
@@ -25,7 +25,7 @@ config `npm run build` uses — then calls `compile(graph.code, {...profile,
 profile: sink})` directly.
 
 One real run, current HEAD, **268 modules** (not the stale "162" cited
-throughout `.work/` — that figure is `.work/porffor-alpha3-audit.md`'s own
+throughout `.work/` — that figure is `.work/archive/porffor-alpha3-audit.md`'s own
 2026-08-27/`4c38662f` measurement, last independently re-run then, never
 refreshed since; dozens of `*-split.md` file-splitting refactors have landed
 since and legitimately grown the module count without necessarily growing
@@ -93,7 +93,7 @@ entry/exit, GC-forced for top-level names only; `Δ` = After−Before; `funcs`/
   driver** — `watrCompile`'s own delta is negative. This matches the native
   scale (tree + ~18 MB buffer is small next to a multi-GB heap already
   dominated by `optimizeFuncs`/`watOptimize`) but is the OPPOSITE of the
-  self-hosted mechanism `.work/v1-architecture-campaign.md`'s Slice 6 names
+  self-hosted mechanism `.work/archive/v1-architecture-campaign.md`'s Slice 6 names
   ("final copying and watr's whole-module cleanup/code-byte arrays need a
   second module-sized working set") — self-hosted, the SAME coexistence is
   decisive because every byte costs far more (NaN-boxed 8 B slots + 16 B
@@ -116,7 +116,7 @@ entry/exit, GC-forced for top-level names only; `Δ` = After−Before; `funcs`/
 ## 2. Strategy decision — measured, not preferred
 
 **Strategy A (region-arena), most complete form that exists on `main` today**
-(not re-derived — cited directly from `.work/region-release-notes.md`'s own
+(not re-derived — cited directly from `.work/archive/region-release-notes.md`'s own
 2026-08-28 entries, same day as this campaign's ref commit): front's round
 fix + `namedUses` fix + `errorSidEntries` fix, PLUS a batched per-function
 region round already wired around BOTH `analyzeFuncs` and `emitFuncs`
@@ -145,7 +145,7 @@ most complete, currently-assembled form — including the per-function
 reclaim round `retained-set-census.md` predicted could move the needle by
 "on the order of 1–2 GB" — measured 6.9%, not an order of magnitude.
 
-**Strategy B (streaming encoder)**, per `.work/region-release-notes.md`'s
+**Strategy B (streaming encoder)**, per `.work/archive/region-release-notes.md`'s
 own prototype on watr `feat/streaming-code-section`: peak bytes and elapsed
 time measured INDISTINGUISHABLE from the dormant baseline, because a dormant
 build never reaches the encode phase B optimizes (front/plan/emit alone
@@ -308,7 +308,7 @@ this whole investigation — landed or not — has zero bearing on the wasm32
 ceiling. Confirmed empirically earlier this session (before the revert, with
 snapshot OFF) and unaffected by the revert:
 
-| | cited, `.work/porffor-alpha3-audit.md`, `4c38662f`, 2026-08-27 | this session, fresh |
+| | cited, `.work/archive/porffor-alpha3-audit.md`, `4c38662f`, 2026-08-27 | this session, fresh |
 |---|---|---|
 | modules | 162 | **268** (source has grown; see §1's staleness note) |
 | outcome | trap / unreachable | trap / unreachable — **identical** |
@@ -342,7 +342,7 @@ Not closed this session; not attempted beyond the measured decision above,
 per the task's own explicit instruction not to chase region's banked defects.
 
 1. Close region-arena's 6 banked hooks-on-only defects (a)–(f),
-   `.work/region-release-notes.md`. Each of this campaign's already-landed
+   `.work/archive/region-release-notes.md`. Each of this campaign's already-landed
    region fixes (`namedUses`, `errorSidEntries`, front's round) took a full
    dedicated session from localized to fixed+verified; no reason to expect
    these six are cheaper on average — treat as ~6 more sessions at that
@@ -353,13 +353,13 @@ per the task's own explicit instruction not to chase region's banked defects.
    a genuinely byte-identical streaming/compact encoder (strategy B exists
    only as a non-byte-identical, separately-buggy prototype today).
 3. If (1)+(2) still don't clear it: the architectural alternative named by
-   `.work/porffor-alpha3-audit.md`'s own #1-ranked item — a compact,
+   `.work/archive/porffor-alpha3-audit.md`'s own #1-ranked item — a compact,
    fixed-shape HIR (six-slot nodes, Porffor's own shape) replacing WAT
    arrays-with-expandos as the first authoritative IR — is a strictly larger
    undertaking than any lever in this document, not attempted or sized here.
 
 No honest single "when" — the evidence (dozens of dated sessions already
-spent on strategy A alone, per `.work/region-release-notes.md`'s own length)
+spent on strategy A alone, per `.work/archive/region-release-notes.md`'s own length)
 says this is a multi-session engineering program at the SAME depth already
 invested, not a remaining afternoon.
 

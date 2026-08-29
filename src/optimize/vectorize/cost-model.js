@@ -2,7 +2,7 @@ import { walkAst } from '../../ast.js'
 import { LOAD_OPS, STORE_OPS } from './lane-tables.js'
 import { isArr } from './node-utils.js'
 
-// ---- Cost model (.work/vectorizer-generality-design.md's final follow-up seam, Part 2): a
+// ---- Cost model (.work/archive/vectorizer-generality-design.md's final follow-up seam, Part 2): a
 // profitability gate for the GENERAL base layers ONLY (tryGeneralMap/
 // tryGeneralStencil/tryGeneralReduce below) — every idiom FUSER above (tryDivergentEscapeVectorize,
 // tryBlurMultiPixel, tryButterfly, …) keeps its own separately-tuned, always-fire behavior
@@ -118,7 +118,7 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
   return vectorCost / lanes < scalarCost
 }
 
-// ---- General MAP base layer (.work/vectorizer-generality-design.md §2-3 step 3, MAP slice) --
+// ---- General MAP base layer (.work/archive/vectorizer-generality-design.md §2-3 step 3, MAP slice) --
 //
 // BASE LAYER: runs LAST in the dispatch chain (after every idiom recognizer above, including
 // tryButterfly) — it exists to catch dependence-free elementwise loops whose address arithmetic
@@ -145,7 +145,7 @@ export function isProfitable(body, lifted, lanes, guardCount = 0) {
 // map path already relies on") — see the runtime-versioning note below for why that convention
 // stays untouched here.
 //
-// RUNTIME ALIAS VERSIONING (layer 3, .work/vectorizer-generality-design.md follow-up — LLVM's
+// RUNTIME ALIAS VERSIONING (layer 3, .work/archive/vectorizer-generality-design.md follow-up — LLVM's
 // loop-versioning-for-vectorization answer to the same static-proof gap): an `elemKey` mismatch
 // used to be an unconditional decline. Every mismatch this pass can reach is SAME-BASE by
 // construction (the check only runs when `exprEq` already proved the two accesses share one

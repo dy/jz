@@ -1,6 +1,6 @@
 /**
  * Freeze discipline for `programFacts` (v1 architecture-convergence, "facts
- * frozen before consumers" — .work/program-facts-split.md §7 has the full
+ * frozen before consumers" — .work/archive/program-facts-split.md §7 has the full
  * lifecycle table and the subset-constraint audit this module's shape
  * follows; read that first). Two independent problems, two mechanisms:
  *
@@ -51,7 +51,7 @@
  */
 
 /** The exact 20 names `collectProgramFacts` publishes (walk-facts.js's own
- *  return statement — program-facts-split.md §1's table cites the same list,
+ *  return statement — .work/archive/program-facts-split.md §1's table cites the same list,
  *  minus `computedCallSites`, added after that doc's own snapshot ref by
  *  fix/string-method-guess's computed-dispatch-table synthesis: the raw
  *  `TABLE[key](args)` candidates `synthesizeComputedDispatchCallSites`
@@ -82,13 +82,12 @@ export const FACT_KEYS = new Set([
  *  — exposes `.get`, the sole method every reader strictly after plan's
  *  round 3 needs (`analyzeSchemaSlotIntCertain`'s `collectBodyElemSids`,
  *  representation-plan.js's `makeBoundaryData`/`solveBigintProvenance` family
- *  — program-facts-split.md §7.1's table) — plus `.raw`, a plain (non-
+ *  — .work/archive/program-facts-split.md §7.1's table) — plus `.raw`, a plain (non-
  *  accessor) data property carrying the real Map back for `plan/index.js`'s
  *  OWN restore before it returns. `.raw` is a deliberately weaker guard than
  *  a hidden channel would be (anyone COULD write `paramReps.raw.set(...)`),
  *  chosen over a module-scope WeakMap-keyed lookup specifically for
- *  region-arena SAFETY: `plan()`'s plan-tail rounds (round(), `.work/
- *  program-facts-split.md` doesn't cover this, see plan/index.js's own doc)
+ *  region-arena SAFETY: `plan()`'s plan-tail rounds (round(), `.work/archive/program-facts-split.md` doesn't cover this, see plan/index.js's own doc)
  *  can relocate `programFacts` wholesale between install and restore under
  *  the self-hosted kernel's region allocator — anything reachable ONLY from
  *  a plain local variable held across such a boundary goes stale (the same
@@ -133,5 +132,5 @@ export function freezeCallSites(callSites) {
 export function assertProgramFactsShape(programFacts, label) {
   for (const k of Object.keys(programFacts))
     if (!FACT_KEYS.has(k))
-      throw new Error(`[program-facts] ${label}: unexpected key '${k}' on programFacts — every top-level fact needs a single documented producer (program-facts-split.md §7); add it to FACT_KEYS in program-facts/freeze.js if this is a genuine new staged fact`)
+      throw new Error(`[program-facts] ${label}: unexpected key '${k}' on programFacts — every top-level fact needs a single documented producer (.work/archive/program-facts-split.md §7); add it to FACT_KEYS in program-facts/freeze.js if this is a genuine new staged fact`)
 }

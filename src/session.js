@@ -280,7 +280,7 @@ export function targetProfileFor(host) {
  */
 
 /**
- * CompileSession (see .work/compile-session-design.md §1 — documentation
+ * CompileSession (see .work/archive/compile-session-design.md §1 — documentation
  * only, no shape change). `ctx` (src/ctx.js) already IS this record: a single
  * object whose 20 named top-level subtrees this typedef enumerates,
  * constructed fresh by `reset()` above on every `beginSession()` call.
@@ -334,7 +334,7 @@ export function beginSession({ emitter, globals, hooks, source, optimize, warnin
   // retention; clearing uniformly costs nothing and removes the asymmetry.
   // Fact-store slices (programFacts/bodyFacts/bindingUses — see the factStore
   // doc above): a fresh store IS the reset — `ctx.facts`, built as part of
-  // `reset()`'s own construction (Slice B, .work/compile-session-design.md
+  // `reset()`'s own construction (Slice B, .work/archive/compile-session-design.md
   // §3) — no separate resetFactStore() call needed here any more.
   clearDollar()
   clearStdlibParseCache()

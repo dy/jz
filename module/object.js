@@ -125,7 +125,7 @@ export default (ctx) => {
         // alloc (a for-of/for-in iterator temp is declared in the loop's
         // own init, always textually after `const T = {}`), so emitting a
         // runtime `domain.length` read here dereferenced an uninitialized
-        // local (0.0) and trapped OOB (.work/todo.md §deletion-sweep).
+        // local (0.0) and trapped OOB (.work/archive/todo.md §deletion-sweep).
         // The hint is speed-only by contract (analyze.js dictDomainOf: an
         // over/underestimate cannot affect semantics) — unproven length
         // degrades to the default cap, never a runtime read.
@@ -929,7 +929,7 @@ const hasOutOfSchemaWrites = (obj, schema) => {
 // enumerable — on every enumeration surface: `Object.keys`/`JSON.stringify`
 // and `spread`/`Object.assign` must agree on what enumerates, or the same
 // object answers "does this property enumerate" differently depending only
-// on which builtin asked. DECISION (documented divergence, see .work/todo.md
+// on which builtin asked. DECISION (documented divergence, see .work/archive/todo.md
 // §deletion-sweep): Error is an ordinary object on every enumeration surface
 // — keys/JSON/spread/assign/for-in all see the physical `['message','name']`
 // layout, consistently. This diverges from real JS (whose Error properties

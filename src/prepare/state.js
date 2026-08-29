@@ -20,10 +20,10 @@ import { TYPED_ELEM_NAMES } from '../../layout.js'
 // SIMD intrinsic namespaces — pure namespaces backed by the `simd` module.
 export const SIMD_NS = new Set(['f32x4', 'i32x4', 'f64x2', 'v128'])
 // prep()'s ctx.features.error scan below — O(1) membership over the 7 built-in
-// error classes (.work/todo.md §deletion-sweep §2).
+// error classes (.work/archive/todo.md §deletion-sweep §2).
 export const ERR_CLASS_SET = new Set(ERR_CLASS_NAMES)
 
-// `instanceof` RHS allowlist (.work/todo.md §deletion-sweep §4). jz has no prototype chain, so
+// `instanceof` RHS allowlist (.work/archive/todo.md §deletion-sweep §4). jz has no prototype chain, so
 // RHS support is closed: Array/Map/Set fold or tag-compare (PTR.ARRAY/MAP/SET); the 8
 // TYPED_ELEM_NAMES ctors + ArrayBuffer tag/aux-compare (PTR.TYPED+aux / PTR.BUFFER); the
 // 7 Error classes tag+sid-compare (module/schema.js's ctx.schema.errorSid — one

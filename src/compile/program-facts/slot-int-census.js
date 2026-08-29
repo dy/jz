@@ -187,7 +187,7 @@ export function analyzeSchemaSlotIntCertain(ast, opts) {
     slotIntCertain.set(sid, arr.map(l => l === undefined ? undefined : l >= 1))
     slotI32Certain.set(sid, arr.map(l => l === 2))
   }
-  // Invariant tripwire (design .work/carrier-representation-design.md §15/
+  // Invariant tripwire (design .work/archive/carrier-representation-design.md §15/
   // §16): a BIGINT-observed slot must never ALSO be i32Certain — i32Certain
   // requires every write to be a strict-int32 NUMBER (isIntExpr), which is
   // disjoint from a BIGINT write by construction (writeVT/isIntExpr never

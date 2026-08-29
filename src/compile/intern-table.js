@@ -58,7 +58,7 @@ export function buildInternTable() {
   // fresh-copies the whole accumulated string per iteration in the kernel
   // (no rope strings), and `slots.length` runs into the tens of thousands on
   // a self-compile — measured 207.6 MB / 39,216 $__str_concat_raw calls of
-  // Window-A churn (.work/research.md §elephant attribution). Same
+  // Window-A churn (.work/evidence.md §elephant attribution). Same
   // remediation class as the ctx.runtime.data parts-array and the dedup
   // rolling-hash fixes.
   const parts = []

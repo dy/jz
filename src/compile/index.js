@@ -134,7 +134,7 @@ const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, f
  * @param {import('./prepare.js').ASTNode} ast - Prepared AST
  * @param {Object} [profiler] - host-only per-phase timing sink (timePhase)
  * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena EMIT
- *  boundary (.work/research.md §Region arena, Slice 3): supplied ONLY by the
+ *  boundary (.work/evidence.md §Region arena, Slice 3): supplied ONLY by the
  *  self-compile kernel entry (scripts/self.js), mirroring frontHalf's own
  *  `regionHooks` contract (src/front.js) one boundary later in the pipeline —
  *  never passed by the native host (index.js calls `compile(ast, profiler)`,
@@ -170,7 +170,7 @@ const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, f
  *  Rooting `ctx.transform` requires `__region_relocate_props` to be
  *  idempotent under re-application to its own output — otherwise
  *  `__region_copy_rec` corrupts a durable-but-unreached receiver's dyn-props
- *  on a second pass (see `module/core.js`, .work/research.md §Region arena
+ *  on a second pass (see `module/core.js`, .work/evidence.md §Region arena
  *  "REGION MACHINERY SOUND"). `REGION_HOOKS_ACTIVE` still stays `false` as
  *  the committed default (scripts/self.js) — this boundary and its
  *  PLAN-TAIL children (`src/compile/plan/index.js`'s own five inner region
@@ -194,7 +194,7 @@ const timePhase = (profiler, name, fn) => profiler?.time ? profiler.time(name, f
  *  `ctx.schema.namedUses` (a plain array `module/core.js`'s
  *  `__throw_property_nullish` populates for nearly every compile, read
  *  ~40 lines after this round's own exit by the `usedSchemaIds` walk —
- *  region-emitir-round session, `.work/region-release-notes.md`). Neither
+ *  region-emitir-round session, `.work/archive/region-release-notes.md`). Neither
  *  bug was a fault in `__region_exit`'s own relocation walk (that
  *  machinery is sound and unconditionally correct for whatever root it's
  *  given) — both were root-COMPLETENESS gaps at the JS call site. `ctx.core`
@@ -329,11 +329,11 @@ export default function compile(ast, profiler, regionHooks) {
   // only, dead code otherwise) rebinds this from its own `exit()` return.
   let programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler, regionHooks))
 
-  // Region-arena plan-tail round 6 (.work/research.md §Region arena, per-pass
+  // Region-arena plan-tail round 6 (.work/evidence.md §Region arena, per-pass
   // slice): the three closure-table scans below are pure AST walks producing
   // three ctx.scope fields (+~61 MB combined, dominated by
   // scanClosureTableLatticeCandidates's own +61 MB)
-  // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/compile-
+  // — one round. Root: the UNION-FIELD set (Slice C-v2, `.work/archive/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale
   // for why this is the union of every field any round has ever needed,
   // applied uniformly, rather than a wholesale `[ast, ctx]` root).
@@ -377,7 +377,7 @@ export default function compile(ast, profiler, regionHooks) {
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
-  // Region-arena analyzeFuncs BATCHED round (.work/research.md §Region arena,
+  // Region-arena analyzeFuncs BATCHED round (.work/evidence.md §Region arena,
   // Lever 1 — the retained-set census's own top lever: ~70% MAP/HASH-shaped
   // churn, up to 1435 calls for jz×jz). Iteration below is index-based,
   // re-reading `ctx.funcs.list[i]` FRESH every access rather than holding
@@ -406,7 +406,7 @@ export default function compile(ast, profiler, regionHooks) {
   // divides that cost by the batch size while still reclaiming per-function
   // churn (the actual target) far more often than the status quo (never).
   // AFE_ROUND_BATCH is a tunable constant, sized from jessie/watr/jzify-entry
-  // measurement (`.work/research.md` §Region arena, this entry), not guessed.
+  // measurement (`.work/evidence.md` §Region arena, this entry), not guessed.
   const AFE_ROUND_BATCH = 32
   // Fixed-shape closure records closed the former `cb.params` relocation
   // corruption, but full closure-round jz×jz still reaches wasm32's copying
@@ -429,7 +429,7 @@ export default function compile(ast, profiler, regionHooks) {
       }
       const lastFunc = i === ctx.funcs.list.length - 1
       if (regionHooks && ((i + 1) % AFE_ROUND_BATCH === 0 || lastFunc)) {
-        // Union-field root (Slice C-v2, `.work/compile-session-design.md`
+        // Union-field root (Slice C-v2, `.work/archive/compile-session-design.md`
         // §2.1/§3, front.js's own doc has the full rationale): covers every
         // container this loop writes — `ctx.plans` (publishFunctionPlan's
         // per-iteration `.set()`) and `ctx.inspect` (captureFuncInspect)
@@ -468,7 +468,7 @@ export default function compile(ast, profiler, regionHooks) {
       }
     })
   }
-  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): every per-function
+  // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
   // above) — this is the freeze point after which NO ctx.features key may change
   // (uniform, no exceptions; typedView — the one key that used to keep flipping
@@ -516,7 +516,7 @@ export default function compile(ast, profiler, regionHooks) {
     out.splice(rootLen, 1)
     return out
   }
-  // Region rounds through EMISSION (re-landing .work/research.md §Emission
+  // Region rounds through EMISSION (re-landing .work/evidence.md §Emission
   // rounds — same batching rationale and iterator discipline as the
   // analyzeFuncs loop above: index-based fresh reads, roots rebound at every
   // exit, batch size shared with AFE_ROUND_BATCH). Nothing reclaimed here
@@ -541,7 +541,7 @@ export default function compile(ast, profiler, regionHooks) {
   // reverted) — 7085cb57 rooted `ctx.core`/`ctx.abi`/`ctx.bridge` wholesale to
   // fix exactly this under-coverage and made the regression WORSE ("phantom
   // pair GROWN", third failure mode), and a dedicated prior investigation unrelated
-  // to this file (.work/research.md §CompileSession Slice D, two direct
+  // to this file (.work/evidence.md §CompileSession Slice D, two direct
   // experiments) independently proved wholesale-rooting these same nine
   // fields reproduces real WASM traps (`unreachable`, `memory access out of
   // bounds`) neither hypothesis closed — walking a several-hundred-entry
@@ -573,8 +573,8 @@ export default function compile(ast, profiler, regionHooks) {
   // specifically — the one structural difference between this round and
   // AFE's own proven-safe use of the same 12-field union), not a simple
   // root-completeness gap. Needs dedicated WAT-breadcrumb forensics (the
-  // campaign's own established method for this exact class, .work/
-  // research.md §CompileSession Slice B) — banked, not chased further this
+  // campaign's own established method for this exact class,
+  // .work/evidence.md §CompileSession Slice B) — banked, not chased further this
   // session, per the same campaign's repeated precedent of not spot-fixing
   // an unconfirmed mechanism.
   let funcs = timePhase(profiler, 'emitFuncs', () => {
@@ -805,7 +805,7 @@ export default function compile(ast, profiler, regionHooks) {
 
   buildInternTable()
 
-  // FeaturePlan freeze (.work/research.md §FeaturePlan freeze): emission is done —
+  // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): emission is done —
   // asserts ctx.features' SESSION+PROGRAM+ANALYSIS strata are present and unchanged
   // since their post-prepare/post-analyze snapshots, right before pullStdlib's
   // resolveIncludes() starts reading the DEMAND stratum (module template factories
@@ -813,7 +813,7 @@ export default function compile(ast, profiler, regionHooks) {
   assertCtxInvariants('pre-assemble')
 
   // Stage region round: pullStdlib realizes every stdlib helper's WAT
-  // template (+927 MB churn measured on jz×jz, .work/research.md §Parts-fix
+  // template (+927 MB churn measured on jz×jz, .work/evidence.md §Parts-fix
   // verified) via resolveIncludes()/includeModule() — module registration,
   // which is ALSO where ctx.core.emit/ctx.core.stdlib (the closure-bearing
   // dicts excluded from every round's root, see the emitFuncs round's own
@@ -926,7 +926,7 @@ export default function compile(ast, profiler, regionHooks) {
     // undefined (reading 'length')` on EVERY region-live compile, including
     // the trivial single-function AGREE-tier corpus — this was the emitIR-
     // round crash this whole investigation chased (region-emitir-round
-    // session, .work/region-release-notes.md).
+    // session, .work/archive/region-release-notes.md).
     let lateSchema = { list: ctx.schema.list, namedUses: ctx.schema.namedUses }
     // pullStdlib only mutates these section arrays. Root them individually;
     // traversing `sec` would also walk every already-durable user function,
@@ -1286,7 +1286,7 @@ export default function compile(ast, profiler, regionHooks) {
   // `new TypeError(...)`/`new SyntaxError(...)`/etc. reached the host as a
   // generic `Error("[object Object]")` — right fields (verified via
   // `e.thrown`: `{message, name}` both correct), wrong class/message
-  // (region-emitir-round session, `.work/region-release-notes.md`). Same
+  // (region-emitir-round session, `.work/archive/region-release-notes.md`). Same
   // fix shape as `lateSchema.namedUses` just above: consume the
   // already-captured snapshot instead of re-deriving through a field this
   // round's narrowing removed.
@@ -1344,11 +1344,11 @@ export default function compile(ast, profiler, regionHooks) {
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
   let builtModule = ['module', ...sections]
-  // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/compile-
+  // Region-arena Slice 3 (union-field root, Slice C-v2 — `.work/archive/compile-
   // session-design.md` §2.1/§3, front.js's own doc has the full rationale):
   // exit the emit round here, rebinding `builtModule` (phase-local, not
   // durable ctx state) and every `ctx.*` field any round needs, including
-  // both `ctx.func` AND `ctx.funcs` (see .work/research.md §Region arena for
+  // both `ctx.func` AND `ctx.funcs` (see .work/evidence.md §Region arena for
   // the root-completeness requirement), without exposing `ctx.core`/
   // `ctx.bridge`/etc to the relocator, which don't need it. Any later read
   // through a stale `ctx.*` or the pre-relocation `builtModule` reference is

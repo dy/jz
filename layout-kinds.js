@@ -1,6 +1,6 @@
 /**
  * Heap-kind registry — COMPACT EXECUTABLE metadata only (audit-#16 registry
- * finding, .work/research.md §Heap-kind registry Slice 4: production dist
+ * finding, .work/evidence.md §Heap-kind registry Slice 4: production dist
  * cost fix). This is the per-tag authority every consumer of a NaN-boxed
  * value's KIND derives from — the composition point for carrier boxing ×
  * region relocation. What's here is exactly what production READS: enums,
@@ -40,7 +40,7 @@ const SET_ENTRY = 16   // [hash i64 @0][elem f64 @8]
 const MAP_ENTRY = 24   // [hash i64 @0][key f64 @8][value f64 @16]
 const LANE = 4         // normal output; self-compile compact profile passes lane=0
 
-// regionArmSetMap's durable short-circuit (.work/research.md §Region arena —
+// regionArmSetMap's durable short-circuit (.work/evidence.md §Region arena —
 // regionArmSetMap's durable short-circuit): tags whose $__region_copy_rec arm
 // actually MOVES the heap block (and therefore changes the value's raw NaN-box
 // bits — tag+offset) when the value is ephemeral this round. module/
@@ -73,7 +73,7 @@ const KEY_MOVABLE_MASK = (1 << PTR.ARRAY) | (1 << PTR.BUFFER) | (1 << PTR.TYPED)
  *                              non-boxed edge (TYPED view's bufferRootOff) vs none (leaf). Full prose is
  *                              doc's `childPointers`.
  * @property {'copy'|'copy-forward'|'rebuild'|'value-relocate'|'copy-rebase'|'immediate'|'env-relocate'} relocate
- *                              Heap-kind registry Slice 2 (.work/research.md §Heap-kind registry): how
+ *                              Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): how
  *                              __region_copy_rec moves this kind across a region boundary — a DISTINCT
  *                              axis from GROWTH forwarding (FORWARDING_MASK, layout.js): 'copy' leaf
  *                              bytes (no children to rewrite); 'copy-forward' relocate-with-forward-stub,
@@ -119,8 +119,8 @@ export const KIND_REGISTRY = {
 }
 
 // ============================================================================
-// __region_copy_rec arm generation (Heap-kind registry Slice 2, .work/
-// research.md §Heap-kind registry / §Region arena). Every KIND_REGISTRY row's
+// __region_copy_rec arm generation (Heap-kind registry Slice 2,
+// .work/evidence.md §Heap-kind registry / §Region arena). Every KIND_REGISTRY row's
 // `relocate` column above names the STRATEGY; the functions below are the
 // EXECUTABLE arms implementing each strategy for module/core.js's
 // __region_copy_rec (the region-arena Cheney-copy tracer). Not a single
@@ -146,7 +146,7 @@ export const KIND_REGISTRY = {
 // __sclone_rec's TYPED view arm; BUFFER mirrors __sclone_rec's BUFFER arm
 // with a memo added, since — unlike structuredClone — region relocation
 // must preserve the "same .buffer" identity multiple views may share).
-// CLOSURE (region arena FRONT-BOUNDARY forcing case, .work/research.md
+// CLOSURE (region arena FRONT-BOUNDARY forcing case, .work/evidence.md
 // §Region arena — the front boundary's own wall: "give CLOSURE a real
 // region-copy arm — needs a capture-count/env-length side table") gets a
 // real arm too: env slot count + per-slot boxed/raw mode come from the
@@ -179,7 +179,7 @@ export function regionArmBigint() {
  *  strings never forward (module/string.js invariant) so the raw offset
  *  mask is always canonical.
  *
- *  HCACHE header fix (region-arena front-boundary hunt, .work/research.md
+ *  HCACHE header fix (region-arena front-boundary hunt, .work/evidence.md
  *  §Region arena): module/string.js allocates a heap-built (non-SSO,
  *  STR_HCACHE_BIT) string with an 8-byte `[hash u32][len u32]` header, and
  *  layout.js's own STR_HCACHE_BIT doc says the lazy-cache design is
@@ -383,7 +383,7 @@ export function regionArmArray({ hasDynProps }) {
           ;; this block entirely.
           ${ephemeralDynProps}
           ;; NO old-site forwarding stub (boundary-arithmetic audit, window B —
-          ;; .work/research.md §Region arena: this function's own CALLER,
+          ;; .work/evidence.md §Region arena: this function's own CALLER,
           ;; __region_exit, closes with a memory.copy(mark, T, size) — that copy
           ;; physically overwrites every byte in [mark, mark+size) with the
           ;; compacted survivors BEFORE any consumer outside this traversal can
@@ -414,7 +414,7 @@ export function regionArmArray({ hasDynProps }) {
  *  bucket, so in general this arm rebuilds via __coll_order+reinsert
  *  (below), exactly like the pre-Slice-2 hand-written version.
  *
- *  Durable short-circuit (.work/research.md §Region arena — regionArmSetMap's
+ *  Durable short-circuit (.work/evidence.md §Region arena — regionArmSetMap's
  *  durable short-circuit, the finisher named by the bb493138/e854a8a7
  *  session pair): when the TABLE itself is durable (`off < mark` — created a
  *  prior region round, never grown/rebuilt this one, so its own address is
@@ -503,7 +503,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
                     (local.set $i (i32.add (local.get $i) (i32.const 1)))
                     (br $vl)))
                   (return (local.get $out))))))
-          ;; $i reset (audit fplan-2026-08-17, .work/research.md §CompileSession
+          ;; $i reset (audit fplan-2026-08-17, .work/evidence.md §CompileSession
           ;; forensic — "FunctionPlan missing for m6_parse$parse"): the
           ;; stability scan above (when entered — table durable) shares this
           ;; same $i local and, on finding an unstable key, branches out of the
@@ -536,7 +536,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
           (drop (call $__region_memo_set (local.get $memo) (local.get $bits) (i64.reinterpret_f64 (local.get $out))))
           ;; walk the source in insertion order (__coll_order), like __sclone_rec's SET/MAP
           ;; branch — inserting into a fresh cap-sized table never grows, so $outPhys stays canonical,
-          ;; PROVIDED $n is the real live count. Chained-region-round fix (.work/research.md §Region
+          ;; PROVIDED $n is the real live count. Chained-region-round fix (.work/evidence.md §Region
           ;; arena, __coll_order/$__dyn_props chain-round defect): $n used to be read from the
           ;; table's own header count word (i32.load(off-8)) BEFORE ever calling __coll_order — the
           ;; ONE call site in this codebase that violated __coll_order's own documented contract
@@ -566,7 +566,7 @@ export function regionArmSetMap({ lane = LANE } = {}) {
           (block $cd (loop $cl
             (br_if $cd (i32.ge_s (local.get $i) (local.get $n)))
             (local.set $slot (i32.load (i32.add (local.get $ord) (i32.shl (local.get $i) (i32.const 2)))))
-            ;; Region-arena rebuild fix (.work/research.md §Region arena, front-
+            ;; Region-arena rebuild fix (.work/evidence.md §Region arena, front-
             ;; boundary hunt — full mechanism on __set_add_h/__map_set_h,
             ;; module/collection.js): a relocated key's stored bits are the
             ;; LOGICAL (post-move) address — correct to STORE, but its target
@@ -764,7 +764,7 @@ export function regionArmTyped() {
                 (then
                   ;; durable descriptor (stable address) — its root buffer may still be
                   ;; ephemeral (this round); rebase in place if it moved. Ordering audit
-                  ;; (.work/research.md §Region arena): memo-guard the durable branch
+                  ;; (.work/evidence.md §Region arena): memo-guard the durable branch
                   ;; itself, same fix class as __region_relocate_props's durable branch
                   ;; below (both were the only two "walks/mutates in place, no memo"
                   ;; arms in the whole dispatch — ARRAY/OBJECT's durable branches memo
@@ -847,7 +847,7 @@ export function regionArmExternal() {
   return `(if (i32.eq (local.get $t) (i32.const ${PTR.EXTERNAL})) (then (return (local.get $v))))`
 }
 
-/** CLOSURE's region arm — the front-boundary forcing case (.work/research.md
+/** CLOSURE's region arm — the front-boundary forcing case (.work/evidence.md
  *  §Region arena), a real relocation now instead of a trap. Shape mirrors
  *  OBJECT's durable/ephemeral split (the env block, like OBJECT's schema
  *  slots, is a fixed-count-once-allocated run with no separate indirect
@@ -886,8 +886,8 @@ export function regionArmClosure() {
           (if (i32.eqz (global.get $__closure_env_len)) (then (unreachable)))
           (local.set $n (i32.load (i32.add (global.get $__closure_env_len) (i32.shl (local.get $aux) (i32.const 2)))))
           ;; >31 captures can't fit the i32 cell-mode bitmask (module/function.js's
-          ;; own envCellMask cap — unobserved on every measured corpus, .work/
-          ;; closure-plan-design.md §1.5 tops out at 27 captures) — a NAMED trap
+          ;; own envCellMask cap — unobserved on every measured corpus,
+          ;; .work/archive/closure-plan-design.md §1.5 tops out at 27 captures) — a NAMED trap
           ;; for that one case, not a silent truncation of which slots are pointers.
           (if (i32.gt_s (local.get $n) (i32.const 32)) (then (unreachable)))
           (local.set $cellMask (i32.load (i32.add (global.get $__closure_env_mask) (i32.shl (local.get $aux) (i32.const 2)))))
@@ -990,8 +990,8 @@ export function regionCopyRecBody({ hasDynProps, lane = LANE }) {
 }
 
 // ============================================================================
-// Identity-dispatch arm generation (Heap-kind registry Slice 3, .work/
-// research.md §Heap-kind registry — "3 $__eq/$__map_hash arms generated").
+// Identity-dispatch arm generation (Heap-kind registry Slice 3,
+// .work/evidence.md §Heap-kind registry — "3 $__eq/$__map_hash arms generated").
 // module/core.js's $__eq and module/collection.js's $__same_value_zero/
 // $__map_hash each hand-roll a tag-dispatch chain that special-cases the
 // CONTENT-identity kinds — every other kind needs no arm at all, relying on

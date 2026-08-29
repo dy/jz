@@ -13,7 +13,7 @@ test('snapshot: init-built tables become pure data, __start is deleted', () => {
   // i32-narrowing fixpoint's bare-escape veto (inferModuleIntGlobals, 2026-08-03)
   // proves it strict-i32-range-safe by construction — an unguarded `seq = seq +
   // 1; return seq` is EXACTLY the unbounded-accumulator-returned-bare shape that
-  // fixpoint now correctly demotes to f64 (same class as .work/todo.md's
+  // fixpoint now correctly demotes to f64 (same class as .work/archive/todo.md's
   // module-global sibling fix), which would make this test's own i32-initializer
   // assertion below false by DESIGN, not by regression.
   const src = `

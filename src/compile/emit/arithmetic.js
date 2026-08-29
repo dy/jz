@@ -114,7 +114,7 @@ const emitNeg = (a, self) => {
   // NUMBER literal here — see parse.js). No magnitude heuristic needed for
   // literals; the runtime magnitude heuristic (emit.js TYPEOF.bigint) remains
   // for genuinely dynamic/unknown-kind values, a separate, real carrier limit.
-  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/todo.md
+  // `|| censusMaybeUndefinedKind(a) === VAL.BIGINT` (.work/archive/todo.md
   // §deletion-sweep §6/§12 Slice 5): a census-shaped operand's exact-kind claim reaches
   // `valTypeOf` here only via VT['[]']/['.']/['()']'s own Slice-4 exact-kind
   // promotion (kind.js) — a SEPARATE mechanism from the census helpers
@@ -200,7 +200,7 @@ export const arithmeticOps = {
     // String concatenation: pure string operands skip generic ToString coercion.
     const vtA = valTypeOf(a)
     const vtB = valTypeOf(b)
-    // mayBeUndefined join (Slice 3, .work/todo.md §deletion-sweep
+    // mayBeUndefined join (Slice 3, .work/archive/todo.md §deletion-sweep
     // §4 — the "NEWLY added" `+` STRING-concat gap): a STRING claim whose only
     // proof is a maybeUndefined-flagged dict/Map census read (or a bare name
     // that copies one through) is "every value ever WRITTEN was a string", not

@@ -22,7 +22,7 @@
  *   WAT IR: watr S-expression `['module', ...sections]`, every instruction node carries `.type`.
  *     ↓  watOptimize (opt-out via opts.optimize=false) — the SOLE, FINAL optimizer: CSE, DCE, const
  *        fold, inline, coalesce. Runs ONCE, as a fixpoint. No jz pass touches WAT after it (bar the
- *        stable-global-offset hoist, a phase-2 watr-migration candidate). See .work/research.md.
+ *        stable-global-offset hoist, a phase-2 watr-migration candidate). See .work/evidence.md.
  *     ↓  watrPrint (opts.wat=true) → WAT text, or watrCompile → Uint8Array binary
  *
  * # State

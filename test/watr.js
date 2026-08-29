@@ -10,9 +10,9 @@ const WATR_ROOT = fileURLToPath(new URL('.', import.meta.resolve('watr')))
 const watrSrc = file => readFileSync(`${WATR_ROOT}/src/${file}`, 'utf8')
 const watrExample = file => readFileSync(new URL(`./watr-examples/${file}`, import.meta.url), 'utf8')
 
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §5/§9): watr
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §5/§9): watr
 // (an independently-versioned npm dependency, not jz kernel source — Slice
-// 0's own ledger entry, ".work/research.md 'BigInt retirement Slice 0'")
+// 0's own ledger entry, ".work/evidence.md 'BigInt retirement Slice 0'")
 // has 4 of its own genuinely-unprovable BigInt sites (encode.js's
 // F64_SIGN/F64_NAN/F64_QUIET module consts + i64.parse's `bi` local),
 // unreachable from this repo to fix. This file compiles watr's REAL bundled

@@ -462,7 +462,7 @@ test('unshift: multi-arg inserts in argument order, returns new length', () => {
   // old emitter silently DROPPED every argument past the first — in the
   // self-compile kernel that broke assemble.js's own
   // `inject.unshift(setBase, ...stores)`, the last byte-parity ordering
-  // divergence (.work/todo.md, INSTRUMENTED-KERNEL SESSION).
+  // divergence (.work/archive/todo.md, INSTRUMENTED-KERNEL SESSION).
   const r = run(`
     export let go = () => {
       const a = [9]

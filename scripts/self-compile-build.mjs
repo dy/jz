@@ -18,7 +18,7 @@ const OUT = resolve(OUT_DIR, 'jz.wasm')
 // Graph resolution + CARRIER_BOX injection + region-arena gate + compact
 // compiler-runtime collection layout: shared with build-dist.mjs via
 // resolveSelfCompileBuild (architecture re-audit item 2,
-// .work/todo.md) — this entry point used to do NEITHER (JZ_CARRIER_BOX=0 was
+// .work/archive/todo.md) — this entry point used to do NEITHER (JZ_CARRIER_BOX=0 was
 // silently a no-op here, and a region-live self.js built through this script
 // would carry build-dist.mjs's inlinePtrOffsetFast hazard ungated). Both
 // builders now consume the identical config resolver.

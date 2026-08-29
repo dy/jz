@@ -1,8 +1,8 @@
 # ADR-0001: BigInt representation — tagged dynamic core, raw i64 as proven specialization
 
 Status: **Accepted** 2026-08-21 (audit-E "yours to answer" ratification). Supersedes the
-BigInt-retirement direction of `.work/compat-handoff.md` §BigInt and
-`.work/bigint-retirement-design.md`'s end state. Ratifies `.work/representation-plan-v2-design.md`
+BigInt-retirement direction of `.work/archive/compat-handoff.md` §BigInt and
+`.work/archive/bigint-retirement-design.md`'s end state. Ratifies `.work/archive/representation-plan-v2-design.md`
 §0 as the standing architecture.
 
 ## Context
@@ -15,7 +15,7 @@ conflicting directions:
 - **representation-plan-v2-design.md**: plan owns edge representation; normalize (box),
   split, or reject — never a raw-TOP fallback. Completion measured by deleting fallback
   authority.
-- **compat-handoff.md / bigint-retirement-design.md**: BigInt mixing is compat leakage;
+- **.work/archive/compat-handoff.md / .work/archive/bigint-retirement-design.md**: BigInt mixing is compat leakage;
   end state raw-i64-only, unprovable Number/BigInt flows = compile errors
   (`JZ_BIGINT_STRICT=1` semantics as default).
 
@@ -26,7 +26,7 @@ end-state is falsified by the repository's own history:
 
 1. **Self-host is load-bearing mixed BigInt.** watr parses `i64.const` operands and needs
    real 64-bit parsing; retiring the dynamic half broke the self-compiled kernel
-   (dc6139d9 wall, .work/todo.md:10044-10097). Raw-only-with-reject would reject jz's own
+   (dc6139d9 wall, .work/archive/todo.md:10044-10097). Raw-only-with-reject would reject jz's own
    self-host graph — the compiler could not compile itself.
 2. **Raw-TOP fallbacks miscompile Numbers, not just BigInts.** v1's magnitude heuristic
    read `-5e-324` as a raw BigInt and compiled it to `-1` (v2 design §1). Ambiguity is
@@ -71,9 +71,9 @@ In order:
 4. **Remaining architectural follow-up:** collapse the duplicate semantic-kind lattice
    onto canonical kind facts; move `programFacts.paramReps` to SignatureSolution.
 5. **Done:** erasure-diag.js and bigint-boxed-stats.js deleted as blocks.
-6. **Done:** obsolete direction documents point here; bigint-retirement-design.md remains
+6. **Done:** obsolete direction documents point here; .work/archive/bigint-retirement-design.md remains
    historical evidence of the wall.
 
-Not in scope: `.work/compat-handoff.md`'s HASH dict-mode workstream (unrelated, still live)
+Not in scope: `.work/archive/compat-handoff.md`'s HASH dict-mode workstream (unrelated, still live)
 and the jzify desugar-to-core direction (compatible: BigInt is core, not sugar — nothing
 about generators/async/classes changes).

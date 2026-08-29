@@ -200,7 +200,7 @@ export function analyzeFuncForEmit(func, programFacts) {
       // Cross-function never-relocation proof (analyzeParamNeverGrown) — the
       // raw-base array read (module/array.js arrBase) keys off this rep.
       if (r.neverGrown) updateRep(pname, { neverGrown: true })
-      // mayBeUndefined (Slice 2, .work/todo.md §deletion-sweep
+      // mayBeUndefined (Slice 2, .work/archive/todo.md §deletion-sweep
       // §3) — narrow.js's inter-procedural join already proved this param's
       // ENTRY value can be a census-shaped read at some live call site.
       // Unconditional (no `!reassigned` guard, unlike r.val/r.recvArrTyped
@@ -275,7 +275,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     seedLocalIntConsts(body)
   }
   // A plain analyzeBody read, not a forced reanalyzeBody (walk-count design
-  // B1, .work/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
+  // B1, .work/archive/walk-count-design.md §2.4/§5 item 3): narrowSignatures may
   // have cached this body's locals slice before our pre-seed, when params
   // still had no inferred VAL.TYPED — but analyzeBody's own live
   // sigFingerprint gate now catches that mismatch on the read itself and
@@ -443,7 +443,7 @@ export function analyzeFuncForEmit(func, programFacts) {
     // Void body (falls off → undefined, which callers ignore) keeps the f64 carrier:
     // undefined isn't a reference, so no i64 is needed and wrapping every void export
     // is pure overhead. A non-empty set must be all-NUMBER to stay f64.
-    // `censusSafe` (.work/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
+    // `censusSafe` (.work/archive/todo.md §deletion-sweep §14) guards BOTH disjuncts below,
     // not just the `valResult == null` one, because `valTypeOf(e)`/`func.valResult`
     // for a bare census-BIGINT node, a `-`/`~` unary wrapping one, or a BINARY
     // arithmetic/bitwise node whose operands `valTypeOfWithLocals` can't locally
@@ -468,14 +468,14 @@ export function analyzeFuncForEmit(func, programFacts) {
       (func.valResult == null && sig.results[0] === 'f64' && rex.every(e => valTypeOf(e) === VAL.NUMBER)))
   }
 
-  // LoopPlan pre-emission mint (.work/research.md §BodyModel /
+  // LoopPlan pre-emission mint (.work/evidence.md §BodyModel /
   // LoweredLoopPlan): last, so it sees this function's FINAL AST (every loop-
   // AST-rewrite pass above has already run) and maximally-settled `repOf`
   // facts (every updateRep call above has already landed) — the same two
   // preconditions emit.js's own (separately, locally computed) counter/guard
   // range facts enjoy today, just at analyze time instead of emit time.
   mintLoopPlans(body)
-  // ClosureEnvPlan pre-emission mint (Slice 1, .work/closure-plan-design.md)
+  // ClosureEnvPlan pre-emission mint (Slice 1, .work/archive/closure-plan-design.md)
   // — same call site, same "last, sees final AST + settled ctx.func.boxed"
   // guarantee; ctx.closure.make reads astClosurePlan back at each closure
   // literal's own emission.

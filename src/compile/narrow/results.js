@@ -247,7 +247,7 @@ export function narrowI32Results(funcs) {
 // (populated at emit time — compile/index.js's analyzeFuncForEmit-equivalent
 // `updateRep` loop over the identical `facts.arrElemValTypes` slice). Without
 // this, `let a = [1n]; return a[0]` reads as an unproven (Number) boundary
-// kind even though the i64 VALUE is already correct (.work/todo.md
+// kind even though the i64 VALUE is already correct (.work/archive/todo.md
 // "NOT FIXED, BANKED" entry — BigInt array literals never
 // qualify for flat SRoA, so this whole-program fact is the only path to the
 // correct kind).
@@ -343,7 +343,7 @@ export function narrowValResults(funcs) {
       if (!vt0) continue
       if (allSame) {
         func.valResult = vt0
-        // mayBeUndefined return-kind join (Slice 2, .work/todo.md
+        // mayBeUndefined return-kind join (Slice 2, .work/archive/todo.md
         // §deletion-sweep §3 "Return kinds"): OR across every return-tail
         // expr this SAME allSame fold already unified — a `return d[missing]`
         // arm's census shape, or a `return x` whose `x` traces to one through

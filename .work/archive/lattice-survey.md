@@ -1,6 +1,6 @@
 # Product-lattice campaign — design-pass survey (2026-08-08)
 
-Read-only inventory for audit-#15's one-solver-domain design (`.work/todo.md`
+Read-only inventory for audit-#15's one-solver-domain design (`.work/archive/todo.md`
 "PRODUCT-LATTICE CAMPAIGN — design-pass opening brief"). No proposals below —
 producers, consumers, conflicts, and migration risk only. All file:line
 citations verified against the working tree at survey time (HEAD `061e2c6e`).
@@ -31,7 +31,7 @@ unification design has to route through all four, not one:
 | `src/compile/infer.js` (608 lines) | Per-body **evidence producers** only (`SOURCES` registry, `inferParams`, `inferValType`/`inferSchemaId`/`inferArrElemSchema*`/`inferTypedCtor`, `recordGlobalRep`) — feeds `updateRep`/`updateGlobalRep`, never touches `paramReps` directly. |
 | `src/compile/narrow.js` (~3437 lines) | The actual cross-call **fixpoint driver**: `mergeRule`/`hardParamVal`/`hardParamRecvArrTyped`, the soft/hard policy split, and every real `paramReps` write. 73 references to `paramReps` — by far the largest consumer/producer of the three target files named in the brief. |
 
-`.work/research.md:450-452`'s own citation ("phase chronology... ~line 84 [of
+`.work/evidence.md:450-452`'s own citation ("phase chronology... ~line 84 [of
 infer.js]") is stale: that comment does not exist in `infer.js` (confirmed via
 `git log -S"phase chronology"`, zero hits at that path). The real "what's
 valid when" phase list is `src/reps.js:21-25` ("Mutation sites by phase":
@@ -294,7 +294,7 @@ runtime check — a concrete, positive case for why unification helps, not
 just a risk to manage.
 
 **The `hz` model in detail** (verified directly against `program-facts.js`
-and cross-checked via `.work/carrier-representation-design.md` §17-§22):
+and cross-checked via `.work/archive/carrier-representation-design.md` §17-§22):
 `hz.all=true` has exactly **2 setter sites**, both gated on "receiver's kind
 COULD be `VAL.OBJECT`" (i.e. `kindOf(obj)` resolves to `null` or
 `VAL.OBJECT` — `VAL.OBJECT` is deliberately excluded from `KEYED_EXEMPT_VALS
@@ -404,7 +404,7 @@ uncached narrower shape (9 fields) returned directly, never stored.
 `assertBodyFactsFresh` staleness check (narrow: only catches a *signature
 retype* surviving under a stale hit, not a full recompute-and-compare — a
 full `JZ_DEBUG_CACHE` general-staleness attempt was tried and abandoned per
-`.work/todo.md`). **30 real call sites** (39 raw grep hits minus 8
+`.work/archive/todo.md`). **30 real call sites** (39 raw grep hits minus 8
 comment-only minus 1 definition), matching the brief's "~31" closely, across
 `plan/literals.js` (2), `analyze.js` (2, one is `reanalyzeBody`'s own default
 arg), `plan/scope.js` (1), `program-facts.js` (4), `compile/index.js` (3, all
@@ -422,7 +422,7 @@ already a **same-named but structurally different** `invalidateBodyFacts`
 — a `narrow.js:958-961` *phase-local method* (`invalidateAllBodyFacts() +
 clearDerived()`, no per-body target, no reason string) — which the brief's
 target end-state (a single module-level `invalidateBodyFacts(body, reason)`
-entry point, per `.work/research.md:704-708`) would have to either absorb or
+entry point, per `.work/evidence.md:704-708`) would have to either absorb or
 rename around, since the name is already taken by a different-shaped thing
 (FINDING — naming collision waiting to happen).
 
@@ -441,7 +441,7 @@ rename around, since the name is already taken by a different-shaped thing
 | **Points-to / schema identity** | `sidOf`/`idOf`; `chainSid` (multi-hop `.`-chain → sid); `slotObjSids` (nested sid) |
 | **Representation (raw/boxed/carrier)** | `isProvenBoxedBigint`/`isCurrentlyBoxedBigint`/`isTernaryBoxedBigint`/`needsBigintBox` (ir.js); `slotBigintBoxedBySid`/`slotBigintProvenBySid` (module/schema.js) |
 
-### 2.2 The five walls (§17-§22, `carrier-representation-design.md`)
+### 2.2 The five walls (§17-§22, `.work/archive/carrier-representation-design.md`)
 
 | § | Site | Question asked | Wall |
 |---|---|---|---|
@@ -593,7 +593,7 @@ performance).
   (`src/infer.js`, "~line 84") is stale on two counts: the file is
   `src/compile/infer.js`, and the lattice's actual primitives moved to
   `src/param-reps.js` (a `git log -S` search confirms the "phase chronology"
-  text the brief/research.md refers to never existed at that path — the real
+  text the brief's `.work/evidence.md` reference describes never existed at that path — the real
   phase-chronology doc lives in `src/reps.js:6-25`).
 - **FINDING-1** — `src/reps.js` (the `ValueRep`/`repOf`/`updateRep` system,
   29-field `REP_FIELDS`, 4-tier lookup priority) is not named anywhere in the

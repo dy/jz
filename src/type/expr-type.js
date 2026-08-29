@@ -5,7 +5,7 @@
  * `exprType` below): "when does i32 arithmetic stay i32 vs widen to f64" is
  * decided in TWO places that must agree — emit.js DECIDES, this mirrors —
  * kept as one dispatch function so that contract stays legible as a whole
- * (see `.work/type-split.md` for why it isn't split further).
+ * (see `.work/archive/type-split.md` for why it isn't split further).
  *
  * @module type/expr-type
  */

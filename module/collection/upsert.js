@@ -5,7 +5,7 @@
  * Pure move out of collection.js (stdlib-generators minimality pass): every
  * export below is called from collection.js's `export default` exactly as
  * before, at the same call sites, with the same arguments. This file changes
- * WHERE the code lives, not what it emits — see .work/stdlib-generators.md
+ * WHERE the code lives, not what it emits — see .work/archive/stdlib-generators.md
  * for the extraction boundary and the byte-identity verification method.
  *
  * Imports the durable-log helpers from the `./durable.js` sibling (not from
@@ -54,7 +54,7 @@ const hasProbeLane = () => collectionLaneBytes() !== 0
 // reach GROW_QUAD_CAP.
 //
 // Measured (2026-08-22, fresh site attribution on the jz×jz goal-gate,
-// dormant/shipped config, .work/research.md): the overwhelming majority of
+// dormant/shipped config, .work/evidence.md): the overwhelming majority of
 // tables — every per-object dyn-props hash chief among them — never grow
 // past a handful of entries at all (≈94% of one run's __hash_new_small
 // tables never triggered a single subsequent grow). Doubling stays exactly
@@ -922,7 +922,7 @@ function genLookupStrictPrehashed(name, entrySize, eqExpr, expectedType, missing
     ${notFound})`
 }
 
-// `hasVal` (region-arena rebuild fix, .work/research.md §Region arena):
+// `hasVal` (region-arena rebuild fix, .work/evidence.md §Region arena):
 // added so PTR.SET (16-byte, key-only entries — no room for a value word at
 // slot+16) can share this generator instead of a hand-duplicated copy —
 // mirrors genUpsert's own hasVal toggle immediately above verbatim. Default

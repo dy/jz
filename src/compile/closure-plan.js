@@ -3,7 +3,7 @@ import { findFreeVars } from './analyze.js'
 import { ctx } from '../ctx.js'
 import { repOf } from '../reps.js'
 
-// ClosureEnvPlan (.work/closure-plan-design.md) — mirrors loop-model.js's
+// ClosureEnvPlan (.work/archive/closure-plan-design.md) — mirrors loop-model.js's
 // astLoopPlan/mintLoopPlans idiom: a frozen, pre-emission fact keyed on AST
 // node identity, computed once after this function's analysis has settled,
 // read-only from emission on.
@@ -69,7 +69,7 @@ import { repOf } from '../reps.js'
 // JZ_DEBUG_INVARIANTS shadow-assert instead (module/function.js's own doc,
 // where the plan is read).
 //
-// This plan store lives at `ctx.plans.closures` (.work/todo.md), a fresh
+// This plan store lives at `ctx.plans.closures` (.work/archive/todo.md), a fresh
 // WeakMap every reset()/beginSession() (src/ctx.js's reset(), the
 // ctx.features/ctx.linkDemand subtree idiom). Session ownership matters
 // because under self-compiling WeakMap lowers to a strong Map (no native GC) —

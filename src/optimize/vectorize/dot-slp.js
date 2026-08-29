@@ -67,7 +67,7 @@ const dotPairExpr = (a, pairs, useRelaxedFma = false) => {
   return expr
 }
 
-// SLP unification (.work/vectorizer-generality-design.md §2 "SLP (#15-17) → 2"): this is
+// SLP unification (.work/archive/vectorizer-generality-design.md §2 "SLP (#15-17) → 2"): this is
 // the DOT-SEQUENCE seed tier of the unified SLP packer (`slpPairsIn`, defined after
 // `slpStorePairsIn` below) — seeds on 2 adjacent `matchF64DotSeq` instances (a 4-wide
 // unrolled dot reduction ending in a store) instead of `slpStorePairsIn`'s adjacent

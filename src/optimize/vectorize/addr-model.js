@@ -279,7 +279,7 @@ export function _offsetLocalStride(body, name, ind, allowAos, idxTees) {
   return found && ok ? stride : null
 }
 
-// ---- BodyModel (.work/research.md §BodyModel §2) — slices 1-3 landed -------------
+// ---- BodyModel (.work/evidence.md §BodyModel §2) — slices 1-3 landed -------------
 //
 // One shared per-block record generalizing three independent private discovery predicates
 // (`_offsetLocalStride`/`_isAddressLocal`/`_isPixelIndexLocal`) plus `matchMirrorAddr` into a
@@ -437,7 +437,7 @@ export function buildBodyModel(body, ind) {
 
 // JZ_DEBUG_INVARIANTS-gated proof that BodyModel's generalized tables agree with the private
 // predicates/queries they generalize, on every block this compiler ever matches (battery + bench
-// corpus + self-compile — see .work/todo.md's LOOPPLAN BODYMODEL SLICE 1 entry for the measured
+// corpus + self-compile — see .work/archive/todo.md's LOOPPLAN BODYMODEL SLICE 1 entry for the measured
 // counts). Throws on the first divergence found — a widening or narrowing in the generalization
 // is a correctness question to answer BEFORE any recognizer can depend on the shared table, not
 // a warning to log past. No-op unless JZ_DEBUG_INVARIANTS=1 (DBG_INVARIANTS), zero production cost.

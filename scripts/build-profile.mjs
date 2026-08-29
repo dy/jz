@@ -2,11 +2,11 @@
 /**
  * resolveSelfCompileBuild — the ONE self-compile build-config resolver shared by
  * scripts/build-dist.mjs and scripts/self-compile-build.mjs (architecture re-audit
- * item 2, .work/todo.md): the only place literal injection (DBG_INVARIANTS) or
+ * item 2, .work/archive/todo.md): the only place literal injection (DBG_INVARIANTS) or
  * the region-arena × inlinePtrOffsetFast derivation happens, so both builders
  * always agree. (The CARRIER_BOX injection this resolver was born for is gone —
  * the boxed carrier became the unconditional representation and the flag was
- * deleted, .work/carrier-representation-design.md §34's own end state.)
+ * deleted, .work/archive/carrier-representation-design.md §34's own end state.)
  *
  * @param {object} [p]
  * @param {boolean} [p.debugInvariants] Bake DBG_INVARIANTS as this literal into
@@ -168,7 +168,7 @@ export function resolveSelfCompileBuild({
     graph.modules[SNAP_PATH] = graph.modules[SNAP_PATH].replace(snapNeedle, 'if (true) return false')
   }
 
-  // ── REGION-ARENA × inlinePtrOffsetFast (.work/research.md §Region arena,
+  // ── REGION-ARENA × inlinePtrOffsetFast (.work/evidence.md §Region arena,
   // ROOT-CAUSE ATTEMPT 2026-08-11 — confirmed by ablation, 7/7 banked fuzz
   // findings + both minimal repros clean ×3 reps with this flag off, kernel-
   // oracle 13/13×3, kernel-parity 33/33×3, dead on the full 200-seed sweep×3):

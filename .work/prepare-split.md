@@ -351,7 +351,7 @@ committed and mechanically re-diffed against the moved files.
 
 1. `node scripts/refactor-oracle.mjs check --ref main` — must report **clean**
    (byte-identical WASM across the whole corpus at O0/O2/O3/size; see
-   `.work/refactor-oracle.md`). This is the primary gate for a pure-move split:
+   `.work/archive/refactor-oracle.md`). This is the primary gate for a pure-move split:
    it proves the split changed no compiled output, not just "tests still pass."
    Run it after *each* module extraction, not only at the end — cheaper to
    isolate a mistake to one move.
@@ -587,7 +587,7 @@ cluster). Second largest `module-resolve.js` at 299.
 ### Dead-code / outlier / walker dispositions
 
 **Dead exports/imports (phase 1, commit `a6c074b7`)**: the 3 names
-`.work/dead-exports-sweep.md` flagged as unused imports specific to
+`.work/archive/dead-exports-sweep.md` flagged as unused imports specific to
 prepare/index.js — `REJECT_OPS` (`../op-policy.js`), `includeForKnownKeyIteration`
 and `includeForRuntimeKeyIteration` (`../autoload.js`) — confirmed still
 genuinely unused post-split (grepped `src/prepare/` for each; the only hit

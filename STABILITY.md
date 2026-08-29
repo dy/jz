@@ -102,8 +102,9 @@ names beyond exported ones — the name section is opt-in via `--names`);
   6.4 MB source inside wasm32) still exceeds the 4 GiB address space and traps.
   V1 requires this run to produce bytes below that ceiling. The native (Node)
   toolchain remains the shipping build path until then. Measured attribution
-  and the current closure plan live in `.work/v1-architecture-campaign.md` and
-  `.work/porffor-alpha3-audit.md`; user programs do not approach this wall.
+  and the current closure plan live in `.work/plan.md`; competitive measurements
+  live in `.work/evidence.md` and their analysis in `.work/audit.md`. User programs
+  do not approach this wall.
 
 ## Known limitations at v1
 

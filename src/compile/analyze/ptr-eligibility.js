@@ -6,7 +6,7 @@
  * function pointer-representation eligibility analyses, imported together
  * at every call site (index.js). Split out of analyze.js (pipeline-
  * minimality slice); see analyze.js's module header for the full split
- * rationale and `.work/analyze-traversals.md` for the traversal inventory.
+ * rationale and `.work/archive/analyze-traversals.md` for the traversal inventory.
  *
  * @module compile/analyze/ptr-eligibility
  */

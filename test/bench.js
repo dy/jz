@@ -314,7 +314,7 @@ const SIZE_BUDGET = {
   // walled precision-rung-3 prerequisite) — that is the only sound reducer.
   // watr 298000 → 300000: fix/string-method-guess retired the unsound
   // method-usage guess; sound inference costs +1383 B here (299383 B
-  // measured) for a real soundness fix — see .work/string-method-guess-notes.md.
+  // measured) for a real soundness fix — see .work/archive/string-method-guess-notes.md.
   dotprod: 1450, bytebeat: 1600, fft: 3000, synth: 9000, blur: 3600, watr: 300000,
   // wav 2050 → 2250, base64 2300 → 2400: Root F checked reads/versioning in
   // the runtime-length codec loops (+100/+55 measured). Ratchet down with the

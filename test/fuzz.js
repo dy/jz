@@ -478,7 +478,7 @@ const report = (f, opts) => {
 // documented integer contract the scalar oracle skips; phase-2 with the contract model
 // can add index-dependent values).
 //
-// LITERAL-CHAIN CAVEAT (.work/todo.md item #6): a subtree built ENTIRELY from F_LEAF
+// LITERAL-CHAIN CAVEAT (.work/archive/todo.md item #6): a subtree built ENTIRELY from F_LEAF
 // literals (no `buf[i]` anywhere in it) is exactly the shape `src/prepare/pre-eval.js`
 // constant-folds at compile time via its Rational carry — by design, rounded ONCE for
 // the whole chain instead of per-operation (README FAQ "Compiled constants are more
@@ -899,7 +899,7 @@ const isMain = import.meta.url === `file://${process.argv[1]}`
 // to f64 (isFullRangeI32; `+` stays i32 — the ToInt32-sunk accumulator op).
 const KNOWN_OPEN = new Set([])
 // KERNEL-ONLY hang exclusion (region-hooks-on kernel investigation,
-// .work/region-release-notes.md "goal (2)", 2026-08-28) — seed=84 at opt=3
+// .work/archive/region-release-notes.md "goal (2)", 2026-08-28) — seed=84 at opt=3
 // compiles instantly and correctly NATIVELY (confirmed: `node test/fuzz.js
 // --seed=84` matches JS at every opt level 0-3 with no delay) but the
 // IDENTICAL source, compiled through the self-hosted region-hooks-on kernel

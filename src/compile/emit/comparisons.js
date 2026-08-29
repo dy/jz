@@ -37,7 +37,7 @@ function emitTypeofCmp(a, b, cmpOp) {
   if (typeof code !== 'number') return null
 
   const t = temp()
-  // Ambiguous BOOL-merge operand (.work/todo.md §deletion-sweep): the
+  // Ambiguous BOOL-merge operand (.work/archive/todo.md §deletion-sweep): the
   // collapsed NUMBER kind is unsound for typeof, which must tell a genuine
   // number apart from a coerced-to-0/1 boolean — emitIdentitySafe re-emits
   // the merge with its own BOOL arm boxed to its atom, so the dynamic bit
@@ -122,7 +122,7 @@ function emitTypeofCmp(a, b, cmpOp) {
     if (planTaggedBigint) return isPtrKind(PTR.BIGINT)
     // bigint heuristic: finite, nonzero, sub-normal abs (RAW bigint carrier
     // bits reinterpreted as f64) OR a real PTR.BIGINT box (CARRIER PROGRAM
-    // Slice 3, .work/carrier-representation-design.md §7 — the registry's
+    // Slice 3, .work/archive/carrier-representation-design.md §7 — the registry's
     // 'typeof' finding, layout-kinds.js). Landed ALONGSIDE, not replacing,
     // the magnitude fallback: round-3's own "verify every R-recovery arm
     // independently before deleting the heuristic" discipline — Slice 5
@@ -358,7 +358,7 @@ const STRICT_PRIM = new Set([VAL.NUMBER, VAL.BOOL, VAL.STRING, VAL.BIGINT])
 // the identical reason: an unwritten key reads back the same undefined —
 // `prec[op] === undefined` (does this key exist?) is that dict's own bounds
 // probe. The predicate is `censusMaybeUndefined` (kind.js,
-// .work/todo.md §deletion-sweep) — REACHABLE but not yet
+// .work/archive/todo.md §deletion-sweep) — REACHABLE but not yet
 // LOAD-BEARING here: Slice 4's VT['[]']/VT['.']/VT['()'] exact-kind wiring
 // was reverted (audit #10, §14 is the re-enablement path), so `valTypeOf`
 // for a dict/Map read stays null and this function's callers never reach a
@@ -500,7 +500,7 @@ function emitLooseEq(a, b, negate, strict) {
   const vtb = numericVal(rawB)
   const numA = () => rawA === VAL.BOOL ? toNumF64(a, va) : asF64(va)
   const numB = () => rawB === VAL.BOOL ? toNumF64(b, vb) : asF64(vb)
-  // maybeUndefined join (.work/todo.md §deletion-sweep §1/Slice 5): "either
+  // maybeUndefined join (.work/archive/todo.md §deletion-sweep §1/Slice 5): "either
   // side known-pure NUMBER" above is only TRUE when that side's exact-kind
   // claim can't be falsified at runtime. `nullableOperand` (this file, above)
   // already unifies the two ways a NUMBER claim can lie — an unproven typed-
@@ -539,7 +539,7 @@ function emitLooseEq(a, b, negate, strict) {
   // dispatch (what pulls __str_eq/__is_str_key/__char_at/__str_byteLen into
   // a module with no string at all, e.g. a pure Uint8Array match loop:
   // `src[j+len] === src[ip+len]` — bisected live to this exact gap,
-  // .work/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
+  // .work/archive/todo.md "lz/glyfparse __eq bloat"). f64.eq alone is unsound only
   // when BOTH sides are nullish (IEEE-754: f64.eq is false for any NaN
   // operand, even a bit-identical one) — NOT a blind i64 bit-eq (a genuine
   // NaN payload, e.g. a literal `NaN` stored through the same slot, can
@@ -685,7 +685,7 @@ function emitStrictEq(a, b, negate) {
   const sa = sentinelOf(a), sb = sentinelOf(b)
   if (sb) return strictSentinel(a, sb === 'undef')
   if (sa) return strictSentinel(b, sa === 'undef')
-  // Ambiguous BOOL-merge operand(s) (.work/todo.md §deletion-sweep):
+  // Ambiguous BOOL-merge operand(s) (.work/archive/todo.md §deletion-sweep):
   // kind.js's collapsed static kind for a `?:`/`&&`/`||`/`??` merge with one
   // BOOL arm and one NUMBER arm is NUMBER (the deliberate benign arithmetic-
   // context coercion) — trusting it here, either for the differing-class fold

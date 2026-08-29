@@ -24,7 +24,7 @@
  * Whole-module passes see the full function list + globals map.
  *
  * This file is the stable public entry: every pass now lives in its own family
- * module under src/optimize/ (see .work/optimize-split.md for the map), and
+ * module under src/optimize/ (see .work/archive/optimize-split.md for the map), and
  * this barrel only re-exports — so no consumer import site needs to change.
  * The pass driver itself (`optimizeFunc`, the fixed per-function apply order)
  * lives in driver.js; the generic peephole/rewrite walker lives in peephole.js.

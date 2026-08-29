@@ -1,7 +1,7 @@
 # jz — recovered todos (clean)
 
-1st-level open tasks recovered from the pre-`db9911bb` `todo.md` (working log
-archived in `.work/archive-todo-2026-07.md`). The compact rewrite kept only the
+1st-level open tasks recovered from the pre-`db9911bb` `.work/archive/todo.md` (working log
+archived in `.work/archive/archive-todo-2026-07.md`). The compact rewrite kept only the
 kernel/perf ledger and dropped every forward-looking section below — recovered
 here. Verdict/status prose and completed `[x]` items stripped; grep the archive
 for the full dissection of anything that needs it.
@@ -11,7 +11,7 @@ for the full dissection of anything that needs it.
 * [x] rename self-host to self-compile
 * [ ] Beat all bench cases, all examples — the standing mandate (residual V2-class
   tails: shapes record layout, qoi branch-sched, sdf symbolic hull, ulam/raymarcher
-  parity noise; tracked in `todo.md`).
+  parity noise; tracked in `.work/archive/todo.md`).
 * [ ] sourcemaps
 * [ ] floatbeat
 * [x] color-space
@@ -151,7 +151,7 @@ Path: `jz → wasm2c/w2c2 → C → arm-none-eabi-gcc / esp-idf / avr-gcc → fl
 * [ ] **Stdlib-pull audit** — walk `module/*.js` for builtins emitting a polyfill where
   wasm-v1 has a native op / cheap fold (the `**0.5→sqrt` win, generalized). Gate on the
   builtin actually appearing in a kernel.
-* [ ] **Representation carriers** (design: .work/research.md) — jsstring internal-locals flow;
+* [ ] **Representation carriers** (design: .work/evidence.md) — jsstring internal-locals flow;
   boundary string cache (by identity); schema-object field packing (i32/ptr, not f64-tag);
   typed-array element rep (auto Int32Array backing); closure-capture narrowing (i32 cell).
 * [ ] **form-normalization folds** (lint) — `parseInt(intLit)` fold; `x=x` drop; `s+""` drop

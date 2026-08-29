@@ -74,7 +74,7 @@ function freshenUnrolledScalarBindings(body, ir) {
   }
   if (!rename.size) return ir
 
-  // HIR provenance link upkeep (.work/research.md §BodyModel slice 4 — found via its own
+  // HIR provenance link upkeep (.work/evidence.md §BodyModel slice 4 — found via its own
   // shadow-assert, vectorize.js's assertLoopPlanAgrees): this rename mutates local names IN
   // PLACE on the ALREADY-linked block node the nested loop's own 'for' emission minted a
   // LoopPlan for — the block's IDENTITY survives (same array), so loopPlanLink still resolves
@@ -896,7 +896,7 @@ export const controlFlowOps = {
     // only the resulting UPPER half is installed here.
     const guardName = Array.isArray(cond) && (cond[0] === '<' || cond[0] === '<=') && typeof cond[1] === 'string' ? cond[1] : null
     const guardBoundRange = guardName ? intExprRange(cond[2]) : null
-    // HIR provenance link fact (.work/research.md §BodyModel slice 4): the guard's RHS is a
+    // HIR provenance link fact (.work/evidence.md §BodyModel slice 4): the guard's RHS is a
     // provable COMPILE-TIME CONSTANT exactly when its proven range collapses to a single point —
     // the WAT-level bound the vectorizer later sees must be that SAME i32.const when so (see
     // ir.js's loopPlanLink doc + vectorize.js's assertLoopPlanAgrees). No new semantics:
@@ -923,7 +923,7 @@ export const controlFlowOps = {
     if (step) loopBody.push(...emitVoid(step))
     loopBody.push(['br', loop])
     const loopBlockNode = ['block', brk, ['loop', loop, ...loopBody]]
-    // HIR provenance link (.work/research.md §BodyModel slice 4; pre-
+    // HIR provenance link (.work/evidence.md §BodyModel slice 4; pre-
     // emission move): stamp this WAT loop's originating HIR facts so the vectorizer's
     // dispatch can shadow-assert against them — see ir.js's loopPlanLink doc for the
     // {plan, lowering} split and the identity/fail-open contract. `plan` (id/hull/

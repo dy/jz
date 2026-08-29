@@ -144,7 +144,7 @@ export const MUTATE_OPS = new Set([...ASSIGN_OPS, '++', '--'])
  *  body once per relevant declaration/reference — O(decls × |body|) unmemoized,
  *  which is what turned module-sized synthetic default functions (m86_math$default,
  *  24 closure registrations in one 175K-char body) into a 3.2 GB wasm-arena blowup
- *  (.work/research.md §emitFunc blowup). The emit driver brackets its stages with
+ *  (.work/evidence.md §emitFunc blowup). The emit driver brackets its stages with
  *  begin/endAssignedMemo — sound there because emission never mutates the source
  *  AST (post-analyze freeze). Outside that window (plan/analyze callers, which DO
  *  interleave AST mutation) the original always-fresh walk runs unchanged. */

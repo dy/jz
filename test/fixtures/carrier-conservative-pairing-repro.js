@@ -1,5 +1,5 @@
 // Fixture for test/pointers.js's carrier-box "CONSERVATIVE PAIRING" pin
-// (.work/carrier-representation-design.md — the §15/§16/§17-21 chain's
+// (.work/archive/carrier-representation-design.md — the §15/§16/§17-21 chain's
 // closing move). Same shape as carrier-layout-repro.js (the REAL layout.js,
 // not a hand-mimicked one — round-3/§13's own lesson) PLUS a `corrupt`
 // helper whose `obj[key] = val` (unresolvable receiver/key) trips

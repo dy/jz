@@ -125,7 +125,7 @@ function matchLoopBrEnd(loopNode) {
 // here per LoopPlan; consumers read bl.writes/bl.referenced/bl.hasGlobalSet instead of
 // re-walking.
 //
-// Also computes BodyModel (.work/research.md §BodyModel; consumed by tryReduceBitExact/
+// Also computes BodyModel (.work/evidence.md §BodyModel; consumed by tryReduceBitExact/
 // tryRampMap): `addrTable`/`offsetTees`/`siteAccess`/`aliasClass`, spread in below. `offsetTees`
 // is ONE construction — `buildBodyModel` derives it FROM `addrTable`, so it rides in with
 // `...bm` instead of its own separate `deriveOffsetTees` call. JZ_DEBUG_INVARIANTS

@@ -215,7 +215,7 @@ test('in: inferred-schema aliases cannot bypass source-side shape mutations', ()
   }
 })
 
-// dyn-reach slice (per-schema precision for needsDynShadow, .work/dyn-reach-
+// dyn-reach slice (per-schema precision for needsDynShadow, .work/archive/dyn-reach-
 // slice.md): anyDynKey used to mirror EVERY object literal's schema fields
 // into the per-object props-hash the instant ANY `obj[computedKey]` read or
 // `for-in` existed ANYWHERE in the program. schemaDynReach narrows this to
@@ -296,7 +296,7 @@ test('dyn-reach: an unresolvable dyn-key receiver fails closed — every schema 
     'a shadows at both construction and its later write despite never itself appearing in a [] or for-in — the fail-closed ALL sentinel')
 })
 
-// union points-to (dyn-reach slice 2, .work/dyn-reach-slice.md's own NEXT):
+// union points-to (dyn-reach slice 2, .work/archive/dyn-reach-slice.md's own NEXT):
 // a bare-name dyn-key receiver that's a function PARAMETER with no single sid
 // (sidOf's own fallbacks never bind a param name) used to fall straight to
 // the whole-program 'ALL' sentinel above. resolveParamUnion
@@ -388,7 +388,7 @@ test('Map: a write through an alias is not lost to a stale census kind (audit P0
     return m.get('k') - 0`), NaN)  // 'oops1' - 0 === NaN, same as plain JS
 })
 
-// FIXED (.work/todo.md §deletion-sweep Slice 1, value-join): dictValueKindOf
+// FIXED (.work/archive/todo.md §deletion-sweep Slice 1, value-join): dictValueKindOf
 // (kind.js, consumed by VT['[]']/VT['.']) had the SAME absent-key
 // exact-promotion unsoundness as the reverted mapValueKindOf — the census is
 // "every value ever WRITTEN", not "this key exists". Closed by
@@ -404,7 +404,7 @@ test('dict: .get()-equivalent read on an absent key behaves as real undefined (S
   is(run(`const d = {}; const wk = 'a'; d[wk] = 1; const rk = 'zz'; return String(d[rk])`), 'undefined')
 })
 
-// FIXED (.work/todo.md §deletion-sweep §2/Slice 3, nameEscapes alias gate):
+// FIXED (.work/archive/todo.md §deletion-sweep §2/Slice 3, nameEscapes alias gate):
 // dictValueKindOf (the ALREADY-LIVE dict census consumer) had the SAME
 // alias-write unsoundness as the reverted mapValueKindOf — the census keys
 // observations by SYNTACTIC receiver name (analyze.js's dictValueTypeOf
@@ -455,7 +455,7 @@ test('dict: a write through an alias is not lost to a stale census kind (audit P
     return String(d[wk2])`), 'oops1')  // already correct pre-Slice-3 (see comment above) — control, not a flip
 })
 
-// FIXED (.work/todo.md §deletion-sweep Slice 5 site survey — LEAK A):
+// FIXED (.work/archive/todo.md §deletion-sweep Slice 5 site survey — LEAK A):
 // emitLooseEq/emitStrictEq's (src/compile/emit.js) raw `f64.eq`/`f64.ne` fast
 // path fired whenever EITHER side's static kind was VAL.NUMBER, with no
 // runtime tag check — unlike arithmetic (toNumF64) and String(), this never
@@ -494,7 +494,7 @@ test('dict: strict/loose equality between two independently-maybe-undefined read
     return d[rk] > 5 ? 1 : 0`), 0)
 })
 
-// FIXED (.work/todo.md §deletion-sweep Slice 5 site survey — LEAK B):
+// FIXED (.work/archive/todo.md §deletion-sweep Slice 5 site survey — LEAK B):
 // ir.js's toStrI64 — the SAME function module/string.js's `bind('String', …)`
 // already delegates to for the maybeUndefined-flagged case, on the stated
 // belief it "falls through to the LAST branch... already correct" — had its
@@ -542,7 +542,7 @@ test('dict: a write captured in a nested callback is not lost to a stale census 
 })
 // Numeric captured-write control — the dominant real-world shape
 // (`arr.forEach(v => m.set(k, v))`) — a functional-correctness pin only now
-// (audit #9 P0-1, .work/todo.md "audit-#9 P0-1 closed": the census consumer
+// (audit #9 P0-1, .work/archive/todo.md "audit-#9 P0-1 closed": the census consumer
 // this comment originally described as "the census win, no fallback to the
 // polymorphic-add path" is reverted/dormant, so EVERY `.get()`/dict read
 // takes the polymorphic path unconditionally — there is no fast-path win
@@ -585,7 +585,7 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // before ever reaching the dict census, so it already took the sound generic
 // toNumF64 path; the dynamic-key case below is the one that actually exercised
 // the raw-i64 branch.
-// Present-key case — FIXED (Slice 5, .work/todo.md §deletion-sweep
+// Present-key case — FIXED (Slice 5, .work/archive/todo.md §deletion-sweep
 // §6/§12, the `presentKindUnboxed` family — the last named
 // value-wrong family from the audit campaign). Root (re-confirmed live,
 // unchanged from the Slice 4 finding below): bigIntUnary's runtime
@@ -651,7 +651,7 @@ test('Map: a read-only capture does not disqualify the census (control)', () => 
 // Slice 4 dormant. (`_resultNumeric`'s companion `_resultBigintSentinel`
 // was already VT-independent per §13 — only `_resultNumeric` itself and
 // emitStrictEq's dispatch had the gap.)
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): every
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): every
 // shape in the 3 tests below stores a BigInt into a Map/dict
 // (`m.set(k, 1n)`/`d[k]=1n`) — exactly the design's "collection" flow class
 // (`d[k]=5n`/`map.set(k,5n)`, §4's table) — which now refuses to compile
@@ -672,7 +672,7 @@ test('dict: unary "-" on a LITERAL-key absent read (already sound — not this b
   throws(() => withBigintStrict(() => run(`const d = {}; d['x'] = 1n; return -d['missing']`)), /BigInt value at this collection/)
 })
 
-// Slice 5 (.work/todo.md §deletion-sweep §6/§12, presentKindUnboxed)
+// Slice 5 (.work/archive/todo.md §deletion-sweep §6/§12, presentKindUnboxed)
 // repro 5 itself — the bare `m.get()`/`d[k]` read, no unary — closing the class
 // this design named the whole audit campaign's last value-wrong family. Was
 // KNOWN-FAIL: `m.set('x', 5n); export let f = () => m.get('x')` returned the host
@@ -680,7 +680,7 @@ test('dict: unary "-" on a LITERAL-key absent read (already sound — not this b
 // the same `s`-lane export marker the unary tests above exercise (sentinel kind 1:
 // UNDEF_NAN → `undefined`, anything else a raw BigInt) — no in-wasm change, the
 // bug was purely in which lane/decode the export took.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): both
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): both
 // tests below construct `m.set('x', 5n)`/`d[k1]=5n` — the "collection" flow
 // class — which now refuses to compile (§4's table names this exact shape:
 // "map.set(k, 5n)"/"d[k]=5n with an unresolvable key"). The whole export-
@@ -712,7 +712,7 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
   is(jz(`export let f = () => -5n`).exports.f(), -5n)
 })
 
-// Slice 6 (.work/todo.md §deletion-sweep §14/§15, "begin the
+// Slice 6 (.work/archive/todo.md §deletion-sweep §14/§15, "begin the
 // presentVal opt-in model"): a NEW `presentVal` REP field (reps.js) rides
 // analyze.js's decl/reassign producer, poison-disciplined like `val` itself
 // (NOT a spread-merge boolean like `mayBeUndefined`) — the KIND-carrying
@@ -726,7 +726,7 @@ test('Slice 5: negative controls — mixed-kind Map falls back to documented (un
 // 5's own lane/decode mechanism. Was silently wrong (`2.5e-323`, the exact
 // repro-5 bit-pattern misread) at HEAD before this slice; confirmed via a
 // direct stash diff, not assumed.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // "collection" flow class as the Slice 5 tests above, one decl-hop further.
 // `m.set('a', 5n)`/`d[k]=5n` refuses to compile before the decl-hop's own
 // presentVal machinery is ever reached.
@@ -744,7 +744,7 @@ test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the 
 })
 
 // FIXED (§14 point 4, audit #10's own "JOINT runtime domain dispatch" finding
-// — .work/todo.md §deletion-sweep §14): a present-key census-BIGINT
+// — .work/archive/todo.md §deletion-sweep §14): a present-key census-BIGINT
 // value used in BINARY `+` with a NUMBER now throws the TypeError real JS
 // gives for BigInt⊕Number mixing, instead of silently doing ordinary f64
 // addition on the raw i64-as-f64 carrier bits. Root cause was exactly audit
@@ -759,7 +759,7 @@ test('Slice 6: negative control — decl-hop through a mixed-kind Map stays the 
 // a fully unresolved operand), then dispatches Number arithmetic / BigInt
 // arithmetic / TypeError jointly — wired at all 9 binary arithmetic/bitwise
 // ops (`+ - * / % & | ^ << >>`), not just `+`.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7):
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7):
 // `m.set('x', 5n)` refuses to compile before the runtime TypeError this
 // test pinned is ever reached.
 test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: silent NUMBER garbage) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
@@ -778,7 +778,7 @@ test('§14 point 4: present-key census-BIGINT + NUMBER throws TypeError (was: si
 // type mismatch) — the exact discrimination an operand-local guard cannot
 // make, only a JOINT check evaluating both operands' actual runtime domains
 // together can.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): every
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): every
 // cell of this matrix (both-present, both-absent, present+absent,
 // census-mixed-with-literal) shares one precondition, `m.set('a'|'x', 6n)`,
 // the "collection" flow class. All 9 ops now refuse to compile at that
@@ -802,7 +802,7 @@ test('§14 point 4: full presence×domain matrix over all 9 binary ops, differen
 // numerically correct (0n == 0); only the TYPE tag is wrong. A real,
 // documented divergence, not silently dropped — this codebase already accepts
 // the identical ambiguity class elsewhere (0-literal BigInt/Number mixing).
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // class as test/data.js's audit-#11 P0-1 (§7): a documented, "permanent,"
 // accepted carrier-collision wrongness class, eliminated at the root once
 // `m.set('a', 6n)` itself refuses to compile.
@@ -812,7 +812,7 @@ test('§14 point 4: documented gap — bitwise both-absent decodes as BigInt 0n,
     throws(() => withBigintStrict(() => jz(`export let f = () => { const m = new Map(); m.set('a', 6n); let x = m.get('m1'); let y = m.get('m2'); return x ${op} y }`, { jzify: true })), /BigInt value at this collection/, `${op}: refuses to compile`)
 })
 
-// AUDIT #10 BATTERY (.work/todo.md §deletion-sweep §14): the full
+// AUDIT #10 BATTERY (.work/archive/todo.md §deletion-sweep §14): the full
 // repro set the audit named as live consequences of Slice 4's global VT
 // promotion — composed expressions, container storage, kind-specific
 // dispatch, String `+` inversion, BigInt joint dispatch. Re-verified
@@ -983,7 +983,7 @@ test('Object.assign onto a literal (unbound) Error instance mutates it in place,
   is(g(), 'y', 'the message slot was actually overwritten')
 })
 
-// Slice 3 (.work/todo.md §deletion-sweep §4/§8 point 3): the
+// Slice 3 (.work/archive/todo.md §deletion-sweep §4/§8 point 3): the
 // chokepoint-sweep completion — bigintMixReject (emit.js, the compile-time
 // BigInt/Number literal-mix TypeError check) and the `+` STRING-concat raw
 // fast path now also consult censusMaybeUndefined (the SAME predicate every
@@ -1108,7 +1108,7 @@ test('single-call-site "+" param-hop: sibling carrier-domain producers (regressi
   `, { jzify: true }).exports.f(10), NaN)
 })
 
-// Slice 4 (.work/todo.md §deletion-sweep §8, VT re-enablement) —
+// Slice 4 (.work/archive/todo.md §deletion-sweep §8, VT re-enablement) —
 // dictValueKindOf/mapValueKindOf wired back into VT['[]']/VT['.']/VT['()'].
 // §5 criterion 1's own acceptance shape: a census claim reaching a
 // NON-chokepoint consumer through 2+ hops (decl → arg → return → use), not
@@ -1223,7 +1223,7 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
   is(f(0), 15005, 's=15 (sum of xs), count=5 (one increment per call) — not 15015 (count tripled)')
 })
 
-// Slice 7 (.work/todo.md §deletion-sweep §14/§15, "widen the
+// Slice 7 (.work/archive/todo.md §deletion-sweep §14/§15, "widen the
 // opt-in consumer chokepoints"): the arithmetic/coercion chokepoints
 // (ir.js toNumF64, emit.js's binary `+` BigInt dispatch) gated on
 // `valTypeOf(node)` FIRST and never saw a decl/direct census claim (`vt`
@@ -1250,7 +1250,7 @@ test('Slice 4: call-result arithmetic does not triplicate a captured-mutation si
 // upgrade plus `censusBigintSentinelKind`'s new kind-4 arm (kind.js) teach
 // the SAME both-census fact to the export lane, so the return crosses the
 // boundary as a real i64 BigInt, not a misdecoded NUMBER.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): every
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): every
 // shape below shares the "collection" precondition `m.set(k, 5n)`/`d[k]=5n`.
 test('Slice 7: decl-hop binary `+` between two present-key BigInt census reads crosses the export boundary correctly (was garbage NUMBER) — BigInt-into-Map/dict strict-mode (opt-in) collection diagnostic', () => {
   if (onKernel()) return
@@ -1319,7 +1319,7 @@ test('Slice 7: negative controls — single-proven-side BigInt mixes and genuine
 //       side to prove ANY bigint evidence in the first place, so the joint
 //       dispatch never even activates (by design — §14 point 4's own "only
 //       emits where the static analysis says domains CAN mix" scope).
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // "collection" precondition (`m.set('a', 6n)`) as the §14 point 4 tests
 // above.
 test('§14 point 4 FIXED: the 9-op census-BigInt sub-case now crosses the export boundary as a real bigint (was: number) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
@@ -1570,7 +1570,7 @@ test('§14 point 4 FIXED: a proven-local BigInt mixed with a zero-evidence dynam
 //
 // GLOBAL receiver only — see the KNOWN-FAIL immediately below for the
 // narrower, still-open LOCAL-receiver sibling this session does NOT close.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // "collection" precondition (`m.set('a', 5n)`, a module-level Map) as every
 // other test in this file.
 test('single-call-site unary `-` param-hop: present-key BigInt census value (module-level Map) through a callee is JS-correct (regression pin, was KNOWN-FAIL) — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
@@ -1612,7 +1612,7 @@ test('single-call-site unary `-` param-hop: absent Map key (module-level Map) th
 // separate, comparable-sized undertaking (the same class of gap
 // nameMayBeUndefinedInBody's own local-vs-global receiver split already
 // accepts elsewhere in this design), not attempted here.
-// BigInt retirement Slice 1 (.work/bigint-retirement-design.md §4/§7): same
+// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // as test/data.js's audit-#11 P0-1 (§7): this KNOWN-FAIL pinned a documented
 // VALUE-wrong divergence whose precondition (`m.set('a', 5n)`) is now
 // structurally impossible to construct. The underlying presentVal gap

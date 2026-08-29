@@ -37,7 +37,7 @@ export function boxPtrIR(i32node, ptrType, aux = 0) {
       ['i64.const', i64Hex(prefix)],
       ['i64.extend_i32_u', i32node]]], 'f64')
   if (ptrType === PTR.OBJECT) result.schemaSid = aux
-  // TAG-PRESERVING REBOX (.work/research.md §Carrier invariant, "DECL-INIT
+  // TAG-PRESERVING REBOX (.work/evidence.md §Carrier invariant, "DECL-INIT
   // WALL"): typed() above sets only .type on the fresh wrapper node —
   // the source i32node's .ptrKind/.ptrAux (set by readVar-style construction)
   // do NOT propagate onto it. The bits are right (the NaN-box correctly

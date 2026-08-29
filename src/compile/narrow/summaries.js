@@ -3,7 +3,7 @@
  * narrowSignatures: fixed-length proof for literal+push-built arrays
  * (inferInternalArrayLengths), the co-induction bounds prover
  * (coInductionCounterHull/findCoInductionLoopCtx/arrayReadProvenInBounds,
- * .work/todo.md "the co-induction prover"), and whole-program typed-elem
+ * .work/archive/todo.md "the co-induction prover"), and whole-program typed-elem
  * store range hulls (inferTypedValueRanges). Each has fan-out 0 into any
  * sibling narrow/*.js family — every dependency here is an upstream import.
  *
@@ -224,7 +224,7 @@ export function inferInternalArrayLengths(paramReps) {
 }
 
 // === Co-induction + interprocedural bounds proof (colorlog project,
-// .work/todo.md "the co-induction prover") ===
+// .work/archive/todo.md "the co-induction prover") ===
 //
 // censusShapedNode (kind.js) over-approximates ANY `arr[idx]` call argument
 // as possibly undefined — sound (an unproven OOB read really does read

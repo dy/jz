@@ -208,7 +208,7 @@ function tryDirectClosureCall(callee, parsed) {
   // Slots are untyped boxed-value positions: a BOOL arg crosses as its atom box
   // (the paramTypes numeric lattice above already poisons on non-NUMBER args, so
   // the body never assumes raw numerics for these slots). An ambiguous BOOL-merge
-  // arg (.work/todo.md §deletion-sweep) needs emitIdentitySafe in place of
+  // arg (.work/archive/todo.md §deletion-sweep) needs emitIdentitySafe in place of
   // carrierF64 — same post-hoc-powerless reasoning as the return tail/store sites.
   recordClosureCallRepresentations(ctx, bodyName, parsed.normal)
   const slots = parsed.normal.map(a => hasAmbiguousBoolMerge(a) ? emitIdentitySafe(a) : carrierF64(a, emit(a)))
