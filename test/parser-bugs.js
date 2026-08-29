@@ -707,7 +707,7 @@ test('lexical-risk pre-filter reaches unterminated comments, dot-adjacent separa
     rejects('export let f = () => "\n"', 'line terminator')
     is(jz('export let f = () => { /* fine */ return 1 }').exports.f(), 1)
     is(jz('export let f = () => 10.5').exports.f(), 10.5)
-    is(jz('export let f = () => globalThis._nonexistent === undefined ? 1 : 0').exports.f(), 1)
+    is(jz('export let f = () => { let o = { _private: 1 }; return o._private }').exports.f(), 1)
     is(jz('export let f = () => "a" + "b"').exports.f(), 'ab')
 })
 
@@ -721,4 +721,178 @@ test('yield/await as a binding name admits no trailing operand (nested-strict-le
     rejects('function f() {\n  let\n  await 0\n}', 'binding position')
     is(jz('export let f = () => { let yield; return 5 }').exports.f(), 5)
     is(jz('export let f = () => { let await; return 6 }').exports.f(), 6)
+})
+
+test('expression-only grammar slots retain their statement/list context (destructuring-cover-grammar / asi / other-jessie-context-loss)', () => {
+    // Jessie reuses the same nodes for parenthesized statement lists and
+    // expressions, array elisions and argument lists, and object literals and
+    // statement-leading blocks. The surrounding grammar slot disambiguates
+    // each pair without rejecting the valid sibling shape.
+    rejects('f(1,,2)', 'arguments')
+    rejects('if (false) f(,1)', 'arguments')
+    rejects('(debugger)', 'statement')
+    rejects('if (false) (debugger)', 'statement')
+    rejects('({};) * 1', 'parenthesized expression')
+    rejects('{} * 1', 'block statement')
+    rejects('{} = 1', 'block statement')
+    rejects('() => {} = 1', 'arrow function block')
+    rejects('let f = () => {} * 1', 'arrow function block')
+
+    is(jz('export let f = () => { let g = (a) => a; return g(7,) }').exports.f(), 7)
+    is(jz('export let f = () => [1,,3].length').exports.f(), 3)
+    is(jz('debugger; export let f = () => 1').exports.f(), 1)
+    is(jz('export let f = () => ({ a: 4 }).a').exports.f(), 4)
+    ok(Array.isArray(parse('({} = o)')), 'a parenthesized object assignment remains syntactically valid')
+    ok(Array.isArray(parse('{} + 1')), 'a block may be followed by a unary-plus sibling without a semicolon')
+    ok(Array.isArray(parse('{}\n[1]')), 'a block may be followed by an array-expression sibling across ASI')
+    ok(Array.isArray(parse('for (let i = 0; i < 1; i++) { ; }')), 'semicolons remain valid in control parens and blocks')
+})
+
+test('for headers keep classic clauses separate from for-in/of heads (asi-and-line-terminator-context / other-jessie-context-loss)', () => {
+    // Newlines never replace either of a classic for header's two semicolons.
+    // Conversely, top-level in/of commits to the iteration grammar and cannot
+    // coexist with classic clauses. Header slots are expressions/declarations,
+    // not blocks or a StatementList.
+    rejects('for () {}', 'semicolons')
+    rejects('for (false\n;\n) {}', 'semicolons')
+    rejects('for (false\nfalse\nfalse) {}', 'semicolons')
+    rejects('export let f = () => { for (let x = 3 in {}) {} }', 'uninitialized binding')
+    rejects('export let f = () => { for (let x, y = 4 in {}) {} }', 'uninitialized binding')
+    rejects("'use strict'; let o = {}; for (let in o) {}", 'strict mode')
+    rejects('for (true ? 0 : 0 in {}; false; ) ;', 'classic for initializer')
+    rejects('export let f = () => { for (let i = 0; i < 1; { i++; }) {} }', 'object literal')
+    rejects('export let f = () => { for ({ let i = 0; } i < 1; i++) {} }', 'object literal')
+
+    is(jz('export let f = () => { let n = 0; for (let i = 0; i < 4; i++) n += i; return n }').exports.f(), 6)
+    is(jz('export let f = () => { let n = 0; for (;;) { n++; break } return n }').exports.f(), 1)
+    is(jz('export let f = () => { let o = { a: 1 }; for (let in o) { } return 1 }').exports.f(), 1)
+    is(jz('export let f = () => { let n = 0; for (const x of [2,3]) n += x; return n }').exports.f(), 5)
+    ok(Array.isArray(parse("for (let seen = ('x' in {x:1}); !seen; ) {}")),
+      'parenthesized in remains a valid classic-for initializer')
+    ok(Array.isArray(parse('for (let of = 0; of < 1; of++) {}')),
+      "the contextual word 'of' remains a valid classic-for binding")
+    ok(Array.isArray(parse('for (let of of [1]) {}')),
+      "a binding named 'of' is distinct from the following for-of keyword")
+    ok(Array.isArray(parse("'use strict'; let x, o = {}; for (x in o) {}")),
+      'strict for-in remains valid with an ordinary assignment target')
+})
+
+test('restricted statement boundaries honor ASI and every line terminator (asi-and-line-terminator-context)', () => {
+    rejects('export let f = () => { let x = 0; if (false) { x\n++ } return x }', 'without an operand')
+    rejects('let x = 0; x\n--', 'without an operand')
+    rejects('let x = 0; x /*\n*/ ++;', 'without an operand')
+    rejects('do {};\nwhile (false)', 'between a do body and while')
+    rejects('//\rthis text is not one expression', 'this')
+
+    is(jz('export let f = () => { let x = 0; x++; return x }').exports.f(), 1)
+    is(jz('export let f = () => { let x = 0; do { x++ } while (x < 1); return x }').exports.f(), 1)
+    is(jz('// lone CR ends this comment\rexport let f = () => 7').exports.f(), 7)
+    is(jz('export let f = () => "a\\\rb"').exports.f(), 'ab')
+    ok(Array.isArray(parse('let x = 0, y = 0; x\n++y;')),
+      'a newline before ++ remains valid when the prefix-update fallback has an operand')
+    ok(Array.isArray(parse('do { { } }\nwhile (false)')),
+      'a do block is followed directly by while, including nested sibling blocks')
+})
+
+test('adjacent string literals require a real statement boundary (other-jessie-context-loss)', () => {
+    rejects("0;\nvar s = '''';", 'adjacent string literals')
+    rejects('0;\nvar s = """";', 'adjacent string literals')
+    rejects("if (false) { let s = ''/*same line*/''; }")
+
+    is(jz("export let f = () => ''").exports.f(), '')
+    is(jz("export let f = () => 'a' + 'b'").exports.f(), 'ab')
+    is(jz("export let f = () => ['a', 'b'].join('')").exports.f(), 'ab')
+    ok(Array.isArray(parse("'a'\n'b'")), 'a LineTerminator can ASI-split sibling string ExpressionStatements')
+    ok(Array.isArray(parse("{ 'a'; } { 'b'; }")), 'sibling block scopes keep independent string statements')
+})
+
+test('async contextual keywords retain arrow/method line boundaries (async-generator-and-parameter-context / other-jessie-context-loss)', () => {
+    rejects('async\n(x) => x', 'async')
+    rejects('if (false) { let f = async /*\n*/ () => 1 }', 'async')
+    rejects('\\u0061sync () => {}', 'arrow parameters')
+    rejects('({ async\nmethod() {} })', 'object method')
+
+    ok(compile('export let f = async (x) => x + 1') instanceof Uint8Array,
+      'same-line async arrow parameters still compile')
+    ok(compile('export let f = async /* no newline */ (x) => x') instanceof Uint8Array,
+      'a same-line comment does not violate the async boundary')
+    ok(Array.isArray(parse('({ async method() {} })')), 'same-line async object methods remain syntactically valid')
+    ok(Array.isArray(parse('class C { async\nmethod() {} }')),
+      'a class field named async may ASI-split from an ordinary method')
+    ok(Array.isArray(parse('{}() => 1')),
+      'a leading block and following zero-param arrow remain separate valid statements')
+})
+
+test('class element modifiers and field boundaries survive jessie splitting (class-element-token-boundaries)', () => {
+    rejects('class C {\n static async m() { var await; }\n}', 'await')
+    rejects('class C {\n static async #m() { var \\u0061wait; }\n}', 'await')
+    rejects('class C {\n static async prototype() {}\n}', 'prototype')
+    rejects('class C {\n field method() {}\n}', 'same line')
+    rejects('class C {\n field = 1 /* no ASI */ method() {}\n}', 'same line')
+    rejects('class C {\n x y\n}', 'same line')
+    rejects('class C {\n #x #y\n}', 'same line')
+    rejects('class C {\n \\u0061sync method() {}\n}', 'same line')
+    rejects('class C {\n st\\u0061tic method() {}\n}', 'same line')
+
+    ok(Array.isArray(parse('class C {\n field\n method() {}\n}')),
+      'a LineTerminator separates a field from a method')
+    ok(Array.isArray(parse('class C {\n field = 1; method() {}\n}')),
+      'an explicit semicolon separates an initialized field')
+    ok(Array.isArray(parse('class C {\n x\n #y\n}')),
+      'bare public/private fields ASI-split across lines')
+    ok(Array.isArray(parse('class C {\n static async m() { var x; }\n}')),
+      'a real static async method with a legal body remains valid')
+    ok(Array.isArray(parse('class C {\n static async\n prototype() {}\n}')),
+      'a newline after async makes it a static field plus ordinary method')
+    ok(Array.isArray(parse('class C {\n *g() {} static *h() {} get x() {} set x(v) {}\n}')),
+      'generator/static/accessor method prefixes retain their own boundaries')
+    ok(Array.isArray(parse('class A { x } class B { y }')),
+      'sibling class scopes do not share field-boundary state')
+})
+
+test('rest trailing commas depend on assignment-pattern context (destructuring-cover-grammar)', () => {
+    rejects('0, [...x,] = []', 'trailing comma')
+    rejects('0, {...x,} = {}', 'trailing comma')
+    rejects('for ([...x,] in [[]]) ;', 'trailing comma')
+    rejects('for ([...x,] of [[]]) ;', 'trailing comma')
+    rejects('export let f = () => { if (false) { 0, [...x,] = [] } return 1 }', 'trailing comma')
+
+    ok(Array.isArray(parse('0, [...x] = []')), 'assignment rest without a trailing comma remains valid')
+    ok(Array.isArray(parse('for ([...x] of [[]]) ;')), 'for-of assignment rest without the comma remains valid')
+    ok(Array.isArray(parse('let a = [...x,]')), 'array-literal spread still permits a trailing comma')
+    ok(Array.isArray(parse('let o = {...x,}')), 'object-literal spread still permits a trailing comma')
+    ok(Array.isArray(parse('{ 0, [...x] = []; } { let y = [...x,]; }')),
+      'sibling block scopes keep pattern and literal contexts independent')
+})
+
+test('semicolon-sensitive export forms cannot absorb a same-line literal sibling (module-goal-and-export-context)', () => {
+    rejects('0;\nexport default null null;', 'export declaration')
+    rejects("0;\nexport * from 'x' null;", 'export declaration')
+    rejects("0;\nexport * as ns from 'x' null;", 'export declaration')
+    rejects("0;\nexport {} from 'x' null;", 'export declaration')
+    rejects('0;\nexport {} null;', 'export declaration')
+
+    ok(Array.isArray(parse('export default null; null;')), 'an explicit semicolon separates export-default expression')
+    ok(Array.isArray(parse('export default null\nnull;')), 'a LineTerminator supplies export-default ASI')
+    ok(Array.isArray(parse("export * from 'x'; null;")), 'export-from accepts an explicit boundary')
+    ok(Array.isArray(parse('export {}\nnull;')), 'a named export accepts a newline boundary')
+    ok(Array.isArray(parse('export default function() {} 0;')),
+      'exported function declarations need no separator before a sibling statement')
+    ok(Array.isArray(parse('export default class {} 0;')),
+      'exported class declarations keep their declaration boundary')
+})
+
+test('an own strict directive validates every raw string in its Directive Prologue (nested-strict-legacy-escape)', () => {
+    rejects('function f() { "\\1"; "use strict"; }', 'legacy escape')
+    rejects('(function() { "\\052"; "use strict"; });', 'legacy escape')
+    rejects('function f() { "use strict"; "\\8"; }', 'legacy escape')
+    rejects('function outer() { function inner() { "\\9"; "use strict"; } }', 'legacy escape')
+
+    ok(Array.isArray(parse('function f() { "\\1"; }')), 'the same legacy escape remains legal in a sloppy function')
+    ok(Array.isArray(parse('if (true) { "\\1"; "use strict"; }')),
+      'a string in an ordinary block is not a directive')
+    ok(Array.isArray(parse('function a() { "\\1"; } function b() { "ok"; "use strict"; }')),
+      'a strict sibling does not retroactively make a sloppy sibling strict')
+    ok(Array.isArray(parse('function f() { "plain"; "use strict"; }')),
+      'an escape-free directive prologue remains valid')
 })

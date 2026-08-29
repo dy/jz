@@ -207,6 +207,7 @@ lexicalTemplateExpr = (src, start, strict) => {
 }
 
 const P_CONTROL = 0, P_SEMIS = 1, P_REST = 2, P_REST_COMMA = 3, P_REST_DEPTH = 4, P_BASE_DEPTH = 5, P_EXPR_DEPTH = 6
+const P_FOR_INOF = 7, P_FOR_DECL = 8, P_FOR_COMMAS = 9, P_FOR_INIT = 10, P_FOR_TOKENS = 11, P_FOR_CONSEQUENT = 12
 const REST_BINDING = 1, REST_EXPRESSION = 2
 
 // Cheap, single-pass, deliberately approximate: tracks only quote/backslash
@@ -228,9 +229,129 @@ const hasNewlineInQuote = src => {
   return false
 }
 
+const previousSourceToken = (src, from) => {
+  let i = from - 1, newline = false
+  for (;;) {
+    while (i >= 0 && isWhitespaceCode(src.charCodeAt(i))) {
+      const c = src.charCodeAt(i)
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i--
+    }
+    if (i > 0 && src[i] === '/' && src[i - 1] === '*') {
+      const start = src.lastIndexOf('/*', i - 2)
+      if (start < 0) return [i, newline]
+      for (let k = start; k <= i; k++) {
+        const c = src.charCodeAt(k)
+        if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) { newline = true; break }
+      }
+      i = start - 1
+      continue
+    }
+    // Once whitespace crossed a line boundary, any `//...` text at the end
+    // of the preceding line is trivia too. This helper is only entered from a
+    // known token boundary, so the last `//` on that line is unambiguous.
+    if (newline && i >= 1) {
+      const lineStart = Math.max(src.lastIndexOf('\n', i), src.lastIndexOf('\r', i),
+        src.lastIndexOf('\u2028', i), src.lastIndexOf('\u2029', i)) + 1
+      const slash = src.lastIndexOf('//', i)
+      if (slash >= lineStart) { i = slash - 1; continue }
+    }
+    return [i, newline]
+  }
+}
+
+const sourceTrivia = (src, from) => {
+  let i = from, newline = false
+  for (;;) {
+    while (i < src.length && isWhitespaceCode(src.charCodeAt(i))) {
+      const c = src.charCodeAt(i)
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i++
+    }
+    if (src[i] === '/' && src[i + 1] === '/') {
+      i += 2
+      while (i < src.length && src[i] !== '\n' && src[i] !== '\r' &&
+          src.charCodeAt(i) !== 0x2028 && src.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (src[i] === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      if (end < 0) return [src.length, newline]
+      for (let k = i; k < end; k++) {
+        const c = src.charCodeAt(k)
+        if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) { newline = true; break }
+      }
+      i = end + 2
+      continue
+    }
+    return [i, newline]
+  }
+}
+
+const nextSourceToken = (src, from) => {
+  let i = from
+  for (;;) {
+    while (i < src.length && isWhitespaceCode(src.charCodeAt(i))) i++
+    if (src[i] === '/' && src[i + 1] === '/') {
+      i += 2
+      while (i < src.length && src[i] !== '\n' && src[i] !== '\r' &&
+          src.charCodeAt(i) !== 0x2028 && src.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (src[i] === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2)
+      return end < 0 ? src.length : nextSourceToken(src, end + 2)
+    }
+    return i
+  }
+}
+
+const M_ASYNC = 1, M_STATIC = 2, M_ASYNC_NL = 4, M_BAD_BOUNDARY = 8
+const sourceWordBefore = (src, from) => {
+  const prev = previousSourceToken(src, from)
+  if (prev[0] < 0 || !isIdentCode(src.charCodeAt(prev[0]))) return null
+  let start = prev[0]
+  while (start > 0 && isIdentCode(src.charCodeAt(start - 1))) start--
+  return [src.slice(start, prev[0] + 1), start, prev[1]]
+}
+
+// Method nodes carry the opening-paren offset. Recover the contextual prefix
+// and the boundary before it without pretending to parse computed names.
+// This repairs jessie's `static async name()` split for validation only, and
+// distinguishes it from the valid `static async\nname()` field+method pair.
+const methodSourceInfo = (src, parenAt) => {
+  if (typeof parenAt !== 'number' || src[parenAt] !== '(') return 0
+  const nameEnd = previousSourceToken(src, parenAt)[0]
+  if (nameEnd < 0 || !isIdentCode(src.charCodeAt(nameEnd))) return 0
+  let cursor = nameEnd
+  while (cursor > 0 && isIdentCode(src.charCodeAt(cursor - 1))) cursor--
+  if (src[cursor - 1] === '#') cursor--
+
+  let flags = 0
+  let prev = previousSourceToken(src, cursor)
+  // Generator marker belongs to this method prefix, including async generators.
+  if (prev[0] >= 0 && src[prev[0]] === '*') { cursor = prev[0]; prev = previousSourceToken(src, cursor) }
+  let word = sourceWordBefore(src, cursor)
+  if (word && word[0] === 'async') {
+    if (word[2]) flags |= M_ASYNC_NL
+    else { flags |= M_ASYNC; cursor = word[1] }
+  } else if (word && (word[0] === 'get' || word[0] === 'set') && !word[2]) {
+    cursor = word[1]
+  }
+  if (!(flags & M_ASYNC_NL)) {
+    word = sourceWordBefore(src, cursor)
+    if (word && word[0] === 'static') { flags |= M_STATIC; cursor = word[1] }
+  }
+
+  const boundary = previousSourceToken(src, cursor)
+  if (boundary[0] >= 0 && src[boundary[0]] !== '{' && src[boundary[0]] !== '}' &&
+      src[boundary[0]] !== ';' && !boundary[1]) flags |= M_BAD_BOUNDARY
+  return flags
+}
+
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   src.includes('\\') || src.includes('#!') || src.includes('\u180e') || src.includes('\u2e2f') ||
-  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') ||
+  src.includes('\u2028') || src.includes('\u2029') || src.includes('=>') || /\b(for|do)\b/.test(src) ||
   src.includes('?.') && src.includes('`') ||
   src.includes('_') && /(^|[^A-Za-z0-9_$])(?:[0-9][0-9]*_|0[xXoObB]_)/m.test(src) ||
   /(^|[^A-Za-z0-9_$])0[xXoObB]/m.test(src) ||
@@ -245,18 +366,19 @@ const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
   // An unterminated block comment, or a raw LineTerminator inside a quoted
   // string, both need the full token-aware scan below to catch correctly
   // (strings/regexes must be skipped as such, not textually).
-  src.includes('/*') || hasNewlineInQuote(src)
+  src.includes('/*') || src.includes("''") || src.includes('""') || hasNewlineInQuote(src)
 )
 
 /** Lightweight lexical validation for spellings jessie's value AST erases. */
 const validateLexicalSource = (src, strict) => {
   if (typeof src !== 'string') return
   let i = 0, canRegex = true, pendingControl = null, expectStatement = false, lastPunct = '', optionalDepth = -1, nesting = 0
+  let pendingDo = false, quotedToken = false
   // True while a genuine LineTerminator (directly, or inside a multi-line
   // comment) has been crossed since the last real token — consumed once,
   // right before a real token is processed below, by the arrow-token check.
   let sawNewline = false
-  const parens = []
+  const parens = [], doBlocks = [], doBlockEnds = new Set()
   while (i < src.length) {
     const c = src.charCodeAt(i), ch = src[i]
     if (isWhitespaceCode(c)) {
@@ -285,6 +407,10 @@ const validateLexicalSource = (src, strict) => {
     // newline state once, for the arrow-token check just below, then reset.
     const hadNewline = sawNewline
     sawNewline = false
+    if (ch !== '{') pendingDo = false
+    if ((ch === '"' || ch === "'") && quotedToken && !hadNewline)
+      fail('adjacent string literals require an operator or statement terminator')
+    if (ch !== '"' && ch !== "'") quotedToken = false
     // ArrowFunction's own grammar carries a "[no LineTerminator here]"
     // between ArrowParameters and `=>` — unlike a restricted-production
     // token (postfix ++/--, break/continue's label, return/yield's operand),
@@ -301,7 +427,10 @@ const validateLexicalSource = (src, strict) => {
       restGroup[P_REST] = false
       restGroup[P_REST_COMMA] = false
     }
-    if (ch === '"' || ch === "'") { i = lexicalQuoted(src, i, ch, strict); canRegex = false; continue }
+    if (ch === '"' || ch === "'") {
+      i = lexicalQuoted(src, i, ch, strict)
+      quotedToken = true; canRegex = false; continue
+    }
     if (ch === '`') {
       if (!canRegex && optionalDepth >= 0) fail('optional chain cannot be used as a tagged template')
       i = lexicalTemplate(src, i, strict, !canRegex)
@@ -347,6 +476,45 @@ const validateLexicalSource = (src, strict) => {
         i++
       }
       const word = src.slice(start, i)
+      pendingDo = false
+      if (word === 'while') {
+        const prev = previousSourceToken(src, start)
+        if (prev[0] >= 0 && src[prev[0]] === ';') {
+          const beforeSemi = previousSourceToken(src, prev[0])
+          if (doBlockEnds.has(beforeSemi[0]))
+            fail('semicolon is not allowed between a do body and while')
+        }
+      }
+      // A classic for head needs exactly two semicolons; a for-in/of head
+      // needs a top-level `in`/`of` and none. Record only the outermost header
+      // group, so `(key in obj)` remains a valid parenthesized classic-for
+      // initializer. Lexical for-in/of declarations have exactly one
+      // uninitialized binding; commas/defaults nested inside a pattern do not
+      // count because `nesting` differs there.
+      const forGroup = parens[parens.length - 1]
+      if (forGroup && forGroup[P_CONTROL] === 'for' && forGroup[P_BASE_DEPTH] === nesting &&
+          forGroup[P_SEMIS] === 0 && !forGroup[P_FOR_INOF] && lastPunct !== '.') {
+        let decl = forGroup[P_FOR_DECL]
+        // In sloppy code `let` alone is a valid IdentifierReference on the
+        // left of for-in. Treat this one-token spelling as an expression LHS,
+        // not an incomplete LexicalDeclaration; strict-context validation is
+        // deliberately left to the AST walker (whose kernel caveat is noted
+        // at the for handler below).
+        const letReference = decl === 'let' && forGroup[P_FOR_TOKENS] === 1 && word === 'in'
+        const lhsReady = letReference || (decl ? forGroup[P_FOR_TOKENS] >= 2 : forGroup[P_FOR_TOKENS] >= 1)
+        if ((word === 'in' || word === 'of') && lhsReady && !forGroup[P_FOR_CONSEQUENT]) {
+          forGroup[P_FOR_INOF] = word
+          if (letReference && strict) fail("'let' cannot be a for-in assignment target in strict mode")
+          if (letReference) decl = forGroup[P_FOR_DECL] = false
+          if ((decl === 'let' || decl === 'const') &&
+              (forGroup[P_FOR_COMMAS] || forGroup[P_FOR_INIT]))
+            fail('for-in/of lexical declaration must have one uninitialized binding')
+        } else {
+          if (!forGroup[P_FOR_TOKENS] && (word === 'let' || word === 'const' || word === 'var'))
+            forGroup[P_FOR_DECL] = word
+          forGroup[P_FOR_TOKENS]++
+        }
+      }
       if (word === 'catch') {
         let k = i
         while (isWhitespaceCode(src.charCodeAt(k))) k++
@@ -374,6 +542,7 @@ const validateLexicalSource = (src, strict) => {
       if (!(pendingControl === 'for' && word === 'await'))
         pendingControl = lastPunct !== '.' && /^(if|while|for|with)$/.test(word) ? word : null
       if (word === 'else' || word === 'do') expectStatement = true
+      if (word === 'do' && lastPunct !== '.') pendingDo = true
       canRegex = /^(return|throw|case|delete|void|typeof|new|in|instanceof|yield|await|else|do)$/.test(word)
       lastPunct = ''
       continue
@@ -403,6 +572,13 @@ const validateLexicalSource = (src, strict) => {
     if (src.slice(i, i + 3) === '???') fail('invalid question-mark token sequence')
     if (expectStatement && ch !== '{') expectStatement = false
     if (ch === '?' && src[i + 1] === '.') optionalDepth = parens.length
+    const forConditional = parens[parens.length - 1]
+    if (forConditional && forConditional[P_CONTROL] === 'for' &&
+        forConditional[P_BASE_DEPTH] === nesting && forConditional[P_SEMIS] === 0 &&
+        !forConditional[P_FOR_INOF]) {
+      if (ch === '?' && src[i + 1] !== '.' && src[i + 1] !== '?') forConditional[P_FOR_CONSEQUENT]++
+      else if (ch === ':' && forConditional[P_FOR_CONSEQUENT]) forConditional[P_FOR_CONSEQUENT]--
+    }
     if (src.slice(i, i + 3) === '...') {
       const group = parens[parens.length - 1]
       if (group) {
@@ -414,13 +590,21 @@ const validateLexicalSource = (src, strict) => {
     if (ch === '(') {
       const parent = parens[parens.length - 1]
       parens.push([pendingControl, 0, false, false, -1, nesting,
-        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1])
+        parent && parent[P_EXPR_DEPTH] >= 0 ? nesting : -1, false, false, 0, false, 0, 0])
       pendingControl = null
     }
     else if (ch === ')') {
       const group = parens.pop()
-      if (group && group[P_CONTROL] === 'for' && group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2)
-        fail('for header has the wrong number of semicolons')
+      if (group && group[P_CONTROL] === 'for') {
+        if ((group[P_SEMIS] === 0 && !group[P_FOR_INOF]) ||
+            (group[P_SEMIS] !== 0 && group[P_SEMIS] !== 2))
+          fail('for header has the wrong number of semicolons')
+        if (group[P_SEMIS] === 2 && group[P_FOR_INOF])
+          fail("'in'/'of' is not allowed in an unparenthesized classic for initializer")
+      }
+      const parent = parens[parens.length - 1]
+      if (parent && parent[P_CONTROL] === 'for' && parent[P_BASE_DEPTH] === nesting &&
+          parent[P_SEMIS] === 0 && !parent[P_FOR_INOF]) parent[P_FOR_TOKENS]++
       if (group && group[P_REST_COMMA] && !group[P_CONTROL]) {
         let k = i + 1
         while (isWhitespaceCode(src.charCodeAt(k))) k++
@@ -432,10 +616,27 @@ const validateLexicalSource = (src, strict) => {
       }
       if (group && group[P_CONTROL]) expectStatement = true
       if (optionalDepth > parens.length) optionalDepth = -1
-    } else if (ch === '{') { nesting++; expectStatement = false; pendingControl = null }
-    else if (ch === '[') nesting++
+    } else if (ch === '{') {
+      const group = parens[parens.length - 1]
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_TOKENS]++
+      nesting++
+      if (pendingDo) doBlocks.push(nesting)
+      pendingDo = false; expectStatement = false; pendingControl = null
+    }
+    else if (ch === '[') {
+      const group = parens[parens.length - 1]
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_TOKENS]++
+      nesting++
+    }
     else if (ch === '}' || ch === ']') {
+      if (ch === '}' && doBlocks[doBlocks.length - 1] === nesting) {
+        doBlocks.pop()
+        doBlockEnds.add(i)
+      }
       nesting--
+      pendingDo = false
       const group = parens[parens.length - 1]
       if (group && group[P_REST] && nesting < group[P_REST_DEPTH]) {
         if (group[P_REST] === REST_EXPRESSION) group[P_REST_COMMA] = false
@@ -446,6 +647,8 @@ const validateLexicalSource = (src, strict) => {
     else if (ch === ';' || ch === ',') {
       const group = parens[parens.length - 1]
       if (ch === ';' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting) group[P_SEMIS]++
+      if (ch === ',' && group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_COMMAS]++
       if (ch === ',' && group && group[P_REST] && group[P_REST_DEPTH] === nesting) group[P_REST_COMMA] = true
       if (ch === ',' && group && group[P_EXPR_DEPTH] >= nesting) group[P_EXPR_DEPTH] = -1
       optionalDepth = -1
@@ -453,6 +656,8 @@ const validateLexicalSource = (src, strict) => {
         !/[=!<>+\-*/%&|^?]/.test(src[i - 1] || '')) {
       const group = parens[parens.length - 1]
       if (group && group[P_EXPR_DEPTH] < 0) group[P_EXPR_DEPTH] = nesting
+      if (group && group[P_CONTROL] === 'for' && group[P_BASE_DEPTH] === nesting &&
+          group[P_SEMIS] === 0 && !group[P_FOR_INOF]) group[P_FOR_INIT] = true
     }
     canRegex = !(/[)\]}]/.test(ch))
     lastPunct = ch
@@ -469,6 +674,44 @@ const isUseStrict = body => {
     break
   }
   return false
+}
+
+const functionBodyOpen = (source, node) => {
+  if (typeof node?.loc !== 'number') return -1
+  let i = node.loc, paren = 0, sawParams = false
+  while (i < source.length) {
+    const trivia = sourceTrivia(source, i)
+    i = trivia[0]
+    const ch = source[i]
+    if (ch === '"' || ch === "'") { i = lexicalQuoted(source, i, ch, false); continue }
+    if (ch === '`') { i = lexicalTemplate(source, i, false); continue }
+    if (ch === '(') { sawParams = true; paren++; i++; continue }
+    if (ch === ')') { paren--; i++; continue }
+    if (ch === '{' && sawParams && paren === 0) return i
+    i++
+  }
+  return -1
+}
+
+// A later "use strict" directive applies to the complete Directive Prologue,
+// including raw escape spellings in strings that precede it. The AST knows
+// that this function has an own strict directive; rescan only that prologue so
+// a same-looking string in an ordinary block or sloppy sibling stays legal.
+const validateStrictDirectivePrologue = (source, bodyOpen) => {
+  if (bodyOpen < 0) return
+  let i = bodyOpen + 1
+  for (;;) {
+    const before = sourceTrivia(source, i)
+    i = before[0]
+    const quote = source[i]
+    if (quote !== '"' && quote !== "'") return
+    i = lexicalQuoted(source, i, quote, true)
+    const after = sourceTrivia(source, i)
+    i = after[0]
+    if (source[i] === ';') { i++; continue }
+    if (after[1]) continue
+    return
+  }
 }
 
 const patternItems = pattern => {
@@ -647,6 +890,22 @@ const checkPattern = (pattern, cx, binding = true) => {
   return names
 }
 
+// Jessie drops a final comma from both `[...x,]` and `[...x]`. In a plain
+// array/object literal the comma is valid; once the same cover node occupies
+// an AssignmentPattern slot it is forbidden. The following operator's source
+// offset gives an exact, local boundary without guessing from decoded values.
+const patternHasTrailingRestComma = (pattern, source, boundary) => {
+  if (!isNode(pattern) || (pattern[0] !== '[]' && pattern[0] !== '{}') ||
+      typeof boundary !== 'number') return false
+  const items = patternItems(pattern)
+  const last = items[items.length - 1]
+  if (!isNode(last) || last[0] !== '...') return false
+  const close = previousSourceToken(source, boundary)[0]
+  if (close < 0 || source[close] !== (pattern[0] === '[]' ? ']' : '}')) return false
+  const comma = previousSourceToken(source, close)[0]
+  return comma >= 0 && source[comma] === ','
+}
+
 const visitPatternInitializers = (pattern, cx, visit) => {
   if (!isNode(pattern)) return
   const op = pattern[0]
@@ -777,6 +1036,28 @@ const isAssignmentTarget = (node, allowPattern) => {
   return false
 }
 
+// Jessie can continue a leading `{}` through an infix/access operator even
+// where ECMAScript has already committed that token to a BlockStatement (at
+// statement start) or an arrow function body. Follow only operators whose
+// source starts at their first operand; an explicit `(...)` is a hard stop.
+const LEFT_EDGE_OPS = new Set([
+  ...ASSIGN_OPS, ',', '?', '.', '[]', '()', '?.', '?.[]', '?.()', '``',
+  '+', '-', '*', '/', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
+  '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'in', 'of', 'instanceof',
+])
+const BLOCK_CANNOT_PREFIX = new Set([
+  ...ASSIGN_OPS, '*', '%', '**', '<', '>', '<=', '>=', '==', '!=', '===', '!==',
+  '&', '|', '^', '<<', '>>', '>>>', '&&', '||', '??', 'in', 'of', 'instanceof', '.', '?.',
+])
+const leftEdgeIsObject = node => {
+  if (!isNode(node)) return false
+  if (node[0] === '{}') return true
+  if (node[0] === '()' && node.length === 2) return false
+  if ((node[0] === '[]' || node[0] === '()') && node.length < 3) return false
+  if ((node[0] === '++' || node[0] === '--') && node.length < 3) return false
+  return LEFT_EDGE_OPS.has(node[0]) && leftEdgeIsObject(node[1])
+}
+
 const hasIncompleteNamedBackref = pattern => {
   for (let i = 0; i < pattern.length; i++) {
     if (pattern[i] !== '\\') continue
@@ -832,6 +1113,7 @@ const isIteration = node => isNode(node) && (
 )
 
 const classMember = raw => {
+  const loc = raw?.loc
   let member = raw, isStatic = false
   if (isNode(member) && member[0] === 'static') { isStatic = true; member = member[1] }
   let kind = 'field', key = typeof member === 'string' ? member : null, value = null
@@ -846,7 +1128,74 @@ const classMember = raw => {
   } else if (isNode(member) && (member[0] === 'get' || member[0] === 'set')) {
     kind = member[0]; key = member[1]; value = member
   } else if (isNode(member) && member[0] === '{}') kind = 'static-block'
-  return { member, isStatic, kind, key, value }
+  return { member, isStatic, kind, key, value, loc }
+}
+
+const classBodyOpen = (node, source) => {
+  if (node[2] != null || typeof node.loc !== 'number') return -1
+  let i = nextSourceToken(source, node.loc + 5)
+  if (typeof node[1] === 'string') {
+    if (!isIdentCode(source.charCodeAt(i))) return -1
+    while (isIdentCode(source.charCodeAt(i))) i++
+    i = nextSourceToken(source, i)
+  }
+  return source[i] === '{' ? i : -1
+}
+
+// Bare class fields have no node location. For the one ambiguity that needs
+// one — two bare fields on the same line — scan only a simple no-heritage
+// class body's top level and compare against adjacent bare-string AST members.
+const hasUnseparatedBareClassFields = (node, members, source) => {
+  const pairs = new Set()
+  for (let i = 1; i < members.length; i++)
+    if (typeof members[i - 1] === 'string' && members[i - 1] !== 'accessor' && typeof members[i] === 'string')
+      pairs.add(`${members[i - 1]}\0${members[i]}`)
+  if (!pairs.size) return false
+  let i = classBodyOpen(node, source)
+  if (i < 0) return false
+  let depth = 1, paren = 0, bracket = 0, lastName = null, newline = false
+  for (i++; i < source.length && depth; ) {
+    const c = source.charCodeAt(i), ch = source[i]
+    if (isWhitespaceCode(c)) {
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i++; continue
+    }
+    if (ch === '/' && source[i + 1] === '/') {
+      i += 2
+      while (i < source.length && source[i] !== '\n' && source[i] !== '\r' &&
+          source.charCodeAt(i) !== 0x2028 && source.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2)
+      if (end < 0) return false
+      for (let k = i; k < end; k++) {
+        const kc = source.charCodeAt(k)
+        if (kc === 10 || kc === 13 || kc === 0x2028 || kc === 0x2029) { newline = true; break }
+      }
+      i = end + 2; continue
+    }
+    if (ch === '"' || ch === "'") { i = lexicalQuoted(source, i, ch, false); lastName = null; newline = false; continue }
+    if (ch === '`') { i = lexicalTemplate(source, i, false); lastName = null; newline = false; continue }
+    if (ch === '{') { depth++; lastName = null; newline = false; i++; continue }
+    if (ch === '}') { depth--; lastName = null; newline = false; i++; continue }
+    if (depth !== 1) { i++; continue }
+    if (ch === '(') { paren++; lastName = null; newline = false; i++; continue }
+    if (ch === ')') { paren--; lastName = null; newline = false; i++; continue }
+    if (ch === '[') { bracket++; lastName = null; newline = false; i++; continue }
+    if (ch === ']') { bracket--; lastName = null; newline = false; i++; continue }
+    if (!paren && !bracket && (isIdentCode(c) && !isDigitCode(c) || ch === '#' && isIdentCode(source.charCodeAt(i + 1)))) {
+      const start = i
+      if (ch === '#') i++
+      while (isIdentCode(source.charCodeAt(i))) i++
+      const name = source.slice(start, i)
+      if (lastName != null && !newline && pairs.has(`${lastName}\0${name}`)) return true
+      lastName = name; newline = false
+      continue
+    }
+    lastName = null; newline = false; i++
+  }
+  return false
 }
 
 const containsDirectName = (node, name) => {
@@ -858,7 +1207,7 @@ const containsDirectName = (node, name) => {
   return false
 }
 
-const validateClass = (node, cx, walk) => {
+const validateClass = (node, cx, walk, source) => {
   const name = node[1]
   if (typeof name === 'string') checkBindingName(name, { ...cx, strict: true, lexical: true })
   const members = statements(node[3])
@@ -878,6 +1227,8 @@ const validateClass = (node, cx, walk) => {
   let constructors = 0
   const privateNames = new Map()
   const parsed = members.map(classMember)
+  if (hasUnseparatedBareClassFields(node, members, source))
+    fail('class fields on the same line require a semicolon or LineTerminator')
 
   // Private declarations are visible throughout the complete class body, so
   // collect the environment before validating any initializer/method use.
@@ -892,10 +1243,21 @@ const validateClass = (node, cx, walk) => {
   for (const key of privateNames.keys()) privateSet.add(key)
 
   for (const m of parsed) {
-    if (m.isStatic && m.key === 'prototype') fail("static class element cannot be named 'prototype'")
+    // An escaped IdentifierName is one source token even though a backward
+    // ASCII scan sees only its trailing fragment. The modifier-like escaped
+    // residuals have an ordinary method key and still take the source path;
+    // a method whose OWN key is escaped must not be split at the escape.
+    const escapedKey = typeof m.key === 'string' && m.key.includes('\\u')
+    const sourceInfo = !escapedKey && (m.kind === 'method' || m.kind === 'get' || m.kind === 'set')
+      ? methodSourceInfo(source, m.loc) : 0
+    if (sourceInfo & M_BAD_BOUNDARY)
+      fail('class elements on the same line require a semicolon or LineTerminator')
+    const sourceStatic = m.isStatic || !!(sourceInfo & M_STATIC)
+    const sourceAsync = !!(sourceInfo & M_ASYNC)
+    if (sourceStatic && m.key === 'prototype') fail("static class element cannot be named 'prototype'")
     if (m.kind === 'field' && m.key === 'constructor') fail("class field cannot be named 'constructor'")
-    if (!m.isStatic && m.key === 'constructor' && m.kind !== 'field') {
-      if (m.kind !== 'method' || isNode(m.value) && (m.value[0] === 'async' || m.value[0] === 'function*'))
+    if (!sourceStatic && m.key === 'constructor' && m.kind !== 'field') {
+      if (m.kind !== 'method' || sourceAsync || isNode(m.value) && (m.value[0] === 'async' || m.value[0] === 'function*'))
         fail('class constructor cannot be an accessor, async function, or generator')
       constructors++
       if (constructors > 1) fail('class cannot declare more than one constructor')
@@ -909,7 +1271,32 @@ const validateClass = (node, cx, walk) => {
     }
     if (m.kind === 'field' && m.value && containsDirectName(m.value, 'arguments'))
       fail("class field initializer cannot contain 'arguments'")
-    if (m.value) walk(m.value, { ...cx, strict: true, classBody: true, privateNames: privateSet })
+    if (m.value) {
+      const value = sourceAsync && isNode(m.value) && m.value[0] === '=>' ? ['async', m.value] : m.value
+      walk(value, { ...cx, strict: true, classBody: true, privateNames: privateSet })
+    }
+  }
+}
+
+const exportEndsInDeclaration = node => {
+  if (!isNode(node)) return false
+  if (node[0] === 'export' || node[0] === 'default') return exportEndsInDeclaration(node[1])
+  if (node[0] === 'async' && isNode(node[1])) return exportEndsInDeclaration(node[1])
+  return node[0] === 'function' || node[0] === 'function*' || node[0] === 'class'
+}
+
+const validateModuleStatementBoundaries = (ast, source) => {
+  const list = statements(ast)
+  for (let i = 1; i < list.length; i++) {
+    const prev = list[i - 1], next = list[i]
+    if (!isNode(prev) || prev[0] !== 'export' || exportEndsInDeclaration(prev)) continue
+    // Value literals retain their exact token offset. If one immediately
+    // follows a semicolon-sensitive export form, the shared ASI layer may
+    // split it into a sibling despite there being no legal insertion point.
+    if (!isNode(next) || next[0] != null || typeof next.loc !== 'number') continue
+    const boundary = previousSourceToken(source, next.loc)
+    if (!boundary[1] && source[boundary[0]] !== ';')
+      fail('export declaration and following literal require a semicolon or LineTerminator')
   }
 }
 
@@ -989,6 +1376,7 @@ const validateExports = ast => {
 
 export function validateEarlyErrors(ast, source) {
   validateExports(ast)
+  validateModuleStatementBoundaries(ast, source)
   // No `=>` boundary here (unlike `some`'s default): a nested arrow can still
   // contain top-level-only import/export syntax that hasn't been rejected yet.
   const rootModule = some(ast, n => n[0] === 'import' || n[0] === 'export', { skipArrow: false })
@@ -1079,6 +1467,29 @@ export function validateEarlyErrors(ast, source) {
       return
     }
 
+    // Parentheses contain an Expression, never a statement list. Jessie uses
+    // the same `';'` node for both and otherwise accepts `(a; b)`/`({};)`.
+    if (op === '()' && node.length === 2 && isSeq(node[1]))
+      fail('semicolon is not allowed in a parenthesized expression')
+
+    // Arguments may have a trailing comma, but never an elision. Array
+    // literals deliberately share the comma-list shape and remain exempt.
+    if (op === '()' && node.length > 2 && isNode(node[2]) && node[2][0] === ',' &&
+        node[2].slice(1).some(arg => arg == null))
+      fail('call arguments cannot contain an elision')
+
+    if (op === 'debugger') {
+      if (!statementPosition) fail('debugger is only valid as a statement')
+      return
+    }
+
+    // At statement start `{` is unconditionally a block. An operator with no
+    // prefix-expression form cannot continue it (`{} * 1`, `{} = rhs`).
+    // Operators such as `+`, `-`, `/`, `(` and `[` are intentionally absent:
+    // each can begin a valid sibling statement immediately after a block.
+    if (statementPosition && BLOCK_CANNOT_PREFIX.has(op) && leftEdgeIsObject(node))
+      fail('block statement cannot be used as an expression operand')
+
     if (op === ';') {
       for (let i = 1; i < node.length; i++) {
         const stmt = node[i]
@@ -1094,6 +1505,10 @@ export function validateEarlyErrors(ast, source) {
     }
     if (op === 'default') { walk(node[1], cx, true); return }
 
+    if (op === ':' && !statementPosition && isNode(node[2]) && node[2][0] === 'async' &&
+        (methodSourceInfo(source, node.loc) & M_ASYNC_NL))
+      fail("line terminator is not allowed between 'async' and an object method name")
+
     if (ASSIGN_OPS.has(op)) {
       const specialIdentifier = isNode(node[1]) && (
         (node[1][0] === 'yield' && !cx.strict && !cx.generator) ||
@@ -1107,6 +1522,8 @@ export function validateEarlyErrors(ast, source) {
         fail(`cannot assign to '${node[1]}' in strict mode`)
       if (op === '=' && isNode(node[1]) && node[1].length === 2 &&
           (node[1][0] === '[]' || node[1][0] === '{}')) {
+        if (patternHasTrailingRestComma(node[1], source, node.loc))
+          fail('rest element in an assignment pattern cannot have a trailing comma')
         checkPattern(node[1], { ...cx, unique: false }, false)
         walk(node[2], cx)
         return
@@ -1117,6 +1534,19 @@ export function validateEarlyErrors(ast, source) {
         (node[1][0] == null && typeof node[1][1] === 'number' && !Number.isFinite(node[1][1])))
       const asiStatement = isNode(node[1]) && (node[1][0] === 'switch' || node[1][0] === 'if')
       if (!specialIdentifier && !asiStatement && !isAssignmentTarget(node[1], false)) fail(`invalid update target for '${op}'`)
+      // Postfix update has a hard no-LineTerminator restriction. Across a
+      // newline it must instead be parsed as a new prefix update; if the
+      // operator reaches a statement/final boundary, that fallback has no
+      // operand and the program is invalid. Do not blanket-reject the newline:
+      // `x\n++y` is valid (the AST currently cannot reconstruct its meaning).
+      if (node.length > 2 && node[2] == null && typeof node.loc === 'number') {
+        const prev = previousSourceToken(source, node.loc)
+        if (prev[1]) {
+          const next = nextSourceToken(source, node.loc + 2)
+          if (next >= source.length || /[;})\],:]/.test(source[next]))
+            fail(`line terminator before '${op}' leaves prefix update without an operand`)
+        }
+      }
     }
 
     if (op === 'await' && node[1] == null && (cx.async || cx.staticBlock))
@@ -1144,7 +1574,8 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'function' || op === 'function*') {
       const generator = op === 'function*'
       const body = node[3]
-      const strict = cx.strict || isUseStrict(body)
+      const ownStrict = isUseStrict(body)
+      const strict = cx.strict || ownStrict
       // GeneratorExpression's own BindingIdentifier is parameterized [+Yield]
       // UNCONDITIONALLY (its own generator-ness) — `var g = function*
       // yield(){}` is forbidden even in sloppy, non-generator-enclosing
@@ -1162,7 +1593,8 @@ export function validateEarlyErrors(ast, source) {
       const params = paramsOf(node[2])
       if (params.some(hasRest)) needsLexical = true
       const simple = isSimpleParams(params)
-      if (strict && !simple && isUseStrict(body)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict && !simple) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict) validateStrictDirectivePrologue(source, functionBodyOpen(source, node))
       const names = []
       for (let i = 0; i < params.length; i++) {
         const p = params[i]
@@ -1184,12 +1616,28 @@ export function validateEarlyErrors(ast, source) {
     if (op === '=>' || (op === 'async' && isNode(node[1]) && node[1][0] === '=>')) {
       const arrow = op === 'async' ? node[1] : node
       const isAsync = op === 'async'
+      if (isAsync && typeof node.loc === 'number') {
+        const firstFormal = nextSourceToken(source, node.loc + 5)
+        if (previousSourceToken(source, firstFormal)[1])
+          fail("line terminator is not allowed between 'async' and arrow parameters")
+      }
+      if (!isAsync && isNode(arrow[1]) && arrow[1][0] === '()' && arrow[1].length > 2 &&
+          typeof arrow[1][1] === 'string' && arrow[1][1].includes('\\u') &&
+          decodeIdentifier(arrow[1][1]) === 'async')
+        fail("escaped contextual keyword 'async' cannot introduce arrow parameters")
       const params = paramsOf(arrow[1]), body = arrow[2]
+      // A leading `{` after `=>` is always the function body, never an object
+      // literal concise body. Jessie can absorb a following operator into that
+      // body (`() => {} = 1`); only explicit parens may choose the expression.
+      if (isNode(body) && body[0] !== '{}' && leftEdgeIsObject(body))
+        fail('arrow function block cannot continue as an expression')
       if (params.some(hasRest)) needsLexical = true
       const fnBody = isNode(body) && body[0] === '{}' ? body[1] : body
       const ownStrict = isUseStrict(fnBody)
       const strict = cx.strict || ownStrict
       if (ownStrict && !isSimpleParams(params)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict && isNode(body) && body[0] === '{}')
+        validateStrictDirectivePrologue(source, body.loc)
       const names = []
       for (let i = 0; i < params.length; i++) {
         const p = params[i]
@@ -1222,6 +1670,7 @@ export function validateEarlyErrors(ast, source) {
       }
       const dup = duplicateName(names)
       if (ownStrict && !isSimpleParams(params)) fail("'use strict' is forbidden with non-simple parameters")
+      if (ownStrict) validateStrictDirectivePrologue(source, functionBodyOpen(source, fn))
       if (dup && (strict || !isSimpleParams(params))) fail(`duplicate parameter '${dup}'`)
       const fnBody = body
       const fnCx = { ...cx, strict, async: true, generator, functionDepth: cx.functionDepth + 1,
@@ -1258,7 +1707,7 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'class') {
       if (soleStmt) fail('class declaration requires a block in statement position')
       needsLexical = true
-      validateClass(node, cx, walk)
+      validateClass(node, cx, walk, source)
       if (node[2]) walk(node[2], cx)
       return
     }
@@ -1392,9 +1841,11 @@ export function validateEarlyErrors(ast, source) {
           if (lhs[0] !== 'var' && boundNames(lhs[1]).some(name => decodeIdentifier(name) === 'let'))
             fail("for-in/of lexical declaration cannot bind 'let'")
           walk(lhs, { ...cx, forBinding: true })
-        } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}'))
+        } else if (isNode(lhs) && lhs.length === 2 && (lhs[0] === '[]' || lhs[0] === '{}')) {
+          if (patternHasTrailingRestComma(lhs, source, head.loc))
+            fail('rest element in a for-in/of assignment pattern cannot have a trailing comma')
           checkPattern(lhs, { ...cx, unique: false }, false)
-        else if (!isAssignmentTarget(lhs, true)) fail('invalid for-in/of assignment target')
+        } else if (!isAssignmentTarget(lhs, true)) fail('invalid for-in/of assignment target')
         if (head[2] == null) fail('for-in/of requires a right-hand expression')
         // for-of's source is an AssignmentExpression (no bare comma allowed —
         // `for (x of a, b)` needs parens); for-in's source is a full
@@ -1402,6 +1853,15 @@ export function validateEarlyErrors(ast, source) {
         if (head[0] === 'of' && isNode(head[2]) && head[2][0] === ',')
           fail('for-of iteration expression cannot be an unparenthesized comma expression')
         walk(head[2], cx)
+      } else if (isSeq(head)) {
+        // A classic for header's three slots are expression/declaration
+        // grammar, not a StatementList. Walking the shared `';'` node through
+        // its ordinary handler marks every child statement-position and turns
+        // an invalid block in init/test/update into an accepted block statement.
+        for (let i = 1; i < head.length; i++) {
+          if (typeof head[i] === 'string') checkIdentifierRef(head[i], cx)
+          else walk(head[i], cx, false)
+        }
       } else walk(head, cx)
       if (declaration(node[2])) needsLexical = true
       walk(node[2], next, true, true)

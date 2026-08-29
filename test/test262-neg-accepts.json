@@ -1,102 +1,25 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 81,
+  "count": 10,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
       "test/language/module-code/parse-err-hoist-lex-fun.js",
-      "test/language/module-code/parse-err-hoist-lex-gen.js",
-      "test/language/module-code/parse-err-semi-dflt-expr.js",
-      "test/language/module-code/parse-err-semi-export-star.js",
-      "test/language/module-code/parse-err-semi-name-space-export.js",
-      "test/language/module-code/parse-err-semi-named-export-from.js",
-      "test/language/module-code/parse-err-semi-named-export.js"
+      "test/language/module-code/parse-err-hoist-lex-gen.js"
     ],
     "class-element-token-boundaries": [
-      "test/language/expressions/class/async-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/expressions/class/async-method-static/await-as-binding-identifier.js",
       "test/language/expressions/class/class-name-ident-await-escaped-module.js",
       "test/language/expressions/class/class-name-ident-await-module.js",
-      "test/language/expressions/class/elements/async-private-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/expressions/class/elements/async-private-method-static/await-as-binding-identifier.js",
-      "test/language/expressions/class/elements/fields-asi-same-line-1.js",
-      "test/language/expressions/class/elements/fields-asi-same-line-2.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-fields-same-line-error.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-privatenames-same-line-error.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-static-async-meth-prototype.js",
-      "test/language/statements/class/async-meth-escaped-async.js",
-      "test/language/statements/class/async-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/statements/class/async-method-static/await-as-binding-identifier.js",
       "test/language/statements/class/class-name-ident-await-escaped-module.js",
-      "test/language/statements/class/class-name-ident-await-module.js",
-      "test/language/statements/class/elements/async-private-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/statements/class/elements/async-private-method-static/await-as-binding-identifier.js",
-      "test/language/statements/class/elements/fields-asi-same-line-1.js",
-      "test/language/statements/class/elements/fields-asi-same-line-2.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-fields-same-line-error.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-privatenames-same-line-error.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-static-async-meth-prototype.js",
-      "test/language/statements/class/syntax/escaped-static.js"
-    ],
-    "destructuring-cover-grammar": [
-      "test/language/expressions/assignment/dstr/array-rest-before-elision.js",
-      "test/language/expressions/assignment/dstr/array-rest-elision-invalid.js",
-      "test/language/expressions/assignmenttargettype/direct-arrowfunction-0.js",
-      "test/language/expressions/assignmenttargettype/direct-primaryexpression-objectliteral.js",
-      "test/language/statements/for-in/dstr/array-rest-before-elision.js",
-      "test/language/statements/for-in/dstr/array-rest-elision-invalid.js",
-      "test/language/statements/for-of/dstr/array-rest-before-elision.js",
-      "test/language/statements/for-of/dstr/array-rest-elision-invalid.js"
+      "test/language/statements/class/class-name-ident-await-module.js"
     ],
     "asi-and-line-terminator-context": [
-      "test/language/asi/S7.9_A10_T2.js",
-      "test/language/asi/S7.9_A10_T4.js",
-      "test/language/asi/S7.9_A10_T6.js",
       "test/language/asi/S7.9_A11_T4.js",
-      "test/language/asi/S7.9_A11_T8.js",
-      "test/language/asi/S7.9_A5.1_T1.js",
-      "test/language/asi/S7.9_A5.3_T1.js",
-      "test/language/asi/S7.9_A6.2_T7.js",
-      "test/language/asi/S7.9_A6.3_T1.js",
-      "test/language/asi/S7.9_A6.3_T2.js",
-      "test/language/asi/S7.9_A6.3_T3.js",
-      "test/language/asi/S7.9_A6.3_T4.js",
-      "test/language/asi/S7.9_A6.3_T5.js",
-      "test/language/asi/S7.9_A6.3_T6.js",
-      "test/language/asi/S7.9_A6.3_T7.js",
-      "test/language/asi/S7.9_A9_T8.js",
-      "test/language/line-terminators/invalid-comment-single-cr.js",
-      "test/language/statements/for/S12.6.3_A8.1_T1.js",
-      "test/language/statements/for/S12.6.3_A8.1_T3.js"
-    ],
-    "async-generator-and-parameter-context": [
-      "test/language/expressions/async-arrow-function/early-errors-arrow-formals-lineterminator.js",
-      "test/language/expressions/async-arrow-function/escaped-async.js"
-    ],
-    "nested-strict-legacy-escape": [
-      "test/language/literals/string/legacy-non-octal-escape-sequence-1-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-2-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-3-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-4-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-5-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-6-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-7-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-8-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-non-octal-escape-sequence-9-strict-explicit-pragma.js",
-      "test/language/literals/string/legacy-octal-escape-sequence-prologue-strict.js"
+      "test/language/asi/S7.9_A11_T8.js"
     ],
     "other-jessie-context-loss": [
-      "test/language/block-scope/syntax/for-in/disallow-initialization-assignment.js",
-      "test/language/block-scope/syntax/for-in/disallow-multiple-lexical-bindings-without-and-with-initializer.js",
-      "test/language/expressions/call/S11.2.4_A1.3_T1.js",
-      "test/language/expressions/conditional/in-branch-2.js",
-      "test/language/expressions/object/method-definition/early-errors-object-method-async-lineterminator.js",
-      "test/language/reserved-words/await-module.js",
-      "test/language/statements/debugger/expression.js",
-      "test/language/statements/let/syntax/identifier-let-allowed-as-lefthandside-expression-strict.js",
-      "test/language/types/string/S8.4_A13_T3.js",
-      "test/language/types/string/S8.4_A14_T3.js"
+      "test/language/reserved-words/await-module.js"
     ]
   }
 }
