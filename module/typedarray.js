@@ -8,7 +8,7 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId } from '../src/ir.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt } from '../src/ir.js'
 import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
@@ -17,7 +17,7 @@ import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
 import { VAL, lookupValType } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
-import { inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
+import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
 import { representationProgramHasBigint } from '../src/compile/representation-plan.js'
 import { plannedTypedStorageCtor, plannedTypedStorageInfo } from '../src/compile/typed-storage-plan.js'
@@ -1832,15 +1832,50 @@ export default (ctx) => {
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (isBigInt) {
+      // Typed storage needs the raw i64 payload. A materialized union can carry
+      // that payload in PTR.BIGINT, so use the RepresentationPlan-aware readI64
+      // authority instead of reinterpreting the box pointer itself. Do not use
+      // maybeUnboxBigInt unconditionally: a genuine raw payload can have the same
+      // bits as a PTR.BIGINT tag (watr emits such NaN payloads), and must stay on
+      // readI64's unchanged raw path. Temp reads are explicitly f64-typed so that
+      // raw fallback is a bit reinterpretation, never a numeric conversion.
+      const tagged = readI64MayUnbox(val), valueKind = valTypeOf(val)
+      if (!tagged && valueKind != null && valueKind !== VAL.BIGINT)
+        err('BigInt typed-array element store cannot prove ToBigInt for this value — pass a BigInt value or convert it with BigInt(...)')
+      if (tagged) {
+        // A successful BigInt-element write cannot consume the Number arm of a
+        // materialized union. Validate before the bounds guard (matching JS even
+        // for OOB indices), then dereference only the proven PTR.BIGINT value.
+        if (ctx.func.inTry)
+          err('A Number-or-BigInt value stored into a BigInt typed array inside try/catch is not supported — narrow or convert the value before the try block')
+        ctx.runtime.throws = true
+        const vt = temp('tw'), bits = tempI64('twb')
+        const get = typed(['local.get', `$${vt}`], 'f64')
+        const mismatch = [
+          ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.BIGINT_UNDEF_MIX]]],
+          ['throw', '$__jz_err', ['f64.const', ERR.BIGINT_UNDEF_MIX]],
+        ]
+        return typed(void_ ? ['block', ...pre,
+          ['local.set', `$${vt}`, asF64(valIR)],
+          ['if', ['i32.eqz', ptrTypeEq(get, PTR.BIGINT)], ['then', ...mismatch]],
+          ['local.set', `$${bits}`, unboxBigInt(get)],
+          guard(['i64.store', off, ['local.get', `$${bits}`]])]
+          : ['block', ['result', 'f64'], ...pre,
+          ['local.set', `$${vt}`, asF64(valIR)],
+          ['if', ['i32.eqz', ptrTypeEq(get, PTR.BIGINT)], ['then', ...mismatch]],
+          ['local.set', `$${bits}`, unboxBigInt(get)],
+          guard(['i64.store', off, ['local.get', `$${bits}`]]),
+          get], void_ ? 'void' : 'f64')
+      }
       if (void_ && (ctx.transform.optFlags & OPTF.leanCheckedIdx) && pureStorable(valIR)) return typed(['block', ...pre,
-        guard(['i64.store', off, ['i64.reinterpret_f64', asF64(valIR)]])], 'void')
+        guard(['i64.store', off, readI64(val, asF64(valIR))])], 'void')
       const vt = temp('tw')
       return typed(void_ ? ['block', ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]])]
+        guard(['i64.store', off, readI64(val, typed(['local.get', `$${vt}`], 'f64'))])]
         : ['block', ['result', 'f64'], ...pre,
         ['local.set', `$${vt}`, asF64(valIR)],
-        guard(['i64.store', off, ['i64.reinterpret_f64', ['local.get', `$${vt}`]]]),
+        guard(['i64.store', off, readI64(val, typed(['local.get', `$${vt}`], 'f64'))]),
         ['local.get', `$${vt}`]], void_ ? 'void' : 'f64')
     }
     if (et === 7) { // Float64Array

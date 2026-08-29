@@ -1,9 +1,10 @@
 // Comprehensive data type tests: arrays, objects, strings
 // Adapted from old arch tests + new NaN-boxing architecture
 import test from 'tst'
-import { is, ok, almost } from 'tst/assert.js'
+import { is, ok, almost, throws } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
 import { onWasi, onKernel, adaptI64 } from './_matrix.js'
+import { BIGINT_TYPED_STORE_CALLS, BIGINT_TYPED_STORE_CATCH_SOURCE, BIGINT_TYPED_STORE_ERROR_SOURCE, BIGINT_TYPED_STORE_PAYLOAD, BIGINT_TYPED_STORE_SOURCE, BIGINT_TYPED_STORE_THROW_CALLS } from './_bigint-typed-store-corpus.js'
 
 function run(code, opts) {
   const { module, instance } = jz(code, opts)
@@ -2808,7 +2809,7 @@ test('bigint: range-boundary family survives the host export boundary (string in
   }
 })
 
-test('bigint: BigInt64Array element store misreads a box-forcing Number|BigInt union (KNOWN-WRONG -- fix reverted, caused a worse self-host regression)', () => {
+test('bigint: BigInt typed-array stores recover a materialized RHS payload (was KNOWN-WRONG)', () => {
   const FAMILY = {
     'i64 max (2^63-1)': '9223372036854775807n',
     'negated i64 max': '-9223372036854775807n',
@@ -2817,53 +2818,86 @@ test('bigint: BigInt64Array element store misreads a box-forcing Number|BigInt u
     'negated 2^64-1 wrapped': '-18446744073709551615n',
     '+2^62 control': '4611686018427387904n',
     '-2^62 control': '-4611686018427387904n',
+    'PTR.BIGINT-shaped raw payload': BIGINT_TYPED_STORE_PAYLOAD,
   }
-  // module/typedarray.js's `.typed:[]=` isBigInt branch stores through a bare
-  // `i64.reinterpret_f64` of the RHS's f64 carrier -- correct only when the
-  // value is provably raw. A Number|BigInt union (the SAME box-forcing
-  // reassignment shape the "survives a Number|BigInt union" pin above uses)
-  // is unconditionally boxed by construction; storing THAT into a BigInt64Array
-  // element reinterprets the box POINTER's own tag bits as the payload -- the
-  // same disease the two pins above exist to prevent, a fourth chokepoint the
-  // 2026-08 range-boundary fix (applyBigintRepresentationAction/coerceArg/
-  // readI64) didn't cover, since none of those three sit on the typed-array
-  // store path. Found while retiring fix/shape8-member-callee (that branch
-  // hit the identical hazard live, against watr's own f64() encoder).
-  //
-  // Not reproducible against main's own architecture through any ORDINARY
-  // native program shape tried -- but genuinely reachable: refactor-oracle's
-  // own check --ref shows bench:watr/watr:watr.js (watr's real WASM encoder)
-  // growing measurably once the fix below is applied, so watr's own source
-  // does exercise this chokepoint somewhere, silently, today.
-  //
-  // Attempted fix: route the store through `maybeUnboxBigInt`, the same
-  // runtime tag-checked primitive its three sibling chokepoints already use
-  // -- REVERTED. Self-hosting the fixed module/typedarray.js into dist/jz.wasm
-  // and running the full native suite through JZ_TEST_TARGET=jz.wasm surfaced
-  // 20 UNRELATED failures elsewhere (test/statements.js's BigInt compound-
-  // assign, test/number.js's parseInt, test/pointers.js's box-tag-shaped
-  // carrier family -- none of which touch BigInt64Array, several trapping
-  // outright with "memory access out of bounds"), confirmed caused by this
-  // one change by isolating it alone (revert module/typedarray.js only,
-  // rebuild, re-run under the SAME kernel target: clean, only this pin's own
-  // KNOWN-WRONG value differs). A NEW instance of this whole file's own
-  // kernel-taint disease (.work/phase-c-unification.md's "Shape #8 branch:
-  // RETIRED" section, and the CLOSED selfhost-fixpoint-divergence section
-  // above): the fix's own new box-tag-shaped IR, compiled INTO the kernel by
-  // an earlier-stage compiler, apparently bakes a wrong decision into
-  // unrelated later BigInt handling somewhere in the self-compile. Not
-  // diagnosed further (well past a "port the branch's own fixes" task's
-  // scope) -- reverted rather than land a worse, self-host-only regression
-  // than the leaf bug it would have closed. Pinned KNOWN-WRONG so a future
-  // fix attempt has to clear the SAME kernel-target gate every OTHER
-  // hardened chokepoint in this family already does before landing.
+  // A Number|BigInt local is materialized as PTR.BIGINT on the taken arm. The
+  // typed store must write that box's i64 payload, not the pointer bits. Both
+  // signed and unsigned 64-bit constructors share this emitter. Values outside
+  // signed i64 use JZ's documented wrapping BigInt dialect.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
-    for (const [name, lit] of Object.entries(FAMILY)) {
-      const e = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; const arr = new BigInt64Array(1); arr[0] = x; return arr[0] === ${lit} ? 1 : 0 }`, { optimize }).exports
-      is(e.f(1), 0, `${lbl} KNOWN-WRONG: box-forcing union misreads through a BigInt64Array store, ${name}`)
+    for (const ctor of ['BigInt64Array', 'BigUint64Array']) {
+      for (const [name, lit] of Object.entries(FAMILY)) {
+        const e = jz(`export let f = (present) => { let x = 0; if (present) x = ${lit}; const arr = new ${ctor}(1); arr[0] = x; return arr[0] === ${lit} ? 1 : 0 }`, { optimize }).exports
+        is(e.f(1), 1, `${lbl}: ${ctor} materialized store, ${name}`)
+      }
     }
   }
+
+  // The Number arm is not a value JZ may silently reinterpret as i64. ToBigInt
+  // fails before the indexed store even when the index is out of bounds.
+  const hostMismatch = index => { const arr = new BigInt64Array(1); let value = 0; arr[index] = value }
+  throws(() => hostMismatch(0), error => error instanceof TypeError)
+  throws(() => hostMismatch(2), error => error instanceof TypeError)
+  const hostCaughtMismatch = () => {
+    let trace = 0, value = 0
+    if (trace < 0) value = 7n
+    const arr = new BigInt64Array(1)
+    try { arr[(trace = trace + 1, 2)] = value; return 99 }
+    catch (error) { return trace * 10 + (error instanceof TypeError ? 1 : 0) }
+  }
+  is(hostCaughtMismatch(), 11, 'Node oracle: OOB conversion throws after the index effect and is catchable')
+  // JZ's compact runtime code-error channel becomes a real host TypeError, but
+  // is not a source-level Error object; reject a surrounding catch rather than
+  // accept different catch identity/effects.
+  for (const optimize of [false, 2, 3])
+    throws(() => jz(BIGINT_TYPED_STORE_CATCH_SOURCE, { optimize }), /inside try\/catch is not supported/)
+  // Other statically non-BigInt inputs take the allowed correct-or-reject path;
+  // JZ does not pretend their raw carriers are i64 payloads.
+  for (const value of ['1', 'true', "'1'"])
+    throws(() => compile(`export let f = () => { const arr = new BigInt64Array(1); arr[0] = ${value} }`),
+      /BigInt typed-array element store cannot prove ToBigInt/)
+
+  // Shared native/kernel source pairs the positive case with the load-bearing
+  // negative control: raw bits that look exactly like PTR.BIGINT must not be
+  // runtime-unboxed. Its hostile 0xffffffff low word would trap near 4 GiB if
+  // the old unconditional maybeUnboxBigInt attempt returned.
+  for (const optimize of [false, 2, 3]) {
+    const e = jz(BIGINT_TYPED_STORE_SOURCE, { optimize }).exports
+    for (const { fn, args, expect } of BIGINT_TYPED_STORE_CALLS)
+      is(e[fn](...args), expect, `O${optimize || 0}: ${fn}`)
+    const errors = jz(BIGINT_TYPED_STORE_ERROR_SOURCE, { optimize }).exports
+    for (const { fn, args } of BIGINT_TYPED_STORE_THROW_CALLS)
+      throws(() => errors[fn](...args), error => error instanceof TypeError)
+  }
+
+  const bodyOf = (src, name) => {
+    const wat = String(compile(src, { optimize: false, wat: true }))
+    const start = wat.indexOf(`(func $${name}\n`)
+    ok(start >= 0, `$${name} found in O0 WAT`)
+    const next = wat.indexOf('\n  (func ', start + 1)
+    return next < 0 ? wat.slice(start) : wat.slice(start, next)
+  }
+  ok(/call \$__ptr_type/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'boxedI64')),
+    'materialized store uses readI64\'s PTR.BIGINT check')
+  ok(!/call \$__ptr_type/.test(bodyOf(BIGINT_TYPED_STORE_SOURCE, 'rawI64')),
+    'proven-raw store remains a direct reinterpret with no tag check')
+
+  // Node oracle for the dialect-compatible value plus an effect pin: the
+  // computed index runs exactly once before the write. The carrier-specific
+  // positive/negative pair above separately proves the RHS representation.
+  const hostEffects = () => {
+    let trace = 0, x = 0
+    if (1) x = 0x7ffa8000ffffffffn
+    const arr = new BigInt64Array(1)
+    const index = () => { trace = trace * 10 + 1; return 0 }
+    arr[index()] = x
+    return trace * 10 + (arr[0] === 0x7ffa8000ffffffffn ? 1 : 0)
+  }
+  const effectSource = `export let f = () => { let trace = 0, x = 0; if (1) x = ${BIGINT_TYPED_STORE_PAYLOAD}; const arr = new BigInt64Array(1); const index = () => { trace = trace * 10 + 1; return 0 }; arr[index()] = x; return trace * 10 + (arr[0] === ${BIGINT_TYPED_STORE_PAYLOAD} ? 1 : 0) }`
+  is(hostEffects(), 11, 'Node oracle: computed index evaluates once before the write')
+  for (const optimize of [false, 3])
+    is(jz(effectSource, { optimize }).exports.f(), 11, `O${optimize || 0}: matches Node source order and effects`)
 })
 
 test('bigint: unary "-"/"~" and joint-binary census results materialize through RepresentationPlan', () => {

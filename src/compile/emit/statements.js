@@ -28,6 +28,10 @@ function canThrow(body, seen = new Set()) {
   // throw and stays excluded.
   if (op === '.' && body[2] === 'length' && valTypeOf(body[1]) == null) return true
   if (op === '[]' && staticPropertyKey(body[2]) === 'length' && valTypeOf(body[1]) == null) return true
+  // Typed element assignment can throw during ToNumber/ToBigInt even for an
+  // OOB index. Keep a surrounding catch visible; the typed emitter either
+  // emits the supported runtime throw or rejects an unrepresentable catch.
+  if (op === '=' && Array.isArray(body[1]) && body[1][0] === '[]' && valTypeOf(body[1][1]) === VAL.TYPED) return true
   if (op === '=>') return false
   if (op === '()') {
     const callee = body[1]

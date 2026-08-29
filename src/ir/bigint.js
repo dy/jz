@@ -195,9 +195,14 @@ export const isTernaryBoxedBigint = (name) => ctx.func.ternaryBoxedNames?.has(na
 export const isPlanTaggedBigint = node =>
   representationActiveMaterializedRep(ctx, node) === (BIGINT_REP_BOXED | BIGINT_REP_CLOSED)
 
+/** Shared proof gate for consumers that need to distinguish a tagged BigInt
+ *  carrier from the raw-i64 path before calling readI64. */
+export const readI64MayUnbox = node =>
+  (typeof node === 'string' && isTernaryBoxedBigint(node)) ||
+  isPlanTaggedBigint(node) || isSchemaSlotBigintPossible(node)
+
 export function readI64(node, emitted) {
-  if (
-      ((typeof node === 'string' && isTernaryBoxedBigint(node)) || isPlanTaggedBigint(node)))
+  if (readI64MayUnbox(node))
     // maybeUnboxBigInt, not unboxBigInt (range-boundary BOX/UNBOX OOB fix,
     // 2026-08 — the same fix already applied to applyBigintRepresentationAction's
     // UNBOX arm above and to emit.js's coerceArg): isPlanTaggedBigint's verdict
@@ -214,6 +219,5 @@ export function readI64(node, emitted) {
     // already-the-payload reinterpret otherwise — this was the one remaining
     // unguarded isPlanTaggedBigint-consuming call site of the three.
     return maybeUnboxBigInt(emitted)
-  if (isSchemaSlotBigintPossible(node)) return maybeUnboxBigInt(emitted)
   return asI64(emitted)
 }

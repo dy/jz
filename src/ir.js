@@ -39,7 +39,7 @@ export { mkPtrIR, ptrOffsetIR, valKindToPtr, ptrTypeIR, extractF64Bits, ptrTypeE
 export { MAX_CLOSURE_ARITY, MEM_OPS, WASM_OPS, SPREAD_MUTATORS, BOXED_MUTATORS, isLit, litVal, isNullishLit, isPureIR, hasExpensiveOp, dataDependentFlag, isNumericIR, resolveValType, isPostfix, emitNum } from './ir/classify.js'
 export { multiCount, loopTop, flat, findBodyStart, verifyFn, buildRefcount, nextLocalId, freshLoopPlanId, tcoTailRewrite, reconstructArgsWithSpreads } from './ir/control.js'
 export { asF64, asI32, asI32Sat, asPtrOffset, asParamType, maskBound, f64Range, toI32, asI64, fromI64, f64rem } from './ir/numeric.js'
-export { bigintStrict, bigintEraseErr, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isSchemaSlotBigintPossible, isTernaryBoxedBigint, isPlanTaggedBigint, readI64 } from './ir/bigint.js'
+export { bigintStrict, bigintEraseErr, boxBigInt, unboxBigInt, applyBigintRepresentationAction, maybeUnboxBigInt, isSchemaSlotBigintPossible, isTernaryBoxedBigint, isPlanTaggedBigint, readI64MayUnbox, readI64 } from './ir/bigint.js'
 export { usesDynProps, needsDynShadow, isBoundName, isGlobal, isConst, boxedAddr, dollar, dollarMap, setDollarMap, clearDollar, readVar, writeVar } from './ir/vars.js'
 export { slotAddr, elemLoad, elemStore, arrayLoop, allocPtr } from './ir/arrays.js'
 export { NULL_NAN, UNDEF_NAN, TOMB_NAN, BOOL_ATOM_BASE, FALSE_NAN, TRUE_NAN, NULL_WAT, UNDEF_WAT, NULL_IR, UNDEF_IR, FALSE_IR, TRUE_IR, nullExpr, undefExpr, boolBoxIR, carrierF64, carrierF64Narrow, unboxBoolIR, isNullish, isUndef, isNull, throwTypeErrorIR, isBoolAtom, truthyIR, toBoolFromEmitted } from './ir/sentinels.js'

@@ -103,6 +103,7 @@ import { join, dirname, resolve as pathResolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { BIGINT_TYPED_STORE_SOURCE } from '../test/_bigint-typed-store-corpus.js'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const LEVELS = [0, 2, 3, 'size']
@@ -116,10 +117,10 @@ const GRAPH_CASES = new Set(['jessie', 'jz'])
 
 const hashBuffer = (buf) => createHash('sha256').update(buf).digest('hex')
 
-// Replicated verbatim from test/kernel-parity.js's exported CORPUS (source of
-// truth — diff against it if this ever needs to catch up). Deliberately NOT
-// imported: `import '../test/kernel-parity.js'` runs that file's own
-// top-level `test(...)` registrations as a side effect, and those pull in
+// Mirrored from test/kernel-parity.js's exported CORPUS (source of truth —
+// diff against it if this ever needs to catch up); pure fixture constants can
+// be shared directly. Deliberately do NOT import kernel-parity.js itself:
+// its top-level test registrations run as import side effects and pull in
 // `kernel-target.js`, which lazily runs `npm run build` to produce
 // dist/jz.wasm (a full self-host compile) the first time it's missing —
 // exactly the expensive self-host cost this tool excludes by default (see
@@ -137,6 +138,7 @@ const KERNEL_PARITY_CORPUS = {
   boolconst: `const g = (n) => { if (typeof n === 'number') return n; return false }
 export let f = (s) => g(s) === false`,
   nestedtyped: `export let f = (x) => new Int32Array(new Float64Array([x]))[0]`,
+  biginttypedstore: BIGINT_TYPED_STORE_SOURCE,
   subviewtyped: `export let f = (buf) => new Int32Array(buf, 0, new Float64Array(4).length)`,
   dvnested: `export let f = (dv) => dv.setFloat64(dv.getInt32(0), dv.getFloat64(8))`,
   fromnested: `export let f = () => Int32Array.from([Float64Array.from([5])[0], 2])`,
