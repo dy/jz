@@ -19,11 +19,148 @@ import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
 import { createGeneratorLowering, ITER_HELPERS_RUNTIME, ITER_ARR_RUNTIME } from './generators.js'
+import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
 
 const names = createNames()
+const SHADOW_SENSITIVE = new Set([
+  'Array', 'SharedArrayBuffer', 'URLSearchParams', 'Promise', 'queueMicrotask',
+  'Function', 'Iterator', 'Symbol',
+])
+let builtinScopes = new WeakMap()
+let activeBuiltinScope = null
+const addBuiltinName = (scope, name) => {
+  if (SHADOW_SENSITIVE.has(name)) scope.names.add(name)
+}
+const addPatternNames = (scope, pattern) => {
+  const bound = collectParamNames([pattern])
+  for (const name of bound) addBuiltinName(scope, name)
+}
+const addImportBindings = (scope, node) => {
+  if (typeof node === 'string') { addBuiltinName(scope, node); return }
+  if (!Array.isArray(node)) return
+  if (node[0] === 'as') { addBuiltinName(scope, node[2]); return }
+  if (node[0] === 'import' || node[0] === 'from') { addImportBindings(scope, node[1]); return }
+  if (node[0] === '{}' || node[0] === ',')
+    for (let i = 1; i < node.length; i++) addImportBindings(scope, node[i])
+}
+const scopeHasBuiltin = (scope, name) => {
+  for (let s = scope; s; s = s.parent) if (s.names.has(name)) return true
+  return false
+}
+const shadowsJzifyBuiltin = name => SHADOW_SENSITIVE.has(name) && scopeHasBuiltin(activeBuiltinScope, name)
+const withBuiltinScope = (node, fn) => {
+  const prior = activeBuiltinScope
+  activeBuiltinScope = builtinScopes.get(node) || prior
+  try { return fn() } finally { activeBuiltinScope = prior }
+}
+
+// Build the lexical scope chain before rewriting. A program-wide name census
+// made a parameter in one function suppress unrelated builtin lowering in
+// every other function.
+const buildBuiltinScopes = root => {
+  const map = new WeakMap()
+  const childScope = parent => ({ parent, names: new Set() })
+  const declarations = (node, scope) => {
+    const list = Array.isArray(node) && node[0] === ';' ? node.slice(1) : [node]
+    for (let stmt of list) {
+      if (!Array.isArray(stmt)) continue
+      if (stmt[0] === 'export') stmt = stmt[1]
+      if (!Array.isArray(stmt)) continue
+      const op = stmt[0]
+      if (op === 'let' || op === 'const' || op === 'var' || op === 'using') {
+        for (let i = 1; i < stmt.length; i++) {
+          const d = stmt[i]
+          addPatternNames(scope, Array.isArray(d) && d[0] === '=' ? d[1] : d)
+        }
+      } else if ((op === 'function' || op === 'function*' || op === 'class') && typeof stmt[1] === 'string') {
+        addBuiltinName(scope, stmt[1])
+      } else if (op === 'async' && Array.isArray(stmt[1]) &&
+          (stmt[1][0] === 'function' || stmt[1][0] === 'function*')) {
+        addBuiltinName(scope, stmt[1][1])
+      } else if (op === 'import' || op === 'from') addImportBindings(scope, stmt)
+    }
+  }
+  const vars = (node, scope) => {
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'function' || op === 'function*' || op === '=>') return
+    if (op === 'var') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        addPatternNames(scope, Array.isArray(d) && d[0] === '=' ? d[1] : d)
+      }
+    }
+    for (let i = 1; i < node.length; i++) vars(node[i], scope)
+  }
+  const visit = (node, scope, reuseSequence = false) => {
+    if (!Array.isArray(node)) return
+    let here = scope
+    const op = node[0]
+    if (op === 'function' || op === 'function*' || op === '=>') {
+      const fn = childScope(scope)
+      const name = op === '=>' ? null : node[1]
+      const params = op === '=>' ? node[1] : node[2]
+      const body = op === '=>' ? node[2] : node[3]
+      addBuiltinName(fn, name)
+      for (const param of extractParams(params)) addPatternNames(fn, param)
+      declarations(body, fn)
+      vars(body, fn)
+      if (Array.isArray(params)) map.set(params, fn)
+      if (Array.isArray(body)) map.set(body, fn)
+      visit(params, fn, true)
+      visit(body, fn, true)
+      return
+    }
+    if (op === ';') {
+      if (!reuseSequence) here = childScope(scope)
+      declarations(node, here)
+      map.set(node, here)
+      for (let i = 1; i < node.length; i++) visit(node[i], here)
+      return
+    }
+    if (op === '{}' && (isBlockBody(node) || JZ_BLOCK_OPS.has(node[1]?.[0]))) {
+      here = childScope(scope)
+      declarations(node[1], here)
+      map.set(node, here)
+      for (let i = 1; i < node.length; i++) visit(node[i], here, true)
+      return
+    }
+    if (op === 'catch') {
+      here = childScope(scope)
+      addPatternNames(here, node[1])
+      declarations(node[2], here)
+      map.set(node, here)
+      visit(node[2], here, true)
+      return
+    }
+    if (op === 'for' && Array.isArray(node[1])) {
+      const head = node[1]
+      const decl = head[0] === ';' ? head[1]
+        : head[0] === 'of' || head[0] === 'in' ? head[1] : head
+      if (Array.isArray(decl) && (decl[0] === 'let' || decl[0] === 'const')) {
+        here = childScope(scope)
+        declarations(decl, here)
+      }
+    } else if (op === 'switch') {
+      here = childScope(scope)
+      for (let i = 2; i < node.length; i++) {
+        const c = node[i]
+        if (Array.isArray(c)) declarations(c[0] === 'case' ? c[2] : c[1], here)
+      }
+    }
+    if (here !== scope) map.set(node, here)
+    for (let i = 1; i < node.length; i++) visit(node[i], here)
+  }
+  const program = childScope(null)
+  declarations(root, program)
+  vars(root, program)
+  if (Array.isArray(root)) map.set(root, program)
+  visit(root, program, true)
+  return map
+}
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
-let lowerClass, lowerObjectLiteralThis, lowerArrayConstructor, transformSwitch
+let lowerClass, lowerObjectLiteralThis, transformSwitch
 let transform, transformScope
 
 ;({ transform, transformScope } = createTransform({
@@ -34,12 +171,13 @@ let transform, transformScope
   transformSwitch: (...a) => transformSwitch(...a),
   lowerClass: () => lowerClass,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
-  lowerArrayConstructor: () => lowerArrayConstructor,
+  shadowsBuiltin: shadowsJzifyBuiltin,
+  withBuiltinScope,
 }))
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis, lowerArrayConstructor } = createClassLowering({ transform, names, JC, constStrings }))
+;({ lowerClass, lowerObjectLiteralThis } = createClassLowering({ transform, names, JC, constStrings }))
 const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
@@ -75,9 +213,8 @@ const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose', asyncIterator
 // objects (__it_mk). Fusable chains still fuse; this covers value positions.
 const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
   'toArray', 'reduce', 'forEach', 'some', 'every', 'find'])
-// Entry walk, three jobs in one pass:
-// 0. Compat aliases: `new WeakMap`/`new WeakSet` → `new Map`/`new Set`.
-// 1. Canonicalize well-known-symbol shapes to reserved literal props — a
+// Entry walk, two jobs in one pass:
+// 1. Canonicalize well-known-symbol shapes to reserved literal props. A
 //    fixed-shape object has no symbol slots, so `[Symbol.iterator]` becomes
 //    the '@@iterator' prop in BOTH key position (computed member/method) and
 //    access position (`x[Symbol.iterator]`).
@@ -85,35 +222,28 @@ const ITER_HELPER_NAMES = new Set(['map', 'filter', 'take', 'drop', 'flatMap',
 //    use / `instanceof Iterator` for the decorated-iterator gate.
 function canonSymbols(node) {
   if (!Array.isArray(node)) return node
-  const [op] = node
-  // No GC → weakness is unobservable: `new WeakMap`/`new WeakSet` are pure sugar
-  // for Map/Set (documented deviation: primitive keys accepted, .size/iteration
-  // exposed). Renamed here so the core subset never sees the Weak ctors; strict
-  // mode (which skips jzify) rejects them in prepare.
-  if (op === 'new') {
-    const c = node[1]
-    if (c === 'WeakMap' || c === 'WeakSet') node[1] = c.slice(4)
-    else if (Array.isArray(c) && c[0] === '()' && (c[1] === 'WeakMap' || c[1] === 'WeakSet')) c[1] = c[1].slice(4)
-  }
-  if (op === 'function*') iterProto.on = true
-  if (op === ':' && (node[1] === 'next' || node[1] === '@@iterator') &&
-      Array.isArray(node[2]) && (node[2][0] === '=>' || node[2][0] === 'function' || node[2][0] === 'function*'))
-    iterProto.on = true
-  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && ITER_HELPER_NAMES.has(node[1][2]))
-    iterProto.helpers = true
-  if (op === 'instanceof' && node[2] === 'Iterator') iterProto.helpers = true
-  // computed key: [':', ['[]', Symbol.X], value]
-  if (op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
-    for (const [k, prop] of Object.entries(WELL_KNOWN))
-      if (isSymbolWellKnown(node[1][1], k)) { node[1] = prop; if (prop === '@@iterator') iterProto.on = true }
-  }
-  // access: ['[]', obj, Symbol.X] → ['.', obj, '@@X']
-  if (op === '[]' && node.length === 3) {
-    for (const [k, prop] of Object.entries(WELL_KNOWN))
-      if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop }
-  }
-  for (let i = 1; i < node.length; i++) canonSymbols(node[i])
-  return node
+  return withBuiltinScope(node, () => {
+    const [op] = node
+    if (op === 'function*') iterProto.on = true
+    if (op === ':' && (node[1] === 'next' || node[1] === '@@iterator') &&
+        Array.isArray(node[2]) && (node[2][0] === '=>' || node[2][0] === 'function' || node[2][0] === 'function*'))
+      iterProto.on = true
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && ITER_HELPER_NAMES.has(node[1][2]))
+      iterProto.helpers = true
+    if (op === 'instanceof' && node[2] === 'Iterator' && !shadowsJzifyBuiltin('Iterator')) iterProto.helpers = true
+    // computed key: [':', ['[]', Symbol.X], value]
+    if (!shadowsJzifyBuiltin('Symbol') && op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
+      for (const [k, prop] of Object.entries(WELL_KNOWN))
+        if (isSymbolWellKnown(node[1][1], k)) { node[1] = prop; if (prop === '@@iterator') iterProto.on = true }
+    }
+    // access: ['[]', obj, Symbol.X] → ['.', obj, '@@X']
+    if (!shadowsJzifyBuiltin('Symbol') && op === '[]' && node.length === 3) {
+      for (const [k, prop] of Object.entries(WELL_KNOWN))
+        if (isSymbolWellKnown(node[2], k)) { node[0] = '.'; node[2] = prop }
+    }
+    for (let i = 1; i < node.length; i++) canonSymbols(node[i])
+    return node
+  })
 }
 
 /**
@@ -123,6 +253,8 @@ function canonSymbols(node) {
  */
 export default function jzify(ast) {
   names.reset()
+  activeBuiltinScope = null
+  builtinScopes = buildBuiltinScopes(ast)
   // Module-scope `const K = 'str'` bindings — lets class lowering fold computed
   // member names `[K]() {}` (const guarantees the binding never changes).
   constStrings.clear()
@@ -151,15 +283,19 @@ export default function jzify(ast) {
   ast = hoistVars(ast, hoisted)
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
+  builtinScopes = buildBuiltinScopes(ast)
   resetAsync()
   iterProto.drain = false
   webrt.usp = false
   let out = transformScope(ast)
   const prepend = (src) => {
-    // runtimes ride the same well-known-symbol canonicalization as user code
-    // ([Symbol.iterator] → '@@iterator' in key/access/assign positions) — the
-    // dot-canonical form keeps writes and prehashed dot-reads on ONE path.
-    const rt = transformScope(canonSymbols(parse(src)))
+    // Runtimes ride the same well-known-symbol canonicalization as user code.
+    const runtimeAst = parse(src)
+    const priorScopes = builtinScopes
+    builtinScopes = buildBuiltinScopes(runtimeAst)
+    let rt
+    try { rt = transformScope(canonSymbols(runtimeAst)) }
+    finally { builtinScopes = priorScopes }
     const rtStmts = Array.isArray(rt) && rt[0] === ';' ? rt.slice(1) : [rt]
     const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
     out = [';', ...rtStmts, ...outStmts]

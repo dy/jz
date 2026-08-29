@@ -391,6 +391,98 @@ test('host override: Math.sin', () => {
   is(exports.f(3), 6)  // 3 * 2
 })
 
+test('imported constructors shadow syntax-only builtin lowering', () => {
+  if (onWasi()) return
+  const calls = []
+  const unary = name => function (value) { calls.push([name, value]); return {} }
+  const binary = name => function (a, b) { calls.push([name, a, b]); return {} }
+  const zeroary = name => function () { calls.push([name]); return {} }
+  const constructors = {
+    Array: binary('Array'),
+    SharedArrayBuffer: unary('SharedArrayBuffer'),
+    URLSearchParams: unary('URLSearchParams'),
+    Promise: unary('Promise'),
+    RegExp: unary('RegExp'),
+    WeakMap: unary('WeakMap'),
+  }
+  const { run } = jz(`
+    import { Array, SharedArrayBuffer, URLSearchParams, Promise, RegExp, WeakMap } from 'ctors'
+    export let run = value => {
+      new Array(3, 4)
+      new SharedArrayBuffer(7)
+      new URLSearchParams(9)
+      new Promise(11)
+      new RegExp(value)
+      new WeakMap(13)
+      return 1
+    }
+  `, { imports: { ctors: constructors } }).exports
+  is(run(12), 1, 'all imported constructor calls complete')
+  is(JSON.stringify(calls), JSON.stringify([
+    ['Array', 3, 4], ['SharedArrayBuffer', 7], ['URLSearchParams', 9],
+    ['Promise', 11], ['RegExp', 12], ['WeakMap', 13],
+  ]), 'imported shadows execute once in source order with their original arguments')
+
+  calls.length = 0
+  const zero = jz(`
+    import { Array } from 'ctors'
+    export let f = () => { new Array(); return 1 }
+  `, { imports: { ctors: { Array: zeroary('Array') } } }).exports.f
+  is(zero(), 1, 'zero-argument imported Array call completes')
+  is(JSON.stringify(calls), JSON.stringify([['Array']]),
+    'zero-argument imported Array is not folded to a literal')
+
+  calls.length = 0
+  const strict = jz(`
+    import { WeakMap } from 'ctors'
+    export let f = () => { new WeakMap(8); return 1 }
+  `, { strict: true, imports: { ctors: constructors } }).exports.f
+  is(strict(), 1, 'strict mode rejects only the unshadowed WeakMap builtin')
+  is(JSON.stringify(calls), JSON.stringify([['WeakMap', 8]]),
+    'strict imported WeakMap reaches its binding')
+
+  calls.length = 0
+  const defaultArray = jz(`
+    import Array from 'ctors'
+    export let f = () => { new Array(3, 4); return 1 }
+  `, { imports: { ctors: { default: constructors.Array } } }).exports.f
+  is(defaultArray(), 1, 'default-imported Array call completes')
+  is(JSON.stringify(calls), JSON.stringify([['Array', 3, 4]]),
+    'default-imported Array shadows the builtin')
+  throws(() => jz(`
+    import Array from 'ctors'
+    export let f = () => new Array()
+  `, { imports: { ctors: { Other: constructors.Array } } }), /'default' not declared/,
+  'a missing host default import rejects before constructor lowering')
+
+  calls.length = 0
+  const aliasedArray = jz(`
+    import { Constructor as Array } from 'ctors'
+    export let f = () => { new Array(3, 4); return 1 }
+  `, { imports: { ctors: { Constructor: constructors.Array } } }).exports.f
+  is(aliasedArray(), 1, 'aliased Array import call completes')
+  is(JSON.stringify(calls), JSON.stringify([['Array', 3, 4]]),
+    'aliased import binding shadows the builtin')
+})
+
+test('host validator can supply a dynamic RegExp compatibility binding', () => {
+  const validate = (pattern, flags) => {
+    try { new RegExp(pattern, flags); return '' }
+    catch (e) { return e.message }
+  }
+  const { exports } = jz(`
+    import { validate } from 'regex-host'
+    let RegExp = (pattern, flags) => {
+      let error = validate(pattern, flags)
+      if (error !== '') throw new SyntaxError(error)
+      return null
+    }
+    export let f = pattern => { try { new RegExp(pattern, 'u'); return 1 } catch { return 2 } }
+  `, { imports: { 'regex-host': { validate } } })
+  is(exports.f('a+'), 1, 'valid runtime pattern passes host validation')
+  is(exports.f('['), 2, 'host validation error is rethrown inside Wasm and remains catchable')
+})
+
 test('host override: Date.now', () => {
   const { exports } = jz(
     'export let f = () => Date.now()',
