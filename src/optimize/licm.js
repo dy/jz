@@ -199,12 +199,30 @@ const HARD_OPS = new Set([
   'i64.trunc_sat_f64_s', 'i64.trunc_sat_f64_u', 'i32.trunc_sat_f64_s', 'i32.trunc_sat_f64_u',
   'select', 'f64.load', 'i32.load', 'call',
 ])
-const hasHardOp = (n) => {
-  let found = false
-  walkAst(n, { enter: x => {
-    if (found) return false
-    if (HARD_OPS.has(x[0])) { found = true; return false }
-  } })
+// Bottom-up, per-node memoized: `cache` is a Map<node, bool> owned by ONE
+// top-level hoistInvariantLoop(fn) call (see there) — every node this scan
+// touches gets its verdict cached as the recursion unwinds, so a LATER
+// top-level call in isHoistable's collect walk on a node this pass already
+// covered (a shared/aliased subtree, or nested inside an earlier-visited
+// ancestor) is an O(1) hit instead of a full re-scan. Measured: 146,062
+// hasHardOp calls / 806,577 walkAst visits in one O3 watr-specimen compile
+// before this change (core-simplification-audit.md §1.5). Safe because the
+// cache is scoped to one hoistInvariantLoop(fn) call: within that call every
+// mutation to a loop's own subtree happens strictly AFTER isHoistable/
+// hasHardOp finished querying it (processLoop's snap-replacement runs after
+// its own collect walk; an inner loop's hoist relocates nodes OUT of the
+// outer loop's span, it never rewrites content the outer loop's later walk
+// still reads in place) — see hoistInvariantLoop's own cache allocation for
+// the fuller argument. The cache must NOT be reused across separate
+// hoistInvariantLoop(fn) invocations: fusedRewrite/hoistAddrBase run between
+// them (driver.js) and mutate nodes in place (e.g. peephole.js's memarg
+// fold), which would make a cross-call cache read stale verdicts.
+const hasHardOp = (n, cache) => {
+  if (!Array.isArray(n)) return false
+  if (cache) { const hit = cache.get(n); if (hit !== undefined) return hit }
+  let found = HARD_OPS.has(n[0])
+  for (let i = 1; !found && i < n.length; i++) found = hasHardOp(n[i], cache)
+  if (cache) cache.set(n, found)
   return found
 }
 
@@ -286,7 +304,7 @@ function buildBaseParamOf(fn, bodyStart, distinctParams) {
 // teed invariant; a free `local.get` must be unwritten by the loop). Memory leaves are admitted
 // only under the summary: a `$__cell_`/distinct-param load iff no aliasing store + no call; a
 // SAFE_OFFSET/READONLY_MEM call iff no unsafe call (+ no direct store for heap reads).
-function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null }) {
+function computeLoopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSets = false, stableHeaderNames = null }) {
   const locals = new Set(), globals = new Set(), storedCells = new Set(), storedBases = new Set()
   let hasUnsafeCall = false, hasAnyCall = false, hasDirectStore = false, hasV128 = false
   const recordEffect = node => {
@@ -407,6 +425,22 @@ function loopInvariance(loopNode, { distinctParams, baseParamOf, allowPrivateSet
   return { pureGiven, locals, globals, storedCells, storedBases, hasUnsafeCall, hasAnyCall, hasDirectStore, hasV128 }
 }
 
+// Per-node memoized wrapper: `cache` is a Map<loopNode, result> owned by ONE
+// top-level call (hoistInvariantLoop or splitLoopPrivateScratch — each passes
+// its own fresh Map, never shared between them or across separate top-level
+// invocations, same scoping argument as hasHardOp's cache above). Every
+// caller within one top-level call passes the SAME options shape (hoist-
+// InvariantLoop always allowPrivateSets:false/default; splitLoopPrivateScratch
+// always allowPrivateSets:true), so keying purely by `loopNode` cannot conflate
+// two different option sets for the same node. `cache` is optional — omitting
+// it (or a cache miss) falls back to the original always-fresh computation.
+function loopInvariance(loopNode, opts, cache) {
+  if (!cache) return computeLoopInvariance(loopNode, opts)
+  let hit = cache.get(loopNode)
+  if (!hit) cache.set(loopNode, hit = computeLoopInvariance(loopNode, opts))
+  return hit
+}
+
 /**
  * Unified loop-invariant code motion. One principle replaces the three former
  * pattern hoists (ToInt32 / __ptr_offset / cell-load): a MAXIMAL pure subtree
@@ -477,6 +511,9 @@ export function splitLoopPrivateScratch(fn) {
   // heuristic (which assumed two loads/stores in different locals never alias — false in general).
   const distinctParams = fn.distinctParams || null
   const baseParamOf = buildBaseParamOf(fn, bodyStart, distinctParams)
+  // Scoped to this ONE splitLoopPrivateScratch(fn) call — see loopInvariance's
+  // own doc for why a cache must never outlive its owning top-level call.
+  const invarianceCache = new Map()
 
   const hasV128 = (n) => {
     let f = false
@@ -540,7 +577,7 @@ export function splitLoopPrivateScratch(fn) {
     // elsewhere (pureGiven already rejects set/store/global.set/unsafe-call). This replaces the old
     // address-local-disjointness load test, which was unsound in general (two distinct locals can
     // hold the same address) and only worked by luck on the bench shapes.
-    const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf, allowPrivateSets: true })
+    const { pureGiven } = loopInvariance(loop, { distinctParams, baseParamOf, allowPrivateSets: true }, invarianceCache)
     const motionSafe = (n) => {
       let hasTee = false
       walkAst(n, { enter: x => { if (hasTee) return false; if (x[0] === 'local.tee') { hasTee = true; return false } } })
@@ -627,6 +664,15 @@ export function hoistInvariantLoop(fn) {
   for (let i = bodyStart; i < fn.length && !hasLoop; i++) walkAst(fn[i], findLoop)
   if (!hasLoop) return
 
+  // hasHardOp/loopInvariance memo caches — scoped to this ONE hoistInvariantLoop(fn)
+  // call (see hasHardOp's and loopInvariance's own docs for the soundness argument;
+  // core-simplification-audit.md §3.4/§4(i) slice 1). Never passed to or reused by
+  // another top-level call: driver.js invokes hoistInvariantLoop more than once per
+  // function with mutating passes (fusedRewrite, hoistAddrBase) in between, and a
+  // cache surviving across that boundary could read a stale verdict for a node one
+  // of those passes rewrote in place.
+  const hardOpCache = new Map(), invarianceCache = new Map()
+
   // Result wasm type of a hoistable node (for the snap local decl). null ⇒ can't
   // type it ⇒ don't hoist. Param/local types come from the func header.
   const localTypes = new Map()
@@ -708,7 +754,7 @@ export function hoistInvariantLoop(fn) {
 
     // The loop's effect summary + the proven invariance/purity predicate (shared with
     // splitLoopPrivateScratch — see loopInvariance). `locals` is the loop's whole write-set.
-    const { pureGiven, locals, hasV128 } = loopInvariance(loopNode, { distinctParams, baseParamOf, stableHeaderNames })
+    const { pureGiven, locals, hasV128 } = loopInvariance(loopNode, { distinctParams, baseParamOf, stableHeaderNames }, invarianceCache)
 
     // Per-subtree local-occurrence counts and write-sets, memoized bottom-up —
     // the tee-privacy check queries them for EVERY candidate node, and the old
@@ -763,7 +809,7 @@ export function hoistInvariantLoop(fn) {
       // rasterizer/convolution recomputes triangle/row-invariant subexpressions every
       // iteration), so hoist any pure-invariant subtree there. Soundness is unchanged —
       // `pureGiven` already proves the subtree is loop-invariant and side-effect-free.
-      return ((nested && !hasV128) || hasHardOp(node) || isPtrBaseDecode(node)) && pureGiven(node, bound)
+      return ((nested && !hasV128) || hasHardOp(node, hardOpCache) || isPtrBaseDecode(node)) && pureGiven(node, bound)
     }
 
     // Maximal extraction: take the largest hoistable subtree; don't descend into

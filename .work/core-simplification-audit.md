@@ -870,6 +870,91 @@ visits per O3 compile of a watr-sized specimen (~5-7% of the measured
 15.27M) for under two agent-days total, at effectively zero risk (pure
 caching / traversal-shape changes, no decision logic touched, oracle-provable).
 
+**Landed / declined, 2026-08-29** (worktree
+`/private/tmp/claude-501/-Users-div-projects-jz/0482f00a-7cbc-475b-939a-b25b5ba26704/scratchpad/wv`,
+branch `refactor/walk-volume` off `17bca77f`; instrumentation reproduced
+per §1.5's method — `_auditCounters` in `src/ast.js`, driver
+`scripts/_audit-walkast.mjs`, both uncommitted):
+
+- **Slice 1 — LANDED** (`bcd1b905`). `hasHardOp` converted from a flat
+  `walkAst`-rescan-per-call predicate to a bottom-up, `Map`-memoized one;
+  `loopInvariance` wrapped with a `Map`-memoized-by-node cache. Both caches
+  are created fresh at the top of each `hoistInvariantLoop(fn)`/
+  `splitLoopPrivateScratch(fn)` call — scoped to survive only ONE such call,
+  never shared across the driver's separate `hoistInvariantLoop` invocations
+  (`src/optimize/driver.js` calls it twice by default, with `fusedRewrite`/
+  `hoistAddrBase` running in between; confirmed those mutate nodes in place —
+  e.g. `src/optimize/peephole.js:104`'s `n[1] = ...; n.splice(2, 0, base)` —
+  so a cache surviving that boundary could read a stale verdict). Safety
+  argument: within one top-level call, `isHoistable`'s `collect` walk
+  finishes querying a loop's content before that loop's own hoist mutations
+  run (the snap-splice happens after `collect` returns), and an inner loop's
+  hoist relocates matched subtrees OUT of the outer loop's span rather than
+  rewriting content the outer loop's later walk still depends on. Measured
+  on the watr specimen at O3 (this worktree, before/after this commit only):
+  walkAst calls 269,642 → 121,892 (**-54.8%**), visits 15,170,740 →
+  14,330,942 (**-839,798, -5.5%**); wasm output byte-identical
+  (540,785 bytes both sides). Battery: refactor-oracle CLEAN 560/560,
+  `test/kernel-parity.js` 33/33, `test/kernel-oracle.js` 605/605,
+  `test/pointers.js` 132/132, `test/data.js` 1098/1098,
+  `test/invariants.js` 106/106, full `test/index.js` 3863/3864 (1
+  pre-existing, unrelated skip).
+
+- **Slice 2 — DECLINED**, proof from the code, not assumed: Pass 1
+  (`collectCall`, `specialize-mkptr.js:104`) accumulates a **whole-`funcs`-
+  array** signature-frequency census (`counts`/`countEntries`) — so
+  centrally whole-module that it's threaded through `regionHooks` region-
+  arena checkpoints every 8 functions specifically because it must span the
+  entire corpus before use (lines 101-111). The `specialized` set (which
+  signatures earn a helper) is only complete once `MIN_USES` (4) has been
+  checked against the FULL census (line ~115) — a signature could cross
+  that threshold from occurrences in a function with a **higher** index than
+  the one currently being considered. Pass 2's rewrite (`exit: rewrite`,
+  line ~214) for `funcs[0]` needs to know whether ITS call sites'
+  signatures are in `specialized`, which isn't knowable until `funcs[N-1]`
+  has also been scanned. This is exactly "the scan is genuinely whole-
+  tree(module)-before-rewrite" — no `walkAst(enter, exit)` restructuring
+  changes that, since it operates on one tree at a time and the dependency
+  spans the whole `funcs` array. Not attempted.
+
+- **Slice 3 — DECLINED**, different reason: the file's actual shape doesn't
+  match the assumed pattern. `stripDeadLazyTables`'s `scan` (line 46) and
+  `stripDeadInternedSpans`'s `scan` (line 139) are each a *complete,
+  self-contained* mark-sweep reachability walk inside its own exported
+  function — **neither function has a second `walkAst`-based rewrite phase**
+  to merge with (each one's actual mutation — data-segment truncation/
+  repointing via `dataReset`/`setInit`, or `spans` truncation — is flat
+  array/Map manipulation, not a tree traversal). There is no scan-then-
+  rewrite-via-`walkAst` pair to collapse in either function. The real
+  redundancy is shaped differently: the two functions are separate, sibling
+  exports, called back-to-back (this file's own header) over an unchanged
+  call graph, so their two independent mark-sweeps recompute much the same
+  reachable-function set. De-duplicating that is possible in principle but
+  would mean either violating this file's own explicit "none of the three
+  calls another in this file" design statement, or reaching outside this
+  slice's single-file scope into the orchestrator (`compile/index.js`) to
+  compute reachability once and hand it to both — both outside a same-file
+  mechanical slice. Declined as specified; the cross-function redundancy is
+  flagged here for a future, differently-scoped slice, not attempted now.
+
+- **Slice 4 — DECLINED**, two independent reasons: (a) `devirtSchemaReads`'s
+  first scan (`assigned`, line 50) collects every local ever written
+  ANYWHERE in `fn`; its second scan (`countScan`, line 227) calls
+  `stableRecv`, which tests `!assigned.has(...)` — a receiver-stability
+  classification that depends on `assigned` being COMPLETE. A local written
+  later in source order than an earlier tagged read of it is a real,
+  ordinary shape (a param reassigned in a branch appearing after an earlier
+  use); merging these into one `walkAst(enter, exit)` pass would classify
+  that earlier read against a partial `assigned` set and wrongly treat the
+  local as stable — a soundness risk, not just a missed optimization,
+  exactly the "rewrite needs facts from nodes the scan has not yet reached"
+  case this slice's own instructions anticipated. (b) Independently, the
+  actual mutation in this function is a **third**, separate, hand-rolled
+  traversal (`walkDSR`, ~line 293 on, its own scoped memo/clobber tracking)
+  that never calls `walkAst` at all — so even setting reason (a) aside,
+  there is no `walkAst`-based rewrite phase to fold scan-227 into. Not
+  attempted.
+
 ### (ii) Multi-day, incremental, behind fuller gates
 
 | Slice | Scope | Files | LOC Δ | Expected effect | Gate | Effort | Deps |
@@ -878,6 +963,37 @@ caching / traversal-shape changes, no decision logic touched, oracle-provable).
 | **7. Always-on `programFacts` shape/freeze check** (§2b) — promote the existing `JZ_DEBUG_INVARIANTS`-gated allowlist scan to a cheap always-on check (or prove it's cheap enough to always run); this is the team's own handoff gate-5 finding, re-affirmed here, not new | `src/compile/program-facts/freeze.js`, `src/compile/plan/index.js` | +~10 | Closes (rather than just documents) the "shared mutable bag" soundness risk `program-facts-split.md` §7 names as a real, if not-yet-triggered, hazard | Full battery; must show negligible perf delta (it's a hot path) or gate it behind `optimizing()` off-path only | 0.5-1 agent-day | none |
 | **8. Precompiled, compressed, lazily-decoded stdlib IR** (Porffor pattern #4 below, existing team ranking: P0) — targets the `pullStdlib` churn the prior audit measured at ~927 MB during self-compile | `module/*`, `src/wat/assemble/stdlib-pull.js`, new build-time generator (precedent: `scripts/gen-prop-modules.mjs` + `src/prop-modules.generated.js` + its freshness test `test/self-compile-includes.js` — the exact "generated table + freshness gate" pattern this needs) | new generator (~300-600 est.), stdlib pull path simplifies | Reduces self-compile memory churn; effect on everyday small compiles likely small (stdlib pull is already demand-gated per-symbol, this compresses *what's decoded*, not *whether*) | refactor-oracle + a new freshness test in the `self-compile-includes.js` family (source vs generated table must never silently drift) | Multi-day: new serialization format + round-trip tests + the generator itself | Should land *after* slice 9's HIR work reaches its "fact schema" milestone if both are in flight — the packed format wants to target the same fact shape, not be designed twice |
 | **9. Demand-first function generation / one frozen reachability index before emission** (Porffor pattern #3, existing team ranking: P0) — jz currently emits every entry in `ctx.funcs.list` then tree-shakes after (`src/compile/index.js:2619+`); build the reachability index first and skip emission of provably-unreachable functions | `src/compile/index.js` (emit driver core), `call-target-index.js` | net negative (removes emit-then-discard work) | Fewer functions pay analysis/IR-allocation cost before being discarded; self-compile-scale effect likely larger than everyday-compile effect (self graph ≈2,234 functions per the prior audit) | Full battery + kernel-parity + kernel-oracle + self-compile timing before/after | Multi-day, touches the emit driver's core sequencing | **Must** consume `RepresentationPlan` + the canonical `call-target-index.js` — explicitly no name-guess fallback (this is the existing team audit's own condition, repeated here because it's the right constraint, not because it's new) |
+
+**Slice 7 — LANDED, 2026-08-29** (`e58e2aee` + test-pin follow-up `b9b56aaa`,
+worktree/branch as above). Measured `assertProgramFactsShape`'s own cost
+directly (isolated `performance.now()` around its one call site,
+`plan/index.js`, called exactly once per compile): **0.02-0.024 ms**,
+sampled on the watr specimen at all five optimize levels —
+
+| level | whole-compile wall | assertProgramFactsShape | share |
+|---|---:|---:|---:|
+| O0 | 0.70 s | 0.0217 ms | 0.0031% |
+| O1 | 0.79 s | 0.0220 ms | 0.0028% |
+| O2 | 4.37 s | 0.0199 ms | 0.0005% |
+| O3 | 6.27-6.38 s | 0.0209-0.0242 ms | 0.0003-0.0004% |
+| size | 4.07 s | 0.0206 ms | 0.0005% |
+
+— several orders of magnitude under the 0.5% threshold even at O0 (the
+least favorable ratio, since it's one fixed-cost check against the
+smallest compile). Removed the `JZ_DEBUG_INVARIANTS` gate and the now-dead
+`DBG_INVARIANTS` import entirely (the whole function was already the
+"cheapest always-on subset" — a single `Object.keys` allowlist scan, no
+larger body to partition). wasm output byte-identical before/after
+(confirmed via refactor-oracle and via matching wasmBytes in the timing
+run). One pre-existing test (`test/invariants.js`, "assertProgramFactsShape
+rejects an undocumented programFacts key, only under JZ_DEBUG_INVARIANTS")
+pinned the old gated contract and needed updating to match — a real,
+expected companion change, not a regression (`b9b56aaa`). Battery:
+refactor-oracle CLEAN 560/560, `test/kernel-parity.js` 33/33,
+`test/kernel-oracle.js` 605/605, `test/pointers.js` 132/132,
+`test/data.js` 1098/1098, `test/invariants.js` 28/28 tests (107
+assertions — 106 before this slice's test-pin update, +1 from the more
+thorough rewrite), full `test/index.js` battery all green.
 
 ### (iii) Re-architecture — say so plainly, with a migration path
 

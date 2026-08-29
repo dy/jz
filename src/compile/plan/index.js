@@ -252,7 +252,8 @@ export default function plan(ast, profiler, regionHooks) {
   // Placed after synthesizeComputedDispatchCallSites (which only enriches
   // the existing `callSites` array, never stapling a new key) so this same
   // check also covers that call — not just callTargets above.
-  // DBG_INVARIANTS-gated (JZ_DEBUG_INVARIANTS=1), zero cost otherwise.
+  // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
+  // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-callTargets')
   // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
   // synthesis — see call-target-index.js's header) is the ONLY value-use

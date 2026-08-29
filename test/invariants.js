@@ -509,7 +509,10 @@ test('invariant: freezeCallSites blocks structural mutation of both the array an
   throws(() => { entry.callee = 'g' }, /read only property/, 'a frozen entry cannot be retargeted after the freeze point')
 })
 
-test('invariant: assertProgramFactsShape rejects an undocumented programFacts key, only under JZ_DEBUG_INVARIANTS', async () => {
+test('invariant: assertProgramFactsShape rejects an undocumented programFacts key, always (not gated)', async () => {
+  // core-simplification-audit.md §4(ii) slice 7: promoted from JZ_DEBUG_INVARIANTS-gated
+  // to always-on (measured <0.03 ms/compile — negligible against whole-compile time), so
+  // the throw now fires regardless of the env flag.
   const { spawnSync } = await import('node:child_process')
   const root = new URL('..', import.meta.url).pathname
   const script = `
@@ -519,8 +522,9 @@ test('invariant: assertProgramFactsShape rejects an undocumented programFacts ke
     console.log('no-throw')
   `
   const { JZ_DEBUG_INVARIANTS, ...envWithoutFlag } = process.env
-  const gated = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: envWithoutFlag })
-  is(gated.stdout.toString().trim(), 'no-throw', `unset JZ_DEBUG_INVARIANTS: zero cost, no throw even on a bad shape (stderr: ${gated.stderr.toString().slice(0, 300)})`)
+  const unset = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: envWithoutFlag })
+  ok(unset.status !== 0, `unset JZ_DEBUG_INVARIANTS: an undocumented top-level key still throws (stderr: ${unset.stderr.toString().slice(0, 300)})`)
+  ok(/notARealFact/.test(unset.stderr.toString()), `error should name the offending key: ${unset.stderr.toString().slice(0, 300)}`)
   const armed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: root, env: { ...envWithoutFlag, JZ_DEBUG_INVARIANTS: '1' } })
   ok(armed.status !== 0, 'JZ_DEBUG_INVARIANTS=1: an undocumented top-level key throws')
   ok(/notARealFact/.test(armed.stderr.toString()), `error should name the offending key: ${armed.stderr.toString().slice(0, 300)}`)
