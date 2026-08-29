@@ -819,3 +819,30 @@ test('async contextual keywords retain arrow/method line boundaries (async-gener
     ok(Array.isArray(parse('{}() => 1')),
       'a leading block and following zero-param arrow remain separate valid statements')
 })
+
+test('class element modifiers and field boundaries survive jessie splitting (class-element-token-boundaries)', () => {
+    rejects('class C {\n static async m() { var await; }\n}', 'await')
+    rejects('class C {\n static async #m() { var \\u0061wait; }\n}', 'await')
+    rejects('class C {\n static async prototype() {}\n}', 'prototype')
+    rejects('class C {\n field method() {}\n}', 'same line')
+    rejects('class C {\n field = 1 /* no ASI */ method() {}\n}', 'same line')
+    rejects('class C {\n x y\n}', 'same line')
+    rejects('class C {\n #x #y\n}', 'same line')
+    rejects('class C {\n \\u0061sync method() {}\n}', 'same line')
+    rejects('class C {\n st\\u0061tic method() {}\n}', 'same line')
+
+    ok(Array.isArray(parse('class C {\n field\n method() {}\n}')),
+      'a LineTerminator separates a field from a method')
+    ok(Array.isArray(parse('class C {\n field = 1; method() {}\n}')),
+      'an explicit semicolon separates an initialized field')
+    ok(Array.isArray(parse('class C {\n x\n #y\n}')),
+      'bare public/private fields ASI-split across lines')
+    ok(Array.isArray(parse('class C {\n static async m() { var x; }\n}')),
+      'a real static async method with a legal body remains valid')
+    ok(Array.isArray(parse('class C {\n static async\n prototype() {}\n}')),
+      'a newline after async makes it a static field plus ordinary method')
+    ok(Array.isArray(parse('class C {\n *g() {} static *h() {} get x() {} set x(v) {}\n}')),
+      'generator/static/accessor method prefixes retain their own boundaries')
+    ok(Array.isArray(parse('class A { x } class B { y }')),
+      'sibling class scopes do not share field-boundary state')
+})

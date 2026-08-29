@@ -1,7 +1,7 @@
 {
   "_comment": "Exact accepted-negative ledger at the pinned test262 corpus. Every entry is invalid ECMAScript whose token/goal context jessie still erases before JZ validation. Any addition, removal, or family move requires review. This is a release-blocker inventory, never supported syntax.",
   "corpus": "b363f29d3c43c626dc852744ad64a0b48a003693",
-  "count": 52,
+  "count": 32,
   "families": {
     "module-goal-and-export-context": [
       "test/language/global-code/export.js",
@@ -14,30 +14,10 @@
       "test/language/module-code/parse-err-semi-named-export.js"
     ],
     "class-element-token-boundaries": [
-      "test/language/expressions/class/async-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/expressions/class/async-method-static/await-as-binding-identifier.js",
       "test/language/expressions/class/class-name-ident-await-escaped-module.js",
       "test/language/expressions/class/class-name-ident-await-module.js",
-      "test/language/expressions/class/elements/async-private-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/expressions/class/elements/async-private-method-static/await-as-binding-identifier.js",
-      "test/language/expressions/class/elements/fields-asi-same-line-1.js",
-      "test/language/expressions/class/elements/fields-asi-same-line-2.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-fields-same-line-error.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-privatenames-same-line-error.js",
-      "test/language/expressions/class/elements/syntax/early-errors/grammar-static-async-meth-prototype.js",
-      "test/language/statements/class/async-meth-escaped-async.js",
-      "test/language/statements/class/async-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/statements/class/async-method-static/await-as-binding-identifier.js",
       "test/language/statements/class/class-name-ident-await-escaped-module.js",
-      "test/language/statements/class/class-name-ident-await-module.js",
-      "test/language/statements/class/elements/async-private-method-static/await-as-binding-identifier-escaped.js",
-      "test/language/statements/class/elements/async-private-method-static/await-as-binding-identifier.js",
-      "test/language/statements/class/elements/fields-asi-same-line-1.js",
-      "test/language/statements/class/elements/fields-asi-same-line-2.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-fields-same-line-error.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-privatenames-same-line-error.js",
-      "test/language/statements/class/elements/syntax/early-errors/grammar-static-async-meth-prototype.js",
-      "test/language/statements/class/syntax/escaped-static.js"
+      "test/language/statements/class/class-name-ident-await-module.js"
     ],
     "destructuring-cover-grammar": [
       "test/language/expressions/assignment/dstr/array-rest-before-elision.js",

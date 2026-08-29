@@ -278,20 +278,47 @@ const nextSourceToken = (src, from) => {
   }
 }
 
-// Method nodes carry the opening-paren offset. Recover a plain `async name(`
-// prefix without pretending to parse computed property names; the returned
-// newline bit is exactly AsyncMethod's no-LineTerminator boundary.
-const asyncMethodPrefix = (src, parenAt) => {
-  if (typeof parenAt !== 'number' || src[parenAt] !== '(') return false
+const M_ASYNC = 1, M_STATIC = 2, M_ASYNC_NL = 4, M_BAD_BOUNDARY = 8
+const sourceWordBefore = (src, from) => {
+  const prev = previousSourceToken(src, from)
+  if (prev[0] < 0 || !isIdentCode(src.charCodeAt(prev[0]))) return null
+  let start = prev[0]
+  while (start > 0 && isIdentCode(src.charCodeAt(start - 1))) start--
+  return [src.slice(start, prev[0] + 1), start, prev[1]]
+}
+
+// Method nodes carry the opening-paren offset. Recover the contextual prefix
+// and the boundary before it without pretending to parse computed names.
+// This repairs jessie's `static async name()` split for validation only, and
+// distinguishes it from the valid `static async\nname()` field+method pair.
+const methodSourceInfo = (src, parenAt) => {
+  if (typeof parenAt !== 'number' || src[parenAt] !== '(') return 0
   const nameEnd = previousSourceToken(src, parenAt)[0]
-  if (nameEnd < 0 || !isIdentCode(src.charCodeAt(nameEnd))) return false
-  let nameStart = nameEnd
-  while (nameStart > 0 && isIdentCode(src.charCodeAt(nameStart - 1))) nameStart--
-  const beforeName = previousSourceToken(src, nameStart)
-  let asyncStart = beforeName[0]
-  if (asyncStart < 0 || !isIdentCode(src.charCodeAt(asyncStart))) return false
-  while (asyncStart > 0 && isIdentCode(src.charCodeAt(asyncStart - 1))) asyncStart--
-  return src.slice(asyncStart, beforeName[0] + 1) === 'async' && beforeName[1]
+  if (nameEnd < 0 || !isIdentCode(src.charCodeAt(nameEnd))) return 0
+  let cursor = nameEnd
+  while (cursor > 0 && isIdentCode(src.charCodeAt(cursor - 1))) cursor--
+  if (src[cursor - 1] === '#') cursor--
+
+  let flags = 0
+  let prev = previousSourceToken(src, cursor)
+  // Generator marker belongs to this method prefix, including async generators.
+  if (prev[0] >= 0 && src[prev[0]] === '*') { cursor = prev[0]; prev = previousSourceToken(src, cursor) }
+  let word = sourceWordBefore(src, cursor)
+  if (word && word[0] === 'async') {
+    if (word[2]) flags |= M_ASYNC_NL
+    else { flags |= M_ASYNC; cursor = word[1] }
+  } else if (word && (word[0] === 'get' || word[0] === 'set') && !word[2]) {
+    cursor = word[1]
+  }
+  if (!(flags & M_ASYNC_NL)) {
+    word = sourceWordBefore(src, cursor)
+    if (word && word[0] === 'static') { flags |= M_STATIC; cursor = word[1] }
+  }
+
+  const boundary = previousSourceToken(src, cursor)
+  if (boundary[0] >= 0 && src[boundary[0]] !== '{' && src[boundary[0]] !== '}' &&
+      src[boundary[0]] !== ';' && !boundary[1]) flags |= M_BAD_BOUNDARY
+  return flags
 }
 
 const sourceHasLexicalRisk = (src, strict) => typeof src === 'string' && (
@@ -1003,6 +1030,7 @@ const isIteration = node => isNode(node) && (
 )
 
 const classMember = raw => {
+  const loc = raw?.loc
   let member = raw, isStatic = false
   if (isNode(member) && member[0] === 'static') { isStatic = true; member = member[1] }
   let kind = 'field', key = typeof member === 'string' ? member : null, value = null
@@ -1017,7 +1045,74 @@ const classMember = raw => {
   } else if (isNode(member) && (member[0] === 'get' || member[0] === 'set')) {
     kind = member[0]; key = member[1]; value = member
   } else if (isNode(member) && member[0] === '{}') kind = 'static-block'
-  return { member, isStatic, kind, key, value }
+  return { member, isStatic, kind, key, value, loc }
+}
+
+const classBodyOpen = (node, source) => {
+  if (node[2] != null || typeof node.loc !== 'number') return -1
+  let i = nextSourceToken(source, node.loc + 5)
+  if (typeof node[1] === 'string') {
+    if (!isIdentCode(source.charCodeAt(i))) return -1
+    while (isIdentCode(source.charCodeAt(i))) i++
+    i = nextSourceToken(source, i)
+  }
+  return source[i] === '{' ? i : -1
+}
+
+// Bare class fields have no node location. For the one ambiguity that needs
+// one — two bare fields on the same line — scan only a simple no-heritage
+// class body's top level and compare against adjacent bare-string AST members.
+const hasUnseparatedBareClassFields = (node, members, source) => {
+  const pairs = new Set()
+  for (let i = 1; i < members.length; i++)
+    if (typeof members[i - 1] === 'string' && members[i - 1] !== 'accessor' && typeof members[i] === 'string')
+      pairs.add(`${members[i - 1]}\0${members[i]}`)
+  if (!pairs.size) return false
+  let i = classBodyOpen(node, source)
+  if (i < 0) return false
+  let depth = 1, paren = 0, bracket = 0, lastName = null, newline = false
+  for (i++; i < source.length && depth; ) {
+    const c = source.charCodeAt(i), ch = source[i]
+    if (isWhitespaceCode(c)) {
+      if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) newline = true
+      i++; continue
+    }
+    if (ch === '/' && source[i + 1] === '/') {
+      i += 2
+      while (i < source.length && source[i] !== '\n' && source[i] !== '\r' &&
+          source.charCodeAt(i) !== 0x2028 && source.charCodeAt(i) !== 0x2029) i++
+      continue
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2)
+      if (end < 0) return false
+      for (let k = i; k < end; k++) {
+        const kc = source.charCodeAt(k)
+        if (kc === 10 || kc === 13 || kc === 0x2028 || kc === 0x2029) { newline = true; break }
+      }
+      i = end + 2; continue
+    }
+    if (ch === '"' || ch === "'") { i = lexicalQuoted(source, i, ch, false); lastName = null; newline = false; continue }
+    if (ch === '`') { i = lexicalTemplate(source, i, false); lastName = null; newline = false; continue }
+    if (ch === '{') { depth++; lastName = null; newline = false; i++; continue }
+    if (ch === '}') { depth--; lastName = null; newline = false; i++; continue }
+    if (depth !== 1) { i++; continue }
+    if (ch === '(') { paren++; lastName = null; newline = false; i++; continue }
+    if (ch === ')') { paren--; lastName = null; newline = false; i++; continue }
+    if (ch === '[') { bracket++; lastName = null; newline = false; i++; continue }
+    if (ch === ']') { bracket--; lastName = null; newline = false; i++; continue }
+    if (!paren && !bracket && (isIdentCode(c) && !isDigitCode(c) || ch === '#' && isIdentCode(source.charCodeAt(i + 1)))) {
+      const start = i
+      if (ch === '#') i++
+      while (isIdentCode(source.charCodeAt(i))) i++
+      const name = source.slice(start, i)
+      if (lastName != null && !newline && pairs.has(`${lastName}\0${name}`)) return true
+      lastName = name; newline = false
+      continue
+    }
+    lastName = null; newline = false; i++
+  }
+  return false
 }
 
 const containsDirectName = (node, name) => {
@@ -1029,7 +1124,7 @@ const containsDirectName = (node, name) => {
   return false
 }
 
-const validateClass = (node, cx, walk) => {
+const validateClass = (node, cx, walk, source) => {
   const name = node[1]
   if (typeof name === 'string') checkBindingName(name, { ...cx, strict: true, lexical: true })
   const members = statements(node[3])
@@ -1049,6 +1144,8 @@ const validateClass = (node, cx, walk) => {
   let constructors = 0
   const privateNames = new Map()
   const parsed = members.map(classMember)
+  if (hasUnseparatedBareClassFields(node, members, source))
+    fail('class fields on the same line require a semicolon or LineTerminator')
 
   // Private declarations are visible throughout the complete class body, so
   // collect the environment before validating any initializer/method use.
@@ -1063,10 +1160,21 @@ const validateClass = (node, cx, walk) => {
   for (const key of privateNames.keys()) privateSet.add(key)
 
   for (const m of parsed) {
-    if (m.isStatic && m.key === 'prototype') fail("static class element cannot be named 'prototype'")
+    // An escaped IdentifierName is one source token even though a backward
+    // ASCII scan sees only its trailing fragment. The modifier-like escaped
+    // residuals have an ordinary method key and still take the source path;
+    // a method whose OWN key is escaped must not be split at the escape.
+    const escapedKey = typeof m.key === 'string' && m.key.includes('\\u')
+    const sourceInfo = !escapedKey && (m.kind === 'method' || m.kind === 'get' || m.kind === 'set')
+      ? methodSourceInfo(source, m.loc) : 0
+    if (sourceInfo & M_BAD_BOUNDARY)
+      fail('class elements on the same line require a semicolon or LineTerminator')
+    const sourceStatic = m.isStatic || !!(sourceInfo & M_STATIC)
+    const sourceAsync = !!(sourceInfo & M_ASYNC)
+    if (sourceStatic && m.key === 'prototype') fail("static class element cannot be named 'prototype'")
     if (m.kind === 'field' && m.key === 'constructor') fail("class field cannot be named 'constructor'")
-    if (!m.isStatic && m.key === 'constructor' && m.kind !== 'field') {
-      if (m.kind !== 'method' || isNode(m.value) && (m.value[0] === 'async' || m.value[0] === 'function*'))
+    if (!sourceStatic && m.key === 'constructor' && m.kind !== 'field') {
+      if (m.kind !== 'method' || sourceAsync || isNode(m.value) && (m.value[0] === 'async' || m.value[0] === 'function*'))
         fail('class constructor cannot be an accessor, async function, or generator')
       constructors++
       if (constructors > 1) fail('class cannot declare more than one constructor')
@@ -1080,7 +1188,10 @@ const validateClass = (node, cx, walk) => {
     }
     if (m.kind === 'field' && m.value && containsDirectName(m.value, 'arguments'))
       fail("class field initializer cannot contain 'arguments'")
-    if (m.value) walk(m.value, { ...cx, strict: true, classBody: true, privateNames: privateSet })
+    if (m.value) {
+      const value = sourceAsync && isNode(m.value) && m.value[0] === '=>' ? ['async', m.value] : m.value
+      walk(value, { ...cx, strict: true, classBody: true, privateNames: privateSet })
+    }
   }
 }
 
@@ -1289,7 +1400,7 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'default') { walk(node[1], cx, true); return }
 
     if (op === ':' && !statementPosition && isNode(node[2]) && node[2][0] === 'async' &&
-        asyncMethodPrefix(source, node.loc))
+        (methodSourceInfo(source, node.loc) & M_ASYNC_NL))
       fail("line terminator is not allowed between 'async' and an object method name")
 
     if (ASSIGN_OPS.has(op)) {
@@ -1483,7 +1594,7 @@ export function validateEarlyErrors(ast, source) {
     if (op === 'class') {
       if (soleStmt) fail('class declaration requires a block in statement position')
       needsLexical = true
-      validateClass(node, cx, walk)
+      validateClass(node, cx, walk, source)
       if (node[2]) walk(node[2], cx)
       return
     }
