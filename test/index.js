@@ -52,6 +52,7 @@ const TESTS = [
   'perf',
   'timers',
   'invariants',
+  'refactor-oracle',
   'layout-kinds',
   'pow-ulp',
   'pow-fold-ulp',
@@ -78,6 +79,7 @@ const TESTS = [
   'transform',
   'self-compile-source',
   'self-compile-includes',
+  'eager-stdlib-parity',
   'jsstring',
   'booleans',
   'warnings',
@@ -142,6 +144,7 @@ const KERNEL_EXCLUDE = new Set(['imports', 'external', 'cli', 'web-smoke', 'snap
   // shape) is an optimization-parity gap like unswitch — re-excluded 2026-07-22
   'never-grown',
   'self-compile-source', 'self-compile-includes', 'abi', 'examples', 'bench-porffor',
+  'eager-stdlib-parity', 'refactor-oracle',   // native harnesses: opts._eagerStdlib passthrough and scripts/refactor-oracle.mjs drive the Node compile() directly
   'transform',   // 'features' cleared 2026-07-23: 49/49 green once the kernel parsed literal-key shorthand methods (SKM family fix)
   // 'errors','parser-bugs','destruct','closures','json' UN-EXCLUDED FOR GOOD
   // 2026-07-27: the frontier hunt fixed two of the three order-shifted rows

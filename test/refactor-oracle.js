@@ -6,9 +6,7 @@
  * host-dependent float fold) would show up here as a flaky assertion — that
  * is a compiler bug to fix, not a test to relax.
  *
- * Deliberately NOT registered in test/index.js: that file has uncommitted
- * changes owned by another in-flight session on this repo. Run standalone
- * until it's wired in:
+ * Registered in test/index.js (native target only). Standalone:
  *   node test/refactor-oracle.js
  */
 import test from 'tst'
