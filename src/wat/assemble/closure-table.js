@@ -111,7 +111,6 @@ export function dedupClosureBodies(closureFuncs, sec) {
   }
   const buckets = new Map()  // hash -> [{ fn, locals, name }]
   const redirect = new Map()
-  const keepSet = new Set()
   for (const fn of closureFuncs) {
     const locals = localNamesOf(fn)
     const h = hashOf(fn, locals)
@@ -123,7 +122,7 @@ export function dedupClosureBodies(closureFuncs, sec) {
       if (equalBodies(fn, locals, cand.fn, cand.locals)) { canonical = cand.name; break }
     }
     if (canonical) redirect.set(name, canonical)
-    else { bucket.push({ fn, locals, name }); keepSet.add(name) }
+    else bucket.push({ fn, locals, name })
   }
   if (!redirect.size) return
   const kept = sec.funcs.filter(fn => {
