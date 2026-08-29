@@ -183,7 +183,12 @@ const NATIVE_TOL = { win: 1.05, tie: 1.20, near: 1.50 }
 const NATIVE_GEOMEAN_MAX = 1.05
 
 // ── Size pins (jz `optimize:'size'` vs AS `-Oz --converge` and Porffor) ─────
-//  win — jz strictly smaller    tie — within 5%    todo — not yet (unasserted)
+// NARRATIVE ONLY — win/tie/todo below are historical annotations (why a case
+// sat where it did, and the shape-class notes toward closing it), not gates:
+// the actual size gate ("Assertions: size — strict per-case leadership" below)
+// asserts jz < AS, hard, on every case in the full bench corpus, regardless of
+// what's marked here. Promote an entry win→(delete comment) as fixes land; the
+// prose stays useful as attribution even after the pin itself is redundant.
 // jz now runs ~1% larger than `asc -Oz` (geomean) on the kernels; only `biquad`,
 // `mat4`, `tokenizer` still trail (~1.1–1.2×). wasm-opt finds ~25-30% slack —
 // single-use runtime-helper inlining + merging `$f$exp` wrappers is the next lever.
@@ -259,7 +264,6 @@ const SIZE = {
   hashjoin:       { as: 'todo' },
   watr:           { as: 'na'  },
 }
-const SIZE_TOL = { win: 1.0, tie: 1.05 }
 const SIZE_GEOMEAN_MAX = { as: 1.05 }  // jz/target geomean ceiling; ratchet `as` toward 1.0 (currently ~1.01×)
 // `wasm-opt -Oz` slack budget: jz_opt / jz_raw must stay ≥ this (wasm-opt may
 // remove ≤ (1-x) of jz output). Aspirational target: 0.95+. Current baseline
@@ -507,11 +511,13 @@ const geoSpeed = tid => geomean(Object.keys(SPEED)
 const geoNative = () => geomean(Object.keys(NATIVE)
   .filter(id => NATIVE_TOL[NATIVE[id]] && runs[id]?.jz && runs[id]?.nat && runs[id].jz.checksum === runs[id].nat.checksum)
   .map(id => runs[id].jz.medianUs / runs[id].nat.medianUs))
-// Size-parity geomean is scoped to the cases that CLAIM it (SIZE win/tie). jz's
-// transcendental pipelines (synth, fft) emit more wasm than AS's lean output —
-// `todo`, not a parity claim — so they're out of the guarantee but printed.
-const geoSize = tid => geomean(Object.keys(SIZE)
-  .filter(id => SIZE_TOL[SIZE[id][tid]] && sizes[id]?.jz && sizes[id]?.[tid])
+// Size geomean runs over the FULL bench corpus scripts/bench-size.mjs
+// discovers (every case with a jz AND a target artifact), not just the
+// curated SIZE table's win/tie subset — the owner's bar (below) holds the
+// whole corpus to strict per-case leadership, so the aggregate check should
+// see the whole corpus too, not a pre-filtered slice of it.
+const geoSize = tid => geomean(Object.keys(sizes)
+  .filter(id => sizes[id]?.jz && sizes[id]?.[tid])
   .map(id => sizes[id].jz / sizes[id][tid]))
 const geoSlack = geomean(Object.values(sizes).filter(s => s.jz && s.jzOpt).map(s => s.jzOpt / s.jz))
 const gV8 = geoSpeed('v8'), gNatT = geoNative(), gAsT = geoSpeed('as')
@@ -702,22 +708,24 @@ test('bench: JZ does not lose to Porffor native by case or geomean (committed ev
   ok(sizeGeomean >= 1, `porf-native/jz artifact-byte geomean ${sizeGeomean?.toFixed(3) ?? 'missing'}×`)
 })
 
-// ── Assertions: size ────────────────────────────────────────────────────────
-for (const [id, claims] of Object.entries(SIZE)) {
-  for (const tid of ['as']) {
-    const claim = claims[tid]
-    if (!SIZE_TOL[claim]) continue
-    if (tid === 'as' && !ascAvailable) continue
-    test(`bench: size ${id} jz ${claim} vs ${tid}`, () => {
-      const s = sizes[id]
-      ok(s?.jz, `missing jz size for ${id}`)
-      // A present-but-broken OPTIONAL rival (binary answers --version, lane
-      // compiles nothing) must not red every per-case row: only
-      // REQUIRED_RIVALS gate hard on absence. Skip the row, keep the signal
-      // in the log.
-      if (!s?.[tid]) return console.log(`  ⊘ ${tid} size missing for ${id} — optional lane produced no row`)
-      const ratio = s.jz / s[tid]
-      ok(ratio <= SIZE_TOL[claim], `${id}: jz ${s.jz} B / ${tid} ${s[tid]} B = ${ratio.toFixed(3)}× > ${claim} limit ${SIZE_TOL[claim]}×`)
+// ── Assertions: size — strict per-case leadership ───────────────────────────
+// The owner's bar: jz wasm is ALWAYS smaller than AssemblyScript's, ×1, on
+// EVERY comparable case — not par-or-tie. Unlike speed, size is deterministic
+// (no run-to-run jitter to excuse with a tolerance band), so the gate is a
+// plain `<`, no tolerance table. Runs over the FULL bench corpus scripts/bench-
+// size.mjs discovers (every case with both a jz and an AS artifact), not just
+// the curated SIZE table above: that table's win/tie/todo verdicts and the
+// per-case prose above it remain as a shape-class narrative (why each case
+// historically sat where it did — real evidence for the fixes that close the
+// gap) but no longer gate anything themselves. A case that used to be `todo`
+// (printed, unasserted) now fails the build until the compiler genuinely
+// emits fewer bytes than `asc -Oz`.
+if (ascAvailable) {
+  for (const id of Object.keys(sizes).sort()) {
+    const s = sizes[id]
+    if (!(s.jz > 0) || !(s.as > 0)) continue   // no comparable AS artifact for this case
+    test(`bench: size ${id} jz < as (strict, per case)`, () => {
+      ok(s.jz < s.as, `${id}: jz ${s.jz} B ≥ AS ${s.as} B (${(s.jz / s.as).toFixed(3)}×) — jz must be strictly smaller than AssemblyScript`)
     })
   }
 }
