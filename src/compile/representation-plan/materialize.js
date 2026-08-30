@@ -107,11 +107,9 @@ export const activeRep = (ctx, node, target) => {
 /** Materialized representation of a stable parameter or normalized local. */
 export function representationActiveMaterializedRep(ctx, name) {
   const active = activeBody(ctx, 'representationActiveMaterializedRep')
-  if (Array.isArray(name) && JOIN_OPS.has(name[0])) {
-    const body = active
-    if (body?.materializedJoins?.has(name)) return activeRep(ctx, name, true)
-    return NO_BIGINT
-  }
+  if (Array.isArray(name) && active?.materializedJoins?.has(name))
+    return activeRep(ctx, name, true)
+  if (Array.isArray(name) && JOIN_OPS.has(name[0])) return NO_BIGINT
   if (Array.isArray(name) && name[0] === '()') {
     // Shape #9 sibling: same one-authority widening as buildBodyData's own
     // calleeNameOf (this function runs at emission time, outside that

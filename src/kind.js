@@ -19,7 +19,7 @@ export {
   dictValueKindOf, mapValueKindOf, censusKindsOf, censusShapedNode,
   censusMaybeUndefinedKind, BIGINT_JOINT_BINARY_OPS, censusBigintResultShape,
   nameMayBeUndefinedInBody, exprMayBeUndefinedIn, exprMapGetShapedIn,
-  censusMaybeUndefined, namePresentValInBody, exprPresentValIn,
+  censusMaybeUndefined, namePresentValInBody, exprPresentValIn, localMapGetMayCarryBigint,
 } from './kind/dict-census.js'
 export { shapeOf, jsonConstString } from './kind/shape.js'
 export {

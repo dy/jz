@@ -17,7 +17,7 @@
 
 import { ctx, getFactStore } from '../ctx.js'
 import { VAL, lookupValType, repOf, mayBeUndefined } from '../reps.js'
-import { isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
+import { commaList, isBlockBody, returnExprs, alwaysReturns, walkAst } from '../ast.js'
 
 // Dict-value-type census consumer — an INTERNAL HELPER ONLY
 // (.work/archive/todo.md §deletion-sweep Slice 1).
@@ -563,7 +563,86 @@ export function namePresentValInBody(bodyRoot, name, seen = new Set()) {
  *  bare-name expr's poison-disciplined trace through bodyRoot's own writes
  *  (namePresentValInBody) — the presentVal analogue of exprMayBeUndefinedIn,
  *  for narrow.js's inter-procedural call-site fold. */
+const staticKey = node => {
+  if (Array.isArray(node) && node[0] === 'str') return `s:${node[1]}`
+  if (Array.isArray(node) && node[0] == null && node.length === 2) return `${typeof node[1]}:${String(node[1])}`
+  if (typeof node === 'number' || typeof node === 'string') return `${typeof node}:${String(node)}`
+  return null
+}
+const staticWrittenKind = node => {
+  if (typeof node === 'number') return VAL.NUMBER
+  if (!Array.isArray(node)) return null
+  if (node[0] === 'bigint' || node[0] === '()' && node[1] === 'BigInt') return VAL.BIGINT
+  if (node[0] === 'str') return VAL.STRING
+  if (node[0] === 'bool') return VAL.BOOL
+  if (node[0] == null && typeof node[1] === 'number') return VAL.NUMBER
+  return null
+}
+const blockStatements = body => {
+  if (!Array.isArray(body)) return []
+  const inner = body[0] === '{}' ? body[1] : body
+  return Array.isArray(inner) && inner[0] === ';' ? inner.slice(1) : [inner]
+}
+const containsNode = (root, target) => {
+  let found = false
+  walkAst(root, { enter: node => { if (node === target) { found = true; return false } } })
+  return found
+}
+const referencesName = (root, name) => {
+  let found = false
+  walkAst(root, { enter: node => {
+    for (let i = 1; i < node.length; i++) if (node[i] === name) { found = true; return false }
+  } })
+  return found
+}
+
+/** Resolve a present literal-key read from a caller-local Map when its complete
+ * reaching history is a straight-line `new Map(); map.set(key, value)` prefix.
+ * Plan-time lacks the caller's installed localReps, so this narrow structural
+ * proof supplies the same exact-kind fact without guessing across control flow,
+ * aliases, dynamic keys, deletes, or receiver escapes. */
+export function localMapGetMayCarryBigint(expr, bodyRoot) {
+  if (!mapGetShapedNode(expr) || !Array.isArray(bodyRoot)) return false
+  const recv = expr[1][1]
+  let found = false
+  walkAst(bodyRoot, { enter: node => {
+    if (node[0] !== '()' || !Array.isArray(node[1]) || node[1][0] !== '.' ||
+        node[1][1] !== recv || node[1][2] !== 'set') return
+    const args = commaList(node[2])
+    if (staticWrittenKind(args[1]) === VAL.BIGINT) { found = true; return false }
+  } })
+  return found
+}
+
+function localMapPresentKind(expr, bodyRoot) {
+  if (!mapGetShapedNode(expr) || !Array.isArray(bodyRoot)) return null
+  const recv = expr[1][1], wanted = staticKey(commaList(expr[2])[0])
+  if (wanted == null) return null
+  let declared = false, claim = null, reached = false
+  for (const stmt of blockStatements(bodyRoot)) {
+    if (!Array.isArray(stmt)) continue
+    if (containsNode(stmt, expr)) { reached = true; break }
+    let recognized = false
+    if (stmt[0] === 'let' || stmt[0] === 'const') {
+      for (let i = 1; i < stmt.length; i++) {
+        const d = stmt[i]
+        if (Array.isArray(d) && d[0] === '=' && d[1] === recv && Array.isArray(d[2]) &&
+            d[2][0] === '()' && d[2][1] === 'new.Map') { declared = true; recognized = true }
+      }
+    }
+    if (stmt[0] === '()' && Array.isArray(stmt[1]) && stmt[1][0] === '.' &&
+        stmt[1][1] === recv && stmt[1][2] === 'set') {
+      const args = commaList(stmt[2]), key = staticKey(args[0]), kind = staticWrittenKind(args[1])
+      if (!declared || key !== wanted || kind == null || claim != null && claim !== kind) return null
+      claim = kind; recognized = true
+    }
+    if (!recognized && referencesName(stmt, recv)) return null
+  }
+  return reached && declared ? claim : null
+}
+
 export const exprPresentValIn = (expr, bodyRoot) =>
-  censusShapedNode(expr) ? censusMaybeUndefinedKind(expr)
-    : typeof expr === 'string' ? namePresentValInBody(bodyRoot, expr) : null
+  localMapPresentKind(expr, bodyRoot) ??
+  (censusShapedNode(expr) ? censusMaybeUndefinedKind(expr)
+    : typeof expr === 'string' ? namePresentValInBody(bodyRoot, expr) : null)
 

@@ -531,3 +531,11 @@ test('arguments: implicit object still works alongside an unrelated function', (
   const exports = runJzify(`export let _run = () => { let g = function(){ return arguments.length }; return g(1,2,3) }`)
   is(exports._run(), 3)
 })
+
+test('arguments: Object.keys sees every rest-array index in nested functions', () => {
+  const exports = runJzify(`export let _run = () => {
+    function keys(x, y, z) { return Object.keys(arguments).join(',') }
+    return keys(1, 2) + ':' + keys(1, 2, 3, 4)
+  }`)
+  is(exports._run(), '0,1:0,1,2,3')
+})

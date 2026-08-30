@@ -1690,7 +1690,8 @@ export default (ctx) => {
     const vt = valTypeOf(search)
     if (vt === VAL.STRING) return asI64(emit(search))
     if (vt === VAL.BOOL) return asI64(bool(search))
-    if (vt === VAL.OBJECT) return toStrI64(search, emit(search))
+    if (vt === VAL.OBJECT || vt === VAL.HASH || Array.isArray(search) && search[0] === '{}')
+      return toStrI64(search, emit(search))
     inc('__to_str')
     return ['call', '$__to_str', asI64(emit(search))]
   }

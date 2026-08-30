@@ -25,7 +25,7 @@ import { staticArrayElems, hull } from '../../static.js'
 import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
 import { observeProgramSlots } from '../program-facts.js'
 import {
-  valTypeOf, hasAmbiguousBoolMerge, exprMayBeUndefinedIn, exprPresentValIn,
+  valTypeOf, hasAmbiguousBoolMerge, exprMayBeUndefinedIn, exprPresentValIn, localMapGetMayCarryBigint,
 } from '../../kind.js'
 import { typedCtorElemValType } from '../../kind-traits.js'
 import { VAL, KIND_UNIVERSE } from '../../reps.js'
@@ -1167,6 +1167,14 @@ export default function narrowSignatures(programFacts, ast) {
       if (isDestructuredParamBody(func, pname)) continue
       const v = hardParamPresentVal(fname, k)
       if (v != null) r.presentVal = v
+      else {
+        const sites = sitesByCallee.get(fname)
+        if (sites?.some(cs => {
+          const state = siteState(cs)
+          return state && k < state.argList.length &&
+            localMapGetMayCarryBigint(state.argList[k], state.callerFunc?.body)
+        })) r.localMapBigintUnknown = true
+      }
     }
   }
 

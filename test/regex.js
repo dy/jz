@@ -634,6 +634,13 @@ test('regex: exec /g returns null on no-match (not 0)', async () => {
   is(await evaluate('/xyz/.exec("abc")'), null)
 })
 
+test('regex: source writes to lastIndex reject instead of splitting state', () => {
+  throws(() => compile(`let re = /a/g; re.lastIndex = 2; export let f = () => re.exec('a')`),
+    /RegExp.lastIndex assignment is not supported/)
+  const { f } = jz(`let o = { lastIndex: 0 }; o.lastIndex = 2; export let f = () => o.lastIndex`).exports
+  is(f(), 2, 'ordinary object properties named lastIndex remain writable')
+})
+
 test('regex: exec /g lastIndex advances correctly', () => {
   // lastIndex should advance to end of each match
   const r = jz(`

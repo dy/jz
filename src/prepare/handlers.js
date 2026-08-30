@@ -1508,7 +1508,8 @@ const handlers = {
     }
     // Sharedness belongs to the linked memory, not an individual buffer.
     // Canonicalize only the genuine builtin; a same-name user binding is an
-    // ordinary constructor call.
+    // ordinary constructor call. Growth options reject below, so this models
+    // the fixed-length SharedArrayBuffer subset only.
     if (builtinCtor && name === 'SharedArrayBuffer') name = 'ArrayBuffer'
     // A lone `null` ctorArg is the parser's no-args sentinel (`new Map()`), and
     // `new Map(null)`/`new Map(undefined)` are spec-equivalent to it (null/undefined
@@ -1520,6 +1521,9 @@ const handlers = {
     // Flatten comma-grouped args: [',', a, b, c] → [a, b, c]
     if (ctorArgs.length === 1 && Array.isArray(ctorArgs[0]) && ctorArgs[0][0] === ',')
       ctorArgs = ctorArgs[0].slice(1)
+
+    if (builtinCtor && name === 'ArrayBuffer' && ctorArgs.length > 1)
+      err('ArrayBuffer options are not supported; resizable/maxByteLength buffers are outside the JZ memory model')
 
     if (builtinCtor && name === 'Array') {
       const literal = prepareArrayConstructor(ctorArgs)

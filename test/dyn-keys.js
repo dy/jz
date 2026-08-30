@@ -1568,8 +1568,8 @@ test('§14 point 4 FIXED: a proven-local BigInt mixed with a zero-evidence dynam
 // so the export decode needed a separate, self-contained structural check
 // rather than reusing that join.
 //
-// GLOBAL receiver only — see the KNOWN-FAIL immediately below for the
-// narrower, still-open LOCAL-receiver sibling this session does NOT close.
+// The local-receiver sibling below now has its own straight-line proof and
+// fail-closed rejection for control-dependent BigInt writes.
 // BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
 // "collection" precondition (`m.set('a', 5n)`, a module-level Map) as every
 // other test in this file.
@@ -1591,38 +1591,28 @@ test('single-call-site unary `-` param-hop: absent Map key (module-level Map) th
   `, { jzify: true })), /BigInt value at this collection/)
 })
 
-// KNOWN-FAIL, narrower than the one this session flips above: hardParamPresentVal
-// (narrow.js) resolves the call-site argument's census kind via
-// `censusMaybeUndefinedKind` directly, at narrow.js's own plan-time fixpoint —
-// where ctx.func.localReps is UNINSTALLED for every function (by design, the
-// same caveat exprMayBeUndefinedIn's own doc comment documents for
-// mayBeUndefined's identical plan-time fold). `dictValueKindOf`/
-// `mapValueKindOf` fall back to `ctx.scope.globalReps` (the whole-program
-// census half) only when `valTypeOf(name)` already proves the receiver's
-// kind — sound for a MODULE-level Map/dict (valTypeOf resolves through
-// ctx.scope.globalValTypes, itself whole-program), but a Map declared LOCAL
-// to the CALLER's own body has no such fallback (valTypeOf('m') can't prove
-// MAP without that caller's OWN ctx.func.localReps, unavailable at plan
-// time) — so `presentVal` stays unset for this narrower shape, `emitNeg`'s
-// OR-arm still sees null, and the raw BigInt carrier still gets corrupted by
-// plain NUMBER negation. Confirmed the boundary is precisely the receiver's
-// scope, not the shape: identical source with `m` promoted to module level
-// (the regression pin above) is fully correct. Closing this needs threading
-// a CALLER's own local census through narrow.js's call-site iteration — a
-// separate, comparable-sized undertaking (the same class of gap
-// nameMayBeUndefinedInBody's own local-vs-global receiver split already
-// accepts elsewhere in this design), not attempted here.
-// BigInt retirement Slice 1 (.work/archive/bigint-retirement-design.md §4/§7): same
-// as test/data.js's audit-#11 P0-1 (§7): this KNOWN-FAIL pinned a documented
-// VALUE-wrong divergence whose precondition (`m.set('a', 5n)`) is now
-// structurally impossible to construct. The underlying presentVal gap
-// (narrow.js's plan-time fixpoint can't see a LOCAL Map receiver) is still
-// real in principle, but has no remaining BigInt-carrier value for it to
-// corrupt — eliminated at the root, not narrowed.
-test('KNOWN-FAIL (found landing §16→§18, out of scope): param-hop present-key BigInt census value through unary `-` in a callee, receiver LOCAL to the caller, still has no presentVal claim — BigInt-into-Map strict-mode (opt-in) collection diagnostic', () => {
-  if (onKernel()) return
-  throws(() => withBigintStrict(() => jz(`
+// Plan-time has no caller localReps installed. A straight-line local Map proof
+// therefore scans only the caller's top-level statement prefix: one new Map,
+// literal-key set writes of one exact kind, no control flow, alias, delete, or
+// dynamic key. Anything broader that may carry BigInt rejects instead of
+// falling through to Number unary arithmetic.
+test('local Map present-key BigInt crosses a unary parameter hop', () => {
+  for (const optimize of [false, 2, 3]) {
+    const { f } = jz(`
+      const g = (v) => -v
+      export let f = () => { const m = new Map(); m.set('a', 5n); return g(m.get('a')) }
+    `, { optimize }).exports
+    is(f(), -5n, `O${optimize || 0}: local Map BigInt remains BigInt through unary -`)
+  }
+})
+
+test('control-dependent local Map BigInt unary hop rejects cleanly', () => {
+  throws(() => jz(`
     const g = (v) => -v
-    export let f = () => { const m = new Map(); m.set('a', 5n); return g(m.get('a')) }
-  `, { jzify: true })), /BigInt value at this collection/)
+    export let f = (cond) => {
+      const m = new Map()
+      if (cond) m.set('a', 5n)
+      return g(m.get('a'))
+    }
+  `), /control-dependent BigInt writes/)
 })

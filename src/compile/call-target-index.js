@@ -90,6 +90,12 @@ import { staticObjectProps } from '../static.js'
 // resolves — so the resolved callee is the exact function a bare-name call
 // to `fn$prop` would reach; no new proof, no new naming convention, no
 // divergence from what emission already does with zero analysis support.
+//
+// Nested extension: `root.inner.method()` resolves through the same index when
+// every intermediate object is a closed module-level object literal and remains
+// unshadowed, unreassigned, free of computed writes, and confined to receiver
+// position. Any alias/value escape or conflicting write poisons the nested path.
+// This is still a finite static proof, not general points-to analysis.
 
 const POISON = Symbol('call-target-index poison')
 
@@ -254,6 +260,106 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
   walkAst(root, { enter })
 }
 
+const memberPath = node => {
+  if (typeof node === 'string') return [node]
+  if (!Array.isArray(node) || node[0] !== '.' || typeof node[2] !== 'string') return null
+  const base = memberPath(node[1])
+  return base ? [...base, node[2]] : null
+}
+const memberPathKey = path => path.join('.')
+
+/** Collect closed nested object-literal receivers (`root.inner`) and their
+ * static function-property writes. The root object still has to pass the
+ * ordinary CallTargetIndex escape/shadow/dynamic-write proof; this layer adds
+ * the corresponding proof for the intermediate object itself. */
+function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite, funcsMap, funcsNames) {
+  const seedObject = (basePath, literal) => {
+    const parsed = staticObjectProps(literal.slice(1))
+    if (!parsed) return
+    for (let i = 0; i < parsed.names.length; i++) {
+      const prop = parsed.names[i], value = parsed.values[i]
+      if (!Array.isArray(value) || value[0] !== '{}') continue
+      const path = [...basePath, prop], key = memberPathKey(path)
+      nestedObjects.add(key)
+      const inner = staticObjectProps(value.slice(1))
+      if (inner) for (let k = 0; k < inner.names.length; k++)
+        foldWrite(table, funcsMap, funcsNames, key, inner.names[k], inner.values[k])
+      seedObject(path, value)
+    }
+  }
+  const enter = node => {
+    const op = node[0]
+    if (op === '=>') return false
+    if (op === 'let' || op === 'const') {
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
+          if (Array.isArray(d[2]) && d[2][0] === '{}') seedObject([d[1]], d[2])
+          walkAst(d[2], { enter })
+        } else walkAst(d, { enter })
+      }
+      return false
+    }
+    if (!MUTATE_OPS.has(op)) return
+    const lhs = node[1], rhs = node[2]
+    const path = memberPath(lhs)
+    if (path && path.length >= 2) {
+      const full = memberPathKey(path)
+      if (nestedObjects.has(full)) rebound.add(full)
+      if (path.length >= 3) {
+        const base = memberPathKey(path.slice(0, -1))
+        if (nestedObjects.has(base))
+          foldWrite(table, funcsMap, funcsNames, base, path.at(-1), op === '=' ? rhs : null)
+      }
+    } else if (Array.isArray(lhs) && lhs[0] === '[]') {
+      const basePath = memberPath(lhs[1])
+      if (basePath) {
+        const base = memberPathKey(basePath)
+        if (nestedObjects.has(base)) dynWrite.add(base)
+      }
+    }
+  }
+  walkAst(root, { enter })
+}
+
+/** A nested receiver is safe only while the receiver value itself never leaves
+ * member/callee position. An alias, argument, return, or ordinary value read
+ * forfeits the proof; static reads/writes through one more property do not. */
+function collectNestedEscapes(ast, moduleInits, funcsList, nestedObjects) {
+  const out = new Set()
+  const walk = (node, safe = false) => {
+    const path = memberPath(node)
+    if (path) {
+      const key = memberPathKey(path)
+      if (nestedObjects.has(key)) {
+        if (!safe) out.add(key)
+        return
+      }
+    }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op === 'import' || op === 'export') return
+    if (op === '.' || op === '?.') { walk(node[1], true); return }
+    if (op === '()' || op === '[]') {
+      walk(node[1], true)
+      for (let i = 2; i < node.length; i++) walk(node[i], false)
+      return
+    }
+    if (op === '?:') { walk(node[1]); walk(node[2], safe); walk(node[3], safe); return }
+    if (op === '&&' || op === '||' || op === '??') { walk(node[1]); walk(node[2], safe); return }
+    if (op === ',') {
+      for (let i = 1; i < node.length - 1; i++) walk(node[i])
+      walk(node[node.length - 1], safe)
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(ast)
+  if (moduleInits) for (const init of moduleInits) walk(init)
+  for (const func of funcsList) if (func.body) walk(func.body)
+  return out
+}
+
 /**
  * Build the frozen call-target index. Called once from plan/index.js, right
  * after the early-plan AST-mutating passes (inlining/SROA/flattening/
@@ -279,6 +385,12 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   const roots = [ast, ...(ctx.module.moduleInits || [])]
   for (const root of roots) collectMemberWrites(root, table, rebound, ctx.funcs.map, ctx.funcs.names)
 
+  const nestedObjects = new Set(), nestedTable = new Map()
+  const nestedRebound = new Set(), nestedDynWrite = new Set()
+  for (const root of roots)
+    collectNestedMemberWrites(root, nestedObjects, nestedTable, nestedRebound, nestedDynWrite, ctx.funcs.map, ctx.funcs.names)
+  const nestedEscapes = collectNestedEscapes(ast, ctx.module.moduleInits, ctx.funcs.list, nestedObjects)
+
   const nameEscapes = programFacts?.nameEscapes
   const dynWriteVars = programFacts?.dynWriteVars
   const safeReceiver = name =>
@@ -297,7 +409,16 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
   }
 
   const resolveMember = (objName, prop) => {
-    if (typeof objName !== 'string' || typeof prop !== 'string') return null
+    if (typeof prop !== 'string') return null
+    const path = memberPath(objName)
+    if (path && path.length > 1) {
+      const key = memberPathKey(path), root = path[0]
+      if (!nestedObjects.has(key) || nestedRebound.has(key) || nestedDynWrite.has(key) ||
+          nestedEscapes.has(key) || !safeReceiver(root)) return null
+      const fn = nestedTable.get(key)?.get(prop)
+      return fn && fn !== POISON && !Array.isArray(fn) ? fn : null
+    }
+    if (typeof objName !== 'string') return null
     const isFuncBase = ctx.funcs.names.has(objName)
     if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return null
     const fn = table.get(objName)?.get(prop)

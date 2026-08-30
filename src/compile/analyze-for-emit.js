@@ -176,6 +176,7 @@ export function analyzeFuncForEmit(func, programFacts) {
       // `setPresentVal` tracker settles the post-write truth independently,
       // starting fresh).
       if (r.presentVal && !reassigned && !ctx.func.localReps?.get(pname)?.presentVal) updateRep(pname, { presentVal: r.presentVal })
+      if (r.localMapBigintUnknown) updateRep(pname, { localMapBigintUnknown: true })
       // recvArrTyped: same reassignment hazard as r.val (an entry-time class proof
       // doesn't survive a body write) — module/array.js's unproven-receiver numeric-
       // key guard reads this to skip its runtime ptrTypeEq test (reps.js doc).
@@ -230,6 +231,14 @@ export function analyzeFuncForEmit(func, programFacts) {
   // callee's `x == null` sentinel must stay a live bit-compare.
   {
     const restIdx = func.rest ? sig.params.length - 1 : -1
+    // A rest parameter is constructed by the call ABI as a fresh ARRAY on
+    // every entry. This is intrinsic parameter provenance, not a caller guess;
+    // publish it through the same ValueRep authority as every other carrier
+    // fact. A body reassignment invalidates the entry fact in the usual way.
+    if (restIdx >= 0) {
+      const restName = sig.params[restIdx].name
+      if (!isReassigned(body, restName)) updateRep(restName, { val: VAL.ARRAY })
+    }
     for (let k = 0; k < sig.params.length; k++) {
       if (k === restIdx) continue                       // rest arrays are never undefined
       const pname = sig.params[k].name

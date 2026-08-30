@@ -62,7 +62,7 @@ const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e
 const edgeMaterializable = (source, target, node, sourceReady = false) => {
   const action = edgeAction(source, target)
   if (action === REP_EDGE_BOX || action === REP_EDGE_UNBOX)
-    return valTypeOf(node) === VAL.BIGINT
+    return valTypeOf(node) === VAL.BIGINT || isBigintOrigin(node)
   if (action !== REP_EDGE_KEEP) return false
   // NONE is unchanged on a tagged union edge. A raw KEEP is also a real
   // identity. BOXED→BOXED is ready only when the upstream producer family
@@ -580,11 +580,30 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     return !!cm && STORAGE_READ_METHODS.has(cm[2]) && isTrackedStorage(cm[1])
   }
 
+  // Generic closures and named function values enter through the uniform
+  // boxed-value ABI. Treat a tagged-target param as a candidate before the
+  // binding fixpoint, then publish closureBoxParams only if the stable entry or
+  // complete body-def set proves every write normalizable. No candidate alone
+  // becomes a representation fact.
+  const closureBoxParams = new Set()
+  // Boundaries are uncovered only for generic closures, exports, or named
+  // functions used through the first-class value ABI. At body-plan time the
+  // original valueUsed Set is no longer carried, so recover the third case
+  // from the frozen boundary plus the two exclusions.
+  const valueAbiIdentity = boundary.covered === false && !options.generic && !isExported(ctx, identity)
+  const valueAbiParamCandidates = new Set()
+  if (options.generic || valueAbiIdentity) for (const [name, k] of params) {
+    const sem = semanticNames.get(name) ?? semAll()
+    if (targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
+      valueAbiParamCandidates.add(k)
+  }
+
   const materializedNames = new Set()
   const exportedIdentity = isExported(ctx, identity)
   for (const [name, list] of defs) {
     if (ctx.scope.globals?.has(name)) continue
-    if (params.has(name) && boundary.covered !== true && !exportedIdentity) continue
+    const paramIndex = params.get(name)
+    if (paramIndex != null && boundary.covered !== true && !exportedIdentity && !valueAbiParamCandidates.has(paramIndex)) continue
     // RepresentationPlan only normalizes the BigInt member. A BOOL member in
     // an ordinary dynamic scalar still needs the separate BOOL-atom producer.
     // A storage read is different: it is already fully tagged for every kind,
@@ -632,8 +651,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
     if (ready && targetNames.get(name) === BOXED_BIGINT && !hasClosedBool(sem))
       hostBoxParams.add(k)
   }
-  const closureBoxParams = new Set()
-  const closureAbiIdentity = options.generic
+  const closureAbiIdentity = options.generic || valueAbiIdentity
   if (closureAbiIdentity) for (const [name, k] of params) {
     const sem = semanticNames.get(name) ?? semAll()
     const ready = boundary.params[k]?.stable === true || materializedNames.has(name)

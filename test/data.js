@@ -2450,37 +2450,12 @@ test('bigint: BOXED-target reassigned param crosses into a RAW-expecting bare-na
   }
 })
 
-test('bigint: shape #9 sibling — index-resolved `.`-member callee (KNOWN-WRONG, separate residual)', () => {
-  // Requirement: the SAME call-argument edge (i64's reassigned local `n` ->
-  // leb's RAW-consuming param), but `leb` reached through a `.`-member the
-  // call-target index resolves (call-target-index.js), not a bare name.
-  //
-  // Traced: once a function's own VALUE is written to a property anywhere
-  // (`obj.leb = leb`, the property write call-target-index.js itself needs
-  // to prove ANY `.`-member call site), narrow.js's whole-program census
-  // marks it `valueUsed` — `makeBoundaryData`'s `uncovered = generic ||
-  // isExported(...) || valueAbi` goes true — and buildBodyData's
-  // materializedNames loop has a dedicated, deliberate gate for exactly
-  // this: `if (params.has(name) && boundary.covered !== true &&
-  // !exportedIdentity) continue` — an uncovered, non-exported param is
-  // categorically excluded from THIS fixpoint. `leb`'s `n` never
-  // materializes through RepresentationPlan at all (regardless of this
-  // fix); it falls to the pre-RepresentationPlan legacy sink/generic-
-  // closure machinery instead (ADR-0001's own "no legacy-machinery deletion
-  // in this campaign... the re-aimed retirement" scope boundary — a
-  // comparably-sized, separate undertaking, the same class of gap Shape #7's
-  // own dispatch-table residual and the closure-forwarding slice's
-  // `closureBoxParams`/`mintRepresentationPlan(...,{generic:true})`
-  // subsystem already name). `emit.js`'s OWN emission for a `.`-member call
-  // confirms this independently: `trySchemaClosureCall` dispatches via
-  // `ctx.closure.call` (a generic call_indirect, uniform ABI) and passes
-  // `parsed.normal` UNCOERCED — `representationCallArgAction`/`coerceArg`
-  // is never even invoked for this edge (confirmed live: zero call-arg
-  // trace entries for it), independent of whether the argument proof itself
-  // succeeds. Fixing this needs the closure-materialization subsystem to
-  // ALSO prove a value-used named function's own param boxed-by-construction
-  // across a property-dispatched call — out of this fix's scope; pinned
-  // KNOWN-WRONG, not silently accepted.
+test('bigint: shape #9 sibling materializes through an index-resolved member callee', () => {
+  // A named function used through a property has an uncovered value ABI.
+  // RepresentationPlan now admits its parameter only when the complete def
+  // set is materializable, then normalizes closure ingress, body writes, and
+  // result to the same boxed contract. CallTargetIndex remains the sole
+  // authority that proves obj.leb names this function.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -2502,16 +2477,13 @@ test('bigint: shape #9 sibling — index-resolved `.`-member callee (KNOWN-WRONG
         return i64("900")
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: value-used leb (reached via .member) never materializes through RepresentationPlan; same box-bits-as-payload symptom as shape #9's own bare-name form`)
+    is(e.f(), 7n, `${lbl}: value-used leb reached through .member returns a real BigInt`)
   }
 })
 
 test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding write, not the RAW-consuming callee itself (FIXED)', () => {
-  // The pin above ("index-resolved `.`-member callee") reaches `leb` (the
-  // RAW-consuming callee) through `.`-member and is a GENUINELY DIFFERENT,
-  // still-open residual (a value-used-via-property-write function excluded
-  // from RepresentationPlan's materializedNames fixpoint entirely, needing
-  // the closure-materialization subsystem — out of this fix's scope). THIS
+  // The pin above reaches the RAW-consuming callee through a member value ABI;
+  // it is now closed by RepresentationPlan's value-ABI materialization. THIS
   // pin is the residual its own comment separately named: `directCallBoundary`
   // (buildBodyData's callee lookup, feeding semanticOf/currentOf/plannedOf/
   // walkEdges) was bare-name-only, so a caller's OWN bigint-provenance proof
@@ -4303,11 +4275,9 @@ test('bigint: object-literal property referencing an existing function, both sho
   // call before any `.`-member machinery -- branch's or main's -- ever runs.
   // Re-confirmed here at the value level on main: correct at every optimize
   // level, for both the `{ parseNum }` shorthand and the explicit
-  // `{ parse: parseNum }` key. Pinned as a COVERED sibling of the shape #8
-  // family, distinct from its two KNOWN-WRONG siblings below (an inline
-  // closure LITERAL as the property value, or a nested `.`-chain base) --
-  // neither of which is a bare reference to an existing function, so neither
-  // gets this same early coverage.
+  // `{ parse: parseNum }` key. The inline-closure and nested-base siblings
+  // below now take their own separately proven paths, so this remains the
+  // direct static-object control.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const body = `
@@ -4341,29 +4311,10 @@ test('bigint: object-literal property referencing an existing function, both sho
 })
 
 test('bigint: object-literal inline closure reached via STATIC `.`-access, not computed dispatch (shape #8 sibling — FIXED)', () => {
-  // The branch's own (superseded) Tier-2 collectMemberCallees resolved this
-  // precisely because a static `.`-access names ONE candidate directly,
-  // unlike a computed `HANDLER[imm](...)` (the pre-existing dispatch-table
-  // pin above). On main, call-target-index.js does NOT resolve `HANDLER.i64`
-  // the same way: foldWrite's isFuncRef gate (src/compile/call-target-
-  // index.js) only ever claims a same-module NAMED-FUNCTION reference as a
-  // property's call target, and an inline closure LITERAL -- `i64: (nodes)
-  // => …`, the same shape the KNOWN-WRONG sibling immediately below hits --
-  // poisons the slot on its first (and only) write, exactly as it does
-  // there. Confirmed correct here for an UNRELATED reason: `nodes` is only
-  // ever pushed a genuine BigInt literal (900n), so `nodes.shift()` reads
-  // back an already-proven, already-boxed BigInt through ordinary
-  // storage-kind provenance -- no runtime typeof-narrowing happens inside
-  // the closure -- and the generic/call_indirect closure ABI forwards an
-  // already-correctly-tagged value untouched. Bisected directly: swapping
-  // this closure's body for the KNOWN-WRONG sibling's `typeof n ===
-  // 'string'` guard, holding the static access and inline-object-literal
-  // shape fixed, reproduces that pin's exact wrong value -- the
-  // reassignment-narrowing gap, not `.`-access shape, is what actually
-  // separates FIXED from KNOWN-WRONG in this family. Kept as its own pin
-  // (distinct from the computed-dispatch pin above) because it exercises
-  // different AST machinery even though neither shape #8 mechanism, branch
-  // or main, is what actually makes it pass.
+  // This control starts with an already boxed BigInt from storage and proves
+  // that ordinary static inline-closure dispatch keeps the tagged value. The
+  // following test separately covers a closure that creates BigInt provenance
+  // through its own reassignment.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -4379,30 +4330,11 @@ test('bigint: object-literal inline closure reached via STATIC `.`-access, not c
   }
 })
 
-test('bigint: object-literal base, property assigned an INLINE CLOSURE (not a bare-name reference) (shape #8 sibling — KNOWN-WRONG)', () => {
-  // Confirmed STILL KNOWN-WRONG on main's independent call-target-index.js
-  // fix -- same root cause as on the branch, reframed for main's own
-  // resolver. Sibling of the shape #8 FIXED pin far above, NOT covered by
-  // it: `ns.parse = parseNum` resolves through foldWrite's isFuncRef gate
-  // (call-target-index.js) because the RHS is a same-module NAMED-FUNCTION
-  // reference. `ns.parse = (n) => {...}` fails that exact gate -- the RHS is
-  // an anonymous CLOSURE LITERAL, not a name, so isFuncRef returns false and
-  // the property is poisoned (permanently unresolvable) on its very first
-  // write. The closure compiles through the separate generic/call_indirect
-  // ABI (shape #7's own "closure-forwarding slice" --
-  // mintRepresentationPlan(...,{generic:true})/closureBoxParams, body-
-  // data.js), which never consults the call-target index and has no
-  // reassignment-narrowing proof of its own: the closure's `if (typeof n ===
-  // 'string') n = BigInt(n)` guard never materializes `n` as bigint, so the
-  // caller sees the open ANY_BIGINT default and the raw i64 bits cross the
-  // export boundary unboxed, misread as a subnormal Number (3.5e-323) -- the
-  // identical hazard shape #8's own primary pin documents. A comparably-
-  // sized, separate undertaking (teaching the closure-forwarding slice to
-  // prove a closure's own result materialized) -- out of scope for both the
-  // branch's fix and main's independent one alike.
-  // FLIP CONDITION: once a resolved-but-anonymous closure target's own
-  // result materialization reaches the closure-forwarding slice's
-  // machinery, replace the `typeof` reject below with `is(e.f(), 7n, ...)`.
+test('bigint: inline closure property materializes its reassigned parameter and result', () => {
+  // Generic closure provenance is derived from the closure's complete def set.
+  // A parameter that becomes BigInt inside the body is projected back onto the
+  // closure boundary, and the value ABI candidate is accepted only when every
+  // body write can be normalized to the boxed target.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -4418,32 +4350,15 @@ test('bigint: object-literal base, property assigned an INLINE CLOSURE (not a ba
         return ns.parse(nodes.shift())
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: inline-closure property value never reaches the closure-forwarding slice's own materialization proof`)
+    is(e.f(), 7n, `${lbl}: inline closure property returns a real BigInt`)
   }
 })
 
-test('bigint: nested member `a.b.c(...)`, one level deeper than shape #8\'s own base.prop (shape #8 sibling — KNOWN-WRONG)', () => {
-  // Confirmed STILL KNOWN-WRONG on main's independent call-target-index.js
-  // fix -- same root cause as on the branch, reframed for main's own
-  // resolver. Both the write-collection side and the read side require the
-  // receiver to be a bare STRING name: collectMemberWrites (call-target-
-  // index.js) only folds a `.`-assignment whose OWN lhs[1] is `typeof
-  // lhs[1] === 'string'` -- `ns.inner.parse`'s lhs is `['.', ['.', 'ns',
-  // 'inner'], 'parse']`, whose base is ITSELF a `.`-node, so the write is
-  // never even collected (not merely poisoned -- invisible to the index).
-  // resolveMember's read side (buildCallTargetIndex) has the identical
-  // `typeof objName !== 'string'` bail, so `ns.inner.parse(...)`'s own
-  // callee resolution fails at the same gate from the other direction.
-  // Falls through to the pre-shape-8 default at every seam, unchanged -- the
-  // raw i64 bits cross unboxed and get misread as a subnormal Number
-  // (3.5e-323), the same hazard shape #8's own primary pin documents. A
-  // comparably-sized, separate undertaking (recursive base resolution --
-  // proving `ns.inner` ITSELF is a stable, non-escaping object reference
-  // before resolving `.parse` off of it) -- not a slice of shape #8's own
-  // single-level fix, on the branch or on main alike.
-  // FLIP CONDITION: once call-target-index.js (or a recursive sibling)
-  // resolves a nested `.`-chain base one level deep, replace the `typeof`
-  // reject below with `is(e.f(), 7n, ...)`.
+test('bigint: nested member `a.b.c(...)` resolves through a closed intermediate object', () => {
+  // CallTargetIndex recursively records nested object-literal paths, but only
+  // while the root and intermediate object remain unshadowed, unreassigned,
+  // nonescaping, and free of computed writes. The same frozen target feeds
+  // kind, provenance, and emission; tagged results are never boxed twice.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
     const e = jz(`
@@ -4460,7 +4375,32 @@ test('bigint: nested member `a.b.c(...)`, one level deeper than shape #8\'s own 
         return ns.inner.parse(nodes.shift())
       }
     `, { optimize }).exports
-    is(typeof e.f(), 'number', `${lbl} KNOWN-WRONG: nested member base a.b.c one level deep never resolves`)
+    is(e.f(), 7n, `${lbl}: nested member target returns a real BigInt`)
+  }
+})
+
+test('nested CallTargetIndex declines conflicting and computed writes', () => {
+  for (const optimize of [false, 2, 3]) {
+    const conflict = jz(`
+      function a() { return 1 }
+      function b() { return 2 }
+      const ns = { inner: {} }
+      ns.inner.f = a
+      ns.inner.f = b
+      export let f = () => ns.inner.f()
+    `, { optimize }).exports
+    is(conflict.f(), 2, `O${optimize || 0}: conflicting nested writes stay dynamic`)
+
+    const computed = jz(`
+      function a() { return 1 }
+      function b() { return 2 }
+      const ns = { inner: {} }
+      ns.inner.f = a
+      const key = 'f'
+      ns.inner[key] = b
+      export let f = () => ns.inner.f()
+    `, { optimize }).exports
+    is(computed.f(), 2, `O${optimize || 0}: computed nested write poisons the static target`)
   }
 })
 

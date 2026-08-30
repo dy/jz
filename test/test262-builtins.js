@@ -733,7 +733,7 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 // entry is an exact, individually-reviewed expectation (and gets xpass tracking).
 // Audit-#12 classification pass (this commit, same tagging scheme as
 // test262.js's own EXPECTED_FAIL_FILES banner — see that file for the full
-// [REJECT]/[DIALECT]/[WRONG-VALUE]/[VERIFY] legend). A representative sample
+// [REJECT]/[DIALECT]/[WRONG-VALUE] legend). A representative sample
 // across this file's clusters was compiled and RUN (not just read) to check
 // the label against actual behavior — result: several long-standing "out of
 // scope" reasons here describe a SILENT wrong value, not a reject (confirmed
@@ -747,14 +747,10 @@ const DATE_UNSUPPORTED_TESTS = new Map([
 // invoke, so it silently falls back to SOME other behavior instead of
 // rejecting. NOT fixed by this commit (out of the two assigned families);
 // tagged so the "out of scope" prose can't be mistaken for "safely rejects"
-// again. Where the specific file wasn't itself run, tagged [VERIFY] rather
-// than assumed into either bucket.
+// again. Files not yet run were left unclassified rather than assumed into
+// either bucket; the final classification pass below resolves them.
 const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/BigInt/', '[DIALECT] BigInt arithmetic/coercion — out of scope (README: BigInt is a signed 64-bit integer, not arbitrary precision)'],
-  ['built-ins/RegExp/prototype/exec/', '[VERIFY] dynamic RegExp lastIndex / u-flag exec — out of scope'],
-  ['built-ins/ArrayBuffer/', '[VERIFY] resizable ArrayBuffer options — out of scope'],
-  ['built-ins/SharedArrayBuffer/', '[VERIFY] growable/maxByteLength options — out of scope'],
-  ['built-ins/Atomics/notify/', '[VERIFY] notify/wait blocking semantics need the agent harness; resizable-buffer edges out of scope'],
   ['built-ins/Symbol/', '[REJECT] Symbol primitive semantics — out of scope (confirmed: bare `Symbol` reference rejects \'not in scope\')'],
   // audit-#11 item 7 sub-2 (pin bump 05bb0329 → b363f29d, 2026-06-04 →
   // 2026-07-31): four Iterator helper methods this newer upstream snapshot
@@ -772,7 +768,7 @@ const EXPECTED_FAIL_PREFIXES = [
   // a clean 'not a host object' REJECT, contradicting the comment above —
   // so either the comment describes a different receiver shape (an external/
   // host-object iterator) than the plain-array one just probed, or it's
-  // stale. Genuinely conflicting evidence: tagged [VERIFY], not asserted
+  // stale. Genuinely conflicting evidence was left unclassified, not asserted
   // either way, rather than trusting either source uncritically.
   // fix/wrong-values-2: resolved by evidence — [REJECT], not [WRONG-VALUE].
   // Re-probed live (a plain array iterator's `.chunks(2)`/`.windows(2)`):
@@ -789,6 +785,11 @@ const EXPECTED_FAIL_PREFIXES = [
   ['built-ins/Iterator/prototype/join/', '[REJECT] Iterator.prototype.join — not implemented (unregistered-stdlib guard rejects)'],
 ]
 const EXPECTED_FAIL_FILES = new Map([
+  // RegExp exec full-Unicode indices use UTF-16 code units in ECMAScript;
+  // JZ's documented UTF-8 byte-string dialect intentionally differs. Files
+  // that write lastIndex are not listed: proven regex writes now reject.
+  ['built-ins/RegExp/prototype/exec/u-captured-value.js', '[DIALECT] RegExp /u capture indexing follows JZ UTF-8 byte strings, not UTF-16 code units'],
+  ['built-ins/RegExp/prototype/exec/u-lastindex-value.js', '[DIALECT] RegExp /u lastIndex follows JZ UTF-8 byte strings, not UTF-16 code units'],
   // RegExp.escape — jz strings are UTF-8 bytes: the spec's \\uXXXX escaping of
   // astral/whitespace/lineterminator code points cannot arise byte-wise (non-ASCII
   // bytes are never regex-special and pass through).
@@ -830,14 +831,14 @@ const EXPECTED_FAIL_FILES = new Map([
   // basic case (`JSON.stringify(o, ['a'])` filters correctly) — these three
   // specific files test array-replacer EDGE behavior (duplicate keys / key
   // order / an explicit undefined element) not covered by that basic probe.
-  ['built-ins/JSON/stringify/replacer-array-duplicates.js', '[VERIFY] JSON.stringify array-replacer duplicate-key edge — out of scope'],
-  ['built-ins/JSON/stringify/replacer-array-order.js', '[VERIFY] JSON.stringify array-replacer key-order edge — out of scope'],
-  ['built-ins/JSON/stringify/replacer-array-undefined.js', '[VERIFY] JSON.stringify array-replacer explicit-undefined-element edge — out of scope'],
+  ['built-ins/JSON/stringify/replacer-array-duplicates.js', '[REJECT] getter-dependent array-replacer edge rejects because accessors are unsupported'],
+  ['built-ins/JSON/stringify/replacer-array-order.js', '[REJECT] runtime JSON.stringify array replacers are unsupported'],
+  ['built-ins/JSON/stringify/replacer-array-undefined.js', '[REJECT] runtime JSON.stringify array replacers are unsupported'],
   ['built-ins/JSON/stringify/replacer-function-array-circular.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/replacer-function-object-circular.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/replacer-function-result-undefined.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
   ['built-ins/JSON/stringify/replacer-function-tojson.js', '[REJECT] JSON.stringify function replacer — out of scope (confirmed: runtime function replacer rejects cleanly)'],
-  ['built-ins/JSON/stringify/value-bigint-replacer.js', '[VERIFY] JSON.stringify replacer argument (with a BigInt value present) — out of scope'],
+  ['built-ins/JSON/stringify/value-bigint-replacer.js', '[REJECT] runtime JSON.stringify replacers are unsupported'],
   // Main-stabilization interim flip (2026-08-14, src/ir.js's bigintStrict()
   // doc comment): BigInt retirement Slice 1 added 8 entries here for files
   // that construct a BigInt inside a heterogeneous array/object literal or
@@ -916,8 +917,8 @@ const EXPECTED_FAIL_FILES = new Map([
   // pass — that reject fires at compile time regardless of assertion order,
   // so the whole file already classified as skip; no entry needed, pruned.
   ['built-ins/JSON/stringify/space-string-object.js', '[DIALECT] JSON.stringify space=new String(x) — boxed-primitive-object divergence (same class as the LANGUAGE suite\'s documented `new (Boolean|Number|String)` skip); confirmed a LOUD test262 assertion failure, not a silently-plausible value'],
-  ['built-ins/JSON/stringify/value-object-abrupt.js', '[VERIFY] JSON.stringify abrupt-getter propagation — out of scope'],
-  ['built-ins/JSON/stringify/value-object-circular.js', '[VERIFY] JSON.stringify circular-reference detection — out of scope (trap vs silent divergence not distinguished)'],
+  ['built-ins/JSON/stringify/value-object-abrupt.js', '[REJECT] accessor-dependent JSON.stringify input rejects because accessors are unsupported'],
+  ['built-ins/JSON/stringify/value-object-circular.js', '[REJECT] accessor-built circular input rejects because accessors are unsupported'],
   ['built-ins/JSON/stringify/value-symbol.js', '[REJECT] JSON.stringify of Symbol value — out of scope (Symbol usage rejects upstream, confirmed)'],
   // fix/wrong-values-2: String.prototype.indexOf/slice's wrapper-object
   // receiver coercion (`new String(obj)` where obj has valueOf/toString) and
@@ -991,7 +992,6 @@ const EXPECTED_FAIL_FILES = new Map([
   // obj)`, obj = {valueOf:function(){}, toString:void 0}) is the SAME
   // toPrimitiveChain callable-guard fix as the String/indexOf entries above —
   // now PASSES outright, removed as newly-passing (not pruned as skip).
-  ['built-ins/String/prototype/indexOf/searchstring-tostring.js', '[VERIFY] String(object) is JSON-ish, not "[object Object]" — CLAIMED "documented divergence" but this specific stringification behavior has no matching bullet in README "What differs from JS?"; the claim itself needs verifying (add to README, or reclassify)'],
   // fix/wrong-values-2: Array.isArray.length — same function-object
   // .length/.name reflection gap as Promise's own entries below (jz compiles
   // closures/named functions AND builtins straight to WASM funcs with no
@@ -1002,9 +1002,6 @@ const EXPECTED_FAIL_FILES = new Map([
   // fix/wrong-values-2: Object.keys on a function receiver is the SAME
   // function-object-reflection gap — module/object.js's emitKeysGeneric now
   // rejects a VAL.CLOSURE receiver ("not supported") → skip, no entry needed.
-  ['built-ins/Object/keys/15.2.3.14-3-4.js', '[VERIFY] Object.keys on arguments/array-like — out of scope'],
-  ['built-ins/Object/assign/OnlyOneArgument.js', '[VERIFY] primitive ToObject boxing — out of scope (a basic probe\'s observable result happened to match JS here; the specific assertions this file makes were not individually checked)'],
-  ['built-ins/Object/fromEntries/string-entry-string-object-succeeds.js', '[VERIFY] Object.fromEntries iterable/entry coercion — out of scope'],
   ['built-ins/Object/fromEntries/supports-symbols.js', '[REJECT] Object.fromEntries Symbol keys — out of scope (Symbol usage rejects upstream, confirmed)'],
   // Promise — jz promises are fixed-shape values adopted STRUCTURALLY
   // (`__p === 1` → subscribe), not via a dynamic `.then` lookup, so overriding
@@ -1033,9 +1030,9 @@ const EXPECTED_FAIL_FILES = new Map([
   // instanceof entries — "is not in scope" → skip, no entry needed.
   ['built-ins/Iterator/prototype/take/limit-tonumber.js', '[REJECT] take limit object ToPrimitive coercion — jz has no general dynamic-dispatch ToPrimitive for a value received through an untyped parameter (fixed to an HONEST runtime TypeError in jzify/generators.js\'s __it_lim, was a misleading "limit must not be NaN" RangeError before this pass; confirmed live, still a genuine — if now honestly worded — runtime reject, not silent)'],
   ['built-ins/Iterator/prototype/drop/limit-tonumber.js', '[REJECT] drop limit object ToPrimitive coercion — same as take/limit-tonumber.js above, same fix, same residual (honest runtime TypeError, not a compile-time reject)'],
-  ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (absent guard means the expected TypeError never fires; whether the call then proceeds to a wrong value or fails some other way was not checked)'],
-  ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
-  ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[VERIFY] running-generator reentrancy guard — out of scope (see .prototype.map sibling entry above)'],
+  ['built-ins/Iterator/prototype/map/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
+  ['built-ins/Iterator/prototype/filter/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
+  ['built-ins/Iterator/prototype/flatMap/throws-typeerror-when-generator-is-running.js', '[REJECT] test depends on an unsupported generator-constructor value'],
   // Promise — function-object / namespace reflection.
   // fix/wrong-values-2: `typeof Promise` (constructor.js) — same
   // isUnresolvableBareIdent fix as `typeof Iterator` above; now rejects

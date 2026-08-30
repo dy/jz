@@ -18,6 +18,8 @@ export const T = '\uE000'
 // only carry one atom).
 export const JZ_NULL = Symbol('null')
 export const JZ_UNDEF = Symbol('undefined')
+export const isUndefinedLiteral = node => node === JZ_UNDEF ||
+  Array.isArray(node) && node[0] == null && (node[1] === JZ_UNDEF || node[1] === undefined)
 
 /** `typeof` comparison codes, keyed by the JS typeof string — negative so they
  *  can't collide with positive user-supplied PTR kinds in the same compare slot

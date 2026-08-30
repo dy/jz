@@ -789,6 +789,14 @@ export function emitElementAssign(arr, idx, val) {
  *    - Non-string receiver expr → __dyn_set
  *    Default: __hash_set on a string-named receiver. */
 export function emitPropertyAssign(obj, prop, val) {
+  // Regex instances carry lastIndex in compiler-generated globals, not as an
+  // ordinary object slot. Accepting a source write would update only a dynamic
+  // sidecar while exec() reads the hidden global, a silent split-brain value.
+  // Until ToLength + accessor effects can be preserved, reject the proven
+  // regex write and leave user objects with an ordinary `lastIndex` untouched.
+  if (prop === 'lastIndex' && (valTypeOf(obj) === VAL.REGEX ||
+      typeof obj === 'string' && ctx.runtime.regex?.vars?.has(obj)))
+    err('RegExp.lastIndex assignment is not supported; stateful exec updates lastIndex internally')
   // arr.length = N — array resize. Intercept before the schema/object paths
   // (`length` is never a schema field). Only ARRAY (or unknown — the runtime
   // helper guards non-arrays) receivers resize; known OBJECT/Map/etc. keep
@@ -897,6 +905,11 @@ export function emitPropertyAssign(obj, prop, val) {
       // that same `shadow` value in that case too — one sid, one fallback.
       const sid = ctx.schema.idOf(obj)
       const shadow = needsDynShadow(obj, sid)
+      // Once any dynamic property write is present, keep fixed slots and the
+      // per-object sidecar synchronized for aliases too. Alias names do not
+      // necessarily inherit the root binding's dyn-reach fact, but they share
+      // the same object header; mirroring is the one source of truth.
+      const mirror = shadow || ctx.core.includes.has('__dyn_set')
       // storedValueNarrow when NOT shadowed — see the identical reasoning at
       // this function's flat-object/unboxed-ptrAux branches above and
       // carrierF64Narrow's own doc comment (ir.js): no __dyn_set mirror means
@@ -909,14 +922,14 @@ export function emitPropertyAssign(obj, prop, val) {
       // per-schema slotBigintBoxedBySid fact (module/object.js's construction
       // comment has the granularity rationale) — `shadow` itself stays the
       // real needsDynShadow(obj, sid), still governing the __dyn_set mirror below.
-      const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : shadow
-      const va = emit(obj), vv = boxed ? storedValue(val) : storedValueNarrow(val), t = temp()
-      if (shadow) inc('__dyn_set')
+      const boxed = sid != null ? ctx.schema.slotBigintBoxedBySid?.(sid, prop) : mirror
+      const va = emit(obj), vv = boxed || mirror ? storedValue(val) : storedValueNarrow(val), t = temp()
+      if (mirror) inc('__dyn_set')
       const stmts = [
         ['local.set', `$${t}`, vv],
         ctx.abi.object.ops.store(ptrOffsetIR(asF64(va), lookupValType(obj) || VAL.OBJECT), idx, ['local.get', `$${t}`]),
       ]
-      if (shadow)
+      if (mirror)
         stmts.push(['drop', ['call', '$__dyn_set', asI64(va), asI64(emit(['str', prop])), ['i64.reinterpret_f64', ['local.get', `$${t}`]]]])
       stmts.push(['local.get', `$${t}`])
       return block64(...stmts)

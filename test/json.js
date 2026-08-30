@@ -1,6 +1,6 @@
 // JSON.stringify and JSON.parse tests
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { run } from './util.js'
 
@@ -560,6 +560,15 @@ test('json: nullish reviver is spec-ignored; runtime replacer rejects', () => {
   let rejected = 0
   try { run(`let o = { a: 1 }; export let f = () => JSON.stringify(o, (k, v) => v).length`) } catch (e) { rejected = /replacer/.test(String(e)) ? 1 : 0 }
   is(rejected, 1)
+})
+
+test('JSON.stringify rejects hooks and nested regex values it cannot represent', () => {
+  throws(() => compile(`export let f = () => JSON.stringify({ toJSON: () => 42 })`),
+    /callable toJSON hooks are not supported/)
+  throws(() => compile(`const r = /x/; export let f = () => JSON.stringify({ r })`),
+    /dynamically nested RegExp/)
+  is(run(`export let f = () => JSON.stringify({ r: /x/ })`).f(), '{"r":{}}')
+  is(run(`export let f = () => JSON.stringify({ toJSON: 0 })`).f(), '{"toJSON":0}')
 })
 
 // JSON.stringify(date) → ISO via toJSON semantics (host-exact): the branded

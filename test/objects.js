@@ -77,7 +77,7 @@ test('jzify builtin shadows stay inside their lexical scope', () => {
   is(loop(), 4, 'a for-head shadow applies to its body and ends after the loop')
 })
 
-test('SharedArrayBuffer builtin canonicalization remains scope-aware', () => {
+test('SharedArrayBuffer fixed-length canonicalization remains scope-aware', () => {
   const { length, instance, groupedArray, groupedShared } = jz(`
     export let length = () => new SharedArrayBuffer(7).byteLength
     export let instance = () => new SharedArrayBuffer(7) instanceof SharedArrayBuffer
@@ -88,6 +88,8 @@ test('SharedArrayBuffer builtin canonicalization remains scope-aware', () => {
   is(instance(), true)
   is(groupedArray(), 0, 'parenthesized Array constructor')
   is(groupedShared(), 8, 'parenthesized SharedArrayBuffer constructor')
+  throws(() => compile(`export let f = () => new SharedArrayBuffer(7, { maxByteLength: 8 })`),
+    /ArrayBuffer options are not supported/)
   throws(() => compile(`
     function SharedArrayBuffer(x) { return { x } }
     export let f = value => value instanceof SharedArrayBuffer
@@ -281,6 +283,30 @@ test('Regression: Object.assign with unknown-schema source preserves target alia
     return alias.x * 100 + target.y * 10 + (out === alias)
   }`)
   is(f('{"x":4,"y":7}'), 471)
+})
+
+test('Object.assign primitive targets reject without ToObject boxing', () => {
+  throws(() => compile(`export let f = () => Object.assign('a')`), /primitive targets require ToObject boxing/)
+  is(run(`export let f = () => Object.assign({}, { a: 1 }).a`).f(), 1)
+})
+
+test('Object.fromEntries rejects unsupported array-like literal entries', () => {
+  throws(() => compile(`export let f = () => Object.fromEntries([new String('ab')])`),
+    /literal entries must be array pairs/)
+  is(run(`export let f = () => Object.fromEntries([['a', 'b']]).a`).f(), 'b')
+})
+
+test('schema writes through aliases keep an existing dynamic sidecar coherent', () => {
+  const { f } = run(`
+    function a() { return 1 }
+    function b() { return 2 }
+    const ns = { inner: {} }
+    ns.inner.f = a
+    const alias = ns.inner
+    alias.f = b
+    export let f = () => ns.inner.f()
+  `)
+  is(f(), 2)
 })
 
 test('Regression: property read does not call method emitter with same name', () => {

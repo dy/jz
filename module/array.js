@@ -9,13 +9,13 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPtr, arrayLoop, elemStore, truthyIR, extractF64Bits, mkPtrIR, slotAddr, isLiteralStr, resolveValType, undefExpr, ptrTypeEq, isPureIR, freshId, isUndef } from '../src/ir.js'
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
-import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE } from '../src/reps.js'
+import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
@@ -2199,7 +2199,9 @@ export default (ctx) => {
     // BUFFER slice → byte-level copy handled in typedarray module.
     if (typeof arr === 'string') {
       const vt = lookupValType(arr)
-      if (vt === 'buffer' && ctx.core.emit['.buf:slice']) return ctx.core.emit['.buf:slice'](arr, start, end)
+      const ctor = plannedTypedStorageCtor(ctx, arr)
+      if ((vt === VAL.BUFFER || ctor === 'new.ArrayBuffer') && ctx.core.emit['.buf:slice'])
+        return ctx.core.emit['.buf:slice'](arr, start, end)
     }
     const recv = hoistArrayValue(arr)
     const s = tempI32('ss'), e = tempI32('se'), len = tempI32('sl'), outLen = tempI32('sn'), ptr = tempI32('sp')
@@ -2207,8 +2209,18 @@ export default (ctx) => {
     // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), not asI32's
     // ToInt32-WRAP fallback — with asI32's wrap, `[1,2,3,4,5].slice(NaN, Infinity)` would
     // drop the last element (Infinity wraps to -1, read downstream as "one before the end").
-    const rawStart = start == null ? ['i32.const', 0] : asI32Sat(emit(start))
-    const rawEnd = end == null ? ['local.get', `$${len}`] : asI32Sat(emit(end))
+    const bound = (expr, fallback) => {
+      if (expr == null || isUndefinedLiteral(expr)) return fallback
+      if (valTypeOf(expr) != null && !(typeof expr === 'string' && (mayBeUndefined(expr) || repOf(expr)?.nullable)))
+        return asI32Sat(emit(expr))
+      const t = temp('sbd')
+      return ['block', ['result', 'i32'],
+        ['local.set', `$${t}`, asF64(emit(expr))],
+        ['if', ['result', 'i32'], isUndef(['local.get', `$${t}`]),
+          ['then', fallback], ['else', asI32Sat(typed(['local.get', `$${t}`], 'f64'))]]]
+    }
+    const rawStart = bound(start, ['i32.const', 0])
+    const rawEnd = bound(end, ['local.get', `$${len}`])
     const out = allocPtr({ type: PTR.ARRAY, len: ['local.get', `$${outLen}`], tag: 'so' })
     return typed(['block', ['result', 'f64'],
       recv.setup,

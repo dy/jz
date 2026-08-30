@@ -594,6 +594,21 @@ test('string: .indexOf not found', () => {
   is(run(`export let f = () => "hello".indexOf("x")`).f(), -1)
 })
 
+test('object ToString uses inherited Object.prototype fallback', () => {
+  const { tag, search, inherited, own, effects } = run(`
+    export let tag = () => String({})
+    export let search = () => "__[object Object]__".indexOf({})
+    export let inherited = () => "abcxdef".indexOf({ valueOf: () => "x" })
+    export let own = () => String({ toString: () => "ok", valueOf: () => 7 })
+    export let effects = () => { let n = 0; let s = String({ a: (n = 1) }); return s + ":" + n }
+  `)
+  is(tag(), '[object Object]')
+  is(search(), 2)
+  is(inherited(), -1, 'inherited toString runs before an own valueOf under string hint')
+  is(own(), 'ok')
+  is(effects(), '[object Object]:1', 'receiver construction evaluates once before coercion')
+})
+
 test('string: literal startsWith/endsWith', () => {
   const { f } = run(`export let f = () => {
     let a = "memory.store"

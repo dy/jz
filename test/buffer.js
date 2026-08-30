@@ -2,7 +2,7 @@
 // interop (subview, reinterpret), .byteLength/.byteOffset, ArrayBuffer.isView,
 // buf.slice, DataView aliasing.
 import test from 'tst'
-import { is, ok } from 'tst/assert.js'
+import { is, ok, throws } from 'tst/assert.js'
 import jz from '../index.js'
 
 // === Allocation + byteLength ===
@@ -15,6 +15,21 @@ test('new ArrayBuffer(n) — basic allocation + byteLength', () => {
     }
   `)
   is(exports.main(), 16)
+})
+
+test('unsupported buffer growth and object-coercion shapes reject cleanly', () => {
+  const { fixed } = jz(`export let fixed = () => {
+    let b = new SharedArrayBuffer(8)
+    return b.byteLength + b.maxByteLength + (b.growable ? 100 : 0)
+  }`).exports
+  is(fixed(), 16, 'fixed-length SharedArrayBuffer subset keeps fixed proposal accessors')
+  throws(() => jz('export let f = () => new SharedArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
+  throws(() => jz('export let f = () => new ArrayBuffer(8, { maxByteLength: 16 })'), /ArrayBuffer options are not supported/)
+  throws(() => jz(`export let f = () => {
+    let b = new ArrayBuffer(8)
+    let start = { valueOf: () => 0 }
+    return b.slice(start).byteLength
+  }`), /object index coercion is not supported/)
 })
 
 test('ArrayBuffer .byteOffset is 0', () => {

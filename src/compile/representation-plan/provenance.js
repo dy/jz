@@ -204,8 +204,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // unresolved as it always was).
   const callTargets = programFacts.callTargets
   const resolveMemberCallee = calleeNode =>
-    (Array.isArray(calleeNode) && calleeNode[0] === '.' &&
-      typeof calleeNode[1] === 'string' && typeof calleeNode[2] === 'string')
+    (Array.isArray(calleeNode) && calleeNode[0] === '.' && typeof calleeNode[2] === 'string')
       ? callTargets?.resolveMember(calleeNode[1], calleeNode[2]) ?? null
       : null
 
@@ -780,6 +779,12 @@ export function deriveLocalProvenance(sig, body, localReps, program) {
         changed = true
       }
   }
+  // A parameter can acquire BigInt provenance from a body reassignment even
+  // when no call-site argument is BigInt (`if (typeof n === 'string') n =
+  // BigInt(n)`). The def fixpoint above marks the name after the initial
+  // parameter scan, so project it back onto the boundary index now.
+  for (let k = 0; k < (sig?.params?.length || 0); k++)
+    if (names.has(sig.params[k].name)) params.add(k)
   const tails = Array.isArray(body) && body[0] === '{}' ? returnExprs(body) : [body]
   return { names, params, storage, result: tails.some(localExprMay) }
 }

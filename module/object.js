@@ -634,6 +634,9 @@ export default (ctx) => {
     // RequireObjectCoercible(target) — null/undefined is a TypeError.
     const nullish = requireCoercible(target)
     if (nullish) return nullish
+    const targetType = valTypeOf(target)
+    if (targetType === VAL.STRING || targetType === VAL.NUMBER || targetType === VAL.BOOL || targetType === VAL.BIGINT)
+      err('Object.assign primitive targets require ToObject boxing, which is not supported; pass an object target')
     // A fresh, anonymous object-LITERAL target (`Object.assign({}, {a:1})`,
     // `Object.assign({b:2}, {a:1}, {c:3})`) is not a pre-existing allocation —
     // nothing else can hold a reference to it, so unlike every other target
@@ -750,6 +753,13 @@ export default (ctx) => {
   // Spec step 1 is RequireObjectCoercible(iterable): a missing/nullish argument
   // is a TypeError, not an `emit(undefined)` compiler crash.
   ctx.core.emit['Object.fromEntries'] = (arr) => {
+    if (Array.isArray(arr) && arr[0] === '[') {
+      for (let i = 1; i < arr.length; i++) {
+        const entry = arr[i]
+        if (!Array.isArray(entry) || entry[0] !== '[' || entry.length < 3)
+          err('Object.fromEntries literal entries must be array pairs; boxed strings and other array-like entries are not supported')
+      }
+    }
     const nullishThrow = requireCoercible(arr)
     if (nullishThrow) return nullishThrow
     inc('__hash_new', '__hash_set')

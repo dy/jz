@@ -15,7 +15,7 @@ import {
 import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../kind.js'
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
-import { REP_EDGE_BOX, REP_EDGE_REJECT, representationStorageWriteAction } from '../representation-plan.js'
+import { REP_EDGE_BOX, REP_EDGE_REJECT, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
 import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { stringOps } from './shared.js'
@@ -625,10 +625,18 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 
 function bigintMethodTargets(obj, method) {
   const out = new Set()
+  const addRawTarget = func => {
+    if (func?.valResult === VAL.BIGINT && !representationResultTagRequired(ctx, func, new WeakSet(), true))
+      out.add(func.name)
+  }
   const scan = expr => {
+    if (Array.isArray(expr)) {
+      const resolved = ctx.types.callTargets?.resolveMember(expr, method)
+      if (resolved) { addRawTarget(resolved); return }
+    }
     if (typeof expr === 'string') {
       for (const name of [`${expr}$${method}`, `${expr}${T}${method}`])
-        if (ctx.funcs.map.get(name)?.valResult === VAL.BIGINT) out.add(name)
+        addRawTarget(ctx.funcs.map.get(name))
       // Shape #8 (call-target-index.js): a same-module named function
       // reached through a schema property, proven by the frozen call-target
       // index rather than guessed from a naming convention — complements
@@ -638,7 +646,7 @@ function bigintMethodTargets(obj, method) {
       // names, never recorded as a write this index's own write-census
       // would see).
       const resolved = ctx.types.callTargets?.resolveMember(expr, method)
-      if (resolved?.valResult === VAL.BIGINT) out.add(resolved.name)
+      addRawTarget(resolved)
       return
     }
     if (!Array.isArray(expr)) return

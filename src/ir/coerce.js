@@ -69,8 +69,8 @@ function primMethodIdx(node, name) {
 }
 
 /** Emit the ES `OrdinaryToPrimitive` method-fallback chain for an OBJECT operand,
- *  returning an i64 IR node holding the resulting primitive — or null when the
- *  object exposes none of the hinted methods. `order` is the method-try order
+ *  returning an i64 IR node holding the resulting primitive. Missing own methods
+ *  fall through to Object.prototype.valueOf/toString; `order` is the method-try order
  *  (number hint → [valueOf,toString]; string hint → [toString,valueOf]). Each
  *  present method is called in turn: a primitive result short-circuits out, a
  *  non-primitive (object) result falls through to the next method, and if every
@@ -87,10 +87,24 @@ function primMethodIdx(node, name) {
  *  confirmed live as a WebAssembly "table index is out of bounds" trap
  *  (String({valueOf:()=>'42', toString: void 0}), which per spec must skip
  *  the non-callable toString and fall through to valueOf). */
+const inheritedObjectTag = () => asI64(ctx.core.emit['str']('[object Object]'))
+function inheritedObjectString(value) {
+  return typed(['block', ['result', 'i64'],
+    ['drop', asF64(value)], inheritedObjectTag()], 'i64')
+}
+
 function toPrimitiveChain(node, v, order) {
-  const present = order.map(name => primMethodIdx(node, name)).filter(i => i >= 0)
-  if (!present.length) return null
-  ctx.runtime.throws = true
+  const methods = order.map(name => ({ name, idx: primMethodIdx(node, name) }))
+  const present = methods.filter(m => m.idx >= 0)
+  // With no own methods, Object.prototype.valueOf returns the receiver and
+  // Object.prototype.toString supplies the first primitive. If string-hint
+  // order reaches an absent own toString first, the inherited method wins
+  // before any own valueOf, exactly as property lookup requires.
+  if (!present.length || methods[0].name === 'toString' && methods[0].idx < 0)
+    return inheritedObjectString(v)
+
+  const ownToString = methods.some(m => m.name === 'toString' && m.idx >= 0)
+  if (ownToString) ctx.runtime.throws = true
   inc('__is_object')
   const blk = `$tp${freshId(ctx)}`
   const prim = tempI64('prim')
@@ -100,18 +114,19 @@ function toPrimitiveChain(node, v, order) {
   // referenced once per method slot below.
   const body = [['result', 'i64'],
     ['local.set', `$${optr}`, ptrOffsetIR(v, VAL.OBJECT)]]
-  for (const idx of present) {
+  for (const { name, idx } of methods) {
+    if (idx < 0) {
+      // The inherited valueOf returns the object and therefore cannot finish
+      // OrdinaryToPrimitive. The inherited toString returns the canonical tag.
+      if (name === 'toString') body.push(['br', blk, inheritedObjectTag()])
+      continue
+    }
     const method = typed(ctx.abi.object.ops.load(['local.get', `$${optr}`], idx), 'f64')
     // NOT `br_if`: br_if's block-result operand stays on the stack when its
     // condition is false (WASM's `[t i32] -> [t]` typing — that's how a
     // fallthrough sees the value at all), so nesting one inside a void `if`
     // (this method's callability guard) only balances on the taken path —
-    // the not-taken path leaves a stray i64 the void `if` can't account for
-    // ("expected 0 elements on the stack for fallthru, found 1"). An
-    // unconditional `br` has no not-taken path to leave anything on, so it
-    // nests cleanly inside either void `if` (not callable / non-primitive
-    // result) — both just fall through empty, exactly like the pre-existing
-    // "this method isn't present at all" case already did.
+    // the not-taken path leaves a stray i64 the void `if` can't account for.
     body.push(
       ['local.set', `$${mslot}`, method],
       ['if', ptrTypeEq(['local.get', `$${mslot}`], PTR.CLOSURE),
@@ -120,9 +135,10 @@ function toPrimitiveChain(node, v, order) {
           ['if', ['i32.eqz', ['call', '$__is_object', ['local.get', `$${prim}`]]],
             ['then', ['br', blk, ['local.get', `$${prim}`]]]]]])
   }
-  // Every method was absent, non-callable, or returned a non-primitive —
-  // `Cannot convert object to primitive`.
-  body.push(['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TO_PRIMITIVE]]], ['throw', '$__jz_err', ['f64.const', ERR.TO_PRIMITIVE]])
+  // An own toString shadows Object.prototype.toString. If every own callable
+  // method returned an object (or was non-callable), no primitive exists.
+  if (ownToString)
+    body.push(['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.TO_PRIMITIVE]]], ['throw', '$__jz_err', ['f64.const', ERR.TO_PRIMITIVE]])
   return typed(['block', blk, ...body], 'i64')
 }
 
@@ -520,6 +536,11 @@ export function toStrI64(node, v) {
  *  ever constructed) toStrI64 calls this directly with no wrapping at all — the
  *  zero-cost path for every Error-free program. */
 function coerceRest(node, v, vt) {
+  // An empty closed object literal may use the dictionary carrier because it
+  // has no schema slots, but its JS ToString is still the inherited ordinary-
+  // object tag, never the dictionary's JSON-like debug rendering.
+  if (Array.isArray(node) && node[0] === '{}' && node.length === 1)
+    return inheritedObjectString(v)
   if (vt === VAL.OBJECT && ctx.closure.call && ctx.schema.slotOf) {
     const prim = toPrimitiveChain(node, v, ['toString', 'valueOf'])
     if (prim) {

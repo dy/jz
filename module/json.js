@@ -50,6 +50,29 @@ const NOT_LIT = Symbol('not-literal')
 // against Node/V8: `JSON.stringify(/x/gi)` is `"{}"`), so this needs no
 // pattern/flags parsing at all — and sidesteps any host-vs-jz regex-dialect
 // syntax mismatch `new RegExp(pattern, flags)` could throw on.
+const literalChildren = node => {
+  if (!Array.isArray(node)) return []
+  if (node[0] === '[') return node.slice(1)
+  if (node[0] === '{}') return node.slice(1)
+    .filter(e => Array.isArray(e) && e[0] === ':').map(e => e[2])
+  return []
+}
+const literalTreeHasCallableToJSON = node => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '{}') for (let i = 1; i < node.length; i++) {
+    const e = node[i]
+    if (Array.isArray(e) && e[0] === ':' && e[1] === 'toJSON' && valTypeOf(e[2]) === VAL.CLOSURE)
+      return true
+  }
+  return literalChildren(node).some(literalTreeHasCallableToJSON)
+}
+const literalTreeHasDynamicRegex = node => {
+  if (typeof node === 'string') return valTypeOf(node) === VAL.REGEX
+  if (!Array.isArray(node)) return false
+  if (node[0] !== '//' && valTypeOf(node) === VAL.REGEX) return true
+  return literalChildren(node).some(literalTreeHasDynamicRegex)
+}
+
 function literalValue(node) {
   if (node === undefined) return undefined            // array hole
   if (!Array.isArray(node)) return NOT_LIT
@@ -1550,6 +1573,10 @@ ${localDecls}
   // the runtime call entirely. The runtime `__stringify` path (which ignores a
   // replacer) handles every non-constant case unchanged.
   ctx.core.emit['JSON.stringify'] = (x, replacer, space) => {
+    if (literalTreeHasCallableToJSON(x))
+      err('JSON.stringify callable toJSON hooks are not supported; call toJSON explicitly before stringifying')
+    if (literalTreeHasDynamicRegex(x))
+      err('JSON.stringify cannot serialize a dynamically nested RegExp value; stringify it separately or replace it with a plain object')
     // An explicit `null`/`undefined` replacer is spec-equivalent to none; only a
     // real array/function replacer changes the result. (foldStringify normalizes
     // the same way via literalValue.) Used by both peepholes below.

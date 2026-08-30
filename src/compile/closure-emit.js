@@ -1,5 +1,5 @@
 import { ctx, inc, PTR, declGlobal, assertCtxInvariants } from '../ctx.js'
-import { T, isBlockBody } from '../ast.js'
+import { T, isBlockBody, isReassigned } from '../ast.js'
 import { hasAmbiguousBoolMerge } from '../kind.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
@@ -70,6 +70,9 @@ function seedClosureFrame(cb, prevSchemaVars, prevTypedElems) {
   const parentBoxedCaptures = new Set(cb.boxed || [])
 
   for (const p of cb.params) ctx.func.locals.set(p, 'f64')
+  // Closure bodies bypass analyzeFuncForEmit, so publish the same intrinsic
+  // rest-array entry fact here. A body assignment invalidates it.
+  if (cb.rest && !isReassigned(cb.body, cb.rest)) updateRep(cb.rest, { val: VAL.ARRAY })
   // All direct named-function callers emitted before closure planning begins,
   // so closure parameter lattices are complete at this boundary.
   const ptRow = ctx.closure.paramTypes?.get(cb.name)

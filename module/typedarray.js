@@ -8,14 +8,14 @@ import { OPTF } from '../src/ctx.js'
  * @module typed
  */
 
-import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt } from '../src/ir.js'
-import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS } from '../src/ast.js'
+import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
+import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
 import { typedIdxProven, idxKey } from '../src/type.js'
 import { constIntExpr } from '../src/static.js'
-import { VAL, lookupValType } from '../src/reps.js'
+import { VAL, lookupValType, mayBeUndefined, repOf } from '../src/reps.js'
 import { nanPrefixHex, TYPED_ELEM_NAMES, TYPED_ELEM_CODE, TYPED_ELEM_BIGINT_FLAG, encodeTypedElemAux } from '../layout.js'
 import { err, inc, PTR, LAYOUT, registerGetter, setLinkDemand, getFactStore } from '../src/ctx.js'
 import { ERR } from '../err-codes.js'
@@ -125,6 +125,33 @@ export default (ctx) => {
   const bufDyn = bufAccessorDyn('buffer', '__to_buffer', buf)
   const blenDyn = bufAccessorDyn('byteLength', '__byte_length', blen)
   const boffDyn = bufAccessorDyn('byteOffset', '__byte_offset', boff)
+
+  // Fixed-length ArrayBuffer proposal accessors. JZ rejects growth options,
+  // so resizable/growable are always false and maxByteLength equals byteLength.
+  // Non-buffer receivers keep ordinary property lookup instead of having these
+  // names hijacked globally.
+  const bufferOnlyDyn = (prop, direct) => (obj) => {
+    if (valTypeOf(obj) === VAL.BUFFER) return direct(asF64(emit(obj)))
+    ctx.module.include('collection')
+    ctx.module.include('array')
+    inc('__ptr_type', '__dyn_get_expr_t_h', '__len')
+    const o = temp('bop'), t = tempI32('bot')
+    const og = ['local.get', `$${o}`]
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${o}`, asF64(emit(obj))],
+      ['local.set', `$${t}`, ['call', '$__ptr_type', ['i64.reinterpret_f64', og]]],
+      ['if', ['result', 'f64'],
+        ['i32.and', ['f64.ne', og, og], ['i32.eq', ['local.get', `$${t}`], ['i32.const', PTR.BUFFER]]],
+        ['then', direct(og)],
+        ['else', ['f64.reinterpret_i64', ['call', '$__dyn_get_expr_t_h',
+          ['i64.reinterpret_f64', og], asI64(emit(['str', prop])), ['local.get', `$${t}`],
+          ['i32.const', strHashLiteral(prop)]]]]]], 'f64')
+  }
+  const fixedBufferFalse = value => typed(['block', ['result', 'f64'], ['drop', value], ['f64.const', `nan:${FALSE_NAN}`]], 'f64')
+  const fixedBufferMax = value => typed(['f64.convert_i32_s', ['call', '$__len', ['i64.reinterpret_f64', value]]], 'f64')
+  registerGetter('.resizable', bufferOnlyDyn('resizable', fixedBufferFalse))
+  registerGetter('.growable', bufferOnlyDyn('growable', fixedBufferFalse))
+  registerGetter('.maxByteLength', bufferOnlyDyn('maxByteLength', fixedBufferMax))
 
   // === Runtime helpers: byte length, buffer coerce ===
   // __typed_shift lives in core (needed by __len/__cap).
@@ -549,6 +576,9 @@ export default (ctx) => {
   // Indices normalize through __clamp_idx (negative wraps from the end, then
   // clamp to [0, byteLength]) — the same bounds dance as every other range op.
   ctx.core.emit['.buf:slice'] = (obj, beginExpr, endExpr) => {
+    if (beginExpr != null && valTypeOf(beginExpr) === VAL.OBJECT ||
+        endExpr != null && valTypeOf(endExpr) === VAL.OBJECT)
+      err('ArrayBuffer.slice object index coercion is not supported; pass numeric start/end values')
     inc('__clamp_idx')
     const src = temp('bss')
     const beg = tempI32('bsb')
@@ -558,8 +588,18 @@ export default (ctx) => {
     const lenWat = ['call', '$__len', ['i64.reinterpret_f64', ['local.get', `$${src}`]]]
     // ToIntegerOrInfinity position args (25.1.5.15 step 5/8) — asI32Sat, not asI32: see
     // src/ir.js's doc comment; __clamp_idx needs ±Infinity saturated to INT32_MAX/MIN.
-    const beginWat = beginExpr == null ? ['i32.const', 0] : asI32Sat(emit(beginExpr))
-    const endWat = endExpr == null ? lenWat : asI32Sat(emit(endExpr))
+    const bound = (expr, fallback) => {
+      if (expr == null || isUndefinedLiteral(expr)) return fallback
+      if (valTypeOf(expr) != null && !(typeof expr === 'string' && (mayBeUndefined(expr) || repOf(expr)?.nullable)))
+        return asI32Sat(emit(expr))
+      const t = temp('bbs')
+      return ['block', ['result', 'i32'],
+        ['local.set', `$${t}`, asF64(emit(expr))],
+        ['if', ['result', 'i32'], isUndef(['local.get', `$${t}`]),
+          ['then', fallback], ['else', asI32Sat(typed(['local.get', `$${t}`], 'f64'))]]]
+    }
+    const beginWat = bound(beginExpr, ['i32.const', 0])
+    const endWat = bound(endExpr, lenWat)
     return typed(['block', ['result', 'f64'],
       ['local.set', `$${src}`, asF64(emit(obj))],
       ['local.set', `$${beg}`, ['call', '$__clamp_idx', beginWat, lenWat]],
@@ -2619,11 +2659,26 @@ export default (ctx) => {
       inc('__typed_slice_rt')
       // ToIntegerOrInfinity position args — asI32Sat, not asI32: __clamp_idx (inside
       // __typed_slice_rt) needs ±Infinity saturated to INT32_MAX/MIN (see src/ir.js).
-      return typed(['call', '$__typed_slice_rt',
-        ['i64.reinterpret_f64', asF64(emit(arr))],
-        start == null ? ['i32.const', 0] : asI32Sat(emit(start)),
-        end == null ? ['i32.const', 0] : asI32Sat(emit(end)),
-        ['i32.const', end == null ? 0 : 1]], 'f64')
+      const arrT = temp('tsra'), startMissing = start == null || isUndefinedLiteral(start)
+      const endMissing = end == null || isUndefinedLiteral(end)
+      const startT = startMissing ? null : temp('tsrs'), endT = endMissing ? null : temp('tsre')
+      const startNeedsCheck = !startMissing && !(valTypeOf(start) != null && !(typeof start === 'string' && (mayBeUndefined(start) || repOf(start)?.nullable)))
+      const endNeedsCheck = !endMissing && !(valTypeOf(end) != null && !(typeof end === 'string' && (mayBeUndefined(end) || repOf(end)?.nullable)))
+      const startValue = startMissing ? null : typed(['local.get', `$${startT}`], 'f64')
+      const endValue = endMissing ? null : typed(['local.get', `$${endT}`], 'f64')
+      const startIR = startMissing ? ['i32.const', 0]
+        : startNeedsCheck ? ['if', ['result', 'i32'], isUndef(startValue),
+          ['then', ['i32.const', 0]], ['else', asI32Sat(startValue)]] : asI32Sat(startValue)
+      const endIR = endMissing ? ['i32.const', 0]
+        : endNeedsCheck ? ['if', ['result', 'i32'], isUndef(endValue),
+          ['then', ['i32.const', 0]], ['else', asI32Sat(endValue)]] : asI32Sat(endValue)
+      const useEnd = endMissing ? ['i32.const', 0]
+        : endNeedsCheck ? ['i32.eqz', isUndef(endValue)] : ['i32.const', 1]
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${arrT}`, asF64(emit(arr))],
+        ...(startMissing ? [] : [['local.set', `$${startT}`, asF64(emit(start))]]),
+        ...(endMissing ? [] : [['local.set', `$${endT}`, asF64(emit(end))]]),
+        ['call', '$__typed_slice_rt', ['i64.reinterpret_f64', ['local.get', `$${arrT}`]], startIR, endIR, useEnd]], 'f64')
     }
     const { et, isView } = r
     const arrLoc = temp('tsa'), srcPtr = tempI32('tssp'), srcLen = tempI32('tssl')
@@ -2634,25 +2689,34 @@ export default (ctx) => {
     // defaultExpr: when boundExpr is omitted (e.g. arr.slice() / arr.slice(2)),
     // start defaults to 0 and end defaults to len.
     const clamp = (boundExpr, fallback, defaultExpr) => {
-      if (boundExpr == null) return defaultExpr
-      const idx = tempI32(fallback)
+      if (boundExpr == null || isUndefinedLiteral(boundExpr)) return defaultExpr
+      const finish = rawIR => {
+        const idx = tempI32(fallback)
+        return ['block', ['result', 'i32'],
+          // ToIntegerOrInfinity position arg (23.2.3.28 step 5/7): asI32Sat, not asI32.
+          // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), matching
+          // Array.prototype.slice's identical fix (see src/ir.js's asI32Sat doc comment).
+          ['local.set', `$${idx}`, asI32Sat(rawIR)],
+          ['select',
+            // negative branch: max(0, idx + len)
+            ['select',
+              ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]],
+              ['i32.const', 0],
+              ['i32.gt_s', ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]], ['i32.const', 0]]],
+            // non-negative branch: min(len, idx)
+            ['select',
+              ['local.get', `$${srcLen}`],
+              ['local.get', `$${idx}`],
+              ['i32.gt_s', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]]],
+            ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]]]
+      }
+      if (valTypeOf(boundExpr) != null && !(typeof boundExpr === 'string' && (mayBeUndefined(boundExpr) || repOf(boundExpr)?.nullable)))
+        return finish(asF64(emit(boundExpr)))
+      const raw = temp('tsb')
       return ['block', ['result', 'i32'],
-        // ToIntegerOrInfinity position arg (23.2.3.28 step 5/7) — asI32Sat, not asI32:
-        // Infinity/NaN/fractional start or end must saturate (INT32_MAX/MIN), matching
-        // Array.prototype.slice's identical fix (see src/ir.js's asI32Sat doc comment).
-        ['local.set', `$${idx}`, asI32Sat(emit(boundExpr))],
-        ['select',
-          // negative branch: max(0, idx + len)
-          ['select',
-            ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]],
-            ['i32.const', 0],
-            ['i32.gt_s', ['i32.add', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]], ['i32.const', 0]]],
-          // non-negative branch: min(len, idx)
-          ['select',
-            ['local.get', `$${srcLen}`],
-            ['local.get', `$${idx}`],
-            ['i32.gt_s', ['local.get', `$${idx}`], ['local.get', `$${srcLen}`]]],
-          ['i32.lt_s', ['local.get', `$${idx}`], ['i32.const', 0]]]]
+        ['local.set', `$${raw}`, asF64(emit(boundExpr))],
+        ['if', ['result', 'i32'], isUndef(['local.get', `$${raw}`]),
+          ['then', defaultExpr], ['else', finish(typed(['local.get', `$${raw}`], 'f64'))]]]
     }
     const dst = allocPtr({ type: PTR.TYPED, aux: typedAux(r.name || ET_NAME[et]),
       len: ['i32.shl', ['local.get', `$${n}`], ['i32.const', SHIFT[et]]],
