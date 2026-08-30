@@ -32,6 +32,14 @@ test('unsupported buffer growth and object-coercion shapes reject cleanly', () =
   }`), /object index coercion is not supported/)
 })
 
+test('DataView setters return undefined in value position', () => {
+  const { set } = jz(`export let set = () => {
+    let d = new DataView(new ArrayBuffer(16))
+    return d.setFloat64(d.getInt32(0), d.getFloat64(8))
+  }`).exports
+  is(set(), undefined)
+})
+
 test('ArrayBuffer .byteOffset is 0', () => {
   const { exports } = jz(`
     export let main = () => {

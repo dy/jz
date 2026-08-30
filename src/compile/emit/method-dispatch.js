@@ -233,13 +233,15 @@ function tryBoxedDelegate({ obj, method, callMethod }) {
 function dateAuxFallback(recv, method, callMethod, fallback, ptrTypeLocal) {
   const dateEmitter = ctx.core.emit[`.date:${method}`]
   if (!dateEmitter) return fallback
+  const dateSid = ctx.schema.ensureDateSid?.()
+  if (dateSid == null) err('internal: Date schema registration is unavailable')
   inc('__ptr_aux')
   const isObjectTag = ptrTypeLocal
     ? ['i32.eq', ['local.get', `$${ptrTypeLocal}`], ['i32.const', PTR.OBJECT]]
     : ptrTypeEq(['local.get', `$${recv}`], PTR.OBJECT)
   return typed(['if', ['result', 'f64'],
     ['i32.and', isObjectTag,
-      ['i32.eq', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], ['i32.const', ctx.schema.dateSid]]],
+      ['i32.eq', ['call', '$__ptr_aux', ['i64.reinterpret_f64', ['local.get', `$${recv}`]]], ['i32.const', dateSid]]],
     ['then', callMethod(recv, dateEmitter)],
     ['else', fallback]], 'f64')
 }

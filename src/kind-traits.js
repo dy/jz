@@ -26,7 +26,12 @@ const STRING_METHODS = new Set([
   'repeat', 'padStart', 'padEnd', 'replace', 'replaceAll', 'charAt', 'substring',
 ])
 
-const NUMBER_METHODS = new Set(['charCodeAt', 'codePointAt'])
+const NUMBER_METHODS = new Set([
+  'charCodeAt', 'codePointAt',
+  'getInt8', 'getUint8', 'getInt16', 'getUint16', 'getInt32', 'getUint32',
+  'getFloat16', 'getFloat32', 'getFloat64',
+])
+const BIGINT_METHODS = new Set(['getBigInt64', 'getBigUint64'])
 
 // Methods whose result is a boolean. Classifying them VAL.BOOL lets the export
 // boundary materialize the 0/1 carrier as a real boolean (host sees true/false,
@@ -206,6 +211,7 @@ export function methodValType(method, obj, objType, ctx) {
   if ((method === 'has' || method === 'delete') && (objType === VAL.MAP || objType === VAL.SET)) return VAL.BOOL
   if (STRING_METHODS.has(method)) return VAL.STRING
   if (NUMBER_METHODS.has(method)) return VAL.NUMBER
+  if (BIGINT_METHODS.has(method)) return VAL.BIGINT
   if (method === 'split') return VAL.ARRAY
   if (method === 'slice' || method === 'concat') {
     if (objType === VAL.STRING || objType === VAL.ARRAY || objType === VAL.TYPED) return objType

@@ -586,6 +586,8 @@ export function reset(proto, globals, bridge) {
     //  and its belt had nothing left to guard.)
     register: null,
     find: null,
+    dateSid: null,
+    ensureDateSid: null,
     targetStack: [],
     autoBox: null,
     arrayVars: new Map(), // synthetic destructure-temp name → prepped array-literal

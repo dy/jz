@@ -62,11 +62,15 @@ export default (ctx) => {
   })
 
   // Brand: dates carry their own registered 1-slot schema (a key no user
-  // identifier can produce) instead of aux=0 — which aliases schema id 0, the
-  // first real literal shape, so dyn-get / {...date} / structuredClone would
-  // read that schema's layout against the date's single-slot block. With the
-  // brand, every generic OBJECT consumer sees the true shape.
-  ctx.schema.dateSid = ctx.schema.register(['\x00time'])
+  // identifier can produce) instead of aux=0, which aliases schema id 0.
+  // Registration is demand-lazy: includeAllMods() must remain pure module
+  // registration for region hooks, while every constructor and unresolved
+  // Date-method discriminator still needs the id before emitting it.
+  const dateSid = () => {
+    if (ctx.schema.dateSid == null) ctx.schema.dateSid = ctx.schema.register(['\x00time'])
+    return ctx.schema.dateSid
+  }
+  ctx.schema.ensureDateSid = dateSid
 
   const dateArg = (node, fallback, required = false) => {
     if (node === undefined) return typed(['f64.const', required ? NaN : fallback], 'f64')
@@ -606,7 +610,7 @@ export default (ctx) => {
       inc('__date_from_value')
       timeVal = typed(['call', '$__date_from_value', ['i64.reinterpret_f64', asF64(emit(ms))]], 'f64')
     }
-    const out = allocPtr({ type: PTR.OBJECT, aux: ctx.schema.dateSid, len: 1, cap: 1, stride: 8, tag: 'date' })
+    const out = allocPtr({ type: PTR.OBJECT, aux: dateSid(), len: 1, cap: 1, stride: 8, tag: 'date' })
     return typed(['block', ['result', 'f64'],
       out.init,
       ['f64.store', ['local.get', `$${out.local}`], timeVal],

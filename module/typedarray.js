@@ -787,7 +787,8 @@ export default (ctx) => {
       const op = storeOp, vt = valType, sz = size
       // Resolve the receiver's descriptor once; the store reads dataOff/byteLen from it.
       const desc = tempI32('dvD')
-      const fin = (body) => ['block', ['local.set', `$${desc}`, dvDescriptor(dv)], body]
+      const fin = (body) => typed(['block', ['result', 'f64'],
+        ['local.set', `$${desc}`, dvDescriptor(dv)], body, undefExpr()], 'f64')
       const addr = ['i32.add', dvDataOff(desc), dvIndexChecked(off, sz, dvViewSize(desc))]
       // Coerce value into the wasm value type the store op consumes. Non-BigInt
       // stores ToNumber the value first (per SetViewValue) so a Symbol value

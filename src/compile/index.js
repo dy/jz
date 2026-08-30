@@ -1323,7 +1323,16 @@ export default function compile(ast, profiler, regionHooks) {
   // `call $f` encodes funcidx as ULEB128 (1 B for idx < 128, 2 B for idx < 16384).
   // On watr self-compile this saves ~6 KB (hot specialized helpers migrate to idx < 128).
   // callCount was computed inline by treeshake's walk (same set of nodes).
-  const byCalls = (a, b) => (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
+  const byCalls = (a, b) => {
+    const delta = (callCount.get(b[1]) || 0) - (callCount.get(a[1]) || 0)
+    if (delta) return delta
+    // Eager and lazy module registration can discover equal-use stdlib helpers
+    // in different orders. Canonicalize only stable `$__*` helper names; user
+    // function ties retain source order, preserving alpha-renaming invariance.
+    const sa = typeof a[1] === 'string' && a[1].startsWith('$__')
+    const sb = typeof b[1] === 'string' && b[1].startsWith('$__')
+    return sa && sb ? (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) : 0
+  }
   const startFn = sec.start.find(n => n[0] === 'func')
   const startDir = sec.start.find(n => n[0] === 'start')
   const sortedFuncs = [
