@@ -56,68 +56,11 @@ import {
   promoteIntArrayLiterals, scalarizeFunctionObjectLiterals, analyzeParamDistinctness,
 } from './literals.js'
 
-/**
- * @param {{mark: Function, exit: Function}} [regionHooks] - region-arena
- *  PLAN-TAIL boundaries (.work/evidence.md §Region arena, per-pass slice):
- *  supplied ONLY by the self-compile kernel, forwarded from compile()'s own
- *  `regionHooks` (Slice 3) — never passed by the native host (plan() is
- *  called with 2 args everywhere else, so this stays undefined and every
- *  `regionHooks?.mark()` / `if (regionHooks)` below is dead code there).
- *  `narrowSignatures` itself (and its own internal narrow.js machinery,
- *  the single largest cost in this function — .work/evidence.md §Region
- *  arena "jz×jz phase-localized") is deliberately OUTSIDE every boundary
- *  here: narrow.js's O(functions×params×callSites) census is a separately-
- *  banked cost, not a churn-vs-retain shape a region round can help —
- *  wrapping it would mean rooting `programFacts` mid-fixpoint while
- *  narrowSignatures is still mutating it in place, a correctness hazard for
- *  zero reclaim (its own allocations ARE the fixpoint's live state, not
- *  garbage). Every boundary below starts AFTER narrowSignatures returns.
- *  Five rounds, one per named pass-group from the diffuse-cost phase map
- *  (.work/evidence.md §Region arena "analyzeFuncForEmit's OWN clone-shape
- *  instances FIXED"): each pass's
- *  own working state (siteState-shaped temporaries, per-call scratch
- *  objects, body-walk locals) is garbage the instant the pass returns —
- *  never read by a LATER pass — while the FACTS each pass publishes
- *  (`programFacts` itself, `ctx.scope`/`ctx.types`/`ctx.schema`/
- *  `ctx.closure`/`ctx.funcs`) must survive to `emitFuncs`. Root is
- *  IDENTICAL across all five rounds (the container-level shape compile()'s
- *  own Slice 3 doc specifies, "root the CONTAINERS, not individual leaf
- *  fields") — `ctx.transform` excluded (plan() never writes it, per
- *  ctx.js's own writer table, so it stays durable and needs no root entry
- *  regardless of round count).
- */
-export default function plan(ast, profiler, regionHooks) {
+export default function plan(ast, profiler) {
   // Per-pass timing under `plan:` — the plan stage is the compile pipeline's
   // multi-pass hot spot (each mutating pass triggers a whole-program fact
   // refresh), so the profile must show WHICH pass and refresh dominate.
   const t = profiler?.time ? (name, fn) => profiler.time(`plan:${name}`, fn) : (_, fn) => fn()
-  // One round shape shared by all five plan-tail boundaries below — mark,
-  // run `body`, exit rooting `ast`/`programFacts` (phase-local, not durable
-  // ctx state) + the UNION-FIELD root (Slice C-v2, `.work/archive/compile-session-
-  // design.md` §2.1/§3, front.js's own doc has the full rationale for why
-  // this is the union of every `ctx.*` field ANY round needs — `funcs,
-  // module, schema, closure, scope, types, warnings, plans, inspect, func,
-  // transform, facts` — applied uniformly here, not a narrower per-round
-  // subset, to avoid a cross-round rooting inconsistency. A durable
-  // container's BACKING STORE can still grow, ephemeral, post-mark, during
-  // any of these rounds' own passes — e.g. round 1's `narrowBoolResults`
-  // populating `bodyFacts` (`ctx.facts`) on first touch per function — so
-  // `ctx.facts` rides along explicitly rather than via a trailing,
-  // non-rebound `getFactStore()` call.
-  // `exitRound` is factored out of `round` below so the two upstream rounds
-  // (early-plan prefix, narrowSignatures whole-call) can share the identical
-  // exit shape, rooting the CURRENT 14-field union bundle, without a third
-  // copy of this array literal.
-  const exitRound = m => {
-    if (regionHooks)
-      [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts] =
-        regionHooks.exit(m, [ast, programFacts, ctx.funcs, ctx.module, ctx.schema, ctx.closure, ctx.scope, ctx.types, ctx.warnings, ctx.plans, ctx.inspect, ctx.func, ctx.transform, ctx.facts])
-  }
-  const round = body => {
-    const m = regionHooks?.mark()
-    body()
-    exitRound(m)
-  }
   // AST-mutating pass: run timed; on change, re-sweep program facts (timed
   // separately — the refreshes are usually the cost, not the passes).
   // Fact freshness is OWNED HERE (stage-2 solver slice 1): mutating passes
@@ -137,27 +80,6 @@ export default function plan(ast, profiler, regionHooks) {
   const sweep = (name, pass) => {
     if (t(name, pass)) _dirty = true
   }
-
-  // Region-arena EARLY-PLAN round (the phase map names this exact span
-  // "+900MB before narrowSignatures even starts": compileAst entry →
-  // plan() entry → classifyHashDictGlobals → flattenFuncNamespaces/
-  // devirtGlobalCalls/inlineHotInternalCalls → collectProgramFacts's own
-  // dirty-resweep loop → narrowSignatures entry).
-  // Every pass from here through `resolveClosureWidth` is a SEQUENTIAL
-  // top-level call, none a loop body holding a stale container reference
-  // across an exit (the `ctx.funcs.list` relocation hazard `round()`'s own
-  // doc describes doesn't apply — nothing below iterates `ctx.funcs.list`
-  // across this boundary). One round spanning the
-  // WHOLE early-plan prefix: mark here, exit right before the
-  // `canSkipWholeProgramNarrowing` branch below — after `programFacts` is
-  // declared and `resolveClosureWidth` has settled it — so BOTH the skip-path
-  // and the full-narrowing path start from an already-reclaimed state. Uses
-  // raw mark/`exitRound()` rather than the `round(body)` wrapper because
-  // `programFacts` itself is DECLARED partway through this span (`let
-  // programFacts = facts()` below) — nesting that declaration inside a
-  // `round(() => {...})` callback would scope it away from every later
-  // reader (`canSkipWholeProgramNarrowing` and the whole narrowing tail).
-  const __earlyMark = regionHooks?.mark()
 
   t('inferModuleLetTypes', () => inferModuleLetTypes(ast))
   // Pass 1 (no call-site param facts yet): literal/alias/global-to-global
@@ -209,10 +131,7 @@ export default function plan(ast, profiler, regionHooks) {
     sweep('promoteIntArrayLiterals', promoteIntArrayLiterals)
     sweep('scalarizeTypedArrays', () => scalarizeFunctionTypedArrays(facts()))
   }
-  // `let`, not `const`: the plan-tail region rounds below (region-live only,
-  // dead code otherwise) rebind this from each round's `exit()` return —
-  // `__region_copy_rec` may relocate the object wholesale.
-  let programFacts = facts()
+  const programFacts = facts()
   ctx.types.dynKeyVars = programFacts.dynVars
   ctx.types.dynWriteVars = programFacts.dynWriteVars
   ctx.types.anyDynKey = programFacts.anyDyn
@@ -281,23 +200,14 @@ export default function plan(ast, profiler, regionHooks) {
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))
   t('resolveClosureWidth', () => resolveClosureWidth(programFacts))
-  // Early-plan round's own exit — fixpoint complete for this span (nothing
-  // below is still mutating what was just rooted mid-pass; `programFacts`
-  // keeps accumulating in EITHER branch below, exactly like every other
-  // round's own "enriched in place, never re-collected past this point"
-  // contract).
-  exitRound(__earlyMark)
   if (canSkipWholeProgramNarrowing(programFacts)) {
     // Freeze point (.work/archive/program-facts-split.md §7): narrowSignatures never runs
     // on this branch, so collectProgramFacts is paramReps/callSites' ONLY
     // producer here — already fully settled the moment we reach this check.
     // callSites is frozen for good (no writer anywhere ever touches it
     // again); paramReps gets the read-only `{get,raw}` view for the four
-    // reads below and is restored (via `.raw`, not a stashed local — see
-    // readonlyParamReps's own doc on why: this branch takes no further
-    // round() boundary, but the restore stays uniform with the main path's
-    // region-relocation-safe shape below) to the real (still-empty) Map
-    // before returning.
+    // reads below and is restored through `.raw` to the real Map before
+    // returning.
     freezeCallSites(programFacts.callSites)
     programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
     // Phase J (jsstring boundary opt-in) is body-local and call-site-independent;
@@ -313,39 +223,14 @@ export default function plan(ast, profiler, regionHooks) {
     return programFacts
   }
 
-  // Region-arena NARROWSIGNATURES round: narrowSignatures itself stays
-  // EXCLUDED from every boundary above ("wrapping it would mean rooting
-  // `programFacts` mid-fixpoint while narrowSignatures is still mutating it
-  // in place — a correctness hazard for zero reclaim") — that exclusion is
-  // about boundaries INSIDE narrowSignatures' own internal fixpoint (its
-  // internal `runFixpointConverged()` sweeps), never attempted here. This
-  // wraps the WHOLE call via the standard `round(body)` helper: mark before,
-  // exit strictly AFTER narrowSignatures returns (its own fixpoint fully
-  // converged, `programFacts.paramReps`/`.callSites` settled) — no
-  // mid-mutation rooting, by construction.
-  // narrowSignatures returns nothing — its entire effect is IN-PLACE
-  // MUTATION of `programFacts` (`.paramReps`/`.callSites`) and `ctx.funcs`
-  // (`func.sig.*`/`.valResult`/...), both already union-root members, plus
-  // `ctx.facts` (`analyzeBody` first-touch population inside its own
-  // multi-phase fixpoint — the same hazard the early-plan round above
-  // already covers) — every touched container already rides in `round()`'s
-  // own 14-field bundle; narrow.js references only `programFacts`,
-  // `ctx.funcs`/`.func`, `ctx.scope`/`.types` read-only + self-restored
-  // `ctx.func.typedElem`, nothing outside that bundle.
-  round(() => t('narrowSignatures', () => narrowSignatures(programFacts, ast)))
+  t('narrowSignatures', () => narrowSignatures(programFacts, ast))
   // Boolean/bigint result kinds for funcs the call-site census can't reach —
   // value-used-only functions have no direct sites, but their results still
   // cross boxed positions (closure trampolines, boundary wrappers). Guarded:
   // only ever SETS an unset valResult (see narrowBoolResults doc).
-  // Plan-tail round 1 (own boundary — the single largest individual delta
-  // outside narrowSignatures itself, +198 MB measured per the phase map).
-  round(() => t('narrowBoolResults', () => narrowBoolResults()))
-  // Plan-tail round 2: the six passes below (+~395 MB combined, dominated by
-  // analyzeParamDistinctness's own +159 MB) share one round — none indivi-
-  // dually justifies a dedicated mark/exit pair, and they run back-to-back
-  // with no external read between them.
-  round(() => {
-    // Pass 2: narrowSignatures has now settled `programFacts.paramReps`, so a
+  t('narrowBoolResults', () => narrowBoolResults())
+
+  // Pass 2: narrowSignatures has now settled `programFacts.paramReps`, so a
     // global written from a bare parameter alias (`cur = s`, subscript's parse-
     // state shape) resolves — pass 1 saw only an untyped param and poisoned it.
     // Idempotent: names pass 1 already claimed are skipped.
@@ -373,12 +258,9 @@ export default function plan(ast, profiler, regionHooks) {
     // overwrite the old element's slots) — needs the settled arrayElemSchema
     // facts, so it runs after the signature fixpoint.
     if (optimizing()) t('scanInplaceStores', () => scanInplaceStores(programFacts))
-    t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
-  })
-  // Plan-tail round 3: five more passes, small individually (refineDynKeys is
-  // the largest at +15 MB) — bundled for the same reason as round 2.
-  round(() => {
-    // VAL-kind landslide specialization (.work/archive/context-sensitivity-survey.md §3-4): a
+  t('specializeBimorphicTyped', () => specializeBimorphicTyped(programFacts))
+
+  // VAL-kind landslide specialization (.work/archive/context-sensitivity-survey.md §3-4): a
     // pure precision/perf slice, sized/gated the same as speculateTypedParams.
     if (optimizing()) t('specializeValKindDichotomy', () => specializeValKindDichotomy(programFacts))
     if (optimizing()) t('speculateTypedParams', () => speculateTypedParams(programFacts, ast))
@@ -388,8 +270,7 @@ export default function plan(ast, profiler, regionHooks) {
     // ctor fixpoint whose FIELD evidence (slotTypedCtorAt, write-gated) resolves
     // only now. Upgrade-only: strictly more evidence than the early run.
     t('refineFieldProvenance', () => refineFieldProvenance(ast))
-    t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
-  })
+  t('refineModuleLetTypes', () => inferModuleLetTypes(ast))
   // Freeze point (.work/archive/program-facts-split.md §7): paramReps/callSites' true last
   // producer WITHIN plan() is this round just above — specializeValKindDichotomy/
   // speculateTypedParams when optimizing() (both write through materializeVariant),
@@ -401,38 +282,22 @@ export default function plan(ast, profiler, regionHooks) {
   // paramReps does: compile/index.js's specializeUnionCursorParams (EMIT-phase
   // union-cursor clones, called from OUTSIDE plan() entirely) legitimately
   // keeps minting new entries for the clones it creates, so the read-only view
-  // is scoped to plan()'s own remaining rounds and restored (via `.raw` off
-  // the CURRENT programFacts.paramReps, never a stashed local — rounds 4/5
-  // below are real round() calls that can relocate `programFacts` wholesale
-  // under the self-hosted region allocator, see readonlyParamReps's own doc)
-  // to the real, writable Map right before `return programFacts`, so that
-  // later write keeps working exactly as before.
+  // is scoped to plan() and restored before return.
   freezeCallSites(programFacts.callSites)
   programFacts.paramReps = readonlyParamReps(programFacts.paramReps)
-  // Plan-tail round 4 (own boundary — the second-largest post-narrowSignatures
-  // delta, +60 MB, analyzeSchemaSlotIntCertain's own whole-program AST walk).
-  round(() => {
-    // Late slot-int census: rebuild FRESH with body-local element-alias sids
+  // Late slot-int census: rebuild FRESH with body-local element-alias sids
     // (`const p = ps[i]` through the param's arrayElemSchema — knowledge that
     // exists only after narrowing). Consumers read at emit, after this.
     // callSites/valueUsed: see refineSlotKindCensus's own comment above — kept
     // in lockstep so this round's collectSlotWriteHazards rebuild (should the
     // fact-store gen ever bump between the two rounds) doesn't silently fall
     // back to the coarser no-callSites path.
-    t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, {
-      paramReps: programFacts.paramReps, callSites: programFacts.callSites, valueUsed: programFacts.valueUsed,
-    }))
-  })
-  // Plan-tail round 5: the plan() tail — invalidateAllBodyFacts drops the
-  // now-stale analyzeBody cache entries the late upgrades above superseded
-  // (its OWN +22 MB is churn from the walk that decides what to drop, not
-  // retained state — the dropped entries themselves were never rooted, so
-  // they're already reclaimed by rounds 3-4's own exits before this runs).
-  round(() => {
-    invalidateAllBodyFacts()
-    strictBoundaryTypeCheck(programFacts)
-    adviseProgram(programFacts)
-  })
+  t('refineSlotIntCensus', () => analyzeSchemaSlotIntCertain(ast, {
+    paramReps: programFacts.paramReps, callSites: programFacts.callSites, valueUsed: programFacts.valueUsed,
+  }))
+  invalidateAllBodyFacts()
+  strictBoundaryTypeCheck(programFacts)
+  adviseProgram(programFacts)
   // RepresentationPlan v2 Slice 1: semantic call/kind facts and every
   // specialization are settled. Publish boundary targets before any body
   // FunctionPlan is analyzed or emitted; this slice is observation-only.

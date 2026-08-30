@@ -51,11 +51,6 @@ export function builtinFunctionValue(name) {
     ctx.core.stdlib[fn] = `(func $${fn} ${params.join(' ')} (result f64) ${op ? `(${op} (local.get $__a0))` : bodyGen()})`
     inc(fn)
   }
-  // ctx.closure.mint (not a bare table.push) — keeps ctx.closure.envMeta
-  // aligned with ctx.closure.table by funcIdx; see module/function.js's
-  // ctx.closure.mint doc (.work/evidence.md §Region arena, funcIdx skew).
-  // A builtin-as-value closure is always zero-capture, so the default
-  // {len:0, cellMask:0} meta is correct here.
   const idx = ctx.closure.mint(fn)
   const ir = mkPtrIR(PTR.CLOSURE, idx, 0)
   ir.closureFuncIdx = idx

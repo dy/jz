@@ -274,7 +274,7 @@ export function foldNamespaceIntrospection(callee, args) {
 // Compiler-internal synthetic callees: emit-handled intrinsics, never user
 // function values — so a bare reference must not pull in the callable-value
 // (function table / closure) machinery.
-export const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro', '__region_mark', '__region_exit', '__region_exit_force'])
+export const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro'])
 
 // Resolve a member-receiver to a builtin module name, honoring FUNCTION-SCOPED
 // namespace aliases (`const M = Math` inside a body registers M → 'math' in the

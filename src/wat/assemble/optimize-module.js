@@ -113,11 +113,11 @@ function applyArenaRewind(func, fn, safeCallees) {
 /**
  * Phase: whole-module + per-function optimization passes.
  */
-export function optimizeModule(sec, profiler, regionHooks) {
+export function optimizeModule(sec, profiler) {
   const t = profiler?.time ? (name, fn) => profiler.time(`optMod:${name}`, fn) : (_, fn) => fn()
   const cfg = ctx.transform.optimize
   if (!cfg || cfg.specializeMkptr !== false) t('specializeMkptr', () =>
-    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat)), parseWat, regionHooks))
+    specializeMkptr([...sec.funcs, ...sec.stdlib, ...sec.start], wat => sec.stdlib.push(parseWat(wat))))
   // (specializePtrBase and sortStrPoolByFreq deleted: byte-identical output with
   // both disabled across the bench + examples corpora AND the self-compile kernel at
   // every watr tier — watr's own inlining/offset folding subsumed them. ~350ms/corpus.)
@@ -191,19 +191,7 @@ export function optimizeModule(sec, profiler, regionHooks) {
     ctx.scope.dvArmFns = new Map(allFuncs.filter(f => Array.isArray(f) && candNames.has(f[1])).map(f => [f[1], f]))
   }
   t('optimizeFuncs', () => {
-    let mark = null, batch = []
-    for (let i = 0; i < allFuncs.length; i++) {
-      if (regionHooks && mark == null) mark = regionHooks.mark()
-      const s = allFuncs[i]
-      optimizeFunc(s, cfg, globalTypesMap, volatileGlobals, reachableWrites)
-      if (regionHooks) batch.push(s)
-      if (regionHooks && (batch.length >= 16 || i === allFuncs.length - 1)) {
-        ;[batch, ctx.scope, ctx.transform, ctx.types, ctx.schema, ctx.core.includes, ctx.runtime] =
-          regionHooks.exit(mark, [batch, ctx.scope, ctx.transform, ctx.types, ctx.schema, ctx.core.includes, ctx.runtime])
-        mark = null
-        batch = []
-      }
-    }
+    for (const func of allFuncs) optimizeFunc(func, cfg, globalTypesMap, volatileGlobals, reachableWrites)
   })
   if (!cfg || cfg.hoistGlobalConstLoads !== false || cfg.maskedSuffixGuard !== false) t('hoistGlobalConstLoads', () => {
     const wantLoads = cfg.hoistGlobalConstLoads !== false && !!ctx.scope.globalTypedLen?.size

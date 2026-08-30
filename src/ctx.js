@@ -75,13 +75,8 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 //   ctx.scope.globals (mut→false) and
 //   declares the __heap* globals. emit seeds ctx.closure.{paramTypes,paramTypedCtors}
 //   at direct-call sites (read by emitClosureBody); plan sets ctx.closure.{floor,width}.
-// `ctx` is bound with `const`: its object identity must never be reassigned.
-// `reset()` below mutates each subtree field in place (`ctx.X = {...}`)
-// instead of replacing the whole binding, because swapping identity corrupts
-// the region arena's relocation walk (`__region_relocate_props`'s
-// value-relocation path — see .work/evidence.md §CompileSession Slice B). A
-// reference to a ctx subtree held across a `reset()` call is therefore not
-// safe to keep using afterward — reset() replaces fields, not the container.
+// `ctx` keeps one exported identity while reset() replaces its phase-owned
+// subtrees. A reference to a subtree is invalid after reset().
 //
 // This initial literal is the pre-first-`reset()` default shape only — every
 // field below is a bare placeholder, fully overwritten by reset()'s own
@@ -787,11 +782,6 @@ export function reset(proto, globals, bridge) {
     bodies: null,
     make: null,
     call: null,
-    envMeta: null,   // Array<{len, cellMask}>, parallel to `table` (index = funcIdx) — region
-                     // arena's CLOSURE relocation side table source (module/function.js's
-                     // ctx.closure.make; materialized by src/wat/assemble.js). Reset fresh
-                     // every compile like `table`/`bodies` — module/function.js's own
-                     // `if (!ctx.closure.envMeta) …` guard (re)creates the array on first use.
     // Map<closureBodyName, VAL.*> — round-6 prereq (a): the closure return-kind
     // pre-pass (module/function.js, ctx.closure.make) derives each closure's
     // unified return-tail VAL kind from its raw AST at CREATION time (always

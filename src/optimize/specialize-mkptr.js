@@ -27,9 +27,8 @@ import { ptrBits, i64Hex, PTR } from '../../layout.js'
  *
  * @param funcs    — flat list of func IR nodes (sec.funcs + sec.stdlib + sec.start)
  * @param addFunc  — callback `(watString) => void` to register new helpers
- * @param parseWat — `wat → IR` parser (injected to avoid circular imports)
  */
-export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
+export function specializeMkptr(funcs, addFunc) {
   // Per-target specification: param-types, result-type. Threshold tuned so helper cost amortizes.
   // Any target not listed here is left untouched. Order matters only for readability.
   const SPECS = {
@@ -98,17 +97,7 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
     }
   }
   const collectOptions = { enter: collectCall }
-  let scanMark = null, scanN = 0
-  for (let i = 0; i < funcs.length; i++) {
-    if (regionHooks && scanMark == null) scanMark = regionHooks.mark()
-    walkAst(funcs[i], collectOptions)
-    scanN++
-    if (regionHooks && (scanN >= 8 || i === funcs.length - 1)) {
-      ;[counts, countEntries] = (regionHooks.forceExit || regionHooks.exit)(scanMark, [counts, countEntries])
-      scanMark = null
-      scanN = 0
-    }
-  }
+  for (const func of funcs) walkAst(func, collectOptions)
 
   // Pass 2: for each eligible (target, sig), emit helper.
   const specialized = new Set()
@@ -208,15 +197,5 @@ export function specializeMkptr(funcs, addFunc, parseWat, regionHooks) {
       newCall.schemaSid = +parts[1].slice(2)
     parent[idx] = newCall
   }
-  let rewriteMark = null, batch = []
-  for (let i = 0; i < funcs.length; i++) {
-    if (regionHooks && rewriteMark == null) rewriteMark = regionHooks.mark()
-    walkAst(funcs[i], { exit: rewrite })
-    if (regionHooks) batch.push(funcs[i])
-    if (regionHooks && (batch.length >= 8 || i === funcs.length - 1)) {
-      ;[batch] = (regionHooks.forceExit || regionHooks.exit)(rewriteMark, [batch])
-      rewriteMark = null
-      batch = []
-    }
-  }
+  for (const func of funcs) walkAst(func, { exit: rewrite })
 }

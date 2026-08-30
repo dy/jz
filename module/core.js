@@ -28,7 +28,6 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
-import { registerRegionArena } from './core/region-arena.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -84,78 +83,6 @@ export default (ctx) => {
     __durable_slot_cancel: [],
     __durable_slot_heal: [],
     __is_eph_bits: [],
-    // Region-arena Slice 1 (.work/evidence.md §Region arena) — see the definitions below
-    // for the full rationale. __region_copy_rec's dep list mirrors __sclone_rec's
-    // (module/collection.js) plus __coll_order/__set_add for the SET/MAP branch.
-    __region_mark: [],
-    // Function-valued (not a plain array): the $__dyn_props implicit-root
-    // relocation deps below must be read at PULL time (mirrors __obj_clone/
-    // __typed_idx/__length/__region_copy_rec below, all function-wrapped for
-    // the exact same reason) — module/collection.js's `declGlobal('__dyn_props',
-    // …)` hasn't run yet at THIS deps() call's own eval time (module/index.js
-    // registers core before collection), so a plain array would eagerly bake
-    // in `false` and permanently under-declare.
-    // '__memgrow'/'__ptr_offset' unconditional now — memo-lane fix
-    // (.work/evidence.md §Region arena — negative-reclaim root cause
-    // 476c88cd): __region_exit makes one direct __memgrow call of its own
-    // (reserving the memo's scratch lane) and one direct __ptr_offset call
-    // (reading the memo's own final cap to seed the NEXT call's reservation
-    // hint) on EVERY real-compaction exit, not just when __dyn_props exists
-    // — __ptr_offset used to be pulled in only via the dyn_props-gated
-    // branch below, which would have silently under-declared it for a build
-    // with no __dyn_props global anywhere.
-    __region_exit_force: ['__region_exit'],
-    __region_exit: () => ['__region_copy_rec', '__mkptr', '__alloc_hdr_n', '__memgrow', '__memgrow_exact', '__ptr_offset',
-      ...(ctx.scope.globals.has('__dyn_props') ? ['__coll_order', '__ihash_set_local', '__region_relocate_props'] : [])],
-    // Heap-kind registry Slice 2 (.work/evidence.md §Heap-kind registry): no
-    // longer gated on __dyn_props — a bare PTR.HASH region-root value
-    // (regionArmHash, layout-kinds.js) reaches this helper independently of
-    // whether the array/object dynamic-property sidecar machinery exists at
-    // all (module/collection.js's dict/JSON.parse machinery can mint a HASH
-    // with no __dyn_props global anywhere in the build). __region_memo_get/
-    // __region_memo_set/__is_nullish added for this function's OWN memo
-    // hardening (see its definition below) — memo-lane fix (.work/evidence.md
-    // §Region arena — negative-reclaim root cause 476c88cd): every memo touch
-    // now goes through the scratch-redirecting wrappers, not raw __map_get/
-    // __map_set, so the memo's own doubling-chain growth never lands in
-    // [T, heap) and never gets swept into the compacted survivor span.
-    __region_relocate_props: ['__ptr_offset', '__alloc_hdr_n', '__mkptr', '__region_copy_rec', '__region_memo_get', '__region_memo_set', '__is_nullish'],
-    // CLOSURE's env arm (layout-kinds.js regionArmClosure) — a boxed/mutable
-    // capture's env slot holds a raw i32 pointer to an independently-heap-
-    // allocated cell (module/function.js's `ctx.func.boxed`), not a NaN-boxed
-    // f64, so it needs its OWN relocation helper (memoized by a synthetic
-    // key so a cell shared by two closures relocates to ONE address, not
-    // two) rather than routing through __region_copy_rec's f64 dispatch.
-    __region_relocate_cell: ['__region_memo_get', '__region_memo_set', '__is_nullish', '__region_copy_rec', '__alloc'],
-    // Memo-lane wrappers (.work/evidence.md §Region arena — negative-reclaim
-    // root cause 476c88cd / memo-lane fix): every OTHER touch of $memo
-    // throughout __region_copy_rec's own arms (layout-kinds.js) and
-    // __region_relocate_props/__region_relocate_cell above routes through
-    // these two instead of raw __map_get/__map_set — see their own
-    // definitions below for why.
-    __region_memo_get: ['__map_get'],
-    __region_memo_set: ['__map_set', '__ptr_offset_fwd'],
-    __region_copy_rec: () => ['__ptr_type', '__ptr_offset', '__ptr_offset_fwd', '__ptr_aux', '__is_nullish',
-      '__alloc', '__alloc_hdr', '__alloc_hdr_n', '__mkptr', '__region_memo_get', '__region_memo_set', '__set_add', '__coll_order',
-      '__len', '__region_relocate_props', '__region_relocate_cell',
-      // SET/MAP rebuild fix (.work/evidence.md §Region arena, front-boundary
-      // hunt): regionArmSetMap (layout-kinds.js) now hashes a relocated
-      // entry's key itself (via $__map_hash, on whichever bits are currently
-      // safe to dereference) and inserts with the STRICT prehashed siblings
-      // ($__map_set_h/$__set_add_h, module/collection.js) instead of the
-      // growing, self-hashing $__map_set/$__set_add — an explicit edge
-      // (matching every other helper reachable ONLY from a spliced WAT
-      // template body, not a real call site auto-scan can see): self-compile's
-      // own realize/regex-scan misses template-only calls (test/self-compile-
-      // includes.js's own "Unknown func" class), so without this a region-
-      // live self-compiled kernel traps the instant it rebuilds its first
-      // relocated Set/Map.
-      '__map_hash', '__map_set_h', '__set_add_h',
-      // ARRAY/OBJECT dyn-props migration (see the definitions below): a relocated
-      // container's off-16 propsPtr sidecar needs the SAME grow/shift migration
-      // arrGrow/arrShift already perform (module/array.js
-      // headerPropsToGlobalIR/__dyn_move).
-      ...(ctx.scope.globals.has('__dyn_props') ? ['__hash_new', '__ihash_set_local', '__ihash_get_local', '__is_nullish'] : [])],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -538,36 +465,6 @@ export default (ctx) => {
     (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
     (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
 
-  // Exact-fit grow — no geometric floor (.work/evidence.md §Footprint levers —
-  // geometric-floor tier boundary): used ONLY by __region_exit's own scratch-lane
-  // reservation below, never by ordinary __alloc/string bump-extend growth (which
-  // keep calling plain $__memgrow, unchanged, so their amortization is untouched).
-  // $__memgrow's geometric floor amortizes MANY small, UNPLANNED grow calls (a hot
-  // bump allocator that can't see its own future demand — jessie's own 1.1M-entry
-  // __alloc traffic is the case it's sized for). __region_exit's reservation is the
-  // opposite shape: ONE grow call per real-compaction round, to a ceiling the
-  // caller has ALREADY computed exactly (scratchBase + memoReserve, both derived
-  // from measured churn/hint, not guessed) — ordinary geometric over-provisioning
-  // buys nothing there, because the very next __region_exit call resets and
-  // re-reserves the lane from scratch (see that function's own "Explicit reset"
-  // comment) — slack left by rounding THIS call up is never spent by a later one.
-  // Worse: wasm memory never shrinks, so an over-grow here becomes the new floor
-  // for EVERY later grow (both ordinary __alloc traffic and the next round's own
-  // reservation) — a geometric floor at this one call site compounds across the
-  // whole compile's round sequence, not just within it. Call COUNT here is already
-  // bounded by round count (tens, not the millions __alloc sees), so dropping the
-  // floor doesn't turn O(log n) grows into O(n) anywhere — it only shrinks each of
-  // this call site's already-few grows to the caller's own known-final size.
-  ctx.core.stdlib['__memgrow_exact'] = `(func $__memgrow_exact (param $next i32)
-    (local $need i32)
-    (local.set $need (i32.wrap_i64 (i64.shr_u (i64.add (i64.extend_i32_u (local.get $next)) (i64.const 65535)) (i64.const 16))))
-    (if (i32.gt_u (local.get $need) (memory.size))
-      (then
-        (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
-        (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1)) (then (unreachable)))))
-    (global.set $__heap_end (i32.shl (memory.size) (i32.const 16)))
-    (global.set $__heap_end64 (i64.shl (i64.extend_i32_u (memory.size)) (i64.const 16))))`
-
   if (ctx.memory.shared) {
     // Heap offset stored at memory[HEAP.PTR_ADDR] (i32), just before heap start at
     // HEAP.START. Threads sharing one memory must share one pointer cell.
@@ -628,30 +525,6 @@ export default (ctx) => {
     // compiler's init state. (Distinct from `__heap_start`, the propsPtr watermark,
     // which must stay at the data end or init-time heap objects misread as static.)
     declGlobal('__heap_reset', 'i32', HEAP.START)
-    // Region-arena memo-lane (.work/evidence.md §Region arena — negative-
-    // reclaim root cause 476c88cd): __region_exit's own compaction memo (a
-    // throwaway, per-call dedup table — never part of `root`, never returned)
-    // used to grow inside the SAME [T, heap) span the round's real survivors
-    // are copied down from — and because __map_set's own grow path
-    // (genUpsert, module/collection.js) doubles-and-forward-marks without
-    // ever reclaiming the OLD generation, a memo that reached cap C had swept
-    // the ENTIRE doubling chain 8+16+...+C into the compacted output every
-    // single round (measured: 93.9% of all real-compaction growth, 98% on
-    // the AFE loop's own batches). $__scratch_base/$__scratch_heap give the
-    // memo its own disjoint bump lane (reset fresh each __region_exit call,
-    // reserved via one explicit __memgrow call so it never physically
-    // overlaps [T, heap)) — see __region_memo_get/__region_memo_set below.
-    // $__memo_cap_hint carries the PRIOR call's own final memo cap forward,
-    // sizing the NEXT reservation from measured evidence instead of growing
-    // it from scratch every call (three unused globals cost nothing on any
-    // build that never reaches region-arena code at all — same "declared
-    // unconditionally, seeded harmlessly to 0" convention $__schema_tbl/
-    // $__closure_env_len already use just below).
-    declGlobal('__scratch_base', 'i32', 0)
-    declGlobal('__scratch_heap', 'i32', 0)
-    declGlobal('__scratch_end', 'i32', 0)
-    declGlobal('__memo_cap_hint', 'i32', 64)
-    declGlobal('__region_force', 'i32', 0)
     // See the shared-memory __alloc above for why the unsigned-wraparound guard
     // (`next < ptr`) is needed here too: once memory.size() organically reaches the
     // wasm32 ceiling (65536 pages — real compiles can get there, e.g. the self-compile
@@ -685,8 +558,6 @@ export default (ctx) => {
       (global.set $__heap (global.get $__heap_reset)))`
 
     registerDurableLog()
-
-    registerRegionArena()
 
   }
 
@@ -2245,17 +2116,6 @@ export default (ctx) => {
   // f64 bits are the payload to box); `p` is a previously-boxed pointer.
   ctx.core.emit['__box_bigint'] = (v) => (inc('__alloc', '__mkptr'), boxBigInt(asI64(emit(v))))
   ctx.core.emit['__unbox_bigint'] = (p) => (inc('__ptr_offset'), typed(['f64.reinterpret_i64', unboxBigInt(asF64(emit(p)))], 'f64'))
-
-  // Region-arena Slice 1 intrinsics (see the stdlib definitions above for the
-  // full design) — callable ONLY from scripts/self.js (the self-compile kernel
-  // entry, never executed as native JS, only ever compiled), which threads them
-  // into watr's optional per-round hooks via src/optimize/watr-tail.js's
-  // `regionHooks`. `__region_mark` takes no args; `__region_exit` takes
-  // (mark, root) and returns the possibly-relocated root — both raw f64 in,
-  // f64 out, matching watr's own untyped AST-node value shape.
-  ctx.core.emit['__region_mark'] = () => (inc('__region_mark'), typed(['call', '$__region_mark'], 'f64'))
-  ctx.core.emit['__region_exit'] = (mark, root) => (inc('__region_exit'), typed(['call', '$__region_exit', asF64(emit(mark)), asF64(emit(root))], 'f64'))
-  ctx.core.emit['__region_exit_force'] = (mark, root) => (inc('__region_exit_force'), typed(['call', '$__region_exit_force', asF64(emit(mark)), asF64(emit(root))], 'f64'))
 
   registerErrorClasses()
 }

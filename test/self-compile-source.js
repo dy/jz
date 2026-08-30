@@ -85,25 +85,6 @@ test('self-compile-source: self-compile kernel is free of labeled-statement misp
 // house pattern `typeof process !== 'undefined' && process.env.X` — prep
 // folds the typeof dead, no import. (String/comment mentions are fine; this
 // scans PARSED source for a `globalThis` member-access base.)
-// REGION_HOOKS_ACTIVE is the build's single dormant/live authority. A squashed
-// merge once restored one optimize-tail `regionHooks` object unconditionally
-// while leaving this marker false; builds reported themselves dormant but ran
-// moving-region exits anyway. Keep every boundary visibly gated by the same
-// expression so marker state and actual wiring cannot diverge again.
-test('self-compile-source: every region hook boundary is gated by REGION_HOOKS_ACTIVE', () => {
-  const { code } = resolveModuleGraph(SELF, { resolveNode: true })
-  const markerFalse = 'export const REGION_HOOKS_ACTIVE = false'
-  const markerTrue = 'export const REGION_HOOKS_ACTIVE = true'
-  const guarded = [...code.matchAll(/REGION_HOOKS_ACTIVE \? \{[\s\S]*?\} : undefined/g)]
-  const sites = guarded.filter(({ 0: site }) =>
-    site.includes('mark: () => __region_mark()') &&
-    site.includes('exit: (mark, root) => __region_exit(mark, root)')).length
-  ok(code.includes(markerFalse) !== code.includes(markerTrue),
-    'scripts/self.js must declare exactly one literal REGION_HOOKS_ACTIVE state')
-  ok(sites === 3,
-    `expected all 3 self-compile region boundaries to use the marker gate; found ${sites} (an unconditional site makes a dormant build region-live)`)
-})
-
 test('self-compile-source: build profile bakes debug invariants to a literal in both modes', () => {
   const ctxSource = (profile) => profile.graph.modules[Object.keys(profile.graph.modules).find(p => p.endsWith('/src/ctx.js'))]
   const prod = resolveSelfCompileBuild()

@@ -13,80 +13,24 @@
 import { parse } from '../src/parse.js'
 import { compile as watrCompile } from 'watr'
 import watrPrint from 'watr/print'
-import { ctx, reset, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/ctx.js'
+import { ctx, initWarnings, assertCtxInvariants, DBG_INVARIANTS } from '../src/ctx.js'
 import prepare, { GLOBALS } from '../src/prepare/index.js'
 import { frontHalf } from '../src/front.js'
 import { beginSession } from '../src/session.js'
 import compileAst from '../src/compile/index.js'
-import { resetProgramFactsCache } from '../src/compile/program-facts.js'
-import { clearDollar } from '../src/ir.js'
-import { clearStdlibParseCache } from '../src/wat/assemble.js'
+
 import {
   emit, emitter, emitVoid, emitBlockBody, emitBoolStr, emitIndex, buildArrayWithSpreads, emitIdentitySafe,
 } from '../src/compile/emit.js'
-import { resolveOptimize } from '../src/optimize/index.js'
 import { watrTail } from '../src/optimize/watr-tail.js'
 import jzify from '../jzify/index.js'
 
-// Final-optimizer tail: the EXACT module index.js's host pipeline uses
-// (src/optimize/watr-tail.js — watr options + watr once + the one post-watr
-// proof repair). Previously a hand-mirrored subset lived here and drifted
-// (missing ifset tiering, inlineWrappers, watr LICM, guard policy, the
-// large-module unroll2 rule, boundary pins, and the pointer repair), so
-// kernel O2/O3 output diverged from native on identical source.
-// Region-arena Slice 1 (.work/evidence.md §Region arena): this file is the ONLY
-// caller that supplies watrTail's `regionHooks` — it is NEVER imported/run as
-// native JS (npm run build feeds it to jz's OWN compiler as source text, to
-// become dist/jz.wasm), so these literal `__region_mark()`/`__region_exit()`
-// calls only ever exist as compiled wasm calls (module/core.js's intrinsics),
-// never as bare identifiers evaluated by a native JS engine.
-// REGION_HOOKS_ACTIVE gates whether the region-arena reclaim
-// (__region_mark/__region_exit) runs during self-compile compilation. It stays
-// false: with the hooks live, kernel-oracle compiles of the
-// dvnested-mechanism source trap at both O2 and O3, and neither failure is
-// understood well enough to ship a fix.
-//
-// O3: narrowed to fusedRewrite's ptr-helper inlining (`$__ptr_type`/
-// `$__ptr_aux` call→expression substitution) — disabling either one alone
-// clears the trap, so the two are jointly necessary to reproduce it, but no
-// safe patch has been verified. `__region_exit` itself reaches its own last
-// instruction cleanly every time; the corruption happens downstream of that,
-// past what the region-arena's own instrumentation observes. It is not a
-// dyn-props-sidecar hazard — no property gets stamped by either helper's
-// inline.
-//
-// O2: a separate, non-deterministic regression. Reproduction depends on
-// unrelated static-layout changes elsewhere in module/core.js — e.g. adding
-// or removing debug globals can flip a failing build to passing and back —
-// which points at an address/layout-boundary-sensitive bug rather than a
-// single clean cause. Not bisected past module/core.js.
-//
-// A related but distinct hazard — a relocated ARRAY's off-16 dyn-props
-// sidecar being copied by value instead of recursively relocated — was
-// found and fixed in module/core.js's __region_copy_rec/__region_exit; that
-// class of fix is necessary but was not sufficient to close the O2
-// regression above. Turning this flag on requires root-causing both the O3
-// ptr-helper interaction and the O2 heisenbug first, then flipping this flag
-// AND the regionHooks line inside optimizeTail together (see the marker
-// comment below). See .work/evidence.md §Region arena for the full
-// investigation.
-//
-// REGION_HOOKS_ACTIVE is read as a literal string match by
-// scripts/build-profile.mjs's resolveSelfCompileBuild — not evaluated, a plain
-// text search for this declaration — so it must stay exactly this shape
-// (`export const REGION_HOOKS_ACTIVE = <bool>`), not an expression or an
-// import. TOGGLE THIS *and* the regionHooks line inside optimizeTail
-// TOGETHER — both must agree, or resolveSelfCompileBuild's derived flag
-// disagrees with what optimizeTail actually wires. A caller of
-// resolveSelfCompileBuild may override the derivation explicitly via its own
-// `regionArena` profile field (see that helper's doc); this marker is only
-// the default-derivation source when a caller doesn't override.
-export const REGION_HOOKS_ACTIVE = false
+// Final-optimizer tail shared with the host pipeline. Keep the live compile
+// context refinements here; watr option policy remains owned by watr-tail.js.
 function optimizeTail(module, cfg) {
-  const tail = ctx.transform._regionTail
   return watrTail(module, cfg, {
-    funcCount: tail ? tail.funcCount : ctx.funcs.list.length,
-    boundaryPins: tail ? tail.boundaryPins : [
+    funcCount: ctx.funcs.list.length,
+    boundaryPins: [
       ...(cfg._vectorizedFnNames?.size
         ? [...cfg._vectorizedFnNames].filter(name => ctx.funcs.map.get(name.slice(1))?.exported)
         : []),
@@ -94,15 +38,7 @@ function optimizeTail(module, cfg) {
         ? ['$__typed_idx', '$__typed_set_idx', '$__typed_idx_tagged', '$__typed_set_idx_tagged', '$__arr_typed_set_idx', '$__arr_typed_obj_set_idx']
           .filter(name => ctx.core.includes.has(name.slice(1))) : []),
     ],
-    targetProfile: tail ? tail.targetProfile : ctx.transform.targetProfile,
-    // This call site must stay gated on REGION_HOOKS_ACTIVE — same ternary
-    // shape as front()'s regionHooks below. If the two call sites' gates
-    // ever diverge (one ternary, one unconditional), the optimize-tail
-    // region-arena reclaim runs even while REGION_HOOKS_ACTIVE is false,
-    // which is a confirmed miscompile source: it interacts with watr's
-    // heal-chain array growth to produce a spurious "boolconst" trap at O3.
-    // Keep both call sites' ternaries in lockstep.
-    regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
+    targetProfile: ctx.transform.targetProfile,
   })
 }
 
@@ -145,42 +81,17 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
 }
 
-// The canonical front half (src/front.js) — the SAME function index.js's
-// jzCompileInner runs: parse -> reserved-prefix guard -> liftIIFEs -> jzify ->
-// prepare -> preEval. preEval must run: without it, statically-foldable
-// programs (e.g. the `0.1+0.2-0.3` constant fold, `Math.sqrt(9)` at O0)
-// compile to different bits than native.
-// Region-arena FRONT boundary (.work/evidence.md §Region arena): mirrors
-// optimizeTail's own regionHooks line above verbatim — same REGION_HOOKS_ACTIVE
-// marker, same ternary shape, same literal __region_mark()/__region_exit()
-// calls that only ever compile to real wasm calls (this file is never run
-// natively — see this file's own header comment). frontHalf's own doc has the
-// root/rebind contract.
+// The canonical front half shared with index.js. preEval must run: omitting it
+// changes constant-folded result bits and output shape between host and kernel.
 function front(source, strict, sourceType) {
   return frontHalf(source, {
     strict, sourceType: sourceType || 'jz', jzify,
     afterPrepare: DBG_INVARIANTS ? () => assertCtxInvariants('post-prepare') : undefined,
-    regionHooks: REGION_HOOKS_ACTIVE ? { mark: () => __region_mark(), exit: (mark, root) => __region_exit(mark, root) } : undefined,
   })
 }
 
-// Region-arena EMIT/ENCODE boundary (Slice 3, .work/evidence.md §Region arena):
-// wraps compileAst itself, one region round later than front's own boundary —
-// mirrors front()'s wiring verbatim (same REGION_HOOKS_ACTIVE marker, same
-// ternary shape, same literal __region_mark()/__region_exit() calls). The
-// root/rebind contract (`[module, ctx.func, ctx.transform, ctx.scope]`,
-// INCLUDING a known open defect on this exact root) lives on compile()'s own
-// doc comment (src/compile/index.js) — that function does the
-// mark/exit/rebind itself, exactly like frontHalf does for the front
-// boundary; this is only the kernel-only call site that supplies the hooks.
 function emitIR(ast) {
-  const module = compileAst(ast, undefined, REGION_HOOKS_ACTIVE ? {
-    mark: () => __region_mark(),
-    exit: (mark, root) => __region_exit(mark, root),
-    finalExit: (mark, root) => __region_exit(mark, root),
-    forceExit: (mark, root) => __region_exit_force(mark, root),
-    releaseSession: true,
-  } : undefined)
+  const module = compileAst(ast)
   if (DBG_INVARIANTS) assertCtxInvariants('post-compile')
   return module
 }

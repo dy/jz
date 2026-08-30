@@ -1,10 +1,8 @@
 #!/usr/bin/env node
 /**
- * resolveSelfCompileBuild — the ONE self-compile build-config resolver shared by
- * scripts/build-dist.mjs and scripts/self-compile-build.mjs (architecture re-audit
- * item 2, .work/archive/todo.md): the only place literal injection (DBG_INVARIANTS) or
- * the region-arena × inlinePtrOffsetFast derivation happens, so both builders
- * always agree. (The CARRIER_BOX injection this resolver was born for is gone —
+ * resolveSelfCompileBuild — the one self-compile build-config resolver shared by
+ * scripts/build-dist.mjs and scripts/self-compile-build.mjs. Build-time literal
+ * specialization lives here so both builders always agree. (The CARRIER_BOX injection this resolver was born for is gone —
  * the boxed carrier became the unconditional representation and the flag was
  * deleted, .work/archive/carrier-representation-design.md §34's own end state.)
  *
@@ -14,13 +12,6 @@
  *   JZ_DEBUG_INVARIANTS env var cannot be observed by the running wasm
  *   kernel). Default false: debug-only invariant code folds out of
  *   production kernels; callers opt in explicitly for an instrumented build.
- * @param {boolean|null} [p.regionArena] Whether scripts/self.js's watrTail
- *   regionHooks are active for THIS build, controlling the inlinePtrOffsetFast
- *   gate (see the doc block below). `true`/`false` — an EXPLICIT profile
- *   override, always wins. `null`/`undefined` (default) — derive ONCE, here,
- *   from scripts/self.js's own `REGION_HOOKS_ACTIVE` marker (a literal string
- *   match, not a regex over the commented/uncommented `regionHooks:` object
- *   shape build-dist.mjs used to run independently).
  * @param {number|string|object|false} [p.optimize] optimize.level (or full
  *   per-pass object, or `false` to disable). Default 3 (both builders' existing
  *   measured self-compile profile — see self-compile-build.mjs's own comment on why).
@@ -67,11 +58,7 @@
  *   graph: object,               // resolveModuleGraph(scripts/self.js) result — g.code/g.modules
  *                                 //   already carry the injected defines below
  *   defines: {CARRIER_BOX: boolean, DBG_INVARIANTS: boolean}, // literal defines actually applied
- *   regionArenaLive: boolean,    // resolved regionArena flag (explicit or marker-derived)
- *   optimize: object|false,      // full compile() optimize cfg, including the region-arena
- *                                 //   optimizer override folded in
- *   optimizerOverrides: object,  // just the delta from the plain {level,watrGuard,snapshotInit}
- *                                 //   shape (e.g. {inlinePtrOffsetFast:false}) — informational
+ *   optimize: object|false,      // full compile() optimize cfg
  *   memory: number,
  *   compactCollections: boolean,
  *   helperCounters: boolean, helperCallsites: boolean|string,
@@ -86,7 +73,6 @@ const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
 
 export function resolveSelfCompileBuild({
   debugInvariants = false,
-  regionArena = null,
   optimize = 3,
   snapshot = true,
   watrGuard = false,
@@ -168,46 +154,14 @@ export function resolveSelfCompileBuild({
     graph.modules[SNAP_PATH] = graph.modules[SNAP_PATH].replace(snapNeedle, 'if (true) return false')
   }
 
-  // ── REGION-ARENA × inlinePtrOffsetFast (.work/evidence.md §Region arena,
-  // ROOT-CAUSE ATTEMPT 2026-08-11 — confirmed by ablation, 7/7 banked fuzz
-  // findings + both minimal repros clean ×3 reps with this flag off, kernel-
-  // oracle 13/13×3, kernel-parity 33/33×3, dead on the full 200-seed sweep×3):
-  // inlinePtrOffsetFast (src/passes.js:48) expands `(call $__ptr_offset X)`
-  // into a loop-free, CSE-eligible i32.and/i64.shr_u/load expression AT EVERY
-  // CALL SITE, precisely so watr's own optimizer can fold/hoist it like any
-  // other pure op. That is exactly the hazard when regionHooks are wired
-  // (scripts/self.js): a region_exit call relocates live heap objects and
-  // re-derives their offsets through the SAME forwarding chase this inlined
-  // form reproduces — but once inlined, the expansion LOOKS pure to every
-  // downstream CSE, which has zero notion that a `$__region_exit` call
-  // anywhere in between invalidates a previously-decoded offset. The
-  // out-of-line `call $__ptr_offset` form is naturally conservative (a call
-  // is a CSE barrier); the inlined form is not. The sound, compile-time gate
-  // is therefore here, at the one config resolution point every self-compile
-  // build entry shares: force inlinePtrOffsetFast off for exactly a
-  // region-live build. Every other compile — native, the test suite, jzify,
-  // any user program, even a DORMANT self-compile build — is untouched.
-  //
-  // regionArena resolution: an EXPLICIT profile field (p.regionArena) always
-  // wins — "the caller says so", not a source guess. Left null/undefined
-  // (both builders' default), derive ONCE from scripts/self.js's own
-  // REGION_HOOKS_ACTIVE marker: a single literal-string match, not a regex
-  // over the `regionHooks: {` object's commented/uncommented shape (the old
-  // build-dist.mjs mechanism this replaces).
-  const regionArenaLive = regionArena ?? graph.code.includes('export const REGION_HOOKS_ACTIVE = true')
-
-  const optimizerOverrides = regionArenaLive ? { inlinePtrOffsetFast: false } : {}
   const optimizeCfg = optimize === false ? false : {
     level: optimize, watrGuard, snapshotInit: snapshot,
-    ...optimizerOverrides,
   }
 
   return {
     graph,
     defines: { DBG_INVARIANTS: !!debugInvariants },
-    regionArenaLive,
     optimize: optimizeCfg,
-    optimizerOverrides,
     memory,
     compactCollections: !!compactCollections,
     helperCounters, helperCallsites,

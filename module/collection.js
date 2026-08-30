@@ -36,11 +36,7 @@ const IN_SCHEMA_COMPARE_BUDGET = 16
 // ssoEncode('length') never returns null (6 ASCII).
 export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64Hex((BigInt(encodePtrHi(4, e.aux) >>> 0) << 32n) | BigInt(e.offset)) })()
 
-// Exported for module/core.js's __region_exit (region-arena design, Slice 1):
-// the round-loop's own `dirty`/`snapshots` bookkeeping is a Set/Map of func-node
-// (ARRAY) pointers that must be relocated in lockstep with the tree itself — the
-// region copy builds a same-shaped SET/MAP at the compacted target using these
-// exact stride/capacity constants, mirroring __sclone_rec's SET/MAP branch.
+// Shared physical layout constants for collection helpers and diagnostics.
 export const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
 export const INIT_CAP = 8    // initial capacity (must be power of 2)
