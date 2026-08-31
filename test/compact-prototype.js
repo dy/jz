@@ -1,6 +1,15 @@
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import compileCompact, { compileCompactAst } from '../prototype/compact/compiler.js'
+import compileDirect from '../prototype/compact/direct.js'
+import { lowerProgram } from '../prototype/compact/lower.js'
+import { prepareCompactAst } from '../prototype/compact/prepare.js'
+import {
+  I_EDGE_TARGET, I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
+  I_FN_TYPE_ID, I_FN_WASM_ID, I_TYPE_PARAM_COUNT,
+  buildProgramIndex, functionCount,
+} from '../prototype/compact/program-index.js'
+import { parse } from '../src/parse.js'
 
 const instantiate = (source) => new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source))).exports
 const sameNumber = (a, b) => Object.is(a, b) || Number.isNaN(a) && Number.isNaN(b)
@@ -88,6 +97,77 @@ test('compact prototype: conditionals and zero-iteration loops', () => {
   }
 })
 
+test('compact prototype: staged watr and frozen direct control agree', () => {
+  const cases = [
+    ['export let f=()=>1+2*3', [], 7],
+    ['export let f=x=>{x=+x;return x*x+1}', [4], 17],
+    ['let twice=x=>x*2;export let f=x=>{x=+x;return twice(x)}', [5], 10],
+    ['export let f=x=>{x=+x;if(x>0)return x;else return -x}', [-7], 7],
+    ['export let f=n=>{n=+n;let s=0;for(let i=0;i<n;i++)s+=i;return s}', [10], 45],
+    ['let fact=n=>{if(n<=1)return 1;else return n*fact(n-1)};export let f=n=>{n=+n;return fact(n)}', [5], 120],
+  ]
+  for (const [source, args, expected] of cases) {
+    const staged = new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source))).exports.f(...args)
+    const direct = new WebAssembly.Instance(new WebAssembly.Module(compileDirect(source))).exports.f(...args)
+    ok(sameNumber(staged, direct), `staged and direct agree for ${source}`)
+    ok(sameNumber(staged, expected), `expected result for ${source}`)
+  }
+})
+
+test('compact prototype: numeric index, reachability, and watr boundary', () => {
+  const source = 'let dead=()=>99;let leaf=x=>x*2;export let f=x=>{x=+x;return leaf(x)+1}'
+  const ast = parse(source)
+  const astBefore = JSON.stringify(ast)
+  const index = buildProgramIndex(prepareCompactAst(ast))
+  is(functionCount(index), 3)
+  is(index[I_FN_REACHABLE].join(','), '0,1,1')
+  is(index[I_FN_WASM_ID].join(','), '-1,0,1')
+  is(index[I_FN_TYPE_ID].join(','), '-1,0,0')
+  is(index[I_TYPE_PARAM_COUNT].join(','), '1')
+  is(index[I_FN_EDGE_COUNT].join(','), '0,0,1')
+  is(index[I_EDGE_TARGET][index[I_FN_EDGE_START][2]], 1)
+
+  const indexBefore = JSON.stringify(index)
+  const wat = lowerProgram(index)
+  is(JSON.stringify(ast), astBefore)
+  is(JSON.stringify(index), indexBefore)
+  const funcs = wat.filter(node => Array.isArray(node) && node[0] === 'func')
+  is(funcs.length, 2)
+  const diagnosticWat = compileCompact(source, { wat: true })
+  is(diagnosticWat[0], 'module')
+  is(diagnosticWat.filter(node => Array.isArray(node) && node[0] === 'func').length, 2)
+  let call = null
+  const visit = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'call') call = node
+    for (let i = 1; i < node.length; i++) visit(node[i])
+  }
+  visit(wat)
+  ok(call && typeof call[1] === 'number', 'lowered direct calls use final numeric function IDs')
+  is(call[1], 0)
+
+  const staged = new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source))).exports.f
+  const direct = new WebAssembly.Instance(new WebAssembly.Module(compileDirect(source))).exports.f
+  const optimized = new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source, { optimize: true }))).exports.f
+  is(staged(7), 15)
+  is(direct(7), 15)
+  is(optimized(7), 15)
+  throws(() => compileCompact('let dead=()=>missing();export let f=()=>0'), /unknown direct function/)
+  throws(() => compileCompact('let dead=()=>"x";export let f=()=>0'), /unsupported/)
+})
+
+test('compact prototype: nested loops own independent function scratch', () => {
+  const nestedFor = 'export let f=n=>{n=+n;let s=0;for(let i=0;i<n;i++){for(let j=0;j<n;j++)s+=1}return s}'
+  const optimizedFor = compileCompact(nestedFor, { optimize: true })
+  is(new WebAssembly.Instance(new WebAssembly.Module(optimizedFor)).exports.f(4), 16)
+  const unoptimizedFor = compileCompact(nestedFor, { optimize: false })
+  is(new WebAssembly.Instance(new WebAssembly.Module(unoptimizedFor)).exports.f(3), 9)
+
+  const nestedWhile = 'export let f=n=>{n=+n;let s=0;let i=0;while(i<n){let j=0;while(j<n){s+=1;j++}i++}return s}'
+  const optimizedWhile = compileCompact(nestedWhile, { optimize: true })
+  is(new WebAssembly.Instance(new WebAssembly.Module(optimizedWhile)).exports.f(4), 16)
+})
+
 test('compact prototype: compiler reuse A to A to B', () => {
   const sourceA = 'export let f=x=>{x=+x;return x+1}'
   const sourceB = 'export let f=x=>{x=+x;return x*x}'
@@ -98,6 +178,13 @@ test('compact prototype: compiler reuse A to A to B', () => {
   is(new WebAssembly.Instance(new WebAssembly.Module(firstA)).exports.f(4), 5)
   is(new WebAssembly.Instance(new WebAssembly.Module(secondA)).exports.f(4), 5)
   is(new WebAssembly.Instance(new WebAssembly.Module(b)).exports.f(4), 16)
+
+  const firstOptimizedA = compileCompact(sourceA, { optimize: true })
+  const secondOptimizedA = compileCompact(sourceA, { optimize: true })
+  const optimizedB = compileCompact(sourceB, { optimize: true })
+  ok(sameBytes(firstOptimizedA, secondOptimizedA), 'optimized A to A is byte-identical')
+  is(new WebAssembly.Instance(new WebAssembly.Module(firstOptimizedA)).exports.f(4), 5)
+  is(new WebAssembly.Instance(new WebAssembly.Module(optimizedB)).exports.f(4), 16)
 })
 
 test('compact prototype: numeric expression differential', () => {
@@ -139,6 +226,8 @@ test('compact prototype: empty and unsupported programs reject', () => {
   throws(() => compileCompact('export let f=x=>x+1'), /must normalize/)
   throws(() => compileCompact('export let f=()=>"1"'), /unsupported/)
   throws(() => compileCompact('export let f=x=>{x=+x;return Math.sin(x)}'), /unsupported/)
+  throws(() => compileCompact('export let f=(x,y)=>{x=+x;y=+y;return x<y}'), /supported only as a condition/)
+  throws(() => compileCompact('export let f=x=>{x=+x;return !x}'), /unsupported/)
   throws(() => compileCompact('export let f=()=>{}'), /does not return/)
   throws(() => compileCompact('export let f=()=>missing()'), /unknown direct function/)
   throws(() => compileCompact('let g=x=>x;export let f=()=>g()'), /has 0 arguments, expected 1/)

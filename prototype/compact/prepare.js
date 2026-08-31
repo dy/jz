@@ -1,0 +1,239 @@
+// Front-end contract for the compact staged prototype.
+//
+// Input is the parser's positional AST. Output is a list of positional function
+// records. This stage validates the supported syntax boundary, extracts names,
+// and records lexical declarations. It does not infer representations, resolve
+// calls, decide reachability, or emit WAT.
+
+import { OP_NONE, arithmeticKind, assignmentKind, comparisonKind } from './ops.js'
+
+export const F_NAME = 0
+export const F_PARAMS = 1
+export const F_BODY = 2
+export const F_EXPORT = 3
+export const F_LOCALS = 4
+export const F_MUTABLES = 5
+
+export const err = (message) => { throw new SyntaxError(`compact prototype: ${message}`) }
+export const opName = (node) => Array.isArray(node) ? String(node[0]) : typeof node
+export const reject = (node, where) => err(`${where}: unsupported ${opName(node)}`)
+
+export const list = (node) => {
+  if (!node) return []
+  if (Array.isArray(node) && node[0] === ';') return node.slice(1)
+  return [node]
+}
+
+export const bodyList = (node) => {
+  if (!Array.isArray(node)) reject(node, 'body')
+  if (node[0] === '{}') return node.length === 2 && Array.isArray(node[1]) && node[1][0] === ';'
+    ? node[1].slice(1) : node.slice(1)
+  return list(node)
+}
+
+export const argsOf = (node) => {
+  if (node == null) return []
+  if (Array.isArray(node) && node[0] === ',') return node.slice(1)
+  return [node]
+}
+
+export const forHead = (node) => {
+  const head = bodyList(node)
+  if (head.length !== 3) reject(node, 'for header')
+  return head
+}
+
+const paramsOf = (node) => {
+  if (node == null) return []
+  if (typeof node === 'string') return [node]
+  if (!Array.isArray(node)) reject(node, 'parameters')
+  if (node[0] === '()') return paramsOf(node[1])
+  if (node[0] !== ',') reject(node, 'parameters')
+  const out = node.slice(1)
+  for (let i = 0; i < out.length; i++) {
+    if (typeof out[i] !== 'string') reject(out[i], 'parameter')
+    if (out.indexOf(out[i]) !== i) err(`duplicate parameter '${out[i]}'`)
+  }
+  return out
+}
+
+const addLocal = (func, name, mutable) => {
+  if (typeof name !== 'string') reject(name, 'local name')
+  if (func[F_PARAMS].includes(name) || func[F_LOCALS].includes(name)) err(`duplicate local '${name}'`)
+  func[F_LOCALS].push(name)
+  func[F_MUTABLES].push(mutable)
+}
+
+const collectLocals = (node, func) => {
+  if (!Array.isArray(node)) return
+  const op = node[0]
+  if (op === '=>' || op === 'function') reject(node, 'nested function')
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) {
+      const decl = node[i]
+      if (!Array.isArray(decl) || decl[0] !== '=' || decl.length !== 3) reject(decl, 'declaration')
+      addLocal(func, decl[1], op === 'let' ? 1 : 0)
+      collectLocals(decl[2], func)
+    }
+    return
+  }
+  for (let i = 1; i < node.length; i++) collectLocals(node[i], func)
+}
+
+const declarationOf = (node, exported) => {
+  if (!Array.isArray(node)) reject(node, 'top level')
+  if (node[0] === 'export') return declarationOf(node[1], true)
+  if (node[0] === 'let' || node[0] === 'const') {
+    if (node.length !== 2) reject(node, 'top-level declaration')
+    const decl = node[1]
+    if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string' ||
+        !Array.isArray(decl[2]) || decl[2][0] !== '=>') reject(node, 'top-level declaration')
+    return [decl[1], paramsOf(decl[2][1]), decl[2][2], exported ? 1 : 0, [], []]
+  }
+  if (node[0] === 'function') {
+    if (typeof node[1] !== 'string') reject(node, 'function declaration')
+    if (exported) err(`exported function declaration '${node[1]}' is constructable; use an exported arrow function`)
+    return [node[1], paramsOf(node[2]), node[3], 0, [], []]
+  }
+  reject(node, 'top level')
+}
+
+const normalizedExportParams = (func) => {
+  if (!func[F_EXPORT] || !func[F_PARAMS].length) return true
+  const stmts = bodyList(func[F_BODY])
+  if (stmts.length < func[F_PARAMS].length) return false
+  for (let i = 0; i < func[F_PARAMS].length; i++) {
+    const name = func[F_PARAMS][i]
+    const stmt = stmts[i]
+    if (!Array.isArray(stmt) || stmt[0] !== '=' || stmt[1] !== name ||
+        !Array.isArray(stmt[2]) || stmt[2][0] !== '+' || stmt[2].length !== 2 || stmt[2][1] !== name) return false
+  }
+  return true
+}
+
+const alwaysReturns = (node) => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === 'return') return true
+  if (node[0] === 'if') return node.length > 3 && alwaysReturns(node[2]) && alwaysReturns(node[3])
+  if (node[0] === '{}' || node[0] === ';') {
+    const stmts = bodyList(node)
+    return !!stmts.length && alwaysReturns(stmts[stmts.length - 1])
+  }
+  return false
+}
+
+const validateExportName = (name) => {
+  for (let i = 0; i < name.length; i++) if (name.charCodeAt(i) > 127) err(`non-ASCII export name '${name}'`)
+}
+
+const validateCondition = (node) => {
+  if (Array.isArray(node)) {
+    if (node[0] === '()' && node.length === 2) { validateCondition(node[1]); return }
+    if (comparisonKind(node[0]) !== OP_NONE && node.length === 3) {
+      validateExpr(node[1])
+      validateExpr(node[2])
+      return
+    }
+    if (node[0] === '!' && node.length === 2) { validateCondition(node[1]); return }
+  }
+  validateExpr(node)
+}
+
+function validateExpr(node) {
+  if (typeof node === 'string') return
+  if (!Array.isArray(node)) reject(node, 'expression')
+  if (node[0] == null && node.length === 2 && typeof node[1] === 'number') return
+  const op = node[0]
+  if (op === '()' && node.length === 2) { validateExpr(node[1]); return }
+  if (op === '()' && typeof node[1] === 'string') {
+    const args = argsOf(node[2])
+    for (let i = 0; i < args.length; i++) validateExpr(args[i])
+    return
+  }
+  if (op === '?' && node.length === 4) {
+    validateCondition(node[1])
+    validateExpr(node[2])
+    validateExpr(node[3])
+    return
+  }
+  const arithmetic = arithmeticKind(op)
+  if (arithmetic !== OP_NONE && (node.length === 2 || node.length === 3)) {
+    validateExpr(node[1])
+    if (node.length === 3) validateExpr(node[2])
+    return
+  }
+  if (comparisonKind(op) !== OP_NONE) err(`comparison '${op}' is supported only as a condition`)
+  reject(node, 'expression')
+}
+
+const validateStmt = (node) => {
+  if (node == null) return
+  if (!Array.isArray(node)) reject(node, 'statement')
+  const op = node[0]
+  if (op === '{}' || op === ';') {
+    const stmts = bodyList(node)
+    for (let i = 0; i < stmts.length; i++) validateStmt(stmts[i])
+    return
+  }
+  if (op === 'let' || op === 'const') {
+    for (let i = 1; i < node.length; i++) validateExpr(node[i][2])
+    return
+  }
+  if (op === '=' || assignmentKind(op) !== OP_NONE) {
+    if (typeof node[1] !== 'string') reject(node[1], 'assignment target')
+    validateExpr(node[2])
+    return
+  }
+  if (op === '++' || op === '--') {
+    if (typeof node[1] !== 'string') reject(node[1], 'update target')
+    return
+  }
+  if (op === 'return') { validateExpr(node[1]); return }
+  if (op === 'if') {
+    validateCondition(node[1])
+    validateStmt(node[2])
+    if (node.length > 3 && node[3] != null) validateStmt(node[3])
+    return
+  }
+  if (op === 'while') {
+    validateCondition(node[1])
+    validateStmt(node[2])
+    return
+  }
+  if (op === 'for') {
+    const head = forHead(node[1])
+    validateStmt(head[0])
+    validateCondition(head[1])
+    validateStmt(node[2])
+    validateStmt(head[2])
+    return
+  }
+  if (op === '()') { validateExpr(node); return }
+  reject(node, 'statement')
+}
+
+const validateBody = (body) => {
+  if (Array.isArray(body) && (body[0] === '{}' || body[0] === ';' || body[0] === 'return')) validateStmt(body)
+  else validateExpr(body)
+}
+
+export function prepareCompactAst(ast) {
+  const top = list(ast)
+  const funcs = []
+  let exports = 0
+  for (let i = 0; i < top.length; i++) {
+    const func = declarationOf(top[i], false)
+    for (let j = 0; j < funcs.length; j++) if (funcs[j][F_NAME] === func[F_NAME]) err(`duplicate function '${func[F_NAME]}'`)
+    collectLocals(func[F_BODY], func)
+    validateBody(func[F_BODY])
+    if (!normalizedExportParams(func)) err(`export '${func[F_NAME]}' must normalize each parameter with a leading 'p = +p'`)
+    const body = func[F_BODY]
+    if (Array.isArray(body) && (body[0] === '{}' || body[0] === ';' || body[0] === 'return') && !alwaysReturns(body))
+      err(`function '${func[F_NAME]}' does not return a number on every supported path`)
+    if (func[F_EXPORT]) { validateExportName(func[F_NAME]); exports++ }
+    funcs.push(func)
+  }
+  if (!funcs.length) err('module has no functions')
+  if (!exports) err('module has no exported function')
+  return funcs
+}

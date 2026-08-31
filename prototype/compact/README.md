@@ -1,6 +1,31 @@
-# Compact positional compiler prototype
+# Compact staged compiler prototype
 
-`compiler.js` parses source with JZ's existing parser, retains the positional AST, stores function facts in positional arrays, and writes Wasm bytes directly. It does not build an object-shaped HIR or call JZ's planner, runtime assembler, optimizer, or watr. Unsupported syntax rejects before encoding.
+This prototype tests the proposed production stages on a deliberately narrow numeric subset:
+
+```text
+parse
+prepare and validate
+numeric ProgramIndex and reachability
+per-function scalar WAT lowering
+optional watr optimize
+watr compile
+```
+
+It has no fallback to the production compiler. Unsupported source rejects before encoding.
+
+The implementation is split by lifetime:
+
+```text
+compiler.js       orchestration only
+prepare.js        strict syntax boundary and declaration extraction
+program-index.js  persistent numeric identities and cross-function facts
+ops.js            single numeric source-operator classifier
+lower.js          function-local AST to WAT lowering
+backend.js        unchanged watr optimize and compile boundary
+direct.js         frozen direct-binary control
+```
+
+The full migration plan and stop rules are in [`../todo.md`](../todo.md).
 
 ## Supported source
 
@@ -10,50 +35,92 @@
 - numeric literals and folded arithmetic
 - `let` and `const` numeric locals
 - assignment and arithmetic updates
-- `if`, ternary, `for`, and `while`
+- `if`, ternary, nested `for`, and nested `while`
 - f64 `+`, `-`, `*`, `/`, unary signs, and comparisons in conditions
 
-Every exported parameter must begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without the check, `x + 1` could concatenate in JavaScript and add in Wasm.
+Every exported parameter must begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without this check, JavaScript could concatenate where Wasm adds.
 
-String syntax and operations, objects inside compiled code, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not; exported arrows preserve that boundary property.
+Strings inside compiled code, objects, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
 
-## Records
+This source rule is confined to the prototype. Production JZ must infer the boundary representation or reject without asking users to edit source.
 
-A function has this shape:
+## Stage contracts
+
+### Prepare
+
+`prepareCompactAst(ast)` validates the supported syntax, extracts function records, checks export coercion guards, and records local declarations. It does not resolve calls, infer representations, mark reachability, or emit WAT.
+
+Prepared function records are positional:
 
 ```js
 [name, params, bodyAst, exported, locals, mutableFlags]
 ```
 
-All compiler-owned records are arrays: functions, type IDs, exports, section payloads, and bytes. Numeric constants name each field.
+### ProgramIndex
+
+`buildProgramIndex(prepared)` copies persistent facts into parallel arrays. It assigns:
+
+- numeric source function IDs
+- numeric binding IDs
+- flat direct-call edges
+- export roots and transitive reachability
+- one f64 representation ID for every current binding and result
+- deduplicated type IDs
+- final Wasm function IDs for reachable functions
+
+Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable function bodies are validated but not emitted.
+
+The current index still retains AST bodies and source names. It does not yet have numeric schemas, globals, typed storage, closure summaries, or data owners.
+
+### Lower
+
+`lowerFunction(index, funcId)` creates one scalar WAT function. Loop-label counters are explicit function scratch, so nested loops and repeated compiles do not share state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+
+The next representation step is a per-function numeric instruction tape. That will remove repeated name lookup without adding a persistent body IR.
+
+### Backend
+
+`compileCompact(source)` calls current `watr/compile` on the lowered WAT. The prototype defaults to `optimize: false`, matching the production compiler's optimize-off comparison used by `bench.mjs`.
+
+```js
+compileCompact(source, { optimize: true }) // current watr/optimize, then compile
+compileCompact(source, { wat: true })      // return the lowered WAT array
+```
+
+The optimized path is covered by nested-loop tests. Watr remains unmodified.
+
+### Direct control
+
+`direct.js` remains a feature-frozen semantic and size lower bound outside the staged compiler artifact. Production continues through watr.
 
 ## Premises and limits
 
-| Decision | Reason | Price |
+| Decision | Reason | Current price |
 | --- | --- | --- |
-| Reuse JZ's parser and positional AST | Isolate backend representation and encoding from parser work | The complete AST remains live; this prototype says nothing about parser peak memory or streaming ingestion |
-| Store facts in positional arrays | Avoid one object or hash allocation per compiler fact | Function records still contain strings, nested arrays, and linear `indexOf` lookups; a production index needs dense numeric IDs and flat pools |
-| Emit Wasm without WAT or watr | Measure the lower bound for an owned backend | Number arrays currently box bytes and copy body to section to module; they are not the production output store |
-| Reject every unsupported shape | Preserve answers, effects, exceptions, and source order without a dynamic fallback | Corpus coverage is deliberately small, so artifact and timing ratios cannot be extrapolated to the full language |
-| Require explicit unary-plus normalization at exported parameters | Make the raw f64 boundary exact without adding coercion machinery to this experiment | This is a prototype constraint, not a production source hint; production must infer the boundary representation or reject, without editing user or benchmark source |
-| Keep compilation state local to one call | Make A to A to B reuse deterministic without reset hooks inside the compiler | It does not provide per-function scratch release inside one large compile |
-| Omit stdlib, snapshots, vectorization, and whole-module optimization | Keep the representation experiment legible | Production needs a compact per-function instruction tape for optimization before direct encoding |
+| Reuse JZ's parser and positional AST | Isolate pipeline ownership from parser work | The complete AST remains live |
+| Use parallel ProgramIndex arrays | Give cross-function facts stable numeric identities | Bodies and diagnostic names are still retained |
+| Mark reachability before lowering | Avoid work and output for dead functions | All functions still receive lightweight syntax and flow validation |
+| Lower one function at a time | Bound local traversal and label state | Finalized WAT bodies remain live for watr |
+| Keep watr unchanged | Keep Wasm encoding outside JZ | Generic optimization has a visible fixed cost on tiny modules |
+| Reject unsupported source | Preserve semantics without a dynamic fallback | Coverage is intentionally small |
+| Keep the direct encoder frozen | Retain an independent lower bound | It is a second prototype artifact, never a production path |
 
-The current function tuple is a prototype, not the proposed `ProgramIndex`. It retains every function, scans bodies several times, allocates slices, resolves names as strings, and emits every function whether reachable or not. Copying those mechanics into production would preserve several causes of the main compiler's memory growth.
-
-Fixed operator sets use a numeric classifier rather than an object dictionary. A controlled self-build of the four compound assignments measured 652,927 bytes for duplicated comparisons, 652,811 bytes for one shared classifier, and 653,091 bytes for an object lookup. The shared classifier removes the duplicate authority and is 280 bytes smaller than the dictionary. The timing samples were too small and the machine too loaded to use as speed evidence.
+The prototype does not establish memory behavior for parsing, the production object model, stdlib realization, closures, snapshots, or current vectorization. It also does not prove that whole-module watr optimization fits the recursive memory target.
 
 ## Promotion rule
 
-Do not install this compiler as a source-pattern fast path. A production slice must replace one old authority, not coexist with it. Promotion requires:
+Do not install this compiler as a source-pattern fast path. A production slice must replace one old authority and delete its old writer in the same change.
 
-1. source-hashed peak-memory scaling on generated 128, 512, and 2,048-function graphs;
-2. one frozen numeric program index with flat function, binding, type, export, and call-edge pools;
-3. reachability before body lowering;
-4. one reusable per-function instruction and byte scratch area, plus a packed owned output buffer;
-5. semantic differential tests and per-case output speed and size parity with the existing path.
+Promotion requires:
 
-The next experiment is memory scaling, not more syntax. Compile generated direct-call graphs with 128, 512, and 2,048 equal-shape functions in one reusable Wasm-hosted compiler. Record source, compiler, and artifact hashes; heap at parse, index, per-function lowering, section finalization, and output; final bytes; and the largest function scratch high-water mark. Every rise above 10% of peak must have an owner. Scratch must plateau once the largest body has passed, and total growth must remain linear. The result decides whether the packed byte writer or the numeric index comes first.
+1. source-hashed scaling on generated 128, 512, and 2,048-function graphs;
+2. one frozen numeric ProgramIndex for the promoted fact family;
+3. conservative reachability before expensive body work;
+4. one reusable function scratch lifetime;
+5. semantic differential tests and current output parity;
+6. native, kernel, self-compile, recursive, size, and speed gates appropriate to the touched slice.
+
+Run the graph-scaling experiment before adding syntax.
 
 ## Run
 
@@ -62,14 +129,19 @@ node test/compact-prototype.js
 node prototype/compact/bench.mjs
 ```
 
-The benchmark self-compiles the prototype, validates one reusable compiler instance with A to A to B, and compares it with `dist/jz.wasm`. Timed intervals include compilation and output copying. Instantiation, source marshaling, and `_clear()` stay outside.
+Do not add these commands to `test/index.js` or `package.json` while the work remains isolated.
 
-Measured against the current 14,446,281-byte `dist/jz.wasm`:
+The benchmark self-compiles the staged compiler and runs A to A to B through one reusable instance in both optimization modes. It then compares optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying. Instantiation, source marshaling, and `_clear()` stay outside.
 
-- prototype compiler: 652,811 bytes, 22.13x smaller
-- latest loaded-machine run: 104.19x compile-speed geomean; 10.45x on the slowest case
-- emitted size: 48.75x smaller by geomean; both constant cases tie at 41 bytes
+Latest loaded-machine result against the current 14,446,281-byte `dist/jz.wasm`:
 
-The machine had about 15 GB of allocated swap. These timings support the prototype decision but cannot certify a release claim. The full compiler also supports much more source, so the artifact ratio does not predict the savings from a production migration.
+- staged compiler: 2,089,128 bytes, 6.91x smaller
+- staged source graph: 70 modules, 944,099 source bytes
+- compile-speed geomean: 66.35x
+- minimum compile speedup: 8.61x
+- emitted-size geomean: 48.75x smaller
+- constant modules tie production at 41 bytes
 
-The slice clears the requested 2x artifact and compile-speed thresholds. A production experiment should port one numeric-function path into the existing representation authority. Installing this prototype as a source-pattern fast path would create a second compiler authority.
+Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
+
+The machine still had about 13.9 GB of allocated swap. These timings are directional evidence and do not certify release performance. The full compiler supports far more source, so the artifact ratio does not predict the final production saving.

@@ -31,16 +31,25 @@ const verifyReuse = () => {
     ['export let f=()=>7', [], 7],
     ['export let f=x=>{x=+x;return x*x}', [4], 16],
   ]
-  let first = null
-  for (let i = 0; i < cases.length; i++) {
-    const [source, args, expected] = cases[i]
-    const output = compiler.memory.read(compiler.exports.default(compiler.memory.String(source)))
-    const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports.f(...args)
-    if (!Object.is(value, expected)) throw new Error(`reuse case ${i}: got ${value}, expected ${expected}`)
-    if (i === 0) first = output
-    else if (i === 1 && !sameBytes(first, output)) throw new Error('reuse case A to A changed output bytes')
-    compiler.instance.exports._clear()
+  const runCases = (optimize) => {
+    let first = null
+    const mode = optimize ? 'optimized ' : ''
+    for (let i = 0; i < cases.length; i++) {
+      const [source, args, expected] = cases[i]
+      const sourcePtr = compiler.memory.String(source)
+      const outputPtr = optimize
+        ? compiler.exports.default(sourcePtr, compiler.memory.Object({ optimize: true }))
+        : compiler.exports.default(sourcePtr)
+      const output = compiler.memory.read(outputPtr)
+      const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports.f(...args)
+      if (!Object.is(value, expected)) throw new Error(`${mode}reuse case ${i}: got ${value}, expected ${expected}`)
+      if (i === 0) first = output
+      else if (i === 1 && !sameBytes(first, output)) throw new Error(`${mode}reuse case A to A changed output bytes`)
+      compiler.instance.exports._clear()
+    }
   }
+  runCases(false)
+  runCases(true)
 }
 verifyReuse()
 
@@ -90,8 +99,8 @@ const timedCompiler = (module, source, compact, runs = 17, warm = 5) => {
 let ratioLog = 0
 let emittedRatioLog = 0
 let minimumSpeedup = Infinity
-console.log(`compact positional prototype: ${Object.keys(graph.modules).length} modules, ${inputBytes} source bytes`)
-console.log(`prototype build: ${compactBytes.length} bytes in ${buildMs.toFixed(1)} ms`)
+console.log(`compact staged prototype: ${Object.keys(graph.modules).length} modules, ${inputBytes} source bytes`)
+console.log(`staged build:    ${compactBytes.length} bytes in ${buildMs.toFixed(1)} ms`)
 console.log(`full compiler:   ${FULL_BYTES.length} bytes`)
 console.log(`artifact ratio:  ${artifactShrink.toFixed(2)}x smaller\n`)
 console.log('case          compact ms   full ms   speedup   compact B   jz-size B   shrink')
