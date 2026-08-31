@@ -697,17 +697,24 @@ function singleDeclInit(body, name) {
 
 /** Does `expr` (an argument expression written in `body`) provably not
  *  exceed `recvName.length`? See the module-level doc above for the
- *  shape-class and soundness contract. */
-export function boundedByCallerLength(expr, recvName, body) {
+ *  shape-class and soundness contract. `seen` (internal — callers omit it)
+ *  guards the single-def alias chase against a pathological self-referential
+ *  decl (`const n = n - 1`, a TDZ violation in real JS but not necessarily
+ *  one this AST layer rejects earlier): each name visited once per call,
+ *  never re-entered, so recursion terminates even on a cyclic chain instead
+ *  of stack-overflowing — an unusual input still fails closed, it never
+ *  crashes. */
+export function boundedByCallerLength(expr, recvName, body, seen = null) {
   if (Array.isArray(expr) && expr.length === 3 && expr[0] === '.' && expr[2] === 'length' && expr[1] === recvName) return true
   if (typeof expr === 'string') {
     if (expr === recvName || isReassigned(body, expr)) return false
+    if (seen?.has(expr)) return false
     const init = singleDeclInit(body, expr)
-    return init != null && boundedByCallerLength(init, recvName, body)
+    return init != null && boundedByCallerLength(init, recvName, body, (seen ??= new Set()).add(expr))
   }
   if (Array.isArray(expr) && expr.length === 3 && expr[0] === '-') {
     const nonneg = typedValueExprRange(expr[2])
-    return nonneg != null && nonneg[0] >= 0 && boundedByCallerLength(expr[1], recvName, body)
+    return nonneg != null && nonneg[0] >= 0 && boundedByCallerLength(expr[1], recvName, body, seen)
   }
   return false
 }
