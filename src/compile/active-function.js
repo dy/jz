@@ -109,9 +109,10 @@ export function declareLocal(ctx, name, type) {
  *  (inTry/finallyStack), emission flags (repsFrozen/boxedResult/
  *  mixedAtomReturn plus the expression-dispatch scopes _expect/
  *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen/lenBoundOf
- *  facts owned directly by the record. Adding state to ActiveFunction requires deciding
- *  and pinning its inactive value here rather than silently widening the gap
- *  between this predicate and a true "record fully restored" claim.
+ *  facts owned directly by the record. Adding state to ActiveFunction
+ *  requires deciding and pinning its inactive value here rather than
+ *  silently widening the gap between this predicate and a true "record
+ *  fully restored" claim.
  *
  *  `uniq` is deliberately NOT checked against 0: it's a shared synthetic-name
  *  counter, and some post-analysis passes (boundary-wrapper synthesis) mint
