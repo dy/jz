@@ -9,6 +9,8 @@ const F_EXPORT = 3
 const F_LOCALS = 4
 const F_MUTABLES = 5
 
+const assignmentOpcode = (op) => op === '+=' ? 0xa0 : op === '-=' ? 0xa1 : op === '*=' ? 0xa2 : op === '/=' ? 0xa3 : -1
+
 const err = (message) => { throw new SyntaxError(`compact prototype: ${message}`) }
 const opName = (node) => Array.isArray(node) ? String(node[0]) : typeof node
 const reject = (node, where) => err(`${where}: unsupported ${opName(node)}`)
@@ -204,7 +206,7 @@ function checkStmt(node, declared, assigned, func, funcs) {
     assigned[idx] = true
     return
   }
-  if (op === '+=' || op === '-=' || op === '*=' || op === '/=') {
+  if (assignmentOpcode(op) >= 0) {
     checkAssignTarget(node[1], declared, assigned, func, true)
     checkExpr(node[2], declared, assigned, func, funcs)
     return
@@ -392,12 +394,13 @@ function emitStmt(node, out, func, funcs) {
     return
   }
   if (op === '=') { emitSet(node[1], node[2], out, func, funcs); return }
-  if (op === '+=' || op === '-=' || op === '*=' || op === '/=') {
+  const assignment = assignmentOpcode(op)
+  if (assignment >= 0) {
     const idx = localIndex(func, node[1])
     if (idx < 0) err(`assignment to unknown local '${node[1]}'`)
     out.push(0x20); uleb(out, idx)
     emitExpr(node[2], out, func, funcs)
-    out.push(op === '+=' ? 0xa0 : op === '-=' ? 0xa1 : op === '*=' ? 0xa2 : 0xa3)
+    out.push(assignment)
     out.push(0x21); uleb(out, idx)
     return
   }
