@@ -138,6 +138,21 @@ export function analyzeFuncForEmit(func, programFacts) {
           if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
         }
       }
+      // lenBoundOf (ledger-performance.md §6.1): a caller-proven relation —
+      // this param's value never exceeds a SIBLING param's runtime
+      // `.length` — independent of typedCtor (the receiver here is
+      // whatever the sibling param denotes, e.g. a string; not necessarily
+      // typed). validateLenBoundOfParams already required the receiver
+      // param to survive its own reassignment check, so no `reassigned`
+      // guard is needed here beyond the one already folded into that
+      // validation.
+      if (r.lenBoundOf != null) {
+        const recvName = sig.params[r.lenBoundOf]?.name
+        if (recvName != null) {
+          if (!ctx.func.lenBoundOf) ctx.func.lenBoundOf = new Map()
+          if (!ctx.func.lenBoundOf.has(pname)) ctx.func.lenBoundOf.set(pname, recvName)
+        }
+      }
       // paramValTrustworthy: `r.val` and `r.possibleKinds` are independent
       // lattices over the same call sites (param-reps.js's own header) — a
       // parameter fed by a mix of easily-proven and unresolved-argument call

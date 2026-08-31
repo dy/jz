@@ -171,6 +171,16 @@ export function emitFunc(func, functionPlan, programFacts) {
           if (!ctx.func.typedLen.has(pname)) ctx.func.typedLen.set(pname, r.typedLen)
         }
       }
+      // lenBoundOf: mirrors the analyzeFuncForEmit seeding above (see its
+      // comment) — same "already validated, no extra reassigned guard
+      // needed" reasoning, same duplication reason.
+      if (r.lenBoundOf != null) {
+        const recvName = sig.params[r.lenBoundOf]?.name
+        if (recvName != null) {
+          if (!ctx.func.lenBoundOf) ctx.func.lenBoundOf = new Map()
+          if (!ctx.func.lenBoundOf.has(pname)) ctx.func.lenBoundOf.set(pname, recvName)
+        }
+      }
       if (r.schemaId != null && !reassigned && !exported && !ctx.schema.vars.has(pname)) {
         ctx.schema.vars.set(pname, r.schemaId)
         updateRep(pname, { schemaId: r.schemaId })

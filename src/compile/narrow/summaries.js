@@ -3,16 +3,19 @@
  * narrowSignatures: fixed-length proof for literal+push-built arrays
  * (inferInternalArrayLengths), the co-induction bounds prover
  * (coInductionCounterHull/findCoInductionLoopCtx/arrayReadProvenInBounds,
- * .work/archive/todo.md "the co-induction prover"), and whole-program typed-elem
- * store range hulls (inferTypedValueRanges). Each has fan-out 0 into any
- * sibling narrow/*.js family — every dependency here is an upstream import.
+ * .work/archive/todo.md "the co-induction prover"), whole-program typed-elem
+ * store range hulls (inferTypedValueRanges), and the caller-side
+ * parameter-length-bound proof (boundedByCallerLength — see its own doc
+ * comment for the shape-class and soundness contract; ledger-performance.md
+ * §6.1). Each has fan-out 0 into any sibling narrow/*.js family — every
+ * dependency here is an upstream import.
  *
  * @module compile/narrow/summaries
  */
 
 import { ctx } from '../../ctx.js'
 import {
-  returnExprs, callArgs, ASSIGN_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, some,
+  returnExprs, callArgs, ASSIGN_OPS, refsName, carriesName, REFS_THROUGH_ARROWS, walkAst, some, isReassigned,
 } from '../../ast.js'
 import { findMutations } from '../analyze.js'
 import {
@@ -633,5 +636,86 @@ export function inferTypedValueRanges(paramReps) {
   propagateCallForwarding()
   const locals = computeLocalRanges()
   return { locals, summaries, hull, initialRange }
+}
+
+// ============================================================================
+// Cross-function parameter-length-bound proof (ledger-performance.md §6.1)
+// ============================================================================
+// Does param K's value never exceed param R's runtime `.length`, PROVEN FROM
+// THE CALLER'S OWN ARGUMENT EXPRESSIONS at every live call site (never from
+// the callee's body — a callee cannot see who calls it). Feeds
+// canonical-bounds.js's scanBoundedLoops: a loop `for (i=C; i<paramK; i++)
+// recv.charCodeAt(i)` where paramK is a PARAMETER (not itself `recv.length`)
+// can still take the canonical in-bounds proof — the SAME proof that already
+// fires when the bound is written `recv.length` directly — once this fact
+// supplies the missing `paramK <= recv.length` link (the tokenizer shape:
+// `scan(src, n - (i&7))` where `n` is a single-def alias of `src.length`;
+// `len` never exceeds `src`'s length, but neither is a compile-time
+// constant, so typedLen itself can't carry it).
+//
+// Deliberately narrow: a small, terminating structural recursion over the
+// SPECIFIC shapes real callers use to express "at most this receiver's
+// length" (a `.length` read, a single-def alias of one, or that minus a
+// provably-nonnegative amount) — not a general symbolic interval prover
+// (interval-proof.js's own scope is numeric-literal-bound loop nests; this
+// needs no absolute bound at all, only a relation to an unresolved runtime
+// `.length`). Fails closed (returns false) on anything unrecognized: forgoes
+// the proof, never wrong.
+//
+// SOUNDNESS: an entry-time relation ("the value passed for paramK does not
+// exceed the length of the value passed for paramR"), proven once from the
+// caller's own expressions and true only because BOTH names are ordinary
+// parameters — bound once at the call and never reassigned thereafter
+// (validated by narrow/param-abi.js's validateLenBoundOfParams, which also
+// excludes any host-reachable function: an external caller isn't covered by
+// this proof — same discipline as validateTypedLenParams). A consumer must
+// additionally confirm the RECEIVER's length cannot change mid-activation
+// (aliasing/re-entrancy) before trusting the relation past entry —
+// scanBoundedLoops's own receiver is a JS string, immutable by language
+// definition, so that half is free there. A future consumer over a MUTABLE
+// receiver (a growable Array; canonical-bounds.js's sibling
+// scanBoundedArrIdx) would need its own argument for why the length can't
+// shrink underneath the proof — NOT wired here; see the ledger design note.
+
+/** Resolve `name`'s initializer within `body` iff it has EXACTLY ONE
+ *  `let`/`const` declaration in the whole body — a second declaration
+ *  (shadowing/redeclaration) evicts to null, same discipline as
+ *  loop-versioning.js's bodyAffineEnv. Does not descend into nested arrow
+ *  bodies: a captured rebinding belongs to a DIFFERENT activation, never
+ *  this caller's own single def. */
+function singleDeclInit(body, name) {
+  let init = null, count = 0
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'let' || n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=' && d[1] === name) { count++; init = d[2] }
+    }
+  } })
+  return count === 1 ? init : null
+}
+
+/** Does `expr` (an argument expression written in `body`) provably not
+ *  exceed `recvName.length`? See the module-level doc above for the
+ *  shape-class and soundness contract. `seen` (internal — callers omit it)
+ *  guards the single-def alias chase against a pathological self-referential
+ *  decl (`const n = n - 1`, a TDZ violation in real JS but not necessarily
+ *  one this AST layer rejects earlier): each name visited once per call,
+ *  never re-entered, so recursion terminates even on a cyclic chain instead
+ *  of stack-overflowing — an unusual input still fails closed, it never
+ *  crashes. */
+export function boundedByCallerLength(expr, recvName, body, seen = null) {
+  if (Array.isArray(expr) && expr.length === 3 && expr[0] === '.' && expr[2] === 'length' && expr[1] === recvName) return true
+  if (typeof expr === 'string') {
+    if (expr === recvName || isReassigned(body, expr)) return false
+    if (seen?.has(expr)) return false
+    const init = singleDeclInit(body, expr)
+    return init != null && boundedByCallerLength(init, recvName, body, (seen ??= new Set()).add(expr))
+  }
+  if (Array.isArray(expr) && expr.length === 3 && expr[0] === '-') {
+    const nonneg = typedValueExprRange(expr[2])
+    return nonneg != null && nonneg[0] >= 0 && boundedByCallerLength(expr[1], recvName, body, seen)
+  }
+  return false
 }
 

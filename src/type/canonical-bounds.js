@@ -11,7 +11,7 @@
  * @module type/canonical-bounds
  */
 import { isReassigned, some, walkAst } from '../ast.js'
-import { getFactStore } from '../ctx.js'
+import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
 
 /** Structural key for a `recv[idx]` site — the assumedBounds channel between the
@@ -107,7 +107,18 @@ export function collectDecls(node, out) {
 /** Walk `node`, recording in `set` the `charCodeAt` callee nodes proven in-bounds
  *  by an enclosing canonical induction loop `for (let i = C; i < recv.length; i++)`.
  *  Matches the post-`prepare` shape, where the `.length` bound is hoisted into a
- *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). */
+ *  temp (`cond` becomes `i < lenTmp`, `lenTmp` declared in `init`). Also matches a
+ *  bound that is a PARAMETER caller-proven (ledger-performance.md §6.1,
+ *  `ctx.func.lenBoundOf`) never to exceed some OTHER param's `.length` — the
+ *  tokenizer shape `scan(src, len)`'s `for (i=0; i<len; i++) src.charCodeAt(i)`,
+ *  where `len` is a param, not itself `recv.length`. Sound specifically because
+ *  the receiver here is a STRING: immutable by language definition, so its
+ *  length cannot change during the callee's activation regardless of aliasing
+ *  or re-entrancy — the one soundness question a caller-side entry-time fact
+ *  would otherwise leave open (see boundedByCallerLength's doc, summaries.js).
+ *  scanBoundedArrIdx (the array-idx sibling below) does NOT take this same
+ *  fallback: a mutable receiver's length could shrink mid-activation, which
+ *  this proof does not (yet) account for. */
 export function scanBoundedLoops(node, set) {
   if (!Array.isArray(node)) return
   if (node[0] === 'for' && node.length === 5) {
@@ -124,6 +135,7 @@ export function scanBoundedLoops(node, set) {
       let bound = cond[2]
       if (typeof bound === 'string') { boundVar = bound; bound = decls.get(bound) }
       recv = lengthRecv(bound)
+      if (recv == null && boundVar != null) recv = ctx.func.lenBoundOf?.get(boundVar) ?? null
     }
     // step `i++`; body never writes `i`/`recv`/the bound temp (incl. via
     // closures) and never re-declares `i`. Then every bare `i` in the body

@@ -36,9 +36,9 @@ import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType, inferSchemaId, inferValType, inferTypedCtor,
 } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, filterLiveCallSites, buildCallerTypedLenCtx, enrichCallerValTypesFromPointerParams, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
-import { applyI32ParamSpecialization, validateTypedLenParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
+import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnArrayElems } from './results.js'
-import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges } from './summaries.js'
+import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { makeMapOverlay } from '../map-overlay.js'
 
@@ -918,6 +918,39 @@ export default function narrowSignatures(programFacts, ast) {
   // takes the typed read path) and a length on a host-reachable or rebound
   // param is unsound — same exclusion discipline as intConst.
   validateTypedLenParams(paramReps, valueUsed)
+
+  // PARAM LENGTH-BOUND relation (ledger-performance.md §6.1): does param k's
+  // value never exceed param r's runtime `.length`? Extends the SAME
+  // caller-computed/callee-consumed contract as typedLen just above,
+  // generalized from "an exact literal length" (unanimous constant) to "a
+  // relational bound against a sibling param" — the tokenizer shape
+  // (`scan(src, n - (i&7))`, `n` a single-def alias of `src.length`): `len`
+  // never exceeds `src`'s length, but neither is a compile-time constant, so
+  // typedLen itself can't carry it. boundedByCallerLength (summaries.js) does
+  // the small, closed-form structural proof over one call site's own
+  // argument pair; here every OTHER param position is tried as a candidate
+  // receiver, keeping whichever (if any) EVERY site agrees on
+  // (mergeParamFact's ordinary exact-agreement poison) — one direct hard
+  // pass, no transitive/soft pre-pass (unverified for this shape-class; a
+  // wrapper-forwarding chain would need summaries.js's own single-def
+  // resolver taught to consult state.callerParamFacts('lenBoundOf') the way
+  // inferTypedLen does above — not attempted here, see the ledger note).
+  runCallsiteLattice([mergeRule('lenBoundOf', (arg, k, state) => {
+    const body = state.callerFunc?.body
+    if (!body) return null
+    const { argList } = state
+    for (let r = 0; r < argList.length; r++) {
+      if (r === k) continue
+      const recvArg = argList[r]
+      if (typeof recvArg !== 'string') continue
+      if (boundedByCallerLength(arg, recvArg, body)) return r
+    }
+    return null
+  })])
+  // Host-reachable functions, rest/default positions on either side, and a
+  // body that writes either name invalidate the theorem — same discipline as
+  // validateTypedLenParams (param-abi.js).
+  validateLenBoundOfParams(paramReps, valueUsed)
 
   // G: TYPED pointer-ABI narrowing — once .typedCtor agrees on a single
   // ctor across all call sites, narrow the param from NaN-boxed f64 to raw

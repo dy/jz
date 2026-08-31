@@ -162,6 +162,34 @@ export function validateTypedLenParams(paramReps, valueUsed) {
   }
 }
 
+// lenBoundOf rides similar safety rails to typedLen: module-local direct
+// callees only (not exported/value-used/raw), no rest/default position on
+// EITHER param (the bound-param k or the receiver-param r.lenBoundOf points
+// at), and a body that never writes either name — the caller-side proof
+// (summaries.js's boundedByCallerLength) is an entry-time fact about the
+// values passed at the call; a body that reassigns either name could hold
+// something else by the time a consumer relies on it. See
+// ledger-performance.md §6.1 for the full soundness contract.
+export function validateLenBoundOfParams(paramReps, valueUsed) {
+  for (const func of ctx.funcs.list) {
+    const hostReachable = func.exported || func.raw || valueUsed.has(func.name)
+    const reps = paramReps.get(func.name)
+    if (!reps) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    for (const [k, r] of reps) {
+      if (r.lenBoundOf == null) continue
+      const ri = r.lenBoundOf
+      if (hostReachable || !func.body || k === restIdx || ri === restIdx ||
+          k >= func.sig.params.length || ri >= func.sig.params.length) { r.lenBoundOf = null; continue }
+      const pname = func.sig.params[k].name, recvName = func.sig.params[ri].name
+      if (func.defaults?.[pname] != null || func.defaults?.[recvName] != null) { r.lenBoundOf = null; continue }
+      const mutated = new Set()
+      findMutations(func.body, new Set([pname, recvName]), mutated)
+      if (mutated.has(pname) || mutated.has(recvName)) r.lenBoundOf = null
+    }
+  }
+}
+
 export function validateIntConstParams(paramReps, valueUsed) {
   for (const func of ctx.funcs.list) {
     if (func.exported || func.raw || valueUsed.has(func.name)) continue
