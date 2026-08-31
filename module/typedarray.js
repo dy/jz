@@ -9,7 +9,7 @@ import { OPTF } from '../src/ctx.js'
  */
 
 import { typed, asF64, asI32, asI32Sat, asI64, toNumF64, coerceNullishToNum, UNDEF_NAN, NULL_NAN, TRUE_NAN, FALSE_NAN, allocPtr, mkPtrIR, ptrOffsetIR, ptrTypeEq, temp, tempI32, tempI64, undefExpr, truthyIR, isLit, litVal, freshId, readI64MayUnbox, readI64, unboxBigInt, isUndef } from '../src/ir.js'
-import { isReassigned, T, ASSIGN_OPS, walkAst, some, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
+import { isReassigned, T, ASSIGN_OPS, walkAst, some, every, REFS_THROUGH_ARROWS, isUndefinedLiteral } from '../src/ast.js'
 import { emit, idx, deps, call } from '../src/bridge.js'
 import { strHashLiteral } from './collection.js'
 import { valTypeOf } from '../src/kind.js'
@@ -1825,21 +1825,20 @@ export default (ctx) => {
     // Emit one guard around a direct read + store. The temporary proof is
     // lexical to RHS emission; no other site or later statement inherits it.
     const sameIdx = (n) => Array.isArray(n) && n[0] === '[]' && n[1] === arr && idxKey(arr, n[2]) === idxKey(arr, i)
-    const safeRmwAst = (n) => {
-      if (!Array.isArray(n)) return true
-      if (sameIdx(n)) return true
-      const op = n[0]
-      if (op === '()' && n.length > 2) {
-        const callee = n[1]
-        if (!(callee === 'math.imul' ||
-            (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && callee[2] === 'imul'))) return false
-        return safeRmwAst(n[2])
-      }
-      if (op === '[]' || op === '.' || op === '?.' || op === 'new' || op === '=>' ||
-          op === '++' || op === '--' || ASSIGN_OPS.has(op)) return false
-      for (let k = 1; k < n.length; k++) if (!safeRmwAst(n[k])) return false
-      return true
-    }
+    // every-predicate (walk-count design's typedarray follow-up, .work/archive/pipeline-minimality.md
+    // batch-2 item (b)): a call node stops the generic fold short — it recurses ONLY its first
+    // argument (an imul's second operand and any callee besides math.imul/Math.imul are never safe
+    // to fuse into the guard's own read, so neither is checked) — expressed as a `boundary` so
+    // `every`'s own child loop doesn't also re-walk them.
+    const isImulCallee = (callee) => callee === 'math.imul' ||
+      (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Math' && callee[2] === 'imul')
+    const safeRmwAst = (n) => every(n, (x) => {
+      if (sameIdx(x)) return true
+      const op = x[0]
+      if (op === '()' && x.length > 2) return isImulCallee(x[1]) && safeRmwAst(x[2])
+      return !(op === '[]' || op === '.' || op === '?.' || op === 'new' || op === '=>' ||
+        op === '++' || op === '--' || ASSIGN_OPS.has(op))
+    }, { boundary: (x) => sameIdx(x) || (x[0] === '()' && x.length > 2) })
     const hasSameRead = (n) => some(n, sameIdx, REFS_THROUGH_ARROWS)
     const i32Rhs = sameIdx(val) || (Array.isArray(val) &&
       (val[0] === '&' || val[0] === '|' || val[0] === '^' || val[0] === '<<' || val[0] === '>>' || val[0] === '>>>' ||
