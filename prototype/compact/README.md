@@ -32,23 +32,31 @@ The full migration plan and stop rules are in [`../todo.md`](../todo.md).
 - exported arrow functions and internal function declarations
 - named direct calls with exact arity
 - numeric function parameters and results
-- numeric literals and folded arithmetic
+- numeric literals and folded arithmetic, including constant `%` and `**`
 - `let` and `const` numeric locals
 - assignment and arithmetic updates
 - `if`, ternary, nested `for`, and nested `while`
+- constant-condition branch and loop removal after full source validation
+- empty modules and modules with no reachable export
 - f64 `+`, `-`, `*`, `/`, unary signs, and comparisons in conditions
 
-Every exported parameter must begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without this check, JavaScript could concatenate where Wasm adds.
+The default `abi: 'js'` contract requires every exported parameter to begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without this proof, JavaScript could concatenate where Wasm adds.
 
-Strings inside compiled code, objects, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
+`compileCompact(source, { abi: 'raw' })` admits unguarded numeric parameters. This is an explicit typed-host contract: every parameter and result is f64 and callers provide numbers. It matches the raw scalar lane in `test/abi.js`; it does not claim JavaScript coercion semantics for nonnumeric arguments. ProgramIndex owns this decision. Prepare only validates source structure.
 
-This source rule is confined to the prototype. Production JZ must infer the boundary representation or reject without asking users to edit source.
+Strings inside compiled code, objects, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Dynamic `%` and `**` also reject until their exact numeric lowering exists. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
+
+These ABI rules are confined to the prototype. Production JZ must reuse its existing representation proofs or reject without asking users to edit source.
+
+## Shared scalar gate
+
+`test/_scalar-core-cases.js` owns 26 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. The original production tests import the same records. The isolated prototype executes 30 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI A to A to B determinism. No test adapter edits source.
 
 ## Stage contracts
 
 ### Prepare
 
-`prepareCompactAst(ast)` validates the supported syntax, extracts function records, checks export coercion guards, and records local declarations. It does not resolve calls, infer representations, mark reachability, or emit WAT.
+`prepareCompactAst(ast)` validates the supported syntax, extracts function records, and records local declarations. It does not choose an ABI, resolve calls, infer representations, mark reachability, or emit WAT.
 
 Prepared function records are positional:
 
@@ -65,10 +73,11 @@ Prepared function records are positional:
 - flat direct-call edges
 - export roots and transitive reachability
 - one f64 representation ID for every current binding and result
+- one explicit JavaScript or raw ABI mode
 - deduplicated type IDs
 - final Wasm function IDs for reachable functions
 
-Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable function bodies are validated but not emitted.
+Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable functions and constant-dead branches are validated but not emitted.
 
 The current index still retains AST bodies and source names. It does not yet have numeric schemas, globals, typed storage, closure summaries, or data owners.
 
@@ -136,12 +145,12 @@ The graph benchmark runs the staged and frozen direct backends in fresh processe
 
 The benchmark self-compiles the staged compiler and runs A to A to B through one reusable instance in both optimization modes. It then compares optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying. Instantiation, source marshaling, and `_clear()` stay outside.
 
-Latest loaded-machine result against the current 14,446,281-byte `dist/jz.wasm`:
+Latest loaded-machine result against the fresh 14,444,038-byte `dist/jz.wasm`:
 
-- staged compiler: 2,089,128 bytes, 6.91x smaller
-- staged source graph: 70 modules, 944,099 source bytes
-- compile-speed geomean: 66.35x
-- minimum compile speedup: 8.61x
+- staged compiler: 2,093,882 bytes, 6.90x smaller
+- staged source graph: 71 modules, 947,508 source bytes
+- compile-speed geomean: 71.55x
+- minimum compile speedup: 9.99x
 - emitted-size geomean: 48.75x smaller
 - constant modules tie production at 41 bytes
 

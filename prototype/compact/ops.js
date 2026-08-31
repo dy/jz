@@ -6,6 +6,8 @@ export const OP_ADD = 0
 export const OP_SUB = 1
 export const OP_MUL = 2
 export const OP_DIV = 3
+export const OP_MOD = 4
+export const OP_POW = 5
 
 export const CMP_EQ = 0
 export const CMP_NE = 1
@@ -15,7 +17,10 @@ export const CMP_LE = 4
 export const CMP_GE = 5
 
 export const arithmeticKind = (op) => op === '+' ? OP_ADD : op === '-' ? OP_SUB
-  : op === '*' ? OP_MUL : op === '/' ? OP_DIV : OP_NONE
+  : op === '*' ? OP_MUL : op === '/' ? OP_DIV : op === '%' ? OP_MOD
+  : op === '**' ? OP_POW : OP_NONE
+
+export const hasScalarWatOpcode = (kind) => kind >= OP_ADD && kind <= OP_DIV
 
 export const assignmentKind = (op) => op === '+=' ? OP_ADD : op === '-=' ? OP_SUB
   : op === '*=' ? OP_MUL : op === '/=' ? OP_DIV : OP_NONE

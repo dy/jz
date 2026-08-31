@@ -7,6 +7,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 // These pin the *default JS-host* output shape. WASI wraps every module in command
 // boilerplate (a `_start` export, fd imports) and the self-compile kernel owns its own
@@ -54,7 +55,7 @@ const HEAP_FREE = {
   'numeric const': 'export const x = 42',
   'SSO string const': "export const x = 'hi'",
   'atom const': 'export const x = null',
-  'numeric fn': 'export const f = (a, b) => a + b',
+  'numeric fn': scalarCase('minimal-numeric-fn').source,
   'boolean fn': 'export const f = (a) => a > 0',
 }
 for (const [name, src] of Object.entries(HEAP_FREE)) {
@@ -88,7 +89,7 @@ test('minimal: runtime string concat pulls the allocator', () => {
 })
 test('minimal: pure numeric module pulls no allocator', () => {
   if (skip) return
-  ok(!hasAllocator('export let f = (a, b) => a * b + 1'), 'arithmetic never allocates')
+  ok(!hasAllocator(scalarCase('minimal-pure-numeric').source), 'arithmetic never allocates')
 })
 
 test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () => {
@@ -162,7 +163,7 @@ test('minimal: medium leaf called in a hot loop inlines', () => {
 // === Empty / trivial programs ===
 test('minimal: empty program is an empty module', () => {
   if (skip) return
-  is(wat('').replace(/\s+/g, ' ').trim(), '(module)')
+  is(wat(scalarCase('empty-module').source).replace(/\s+/g, ' ').trim(), '(module)')
 })
 test('minimal: dead pure expression statement is eliminated at O2', () => {
   if (skip) return

@@ -8,8 +8,11 @@ import {
   F_BODY, F_EXPORT, F_LOCALS, F_MUTABLES, F_NAME, F_PARAMS,
   argsOf, bodyList, err, forHead, reject,
 } from './prepare.js'
+import { isBooleanLiteral } from './constants.js'
 import { OP_NONE, arithmeticKind, assignmentKind, comparisonKind } from './ops.js'
 
+export const ABI_JS = 0
+export const ABI_RAW = 1
 export const REP_F64 = 1
 
 export const B_PARAM = 1
@@ -34,6 +37,7 @@ export const I_EDGE_TARGET = 15
 export const I_TYPE_PARAM_COUNT = 16
 export const I_EXPORT_FUNC = 17
 export const I_EXPORT_NAME = 18
+export const I_ABI_MODE = 19
 
 export const functionCount = (index) => index[I_FN_NAME].length
 
@@ -82,6 +86,7 @@ function checkExpr(node, declared, assigned, index, funcId, edges) {
   }
   if (!Array.isArray(node)) reject(node, 'expression')
   if (node[0] == null && node.length === 2 && typeof node[1] === 'number') return
+  if (isBooleanLiteral(node)) return
   const op = node[0]
   if (op === '()' && node.length === 2) { checkExpr(node[1], declared, assigned, index, funcId, edges); return }
   if (op === '()' && typeof node[1] === 'string') { checkCall(node, declared, assigned, index, funcId, edges); return }
@@ -191,6 +196,26 @@ const checkFunction = (index, funcId, edges) => {
   }
 }
 
+const normalizedExportParams = (func) => {
+  if (!func[F_EXPORT] || !func[F_PARAMS].length) return true
+  const stmts = bodyList(func[F_BODY])
+  if (stmts.length < func[F_PARAMS].length) return false
+  for (let i = 0; i < func[F_PARAMS].length; i++) {
+    const name = func[F_PARAMS][i]
+    const stmt = stmts[i]
+    if (!Array.isArray(stmt) || stmt[0] !== '=' || stmt[1] !== name ||
+        !Array.isArray(stmt[2]) || stmt[2][0] !== '+' || stmt[2].length !== 2 || stmt[2][1] !== name) return false
+  }
+  return true
+}
+
+const abiMode = (options) => {
+  const abi = options?.abi ?? 'js'
+  if (abi === 'js') return ABI_JS
+  if (abi === 'raw') return ABI_RAW
+  err(`unknown ABI '${abi}'`)
+}
+
 const markReachable = (index) => {
   const reachable = index[I_FN_REACHABLE]
   const stack = []
@@ -219,12 +244,13 @@ const assignFinalIds = (index) => {
   }
 }
 
-export function buildProgramIndex(funcs) {
+export function buildProgramIndex(funcs, options) {
   const count = funcs.length
+  const abi = abiMode(options)
   const index = [
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count),
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count).fill(0),
-    new Array(count).fill(-1), new Array(count).fill(-1), [], [], [], [], [], [], [],
+    new Array(count).fill(-1), new Array(count).fill(-1), [], [], [], [], [], [], [], abi,
   ]
 
   for (let funcId = 0; funcId < count; funcId++) {
@@ -236,6 +262,8 @@ export function buildProgramIndex(funcs) {
     index[I_FN_LOCAL_COUNT][funcId] = func[F_LOCALS].length
     index[I_FN_EXPORTED][funcId] = func[F_EXPORT]
     index[I_FN_RESULT_REP][funcId] = REP_F64
+    if (abi === ABI_JS && !normalizedExportParams(func))
+      err(`export '${func[F_NAME]}' must normalize each parameter with a leading 'p = +p'`)
     for (let i = 0; i < func[F_PARAMS].length; i++) {
       index[I_BIND_NAME].push(func[F_PARAMS][i])
       index[I_BIND_FLAGS].push(B_PARAM | B_MUTABLE)

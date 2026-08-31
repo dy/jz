@@ -3,6 +3,7 @@ import test from 'tst'
 import { is, ok, almost } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 function run(code, opts) { return jz(code, opts).exports }
 
@@ -18,7 +19,7 @@ const constPin = (n) => new RegExp(`[fi](32|64)\\.const ${n}\\b`)
 
 test('fold-fires: numeric chain -> literal, no arithmetic ops', () => {
   if (onKernel()) return
-  const wat = compile('export let f = () => 1 + 2 * 3 - 4', { wat: true, optimize: false })
+  const wat = compile(scalarCase('preeval-numeric-chain').source, { wat: true, optimize: false })
   ok(constPin(3).test(wat), 'expected the folded literal 3 in WAT')
   ok(!/[fi]64\.(add|sub|mul)/.test(wat), 'expected no runtime arithmetic ops')
 })
@@ -38,7 +39,7 @@ test('fold-fires: boolean/nullish -> literal', () => {
 
 test('fold-fires: dead if-branch eliminated', () => {
   if (onKernel()) return
-  const wat = compile('export let f = () => { if (1 < 2) { return 10 } else { return 20 } }', { wat: true, optimize: false })
+  const wat = compile(scalarCase('preeval-dead-if').source, { wat: true, optimize: false })
   ok(constPin(10).test(wat), 'expected the live branch literal')
   ok(!constPin(20).test(wat), 'expected the dead branch gone')
   ok(!/[fi]64\.lt/.test(wat), 'expected the constant condition itself gone')
@@ -46,7 +47,7 @@ test('fold-fires: dead if-branch eliminated', () => {
 
 test('fold-fires: while(false) removed entirely', () => {
   if (onKernel()) return
-  const wat = compile('export let f = () => { let x = 0; while (false) { x = x + 1 } return x }', { wat: true, optimize: false })
+  const wat = compile(scalarCase('preeval-while-false').source, { wat: true, optimize: false })
   ok(!/loop/.test(wat), 'expected the dead loop gone')
 })
 
@@ -81,10 +82,10 @@ test('fold-fires: transcendental Math.* call with constant arg -> literal', () =
 // ============================================================================
 
 test('value: numeric chain', () => {
-  is(run('export let f = () => 1 + 2 * 3 - 4').f(), 3)
+  is(run(scalarCase('preeval-numeric-chain').source).f(), 3)
   is(run('export let f = () => (10 - 3) / 2').f(), 3.5)
-  is(run('export let f = () => 2 ** 10').f(), 1024)
-  is(run('export let f = () => 7 % 3').f(), 1)
+  is(run(scalarCase('preeval-constant-power').source).f(), 1024)
+  is(run(scalarCase('preeval-constant-remainder').source).f(), 1)
   is(run('export let f = () => -5 * -2').f(), 10)
 })
 

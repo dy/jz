@@ -237,6 +237,34 @@ Status: first slice implemented; scaling evidence remains.
 
 Stop condition: if indexing itself exceeds 10 percent above the direct control peak, attribute the exact pool before adding syntax.
 
+### M1a. Shared scalar-core gate
+
+Status: implemented on the isolated prototype.
+
+- [x] move 26 unmodified main-suite sources into one data-only corpus
+- [x] make statements, pre-eval, ABI, minimal-output, differential, and determinism tests consume that corpus
+- [x] execute 30 pinned calls through the raw compact ABI
+- [x] move exported-parameter ABI policy from prepare into ProgramIndex
+- [x] keep JavaScript coercion guards as the default contract
+- [x] add an explicit typed-host raw f64 contract for unguarded numeric sources
+- [x] accept empty modules and modules with no reachable export
+- [x] fold constant arithmetic, constant branches, and `while(false)` during lowering
+- [x] validate unsupported and unresolved source inside constant-dead code
+- [x] pin raw scalar A to A to B in both optimization modes
+- [x] rerun graph scaling without changing output hashes or scratch growth
+
+Dynamic `%` and `**` remain rejected. Only fully constant forms fold. The raw ABI is not a JavaScript coercion fallback.
+
+Verification for this slice:
+
+- `npm test`: 3,894 pass, 1 skip
+- `npm run test:opt3`: 3,894 pass, 1 skip
+- `npm run test:wasi`: 3,893 pass, 1 skip
+- compact prototype: 15 tests and 237 assertions
+- self-compiled compact benchmark: threshold pass, including raw A to A to B and constant `%` and `**`
+
+The opt0 matrix leg remains red on the pre-existing standalone `test/date.js` shared-dispatch `.valueOf()` case. No production compiler, runtime, or date source differs from `origin/main` on this branch. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
+
 ### M2. Production identity migration
 
 - [ ] define production ProgramIndex field constants and lifecycle contract
@@ -347,15 +375,15 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Build the shared scalar-core corpus from exact main-suite sources:
+Complete scalar control without adding heap values:
 
-1. Move the selected source strings, calls, and expected values into one data-only corpus.
-2. Keep the production tests and isolated prototype runner on that same authority.
-3. Accept empty modules and modules with no reachable export.
-4. Move exported-parameter ABI policy from prepare into ProgramIndex.
-5. Admit unguarded numeric parameters only under an explicit raw ABI contract.
-6. Fold pure constant arithmetic and constant control during function lowering without skipping validation of dead source.
-7. Preserve the frozen direct encoder and rerun the graph experiment after the scalar gate stabilizes.
+1. Add explicit numeric completion IDs for loop break and continue targets.
+2. Support prefix and postfix update values with one local evaluation.
+3. Support omitted `for` components and `do...while` through normalized control shapes.
+4. Add numeric short-circuit joins for `&&`, `||`, and comma expressions.
+5. Extend the shared corpus with exact statement tests for each shape and its nested or labeled sibling.
+6. Keep exceptions, `try/finally`, strings, arrays, objects, imports, and dynamic carriers out of this slice.
+7. Rerun graph scaling and the self-compiled benchmark before promotion.
 
 The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

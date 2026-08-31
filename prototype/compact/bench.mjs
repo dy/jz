@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { compile } from '../../index.js'
 import { instantiate, toModule } from '../../interop.js'
 import { resolveModuleGraph } from '../../src/resolve.js'
+import { scalarCase } from '../../test/_scalar-core-cases.js'
 
 const ROOT = new URL('../..', import.meta.url).pathname
 const FULL_BYTES = readFileSync(ROOT + '/dist/jz.wasm')
@@ -26,22 +27,24 @@ const artifactShrink = FULL_BYTES.length / compactBytes.length
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i])
 const verifyReuse = () => {
   const compiler = instantiate(compactModule, { memory: 1024, externref: false })
+  const a = scalarCase('abi-add'), b = scalarCase('determinism-poly')
+  const power = scalarCase('preeval-constant-power'), remainder = scalarCase('preeval-constant-remainder')
   const cases = [
-    ['export let f=()=>7', [], 7],
-    ['export let f=()=>7', [], 7],
-    ['export let f=x=>{x=+x;return x*x}', [4], 16],
+    [a.source, 'add', [2, 3], 5],
+    [a.source, 'add', [2, 3], 5],
+    [b.source, 'poly', [2, 3, 4], 671950],
+    [power.source, 'f', [], 1024],
+    [remainder.source, 'f', [], 1],
   ]
   const runCases = (optimize) => {
     let first = null
     const mode = optimize ? 'optimized ' : ''
     for (let i = 0; i < cases.length; i++) {
-      const [source, args, expected] = cases[i]
+      const [source, exportName, args, expected] = cases[i]
       const sourcePtr = compiler.memory.String(source)
-      const outputPtr = optimize
-        ? compiler.exports.default(sourcePtr, compiler.memory.Object({ optimize: true }))
-        : compiler.exports.default(sourcePtr)
-      const output = compiler.memory.read(outputPtr)
-      const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports.f(...args)
+      const optionsPtr = compiler.memory.Object(optimize ? { abi: 'raw', optimize: true } : { abi: 'raw' })
+      const output = compiler.memory.read(compiler.exports.default(sourcePtr, optionsPtr))
+      const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports[exportName](...args)
       if (!Object.is(value, expected)) throw new Error(`${mode}reuse case ${i}: got ${value}, expected ${expected}`)
       if (i === 0) first = output
       else if (i === 1 && !sameBytes(first, output)) throw new Error(`${mode}reuse case A to A changed output bytes`)

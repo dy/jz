@@ -6,13 +6,17 @@ import { generateDirectCallGraph } from '../prototype/compact/graph-corpus.js'
 import { lowerProgram } from '../prototype/compact/lower.js'
 import { prepareCompactAst } from '../prototype/compact/prepare.js'
 import {
-  I_EDGE_TARGET, I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
+  ABI_RAW, I_ABI_MODE, I_EDGE_TARGET, I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
   I_FN_TYPE_ID, I_FN_WASM_ID, I_TYPE_PARAM_COUNT,
   buildProgramIndex, functionCount,
 } from '../prototype/compact/program-index.js'
 import { parse } from '../src/parse.js'
+import { scalarCase, scalarCasesIn, SCALAR_CORE_CASES } from './_scalar-core-cases.js'
 
 const instantiate = (source) => new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source))).exports
+const instantiateRaw = (source, options) => new WebAssembly.Instance(new WebAssembly.Module(
+  compileCompact(source, { ...options, abi: 'raw' }),
+)).exports
 const sameNumber = (a, b) => Object.is(a, b) || Number.isNaN(a) && Number.isNaN(b)
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i])
 
@@ -155,6 +159,78 @@ test('compact prototype: numeric index, reachability, and watr boundary', () => 
   is(optimized(7), 15)
   throws(() => compileCompact('let dead=()=>missing();export let f=()=>0'), /unknown direct function/)
   throws(() => compileCompact('let dead=()=>"x";export let f=()=>0'), /unsupported/)
+  throws(() => compileCompact('export let f=()=>{if(false)return missing();else return 1}', { abi: 'raw' }), /unknown direct function/)
+  throws(() => compileCompact('export let f=()=>{while(false){return "x"}return 1}', { abi: 'raw' }), /unsupported/)
+})
+
+test('compact prototype: unmodified main-suite scalar corpus', () => {
+  let calls = 0
+  for (const entry of SCALAR_CORE_CASES) {
+    if (!entry.calls.length) continue
+    const exports = instantiateRaw(entry.source)
+    for (const [name, args, expected] of entry.calls) {
+      const actual = exports[name](...args)
+      ok(sameNumber(actual, expected), `${entry.id}: ${name}(${args.map(String).join(', ')})`)
+      calls++
+    }
+  }
+  is(calls, 30)
+
+  const numericWat = compileCompact(scalarCase('preeval-numeric-chain').source, { abi: 'raw', wat: true })
+  const deadIfWat = compileCompact(scalarCase('preeval-dead-if').source, { abi: 'raw', wat: true })
+  const deadWhileWat = compileCompact(scalarCase('preeval-while-false').source, { abi: 'raw', wat: true })
+  const ops = (tree) => {
+    const out = []
+    const visit = (node) => {
+      if (!Array.isArray(node)) return
+      if (typeof node[0] === 'string') out.push(node[0])
+      for (let i = 1; i < node.length; i++) visit(node[i])
+    }
+    visit(tree)
+    return out
+  }
+  ok(!ops(numericWat).some(op => op === 'f64.add' || op === 'f64.sub' || op === 'f64.mul'), 'numeric chain has no runtime arithmetic')
+  ok(!ops(deadIfWat).includes('f64.lt') && !JSON.stringify(deadIfWat).includes('["f64.const",20]'), 'constant if emits only its live branch')
+  ok(!ops(deadWhileWat).includes('loop'), 'while(false) emits no loop')
+  ok(!ops(compileCompact(scalarCase('minimal-numeric-fn').source, { abi: 'raw', wat: true })).includes('memory'), 'numeric module emits no memory')
+  is(JSON.stringify(compileCompact('', { wat: true })), '["module"]')
+  is(compileCompact('').length, 8)
+
+  const rawIndex = buildProgramIndex(prepareCompactAst(parse(scalarCase('abi-add').source)), { abi: 'raw' })
+  is(rawIndex[I_ABI_MODE], ABI_RAW)
+  throws(() => compileCompact(scalarCase('abi-add').source), /must normalize/)
+  throws(() => compileCompact(scalarCase('abi-add').source, { abi: 'opaque' }), /unknown ABI/)
+})
+
+test('compact prototype: main-suite scalar compiler reuse A to A to B', () => {
+  const a = scalarCase('abi-add')
+  const b = scalarCase('determinism-poly')
+  for (const optimize of [false, true]) {
+    const options = { abi: 'raw', optimize }
+    const firstA = compileCompact(a.source, options)
+    const secondA = compileCompact(a.source, options)
+    const afterA = compileCompact(b.source, options)
+    ok(sameBytes(firstA, secondA), `${optimize ? 'optimized' : 'plain'} scalar A to A is byte-identical`)
+    is(new WebAssembly.Instance(new WebAssembly.Module(firstA)).exports.add(2, 3), 5)
+    is(new WebAssembly.Instance(new WebAssembly.Module(afterA)).exports.poly(2, 3, 4), 671950)
+  }
+})
+
+test('compact prototype: main-suite scalar differential sources', () => {
+  const jsRef = source => new Function(`${source.replace(/export\s+let\s+f\s*=/, 'let f =')}\n;return f`)()
+  const inputs = [-98765.4321, -3, -0, 0, 0.5, 7, 12345.678, Infinity]
+  for (const entry of scalarCasesIn('differential')) {
+    const wasm = instantiateRaw(entry.source).f
+    const js = jsRef(entry.source)
+    if (entry.id === 'differential-loop-accumulate') {
+      for (const a of inputs) for (const b of inputs) ok(sameNumber(wasm(a, b), js(a, b)), `${entry.id}(${a}, ${b})`)
+    } else {
+      for (const input of inputs) {
+        const a = Math.abs(input) + 0.25
+        ok(sameNumber(wasm(a), js(a)), `${entry.id}(${a})`)
+      }
+    }
+  }
 })
 
 test('compact prototype: generated call graphs stay byte-identical and scratch plateaus', () => {
@@ -240,13 +316,15 @@ test('compact prototype: lexical hazards reject', () => {
   throws(() => compileCompact('export let f=()=>{{let x=1}return x}'), /before its declaration/)
 })
 
-test('compact prototype: empty and unsupported programs reject', () => {
-  throws(() => compileCompact(''), /module has no functions/)
-  throws(() => compileCompactAst(null), /module has no functions/)
-  throws(() => compileCompact('let f=()=>0'), /no exported function/)
+test('compact prototype: empty modules compile and unsupported programs reject', () => {
+  is(compileCompact('').length, 8)
+  is(compileCompactAst(null).length, 8)
+  is(compileCompact('let f=()=>0').length, 8)
   throws(() => compileCompact('export let f=x=>x+1'), /must normalize/)
   throws(() => compileCompact('export let f=()=>"1"'), /unsupported/)
   throws(() => compileCompact('export let f=x=>{x=+x;return Math.sin(x)}'), /unsupported/)
+  throws(() => compileCompact('export let f=x=>x%3', { abi: 'raw' }), /unsupported/)
+  throws(() => compileCompact('export let f=x=>x**2', { abi: 'raw' }), /unsupported/)
   throws(() => compileCompact('export let f=(x,y)=>{x=+x;y=+y;return x<y}'), /supported only as a condition/)
   throws(() => compileCompact('export let f=x=>{x=+x;return !x}'), /unsupported/)
   throws(() => compileCompact('export let f=()=>{}'), /does not return/)

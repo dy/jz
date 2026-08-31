@@ -10,6 +10,7 @@
 import test from 'tst'
 import { ok, is } from 'tst/assert.js'
 import jz from '../index.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 // Deterministic PRNG so failures reproduce.
 const rng = (seed => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296)(0xC0FFEE)
@@ -28,8 +29,8 @@ const PROGRAMS = [
   // half-integers stress Math.round's ties-toward-+∞ (vs wasm f64.nearest's ties-to-even).
   { name: 'round half-integers', src: `export let f = (a) => { let n = (a|0) % 64; return Math.round(n * 0.5) + Math.round(-n * 0.5) + Math.round(n * 0.5 + 0.5) }`, args: () => [num()] },
   { name: 'min/max/sqrt', src: `export let f = (a, b, c) => Math.max(a, b, c) - Math.min(a, b, c) + Math.sqrt(Math.abs(a*b))`, args: () => [num(), num(), num()] },
-  { name: 'loop accumulate', src: `export let f = (a, b) => { let s = 0; let i = 0; while (i < 64) { s = s + a*i - b; i = i + 1 } return s }`, args: () => [num(), num()] },
-  { name: 'newton sqrt', src: `export let f = (a) => { let x = a < 0 ? -a : a; let y = x > 0 ? x : 1; let i = 0; while (i < 30) { y = (y + x/y) * 0.5; i = i + 1 } return y }`, args: () => [Math.abs(num()) + rng()] },
+  { name: 'loop accumulate', src: scalarCase('differential-loop-accumulate').source, args: () => [num(), num()] },
+  { name: 'newton sqrt', src: scalarCase('differential-newton-sqrt').source, args: () => [Math.abs(num()) + rng()] },
   { name: 'fib-ish', src: `export let f = (n) => { let k = (n|0) & 31; let a = 0; let b = 1; let i = 0; while (i < k) { let t = (a + b) | 0; a = b; b = t; i = i + 1 } return a }`, args: () => [num()] },
   { name: 'branchy', src: `export let f = (a, b) => { let r = 0; if (a > b) r = a - b; else if (a < b) r = b - a; else r = 0; return a > 0 ? (r % 7) : -(r % 13) }`, args: () => [num(), num()] },
   // small base/exp so the exact f64 range isn't exceeded (iterated-multiply vs

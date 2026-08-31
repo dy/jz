@@ -2,6 +2,7 @@
 // The ProgramIndex is read-only here. Each function body is materialized once,
 // appended to the module, and then all function-local traversal state dies.
 
+import { constantNumber, constantTruth } from './constants.js'
 import { argsOf, bodyList, err, forHead, reject } from './prepare.js'
 import {
   CMP_EQ, CMP_GE, CMP_GT, CMP_LE, CMP_LT, CMP_NE, OP_ADD, OP_DIV, OP_MUL, OP_NONE, OP_SUB,
@@ -13,20 +14,6 @@ import {
   callTargetId, functionCount, localIndex,
 } from './program-index.js'
 
-const constantNumber = (node) => {
-  if (!Array.isArray(node)) return undefined
-  if (node[0] == null && node.length === 2 && typeof node[1] === 'number') return node[1]
-  if (node[0] === '()' && node.length === 2) return constantNumber(node[1])
-  const op = node[0]
-  const a = constantNumber(node[1])
-  if (a === undefined) return undefined
-  if (node.length === 2) return op === '+' ? +a : op === '-' ? -a : undefined
-  if (node.length !== 3) return undefined
-  const b = constantNumber(node[2])
-  if (b === undefined) return undefined
-  return op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : op === '/' ? a / b : undefined
-}
-
 const arithmeticWat = (kind) => kind === OP_ADD ? 'f64.add' : kind === OP_SUB ? 'f64.sub'
   : kind === OP_MUL ? 'f64.mul' : kind === OP_DIV ? 'f64.div' : null
 
@@ -35,6 +22,8 @@ const comparisonWat = (kind) => kind === CMP_EQ ? 'f64.eq' : kind === CMP_NE ? '
   : kind === CMP_LE ? 'f64.le' : kind === CMP_GE ? 'f64.ge' : null
 
 function emitCondition(node, index, funcId, scratch) {
+  const folded = constantTruth(node)
+  if (folded !== undefined) return ['i32.const', folded]
   if (Array.isArray(node)) {
     if (node[0] === '()' && node.length === 2) return emitCondition(node[1], index, funcId, scratch)
     const cmp = comparisonWat(comparisonKind(node[0]))
@@ -112,6 +101,12 @@ const appendStmt = (out, node, index, funcId, scratch) => {
   }
   if (op === 'return') { out.push(['return', emitExpr(node[1], index, funcId, scratch)]); return }
   if (op === 'if') {
+    const folded = constantTruth(node[1])
+    if (folded !== undefined) {
+      const selected = folded ? node[2] : node.length > 3 ? node[3] : null
+      appendStmt(out, selected, index, funcId, scratch)
+      return
+    }
     const thenBody = ['then']
     appendStmt(thenBody, node[2], index, funcId, scratch)
     const wat = ['if', emitCondition(node[1], index, funcId, scratch), thenBody]
@@ -124,6 +119,7 @@ const appendStmt = (out, node, index, funcId, scratch) => {
     return
   }
   if (op === 'while') {
+    if (constantTruth(node[1]) === 0) return
     const id = scratch[0]++
     const loopName = `$loop${id}`, breakName = `$break${id}`
     const loop = ['loop', loopName, ['br_if', breakName, ['i32.eqz', emitCondition(node[1], index, funcId, scratch)]]]
@@ -135,6 +131,7 @@ const appendStmt = (out, node, index, funcId, scratch) => {
   if (op === 'for') {
     const head = forHead(node[1])
     appendStmt(out, head[0], index, funcId, scratch)
+    if (constantTruth(head[1]) === 0) return
     const id = scratch[0]++
     const loopName = `$loop${id}`, breakName = `$break${id}`
     const loop = ['loop', loopName, ['br_if', breakName, ['i32.eqz', emitCondition(head[1], index, funcId, scratch)]]]

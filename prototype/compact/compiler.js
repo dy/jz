@@ -10,7 +10,7 @@ import { buildProgramIndex } from './program-index.js'
 
 export function compileCompactAst(ast, options) {
   const prepared = prepareCompactAst(ast)
-  const index = buildProgramIndex(prepared)
+  const index = buildProgramIndex(prepared, options)
   const wat = optimizeWat(lowerProgram(index), options)
   return options?.wat ? wat : compileWat(wat)
 }

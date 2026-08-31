@@ -16,6 +16,7 @@ import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { PTR, ATOM, encodePtrHi, decodePtrType, decodePtrAux } from '../layout.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 // Decode an i64 box — the u64 a raw host receives from an i64 result (BigInt in JS,
 // plain int64 in Rust/Go) — with integer ops only. No f64 reinterpret, no interop.
@@ -46,12 +47,12 @@ const i64Map = (mod) => {
 test('abi: numeric exports stay f64 — no i64 carrier, no jz:i64exp entry', () => {
   // A pure number-in/number-out export needs no boxing: it crosses as plain f64 and emits
   // no carrier metadata. Zero footprint off the box path (the DSP/bench hot shape).
-  for (const src of ['export let add = (a, b) => a + b', 'export let sq = (x) => x * x'])
+  for (const src of [scalarCase('abi-add').source, scalarCase('abi-square').source])
     is(i64Map(raw(src).mod).length, 0, `no i64exp: ${src.slice(11, 22)}`)
 })
 
 test('abi: scalar f64 in/out passes straight through', () => {
-  const { e } = raw('export let add = (a, b) => a + b')
+  const { e } = raw(scalarCase('abi-add').source)
   is(e.add(2, 3), 5)
   is(e.add(-1.5, 0.5), -1)
 })

@@ -58,3 +58,15 @@ Function scratch stays at one slot. Maximum loop-label demand is zero and maximu
 The experiment does not justify a numeric instruction tape for call lookup. At 2,048 functions, indexing plus lowering takes 11.14 ms while the frozen direct control takes 23.93 ms to validate and encode. A persistent tape would add another retained body representation without addressing the largest owner.
 
 Finalized WAT is the largest staged-only linear owner. Its measured delta reaches 1.45 MiB at 2,048 functions, and generic watr compilation adds about 0.37 MiB after lowering. This crosses the backend-attribution trigger, but the prototype remains far below the production compiler and the machine is not suitable for certification. Keep watr unchanged through the scalar and typed-memory proofs. Repeat this experiment on an exclusive machine before proposing an ownership API. Any such API must remove the retained WAT owner and preserve the byte-identical outputs above.
+
+## Scalar-gate rerun
+
+The graph was rerun after adding the shared main-suite scalar corpus, explicit raw ABI mode, empty modules, and constant-control lowering. The staged compiler graph hash was `18a59cef21c1e423d0817b650ebc04a6a42d93d3d33769b41991f889cc98414c`. The direct hash did not change.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,111,048 | 668,784 | 135,488 | 2,333 |
+| 512 | 2,028,144 | 1,058,536 | 405,480 | 9,629 |
+| 2,048 | 4,681,088 | 2,113,136 | 1,446,592 | 38,814 |
+
+All three staged outputs retained the earlier output hashes and remained byte-identical to the direct control. Function scratch remained one slot and maximum function WAT remained 13 nodes. The scalar work therefore changed neither graph output nor its lifetime conclusion.

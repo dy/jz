@@ -5,7 +5,8 @@
 // and records lexical declarations. It does not infer representations, resolve
 // calls, decide reachability, or emit WAT.
 
-import { OP_NONE, arithmeticKind, assignmentKind, comparisonKind } from './ops.js'
+import { constantNumber, isBooleanLiteral } from './constants.js'
+import { OP_ADD, OP_NONE, OP_SUB, arithmeticKind, assignmentKind, comparisonKind, hasScalarWatOpcode } from './ops.js'
 
 export const F_NAME = 0
 export const F_PARAMS = 1
@@ -98,19 +99,6 @@ const declarationOf = (node, exported) => {
   reject(node, 'top level')
 }
 
-const normalizedExportParams = (func) => {
-  if (!func[F_EXPORT] || !func[F_PARAMS].length) return true
-  const stmts = bodyList(func[F_BODY])
-  if (stmts.length < func[F_PARAMS].length) return false
-  for (let i = 0; i < func[F_PARAMS].length; i++) {
-    const name = func[F_PARAMS][i]
-    const stmt = stmts[i]
-    if (!Array.isArray(stmt) || stmt[0] !== '=' || stmt[1] !== name ||
-        !Array.isArray(stmt[2]) || stmt[2][0] !== '+' || stmt[2].length !== 2 || stmt[2][1] !== name) return false
-  }
-  return true
-}
-
 const alwaysReturns = (node) => {
   if (!Array.isArray(node)) return false
   if (node[0] === 'return') return true
@@ -129,6 +117,7 @@ const validateExportName = (name) => {
 const validateCondition = (node) => {
   if (Array.isArray(node)) {
     if (node[0] === '()' && node.length === 2) { validateCondition(node[1]); return }
+    if (isBooleanLiteral(node)) return
     if (comparisonKind(node[0]) !== OP_NONE && node.length === 3) {
       validateExpr(node[1])
       validateExpr(node[2])
@@ -158,8 +147,10 @@ function validateExpr(node) {
   }
   const arithmetic = arithmeticKind(op)
   if (arithmetic !== OP_NONE && (node.length === 2 || node.length === 3)) {
+    if (node.length === 2 && arithmetic !== OP_ADD && arithmetic !== OP_SUB) reject(node, 'expression')
     validateExpr(node[1])
     if (node.length === 3) validateExpr(node[2])
+    if (!hasScalarWatOpcode(arithmetic) && constantNumber(node) === undefined) reject(node, 'expression')
     return
   }
   if (comparisonKind(op) !== OP_NONE) err(`comparison '${op}' is supported only as a condition`)
@@ -220,20 +211,16 @@ const validateBody = (body) => {
 export function prepareCompactAst(ast) {
   const top = list(ast)
   const funcs = []
-  let exports = 0
   for (let i = 0; i < top.length; i++) {
     const func = declarationOf(top[i], false)
     for (let j = 0; j < funcs.length; j++) if (funcs[j][F_NAME] === func[F_NAME]) err(`duplicate function '${func[F_NAME]}'`)
     collectLocals(func[F_BODY], func)
     validateBody(func[F_BODY])
-    if (!normalizedExportParams(func)) err(`export '${func[F_NAME]}' must normalize each parameter with a leading 'p = +p'`)
     const body = func[F_BODY]
     if (Array.isArray(body) && (body[0] === '{}' || body[0] === ';' || body[0] === 'return') && !alwaysReturns(body))
       err(`function '${func[F_NAME]}' does not return a number on every supported path`)
-    if (func[F_EXPORT]) { validateExportName(func[F_NAME]); exports++ }
+    if (func[F_EXPORT]) validateExportName(func[F_NAME])
     funcs.push(func)
   }
-  if (!funcs.length) err('module has no functions')
-  if (!exports) err('module has no exported function')
   return funcs
 }

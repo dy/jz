@@ -4,9 +4,16 @@ import { is, ok, throws, almost } from 'tst/assert.js'
 import { onWasi, onKernel } from './_matrix.js'
 import jz, { compile } from '../index.js'
 import math from '../module/math.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 function run(code, opts) {
   return jz(code, opts).exports
+}
+
+function runScalarCase(id) {
+  const entry = scalarCase(id)
+  const exports = run(entry.source)
+  for (const [name, args, expected] of entry.calls) is(exports[name](...args), expected)
 }
 
 function hasSection(wasm, code) {
@@ -33,9 +40,7 @@ function hasSection(wasm, code) {
 
 // === Block body with let/return ===
 
-test('block: let + return', () => {
-  is(run('export let f = (x) => { let y = x * 2; return y + 1 }').f(3), 7)
-})
+test('block: let + return', () => runScalarCase('block-let-return'))
 
 test('block: multiple lets', () => {
   is(run('export let f = (x) => { let a = x + 1; let b = a * 2; return b }').f(3), 8)
@@ -47,25 +52,17 @@ test('block: const in body', () => {
 
 // === Assignment operators ===
 
-test('assignment: =', () => {
-  is(run('export let f = (x) => { let y = 0; y = x * 2; return y }').f(5), 10)
-})
+test('assignment: =', () => runScalarCase('assignment-set'))
 
 test('assignment: +=', () => {
   is(run('export let f = (x) => { let y = 10; y += x; return y }').f(5), 15)
 })
 
-test('assignment: -=', () => {
-  is(run('export let f = (x) => { let y = 10; y -= x; return y }').f(3), 7)
-})
+test('assignment: -=', () => runScalarCase('assignment-sub'))
 
-test('assignment: *=', () => {
-  is(run('export let f = (x) => { let y = 3; y *= x; return y }').f(4), 12)
-})
+test('assignment: *=', () => runScalarCase('assignment-mul'))
 
-test('assignment: /=', () => {
-  is(run('export let f = (x) => { let y = 20; y /= x; return y }').f(4), 5)
-})
+test('assignment: /=', () => runScalarCase('assignment-div'))
 
 test('assignment: >>=', () => {
   is(run('export let f = () => { let a = 256; a >>= 4; return a }').f(), 16)
@@ -572,11 +569,7 @@ test('if: early return', () => {
   is(f(-3), 3)
 })
 
-test('if-else: both branches return', () => {
-  const { f } = run('export let f = (x) => { if (x > 0) return 1; else return -1 }')
-  is(f(5), 1)
-  is(f(-5), -1)
-})
+test('if-else: both branches return', () => runScalarCase('if-else-return'))
 
 test('if: comparison ==', () => {
   const { f } = run('export let f = (x) => { if (x == 0) return 42; return x }')
@@ -610,9 +603,7 @@ test('assign prefix: x = ++i', () => {
   is(run('export let f = () => { let i = 5; let x = ++i; return x }').f(), 6)
 })
 
-test('postfix increments side effect', () => {
-  is(run('export let f = () => { let i = 5; i++; return i }').f(), 6)
-})
+test('postfix increments side effect', () => runScalarCase('postfix-side-effect'))
 
 test('array[i++] uses old index', () => {
   is(run('export let f = () => { let a = [10, 20, 30]; let i = 1; return a[i++] }').f(), 20)
@@ -620,9 +611,7 @@ test('array[i++] uses old index', () => {
 
 // === NaN truthiness ===
 
-test('if(NaN) is falsy', () => {
-  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(NaN), 0)
-})
+test('if(NaN) is falsy', () => runScalarCase('if-nan-falsy'))
 
 test('!NaN is true', () => {
   is(run('export let f = (x) => { if (!x) return 1; return 0 }').f(NaN), 1)
@@ -979,13 +968,9 @@ test('for...in: break in runtime HASH iteration exits', () => {
   is(f(), 1)
 })
 
-test('if(0) still falsy', () => {
-  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(0), 0)
-})
+test('if(0) still falsy', () => runScalarCase('if-zero-falsy'))
 
-test('if(1) still truthy', () => {
-  is(run('export let f = (x) => { if (x) return 1; return 0 }').f(1), 1)
-})
+test('if(1) still truthy', () => runScalarCase('if-one-truthy'))
 
 // === Ternary ===
 
@@ -997,40 +982,11 @@ test('ternary: a ? b : c', () => {
 
 // === For loop ===
 
-test('for: sum 0..n', () => {
-  const { f } = run(`export let f = (n) => {
-    let s = 0
-    for (let i = 0; i < n; i++) s += i
-    return s
-  }`)
-  is(f(0), 0)
-  is(f(1), 0)
-  is(f(5), 10)  // 0+1+2+3+4
-  is(f(10), 45)
-})
+test('for: sum 0..n', () => runScalarCase('for-sum'))
 
-test('for: factorial', () => {
-  const { f } = run(`export let f = (n) => {
-    let r = 1
-    for (let i = 1; i <= n; i++) r *= i
-    return r
-  }`)
-  is(f(0), 1)
-  is(f(1), 1)
-  is(f(5), 120)
-})
+test('for: factorial', () => runScalarCase('for-factorial'))
 
-test('for: nested', () => {
-  // sum of i*j for i=0..a, j=0..b
-  const { f } = run(`export let f = (a, b) => {
-    let s = 0
-    for (let i = 0; i < a; i++)
-      for (let j = 0; j < b; j++)
-        s += i * j
-    return s
-  }`)
-  is(f(3, 3), 9)  // (0*0+0*1+0*2) + (1*0+1*1+1*2) + (2*0+2*1+2*2) = 0+3+6
-})
+test('for: nested', () => runScalarCase('for-nested'))
 
 test('for: omitted init and step with condition', () => {
   const { f } = run(`export let f = () => {

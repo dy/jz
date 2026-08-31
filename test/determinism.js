@@ -8,13 +8,14 @@ import { ok } from 'tst/assert.js'
 import { compile } from '../index.js'
 import { OPT_LEVEL } from './_matrix.js'
 import { BIGINT_TYPED_STORE_SOURCE } from './_bigint-typed-store-corpus.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 const PROGRAMS = [
-  'export let add = (a, b) => a + b',
+  scalarCase('abi-add').source,
   'export let mix = (n) => { let h = 2166136261|0; for (let i = 0; i < (n|0); i++) { h = Math.imul(h ^ i, 16777619); h ^= h >>> 13 } return h >>> 0 }',
   'export let shape = () => { let o = { x: 1, y: 2, z: 3 }; let a = [o.x, o.y, o.z]; return a[0] + a[1] + a[2] }',
   'export let str = (s) => s.length + s.charCodeAt(0)',
-  'export let poly = (a, b, c) => { let s = 0; for (let i = 0; i < 100; i++) s += a*i*i + b*i + c; return s }',
+  scalarCase('determinism-poly').source,
   'let N = 0; let buf; export let init = (k) => { N = k; buf = new Float64Array(k); return buf }; export let run = () => { let i = 0; while (i < N) { buf[i] = buf[i] * 2.0 + i; i++ } }',
   BIGINT_TYPED_STORE_SOURCE,
 ]
