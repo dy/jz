@@ -1,6 +1,6 @@
 # Compact staged compiler prototype
 
-This prototype tests the proposed production stages on a deliberately narrow numeric subset:
+The prototype implements the proposed production stages for a narrow numeric subset:
 
 ```text
 parse
@@ -11,7 +11,7 @@ optional watr optimize
 watr compile
 ```
 
-It has no fallback to the production compiler. Unsupported source rejects before encoding.
+Unsupported source rejects before encoding. No source shape falls back to the production compiler.
 
 The implementation is split by lifetime:
 
@@ -51,11 +51,11 @@ The default `abi: 'js'` contract requires every exported parameter to begin with
 
 Strings inside compiled code, objects, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Dynamic `%` and `**` also reject until their exact numeric lowering exists. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
 
-These ABI rules are confined to the prototype. Production JZ must reuse its existing representation proofs or reject without asking users to edit source.
+Production JZ must use its existing representation proofs or reject. It cannot require users to add coercion guards.
 
 ## Shared scalar gate
 
-`test/_scalar-core-cases.js` owns 56 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. The original production tests import the same records. The isolated prototype executes 69 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI A to A to B determinism. Thirty control cases and 39 calls also run after watr optimization. No test adapter edits source.
+`test/_scalar-core-cases.js` owns 56 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. Production tests and the isolated prototype import the same records. The prototype executes 69 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI reuse checks. Thirty control cases and 39 calls also run after watr optimization. No adapter edits source.
 
 ## Stage contracts
 
@@ -71,7 +71,7 @@ Prepared function records are positional:
 
 ### ProgramIndex
 
-`buildProgramIndex(prepared)` copies persistent facts into parallel arrays. It assigns:
+`buildProgramIndex(prepared, options)` copies persistent facts into parallel arrays. It assigns:
 
 - numeric source function IDs
 - numeric binding IDs
@@ -90,7 +90,7 @@ The current index still retains AST bodies and source names. It does not yet hav
 
 `lowerFunction(index, funcId)` creates one scalar WAT function. Numeric control IDs, lexical target records, reusable expression temporaries, and their high-water marks live in function scratch. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
 
-The graph experiment rejected a persistent numeric instruction tape: lookup was not material and another retained body form would increase memory.
+Graph measurements found no material lookup cost. A persistent instruction tape would retain another body representation.
 
 ### Backend
 
@@ -101,7 +101,7 @@ compileCompact(source, { optimize: true }) // current watr/optimize, then compil
 compileCompact(source, { wat: true })      // return the lowered WAT array
 ```
 
-The optimized path is covered by nested loops, lexical control transfer, update values, comma effects, and short-circuit joins. Lowering gives watr local names derived from numeric binding IDs because watr 5.10.1 CSE invalidates named local writes only. The binary still contains numeric local indices and graph output remains byte-identical to the direct control. The general numeric-index fix is committed upstream in watr as `b53c92c`; it is not hidden in `node_modules` and is not required by this branch. Watr otherwise remains unmodified.
+The optimized path covers nested loops, lexical control transfer, update values, comma effects, and short-circuit joins. Lowering derives WAT local names from numeric binding IDs because watr 5.10.1 CSE invalidates named local writes only. Wasm still uses numeric local indices, and graph output remains byte-identical to the direct control. The general numeric-index fix is committed upstream as watr `b53c92c`; this branch does not depend on it. The installed watr package is unchanged.
 
 ### Direct control
 
@@ -146,19 +146,19 @@ node prototype/compact/bench.mjs
 
 Do not add these commands to `test/index.js` or `package.json` while the work remains isolated.
 
-The graph benchmark runs the staged and frozen direct backends in fresh processes at 128, 512, and 2,048 functions. It records source, compiler, and output hashes, phase time, post-GC heap, retained WAT, and maximum function scratch. The first evidence is recorded in [`graph-evidence.md`](graph-evidence.md). Output is byte-identical at every size, scratch plateaus, and finalized WAT is the largest staged-only linear owner. The measurement does not justify a retained numeric instruction tape.
+The graph benchmark runs the staged and frozen direct backends in fresh processes at 128, 512, and 2,048 functions. It records source, compiler, and output hashes, phase time, post-GC heap, retained WAT, and maximum function scratch. [`graph-evidence.md`](graph-evidence.md) records byte-identical output at every size, plateauing scratch, and finalized WAT as the largest staged-only linear owner.
 
-The benchmark self-compiles the staged compiler and runs A to A to B through one reusable instance in both optimization modes. It then compares optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying. Instantiation, source marshaling, and `_clear()` stay outside.
+The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
 
-Latest loaded-machine result against the fresh 14,444,038-byte `dist/jz.wasm`:
+Latest loaded-machine result against the fresh 14,455,164-byte `dist/jz.wasm`:
 
-- staged compiler: 2,125,754 bytes, 6.79x smaller
+- staged compiler: 2,125,754 bytes, 6.80x smaller
 - staged source graph: 71 modules, 960,470 source bytes
-- compile-speed geomean: 62.22x
-- minimum compile speedup: 7.13x
+- compile-speed geomean: 64.80x
+- minimum compile speedup: 7.09x
 - emitted-size geomean: 48.75x smaller
 - constant modules tie production at 41 bytes
 
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
-The machine still had about 13.9 GB of allocated swap. These timings are directional evidence and do not certify release performance. The full compiler supports far more source, so the artifact ratio does not predict the final production saving.
+The machine had about 13.9 GB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

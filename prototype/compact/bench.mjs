@@ -25,6 +25,9 @@ const fullModule = toModule(FULL_BYTES)
 const artifactShrink = FULL_BYTES.length / compactBytes.length
 
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i])
+// mem.read returns typed-array views into compiler memory. Copy before _clear()
+// so retained-output checks cannot alias the next compile's arena.
+const readBytes = (instance, ptr) => new Uint8Array(instance.memory.read(ptr))
 const verifyReuse = () => {
   const compiler = instantiate(compactModule, { memory: 1024, externref: false })
   const a = scalarCase('abi-add'), b = scalarCase('determinism-poly')
@@ -40,19 +43,33 @@ const verifyReuse = () => {
     [control.source, 'f', [], 30],
   ]
   const runCases = (optimize) => {
-    let first = null
+    let first = null, firstSnapshot = null
     const mode = optimize ? 'optimized ' : ''
+    const reference = instantiate(compactModule, { memory: 1024, externref: false })
+    const referenceSource = reference.memory.String(b.source)
+    const referenceOptions = reference.memory.Object(optimize ? { abi: 'raw', optimize: true } : { abi: 'raw' })
+    const referenceB = readBytes(reference, reference.exports.default(referenceSource, referenceOptions))
+    reference.instance.exports._clear()
     for (let i = 0; i < cases.length; i++) {
       const [source, exportName, args, expected] = cases[i]
       const sourcePtr = compiler.memory.String(source)
       const optionsPtr = compiler.memory.Object(optimize ? { abi: 'raw', optimize: true } : { abi: 'raw' })
-      const output = compiler.memory.read(compiler.exports.default(sourcePtr, optionsPtr))
+      const output = readBytes(compiler, compiler.exports.default(sourcePtr, optionsPtr))
       const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports[exportName](...args)
       if (!Object.is(value, expected)) throw new Error(`${mode}reuse case ${i}: got ${value}, expected ${expected}`)
-      if (i === 0) first = output
+      if (i === 0) { first = output; firstSnapshot = new Uint8Array(output) }
       else if (i === 1 && !sameBytes(first, output)) throw new Error(`${mode}reuse case A to A changed output bytes`)
+      else if (i === 2 && !sameBytes(referenceB, output)) throw new Error(`${mode}reuse case B changed after A to A`)
       compiler.instance.exports._clear()
     }
+    if (!sameBytes(first, firstSnapshot)) throw new Error(`${mode}retained output aliases compiler memory`)
+    const emptySource = compiler.memory.String('')
+    const emptyOptions = compiler.memory.Object(optimize ? { abi: 'raw', optimize: true } : { abi: 'raw' })
+    const empty = readBytes(compiler, compiler.exports.default(emptySource, emptyOptions))
+    const emptyModule = new WebAssembly.Module(empty)
+    if (empty.length !== 8 || WebAssembly.Module.exports(emptyModule).length)
+      throw new Error(`${mode}reuse empty source did not produce the canonical empty module`)
+    compiler.instance.exports._clear()
   }
   runCases(false)
   runCases(true)
@@ -78,8 +95,8 @@ const compileOnce = (module, source, compact) => {
   const instance = instantiate(module, { memory: 1024, externref: false })
   const sourcePtr = instance.memory.String(source)
   return compact
-    ? instance.memory.read(instance.exports.default(sourcePtr))
-    : instance.memory.read(instance.exports.default(sourcePtr, 0, instance.memory.String('false')))
+    ? readBytes(instance, instance.exports.default(sourcePtr))
+    : readBytes(instance, instance.exports.default(sourcePtr, 0, instance.memory.String('false')))
 }
 
 // One instance per case, reset after each compile. Source marshaling and reset stay
@@ -90,8 +107,8 @@ const timedCompiler = (module, source, compact, runs = 17, warm = 5) => {
     const sourcePtr = instance.memory.String(source)
     const optPtr = compact ? 0 : instance.memory.String('false')
     const start = performance.now()
-    if (compact) instance.memory.read(instance.exports.default(sourcePtr))
-    else instance.memory.read(instance.exports.default(sourcePtr, 0, optPtr))
+    if (compact) readBytes(instance, instance.exports.default(sourcePtr))
+    else readBytes(instance, instance.exports.default(sourcePtr, 0, optPtr))
     const elapsed = performance.now() - start
     instance.instance.exports._clear()
     return elapsed

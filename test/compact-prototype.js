@@ -193,12 +193,15 @@ test('compact prototype: unmodified main-suite scalar corpus', () => {
   ok(!ops(deadIfWat).includes('f64.lt') && !JSON.stringify(deadIfWat).includes('["f64.const",20]'), 'constant if emits only its live branch')
   ok(!ops(deadWhileWat).includes('loop'), 'while(false) emits no loop')
   ok(!ops(compileCompact(scalarCase('minimal-numeric-fn').source, { abi: 'raw', wat: true })).includes('memory'), 'numeric module emits no memory')
-  is(JSON.stringify(compileCompact('', { wat: true })), '["module"]')
-  is(compileCompact('').length, 8)
 
-  const rawIndex = buildProgramIndex(prepareCompactAst(parse(scalarCase('abi-add').source)), { abi: 'raw' })
+  const rawSource = scalarCase('abi-add').source
+  const rawAst = parse(rawSource)
+  const rawIndex = buildProgramIndex(prepareCompactAst(rawAst), { abi: 'raw' })
   is(rawIndex[I_ABI_MODE], ABI_RAW)
-  throws(() => compileCompact(scalarCase('abi-add').source), /must normalize/)
+  const rawAstModule = new WebAssembly.Module(compileCompactAst(rawAst, { abi: 'raw' }))
+  is(new WebAssembly.Instance(rawAstModule).exports.add(2, 3), 5)
+  throws(() => compileCompactAst(rawAst), /must normalize/)
+  throws(() => compileCompact(rawSource), /must normalize/)
   throws(() => compileCompact(scalarCase('abi-add').source, { abi: 'opaque' }), /unknown ABI/)
 })
 
@@ -246,11 +249,15 @@ test('compact prototype: main-suite scalar compiler reuse A to A to B', () => {
   const b = scalarCase('determinism-poly')
   for (const optimize of [false, true]) {
     const options = { abi: 'raw', optimize }
+    const referenceB = compileCompact(b.source, options)
     const firstA = compileCompact(a.source, options)
     const secondA = compileCompact(a.source, options)
     const afterA = compileCompact(b.source, options)
-    ok(sameBytes(firstA, secondA), `${optimize ? 'optimized' : 'plain'} scalar A to A is byte-identical`)
+    const mode = optimize ? 'optimized' : 'plain'
+    ok(sameBytes(firstA, secondA), `${mode} scalar A to A is byte-identical`)
+    ok(sameBytes(referenceB, afterA), `${mode} scalar B is independent of prior A compiles`)
     is(new WebAssembly.Instance(new WebAssembly.Module(firstA)).exports.add(2, 3), 5)
+    is(new WebAssembly.Instance(new WebAssembly.Module(secondA)).exports.add(2, 3), 5)
     is(new WebAssembly.Instance(new WebAssembly.Module(afterA)).exports.poly(2, 3, 4), 671950)
   }
 })
@@ -358,8 +365,13 @@ test('compact prototype: lexical hazards reject', () => {
 })
 
 test('compact prototype: empty modules compile and unsupported programs reject', () => {
-  is(compileCompact('').length, 8)
-  is(compileCompactAst(null).length, 8)
+  const empty = compileCompact('')
+  is(empty.length, 8)
+  is(WebAssembly.Module.exports(new WebAssembly.Module(empty)).length, 0)
+  is(JSON.stringify(compileCompact('', { wat: true })), '["module"]')
+  is(compileCompact('', { optimize: true }).length, 8)
+  is(compileCompactAst(null, null).length, 8)
+  is(JSON.stringify(compileCompactAst(null, { abi: 'raw', optimize: true, wat: true })), '["module"]')
   is(compileCompact('let f=()=>0').length, 8)
   throws(() => compileCompact('export let f=x=>x+1'), /must normalize/)
   throws(() => compileCompact('export let f=()=>"1"'), /unsupported/)
