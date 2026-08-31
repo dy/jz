@@ -148,7 +148,14 @@ const appendStmt = (out, node, index, funcId, scratch) => {
   reject(node, 'statement')
 }
 
-export function lowerFunction(index, funcId) {
+const treeNodeCount = (node) => {
+  if (!Array.isArray(node)) return 1
+  let count = 1
+  for (let i = 1; i < node.length; i++) count += treeNodeCount(node[i])
+  return count
+}
+
+export function lowerFunction(index, funcId, metrics) {
   const scratch = [0]
   const fn = ['func', ['type', index[I_FN_TYPE_ID][funcId]]]
   const locals = index[I_FN_LOCAL_COUNT][funcId]
@@ -164,10 +171,16 @@ export function lowerFunction(index, funcId) {
     appendStmt(fn, body, index, funcId, scratch)
     fn.push(['unreachable'])
   }
+  if (metrics) {
+    metrics.functionCount = (metrics.functionCount || 0) + 1
+    metrics.maxScratchSlots = Math.max(metrics.maxScratchSlots || 0, scratch.length)
+    metrics.maxLoopLabels = Math.max(metrics.maxLoopLabels || 0, scratch[0])
+    metrics.maxFunctionWatNodes = Math.max(metrics.maxFunctionWatNodes || 0, treeNodeCount(fn))
+  }
   return fn
 }
 
-export function lowerProgram(index) {
+export function lowerProgram(index, metrics) {
   const module = ['module']
   const types = index[I_TYPE_PARAM_COUNT]
   for (let typeId = 0; typeId < types.length; typeId++) {
@@ -177,7 +190,7 @@ export function lowerProgram(index) {
     module.push(['type', signature])
   }
   for (let funcId = 0; funcId < functionCount(index); funcId++) {
-    if (index[I_FN_REACHABLE][funcId]) module.push(lowerFunction(index, funcId))
+    if (index[I_FN_REACHABLE][funcId]) module.push(lowerFunction(index, funcId, metrics))
   }
   const exportFuncs = index[I_EXPORT_FUNC]
   const exportNames = index[I_EXPORT_NAME]

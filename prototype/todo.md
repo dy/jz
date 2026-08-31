@@ -230,10 +230,10 @@ Status: first slice implemented; scaling evidence remains.
 - [x] assign final Wasm function and type IDs before lowering
 - [x] omit unreachable function bodies
 - [x] emit numeric function and type references to WAT
-- [ ] replace lower-time name lookup with a per-function numeric instruction tape
-- [ ] generate source-hashed 128, 512, and 2,048-function graphs
-- [ ] record parse, index, lower, watr, and output memory
-- [ ] prove linear total growth and plateauing scratch
+- [x] retain lower-time name lookup after measurement found no material cost; do not add a persistent tape
+- [x] generate source-hashed 128, 512, and 2,048-function graphs
+- [x] record parse, index, lower, watr, and output memory
+- [x] prove linear total growth and plateauing scratch
 
 Stop condition: if indexing itself exceeds 10 percent above the direct control peak, attribute the exact pool before adding syntax.
 
@@ -347,15 +347,17 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Implement the generated graph experiment before adding any source feature:
+Build the shared scalar-core corpus from exact main-suite sources:
 
-1. Generate equal-shape direct-call graphs at 128, 512, and 2,048 functions.
-2. Compile each with the staged watr backend and frozen direct control.
-3. Verify result equality, emitted module validity, and reachable-body counts.
-4. Record source hash, compiler hash, output hash, phase time, heap after phase GC, and max function scratch.
-5. Replace lower-time call-name resolution with a numeric per-function tape only if measurements show that retained lookup or repeated traversal matters.
+1. Move the selected source strings, calls, and expected values into one data-only corpus.
+2. Keep the production tests and isolated prototype runner on that same authority.
+3. Accept empty modules and modules with no reachable export.
+4. Move exported-parameter ABI policy from prepare into ProgramIndex.
+5. Admit unguarded numeric parameters only under an explicit raw ABI contract.
+6. Fold pure constant arithmetic and constant control during function lowering without skipping validation of dead source.
+7. Preserve the frozen direct encoder and rerun the graph experiment after the scalar gate stabilizes.
 
-The experiment decides the next allocation owner. It does not decide a preferred backend in advance.
+The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 
 ## Expert test
 

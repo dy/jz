@@ -126,10 +126,13 @@ Run the graph-scaling experiment before adding syntax.
 
 ```sh
 node test/compact-prototype.js
+node prototype/compact/graph-bench.mjs
 node prototype/compact/bench.mjs
 ```
 
 Do not add these commands to `test/index.js` or `package.json` while the work remains isolated.
+
+The graph benchmark runs the staged and frozen direct backends in fresh processes at 128, 512, and 2,048 functions. It records source, compiler, and output hashes, phase time, post-GC heap, retained WAT, and maximum function scratch. The first evidence is recorded in [`graph-evidence.md`](graph-evidence.md). Output is byte-identical at every size, scratch plateaus, and finalized WAT is the largest staged-only linear owner. The measurement does not justify a retained numeric instruction tape.
 
 The benchmark self-compiles the staged compiler and runs A to A to B through one reusable instance in both optimization modes. It then compares optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying. Instantiation, source marshaling, and `_clear()` stay outside.
 

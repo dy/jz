@@ -2,6 +2,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import compileCompact, { compileCompactAst } from '../prototype/compact/compiler.js'
 import compileDirect from '../prototype/compact/direct.js'
+import { generateDirectCallGraph } from '../prototype/compact/graph-corpus.js'
 import { lowerProgram } from '../prototype/compact/lower.js'
 import { prepareCompactAst } from '../prototype/compact/prepare.js'
 import {
@@ -154,6 +155,26 @@ test('compact prototype: numeric index, reachability, and watr boundary', () => 
   is(optimized(7), 15)
   throws(() => compileCompact('let dead=()=>missing();export let f=()=>0'), /unknown direct function/)
   throws(() => compileCompact('let dead=()=>"x";export let f=()=>0'), /unsupported/)
+})
+
+test('compact prototype: generated call graphs stay byte-identical and scratch plateaus', () => {
+  for (const count of [8, 128]) {
+    const graph = generateDirectCallGraph(count)
+    const ast = parse(graph.source)
+    const index = buildProgramIndex(prepareCompactAst(ast))
+    const metrics = {}
+    const wat = lowerProgram(index, metrics)
+    const staged = compileCompact(graph.source)
+    const direct = compileDirect(graph.source)
+    ok(sameBytes(staged, direct), `${count} functions emit the direct-control bytes`)
+    is(functionCount(index), count)
+    is(index[I_FN_REACHABLE].reduce((sum, value) => sum + value, 0), count)
+    is(wat.filter(node => Array.isArray(node) && node[0] === 'func').length, count)
+    is(metrics.maxScratchSlots, 1)
+    is(metrics.maxLoopLabels, 0)
+    is(metrics.maxFunctionWatNodes, 13)
+    is(new WebAssembly.Instance(new WebAssembly.Module(staged)).exports.run(...graph.args), graph.expected)
+  }
 })
 
 test('compact prototype: nested loops own independent function scratch', () => {
