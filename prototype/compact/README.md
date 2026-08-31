@@ -152,10 +152,10 @@ The benchmark self-compiles the staged compiler and runs A to A to B through one
 
 Latest loaded-machine result against the fresh 14,444,038-byte `dist/jz.wasm`:
 
-- staged compiler: 2,125,730 bytes, 6.79x smaller
-- staged source graph: 71 modules, 960,400 source bytes
-- compile-speed geomean: 66.45x
-- minimum compile speedup: 7.67x
+- staged compiler: 2,125,754 bytes, 6.79x smaller
+- staged source graph: 71 modules, 960,470 source bytes
+- compile-speed geomean: 62.22x
+- minimum compile speedup: 7.13x
 - emitted-size geomean: 48.75x smaller
 - constant modules tie production at 41 bytes
 
