@@ -263,7 +263,7 @@ Verification for this slice:
 - compact prototype after scalar control: 17 tests and 333 assertions
 - self-compiled compact benchmark: threshold pass, including raw A to A to B and constant `%` and `**`
 
-The opt0 matrix leg remains red on the pre-existing standalone `test/date.js` shared-dispatch `.valueOf()` case. No production compiler, runtime, or date source differs from `origin/main` on this branch. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
+The opt0 matrix leg remains red on the standalone `test/date.js` shared-dispatch `.valueOf()` case that predates this prototype slice. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
 
 ### M1b. Scalar control completion
 
