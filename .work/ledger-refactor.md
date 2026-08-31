@@ -1330,3 +1330,194 @@ Map/Set iteration order was touched by any change in this sweep: each
 change is either a whole unreached file, a function/const with zero
 readers, or an `export` keyword removed from a binding whose only readers
 are in the same file (removing `export` cannot change iteration order).
+
+---
+
+## Typedarray `every()` combinator + the six vectorize load/store validators
+
+Closes the two remaining items from the M1b follow-up list ("Follow-ups
+queued for a later batch", above) and `.work/archive/pipeline-minimality.md`'s
+batch-2 items (b) and (c). Branch `refactor/vec-combinators`, worktree off
+`b4e36f0f`. `hasWrite`/`hasSameRead` in `module/typedarray.js` were already
+closed by slice M1c (`025e2a7a`, converted onto `some()`'s new `boundary`
+option) — only `safeRmwAst` (an every-predicate, no dual combinator existed)
+and the six validator ports remained open.
+
+**`every()`** (`src/ast.js`, next to `some()`): same contract, dualized —
+`pred` sees every array node before a `boundary` node's children are
+pruned; a non-array node is vacuously true (nothing left to disprove) where
+`some()`'s is vacuously false. `safeRmwAst` (`module/typedarray.js`, the
+checked-typedarray RMW-fusion guard in `.typed:[]=`) rewritten on top of
+it: the `()`-call special case (only a `math.imul`/`Math.imul` callee's
+FIRST argument is ever safe to fuse; the callee itself and any further
+argument are never inspected) is expressed as a `boundary` so `every`'s own
+child loop doesn't re-walk what the call arm already resolved. 1 site,
+14 → 8 lines of logic (`+15/-16` incl. the new `isImulCallee` extraction
+and doc comment). Byte-identical by construction (hand-verified node-by-
+node against the original before landing, then oracle-confirmed).
+
+**The six validator ports** (`.work/archive/pipeline-minimality.md`
+batch-2's own words: "the six verbatim load/store validator ports across
+vectorize map/stencil/reduce are one walker copied six times"): each of
+`tryGeneralStencil` (`stencil.js`), `tryGeneralMap` (`map.js`), and
+`tryGeneralReduce` (`reduce.js`) carried its own copy of a `matchOffset` +
+`matchAddr` pair — a tee-CSE "`base + (IDX << K)`" address matcher, ported
+verbatim from one to the next per their own header comments ("exactly like
+tryStencil's own matchAddr (ported, not re-derived — same soundness
+argument)", map.js; "identical contract to tryReduceReassoc's own
+scanExpr, generalized ONLY in the address proof", reduce.js). Diffing all
+three confirmed the six functions are CODE-IDENTICAL (not merely similar):
+`matchOffset` byte-for-byte across all three including the byte-lane
+fallback clause (tryGeneralMap's own addition — "needed here for the first
+time because tryStencil never reached i8 lanes at all" — ported on to the
+other two from there); `matchAddr` identical modulo one cosmetic default-
+parameter presence (`reduce`'s omits `= stride` because its caller, unlike
+the other two, never invokes it without an explicit stride — dead
+either way). `isInvBase` (`(b) => global.get or a local.get never in
+writes`), inlined into each `matchAddr`, was also identical across all
+three and had no other call site in any of the three functions.
+
+Unified onto two new exports in `addr-model.js` (already this family's
+shared home — `isI32Const`/`isLocalGet`/`matchLaneAddr`/`matchLaneOffset`
+all live there and all three files already import from it):
+`matchStrideOffset(off, expectStride, offTees, ivCoeff)` and
+`matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)`
+(`isInvariantBase` folded in as a private helper — no external caller).
+`ivCoeff` deliberately stays a per-recognizer callback, NOT unified:
+`tryGeneralStencil`'s own carries the toroidal wrap-select and float-
+domain grid-index arms (needed for periodic-boundary stencils and 2-D row-
+base loops) that the plain map/reduce recognizers never need — see the
+"port, don't share" design note directly above `tryGeneralStencil` in
+`stencil.js`, which explains that duplication there is deliberate
+(insulating each recognizer's own gated corpus from a future change to a
+sibling's acceptance criteria). Unifying only the mechanical tee-chasing
+shape — which has no acceptance criteria of its own — respects that intent
+instead of overriding it; each of the six call sites becomes a 1-2 line
+wrapper closing over its own `writes`/`offTees`/`addrTees`/`ivCoeff`, so
+every call site elsewhere in each function (load path, store path, the
+`local.tee` offset-record path, and — `tryGeneralStencil` only — the
+later alias-versioning section) needed no change at all.
+
+**`tryStencil`'s own original** (the ancestor these three ported their
+SHAPE from) is untouched on purpose: it predates the byte-lane fallback
+clause (an f64/f32-only recognizer that hard-declines every other lane
+never reaches stride 1), so it is not one of "the six" the campaign names
+and folding it in would mean either giving it a dead unreachable branch it
+never had, or adding a flag back to the shared functions for a single
+caller — both worse than leaving one 3-line-smaller original in place.
+
+**Battery** (worktree `b4e36f0f`, HEAD `9f7b4f2f`): refactor oracle CLEAN
+568/568 after each of the two commits individually (baseline `b4e36f0f`),
+and again 568/568 at final HEAD; `kernel-parity.js` 3/3 (39 assertions)
+after each; vectorizer-specific suites (`cond-vectorize.js`, `simd.js`
+[242/242, 7205 assertions], `simd-intrinsics.js`, `slp.js`,
+`unswitch-typed-param.js`) all green after the validator unification.
+LOC: `+15/-16` typedarray.js, `+19/-0` ast.js, `+63/-0` addr-model.js (new
+shared home), `+7/-29` map.js, `+6/-27` reduce.js, `+6/-25` stencil.js —
+six ~10-22-line duplicated validators collapsed to six 1-2-line wrappers
+over one ~35-line (plus doc comment) shared implementation.
+
+**Kernel size**: `dist/jz.wasm` (jz's own compiler self-compiled — the
+oracle's default corpus excludes this exact graph as too slow for a
+per-slice gate) 14,116.4 kB at `b4e36f0f` → 14,113.0 kB at HEAD, a genuine
+−3.4 kB self-compile reduction — expected and correct, not a divergence:
+the kernel is jz's OWN compiler source compiled by itself, so deleting
+net duplicate logic from that source (comments compile away; the six
+collapsed validator bodies don't) legitimately shrinks it.
+`scripts/bench-size.mjs --json` (the per-CASE compiled-output sizes this
+kernel then produces for bench/example programs, a materially different
+question from the kernel's own size) diffed `b4e36f0f` vs HEAD: 0 lines
+differ, byte-identical — consistent with, and independently confirming,
+the refactor oracle's own CLEAN result.
+
+**Final battery** (HEAD `9f7b4f2f`, after both commits): `npm run build`
+clean; `test/index.js` 3895 total, 3894 pass, 1 skip, 0 fail (29,286
+assertions — matches `plan.md`'s recorded 3,894/3,895 baseline exactly);
+`kernel-parity.js` 3/3 (39 assertions); `kernel-oracle.js` 15/15 (738
+assertions); `pointers.js` 73/73 (132 assertions); `data.js` 210/210
+(1171 assertions — the four open wrong-value families in `plan.md` are
+pinned KNOWN-WRONG, not newly introduced, and this run doesn't touch
+them); `invariants.js` 29/29 (169 assertions); `eager-stdlib-parity.js`
+30/30 (68 assertions); `JZ_TEST_TARGET=jz.wasm test/index.js` (the
+kernel-target leg) 3059 total, 3058 pass, 1 skip, 0 fail (15,181
+assertions — matches `plan.md`'s recorded 3,058/3,059 baseline exactly).
+Every leg 0 fail; every total matches its documented baseline count
+exactly, so nothing in the surrounding suite moved either.
+
+## `scanNumericFill` fold — declined
+
+`.work/archive/walk-count-design.md` §5 item A2 ("fold `scanNumericFill`
+into `walk`'s own dispatch", `analyzeBody`'s 6th named sub-pass, after A1
+already fused three others into `scanObjectArrayFacts` — see
+`.work/evidence.md`'s "Walk-count reduction — B1 + A1 landed" entry) was
+attempted and declined, per the queue item's own precondition ("needs the
+empirical check... run both old-and-new... THEN delete the separate
+call"). No code changed for this item; declining IS the precondition
+doing its job, not a formality skipped.
+
+**Why it isn't a mechanical fold.** `scanNumericFill` (`analyze-scans.js`)
+is a per-candidate recursive predicate, `numFillSafe(body, name,
+isNumericRhs)`: default-deny, visits EVERY node including bare-string
+leaves, and disqualifies `name` on any mention that isn't one of a fixed
+set of recognized-safe shapes (the fill-write itself, a `.length` read, an
+index read, a decl initializer). `walk` (`body-facts.js:521`, the pass
+this would fold into) is a different kind of traversal: an op-dispatch
+visitor that recurses only into ARRAY children (`if
+(!Array.isArray(node)) return` at its own top) and has no generic bare-
+string visiting at all — the closest it has, `markEscapeValue`, is called
+at specific value-position sites for its OWN (different) escape-tracking
+purpose, not everywhere `numFillSafe` needs it. Two concrete gaps found
+while attempting the fold, not merely suspected:
+
+1. **A bare-alias miss.** `let b = a` (aliasing a fill candidate `a`)
+   is a `let`/`const` decl whose init is the bare string `'a'`. `walk`'s
+   own decl handler calls `walk(rhs)` on it, which is a no-op for a
+   non-array argument — this specific disqualifying shape has no path to
+   get checked without adding a new value-position-visiting discipline
+   `walk` doesn't have today, not just a new dispatch arm.
+2. **A write-shape gap.** `numFillSafe`'s own fill-write rule matches
+   `a[i] = val` (an `=` node whose LHS is a `[]` node) directly. `walk`
+   has no branch for `op === '=' && Array.isArray(node[1])` at all — that
+   shape currently falls through to `walk`'s generic bottom loop, which
+   treats the `['[]', 'a', 'i']` LHS exactly like an ordinary read (its
+   own `escapes`-tracking purpose doesn't distinguish read/write position
+   for this shape). A correct fold needs this as a new, explicit branch,
+   not a repurposing of something already there.
+
+**Why the assert-gate wouldn't have been decisive here either**, unlike a
+pure control-flow refactor (where a clean corpus diff is strong evidence):
+`valTypes` (the overlay `isNumericRhs` reads) is populated by
+`makeValTracker` (`analyze/trackers.js`), a POISON-based join — a name's
+entry can read as `NUMBER` mid-walk and later be deleted (poisoned) by
+conflicting evidence seen further down the SAME body. `scanNumericFill`'s
+current placement (strictly after `walk(body)` completes) reads the fully-
+settled join; an inline fold evaluating the same read mid-walk could see
+an interim, not-yet-poisoned value — a genuine flow-sensitivity hazard,
+not a hypothetical one, confirmed by reading `makeValTracker`'s actual
+join logic. This shape (a fill-write followed LATER in the same body by
+conflicting evidence for the same name) is a narrow, specific pattern a
+real-world corpus (bench cases, gallery examples, kernel-parity's CORPUS,
+the vectorize test files) has no particular reason to contain — so "zero
+disagreements on the corpus" would fail to distinguish "correct" from
+"the hazard shape never came up," unlike A1/A2's sibling slices where the
+change is a pure reordering/fusion with no analogous latent-input-
+dependence. Given `plan.md`'s own standing priority ("Wrong-value classes
+outrank performance work"), shipping a fold whose corpus-clean result
+wouldn't actually rule out a new wrong-value class — for a sub-1%-of-
+compile-time site whose own measurement (`walk-count-design.md` §1.2)
+shows it as one of the SMALLER contributors even within that 1% — is the
+wrong trade.
+
+**Not implemented, noted for whoever picks this up**: a strictly smaller
+and safer optimization exists one level down — `scanNumericFill` already
+calls the (cached) `scanBindingUses(body)` once, cheaply; the real
+remaining cost is that `numFillSafe` re-walks the WHOLE body once per
+candidate name (K candidates → K full-body walks). Generalizing
+`numFillSafe` to accept a Set of candidate names and disqualify each
+independently in ONE shared walk (the same K-scans-into-1 shape A1 used
+for `scanFlatObjects`/`scanSliceViews`/`scanNeverGrown`) would cut the
+K-way blowup without touching `walk` or `valTypes`'s flow-sensitivity at
+all — safe by the same argument A1 was. This is NOT what A2 specifies
+(it doesn't reduce `analyzeBody`'s named sub-pass count, 6 stays 6) and
+was not implemented here on that basis: doing a smaller, different-shaped
+optimization and reporting it as A2 would misrepresent what was asked.

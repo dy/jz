@@ -388,6 +388,25 @@ export function some(node, pred, opts) {
   return someNode(node, pred, opts?.boundary ?? (opts?.skipArrow !== false ? isArrowNode : null))
 }
 
+/** Dual of {@link someNode}: false as soon as `pred` fails a node (a non-array
+ *  node always passes — there's nothing left to check); `stop` prunes a passing
+ *  node's children (it already stood in for them). */
+const everyNode = (node, pred, stop) => {
+  if (!Array.isArray(node)) return true
+  if (!pred(node)) return false
+  if (stop && stop(node)) return true
+  for (let i = 1; i < node.length; i++) if (!everyNode(node[i], pred, stop)) return false
+  return true
+}
+
+/** Dual of {@link some}: true iff `pred` holds for every array node reached.
+ *  Same `opts` shape (`boundary`/`skipArrow`) and the same short-circuit-first
+ *  contract: `pred` sees a boundary node itself before `boundary` prunes its
+ *  children. */
+export function every(node, pred, opts) {
+  return everyNode(node, pred, opts?.boundary ?? (opts?.skipArrow !== false ? isArrowNode : null))
+}
+
 /** Options for {@link refsName} / {@link refsAny}. */
 // skipArrow (default true): stop at `=>` boundaries — matches `some()`.
 // skipStr: don't descend into `str` literal nodes.

@@ -239,6 +239,69 @@ export function matchLaneAddr(addr, ind, addrLocals, offsetTees, allowAos, aosPi
 }
 
 /**
+ * Shared "base + (IDX << K)" address matcher for the tryGeneral* recognizer
+ * family (tryGeneralStencil/tryGeneralMap/tryGeneralReduce) — three verbatim
+ * ports of tryStencil's own original matchOffset/matchAddr, unified here
+ * (pipeline-minimality campaign, `.work/archive/pipeline-minimality.md`'s
+ * batch-2 follow-up (c): "the six verbatim load/store validator ports across
+ * vectorize map/stencil/reduce are one walker copied six times"). All three
+ * ports are code-identical (including the byte-lane offset fallback below,
+ * which tryGeneralMap's own header comment says is ITS addition — "needed
+ * here for the first time because tryStencil never reached i8 lanes at all" —
+ * ported on to tryGeneralStencil/tryGeneralReduce from there, not from
+ * tryStencil). tryStencil's own original — the ancestor these three ported
+ * their SHAPE from, predating the byte-lane arm, not one of the six copies —
+ * stays independent (its inline offset match has no such arm to unify).
+ *
+ * `ivCoeff` is deliberately NOT unified — it differs by recognizer
+ * (tryGeneralStencil's own carries the toroidal wrap-select / float-domain-
+ * grid-index arms the plain map/reduce recognizers never need — see the "port,
+ * don't share" note above `tryGeneralStencil`), so it threads through as a
+ * plain callback instead. `writes`/`offTees`/`addrTees` are the caller's own
+ * per-scan mutable state (offTees/addrTees accumulate tee-CSE bindings across
+ * the whole scan; `writes` is the block-loop scaffold's written-names set).
+ */
+function isInvariantBase(b, writes) {
+  return (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
+}
+
+/** Resolve one `(IDX << K)` offset operand — tee-CSE via `offTees`, `ivCoeff(IDX)
+ * === 1` proving the affine coefficient; a bare coefficient-1 affine offset with
+ * no shift at all also matches (a stride-1/byte lane's `i*1` is a no-op the
+ * compiler never wraps in `i32.shl 0`) — dead for tryGeneralReduce in practice
+ * (no i8/i16 REDUCE_CANON entry) but kept for parity, exactly as the ported
+ * comment at its call site says. */
+export function matchStrideOffset(off, expectStride, offTees, ivCoeff) {
+  let ot = null, o = off
+  if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
+  if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
+  if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
+    if (ot) offTees.set(ot, o[1])
+    return { idx: o[1] }
+  }
+  if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
+  return null
+}
+
+/** Resolve `(i32.add base OFFSET)` (either operand order), or a previously
+ * tee'd full address via `addrTees`. `base` must be `isInvariantBase` (a
+ * `global.get`, or a `local.get` never in `writes`). Returns `{ base, idx }`
+ * or null — same shape as `matchLaneAddr`'s `{ base, strideLog2, … }`, minus
+ * the AoS/mirror generality this simpler affine-only proof doesn't need. */
+export function matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff) {
+  let teeName = null, n = addr
+  if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
+  if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
+  if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
+  for (const [bi, oi] of [[1, 2], [2, 1]]) {
+    if (!isInvariantBase(n[bi], writes)) continue
+    const om = matchStrideOffset(n[oi], expectStride, offTees, ivCoeff)
+    if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
+  }
+  return null
+}
+
+/**
  * A scalar i32 local that is ONLY ever assigned a lane offset — `(i32.shl ind K)`
  * (or bare `ind` for stride 0) — is a CSE'd offset shared across base pointers.
  * Returns the consistent strideLog2, or null if any write to it diverges.

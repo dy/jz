@@ -1,5 +1,5 @@
 import { walkAst } from '../../ast.js'
-import { _offsetLocalStride, constNum, hasSideEffect, isI32Const, isLocalGet, matchLaneAddr } from './addr-model.js'
+import { _offsetLocalStride, constNum, hasSideEffect, isI32Const, isLocalGet, matchLaneAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { isProfitable } from './cost-model.js'
 import { matchCanonBlock, matchCanonSelect, matchIntMinMaxReduce, normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, MINMAX_CVT, MINMAX_WIDEN, REDUCE_CANON, REDUCE_OP_LOOKUP, STORE_OPS, WIDEN_LOADS } from './lane-tables.js'
@@ -672,33 +672,12 @@ export function tryGeneralReduce(bl, fnLocals, freshIdRef, multiAcc = false) {
     if (isArr(n) && n[0] === 'local.tee' && n.length === 3) return ivCoeff(n[2])
     return null
   }
-  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
   const offTees = new Map(), addrTees = new Map()
-  const matchOffset = (off, expectStride) => {
-    let ot = null, o = off
-    if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
-    if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
-    if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
-      if (ot) offTees.set(ot, o[1])
-      return { idx: o[1] }
-    }
-    // Byte lanes (i8, stride 1) never occur here — REDUCE_OP_LOOKUP/REDUCE_CANON have no i8/i16
-    // entries (see REDUCE_OPS's own header) — kept for parity with tryGeneralMap's identical arm.
-    if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
-    return null
-  }
-  const matchAddr = (addr, expectStride) => {
-    let teeName = null, n = addr
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
-    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
-    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
-    for (const [bi, oi] of [[1, 2], [2, 1]]) {
-      if (!isInvBase(n[bi])) continue
-      const om = matchOffset(n[oi], expectStride)
-      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
-    }
-    return null
-  }
+  // matchOffset/matchAddr: shared with tryGeneralStencil/tryGeneralMap, see
+  // addr-model.js's matchStrideOffset/matchStrideAddr header doc (pipeline-
+  // minimality campaign, the six verbatim load/store validator ports).
+  const matchOffset = (off, expectStride) => matchStrideOffset(off, expectStride, offTees, ivCoeff)
+  const matchAddr = (addr, expectStride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
 
   // Scan EXPR for lane-aligned loads. Stores forbidden. Re-references of accName forbidden (the
   // accumulator only appears in the outer wrapper) — identical contract to tryReduceReassoc's own
