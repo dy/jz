@@ -251,13 +251,26 @@ tracked in `ledger-correctness.md`; this list is everything else):
 3. **Parser residuals**: CLOSED 2026-08-30 — `test262-neg-accepts.json`
    count is 0 at the pinned corpus; any future accept is a release blocker.
 4. **Pipeline minimality** (`ledger-refactor.md`):
-   - Fold `scanNumericFill` only after an assert-gated old-vs-new run.
+   - `scanNumericFill` fold: DECLINED 2026-08-31 — attempted, two concrete
+     gaps found in reconciling `numFillSafe`'s default-deny bare-string
+     walk against `walk`'s array-only dispatch, plus a flow-sensitivity
+     hazard in `valTypes` (`makeValTracker`'s poison-based join) that
+     would make a clean corpus-diff weak evidence either way. See
+     `ledger-refactor.md`'s "`scanNumericFill` fold — declined" for the
+     full reasoning and the smaller, safe alternative left for a future
+     session (batch `numFillSafe`'s K per-candidate walks into one, A1-
+     style — does not itself close this item).
    - Audit `narrowSignatures`'s 1,085-line shared-state driver before any
      decomposition. Keep `inferTypedValueRanges` nested at 181 lines.
    - Split the four files over 3,000 lines listed above, beginning with the
      already-mapped emit and prepare files.
-   - Finish the typedarray `hasWrite`/`hasSameRead` and `safeRmwAst`
-     combinator work, then the six repeated vector load/store validators.
+   - Typedarray `hasWrite`/`hasSameRead`/`safeRmwAst` combinator work and
+     the six repeated vector load/store validators: CLOSED 2026-08-31 —
+     `every()` added to `ast.js` as `some()`'s dual, `safeRmwAst` folded
+     onto it; `tryGeneralStencil`/`tryGeneralMap`/`tryGeneralReduce`'s six
+     verbatim `matchOffset`/`matchAddr` ports unified onto two new
+     `addr-model.js` exports. See `ledger-refactor.md`'s "Typedarray
+     `every()` combinator + the six vectorize load/store validators".
    - Revisit dormant zero-importer files only with an explicit owner
      delete-or-keep decision. `src/ops.js` itself is already deleted.
 5. **Performance loss classes**: close the 24/49 size-red and 13/60
