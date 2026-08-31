@@ -6,10 +6,10 @@
  * selected field list. Flow scopes inside one function still mutate fields on
  * the active record deliberately.
  *
- * typedElem/typedLen live here too: they are function-local representation
- * facts, not program-wide type state. A boundary therefore swaps them by the
- * same record identity as locals, reps, refinements, and emission flags; no
- * parallel ambient save/restore authority exists.
+ * typedElem/typedLen/lenBoundOf live here too: they are function-local
+ * representation facts, not program-wide type state. A boundary therefore
+ * swaps them by the same record identity as locals, reps, refinements, and
+ * emission flags; no parallel ambient save/restore authority exists.
  */
 export function createActiveFunction({
   sig = null,
@@ -30,6 +30,7 @@ export function createActiveFunction({
     localProps: null,
     typedElem: null,
     typedLen: null,
+    lenBoundOf: null,
     boxed: new Map(),
     cellTypes: new Set(),
     flatObjects: new Map(),
@@ -107,8 +108,8 @@ export function declareLocal(ctx, name, type) {
  *  fields), refinements, prediction state (p1Predicted), try/finally state
  *  (inTry/finallyStack), emission flags (repsFrozen/boxedResult/
  *  mixedAtomReturn plus the expression-dispatch scopes _expect/
- *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen facts owned
- *  directly by the record. Adding state to ActiveFunction requires deciding
+ *  _selfAccumConcat/_schemaSpecSlow), and the typedElem/typedLen/lenBoundOf
+ *  facts owned directly by the record. Adding state to ActiveFunction requires deciding
  *  and pinning its inactive value here rather than silently widening the gap
  *  between this predicate and a true "record fully restored" claim.
  *
@@ -125,6 +126,7 @@ export function isInactiveFunction(ctx) {
   return frame.current === null && frame.body === null && frame.exported === false &&
     frame.atModuleScope === false && emptyMap(frame.locals) && frame.localReps === null &&
     frame.localProps === null && frame.typedElem === null && frame.typedLen === null &&
+    frame.lenBoundOf === null &&
     emptyMap(frame.boxed) && emptySet(frame.cellTypes) && emptyMap(frame.flatObjects) &&
     emptySet(frame.sliceViews) && emptySet(frame.leanHashLocals) && emptySet(frame.i32HashLocals) &&
     emptyMap(frame.leanHashDomains) && emptySet(frame.preboxed) &&
