@@ -20,6 +20,7 @@ compiler.js       orchestration only
 prepare.js        strict syntax boundary and declaration extraction
 program-index.js  persistent numeric identities and cross-function facts
 ops.js            single numeric source-operator classifier
+constants.js      pure scalar constant-evaluation authority
 lower.js          function-local AST to WAT lowering
 backend.js        unchanged watr optimize and compile boundary
 direct.js         frozen direct-binary control
@@ -34,8 +35,12 @@ The full migration plan and stop rules are in [`../todo.md`](../todo.md).
 - numeric function parameters and results
 - numeric literals and folded arithmetic, including constant `%` and `**`
 - `let` and `const` numeric locals
-- assignment and arithmetic updates
-- `if`, ternary, nested `for`, and nested `while`
+- assignment, statement updates, and prefix or postfix update values
+- comma expressions with ordered effects
+- value-preserving numeric `&&` and `||` with short circuiting
+- `if`, ternary, nested `for`, `while`, and `do...while`
+- omitted `for` initialization, condition, and step
+- lexical labeled and unlabeled `break` and `continue`
 - constant-condition branch and loop removal after full source validation
 - empty modules and modules with no reachable export
 - f64 `+`, `-`, `*`, `/`, unary signs, and comparisons in conditions
@@ -50,7 +55,7 @@ These ABI rules are confined to the prototype. Production JZ must reuse its exis
 
 ## Shared scalar gate
 
-`test/_scalar-core-cases.js` owns 26 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. The original production tests import the same records. The isolated prototype executes 30 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI A to A to B determinism. No test adapter edits source.
+`test/_scalar-core-cases.js` owns 56 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. The original production tests import the same records. The isolated prototype executes 69 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI A to A to B determinism. Thirty control cases and 39 calls also run after watr optimization. No test adapter edits source.
 
 ## Stage contracts
 
@@ -83,9 +88,9 @@ The current index still retains AST bodies and source names. It does not yet hav
 
 ### Lower
 
-`lowerFunction(index, funcId)` creates one scalar WAT function. Loop-label counters are explicit function scratch, so nested loops and repeated compiles do not share state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+`lowerFunction(index, funcId)` creates one scalar WAT function. Numeric control IDs, lexical target records, reusable expression temporaries, and their high-water marks live in function scratch. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
 
-The next representation step is a per-function numeric instruction tape. That will remove repeated name lookup without adding a persistent body IR.
+The graph experiment rejected a persistent numeric instruction tape: lookup was not material and another retained body form would increase memory.
 
 ### Backend
 
@@ -96,7 +101,7 @@ compileCompact(source, { optimize: true }) // current watr/optimize, then compil
 compileCompact(source, { wat: true })      // return the lowered WAT array
 ```
 
-The optimized path is covered by nested-loop tests. Watr remains unmodified.
+The optimized path is covered by nested loops, lexical control transfer, update values, comma effects, and short-circuit joins. Lowering gives watr local names derived from numeric binding IDs because watr 5.10.1 CSE invalidates named local writes only. The binary still contains numeric local indices and graph output remains byte-identical to the direct control. The general numeric-index fix is committed upstream in watr as `b53c92c`; it is not hidden in `node_modules` and is not required by this branch. Watr otherwise remains unmodified.
 
 ### Direct control
 
@@ -147,10 +152,10 @@ The benchmark self-compiles the staged compiler and runs A to A to B through one
 
 Latest loaded-machine result against the fresh 14,444,038-byte `dist/jz.wasm`:
 
-- staged compiler: 2,093,882 bytes, 6.90x smaller
-- staged source graph: 71 modules, 947,508 source bytes
-- compile-speed geomean: 71.55x
-- minimum compile speedup: 9.99x
+- staged compiler: 2,125,730 bytes, 6.79x smaller
+- staged source graph: 71 modules, 960,400 source bytes
+- compile-speed geomean: 66.45x
+- minimum compile speedup: 7.67x
 - emitted-size geomean: 48.75x smaller
 - constant modules tie production at 41 bytes
 

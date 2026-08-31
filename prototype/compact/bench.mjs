@@ -29,12 +29,15 @@ const verifyReuse = () => {
   const compiler = instantiate(compactModule, { memory: 1024, externref: false })
   const a = scalarCase('abi-add'), b = scalarCase('determinism-poly')
   const power = scalarCase('preeval-constant-power'), remainder = scalarCase('preeval-constant-remainder')
+  const comma = scalarCase('comma-effects'), control = scalarCase('continue-labeled-outer')
   const cases = [
     [a.source, 'add', [2, 3], 5],
     [a.source, 'add', [2, 3], 5],
     [b.source, 'poly', [2, 3, 4], 671950],
     [power.source, 'f', [], 1024],
     [remainder.source, 'f', [], 1],
+    [comma.source, 'f', [], 2],
+    [control.source, 'f', [], 30],
   ]
   const runCases = (optimize) => {
     let first = null

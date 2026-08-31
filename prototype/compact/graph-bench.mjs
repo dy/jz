@@ -174,7 +174,7 @@ const printResults = (rows, hashes) => {
       `${formatBytes(row.outputBytes).padStart(9)}`,
     )
     console.log(`           source ${row.sourceHash.slice(0, 16)}  output ${row.outputHash.slice(0, 16)}  result ${row.result}`)
-    if (row.scratch) console.log(`           max scratch ${row.scratch.maxScratchSlots} slot, ${row.scratch.maxLoopLabels} loop labels, ${row.scratch.maxFunctionWatNodes} function WAT nodes`)
+    if (row.scratch) console.log(`           max scratch ${row.scratch.maxScratchSlots} slot, ${row.scratch.maxControlDepth} control depth, ${row.scratch.maxTemporaryLocals} temps, ${row.scratch.maxFunctionWatNodes} function WAT nodes`)
   }
   console.log('')
   for (const backend of ['staged', 'direct']) {

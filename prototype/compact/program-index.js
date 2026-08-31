@@ -2,14 +2,14 @@
 //
 // Every cross-function decision is numeric after this stage. Names remain only
 // for diagnostics and export spelling. Function bodies remain positional ASTs
-// until per-function lowering replaces them with a compact instruction tape.
+// and are traversed directly by one disposable lowering lifetime.
 
 import {
   F_BODY, F_EXPORT, F_LOCALS, F_MUTABLES, F_NAME, F_PARAMS,
   argsOf, bodyList, err, forHead, reject,
 } from './prepare.js'
 import { isBooleanLiteral } from './constants.js'
-import { OP_NONE, arithmeticKind, assignmentKind, comparisonKind } from './ops.js'
+import { LOGIC_NONE, OP_NONE, arithmeticKind, assignmentKind, comparisonKind, logicalKind } from './ops.js'
 
 export const ABI_JS = 0
 export const ABI_RAW = 1
@@ -96,6 +96,16 @@ function checkExpr(node, declared, assigned, index, funcId, edges) {
     checkExpr(node[3], declared, assigned, index, funcId, edges)
     return
   }
+  if (op === '++' || op === '--') { checkAssignTarget(node[1], declared, assigned, index, funcId, true); return }
+  if (op === ',' && node.length > 2) {
+    for (let i = 1; i < node.length; i++) checkExpr(node[i], declared, assigned, index, funcId, edges)
+    return
+  }
+  if (logicalKind(op) !== LOGIC_NONE && node.length === 3) {
+    checkExpr(node[1], declared, assigned, index, funcId, edges)
+    checkExpr(node[2], declared, assigned, index, funcId, edges)
+    return
+  }
   if ((arithmeticKind(op) !== OP_NONE || comparisonKind(op) !== OP_NONE) &&
       (node.length === 2 || node.length === 3)) {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
@@ -115,7 +125,22 @@ const checkAssignTarget = (name, declared, assigned, index, funcId, read) => {
   return local
 }
 
-function checkStmt(node, declared, assigned, index, funcId, edges) {
+const isLoopStmt = (node) => Array.isArray(node) && (node[0] === 'while' || node[0] === 'for' || node[0] === 'do')
+
+const checkControlTarget = (node, controls) => {
+  const label = node[1]
+  for (let i = controls.length - 1; i >= 0; i--) {
+    const control = controls[i]
+    if (label != null ? control[0] === label : control[1]) {
+      if (node[0] === 'continue' && !control[1]) err(`continue target '${label}' is not a loop`)
+      return
+    }
+  }
+  if (label != null) err(`unknown ${node[0]} label '${label}'`)
+  err(`${node[0]} is not inside a loop`)
+}
+
+function checkStmt(node, declared, assigned, index, funcId, edges, controls) {
   if (node == null) return
   if (!Array.isArray(node)) reject(node, 'statement')
   const op = node[0]
@@ -124,7 +149,7 @@ function checkStmt(node, declared, assigned, index, funcId, edges) {
     const savedDeclared = scoped ? declared.slice() : null
     const savedAssigned = scoped ? assigned.slice() : null
     const stmts = bodyList(node)
-    for (let i = 0; i < stmts.length; i++) checkStmt(stmts[i], declared, assigned, index, funcId, edges)
+    for (let i = 0; i < stmts.length; i++) checkStmt(stmts[i], declared, assigned, index, funcId, edges, controls)
     if (scoped) for (let i = 0; i < declared.length; i++) {
       declared[i] = savedDeclared[i]
       assigned[i] = savedAssigned[i]
@@ -157,25 +182,48 @@ function checkStmt(node, declared, assigned, index, funcId, edges) {
   if (op === 'return') { checkExpr(node[1], declared, assigned, index, funcId, edges); return }
   if (op === 'if') {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
-    checkStmt(node[2], declared.slice(), assigned.slice(), index, funcId, edges)
-    if (node.length > 3 && node[3] != null) checkStmt(node[3], declared.slice(), assigned.slice(), index, funcId, edges)
+    checkStmt(node[2], declared.slice(), assigned.slice(), index, funcId, edges, controls)
+    if (node.length > 3 && node[3] != null) checkStmt(node[3], declared.slice(), assigned.slice(), index, funcId, edges, controls)
     return
   }
   if (op === 'while') {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
-    checkStmt(node[2], declared.slice(), assigned.slice(), index, funcId, edges)
+    controls.push([null, 1])
+    checkStmt(node[2], declared.slice(), assigned.slice(), index, funcId, edges, controls)
+    controls.pop()
+    return
+  }
+  if (op === 'do') {
+    const d = declared.slice(), a = assigned.slice()
+    controls.push([null, 1])
+    checkStmt(node[1], d, a, index, funcId, edges, controls)
+    controls.pop()
+    checkExpr(node[2], d, a, index, funcId, edges)
     return
   }
   if (op === 'for') {
     const head = forHead(node[1])
     const d = declared.slice(), a = assigned.slice()
-    checkStmt(head[0], d, a, index, funcId, edges)
-    checkExpr(head[1], d, a, index, funcId, edges)
-    checkStmt(node[2], d, a, index, funcId, edges)
-    checkStmt(head[2], d, a, index, funcId, edges)
+    checkStmt(head[0], d, a, index, funcId, edges, controls)
+    if (head[1] != null) checkExpr(head[1], d, a, index, funcId, edges)
+    controls.push([null, 1])
+    checkStmt(node[2], d, a, index, funcId, edges, controls)
+    controls.pop()
+    checkStmt(head[2], d, a, index, funcId, edges, controls)
     return
   }
-  if (op === '()') { checkExpr(node, declared, assigned, index, funcId, edges); return }
+  if (op === ':') {
+    for (let i = controls.length - 1; i >= 0; i--) if (controls[i][0] === node[1]) err(`duplicate label '${node[1]}'`)
+    controls.push([node[1], isLoopStmt(node[2]) ? 1 : 0])
+    checkStmt(node[2], declared, assigned, index, funcId, edges, controls)
+    controls.pop()
+    return
+  }
+  if (op === 'break' || op === 'continue') { checkControlTarget(node, controls); return }
+  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE) {
+    checkExpr(node, declared, assigned, index, funcId, edges)
+    return
+  }
   reject(node, 'statement')
 }
 
@@ -188,9 +236,10 @@ const checkFunction = (index, funcId, edges) => {
   const body = index[I_FN_BODY][funcId]
   if (Array.isArray(body) && body[0] === '{}') {
     const stmts = bodyList(body)
-    for (let i = 0; i < stmts.length; i++) checkStmt(stmts[i], declared, assigned, index, funcId, edges)
+    const controls = []
+    for (let i = 0; i < stmts.length; i++) checkStmt(stmts[i], declared, assigned, index, funcId, edges, controls)
   } else if (Array.isArray(body) && (body[0] === ';' || body[0] === 'return')) {
-    checkStmt(body, declared, assigned, index, funcId, edges)
+    checkStmt(body, declared, assigned, index, funcId, edges, [])
   } else {
     checkExpr(body, declared, assigned, index, funcId, edges)
   }

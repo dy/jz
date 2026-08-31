@@ -5,8 +5,11 @@
 // and records lexical declarations. It does not infer representations, resolve
 // calls, decide reachability, or emit WAT.
 
-import { constantNumber, isBooleanLiteral } from './constants.js'
-import { OP_ADD, OP_NONE, OP_SUB, arithmeticKind, assignmentKind, comparisonKind, hasScalarWatOpcode } from './ops.js'
+import { constantNumber, constantTruth, isBooleanLiteral } from './constants.js'
+import {
+  LOGIC_NONE, OP_ADD, OP_NONE, OP_SUB,
+  arithmeticKind, assignmentKind, comparisonKind, hasScalarWatOpcode, logicalKind,
+} from './ops.js'
 
 export const F_NAME = 0
 export const F_PARAMS = 1
@@ -99,22 +102,81 @@ const declarationOf = (node, exported) => {
   reject(node, 'top level')
 }
 
-const alwaysReturns = (node) => {
-  if (!Array.isArray(node)) return false
-  if (node[0] === 'return') return true
-  if (node[0] === 'if') return node.length > 3 && alwaysReturns(node[2]) && alwaysReturns(node[3])
-  if (node[0] === '{}' || node[0] === ';') {
-    const stmts = bodyList(node)
-    return !!stmts.length && alwaysReturns(stmts[stmts.length - 1])
+const NORMAL = 'n'
+const RETURN = 'r'
+const BREAK = 'b:'
+const CONTINUE = 'c:'
+
+const addCompletion = (out, value) => { if (!out.includes(value)) out.push(value) }
+const mergeCompletions = (out, values) => { for (let i = 0; i < values.length; i++) addCompletion(out, values[i]); return out }
+
+const sequenceCompletion = (nodes) => {
+  let out = [NORMAL]
+  for (let i = 0; i < nodes.length && out.includes(NORMAL); i++) {
+    const next = []
+    for (let j = 0; j < out.length; j++) if (out[j] !== NORMAL) addCompletion(next, out[j])
+    out = mergeCompletions(next, statementCompletion(nodes[i]))
   }
-  return false
+  return out
 }
+
+const loopCompletion = (node, labels) => {
+  const op = node[0]
+  const condition = op === 'while' ? node[1] : op === 'for' ? forHead(node[1])[1] : node[2]
+  const truth = condition == null ? 1 : constantTruth(condition)
+  if (op !== 'do' && truth === 0) return [NORMAL]
+  const body = op === 'while' ? node[2] : op === 'for' ? node[2] : node[1]
+  const completions = statementCompletion(body)
+  const out = []
+  let exits = false, repeats = false
+  for (let i = 0; i < completions.length; i++) {
+    const value = completions[i]
+    const label = value.slice(2)
+    if (value === NORMAL || value === CONTINUE || value.startsWith(CONTINUE) && labels.includes(label)) repeats = true
+    else if (value === BREAK || value.startsWith(BREAK) && labels.includes(label)) exits = true
+    else addCompletion(out, value)
+  }
+  if (op !== 'do' && truth !== 1 || op === 'do' && repeats && truth !== 1 || exits) addCompletion(out, NORMAL)
+  return out
+}
+
+function statementCompletion(node) {
+  if (node == null) return [NORMAL]
+  if (!Array.isArray(node)) return [NORMAL]
+  const op = node[0]
+  if (op === '{}' || op === ';') return sequenceCompletion(bodyList(node))
+  if (op === 'return') return [RETURN]
+  if (op === 'break') return [BREAK + (node[1] ?? '')]
+  if (op === 'continue') return [CONTINUE + (node[1] ?? '')]
+  if (op === 'if') {
+    const truth = constantTruth(node[1])
+    if (truth === 1) return statementCompletion(node[2])
+    if (truth === 0) return node.length > 3 && node[3] != null ? statementCompletion(node[3]) : [NORMAL]
+    const out = statementCompletion(node[2]).slice()
+    return mergeCompletions(out, node.length > 3 && node[3] != null ? statementCompletion(node[3]) : [NORMAL])
+  }
+  if (op === 'while' || op === 'for' || op === 'do') return loopCompletion(node, [])
+  if (op === ':') {
+    const labels = []
+    let target = node
+    while (target[0] === ':') { labels.push(target[1]); target = target[2] }
+    if (Array.isArray(target) && (target[0] === 'while' || target[0] === 'for' || target[0] === 'do'))
+      return loopCompletion(target, labels)
+    const values = statementCompletion(node[2]), out = []
+    for (let i = 0; i < values.length; i++) addCompletion(out, values[i] === BREAK + node[1] ? NORMAL : values[i])
+    return out
+  }
+  return [NORMAL]
+}
+
+const mayFallThrough = (node) => statementCompletion(node).includes(NORMAL)
 
 const validateExportName = (name) => {
   for (let i = 0; i < name.length; i++) if (name.charCodeAt(i) > 127) err(`non-ASCII export name '${name}'`)
 }
 
 const validateCondition = (node) => {
+  if (node == null) return
   if (Array.isArray(node)) {
     if (node[0] === '()' && node.length === 2) { validateCondition(node[1]); return }
     if (isBooleanLiteral(node)) return
@@ -124,6 +186,11 @@ const validateCondition = (node) => {
       return
     }
     if (node[0] === '!' && node.length === 2) { validateCondition(node[1]); return }
+    if (logicalKind(node[0]) !== LOGIC_NONE && node.length === 3) {
+      validateCondition(node[1])
+      validateCondition(node[2])
+      return
+    }
   }
   validateExpr(node)
 }
@@ -143,6 +210,19 @@ function validateExpr(node) {
     validateCondition(node[1])
     validateExpr(node[2])
     validateExpr(node[3])
+    return
+  }
+  if ((op === '++' || op === '--') && (node.length === 2 || node.length === 3)) {
+    if (typeof node[1] !== 'string') reject(node[1], 'update target')
+    return
+  }
+  if (op === ',' && node.length > 2) {
+    for (let i = 1; i < node.length; i++) validateExpr(node[i])
+    return
+  }
+  if (logicalKind(op) !== LOGIC_NONE && node.length === 3) {
+    validateExpr(node[1])
+    validateExpr(node[2])
     return
   }
   const arithmetic = arithmeticKind(op)
@@ -191,6 +271,11 @@ const validateStmt = (node) => {
     validateStmt(node[2])
     return
   }
+  if (op === 'do') {
+    validateStmt(node[1])
+    validateCondition(node[2])
+    return
+  }
   if (op === 'for') {
     const head = forHead(node[1])
     validateStmt(head[0])
@@ -199,7 +284,16 @@ const validateStmt = (node) => {
     validateStmt(head[2])
     return
   }
-  if (op === '()') { validateExpr(node); return }
+  if (op === ':') {
+    if (typeof node[1] !== 'string' || node.length !== 3) reject(node, 'label')
+    validateStmt(node[2])
+    return
+  }
+  if (op === 'break' || op === 'continue') {
+    if (node.length > 2 || node.length === 2 && typeof node[1] !== 'string') reject(node, op)
+    return
+  }
+  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE) { validateExpr(node); return }
   reject(node, 'statement')
 }
 
@@ -217,7 +311,7 @@ export function prepareCompactAst(ast) {
     collectLocals(func[F_BODY], func)
     validateBody(func[F_BODY])
     const body = func[F_BODY]
-    if (Array.isArray(body) && (body[0] === '{}' || body[0] === ';' || body[0] === 'return') && !alwaysReturns(body))
+    if (Array.isArray(body) && (body[0] === '{}' || body[0] === ';' || body[0] === 'return') && mayFallThrough(body))
       err(`function '${func[F_NAME]}' does not return a number on every supported path`)
     if (func[F_EXPORT]) validateExportName(func[F_NAME])
     funcs.push(func)

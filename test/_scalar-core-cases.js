@@ -59,6 +59,114 @@ export const SCALAR_CORE_CASES = Object.freeze([
         s += i * j
     return s
   }`, [['f', [3, 3], 9]], ['statements']),
+  makeCase('prefix-increment-value', 'prefix ++i returns new',
+    'export let f = () => { let i = 5; return ++i }',
+    [['f', [], 6]], ['statements', 'control']),
+  makeCase('postfix-increment-value', 'postfix i++ returns old',
+    'export let f = () => { let i = 5; return i++ }',
+    [['f', [], 5]], ['statements', 'control']),
+  makeCase('prefix-decrement-value', 'prefix --i returns new',
+    'export let f = () => { let i = 5; return --i }',
+    [['f', [], 4]], ['statements', 'control']),
+  makeCase('postfix-decrement-value', 'postfix i-- returns old',
+    'export let f = () => { let i = 5; return i-- }',
+    [['f', [], 5]], ['statements', 'control']),
+  makeCase('assign-postfix-value', 'assign postfix: x = i++',
+    'export let f = () => { let i = 5; let x = i++; return x }',
+    [['f', [], 5]], ['statements', 'control']),
+  makeCase('assign-prefix-value', 'assign prefix: x = ++i',
+    'export let f = () => { let i = 5; let x = ++i; return x }',
+    [['f', [], 6]], ['statements', 'control']),
+  makeCase('comma-last', 'comma: returns last value',
+    'export let f = () => { let a = (1, 2, 3); return a }',
+    [['f', [], 3]], ['statements', 'control']),
+  makeCase('comma-effects', 'comma: side effects',
+    'export let f = () => { let i = 0; i++, i++; return i }',
+    [['f', [], 2]], ['statements', 'control']),
+  makeCase('comma-grouped-call', 'comma: parenthesized comma-expression is one argument',
+    'let g = (x) => x + 1; export let f = () => g((1, 2, 7))',
+    [['f', [], 8]], ['statements', 'control']),
+  makeCase('comma-grouped-nested-call', 'comma: nested parenthesized expression is one argument',
+    'let g = (x) => x + 1; export let f = () => g(((1, 2, 7)))',
+    [['f', [], 8]], ['statements', 'control']),
+  makeCase('comma-grouped-second-arg', 'comma: grouped second argument remains distinct',
+    'let g = (a, b) => a + b; export let f = () => g(100, (1, 2, 7))',
+    [['f', [], 107]], ['statements', 'control']),
+  makeCase('for-omitted-init-step', 'for: omitted init and step with condition', `export let f = () => {
+    let i = 0
+    for (; i < 4; ) i++
+    return i
+  }`, [['f', [], 4]], ['statements', 'control']),
+  makeCase('for-infinite-return', 'for: omitted init condition and step', `export let f = () => {
+    let i = 0
+    for (;;) {
+      i++
+      if (i == 4) return i
+    }
+  }`, [['f', [], 4]], ['statements', 'control']),
+  makeCase('do-basic', 'do-while: basic', `export let f = (n) => {
+    let s = 0, i = 0
+    do { s += i; i++ } while (i < n)
+    return s
+  }`, [['f', [5], 10], ['f', [0], 0]], ['statements', 'control']),
+  makeCase('do-once', 'do-while: executes body at least once',
+    'export let f = () => { let x = 0; do { x++ } while (0); return x }',
+    [['f', [], 1]], ['statements', 'control']),
+  makeCase('do-continue-condition', 'do-while: continue runs condition', `export let f = () => {
+    let s = 0, i = 0
+    do { i++; if (i == 3) continue; s += i } while (i < 5)
+    return s
+  }`, [['f', [], 12]], ['statements', 'control']),
+  makeCase('do-strict', 'do-while: works in strict mode',
+    'export let f = (n) => { let i = 0; do { i++ } while (i < n); return i }',
+    [['f', [5], 5], ['f', [0], 1]], ['statements', 'control']),
+  makeCase('do-break', 'do-while: break',
+    'export let f = () => { let s = 0; do { s++; if (s == 3) break } while (1); return s }',
+    [['f', [], 3]], ['statements', 'control']),
+  makeCase('do-continue-exit', 'do-while: continue at terminating condition exits', `export let f = () => {
+    let count = 0
+    do { count++; if (count >= 3) continue } while (count < 3)
+    return count
+  }`, [['f', [], 3]], ['statements', 'control']),
+  makeCase('do-nested', 'do-while: nested', `export let f = () => {
+    let s = 0, i = 0
+    do {
+      let j = 0
+      do { s++; j++ } while (j < 3)
+      i++
+    } while (i < 2)
+    return s
+  }`, [['f', [], 6]], ['statements', 'control']),
+  makeCase('break-loop', 'break: exits loop',
+    'export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 3) break; s += i } return s }',
+    [['f', [], 3]], ['statements', 'control']),
+  makeCase('break-labeled-if', 'break: exits labeled if statement',
+    'export let f = (x) => { let s = 0; out: if (x) { s++; break out; s += 10 } return s }',
+    [['f', [1], 1], ['f', [0], 0]], ['statements', 'control']),
+  makeCase('break-labeled-outer', 'break: exits labeled outer loop from nested loop',
+    'export let f = () => { let s = 0; outer: for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) { s++; if (i == 1 && j == 1) break outer } } return s }',
+    [['f', [], 6]], ['statements', 'control']),
+  makeCase('continue-labeled-outer', 'continue: labeled continue targets outer loop',
+    'export let f = () => { let s = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j == 1) continue outer; s += 10 } } return s }',
+    [['f', [], 30]], ['statements', 'control']),
+  makeCase('continue-labeled-while', 'continue: labeled continue on while',
+    'export let f = () => { let s = 0, i = 0; outer: while (i < 3) { i++; let j = 0; while (j < 3) { j++; if (j == 2) continue outer; s++ } } return s }',
+    [['f', [], 3]], ['statements', 'control']),
+  makeCase('continue-skip', 'continue: skips iteration',
+    'export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 2) continue; s += i } return s }',
+    [['f', [], 8]], ['statements', 'control']),
+  makeCase('logical-and', '&&: short-circuit',
+    'export let f = (a, b) => a && b',
+    [['f', [3, 5], 5], ['f', [0, 5], 0], ['f', [NaN, 5], NaN]], ['statements', 'control']),
+  makeCase('logical-or', '||: short-circuit',
+    'export let f = (a, b) => a || b',
+    [['f', [3, 5], 3], ['f', [0, 5], 5], ['f', [NaN, 5], 5]], ['statements', 'control']),
+  makeCase('logical-and-chain', '&&: chained',
+    'export let f = (a, b, c) => a && b && c',
+    [['f', [1, 2, 3], 3], ['f', [1, 0, 3], 0]], ['statements', 'control']),
+  makeCase('logical-or-chain', '||: chained',
+    'export let f = (a, b, c) => a || b || c',
+    [['f', [0, 0, 3], 3], ['f', [0, 2, 3], 2]], ['statements', 'control']),
   makeCase('preeval-numeric-chain', 'fold-fires: numeric chain -> literal, no arithmetic ops',
     'export let f = () => 1 + 2 * 3 - 4',
     [['f', [], 3]], ['preeval', 'wat-fold']),

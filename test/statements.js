@@ -10,9 +10,9 @@ function run(code, opts) {
   return jz(code, opts).exports
 }
 
-function runScalarCase(id) {
+function runScalarCase(id, opts) {
   const entry = scalarCase(id)
-  const exports = run(entry.source)
+  const exports = run(entry.source, opts)
   for (const [name, args, expected] of entry.calls) is(exports[name](...args), expected)
 }
 
@@ -130,21 +130,14 @@ test('assignment: ??= leaves defined value alone', () => {
 
 // === Comma operator ===
 
-test('comma: returns last value', () => {
-  is(run('export let f = () => { let a = (1, 2, 3); return a }').f(), 3)
-})
+test('comma: returns last value', () => runScalarCase('comma-last'))
 
-test('comma: side effects', () => {
-  is(run('export let f = () => { let i = 0; i++, i++; return i }').f(), 2)
-})
+test('comma: side effects', () => runScalarCase('comma-effects'))
 
 test('comma: parenthesized comma-expression is a single argument', () => {
-  // `g((1, 2, 7))` is ONE argument whose value is the last comma operand —
-  // not a 3-argument call. The grouping must survive prep/emit.
-  is(run('let g = (x) => x + 1; export let f = () => g((1, 2, 7))').f(), 8)
-  is(run('let g = (x) => x + 1; export let f = () => g(((1, 2, 7)))').f(), 8)
-  // A grouped comma alongside ordinary args stays distinct from the arg list.
-  is(run('let g = (a, b) => a + b; export let f = () => g(100, (1, 2, 7))').f(), 107)
+  runScalarCase('comma-grouped-call')
+  runScalarCase('comma-grouped-nested-call')
+  runScalarCase('comma-grouped-second-arg')
 })
 
 // === BigInt ===
@@ -579,29 +572,17 @@ test('if: comparison ==', () => {
 
 // === Prefix/postfix increment ===
 
-test('prefix ++i returns new', () => {
-  is(run('export let f = () => { let i = 5; return ++i }').f(), 6)
-})
+test('prefix ++i returns new', () => runScalarCase('prefix-increment-value'))
 
-test('postfix i++ returns old', () => {
-  is(run('export let f = () => { let i = 5; return i++ }').f(), 5)
-})
+test('postfix i++ returns old', () => runScalarCase('postfix-increment-value'))
 
-test('prefix --i returns new', () => {
-  is(run('export let f = () => { let i = 5; return --i }').f(), 4)
-})
+test('prefix --i returns new', () => runScalarCase('prefix-decrement-value'))
 
-test('postfix i-- returns old', () => {
-  is(run('export let f = () => { let i = 5; return i-- }').f(), 5)
-})
+test('postfix i-- returns old', () => runScalarCase('postfix-decrement-value'))
 
-test('assign postfix: x = i++', () => {
-  is(run('export let f = () => { let i = 5; let x = i++; return x }').f(), 5)
-})
+test('assign postfix: x = i++', () => runScalarCase('assign-postfix-value'))
 
-test('assign prefix: x = ++i', () => {
-  is(run('export let f = () => { let i = 5; let x = ++i; return x }').f(), 6)
-})
+test('assign prefix: x = ++i', () => runScalarCase('assign-prefix-value'))
 
 test('postfix increments side effect', () => runScalarCase('postfix-side-effect'))
 
@@ -988,115 +969,37 @@ test('for: factorial', () => runScalarCase('for-factorial'))
 
 test('for: nested', () => runScalarCase('for-nested'))
 
-test('for: omitted init and step with condition', () => {
-  const { f } = run(`export let f = () => {
-    let i = 0
-    for (; i < 4; ) i++
-    return i
-  }`, { jzify: true })
-  is(f(), 4)
-})
+test('for: omitted init and step with condition', () => runScalarCase('for-omitted-init-step', { jzify: true }))
 
-test('for: omitted init condition and step', () => {
-  const { f } = run(`export let f = () => {
-    let i = 0
-    for (;;) {
-      i++
-      if (i == 4) return i
-    }
-  }`, { jzify: true })
-  is(f(), 4)
-})
+test('for: omitted init condition and step', () => runScalarCase('for-infinite-return', { jzify: true }))
 
 // === Do-while loop (jzify lowers to for + once-flag) ===
 
-test('do-while: basic', () => {
-  const { f } = run(`export let f = (n) => {
-    let s = 0, i = 0
-    do { s += i; i++ } while (i < n)
-    return s
-  }`, { jzify: true })
-  is(f(5), 10)
-  is(f(0), 0)
-})
+test('do-while: basic', () => runScalarCase('do-basic', { jzify: true }))
 
-test('do-while: executes body at least once', () => {
-  is(run('export let f = () => { let x = 0; do { x++ } while (0); return x }', { jzify: true }).f(), 1)
-})
+test('do-while: executes body at least once', () => runScalarCase('do-once', { jzify: true }))
 
-test('do-while: works in strict mode (prepare lowers it; jzify is skipped)', () => {
-  // Regression: strict skips jzify, so prepare must lower do-while itself — otherwise it
-  // reached emit as a raw 'do' op and crashed with "Unknown op: do". The README lists
-  // do-while in the strict subset, so strict must compile and run it correctly.
-  const { f } = run('export let f = (n) => { let i = 0; do { i++ } while (i < n); return i }', { strict: true })
-  is(f(5), 5)
-  is(f(0), 1)  // body runs once even when the condition starts false
-})
+test('do-while: works in strict mode (prepare lowers it; jzify is skipped)', () => runScalarCase('do-strict', { strict: true }))
 
-test('do-while: break', () => {
-  is(run('export let f = () => { let s = 0; do { s++; if (s == 3) break } while (1); return s }', { jzify: true }).f(), 3)
-})
+test('do-while: break', () => runScalarCase('do-break', { jzify: true }))
 
-test('do-while: continue runs cond, not body', () => {
-  // JS semantics: continue branches to cond test; body never runs again unless cond true.
-  // The desugared form uses for(_once; _once||cond; _once=false), so continue → step → cond.
-  const { f } = run(`export let f = () => {
-    let s = 0, i = 0
-    do { i++; if (i == 3) continue; s += i } while (i < 5)
-    return s
-  }`, { jzify: true })
-  is(f(), 12)  // 1+2+4+5 = 12 (skip 3)
-})
+test('do-while: continue runs cond, not body', () => runScalarCase('do-continue-condition', { jzify: true }))
 
-test('do-while: continue at terminating cond exits cleanly (no infinite loop)', () => {
-  // Regression for the naive `loop { body; br_if loop cond }` shape:
-  // continue would jump past the cond check, re-running body → infinite loop.
-  const { f } = run(`export let f = () => {
-    let count = 0
-    do { count++; if (count >= 3) continue } while (count < 3)
-    return count
-  }`, { jzify: true })
-  is(f(), 3)
-})
+test('do-while: continue at terminating cond exits cleanly (no infinite loop)', () => runScalarCase('do-continue-exit', { jzify: true }))
 
-test('do-while: nested', () => {
-  const { f } = run(`export let f = () => {
-    let s = 0, i = 0
-    do {
-      let j = 0
-      do { s++; j++ } while (j < 3)
-      i++
-    } while (i < 2)
-    return s
-  }`, { jzify: true })
-  is(f(), 6)  // 2 outer × 3 inner
-})
+test('do-while: nested', () => runScalarCase('do-nested', { jzify: true }))
 
-test('break: exits loop', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 3) break; s += i } return s }').f(), 3)
-})
+test('break: exits loop', () => runScalarCase('break-loop'))
 
-test('break: exits labeled if statement', () => {
-  is(run('export let f = (x) => { let s = 0; out: if (x) { s++; break out; s += 10 } return s }', { jzify: true }).f(1), 1)
-})
+test('break: exits labeled if statement', () => runScalarCase('break-labeled-if', { jzify: true }))
 
-test('break: exits labeled outer loop from nested loop', () => {
-  is(run('export let f = () => { let s = 0; outer: for (let i = 0; i < 4; i++) { for (let j = 0; j < 4; j++) { s++; if (i == 1 && j == 1) break outer } } return s }', { jzify: true }).f(), 6)
-})
+test('break: exits labeled outer loop from nested loop', () => runScalarCase('break-labeled-outer', { jzify: true }))
 
-test('continue: labeled continue targets the outer loop (runs its step)', () => {
-  // `continue outer` from the inner loop skips the rest of the inner body AND the rest of the
-  // outer body, jumping to the outer loop's step+test. Matches plain-JS evaluation (= 30).
-  is(run('export let f = () => { let s = 0; outer: for (let i = 0; i < 3; i++) { for (let j = 0; j < 3; j++) { if (j == 1) continue outer; s += 10 } } return s }').f(), 30)
-})
+test('continue: labeled continue targets the outer loop (runs its step)', () => runScalarCase('continue-labeled-outer'))
 
-test('continue: labeled continue on while', () => {
-  is(run('export let f = () => { let s = 0, i = 0; outer: while (i < 3) { i++; let j = 0; while (j < 3) { j++; if (j == 2) continue outer; s++ } } return s }').f(), 3)
-})
+test('continue: labeled continue on while', () => runScalarCase('continue-labeled-while'))
 
-test('continue: skips iteration', () => {
-  is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { if (i == 2) continue; s += i } return s }').f(), 8)
-})
+test('continue: skips iteration', () => runScalarCase('continue-skip'))
 
 test('try/finally: break runs cleanup before exit', () => {
   is(run('export let f = () => { let s = 0; for (let i = 0; i < 5; i++) { try { if (i == 2) break; s += i } finally { s += 10 } } return s }').f(), 31)
@@ -1109,24 +1012,20 @@ test('try/finally: continue runs cleanup before next iteration', () => {
 // === Logical operators ===
 
 test('&&: short-circuit', () => {
-  is(run('export let f = (a, b) => a && b').f(3, 5), 5)
-  is(run('export let f = (a, b) => a && b').f(0, 5), 0)
+  const entry = scalarCase('logical-and')
+  const { f } = run(entry.source)
+  for (const [, args, expected] of entry.calls.slice(0, 2)) is(f(...args), expected)
 })
 
 test('||: short-circuit', () => {
-  is(run('export let f = (a, b) => a || b').f(3, 5), 3)
-  is(run('export let f = (a, b) => a || b').f(0, 5), 5)
+  const entry = scalarCase('logical-or')
+  const { f } = run(entry.source)
+  for (const [, args, expected] of entry.calls.slice(0, 2)) is(f(...args), expected)
 })
 
-test('&&: chained', () => {
-  is(run('export let f = (a, b, c) => a && b && c').f(1, 2, 3), 3)
-  is(run('export let f = (a, b, c) => a && b && c').f(1, 0, 3), 0)
-})
+test('&&: chained', () => runScalarCase('logical-and-chain'))
 
-test('||: chained', () => {
-  is(run('export let f = (a, b, c) => a || b || c').f(0, 0, 3), 3)
-  is(run('export let f = (a, b, c) => a || b || c').f(0, 2, 3), 2)
-})
+test('||: chained', () => runScalarCase('logical-or-chain'))
 
 // === Combined patterns ===
 

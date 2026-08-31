@@ -16,6 +16,10 @@ export const CMP_GT = 3
 export const CMP_LE = 4
 export const CMP_GE = 5
 
+export const LOGIC_NONE = -1
+export const LOGIC_AND = 0
+export const LOGIC_OR = 1
+
 export const arithmeticKind = (op) => op === '+' ? OP_ADD : op === '-' ? OP_SUB
   : op === '*' ? OP_MUL : op === '/' ? OP_DIV : op === '%' ? OP_MOD
   : op === '**' ? OP_POW : OP_NONE
@@ -29,3 +33,5 @@ export const comparisonKind = (op) => op === '==' || op === '===' ? CMP_EQ
   : op === '!=' || op === '!==' ? CMP_NE
   : op === '<' ? CMP_LT : op === '>' ? CMP_GT
   : op === '<=' ? CMP_LE : op === '>=' ? CMP_GE : OP_NONE
+
+export const logicalKind = (op) => op === '&&' ? LOGIC_AND : op === '||' ? LOGIC_OR : LOGIC_NONE

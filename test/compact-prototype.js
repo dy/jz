@@ -174,7 +174,7 @@ test('compact prototype: unmodified main-suite scalar corpus', () => {
       calls++
     }
   }
-  is(calls, 30)
+  is(calls, 69)
 
   const numericWat = compileCompact(scalarCase('preeval-numeric-chain').source, { abi: 'raw', wat: true })
   const deadIfWat = compileCompact(scalarCase('preeval-dead-if').source, { abi: 'raw', wat: true })
@@ -200,6 +200,45 @@ test('compact prototype: unmodified main-suite scalar corpus', () => {
   is(rawIndex[I_ABI_MODE], ABI_RAW)
   throws(() => compileCompact(scalarCase('abi-add').source), /must normalize/)
   throws(() => compileCompact(scalarCase('abi-add').source, { abi: 'opaque' }), /unknown ABI/)
+})
+
+test('compact prototype: scalar control remains exact after watr optimization', () => {
+  let calls = 0
+  for (const entry of scalarCasesIn('control')) {
+    const exports = instantiateRaw(entry.source, { optimize: true })
+    for (const [name, args, expected] of entry.calls) {
+      ok(sameNumber(exports[name](...args), expected), `optimized ${entry.id}`)
+      calls++
+    }
+  }
+  is(calls, 39)
+})
+
+test('compact prototype: control effects are single-evaluation and targets are lexical', () => {
+  is(instantiateRaw('export let f=()=>{let y=0;let x=y++&&y++;return y*10+x}').f(), 10)
+  is(instantiateRaw('export let f=()=>{let y=0;let x=y++||y++;return y*10+x}').f(), 21)
+  is(instantiateRaw('export let f=()=>{let i=5;return i+++i}').f(), 11)
+
+  const source = scalarCase('break-labeled-outer').source
+  const index = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw' })
+  const metrics = {}
+  lowerProgram(index, metrics)
+  ok(metrics.maxControlDepth >= 2, 'nested labeled loops record bounded control depth')
+  const logicalIndex = buildProgramIndex(prepareCompactAst(parse(scalarCase('logical-and-chain').source)), { abi: 'raw' })
+  const logicalMetrics = {}
+  lowerProgram(logicalIndex, logicalMetrics)
+  is(logicalMetrics.maxTemporaryLocals, 2, 'nested value-preserving logic holds two temporary locals')
+  const plainForWat = JSON.stringify(compileCompact(scalarCase('for-sum').source, { abi: 'raw', wat: true }))
+  const continueForWat = JSON.stringify(compileCompact(scalarCase('continue-skip').source, { abi: 'raw', wat: true }))
+  ok(!plainForWat.includes('$continue'), 'a for-loop without continue pays no continue block')
+  ok(continueForWat.includes('$continue'), 'a for-loop with continue owns an explicit step target')
+
+  throws(() => compileCompact('export let f=()=>{break;return 0}', { abi: 'raw' }), /break outside loop/)
+  throws(() => compileCompact('export let f=()=>{continue;return 0}', { abi: 'raw' }), /continue outside a loop/)
+  throws(() => compileCompact('export let f=()=>{break missing;return 0}', { abi: 'raw' }), /unknown break label/)
+  throws(() => compileCompact('export let f=()=>{out:{continue out}return 0}', { abi: 'raw' }), /does not name a loop/)
+  throws(() => compileCompact('export let f=()=>{const x=1;return x++}', { abi: 'raw' }), /const local/)
+  throws(() => compileCompact('export let f=()=>{let x=0;0&&(x="bad");return x}', { abi: 'raw' }), /unsupported/)
 })
 
 test('compact prototype: main-suite scalar compiler reuse A to A to B', () => {
@@ -248,7 +287,9 @@ test('compact prototype: generated call graphs stay byte-identical and scratch p
     is(wat.filter(node => Array.isArray(node) && node[0] === 'func').length, count)
     is(metrics.maxScratchSlots, 1)
     is(metrics.maxLoopLabels, 0)
-    is(metrics.maxFunctionWatNodes, 13)
+    is(metrics.maxControlDepth, 0)
+    is(metrics.maxTemporaryLocals, 0)
+    is(metrics.maxFunctionWatNodes, 18)
     is(new WebAssembly.Instance(new WebAssembly.Module(staged)).exports.run(...graph.args), graph.expected)
   }
 })

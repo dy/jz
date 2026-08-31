@@ -70,3 +70,15 @@ The graph was rerun after adding the shared main-suite scalar corpus, explicit r
 | 2,048 | 4,681,088 | 2,113,136 | 1,446,592 | 38,814 |
 
 All three staged outputs retained the earlier output hashes and remained byte-identical to the direct control. Function scratch remained one slot and maximum function WAT remained 13 nodes. The scalar work therefore changed neither graph output nor its lifetime conclusion.
+
+## Scalar-control rerun
+
+Scalar control added lexical target scratch and watr-facing local names derived from numeric binding IDs. The staged compiler graph hash was `e4f93541e59eef0b0659e56a84ed5d14be78c16572eb16f739e4521dcf9dc70c`. The direct hash did not change.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,146,160 | 668,784 | 162,696 | 2,333 |
+| 512 | 2,123,144 | 1,058,736 | 484,176 | 9,629 |
+| 2,048 | 4,994,768 | 2,112,936 | 1,766,264 | 38,814 |
+
+Outputs retained the earlier hashes and stayed byte-identical to the direct control. Graph functions need no control records or expression temporaries, so scratch remains one slot at every size. Named parameter annotations raise finalized function WAT from 13 to 18 nodes and add about 160 retained bytes per function. This is the measured price of adapting numeric binding IDs to watr 5.10.1's named-local optimizer contract. Remove the adapter only after the upstream numeric-local CSE fix is published and adopted.

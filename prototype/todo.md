@@ -260,10 +260,28 @@ Verification for this slice:
 - `npm test`: 3,894 pass, 1 skip
 - `npm run test:opt3`: 3,894 pass, 1 skip
 - `npm run test:wasi`: 3,893 pass, 1 skip
-- compact prototype: 15 tests and 237 assertions
+- compact prototype after scalar control: 17 tests and 333 assertions
 - self-compiled compact benchmark: threshold pass, including raw A to A to B and constant `%` and `**`
 
 The opt0 matrix leg remains red on the pre-existing standalone `test/date.js` shared-dispatch `.valueOf()` case. No production compiler, runtime, or date source differs from `origin/main` on this branch. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
+
+### M1b. Scalar control completion
+
+Status: implemented on the isolated prototype.
+
+- [x] add numeric function-local control IDs and lexical target records
+- [x] lower labeled and unlabeled break and continue through named WAT targets
+- [x] make `for` continue execute the step and `do` continue execute the condition
+- [x] support omitted `for` initialization, condition, and step
+- [x] admit infinite loops only when completion analysis proves no fallthrough
+- [x] support prefix and postfix update values without repeated source evaluation
+- [x] support ordered comma expressions and grouped comma call arguments
+- [x] support value-preserving numeric `&&` and `||` with reusable temporary locals
+- [x] specialize logical conditions to i32 without boxing comparison operands
+- [x] record maximum control depth and temporary-local demand in function scratch
+- [x] run every control case before and after watr optimization
+
+Watr 5.10.1 CSE does not invalidate expressions that read numeric local indices after a numeric-index write. The compact lowerer now presents local names derived from numeric binding IDs at the optimizer boundary, preserving numeric authority and byte-identical binaries. The general watr fix and regression are committed in sibling revision `b53c92c`. It remains unpublished because watr's separate Wasm-hosted test gate is red on its pre-existing unknown-instruction error-message case.
 
 ### M2. Production identity migration
 
@@ -365,9 +383,11 @@ prototype/compact/compiler.js       stage orchestrator
 prototype/compact/prepare.js        strict front-end boundary
 prototype/compact/program-index.js  numeric persistent authority
 prototype/compact/ops.js            source-operator classifier authority
+prototype/compact/constants.js      scalar constant-evaluation authority
 prototype/compact/lower.js          function-local scalar WAT lowering
 prototype/compact/backend.js        unchanged watr boundary
 prototype/compact/direct.js         frozen direct-binary control
+prototype/compact/graph-bench.mjs   source-hashed graph allocation experiment
 prototype/compact/bench.mjs         artifact and compile comparison
 ```
 
@@ -375,15 +395,15 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Complete scalar control without adding heap values:
+Add scalar integer representations before typed memory:
 
-1. Add explicit numeric completion IDs for loop break and continue targets.
-2. Support prefix and postfix update values with one local evaluation.
-3. Support omitted `for` components and `do...while` through normalized control shapes.
-4. Add numeric short-circuit joins for `&&`, `||`, and comma expressions.
-5. Extend the shared corpus with exact statement tests for each shape and its nested or labeled sibling.
-6. Keep exceptions, `try/finally`, strings, arrays, objects, imports, and dynamic carriers out of this slice.
-7. Rerun graph scaling and the self-compiled benchmark before promotion.
+1. Extend ProgramIndex representation IDs with i32 and unsigned i32 carriers.
+2. Infer integer and range facts in disposable function scratch.
+3. Add bitwise operators, shifts, and exact ToInt32 or ToUint32 boundaries.
+4. Cover the scalar rows of `unsigned.js`, `math.js`, and `differential.js` without editing their sources.
+5. Keep comparison results boxed or rejected until the dynamic-value lane owns boolean identity.
+6. Pin f64, i32, and unsigned export signatures separately.
+7. Rerun graph scaling and the self-compiled benchmark before starting Float64Array memory.
 
 The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 
