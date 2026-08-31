@@ -242,12 +242,14 @@ local-literal walker.
 In priority order (finish-order items 1-2 and the soundness families are
 tracked in `ledger-correctness.md`; this list is everything else):
 
-1. **Wrong values**: fix or reject the four `test/data.js` families and
-   the host own-method shadow gap recorded in `ledger-correctness.md`.
+1. **Wrong values**: CLOSED 2026-08-30/31 — every `test/data.js` family
+   pin now reads "was KNOWN-WRONG" (fixed) and the STRING shadow twin is
+   closed by the guess retirement (`ledger-correctness.md` §3). Still open
+   there, unscheduled: §4's zero-closure host-hijack export-boundary gap.
 2. **4 GiB self-compile**: fix the dvnested region soundness trip, then
    choose a strategy using the decision rule above.
-3. **137 parser residuals**: close each exact-set family with native and
-   kernel early rejection.
+3. **Parser residuals**: CLOSED 2026-08-30 — `test262-neg-accepts.json`
+   count is 0 at the pinned corpus; any future accept is a release blocker.
 4. **Schema-liveness scan**: stop re-deriving facts from emitted WAT in
    `src/compile/index.js`; publish an emission-time used-sid fact instead.
 5. **Pipeline minimality** (`ledger-refactor.md`):
