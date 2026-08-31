@@ -62,6 +62,113 @@ duplicate usage reference).
 
 ---
 
+## Schema-liveness scan: queue item found already landed (2026-08-31)
+
+`plan.md`'s "Remaining queue" carried an item verbatim from
+`archive/pipeline-minimality.md`'s post-M1d queue (2026-08-28): "Schema-
+liveness scan re-derives facts from emitted WAT (compile/index.js
+~:3158-3273) → emission-time used-sid fact." Picking it up as its own
+slice found the item stale: `b8c858d9` (2026-08-26, "fix kernel-target
+objects regression: emission-time PTR.OBJECT schema-liveness tags replace
+the post-treeshake WAT-text scan") already landed exactly this fix, two
+days before the queue text above was written, and it has ridden unbroken
+on main ever since — confirmed `b8c858d9` is an ancestor of this slice's
+base (`3814c151`), and no commit in between touches
+`src/compile/index.js`/`src/ir/pointers.js`/`src/ctx.js`'s schema-liveness
+code. No source change was made this slice; `.work/` only.
+
+**What used to be re-derived**: `scanMkptrAux` (deleted by `b8c858d9`, zero
+references anywhere in the tree today outside its own historical mention
+in `src/compile/index.js`'s comment) walked the post-treeshake
+`sec.stdlib/funcs/start/globals/elem` arrays and pattern-matched
+`f64.const`/`i64.const` operand STRINGS and `$__mkptr`/`$__mkptr_*` call
+NAMES to recover a schema id that was already a plain number before
+`mkPtrIR`/`boxPtrIR` (`src/ir/pointers.js`) encoded it into a WAT literal —
+the wrong-level-architecture pattern the audit flagged, and a real bug: a
+self-hosted-only folded `f64.const nan:...` literal (a recursive OBJECT
+param's re-box, `narrow.js`'s `applyPointerParamAbi` devirt) failed the
+scan's strict 16-hex-digit parser and silently dead-marked a live schema,
+native-only correct.
+
+**Where the fact is published now**: `mkPtrIR`/`boxPtrIR`
+(`src/ir/pointers.js:97-111`, `:26-74`) — the only two sites a PTR.OBJECT
+pointer is ever IR-constructed — stamp a `.schemaSid` property directly
+onto the node they return, additive metadata in the same family as
+`.type`/`.ptrKind`/`.ptrAux`, at the exact moment the WAT literal/call that
+carries the sid is produced (this IS emission time: both run from inside
+`emit.js`/`emit-assign.js`/the `module/*.js` builtins, never after).
+`src/compile/index.js:841-857` (`usedSchemaIds`) still walks the
+already-treeshaken `sec.*` arrays once to collect these tags, plus
+`ctx.schema.namedUses` (`{sid, funcName}` pairs the handful of raw-WAT-text
+stdlib templates push directly, `src/ctx.js:550-572`) — but this reads a
+plain numeric property off already-built nodes, not text reformatted back
+into a number, and it stays scoped to the one, deliberately-final,
+post-treeshake snapshot.
+
+**Why the literal ask ("a ctx Set, no post-hoc walk, appended purely at
+mkPtrIR-call time") was not implemented as a further change**: it would be
+a regression, not a simplification. `mkPtrIR`/`boxPtrIR`'s own doc comment
+(`src/ir/pointers.js:85-96`) states the reasoning this slice re-verified
+independently: walking the POST-treeshake arrays keeps the fact
+treeshake-accurate FOR FREE — a construction whose sole containing
+function treeshake later removes is simply never visited, no separate
+reachability accounting needed. A flat Set populated unconditionally the
+instant `mkPtrIR` runs (before treeshake has decided which functions
+survive) would over-approximate liveness for exactly the case this
+mechanism was built to get right (`test/objects.js`'s "dead opaque-length
+TypeError schema" pin, the original size-gate regression, `e867c3af`) —
+safe for correctness (the file's own comment: over-approximating "only
+costs bytes") but NOT output-identical, which is this slice's actual bar.
+Recovering treeshake-precision without the post-hoc walk would mean
+extending the `namedUses` `{sid, funcName}`-plus-survival-filter pattern to
+every one of the ~20 `mkPtrIR(PTR.OBJECT, …)`/`boxPtrIR(…, PTR.OBJECT, …)`
+call sites across `emit-assign.js`, `module/object.js`, `module/json.js`,
+`module/core/error-object.js`, `src/ir/sentinels.js`,
+`src/wat/assemble/start-fn.js`, `src/compile/emit/dispatch.js` — a larger,
+riskier diff whose failure mode (one missed call site) is silent
+UNDER-approximation, explicitly the unsafe direction ("would silently
+corrupt a live interop decode," `src/ctx.js`'s own schema-liveness
+comment) — to eliminate a single cheap linear walk over an already-pruned
+tree. Declined for the same reason this campaign declines other
+decompositions with no proven payoff (§ elsewhere in this ledger): no
+reader needs it, no correctness gap exists, and the risk is asymmetric (a
+silent wrong value vs. a walk that costs nothing observable).
+
+**Proof of equality** (no behavioral change was made, so "equality" here
+is: the mechanism is sound and nothing regressed since `b8c858d9`):
+
+1. `scanMkptrAux` has zero definitions anywhere in the tree (grep-confirmed)
+   — the re-derivation the queue item names is gone, not merely improved.
+2. `usedSchemaIds`'s two consumers (`jz:schema` positional serialization,
+   `jz:errcls` entry filter, `src/compile/index.js:892-895`/`:904`) are
+   unchanged since `b8c858d9`.
+3. `node scripts/refactor-oracle.mjs check --ref 3814c151`: **CLEAN — 568
+   entries identical**.
+4. `node test/kernel-parity.js`: **3/3 groups, 39/39 assertions, 0 fail**
+   (13 specimens × O0/O2/O3, including `dvnested`).
+5. `node test/kernel-oracle.js`: **15/15 groups, 738/738 assertions, 0
+   fail** — this is the native-vs-kernel-vs-JS-oracle three-way check;
+   `b8c858d9`'s bug was exactly a native/kernel divergence on a recursive
+   OBJECT param, so a clean run here is the most direct evidence the fix
+   still holds.
+6. `node test/pointers.js`: **73/73**. `node test/data.js`: **210/210
+   (1171 assertions)**. `node test/invariants.js`: **29/29 (169
+   assertions)**.
+7. `JZ_TEST_TARGET=jz.wasm node test/index.js` (kernel-hosted full suite —
+   the exact configuration `b8c858d9`'s regression only showed up under):
+   **3059 total, 3058 pass, 1 skip, 0 fail (15181 assertions)**.
+8. `node test/index.js` (native): **3895 total, 3894 pass, 1 skip, 0 fail
+   (29286 assertions)**.
+
+All eight green against a freshly built kernel (`dist/jz.wasm`, 14,105.5 kB,
+built this session).
+
+**Action taken**: `plan.md`'s queue item 4 removed (list renumbered),
+replaced with a one-line pointer to this section, so a future session
+doesn't re-open a closed item from stale queue text again.
+
+---
+
 ## Traversal-combinator retrofit: walkAst/some adoption (2026-08-27/28)
 
 Retires hand-rolled recursive AST walkers onto `walkAst`/`some`

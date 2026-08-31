@@ -248,9 +248,7 @@ tracked in `ledger-correctness.md`; this list is everything else):
    choose a strategy using the decision rule above.
 3. **137 parser residuals**: close each exact-set family with native and
    kernel early rejection.
-4. **Schema-liveness scan**: stop re-deriving facts from emitted WAT in
-   `src/compile/index.js`; publish an emission-time used-sid fact instead.
-5. **Pipeline minimality** (`ledger-refactor.md`):
+4. **Pipeline minimality** (`ledger-refactor.md`):
    - Fold `scanNumericFill` only after an assert-gated old-vs-new run.
    - Audit `narrowSignatures`'s 1,085-line shared-state driver before any
      decomposition. Keep `inferTypedValueRanges` nested at 181 lines.
@@ -260,14 +258,20 @@ tracked in `ledger-correctness.md`; this list is everything else):
      combinator work, then the six repeated vector load/store validators.
    - Revisit dormant zero-importer files only with an explicit owner
      delete-or-keep decision. `src/ops.js` itself is already deleted.
-6. **Performance loss classes**: close the 24/49 size-red and 13/60
+5. **Performance loss classes**: close the 24/49 size-red and 13/60
    speed-red sets through general engine work. Do not edit specimens.
-7. **Reference refresh**: after source freeze, rerun the Porffor floor
+6. **Reference refresh**: after source freeze, rerun the Porffor floor
    without swap pressure and refresh case-by-case speed, size, and memory.
-8. **Native target**: generalize the watr-specific source-to-native path
+7. **Native target**: generalize the watr-specific source-to-native path
    or record an owner decision to descope the promise.
-9. **Final sweep and gates**: build, matrix, wasm-hosted, test262, bench,
+8. **Final sweep and gates**: build, matrix, wasm-hosted, test262, bench,
    self, pack, release.
+
+(A stale "schema-liveness scan" item was carried in this queue past its
+own completion: `b8c858d9` (2026-08-26) already replaced the post-treeshake
+`scanMkptrAux` WAT-text scan with the emission-time `.schemaSid` node tag
+mkPtrIR/boxPtrIR now stamp — see `ledger-refactor.md` "Schema-liveness
+scan" for the verification that closed it out.)
 
 ## Process rules (binding for any resumer)
 
