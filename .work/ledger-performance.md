@@ -613,3 +613,373 @@ before it got built.
 5. Do **not** re-attempt `shapes` shape-set devirt as a redesign — it's
    already built; treat any further `shapes` work as bucket (a) or (b),
    not a representation gap.
+
+### 6.1 Cross-function value-range/relationship proofs — design pass
+(2026-08-31, `perf/cross-fn-ranges`, worktree base `35148654`). Bucket (b)'s
+three named instances (tokenizer, dispatch, immutable) re-examined with a
+design requirement: EXTEND an existing fact channel, never invent a parallel
+one. **Verdict: one instance (tokenizer) is genuinely bounded and is
+implemented below; the other two are precisely diagnosed — considerably more
+precisely than their §3.3/§3.5 entries — but are NOT bounded this session,
+for two structurally different reasons documented per-instance.**
+
+**The shape-class, precisely.** All three are a fact that is TRUE BY
+CONSTRUCTION at a value's origin (an argument expression at a call site; a
+write into an array) and NEEDED at a distant use site (a checked read in a
+different function), where today's analyses stop at the exact function
+boundary that separates origin from use. The general form: a CALLER-side
+proof, computed once from the caller's own expressions/effects, published
+onto the callee's `paramReps` entry (the SAME product-lattice `param-reps.js`
+already hosts `typedLen`/`typedCtor`/`schemaId`/`arrayElemRange`/…), gated by
+the SAME host-reachability/rest/default/body-write exclusions every existing
+field in that lattice already uses, seeded into the callee's OWN
+`ctx.func.*` fact map at analysis/emit time (mirroring `typedLen`'s two
+seeding sites), and consumed by extending an EXISTING elision authority
+rather than writing a new one. This shape held for tokenizer. It did NOT
+fully hold for dispatch or immutable — in both, the missing piece turned out
+to be on the CONSUMER side (an elision authority that doesn't exist yet for
+the specific receiver-kind/access-shape), not merely a channel gap — see
+each instance below.
+
+**Fixpoint/ordering note (applies to all three, whether or not implemented):
+this class of fact belongs immediately after `typedLen`'s own producer/
+validator pair in `narrowSignatures` (`compile/narrow/index.js`) — same
+round, same `sitesByCallee`/`runCallsiteLattice` driver, same `paramReps`
+freeze point (program-facts §7: `paramReps` is a STAGED fact, mutable
+through `plan()`'s rounds 2-3, frozen by `readonlyParamReps` at its own
+true last-producer point — a new field here is just one more producer inside
+that same window, not a new lifecycle to design).**
+
+---
+
+**Instance 1 — tokenizer's `len ≤ src.length`: BOUNDED, IMPLEMENTED.**
+
+`bench/tokenizer/tokenizer.js`'s `scan(src, len)` loops `for (i=0; i<len;
+i++) … src.charCodeAt(i) …`; both call sites are `scan(src, n - (i & 7))`
+where `n = src.length` (a single-def `const` in `main`, same `src`). The
+existing canonical-loop proof (`canonical-bounds.js`'s `scanBoundedLoops`,
+`typedIdxProven` class 1) requires the loop bound to be syntactically
+`recv.length` (or a hoisted temp declared IN THE LOOP'S OWN `init` clause);
+`len` is a PARAMETER with no def inside `scan` at all, so the proof never
+fires and every `charCodeAt` pays a per-iteration `i32.ge_u ($i)
+($src$cclen)` guard plus the f64/NaN-capable contract that guard forces.
+
+**Design.**
+- *Fact*: `paramReps.get(f).get(k).lenBoundOf = r` — param `k`'s value never
+  exceeds param `r`'s runtime `.length`.
+- *Where computed*: caller side, at each call site, from the two ARGUMENT
+  EXPRESSIONS directly (`summaries.js`'s new `boundedByCallerLength(expr,
+  recvName, callerBody)`) — a small, terminating structural recursion, NOT
+  a general symbolic interval prover (`interval-proof.js`'s own scope is
+  numeric-literal-bound loop nests; this needs no absolute bound at all,
+  only a relation to an unresolved runtime `.length`): a `.length` read on
+  `recvName` (base case); a bare name whose SOLE `let`/`const` def in the
+  caller body is itself bounded (single-def alias chase, evicted to
+  unprovable on any shadowing — `singleDeclInit`); or `A - B` where `A` is
+  bounded and `B` is provably nonnegative (`static.js`'s existing
+  `typedValueExprRange`, reused read-only — already used elsewhere for
+  exactly this "value stored through a bitmask" idiom, e.g. `s & (NOPS-1)`
+  in the dispatch instance below). Fails closed on anything else — forgone
+  proof, never a wrong one. Wired into `narrowSignatures` right after the
+  `typedLen` block, trying every OTHER param position as receiver candidate
+  and keeping whichever one EVERY live call site agrees on
+  (`mergeParamFact`'s ordinary exact-agreement poison — the same meet
+  `typedLen` itself uses).
+- *Where validated*: `param-abi.js`'s new `validateLenBoundOfParams` —
+  EXACT mirror of `validateTypedLenParams`'s exclusions, applied to BOTH
+  param names: host-reachable (`exported`/`raw`/`valueUsed`) functions
+  never trust it (an external caller isn't covered by a proof over the
+  enumerated call sites); rest/default position on either side voids it;
+  a body that WRITES either name voids it (the proof is an entry-time fact
+  about the values bound at call, not an invariant re-derivable from a
+  reassigned local).
+- *Where consumed*: `canonical-bounds.js`'s `scanBoundedLoops` — when the
+  loop bound is a bare name that doesn't resolve through `decls`/
+  `lengthRecv` (i.e., it's a parameter, not a loop-local `.length` temp),
+  fall back to `ctx.func.lenBoundOf?.get(boundVar)`; if present, treat it
+  exactly as if the bound had syntactically been `recv.length` — every
+  downstream safety check in the function (`idx !== recv`,
+  `!isReassigned(body, idx/recv/boundVar)`, `!redeclaresName`) is
+  UNCHANGED and applies identically regardless of how `recv` was
+  identified. Seeded into `ctx.func.lenBoundOf` (a new field on
+  `active-function.js`'s per-function record, alongside `typedLen`) at the
+  SAME two sites `typedLen` is seeded (`analyze-for-emit.js`,
+  `emit-func.js`), independent of the `typedCtor` gate those sites nest
+  `typedLen` inside (this fact's receiver need not be typed — tokenizer's
+  is a STRING).
+- **Why sound, precisely — the soundness condition the task asked for
+  stated explicitly**: the fact is an ENTRY-TIME relation between two
+  parameter VALUES, true once at the call and never re-derived. What could
+  invalidate it: (1) *writes through aliases* — guarded by
+  `validateLenBoundOfParams`'s body-write check on both names, AND by the
+  receiver being consumed ONLY in `scanBoundedLoops`, whose OWN existing
+  `!isReassigned(body, recv)` check is unconditional; (2) *re-entrancy* — a
+  callback reachable from the loop body mutating the receiver mid-activation
+  would need the receiver's LENGTH to be able to change at all; `scan`'s
+  receiver is a JS STRING, immutable by language definition, so this
+  channel is closed by construction, not by an extra proof — **this is
+  exactly why `scanBoundedArrIdx` (the array-idx sibling proof, same file)
+  deliberately does NOT take the same fallback**: a mutable Array receiver
+  COULD shrink mid-activation through an alias, and unlike the canonical
+  `for (i=0; i<recv.length; i++)` case (which re-reads `recv.length` fresh
+  every iteration and so self-corrects), a `len`-parameter bound is FIXED
+  at entry and decoupled from the receiver's live length — trusting it for
+  a shrinkable receiver would be a real OOB-read hazard, not merely an
+  imprecision. Extending to `scanBoundedArrIdx` would need its own argument
+  (e.g., gating on `ctx.func.typedElem?.has(recv)` — jz's typed arrays are
+  fixed-length for their lifetime — or on the SAME `neverGrown`-style
+  whole-callee-graph closure §6.2 needs) — not attempted here, on purpose;
+  (3) *host boundary* — closed by `validateLenBoundOfParams`'s
+  `hostReachable` exclusion, inherited for free from `siteState`'s own gate
+  in `narrow/index.js` (a site targeting an exported/value-used callee
+  never even reaches the fact-merge rule); (4) *growth* — not applicable to
+  a string's `.length` at all (immutable value), and moot for the excluded
+  mutable-receiver sibling.
+- **No transitive/soft pre-pass**: unlike `typedLen`/`typedCtor`, this is
+  ONE direct hard pass — a wrapper-forwarding chain (`g(a,b){return
+  f(a,b)}` where `g`'s own `lenBoundOf` would need to feed `f`'s) is NOT
+  wired (would need `boundedByCallerLength` taught to consult
+  `state.callerParamFacts('lenBoundOf')` the way `inferTypedLen` already
+  does for its own field) — skipped because the corpus doesn't currently
+  exercise it and an unverified code path in a bounds-elision prover is a
+  liability, not a convenience. Flagged as the natural next increment if a
+  future case needs it.
+
+**Measured.** `bench-size.mjs --json`, full 60-case corpus, before
+(`35148654`) vs after: **exactly one line changes** —
+`tokenizer jz=1981→1796 (jz_wasmopt=1968→1770), as=1551` unchanged — every
+other case byte-identical. Ratio 1.277×→1.158×. `refactor-oracle.mjs check
+--ref 35148654` across the full 142-spec corpus: exactly 2 differences,
+both `bench:tokenizer` (`O0`: 15814B→15724B; `size`: 1981B→1796B), both
+reductions, nothing else touched. Reading the compiled WAT confirms why the
+win is larger than "one guard removed": eliding the bounds check ALSO drops
+`charCodeAt`'s contract from f64 (NaN-capable, for the OOB case) to raw i32
+(`inBoundsCharCodeAt`'s own existing i32/f64 contract choice — canonical-
+bounds.js's module doc), which cascades into simpler downstream comparisons
+throughout `scan`'s classifier body. Landed as four commits per the
+campaign rule (fact channel, then consumer, plus two same-session hardening
+follow-ups caught on self-review): `35fc571e` (the `lenBoundOf` channel —
+`refactor-oracle`: 568/568 entries identical, confirming it is a pure no-op
+until consumed), `258cc7bf` (the `scanBoundedLoops` consumer — the two
+tokenizer diffs above), `3a728fda` (comment rewrap, no functional change),
+`5d587c4c` (a cycle guard in `boundedByCallerLength`'s single-def alias
+chase — `singleDeclInit` resolves independent of walk order, unlike
+`bodyAffineEnv`'s incrementally-populated env, so a pathological
+`const n = n - 1` could otherwise recurse forever instead of failing
+closed; re-verified inert on the real case after landing it: tokenizer
+still 1796B, oracle still shows exactly the same 2 diffs). Full battery,
+all green: `test/kernel-parity.js` 39/39 (39 assertions); `npm run build`
+clean; `test/index.js` (native) 3894/3895 pass (1 pre-existing skip, 0
+fail, 29286 assertions); `test/kernel-oracle.js` 15/15 (738 assertions);
+`test/pointers.js` 73/73 (132 assertions); `test/data.js` 210/210 (1171
+assertions); `test/invariants.js` 29/29 (169 assertions);
+`JZ_TEST_TARGET=jz.wasm test/index.js` (self-hosted) 3058/3059 pass (1
+pre-existing skip, 0 fail, 15181 assertions). Zero failures anywhere,
+native or self-hosted.
+
+---
+
+**Instance 2 — dispatch's `code[i] ∈ [0,7]`: precisely diagnosed, NOT
+bounded.** §3.3's own framing ("a value-range fact about an array's
+CONTENTS, tracked across a write-site/read-site function boundary... a
+different, harder proof than the INDEX-bounds proofs already closed") is
+confirmed correct, and this session narrows exactly WHERE it is hard.
+
+`bench/dispatch/dispatch.js`: `fill(code, ks)` writes `code[i] = s &
+(NOPS-1)` (NOPS=8) once in `main`; `runKernel(code, ks)` (a SEPARATE,
+non-inlined function — called from 2 sites) later reads `ops[code[i]]` as a
+call target through `devirtConstFnArrayCalls`'s (`optimize/devirt.js`)
+const-fn-array devirtualization. Reading the compiled WAT directly (`node
+scripts/bench-size.mjs` compile of `dispatch.js`, `optimize:'size'`) shows
+the exact cost: `code[i]` is read, checked (`i32.lt_u … (i32.const 8)`),
+and on OOB falls back to a sentinel closure (`__fc3`); the resulting boxed
+value is then `br_table`-dispatched over its 8 known closure identities,
+with a `call_indirect` DEFAULT arm — the Table (4B) + Elem (14B, 8 entries)
++ 8 standalone `$closure0..7` functions (kept ONLY as `call_indirect`
+targets) exist SOLELY to serve that default arm and the OOB sentinel path.
+
+**A cross-function content-range channel for exactly this fact ALREADY
+EXISTS, end-to-end, and needed NO new machinery to build — `arrayElemRange`**
+(`param-reps.js`'s own field list; producer `narrow/index.js`'s `rangeAtSite`
++ `summaries.js`'s `inferTypedValueRanges`, "whole-program typed-elem store
+range hulls"; consumer `interval-proof.js`'s `ev()`, `written = ctx.func.
+localReps?.get(x)?.arrayElemRange`, already used for e.g. `table[in[j]]`-
+style narrow-typed-load range bounds). **This session found and FIXED (then
+reverted — see below) a real, narrow imprecision in its producer that was
+the ONLY reason it wasn't already proving `[0,7]` for `code`.**
+
+`fill` gets inlined into `main` (single call site) before `narrowSignatures`
+runs, so `computeDirectEffects` (`summaries.js`) never even sees `fill` as a
+separate callee for THIS instance's own local-range tracking (verified by
+instrumenting `inferTypedValueRanges` directly — `main`'s inlined body shows
+mangled names `codef17_0`, `inl0_sf15_2` etc., confirming inlining precedes
+this analysis). The actual break: `runKernel`'s OWN summary
+(`computeDirectEffects`, walking `runKernel`'s un-inlined body — 2 call
+sites keeps it standalone) marks its `code` param `bad: true` — NOT because
+`code` is written (it isn't; `runKernel` only reads it) but because
+`ops[code[i]](x, ks[i])`'s CALL node has `code` appearing inside the
+CALLEE-SELECTING expression (`n[1] = ['[]', 'ops', ['[]', 'code', 'i']]`),
+and `computeDirectEffects`'s receiver-mutation guard —
+`if (mentions(n[1], name)) sum[k].bad = true` — treats ANY occurrence of
+`name` ANYWHERE in the callee subtree as "this call might mutate `name`",
+not just when `name` IS the receiver. `code` here is merely the KEY
+selecting which closure runs — the same "element/property reads do not
+[alias]" exemption the function's own comment already grants every OTHER
+read site, just not this one. **Fix verified**: narrowing the guard to the
+callee's actual RECEIVER (the base of a `.`/`?.`/`[]`/`?.[]` access, reusing
+`carries` — the SAME aliasing primitive already trusted one line below for
+the args loop, in place of the blanket `mentions`) makes `runKernel`'s
+`code` summary `bad: false`, `main`'s local `codef17_0` range settle to
+`[0,7]`, and `paramReps.get('runKernel').get(0).arrayElemRange` finally
+resolve to `[0,7]` — confirmed by direct instrumentation of the fixpoint.
+`refactor-oracle.mjs check --ref 35148654` over the FULL 142-spec corpus
+with ONLY this fix applied: **CLEAN, 568/568 identical — zero bytes change
+anywhere, including dispatch.** The producer fix was therefore reverted
+(no case shrinks; landing a verified-inert diff serves nothing this
+campaign's gates require) rather than committed; it is fully specified
+above for whoever picks this up next (`summaries.js`'s `computeDirectEffects`,
+the `if (n[0] === '()')` block, `mentions(n[1], name)` → receiver-scoped
+`carries`).
+
+**Why it's still zero bytes even with the channel correct — the actual gap
+is on the CONSUMER side, and it is not one gap but two:**
+1. `ops[code[i]]`'s checked read is NOT gated by `typedIdxProven` at all —
+   confirmed by testing (the producer fix alone changed the WAT nowhere).
+   `typedIdxProven`'s whole family is scoped to TYPED (numeric) array
+   receivers (`canonical-bounds.js`'s own module doc: "Two sibling proofs…
+   array-idx is a bounds-check elision" via `scanBoundedArrIdx`/
+   `inBoundsArrIdx` — the GENERAL-array sibling). `ops` is a plain `Array`
+   of closures, so the relevant authority is `inBoundsArrIdx`, and THAT
+   function has only ONE proof class — the canonical structural loop
+   `for (i=C; i<recv.length; i++) recv[i]` — no analog of `typedIdxProven`'s
+   class 6 ("refined-range proof": `exprType(idx)==='i32'` then
+   `intExprRange(idx)`, which for a TYPED receiver can already reach into
+   `arrayElemRange` via `interval-proof.js`'s `ev()`). `ops[code[i]]` is not
+   a canonical loop over `ops` at all (`code[i]` isn't `ops`'s own induction
+   variable) — so `inBoundsArrIdx` correctly, structurally, does not fire,
+   and there is no general-array counterpart to fall back to. Closing THIS
+   needs a genuinely new proof class, ported into the general (non-typed)
+   array checked-read path, not merely a channel fix.
+2. Even with (1) closed — the read fully unchecked, `ops[code[i]]`
+   unconditionally one of the 8 known closures — `devirtConstFnArrayCalls`
+   does not currently have any code path that OMITS the Table/Elem/8-
+   closure fallback. Its own doc is explicit and deliberate: "The untouched
+   original call_indirect is the default arm… semantics are bit-identical
+   regardless of the candidate set" — it ALWAYS preserves a runtime
+   fallback, by design, independent of whatever proof produced the
+   candidate arms. Teaching it to omit the fallback when the feeding index
+   is separately proven exhaustive is a real design change to a pass whose
+   current soundness story is "no proof needed, the fallback covers
+   everything" — a materially different, higher-risk kind of change than
+   extending a bounds-check elision, and it is where the bulk of the 19B
+   actually lives (the guard/sentinel that (1) alone would remove is a
+   small fraction of the total; Table+Elem+8 outlined closures are the
+   rest).
+
+**Verdict: NOT bounded this session.** Two new consumer-side mechanisms are
+needed (a general-array index-value-range proof class; a devirtualization
+pass willing to trust an external proof to drop its own safety net), one of
+which is an architectural change to a pass that currently trusts nothing
+but itself. Recorded here at a level of precision the campaign can act on
+directly next time — the old §3.3 framing ("a different, harder proof") is
+now three concrete, separately-attackable engineering tasks instead of one
+diffuse "needs a proof" note.
+
+---
+
+**Instance 3 — immutable's element-replace bound: precisely diagnosed, NOT
+bounded.** §3.5's own framing is confirmed and sharpened to the exact
+consumer wiring and the exact reason today's proof rejects it.
+
+`bench/immutable/immutable.js`: `initParticles()` builds `ps` via `N`
+(=4096) unconditional `ps.push({...})` calls in a literal-trip loop —
+exactly `inferInternalArrayLengths`'s (`summaries.js`) own target shape, so
+`initParticles.arrayLen = 4096` is provably known. `runKernel(ps)` then does
+`ps[i] = {x,y,vx,vy}` (element replace, same index range `[0,N)`, no
+push/no `.length` write) once per particle per step. Reading the compiled
+WAT: the store recomputes the array's base (`sib5 = p - i*16`), loads the
+header at `sib5-8` (the array's CURRENT capacity, in the general dynamic-
+element-store path every non-`neverGrown` array write pays), and gates the
+4-field store behind `i32.lt_u(i, header_capacity)` — INSIDE the hot loop,
+every iteration.
+
+**The consumer wiring for a fix already exists and is ready to be fed**:
+`neverGrown` (a `ValueRep`/`paramReps` field — `param-never-grown.js`'s
+whole-callee-graph closure proof) feeds `emit-func.js`'s
+`plannedStableHeaderNames` → `optimize/licm.js`'s `stableHeaderNames`,
+which hoists exactly this header LOAD out of a loop when the receiver's
+header is proven stable (`licm.js:360`, "proven stable-header pointer —
+VAL.TYPED or ARRAY neverGrown"). No new wiring needed there — `ps` simply
+never qualifies today.
+
+**Why it doesn't qualify — and why BOTH of the two relevant existing
+analyses independently reject it for the SAME underlying reason.**
+`param-never-grown.js`'s own doc already states the gap precisely: `
+neverGrown` requires the body to ONLY EVER PURELY READ the param
+(`safeReads`); `ps[i] = {...}` writes, disqualifying it unconditionally —
+there is no notion of "writes, but only ever an in-bounds replace" anywhere
+in that scan. Separately, `inferInternalArrayLengths`'s OWN "length-
+preserving parameter" tracking (the mechanism that would otherwise let
+`runKernel`'s `ps` carry its proven 4096-length capacity fact forward)
+INDEPENDENTLY rejects it for the identical reason: its per-statement walk
+poisons a tracked name on `Array.isArray(n[1]) && refs(n[1], name)` for any
+`ASSIGN_OPS` node — `ps[i] = {...}`'s own LHS `['[]', 'ps', 'i']` references
+`ps`, so this fires unconditionally, with no in-bounds exception either
+(confirmed by reading `summaries.js`'s `locals`-tracking `verify` walk —
+the SAME pattern, same file, ~80 lines from the `neverGrown` sibling
+concern). **Both proofs need the identical new primitive**: "is `arr[idx] =
+expr` (for this specific write, in a known loop context) provably an
+in-bounds REPLACE — `idx` provably `< arr`'s own constructed length — never
+a resize", usable from BOTH `param-never-grown.js`'s scan (to admit the
+write as safe) AND `summaries.js`'s length-preservation tracking (to let
+the capacity fact itself survive the write and keep flowing to
+`runKernel`'s param). Neither half is landable alone: `neverGrown` alone
+would let LICM hoist the header LOAD but the per-iteration COMPARISON
+against a non-constant capacity would remain (only a full "capacity ≥ N,
+proven" fact — the SECOND half — turns the conditional store into an
+unconditional one and removes the base-recompute entirely, which is what
+the ledger's original "provably fixed length, no grow/forward check fast
+path" language was asking for).
+
+**Verdict: NOT bounded this session.** This is a genuine generalization of
+a MEMORY-SAFETY CRITICAL, default-deny, whole-callee-graph closure analysis
+(`param-never-grown.js`'s own doc: "default-deny — nested arrows are walked
+as part of the enclosing body… unknown callees poison") — landing a new
+"safe in-bounds replace" admission rule there, correctly, needs its own
+focused design-and-review pass (the in-bounds proof itself likely needs to
+reuse or parallel `typedIdxProven`'s machinery for OBJECT-schema array
+receivers, which `typedIdxProven` does not cover today — it is typed-numeric-
+receiver-only, same gap as dispatch's instance 2). Attempting it inside an
+already-large multi-instance session, alongside the higher-confidence
+tokenizer fix, would trade the session's remaining verification depth
+(empirical, byte-by-byte, before commit — the standard this ledger holds
+every landed fix to) for speed on the hardest of the three instances. Two
+concrete next steps for whoever picks this up: (a) design the shared
+"provably in-bounds replace, not a resize" predicate once, as a small
+reusable primitive parallel to `typedIdxProven`'s canonical-loop class but
+for object/schema-array receivers; (b) wire it into BOTH
+`param-never-grown.js`'s `_NG_SAFE_METHODS`-adjacent write scan and
+`summaries.js`'s two independent poison sites (`computeDirectEffects`'s
+receiver-write guard is unaffected — this is the SEPARATE local-tracking
+`verify`/`locals` walk) — landing either alone is an inert diff, exactly as
+instance 2's producer fix was.
+
+---
+
+**Summary verdict for §6.1**: 1 of 3 bounded and implemented (tokenizer,
+−185B, `1981→1796`, four commits (two substantive, two same-session
+hardening), full battery green native and self-hosted); 2 of 3 precisely
+diagnosed but correctly NOT implemented (dispatch needs two new consumer-
+side mechanisms, one of which is an architecture change to a
+deliberately-conservative devirtualization pass; immutable needs a new
+shared in-bounds-write predicate touching a memory-safety-critical
+whole-program closure analysis in two places). Both un-implemented
+instances converge on the SAME missing primitive at their core — a
+provable relationship between an INDEX (or a value read from another
+array) and a receiver's true extent, for receivers `typedIdxProven`
+does not cover (general Arrays; object-schema Arrays) — which is itself a
+useful finding: bucket (b) was "one hard case, then three", and is now
+"three, of which one closes cleanly and the other two both bottleneck on
+one missing general-array range-proof class." That class, if built, would
+likely unblock both remaining instances at once — a genuine next campaign
+target, not merely two more one-off gaps.
