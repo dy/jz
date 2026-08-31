@@ -574,8 +574,13 @@ export default (ctx) => {
           return ptr
         }
       }
-      // L3/'speed' bumps the cap floor (default 4) to skip more growth cycles.
-      const minCap = Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)
+      // Literal arrays know their final length and do not need the speed
+      // profile's dynamic-growth floor. Compiler kernels can lower this
+      // separate floor without changing arrays emitted for user programs.
+      const configuredLiteralCap = ctx.transform.optimize?.arrayLiteralMinCap
+      const minCap = configuredLiteralCap == null
+        ? Math.max(ctx.transform.optimize?.arrayMinCap | 0, 4)
+        : Math.max(configuredLiteralCap | 0, 0)
       const a = allocArray(len, Math.max(len, minCap))
       const body = [...a.setup]
       for (let i = 0; i < len; i++)
@@ -1588,12 +1593,15 @@ export default (ctx) => {
   // no assignments to names not declared locally in the callback.
   function collectLocals(node, locals) {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '=>') return
     if (op === 'let' || op === 'const' || op === 'var') {
-      for (const a of args) if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') locals.add(a[1])
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') locals.add(decl[1])
+      }
     }
-    for (const a of args) collectLocals(a, locals)
+    for (let i = 1; i < node.length; i++) collectLocals(node[i], locals)
   }
   function isPureCallback(fn) {
     if (!Array.isArray(fn) || fn[0] !== '=>') return false
@@ -1607,16 +1615,16 @@ export default (ctx) => {
     let pure = true
     ;(function walk(node) {
       if (!pure || !Array.isArray(node)) return
-      const [op, ...args] = node
+      const op = node[0]
       if (op === '=>') return
       if (op === '()' || op === '?.()' || op === 'new') { pure = false; return }
       if (op === '++' || op === '--') { pure = false; return }
       if (ASSIGN_OPS.has(op)) {
-        const t = args[0]
-        if (typeof t === 'string') { if (!locals.has(t)) { pure = false; return } }
+        const target = node[1]
+        if (typeof target === 'string') { if (!locals.has(target)) { pure = false; return } }
         else { pure = false; return }
       }
-      for (const a of args) walk(a)
+      for (let i = 1; i < node.length; i++) walk(node[i])
     })(fn[2])
     return pure
   }

@@ -215,27 +215,24 @@ const flattenPrefix = (shape) => {
 // from expression contexts (if-conditions, ternary tests). For these the
 // inlined body is value-only (zero prefix), so a pure substitution is safe.
 const inlineInExpr = (node, candidates) => {
-  if (!Array.isArray(node)) return { node, changed: false }
-  if (node[0] === '=>') return { node, changed: false }
-  let changed = false
-  const next = [node[0]]
+  if (!Array.isArray(node) || node[0] === '=>') return node
+  let next = null
   for (let i = 1; i < node.length; i++) {
-    const r = inlineInExpr(node[i], candidates)
-    if (r.changed) changed = true
-    next.push(r.node)
+    const child = inlineInExpr(node[i], candidates)
+    if (child !== node[i] && !next) next = node.slice(0, i)
+    if (next) next.push(child)
   }
-  if (isCandidateCall(next, candidates)) {
-    const args = callArgs(next)
-    const shape = flattenPrefix(args && inlinedBody(candidates.get(next[1]), args))
-    if (shape && shape.value !== null && shape.prefix.length === 0) {
-      return { node: shape.value, changed: true }
-    }
+  const out = next || node
+  if (isCandidateCall(out, candidates)) {
+    const args = callArgs(out)
+    const shape = flattenPrefix(args && inlinedBody(candidates.get(out[1]), args))
+    if (shape && shape.value !== null && shape.prefix.length === 0) return shape.value
   }
-  return { node: changed ? next : node, changed }
+  return out
 }
 
 const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
-  if (!Array.isArray(stmt)) return { node: stmt, changed: false }
+  if (!Array.isArray(stmt)) return null
   // Statement-position call: the result is unused, but the callee's return
   // EXPRESSION may still carry side effects — an expression-bodied arrow whose body
   // is itself effectful (`seek = n => idx = n` inlines to the assignment `idx = i`;
@@ -279,19 +276,16 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     const next = [';']
     for (let i = 1; i < stmt.length; i++) {
       const r = inlineInStmt(stmt[i], candidates, loopVariantNames)
-      changed ||= r.changed
-      if (r.hoisted?.length) {
-        next.push(...r.hoisted)
-        changed = true
-      }
-      if (r.splice) next.push(...r.splice)
-      else next.push(r.node)
+      if (r) changed = true
+      if (r?.hoisted?.length) next.push(...r.hoisted)
+      if (r?.splice) next.push(...r.splice)
+      else next.push(r ? r.node : stmt[i])
     }
-    return changed ? { node: next, changed: true } : { node: stmt, changed: false }
+    return changed ? { node: next, changed: true } : null
   }
   if (op === '{}') {
     const r = inlineInStmt(stmt[1], candidates, loopVariantNames)
-    if (!r.changed) return { node: stmt, changed: false }
+    if (!r) return null
     // If the child was itself a candidate call (or a let/assign-of-call), it
     // already returned a `['{}', [';', ...prefix]]` shape. Re-wrapping here
     // would yield `['{}', ['{}', …]]`, which codegen rejects ("Unknown op: {}").
@@ -302,7 +296,7 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     const idx = forLoopBodyIndex(stmt)
     const vars = loopVariantNames ? new Set(loopVariantNames) : new Set()
     const r = inlineInStmt(stmt[idx], candidates, vars.size ? vars : null)
-    if (!r.changed) return { node: stmt, changed: false }
+    if (!r) return null
     return { node: withForLoopBody(stmt, r.node), changed: true, hoisted: r.hoisted }
   }
   if (op === 'while') {
@@ -310,16 +304,17 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     const ind = whileInductionVar(stmt[1])
     if (ind) vars.add(ind)
     const r = inlineInStmt(stmt[2], candidates, vars.size ? vars : null)
-    if (!r.changed) return { node: stmt, changed: false }
+    if (!r) return null
     return { node: ['while', stmt[1], r.node], changed: true, hoisted: r.hoisted }
   }
   if (op === 'if') {
     const thenR = inlineInStmt(stmt[2], candidates, loopVariantNames)
     const elseR = stmt.length > 3 ? inlineInStmt(stmt[3], candidates, loopVariantNames) : null
-    if (thenR.changed || elseR?.changed) return {
-      node: stmt.length > 3 ? ['if', stmt[1], thenR.node, elseR.node] : ['if', stmt[1], thenR.node],
+    if (thenR || elseR) return {
+      node: stmt.length > 3 ? ['if', stmt[1], thenR ? thenR.node : stmt[2], elseR ? elseR.node : stmt[3]]
+        : ['if', stmt[1], thenR ? thenR.node : stmt[2]],
       changed: true,
-      hoisted: [...(thenR.hoisted || []), ...(elseR?.hoisted || [])],
+      hoisted: [...(thenR?.hoisted || []), ...(elseR?.hoisted || [])],
     }
   }
   if (op === 'try' || op === 'catch' || op === 'finally') {
@@ -328,14 +323,14 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
     let hoisted = []
     for (let i = 1; i < stmt.length; i++) {
       const part = stmt[i]
-      const r = Array.isArray(part) ? inlineInStmt(part, candidates, loopVariantNames) : { node: part, changed: false }
-      changed ||= r.changed
-      if (r.hoisted?.length) hoisted = hoisted.concat(r.hoisted)
-      next.push(r.node)
+      const r = Array.isArray(part) ? inlineInStmt(part, candidates, loopVariantNames) : null
+      if (r) changed = true
+      if (r?.hoisted?.length) hoisted = hoisted.concat(r.hoisted)
+      next.push(r ? r.node : part)
     }
-    return changed ? { node: next, changed: true, hoisted } : { node: stmt, changed: false }
+    return changed ? { node: next, changed: true, hoisted } : null
   }
-  return { node: stmt, changed: false }
+  return null
 }
 
 // Short-circuit operators: only the FIRST operand is unconditionally evaluated; a call in
@@ -677,11 +672,16 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         const h = hoistNestedCalls(body, blockNames)
         if (h.changed) { body = h.node; iterChanged = true }
       }
-      const r = isExprBody ? inlineInExpr(body, activeCandidates) : inlineInStmt(body, activeCandidates)
-      if (r.changed) { body = r.node; iterChanged = true }
+      if (isExprBody) {
+        const next = inlineInExpr(body, activeCandidates)
+        if (next !== body) { body = next; iterChanged = true }
+      } else {
+        const r = inlineInStmt(body, activeCandidates)
+        if (r) { body = r.node; iterChanged = true }
+      }
       if (exprActive.size) {
-        const e = inlineInExpr(body, exprActive)
-        if (e.changed) { body = e.node; iterChanged = true }
+        const next = inlineInExpr(body, exprActive)
+        if (next !== body) { body = next; iterChanged = true }
       }
       if (!iterChanged) break
       bodyChanged = true
@@ -690,7 +690,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   }
   if (ast) {
     const r = inlineInStmt(ast, candidates)
-    if (r.changed) changed = true
+    if (r) changed = true
   }
   return changed
 }
@@ -796,8 +796,8 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
     (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
 
   let out = body, didChange = false
-  if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r.changed) { out = r.node; didChange = true } }
-  if (exprCands.size) { const r = inlineInExpr(out, exprCands); if (r.changed) { out = r.node; didChange = true } }
+  if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r) { out = r.node; didChange = true } }
+  if (exprCands.size) { const next = inlineInExpr(out, exprCands); if (next !== out) { out = next; didChange = true } }
   if (!didChange) return false
 
   // Remove decls of candidates that are now fully consumed.

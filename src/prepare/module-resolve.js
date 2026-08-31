@@ -88,24 +88,25 @@ export function recordModuleInitFacts(root) {
   }
   const visitFuncValue = (node) => {
     if (facts.hasFuncValue || !Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '()') {
-      for (let i = 1; i < args.length; i++) {
-        const a = args[i]
-        if (isFuncRef(a, ctx.funcs.names)) { facts.hasFuncValue = true; return }
-        visitFuncValue(a)
+      for (let i = 2; i < node.length; i++) {
+        const child = node[i]
+        if (isFuncRef(child, ctx.funcs.names)) { facts.hasFuncValue = true; return }
+        visitFuncValue(child)
       }
       return
     }
     if (op === '.' || op === '?.') {
-      if (isFuncRef(args[0], ctx.funcs.names)) { facts.hasFuncValue = true; return }
-      visitFuncValue(args[0])
+      if (isFuncRef(node[1], ctx.funcs.names)) { facts.hasFuncValue = true; return }
+      visitFuncValue(node[1])
       return
     }
-    if (op === '=>') { visitFuncValue(args[1]); return }
-    for (const a of args) {
-      if (isFuncRef(a, ctx.funcs.names)) { facts.hasFuncValue = true; return }
-      visitFuncValue(a)
+    if (op === '=>') { visitFuncValue(node[2]); return }
+    for (let i = 1; i < node.length; i++) {
+      const child = node[i]
+      if (isFuncRef(child, ctx.funcs.names)) { facts.hasFuncValue = true; return }
+      visitFuncValue(child)
     }
   }
   const walk = (node) => {
@@ -114,7 +115,7 @@ export function recordModuleInitFacts(root) {
       return
     }
     observeNodeFacts(node, facts)
-    for (const a of node.slice(1)) walk(a)
+    for (let i = 1; i < node.length; i++) walk(node[i])
   }
   visitFuncValue(root)
   walk(root)
@@ -274,7 +275,11 @@ export function foldNamespaceIntrospection(callee, args) {
 // Compiler-internal synthetic callees: emit-handled intrinsics, never user
 // function values — so a bare reference must not pull in the callable-value
 // (function table / closure) machinery.
-export const INTRINSIC_CALLEES = new Set(['__iter_arr', '__keys_ro'])
+export const INTRINSIC_CALLEES = new Set([
+  '__iter_arr', '__keys_ro', '__heap_mark', '__heap_large', '__park_begin', '__park_rewind',
+  '__park_write_u8', '__park_write_u32', '__park_write_f64', '__park_write_i64', '__park_write_str', '__park_finish',
+  '__park_read_u8', '__park_read_u32', '__park_read_f64', '__park_read_i64', '__park_read_str',
+])
 
 // Resolve a member-receiver to a builtin module name, honoring FUNCTION-SCOPED
 // namespace aliases (`const M = Math` inside a body registers M → 'math' in the

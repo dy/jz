@@ -212,7 +212,7 @@ const COMPILE_FAMILY_OWNERS = [
   ['func-inspect.js', ['repView', 'captureFuncInspect']],
   ['boundary-wrap.js', ['isBoundaryWrapped', 'synthesizeBoundaryWrappers']],
   ['coercion-hoist.js', ['hoistInvariantParamCoercions', 'hoistUnionCursorUnbox']],
-  ['analyze-for-emit.js', ['freshCseName', 'cloneRepMap', 'analyzeFuncForEmit', 'seedLocalIntConsts']],
+  ['analyze-for-emit.js', ['freshCseName', 'analyzeFuncForEmit', 'seedLocalIntConsts']],
   ['emit-func.js', ['emitFunc']],
   ['closure-emit.js', ['normalizeClosureBody', 'closureSig', 'enterClosureFrame', 'seedClosureFrame', 'analyzeClosureBodyForEmit', 'emitClosureBody']],
 ]
@@ -362,23 +362,17 @@ test('invariant: isReassigned memo path bit-equivalent to the fresh walk', async
 })
 
 // ============================================================================
-// FunctionPlan clone — deep independence and dispatch fidelity
+// FunctionPlan linear ownership
 // ============================================================================
-// Canonical FunctionPlans pack maps/sets as compact tuples across the
-// analyze→emit gap, then materialize fresh mutable collections for emission.
-// The ownership representation must preserve the original semantics exactly:
-// deep clone of the closed plan vocabulary, insertion order kept, and no
-// aliasing between the packed authority, a working copy, or the source facts.
-test('invariant: packed FunctionPlan materialization is deep, order-preserving, dispatch-faithful', async () => {
-  const { createFunctionPlan, installFunctionPlan } = await import('../src/compile/function-plan.js')
+test('invariant: FunctionPlan transfers collections once and keeps projections detached', async () => {
+  const { createFunctionPlan, functionPlanRepField, installFunctionPlan } = await import('../src/compile/function-plan.js')
   const { isMapOverlay, makeMapOverlay } = await import('../src/compile/map-overlay.js')
-  const wideRep = { val: 3, ptrKind: null, ptrAux: undefined, schemaId: 7, intConst: 42, intCertain: true, notString: false, arrayElemSchema: { id: 1, elems: [1, 2] }, range: [0, 100], typedCtor: 'Float64Array', wasm: 'f64', nullable: false, mayBeUndefined: true, dictValueValType: new Set(['a']), inner: new Map([['k', { deep: [{ x: 1 }] }]]) }
+  const wideRep = { schemaId: 7, arrayElemSchema: { id: 1, elems: [1, 2] }, kinds: new Set(['a']) }
   const facts = {
     block: false,
     locals: new Map([['w', wideRep], ['n', 5], ['nil', null]]),
-    boxed: new Map(), cellTypes: new Set(['w']),
-    flatObjects: new Map([['f', { slots: ['a', 'b'] }]]),
-    sliceViews: new Set(), cseLoadBases: new Set([['base', 0]]),
+    boxed: new Map(), capturedNames: new Set(), cellTypes: new Set(['w']),
+    flatObjects: new Map(), sliceViews: new Set(), cseLoadBases: new Set(),
     distinctParams: null, leanHashLocals: new Set(), i32HashLocals: new Set(),
     leanHashDomains: new Map(),
     typedElem: makeMapOverlay(new Map([['t', 'Float64Array']]), new Map()),
@@ -387,33 +381,18 @@ test('invariant: packed FunctionPlan materialization is deep, order-preserving, 
   }
   const { ctx } = await import('../src/ctx.js')
   const plan = createFunctionPlan(ctx, facts)
+  const projected = functionPlanRepField(ctx, plan, 'w', 'arrayElemSchema')
+  projected.elems.push(3)
+  is(wideRep.arrayElemSchema.elems.length, 2, 'cross-function projection is detached')
+
   const data = installFunctionPlan(ctx, plan)
-  // structure equal where it matters
-  is(data.locals.get('w').schemaId, 7)
-  is(data.locals.get('n'), 5)
-  is(data.locals.get('nil'), null)
+  is(data.locals, facts.locals, 'analysis collection ownership transfers without cloning')
+  is(data.localReps, facts.localReps)
   is([...data.locals.keys()].join(','), 'w,n,nil', 'Map insertion order preserved')
-  is(Object.keys(data.locals.get('w')).join(','), Object.keys(wideRep).join(','), 'record key order preserved')
   ok(data.cellTypes.has('w'))
   ok(isMapOverlay(data.typedElem), 'MapOverlay stays an overlay, not flattened')
-  is(data.typedLen, null)
-  // deep independence: mutate every layer of the clone, source must not move
-  data.locals.get('w').schemaId = 999
-  data.locals.get('w').arrayElemSchema.elems.push(3)
-  data.locals.get('w').inner.get('k').deep[0].x = 999
-  data.locals.get('w').dictValueValType.add('poison')
-  data.flatObjects.get('f').slots.push('c')
-  is(wideRep.schemaId, 7)
-  is(wideRep.arrayElemSchema.elems.length, 2)
-  is(wideRep.inner.get('k').deep[0].x, 1)
-  is(wideRep.dictValueValType.size, 1)
-  is(facts.flatObjects.get('f').slots.length, 2)
-  // and the reverse: mutate the source, a fresh materialization must not move
-  wideRep.range[0] = -1
-  const again = installFunctionPlan(ctx, plan)
-  is(again.locals.get('w').range[0], 0)
-  is(again.locals.get('w').schemaId, 7, 'first working copy did not mutate packed authority')
-  ctx.plans.functionData.delete(plan)
+  is(ctx.plans.functionData.has(plan), false, 'install consumes canonical storage immediately')
+  throws(() => installFunctionPlan(ctx, plan), /already-consumed FunctionPlan/)
 })
 
 // ============================================================================

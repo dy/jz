@@ -5,7 +5,7 @@ import { intLiteralValue } from '../static.js'
 import { intCertainMap } from '../type.js'
 import { typedElemAux } from '../../layout.js'
 import { VAL, updateRep } from '../reps.js'
-import { cloneRep, paramValTrustworthy } from '../param-reps.js'
+import { paramValTrustworthy } from '../param-reps.js'
 import { I32_MIN, I32_MAX } from '../ir.js'
 import { restoreActiveFunction } from './active-function.js'
 import { enterFunc } from './func-entry.js'
@@ -32,19 +32,6 @@ import { cseLoads } from './cse-load.js'
 // freshLoopId pattern): a module-level counter made warm-process WAT text
 // history-dependent (`cse0/1` then `cse2/3` for the same program).
 const freshCseName = () => `${T}cse${ctx.transform.cseId++}`
-
-// Routes through cloneRep (param-reps.js) — the authoritative deep clone: a
-// bare `{ ...v }` shallow-copies Set-valued lattice fields, so a later join
-// on the copy would silently mutate the source map's rep. `map` here is
-// `ctx.func.localReps` (ValueRep records) — cloneRep's REP_SET_FIELDS list
-// (param-reps.js) covers its `dictValueValType`/`mapValueValType` Sets
-// alongside paramReps' `possibleKinds`.
-const cloneRepMap = map => {
-  if (!map) return null
-  const out = new Map()
-  for (const [k, v] of map) out.set(k, cloneRep(v))
-  return out
-}
 
 export function analyzeFuncForEmit(func, programFacts) {
   const { paramReps } = programFacts
@@ -502,35 +489,25 @@ export function analyzeFuncForEmit(func, programFacts) {
       valResultMayBeUndefined: func.valResultMayBeUndefined,
     })
 
+  // Linear ownership transfer: every collection below was created for this
+  // function and has no remaining analysis writer. FunctionPlan keeps these
+  // exact values opaque until its sole emission consumer installs them.
   const facts = {
     block,
-    locals: new Map(ctx.func.locals),
-    boxed: new Map(ctx.func.boxed),
-    // Captured-anywhere names (analyze-scans.js's boxedCaptures pre-scan) —
-    // emitDecl (emit.js) consults this at EMISSION time to gate the
-    // identity-safe closure-capture shadow (kind.js hasAmbiguousBoolMerge),
-    // but boxedCaptures only ever runs HERE, during analysis. Must cross the
-    // same analyze→emit handoff `boxed` above does (function-plan.js's
-    // clonePlanData/installFunctionPlan) or it reads back empty every time —
-    // ctx.func is a fresh ActiveFunction record per enterFunc call
-    // (active-function.js createActiveFunction), not a persistent object, so
-    // nothing survives the analysis→emission boundary that isn't explicitly
-    // published through the plan.
-    capturedNames: new Set(ctx.func.capturedNames || []),
+    locals: ctx.func.locals,
+    boxed: ctx.func.boxed,
+    capturedNames: ctx.func.capturedNames,
     cellTypes,
-    flatObjects: new Map(ctx.func.flatObjects),
-    sliceViews: new Set(ctx.func.sliceViews),
+    flatObjects: ctx.func.flatObjects,
+    sliceViews: ctx.func.sliceViews,
     cseLoadBases,
     distinctParams: func.distinctParams || null,
-    leanHashLocals: new Set(ctx.func.leanHashLocals || []),
-    i32HashLocals: new Set(ctx.func.i32HashLocals || []),
-    leanHashDomains: new Map(ctx.func.leanHashDomains || []),
-    // Publication forks only the overlay's function-local `own` map and keeps
-    // the stable program-wide base by reference. This handoff therefore stays
-    // O(function facts), never the retired O(programSize)-per-function clone.
+    leanHashLocals: ctx.func.leanHashLocals,
+    i32HashLocals: ctx.func.i32HashLocals,
+    leanHashDomains: ctx.func.leanHashDomains,
     typedElem: ctx.func.typedElem,
     typedLen: ctx.func.typedLen,
-    localReps: cloneRepMap(ctx.func.localReps),
+    localReps: ctx.func.localReps,
   }
   return facts
   } finally {

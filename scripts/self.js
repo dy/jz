@@ -58,7 +58,7 @@ function optimizeTail(module, cfg) {
 // surviving a `_clear` is a correctness bug (wrong bytes read back), not just
 // waste. Must run every compile (not just after the first `_clear`) since it's
 // cheap and callers may `_clear` in any pattern.
-function setupSelf(strict, optJSON, modulesJSON, host) {
+function setupSelf(strict, optJSON, modulesJSON, host, buildJSON) {
   // Session lifecycle — the SAME beginSession native setupCtx runs
   // (src/session.js): ctx reset, every cache clear, watr name-uids, warnings,
   // strict/host/optimize normalization, post-reset invariants. Only the wasm-ABI
@@ -79,6 +79,11 @@ function setupSelf(strict, optJSON, modulesJSON, host) {
   // this compile actually received opts.modules; never inherit the compiler's
   // own build graph into a later user compile.
   if (modulesJSON) ctx.module.importSources = JSON.parse(modulesJSON)
+  if (buildJSON) {
+    const build = JSON.parse(buildJSON)
+    if (typeof build.memory === 'number') ctx.memory.pages = build.memory
+    if (build.compactCollections) ctx.transform.compactCollections = true
+  }
 }
 
 // The canonical front half shared with index.js. preEval must run: omitting it
@@ -96,15 +101,86 @@ function emitIR(ast) {
   return module
 }
 
+const PARK_NULL = 0
+const PARK_UNDEFINED = 1
+const PARK_FALSE = 2
+const PARK_TRUE = 3
+const PARK_NUMBER = 4
+const PARK_STRING = 5
+const PARK_BIGINT = 6
+const PARK_ARRAY = 7
+const PARK_OBJECT = 8
+
+function parkValue(value) {
+  if (value === null) { __park_write_u8(PARK_NULL); return }
+  if (value === undefined) { __park_write_u8(PARK_UNDEFINED); return }
+  if (value === false) { __park_write_u8(PARK_FALSE); return }
+  if (value === true) { __park_write_u8(PARK_TRUE); return }
+  if (typeof value === 'number') { __park_write_u8(PARK_NUMBER); __park_write_f64(value); return }
+  if (typeof value === 'string') { __park_write_u8(PARK_STRING); __park_write_str(value); return }
+  if (typeof value === 'bigint') { __park_write_u8(PARK_BIGINT); __park_write_i64(value); return }
+  if (Array.isArray(value)) {
+    __park_write_u8(PARK_ARRAY)
+    __park_write_u32(value.length)
+    for (let i = 0; i < value.length; i++) parkValue(value[i])
+    return
+  }
+  if (value != null && typeof value === 'object') {
+    const keys = Object.keys(value)
+    __park_write_u8(PARK_OBJECT)
+    __park_write_u32(keys.length)
+    for (let i = 0; i < keys.length; i++) {
+      __park_write_str(keys[i])
+      parkValue(value[keys[i]])
+    }
+    return
+  }
+  throw new TypeError(`Cannot checkpoint WAT IR value of type ${typeof value}`)
+}
+
+function unparkValue() {
+  const tag = __park_read_u8()
+  if (tag === PARK_NULL) return null
+  if (tag === PARK_UNDEFINED) return undefined
+  if (tag === PARK_FALSE) return false
+  if (tag === PARK_TRUE) return true
+  if (tag === PARK_NUMBER) return __park_read_f64()
+  if (tag === PARK_STRING) return __park_read_str()
+  if (tag === PARK_BIGINT) return __park_read_i64()
+  if (tag === PARK_ARRAY) {
+    const len = __park_read_u32() >>> 0
+    const out = new Array(len)
+    for (let i = 0; i < len; i++) out[i] = unparkValue()
+    return out
+  }
+  if (tag === PARK_OBJECT) {
+    const len = __park_read_u32() >>> 0
+    const out = {}
+    for (let i = 0; i < len; i++) out[__park_read_str()] = unparkValue()
+    return out
+  }
+  throw new TypeError(`Invalid parked WAT IR tag ${tag}`)
+}
+
+function checkpointIR(module) {
+  __park_begin()
+  parkValue(module)
+  __park_finish()
+  __park_rewind()
+  return unparkValue()
+}
+
 /**
  * @param {string} source - JS source
  * @param {boolean} [strict] - enforce the pure canonical subset (skip jzify)
  * @param {string} [optJSON] - optimize config as JSON (level / alias / per-pass object)
  * @returns {Uint8Array} compiled wasm bytes
  */
-export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType) {
-  setupSelf(strict, optJSON, modulesJSON, host)
-  return watrCompile(optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize))
+export default function compileSelf(source, strict, optJSON, modulesJSON, host, sourceType, buildJSON) {
+  const heapMark = __heap_mark()
+  setupSelf(strict, optJSON, modulesJSON, host, buildJSON)
+  const optimized = optimizeTail(emitIR(front(source, strict, sourceType)), ctx.transform.optimize)
+  return watrCompile(__heap_large(heapMark) ? checkpointIR(optimized) : optimized)
 }
 
 /**

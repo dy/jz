@@ -1647,7 +1647,7 @@ export function emit(node, expect) {
   }
   if (!Array.isArray(node)) return typed(['f64.const', 0], 'f64')
 
-  const [op, ...args] = node
+  const op = node[0]
   if (op === '__eager&&' || op === '__eager||') return toBool(node)
   // WASM IR passthrough: internally-generated IR nodes (from statement flattening) pass through
   if (typeof op === 'string' && !ctx.core.emit[op] && (op.includes('.') || WASM_OPS.has(op))) return node
@@ -1658,7 +1658,7 @@ export function emit(node, expect) {
   // the unsigned-64 decimal (BigInt.asUintN(64,·) semantics, computed via
   // bignum.js's limb arithmetic at parse time — no host BigInt, no ambiguity),
   // passed straight to i64.const — no in-kernel re-parse needed.
-  if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', args[0]]], 'f64')
+  if (op === 'bigint') return typed(['f64.reinterpret_i64', ['i64.const', node[1]]], 'f64')
 
   // Self-describing NaN literal — same reason bigints are self-describing: a raw NaN
   // number is NaN-boxing-ambiguous and degrades to 0 across the self-compile kernel's
@@ -1673,11 +1673,11 @@ export function emit(node, expect) {
   // kernel's marshalling boundary, losing VAL.BOOL. args[0] is 1/0 (prepare
   // may wrap it as a `[, 1]` literal node) — emit it as that working rep; the
   // BOOL boxing happens at the boundary via valTypeOf('bool')=VAL.BOOL.
-  if (op === 'bool') return emit(args[0])
+  if (op === 'bool') return emit(node[1])
 
   // Literal node [, value] — handle null/undefined values
-  if (op == null && args.length === 1) {
-    const v = args[0]
+  if (op == null && node.length === 2) {
+    const v = node[1]
     return v === undefined ? undefExpr() : v === null ? nullExpr() : emit(v)
   }
 
@@ -1695,10 +1695,23 @@ export function emit(node, expect) {
   // `let` with >8 expression-init declarators (e.g. an SROA prologue loading 16 typed-array
   // slots) lost everything past the 8th. A direct call to the module-local binding compiles
   // as a real direct call, which marshals all args.
-  if (op === 'let' || op === 'const') return emitDecl(...args)
+  if (op === 'let' || op === 'const') return emitDecl(...node.slice(1))
   const handler = ctx.core.emit[op]
   if (!handler) err(`Unknown op: ${op}`)
-  const ir = SELF_AWARE_OPS.has(op) ? handler(...args, node) : handler(...args)
+  const selfAware = SELF_AWARE_OPS.has(op)
+  let ir
+  switch (node.length) {
+    case 1: ir = selfAware ? handler(node) : handler(); break
+    case 2: ir = selfAware ? handler(node[1], node) : handler(node[1]); break
+    case 3: ir = selfAware ? handler(node[1], node[2], node) : handler(node[1], node[2]); break
+    case 4: ir = selfAware ? handler(node[1], node[2], node[3], node) : handler(node[1], node[2], node[3]); break
+    case 5: ir = selfAware ? handler(node[1], node[2], node[3], node[4], node) : handler(node[1], node[2], node[3], node[4]); break
+    default: {
+      const args = node.slice(1)
+      if (selfAware) args.push(node)
+      ir = handler(...args)
+    }
+  }
   if (ir && ir.type === 'f64' && valTypeOf(node) === VAL.NUMBER) ir.valKind = VAL.NUMBER
   return ir
 }

@@ -86,11 +86,11 @@ const isConst = node => {
  */
 function analyzeSimd(body, param) {
   if (!Array.isArray(body)) return null
-  const [op, ...args] = body
+  const op = body[0]
 
   // Binary: x*c, x+c, x-c, x/c (and commutative)
-  if (['+', '-', '*', '/'].includes(op) && args.length === 2) {
-    const [a, b] = args
+  if (['+', '-', '*', '/'].includes(op) && body.length === 3) {
+    const a = body[1], b = body[2]
     const isA = a === param, isB = b === param
     const cA = !isA && isConst(a), cB = !isB && isConst(b)
     if (op === '*' && ((isA && cB !== false) || (isB && cA !== false)))
@@ -102,8 +102,8 @@ function analyzeSimd(body, param) {
   }
 
   // Bitwise: x&c, x|c, x^c, x<<c, x>>c, x>>>c
-  if (['&', '|', '^', '<<', '>>', '>>>'].includes(op) && args.length === 2) {
-    const [a, b] = args
+  if (['&', '|', '^', '<<', '>>', '>>>'].includes(op) && body.length === 3) {
+    const a = body[1], b = body[2]
     if (a === param && isConst(b) !== false) {
       const ops = { '&': 'and', '|': 'or', '^': 'xor', '<<': 'shl', '>>': 'shr', '>>>': 'shru' }
       return { op: ops[op], val: isConst(b) }
@@ -111,12 +111,12 @@ function analyzeSimd(body, param) {
   }
 
   // Unary minus: ['u-', param]
-  if (op === 'u-' && args[0] === param) return { op: 'neg' }
+  if (op === 'u-' && body[1] === param) return { op: 'neg' }
 
   // Math.abs/sqrt/ceil/floor
-  if (op === '()' && typeof args[0] === 'string' && args[0].startsWith('math.')) {
-    const method = args[0].slice(5)
-    const fnArg = args[1]
+  if (op === '()' && typeof body[1] === 'string' && body[1].startsWith('math.')) {
+    const method = body[1].slice(5)
+    const fnArg = body[2]
     if (fnArg === param && ['abs', 'sqrt', 'ceil', 'floor'].includes(method))
       return { op: method }
   }

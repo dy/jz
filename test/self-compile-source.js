@@ -99,6 +99,9 @@ test('self-compile-source: build profile bakes debug invariants to a literal in 
     'debug self-compile graph bakes true explicitly')
   ok((debugGraph.match(/\bDBG_INVARIANTS\b/g) || []).length > 20,
     'debug graph retains invariant call sites and helper bodies')
+  ok(prod.optimize.arrayMinCap === 2 && prod.optimize.arrayLiteralMinCap === 2 &&
+      prod.optimize.hashSmallInitCap === 2 && prod.optimize.collectionInitCap === 2,
+    'compiler artifact uses compact collection floors independent of user-program optimize profiles')
 })
 
 test('self-compile-source: no bare globalThis reads (env.globalThis import would break instantiation)', () => {

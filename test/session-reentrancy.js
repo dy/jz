@@ -321,42 +321,25 @@ test('RepresentationPlan v2 publishes normalized edge facts without exposing mut
     'the complete graph census proves a numeric-only program BigInt-free')
 })
 
-test('FunctionPlan detaches nested maps, sets, arrays, reps, and typed views', () => {
+test('FunctionPlan transfers analysis collections through one opaque, linear handle', () => {
   if (onKernel()) return
-  const flatObjects = new Map([['o', { names: ['x'], values: [[null, 1]], written: new Set(['x']) }]])
-  const leanHashDomains = new Map([['d', ['a', 'b']]])
-  const localReps = new Map([['x', { val: 1, range: [0, 1], dictValueValType: new Set([1]) }]])
-  const typedElem = new Map([['buf', 'Float64Array']])
-  const typedLen = new Map([['buf', 4]])
-  const plan = createFunctionPlan(ctx, {
-    locals: new Map([['x', 'f64']]), flatObjects, leanHashDomains, localReps, typedElem, typedLen,
-  })
-  ok(Object.keys(plan).length === 0, 'canonical facts are private, not shallow-frozen public fields')
-  // Publication owns an independent snapshot too; mutating the analysis result
-  // after handoff cannot alter the canonical plan.
-  flatObjects.get('o').names.push('source-evil')
-  localReps.get('x').range[0] = -7
-  typedElem.set('source-evil', 'Int32Array')
+  const facts = {
+    block: true,
+    locals: new Map([['x', 'f64']]), boxed: new Map(), capturedNames: new Set(), cellTypes: new Set(),
+    flatObjects: new Map(), sliceViews: new Set(), cseLoadBases: new Set(), distinctParams: null,
+    leanHashLocals: new Set(), i32HashLocals: new Set(), leanHashDomains: new Map(),
+    localReps: new Map([['x', { val: 1 }]]), typedElem: new Map([['buf', 'Float64Array']]), typedLen: new Map([['buf', 4]]),
+  }
+  const plan = createFunctionPlan(ctx, facts)
+  ok(Object.keys(plan).length === 0, 'facts remain private behind an opaque handle')
   const displaced = enterActiveFunction(ctx)
-  const first = installFunctionPlan(ctx, plan)
-  ok(first.flatObjects.get('o').names.length === 1 && first.localReps.get('x').range[0] === 0 &&
-      !first.typedElem.has('source-evil'), 'publication detaches the analysis result before it becomes canonical')
-  first.flatObjects.get('o').names.push('evil')
-  first.flatObjects.get('o').written.add('evil')
-  first.leanHashDomains.get('d').push('evil')
-  first.localReps.get('x').range[0] = -99
-  first.localReps.get('x').dictValueValType.add(9)
-  first.typedElem.set('evil', 'Int32Array')
-  first.typedLen.set('evil', 9)
-  const second = installFunctionPlan(ctx, plan)
-  ok(second.flatObjects.get('o').names.length === 1 && !second.flatObjects.get('o').written.has('evil'),
-    'nested object/array/Set facts are detached')
-  ok(second.leanHashDomains.get('d').length === 2 && second.localReps.get('x').range[0] === 0 &&
-      !second.localReps.get('x').dictValueValType.has(9),
-    'domain and ValueRep substructure is detached')
-  ok(!second.typedElem.has('evil') && !second.typedLen.has('evil') &&
-      first.typedElem !== second.typedElem && first.typedLen !== second.typedLen,
-    'typed views fork per install without exposing canonical storage')
+  const installed = installFunctionPlan(ctx, plan)
+  ok(installed.locals === facts.locals && installed.localReps === facts.localReps &&
+      installed.typedElem === facts.typedElem && installed.typedLen === facts.typedLen,
+    'install moves existing collections instead of allocating a cloned generation')
+  let rejected = false
+  try { installFunctionPlan(ctx, plan) } catch { rejected = true }
+  ok(rejected, 'a consumed plan cannot be installed twice')
   restoreActiveFunction(ctx, displaced)
 })
 

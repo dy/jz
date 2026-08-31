@@ -488,29 +488,29 @@ const compileLazyBacktrack = (quant, rest, c) => {
 const compileNode = (node, c) => {
   if (typeof node === 'string') { compileLiteral(node, c); return }
   if (!Array.isArray(node)) return
-  const [op, ...args] = node
+  const op = node[0]
   switch (op) {
-    case 'seq': compileSeq(args, c); break
-    case '|': compileAlt(args, c); break
-    case '*': compileRepeatN(args[0], 0, Infinity, true, c); break
-    case '+': compileRepeatN(args[0], 1, Infinity, true, c); break
-    case '?': compileRepeatN(args[0], 0, 1, true, c); break
-    case '*?': compileRepeatN(args[0], 0, Infinity, false, c); break
-    case '+?': compileRepeatN(args[0], 1, Infinity, false, c); break
-    case '??': compileRepeatN(args[0], 0, 1, false, c); break
-    case '{}': compileRepeatN(args[0], args[1], args[2], true, c); break
-    case '{}?': compileRepeatN(args[0], args[1], args[2], false, c); break
-    case '[]': compileClassN(args, false, c); break
-    case '[^]': compileClassN(args, true, c); break
+    case 'seq': compileSeq(node.slice(1), c); break
+    case '|': compileAlt(node.slice(1), c); break
+    case '*': compileRepeatN(node[1], 0, Infinity, true, c); break
+    case '+': compileRepeatN(node[1], 1, Infinity, true, c); break
+    case '?': compileRepeatN(node[1], 0, 1, true, c); break
+    case '*?': compileRepeatN(node[1], 0, Infinity, false, c); break
+    case '+?': compileRepeatN(node[1], 1, Infinity, false, c); break
+    case '??': compileRepeatN(node[1], 0, 1, false, c); break
+    case '{}': compileRepeatN(node[1], node[2], node[3], true, c); break
+    case '{}?': compileRepeatN(node[1], node[2], node[3], false, c); break
+    case '[]': compileClassN(node.slice(1), false, c); break
+    case '[^]': compileClassN(node.slice(1), true, c); break
     case '.': compileDot(c); break
     case '^': compileAnchorStart(c); break
     case '$': compileAnchorEnd(c); break
-    case '()': compileCapture(args[0], args[1], c); break
-    case '(?:)': compileNode(args[0], c); break
-    case '(?=)': compileLookahead(args[0], true, c); break
-    case '(?!)': compileLookahead(args[0], false, c); break
-    case '(?<=)': compileLookbehind(args[0], true, c); break
-    case '(?<!)': compileLookbehind(args[0], false, c); break
+    case '()': compileCapture(node[1], node[2], c); break
+    case '(?:)': compileNode(node[1], c); break
+    case '(?=)': compileLookahead(node[1], true, c); break
+    case '(?!)': compileLookahead(node[1], false, c); break
+    case '(?<=)': compileLookbehind(node[1], true, c); break
+    case '(?<!)': compileLookbehind(node[1], false, c); break
     case '\\d': compileCharClassN('d', false, c); break
     case '\\D': compileCharClassN('d', true, c); break
     case '\\w': compileCharClassN('w', false, c); break
@@ -786,16 +786,16 @@ const compileBackref = (n, c) => {
 const patternMinLen = node => {
   if (typeof node === 'string') return 1
   if (!Array.isArray(node)) return 0
-  const [op, ...args] = node
+  const op = node[0]
   switch (op) {
-    case 'seq': return args.reduce((s, a) => s + patternMinLen(a), 0)
-    case '|': return Math.min(...args.map(patternMinLen))
+    case 'seq': { let n = 0; for (let i = 1; i < node.length; i++) n += patternMinLen(node[i]); return n }
+    case '|': { let n = Infinity; for (let i = 1; i < node.length; i++) n = Math.min(n, patternMinLen(node[i])); return n }
     case '*': case '*?': case '?': case '??': return 0
-    case '+': case '+?': return patternMinLen(args[0])
-    case '{}': case '{}?': return args[1] * patternMinLen(args[0])
+    case '+': case '+?': return patternMinLen(node[1])
+    case '{}': case '{}?': return node[2] * patternMinLen(node[1])
     case '[]': case '[^]': case '.': return 1
     case '\\d': case '\\D': case '\\w': case '\\W': case '\\s': case '\\S': return 1
-    case '()': case '(?:)': return patternMinLen(args[0])
+    case '()': case '(?:)': return patternMinLen(node[1])
     case '(?=)': case '(?!)': case '(?<=)': case '(?<!)': return 0
     case '^': case '$': case '\\b': case '\\B': return 0
     default: return 0

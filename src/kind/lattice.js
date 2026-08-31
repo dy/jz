@@ -21,31 +21,32 @@ export function literalTruthiness(expr) {
     if (value != null) return value !== 0
   }
   if (Array.isArray(expr)) {
-    const [op, ...args] = expr
+    const op = expr[0]
     if (op == null) {
-      if (args.length === 0 || args[0] == null) return false
-      return literalTruthiness(args[0])
+      if (expr.length === 1 || expr[1] == null) return false
+      return literalTruthiness(expr[1])
     }
-    if (op === 'bool') return literalTruthiness(args[0])
+    if (op === 'bool') return literalTruthiness(expr[1])
     if (op === 'nan') return false
-    if (op === 'str' && typeof args[0] === 'string') return args[0].length !== 0
-    if (op === '()' && expr.length === 2) return literalTruthiness(args[0])
+    if (op === 'str' && typeof expr[1] === 'string') return expr[1].length !== 0
+    if (op === '()' && expr.length === 2) return literalTruthiness(expr[1])
     if (BOOL_OPS.has(op)) {
       const result = literalBool(expr)
       if (result != null) return result
     }
     if (op === '?:' || op === '?') {
-      const truthy = literalTruthiness(args[0])
-      if (truthy != null) return literalTruthiness(truthy ? args[1] : args[2])
-      const thenTruthy = literalTruthiness(args[1])
-      const elseTruthy = literalTruthiness(args[2])
+      const truthy = literalTruthiness(expr[1])
+      if (truthy != null) return literalTruthiness(truthy ? expr[2] : expr[3])
+      const thenTruthy = literalTruthiness(expr[2])
+      const elseTruthy = literalTruthiness(expr[3])
       if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
     }
-    if (op === '()' && Array.isArray(args[0]) && args[0][0] === '?') {
-      const truthy = literalTruthiness(args[0][1])
-      if (truthy != null) return literalTruthiness(truthy ? args[0][2] : args[0][3])
-      const thenTruthy = literalTruthiness(args[0][2])
-      const elseTruthy = literalTruthiness(args[0][3])
+    if (op === '()' && Array.isArray(expr[1]) && expr[1][0] === '?') {
+      const ternary = expr[1]
+      const truthy = literalTruthiness(ternary[1])
+      if (truthy != null) return literalTruthiness(truthy ? ternary[2] : ternary[3])
+      const thenTruthy = literalTruthiness(ternary[2])
+      const elseTruthy = literalTruthiness(ternary[3])
       if (thenTruthy != null && thenTruthy === elseTruthy) return thenTruthy
     }
   }
@@ -55,15 +56,15 @@ export function literalTruthiness(expr) {
 function literalValue(expr) {
   if (expr == null || typeof expr === 'number' || typeof expr === 'boolean' || typeof expr === 'bigint') return expr
   if (!Array.isArray(expr)) return undefined
-  const [op, ...args] = expr
-  if (op == null) return args.length ? args[0] : undefined
+  const op = expr[0]
+  if (op == null) return expr.length > 1 ? expr[1] : undefined
   if (op === 'nan') return NaN
-  if (op === 'str') return args[0]
+  if (op === 'str') return expr[1]
   if (op === 'bool') {
-    const truthy = literalTruthiness(args[0])
+    const truthy = literalTruthiness(expr[1])
     return truthy == null ? undefined : truthy
   }
-  if (op === '()' && expr.length === 2) return literalValue(args[0])
+  if (op === '()' && expr.length === 2) return literalValue(expr[1])
   return undefined
 }
 

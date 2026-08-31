@@ -41,9 +41,16 @@ const ESCAPE_SKIP = {
   'import': true, 'export': true, // module wiring: exported arrays are host/importer-reachable — see explicit mark below
 }
 
+// Reused because observeNodeFacts is a non-recursive walkAst observer. Rest
+// destructuring allocated one children array for every AST node in every
+// whole-program census; no caller retains this scratch view.
+const OBSERVE_ARGS = []
 export function observeNodeFacts(node, f) {
   if (!Array.isArray(node)) return
-  const [op, ...args] = node
+  const op = node[0]
+  OBSERVE_ARGS.length = node.length - 1
+  for (let i = 1; i < node.length; i++) OBSERVE_ARGS[i - 1] = node[i]
+  const args = OBSERVE_ARGS
   // RepresentationPlan v2 reach bit: folded into this existing universal
   // walk so proving a program BigInt-free costs no second AST traversal.
   // Module-init callers use the same observer, making the fact graph-complete.
@@ -272,20 +279,20 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
   if (typeof root === 'string') acc.nameEscapes.add(root)
   const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     observeNodeFacts(node, acc)
     if (op === 'for-in' && ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
     if (op === '{}' && doSchema) {
-      const parsed = staticObjectProps(args)
+      const parsed = staticObjectProps(node.slice(1))
       if (parsed) ctx.schema.register(parsed.names)
     }
     if (op === '=>') {
-      for (const a of args) walkFacts(a, fullWalk, true, caller)
+      for (let i = 1; i < node.length; i++) walkFacts(node[i], fullWalk, true, caller)
       return
     }
     if (fullWalk) {
-      if (doSchema && op === '=' && Array.isArray(args[0]) && args[0][0] === '.') {
-        const [, obj, prop] = args[0]
+      if (doSchema && op === '=' && Array.isArray(node[1]) && node[1][0] === '.') {
+        const [, obj, prop] = node[1]
         // `.length =` is the structural resize op (emit-assign handles ARRAY/
         // TYPED/unknown receivers) — NOT a schema property. Recording it here
         // auto-boxed the binding (['__inner__','length']): reads then deref'd
@@ -300,7 +307,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           acc.propMap.get(obj).add(prop)
         }
       }
-      if (op === '()' && isFuncRef(args[0], ctx.funcs.names)) {
+      if (op === '()' && isFuncRef(node[1], ctx.funcs.names)) {
         // Record the call site even inside an arrow body. The param-inference
         // lattice (narrow.js) must see EVERY arg a callee receives — including
         // calls made from a closure (`mfb(() => ci(2))`) — or it over-specializes:
@@ -309,12 +316,12 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // arrow's scope that the enclosing caller can't type infer as untyped →
         // poison → conservative (no specialization), which is sound.
         {
-          const a = args[1]
+          const a = node[2]
           const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-          acc.callSites.push({ callee: args[0], argList, callerFunc: caller, node })
+          acc.callSites.push({ callee: node[1], argList, callerFunc: caller, node })
         }
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i]
+        for (let i = 2; i < node.length; i++) {
+          const a = node[i]
           if (isFuncRef(a, ctx.funcs.names)) acc.valueUsed.add(a)
           else walkFacts(a, true, inArrow, caller)
         }
@@ -329,15 +336,16 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // otherwise contribute (nameEscapes on `key`, whatever the args
       // walk marks) still runs exactly as before this branch existed —
       // purely additive, changes no other observation.
-      if (op === '()' && Array.isArray(args[0]) && args[0][0] === '[]' &&
-          args[0].length === 3 && typeof args[0][1] === 'string') {
-        const a = args[1]
+      if (op === '()' && Array.isArray(node[1]) && node[1][0] === '[]' &&
+          node[1].length === 3 && typeof node[1][1] === 'string') {
+        const a = node[2]
         const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
-        acc.computedCallSites.push({ objName: args[0][1], argList, callerFunc: caller, node })
+        acc.computedCallSites.push({ objName: node[1][1], argList, callerFunc: caller, node })
       }
-      if ((op === '.' || op === '?.') && isFuncRef(args[0], ctx.funcs.names)) return
+      if ((op === '.' || op === '?.') && isFuncRef(node[1], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
-        for (const decl of args) {
+        for (let i = 1; i < node.length; i++) {
+          const decl = node[i]
           if (Array.isArray(decl) && decl[0] === '=' && decl.length >= 3) {
             // nameEscapes: this branch hand-walks the decl's parts (valueUsed +
             // targeted RHS recursion below) instead of recursing into `decl` as
@@ -374,20 +382,21 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
         return
       }
-      if (op === '=' && args.length >= 2) {
+      if (op === '=' && node.length >= 3) {
         // RHS may be a bare function reference (`store[0] = pick3`) — record it as a
         // value use so resolveClosureWidth sizes the closure ABI to its arity. Matches
         // the func-ref handling in the call/let/general cases below.
-        if (isFuncRef(args[1], ctx.funcs.names)) acc.valueUsed.add(args[1])
-        else walkFacts(args[1], true, inArrow, caller)
+        if (isFuncRef(node[2], ctx.funcs.names)) acc.valueUsed.add(node[2])
+        else walkFacts(node[2], true, inArrow, caller)
         return
       }
-      for (const a of args) {
-        if (isFuncRef(a, ctx.funcs.names)) acc.valueUsed.add(a)
-        else walkFacts(a, true, inArrow, caller)
+      for (let i = 1; i < node.length; i++) {
+        const child = node[i]
+        if (isFuncRef(child, ctx.funcs.names)) acc.valueUsed.add(child)
+        else walkFacts(child, true, inArrow, caller)
       }
     } else {
-      for (const a of args) walkFacts(a, false, inArrow, caller)
+      for (let i = 1; i < node.length; i++) walkFacts(node[i], false, inArrow, caller)
     }
   }
   walkFacts(root, full, false, callerFunc)

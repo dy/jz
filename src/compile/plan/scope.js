@@ -20,7 +20,7 @@
  * @module compile/plan/scope
  */
 
-import { ctx, warn, declGlobal } from '../../ctx.js'
+import { ctx, warn, declGlobal, getFactStore } from '../../ctx.js'
 import { withValueOverlay } from '../flow-state.js'
 import { warningsView } from '../../session-views.js'
 import { ASSIGN_OPS, T, refsAny, extractParams, classifyParam, PARAM_KIND, PARAM_NAME, collectParamNames, walkAst } from '../../ast.js'
@@ -34,6 +34,7 @@ import { MAX_CLOSURE_ARITY, UNDEF_NAN, freshId } from '../../ir.js'
 import { analyzeFuncNamespaces, analyzeBody } from '../analyze.js'
 import { collectBareEscapes } from '../analyze-scans.js'
 import { invalidateProgramFactsCache } from '../program-facts.js'
+import { makeMapOverlay } from '../map-overlay.js'
 
 // `scanGlobalValueFacts` was deleted — prepare's depth-0 catch (calling
 // `recordGlobalRep` from src/infer.js) is the authoritative pass and a
@@ -291,10 +292,13 @@ export const classifyHashDictGlobals = (ast, programFacts) => {
     ;(ctx.scope.globalValTypes ||= new Map()).set(name, VAL.HASH)
   }
   const enter = (node) => {
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '=>') return false
     if (op === 'let' || op === 'const') {
-      for (const a of args) if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') mark(a[1], a[2])
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') mark(decl[1], decl[2])
+      }
     }
   }
   walkAst(ast, { enter })
@@ -425,21 +429,27 @@ export const inferModuleGlobalValTypes = (ast, paramReps) => {
     // the same "hoist let to function scope" convention, matching how prepare
     // resolves same-name block shadowing). A write to a shadowed name is a
     // local mutation, not a global one — it must not pollute the global's kind.
-    const bound = new Set()
-    for (const p of paramNames) if (p) bound.add(p)
-    const collectDecls = (node) => walkAst(node, { enter: n => {
-      if (n[0] === '=>') return false
-      if (n[0] === 'let' || n[0] === 'const') collectParamNames(n.slice(1), bound)
-      if (n[0] === 'catch' && typeof n[2] === 'string') bound.add(n[2])
-    } })
-    collectDecls(body)
+    const boundCache = funcName && body != null && typeof body === 'object'
+      ? getFactStore().scopeBoundNames : null
+    let bound = boundCache?.get(body)
+    if (!bound) {
+      bound = new Set()
+      for (const p of paramNames) if (p) bound.add(p)
+      walkAst(body, { enter: n => {
+        if (n[0] === '=>') return false
+        if (n[0] === 'let' || n[0] === 'const') collectParamNames(n, bound, 1)
+        if (n[0] === 'catch' && typeof n[2] === 'string') bound.add(n[2])
+      } })
+      if (boundCache) boundCache.set(body, bound)
+    }
 
     // Overlay: this scope's own let/const locals (analyzeBody — the same
     // per-function local analysis emit.js seeds from) plus, for a named
     // function once paramReps is populated (pass 2, post-narrowSignatures),
     // its resolved param facts — so `cur = s` resolves `s` exactly like a
     // local alias would, via the same valTypeOf call sites use everywhere else.
-    const overlay = new Map(analyzeBody(body).valTypes)
+    const baseValTypes = analyzeBody(body).valTypes
+    const overlay = funcName && paramReps ? makeMapOverlay(baseValTypes) : baseValTypes
     if (funcName && paramReps) {
       const reps = paramReps.get(funcName)
       if (reps) for (const [idx, r] of reps)
@@ -988,7 +998,7 @@ export const devirtGlobalCalls = (ast) => {
     if (op === '.' || op === '?.') { collectFreeIdents(node[1], bound, out); return }
     if (op === ':') { collectFreeIdents(node[2], bound, out); return }
     if (op === 'catch' && typeof node[2] === 'string') bound.add(node[2])
-    if (op === 'let' || op === 'const') collectParamNames(node.slice(1), bound)
+    if (op === 'let' || op === 'const') collectParamNames(node, bound, 1)
     for (let i = 1; i < node.length; i++) {
       const c = node[i]
       if (typeof c === 'string') { if (!bound.has(c)) out.add(c) }

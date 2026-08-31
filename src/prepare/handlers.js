@@ -36,6 +36,19 @@ import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, in
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
 
 
+// Avoid materializing `node.slice(1)` at every recursive dispatch. Nearly all
+// AST operators have at most four operands; only declaration/list outliers use
+// the allocating fallback.
+const callHandler = (handler, node) => {
+  switch (node.length) {
+    case 1: return handler()
+    case 2: return handler(node[1])
+    case 3: return handler(node[1], node[2])
+    case 4: return handler(node[1], node[2], node[3])
+    case 5: return handler(node[1], node[2], node[3], node[4])
+    default: return handler(...node.slice(1))
+  }
+}
 
 export function prep(node) {
   if (Array.isArray(node)) includeForOp(node[0])
@@ -219,7 +232,7 @@ export function prep(node) {
     return node
   }
 
-  const [op, ...args] = node
+  const op = node[0]
   if (op === 'void' && ctx.transform.strict) err('strict mode: `void` is prohibited — write `undefined`.')
   // jz's `==`/`!=` follow JS loose equality (statically-known mixed types coerce:
   // `1 == "1"` is true), so default mode accepts them for JS parity. strict enforces
@@ -230,25 +243,29 @@ export function prep(node) {
   // carries no storage — writing through it would silently target nothing.
   // Catch every write form (`=`, compound `+=`-family, `++`/`--`) here, ahead
   // of per-op handlers, so none of them need their own copy of this check.
-  if (MUTATE_OPS.has(op) && typeof args[0] === 'string') {
-    const aliasKey = builtinAliasKeyOf(args[0])
-    if (aliasKey) err(`Cannot reassign '${args[0]}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage. Declare a fresh local instead, or reference '${aliasKey}' directly`)
+  if (MUTATE_OPS.has(op) && typeof node[1] === 'string') {
+    const name = node[1]
+    const aliasKey = builtinAliasKeyOf(name)
+    if (aliasKey) err(`Cannot reassign '${name}' — bound to builtin '${aliasKey}' via alias/destructuring; builtin-namespace bindings are compile-time only, not writable storage. Declare a fresh local instead, or reference '${aliasKey}' directly`)
     // Assignment to a const binding is a compile error (ES: runtime TypeError).
     // Resolve through the live block scopes so a shadowing `let` of the same
     // name stays writable; module-level consts are guarded by emit's isConst.
-    const target = scopes.length && isDeclared(args[0]) ? resolveScope(args[0]) : args[0]
+    const target = scopes.length && isDeclared(name) ? resolveScope(name) : name
     if (typeof target === 'string' && staticConstScopes.some(f => f[STATIC_CONSTS]?.has(target)))
-      err(`Assignment to constant '${args[0]}' (TypeError in JS)`)
+      err(`Assignment to constant '${name}' (TypeError in JS)`)
   }
   if (op == null) {
-    if (typeof args[0] === 'string') {
+    if (typeof node[1] === 'string') {
       includeForStringValue()
-      return ['str', args[0]]  // string literal
+      return ['str', node[1]]  // string literal
     }
-    return [, args[0]]  // number literal
+    return [, node[1]]  // number literal
   }
   const handler = handlers[op]
-  return handler ? handler(...args) : [op, ...args.map(prep)]
+  if (handler) return callHandler(handler, node)
+  const out = [op]
+  for (let i = 1; i < node.length; i++) out.push(prep(node[i]))
+  return out
 }
 
 // A lone parenthesized comma-expression argument — `f((a, b, c))` — is ONE

@@ -40,6 +40,7 @@ import { applyI32ParamSpecialization, validateTypedLenParams, validateIntConstPa
 import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnArrayElems } from './results.js'
 import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
+import { makeMapOverlay } from '../map-overlay.js'
 
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
@@ -75,6 +76,12 @@ export default function narrowSignatures(programFacts, ast) {
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
+
+  // Body-driven result kinds do not depend on the parameter lattice. Settle
+  // them before caller contexts are built so those contexts are born against
+  // the final value-result view instead of immediately becoming stale.
+  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
+  narrowValResults(funcsWithNarrowableResult)
 
   // D: Call-site type propagation — infer param types from how functions are called.
   // Drives off `callSites` collected during the ProgramFacts walk; no AST re-walking.
@@ -117,6 +124,7 @@ export default function narrowSignatures(programFacts, ast) {
   // per site was the largest attributed HASH-sidecar source in self-hosted
   // narrowing (hundreds of thousands of constructions before the 4 GiB wall).
   const paramFactsCache = new Map()
+  const paramNamesByFunc = new Map()
   let sharedSiteState
   const callerParamFacts = key => {
     const callerFunc = sharedSiteState.callerFunc
@@ -129,7 +137,7 @@ export default function narrowSignatures(programFacts, ast) {
     callerParamFacts,
     // runArrElemFixpoint mutates these named context channels in place.
     callerElems: undefined, paramFacts: undefined, callerSids: undefined, callerSchemaIds: undefined,
-    _teOverlay: null, _lastArgMiss: false,
+    calleeParamNames: undefined, _teOverlay: null, _lastArgMiss: false,
   }
   const siteState = cs => {
     const { callee, argList, callerFunc } = cs
@@ -146,6 +154,12 @@ export default function narrowSignatures(programFacts, ast) {
     sharedSiteState.callerLocals = ctxEntry.callerLocals
     sharedSiteState.callerValTypes = ctxEntry.callerValTypes
     sharedSiteState.callerTypedElems = ctxEntry.callerTypedElems
+    let paramNames = paramNamesByFunc.get(func)
+    if (!paramNames) {
+      paramNames = new Set(func.sig.params.map(p => p.name))
+      paramNamesByFunc.set(func, paramNames)
+    }
+    sharedSiteState.calleeParamNames = paramNames
     sharedSiteState.callerElems = undefined
     sharedSiteState.paramFacts = undefined
     sharedSiteState.callerSids = undefined
@@ -428,15 +442,17 @@ export default function narrowSignatures(programFacts, ast) {
     // it. Lets a plain decreasing recursion narrow with no `|0` source crutch. (The bare-identity
     // arg `f(n)` is already skipped wholesale in runCallsiteLattice.)
     if (state.callee === state.callerFunc?.name &&
-        isRecurIntExpr(arg, new Set(state.func.sig.params.map(p => p.name)), state.callerLocals)) return 'i32'
+        isRecurIntExpr(arg, state.calleeParamNames, state.callerLocals)) return 'i32'
     if (!state._teOverlay) {
-      // Caller's typed arrays (locals + non-shadowed globals, precomputed shadow-aware
-      // in buildCallerCtx) so a LOCAL `const buf = new Int32Array(…)` makes `buf[i]`
-      // type i32 here — not just module globals / typedCtor-narrowed params.
-      const m = new Map(state.callerTypedElems || ctx.scope.globalTypedElem || [])
+      // Overlay per-site param facts on the caller's stable typed map without
+      // cloning that whole map on every fixpoint visit.
+      const base = state.callerTypedElems || ctx.scope.globalTypedElem || null
       const pf = state.callerParamFacts('typedCtor')
-      if (pf) for (const [name, ctor] of pf) if (ctor != null) m.set(name, ctor)
-      state._teOverlay = m
+      if (pf?.size) {
+        const overlay = makeMapOverlay(base)
+        for (const [name, ctor] of pf) if (ctor != null) overlay.set(name, ctor)
+        state._teOverlay = overlay
+      } else state._teOverlay = base
     }
     const wt = withTypedElemOverlay(state._teOverlay, () => exprType(arg, state.callerLocals))
     // An i32-typed BARE NAME that carries a POINTER kind in the caller (a local
@@ -583,8 +599,6 @@ export default function narrowSignatures(programFacts, ast) {
   // the param fixpoint's FIRST pass, so val/schemaId never get the can't-tell-yet
   // poison that clearStickyNull used to un-stick (root B). Numeric (i32) result
   // narrowing stays below — it benefits from i32 params being narrowed first.
-  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
-  narrowValResults(funcsWithNarrowableResult)
   // Own-default typed annotation: `(arr = new Int32Array(0)) => …` self-declares
   // the param's element ctor — the ONLY evidence a host-called export can carry
   // (no call sites to lattice over; Workers v1 SPMD kernels are exactly this

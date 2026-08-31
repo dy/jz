@@ -39,7 +39,11 @@ export const LENGTH_SSO_I64 = (() => { const e = ssoEncode('length'); return i64
 // Shared physical layout constants for collection helpers and diagnostics.
 export const SET_ENTRY = 16  // hash + key
 export const MAP_ENTRY = 24  // hash + key + value
-export const INIT_CAP = 8    // initial capacity (must be power of 2)
+export const INIT_CAP = 8    // user-program default (must be power of 2)
+export const collectionInitCap = () => {
+  const cap = ctx.transform.optimize?.collectionInitCap | 0
+  return cap >= 2 && (cap & (cap - 1)) === 0 ? cap : INIT_CAP
+}
 
 // __dyn_props global-table membership filter (see __dyn_props_filter's declGlobal
 // comment). offExpr is an i32 WAT expr for the offset key. Mix folds the offset's
@@ -165,6 +169,7 @@ export default (ctx) => {
   // Fixed for this one compilation while stdlib templates materialize. The
   // self-compile artifact sets 0; ordinary compilations retain the 4-byte lane.
   const lane = collectionLaneBytes()
+  const initCap = collectionInitCap()
   // Feature-gated deps: EXTERNAL-dependent symbols are only pulled when linkDemand.external.
   // Evaluated lazily at resolveIncludes() time — after emission has finalized ctx.linkDemand.
   const ifExt = (name) => () => ctx.linkDemand.external ? [name] : []
@@ -410,14 +415,14 @@ export default (ctx) => {
   // __map_new() → f64 — allocate empty Map (for JSON.parse, runtime creation)
   ctx.core.stdlib['__map_new'] = `(func $__map_new (result f64)
     (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY + lane}))))`
 
   // === Set ===
 
   ctx.core.emit['new.Set'] = (iterExpr) => {
     setLinkDemand('set')
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.SET, len: 0, cap: INIT_CAP, stride: SET_ENTRY + lane, tag: 'set' })
+      const out = allocPtr({ type: PTR.SET, len: 0, cap: initCap, stride: SET_ENTRY + lane, tag: 'set' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // new Set(iterable): __iter_arr normalizes any iterable to an index-iterable
@@ -427,17 +432,17 @@ export default (ctx) => {
     // non-array value — the ptr_type guard zeroes the length so the loop is skipped.
     //
     // __set_add grows on demand, but pre-sizing the table to fit the source array
-    // skips the rehash churn of building it up from INIT_CAP. cap = 1 << (32 −
-    // clz(m−1)) with m = 2*len + INIT_CAP is the smallest power of two > 2*len:
+    // skips the rehash churn of building it up from initCap. cap = 1 << (32 −
+    // clz(m−1)) with m = 2*len + initCap is the smallest power of two > 2*len:
     // distinct entries ≤ len, so the table lands ≤50% full and never needs to grow
-    // while seeding. Floors at INIT_CAP for the empty/short case.
+    // while seeding. Floors at initCap for the empty/short case.
     inc('__set_add', '__ptr_type', '__len', '__typed_idx')
     const setL = temp('nss'), arrL = temp('nsa')
     const iL = tempI32('nsi'), lenL = tempI32('nsl')
     const capExpr = ['i32.shl', ['i32.const', 1],
       ['i32.sub', ['i32.const', 32], ['i32.clz',
         ['i32.sub',
-          ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', INIT_CAP]],
+          ['i32.add', ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', 1]], ['i32.const', initCap]],
           ['i32.const', 1]]]]]
     const out = allocPtr({ type: PTR.SET, len: 0, cap: capExpr, stride: SET_ENTRY + lane, tag: 'set' })
     return typed(['block', ['result', 'f64'],
@@ -655,7 +660,7 @@ export default (ctx) => {
   ctx.core.emit['new.Map'] = (iterExpr) => {
     setLinkDemand('map')
     if (iterExpr == null) {
-      const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + lane, tag: 'map' })
+      const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY + lane, tag: 'map' })
       return typed(['block', ['result', 'f64'], out.init, out.ptr], 'f64')
     }
     // new Map(iterable): seed from another Map or an array of [key, value] pairs.
@@ -795,7 +800,7 @@ export default (ctx) => {
     const resI64 = ['i64.reinterpret_f64', ['local.get', `$${result}`]]
     const nb = allocPtr({ type: PTR.ARRAY, len: 0, cap: 0, tag: 'gbn' })
     const initResult = isMap
-      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: INIT_CAP, stride: MAP_ENTRY + lane, tag: 'gbm' })
+      ? (() => { const out = allocPtr({ type: PTR.MAP, len: 0, cap: initCap, stride: MAP_ENTRY + lane, tag: 'gbm' })
           return ['block', ['result', 'f64'], out.init, out.ptr] })()
       : ['call', '$__hash_new']
     const keyOf = (cbResult) => isMap ? asI64(cbResult) : ['call', '$__to_str', asI64(cbResult)]
@@ -855,7 +860,7 @@ export default (ctx) => {
   ctx.core.stdlib['__sclone'] = `(func $__sclone (param $v f64) (result f64)
     (call $__sclone_rec (local.get $v)
       (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
-        (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane}))))))`
+        (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY + lane}))))))`
 
   // Deep-clone the values of a freshly copied HASH table, in place.
   ctx.core.stdlib['__sclone_hash_vals'] = `(func $__sclone_hash_vals (param $off i32) (param $memo i64)
@@ -1042,7 +1047,7 @@ export default (ctx) => {
 
   // new Map(iterable) seeder. Source is another Map (copy live [key,val] slots) or
   // an array of [key,value] pairs (`new Map([["a",1],…])`); any other arg yields an
-  // empty map. Pre-sizes cap to fit (smallest pow2 > 2·n, floor INIT_CAP) so seeding
+  // empty map. Pre-sizes cap to fit (smallest pow2 > 2·n, floor initCap) so seeding
   // never triggers a rehash. Occupied MAP slot ⇔ hash word ≠ 0 (genDelete shift-back
   // writes 0, leaving no tombstones — matches the rehash loop's own occupancy test).
   ctx.core.stdlib['__map_from'] = `(func $__map_from (param $src i64) (result f64)
@@ -1058,7 +1063,7 @@ export default (ctx) => {
         (then (local.set $n (call $__len (local.get $src)))))))
     (local.set $newcap (i32.shl (i32.const 1)
       (i32.sub (i32.const 32) (i32.clz
-        (i32.sub (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const ${INIT_CAP})) (i32.const 1))))))
+        (i32.sub (i32.add (i32.shl (local.get $n) (i32.const 1)) (i32.const ${initCap})) (i32.const 1))))))
     (local.set $map (i64.reinterpret_f64 (call $__mkptr (i32.const ${PTR.MAP}) (i32.const 0)
       (call $__alloc_hdr_n (i32.const 0) (local.get $newcap) (i32.const ${MAP_ENTRY + lane})))))
     (if (i32.eq (local.get $t) (i32.const ${PTR.MAP}))
@@ -1175,7 +1180,7 @@ export default (ctx) => {
 
   ctx.core.stdlib['__hash_new'] = `(func $__hash_new (result f64)
     (call $__mkptr (i32.const ${PTR.HASH}) (i32.const 0)
-      (call $__alloc_hdr_n (i32.const 0) (i32.const ${INIT_CAP}) (i32.const ${MAP_ENTRY + lane}))))`
+      (call $__alloc_hdr_n (i32.const 0) (i32.const ${initCap}) (i32.const ${MAP_ENTRY + lane}))))`
 
   // Small initial capacity for propsPtr-style hashes (per-object dyn props).
   // Most receivers in real code carry 0-2 dyn props; paying 8-slot up-front

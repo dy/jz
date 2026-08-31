@@ -15,23 +15,15 @@ const OUT = resolve(OUT_DIR, 'jz.wasm')
 // function. The resulting wasm's `default(source)` is jz, compiled by jz — no host
 // help needed (the wasm parses and encodes too).
 //
-// Graph resolution + CARRIER_BOX injection + region-arena gate + compact
-// compiler-runtime collection layout: shared with build-dist.mjs via
-// resolveSelfCompileBuild (architecture re-audit item 2,
-// .work/archive/todo.md) — this entry point used to do NEITHER (JZ_CARRIER_BOX=0 was
-// silently a no-op here, and a region-live self.js built through this script
-// would carry build-dist.mjs's inlinePtrOffsetFast hazard ungated). Both
-// builders now consume the identical config resolver.
+// Graph resolution, build-time specialization, and compact compiler-runtime
+// collection layout are shared with build-dist.mjs via resolveSelfCompileBuild.
+// Both builders consume the identical profile.
 const t0 = Date.now()
-// optimize:2 — full standard optimization. (Earlier this MISCOMPILED the compiler into
-// an infinite loop on its own code; root cause was `sourceInline` dropping a statement-
-// position callee's side-effecting return expression — the parser's `seek = n => idx = n`
-// stopped advancing `idx`, looping comment-skip forever. Fixed in src/compile/plan/inline.js.)
-// -O3 is now the measured self-compile profile: internal lifted helpers can dissolve
-// through inlineOnce and speed-tier loop shaping keeps the warm compiler clear of
-// V8 (0.952× vs O2's load-sensitive ~0.99–1.02× on the pinned corpus). Dist size
-// is irrelevant for this unpublished compiler artifact. Override for diagnosis.
-const SELF_OPT = process.env.JZ_SELF_COMPILE_OPT ?? '3'
+// The compiler artifact defaults to level 1. Higher tiers spend gigabytes
+// optimizing compiler-only SIMD and peephole candidates before encoding; level
+// 1 keeps the essential cleanup while the hosted compiler still applies each
+// user program's requested optimization profile. Override for diagnosis.
+const SELF_OPT = process.env.JZ_SELF_COMPILE_OPT ?? '1'
 const HELPER_COUNTERS = /^(1|true|yes)$/i.test(process.env.JZ_HELPER_COUNTERS || '')
 const HELPER_SITES = process.env.JZ_HELPER_SITES || ''
 const HELPER_SITES_ON = !!HELPER_SITES && !/^(0|false|no)$/i.test(HELPER_SITES)

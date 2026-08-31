@@ -297,14 +297,29 @@ const hasScalarTypedArrayRead = (node, name) => {
   return false
 }
 
+// Rebuild an AST node only after a child actually changes. The former four
+// scalarizers each allocated a throwaway copy for every visited node even on
+// their overwhelmingly common no-op path; a self-host bump arena could never
+// recover those copies between passes.
+const rewriteChangedChildren = (node, visit, state) => {
+  let out = null
+  for (let i = 1; i < node.length; i++) {
+    const child = visit(node[i], state)
+    if (child !== node[i] && !out) out = node.slice(0, i)
+    if (out) out.push(child)
+  }
+  return out || node
+}
+
 const scalarizeTypedArrayLiteralSeq = (seq) => {
-  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
-  const stmts = seq.slice(1).map(stmt => {
-    const r = scalarizeTypedArrayLiterals(stmt)
-    changed ||= r.changed
-    return r.node
-  })
+  const stmts = []
+  for (let i = 1; i < seq.length; i++) {
+    const stmt = scalarizeTypedArrayLiterals(seq[i])
+    if (stmt !== seq[i]) changed = true
+    stmts.push(stmt)
+  }
 
   const candidates = new Map()
   const mirrored = new Map()
@@ -330,7 +345,7 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
     if (!hasUnsafeUse) candidates.set(decl[1], { index: i, len, coerce, mirrored: false })
     else mirrored.set(decl[1], { index: i, len, coerce, mirrored: true })
   }
-  if (!candidates.size && !mirrored.size) return { node: changed ? [';', ...stmts] : seq, changed }
+  if (!candidates.size && !mirrored.size) return changed ? [';', ...stmts] : seq
 
   const arrays = new Map()
   for (const [name, c] of [...candidates, ...mirrored]) {
@@ -373,21 +388,14 @@ const scalarizeTypedArrayLiteralSeq = (seq) => {
       out.push(rewriteScalarTypedArrayUses(stmts[i], arrays))
     }
   }
-  return { node: [';', ...out], changed: true }
+  return [';', ...out]
 }
 
 function scalarizeTypedArrayLiterals(node) {
-  if (!Array.isArray(node)) return { node, changed: false }
-  if (node[0] === '=>') return { node, changed: false }
+  if (!Array.isArray(node)) return node
+  if (node[0] === '=>') return node
   if (node[0] === ';') return scalarizeTypedArrayLiteralSeq(node)
-  let changed = false
-  const out = [node[0]]
-  for (let i = 1; i < node.length; i++) {
-    const r = scalarizeTypedArrayLiterals(node[i])
-    changed ||= r.changed
-    out.push(r.node)
-  }
-  return changed ? { node: out, changed: true } : { node, changed: false }
+  return rewriteChangedChildren(node, scalarizeTypedArrayLiterals)
 }
 
 const containsTypedArrayAccess = (body, names) => some(body, n => n[0] === '[]' && typeof n[1] === 'string' && names.has(n[1]))
@@ -411,21 +419,21 @@ const scalarTypedLoopBudget = (body) => {
 }
 
 const unrollTypedArrayLoops = (node, names) => {
-  if (!Array.isArray(node) || node[0] === '=>') return { node, changed: false }
+  if (!Array.isArray(node) || node[0] === '=>') return node
   if (node[0] === ';') {
     let changed = false
     const out = [';']
-    for (const stmt of node.slice(1)) {
-      const r = unrollTypedArrayLoops(stmt, names)
-      changed ||= r.changed
-      if (Array.isArray(r.node) && r.node[0] === ';') out.push(...r.node.slice(1))
-      else out.push(r.node)
+    for (let i = 1; i < node.length; i++) {
+      const stmt = unrollTypedArrayLoops(node[i], names)
+      if (stmt !== node[i]) changed = true
+      if (Array.isArray(stmt) && stmt[0] === ';') out.push(...stmt.slice(1))
+      else out.push(stmt)
     }
-    return changed ? { node: out, changed: true } : { node, changed: false }
+    return changed ? out : node
   }
   if (node[0] === '{}') {
-    const r = unrollTypedArrayLoops(node[1], names)
-    return r.changed ? { node: ['{}', r.node], changed: true } : { node, changed: false }
+    const body = unrollTypedArrayLoops(node[1], names)
+    return body !== node[1] ? ['{}', body] : node
   }
   if (node[0] === 'for') {
     const trip = smallScalarTypedForTrip(node[1], node[2], node[3])
@@ -442,20 +450,13 @@ const unrollTypedArrayLoops = (node, names) => {
         const rename = new Map()
         for (const b of bindings) rename.set(b, `${T}ul${freshId(ctx)}_${b}`)
         const cloned = cloneWithSubst(node[4], new Map([[trip.name, [null, i]]]), rename)
-        const r = unrollTypedArrayLoops(cloned, names)
-        out.push(...stmtList(r.node))
+        const rewritten = unrollTypedArrayLoops(cloned, names)
+        out.push(...stmtList(rewritten))
       }
-      return { node: out, changed: true }
+      return out
     }
   }
-  let changed = false
-  const out = [node[0]]
-  for (let i = 1; i < node.length; i++) {
-    const r = unrollTypedArrayLoops(node[i], names)
-    changed ||= r.changed
-    out.push(r.node)
-  }
-  return changed ? { node: out, changed: true } : { node, changed: false }
+  return rewriteChangedChildren(node, unrollTypedArrayLoops, names)
 }
 
 const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
@@ -526,16 +527,16 @@ export const scalarizeFunctionTypedArrays = (programFacts) => {
     if (names.size) {
       let guard = 0
       while (guard++ < 6) {
-        const r = unrollTypedArrayLoops(func.body, names)
-        if (!r.changed) break
-        setFuncBody(func, r.node)
+        const body = unrollTypedArrayLoops(func.body, names)
+        if (body === func.body) break
+        setFuncBody(func, body)
         changed = true
       }
     }
     const p = scalarizeTypedArrayParams(func, paramCands)
     if (p.changed) { setFuncBody(func, p.body); changed = true }
-    const l = scalarizeTypedArrayLiterals(func.body)
-    if (l.changed) { setFuncBody(func, l.node); changed = true }
+    const body = scalarizeTypedArrayLiterals(func.body)
+    if (body !== func.body) { setFuncBody(func, body); changed = true }
     // Body-mutation cache invalidation is owned by setFuncBody: every actual
     // body mutation above already goes through it, and it invalidates
     // whatever node it assigns. A manual invalidateLocalsCache(func.body)
@@ -618,13 +619,14 @@ export const analyzeParamDistinctness = (programFacts) => {
 }
 
 const scalarizeArrayLiteralSeq = (seq) => {
-  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
-  const stmts = seq.slice(1).map(stmt => {
-    const r = scalarizeArrayLiterals(stmt)
-    changed ||= r.changed
-    return r.node
-  })
+  const stmts = []
+  for (let i = 1; i < seq.length; i++) {
+    const stmt = scalarizeArrayLiterals(seq[i])
+    if (stmt !== seq[i]) changed = true
+    stmts.push(stmt)
+  }
 
   const candidates = new Map()
   for (let i = 0; i < stmts.length; i++) {
@@ -642,7 +644,7 @@ const scalarizeArrayLiteralSeq = (seq) => {
     if (!ok) continue
     candidates.set(decl[1], { index: i, op: stmt[0], elems })
   }
-  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+  if (!candidates.size) return changed ? [';', ...stmts] : seq
 
   const arrays = new Map()
   for (const [name, c] of candidates) {
@@ -665,17 +667,18 @@ const scalarizeArrayLiteralSeq = (seq) => {
     }
     out.push(rewriteScalarArrayUses(stmts[i], arrays))
   }
-  return { node: [';', ...out], changed: true }
+  return [';', ...out]
 }
 
 const scalarizeObjectLiteralSeq = (seq, escapes) => {
-  if (!Array.isArray(seq) || seq[0] !== ';') return { node: seq, changed: false }
+  if (!Array.isArray(seq) || seq[0] !== ';') return seq
   let changed = false
-  const stmts = seq.slice(1).map(stmt => {
-    const r = scalarizeObjectLiterals(stmt, escapes)
-    changed ||= r.changed
-    return r.node
-  })
+  const stmts = []
+  for (let i = 1; i < seq.length; i++) {
+    const stmt = scalarizeObjectLiterals(seq[i], escapes)
+    if (stmt !== seq[i]) changed = true
+    stmts.push(stmt)
+  }
 
   const candidates = new Map()
   for (let i = 0; i < stmts.length; i++) {
@@ -695,7 +698,7 @@ const scalarizeObjectLiteralSeq = (seq, escapes) => {
     if (!ok) continue
     candidates.set(decl[1], { index: i, op: stmt[0], props })
   }
-  if (!candidates.size) return { node: changed ? [';', ...stmts] : seq, changed }
+  if (!candidates.size) return changed ? [';', ...stmts] : seq
 
   const objects = new Map()
   for (const [name, c] of candidates) {
@@ -721,25 +724,17 @@ const scalarizeObjectLiteralSeq = (seq, escapes) => {
     }
     out.push(rewriteScalarObjectUses(stmts[i], objects))
   }
-  return { node: [';', ...out], changed: true }
+  return [';', ...out]
 }
 
 function scalarizeObjectLiterals(node, escapes) {
-  if (!Array.isArray(node)) return { node, changed: false }
+  if (!Array.isArray(node)) return node
   if (node[0] === '=>') {
-    const r = scalarizeObjectLiterals(node[2], escapes)
-    if (!r.changed) return { node, changed: false }
-    return { node: [node[0], node[1], r.node], changed: true }
+    const body = scalarizeObjectLiterals(node[2], escapes)
+    return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeObjectLiteralSeq(node, escapes)
-  let changed = false
-  const out = [node[0]]
-  for (let i = 1; i < node.length; i++) {
-    const r = scalarizeObjectLiterals(node[i], escapes)
-    changed ||= r.changed
-    out.push(r.node)
-  }
-  return changed ? { node: out, changed: true } : { node, changed: false }
+  return rewriteChangedChildren(node, scalarizeObjectLiterals, escapes)
 }
 
 // === Whole-program constant fold of module-scope aggregate literals ===
@@ -928,21 +923,13 @@ export function foldStaticConstAggregates(ast) {
 }
 
 function scalarizeArrayLiterals(node) {
-  if (!Array.isArray(node)) return { node, changed: false }
+  if (!Array.isArray(node)) return node
   if (node[0] === '=>') {
-    const r = scalarizeArrayLiterals(node[2])
-    if (!r.changed) return { node, changed: false }
-    return { node: [node[0], node[1], r.node], changed: true }
+    const body = scalarizeArrayLiterals(node[2])
+    return body === node[2] ? node : [node[0], node[1], body]
   }
   if (node[0] === ';') return scalarizeArrayLiteralSeq(node)
-  let changed = false
-  const out = [node[0]]
-  for (let i = 1; i < node.length; i++) {
-    const r = scalarizeArrayLiterals(node[i])
-    changed ||= r.changed
-    out.push(r.node)
-  }
-  return changed ? { node: out, changed: true } : { node, changed: false }
+  return rewriteChangedChildren(node, scalarizeArrayLiterals)
 }
 
 export const scalarizeFunctionArrayLiterals = () => {
@@ -951,9 +938,9 @@ export const scalarizeFunctionArrayLiterals = () => {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
-      const r = scalarizeArrayLiterals(func.body)
-      if (!r.changed) break
-      func.body = r.node
+      const body = scalarizeArrayLiterals(func.body)
+      if (body === func.body) break
+      func.body = body
       changed = true
     }
   }
@@ -1432,17 +1419,12 @@ export const scalarizeFunctionObjectLiterals = () => {
     if (!func.body || func.raw) continue
     let guard = 0
     while (guard++ < 4) {
-      // No manual invalidateLocalsCache call here: scalarizeObjectLiterals
-      // never mutates its input in place (always returns a fresh node when
-      // r.changed) and never reads analyzeBody's cache itself, so nothing
-      // between this read and setFuncBody below could observe or need a
-      // dropped entry — setFuncBody already invalidates whatever node it
-      // assigns. See compile/analyze.js's analyzeBody doc for the full
-      // seam-ownership note.
-      const escapes = new Map(analyzeBody(func.body).escapes)
-      const r = scalarizeObjectLiterals(func.body, escapes)
-      if (!r.changed) break
-      setFuncBody(func, r.node)
+      // The escapes map is read-only here; retain the body-fact authority
+      // instead of cloning a full per-function map for this one pass.
+      const escapes = analyzeBody(func.body).escapes
+      const body = scalarizeObjectLiterals(func.body, escapes)
+      if (body === func.body) break
+      setFuncBody(func, body)
       changed = true
     }
   }

@@ -83,6 +83,21 @@ export default (ctx) => {
     __durable_slot_cancel: [],
     __durable_slot_heal: [],
     __is_eph_bits: [],
+    __heap_mark: [],
+    __heap_large: [],
+    __park_begin: ['__memgrow'],
+    __park_write_u8: [],
+    __park_write_u32: [],
+    __park_write_f64: [],
+    __park_write_i64: [],
+    __park_write_str: ['__str_byteLen', '__str_copy'],
+    __park_finish: [],
+    __park_read_u8: [],
+    __park_read_u32: [],
+    __park_read_f64: [],
+    __park_read_i64: [],
+    __park_read_str: ['__alloc', '__mkptr', '__sso_norm'],
+    __park_rewind: ['__clear'],
   })
 
   ctx.core.stdlib['__is_nullish'] = `(func $__is_nullish (param $v i64) (result i32)
@@ -558,6 +573,103 @@ export default (ctx) => {
       (global.set $__heap (global.get $__heap_reset)))`
 
     registerDurableLog()
+
+    // Compiler-only one-shot checkpoint. A large self-hosted compile writes
+    // its final WAT tree into a compact binary lane above the low heap, rewinds
+    // all dead analysis state, then rehydrates only the encoder input.
+    const PARK_GAP = 64 * 1024 * 1024
+    const PARK_END = 0xFFFFFFF0 | 0
+    declGlobal('__park_base', 'i32', 0)
+    declGlobal('__park_cursor', 'i32', 0)
+    declGlobal('__park_read', 'i32', 0)
+    ctx.core.stdlib['__heap_mark'] = `(func $__heap_mark (result i32)
+      (global.get $__heap))`
+    ctx.core.stdlib['__heap_large'] = `(func $__heap_large (param $mark i32) (result i32)
+      (i32.gt_u (i32.sub (global.get $__heap) (local.get $mark)) (i32.const 1073741824)))`
+    ctx.core.stdlib['__park_begin'] = `(func $__park_begin (result f64)
+      (local $base i32)
+      (local.set $base (i32.and
+        (i32.add (global.get $__heap) (i32.const ${PARK_GAP + 7}))
+        (i32.const -8)))
+      (if (i32.or
+            (i32.lt_u (local.get $base) (global.get $__heap))
+            (i32.gt_u (local.get $base) (i32.const ${PARK_END})))
+        (then (unreachable)))
+      (call $__memgrow (i32.const ${PARK_END}))
+      (global.set $__park_base (local.get $base))
+      (global.set $__park_cursor (local.get $base))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_write_u8'] = `(func $__park_write_u8 (param $v i32) (result f64)
+      (i32.store8 (global.get $__park_cursor) (local.get $v))
+      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 1)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_write_u32'] = `(func $__park_write_u32 (param $v i32) (result f64)
+      (i32.store (global.get $__park_cursor) (local.get $v))
+      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 4)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_write_f64'] = `(func $__park_write_f64 (param $v f64) (result f64)
+      (f64.store (global.get $__park_cursor) (local.get $v))
+      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 8)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_write_i64'] = `(func $__park_write_i64 (param $v i64) (result f64)
+      (i64.store (global.get $__park_cursor) (local.get $v))
+      (global.set $__park_cursor (i32.add (global.get $__park_cursor) (i32.const 8)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_write_str'] = `(func $__park_write_str (param $s i64) (result f64)
+      (local $len i32) (local $dst i32)
+      (local.set $len (call $__str_byteLen (local.get $s)))
+      (local.set $dst (i32.add (global.get $__park_cursor) (i32.const 4)))
+      (i32.store (global.get $__park_cursor) (local.get $len))
+      (call $__str_copy (local.get $s) (local.get $dst) (local.get $len))
+      (global.set $__park_cursor (i32.add (local.get $dst) (local.get $len)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_finish'] = `(func $__park_finish (result f64)
+      (if (i32.or
+            (i32.lt_u (global.get $__park_cursor) (global.get $__park_base))
+            (i32.gt_u (global.get $__park_cursor) (i32.const ${PARK_END})))
+        (then (unreachable)))
+      (f64.const nan:${UNDEF_NAN}))`
+    ctx.core.stdlib['__park_read_u8'] = `(func $__park_read_u8 (result i32)
+      (local $p i32)
+      (local.set $p (global.get $__park_read))
+      (global.set $__park_read (i32.add (local.get $p) (i32.const 1)))
+      (i32.load8_u (local.get $p)))`
+    ctx.core.stdlib['__park_read_u32'] = `(func $__park_read_u32 (result i32)
+      (local $p i32)
+      (local.set $p (global.get $__park_read))
+      (global.set $__park_read (i32.add (local.get $p) (i32.const 4)))
+      (i32.load (local.get $p)))`
+    ctx.core.stdlib['__park_read_f64'] = `(func $__park_read_f64 (result f64)
+      (local $p i32)
+      (local.set $p (global.get $__park_read))
+      (global.set $__park_read (i32.add (local.get $p) (i32.const 8)))
+      (f64.load (local.get $p)))`
+    ctx.core.stdlib['__park_read_i64'] = `(func $__park_read_i64 (result i64)
+      (local $p i32)
+      (local.set $p (global.get $__park_read))
+      (global.set $__park_read (i32.add (local.get $p) (i32.const 8)))
+      (i64.load (local.get $p)))`
+    ctx.core.stdlib['__park_read_str'] = `(func $__park_read_str (result f64)
+      (local $len i32) (local $src i32) (local $ptr i32)
+      (local.set $len (i32.load (global.get $__park_read)))
+      (local.set $src (i32.add (global.get $__park_read) (i32.const 4)))
+      (global.set $__park_read (i32.add (local.get $src) (local.get $len)))
+      (local.set $ptr (call $__alloc (i32.add (local.get $len) (i32.const 8))))
+      (i32.store (local.get $ptr) (i32.const 0))
+      (i32.store offset=4 (local.get $ptr) (local.get $len))
+      (local.set $ptr (i32.add (local.get $ptr) (i32.const 8)))
+      (memory.copy (local.get $ptr) (local.get $src) (local.get $len))
+      (call $__sso_norm
+        (call $__mkptr (i32.const ${PTR.STRING}) (i32.const 0) (local.get $ptr))))`
+    ctx.core.stdlib['__park_rewind'] = `(func $__park_rewind (result f64)
+      (local $base i32)
+      (local.set $base (global.get $__park_base))
+      (call $__clear)
+      (global.set $__park_base (local.get $base))
+      (global.set $__heap_end (i32.sub (local.get $base) (i32.const 8)))
+      (global.set $__heap_end64 (i64.extend_i32_u (i32.sub (local.get $base) (i32.const 8))))
+      (global.set $__park_read (local.get $base))
+      (f64.const nan:${UNDEF_NAN}))`
 
   }
 
@@ -2116,6 +2228,22 @@ export default (ctx) => {
   // f64 bits are the payload to box); `p` is a previously-boxed pointer.
   ctx.core.emit['__box_bigint'] = (v) => (inc('__alloc', '__mkptr'), boxBigInt(asI64(emit(v))))
   ctx.core.emit['__unbox_bigint'] = (p) => (inc('__ptr_offset'), typed(['f64.reinterpret_i64', unboxBigInt(asF64(emit(p)))], 'f64'))
+
+  ctx.core.emit['__heap_mark'] = () => (inc('__heap_mark'), typed(['call', '$__heap_mark'], 'i32'))
+  ctx.core.emit['__heap_large'] = (mark) => (inc('__heap_large'), typed(['call', '$__heap_large', asI32(emit(mark))], 'i32'))
+  ctx.core.emit['__park_begin'] = () => (inc('__park_begin'), typed(['call', '$__park_begin'], 'f64'))
+  ctx.core.emit['__park_write_u8'] = (v) => (inc('__park_write_u8'), typed(['call', '$__park_write_u8', asI32(emit(v))], 'f64'))
+  ctx.core.emit['__park_write_u32'] = (v) => (inc('__park_write_u32'), typed(['call', '$__park_write_u32', asI32(emit(v))], 'f64'))
+  ctx.core.emit['__park_write_f64'] = (v) => (inc('__park_write_f64'), typed(['call', '$__park_write_f64', asF64(emit(v))], 'f64'))
+  ctx.core.emit['__park_write_i64'] = (v) => (inc('__park_write_i64'), typed(['call', '$__park_write_i64', asI64(emit(v))], 'f64'))
+  ctx.core.emit['__park_write_str'] = (v) => (inc('__park_write_str'), typed(['call', '$__park_write_str', asI64(emit(v))], 'f64'))
+  ctx.core.emit['__park_finish'] = () => (inc('__park_finish'), typed(['call', '$__park_finish'], 'f64'))
+  ctx.core.emit['__park_read_u8'] = () => (inc('__park_read_u8'), typed(['call', '$__park_read_u8'], 'i32'))
+  ctx.core.emit['__park_read_u32'] = () => (inc('__park_read_u32'), typed(['call', '$__park_read_u32'], 'i32'))
+  ctx.core.emit['__park_read_f64'] = () => (inc('__park_read_f64'), typed(['call', '$__park_read_f64'], 'f64'))
+  ctx.core.emit['__park_read_i64'] = () => (inc('__park_read_i64'), typed(['call', '$__park_read_i64'], 'i64'))
+  ctx.core.emit['__park_read_str'] = () => (inc('__park_read_str'), typed(['call', '$__park_read_str'], 'f64'))
+  ctx.core.emit['__park_rewind'] = () => (inc('__park_rewind'), typed(['call', '$__park_rewind'], 'f64'))
 
   registerErrorClasses()
 }

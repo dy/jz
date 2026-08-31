@@ -436,49 +436,50 @@ export function staticValue(node) {
   if (typeof node === 'string') return ctx.scope.constStrs?.get(node) ?? NO_VALUE
   if (!Array.isArray(node)) return NO_VALUE
 
-  const [op, ...args] = node
-  if (op == null) return args.length ? args[0] : undefined
-  if (op === 'str') return args[0]
+  const op = node[0]
+  const arity = node.length - 1
+  if (op == null) return arity ? node[1] : undefined
+  if (op === 'str') return node[1]
   // parse.js tags a literal bool as `['bool', 1|0]` (self-compile kernel boundary
   // marker — the same convention as bigint literals' `['bigint', decimalStr]`,
   // see kind.js), where native subscript's own literal shape `[, true]` would
   // also work (caught by op==null above) but degrades once self-compiled.
   // Recover the boolean from its 0/1 carrier so const-folded keys/conditions
   // resolve on the kernel leg (e.g. `{ [true ? 3 : 4]: 5 }`).
-  if (op === 'bool') { const c = staticValue(args[0]); return c === NO_VALUE ? NO_VALUE : !!c }
-  if (op === '[]' && args.length === 1) return staticValue(args[0])
+  if (op === 'bool') { const c = staticValue(node[1]); return c === NO_VALUE ? NO_VALUE : !!c }
+  if (op === '[]' && arity === 1) return staticValue(node[1])
   // Member read of a module-const object-literal scalar field (`KIND.BARE`) —
   // registry populated at the const decl (prepare/index.js, beside constStrs).
   // has() before get(): a legitimately-undefined field must not fold.
-  if (op === '.' && typeof args[0] === 'string' && typeof args[1] === 'string') {
-    const fields = ctx.scope.constObjFields?.get(args[0]) ?? (ctx.scope.chain?.[args[0]] != null ? ctx.scope.constObjFields?.get(ctx.scope.chain[args[0]]) : undefined)
-    if (fields?.has(args[1])) return fields.get(args[1])
+  if (op === '.' && typeof node[1] === 'string' && typeof node[2] === 'string') {
+    const fields = ctx.scope.constObjFields?.get(node[1]) ?? (ctx.scope.chain?.[node[1]] != null ? ctx.scope.constObjFields?.get(ctx.scope.chain[node[1]]) : undefined)
+    if (fields?.has(node[2])) return fields.get(node[2])
     return NO_VALUE
   }
-  if (op === '()' && args[0] === 'String' && args.length === 2) {
-    const value = staticValue(args[1])
+  if (op === '()' && node[1] === 'String' && arity === 2) {
+    const value = staticValue(node[2])
     return value === NO_VALUE ? NO_VALUE : String(value)
   }
-  if (op === '()' && args[0] === 'Number' && args.length === 2) {
-    const value = staticValue(args[1])
+  if (op === '()' && node[1] === 'Number' && arity === 2) {
+    const value = staticValue(node[2])
     return value === NO_VALUE ? NO_VALUE : Number(value)
   }
   if (op === '?:' || op === '?') {
-    const cond = staticValue(args[0])
-    return cond === NO_VALUE ? NO_VALUE : staticValue(cond ? args[1] : args[2])
+    const cond = staticValue(node[1])
+    return cond === NO_VALUE ? NO_VALUE : staticValue(cond ? node[2] : node[3])
   }
   if (op === '&&' || op === '||') {
-    const left = staticValue(args[0])
+    const left = staticValue(node[1])
     if (left === NO_VALUE) return NO_VALUE
-    return op === '&&' ? (left ? staticValue(args[1]) : left) : (left ? left : staticValue(args[1]))
+    return op === '&&' ? (left ? staticValue(node[2]) : left) : (left ? left : staticValue(node[2]))
   }
   if (op === '??') {
-    const left = staticValue(args[0])
-    return left === NO_VALUE ? NO_VALUE : left == null ? staticValue(args[1]) : left
+    const left = staticValue(node[1])
+    return left === NO_VALUE ? NO_VALUE : left == null ? staticValue(node[2]) : left
   }
 
-  if (args.length === 1) {
-    const value = staticValue(args[0])
+  if (arity === 1) {
+    const value = staticValue(node[1])
     if (value === NO_VALUE) return NO_VALUE
     // Parser emits raw `-`/`+` for both unary and binary; prep later normalizes
     // unary to `u-`/`u+`, but staticPropertyKey runs on raw parser AST.
@@ -489,9 +490,9 @@ export function staticValue(node) {
     return NO_VALUE
   }
 
-  if (args.length === 2) {
-    const left = staticValue(args[0])
-    const right = staticValue(args[1])
+  if (arity === 2) {
+    const left = staticValue(node[1])
+    const right = staticValue(node[2])
     if (left === NO_VALUE || right === NO_VALUE) return NO_VALUE
     switch (op) {
       case '+': return typeof left === 'string' || typeof right === 'string' ? String(left) + String(right) : Number(left) + Number(right)

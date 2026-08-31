@@ -18,7 +18,7 @@
  * @module kind/val-type-of
  */
 
-import { ctx } from '../ctx.js'
+import { ctx, registerResetHook } from '../ctx.js'
 import { VAL, lookupValType, repOf } from '../reps.js'
 import { intLiteralValue, staticIndexKey } from '../static.js'
 import {
@@ -37,6 +37,26 @@ import { shapeOf, jsonConstString, spreadMergeResolves } from './shape.js'
  * is a kind-traits table entry, not a new branch here.
  */
 const VT = Object.create(null)
+
+// valTypeOf is recursively dispatched and sits on nearly every analysis walk.
+// Keep one tail-argument array per active recursion depth instead of allocating
+// `expr.slice(1)` on every query. Reset swaps the pool without touching a
+// prior wasm arena after `_clear`.
+let VT_ARGS = []
+let vtArgsDepth = 0
+registerResetHook(() => { VT_ARGS = []; vtArgsDepth = 0 })
+const takeVtArgs = (expr) => {
+  let args = VT_ARGS[vtArgsDepth]
+  if (!args) VT_ARGS[vtArgsDepth] = args = []
+  vtArgsDepth++
+  args.length = expr.length - 1
+  for (let i = 1; i < expr.length; i++) args[i - 1] = expr[i]
+  return args
+}
+const releaseVtArgs = (args) => {
+  args.length = 0
+  vtArgsDepth--
+}
 
 // Self-describing boolean literal (`['bool', 1|0]`, tagged at parse time —
 // see parse.js's `true`/`false` token overrides) — the self-host kernel's
@@ -637,7 +657,7 @@ export function valTypeOf(expr) {
   if (typeof expr === 'string') return lookupValType(expr)
   if (!Array.isArray(expr)) return null
 
-  const [op, ...args] = expr
+  const op = expr[0]
   if (op == null) {
     // Literal forms: [] = undefined, [null, null] = null, [null, n] = number, [, bool] = boolean.
     // Bigint literals are NEVER this shape — the parser tags them structurally
@@ -647,21 +667,19 @@ export function valTypeOf(expr) {
     // reads 'bigint' too (the carrier is bit-identical — the very collapse
     // this tag exists to avoid), which used to misclassify e.g. `5e-324`'s
     // OWN literal node as VAL.BIGINT and corrupt its export boundary.
-    if (args.length === 0) return null              // undefined literal
-    if (args[0] == null) return null                // null literal
-    if (typeof args[0] === 'boolean') return VAL.BOOL
-    if (typeof args[0] === 'symbol') return null    // prepared null sentinel
-    // C5b hardening: a string payload here is never a real string LITERAL
-    // (prepare/index.js converts every one to ['str', x] before this runs —
-    // this shape is the parser's own pre-conversion encoding, and the one
-    // OTHER known producer, inline.js's hoisted-temp wrapper, was C5's own
-    // fix). It would mean some NEW producer reintroduced the ambiguity a
-    // name and a string share through this shape — fail to null rather than
-    // fall through to the NUMBER default below and misclassify it.
-    if (typeof args[0] === 'string') return null
+    if (expr.length === 1) return null              // undefined literal
+    if (expr[1] == null) return null                 // null literal
+    if (typeof expr[1] === 'boolean') return VAL.BOOL
+    if (typeof expr[1] === 'symbol') return null    // prepared null sentinel
+    // C5b hardening: a string payload here is never a real string LITERAL.
+    if (typeof expr[1] === 'string') return null
     return VAL.NUMBER
   }
-  return VT[op]?.(args) ?? null
+  const handler = VT[op]
+  if (!handler) return null
+  const args = takeVtArgs(expr)
+  try { return handler(args) ?? null }
+  finally { releaseVtArgs(args) }
 }
 
 /**
@@ -691,14 +709,14 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   if (expr == null) return null
   if (typeof expr === 'string') return resolveLocal(expr) ?? null
   if (!Array.isArray(expr)) return valTypeOf(expr)
-  const [op, ...args] = expr
+  const op = expr[0]
   const rec = (e) => valTypeOfWithLocals(e, resolveLocal)
   if (op === '?:') {
-    const a = rec(args[1]), b = rec(args[2])
+    const a = rec(expr[2]), b = rec(expr[3])
     return a && a === b ? a : null
   }
   if (op === '&&' || op === '||') {
-    const a = rec(args[0]), b = rec(args[1])
+    const a = rec(expr[1]), b = rec(expr[2])
     return a && a === b ? a : null
   }
   // SOUND `+` — see narrowValResults' identical comment (src/compile/narrow.js):
@@ -719,7 +737,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // identical class as the sibling arithmetic ops below (`+` is not immune
   // to this despite the "SOUND +" framing elsewhere in this file).
   if (op === '+') {
-    const a = rec(args[0]), b = rec(args[1])
+    const a = rec(expr[1]), b = rec(expr[2])
     if (a === VAL.STRING || b === VAL.STRING) return VAL.STRING
     if (a == null || b == null) return null
     return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
@@ -757,7 +775,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // codegen pin in test/closures.js.
   if (op === '-' || op === '*' || op === '/' || op === '%' ||
       op === '&' || op === '|' || op === '^' || op === '<<' || op === '>>') {
-    const a = rec(args[0]), b = rec(args[1])
+    const a = rec(expr[1]), b = rec(expr[2])
     return a === VAL.BIGINT || b === VAL.BIGINT ? VAL.BIGINT : VAL.NUMBER
   }
   // Unary BigInt-preserving family (u- ~ ++ --): kind follows the single
@@ -780,7 +798,7 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // ordinary numeric unary's NUMBER result independently, so this costs no
   // real specialization for the common case).
   if (op === 'u-' || op === '~' || op === '++' || op === '--') {
-    const a = rec(args[0])
+    const a = rec(expr[1])
     if (a === VAL.BIGINT) return VAL.BIGINT
     if (a == null) return null
     return valTypeOf(expr)
@@ -802,8 +820,8 @@ export function valTypeOfWithLocals(expr, resolveLocal) {
   // here or the global path), so this is purely additive — a method whose claim
   // doesn't depend on objType (most STRING/NUMBER/ARRAY methods) was never blocked
   // by this gap in the first place.
-  if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.') {
-    const [, obj, method] = args[0]
+  if (op === '()' && Array.isArray(expr[1]) && expr[1][0] === '.') {
+    const [, obj, method] = expr[1]
     const objType = rec(obj)
     const vt = methodValType(method, obj, objType, ctx)
     if (vt != null) return vt

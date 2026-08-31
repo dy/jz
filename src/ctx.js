@@ -350,6 +350,8 @@ function createFactStore() {
     programFacts: { gen: 0, walkCache: new WeakMap(), moduleInitSlot: new WeakMap(), bodyIntCertain: new WeakMap(), hazard: null },
     bodyFacts: new Map(),
     bindingUses: new WeakMap(),
+    mutationNames: new WeakMap(),
+    scopeBoundNames: new WeakMap(),
     mayBeUndefinedTrace: new WeakMap(),
     mapGetShapedTrace: new WeakMap(),
     presentValTrace: new WeakMap(),
@@ -1029,8 +1031,8 @@ export function reset(proto, globals, bridge) {
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
-    functionData: new WeakMap(),  // handle → private canonical facts (function-plan.js only)
-    functionWorking: new WeakMap(), // handle → detached one-shot analysis frame awaiting emission
+    functionData: new WeakMap(),  // handle → linearly-owned ordinary-function facts
+    functionWorking: new WeakMap(), // handle → linearly-owned closure/start ActiveFunction frame
     representations: new WeakMap(), // function/start/closure identity → opaque RepresentationPlan handle
     representationData: new WeakMap(), // handle → private boundary/body facts (representation-plan.js only)
     typedStorage: new WeakMap(), // function/start/closure identity → opaque TypedStoragePlan handle

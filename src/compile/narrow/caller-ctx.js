@@ -9,6 +9,7 @@
 
 import { ctx } from '../../ctx.js'
 import { withTypedElems } from '../flow-state.js'
+import { makeMapOverlay } from '../map-overlay.js'
 import { analyzeBody, reanalyzeBody, invalidateAllBodyFacts } from '../analyze.js'
 import { ctorFromElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
@@ -70,10 +71,9 @@ export function buildCallerCtx() {
   for (const func of ctx.funcs.list) {
     if (!func.body || func.raw) continue
     const facts = analyzeBody(func.body)
-    // COPY before adding params: analyzeBody's returned maps are shared cache
-    // entries (immutable by contract) — writing params into facts.locals leaked
-    // caller-view state into every later reader of the same cached facts.
-    const callerLocals = new Map(facts.locals)
+    // Add params through an overlay; the cached body-fact map remains immutable
+    // and is not cloned once per function.
+    const callerLocals = makeMapOverlay(facts.locals)
     for (const p of func.sig.params) if (!callerLocals.has(p.name)) callerLocals.set(p.name, p.type)
     // Shadow-aware local+global typed-array map: a `const buf = new Int32Array(…)`
     // local makes `buf[i]` arg reads type i32 at this caller's sites, so a callee
@@ -114,11 +114,12 @@ function callerTypedElemsFor(func, globalTE) {
   const facts = analyzeBody(func.body)
   const local = facts.typedElems
   if (!globalTE.size) return local
-  const shadowed = new Set(facts.locals.keys())
-  for (const p of func.sig?.params || []) shadowed.add(p.name)
-  const merged = new Map()
-  for (const [k, v] of globalTE) if (!shadowed.has(k)) merged.set(k, v)
-  for (const [k, v] of local) merged.set(k, v)  // local typed binding shadows the global
+  const merged = makeMapOverlay(globalTE)
+  // Every local/param shadows a same-named global; typed locals then replace
+  // their tombstone in the overlay's own layer.
+  for (const name of facts.locals.keys()) merged.delete(name)
+  for (const p of func.sig?.params || []) merged.delete(p.name)
+  for (const [k, v] of local) merged.set(k, v)
   return merged
 }
 
@@ -145,10 +146,9 @@ export function buildCallerTypedLenCtx() {
     const facts = analyzeBody(func.body)
     const local = facts.typedLens || new Map()
     if (!globalTL.size) { out.set(func, local); continue }
-    const shadowed = new Set(facts.locals.keys())
-    for (const p of func.sig?.params || []) shadowed.add(p.name)
-    const merged = new Map()
-    for (const [k, v] of globalTL) if (!shadowed.has(k)) merged.set(k, v)
+    const merged = makeMapOverlay(globalTL)
+    for (const name of facts.locals.keys()) merged.delete(name)
+    for (const p of func.sig?.params || []) merged.delete(p.name)
     for (const [k, v] of local) merged.set(k, v)
     out.set(func, merged)
   }
@@ -186,7 +186,7 @@ function refreshCallerLocals(callerCtx) {
     // an integer typed-array PARAM element — `aa = perm[perm[X]+Y]` (noise), perm an Int32
     // pointer param — types f64 here, so a callee fed it (`grad(aa,…)`, used only as `aa&3`)
     // never narrows its param to i32. Mirrors emit so narrow-time callerLocals agree with it.
-    const te = ctx.scope.globalTypedElem ? new Map(ctx.scope.globalTypedElem) : new Map()
+    const te = makeMapOverlay(ctx.scope.globalTypedElem || null)
     for (const p of func.sig.params) {
       if (p.ptrKind != null) ctx.func.localReps.set(p.name, { val: p.ptrKind })
       if (p.ptrKind === VAL.TYPED && p.ptrAux != null) { const c = ctorFromElemAux(p.ptrAux); if (c != null) te.set(p.name, c) }

@@ -122,20 +122,20 @@ export function shapeOf(expr) {
         ?? ctx.scope.globalReps?.get(expr)?.jsonShape
         ?? null
   if (!Array.isArray(expr)) return null
-  const [op, ...args] = expr
-  if (op === '()' && args[0] === 'JSON.parse') {
-    const srcs = jsonShapeStrings(args[1])
+  const op = expr[0]
+  if (op === '()' && expr[1] === 'JSON.parse') {
+    const srcs = jsonShapeStrings(expr[2])
     if (srcs) return parseUnifiedJsonShape(srcs)
   }
-  if (op === '.' && typeof args[1] === 'string') {
-    const parent = shapeOf(args[0])
-    if (parent?.val === VAL.OBJECT || parent?.val === VAL.HASH) return parent.props[args[1]] || null
+  if (op === '.' && typeof expr[2] === 'string') {
+    const parent = shapeOf(expr[1])
+    if (parent?.val === VAL.OBJECT || parent?.val === VAL.HASH) return parent.props[expr[2]] || null
   }
-  if (op === '[]' && args.length === 2) {
-    const parent = shapeOf(args[0])
+  if (op === '[]' && expr.length === 3) {
+    const parent = shapeOf(expr[1])
     if (parent?.val === VAL.ARRAY) {
       // non-numeric string-literal key = PROPERTY read, not an element (see VT['[]'])
-      const k = args[1]
+      const k = expr[2]
       const lit = Array.isArray(k) && k.length === 2 && k[0] == null ? k[1]
         : Array.isArray(k) && k[0] === 'str' ? k[1] : undefined
       if (typeof lit === 'string' && !/^(0|[1-9][0-9]*)$/.test(lit)) return null

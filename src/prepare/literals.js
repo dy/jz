@@ -32,16 +32,16 @@ function immediateStaticStringExpr(node) {
   if (lit != null) return lit
   if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
   if (!Array.isArray(node)) return null
-  const [op, ...args] = node
+  const op = node[0]
   if (op === '+') {
-    const a = immediateStaticStringExpr(args[0])
-    const b = immediateStaticStringExpr(args[1])
+    const a = immediateStaticStringExpr(node[1])
+    const b = immediateStaticStringExpr(node[2])
     return a != null && b != null ? a + b : null
   }
   if (op === '`') {
     let out = ''
-    for (const part of args) {
-      const s = immediateStaticStringExpr(part)
+    for (let i = 1; i < node.length; i++) {
+      const s = immediateStaticStringExpr(node[i])
       if (s == null) return null
       out += s
     }
@@ -231,10 +231,10 @@ export function staticStringExpr(node) {
   if (Array.isArray(node) && node[0] === 'str' && typeof node[1] === 'string') return node[1]
   if (typeof node === 'string') return lookupStaticString(node)
   if (!Array.isArray(node)) return null
-  const [op, ...args] = node
+  const op = node[0]
   if (op === '+') {
-    const a = staticStringExpr(args[0])
-    const b = staticStringExpr(args[1])
+    const a = staticStringExpr(node[1])
+    const b = staticStringExpr(node[2])
     // Accumulate from a fresh empty string (`'' + a + b`) rather than concatenating two
     // source-derived substrings directly. Under self-compile the latter can yield a string
     // backed by transient parse-time storage that's invalid by the time emit['//'] reads
@@ -244,7 +244,8 @@ export function staticStringExpr(node) {
   }
   if (op === '`') {
     let out = ''
-    for (const part of args) {
+    for (let i = 1; i < node.length; i++) {
+      const part = node[i]
       let s = staticStringExpr(part)
       // A numeric interpolation (`${123}`, `${1+2}`) is a constant in string context —
       // ToString it so a fully-static template folds to one literal instead of a runtime
@@ -255,10 +256,10 @@ export function staticStringExpr(node) {
     }
     return out
   }
-  if (op === '()' && Array.isArray(args[0]) && args[0][0] === '.' && args[0][2] === 'join' && typeof args[0][1] === 'string') {
-    const arr = lookupStaticStringArray(args[0][1])
+  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'join' && typeof node[1][1] === 'string') {
+    const arr = lookupStaticStringArray(node[1][1])
     if (!arr) return null
-    const sep = args.length > 1 && args[1] != null ? staticStringExpr(args[1]) : ','
+    const sep = node.length > 2 && node[2] != null ? staticStringExpr(node[2]) : ','
     return sep != null ? arr.join(sep) : null
   }
   return null

@@ -46,12 +46,16 @@ export function buildPureFuncMap(funcs) {
     if (!Array.isArray(fn) || fn[0] !== 'func') continue
     const name = fn[1]
     if (typeof name !== 'string' || name.startsWith('$math.') || name.startsWith('$__')) continue
-    const clone = cloneIR(fn)
-    foldStrDispatchF64(clone)
-    const bodyStart = findBodyStart(clone)
-    if (bodyStart < 0) continue
-    let pure = true
-    for (let i = bodyStart; i < clone.length; i++) if (hasSideEffect(clone[i])) { pure = false; break }
+    // Fold transactionally on the source tree, classify, clone only a survivor,
+    // then restore the source. This preserves the exact folded candidate while
+    // avoiding a full clone of every impure function in the module.
+    const changes = []
+    foldStrDispatchF64(fn, changes)
+    const bodyStart = findBodyStart(fn)
+    let pure = bodyStart >= 0
+    if (pure) for (let i = bodyStart; i < fn.length; i++) if (hasSideEffect(fn[i])) { pure = false; break }
+    const clone = pure ? cloneIR(fn) : null
+    for (let i = changes.length - 1; i >= 0; i--) changes[i][0][changes[i][1]] = changes[i][2]
     if (pure) pureFuncMap.set(name, clone)
   }
   return pureFuncMap
@@ -91,7 +95,7 @@ export function buildPureFuncMap(funcs) {
 // independently proven numeric by its OWN context — e.g. a per-lane value
 // read straight off a typed array inside a proven f64 SIMD context — never
 // for the callee's bare declared param type).
-export function foldStrDispatchF64(fn) {
+export function foldStrDispatchF64(fn, changes) {
   if (!Array.isArray(fn) || fn[0] !== 'func') return
   const bodyStart = findBodyStart(fn)
   if (bodyStart < 0) return
@@ -151,7 +155,12 @@ export function foldStrDispatchF64(fn) {
     // Recurse children first (bottom-up).
     for (let i = 0; i < node.length; i++) {
       const c = node[i]
-      if (Array.isArray(c)) node[i] = foldNode(c)
+      if (!Array.isArray(c)) continue
+      const next = foldNode(c)
+      if (next !== c) {
+        if (changes) changes.push([node, i, c])
+        node[i] = next
+      }
     }
     // Match:
     //   ['block', ['result','f64'],
@@ -214,5 +223,12 @@ export function foldStrDispatchF64(fn) {
     return ['f64.add', exprA, ['local.get', P]]
   }
 
-  for (let i = bodyStart; i < fn.length; i++) fn[i] = foldNode(fn[i])
+  for (let i = bodyStart; i < fn.length; i++) {
+    const before = fn[i]
+    const next = foldNode(before)
+    if (next !== before) {
+      if (changes) changes.push([fn, i, before])
+      fn[i] = next
+    }
+  }
 }

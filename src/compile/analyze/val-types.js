@@ -477,19 +477,20 @@ export function analyzeValTypes(body) {
   const dictDomain = (name) => dictDomainOf(body, name)
   function walk(node, cond) {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '=>') return  // don't leak inner-closure val types
     // Collect Object.assign(name, …) sites for the post-walk boxed-schema
     // predictor (slice-4 P3) — decided AFTER the walk so the target's FINAL
     // val kind matches what emit reads.
-    if (op === '()' && args[0] === 'Object.assign') {
-      let aa = args.slice(1)
+    if (op === '()' && node[1] === 'Object.assign') {
+      let aa = node.slice(2)
       if (aa.length === 1 && Array.isArray(aa[0]) && aa[0][0] === ',') aa = aa[0].slice(1)
       if (typeof aa[0] === 'string' && aa.length > 1)
         objAssignSites.push({ target: aa[0], sources: aa.slice(1) })
     }
     if (op === 'let' || op === 'const') {
-      for (const a of args) {
+      for (let i = 1; i < node.length; i++) {
+        const a = node[i]
         if (!Array.isArray(a) || a[0] !== '=' || typeof a[1] !== 'string') continue
         declared.add(a[1])
         // Empty object used exclusively as a computed-key sink is represented
@@ -658,29 +659,29 @@ export function analyzeValTypes(body) {
         }
       }
     }
-    if (op === '=' && typeof args[0] === 'string') {
-      walk(args[1], cond)
-      const merged = ctx.schema.resolve?.(args[0])
-      const dict = Array.isArray(args[1]) && args[1][0] === '{}' && args[1].length === 1 &&
-        ctx.types.dynWriteVars?.has(args[0]) && !merged?.length
-      const vt = dict ? VAL.HASH : valTypeOf(args[1])
+    if (op === '=' && typeof node[1] === 'string') {
+      walk(node[2], cond)
+      const merged = ctx.schema.resolve?.(node[1])
+      const dict = Array.isArray(node[2]) && node[2][0] === '{}' && node[2].length === 1 &&
+        ctx.types.dynWriteVars?.has(node[1]) && !merged?.length
+      const vt = dict ? VAL.HASH : valTypeOf(node[2])
       // Dict-value-type census, local half (design §1a) — reassignment site
       // sibling of the decl-site stamp above.
       if (dict) {
-        const dvt = dictValueTypeOf(body, args[0])
-        if (dvt.size) updateRep(args[0], { dictValueValType: dvt })
+        const dvt = dictValueTypeOf(body, node[1])
+        if (dvt.size) updateRep(node[1], { dictValueValType: dvt })
       }
       // Map-value-type census, local half — reassignment site sibling of the
       // decl-site stamp above.
       if (vt === VAL.MAP) {
-        const mvt = mapValueTypeOf(body, args[0])
-        if (mvt.size) updateRep(args[0], { mapValueValType: mvt })
+        const mvt = mapValueTypeOf(body, node[1])
+        if (mvt.size) updateRep(node[1], { mapValueValType: mvt })
       }
-      if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(args[0])) {
-        (ctx.func.leanHashLocals ??= new Set()).add(args[0])
-        if (i32DictUse(args[0])) (ctx.func.i32HashLocals ??= new Set()).add(args[0])
-        const domain = dictDomain(args[0])
-        if (domain) (ctx.func.leanHashDomains ??= new Map()).set(args[0], domain)
+      if (dict && (ctx.transform.optFlags & OPTF.hashRmwFusion) && leanDictUse(node[1])) {
+        (ctx.func.leanHashLocals ??= new Set()).add(node[1])
+        if (i32DictUse(node[1])) (ctx.func.i32HashLocals ??= new Set()).add(node[1])
+        const domain = dictDomain(node[1])
+        if (domain) (ctx.func.leanHashDomains ??= new Map()).set(node[1], domain)
       }
       // A CONDITIONALLY-positioned BIGINT write to a PARAM poisons, never
       // settles: the entry kind is call-site truth this body walk can't see,
@@ -695,26 +696,26 @@ export function analyzeValTypes(body) {
       // the false STATIC claim. Non-BigInt conditional adopts stay: numeric
       // loop-write adoption is load-bearing for the typing pipeline
       // (unswitch-typed-param's i32 guard locals validate against it).
-      const bigintParamWrite = vt === VAL.BIGINT && (ctx.func.current?.params?.some(p => p.name === args[0]) ||
-        ctx.func.current?.sig?.params?.some(p => p.name === args[0]))
-      setVal(args[0], bigintParamWrite && cond ? null : poisonUndeclared(args[0], vt))
-      if (mayBeNullish(args[1])) updateRep(args[0], { nullable: true })
+      const bigintParamWrite = vt === VAL.BIGINT && (ctx.func.current?.params?.some(p => p.name === node[1]) ||
+        ctx.func.current?.sig?.params?.some(p => p.name === node[1]))
+      setVal(node[1], bigintParamWrite && cond ? null : poisonUndeclared(node[1], vt))
+      if (mayBeNullish(node[2])) updateRep(node[1], { nullable: true })
       // presence (re-audit item 9(b)): 'maybe-undef' mirrors mayBeUndefined's
       // boolean here too. No 'present' arm at a REASSIGN site — this write
-      // itself makes writeCount(body, args[0], 0) ≥ 1 for the whole body, so
+      // itself makes writeCount(body, node[1], 0) ≥ 1 for the whole body, so
       // the decl site's never-reassigned precondition for 'present' is
       // already false whenever this site can even fire (decl-site 'present'
       // never gets set for a name that reaches a reassignment anywhere).
-      if (mayBeUndefinedRhs(args[1])) updateRep(args[0], { mayBeUndefined: true, presence: 'maybe-undef' })
-      setPresentVal(args[0], censusMaybeUndefinedKind(args[1]))
-      if (vt === VAL.REGEX) trackRegex(args[0], args[1])
-      if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(args[1])) trackTyped(args[0], args[1])
-      if (vt === VAL.OBJECT) bindObjSchema(args[0], args[1])
+      if (mayBeUndefinedRhs(node[2])) updateRep(node[1], { mayBeUndefined: true, presence: 'maybe-undef' })
+      setPresentVal(node[1], censusMaybeUndefinedKind(node[2]))
+      if (vt === VAL.REGEX) trackRegex(node[1], node[2])
+      if (vt === VAL.TYPED || vt === VAL.BUFFER || isCondExpr(node[2])) trackTyped(node[1], node[2])
+      if (vt === VAL.OBJECT) bindObjSchema(node[1], node[2])
       return
     }
     // Track property assignments for auto-boxing: x.prop = val
-    if (op === '=' && Array.isArray(args[0]) && args[0][0] === '.' && typeof args[0][1] === 'string') {
-      const [, obj, prop] = args[0]
+    if (op === '=' && Array.isArray(node[1]) && node[1][0] === '.' && typeof node[1][1] === 'string') {
+      const [, obj, prop] = node[1]
       const vt = getVal(obj)
       if ((vt === VAL.NUMBER || vt === VAL.BIGINT) && ctx.func.locals?.has(obj) && ctx.schema.register) {
         if (!ctx.func.localProps) ctx.func.localProps = new Map()
@@ -727,12 +728,15 @@ export function analyzeValTypes(body) {
     // arms (their tests stay at the current position), '&&'/'||'/'??' right
     // sides, and every part of a loop (a body that may run zero times).
     // Everything else inherits the caller's position.
-    if (op === 'if' || op === '?:') { walk(args[0], cond); for (let i = 1; i < args.length; i++) walk(args[i], true); return }
-    if (op === '&&' || op === '||' || op === '??') { walk(args[0], cond); walk(args[1], true); return }
+    if (op === 'if' || op === '?:') { walk(node[1], cond); for (let i = 2; i < node.length; i++) walk(node[i], true); return }
+    if (op === '&&' || op === '||' || op === '??') { walk(node[1], cond); walk(node[2], true); return }
     // Loops and try: every part may run zero times (loop body / catch arm) or
     // stop mid-way (a throw skips the try body's tail) — all conditional.
-    if (op === 'while' || op === 'do' || op === 'for' || op === 'for-in' || op === 'for-of' || op === 'try') { for (const a of args) walk(a, true); return }
-    for (const a of args) walk(a, cond)
+    if (op === 'while' || op === 'do' || op === 'for' || op === 'for-in' || op === 'for-of' || op === 'try') {
+      for (let i = 1; i < node.length; i++) walk(node[i], true)
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i], cond)
   }
   const objAssignSites = []
   walk(body, false)

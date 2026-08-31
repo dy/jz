@@ -831,15 +831,15 @@ function widenLocalTypes(body, locals) {
   const keepI32 = (name) => i32SafeIdx.has(name) || ((intLevels.get(name) ?? 0) >= 1 && !f64IdxVars.has(name))
   const widenPass = (node) => {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     if (WIDEN_CMP_OPS.has(op)) {
-      const [a, b] = args
+      const a = node[1], b = node[2]
       const ta = exprType(a, locals), tb = exprType(b, locals)
       if (ta === 'i32' && tb === 'f64' && typeof a === 'string' && locals.has(a) && !keepI32(a)) locals.set(a, 'f64')
       if (tb === 'i32' && ta === 'f64' && typeof b === 'string' && locals.has(b) && !keepI32(b)) locals.set(b, 'f64')
     }
-    if (op === '=>') { if (nestedNames.size) widenPass(args[1]) }
-    else for (const a of args) widenPass(a)
+    if (op === '=>') { if (nestedNames.size) widenPass(node[2]) }
+    else for (let i = 1; i < node.length; i++) widenPass(node[i])
   }
   widenPass(body)
 

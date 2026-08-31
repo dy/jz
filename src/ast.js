@@ -158,7 +158,7 @@ export const endAssignedMemo = () => { assignedMemo = null }
 // declarator's own `=` binds rather than writes (only its initializer is
 // scanned); mutation targets that aren't bare names contribute nothing
 // themselves but their subexpressions are scanned.
-const collectAssignedNames = (body, out) => {
+export const collectAssignedNames = (body, out) => {
   if (!Array.isArray(body)) return out
   const op = body[0]
   if (op === 'let' || op === 'const') {
@@ -511,16 +511,18 @@ export function classifyParam(r) {
   return ['plain', r]
 }
 
-export function collectParamNames(raw, out = new Set()) {
-  for (const r of raw) {
-    if (typeof r === 'string') out.add(r)
-    else if (Array.isArray(r)) {
-      if (r[0] === '=' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '...' && typeof r[1] === 'string') out.add(r[1])
-      else if (r[0] === '=' && Array.isArray(r[1])) collectParamNames([r[1]], out)
-      else if (r[0] === '[]' || r[0] === '{}' || r[0] === ',') collectParamNames(r.slice(1), out)
-    }
-  }
+const collectParamName = (r, out) => {
+  if (typeof r === 'string') { out.add(r); return }
+  if (!Array.isArray(r)) return
+  if (r[0] === '=' && typeof r[1] === 'string') { out.add(r[1]); return }
+  if (r[0] === '...' && typeof r[1] === 'string') { out.add(r[1]); return }
+  if (r[0] === '=' && Array.isArray(r[1])) { collectParamName(r[1], out); return }
+  if (r[0] === '[]' || r[0] === '{}' || r[0] === ',')
+    for (let i = 1; i < r.length; i++) collectParamName(r[i], out)
+}
+
+export function collectParamNames(raw, out = new Set(), start = 0) {
+  for (let i = start; i < raw.length; i++) collectParamName(raw[i], out)
   return out
 }
 
@@ -553,10 +555,10 @@ export function collectAllBoundNames(node, out = new Set()) {
 
 const collectReturnExprs = (node, out) => {
   if (!Array.isArray(node)) return
-  const [op, ...args] = node
+  const op = node[0]
   if (op === '=>') return
-  if (op === 'return') { if (args[0] != null) out.push(args[0]); return }
-  for (const a of args) collectReturnExprs(a, out)
+  if (op === 'return') { if (node[1] != null) out.push(node[1]); return }
+  for (let i = 1; i < node.length; i++) collectReturnExprs(node[i], out)
 }
 
 export const alwaysReturns = (n) => {

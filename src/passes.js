@@ -104,7 +104,7 @@ export const PASS_NAMES = [
  *  NOT on/off passes. The registry-coverage test accepts these; anything else
  *  read off the optimize object is an unregistered flag and fails the gate. */
 export const TUNING_KEYS = [
-  'level', 'arrayMinCap', 'hashSmallInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
+  'level', 'arrayMinCap', 'arrayLiteralMinCap', 'hashSmallInitCap', 'collectionInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',
   'scalarTypedLoopUnroll', 'scalarTypedNestedUnroll', 'scalarTypedArrayLen',
   'snapshotInit',

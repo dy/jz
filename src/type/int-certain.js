@@ -47,17 +47,19 @@ function collectIntDefs(body, capturedNames) {
       if (capturedNames && capturedNames.size) collect(n[2], true)
       return false
     }
-    const [op, ...args] = n
+    const op = n[0]
     if (op === 'let' || op === 'const') {
-      for (const a of args)
-        if (Array.isArray(a) && a[0] === '=' && typeof a[1] === 'string') pushDef(a[1], a[2], inArrow)
-    } else if (op === '=' && typeof args[0] === 'string') {
-      pushDef(args[0], args[1], inArrow)
+      for (let i = 1; i < n.length; i++) {
+        const decl = n[i]
+        if (Array.isArray(decl) && decl[0] === '=' && typeof decl[1] === 'string') pushDef(decl[1], decl[2], inArrow)
+      }
+    } else if (op === '=' && typeof n[1] === 'string') {
+      pushDef(n[1], n[2], inArrow)
     } else if (typeof op === 'string' && op.length > 1 && op.endsWith('=') &&
-               !CMP_OPS.has(op) && op !== '=>' && typeof args[0] === 'string') {
-      pushDef(args[0], [op.slice(0, -1), args[0], args[1]], inArrow)
-    } else if ((op === '++' || op === '--') && typeof args[0] === 'string') {
-      pushDef(args[0], [op === '++' ? '+' : '-', args[0], [null, 1]], inArrow)
+               !CMP_OPS.has(op) && op !== '=>' && typeof n[1] === 'string') {
+      pushDef(n[1], [op.slice(0, -1), n[1], n[2]], inArrow)
+    } else if ((op === '++' || op === '--') && typeof n[1] === 'string') {
+      pushDef(n[1], [op === '++' ? '+' : '-', n[1], [null, 1]], inArrow)
     }
   } })
   collect(body, false)
@@ -89,23 +91,23 @@ function makeIntLevelExpr(intLevels, slotLevelOf) {
     if (!Array.isArray(expr)) return 0
     const sv = staticValue(expr)
     if (sv !== NO_VALUE && typeof sv === 'number' && Object.is(sv, -0)) return 0
-    const [op, ...args] = expr
-    if (op == null) return _numLevel(args[0])
+    const op = expr[0]
+    if (op == null) return _numLevel(expr[1])
     if (op === '>>>') return 1                      // uint32: up to 2^32-1, exceeds int32
     if (INT_BIT_OPS.has(op) || CMP_OPS.has(op)) return 2
     if (op === '.') {
       // Slot-census resolver (analyzeSchemaSlotIntCertain's optimistic
       // fixpoint): a censused slot answers definitively — including 0
       // (a known non-int write beats the val-kind fallback below).
-      if (slotLevelOf && typeof args[0] === 'string') {
-        const r = slotLevelOf(args[0], args[1])
+      if (slotLevelOf && typeof expr[1] === 'string') {
+        const r = slotLevelOf(expr[1], expr[2])
         if (r != null) return r
       }
-      return typeof args[0] === 'string' && propValType(args[1], lookupValType(args[0])) === VAL.NUMBER ? 1 : 0
+      return typeof expr[1] === 'string' && propValType(expr[2], lookupValType(expr[1])) === VAL.NUMBER ? 1 : 0
     }
     if (INT_CLOSED_OPS.has(op)) {
-      const a = levelOf(args[0])
-      const b = args[1] != null ? levelOf(args[1]) : a
+      const a = levelOf(expr[1])
+      const b = expr[2] != null ? levelOf(expr[2]) : a
       return a && b ? 1 : 0                          // integral-closed, range-open
     }
     // `a % b` is integer-valued only when b is a provably-nonzero integer
@@ -114,15 +116,15 @@ function makeIntLevelExpr(intLevels, slotLevelOf) {
     // truncate a NaN remainder to 0 and floor-elision won't drop a NaN.
     // Never strict: `-5 % 5` is -0.
     if (op === '%') {
-      const bv = staticValue(args[1])
-      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(args[0]) ? 1 : 0
+      const bv = staticValue(expr[2])
+      return bv !== NO_VALUE && typeof bv === 'number' && bv !== 0 && Number.isInteger(bv) && levelOf(expr[1]) ? 1 : 0
     }
-    if (op === 'u-') return levelOf(args[0]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
-    if (op === 'u+') return levelOf(args[0])         // ToNumber identity on an int
-    if (op === '?:') return Math.min(levelOf(args[1]), levelOf(args[2]))
-    if (op === '&&' || op === '||') return Math.min(levelOf(args[0]), levelOf(args[1]))
+    if (op === 'u-') return levelOf(expr[1]) ? 1 : 0 // -(0) is -0; -(-2^31) exceeds int32
+    if (op === 'u+') return levelOf(expr[1])         // ToNumber identity on an int
+    if (op === '?:') return Math.min(levelOf(expr[2]), levelOf(expr[3]))
+    if (op === '&&' || op === '||') return Math.min(levelOf(expr[1]), levelOf(expr[2]))
     if (op === '()') {
-      const c = args[0]
+      const c = expr[1]
       const fn = typeof c === 'string' && c.startsWith('math.') ? c.slice(5)
         : Array.isArray(c) && c[0] === '.' && c[1] === 'Math' ? c[2] : null
       if (fn && INT_MATH_FNS.has(fn)) return INT_MATH_FNS_I32.has(fn) ? 2 : 1

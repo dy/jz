@@ -100,6 +100,24 @@ export function createTransform(opts) {
   const shadowsBuiltin = opts.shadowsBuiltin
   const withBuiltinScope = opts.withBuiltinScope
 
+  // transformScopeInner recurses while its parent still reads operands, so
+  // retain one reusable tail array per active depth rather than allocating a
+  // rest-destructure array at every AST node.
+  const scopeArgPool = []
+  let scopeArgDepth = 0
+  const takeScopeArgs = (node) => {
+    let args = scopeArgPool[scopeArgDepth]
+    if (!args) scopeArgPool[scopeArgDepth] = args = []
+    scopeArgDepth++
+    args.length = node.length - 1
+    for (let i = 1; i < node.length; i++) args[i - 1] = node[i]
+    return args
+  }
+  const releaseScopeArgs = (args) => {
+    args.length = 0
+    scopeArgDepth--
+  }
+
   const methodOverrideHasOwn = (a, b) => {
     const proto = isProto(a) ? a : isProto(b) ? b : null
     if (!proto) return null
@@ -161,8 +179,9 @@ export function createTransform(opts) {
   function transformScopeInner(node) {
     if (!Array.isArray(node)) return transform(node)
 
-    const [op, ...args] = node
-
+    const op = node[0]
+    const args = takeScopeArgs(node)
+    try {
     if (op === 'function' && args[0]) return hoistFnDecl(...args)
     if (op === 'function*' && args[0] && _gen)
       return ['const', ['=', args[0], _gen.lowerGenerator(...argsLowered(args[1], args[2]))]]
@@ -245,6 +264,9 @@ export function createTransform(opts) {
     }
 
     return transform(node)
+    } finally {
+      releaseScopeArgs(args)
+    }
   }
 
   // Promise statics → the injected plain-jz runtime helpers.
@@ -655,10 +677,24 @@ export function createTransform(opts) {
 
   function transformInner(node) {
     if (node == null || typeof node !== 'object' || !Array.isArray(node)) return node
-    const [op, ...args] = node
+    const op = node[0]
     if (op == null) return node
     const h = handlers[op]
-    return (h && h(...args)) ?? [op, ...args.map(transform)]
+    let result
+    if (h) {
+      switch (node.length) {
+        case 1: result = h(); break
+        case 2: result = h(node[1]); break
+        case 3: result = h(node[1], node[2]); break
+        case 4: result = h(node[1], node[2], node[3]); break
+        case 5: result = h(node[1], node[2], node[3], node[4]); break
+        default: result = h(...node.slice(1))
+      }
+      if (result != null) return result
+    }
+    const out = [op]
+    for (let i = 1; i < node.length; i++) out.push(transform(node[i]))
+    return out
   }
 
   return { transform, transformScope }

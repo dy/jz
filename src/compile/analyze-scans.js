@@ -3,7 +3,7 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
@@ -38,45 +38,45 @@ export function findFreeVars(node, bound, free, scope) {
     return
   }
   if (!Array.isArray(node)) return
-  const [op, ...args] = node
+  const op = node[0]
   if (op === '=>') {
-    const innerBound = collectParamNames(extractParams(args[0]), new Set(bound))
-    findFreeVars(args[1], innerBound, free, scope)
+    const innerBound = collectParamNames(extractParams(node[1]), new Set(bound))
+    findFreeVars(node[2], innerBound, free, scope)
     return
   }
   if (op === 'catch') {
-    findFreeVars(args[0], bound, free, scope)
-    const errName = args[1]
+    findFreeVars(node[1], bound, free, scope)
+    const errName = node[2]
     const handlerBound = typeof errName === 'string' && errName
       ? new Set(bound).add(errName) : bound
-    findFreeVars(args[2], handlerBound, free, scope)
+    findFreeVars(node[3], handlerBound, free, scope)
     return
   }
   if (op === 'let' || op === 'const') {
-    collectParamNames(args, bound)
-    if (scope) collectParamNames(args, scope)
+    const decls = node.slice(1)
+    collectParamNames(decls, bound)
+    if (scope) collectParamNames(decls, scope)
   }
-  if (op === 'for' && Array.isArray(args[0]) && (args[0][0] === 'let' || args[0][0] === 'const')) {
-    collectParamNames(args[0].slice(1), bound)
-    if (scope) collectParamNames(args[0].slice(1), scope)
+  if (op === 'for' && Array.isArray(node[1]) && (node[1][0] === 'let' || node[1][0] === 'const')) {
+    const decls = node[1].slice(1)
+    collectParamNames(decls, bound)
+    if (scope) collectParamNames(decls, scope)
   }
-  for (const a of args) findFreeVars(a, bound, free, scope)
+  for (let i = 1; i < node.length; i++) findFreeVars(node[i], bound, free, scope)
 }
 
-/** Check if any of the given variable names are assigned anywhere in the AST. */
+/** Check which queried names are assigned in an AST subtree. The complete
+ * mutation set is body-identity-cached because narrowing and closure planning
+ * ask the same question with different candidate sets. */
 export function findMutations(node, names, mutated) {
-  if (node == null || typeof node !== 'object' || !Array.isArray(node)) return
-  const [op, ...args] = node
-  if (op === 'let' || op === 'const') {
-    for (const decl of args)
-      if (Array.isArray(decl) && decl[0] === '=') findMutations(decl[2], names, mutated)
-    return
+  if (!Array.isArray(node)) return
+  const cache = getFactStore().mutationNames
+  let all = cache.get(node)
+  if (!all) {
+    all = collectAssignedNames(node, new Set())
+    cache.set(node, all)
   }
-  if (ASSIGN_OPS.has(op) && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  if ((op === '++' || op === '--') && typeof args[0] === 'string' && names.has(args[0]))
-    mutated.add(args[0])
-  for (const a of args) findMutations(a, names, mutated)
+  for (const name of all) if (names.has(name)) mutated.add(name)
 }
 
 /**
@@ -86,10 +86,9 @@ export function findMutations(node, names, mutated) {
 export function boxedCaptures(body) {
   const outerScope = new Set()
   walkAst(body, { enter: node => {
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '=>') return false
-    if (op === 'let' || op === 'const')
-      collectParamNames(args, outerScope)
+    if (op === 'let' || op === 'const') collectParamNames(node, outerScope, 1)
   } })
   if (ctx.func.current?.params) for (const p of ctx.func.current.params) outerScope.add(p.name)
   if (ctx.func.locals) for (const k of ctx.func.locals.keys()) outerScope.add(k)
@@ -121,7 +120,7 @@ export function boxedCaptures(body) {
 
   ;(function walk(node, assignTarget, seen = new Set(ctx.func.current?.params?.map(p => p.name) || [])) {
     if (!Array.isArray(node)) return
-    const [op, ...args] = node
+    const op = node[0]
     if (op === '=>') {
       markArrowCaptures(node, assignTarget, seen)
       return
@@ -129,12 +128,13 @@ export function boxedCaptures(body) {
 
     if (op === ';' || op === '{}') {
       const blockSeen = new Set(seen)
-      for (const a of args) walk(a, null, blockSeen)
+      for (let i = 1; i < node.length; i++) walk(node[i], null, blockSeen)
       return
     }
 
     if (op === 'let' || op === 'const') {
-      for (const decl of args) {
+      for (let i = 1; i < node.length; i++) {
+        const decl = node[i]
         if (Array.isArray(decl) && decl[0] === '=') walk(decl[2], typeof decl[1] === 'string' ? decl[1] : null, seen)
         else walk(decl, null, seen)
         collectParamNames([decl], seen)
@@ -142,9 +142,9 @@ export function boxedCaptures(body) {
       return
     }
 
-    if (op === '=' && typeof args[0] === 'string' && Array.isArray(args[1]) && args[1][0] === '=>')
-      return walk(args[1], args[0], seen)
-    for (const a of args) walk(a, null, seen)
+    if (op === '=' && typeof node[1] === 'string' && Array.isArray(node[2]) && node[2][0] === '=>')
+      return walk(node[2], node[1], seen)
+    for (let i = 1; i < node.length; i++) walk(node[i], null, seen)
   })(body)
 }
 

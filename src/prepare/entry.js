@@ -94,30 +94,31 @@ export default function prepare(node) {
     const isFuncValueName = a => funcNames.has(a) || FIRST_CLASS_BUILTIN_NAMES.has(a)
     const visit = (n) => {
       if (!Array.isArray(n)) return false
-      const [op, ...args] = n
+      const op = n[0]
       // Any inline arrow surviving prep is a closure value (defFunc-lifted ones
       // are extracted from the AST into ctx.funcs.list).
       if (op === '=>') return true
       if (op === '()') {
-        // callee at args[0]: skip if it's a bare func name (direct call); recurse rest
-        if (typeof args[0] !== 'string' || !funcNames.has(args[0])) {
-          if (visit(args[0])) return true
+        // Skip a bare direct callee; recurse through the receiver and arguments.
+        if (typeof n[1] !== 'string' || !funcNames.has(n[1])) {
+          if (visit(n[1])) return true
         }
-        for (let i = 1; i < args.length; i++) {
-          const a = args[i]
-          if (typeof a === 'string' && isFuncValueName(a)) return true
-          if (visit(a)) return true
+        for (let i = 2; i < n.length; i++) {
+          const child = n[i]
+          if (typeof child === 'string' && isFuncValueName(child)) return true
+          if (visit(child)) return true
         }
         return false
       }
       if (op === '.' || op === '?.') {
-        // obj at args[0] can be a func ref; prop at args[1] is a name, never a ref
-        if (typeof args[0] === 'string' && funcNames.has(args[0])) return true
-        return visit(args[0])
+        // The receiver can be a function reference; the property name cannot.
+        if (typeof n[1] === 'string' && funcNames.has(n[1])) return true
+        return visit(n[1])
       }
-      for (const a of args) {
-        if (typeof a === 'string' && isFuncValueName(a)) return true
-        if (visit(a)) return true
+      for (let i = 1; i < n.length; i++) {
+        const child = n[i]
+        if (typeof child === 'string' && isFuncValueName(child)) return true
+        if (visit(child)) return true
       }
       return false
     }

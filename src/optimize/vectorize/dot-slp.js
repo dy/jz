@@ -86,8 +86,11 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
     const child = node[i]
     if (isArr(child)) vectorizeStraightLineF64DotPairsIn(child, fnLocals, freshIdRef, newLocalDecls, useRelaxedFma)
   }
-  const addendTemps = new Map()
-  const pairTemps = new Map()
+  // Allocate dedup tables only after this statement list proves it contains a
+  // packable pair. Most compiler IR nodes never contain a dot seed; eagerly
+  // allocating two Maps at every recursive node dominated self-hosted SLP.
+  let addendTemps = null
+  let pairTemps = null
   for (let i = 0; i < node.length;) {
     const a = matchF64DotSeq(node, i)
     if (!a) { i++; continue }
@@ -97,6 +100,8 @@ const vectorizeStraightLineF64DotPairsIn = (node, fnLocals, freshIdRef, newLocal
       i++
       continue
     }
+    addendTemps ||= new Map()
+    pairTemps ||= new Map()
     const v = `$__dot2_${freshIdRef.next++}`
     newLocalDecls.push(['local', v, 'v128'])
     fnLocals.set(v, 'v128')
@@ -414,8 +419,17 @@ const slpStorePairsIn = (node, fnLocals, freshIdRef, newLocalDecls, getCounts) =
 // category (LICM: reassociating hoist of loop-invariant partial products, not a packer;
 // design §2 keeps it distinct) and is called separately, before this, at the dispatch.
 export function slpPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma, slp) {
-  vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
-  if (slp && !assembleView().linkDemand.typedView) slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
+  let hasF64Mul = false
+  let f64Stores = 0
+  walkAst(fn, { enter: node => {
+    if (node[0] === 'f64.mul') hasF64Mul = true
+    else if (node[0] === 'f64.store') f64Stores++
+  } })
+  // Necessary-op gates keep scalar/compiler functions out of both recursive
+  // SLP walkers. They only reject functions that cannot contain either seed.
+  if (hasF64Mul) vectorizeStraightLineF64DotPairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, relaxedFma)
+  if (f64Stores >= 2 && slp && !assembleView().linkDemand.typedView)
+    slpStorePairsIn(fn, fnLocals, freshIdRef, newLocalDeclsAll, slpGetCounts(fn))
 }
 
 // ---- Lane type tables ------------------------------------------------------

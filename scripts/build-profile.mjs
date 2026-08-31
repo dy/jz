@@ -13,8 +13,9 @@
  *   kernel). Default false: debug-only invariant code folds out of
  *   production kernels; callers opt in explicitly for an instrumented build.
  * @param {number|string|object|false} [p.optimize] optimize.level (or full
- *   per-pass object, or `false` to disable). Default 3 (both builders' existing
- *   measured self-compile profile — see self-compile-build.mjs's own comment on why).
+ *   per-pass object, or `false` to disable). Default 1: the compiler artifact
+ *   keeps essential cleanup without spending its finite heap optimizing its
+ *   own optimizer; user programs still receive their requested profile.
  * @param {boolean} [p.snapshot]  optimize.snapshotInit. Default true — KEPT ON
  *   (self-compile-memory campaign, .work/self-compile-memory.md, measured
  *   2026-08-29). snapshotInit's own probe (a full extra watrCompile() of the
@@ -43,6 +44,17 @@
  *   `JZ_SELF_COMPILE_SNAPSHOT=0` remains available for diagnostic A/B use.
  * @param {boolean} [p.watrGuard] optimize.watrGuard. Default false (both
  *   builders already skip watr's size-revert guard on this controlled artifact).
+ * @param {number} [p.arrayMinCap] Dynamic-array capacity floor for the compiler
+ *   artifact itself. Default 2: compiler ASTs favor compact tiny arrays over
+ *   the user speed preset's 16-slot growth floor.
+ * @param {number} [p.arrayLiteralMinCap] Literal-array capacity floor for the
+ *   compiler artifact. Default 2; user programs retain the normal default 4.
+ * @param {number} [p.hashSmallInitCap] Small HASH sidecar capacity floor for
+ *   the compiler artifact. Default 2; most compiler metadata sidecars are tiny.
+ * @param {number} [p.collectionInitCap] Set/Map initial capacity for the
+ *   compiler artifact. Default 2 instead of the user runtime's speed-tuned 8.
+ * @param {boolean} [p.inPlaceWatrCleanup] Specialize watr's normalization
+ *   clone to consume the compiler's one-shot IR in place. Default true.
  * @param {number} [p.memory]     memory pages — the kernel's declared INITIAL commitment; $__memgrow extends on demand (no max). Default 1024 (64 MiB): small graphs stay near their true need instead of paying the old flat 8192-page/512 MiB floor (census 2026-08-18: jessie's real working set is ~150 MB, 70.7% of the old commitment was never touched).
  * @param {boolean} [p.helperCounters]  compile() opts.helperCounters passthrough
  *   (self-compile-build.mjs's JZ_HELPER_COUNTERS diagnostic profiling knob; unused
@@ -73,9 +85,14 @@ const SELF_ENTRY = resolve(ROOT, 'scripts/self.js')
 
 export function resolveSelfCompileBuild({
   debugInvariants = false,
-  optimize = 3,
+  optimize = 1,
   snapshot = true,
   watrGuard = false,
+  arrayMinCap = 2,
+  arrayLiteralMinCap = 2,
+  hashSmallInitCap = 2,
+  collectionInitCap = 2,
+  inPlaceWatrCleanup = true,
   memory = 1024,
   compactCollections = process.env.JZ_SELF_COMPILE_COMPACT_COLLECTIONS !== '0',
   helperCounters = false,
@@ -154,8 +171,107 @@ export function resolveSelfCompileBuild({
     graph.modules[SNAP_PATH] = graph.modules[SNAP_PATH].replace(snapNeedle, 'if (true) return false')
   }
 
+  // Keep watr's printer flatness check in the self-host subset's proven loop
+  // form. The callback form is semantically identical on a native host but an
+  // O1-built compiler widened its boolean callback carrier and printed a flat
+  // `(memory (export …) 1)` over three lines.
+  const watrPrintPath = Object.keys(graph.modules).find(p => p.endsWith('/node_modules/watr/src/print.js'))
+  if (!watrPrintPath) throw new Error('resolveSelfCompileBuild: watr/src/print.js missing from self graph')
+  const printRewrites = [
+    ['let flat = !!newline && node.length < 4 && !node.some(n => typeof n === \'string\' && n[0] === \';\' && n[1] === \';\')',
+      `let flat = !!newline && node.length < 4
+    if (flat) for (let j = 0; j < node.length; j++) {
+      const value = node[j]
+      if (typeof value === 'string' && value[0] === ';' && value[1] === ';') { flat = false; break }
+    }`],
+    ['if (flat) flat = sub.every(sub => !Array.isArray(sub))',
+      `if (flat) for (let j = 0; j < sub.length; j++) if (Array.isArray(sub[j])) { flat = false; break }`],
+  ]
+  for (const [from, to] of printRewrites) {
+    if (!graph.modules[watrPrintPath].includes(from)) throw new Error(`resolveSelfCompileBuild: watr print shape changed: ${from}`)
+    graph.modules[watrPrintPath] = graph.modules[watrPrintPath].replace(from, to)
+  }
+  const memoryPrintPoint = "    let afterLineComment = false // track if we just printed a line comment"
+  if (!graph.modules[watrPrintPath].includes(memoryPrintPoint)) throw new Error('resolveSelfCompileBuild: watr memory print insertion point changed')
+  graph.modules[watrPrintPath] = graph.modules[watrPrintPath].replace(memoryPrintPoint,
+    `${memoryPrintPoint}
+    if (content === 'memory' && node.length === 3)
+      return \`(memory \${printNode(node[1], level)} \${node[2]})\``)
+
+  // The self kernel hands watr a one-shot assembled IR tree and never reads it
+  // after encoding. watr@5.10.1's generic cleanup defensively filter()+map()
+  // clones every node, requiring a second module-sized heap generation. Use an
+  // output-equivalent in-place normalizer only in this hermetic build graph;
+  // the host API and dependency source remain the published watr implementation.
+  if (inPlaceWatrCleanup) {
+    const watrCompilePath = Object.keys(graph.modules).find(p => p.endsWith('/node_modules/watr/src/compile.js'))
+    if (!watrCompilePath) throw new Error('resolveSelfCompileBuild: watr/src/compile.js missing from self graph')
+    const src = graph.modules[watrCompilePath]
+    const start = src.indexOf('const cleanup = (node, result) => {')
+    const end = src.indexOf('\n\n// string literal node:', start)
+    if (start < 0 || end < 0) throw new Error('resolveSelfCompileBuild: watr cleanup shape changed — update the one-shot in-place specialization')
+    const cleanup = `const cleanup = (node, result) => {
+  if (typeof node === 'string') return (
+    node[0] === '$' && node[1] === '"' ? (node.includes('\\\\') ? '$' + unescape(node.slice(1)) : '$' + node.slice(2, -1)) :
+    node[0] === '"' ? str(node) :
+    node[0] === ';' ? loc(node) :
+    node
+  )
+  if (!Array.isArray(node)) return node
+  const sourceLoc = node.loc
+  let write = 0
+  for (let i = 0; i < node.length; i++) {
+    const child = node[i]
+    if (isDroppable(child)) continue
+    node[write++] = cleanup(child)
+  }
+  node.length = write
+  node.loc = sourceLoc
+  return node.length === 1 && node[0]?.[0] === 'module' ? node[0] : node
+}`
+    let specialized = src.slice(0, start) + cleanup + src.slice(end)
+    const rewrites = [
+      ["  ctx.metadata = {} // code metadata storage: { type: [[funcIdx, [[pos, data]...]]] }", "  ctx.metadata = {} // code metadata storage: { type: [[funcIdx, [[pos, data]...]]] }\n  ctx.normalizePartsPool = []\n  ctx.normalizeDepth = 0"],
+      ["      const parts = node.slice(1)", "      const parts = takeNormalizeParts(node, ctx)\n      try {"],
+      ["      }\n    } else out.push(node)", "      }\n      } finally { releaseNormalizeParts(parts, ctx) }\n    } else out.push(node)"],
+    ]
+    for (const [from, to] of rewrites) {
+      if (!specialized.includes(from)) throw new Error(`resolveSelfCompileBuild: watr one-shot rewrite missing: ${from}`)
+      specialized = specialized.replace(from, to)
+    }
+    const normalizeAt = specialized.indexOf('function normalize(nodes, ctx, out = [], owned = false) {')
+    if (normalizeAt < 0) throw new Error('resolveSelfCompileBuild: watr normalize shape changed')
+    const pool = `const takeNormalizeParts = (node, ctx) => {
+  const depth = ctx.normalizeDepth
+  let parts = ctx.normalizePartsPool[depth]
+  if (!parts) {
+    parts = new Array(node.length - 1)
+    parts.length = 0
+    ctx.normalizePartsPool[depth] = parts
+  }
+  ctx.normalizeDepth = depth + 1
+  parts.length = node.length - 1
+  for (let i = 1; i < node.length; i++) parts[i - 1] = node[i]
+  return parts
+}
+const releaseNormalizeParts = (parts, ctx) => {
+  parts.length = 0
+  ctx.normalizeDepth--
+}
+
+`
+    specialized = specialized.slice(0, normalizeAt) + pool + specialized.slice(normalizeAt)
+    graph.modules[watrCompilePath] = specialized
+  }
+
   const optimizeCfg = optimize === false ? false : {
-    level: optimize, watrGuard, snapshotInit: snapshot,
+    ...(typeof optimize === 'object' ? optimize : { level: optimize }),
+    watrGuard,
+    snapshotInit: snapshot,
+    arrayMinCap: typeof optimize === 'object' && optimize.arrayMinCap != null ? optimize.arrayMinCap : arrayMinCap,
+    arrayLiteralMinCap: typeof optimize === 'object' && optimize.arrayLiteralMinCap != null ? optimize.arrayLiteralMinCap : arrayLiteralMinCap,
+    hashSmallInitCap: typeof optimize === 'object' && optimize.hashSmallInitCap != null ? optimize.hashSmallInitCap : hashSmallInitCap,
+    collectionInitCap: typeof optimize === 'object' && optimize.collectionInitCap != null ? optimize.collectionInitCap : collectionInitCap,
   }
 
   return {

@@ -383,24 +383,24 @@ function localElemAuxMap(body) {
 function typedAuxOfReturn(expr, localElemMap) {
   if (typeof expr === 'string') return localElemMap?.get(expr) ?? null
   if (!Array.isArray(expr)) return null
-  const [op, ...args] = expr
-  if (op === '()' && typeof args[0] === 'string') {
-    if (args[0].startsWith('new.')) {
+  const op = expr[0]
+  if (op === '()' && typeof expr[1] === 'string') {
+    if (expr[1].startsWith('new.')) {
       const ctor = typedElemCtor(expr)
       return ctor != null ? typedElemAux(ctor) : null
     }
-    const f = ctx.funcs.map.get(args[0])
+    const f = ctx.funcs.map.get(expr[1])
     if (f?.valResult === VAL.TYPED && f.sig.ptrAux != null) return f.sig.ptrAux
     return null
   }
   if (op === '?:') {
-    const a = typedAuxOfReturn(args[1], localElemMap)
-    const b = typedAuxOfReturn(args[2], localElemMap)
+    const a = typedAuxOfReturn(expr[2], localElemMap)
+    const b = typedAuxOfReturn(expr[3], localElemMap)
     return a != null && a === b ? a : null
   }
   if (op === '&&' || op === '||') {
-    const a = typedAuxOfReturn(args[0], localElemMap)
-    const b = typedAuxOfReturn(args[1], localElemMap)
+    const a = typedAuxOfReturn(expr[1], localElemMap)
+    const b = typedAuxOfReturn(expr[2], localElemMap)
     return a != null && a === b ? a : null
   }
   return null

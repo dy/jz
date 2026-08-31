@@ -36,6 +36,10 @@ jobs:
       # Quick gate: round-trip sample programs through self.default(source).
       - name: self-compile round-trip
         run: npm run test:self
+      # Release gate: compile the complete compiler graph recursively and
+      # validate that the resulting wasm is itself a working compiler.
+      - name: recursive jz × jz
+        run: node scripts/recursive-self-check.mjs
       # Full gate: run the ENTIRE host test suite with the compiler being the
       # self-compile kernel (JZ_TEST_TARGET=jz.wasm) — every program is compiled by
       # dist/jz.wasm, so any divergence from the native run is a self-compile bug.
