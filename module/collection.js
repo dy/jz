@@ -61,7 +61,7 @@ export const dynPropsFilterSetIR = (offExpr) =>
 export const dynPropsFilterMissIR = (offExpr) =>
   `(i64.eqz (i64.and (global.get $__dyn_props_filter) ${dynPropsFilterBitIR(offExpr)}))`
 
-import { heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode } from './collection/durable.js'
+import { hasDurableReset, heapResetWat, durableFwdLogIR, durableLenLogIR, durableArrSnapIR, durableArrSnapNode } from './collection/durable.js'
 // Re-exported from their new home (module/collection/durable.js — the
 // durable-heap logging primitives, pure-moved out of this file) so
 // module/core.js's/module/json.js's `heapResetWat` imports, module/core.js's
@@ -178,7 +178,7 @@ export default (ctx) => {
   // Gates the deps() edges below the SAME way, so a shared-memory build (where core.js
   // never registers __durable_fwd_log/__durable_fwd_heal) never requests a name nothing
   // delivers.
-  const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
+  const needsDurableFwdLog = hasDurableReset
   // durableSlotLogIR's call pair, gated identically (see its comment): every helper
   // that stores a VALUE into a collection slot may log a durable-slot write.
   const slotLogDeps = () => needsDurableFwdLog() ? ['__durable_slot_log', '__is_eph_bits'] : []
@@ -1304,7 +1304,7 @@ export default (ctx) => {
   ctx.core.stdlib['__hash_slot_eph_fixed'] = genEphemeralFixedSlot('__hash_slot_eph_fixed', MAP_ENTRY)
   // The RMW fusion's value update — the store plus the durable-heal protocol
   // (mirrors durableSlotLogIR exactly; kept in the kernel so heal logic has one home).
-  ctx.core.stdlib['__slot_write'] = () => ctx.scope.globals.has('__heap_reset')
+  ctx.core.stdlib['__slot_write'] = () => hasDurableReset()
     ? `(func $__slot_write (param $a i32) (param $v i64)
     (i64.store (local.get $a) (local.get $v))
     (if (i32.and (i32.lt_u (local.get $a) ${heapResetWat()}) (call $__is_eph_bits (local.get $v)))

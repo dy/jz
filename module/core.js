@@ -24,6 +24,7 @@ import { ptrOffsetFwdWat } from '../layout.js'
 import { nanPrefixHex, OBJECT_SCHEMA_HI_MASK, objectSchemaGuardHex, TYPED_ELEM_BIGINT_FLAG } from '../layout.js'
 import { initSchema } from './schema.js'
 import { strHashLiteral, heapResetWat, durableLenLogIR, durableArrSnapIR, LENGTH_SSO_I64, MAP_ENTRY, collectionLaneBytes } from './collection.js'
+import { hasDurableReset } from './collection/durable.js'
 import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses } from './core/error-object.js'
@@ -52,7 +53,7 @@ export default (ctx) => {
     // and durableArrSnapIR (ARRAY branch — pop()'s len-1 write, header+data heal)
     // directly — self-compile's auto-dep scan can't be relied on to discover a name
     // reachable only through template interpolation, not a literal deps-table entry.
-    __set_len: () => ['__ptr_offset_fwd', ...(ctx.scope.globals.has('__heap_reset') ? ['__durable_fwd_log', '__durable_arr_snap'] : [])],
+    __set_len: () => ['__ptr_offset_fwd', ...(hasDurableReset() ? ['__durable_fwd_log', '__durable_arr_snap'] : [])],
     // Property-fallback arm (`.length` as an ordinary own key on OBJECT/HASH
     // receivers) needs the dyn dispatcher — but only when the program can even
     // HOLD such a property (a schema'd object or dyn/hash machinery exists);

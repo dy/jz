@@ -19,6 +19,7 @@ import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, may
 import { structInline } from '../src/abi/index.js'
 import { ctx, inc, err, warnDeopt, PTR, LAYOUT, followForwardingWat, setLinkDemand } from '../src/ctx.js'
 import { strHashLiteral, dynPropsFilterSetIR, durableFwdLogIR, durableArrSnapIR, durableArrSnapNode } from './collection.js'
+import { hasDurableReset } from './collection/durable.js'
 import { ERR } from '../err-codes.js'
 import { withArrayLiteralEscape } from '../src/compile/flow-state.js'
 import { REP_EDGE_REJECT, representationProgramHasBigint, representationStorageWriteAction } from '../src/compile/representation-plan.js'
@@ -78,7 +79,7 @@ const needsArrayDynMove = () => ctx.core.includes.has('__dyn_set')
 // gates __arr_shift's OWN continued use of durableFwdLogIR (the one array.js call site NOT
 // migrated to durableArrSnapIR — see that function's comment), so it remains an accurate
 // name for what it tests, just no longer the ONLY durable-heal gate in this file.
-const needsDurableFwdLog = () => ctx.scope.globals.has('__heap_reset')
+const needsDurableFwdLog = hasDurableReset
 // knownArray=true (__arr_grow_known): the raw offset + inline forwarding chase (see
 // arrGrow below) calls $__ptr_offset_fwd directly, not the generic $__ptr_offset.
 // '__durable_arr_snap' is an EXPLICIT edge (not left to the auto-dep scan): arrGrow's

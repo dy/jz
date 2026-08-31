@@ -217,7 +217,8 @@ export function finalizeClosureTable(sec) {
   }
   if (indirectUsed) {
     if (!ctx.closure.table) ctx.closure.table = []
-    sec.table = [['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref']]
+    sec.table = [['table', ...(ctx.transform.alloc === false ? [] : [['export', '"__jz_table"']]),
+      ctx.closure.table.length, 'funcref']]
     sec.elem = ctx.closure.table.length ? [['elem', ['i32.const', 0], 'func', ...ctx.closure.table.map(n => `$${n}`)]] : []
     return
   }

@@ -56,7 +56,7 @@ export interface CompileOptions {
   strict?: boolean
   /** Parse goal. Default `jz` keeps export-as-ABI with Script strictness. */
   sourceType?: 'jz' | 'script' | 'module'
-  /** Set `false` to omit `_alloc`/`_clear`. */
+  /** Raw standalone ABI: omit host-marshalling/reset metadata and state healing. */
   alloc?: boolean
   noSimd?: boolean
   whyNotSimd?: boolean

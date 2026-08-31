@@ -460,7 +460,8 @@ export default function compile(ast, profiler) {
   // Memory section deferred — emitted after resolveIncludes() when __alloc is needed
 
   if (ctx.closure.table?.length)
-    sec.table.push(['table', ['export', '"__jz_table"'], ctx.closure.table.length, 'funcref'])
+    sec.table.push(['table', ...(ctx.transform.alloc === false ? [] : [['export', '"__jz_table"']]),
+      ctx.closure.table.length, 'funcref'])
 
   sec.funcs.push(...closureFuncs, ...funcs)
 
@@ -586,6 +587,13 @@ export default function compile(ast, profiler) {
   // pointer carries is already in its final, shifted form (hoisting earlier would
   // freeze a pre-strip offset the shift pass never revisits in the global decl).
   hoistConstGlobalInits(sec)
+
+  // Standalone alloc:false has no JS allocator to synchronize, so its internal
+  // bump pointer is not part of the host ABI.
+  if (ctx.transform.alloc === false) {
+    const heap = ctx.scope.globals.get('__heap')
+    if (heap) heap.export = null
+  }
 
   // Populate globals (after __start — const folding may update declarations).
   // Records build IR directly — no WAT-text parse-back.

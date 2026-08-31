@@ -53,7 +53,10 @@ export function stripDeadLazyTables(sec) {
     for (const c of n) { if (typeof c === 'string' && c[0] === '$') mark(c); else scan(c) }
   }
   while (work.length) scan(byName.get(work.pop()))
-  if (spans.every(s => live.has(s.fn))) { ctx.runtime.lazySpans = ctx.memory.shared ? spans : [] ; return }
+  // Keep the survivor metadata through watr. Its later inlining/constant folding can
+  // prove an owner dead even when this pre-watr graph still reaches it; watrTail uses
+  // the exact byte ranges to remove those newly-orphaned table bytes from active data.
+  if (spans.every(s => live.has(s.fn))) { ctx.runtime.lazySpans = spans; return }
   // Rebuild the tail (the spans are the last data appends, in order): truncate
   // to the first span's pre-pad start, re-append live tables, re-point their
   // base globals — both the scope entry and the already-pushed sec.globals IR.
@@ -82,15 +85,19 @@ export function stripDeadLazyTables(sec) {
   // element by the first call above), only the LENGTH re-derivation is
   // skipped now that the caller already has it.
   dataReset(dataString().slice(0, spans[0].start), spans[0].start)
+  const survivors = []
   for (const s of spans) {
     if (!live.has(s.fn)) { setInit(s.global, 0); continue }
     dataAlign(8)
-    setInit(s.global, dataLen())
+    s.start = dataLen()
+    s.base = s.start
+    setInit(s.global, s.base)
     dataPush(s.bytes)
+    survivors.push(s)
   }
-  // Shared memory needs the survivor list after this pass — the start-time
-  // rebase (compile/index.js) re-points each surviving table global.
-  ctx.runtime.lazySpans = ctx.memory.shared ? spans.filter(s => live.has(s.fn)) : []
+  // Shared memory needs this list for start-time rebasing; active memory keeps it
+  // until watr's final graph has had one more chance to prove an owner dead.
+  ctx.runtime.lazySpans = survivors
 }
 
 /**
@@ -170,7 +177,12 @@ export function stripDeadInternedSpans(sec) {
  * Phase: strip static-data prefix.
  */
 export function stripStaticDataPrefix(sec) {
-  if (!ctx.runtime.staticDataLen || ctx.core.includes.has('__static_str')) return
+  ctx.runtime.staticPrefixSpan = null
+  if (!ctx.runtime.staticDataLen) return
+  if (ctx.core.includes.has('__static_str')) {
+    ctx.runtime.staticPrefixSpan = { fn: '$__static_str', start: 0, end: ctx.runtime.staticDataLen, static: true }
+    return
+  }
   const prefix = ctx.runtime.staticDataLen
   const SHIFTABLE = new Set([PTR.STRING, PTR.OBJECT, PTR.ARRAY, PTR.HASH, PTR.SET, PTR.MAP, PTR.BUFFER, PTR.TYPED, PTR.CLOSURE])
   const data = dataString()
@@ -214,8 +226,10 @@ export function stripStaticDataPrefix(sec) {
   }
   // Lazy-table spans (EL/Ryū) sit at the data tail — keep their recorded starts
   // in post-strip coordinates so stripDeadLazyTables truncates at the right base.
-  if (ctx.runtime.lazySpans) for (const s of ctx.runtime.lazySpans)
+  if (ctx.runtime.lazySpans) for (const s of ctx.runtime.lazySpans) {
     if (s.start >= prefix) s.start -= prefix
+    if (s.base >= prefix) s.base -= prefix
+  }
   // reclaimSpans (buildStartFn's schema table, a stdlib thunk's own interned
   // constants) — same re-coordination, both edges: stripDeadInternedSpans'
   // contiguity check (`s.end !== cut`) needs `end` in the same post-strip

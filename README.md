@@ -48,7 +48,7 @@ Options are passed as `jz(source, opts)` or `compile(source, opts)`:
 | `define` | Compile-time constants injected as top-level bindings, e.g. `{ DEBUG: false, PORT: 8080 }` (numbers, booleans, strings, null, or literal arrays/objects). |
 | `strict: true` | Skip jzify lowering and reject dynamic fallbacks such as `obj[k]`, `for-in`, and unknown receiver methods. |
 | `sourceType: 'jz' \| 'script' \| 'module'` | Select the parse goal. `jz` is the default export-as-ABI dialect; `script` rejects imports/exports; `module` applies Module early errors and implicit strict mode. |
-| `alloc: false` | Omit allocator exports (`_alloc`/`_clear`) from modules that never marshal heap values. |
+| `alloc: false` | Raw standalone ABI for modules that never marshal heap values: omit allocator/reset exports, closure-table and decoded-error metadata, and reset-only state healing. Do not use `memory.reset()` when module-owned heap state must survive it. |
 | `noSimd: true` | Disable auto-vectorization. Explicit `f32x4` and `i32x4` intrinsics still compile. |
 | `whyNotSimd: true` | Report the first operation that prevented each loop from being vectorized. Warnings go to the `warnings` sink. |
 | `stencil` / `outerStrip` / `toneMap` | Structure vectorizers: neighbour-load stencils (`b[i] = f(a[i-1], a[i], a[i+1])`, 2-D 5-point), strip-mined pixel loops over an inner reduction, and log-tonemap islands — all to f64x2, bit-exact vs scalar. On by default at `optimize` 2+; pass `false` to disable one, `true` to force it at lower levels. |
@@ -434,7 +434,7 @@ AssemblyScript's ports use unchecked array access while JZ retains JavaScript
 out-of-bounds guards. Most JZ modules in the corpus are single-digit kilobytes.
 
 - `optimize: 'size'` disables unrolling and SIMD.
-- `alloc: false` omits allocator exports from numeric modules.
+- `alloc: false` omits host-marshalling and reset machinery from standalone modules.
 - Function names are omitted unless `names: true` is set.
 
 The compiler stays in the build step; these sizes are what ships.

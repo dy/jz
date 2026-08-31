@@ -1,5 +1,15 @@
 # plan.md: the living plan
 
+## 2026-08-31 status override
+
+This section supersedes the older measurements below.
+
+- Recursive jz×jz is green on the complete 321-module build graph: 6,827,550 input bytes, 14,005,329 output bytes, 4,103,691,504 final heap, 191,275,792 bytes of wasm32 headroom, and a working compiler probe.
+- `dist/jz.wasm` is 14,107.7 kB. The full native suite passes 3,894/3,895 with one skip; the hosted suite passes 3,058/3,059 with one skip. Functional self-compilation, warm reuse, snapshot tests, and recursive compilation pass.
+- Size improved from 25/49 strict wins and a 1.0403× JZ/AssemblyScript geomean to 34/49 wins and 0.9368×. Fifteen strict per-case losses remain, led by `shapes`, `wordcount`, `fft`, and `tokenizer`; v1 size certification remains red.
+- Runtime evidence remains embargoed. The machine currently has about 16 GB of swap in use, well beyond the 4 GB validity ceiling. No timing from this session is release evidence.
+- Correctness remains frozen. Late data stripping is limited to exact EL/Ryū ranges and the static number-string seed; broader post-watr string/span reclamation was rejected after full-suite memory faults.
+
 THE cross-session plan: current state, the seven-gate scorecard, the 4 GiB
 self-compile strategies, and the remaining queue. Present tense; superseded
 session-by-session history lives in `archive/handoff-2026-08-22.md`,

@@ -218,11 +218,12 @@ export function pullStdlib(sec) {
     // Shared memory: the table lands via memory.init at a runtime base, so the
     // global is MUTABLE and re-pointed at start (compile/index.js); its declared
     // init meanwhile holds the offset WITHIN the static region.
-    declGlobal(global, 'i32', dataLen(), ctx.memory.shared ? undefined : { mut: false })
+    const base = dataLen()
+    declGlobal(global, 'i32', base, ctx.memory.shared ? undefined : { mut: false })
     if (ctx.memory.shared && !ctx.scope.globals.has('__staticBase')) declGlobal('__staticBase', 'i32')
     dataPush(bytes)
     ;(ctx.runtime.staticI32GlobalInits ??= []).push(global)
-    ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, bytes })
+    ctx.runtime.lazySpans.push({ fn: '$' + fn, global, start, base, bytes })
     return true
   }
   // prevent double-injection on re-entry (null-sentinel; jz forbids delete)

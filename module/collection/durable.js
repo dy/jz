@@ -43,7 +43,10 @@ import { ctx } from '../../src/ctx.js'
 // see module/object.js's emitEnumerateObject and module/json.js's __json_obj
 // for the array-IR / WAT-string twins that merge in the global table for
 // durable receivers.
-export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(global.get $__heap_reset)' : '(i32.const 0)'
+// alloc:false exports no reset operation, so logging/healing would have no
+// consumer and is omitted with the rest of that standalone ABI.
+export const hasDurableReset = () => ctx.transform.alloc !== false && ctx.scope.globals.has('__heap_reset')
+export const heapResetWat = () => hasDurableReset() ? '(global.get $__heap_reset)' : '(i32.const 0)'
 
 // A growable ARRAY/HASH/SET/MAP relocates by leaving a forwarding header behind
 // (cap=-1 sentinel at off-4, new offset at off-8 — see layout.js's followForwardingWat).
@@ -97,7 +100,7 @@ export const heapResetWat = () => ctx.scope.globals.has('__heap_reset') ? '(glob
 // reference a never-registered stdlib name, tripping assemble.js's `internal: stdlib
 // '__durable_fwd_log' was requested but never registered` sanity check.
 export const durableFwdLogIR = (off, newOff, len, cap) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (i32.and (i32.lt_u (local.get $${off}) ${heapResetWat()}) (i32.ge_u (local.get $${newOff}) ${heapResetWat()}))
       (then (call $__durable_fwd_log (local.get $${off}) (local.get $${len}) (local.get $${cap}))))`
@@ -118,7 +121,7 @@ export const durableFwdLogIR = (off, newOff, len, cap) => {
 // round ever records anything, so N in-place writes before an eventual grow
 // (or none at all) all converge on the one correct original snapshot.
 export const durableLenLogIR = (base) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
       (then (call $__durable_fwd_log (local.get $${base})
@@ -172,7 +175,7 @@ export const durableLenLogIR = (base) => {
 // OWN table-header growth — this is a parallel, independent mechanism, not a
 // replacement of the shared one.
 export const durableArrSnapIR = (base) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${base}) ${heapResetWat()})
       (then (call $__durable_arr_snap (local.get $${base}))))`
@@ -188,7 +191,7 @@ export const durableArrSnapIR = (base) => {
 // function the heal-length session patched: that one only handles the WITH-inserts
 // overload). This one call, added to that emitter, fixes both gaps for that path at once.
 export const durableArrSnapNode = (base) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ['nop']
+  if (!hasDurableReset()) return ['nop']
   return ['if', ['i32.lt_u', ['local.get', `$${base}`], ['global.get', '$__heap_reset']],
     ['then', ['call', '$__durable_arr_snap', ['local.get', `$${base}`]]]]
 }
@@ -201,7 +204,7 @@ export const durableArrSnapNode = (base) => {
 // semantics. `slotLocal`+`byteOff` name the value slot; `valLocal` holds the boxed
 // bits (i64). Same shared-memory gate as durableFwdLogIR (no watermark, no sweep).
 export const durableSlotLogIR = (slotLocal, byteOff, valLocal) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   const addr = byteOff ? `(i32.add (local.get $${slotLocal}) (i32.const ${byteOff}))` : `(local.get $${slotLocal})`
   return `
     (if (i32.and (i32.lt_u ${addr} ${heapResetWat()}) (call $__is_eph_bits (local.get $${valLocal})))
@@ -222,7 +225,7 @@ export const durableSlotLogIR = (slotLocal, byteOff, valLocal) => {
 // durableSlotRelogIR below for why the logged address must stay accurate if a
 // LATER delete this same round moves this entry before the log is healed.
 export const durableEntryLogIR = (slotLocal, offLocal) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (i32.lt_u (local.get $${slotLocal}) ${heapResetWat()})
       (then (call $__durable_slot_log (i32.or (local.get $${slotLocal}) (i32.const 1)) (local.get $${offLocal}))))`
@@ -243,7 +246,7 @@ export const durableEntryLogIR = (slotLocal, offLocal) => {
 // yet) delete — the overwhelmingly common case — pays one global read and a
 // forward branch, never the call.
 export const durableSlotRelogIR = (oldLocal, newLocal, entrySize) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (global.get $__durable_slot_n)
       (then (call $__durable_slot_relog (local.get $${oldLocal}) (local.get $${newLocal}) (i32.const ${entrySize}))))`
@@ -271,7 +274,7 @@ export const durableSlotRelogIR = (oldLocal, newLocal, entrySize) => {
 // SECOND into its slot, that second entry vanishes at the next _clear() even
 // though nothing ever asked for it to be removed).
 export const durableSlotCancelIR = (addrLocal, entrySize) => {
-  if (!ctx.scope.globals.has('__heap_reset')) return ''
+  if (!hasDurableReset()) return ''
   return `
     (if (global.get $__durable_slot_n)
       (then (call $__durable_slot_cancel (local.get $${addrLocal}) (i32.const ${entrySize}))))`

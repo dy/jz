@@ -1,5 +1,11 @@
 # Self-compile memory campaign — hosted-build attribution (2026-08-29)
 
+## Closed result, 2026-08-31
+
+The redesign landed after the diagnostic history below. The production kernel now recursively compiles the full 321-module graph and returns a working 14,005,329-byte compiler in 27.7 seconds. Final heap is 4,103,691,504, leaving 191,275,792 bytes below the wasm32 ceiling. The build artifact is 14,107.7 kB.
+
+The closing architecture removed the dormant moving-region system, transferred FunctionPlan generations instead of cloning them, reduced transient collection/IR allocation, and parks optimized final IR in a binary lane before clearing dead analysis state. The recursive gate is `npm run test:self:recursive`; it also instantiates the returned compiler and compiles a probe. Region hooks remain deleted rather than dormant.
+
 Base `8986c2e2` (v1-readiness-audit's own ref). Worktree, never the main
 checkout. Companion to `.work/archive/v1-architecture-campaign.md` (the two
 candidate strategies), `.work/archive/region-release-notes.md` (region-arena's own,

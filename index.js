@@ -341,9 +341,9 @@ jz.pool = async function pool(source, opts = {}) {
  *   Link with `new WebAssembly.Memory({ initial, maximum, shared: true })`.
  * @param {boolean} [opts.importMemory] - Import `env.memory` instead of exporting an
  *   owned memory. For embedding into a host that provides the memory.
- * @param {boolean} [opts.alloc=true] - Export raw allocator helpers
- *   (`_alloc`, `_clear`) for JS memory wrapping. Set false for standalone host-run
- *   modules that only call exported wasm functions.
+ * @param {boolean} [opts.alloc=true] - Export the JS host-marshalling ABI.
+ *   False is raw standalone mode: allocator/reset exports, closure-table and decoded-error
+ *   metadata, and reset-only healing are omitted.
  * @param {Object<string,*>} [opts.define] - Compile-time constants injected as
  *   top-level bindings before parse, e.g. `{ DEBUG: false, PORT: 8080 }`. Values may
  *   be numbers, booleans, strings, null, or literal arrays/objects.
@@ -666,6 +666,8 @@ const jzCompileInner = (code, opts = {}) => {
     ],
     time,
     targetProfile: ctx.transform.targetProfile,
+    lazyDataSpans: ctx.runtime.lazySpans,
+    staticDataSpan: ctx.runtime.staticPrefixSpan,
   })
   // NO post-watr generic optimizer. jz does all lowering — including auto-vectorization — before
   // watr (src/wat/assemble.js optimizeModule → optimizeFunc); watr is the sole generic fixpoint and

@@ -301,6 +301,115 @@ export function legalizeForTarget(module, targetProfile) {
   return module
 }
 
+function hexNibble(c) {
+  return c >= 48 && c <= 57 ? c - 48
+    : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c <= 102 ? c - 87 : -1
+}
+
+function decodeDataBytes(token) {
+  if (typeof token !== 'string' || token.length < 2 || token[0] !== '"') return null
+  const out = []
+  for (let i = 1; i < token.length - 1; i++) {
+    const c = token.charCodeAt(i)
+    if (c !== 92) { out.push(c); continue }
+    const hi = hexNibble(token.charCodeAt(i + 1)), lo = hexNibble(token.charCodeAt(i + 2))
+    if (hi >= 0 && lo >= 0) { out.push((hi << 4) | lo); i += 2; continue }
+    const e = token[++i]
+    out.push(e === 'n' ? 10 : e === 'r' ? 13 : e === 't' ? 9 : e.charCodeAt(0))
+  }
+  return out
+}
+
+function encodeDataBytes(bytes) {
+  let out = '"'
+  for (const c of bytes) {
+    if (c >= 32 && c < 127 && c !== 34 && c !== 92) out += String.fromCharCode(c)
+    else out += '\\' + c.toString(16).padStart(2, '0')
+  }
+  return out + '"'
+}
+
+/**
+ * Watr can erase a numeric conversion-table or the static number-string seed
+ * only after inlining and folding expose its last dead call. Remove those exact
+ * ranges when neither their owner nor an inlined address survives. Ranges stay
+ * at their original addresses, so no pointer rebasing is needed.
+ */
+export function stripDeadLateData(module, lazySpans, staticSpan) {
+  const spans = []
+  if (lazySpans) for (let i = 0; i < lazySpans.length; i++) spans.push(lazySpans[i])
+  if (staticSpan) spans.push(staticSpan)
+  if (!spans.length) return module
+  const live = new Set()
+  // Pow's two tables are addressed at folded interior offsets after inlining;
+  // the base-global test below is exact only for EL/Ryū conversion tables.
+  for (let i = 0; i < spans.length; i++)
+    if (!spans[i].static && spans[i].global !== '__el_tbl' && spans[i].global !== '__ryu_tbl') live.add(spans[i])
+  const scan = node => {
+    if (!Array.isArray(node) || node[0] === 'data') return
+    if (node[0] === 'global' || node[0] === 'global.get' || node[0] === 'global.set') {
+      for (let i = 0; i < spans.length; i++) if (node[1] === '$' + spans[i].global) live.add(spans[i])
+    } else if (node[0] === 'func') {
+      for (let i = 0; i < spans.length; i++) if (node[1] === spans[i].fn) live.add(spans[i])
+    } else if (node[0] === 'i32.const') {
+      const n = Number(node[1])
+      for (let i = 0; i < spans.length; i++) {
+        const s = spans[i], base = s.base == null ? s.start : s.base
+        if (!s.static && (n === s.start || n === base)) live.add(s)
+      }
+    } else if (staticSpan && typeof node[1] === 'string') {
+      let hex = null
+      if (node[0] === 'f64.const' && node[1].startsWith('nan:0x')) hex = node[1].slice(6)
+      else if (node[0] === 'i64.const' && node[1].startsWith('0x')) hex = node[1].slice(2)
+      if (hex) {
+        if (hex.length < 16) hex = '0000000000000000'.slice(hex.length) + hex
+        else if (hex.length > 16) hex = hex.slice(-16)
+        const hi = parseInt(hex.slice(0, 8), 16) >>> 0
+        const tag = (hi >>> 15) & 15, off = parseInt(hex.slice(8), 16) >>> 0
+        if (((hi >>> 16) & 0xFFF8) === 0x7FF8 && tag === 4 && !(hi & 0x4000) &&
+            off >= staticSpan.start && off < staticSpan.end) live.add(staticSpan)
+      }
+    }
+    for (let i = 0; i < node.length; i++) scan(node[i])
+  }
+  scan(module)
+  const dead = []
+  for (let i = 0; i < spans.length; i++) if (!live.has(spans[i])) dead.push({
+    start: spans[i].start,
+    end: spans[i].static ? spans[i].end
+      : (spans[i].base == null ? spans[i].start : spans[i].base) + spans[i].bytes.length,
+  })
+  if (!dead.length) return module
+  dead.sort((a, b) => a.start - b.start)
+  const out = []
+  for (let ni = 0; ni < module.length; ni++) {
+    const node = module[ni]
+    if (!Array.isArray(node) || node[0] !== 'data' || !Array.isArray(node[1]) || node[1][0] !== 'i32.const') {
+      out.push(node); continue
+    }
+    const start = Number(node[1][1]), bytes = decodeDataBytes(node[2])
+    if (!Number.isFinite(start) || !bytes) { out.push(node); continue }
+    const end = start + bytes.length
+    let cursor = 0, cutAny = false
+    for (let i = 0; i < dead.length; i++) {
+      const cut = dead[i]
+      if (cut.end <= start) continue
+      if (cut.start >= end) break
+      cutAny = true
+      const cutStart = Math.max(0, cut.start - start), cutEnd = Math.min(bytes.length, cut.end - start)
+      if (cutStart > cursor)
+        out.push(['data', ['i32.const', String(start + cursor)], encodeDataBytes(bytes.slice(cursor, cutStart))])
+      if (cutEnd > cursor) cursor = cutEnd
+    }
+    if (!cutAny) out.push(node)
+    else if (cursor < bytes.length)
+      out.push(['data', ['i32.const', String(start + cursor)], encodeDataBytes(bytes.slice(cursor))])
+  }
+  module.length = 0
+  for (let i = 0; i < out.length; i++) module.push(out[i])
+  return module
+}
+
 /**
  * Run the whole final-optimizer tail on an assembled `['module', …]` tree:
  * target legalization, then watr (the sole generic fixpoint, exactly once),
@@ -311,7 +420,10 @@ export function legalizeForTarget(module, targetProfile) {
  * passes none. `targetProfile` (src/session.js targetProfileFor) is threaded
  * through from both callers so a real legalization can consult it once landed.
  */
-export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile } = {}) {
+export function watrTail(module, cfg, {
+  funcCount = 0, boundaryPins = [], time = (n, f) => f(), targetProfile,
+  lazyDataSpans = [], staticDataSpan = null,
+} = {}) {
   const legalized = legalizeForTarget(module, targetProfile)
   const watrOpts = resolveWatrOpts(cfg, { funcCount, boundaryPins })
   const optimized = watrOpts ? time('watOptimize', () => watOptimize(legalized, watrOpts)) : legalized
@@ -323,5 +435,6 @@ export function watrTail(module, cfg, { funcCount = 0, boundaryPins = [], time =
       for (const node of funcs) hoistGlobalPtrOffset(node, stableGlobals, reach)
     }
   }
+  stripDeadLateData(optimized, lazyDataSpans, staticDataSpan)
   return optimized
 }

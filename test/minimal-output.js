@@ -91,6 +91,16 @@ test('minimal: pure numeric module pulls no allocator', () => {
   ok(!hasAllocator('export let f = (a, b) => a * b + 1'), 'arithmetic never allocates')
 })
 
+test('minimal: alloc:false omits the uncallable arena-reset heal protocol', () => {
+  if (skip) return
+  const src = 'export let f = () => { const a = []; a.push(1); return a.length }'
+  const normal = wat(src, 'size')
+  const standalone = compile(src, { wat: true, optimize: 'size', alloc: false })
+  ok(normal.includes('$__durable_arr_snap'), 'ordinary output keeps _clear-time durable-array healing')
+  ok(!standalone.includes('$__durable_arr_snap'), 'without allocator/reset exports no heal consumer exists')
+  ok(!standalone.includes('$__durable_fwd_log'), 'header logging is absent with its reset consumer')
+})
+
 // === No emitted compiler-internal function is dead ===
 // Every `$__foo` / `$math.foo` helper in the binary must be *reached* (called, in the elem
 // table, or exported). An eager include or a dead-branch dependency that nothing actually

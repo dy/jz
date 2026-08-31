@@ -5,8 +5,25 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz, { compile } from '../index.js'
+import { compile as compileWat } from 'watr'
+import { snapshotInit } from '../src/snapshot.js'
 
 const SNAP = { level: 2, snapshotInit: true }
+
+test('snapshot: one full image replaces every split input data segment', () => {
+  const module = ['module',
+    ['memory', ['export', '"memory"'], '1'],
+    ['data', ['i32.const', '0'], '"abc"'],
+    ['data', ['i32.const', '16'], '"xyz"'],
+    ['global', '$__heap', ['export', '"__heap"'], ['mut', 'i32'], ['i32.const', '32']],
+    ['func', '$__start', ['i32.store', ['i32.const', 8], ['i32.const', 0x12345678]]],
+    ['start', '$__start']]
+  ok(snapshotInit(module, compileWat), 'synthetic hermetic init snapshots')
+  is(module.filter(n => Array.isArray(n) && n[0] === 'data').length, 1,
+    'the complete image replaces, rather than overlays, both input segments')
+  ok(!module.some(n => Array.isArray(n) && (n[0] === 'start' || n[1] === '$__start')),
+    'spent start function and directive are removed')
+})
 
 test('snapshot: init-built tables become pure data, __start is deleted', () => {
   // `seq`'s increment is `| 0`-rooted (not bare `seq + 1`) so the module-global

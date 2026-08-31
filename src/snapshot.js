@@ -169,8 +169,15 @@ export function snapshotInit(module, watrCompile) {
   // data segment ← post-init image (contains the original statics as its prefix)
   const dataNode = findNode(module, n => n[0] === 'data' && Array.isArray(n[1]) && n[1][0] === 'i32.const' && Number(n[1][1]) === 0)
   const imageStr = '"' + escImage(image) + '"'
-  if (dataNode) dataNode[2] = imageStr
-  else module.push(['data', ['i32.const', '0'], imageStr])
+  let imageNode = dataNode
+  if (imageNode) imageNode[2] = imageStr
+  else { imageNode = ['data', ['i32.const', '0'], imageStr]; module.push(imageNode) }
+  // The image is the complete post-init memory, not a patch. Drop every other
+  // active/passive segment or split static-data inputs would be shipped again as
+  // overlapping overlays (correct at runtime, but potentially duplicating MB).
+  for (let i = module.length - 1; i >= 1; i--)
+    if (Array.isArray(module[i]) && module[i][0] === 'data' && module[i] !== imageNode)
+      module.splice(i, 1)
   // memory floor must cover the image
   const pages = Math.max(1, Math.ceil(image.length / 65536))
   for (let i = 1; i < memNode.length; i++)

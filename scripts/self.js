@@ -39,6 +39,8 @@ function optimizeTail(module, cfg) {
           .filter(name => ctx.core.includes.has(name.slice(1))) : []),
     ],
     targetProfile: ctx.transform.targetProfile,
+    lazyDataSpans: ctx.runtime.lazySpans,
+    staticDataSpan: ctx.runtime.staticPrefixSpan,
   })
 }
 

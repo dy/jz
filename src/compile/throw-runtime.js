@@ -14,7 +14,8 @@ export const ensureThrowRuntime = (sec) => {
     declGlobal('__jz_last_err_bits', 'i64')
   if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'tag' && t[1] === '$__jz_err'))
     sec.tags.push(['tag', '$__jz_err', ['param', 'f64']])
-  if (!sec.tags.some(t => Array.isArray(t) && t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))
+  if (ctx.transform.alloc !== false &&
+      !sec.tags.some(t => Array.isArray(t) && t[0] === 'export' && t[1] === '"__jz_last_err_bits"'))
     sec.tags.push(['export', '"__jz_last_err_bits"', ['global', '$__jz_last_err_bits']])
 }
 
@@ -81,6 +82,10 @@ export const pruneUnusedThrowRuntime = (sec) => {
   const lowerThrows = (n) => {
     if (!Array.isArray(n)) return n
     if (n[0] === 'throw') return ['unreachable']
+    // alloc:false is the raw standalone ABI: no interop decoder can observe the
+    // last-error carrier. Preserve evaluation defensively; watr drops it when pure.
+    if (ctx.transform.alloc === false && n[0] === 'global.set' && n[1] === '$__jz_last_err_bits')
+      return ['drop', lowerThrows(n[2])]
     for (let i = 1; i < n.length; i++) n[i] = lowerThrows(n[i])
     return n
   }

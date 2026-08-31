@@ -3562,20 +3562,46 @@ test('sourceInline preserves side effects of an expr-bodied callee at statement 
 test('dead helper does not leak the Eisel-Lemire decimal table', () => {
   if (onKernel()) return  // needs host-side { modules } wiring + optimize:'size' (the kernel owns its pipeline and ignores both — it can't resolve './lib.js')
   // A dead lib export whose `arr[i] | 0` on an untyped param pulls __to_num →
-  // __dec_to_f64 (consumer of the ~2 KB power-of-10 table). watr treeshakes the dead
-  // function but NOT the data segment, so the table used to bloat EVERY module ~2 KB.
-  // stripDeadElTable drops it when no LIVE code parses decimals at runtime.
+  // __dec_to_f64 (consumer of the 10.4 KB power-of-10 table). watr treeshakes the dead
+  // function but not the data segment, so the table used to bloat every such module.
+  // The pre-watr lazy-span pass drops it when no live code parses decimals at runtime.
   const lib = `export let used = (h, x) => ((h ^ (x | 0)) * 16777619) | 0
 export let dead = (arr) => { let h = 0; for (let i = 0; i < arr.length; i++) h = used(h, arr[i]); return h }`
   const bytes = jz.compile(
     `import { used } from './lib.js'\nexport let main = () => { let z = new Int32Array(4); z[0] = 7; return used(0, z[0]) }`,
     { modules: { './lib.js': lib }, optimize: 'size', alloc: false })
-  ok(bytes.length < 1024, `module is ${bytes.length} B — decimal table (~2 KB) leaked from a dead helper`)
+  ok(bytes.length < 1024, `module is ${bytes.length} B — decimal table (10.4 KB) leaked from a dead helper`)
+})
+
+test('post-watr dead conversion owners leave no orphaned numeric tables', async () => {
+  if (onKernel()) return
+  // This shape is still conservatively live before watr: dynamic HASH values flow
+  // through an integer coercion while generated integer keys flow through ToString.
+  // Watr later specializes both paths and erases the generic decimal/float owners.
+  // The final data-range sweep must follow that exact graph, not ship 11 KB of tables.
+  const src = `const run = (words) => {
+    const counts = {}
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i]
+      counts[w] = (counts[w] | 0) + 1
+    }
+    return counts['a'] | 0
+  }
+  export let main = () => {
+    const words = []
+    for (let j = 0; j < 8; j++) words.push('zz' + j)
+    words.push('a')
+    return run(words)
+  }`
+  const bytes = jz.compile(src, { optimize: 'size', alloc: false })
+  ok(bytes.length < 6000, `module is ${bytes.length} B — post-watr numeric tables leaked`)
+  const { instance } = await WebAssembly.instantiate(bytes)
+  is(instance.exports.main(), 1, 'stripping orphaned ranges preserves the live HASH result')
 })
 
 test('live runtime decimal parsing keeps the Eisel-Lemire table (no false strip)', () => {
-  // The dual: Number() on a runtime string IS live, so __dec_to_f64 must keep its table —
-  // stripDeadElTable must not strip it. The module carries the ~2 KB table and instantiates.
+  // The dual: Number() on a runtime string IS live, so __dec_to_f64 must keep its table.
+  // The module carries the 10.4 KB table and instantiates.
   const src = `let toNum = (s) => Number(s)\nexport let main = (s) => { let a = new Float64Array(2); a[0] = toNum(s); return a[0] }`
   const bytes = jz.compile(src, { optimize: 'size', alloc: false })
   ok(bytes.length > 2048, `module is ${bytes.length} B — table wrongly stripped from live Number()`)
