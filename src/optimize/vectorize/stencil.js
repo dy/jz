@@ -1,5 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { constNum, firstAccess, hasGlobalSet, isI32Const, isLocalGet } from './addr-model.js'
+import { constNum, firstAccess, hasGlobalSet, isI32Const, isLocalGet, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
@@ -517,30 +517,11 @@ export function tryGeneralStencil(node, fnLocals, freshIdRef, enabled, bl, opts 
   let laneType = null, stride = -1
   const offTees = new Map(), addrTees = new Map()
   const sites = []
-  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
-  const matchOffset = (off, expectStride) => {
-    let ot = null, o = off
-    if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
-    if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
-    if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
-      if (ot) offTees.set(ot, o[1])
-      return { idx: o[1] }
-    }
-    if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
-    return null
-  }
-  const matchAddr = (addr, expectStride = stride) => {
-    let teeName = null, n = addr
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
-    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
-    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
-    for (const [bi, oi] of [[1, 2], [2, 1]]) {
-      if (!isInvBase(n[bi])) continue
-      const om = matchOffset(n[oi], expectStride)
-      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
-    }
-    return null
-  }
+  // matchOffset/matchAddr: shared with tryGeneralMap/tryGeneralReduce, see
+  // addr-model.js's matchStrideOffset/matchStrideAddr header doc (pipeline-
+  // minimality campaign, the six verbatim load/store validator ports).
+  const matchOffset = (off, expectStride) => matchStrideOffset(off, expectStride, offTees, ivCoeff)
+  const matchAddr = (addr, expectStride = stride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
   const scan = (n, parent, pi) => {
     if (!isArr(n)) return true
     const op = n[0]

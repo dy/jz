@@ -1,5 +1,5 @@
 import { nodeEqual as exprEq, cloneNode, walkAst } from '../../ast.js'
-import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, firstAccess, hasGlobalSet, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr } from './addr-model.js'
+import { _isAddressLocal, _isPixelIndexLocal, _offsetLocalStride, firstAccess, hasGlobalSet, isI32Const, isLocalGet, matchConstMulIV, matchLaneAddr, matchLaneOffset, matchMirrorAddr, matchStrideAddr, matchStrideOffset } from './addr-model.js'
 import { ALIAS_VERSION_MAX_BODY_NODES, gmNodeCount, isProfitable } from './cost-model.js'
 import { normTee } from './idioms.js'
 import { INT_WIDEN_F32, LANE_INFO, LOAD_OPS, STORE_OPS } from './lane-tables.js'
@@ -412,8 +412,6 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   }
   if (body.some(hasNestedLoopOrCall)) return null
 
-  const isInvBase = (b) => (isArr(b) && b[0] === 'global.get') || (isLocalGet(b) && !writes.has(b[1]))
-
   // Affine-in-IV coefficient solver, i32 domain only (no toroidal wrap, no float-derived index —
   // both genuinely stencil-specific; see header doc). Returns 0 (loop-invariant), 1 (stride-1
   // affine — IV itself, or ± a loop-invariant term, nested arbitrarily deep), or null (unprovable).
@@ -443,32 +441,12 @@ export function tryGeneralMap(node, fnLocals, freshIdRef, bl, opts = {}) {
   let laneType = null, stride = -1
   const offTees = new Map(), addrTees = new Map()
   const sites = []   // { kind, base, idx, memBytes }
-  const matchOffset = (off, expectStride) => {
-    let ot = null, o = off
-    if (isArr(o) && o[0] === 'local.tee' && o.length === 3) { ot = o[1]; o = o[2] }
-    if (isLocalGet(o) && offTees.has(o[1])) return { idx: offTees.get(o[1]) }
-    if (isArr(o) && o[0] === 'i32.shl' && o.length === 3 && isI32Const(o[2]) && (1 << o[2][1]) === expectStride && ivCoeff(o[1]) === 1) {
-      if (ot) offTees.set(ot, o[1])
-      return { idx: o[1] }
-    }
-    // Byte lanes (i8, stride 1): `i*1` is a no-op the compiler never wraps in a shl — the
-    // offset is the bare affine expression itself (matchLaneOffset's own `isLocalGet(n,ind)`
-    // fallback, generalized past a bare IV to any coefficient-1 affine form).
-    if (expectStride === 1 && ivCoeff(o) === 1) { if (ot) offTees.set(ot, o); return { idx: o } }
-    return null
-  }
-  const matchAddr = (addr, expectStride = stride) => {
-    let teeName = null, n = addr
-    if (isArr(n) && n[0] === 'local.tee' && n.length === 3) { teeName = n[1]; n = n[2] }
-    if (isLocalGet(n) && addrTees.has(n[1])) { const e = addrTees.get(n[1]); if (teeName) addrTees.set(teeName, e); return e }
-    if (!isArr(n) || n[0] !== 'i32.add' || n.length !== 3) return null
-    for (const [bi, oi] of [[1, 2], [2, 1]]) {
-      if (!isInvBase(n[bi])) continue
-      const om = matchOffset(n[oi], expectStride)
-      if (om) { const e = { base: n[bi], idx: om.idx }; if (teeName) addrTees.set(teeName, e); return e }
-    }
-    return null
-  }
+  // matchOffset/matchAddr: shared with tryGeneralStencil/tryGeneralReduce, see
+  // addr-model.js's matchStrideOffset/matchStrideAddr header doc (pipeline-
+  // minimality campaign, the six verbatim load/store validator ports —
+  // this pair is the byte-lane arm's own origin).
+  const matchOffset = (off, expectStride) => matchStrideOffset(off, expectStride, offTees, ivCoeff)
+  const matchAddr = (addr, expectStride = stride) => matchStrideAddr(addr, expectStride, writes, offTees, addrTees, ivCoeff)
   const scan = (n, parent, pi) => {
     if (!isArr(n)) return true
     const op = n[0]
