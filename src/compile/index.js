@@ -39,7 +39,7 @@ import { intLiteralValue } from '../static.js'
 import { intCertainMap, typedStaticLen } from '../type.js'
 import {
   analyzeBody, unboxablePtrs, inheritPtrAliases, cseSafeLoadBases, boxedCaptures,
-  analyzeStructInline, analyzeUnionInline, reanalyzeBody, invalidateAllBodyFacts,
+  structInlinePass, unionInlinePass, reanalyzeBody, invalidateAllBodyFacts,
 } from './analyze.js'
 import { typedElemAux } from '../../layout.js'
 import { invalidateBindingUsesCache, resetBindingUsesCache } from './analyze-scans.js'
@@ -284,24 +284,31 @@ export default function compile(ast, profiler) {
   if (ctx.transform.inspect) ctx.inspect = { functions: {}, schemas: ctx.schema.list.map(s => s.slice()) }
 
   const publishPlan = (func, facts) => publishFunctionPlan(ctx, func, facts)
+  // Whole-program SRoA passes as compact summaries: each pass collects its
+  // per-function facts inside the analyze loop, while that function's plan
+  // and body are hot, and decides at its original phase position from the
+  // collected summaries alone. `optimize: { structInline/unionInline: false }`
+  // disable a representation wholesale — the REFERENCE MODES for three-way
+  // differentials (off / on / plain JS); with an empty registry every
+  // consumer takes the plain path.
+  const structInline = ctx.transform.optimize?.structInline !== false ? structInlinePass(programFacts) : null
+  const unionInline = ctx.transform.optimize?.unionInline !== false ? unionInlinePass(programFacts) : null
   timePhase(profiler, 'analyzeFuncs', () => {
     for (const func of ctx.funcs.list) {
       if (func.raw) continue
       const facts = analyzeFuncForEmit(func, programFacts)
       publishPlan(func, facts)
       captureFuncInspect(func, facts, programFacts)
+      if (structInline) structInline.collect(func)
+      if (unionInline) unionInline.collect(func)
     }
   })
-  // Whole-program SRoA: pick the schemas whose `Array<S>` instances use the
-  // `structInline` carrier. Runs once the per-function reps have settled (they
-  // are codegen truth) and before any function is emitted.
-  // `optimize: { structInline/unionInline: false }` disable a representation
-  // wholesale — the REFERENCE MODES for three-way differentials (off / on /
-  // plain JS); with an empty registry every consumer takes the plain path.
-  if (ctx.transform.optimize?.structInline !== false)
-    timePhase(profiler, 'structInline', () => analyzeStructInline(programFacts))
+  // Runs once the per-function reps have settled (they are codegen truth) and
+  // before any function is emitted.
+  if (structInline)
+    timePhase(profiler, 'structInline', () => structInline.finish())
   if (ctx.transform.optimize?.unionInline !== false) {
-    timePhase(profiler, 'unionInline', () => analyzeUnionInline(programFacts))
+    if (unionInline) timePhase(profiler, 'unionInline', () => unionInline.finish())
     // Carrier-specialized clones (after the registry settles): verified
     // cursor-param functions get a raw-i32 `$union` sibling; sanctioned
     // callsites rewrite to it — no NaN-box crosses the call.

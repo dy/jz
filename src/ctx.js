@@ -757,7 +757,7 @@ export function reset(proto, globals, bridge) {
     inlineArray: new Set(),     // schemaId set — schemas whose `Array<S>` instances
                                 //   use the `structInline` SRoA carrier (K f64
                                 //   fields inlined per element, no per-row object).
-                                //   Populated whole-program by `analyzeStructInline`
+                                //   Populated whole-program by `structInlinePass`
                                 //   (default-disqualify); read by the array
                                 //   push/index/length codegen.
     inlineCellI32: new Set(),   // inlineArray subset — every slot strict-int32
@@ -772,7 +772,7 @@ export function reset(proto, globals, bridge) {
     inlineUnion: new Map(),     // canonical 'a,b,…' key → { sids, stride } —
                                 //   CLOSED heterogeneous unions whose Array
                                 //   instances store max-K-stride packed i32
-                                //   cells (analyzeUnionInline; fail-closed)
+                                //   cells (unionInlinePass; fail-closed)
     inlineUnionArrays: new Map(), // sig → Map<name, key>: union-array locals
     inlineUnionCursors: new Map(), // sig → Map<name, key>: `const o = a[i]`
                                 //   cursors of union arrays (reads resolve

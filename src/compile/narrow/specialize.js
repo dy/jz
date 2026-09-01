@@ -331,7 +331,7 @@ function collectUnionSites(body, callerFunc, candidateNames, sitesByCallee) {
 }
 
 /** Carrier-specialized union-cursor clones (audit decision 2): a function
- *  whose params are VERIFIED union cursors (analyzeUnionInline's grammar walk
+ *  whose params are VERIFIED union cursors (unionInlinePass's grammar walk
  *  + registry) gets a `$union` sibling whose cursor params are RAW I32
  *  packed-cell addresses (type 'i32', ptrKind OBJECT — PTR.OBJECT never
  *  forwards, so the address is call-stable). The clone body rides the
@@ -340,7 +340,7 @@ function collectUnionSites(body, callerFunc, candidateNames, sitesByCallee) {
  *  sanctioned callsite (`measure(rows[i])`) rewrites to the clone and passes
  *  the raw address — no NaN-box crosses the call. The f64 original keeps the
  *  generic body for any caller specialization can't see.
- *  Runs AFTER analyzeUnionInline (registry + verified cursors settled),
+ *  Runs AFTER unionInlinePass (registry + verified cursors settled),
  *  BEFORE emitFuncs. Sites are collected FRESH over the current AST
  *  (programFacts.callSites is stale at this phase — plan's loop rewrites
  *  clone body nodes). KERNEL-SAFE STYLE throughout: plain loops (no nested

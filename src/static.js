@@ -548,7 +548,7 @@ export function objLiteralSchemaId(expr) {
 /** Canonical content key for an inplace/structInline replace-store site —
  *  the ','-wrapper around literal props is normalized away between plan and
  *  emit, so flatten before serializing. Shared by scanInplaceStores (plan),
- *  analyzeStructInline (eligibility), and the emit arms; lives here so the
+ *  structInlinePass (eligibility), and the emit arms; lives here so the
  *  three importers stay acyclic (the self-compile resolver rejects cycles). */
 export const inplaceKey = (arrName, lit) => {
   const props = lit.slice(1)
@@ -607,7 +607,7 @@ export function exprSchemaId(expr, localSchemaMap) {
 }
 
 /** Closed-union inline carrier for `name` (Array of a packed heterogeneous
- *  union — analyzeUnionInline). Same function-local-only rule as
+ *  union — unionInlinePass). Same function-local-only rule as
  *  inlineArraySid, keyed by the rep's canonical set. */
 export function inlineArrayUnion(name) {
   if (typeof name !== 'string') return null

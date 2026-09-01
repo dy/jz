@@ -29,7 +29,7 @@
  *                  (`__alloc_hdr`, `__arr_grow`, `__len`, `__set_len`) is
  *                  reused untouched — `.push` of a struct writes K cells and
  *                  adds K to `len`; `.length` divides the physical len by K.
- *                  Picked per-schema by `analyzeStructInline` (src/analyze.js),
+ *                  Picked per-schema by `structInlinePass` (src/analyze.js),
  *                  whole-program, default-disqualify.
  *
  * Typed arrays (`Float64Array`/`Int32Array`/…) are a distinct value type

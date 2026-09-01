@@ -396,7 +396,7 @@ function tryInplaceReplaceStore(arr, idx, val) {
 /** structInline Array<S> wholesale element replace `a[i] = {S-literal}` — K
  *  f64 cell stores into the element's inline cells: no allocation, no box
  *  read, no identity guard (cells cannot hold aliens — the layout is fixed by
- *  analyzeStructInline's whole-program proof, which accepted this store via
+ *  structInlinePass's whole-program proof, which accepted this store via
  *  the inplace sweep's alias-liveness + reuse verdicts).
  *
  *  Evaluation order (JS: member target before RHS): the index and — on the
@@ -422,7 +422,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
   if (sid == null) return null
   const schema = ctx.schema.list[sid]
   const fields = structLiteralFields(val, sid)
-  // analyzeStructInline accepted every store site for this sid — a shape this
+  // structInlinePass accepted every store site for this sid — a shape this
   // arm cannot lower here means the phases disagree; never fall through to a
   // boxed store on cell memory.
   if (!fields) err(`structInline replace-store expects { ${schema.join(', ')} } literal`)
@@ -480,7 +480,7 @@ function tryStructInlineReplaceStore(arr, idx, val) {
   // under the inline carrier the cell address IS the object identity. A
   // PACKED cell address cannot be boxed (slot reads through a box assume f64
   // cells), so the phases disagreeing there is a compile error, not bytes.
-  if (packed) err('structInline packed replace-store in value position — analyzeStructInline must poison this shape')
+  if (packed) err('structInline packed replace-store in value position — structInlinePass must poison this shape')
   return typed(['block', ['result', 'f64'], ...body,
     ['if', ['result', 'f64'], inBounds,
       ['then', ...stores, mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${aT}`])],
@@ -529,7 +529,7 @@ export function emitElementAssign(arr, idx, val) {
         ['i64.reinterpret_f64', ['local.get', `$${arrTmp}`]]]],
       ['local.get', `$${resultTmp}`])
   }
-  // structInline receivers first: once analyzeStructInline committed the sid
+  // structInline receivers first: once structInlinePass committed the sid
   // to the inline-cell layout, a boxed store (generic/inplace paths below)
   // would corrupt cell memory — this arm is the only sound lowering.
   const sIn = tryStructInlineReplaceStore(arr, idx, val)

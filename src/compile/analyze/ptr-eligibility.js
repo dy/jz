@@ -84,7 +84,7 @@ export function unboxablePtrs(body, locals, boxed) {
         if (r?.arrayElemSchema != null) return true
         // Closed-union element: an OBJECT of some member schema on EITHER
         // layout (plain ptr or inline cell) — unboxing to a raw offset is
-        // valid regardless of whether analyzeUnionInline (which runs later)
+        // valid regardless of whether unionInlinePass (which runs later)
         // admits the packed carrier.
         return (r?.arrayElemSchemaSet?.length ?? 0) >= 2
       }

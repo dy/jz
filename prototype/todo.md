@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 13.66x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,522,343 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.13x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,523,120 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -434,6 +434,7 @@ Per-slice recursive and artifact ratchet:
 | anonymous BigInt boundaries | 14,509,947 | 4,117,854,848 | 177,112,448 | +619 bytes, -33,232 headroom |
 | concrete Wasm function IDs | 14,519,509 | 4,119,704,568 | 175,262,728 | +9,562 bytes, -1,849,720 headroom |
 | parameter-ABI emission rows | 14,522,343 | 4,120,236,904 | 174,730,392 | +2,834 bytes, -532,336 headroom |
+| SRoA collect-during-analyze | 14,523,120 | 4,120,384,696 | 174,582,600 | +777 bytes, -147,792 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -526,7 +527,7 @@ Initial promotion must preserve emitted WAT. Do not redesign the emitter while c
 
 ### M5. Loop optimization and SIMD
 
-- [ ] express required module facts as compact summaries before body lowering
+- [ ] express required module facts as compact summaries before body lowering (first slice landed: structInline and unionInline collect per-function summaries inside the analyze loop and decide from summaries alone; no FunctionPlan or body is read after that loop)
 - [ ] move source loop transforms into function lowering
 - [ ] run scalar pointer cleanup and LICM on the current WAT shape
 - [ ] run the existing vectorizer before function finalization
@@ -535,6 +536,20 @@ Initial promotion must preserve emitted WAT. Do not redesign the emitter while c
 - [ ] preserve bit-exact SIMD versus scalar output where required
 
 No DSP-only compiler path is allowed. Every proof must describe a general program shape.
+
+SRoA summary-collection slice verification:
+
+- `structInlinePass`/`unionInlinePass` collect per-function facts inside the analyze loop, right after each plan publishes; the finish step reads only collected summaries, module inits, and schema censuses
+- every fact the collectors read (callee array facts, paramReps rows, schema censuses, constInts) settles before the analyze loop, so collection sees exactly what the retired post-analyze sweeps saw
+- native: 3,901 pass, 1 skip
+- opt3: 3,901 pass, 1 skip
+- WASI: 3,900 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,867,285 input bytes, 14,082,167 output bytes, 4,120,384,696 heap bytes, 174,582,600 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,523,120-byte production compiler
 
 ### M6. Module assembly
 
@@ -596,7 +611,7 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
 1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels.
-2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is blocked by whole-program analyze consumers: structInline, unionInline, and union-cursor cloning read every function's settled reps before any emission. Express those demands as compact summaries first (the M5 item), or scope the first lifetime slice to a window no whole-program pass reads.
+2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is closer: structInline and unionInline now collect per-function summaries inside the analyze loop and decide from summaries alone. Remaining between analyze and emit: union-cursor cloning (whole-program specialization over the settled registry) and the identity/ABI closes, all of which need only an analyze-complete barrier, not retained plans or bodies.
 3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.

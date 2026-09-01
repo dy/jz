@@ -21,7 +21,7 @@ import { scanBoundedArrIdx, isTerminator } from '../../type.js'
  *  closed-union chain: the tag (union-agreeing slot) directly; variant fields
  *  under the user's own `tag === C` branches (discriminant refinement).
  *
- *  FAIL-CLOSED like analyzeStructInline: a union inlines only when EVERY use
+ *  FAIL-CLOSED like structInlinePass: a union inlines only when EVERY use
  *  of every union-array binding and cursor — across all functions — is a
  *  handled shape, and every cursor field read RESOLVES statically (agreeing
  *  slot, or discriminant-narrowed members that agree). Anything else
@@ -29,9 +29,9 @@ import { scanBoundedArrIdx, isTerminator } from '../../type.js'
  *  strict-int32), same-function cursors (`measure(rows[i])` param cursors are
  *  stage 3 — the pointer-ABI seam), reads only (element replace poisons).
  */
-export function analyzeUnionInline(programFacts) {
+export function unionInlinePass(programFacts) {
   const registry = ctx.schema?.inlineUnion
-  if (!registry || !ctx.schema?.list) return
+  if (!registry || !ctx.schema?.list) return null
   const DBG = typeof process !== 'undefined' && process.env?.JZ_DBG_INLARR
   const propsOf = (sid) => ctx.schema.list[sid] || []
   const keyOf = (sids) => sids.join(',')
@@ -54,10 +54,13 @@ export function analyzeUnionInline(programFacts) {
     return slot ?? -1
   }
 
-  for (const func of ctx.funcs.list) {
+  // Per-function summary collection inside the analyzeFuncs loop; every fact
+  // read here settles before that loop starts (same contract as
+  // structInlinePass.collect).
+  const collect = (func) => {
     const functionPlan = ctx.plans.functions.get(func)
     const body = func?.body
-    if (func?.raw || body == null || typeof body !== 'object') continue
+    if (func?.raw || body == null || typeof body !== 'object') return
 
     // Union-array bindings of this frame (rep channel — the landed census).
     const uArr = new Map()                   // name → key
@@ -85,7 +88,7 @@ export function analyzeUnionInline(programFacts) {
       cursorParams.set(func.sig.params[k].name, key)
       if (!cand.has(key)) cand.set(key, key.split(',').map(Number))
     }
-    if (!uArr.size && !cursorParams.size) continue
+    if (!uArr.size && !cursorParams.size) return
     if (uArr.size) uArraysByFunc.set(func.sig, uArr)
 
     // `const t = o.PROP` aliases (discriminant reads) + `const o = a[i]`
@@ -404,6 +407,9 @@ export function analyzeUnionInline(programFacts) {
     })(body, null)
   }
 
+  // Program decision over collected summaries and schema censuses only; no
+  // FunctionPlan or function body is read after the analyze loop.
+  const finish = () => {
   // v1: packed-only — every member all-slots strict-int32 and stride ≥ 2.
   for (const [key, sids] of cand) {
     if (black.has(key)) continue
@@ -430,4 +436,6 @@ export function analyzeUnionInline(programFacts) {
     if (keep) ctx.schema.inlineUnionCursors.set(sig, keep)
   }
   if (DBG) console.error('[inlarr-union]', 'eligible:', [...registry.keys()], 'black:', [...black])
+  }
+  return { collect, finish }
 }

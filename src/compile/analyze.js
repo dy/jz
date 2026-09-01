@@ -26,8 +26,8 @@
  *                                   mayBeNullish, dict/map-shaped helpers
  *   - `analyze/ptr-eligibility.js`— unboxablePtrs, inheritPtrAliases,
  *                                   cseSafeLoadBases
- *   - `analyze/struct-inline.js`  — analyzeStructInline
- *   - `analyze/union-inline.js`   — analyzeUnionInline
+ *   - `analyze/struct-inline.js`  — structInlinePass
+ *   - `analyze/union-inline.js`   — unionInlinePass
  *   - `analyze/func-namespaces.js`— analyzeFuncNamespaces
  * `src/compile/analyze-scans.js` (findFreeVars/findMutations/boxedCaptures/
  * scanBindingUses/etc.) is a separate, pre-existing, already-scoped module —
@@ -46,9 +46,9 @@ export { mayBeNullish, analyzeValTypes, analyzeIntCertain } from './analyze/val-
 
 export { unboxablePtrs, inheritPtrAliases, cseSafeLoadBases } from './analyze/ptr-eligibility.js'
 
-export { analyzeStructInline } from './analyze/struct-inline.js'
+export { structInlinePass } from './analyze/struct-inline.js'
 
-export { analyzeUnionInline } from './analyze/union-inline.js'
+export { unionInlinePass } from './analyze/union-inline.js'
 
 export { analyzeFuncNamespaces } from './analyze/func-namespaces.js'
 

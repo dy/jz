@@ -46,9 +46,9 @@ import { staticArrayElems, objLiteralSchemaId, inplaceKey } from '../../static.j
  * argument, an `Array<S>`-returning call, an `[{S}, …]` literal, or a captured
  * tracked array inside one is poisoned.
  */
-export function analyzeStructInline(programFacts) {
+export function structInlinePass(programFacts) {
   const inlineArray = ctx.schema?.inlineArray
-  if (!inlineArray || !ctx.schema?.list) return
+  if (!inlineArray || !ctx.schema?.list) return null
   const { paramReps } = programFacts
   const cand = new Set()      // sids observed as an `Array<S>` element schema
   // env-gated debug — dist/jz.js runs in browsers where `process` doesn't
@@ -124,10 +124,15 @@ export function analyzeStructInline(programFacts) {
   const anyArrRetFn = ctx.funcs.list.some(f => f?.arrayElemSchema != null && !f.raw)
   const anyParamArrFn = paramReps != null &&
     [...paramReps.values()].some(m => m && [...m.values()].some(r => r?.arrayElemSchema != null))
-  for (const func of ctx.funcs.list) {
+  // Per-function summary collection: runs inside the analyzeFuncs loop, right
+  // after this function's plan publishes, while its body and settled reps are
+  // hot. Every fact read here (callee arrayElemSchema, paramReps rows, schema
+  // censuses, constInts) settles before that loop starts, so collection sees
+  // the same values the retired post-analyze sweep saw.
+  const collect = (func) => {
     const functionPlan = ctx.plans.functions.get(func)
     const body = func?.body
-    if (func?.raw || body == null || typeof body !== 'object') continue
+    if (func?.raw || body == null || typeof body !== 'object') return
 
     // `Array<S>` bindings of this function (codegen truth) and their schemas.
     // FunctionPlan stays opaque: iterate names and read detached scalar fields.
@@ -148,7 +153,7 @@ export function analyzeStructInline(programFacts) {
     // fresh array-literal argument (`pick([{gain: 2}])`), and verifyCall's
     // default-disqualify poisoning is the only thing that ever sees that
     // call site. When NEITHER holds, the walk is provably a no-op.
-    if (!arrName.size && !anyArrRetFn && !anyParamArrFn) continue
+    if (!arrName.size && !anyArrRetFn && !anyParamArrFn) return
 
     // A structInline `Array<S>` value is only ever born from an empty `[]`
     // grown by structInline `.push`. `expr` is such a producer of `Array<sid>`
@@ -466,6 +471,10 @@ export function analyzeStructInline(programFacts) {
     verify(body)
   }
 
+  // Program decision: merges only collected summaries, module inits, and
+  // schema censuses. No FunctionPlan or function body is read after the
+  // analyze loop.
+  const finish = () => {
   // Module inits are not walked in detail — poison any schema whose array form
   // could appear there (struct-array consumed/built at module scope).
   if (ctx.module?.moduleInits) for (const mi of ctx.module.moduleInits) poisonAll(mi)
@@ -493,4 +502,6 @@ export function analyzeStructInline(programFacts) {
     if (set) ctx.schema.inlineCellCursors.set(sig, set)
   }
   if (DBG) console.error('[inlarr]', 'eligible:', [...inlineArray], 'packedI32:', [...ctx.schema.inlineCellI32])
+  }
+  return { collect, finish }
 }

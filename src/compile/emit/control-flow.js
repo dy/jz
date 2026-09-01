@@ -358,7 +358,7 @@ export const controlFlowOps = {
       let spec = ctx.transform.optimize?.speculateSchemaBranches !== false &&
         !(Array.isArray(branch) && branch[0] === 'if')
         ? inferSchemaBranch(branch) : null
-      // A sanctioned union CURSOR (analyzeUnionInline) already reads through
+      // A sanctioned union CURSOR (unionInlinePass) already reads through
       // the packed carrier under discriminant-refinement PROOFS — the union's
       // closure is the guard. Speculating here clones the body into two
       // identical packed arms behind a redundant runtime tag check.
