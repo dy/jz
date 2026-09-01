@@ -10,6 +10,9 @@
  *     rounds 2-3. `readonlyParamReps`/`freezeCallSites` below close each one
  *     off at its own true last-producer point (plan/index.js's own call
  *     sites document exactly where).
+ *     `valueUsed` has an earlier transfer point: ProgramIndex consumes the
+ *     mutable Set after enrichment and replaces it with a read-only numeric
+ *     address-taken view before this module's later freeze points.
  *  2. `programFacts` itself is an OPEN BAG — `collectProgramFacts` returns a
  *     plain object with a fixed, documented key set, but nothing stops a
  *     later pass from stapling on an undocumented new one the way

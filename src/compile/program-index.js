@@ -677,13 +677,29 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   }
   const rootIds = [], dynamicRootIds = []
   const rootSeen = new Array(count).fill(false)
-  const dynamicRootSeen = new Array(count).fill(false)
+  const addressTakenBits = new Array(count).fill(0)
+  for (const name of programFacts.valueUsed || []) {
+    const id = functionNameIds.get(name) ?? -1
+    if (id >= 0 && !addressTakenBits[id]) {
+      addressTakenBits[id] = 1
+      dynamicRootIds.push(id)
+    }
+  }
+  const isAddressTaken = idOrName => {
+    const id = Number.isInteger(idOrName) ? idOrName : functionNameIds.get(idOrName) ?? -1
+    return id >= 0 && !!addressTakenBits[id]
+  }
+  const addressTaken = Object.freeze({ size: dynamicRootIds.length, has: name => isAddressTaken(name) })
+  // ProgramFacts owns the mutable source census only through enrichment. Every
+  // later compatibility reader sees this read-only numeric ProgramIndex view.
+  programFacts.valueUsed = addressTaken
   for (const func of ctx.funcs.list) {
     const id = functionNameIds.get(func.name) ?? -1
-    if (id < 0) continue
-    const dynamic = programFacts.valueUsed?.has(func.name) === true
-    if (dynamic && !dynamicRootSeen[id]) { dynamicRootSeen[id] = true; dynamicRootIds.push(id) }
-    if ((func.exported || dynamic) && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+    if (id >= 0 && func.exported && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
+  for (let i = 0; i < dynamicRootIds.length; i++) {
+    const id = dynamicRootIds[i]
+    if (!rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (const site of callSites) if (site.callerFunc == null) {
     const id = functionNameIds.get(site.callee) ?? -1
@@ -696,8 +712,9 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   Object.freeze(edgeTarget)
   Object.freeze(rootIds)
   Object.freeze(dynamicRootIds)
+  Object.freeze(addressTakenBits)
   const callGraph = Object.freeze({
-    edgeStart, edgeCount, edgeTarget, rootIds, dynamicRootIds,
+    edgeStart, edgeCount, edgeTarget, rootIds, dynamicRootIds, addressTakenBits,
     componentCount: scc.componentCount,
     componentOf: scc.componentOf,
     componentStart: scc.componentStart,
@@ -730,6 +747,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     functionIdOfName,
     resolveMemberId,
     resolveComputedIds,
+    addressTaken,
+    isAddressTaken,
     filterCallSitesToReachable,
     getCallGraph,
     isReachable,
@@ -738,11 +757,9 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
 
 /**
  * Release `programFacts.valueUsed` of a lifted-function-property name whose
- * only possible value-use is its own defining write. Called once from
- * plan/index.js, immediately after `buildProgramIndex` and before
- * `solveRepresentationBoundaries`/`narrowSignatures` (representation-plan.js's
- * `makeBoundaryData`) ever read `valueUsed` to decide `uncovered` for a
- * function's boundary plan.
+ * only possible value-use is its own defining write. Called once through
+ * `buildProgramIndex`'s enrichment callback, after member resolution exists
+ * and before address-taken roots freeze or any boundary consumer runs.
  *
  * Prepare's `fn.prop = arrow` lift substitutes `fn.prop = fn$prop` — a
  * SYNTHESIZED name that cannot appear anywhere else in the whole program by

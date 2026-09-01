@@ -511,6 +511,7 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
     { callee: 'target', argList: [], callerFunc: dead, node: ['()', 'target'] },
     { callee: 'target', argList: [], callerFunc: orphan, node: ['()', 'target'] },
   ]
+  const valueUsed = new Set(['dead', 'orphan'])
   const index = buildProgramIndex({
     module: { moduleInits: [] },
     funcs: {
@@ -520,8 +521,9 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
       multiProp: new Set(),
     },
   }, {
-    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(['dead']), callSites,
-  }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'))
+    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed, callSites,
+  }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'),
+  () => valueUsed.delete('orphan'))
   const targetId = index.functionIdOfName('target')
   const callerId = index.functionIdOfName('caller')
   const deadId = index.functionIdOfName('dead')
@@ -536,6 +538,12 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
   const graph = index.getCallGraph()
   is(graph.rootIds.join(','), `${callerId},${deadId}`)
   is(graph.dynamicRootIds.join(','), String(deadId))
+  is(index.addressTaken.size, 1)
+  ok(index.addressTaken.has('dead'), 'address-taken compatibility reads the numeric index')
+  ok(!index.addressTaken.has('orphan'), 'enrichment release settles before address-taken freeze')
+  ok(index.isAddressTaken(deadId), 'numeric address-taken query agrees with the name view')
+  is(graph.addressTakenBits.join(','), '0,0,1,0')
+  throws(() => index.addressTaken.add('orphan'), /is not a function/)
   is(graph.edgeStart.join(','), '0,1,2,3')
   is(graph.edgeCount.join(','), '1,1,1,1')
   is(graph.edgeTarget.join(','), `${callerId},${targetId},${targetId},${targetId}`)

@@ -68,11 +68,13 @@
  * `analyzeSchemaSlotIntCertain` again (same late-mode rebuild). Every one of
  * these later calls is a REBUILD (clears and re-derives), never an
  * incremental patch of the earlier pass's output — see `.work/archive/program-facts-split.md`
- * §7 for the full fact→producer→freeze-point→consumer table: `paramReps`/
+ * §7 for the full fact-to-producer-to-consumer table: `paramReps` and
  * `.callSites` are mutated in place after publication through plan's own
- * round 3 (`narrowSignatures` and its `specialize*` siblings), then frozen/
- * view-wrapped by `plan/index.js` via this module's own `freeze.js` — no
- * longer left open-ended past that point.
+ * round 3 (`narrowSignatures` and its `specialize*` siblings), then frozen or
+ * view-wrapped by `plan/index.js` via this module's own `freeze.js`. The mutable
+ * `valueUsed` source census ends earlier: ProgramIndex applies lifted-value
+ * release, converts it to numeric address-taken bits, and replaces this key
+ * with a read-only `has`/`size` compatibility view before any later consumer.
  *
  * @module program-facts
  */

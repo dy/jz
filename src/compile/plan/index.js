@@ -142,13 +142,15 @@ export default function plan(ast, profiler) {
   ctx.types.literalObjectVars = programFacts.literalObjectVars
   // ProgramIndex identity and direct-graph slice. Build numeric identities and
   // member resolvers after every early AST mutation. Its builder exposes one
-  // temporary resolver to computed-dispatch synthesis, then freezes numeric
-  // call edges, roots, and reachability before returning. Only that closed index
+  // temporary resolver to computed-dispatch synthesis and lifted-value release,
+  // then freezes numeric call edges, roots, and reachability. Only that closed index
   // is published. Compatibility consumers project IDs back through functionById;
   // no second member-target or call-graph table survives.
   const programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast,
-    resolver => t('synthesizeComputedDispatchCallSites', () =>
-      synthesizeComputedDispatchCallSites(programFacts, resolver))))
+    resolver => {
+      t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts, resolver))
+      t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, resolver))
+    }))
   programFacts.programIndex = programIndex
   ctx.plans.programIndex = programIndex
   // Shape check (.work/archive/program-facts-split.md §7.1): this is the ONLY staple-on
@@ -160,19 +162,6 @@ export default function plan(ast, profiler) {
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-programIndex')
-  // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
-  // synthesis, see program-index.js) is the ONLY value-use
-  // program-facts.js's whole-program walk can ever find for `fn$prop`, since
-  // the name exists nowhere else in the program by construction. Once the
-  // index above independently re-derives the same fact, that write is
-  // provably fully covered — release `fn$prop` from `valueUsed` so its
-  // boundary plan (`makeBoundaryData`, representation-plan.js) gets the same
-  // direct-call materialization an ordinary internal function gets, instead
-  // of the conservative closure-shaped path `valueUsed` exists to force onto
-  // a genuinely indirectly-reachable one. Must run before
-  // solveRepresentationBoundaries/narrowSignatures below, both of which read
-  // `programFacts.valueUsed` to decide exactly that.
-  t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.programIndex))
   // DictKindIndex (dict-kind-index.js): per-key kind facts for an array-literal
   // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
   // …` unroll over a constant object literal — never schema-registered, since

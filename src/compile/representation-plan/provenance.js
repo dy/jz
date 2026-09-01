@@ -537,8 +537,13 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         if (noteResult(func, func.body)) graphChanged = true
       if (scan(func.body, func, names)) graphChanged = true
     }
-    if (!indirectResult)
-      for (const name of programFacts.valueUsed) if (results.has(name)) { indirectResult = true; graphChanged = true; break }
+    if (!indirectResult) {
+      const dynamicRoots = programFacts.programIndex.getCallGraph().dynamicRootIds
+      for (let i = 0; i < dynamicRoots.length; i++) {
+        const name = programFacts.programIndex.functionById(dynamicRoots[i])?.name
+        if (name && results.has(name)) { indirectResult = true; graphChanged = true; break }
+      }
+    }
     if (scan(ast, null, globals)) graphChanged = true
     if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits)
       if (scan(init, null, globals)) graphChanged = true

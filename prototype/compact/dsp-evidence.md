@@ -46,11 +46,11 @@ The machine had about 11.6 GiB of allocated swap. Runtime timing is directional 
 The self-hosted compact benchmark includes a 64-element typed SIMD row:
 
 - compact compiler: 2,256,496 bytes
-- current full compiler: 14,480,545 bytes
+- current full compiler: 14,483,762 bytes
 - compiler artifact ratio: 6.42x smaller
-- typed row compile speedup: 12.72x
+- typed row compile speedup: 12.63x
 - typed row output: 287 bytes versus production's 568 bytes
-- overall compile-speed geomean: 37.81x
-- minimum compile speedup: 4.21x
+- overall compile-speed geomean: 36.95x
+- minimum compile speedup: 4.16x
 
 The exact integer row remains 212 bytes versus production's 120 bytes. That loss still blocks production promotion and is not offset by the typed row's win.
