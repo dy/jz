@@ -33,6 +33,7 @@ const verifyReuse = () => {
   const a = scalarCase('abi-add'), b = scalarCase('determinism-poly')
   const power = scalarCase('preeval-constant-power'), remainder = scalarCase('preeval-constant-remainder')
   const comma = scalarCase('comma-effects'), control = scalarCase('continue-labeled-outer')
+  const unsigned = scalarCase('unsigned-accumulator-wrap'), integer = scalarCase('differential-fnv-i32')
   const cases = [
     [a.source, 'add', [2, 3], 5],
     [a.source, 'add', [2, 3], 5],
@@ -41,6 +42,8 @@ const verifyReuse = () => {
     [remainder.source, 'f', [], 1],
     [comma.source, 'f', [], 2],
     [control.source, 'f', [], 30],
+    [unsigned.source, 'main', [], 4],
+    [integer.source, 'f', [1, 2, 3], 5689143],
   ]
   const runCases = (optimize) => {
     let first = null, firstSnapshot = null
@@ -84,6 +87,7 @@ const CASES = [
   ['conditional', 'export let f=x=>{x=+x;if(x>0)return x;else return -x}', [-9], 9],
   ['for-loop', 'export let f=n=>{n=+n;let s=0;for(let i=0;i<n;i++)s+=i;return s}', [100], 4950],
   ['while-loop', 'export let f=n=>{n=+n;let s=0;let i=0;while(i<n){s+=i;i++}return s}', [100], 4950],
+  ['bitwise', scalarCase('differential-fnv-i32').source, [1, 2, 3], 5689143],
 ]
 
 const median = (values) => {
@@ -95,7 +99,7 @@ const compileOnce = (module, source, compact) => {
   const instance = instantiate(module, { memory: 1024, externref: false })
   const sourcePtr = instance.memory.String(source)
   return compact
-    ? readBytes(instance, instance.exports.default(sourcePtr))
+    ? readBytes(instance, instance.exports.default(sourcePtr, instance.memory.Object({ abi: 'raw' })))
     : readBytes(instance, instance.exports.default(sourcePtr, 0, instance.memory.String('false')))
 }
 
@@ -105,9 +109,9 @@ const timedCompiler = (module, source, compact, runs = 17, warm = 5) => {
   const instance = instantiate(module, { memory: 1024, externref: false })
   const sample = () => {
     const sourcePtr = instance.memory.String(source)
-    const optPtr = compact ? 0 : instance.memory.String('false')
+    const optPtr = compact ? instance.memory.Object({ abi: 'raw' }) : instance.memory.String('false')
     const start = performance.now()
-    if (compact) readBytes(instance, instance.exports.default(sourcePtr))
+    if (compact) readBytes(instance, instance.exports.default(sourcePtr, optPtr))
     else readBytes(instance, instance.exports.default(sourcePtr, 0, optPtr))
     const elapsed = performance.now() - start
     instance.instance.exports._clear()

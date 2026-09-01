@@ -212,11 +212,14 @@ if (workerAt >= 0) {
     }
     rows.push(JSON.parse(child.stdout))
   }
-  if (process.argv.includes('--json')) process.stdout.write(`${JSON.stringify({ hashes, rows }, null, 2)}\n`)
+  const jsonOutput = process.argv.includes('--json')
+  if (jsonOutput) process.stdout.write(`${JSON.stringify({ hashes, rows }, null, 2)}\n`)
   else printResults(rows, hashes)
 
   if (process.platform === 'darwin') {
     const swap = execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8' }).trim()
-    console.log(`machine swap: ${swap}; graph timings are directional until measured on an exclusive machine`)
+    const message = `machine swap: ${swap}; graph timings are directional until measured on an exclusive machine`
+    if (jsonOutput) process.stderr.write(`${message}\n`)
+    else console.log(message)
   }
 }

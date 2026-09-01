@@ -64,13 +64,9 @@ test('assignment: *=', () => runScalarCase('assignment-mul'))
 
 test('assignment: /=', () => runScalarCase('assignment-div'))
 
-test('assignment: >>=', () => {
-  is(run('export let f = () => { let a = 256; a >>= 4; return a }').f(), 16)
-})
+test('assignment: >>=', () => runScalarCase('assignment-shr'))
 
-test('assignment: <<=', () => {
-  is(run('export let f = () => { let a = 1; a <<= 4; return a }').f(), 16)
-})
+test('assignment: <<=', () => runScalarCase('assignment-shl'))
 
 test('assignment: &=', () => {
   is(run('export let f = () => { let a = 255; a &= 0x0F; return a }').f(), 15)
@@ -84,9 +80,7 @@ test('assignment: ^=', () => {
   is(run('export let f = () => { let a = 0xFF; a ^= 0x0F; return a }').f(), 240)
 })
 
-test('assignment: >>>=', () => {
-  is(run('export let f = () => { let a = -1; a >>>= 24; return a }').f(), 255)
-})
+test('assignment: >>>=', () => runScalarCase('assignment-ushr'))
 
 test('assignment: ||= on falsy', () => {
   is(run('export let f = () => { let a = 0; a ||= 42; return a }').f(), 42)

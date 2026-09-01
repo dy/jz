@@ -260,8 +260,8 @@ Verification for this slice:
 - `npm test`: 3,894 pass, 1 skip
 - `npm run test:opt3`: 3,894 pass, 1 skip
 - `npm run test:wasi`: 3,893 pass, 1 skip
-- compact prototype after scalar control: 17 tests and 341 assertions
-- self-compiled compact benchmark: threshold pass, including raw A to A to B and constant `%` and `**`
+- compact prototype after scalar integer lowering: 22 tests and 526 assertions
+- self-compiled compact benchmark: threshold pass, including raw A to A to B, integer kernels, and constant `%` and `**`
 
 The opt0 matrix leg remains red on the standalone `test/date.js` shared-dispatch `.valueOf()` case that predates this prototype slice. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
 
@@ -282,6 +282,24 @@ Status: implemented on the isolated prototype.
 - [x] run every control case before and after watr optimization
 
 Watr 5.10.1 CSE does not invalidate expressions that read numeric local indices after a numeric-index write. The compact lowerer now presents local names derived from numeric binding IDs at the optimizer boundary, preserving numeric authority and byte-identical binaries. The general watr fix and regression are committed in sibling revision `b53c92c`. It remains unpublished because watr's separate Wasm-hosted test gate is red on its pre-existing unknown-instruction error-message case.
+
+### M1c. Scalar integer representations
+
+Status: implemented on the isolated prototype.
+
+- [x] add f64, signed-i32, and unsigned-i32 representation IDs
+- [x] infer internal direct-call result representations before final type IDs
+- [x] infer local representation and range facts in disposable function scratch
+- [x] keep JavaScript and raw host ABI parameters and exports physically f64
+- [x] lower `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`, and compound assignments
+- [x] lower `Math.imul` and `Math.clz32`
+- [x] implement exact `ToInt32` and `ToUint32` for every f64 bit pattern
+- [x] assign one ProgramIndex identity and share unknown conversion through that module-owned helper
+- [x] keep finalized WAT free of representation and range metadata
+- [x] consume unchanged rows from unsigned, math, statements, and differential tests
+- [x] preserve graph output hashes and one-slot scratch on f64-only graphs
+
+Comparison values remain rejected outside condition positions. Dynamic `%` and `**` remain rejected. The exact bitwise benchmark row emits 212 bytes versus production's 120 bytes, so this slice is proven semantically but is not eligible for production promotion yet. Typed-memory range and storage proofs must remove the general helper from proven kernels without weakening unknown-value semantics.
 
 ### M2. Production identity migration
 
@@ -382,6 +400,7 @@ No timing gathered on a swapped or loaded machine certifies release performance.
 prototype/compact/compiler.js       stage orchestrator
 prototype/compact/prepare.js        strict front-end boundary
 prototype/compact/program-index.js  numeric persistent authority
+prototype/compact/reps.js           scalar representation IDs
 prototype/compact/ops.js            source-operator classifier authority
 prototype/compact/constants.js      scalar constant-evaluation authority
 prototype/compact/lower.js          function-local scalar WAT lowering
@@ -395,15 +414,16 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Add scalar integer representations before typed memory:
+Prove typed memory with one Float64Array DSP path:
 
-1. Extend ProgramIndex representation IDs with i32 and unsigned i32 carriers.
-2. Infer integer and range facts in disposable function scratch.
-3. Add bitwise operators, shifts, and exact ToInt32 or ToUint32 boundaries.
-4. Cover the scalar rows of `unsigned.js`, `math.js`, and `differential.js` without editing their sources.
-5. Keep comparison results boxed or rejected until the dynamic-value lane owns boolean identity.
-6. Pin f64, i32, and unsigned export signatures separately.
-7. Rerun graph scaling and the self-compiled benchmark before starting Float64Array memory.
+1. Add typed construction, length, load, and store to the prepared subset.
+2. Represent proven internal data pointers as raw i32 while host ABI values remain f64.
+3. Record storage element width, relocation, and alias groups in the ProgramIndex.
+4. Infer loop ranges, purity, and global writes in disposable function scratch.
+5. Run scalar pointer cleanup and LICM before vectorization.
+6. Pin one SIMD-positive kernel and relocation, alias, range, and effect veto kernels.
+7. Compare SIMD and scalar output byte for byte, including cleanup iterations.
+8. Rerun graph scaling and the self-compiled benchmark, then stop standalone feature expansion.
 
 The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

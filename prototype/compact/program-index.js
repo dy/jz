@@ -8,12 +8,18 @@ import {
   F_BODY, F_EXPORT, F_LOCALS, F_MUTABLES, F_NAME, F_PARAMS,
   argsOf, bodyList, err, forHead, reject,
 } from './prepare.js'
-import { isBooleanLiteral } from './constants.js'
-import { LOGIC_NONE, OP_NONE, arithmeticKind, assignmentKind, comparisonKind, logicalKind } from './ops.js'
+import { constantScalar, isBooleanLiteral } from './constants.js'
+import {
+  BIT_NONE, BIT_USHR, BUILTIN_CLZ32, BUILTIN_IMUL, BUILTIN_NONE,
+  LOGIC_NONE, OP_NONE,
+  arithmeticKind, assignmentKind, bitwiseAssignmentKind, bitwiseKind, builtinKind,
+  comparisonKind, logicalKind,
+} from './ops.js'
+import { REP_F64, REP_I32, REP_U32, REP_UNKNOWN, physicalRep } from './reps.js'
 
 export const ABI_JS = 0
 export const ABI_RAW = 1
-export const REP_F64 = 1
+export { REP_F64, REP_I32, REP_U32 }
 
 export const B_PARAM = 1
 export const B_MUTABLE = 2
@@ -38,6 +44,10 @@ export const I_TYPE_PARAM_COUNT = 16
 export const I_EXPORT_FUNC = 17
 export const I_EXPORT_NAME = 18
 export const I_ABI_MODE = 19
+export const I_TYPE_RESULT_REP = 20
+export const I_EXACT_I32_WASM_ID = 21
+export const I_EXACT_I32_TYPE_ID = 22
+export const I_EXACT_I32_OWNS_TYPE = 23
 
 export const functionCount = (index) => index[I_FN_NAME].length
 
@@ -77,6 +87,18 @@ const checkCall = (node, declared, assigned, index, funcId, edges) => {
   for (let i = 0; i < args.length; i++) checkExpr(args[i], declared, assigned, index, funcId, edges)
 }
 
+const checkBuiltinCall = (node, declared, assigned, index, funcId, edges) => {
+  const builtin = builtinKind(node[1])
+  if (builtin === BUILTIN_NONE) reject(node[1], 'callee')
+  const args = argsOf(node[2])
+  const expected = builtin === BUILTIN_IMUL ? 2 : 1
+  if (args.length !== expected) {
+    const name = builtin === BUILTIN_IMUL ? 'Math.imul' : builtin === BUILTIN_CLZ32 ? 'Math.clz32' : 'builtin'
+    err(`${name} has ${args.length} arguments, expected ${expected}`)
+  }
+  for (let i = 0; i < args.length; i++) checkExpr(args[i], declared, assigned, index, funcId, edges)
+}
+
 function checkExpr(node, declared, assigned, index, funcId, edges) {
   if (typeof node === 'string') {
     const idx = localIndex(index, funcId, node)
@@ -90,6 +112,7 @@ function checkExpr(node, declared, assigned, index, funcId, edges) {
   const op = node[0]
   if (op === '()' && node.length === 2) { checkExpr(node[1], declared, assigned, index, funcId, edges); return }
   if (op === '()' && typeof node[1] === 'string') { checkCall(node, declared, assigned, index, funcId, edges); return }
+  if (op === '()') { checkBuiltinCall(node, declared, assigned, index, funcId, edges); return }
   if (op === '?' && node.length === 4) {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
     checkExpr(node[2], declared, assigned, index, funcId, edges)
@@ -104,6 +127,11 @@ function checkExpr(node, declared, assigned, index, funcId, edges) {
   if (logicalKind(op) !== LOGIC_NONE && node.length === 3) {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
     checkExpr(node[2], declared, assigned, index, funcId, edges)
+    return
+  }
+  if (bitwiseKind(op) !== BIT_NONE && (node.length === 3 || op === '~' && node.length === 2)) {
+    checkExpr(node[1], declared, assigned, index, funcId, edges)
+    if (node.length === 3) checkExpr(node[2], declared, assigned, index, funcId, edges)
     return
   }
   if ((arithmeticKind(op) !== OP_NONE || comparisonKind(op) !== OP_NONE) &&
@@ -173,7 +201,7 @@ function checkStmt(node, declared, assigned, index, funcId, edges, controls) {
     assigned[local] = true
     return
   }
-  if (assignmentKind(op) !== OP_NONE) {
+  if (assignmentKind(op) !== OP_NONE || bitwiseAssignmentKind(op) !== BIT_NONE) {
     checkAssignTarget(node[1], declared, assigned, index, funcId, true)
     checkExpr(node[2], declared, assigned, index, funcId, edges)
     return
@@ -220,7 +248,7 @@ function checkStmt(node, declared, assigned, index, funcId, edges, controls) {
     return
   }
   if (op === 'break' || op === 'continue') { checkControlTarget(node, controls); return }
-  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE) {
+  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE || bitwiseKind(op) !== BIT_NONE) {
     checkExpr(node, declared, assigned, index, funcId, edges)
     return
   }
@@ -280,17 +308,106 @@ const markReachable = (index) => {
   }
 }
 
+const expressionResultRep = (node, index, funcId) => {
+  if (!Array.isArray(node)) return REP_F64
+  const folded = constantScalar(node)
+  if (folded) return folded[1]
+  const op = node[0]
+  if (op === '()' && node.length === 2) return expressionResultRep(node[1], index, funcId)
+  if (op === '+' && node.length === 2) return expressionResultRep(node[1], index, funcId)
+  const bitwise = bitwiseKind(op)
+  if (bitwise !== BIT_NONE) return bitwise === BIT_USHR ? REP_U32 : REP_I32
+  if (op === '()' && typeof node[1] === 'string') {
+    const target = callTargetId(index, funcId, node[1])
+    return index[I_FN_RESULT_REP][target]
+  }
+  if (op === '()' && builtinKind(node[1]) !== BUILTIN_NONE) return REP_I32
+  if (op === '?' && node.length === 4 || logicalKind(op) !== LOGIC_NONE && node.length === 3) {
+    const a = expressionResultRep(node[op === '?' ? 2 : 1], index, funcId)
+    const b = expressionResultRep(node[op === '?' ? 3 : 2], index, funcId)
+    return a === REP_UNKNOWN || b === REP_UNKNOWN ? REP_UNKNOWN : a === b ? a : REP_F64
+  }
+  if (op === ',' && node.length > 2) return expressionResultRep(node[node.length - 1], index, funcId)
+  return REP_F64
+}
+
+const functionResultRep = (index, funcId) => {
+  if (index[I_FN_EXPORTED][funcId]) return REP_F64
+  const body = index[I_FN_BODY][funcId]
+  if (!Array.isArray(body) || body[0] !== '{}' && body[0] !== ';' && body[0] !== 'return')
+    return expressionResultRep(body, index, funcId)
+  const returns = []
+  const visit = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === 'return') { returns.push(node[1]); return }
+    for (let i = 1; i < node.length; i++) visit(node[i])
+  }
+  visit(body)
+  if (!returns.length) return REP_F64
+  let rep = expressionResultRep(returns[0], index, funcId)
+  for (let i = 1; i < returns.length; i++) {
+    const next = expressionResultRep(returns[i], index, funcId)
+    if (rep === REP_UNKNOWN || next === REP_UNKNOWN) rep = REP_UNKNOWN
+    else if (rep !== next) return REP_F64
+  }
+  return rep
+}
+
+const inferResultReps = (index) => {
+  const reps = index[I_FN_RESULT_REP]
+  for (let funcId = 0; funcId < functionCount(index); funcId++)
+    reps[funcId] = index[I_FN_EXPORTED][funcId] || !index[I_FN_REACHABLE][funcId] ? REP_F64 : REP_UNKNOWN
+  for (let pass = 0; pass < functionCount(index); pass++) {
+    let changed = false
+    for (let funcId = 0; funcId < functionCount(index); funcId++) {
+      if (!index[I_FN_REACHABLE][funcId] || index[I_FN_EXPORTED][funcId]) continue
+      const rep = functionResultRep(index, funcId)
+      if (rep !== REP_UNKNOWN && reps[funcId] !== rep) { reps[funcId] = rep; changed = true }
+    }
+    if (!changed) break
+  }
+  for (let funcId = 0; funcId < functionCount(index); funcId++) if (reps[funcId] === REP_UNKNOWN) reps[funcId] = REP_F64
+}
+
+const mayNeedExactI32 = (node) => {
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (bitwiseKind(op) !== BIT_NONE && !constantScalar(node)) return true
+  if (bitwiseAssignmentKind(op) !== BIT_NONE) return true
+  if (op === '()' && builtinKind(node[1]) !== BUILTIN_NONE && !constantScalar(node)) return true
+  for (let i = 1; i < node.length; i++) if (mayNeedExactI32(node[i])) return true
+  return false
+}
+
 const assignFinalIds = (index) => {
   const typeParams = index[I_TYPE_PARAM_COUNT]
+  const typeResults = index[I_TYPE_RESULT_REP]
   let wasmId = 0
   for (let funcId = 0; funcId < functionCount(index); funcId++) {
     if (!index[I_FN_REACHABLE][funcId]) continue
     const arity = index[I_FN_PARAM_COUNT][funcId]
-    let typeId = typeParams.indexOf(arity)
-    if (typeId < 0) { typeId = typeParams.length; typeParams.push(arity) }
+    const result = physicalRep(index[I_FN_RESULT_REP][funcId])
+    let typeId = -1
+    for (let i = 0; i < typeParams.length; i++) if (typeParams[i] === arity && typeResults[i] === result) { typeId = i; break }
+    if (typeId < 0) { typeId = typeParams.length; typeParams.push(arity); typeResults.push(result) }
     index[I_FN_TYPE_ID][funcId] = typeId
     index[I_FN_WASM_ID][funcId] = wasmId++
   }
+  let needsExactI32 = false
+  for (let funcId = 0; funcId < functionCount(index); funcId++)
+    if (index[I_FN_REACHABLE][funcId] && mayNeedExactI32(index[I_FN_BODY][funcId])) { needsExactI32 = true; break }
+  if (!needsExactI32) return
+  let typeId = -1
+  for (let i = 0; i < typeParams.length; i++)
+    if (typeParams[i] === 1 && typeResults[i] === REP_I32) { typeId = i; break }
+  if (typeId < 0) {
+    typeId = typeParams.length
+    typeParams.push(1)
+    typeResults.push(REP_I32)
+    index[I_EXACT_I32_OWNS_TYPE] = 1
+  }
+  index[I_EXACT_I32_TYPE_ID] = typeId
+  index[I_EXACT_I32_WASM_ID] = wasmId
 }
 
 export function buildProgramIndex(funcs, options) {
@@ -299,7 +416,7 @@ export function buildProgramIndex(funcs, options) {
   const index = [
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count),
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count).fill(0),
-    new Array(count).fill(-1), new Array(count).fill(-1), [], [], [], [], [], [], [], abi,
+    new Array(count).fill(-1), new Array(count).fill(-1), [], [], [], [], [], [], [], abi, [], -1, -1, 0,
   ]
 
   for (let funcId = 0; funcId < count; funcId++) {
@@ -337,6 +454,7 @@ export function buildProgramIndex(funcs, options) {
   }
 
   markReachable(index)
+  inferResultReps(index)
   assignFinalIds(index)
   return index
 }

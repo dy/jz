@@ -35,11 +35,12 @@
 import test from 'tst'
 import { is } from 'tst/assert.js'
 import { run, evaluate, compileSrc } from './util.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 // ───────────────────────────────────────────────── canonical uint32 boundary
 
 test('(x >>> 0) reboxes as uint32 across the export boundary', async () => {
-  const { main } = run('export let main = (x) => x >>> 0')
+  const { main } = run(scalarCase('unsigned-export-boundary').source)
   is(main(-1), 4294967295)
   is(main(-2147483648), 2147483648) // high-bit set
   is(main(0), 0)
@@ -47,7 +48,7 @@ test('(x >>> 0) reboxes as uint32 across the export boundary', async () => {
 })
 
 test('(x >>> 0) / 2^32 — canonical PRNG unit-interval idiom', () => {
-  const { main } = run('export let main = (x) => (x >>> 0) / 4294967296')
+  const { main } = run(scalarCase('unsigned-unit-interval').source)
   is(main(-1), 4294967295 / 4294967296) // 0.9999999997671694
   is(main(0), 0)
 })
@@ -55,21 +56,17 @@ test('(x >>> 0) / 2^32 — canonical PRNG unit-interval idiom', () => {
 // ───────────────────────────────────────────── unsignedResult call-chain propagation
 
 test('unsignedResult propagates through a tail-call helper', () => {
-  const { main } = run('let toU32 = (x) => x >>> 0; export let main = (x) => toU32(x)')
+  const { main } = run(scalarCase('unsigned-tail-helper').source)
   is(main(-1), 4294967295)
 })
 
 test('unsignedResult propagates through a 2-deep call chain', () => {
-  const { main } = run(`
-    let a = (x) => x >>> 0
-    let b = (x) => a(x)
-    export let main = (x) => b(x)
-  `)
+  const { main } = run(scalarCase('unsigned-tail-chain').source)
   is(main(-1), 4294967295)
 })
 
 test('unsigned result used in arithmetic at the call site widens (no wrap)', () => {
-  const { main } = run('let u = (x) => x >>> 0; export let main = (x) => u(x) + 1')
+  const { main } = run(scalarCase('unsigned-call-arithmetic').source)
   is(main(-1), 4294967296)
 })
 
@@ -78,7 +75,7 @@ test('unsigned result used in arithmetic at the call site widens (no wrap)', () 
 test('mixed signed/unsigned return tails do NOT narrow to unsigned', () => {
   // One tail is `x | 0` (signed), the other `x >>> 0` (unsigned). Narrowing the
   // whole function to unsigned would corrupt the signed branch — so it must not.
-  const { main } = run('export let main = (x) => { if (x < 0) return x | 0; return x >>> 0 }')
+  const { main } = run(scalarCase('unsigned-mixed-return').source)
   is(main(-1), -1)        // signed branch preserved
   is(main(5), 5)          // unsigned branch (small) unaffected
 })
@@ -193,7 +190,7 @@ test('unsignedness survives a local binding read outside a >>> sink', () => {
   // narrowed to a SIGNED i32 result and reboxed -1294967296 instead of
   // 3000000000 — the exact "hashing/checksum" shape named atop this file,
   // returning the accumulator bare instead of re-masking it on the way out.
-  is(run('export let main = (x) => { let u = x >>> 0; return u }').main(-1), 4294967295)
+  is(run(scalarCase('unsigned-local-return').source).main(-1), 4294967295)
   is(run('export let main = (x) => { let u = x >>> 0; return u + 1 }').main(-1), 4294967296)
   is(run('export let main = (x) => { let u = x >>> 0; return u < 5 }').main(-1), false)
 })
@@ -211,12 +208,7 @@ test('unsigned accumulator: magnitude-boundary pins (ECMA-262 §7.1.8 ToUint32)'
   // Wrap case: the accumulator crosses the 2^32 boundary through ordinary
   // addition, same as a running FNV/djb2 hash total — ToUint32 wraps it back
   // into [0, 2^32) rather than saturating or reading back negative.
-  const wrapped = run(`export let main = () => {
-    let h = 0
-    h = (h + 4294967290) >>> 0
-    h = (h + 10) >>> 0
-    return h
-  }`).main()
+  const wrapped = run(scalarCase('unsigned-accumulator-wrap').source).main()
   is(wrapped, 4)   // 4294967290 + 10 = 4294967300 ≡ 4 (mod 2^32)
 })
 

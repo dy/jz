@@ -3,6 +3,7 @@ import { is, ok, almost } from 'tst/assert.js'
 import { evaluate, run } from './util.js'
 import jz, { compile } from '../index.js'
 import { onKernel } from './_matrix.js'
+import { scalarCase } from './_scalar-core-cases.js'
 
 // Math module tests - comprehensive coverage of all Math.* methods
 
@@ -453,18 +454,21 @@ test('Math.hypot', async () => {
 // ============================================
 
 test('Math.clz32', async () => {
-  is(await evaluate('Math.clz32(1)'), 31)
-  is(await evaluate('Math.clz32(2)'), 30)
-  is(await evaluate('Math.clz32(4)'), 29)
-  is(await evaluate('Math.clz32(256)'), 23)
-  is(await evaluate('Math.clz32(0)'), 32)
+  const entry = scalarCase('math-clz32')
+  const { f } = run(entry.source)
+  for (const [, args, expected] of entry.calls) {
+    is(f(...args), expected)
+    is(await evaluate(`Math.clz32(${args[0]})`), expected)
+  }
 })
 
 test('Math.imul', async () => {
-  is(await evaluate('Math.imul(3, 4)'), 12)
-  is(await evaluate('Math.imul(5, 5)'), 25)
-  is(await evaluate('Math.imul(-1, 8)'), -8)
-  is(await evaluate('Math.imul(-1, 5)'), -5)
+  const entry = scalarCase('math-imul')
+  const { f } = run(entry.source)
+  for (const [, args, expected] of entry.calls) {
+    is(f(...args), expected)
+    is(await evaluate(`Math.imul(${args[0]}, ${args[1]})`), expected)
+  }
 })
 
 // ============================================

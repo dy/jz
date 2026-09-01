@@ -19,9 +19,10 @@ The implementation is split by lifetime:
 compiler.js       orchestration only
 prepare.js        strict syntax boundary and declaration extraction
 program-index.js  persistent numeric identities and cross-function facts
+reps.js           scalar representation IDs and physical Wasm types
 ops.js            single numeric source-operator classifier
 constants.js      pure scalar constant-evaluation authority
-lower.js          function-local AST to WAT lowering
+lower.js          function-local facts and AST to WAT lowering
 backend.js        unchanged watr optimize and compile boundary
 direct.js         frozen direct-binary control
 ```
@@ -44,6 +45,9 @@ The full migration plan and stop rules are in [`../todo.md`](../todo.md).
 - constant-condition branch and loop removal after full source validation
 - empty modules and modules with no reachable export
 - f64 `+`, `-`, `*`, `/`, unary signs, and comparisons in conditions
+- Number bitwise operators, shifts, and their compound assignments
+- exact `ToInt32` and `ToUint32` for every f64 magnitude
+- `Math.imul` and `Math.clz32`
 
 The default `abi: 'js'` contract requires every exported parameter to begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without this proof, JavaScript could concatenate where Wasm adds.
 
@@ -55,7 +59,7 @@ Production JZ must use its existing representation proofs or reject. It cannot r
 
 ## Shared scalar gate
 
-`test/_scalar-core-cases.js` owns 56 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, and `determinism.js`. Production tests and the isolated prototype import the same records. The prototype executes 69 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI reuse checks. Thirty control cases and 39 calls also run after watr optimization. No adapter edits source.
+`test/_scalar-core-cases.js` owns 74 unmodified sources selected from `statements.js`, `preeval.js`, `abi.js`, `minimal-output.js`, `differential.js`, `determinism.js`, `unsigned.js`, and `math.js`. Production tests and the isolated prototype import the same records. The prototype executes 110 pinned calls, constant-fold and output-shape checks, selected JavaScript differentials, and raw-ABI reuse checks. Thirty control cases with 39 calls and 18 integer cases with 41 calls also run after watr optimization. No adapter edits source.
 
 ## Stage contracts
 
@@ -77,10 +81,11 @@ Prepared function records are positional:
 - numeric binding IDs
 - flat direct-call edges
 - export roots and transitive reachability
-- one f64 representation ID for every current binding and result
+- f64, signed-i32, and unsigned-i32 representation IDs
+- signed and unsigned result summaries across direct call chains
 - one explicit JavaScript or raw ABI mode
 - deduplicated type IDs
-- final Wasm function IDs for reachable functions
+- final Wasm function IDs for reachable functions and the optional exact-conversion helper
 
 Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable functions and constant-dead branches are validated but not emitted.
 
@@ -88,7 +93,9 @@ The current index still retains AST bodies and source names. It does not yet hav
 
 ### Lower
 
-`lowerFunction(index, funcId)` creates one scalar WAT function. Numeric control IDs, lexical target records, reusable expression temporaries, and their high-water marks live in function scratch. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+`lowerFunction(index, funcId)` creates one scalar WAT function. Numeric control IDs, lexical target records, local representation and range facts, reusable expression temporaries, and their high-water marks live in function scratch. Values use short positional wrappers while lowering; finalized WAT owns none of those facts. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+
+Unknown f64 bitwise operands use one module-owned exact conversion helper. Constants, proven ranges, i32 locals, and direct i32 results bypass it. Signed and unsigned i32 share Wasm storage but widen through different f64 conversions. Exported JavaScript and raw ABI signatures remain f64.
 
 Graph measurements found no material lookup cost. A persistent instruction tape would retain another body representation.
 
@@ -148,17 +155,20 @@ Do not add these commands to `test/index.js` or `package.json` while the work re
 
 The graph benchmark runs the staged and frozen direct backends in fresh processes at 128, 512, and 2,048 functions. It records source, compiler, and output hashes, phase time, post-GC heap, retained WAT, and maximum function scratch. [`graph-evidence.md`](graph-evidence.md) records byte-identical output at every size, plateauing scratch, and finalized WAT as the largest staged-only linear owner.
 
-The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
+The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, integer kernels, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
 
-Latest loaded-machine result against the fresh 14,455,164-byte `dist/jz.wasm`:
+Latest loaded-machine result against the fresh 14,451,722-byte `dist/jz.wasm`:
 
-- staged compiler: 2,125,754 bytes, 6.80x smaller
-- staged source graph: 71 modules, 960,470 source bytes
-- compile-speed geomean: 64.80x
-- minimum compile speedup: 7.09x
-- emitted-size geomean: 48.75x smaller
+- staged compiler: 2,180,186 bytes, 6.63x smaller
+- staged source graph: 72 modules, 987,325 source bytes
+- compile-speed geomean: 44.14x
+- minimum compile speedup: 4.61x
+- emitted-size geomean: 27.93x smaller
 - constant modules tie production at 41 bytes
+- the exact bitwise row is 212 bytes versus production's 120 bytes
+
+The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs already remove that helper where possible. The typed-memory slice must strengthen those general proofs rather than weaken the conversion boundary.
 
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
-The machine had about 13.9 GB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.
+The machine had about 12.5 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

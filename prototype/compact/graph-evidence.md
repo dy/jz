@@ -82,3 +82,17 @@ Scalar control added lexical target scratch and watr-facing local names derived 
 | 2,048 | 4,994,768 | 2,112,936 | 1,766,264 | 38,814 |
 
 Outputs retained the earlier hashes and stayed byte-identical to the direct control. Graph functions need no control records or expression temporaries, so scratch remains one slot at every size. Named parameter annotations raise finalized function WAT from 13 to 18 nodes and add about 160 retained bytes per function. This is the measured price of adapting numeric binding IDs to watr 5.10.1's named-local optimizer contract. Remove the adapter only after the upstream numeric-local CSE fix is published and adopted.
+
+## Integer-representation rerun
+
+The integer slice added signed and unsigned result summaries, disposable local representation and range facts, and exact f64 conversion. Finalized WAT does not retain those facts. The staged compiler graph hash was `a1bd66c92c6de54b99c6feeec2a5636325a0a3992df79dab8642133356474c31`; the direct graph hash was `d6df7bf2cea69fd7bcc10efff9f555d9cd62e6a50e2272575d31302a345f89d4`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,261,464 | 668,016 | 216,472 | 2,333 |
+| 512 | 2,270,584 | 1,057,896 | 537,328 | 9,629 |
+| 2,048 | 5,209,984 | 2,112,096 | 1,925,152 | 38,814 |
+
+All output hashes remain unchanged and byte-identical between staged and direct lowering. Scratch remains one slot, with zero representation or range facts for this f64-only graph. Maximum finalized function WAT remains 18 nodes. The machine still had about 12.5 GiB of allocated swap, so heap and timing differences from the scalar-control run are directional rather than a regression claim.
+
+`--json` now keeps stdout machine-readable and reports the swap warning on stderr.

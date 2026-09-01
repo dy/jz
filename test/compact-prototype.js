@@ -6,8 +6,11 @@ import { generateDirectCallGraph } from '../prototype/compact/graph-corpus.js'
 import { lowerProgram } from '../prototype/compact/lower.js'
 import { prepareCompactAst } from '../prototype/compact/prepare.js'
 import {
-  ABI_RAW, I_ABI_MODE, I_EDGE_TARGET, I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
-  I_FN_TYPE_ID, I_FN_WASM_ID, I_TYPE_PARAM_COUNT,
+  ABI_RAW, I_ABI_MODE, I_EDGE_TARGET, I_EXACT_I32_OWNS_TYPE, I_EXACT_I32_TYPE_ID,
+  I_EXACT_I32_WASM_ID,
+  I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
+  I_FN_RESULT_REP, I_FN_TYPE_ID, I_FN_WASM_ID, I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP,
+  REP_F64, REP_I32, REP_U32,
   buildProgramIndex, functionCount,
 } from '../prototype/compact/program-index.js'
 import { parse } from '../src/parse.js'
@@ -74,6 +77,140 @@ test('compact prototype: direct calls and arithmetic updates', () => {
 
   const updated = instantiate('export let f=x=>{x=+x;let y=x;y+=2;y*=3;y-=1;y/=2;return y}')
   is(updated.f(4), 8.5)
+})
+
+test('compact prototype: exact signed and unsigned 32-bit boundaries', () => {
+  const source = `
+    export let signed = (x) => x | 0
+    export let unsigned = (x) => x >>> 0
+    export let not = (x) => ~x
+    export let and = (x, y) => x & y
+    export let or = (x, y) => x | y
+    export let xor = (x, y) => x ^ y
+    export let shl = (x, y) => x << y
+    export let shr = (x, y) => x >> y
+    export let ushr = (x, y) => x >>> y
+    export let imul = (x, y) => Math.imul(x, y)
+    export let clz = (x) => Math.clz32(x)
+  `
+  const boundaries = [
+    NaN, Infinity, -Infinity, 0, -0, 0.5, -0.5, 1, -1,
+    2147483647, 2147483648, 4294967295, 4294967296,
+    2 ** 63, -(2 ** 63), 2 ** 70 + 2 ** 20, Number.MAX_VALUE, Number.MIN_VALUE,
+  ]
+  const binaryInputs = []
+  for (const x of boundaries) for (const y of [-1, 0, 1, 31, 32, 33, NaN, Infinity, 2654435761])
+    binaryInputs.push([x, y])
+  const bitBuffer = new ArrayBuffer(8), bitView = new DataView(bitBuffer)
+  const bitInputs = []
+  let bits = 0x123456789abcdef0n
+  for (let i = 0; i < 512; i++) {
+    bits = (bits * 6364136223846793005n + 1442695040888963407n) & 0xffffffffffffffffn
+    bitView.setBigUint64(0, bits, true)
+    bitInputs.push([bitView.getFloat64(0, true)])
+  }
+  const compare = (label, inputs, actual, expected) => {
+    let mismatch = ''
+    for (const args of inputs) {
+      const got = actual(...args), want = expected(...args)
+      if (!sameNumber(got, want)) { mismatch = `${label}(${args.map(String).join(', ')}): ${got} != ${want}`; break }
+    }
+    ok(!mismatch, mismatch || `${label}: ${inputs.length} boundaries match JavaScript`)
+  }
+  for (const optimize of [false, true]) {
+    const e = instantiateRaw(source, { optimize })
+    const mode = optimize ? 'optimized' : 'plain'
+    const unaryInputs = boundaries.map(x => [x])
+    compare(`${mode} signed`, unaryInputs, e.signed, x => x | 0)
+    compare(`${mode} unsigned`, unaryInputs, e.unsigned, x => x >>> 0)
+    compare(`${mode} not`, unaryInputs, e.not, x => ~x)
+    compare(`${mode} clz32`, unaryInputs, e.clz, Math.clz32)
+    compare(`${mode} signed bit patterns`, bitInputs, e.signed, x => x | 0)
+    compare(`${mode} unsigned bit patterns`, bitInputs, e.unsigned, x => x >>> 0)
+    compare(`${mode} and`, binaryInputs, e.and, (x, y) => x & y)
+    compare(`${mode} or`, binaryInputs, e.or, (x, y) => x | y)
+    compare(`${mode} xor`, binaryInputs, e.xor, (x, y) => x ^ y)
+    compare(`${mode} shl`, binaryInputs, e.shl, (x, y) => x << y)
+    compare(`${mode} shr`, binaryInputs, e.shr, (x, y) => x >> y)
+    compare(`${mode} ushr`, binaryInputs, e.ushr, (x, y) => x >>> y)
+    compare(`${mode} imul`, binaryInputs, e.imul, Math.imul)
+  }
+})
+
+test('compact prototype: i32 representations and local facts are disposable', () => {
+  const source = 'let signed=x=>x|0;let unsigned=x=>x>>>0;export let f=x=>{let u=unsigned(x);return signed(x)+u}'
+  const index = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw' })
+  is(index[I_FN_RESULT_REP].join(','), `${REP_I32},${REP_U32},${REP_F64}`)
+  is(index[I_FN_TYPE_ID].join(','), '0,0,1')
+  is(index[I_TYPE_PARAM_COUNT].join(','), '1,1')
+  is(index[I_TYPE_RESULT_REP].join(','), `${REP_I32},${REP_F64}`)
+  is(index[I_EXACT_I32_WASM_ID], 3)
+  is(index[I_EXACT_I32_TYPE_ID], 0)
+  is(index[I_EXACT_I32_OWNS_TYPE], 0)
+  const before = JSON.stringify(index)
+  const metrics = {}
+  const wat = lowerProgram(index, metrics)
+  is(JSON.stringify(index), before)
+  ok(metrics.maxRepresentationFacts >= 1, 'representation facts are reported from function scratch')
+  ok(metrics.maxRangeFacts >= 1, 'range facts are reported from function scratch')
+  is(metrics.exactI32HelperCount, 1, 'a module owns one exact conversion helper')
+  let retainedFact = ''
+  const checkFacts = (node) => {
+    if (!Array.isArray(node)) return
+    if (Object.hasOwn(node, 'rep') || Object.hasOwn(node, 'lo') || Object.hasOwn(node, 'hi')) retainedFact = node[0]
+    for (let i = 1; i < node.length; i++) checkFacts(node[i])
+  }
+  checkFacts(wat)
+  ok(!retainedFact, retainedFact ? `final WAT retained scratch facts at ${retainedFact}` : 'final WAT owns no scratch facts')
+  const text = JSON.stringify(wat)
+  ok(text.includes('["result","i32"]'), 'internal signed and unsigned results use i32 storage')
+  ok(text.includes('f64.convert_i32_s'), 'signed result widens through signed conversion')
+  ok(text.includes('f64.convert_i32_u'), 'unsigned result widens through unsigned conversion')
+  is(new WebAssembly.Instance(new WebAssembly.Module(compileCompact(source, { abi: 'raw' }))).exports.f(-1), 4294967294)
+
+  const localOnlySource = scalarCase('assignment-shl').source
+  const localOnlyIndex = buildProgramIndex(prepareCompactAst(parse(localOnlySource)), { abi: 'raw' })
+  is(localOnlyIndex[I_EXACT_I32_OWNS_TYPE], 1)
+  const localOnlyWat = lowerProgram(localOnlyIndex)
+  is(localOnlyWat.filter(node => Array.isArray(node) && node[0] === 'type').length, 1)
+  ok(!JSON.stringify(localOnlyWat).includes('0x000fffffffffffff'), 'a proven i32 local emits no helper or helper-only type')
+
+  const localWat = JSON.stringify(compileCompact('export let f=x=>{let u=x>>>0;return u}', { abi: 'raw', wat: true }))
+  ok(localWat.includes('["local","$v1","i32"]'), 'a uint32-only local uses i32 storage')
+  const mixedWat = JSON.stringify(compileCompact('export let f=()=>{let u=-1;u>>>=24;return u}', { abi: 'raw', wat: true }))
+  ok(mixedWat.includes('["local","$v0","f64"]'), 'a mixed signed and unsigned local stays f64')
+})
+
+test('compact prototype: bitwise effects, compound assignments, and ABI conversions', () => {
+  const effects = instantiateRaw('export let f=()=>{let x=1;let y=x++|x++;return x*10+y}').f
+  is(effects(), 33)
+  is(instantiateRaw('export let f=()=>{let x=1;x++|x++;return x}').f(), 3)
+  const shifts = instantiateRaw(`export let f=()=>{
+    let a=256;a>>=4
+    let b=1;b<<=4
+    let c=-1;c>>>=24
+    let d=7;d&=3;d|=8;d^=2
+    return a*1000000+b*10000+c*10+d
+  }`).f
+  is(shifts(), 16162559)
+
+  const folded = compileCompact('export let f=()=>-1>>>0', { abi: 'raw', wat: true })
+  ok(!JSON.stringify(folded).includes('i32.shr_u'), 'constant unsigned shift folds before lowering')
+  is(instantiateRaw('export let f=()=>-1>>>0').f(), 4294967295)
+  const exactWat = JSON.stringify(compileCompact('export let f=x=>x|0', { abi: 'raw', wat: true }))
+  ok(exactWat.includes('i64.reinterpret_f64'), 'unknown f64 uses the exact bit-decomposition boundary')
+  ok(exactWat.includes('0x000fffffffffffff'), 'exact conversion retains the f64 significand mask')
+  const sharedWat = JSON.stringify(compileCompact('export let f=(x,y)=>(x|0)+(y>>>0)', { abi: 'raw', wat: true }))
+  is((sharedWat.match(/0x000fffffffffffff/g) || []).length, 1, 'unknown conversions share one module-owned helper')
+
+  const jsBoundary = instantiate('export let f=x=>{x=+x;return x>>>0}').f
+  is(jsBoundary('-1'), 4294967295)
+  is(jsBoundary(null), 0)
+  throws(() => jsBoundary(1n), error => error instanceof TypeError)
+  throws(() => compileCompact('export let f=x=>x>>>0'), /must normalize/)
+  throws(() => compileCompact('export let f=x=>Math.imul(x)', { abi: 'raw' }), /has 1 arguments, expected 2/)
+  throws(() => compileCompact('export let f=x=>Math.clz32(x,1)', { abi: 'raw' }), /has 2 arguments, expected 1/)
+  throws(() => compileCompact('export let f=x=>Math.abs(x)', { abi: 'raw' }), /unsupported/)
 })
 
 test('compact prototype: conditionals and zero-iteration loops', () => {
@@ -174,7 +311,7 @@ test('compact prototype: unmodified main-suite scalar corpus', () => {
       calls++
     }
   }
-  is(calls, 69)
+  is(calls, 110)
 
   const numericWat = compileCompact(scalarCase('preeval-numeric-chain').source, { abi: 'raw', wat: true })
   const deadIfWat = compileCompact(scalarCase('preeval-dead-if').source, { abi: 'raw', wat: true })
@@ -205,6 +342,18 @@ test('compact prototype: unmodified main-suite scalar corpus', () => {
   throws(() => compileCompact(scalarCase('abi-add').source, { abi: 'opaque' }), /unknown ABI/)
 })
 
+test('compact prototype: scalar integers remain exact after watr optimization', () => {
+  let calls = 0
+  for (const entry of scalarCasesIn('integer')) {
+    const exports = instantiateRaw(entry.source, { optimize: true })
+    for (const [name, args, expected] of entry.calls) {
+      ok(sameNumber(exports[name](...args), expected), `optimized ${entry.id}`)
+      calls++
+    }
+  }
+  is(calls, 41)
+})
+
 test('compact prototype: scalar control remains exact after watr optimization', () => {
   let calls = 0
   for (const entry of scalarCasesIn('control')) {
@@ -230,7 +379,7 @@ test('compact prototype: control effects are single-evaluation and targets are l
   const logicalIndex = buildProgramIndex(prepareCompactAst(parse(scalarCase('logical-and-chain').source)), { abi: 'raw' })
   const logicalMetrics = {}
   lowerProgram(logicalIndex, logicalMetrics)
-  is(logicalMetrics.maxTemporaryLocals, 2, 'nested value-preserving logic holds two temporary locals')
+  is(logicalMetrics.maxTemporaryLocals, 1, 'completed left-associative logic joins reuse one temporary local')
   const plainForWat = JSON.stringify(compileCompact(scalarCase('for-sum').source, { abi: 'raw', wat: true }))
   const continueForWat = JSON.stringify(compileCompact(scalarCase('continue-skip').source, { abi: 'raw', wat: true }))
   ok(!plainForWat.includes('$continue'), 'a for-loop without continue pays no continue block')
@@ -262,6 +411,23 @@ test('compact prototype: main-suite scalar compiler reuse A to A to B', () => {
   }
 })
 
+test('compact prototype: integer compiler reuse A to A to B', () => {
+  const a = scalarCase('unsigned-local-return')
+  const b = scalarCase('differential-fnv-i32')
+  for (const optimize of [false, true]) {
+    const options = { abi: 'raw', optimize }
+    const referenceB = compileCompact(b.source, options)
+    const firstA = compileCompact(a.source, options)
+    const secondA = compileCompact(a.source, options)
+    const afterA = compileCompact(b.source, options)
+    const mode = optimize ? 'optimized' : 'plain'
+    ok(sameBytes(firstA, secondA), `${mode} integer A to A is byte-identical`)
+    ok(sameBytes(referenceB, afterA), `${mode} integer B is independent of prior A compiles`)
+    is(new WebAssembly.Instance(new WebAssembly.Module(firstA)).exports.main(-1), 4294967295)
+    is(new WebAssembly.Instance(new WebAssembly.Module(afterA)).exports.f(1, 2, 3), 5689143)
+  }
+})
+
 test('compact prototype: main-suite scalar differential sources', () => {
   const jsRef = source => new Function(`${source.replace(/export\s+let\s+f\s*=/, 'let f =')}\n;return f`)()
   const inputs = [-98765.4321, -3, -0, 0, 0.5, 7, 12345.678, Infinity]
@@ -270,10 +436,15 @@ test('compact prototype: main-suite scalar differential sources', () => {
     const js = jsRef(entry.source)
     if (entry.id === 'differential-loop-accumulate') {
       for (const a of inputs) for (const b of inputs) ok(sameNumber(wasm(a, b), js(a, b)), `${entry.id}(${a}, ${b})`)
-    } else {
+    } else if (entry.id === 'differential-newton-sqrt') {
       for (const input of inputs) {
         const a = Math.abs(input) + 0.25
         ok(sameNumber(wasm(a), js(a)), `${entry.id}(${a})`)
+      }
+    } else {
+      for (let i = 0; i < inputs.length; i++) {
+        const args = Array.from({ length: js.length }, (_, j) => inputs[(i + j * 3) % inputs.length])
+        ok(sameNumber(wasm(...args), js(...args)), `${entry.id}(${args.map(String).join(', ')})`)
       }
     }
   }

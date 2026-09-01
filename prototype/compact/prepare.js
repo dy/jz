@@ -7,8 +7,10 @@
 
 import { constantNumber, constantTruth, isBooleanLiteral } from './constants.js'
 import {
+  BIT_NONE, BUILTIN_CLZ32, BUILTIN_IMUL, BUILTIN_NONE,
   LOGIC_NONE, OP_ADD, OP_NONE, OP_SUB,
-  arithmeticKind, assignmentKind, comparisonKind, hasScalarWatOpcode, logicalKind,
+  arithmeticKind, assignmentKind, bitwiseAssignmentKind, bitwiseKind, builtinKind,
+  comparisonKind, hasScalarWatOpcode, logicalKind,
 } from './ops.js'
 
 export const F_NAME = 0
@@ -206,6 +208,18 @@ function validateExpr(node) {
     for (let i = 0; i < args.length; i++) validateExpr(args[i])
     return
   }
+  if (op === '()') {
+    const builtin = builtinKind(node[1])
+    if (builtin === BUILTIN_NONE) reject(node[1], 'callee')
+    const args = argsOf(node[2])
+    const expected = builtin === BUILTIN_IMUL ? 2 : 1
+    if (args.length !== expected) {
+      const name = builtin === BUILTIN_IMUL ? 'Math.imul' : builtin === BUILTIN_CLZ32 ? 'Math.clz32' : 'builtin'
+      err(`${name} has ${args.length} arguments, expected ${expected}`)
+    }
+    for (let i = 0; i < args.length; i++) validateExpr(args[i])
+    return
+  }
   if (op === '?' && node.length === 4) {
     validateCondition(node[1])
     validateExpr(node[2])
@@ -223,6 +237,12 @@ function validateExpr(node) {
   if (logicalKind(op) !== LOGIC_NONE && node.length === 3) {
     validateExpr(node[1])
     validateExpr(node[2])
+    return
+  }
+  const bitwise = bitwiseKind(op)
+  if (bitwise !== BIT_NONE && (node.length === 3 || op === '~' && node.length === 2)) {
+    validateExpr(node[1])
+    if (node.length === 3) validateExpr(node[2])
     return
   }
   const arithmetic = arithmeticKind(op)
@@ -250,7 +270,7 @@ const validateStmt = (node) => {
     for (let i = 1; i < node.length; i++) validateExpr(node[i][2])
     return
   }
-  if (op === '=' || assignmentKind(op) !== OP_NONE) {
+  if (op === '=' || assignmentKind(op) !== OP_NONE || bitwiseAssignmentKind(op) !== BIT_NONE) {
     if (typeof node[1] !== 'string') reject(node[1], 'assignment target')
     validateExpr(node[2])
     return
@@ -293,7 +313,10 @@ const validateStmt = (node) => {
     if (node.length > 2 || node.length === 2 && typeof node[1] !== 'string') reject(node, op)
     return
   }
-  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE) { validateExpr(node); return }
+  if (op === '()' || op === ',' || logicalKind(op) !== LOGIC_NONE || bitwiseKind(op) !== BIT_NONE) {
+    validateExpr(node)
+    return
+  }
   reject(node, 'statement')
 }
 
