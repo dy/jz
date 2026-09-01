@@ -19,8 +19,8 @@ import {
   I_FN_PARAM_COUNT, I_FN_REACHABLE, I_FN_RESULT_REP, I_FN_TYPE_ID, I_FN_WASM_ID,
   I_MEMORY_BYTES, I_SIMD_ENABLED, I_STORAGE_ALIAS_GROUP, I_STORAGE_BASE, I_STORAGE_LENGTH,
   I_STORAGE_OWNER, I_STORAGE_RELOCATION, STORAGE_FIXED,
-  I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP,
-  callTargetId, functionCount, localIndex, storageCount, storageTargetId,
+  I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP, NATIVE_I32, NATIVE_U32,
+  callTargetId, expressionRepFacts, functionCount, localIndex, storageCount, storageTargetId,
 } from './program-index.js'
 import { REP_F64, REP_I32, REP_PTR, REP_U32, isI32Rep, wasmType } from './reps.js'
 
@@ -149,45 +149,6 @@ const truthyWat = (value, scratch) => isI32Rep(repOf(scratch, value))
   ? ['i32.ne', rawValue(value), ['i32.const', 0]]
   : ['f64.gt', ['f64.abs', rawValue(value)], ['f64.const', 0]]
 
-const MASK_I32 = 1
-const MASK_U32 = 2
-
-const nativeHint = (node, index, funcId, reps) => {
-  if (typeof node === 'string') {
-    const local = localIndex(index, funcId, node)
-    const rep = local < 0 ? REP_F64 : reps[local]
-    return rep === REP_I32 ? [MASK_I32, 1] : rep === REP_U32 ? [MASK_U32, 1] : [0, 0]
-  }
-  if (!Array.isArray(node)) return [0, 0]
-  const folded = constantScalar(node)
-  if (folded) {
-    if (folded[1] === REP_I32) return [MASK_I32, 1]
-    if (folded[1] === REP_U32) return [MASK_U32, 1]
-    const value = folded[0]
-    let mask = 0
-    if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) mask |= MASK_I32
-    if (Number.isInteger(value) && value >= 0 && value <= 4294967295) mask |= MASK_U32
-    return [mask, 0]
-  }
-  const op = node[0]
-  if (op === '()' && node.length === 2 || op === '+' && node.length === 2)
-    return nativeHint(node[1], index, funcId, reps)
-  const bitwise = bitwiseKind(op)
-  if (bitwise !== BIT_NONE) return [bitwise === BIT_USHR ? MASK_U32 : MASK_I32, 1]
-  if (op === '()' && typeof node[1] === 'string') {
-    const rep = index[I_FN_RESULT_REP][callTargetId(index, funcId, node[1])]
-    return rep === REP_I32 ? [MASK_I32, 1] : rep === REP_U32 ? [MASK_U32, 1] : [0, 0]
-  }
-  if (op === '()' && builtinKind(node[1]) !== BUILTIN_NONE) return [MASK_I32, 1]
-  if (op === '?' && node.length === 4 || logicalKind(op) !== LOGIC_NONE && node.length === 3) {
-    const a = nativeHint(node[op === '?' ? 2 : 1], index, funcId, reps)
-    const b = nativeHint(node[op === '?' ? 3 : 2], index, funcId, reps)
-    return [a[0] & b[0], a[1] || b[1] ? 1 : 0]
-  }
-  if (op === ',' && node.length > 2) return nativeHint(node[node.length - 1], index, funcId, reps)
-  return [0, 0]
-}
-
 const analyzeBindings = (index, funcId) => {
   const params = index[I_FN_PARAM_COUNT][funcId]
   const count = params + index[I_FN_LOCAL_COUNT][funcId]
@@ -223,18 +184,19 @@ const analyzeBindings = (index, funcId) => {
   for (let pass = 0; pass < count; pass++) {
     let changed = false
     for (let local = params; local < count; local++) {
-      let allowed = MASK_I32 | MASK_U32, demanded = false
+      let allowed = NATIVE_I32 | NATIVE_U32, demanded = false
       const localWrites = writes[local]
       for (let i = 0; i < localWrites.length; i++) {
         const forced = localWrites[i][1]
         if (forced === REP_F64) { allowed = 0; break }
-        const hint = forced === REP_I32 ? [MASK_I32, 1] : forced === REP_U32 ? [MASK_U32, 1]
-          : nativeHint(localWrites[i][0], index, funcId, reps)
-        allowed &= hint[0]
-        demanded ||= !!hint[1]
+        const facts = forced === REP_I32 ? [REP_I32, NATIVE_I32, 1]
+          : forced === REP_U32 ? [REP_U32, NATIVE_U32, 1]
+          : expressionRepFacts(localWrites[i][0], index, funcId, reps)
+        allowed &= facts[1]
+        demanded ||= !!facts[2]
       }
-      const rep = demanded && allowed === MASK_I32 ? REP_I32
-        : demanded && allowed === MASK_U32 ? REP_U32 : REP_F64
+      const rep = demanded && allowed === NATIVE_I32 ? REP_I32
+        : demanded && allowed === NATIVE_U32 ? REP_U32 : REP_F64
       if (reps[local] !== rep) { reps[local] = rep; changed = true }
     }
     if (!changed) break
@@ -380,6 +342,7 @@ const storageAddress = (name, subscript, index, funcId, scratch) => {
   const value = exactI32Bits(emitExpr(subscript, index, funcId, scratch), scratch)
   const scaled = ['i32.shl', rawValue(value), ['i32.const', 3]]
   const base = index[I_STORAGE_BASE][storageId]
+  // WAT spells i32 literals as signed values; wasm32 addresses are modulo 2^32.
   const address = base ? ['i32.add', ['i32.const', base | 0], scaled] : scaled
   return typed(scratch, address, REP_PTR, [base + range[0] * 8, base + range[1] * 8])
 }

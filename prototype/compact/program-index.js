@@ -419,28 +419,61 @@ const markReachable = (index) => {
   }
 }
 
-const expressionResultRep = (node, index, funcId) => {
-  if (!Array.isArray(node)) return REP_F64
+export const NATIVE_I32 = 1
+export const NATIVE_U32 = 2
+
+const nativeMask = (rep) => rep === REP_I32 ? NATIVE_I32 : rep === REP_U32 ? NATIVE_U32 : 0
+
+// One representation kernel serves persistent result summaries and disposable
+// local inference. The first field is the expression's current result rep. The
+// mask says which native i32 interpretation can carry it without loss; demand
+// distinguishes an operation that requires native storage from an f64 constant
+// that merely fits.
+export const expressionRepFacts = (node, index, funcId, bindingReps = null) => {
+  if (typeof node === 'string') {
+    const local = bindingReps ? localIndex(index, funcId, node) : -1
+    const rep = local < 0 ? REP_F64 : bindingReps[local]
+    const mask = nativeMask(rep)
+    return [rep, mask, mask ? 1 : 0]
+  }
+  if (!Array.isArray(node)) return [REP_F64, 0, 0]
   const folded = constantScalar(node)
-  if (folded) return folded[1]
+  if (folded) {
+    const rep = folded[1], native = nativeMask(rep)
+    if (native) return [rep, native, 1]
+    const value = folded[0]
+    let mask = 0
+    if (Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) mask |= NATIVE_I32
+    if (Number.isInteger(value) && value >= 0 && value <= 4294967295) mask |= NATIVE_U32
+    return [rep, mask, 0]
+  }
   const op = node[0]
-  if (op === '()' && node.length === 2) return expressionResultRep(node[1], index, funcId)
-  if (op === '+' && node.length === 2) return expressionResultRep(node[1], index, funcId)
+  if (op === '()' && node.length === 2 || op === '+' && node.length === 2)
+    return expressionRepFacts(node[1], index, funcId, bindingReps)
   const bitwise = bitwiseKind(op)
-  if (bitwise !== BIT_NONE) return bitwise === BIT_USHR ? REP_U32 : REP_I32
+  if (bitwise !== BIT_NONE) {
+    const rep = bitwise === BIT_USHR ? REP_U32 : REP_I32
+    return [rep, nativeMask(rep), 1]
+  }
   if (op === '()' && typeof node[1] === 'string') {
-    const target = callTargetId(index, funcId, node[1])
-    return index[I_FN_RESULT_REP][target]
+    const rep = index[I_FN_RESULT_REP][callTargetId(index, funcId, node[1])]
+    const mask = nativeMask(rep)
+    return [rep, mask, mask ? 1 : 0]
   }
-  if (op === '()' && builtinKind(node[1]) !== BUILTIN_NONE) return REP_I32
+  if (op === '()' && builtinKind(node[1]) !== BUILTIN_NONE) return [REP_I32, NATIVE_I32, 1]
   if (op === '?' && node.length === 4 || logicalKind(op) !== LOGIC_NONE && node.length === 3) {
-    const a = expressionResultRep(node[op === '?' ? 2 : 1], index, funcId)
-    const b = expressionResultRep(node[op === '?' ? 3 : 2], index, funcId)
-    return a === REP_UNKNOWN || b === REP_UNKNOWN ? REP_UNKNOWN : a === b ? a : REP_F64
+    const a = expressionRepFacts(node[op === '?' ? 2 : 1], index, funcId, bindingReps)
+    const b = expressionRepFacts(node[op === '?' ? 3 : 2], index, funcId, bindingReps)
+    const rep = a[0] === REP_UNKNOWN || b[0] === REP_UNKNOWN ? REP_UNKNOWN
+      : a[0] === b[0] ? a[0] : REP_F64
+    return [rep, a[1] & b[1], a[2] || b[2] ? 1 : 0]
   }
-  if (op === ',' && node.length > 2) return expressionResultRep(node[node.length - 1], index, funcId)
-  return REP_F64
+  if (op === ',' && node.length > 2)
+    return expressionRepFacts(node[node.length - 1], index, funcId, bindingReps)
+  return [REP_F64, 0, 0]
 }
+
+const expressionResultRep = (node, index, funcId) => expressionRepFacts(node, index, funcId)[0]
 
 const functionResultRep = (index, funcId) => {
   if (index[I_FN_EXPORTED][funcId]) return REP_F64

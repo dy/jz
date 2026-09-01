@@ -95,7 +95,7 @@ The prepared program is `[functions, storages]`. Function records are positional
 - per-function direct storage reads and writes plus transitive purity
 - one explicit scalar or SIMD profile bit
 
-Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable functions and constant-dead branches are validated but not emitted.
+Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable functions and constant-dead branches are validated but not emitted. Persistent result summaries and disposable local inference share `expressionRepFacts`; they no longer classify expression representations independently.
 
 Storage fields allocate only when the prepared program declares typed storage. The current index still retains AST bodies and source names. It does not yet have numeric schemas, general globals, closure summaries, or dynamic data owners.
 
@@ -139,7 +139,7 @@ The optimized path covers nested loops, lexical control transfer, update values,
 
 The prototype does not establish memory behavior for parsing, the production object model, stdlib realization, closures, snapshots, dynamic typed storage, or the production vectorizer's full recognizer set. It also does not prove that whole-module watr optimization fits the recursive memory target.
 
-The typed DSP proof is the final standalone feature slice. Further prototype changes are limited to regressions and evidence. New implementation work migrates proven authorities into production.
+The typed DSP proof is the final standalone feature slice. Further prototype changes are limited to regressions and evidence. The prepare, index-validation, and lowering walks therefore stay separate and frozen rather than gaining a new dispatch framework. Production migration must reuse the normalized production program and existing emitter, not copy those three subset walks. New implementation work migrates proven authorities into production.
 
 ## Promotion rule
 
@@ -173,17 +173,17 @@ The benchmark self-compiles the staged compiler. In both optimization modes, one
 
 Latest loaded-machine result against the fresh 14,457,881-byte `dist/jz.wasm`:
 
-- staged compiler: 2,257,267 bytes, 6.41x smaller
-- staged source graph: 72 modules, 1,016,669 source bytes
-- compile-speed geomean: 41.03x
-- minimum compile speedup: 4.66x
+- staged compiler: 2,256,496 bytes, 6.41x smaller
+- staged source graph: 72 modules, 1,016,501 source bytes
+- compile-speed geomean: 39.28x
+- minimum compile speedup: 4.45x
 - emitted-size geomean: 20.81x smaller
 - constant modules tie production at 41 bytes
 - the exact bitwise row is 212 bytes versus production's 120 bytes
-- the typed SIMD row compiles 15.89x faster and emits 287 bytes versus production's 568 bytes
+- the typed SIMD row compiles 15.16x faster and emits 287 bytes versus production's 568 bytes
 
 The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs remove that helper where possible. The typed row's win does not offset this per-case loss.
 
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
-The machine had about 11.4 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.
+The machine had about 12.3 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

@@ -108,3 +108,15 @@ Static typed-storage fields allocate only when a prepared program declares stora
 | 2,048 | 5,249,032 | 2,105,584 | 1,948,432 | 38,814 |
 
 All binaries retain the earlier output hashes and remain byte-identical to the direct control. Function scratch remains one slot, and finalized function WAT remains 18 nodes. The machine had about 11.4 GiB of allocated swap, so heap and timing values remain directional.
+
+## Representation-authority hardening rerun
+
+Persistent result summaries and disposable local inference now share one expression representation kernel. The staged compiler graph hash is `77408f71ad710291b0301fdbb248c5d26d029c999a27c07ff0cc43628ef74905`; the unchanged direct graph hash is `754c2c403946455813c5d82b743298fd969b603f82bfbad0a97d77e57a167adc`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,308,016 | 667,944 | 239,152 | 2,333 |
+| 512 | 2,327,880 | 1,058,424 | 557,056 | 9,629 |
+| 2,048 | 5,262,264 | 2,109,832 | 1,949,120 | 38,814 |
+
+Output hashes, maximum function WAT, and one-slot scratch remain unchanged. The machine had about 12.3 GiB of allocated swap, so heap and timing values remain directional.

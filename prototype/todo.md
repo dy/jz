@@ -319,9 +319,20 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.89x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,257,267 bytes versus 14,457,881 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.16x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,457,881 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
+
+### Prototype review hardening
+
+- [x] replace the overlapping result-representation and local-native classifiers with one shared expression fact kernel
+- [x] test both signs and multiple mantissas around IEEE exponent fields 1076 and 1107
+- [x] document signed WAT literals for modulo-2^32 storage bases
+- [x] keep the three subset grammar walks frozen instead of growing another dispatch framework
+- [x] keep the direct encoder independent
+- [x] retain measured lower-time name scans and reject a persistent numeric instruction tape
+
+Production migration reuses the normalized production program and existing emitter. It does not transplant the compact subset's grammar walks or its vestigial value-wrapper call shape.
 
 ### M2. Production identity migration
 

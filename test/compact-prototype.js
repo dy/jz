@@ -115,15 +115,27 @@ test('compact prototype: exact signed and unsigned 32-bit boundaries', () => {
     export let imul = (x, y) => Math.imul(x, y)
     export let clz = (x) => Math.clz32(x)
   `
+  const bitBuffer = new ArrayBuffer(8), bitView = new DataView(bitBuffer)
+  const floatOfBits = bits => {
+    bitView.setBigUint64(0, bits, true)
+    return bitView.getFloat64(0, true)
+  }
+  const exponentEdges = []
+  for (const exponent of [1074n, 1075n, 1076n, 1077n, 1105n, 1106n, 1107n, 1108n]) {
+    for (const mantissa of [0n, 1n, 0x8000000000000n, 0xfffffffffffffn]) {
+      const magnitude = exponent << 52n | mantissa
+      exponentEdges.push(floatOfBits(magnitude), floatOfBits(1n << 63n | magnitude))
+    }
+  }
   const boundaries = [
     NaN, Infinity, -Infinity, 0, -0, 0.5, -0.5, 1, -1,
     2147483647, 2147483648, 4294967295, 4294967296,
     2 ** 63, -(2 ** 63), 2 ** 70 + 2 ** 20, Number.MAX_VALUE, Number.MIN_VALUE,
+    ...exponentEdges,
   ]
   const binaryInputs = []
   for (const x of boundaries) for (const y of [-1, 0, 1, 31, 32, 33, NaN, Infinity, 2654435761])
     binaryInputs.push([x, y])
-  const bitBuffer = new ArrayBuffer(8), bitView = new DataView(bitBuffer)
   const bitInputs = []
   let bits = 0x123456789abcdef0n
   for (let i = 0; i < 512; i++) {
