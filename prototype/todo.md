@@ -319,20 +319,32 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 16.00x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,257,243 bytes versus 14,451,722 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.89x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,257,267 bytes versus 14,457,881 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
 ### M2. Production identity migration
 
-- [ ] define production ProgramIndex field constants and lifecycle contract
-- [ ] migrate frozen CallTargetIndex IDs and edges into it
-- [ ] delete the superseded call-target maps and writers
+- [x] define the production ProgramIndex lifecycle on `ctx.plans`
+- [x] assign stable numeric IDs to prepared and imported functions
+- [x] migrate same-module member targets to numeric IDs
+- [x] redirect every member-target reader through `resolveMemberId` and `functionById`
+- [x] delete the superseded CallTargetIndex file, maps, API, and writer
+- [x] preserve all 568 production refactor-oracle outputs byte for byte
+- [ ] move direct call edges and roots from ProgramFacts into ProgramIndex
 - [ ] add conservative dynamic-call roots and SCC summaries
 - [ ] assign final function, type, global, schema, and data IDs once
-- [ ] preserve production WAT byte-for-byte for this identity-only slice
 
-Do not migrate representations in the same change.
+First production slice verification:
+
+- native: 3,895 pass, 1 skip
+- opt3: 3,895 pass, 1 skip
+- WASI: 3,894 pass, 1 skip
+- functional self-compile: 22 tests and 212 assertions
+- refactor oracle: all 568 outputs byte-identical to `54956f0e`
+- recursive self-compile: 321 modules, 6,840,880 input bytes, 14,016,983 output bytes, 4,106,338,664 heap bytes, 188,628,632 bytes headroom
+
+The opt0 leg reaches the same pre-existing shared-dispatch `Date.valueOf()` failure after 3,894 passes and one skip. Recursive completion remains green, but its memory efficiency remains red. Do not migrate representations in the same change.
 
 ### M3. Representation and typed storage
 
@@ -438,15 +450,15 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Begin production identity migration without routing source to the prototype:
+Continue production identity migration without routing source to the prototype:
 
-1. Define production ProgramIndex field constants and lifecycle ownership in `src/compile/`.
-2. Move frozen CallTargetIndex function IDs, direct edges, roots, and final Wasm IDs into it.
-3. Redirect every current reader in one slice.
-4. Delete the superseded CallTargetIndex maps and writers in that same slice.
+1. Move direct named-call edges and export roots from ProgramFacts into ProgramIndex.
+2. Give each edge numeric caller and callee IDs while retaining AST nodes only where a mutating specialization still needs them.
+3. Redirect reachability and read-only call-graph consumers.
+4. Delete the superseded edge writer and name-keyed edge views in the same slice.
 5. Preserve production WAT byte for byte and keep representation authorities unchanged.
 6. Run focused identity and reachability tests, the full suite, matrix, self-compile, and recursive checks appropriate to the production change.
-7. Repeat the generated graph evidence against production before migrating representations.
+7. Repeat production graph evidence before adding SCC summaries.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

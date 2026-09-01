@@ -32,7 +32,7 @@ import {
   collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown,
   synthesizeComputedDispatchCallSites, readonlyParamReps, freezeCallSites, assertProgramFactsShape,
 } from '../program-facts.js'
-import { buildCallTargetIndex, releaseLiftedValueUsed } from '../call-target-index.js'
+import { buildProgramIndex, releaseLiftedValueUsed } from '../program-index.js'
 import { buildDictKindIndex } from '../dict-kind-index.js'
 import narrowSignatures, {
   specializeBimorphicTyped, specializeValKindDichotomy, speculateTypedParams, refineDynKeys,
@@ -140,26 +140,22 @@ export default function plan(ast, profiler) {
   ctx.types.arrResized = programFacts.arrResized
   ctx.types.nameEscapes = programFacts.nameEscapes
   ctx.types.literalObjectVars = programFacts.literalObjectVars
-  // CallTargetIndex (finish-order item 1, call-target-index.js): the single,
-  // frozen, same-module authority for a `.`-member call's callee. Built ONCE,
-  // here — after every AST-mutating early-plan pass above has settled and
-  // before solveRepresentationBoundaries/narrowSignatures (this function's
-  // own two callers of both, further down) or emission ever run — so every
-  // consumer reads the identical snapshot, never a pass-order-dependent
-  // partial one (the exact hazard that sank fix/shape8-member-callee, see
-  // that module's own header comment). Published on `ctx.types` alongside
-  // its sibling whole-program facts above so emit.js (which only sees `ctx`,
-  // never `programFacts`) can read it too.
-  programFacts.callTargets = t('buildCallTargetIndex', () => buildCallTargetIndex(ctx, programFacts, ast))
-  ctx.types.callTargets = programFacts.callTargets
+  // ProgramIndex identity slice: the single frozen authority for stable
+  // function IDs and same-module member-call targets. Built once after every
+  // AST-mutating early-plan pass settles and before narrowing, representation
+  // solving, or emission. Compatibility consumers project numeric IDs back to
+  // live function records through functionById; no consumer stores a second
+  // member-target table. Published on ctx.types for emission readers.
+  programFacts.programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast))
+  ctx.plans.programIndex = programFacts.programIndex
   // Computed-dispatch call-site synthesis (program-facts.js's own doc on
   // synthesizeComputedDispatchCallSites has the full reasoning): must run
-  // AFTER callTargets exists (it resolves through resolveComputed) and
+  // AFTER ProgramIndex exists (it resolves through resolveComputedIds) and
   // BEFORE anything reads programFacts.callSites for real — narrowSignatures
   // below is the first and primary reader, but materializeAutoBoxSchemas/
   // resolveClosureWidth/canSkipWholeProgramNarrowing all run first in this
   // function, so this sits right at the earliest safe point, immediately
-  // after the index itself. Mutates programFacts.callSites in place (pushes
+  // after ProgramIndex itself. Mutates programFacts.callSites in place (pushes
   // only) — the same "enrich in place, never re-collected past here"
   // contract this function's own header already documents for
   // narrowSignatures' paramReps writes.
@@ -170,12 +166,12 @@ export default function plan(ast, profiler) {
   // right place to assert no OTHER, undocumented key has snuck on too.
   // Placed after synthesizeComputedDispatchCallSites (which only enriches
   // the existing `callSites` array, never stapling a new key) so this same
-  // check also covers that call — not just callTargets above.
+  // check also covers that call, not only ProgramIndex above.
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
-  assertProgramFactsShape(programFacts, 'post-callTargets')
+  assertProgramFactsShape(programFacts, 'post-programIndex')
   // A lifted function-property write (`fn.prop = fn$prop`, prepare's own
-  // synthesis — see call-target-index.js's header) is the ONLY value-use
+  // synthesis, see program-index.js) is the ONLY value-use
   // program-facts.js's whole-program walk can ever find for `fn$prop`, since
   // the name exists nowhere else in the program by construction. Once the
   // index above independently re-derives the same fact, that write is
@@ -186,16 +182,16 @@ export default function plan(ast, profiler) {
   // a genuinely indirectly-reachable one. Must run before
   // solveRepresentationBoundaries/narrowSignatures below, both of which read
   // `programFacts.valueUsed` to decide exactly that.
-  t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.callTargets))
+  t('releaseLiftedValueUsed', () => releaseLiftedValueUsed(ctx, programFacts, programFacts.programIndex))
   // DictKindIndex (dict-kind-index.js): per-key kind facts for an array-literal
   // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
   // …` unroll over a constant object literal — never schema-registered, since
   // that mechanism only fires on a `{}`-literal AST node). Depends on
-  // callTargets.resolveComputed (the HANDLER-forwarding alias channel), so it
+  // ProgramIndex.resolveComputedIds (the HANDLER-forwarding alias channel), so it
   // must run after the index above; independent of synthesizeComputedDispatch-
   // CallSites/releaseLiftedValueUsed (neither reads nor feeds it), placed here
-  // only to keep every "built once, right after callTargets" fact together.
-  programFacts.dictKinds = t('buildDictKindIndex', () => buildDictKindIndex(ctx, programFacts, ast, programFacts.callTargets))
+  // only to keep every "built once, right after ProgramIndex" fact together.
+  programFacts.dictKinds = t('buildDictKindIndex', () => buildDictKindIndex(ctx, programFacts, ast, programFacts.programIndex))
   ctx.types.dictKinds = programFacts.dictKinds
 
   t('materializeAutoBoxSchemas', () => materializeAutoBoxSchemas(programFacts))

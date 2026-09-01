@@ -4,8 +4,8 @@
  * Stable entry point / barrel: every name this module ever exported still
  * comes from here, unchanged, so no consumer import path changes (v1
  * architecture campaign, `.work/archive/v1-architecture-campaign.md` — the
- * program-facts.js split, second step after the frozen call-target index,
- * `call-target-index.js`). The actual builders live in `program-facts/`,
+ * program-facts.js split, second step after the frozen ProgramIndex,
+ * `program-index.js`). The actual builders live in `program-facts/`,
  * one small single-purpose module per fact family, each with its own
  * explicit import list (no module imports a symbol it doesn't call).
  *
@@ -48,9 +48,9 @@
  *      cache hit as a result, not a correctness order — see analyzeBody call
  *      graph in that file for the exact `hasSchemaLiterals`/`hasMapSet` gates).
  *      `synthesizeComputedDispatchCallSites` is a separate, later entry point
- *      (plan/index.js, immediately after `buildCallTargetIndex`) that resolves
+ *      (plan/index.js, immediately after `buildProgramIndex`) that resolves
  *      `collectProgramFacts`'s own stashed `computedCallSites` candidates
- *      through the call-target index and enriches `callSites` in place — see
+ *      through ProgramIndex and enriches `callSites` in place. See
  *      its own doc comment for the two-hop (named-member / inline-arrow-member)
  *      resolution it performs.
  *   6. `program-facts/freeze.js` — `readonlyParamReps`/`freezeCallSites`/

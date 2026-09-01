@@ -46,7 +46,7 @@ const paramForwardsToReturn = (body, paramName) => returnExprs(body).some(e => e
 //
 // BOX/UNBOX admission is plain valTypeOf(node) === VAL.BIGINT — no
 // `.`-member widening needed here. kind.js's valTypeOf (VT['()']) now
-// resolves a `.`-member callee through the same frozen call-target index
+// resolves a `.`-member callee through the same frozen ProgramIndex IDs
 // this file's own calleeNameOf/resolveMemberCallee already consult, so a
 // `.`-member call proves exactly as BIGINT here as the equivalent
 // bare-name call always did — one authority, not a second proof re-derived
@@ -106,7 +106,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   // directCallBoundary consumer below (semanticOf/currentOf/plannedOf/
   // walkEdges/emittedCandidate) resolved ONLY a bare-name callee
   // (`typeof node[1] === 'string'`) — a `.`-member callee the frozen
-  // call-target index proves (Shape #8/#7-residual, `resolveMemberCallee`,
+  // ProgramIndex proves (Shape #8/#7-residual, `resolveMemberCallee`,
   // the SAME function solveBigintProvenance's own exprMay/exprRep/scan/
   // visitCallSites already use) was invisible here even when fully resolved
   // there, so a binding write like watr's own `n = i64.parse(n)` never
@@ -699,7 +699,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
         // passthrough tail fed a non-excluded argument) stands in for the
         // callee-plan lookup this branch ordinarily uses. Bare-name only by
         // construction (its own internal gate): a local closure is never
-        // reachable through a `.`-member call — call-target-index.js's own
+        // reachable through a `.`-member call, using program-index.js's own
         // property-write census never descends into any function body, so a
         // closure assigned to a property from inside one is never indexed.
         if (closureCallNeedsBox(node)) return { rep: BOXED_BIGINT, ready: true }

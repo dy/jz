@@ -37,13 +37,13 @@ import { valTypeOf } from '../kind.js'
 // EVERY function-local binding (param or let/const/var, any nesting depth)
 // to a module-wide-unique `name<T>f<fnId>_<serial>` BEFORE this pass ever
 // runs (plan/index.js calls buildDictKindIndex after prepare has fully run,
-// same stage as buildCallTargetIndex) — bare names survive only at true
+// same stage as buildProgramIndex). Bare names survive only at true
 // module scope. So a function-local target's exact spelling can never
 // collide with any other binding anywhere in the program: walking the WHOLE
 // program for every bare-string occurrence of that one spelling is exhaustive
 // and unambiguous, no separate shadow-scan needed (module-level targets —
 // rarer, but part of the task's own "local/module target" framing — reuse
-// call-target-index.js's collectShadowedNames for the identical protection
+// program-index.js's collectShadowedNames for the identical protection
 // that file already gives its own module-top-level receivers).
 //
 // A target's value can be THREADED through the program as an ordinary
@@ -56,7 +56,7 @@ import { valTypeOf } from '../kind.js'
 // direct write, so this file follows the alias through the TWO closed,
 // already-audited forwarding channels this codebase provides — a same-
 // module NAMED function's own parameter at the same position
-// (ctx.funcs.map/names), or a call-target-index.js resolveComputed member's
+// (ctx.funcs.map/names), or a ProgramIndex resolveComputedIds member's
 // own parameter at the same position (named-function member or inline-arrow
 // member, the identical substitution channel synthesizeComputedDispatch-
 // CallSites already trusts) — and recurses (bounded, memoized) into the
@@ -114,14 +114,14 @@ function matchForInShape(node) {
 
 /**
  * Build the frozen dict-kind index. Called once from plan/index.js, right after
- * buildCallTargetIndex/synthesizeComputedDispatchCallSites settle (the alias walk's
- * computed-dispatch-forwarding channel resolves through callTargets.resolveComputed).
+ * buildProgramIndex/synthesizeComputedDispatchCallSites settle (the alias walk's
+ * computed-dispatch-forwarding channel resolves through ProgramIndex.resolveComputedIds).
  *
  * @returns {{resolveDictKind: (name: string, key: string) => number|null}}
  *   `resolveDictKind` returns a VAL.* kind or null — callers MUST treat null exactly
  *   like any other unproven receiver, never guess.
  */
-export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
+export function buildDictKindIndex(ctx, programFacts, ast, programIndex) {
   const moduleInits = ctx.module.moduleInits || []
   const roots = [ast, ...moduleInits]
 
@@ -256,7 +256,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   // constArrayElems (a second, closely-related dispatch-table shape watr's real
   // program ALSO uses — build[SECTION.code](item, ctx): a POSITIONAL array-of-
   // arrows table, `const build = [ (args)=>{…}, … ]`, indexed by SECTION's own
-  // numeric VALUES rather than resolveComputed's string-keyed object literals).
+  // numeric VALUES rather than resolveComputedIds' string-keyed object literals).
   // Same roots, same discipline every producer in this file family already uses:
   // never reassigned as a whole anywhere in the program (a whole-binding
   // reassignment could make a reader see an entirely different value at runtime
@@ -281,7 +281,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
     if (result !== null) {
       // A decl's OWN `['=', NAME, init]` child is the BINDING itself, not a reassignment —
       // handled explicitly here (walk the initializer only) so it is never ALSO read as a
-      // MUTATE_OPS hit below — the exact false-positive call-target-index.js's own
+      // MUTATE_OPS hit below. This is the exact false-positive program-index.js's own
       // collectMemberWrites already documents avoiding for this identical shape.
       let reassigned = false
       const reassignScan = (node) => {
@@ -318,18 +318,18 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
     return result
   }
 
-  // Array-of-members dispatch table sibling of resolveComputed (call-target-
-  // index.js's own object-literal mechanism never covers this shape — its
+  // Array-of-members dispatch table sibling of resolveComputedIds.
+  // ProgramIndex's object-literal mechanism never covers this shape because its
   // header is explicit that it resolves `{}`-literal property writes only).
   // Each element is EITHER a same-module named-function reference or an
-  // inline arrow — resolveComputed's identical "mixed funcInfo/arrow-node"
+  // inline arrow. resolveComputedIds' identical "mixed function-ID/arrow-node"
   // contract, reused verbatim by resolveRoot below so both table shapes feed
   // the SAME downstream member-forwarding code. A sparse hole (`, ,` / an
   // explicit `undefined`/`null` element) contributes no member at that
   // position — never reached without a runtime TypeError, so it can never
   // itself be a write hazard — and does not block resolution of the OTHER,
   // real positions. Any element that is neither a function reference, an
-  // arrow, nor a hole makes the WHOLE table unresolvable (resolveComputed's
+  // arrow, nor a hole makes the WHOLE table unresolvable (resolveComputedIds'
   // own all-or-nothing discipline).
   const arrayMembersCache = new Map()
   const constArrayMembers = (name) => {
@@ -362,7 +362,7 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
   // rewritten AST, not assumed: `(...REST) => { let name = REST[0], ctx =
   // REST[1], ... ; <original body> }`. A member's params never see this
   // rewrite at all when it's dispatched by a runtime STRING key instead (an
-  // object-literal table, resolveComputed's own domain) — WASM has no
+  // object-literal table, resolveComputedIds' own domain). WASM has no
   // string-keyed call primitive, so that shape is emitted as a plain runtime
   // comparison chain calling each ORIGINAL-signature function directly, never
   // needing one shared type. Recovers the name ONLY from the exact mechanical
@@ -491,13 +491,16 @@ export function buildDictKindIndex(ctx, programFacts, ast, callTargets) {
         }
         if (o.t === 'fwdComputed') {
           // Two closed-table shapes, tried in turn: an object-literal table
-          // (call-target-index.js's own resolveComputed, watr's real HANDLER)
+          // (program-index.js's resolveComputedIds, watr's real HANDLER)
           // or a positional array-of-members table (constArrayMembers above,
-          // watr's real build[] — resolveComputed's own header is explicit
+          // watr's real build[]. resolveComputedIds' own header is explicit
           // that object literals are its whole scope, so this table shape
-          // needs its own, narrower resolver, not a wider resolveComputed).
-          const members = callTargets?.resolveComputed?.(o.objName) ?? constArrayMembers(o.objName)
-          if (!members) { poisoned = true; break }
+          // needs its own, narrower resolver, not a wider resolveComputedIds).
+          const memberIds = programIndex?.resolveComputedIds?.(o.objName)
+          const members = memberIds
+            ? memberIds.map(member => Array.isArray(member) ? member : programIndex.functionById(member))
+            : constArrayMembers(o.objName)
+          if (!members || members.some(member => !member)) { poisoned = true; break }
           let bad = false
           for (const m of members) {
             if (!Array.isArray(m)) {

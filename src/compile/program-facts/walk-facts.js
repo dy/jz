@@ -327,11 +327,10 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
         return
       }
-      // Computed-member call `TABLE[key](args)` — candidate for
-      // call-target-index.js's `resolveComputed`. Stashed here, resolved
-      // LATER (plan/index.js's synthesizeComputedDispatchCallSites, after
-      // buildCallTargetIndex runs — this walk happens BEFORE the index
-      // exists, so it can only record the candidate, never resolve it).
+      // Computed-member call `TABLE[key](args)`, a candidate for
+      // program-index.js's `resolveComputedIds`. Stashed here and resolved
+      // later by plan/index.js after buildProgramIndex runs. This walk happens
+      // before the index exists, so it can only record the candidate.
       // No `return`: every existing fact this call's own subtree would
       // otherwise contribute (nameEscapes on `key`, whatever the args
       // walk marks) still runs exactly as before this branch existed —
@@ -513,20 +512,15 @@ export function collectProgramFacts(ast) {
 }
 
 /** For each stashed computed-member call candidate (`TABLE[key](args)`,
- *  `programFacts.computedCallSites` — collected above, during the same walk
- *  as `callSites`, since `resolveComputed` didn't exist yet to resolve them
- *  on sight), resolve `TABLE` through the call-target index and, when it
- *  proves closed, synthesize call-site observations into
- *  `programFacts.callSites` so paramReps/narrowSignatures' census sees what
- *  a bare-name call would — see call-target-index.js's `resolveComputed`
- *  doc and .work/archive/string-method-guess-notes.md "Third follow-up session" for
- *  why this needs two hops, not one. Must run after `programFacts.
- *  callTargets` is built and before narrowSignatures ever reads
- *  `programFacts.callSites` (plan/index.js wires the ordering, right after
- *  `buildCallTargetIndex`).
+ *  `programFacts.computedCallSites`, collected above during the same walk
+ *  as `callSites`), resolve `TABLE` through ProgramIndex and, when it proves
+ *  closed, synthesize call-site observations into `programFacts.callSites`.
+ *  Param narrowing then sees the same arguments a bare-name call would.
+ *  This must run after `programFacts.programIndex` is built and before
+ *  narrowSignatures reads `programFacts.callSites`.
  *
- *  Two resolved-member shapes, per call-target-index.js's `foldWrite`:
- *   - a same-module named function (`resolveMember`'s own shape — e.g. an
+ *  Two resolved-member shapes, per program-index.js's `foldWrite`:
+ *   - a same-module named function (`resolveMemberId`'s own shape, e.g. an
  *     `ns.parse = parseNum`-style property): synthesized DIRECTLY, one call
  *     site per outer site, reusing that site's own `argList` verbatim — the
  *     member function receives exactly what a bare-name call to it would.
@@ -536,9 +530,9 @@ export function collectProgramFacts(ast) {
  *     (prepare.js never lifts an object-literal property's arrow into a
  *     named function — verified empirically, see the notes above), so this
  *     reaches one hop further: walks the arrow's OWN direct body (never
- *     descending into a nested `=>` for DISCOVERING calls — the same scope
- *     boundary every other closure-aware walk in this file/call-target-
- *     index.js already draws) for calls to real, named functions,
+ *     descending into a nested `=>` for DISCOVERING calls, the same scope
+ *     boundary every other closure-aware walk in this file and
+ *     program-index.js already draws) for calls to real, named functions,
  *     substitutes the arrow's OWN formal parameters with the outer site's
  *     actual argument expressions wherever they textually occur (plain,
  *     referentially-transparent AST rewriting — no evaluation, so it's
@@ -579,8 +573,9 @@ export function collectProgramFacts(ast) {
  *  node's own arguments) both skip `synthetic` sites for exactly this
  *  reason — see their own comments at the skip. */
 export function synthesizeComputedDispatchCallSites(programFacts) {
-  const resolveComputed = programFacts.callTargets?.resolveComputed
-  if (!resolveComputed || !programFacts.computedCallSites.length) return
+  const programIndex = programFacts.programIndex
+  const resolveComputedIds = programIndex?.resolveComputedIds
+  if (!resolveComputedIds || !programFacts.computedCallSites.length) return
 
   // Does `node` contain a bare-string reference to any name in `names`,
   // anywhere — INCLUDING inside a further-nested `=>` (a captured reference
@@ -647,7 +642,7 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
   // A resolved arrow member's body was ALREADY reached once before, by the
   // ordinary call-site walker (collectProgramFacts's own walkFacts, which
   // descends into every object-literal property value including an inline
-  // arrow — it has no reason not to, since resolveComputed didn't exist yet
+  // arrow because ProgramIndex does not exist during that first walk
   // to tell it this arrow is a table member). Any `NAMED_FUNC(...)` call
   // inside that arrow body it found is ALREADY sitting in
   // `programFacts.callSites`, but attributed `callerFunc: null` (module
@@ -667,10 +662,12 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
   const claimedNodes = new Set()
 
   for (const site of programFacts.computedCallSites) {
-    const members = resolveComputed(site.objName)
+    const members = resolveComputedIds(site.objName)
     if (!members) continue
     for (const member of members) {
       if (!Array.isArray(member)) {
+        const memberFunc = programIndex.functionById(member)
+        if (!memberFunc) continue
         // Named-function member: has its own real paramReps identity —
         // synthesize directly, the outer site's argList unchanged, exactly
         // like an ordinary bare-name call would. Nothing to claim: the
@@ -678,7 +675,7 @@ export function synthesizeComputedDispatchCallSites(programFacts) {
         // ordinary walker (isFuncRef declines a computed callee), so there
         // is no raw twin of THIS site to remove.
         programFacts.callSites.push({
-          callee: member.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
+          callee: memberFunc.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
         })
         continue
       }

@@ -507,7 +507,7 @@ function trySchemaClosureCall({ obj, method, parsed }) {
       // applies for its own dynamic dispatch: this property read is resolved
       // to a real closure/function value at COMPILE time (a known schema
       // slot), but WHICH function it holds is a runtime fact here — a proven
-      // same-module BigInt-returning candidate (Shape #8, call-target-index.js;
+      // same-module BigInt-returning candidate (Shape #8, program-index.js;
       // still name-guess-only for the object-literal-method-shorthand shape
       // bigintMethodTargets already covered) means the raw i64 payload needs
       // boxing when the runtime dispatch actually lands on it. Unresolved
@@ -625,6 +625,12 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
   }
 }
 
+const indexedMemberFunction = (receiver, method) => {
+  const index = ctx.plans.programIndex
+  const targetId = index?.resolveMemberId(receiver, method) ?? -1
+  return index?.functionById(targetId) ?? null
+}
+
 function bigintMethodTargets(obj, method) {
   const out = new Set()
   const addRawTarget = func => {
@@ -633,21 +639,21 @@ function bigintMethodTargets(obj, method) {
   }
   const scan = expr => {
     if (Array.isArray(expr)) {
-      const resolved = ctx.types.callTargets?.resolveMember(expr, method)
+      const resolved = indexedMemberFunction(expr, method)
       if (resolved) { addRawTarget(resolved); return }
     }
     if (typeof expr === 'string') {
       for (const name of [`${expr}$${method}`, `${expr}${T}${method}`])
         addRawTarget(ctx.funcs.map.get(name))
-      // Shape #8 (call-target-index.js): a same-module named function
-      // reached through a schema property, proven by the frozen call-target
+      // Shape #8 (program-index.js): a same-module named function
+      // reached through a schema property, proven by frozen ProgramIndex IDs
       // index rather than guessed from a naming convention — complements
       // the two name-guesses above rather than replacing them (they serve a
       // different, unrelated shape: an object-literal-method-shorthand
       // property, synthesized as a standalone function at those exact
       // names, never recorded as a write this index's own write-census
       // would see).
-      const resolved = ctx.types.callTargets?.resolveMember(expr, method)
+      const resolved = indexedMemberFunction(expr, method)
       addRawTarget(resolved)
       return
     }

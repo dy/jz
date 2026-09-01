@@ -21,7 +21,7 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
   hoist-vars.js var hoisting; arguments.js — arguments/rest lowering
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
-  compile/      analyze → infer → plan → narrow → emit; program-facts; driver (index.js)
+  compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
   optimize/     WASM IR peephole passes + vectorize.js
   wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)
@@ -48,6 +48,8 @@ cli.js          command-line driver (`jz` binary): flags → compile opts, file 
   The one hard, mechanical rule for either dialect: **never introduce a second write for a FLAT name already registered** — it used to silently overwrite the earlier handler (dropping `emitter()`'s auto-inc/argc guarantee when the earlier write was a `reg()`) with no error. It no longer can: `reg()`/`wat()`/`registerGetter()`/`bind()` (`src/ctx.js` `registerName`) refuse to register a FLAT name (no `:`) that's already occupied — by an earlier raw/`bind()` write *or* an earlier `reg()`/`wat()`/`registerGetter()` call, in either order, through either dialect — and throw immediately, naming both the module registering now and the module that got there first. A guarded `ctx.core.emit` handler clobbered by a *later, genuinely raw* (non-`bind()`) assignment — undetectable at the moment of that write, no Proxy in the self-compilable subset — is caught right after the clobbering module's `init()` returns (`verifyEmitIntegrity`, wired from `src/autoload.js` `includeModule`), by comparing the live table entry against the exact value reference `registerName` stored at registration time. **Type-qualified keys** (`.date:valueOf`, `.string:padStart`, …) are the one exemption: namespaced by design, one physical owner (the type's own module) per key, so `bind()` leaves them on the old unguarded raw write — cross-module collision there was never the hazard. What used to read as a legitimate "generic default, specific override" chain on FLAT names (e.g. `date.js`'s raw `.valueOf` over `string.js`'s `bind('.valueOf', …)`) was never actually that: it was this exact silent-collision class, and it corrupted `.valueOf()` on every unresolved-type receiver for as long as it shipped (`.work/archive/printer-trio.md`). All throw paths are exercised by `test/passes.js`'s stdlib duplicate-registration tests.
 
 **kind vs type:** `kind.js` = value family (STRING, ARRAY, …). `type.js` = WASM numeric type (i32/f64), typed-array ctor detection, integer proofs, loop-unroll helpers (the pure PTR.TYPED aux codec lives in `layout.js`). **AST walks:** use `refsName`/`refsAny`/`some` from `ast.js` — don't hand-roll name scanners.
+
+**ProgramIndex:** `src/compile/program-index.js` owns stable numeric identities for the prepared/imported function snapshot and same-module member-call targets. It is built once after source-mutating plan passes settle and published at `ctx.plans.programIndex`. Consumers resolve a numeric ID first and use `functionById` only when the existing emitter still needs the live function record. Later specialization variants still use the existing registry until final function identity migrates. Do not restore a second member-target table or name-keyed target cache.
 
 ## Architecture
 

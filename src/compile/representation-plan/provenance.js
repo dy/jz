@@ -193,7 +193,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // walks is fixed for the whole fixpoint below.
   const dispatchTables = collectDispatchTableClosures([ast, ...(ctx.module.moduleInits || [])])
   // Shape #8: a `.`-member call's callee, proven (or not) by the frozen
-  // call-target index (call-target-index.js) built once in plan/index.js
+  // ProgramIndex member-target IDs built once in plan/index.js
   // before this whole fixpoint starts. Every direct-callee branch below
   // already gates on `typeof node[1] === 'string'` (a bare name IS its own
   // callee, trivially); this gives the SAME branches a second way to name a
@@ -202,11 +202,12 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   // returns null for every other shape (computed dispatch stays on
   // dispatchTables above; an unresolved receiver/property stays exactly as
   // unresolved as it always was).
-  const callTargets = programFacts.callTargets
-  const resolveMemberCallee = calleeNode =>
-    (Array.isArray(calleeNode) && calleeNode[0] === '.' && typeof calleeNode[2] === 'string')
-      ? callTargets?.resolveMember(calleeNode[1], calleeNode[2]) ?? null
-      : null
+  const programIndex = programFacts.programIndex
+  const resolveMemberCallee = calleeNode => {
+    if (!Array.isArray(calleeNode) || calleeNode[0] !== '.' || typeof calleeNode[2] !== 'string') return null
+    const targetId = programIndex?.resolveMemberId(calleeNode[1], calleeNode[2]) ?? -1
+    return programIndex?.functionById(targetId) ?? null
+  }
 
   const namesFor = func => {
     let names = namesByFunc.get(func)
@@ -279,7 +280,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
         if (STORAGE_READ_METHODS.has(method) && typeof node[1][1] === 'string')
           return storage.has(node[1][1]) || bigintTyped.has(node[1][1])
         // Shape #8: a same-module named function reached via `.`-member call
-        // (`ns.parse(...)`) — proven, or not, by the call-target index.
+        // (`ns.parse(...)`), proven or declined by ProgramIndex.
         const resolved = resolveMemberCallee(node[1])
         return resolved ? results.has(resolved.name) : false
       }
@@ -394,7 +395,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     }
     if (op === '()') {
       // Shape #8: widen the direct-callee lookup from "bare name only" to
-      // "bare name, or a `.`-member call the call-target index resolves" —
+      // "bare name, or a `.`-member call ProgramIndex resolves":
       // every rule below (call-arg BigInt propagation, forward/backward
       // storage taint) is otherwise unchanged and equally sound for either
       // shape once `callee` names a real same-module function.
@@ -672,7 +673,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (typeof node === 'number') return true
     if (Array.isArray(node) && node[0] === 'str') return true
     if (!Array.isArray(node) || node[0] !== '()') return false
-    // Shape #9 sibling: a `.`-member callee the call-target index resolves
+    // Shape #9 sibling: a `.`-member callee ProgramIndex resolves
     // (Shape #8) is exactly as real a same-module callee as a bare name for
     // this recursion — without this, `n = i64.parse(n)` (watr's own shape)
     // can never prove its own reaching def never-bool, so a caller passing

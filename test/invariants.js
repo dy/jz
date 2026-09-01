@@ -19,6 +19,8 @@ import { GLOBALS } from '../src/prepare/index.js'
 import { run } from './util.js'
 import { onKernel } from './_matrix.js'
 import { representationStorageWriteAction } from '../src/compile/representation-plan.js'
+import { buildProgramIndex } from '../src/compile/program-index.js'
+import { parse } from '../src/parse.js'
 
 // === Helper: compile with WAT output for structural inspection ===
 const wat = (code, opts = {}) => compile(code, { ...opts, wat: true })
@@ -489,12 +491,36 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
 // before consumers" — .work/archive/program-facts-split.md §7 has the full lifecycle
 // table: paramReps/callSites are STAGED facts, published empty/raw by
 // collectProgramFacts and settled by plan()'s own round 3; programFacts
-// itself is closed-shape once callTargets is stapled on). All three pins
+// itself is closed-shape once ProgramIndex is stapled on). All three pins
 // below are white-box against the freeze.js mechanism itself, not a live
 // compile's internal state — no onKernel() guard needed, since
 // JZ_TEST_TARGET=jz.wasm only changes WHERE compilation happens, never what
 // this plain, side-effect-free module does when called directly from the host.
 // ============================================================================
+
+test('invariant: ProgramIndex owns stable numeric function and member-target identities', () => {
+  const target = { name: 'target', sig: { params: [], results: ['f64'] }, body: ['return', [null, 1]] }
+  const caller = { name: 'caller', sig: { params: [], results: ['f64'] }, body: ['return', ['()', ['.', 'ns', 'run'], null]] }
+  const funcs = [target, caller]
+  const index = buildProgramIndex({
+    module: { moduleInits: [] },
+    funcs: {
+      list: funcs,
+      map: new Map(funcs.map(func => [func.name, func])),
+      names: new Set(funcs.map(func => func.name)),
+      multiProp: new Set(),
+    },
+  }, {
+    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(),
+  }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'))
+  const targetId = index.functionIdOfName('target')
+  is(targetId, 0)
+  is(index.functionCount, 2)
+  is(index.functionById(targetId), target)
+  is(index.resolveMemberId('ns', 'run'), targetId)
+  is(index.resolveComputedIds('ns').join(','), String(targetId))
+  is(index.resolveMemberId('ns', 'missing'), -1)
+})
 
 test('invariant: readonlyParamReps exposes get (+ the .raw restore hook), not a mutator — a stray write throws', async () => {
   const { readonlyParamReps } = await import('../src/compile/program-facts.js')
@@ -530,7 +556,7 @@ test('invariant: assertProgramFactsShape rejects an undocumented programFacts ke
   const root = new URL('..', import.meta.url).pathname
   const script = `
     import { assertProgramFactsShape } from './src/compile/program-facts.js'
-    const bogus = { dynVars: new Set(), callTargets: null, notARealFact: 1 }
+    const bogus = { dynVars: new Set(), programIndex: null, notARealFact: 1 }
     assertProgramFactsShape(bogus, 'test')
     console.log('no-throw')
   `

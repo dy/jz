@@ -2332,7 +2332,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call, not a
   // bits crossed unboxed and were misread as a subnormal Number
   // (`3.5e-323`).
   //
-  // Fixed by call-target-index.js: one frozen, same-module index, built
+  // Fixed by program-index.js: one frozen, same-module index, built
   // once in plan/index.js before representation-plan.js's provenance walk
   // or narrow.js's signature narrowing ever run, proving a `.`-member call's
   // callee from whole-program property-write evidence (never a name guess).
@@ -2454,7 +2454,7 @@ test('bigint: shape #9 sibling materializes through an index-resolved member cal
   // A named function used through a property has an uncovered value ABI.
   // RepresentationPlan now admits its parameter only when the complete def
   // set is materializable, then normalizes closure ingress, body writes, and
-  // result to the same boxed contract. CallTargetIndex remains the sole
+  // result to the same boxed contract. ProgramIndex remains the sole
   // authority that proves obj.leb names this function.
   for (const optimize of [false, 2, 3]) {
     const lbl = `O${optimize || 0}`
@@ -2497,7 +2497,7 @@ test('bigint: shape #9 sibling — `.`-member callee feeds a CALLER-side binding
   // (1) buildBodyData's directCallBoundary consumers (semanticOf/currentOf/
   // plannedOf/walkEdges/emittedCandidate) gained a `calleeNameOf` helper —
   // `typeof node[1] === 'string' ? node[1] : provenance.resolveMemberCallee
-  // (node[1])?.name` — reusing the SAME frozen call-target-index resolver
+  // (node[1])?.name`, reusing the same frozen ProgramIndex resolver
   // solveBigintProvenance's own exprMay/exprRep/scan/visitCallSites already
   // use (Shape #8), so `i64.parse(n)`'s callee now resolves to `i64$parse`
   // and `currentOf` can read its proven RAW_BIGINT result. (2) That alone
@@ -3703,8 +3703,8 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   // observations (the outer computed dispatch is invisible to the call-site
   // walker; program-facts.js's own doc on synthesizeComputedDispatchCallSites
   // has the full mechanism). `instr`'s own `out` literal is genuinely,
-  // monomorphically an array at the one real call site — call-target-index.js's
-  // resolveComputed proves HANDLER closed (every property a same-module
+  // monomorphically an array at the one real call site. ProgramIndex's
+  // resolveComputedIds proves HANDLER closed (every property a same-module
   // arrow, no escape/dynWrite/shadow/rebind), and the synthesis walks `a`'s
   // own body for its call to push2, substituting `a`'s formal params with
   // `instr`'s actual arguments.
@@ -3723,8 +3723,8 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   `
   // Negative control: byte-identical shape, except HANDLER is also handed to
   // an unrelated function (`leak`) — a genuine value-escaping use (passed as
-  // an argument, not a `[]`-receiver/`__keys_ro` read) — so resolveComputed
-  // must decline the whole table, same as resolveMember already would.
+  // an argument, not a `[]`-receiver/`__keys_ro` read), so resolveComputedIds
+  // must decline the whole table, same as resolveMemberId already would.
   // push2's `buf` stays exactly as unprovable as it always was: real runtime
   // dispatch, not a wrong guess.
   const escapedSrc = `
@@ -3997,7 +3997,7 @@ test('bigint: typeof-guarded normalizer reached through a `.`-member call attach
   // — which prepare lifts into a top-level `i64$parse` function and
   // rewrites the write to `i64.parse = i64$parse` (src/prepare/index.js's
   // `'='` handler, "Function property assignment"), a shape
-  // collectMemberWrites/foldWrite (call-target-index.js) can fold exactly
+  // collectMemberWrites/foldWrite (program-index.js) can fold exactly
   // like Shape #8's object-literal write once it survives — but
   // `programFacts.nameEscapes` has no exemption for a call's OWN callee
   // position (program-facts.js's `ESCAPE_SKIP` has no `'()'` entry: "sound
@@ -4117,7 +4117,7 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
 })
 
 test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
-  // resolveComputed (call-target-index.js) resolves ONLY object-literal
+  // resolveComputedIds (program-index.js) resolves only object-literal
   // tables (its own header: property writes are `{}`-literal only) — watr's
   // real `build[SECTION.code](item, ctx)` is a numerically-indexed ARRAY of
   // arrows instead (needed for a real WASM call_indirect), which this file's
@@ -4261,7 +4261,7 @@ test('DictKindIndex: pass-order-independent — swapping the target/reader decla
 // The four pins below are ported from the shelved fix/shape8-member-callee
 // branch (.work/archive/phase-c-unification.md's "Shape #8 branch" section, retired)
 // as its own Tier-1/Tier-2 `.`-member resolver was never merged -- superseded
-// by call-target-index.js above, which fixes Shape #8 through a differently-
+// by program-index.js above, which fixes Shape #8 through a differently-
 // shaped proof. Each was re-run against MAIN's own fix (not the branch's) at
 // every optimize level and labeled by what actually happens now, not by the
 // branch's original labels.
@@ -4355,7 +4355,7 @@ test('bigint: inline closure property materializes its reassigned parameter and 
 })
 
 test('bigint: nested member `a.b.c(...)` resolves through a closed intermediate object', () => {
-  // CallTargetIndex recursively records nested object-literal paths, but only
+  // ProgramIndex recursively records nested object-literal paths, but only
   // while the root and intermediate object remain unshadowed, unreassigned,
   // nonescaping, and free of computed writes. The same frozen target feeds
   // kind, provenance, and emission; tagged results are never boxed twice.
@@ -4379,7 +4379,7 @@ test('bigint: nested member `a.b.c(...)` resolves through a closed intermediate 
   }
 })
 
-test('nested CallTargetIndex declines conflicting and computed writes', () => {
+test('nested ProgramIndex targets decline conflicting and computed writes', () => {
   for (const optimize of [false, 2, 3]) {
     const conflict = jz(`
       function a() { return 1 }

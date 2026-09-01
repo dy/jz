@@ -113,8 +113,8 @@ export function unboxBigInt(f64expr) {
  *  e.g. test/data.js's `.member`-call KNOWN-WRONG pin — never a dereference,
  *  so it cannot trap and is out of this fix's scope). */
 
-// valTypeOf (kind.js) now resolves a `.`-member callee through the frozen
-// call-target index (the same one representationActiveMaterializedRep's own
+// valTypeOf (kind.js) now resolves a `.`-member callee through frozen
+// ProgramIndex IDs (the same authority representationActiveMaterializedRep's own
 // `()` branch, above, and representation-plan.js's calleeNameOf/
 // resolveMemberCallee already consult) — a `.`-member call proves exactly
 // as BIGINT here as the equivalent bare-name call always did, so this gate

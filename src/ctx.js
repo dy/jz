@@ -55,6 +55,7 @@ export { HEAP, LAYOUT, PTR, ATOM, FORWARDING_MASK, nanPrefixHex, atomNanHex, sso
 // | transform | compile  | index.js                        | prepare, compile, emit    |
 // | features  | compile  | prepare, analyze                | compile, optimizer, stdlib factories |
 // | linkDemand| compile  | emit, modules                   | resolveIncludes()+, assemble |
+// | plans     | compile  | plan and per-function planners | analyze, emit, optimizer  |
 // | abi       | compile  | reset (makeAbi)                 | ir.js codegen, optimizer  |
 // | bridge    | compile  | reset (bridge.js)               | bridge.js → emit, modules |
 //
@@ -1030,6 +1031,7 @@ export function reset(proto, globals, bridge) {
   // loop/closure-plan reads, src/optimize/vectorize.js's loopPlanLink read)
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
+    programIndex: null,           // frozen numeric function identities and member-call targets
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → linearly-owned ordinary-function facts
     functionWorking: new WeakMap(), // handle → linearly-owned closure/start ActiveFunction frame

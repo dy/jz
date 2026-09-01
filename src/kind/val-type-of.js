@@ -3,8 +3,8 @@
  * lattice's join rules (`?:`/`&&`/`||`/`??`, `hasAmbiguousBoolMerge`) and
  * per-op value-KIND resolution, including call-node resolution for both
  * bare-name callees (`kind-traits.js`'s `calleeValType`) and same-module
- * `.`-member callees via the frozen call-target index
- * (`ctx.types.callTargets.resolveMember` — see VT['()'], phase-c-unification
+ * `.`-member callees via frozen ProgramIndex IDs
+ * (`ctx.plans.programIndex.resolveMemberId`, see VT['()'], phase-c-unification
  * shape #7-#9: this resolution must stay exactly as landed there) plus
  * method-kind dispatch (`kind-traits.js`'s `methodValType`).
  *
@@ -597,11 +597,11 @@ VT['()'] = (args) => {
   if (Array.isArray(callee) && callee[0] === '.') {
     const [, obj, method] = callee
     // Same-module `.`-member callee, proven (or not) by the frozen
-    // call-target index (call-target-index.js, built once in plan/index.js
+    // ProgramIndex member-target IDs (program-index.js, built once in plan/index.js
     // before any consumer — including this one, since valTypeOf is never
     // queried on a call node until prepare's early-plan passes run, and the
     // index is built before narrowSignatures/solveRepresentationBoundaries;
-    // an earlier query simply sees `callTargets` still undefined and falls
+    // an earlier query simply sees `programIndex` still undefined and falls
     // through below, exactly like today). This is the SAME question
     // calleeValType's bare-name tail (`ctx.funcs.map.get(callee).valResult`,
     // kind-traits.js) already answers for `f(x)` — `obj.method(x)` deserves
@@ -610,7 +610,7 @@ VT['()'] = (args) => {
     // BEFORE methodValType's builtin-method-name dispatch below: a resolved
     // same-module function is a strictly stronger, structural proof than a
     // name-only builtin-method guess (methodValType's `push` arm, e.g.,
-    // matches on the property name alone, unconditionally). resolveMember
+    // matches on the property name alone, unconditionally). resolveMemberId
     // itself refuses anything shadowed, reassigned, dynamically written, or
     // escaping the module (its own header) — an ordinary Array/Map/String/
     // TypedArray `.method()` call can never spuriously resolve here.
@@ -624,7 +624,9 @@ VT['()'] = (args) => {
     // has no vocabulary for. This is the narrower, general-purpose half of
     // that same proof: "what VAL kind does this call produce," asked and
     // answered exactly once, here, for every consumer of valTypeOf.
-    const resolved = ctx.types.callTargets?.resolveMember(obj, method)
+    const programIndex = ctx.plans.programIndex
+    const targetId = programIndex?.resolveMemberId(obj, method) ?? -1
+    const resolved = programIndex?.functionById(targetId)
     if (resolved?.valResult) return resolved.valResult
     // INVARIANT: NO `.get` short-circuit here: mapValueKindOf
     // (kind/dict-census.js) is a censusMaybeUndefinedKind-only helper —

@@ -99,12 +99,12 @@ All output hashes remain unchanged and byte-identical between staged and direct 
 
 ## Typed DSP rerun
 
-Static typed-storage fields allocate only when a prepared program declares storage. The scalar graph therefore retains null storage families and creates no range, pointer, alias, relocation, purity, or SIMD scratch facts. The staged compiler graph hash was `d26a891655166ffe5062346b09d42381b86feb6cf068469a0d5197ceb886f052`; the direct graph hash remained `d6df7bf2cea69fd7bcc10efff9f555d9cd62e6a50e2272575d31302a345f89d4`.
+Static typed-storage fields allocate only when a prepared program declares storage. The scalar graph therefore retains null storage families and creates no range, pointer, alias, relocation, purity, or SIMD scratch facts. After the production ProgramIndex identity slice, the staged compiler graph hash was `623e8107bf8c4035d1a8d717e7847a18e5c33ab5c148a2fda214218c5420e43b`; the direct graph hash was `754c2c403946455813c5d82b743298fd969b603f82bfbad0a97d77e57a167adc`.
 
 | Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
 | ---: | ---: | ---: | ---: | ---: |
-| 128 | 1,314,432 | 667,944 | 237,664 | 2,333 |
-| 512 | 2,310,448 | 1,071,224 | 555,568 | 9,629 |
-| 2,048 | 5,247,616 | 2,110,104 | 1,948,432 | 38,814 |
+| 128 | 1,301,608 | 667,912 | 244,280 | 2,333 |
+| 512 | 2,322,624 | 1,058,320 | 555,568 | 9,629 |
+| 2,048 | 5,249,032 | 2,105,584 | 1,948,432 | 38,814 |
 
-All binaries retain the earlier output hashes and remain byte-identical to the direct control. Function scratch remains one slot, and finalized function WAT remains 18 nodes. The machine had about 11.6 GiB of allocated swap, so heap and timing values remain directional.
+All binaries retain the earlier output hashes and remain byte-identical to the direct control. Function scratch remains one slot, and finalized function WAT remains 18 nodes. The machine had about 11.4 GiB of allocated swap, so heap and timing values remain directional.

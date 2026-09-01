@@ -1,8 +1,8 @@
 import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } from '../ast.js'
 import { staticObjectProps } from '../static.js'
 
-// CallTargetIndex (.work/archive/v1-architecture-campaign.md finish-order item 1) —
-// the canonical, frozen, same-module resolver for a `.`-member call's
+// ProgramIndex member-target family (.work/archive/v1-architecture-campaign.md finish-order item 1).
+// This is the canonical, frozen, same-module resolver for a `.`-member call's
 // callee, mirroring closure-plan.js's ClosureEnvPlan idiom: a fact computed
 // ONCE from the parsed program, before any analysis consumer, never mutated
 // afterward. Every existing callee-resolution site treats a bare-name call
@@ -82,7 +82,7 @@ import { staticObjectProps } from '../static.js'
 // `ctx.funcs.names`/`ctx.funcs.map` (the function `fn$prop` itself) plus a
 // negative fact in `ctx.funcs.multiProp` (`"fn.prop"`) exactly when a SECOND
 // write to the same property occurs (wrapper-composition reassignment —
-// prepare's own "Collide → fresh name" branch). `resolveMember` below falls
+// prepare's own "Collide → fresh name" branch). `resolveMemberId` below falls
 // back to these two facts when the census found no write to fold at all,
 // trusted the SAME way `tryFnPropCall`/`bigintMethodTargets` (emit.js)
 // already trust them for direct-call emission — a same-module function
@@ -97,7 +97,7 @@ import { staticObjectProps } from '../static.js'
 // position. Any alias/value escape or conflicting write poisons the nested path.
 // This is still a finite static proof, not general points-to analysis.
 
-const POISON = Symbol('call-target-index poison')
+const POISON = Symbol('program-index member poison')
 
 /** Whole-program set of names ever bound as a function parameter or a
  *  local `let`/`const`/`var` anywhere (any nesting depth, any function) —
@@ -186,9 +186,9 @@ function collectValueEscapes(ast, moduleInits, funcsList) {
 
 /** Fold one observed write's value into `table.get(name).get(prop)`. Two
  *  shapes resolve: a same-module named-function reference (`fn`, a
- *  `ctx.funcs.list` entry — the ONLY thing `resolveMember` ever hands out,
- *  its existing contract, unchanged), or an inline arrow literal (the
- *  node itself — `resolveComputed`'s addition, see its own doc; NOT a
+ *  `ctx.funcs.list` entry, converted to a numeric ID before publication),
+ *  or an inline arrow literal (the node itself, which has no named-function
+ *  identity and remains an AST value in `resolveComputedIds`), NOT a
  *  `ctx.funcs.list` entry, since prepare.js never lifts an object-literal
  *  property's arrow into one — verified empirically, not assumed: a
  *  property value is either a bare name in `funcsNames` or it stays a
@@ -198,17 +198,17 @@ function collectValueEscapes(ast, moduleInits, funcsList) {
  *  reference (function OR a different arrow node) also poisons — sticky,
  *  meet-style, matching param-reps.js's mergeParamFact/paramBigintOnly's
  *  own "disagreement → permanently unresolved" rule. Discriminating the
- *  two resolved shapes needs no tag: a `ctx.funcs.list` entry is a plain
- *  object, an arrow node is `['=>', params, body]` — `Array.isArray`
- *  tells them apart everywhere this table is read. */
-function foldWrite(table, funcsMap, funcsNames, name, prop, valueNode) {
+ *  two resolved shapes needs no tag: a named function is a numeric ID, while
+ *  an arrow node is `['=>', params, body]`. `Array.isArray` tells them apart
+ *  everywhere this table is read. */
+function foldWrite(table, functionNameIds, funcsNames, name, prop, valueNode) {
   let props = table.get(name)
   if (!props) { props = new Map(); table.set(name, props) }
   const prior = props.get(prop)
   if (prior === POISON) return
-  const resolved = isFuncRef(valueNode, funcsNames) ? funcsMap.get(valueNode)
+  const resolved = isFuncRef(valueNode, funcsNames) ? functionNameIds.get(valueNode)
     : (Array.isArray(valueNode) && valueNode[0] === '=>') ? valueNode : null
-  if (!resolved) { props.set(prop, POISON); return }
+  if (resolved == null) { props.set(prop, POISON); return }
   if (prior === undefined) { props.set(prop, resolved); return }
   if (prior !== resolved) props.set(prop, POISON)
 }
@@ -221,7 +221,7 @@ function foldWrite(table, funcsMap, funcsNames, name, prop, valueNode) {
  *  trusted for calls that follow the rebind. Root-level only: stops at
  *  `=>`, the same scope collectDispatchTableClosures already uses for its
  *  own inline-property scan (representation-plan.js). */
-function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
+function collectMemberWrites(root, table, rebound, functionNameIds, funcsNames) {
   const enter = node => {
     const op = node[0]
     if (op === '=>') return false
@@ -239,7 +239,7 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
           if (Array.isArray(d[2]) && d[2][0] === '{}') {
             const parsed = staticObjectProps(d[2].slice(1))
             if (parsed) for (let k = 0; k < parsed.names.length; k++)
-              foldWrite(table, funcsMap, funcsNames, d[1], parsed.names[k], parsed.values[k])
+              foldWrite(table, functionNameIds, funcsNames, d[1], parsed.names[k], parsed.values[k])
           }
           walkAst(d[2], { enter })
         } else walkAst(d, { enter })
@@ -251,9 +251,9 @@ function collectMemberWrites(root, table, rebound, funcsMap, funcsNames) {
       if (typeof lhs === 'string') {
         rebound.add(lhs)
       } else if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string') {
-        foldWrite(table, funcsMap, funcsNames, lhs[1], lhs[2], op === '=' ? rhs : null)
+        foldWrite(table, functionNameIds, funcsNames, lhs[1], lhs[2], op === '=' ? rhs : null)
       } else if (Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && isLiteralStr(lhs[2])) {
-        foldWrite(table, funcsMap, funcsNames, lhs[1], lhs[2][1], op === '=' ? rhs : null)
+        foldWrite(table, functionNameIds, funcsNames, lhs[1], lhs[2][1], op === '=' ? rhs : null)
       }
     }
   }
@@ -270,9 +270,9 @@ const memberPathKey = path => path.join('.')
 
 /** Collect closed nested object-literal receivers (`root.inner`) and their
  * static function-property writes. The root object still has to pass the
- * ordinary CallTargetIndex escape/shadow/dynamic-write proof; this layer adds
+ * ordinary ProgramIndex escape/shadow/dynamic-write proof; this layer adds
  * the corresponding proof for the intermediate object itself. */
-function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite, funcsMap, funcsNames) {
+function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite, functionNameIds, funcsNames) {
   const seedObject = (basePath, literal) => {
     const parsed = staticObjectProps(literal.slice(1))
     if (!parsed) return
@@ -283,7 +283,7 @@ function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite
       nestedObjects.add(key)
       const inner = staticObjectProps(value.slice(1))
       if (inner) for (let k = 0; k < inner.names.length; k++)
-        foldWrite(table, funcsMap, funcsNames, key, inner.names[k], inner.values[k])
+        foldWrite(table, functionNameIds, funcsNames, key, inner.names[k], inner.values[k])
       seedObject(path, value)
     }
   }
@@ -309,7 +309,7 @@ function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite
       if (path.length >= 3) {
         const base = memberPathKey(path.slice(0, -1))
         if (nestedObjects.has(base))
-          foldWrite(table, funcsMap, funcsNames, base, path.at(-1), op === '=' ? rhs : null)
+          foldWrite(table, functionNameIds, funcsNames, base, path.at(-1), op === '=' ? rhs : null)
       }
     } else if (Array.isArray(lhs) && lhs[0] === '[]') {
       const basePath = memberPath(lhs[1])
@@ -361,34 +361,50 @@ function collectNestedEscapes(ast, moduleInits, funcsList, nestedObjects) {
 }
 
 /**
- * Build the frozen call-target index. Called once from plan/index.js, right
- * after the early-plan AST-mutating passes (inlining/SROA/flattening/
+ * Build the frozen ProgramIndex identity and member-target slice. Called once
+ * from plan/index.js after the early-plan AST-mutating passes (inlining/SROA/flattening/
  * devirtualization) settle and before solveRepresentationBoundaries/
  * narrowSignatures run — every later plan pass and every emission site sees
  * the identical, already-closed snapshot. Never re-derived, never mutated:
  * requirement (1) of the finish-order item this file implements.
  *
- * @returns {{resolveMember: (objName: string, prop: string) => object|null,
- *   resolveComputed: (objName: string) => Array<object|Array>|null}}
- *  `resolveMember` returns the resolved function's `ctx.funcs.list` entry
- *  (same shape `ctx.funcs.map.get(name)` returns for a bare-name call) or
- *  `null` when the index cannot prove a single same-module target — callers
- *  MUST treat `null` exactly like an ordinary unresolved/dynamic callee,
- *  never guess (requirement 2). `resolveComputed` is `resolveMember`'s
- *  computed-key sibling — see its own doc below.
+ * @returns a frozen numeric identity and member-target authority.
+ *  `resolveMemberId` returns a stable function ID or -1. `functionById`
+ *  projects that ID to the live function record for compatibility consumers.
+ *  `resolveComputedIds` returns a closed mixed set of numeric named-function
+ *  IDs and inline arrow AST nodes, or null when any member is unresolved.
+ *  This first production slice indexes the prepared and imported snapshot.
+ *  Variants minted later by narrowing remain on the existing registry until
+ *  final function identity moves to ProgramIndex in a later slice.
  */
-export function buildCallTargetIndex(ctx, programFacts, ast) {
+export function buildProgramIndex(ctx, programFacts, ast) {
+  const functions = []
+  const seenFunctions = new Map()
+  const functionNameIds = new Map()
+  const addFunction = (name, func) => {
+    if (!func) return
+    let id = seenFunctions.get(func)
+    if (id === undefined) {
+      id = functions.length
+      functions.push(func)
+      seenFunctions.set(func, id)
+    }
+    if (typeof name === 'string') functionNameIds.set(name, id)
+  }
+  for (const func of ctx.funcs.list) addFunction(func.name, func)
+  for (const [name, func] of ctx.funcs.map) addFunction(name, func)
+
   const shadowed = collectShadowedNames(ast, ctx.module.moduleInits, ctx.funcs.list)
 
   const table = new Map()
   const rebound = new Set()
   const roots = [ast, ...(ctx.module.moduleInits || [])]
-  for (const root of roots) collectMemberWrites(root, table, rebound, ctx.funcs.map, ctx.funcs.names)
+  for (const root of roots) collectMemberWrites(root, table, rebound, functionNameIds, ctx.funcs.names)
 
   const nestedObjects = new Set(), nestedTable = new Map()
   const nestedRebound = new Set(), nestedDynWrite = new Set()
   for (const root of roots)
-    collectNestedMemberWrites(root, nestedObjects, nestedTable, nestedRebound, nestedDynWrite, ctx.funcs.map, ctx.funcs.names)
+    collectNestedMemberWrites(root, nestedObjects, nestedTable, nestedRebound, nestedDynWrite, functionNameIds, ctx.funcs.names)
   const nestedEscapes = collectNestedEscapes(ast, ctx.module.moduleInits, ctx.funcs.list, nestedObjects)
 
   const nameEscapes = programFacts?.nameEscapes
@@ -408,28 +424,28 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
     return !shadowed.has(name) && !rebound.has(name) && !(dynWriteVars && dynWriteVars.has(name)) && !valueEscapes.has(name)
   }
 
-  const resolveMember = (objName, prop) => {
-    if (typeof prop !== 'string') return null
+  const resolveMemberId = (objName, prop) => {
+    if (typeof prop !== 'string') return -1
     const path = memberPath(objName)
     if (path && path.length > 1) {
       const key = memberPathKey(path), root = path[0]
       if (!nestedObjects.has(key) || nestedRebound.has(key) || nestedDynWrite.has(key) ||
-          nestedEscapes.has(key) || !safeReceiver(root)) return null
-      const fn = nestedTable.get(key)?.get(prop)
-      return fn && fn !== POISON && !Array.isArray(fn) ? fn : null
+          nestedEscapes.has(key) || !safeReceiver(root)) return -1
+      const targetId = nestedTable.get(key)?.get(prop)
+      return Number.isInteger(targetId) ? targetId : -1
     }
-    if (typeof objName !== 'string') return null
+    if (typeof objName !== 'string') return -1
     const isFuncBase = ctx.funcs.names.has(objName)
-    if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return null
-    const fn = table.get(objName)?.get(prop)
-    // Only a named-function resolution is `resolveMember`'s contract — an
-    // arrow-node resolution (foldWrite's other resolved shape, added for
-    // resolveComputed below) is deliberately declined here, unchanged from
-    // before that addition: nothing that calls resolveMember expects (or
+    if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return -1
+    const targetId = table.get(objName)?.get(prop)
+    // Only a named-function resolution is `resolveMemberId`'s contract. An
+    // arrow-node resolution (foldWrite's other resolved shape, retained for
+    // resolveComputedIds below) is deliberately declined here: nothing that
+    // asks for one numeric function identity expects (or
     // could use) a bare AST node in place of a ctx.funcs.list entry.
-    if (fn === POISON || Array.isArray(fn)) return null
-    if (fn) return fn
-    if (!isFuncBase) return null
+    if (targetId === POISON || Array.isArray(targetId)) return -1
+    if (Number.isInteger(targetId)) return targetId
+    if (!isFuncBase) return -1
     // Lifted function-property fallback (see header) — no write survived for
     // the census above to fold (flattenFuncNamespaces dropped it outright),
     // so resolve directly off prepare's own witnesses: same single-write
@@ -437,15 +453,15 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
     // same `objName.prop`, the identical fact `tryFnPropCall`/
     // `bigintMethodTargets` already gate on), same `${objName}$${prop}` name
     // emission's own direct-call path uses.
-    if (ctx.funcs.multiProp.has(`${objName}.${prop}`)) return null
-    return ctx.funcs.map.get(`${objName}$${prop}`) ?? null
+    if (ctx.funcs.multiProp.has(`${objName}.${prop}`)) return -1
+    return functionNameIds.get(`${objName}$${prop}`) ?? -1
   }
 
   /**
-   * Computed-member-call sibling of `resolveMember`: `TABLE[key](args)`
+   * Computed-member-call sibling of `resolveMemberId`: `TABLE[key](args)`
    * where `key` is not statically known. Resolves to the closed SET of
    * every one of `objName`'s properties — a same-module named function
-   * (`resolveMember`'s own shape) or an inline arrow literal (the `['=>',
+   * (`resolveMemberId`'s named-function shape) or an inline arrow literal (the `['=>',
    * params, body]` node — watr's actual `HANDLER` shape, every property an
    * arrow literal, none a reference to a pre-existing declared function;
    * see .work/archive/string-method-guess-notes.md "Third follow-up session" for
@@ -455,18 +471,18 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
    * the same property: `foldWrite`'s POISON). "Closed" here means what it
    * means throughout this file: every property this walk can see is
    * accounted for, under the IDENTICAL `safeReceiver` eligibility
-   * (shadowed/rebound/escapes/dynWriteVars) `resolveMember` already
+   * (shadowed/rebound/escapes/dynWriteVars) `resolveMemberId` already
    * applies — a table with even one dynamically-written or non-function
    * property, or that itself escapes/reassigns/shadows, resolves nothing,
    * same fail-closed discipline as everywhere else in this file. An empty
    * table (no property ever statically folded — e.g. a non-static-key
    * object literal, `staticObjectProps` returning null) also resolves
-   * nothing: `resolveComputed` never claims a set it has zero evidence
-   * for. Callers get back a MIXED array (funcInfo objects and/or arrow
+   * nothing: `resolveComputedIds` never claims a set it has zero evidence
+   * for. Callers get back a mixed array (numeric function IDs and/or arrow
    * nodes) and must discriminate with `Array.isArray` per element, exactly
    * as `foldWrite`'s own doc above does.
    */
-  const resolveComputed = (objName) => {
+  const resolveComputedIds = (objName) => {
     if (typeof objName !== 'string' || !safeReceiver(objName)) return null
     const props = table.get(objName)
     if (!props || !props.size) return null
@@ -478,13 +494,23 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
     return members
   }
 
-  return Object.freeze({ resolveMember, resolveComputed })
+  const functionById = id => Number.isInteger(id) && id >= 0 && id < functions.length ? functions[id] : null
+  const functionIdOfName = name => functionNameIds.get(name) ?? -1
+
+  Object.freeze(functions)
+  return Object.freeze({
+    functionCount: functions.length,
+    functionById,
+    functionIdOfName,
+    resolveMemberId,
+    resolveComputedIds,
+  })
 }
 
 /**
  * Release `programFacts.valueUsed` of a lifted-function-property name whose
  * only possible value-use is its own defining write. Called once from
- * plan/index.js, immediately after `buildCallTargetIndex` — before
+ * plan/index.js, immediately after `buildProgramIndex` and before
  * `solveRepresentationBoundaries`/`narrowSignatures` (representation-plan.js's
  * `makeBoundaryData`) ever read `valueUsed` to decide `uncovered` for a
  * function's boundary plan.
@@ -499,7 +525,7 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
  * (`store[0] = pick3`, callable through an unknown later dispatch), but this
  * ONE write is not that: it is prepare's own bookkeeping, and every call
  * this index can trace to it goes through the SAME direct `.`-property path
- * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMember`
+ * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMemberId`
  * independently re-derives the identical `(base, prop) → fn$prop` fact —
  * meaning `base` passed this file's own escape/shadow/reassignment proof —
  * the write is provably fully covered: no truly indirect/closure call can
@@ -517,16 +543,17 @@ export function buildCallTargetIndex(ctx, programFacts, ast) {
  * `base` itself a same-module function declaration, carries the "cannot
  * exist anywhere else" guarantee this release depends on.
  */
-export function releaseLiftedValueUsed(ctx, programFacts, callTargets) {
+export function releaseLiftedValueUsed(ctx, programFacts, programIndex) {
   const valueUsed = programFacts?.valueUsed
-  if (!valueUsed || !valueUsed.size || !callTargets) return
+  if (!valueUsed || !valueUsed.size || !programIndex) return
   const release = []
   for (const name of valueUsed) {
     const cut = name.lastIndexOf('$')
     if (cut <= 0 || cut === name.length - 1) continue
     const base = name.slice(0, cut), prop = name.slice(cut + 1)
     if (!ctx.funcs.names.has(base)) continue
-    if (callTargets.resolveMember(base, prop)?.name === name) release.push(name)
+    const targetId = programIndex.resolveMemberId(base, prop)
+    if (programIndex.functionById(targetId)?.name === name) release.push(name)
   }
   for (const name of release) valueUsed.delete(name)
 }

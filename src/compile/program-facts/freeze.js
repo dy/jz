@@ -13,10 +13,10 @@
  *  2. `programFacts` itself is an OPEN BAG — `collectProgramFacts` returns a
  *     plain object with a fixed, documented key set, but nothing stops a
  *     later pass from stapling on an undocumented new one the way
- *     `plan/index.js` deliberately does for `callTargets`. `FACT_KEYS` +
+ *     `plan/index.js` deliberately does for `programIndex`. `FACT_KEYS` +
  *     `assertProgramFactsShape` close that gap with an allowlist scan.
  *
- * SUBSET-SAFE BY CONSTRUCTION, same discipline as `call-target-index.js` and
+ * SUBSET-SAFE BY CONSTRUCTION, same discipline as `program-index.js` and
  * `session-views.js` (this module sits in the self-hosted kernel's own
  * module graph — reachable from scripts/self.js via compile/index.js →
  * plan() → program-facts.js's barrel — so it is compiled BY jz, not merely
@@ -31,8 +31,7 @@
  *    function-plan.js:135 names the identical asymmetry as an
  *    already-accepted tradeoff elsewhere). `freezeCallSites` inherits this:
  *    real protection in `node test/index.js`, inert-but-harmless in
- *    `dist/jz.wasm` — matching `call-target-index.js`'s own
- *    `Object.freeze({resolveMember})`, already shipping.
+ *    `dist/jz.wasm`, matching `program-index.js`'s frozen method record.
  *  - `Object.seal`/`Object.preventExtensions` are not registered anywhere in
  *    `module/*.js` — calling either from kernel-reachable code risks an
  *    outright self-host compile failure (the `Object.defineProperty`
@@ -44,8 +43,7 @@
  * lookup, not from any freeze/trap primitive: the returned object simply has
  * no `.set`, so a caller that reaches for one gets a plain "is not a
  * function" TypeError — identical behavior natively and self-hosted, the
- * same idiom `call-target-index.js`'s `Object.freeze({resolveMember})`
- * already proves self-hostable.
+ * same idiom `program-index.js` already proves self-hostable.
  *
  * @module program-facts/freeze
  */
@@ -57,15 +55,15 @@
  *  `TABLE[key](args)` candidates `synthesizeComputedDispatchCallSites`
  *  resolves into real `callSites` entries — see that function's own doc)
  *  plus two staple-on keys `plan/index.js` adds afterward, both right after
- *  `buildCallTargetIndex`: `callTargets` itself (§7.1 — at the time of that
+ *  `buildProgramIndex`: `programIndex` itself (§7.1, at the time of that
  *  audit, grep-verified the ONLY such site) and `dictKinds`
  *  (`buildDictKindIndex`, dict-kind-index.js — added later, same
  *  fix/string-method-guess branch, same shape: a whole-program index built
  *  once and stapled on for emit.js/narrow.js to read via `ctx.types`, never
  *  read back off `programFacts` itself past this file's own return). `plan/
  *  index.js`'s own `assertProgramFactsShape` call sits BETWEEN the two
- *  staples (right after `callTargets`, before `dictKinds`), so it only ever
- *  checks the `callTargets`-only snapshot today — `dictKinds` is listed here
+ *  staples (right after `programIndex`, before `dictKinds`), so it only ever
+ *  checks the ProgramIndex-only snapshot today. `dictKinds` is listed here
  *  for the allowlist's own accuracy, not because any call currently checks a
  *  state where it's present. Any OTHER top-level key appearing on
  *  `programFacts` is an undocumented producer that bypassed this file's own
@@ -75,7 +73,7 @@ export const FACT_KEYS = new Set([
   'computedCallSites',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasMapSet', 'hasBigint', 'writtenProps', 'literalWriteKeys', 'arrResized',
-  'nameEscapes', 'literalObjectVars', 'callTargets', 'dictKinds',
+  'nameEscapes', 'literalObjectVars', 'programIndex', 'dictKinds',
 ])
 
 /** Read-only view of a `paramReps`-shaped `Map<funcName, Map<paramIdx, rep>>`
@@ -126,7 +124,7 @@ export function freezeCallSites(callSites) {
  *  near the 0.5%-of-compile-time bar for staying debug-only). Throws if
  *  `programFacts` carries any top-level key outside `FACT_KEYS` — the
  *  container-level twin of the two Map/Array freezes above, catching a
- *  future undocumented staple-on the way `callTargets` itself was added
+ *  future undocumented staple-on the way `programIndex` itself was added
  *  deliberately (§7.1) — now a loud error in every build, not only under the
  *  env flag. */
 export function assertProgramFactsShape(programFacts, label) {
