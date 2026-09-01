@@ -593,12 +593,11 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Production function identity is closed: concrete Wasm function IDs freeze the registry order once after `finalizeVariantIdentities`, and emission, wrapper synthesis, and late export metadata read that order. Next:
+Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
-1. Assign final type, global, schema, and data IDs once, closing each space with one writer.
-2. Continue M3 with family 3, non-BigInt parameter and result ABI, deleting its previous plan writer in the same slice.
-3. Preserve production WAT byte for byte while representation authorities migrate.
-4. Record recursive headroom and compiler artifact size for every slice.
+1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels.
+2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is blocked by whole-program analyze consumers: structInline, unionInline, and union-cursor cloning read every function's settled reps before any emission. Express those demands as compact summaries first (the M5 item), or scope the first lifetime slice to a window no whole-program pass reads.
+3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 
