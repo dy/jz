@@ -227,7 +227,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
-    propMap: new Map(), valueUsed: new Set(), callSites: [], computedCallSites: [],
+    propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -258,7 +258,7 @@ function mergeWalkFacts(into, from) {
     if (!into.propMap.has(obj)) into.propMap.set(obj, new Set())
     for (const p of props) into.propMap.get(obj).add(p)
   }
-  for (const v of from.valueUsed) into.valueUsed.add(v)
+  for (const v of from.addressTakenNames) into.addressTakenNames.add(v)
   into.callSites.push(...from.callSites)
   into.computedCallSites.push(...from.computedCallSites)
 }
@@ -322,7 +322,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         }
         for (let i = 2; i < node.length; i++) {
           const a = node[i]
-          if (isFuncRef(a, ctx.funcs.names)) acc.valueUsed.add(a)
+          if (isFuncRef(a, ctx.funcs.names)) acc.addressTakenNames.add(a)
           else walkFacts(a, true, inArrow, caller)
         }
         return
@@ -346,7 +346,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         for (let i = 1; i < node.length; i++) {
           const decl = node[i]
           if (Array.isArray(decl) && decl[0] === '=' && decl.length >= 3) {
-            // nameEscapes: this branch hand-walks the decl's parts (valueUsed +
+            // nameEscapes: this branch hand-walks the decl's parts (addressTakenNames +
             // targeted RHS recursion below) instead of recursing into `decl` as
             // a whole node via walkFacts — so `decl` itself never reaches
             // observeNodeFacts's generic per-arg escape-marking loop the way a
@@ -369,13 +369,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
             const name = decl[1]
             if (typeof name === 'string' && ctx.funcs.names.has(name)) {
               const isFuncLit = Array.isArray(decl[2]) && decl[2][0] === '=>'
-              if (isFuncLit || caller?.name !== name) acc.valueUsed.add(name)
+              if (isFuncLit || caller?.name !== name) acc.addressTakenNames.add(name)
             }
             // A bare func-ref RHS (`let c = taylor` — the fn-attached-memo idiom)
             // is a VALUE use: resolveClosureWidth must size the uniform ABI to the
             // referenced function's full arity, or its boundary trampoline forwards
             // $__a{k} slots it never declared. Mirrors the '=' handler below.
-            if (isFuncRef(decl[2], ctx.funcs.names)) acc.valueUsed.add(decl[2])
+            if (isFuncRef(decl[2], ctx.funcs.names)) acc.addressTakenNames.add(decl[2])
             else walkFacts(decl[2], true, inArrow, caller)
           } else walkFacts(decl, true, inArrow, caller)
         }
@@ -385,13 +385,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         // RHS may be a bare function reference (`store[0] = pick3`) — record it as a
         // value use so resolveClosureWidth sizes the closure ABI to its arity. Matches
         // the func-ref handling in the call/let/general cases below.
-        if (isFuncRef(node[2], ctx.funcs.names)) acc.valueUsed.add(node[2])
+        if (isFuncRef(node[2], ctx.funcs.names)) acc.addressTakenNames.add(node[2])
         else walkFacts(node[2], true, inArrow, caller)
         return
       }
       for (let i = 1; i < node.length; i++) {
         const child = node[i]
-        if (isFuncRef(child, ctx.funcs.names)) acc.valueUsed.add(child)
+        if (isFuncRef(child, ctx.funcs.names)) acc.addressTakenNames.add(child)
         else walkFacts(child, true, inArrow, caller)
       }
     } else {
@@ -413,7 +413,7 @@ export function collectProgramFacts(ast) {
   for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, true))
   }
-  const { propMap, valueUsed, callSites } = f
+  const { propMap, addressTakenNames, callSites } = f
   // Bundled sub-module inits live OUTSIDE `ast` (ctx.module.moduleInits — the
   // main walk never sees them) and prepare's recordModuleInitFacts collects a
   // REDUCED set with no call sites. But init code is a first-class CALLER:
@@ -426,7 +426,7 @@ export function collectProgramFacts(ast) {
   // null entry and ProgramIndex keeps null-caller sites and marks
   // their callees live). Everything else stays on the reduced initFacts
   // path: a full walkFactsRoot here would re-register schemas and promote
-  // init-stored func REFS into valueUsed — a program-wide dispatch behavior
+  // init-stored func REFS into addressTakenNames, a program-wide dispatch behavior
   // change this census repair must not smuggle in.
   const initCallSites = (node) => walkAst(node, { enter: node => {
     if (node[0] === '()' && isFuncRef(node[1], ctx.funcs.names)) {
@@ -501,7 +501,7 @@ export function collectProgramFacts(ast) {
 
   ctx.module.writtenProps = f.writtenProps
   return {
-    dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, valueUsed, callSites,
+    dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, addressTakenNames, callSites,
     computedCallSites: f.computedCallSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,

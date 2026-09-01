@@ -65,8 +65,8 @@ const demandFor = sem => canBeBigint(sem) && canBeOther(sem)
 
 const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   const generic = !!options.generic
-  const valueAbi = options.valueUsed?.has(func.name) === true
-  const uncovered = generic || isExported(ctx, func) || valueAbi
+  const indirectAbi = options.addressTaken?.has(func.name) === true
+  const uncovered = generic || isExported(ctx, func) || indirectAbi
   const row = paramReps?.get(func.name)
   const params = (func.sig?.params || []).map((param, k) => {
     const rep = row?.get(k) || (generic ? options.localReps?.get(param.name) : null)
@@ -222,7 +222,7 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.sig) continue
     const data = makeBoundaryData(ctx, func, programFacts.paramReps, {
-      valueUsed: programFacts.valueUsed,
+      addressTaken: programFacts.programIndex.addressTaken,
       provenance: program.provenance,
     })
     if (isExported(ctx, func)) for (let k = 0; k < data.params.length; k++) {

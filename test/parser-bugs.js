@@ -339,7 +339,7 @@ test('return-statement rebox: i32 tail in an unnarrowed (mixed-tail) function co
     // charter repro: minimally reduced from bench/mat4 + bench/_lib/benchlib.js's `medianUs`/
     // `printResult` pair — a same-named PARAMETER elsewhere in the program (`printResult`'s
     // `medianUs` param, used in a template literal) marks the top-level `medianUs` function
-    // valueUsed (scope-blind name match — a separate, harmless pessimization, not this bug),
+    // the address-taken census (scope-blind name match, a separate harmless pessimization),
     // so its `(expr) | 0` tail stays unnarrowed exactly like the mixed-tail case above.
     is(jz(`
         const medianUs = (samples) => { return samples[0] | 0 }

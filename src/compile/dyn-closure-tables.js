@@ -578,7 +578,7 @@ function proveClosureFactory(calleeName, programFacts, cache) {
   let verdict = ctx.scope.directReturnClosures?.get(calleeName) || null
   if (!verdict) {
     const fn = ctx.funcs.map?.get(calleeName)
-    if (fn && !fn.raw && fn.body && fn.defaults && !fn.exported && !programFacts.valueUsed?.has(calleeName)) {
+    if (fn && !fn.raw && fn.body && fn.defaults && !fn.exported && !programFacts.programIndex.addressTaken.has(calleeName)) {
       const rets = extractReturnExprs(fn.body)
       if (rets && rets.length) {
         for (const pname of Object.keys(fn.defaults)) {

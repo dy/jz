@@ -45,7 +45,8 @@ import { assertValKindConsistent, buildCallerTypedCtx, buildCallerCtx } from './
  * blow-up (≥5 distinct ctors at one site → no specialization).
  */
 export function specializeBimorphicTyped(programFacts) {
-  const { callSites, valueUsed, paramReps } = programFacts
+  const { callSites, paramReps } = programFacts
+  const addressTaken = programFacts.programIndex.addressTaken
   const MAX_CLONES_PER_FN = 4
 
   // Per-callee static-call-site index. Built once; cheap.
@@ -76,7 +77,7 @@ export function specializeBimorphicTyped(programFacts) {
   // Snapshot ctx.funcs.list — we'll be appending clones during the loop.
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     if (func.rest) continue
     const reps = paramReps.get(func.name)
@@ -211,7 +212,8 @@ export function specializeBimorphicTyped(programFacts) {
  * changes.
  */
 export function specializeValKindDichotomy(programFacts) {
-  const { callSites, valueUsed, paramReps } = programFacts
+  const { callSites, paramReps } = programFacts
+  const addressTaken = programFacts.programIndex.addressTaken
   // Landslide threshold — a pass-registry tuning key (src/passes.js
   // TUNING_KEYS), not a hidden local constant: a visible/overridable knob
   // like every other tuning key (e.g. scalarTypedArrayLen).
@@ -229,7 +231,7 @@ export function specializeValKindDichotomy(programFacts) {
 
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     if (func.rest) continue
     const reps = paramReps.get(func.name)
@@ -350,7 +352,8 @@ export function specializeUnionCursorParams(programFacts) {
   const clones = []
   const cursorsBySig = ctx.schema.inlineUnionCursors
   if (!cursorsBySig?.size) return clones
-  const { valueUsed, paramReps } = programFacts
+  const { paramReps } = programFacts
+  const addressTaken = programFacts.programIndex.addressTaken
   const candidateNames = new Set()
   for (const func of ctx.funcs.list)
     if (!func.raw && func.sig && cursorsBySig.get(func.sig)?.size) candidateNames.add(func.name)
@@ -359,7 +362,7 @@ export function specializeUnionCursorParams(programFacts) {
     collectUnionSites(func.body, func, candidateNames, sitesByCallee)
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || func.rest || !func.body || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || func.rest || !func.body || addressTaken.has(func.name)) continue
     const cursors = cursorsBySig.get(func.sig)
     if (!cursors?.size) continue
     const idxs = []

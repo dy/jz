@@ -21,7 +21,8 @@ const TYPED_ARRAY_CTOR = /^(Float|Int|Uint|BigInt|BigUint)(8|16|32|64)(Clamped)?
 
 export function refineDynKeys(programFacts) {
   if (!ctx.types.anyDynKey) return
-  const { paramReps, valueUsed } = programFacts
+  const { paramReps } = programFacts
+  const addressTaken = programFacts.programIndex.addressTaken
 
   // Per-function type map: param vtypes from paramReps, plus locals
   // we can prove are typed arrays from `let v = new TypedArray(...)`. After
@@ -79,7 +80,7 @@ export function refineDynKeys(programFacts) {
   // Live: anything reachable from exports/first-class value uses. Skipping
   // dead helpers (unused benchlib imports) keeps their generic params from
   // pretending to be dyn-key access.
-  const isLive = f => f.exported || paramReps.has(f.name) || (valueUsed && valueUsed.has(f.name))
+  const isLive = f => f.exported || paramReps.has(f.name) || addressTaken.has(f.name)
 
   const topMap = buildTypeMap(null, null, null)
   for (const f of ctx.funcs.list) {

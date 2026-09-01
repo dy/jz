@@ -122,7 +122,7 @@ export function collectSlotWriteHazards(ast, opts) {
   // unsound. A function with zero statically-visible call sites (dead code,
   // or reached only indirectly) can't be proven anything either — 'ALL'.
   const callSites = opts?.callSites
-  const csValueUsed = opts?.valueUsed
+  const addressTaken = opts?.addressTaken
   let sitesByCallee = null
   if (late && callSites) {
     sitesByCallee = new Map()
@@ -168,7 +168,7 @@ export function collectSlotWriteHazards(ast, opts) {
     const func = ctx.funcs.map?.get(funcName)
     const params = func?.sig?.params
     const restIdx = func?.rest && params ? params.length - 1 : -1
-    if (!func || func.raw || func.exported || csValueUsed?.has(funcName) || !params?.length || paramIdx === restIdx) {
+    if (!func || func.raw || func.exported || addressTaken?.has(funcName) || !params?.length || paramIdx === restIdx) {
       paramUnionMemo.set(key, 'ALL')
       return 'ALL'
     }

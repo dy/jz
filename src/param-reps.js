@@ -145,13 +145,13 @@ export const ensureParamRep = (paramReps, funcName, k) => {
  * @property {'open'|'closed'} [kindsCoverage]  Sibling of `possibleKinds` (re-audit
  *   item 9(a)): whether EVERY call site feeding `possibleKinds` was actually
  *   enumerated by this fixpoint. A non-empty `possibleKinds` alone cannot prove
- *   exclusion — an external caller (exported) or an indirect one (the function's
- *   name escapes into `valueUsed`, so it can be invoked through a value/table
+ *   exclusion. An external caller (exported) or an indirect one (ProgramIndex
+ *   marks the function address-taken, so it can be invoked through a value/table
  *   this walk's `callSites` census never sees) could still pass an unobserved
  *   kind. DEFAULT is 'open' (the field is absent unless a producer explicitly
  *   marks 'closed'); a producer may mark 'closed' ONLY where it has verified
- *   every call site is enumerated and none is external/indirect/exported —
- *   narrow.js's own `!f.raw && !f.exported && !valueUsed.has(f.name)` predicate
+ *   every call site is enumerated and none is external, indirect, or exported.
+ *   Narrowing uses `!f.raw && !f.exported && !addressTaken.has(f.name)` for
  *   (already used by `narrowReturnArrayElems`'s targets filter for the identical
  *   "have we truly seen every site" question). See the exclusion-projection
  *   contract below, updated to require `possibleKinds.size > 0 && kindsCoverage

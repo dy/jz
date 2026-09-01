@@ -84,9 +84,9 @@ function callerArgSelfConsistentI32(func, k, sites) {
   return ok
 }
 
-export function applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee, { skipTyped = false } = {}) {
+export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCallee, { skipTyped = false } = {}) {
   for (const func of ctx.funcs.list) {
-    if (func.raw || valueUsed.has(func.name)) continue
+    if (func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -140,9 +140,9 @@ export function applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee,
 // body that never writes the param. Additionally requires the SETTLED typedCtor
 // — length evidence for a receiver that never proved typed is dead weight the
 // `.length` fold must not trust.
-export function validateTypedLenParams(paramReps, valueUsed) {
+export function validateTypedLenParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    const hostReachable = func.exported || func.raw || valueUsed.has(func.name)
+    const hostReachable = func.exported || func.raw || addressTaken.has(func.name)
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -170,9 +170,9 @@ export function validateTypedLenParams(paramReps, valueUsed) {
 // values passed at the call; a body that reassigns either name could hold
 // something else by the time a consumer relies on it. See
 // ledger-performance.md §6.1 for the full soundness contract.
-export function validateLenBoundOfParams(paramReps, valueUsed) {
+export function validateLenBoundOfParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    const hostReachable = func.exported || func.raw || valueUsed.has(func.name)
+    const hostReachable = func.exported || func.raw || addressTaken.has(func.name)
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -190,9 +190,9 @@ export function validateLenBoundOfParams(paramReps, valueUsed) {
   }
 }
 
-export function validateIntConstParams(paramReps, valueUsed) {
+export function validateIntConstParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -212,9 +212,9 @@ export function validateIntConstParams(paramReps, valueUsed) {
   }
 }
 
-export function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
+export function applyPointerParamAbi(paramReps, addressTaken, hardParamVal) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -267,15 +267,15 @@ export function applyPointerParamAbi(paramReps, valueUsed, hardParamVal) {
   }
 }
 
-export function narrowableFuncs(valueUsed) {
+export function narrowableFuncs(addressTaken) {
   return ctx.funcs.list.filter(f =>
-    !f.raw && !valueUsed.has(f.name) && f.sig.results.length === 1
+    !f.raw && !addressTaken.has(f.name) && f.sig.results.length === 1
   )
 }
 
-export function applyTypedPointerParamAbi(paramReps, valueUsed) {
+export function applyTypedPointerParamAbi(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || valueUsed.has(func.name)) continue
+    if (func.exported || func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1

@@ -793,7 +793,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   const rootIds = [], dynamicRootIds = []
   const rootSeen = new Array(count).fill(false)
   const addressTakenBits = new Array(count).fill(0)
-  for (const name of programFacts.valueUsed || []) {
+  for (const name of programFacts.addressTakenNames || []) {
     const id = graphNameIds.get(name) ?? -1
     if (id >= 0 && !addressTakenBits[id]) {
       addressTakenBits[id] = 1
@@ -805,9 +805,10 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     return id >= 0 && !!addressTakenBits[id]
   }
   const addressTaken = Object.freeze({ size: dynamicRootIds.length, has: name => isGraphAddressTaken(name) })
-  // ProgramFacts owns the mutable source census only through enrichment. Every
-  // later compatibility reader sees this read-only numeric ProgramIndex view.
-  programFacts.valueUsed = addressTaken
+  // ProgramFacts owns the mutable source-name census only through enrichment.
+  // Numeric bits are now authoritative; no post-index name-set key survives.
+  const retiredAddressTakenKey = 'addressTakenNames'
+  delete programFacts[retiredAddressTakenKey]
   for (const func of ctx.funcs.list) {
     const id = graphNameIds.get(func.name) ?? -1
     if (id >= 0 && func.exported && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
@@ -881,44 +882,26 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
 }
 
 /**
- * Release `programFacts.valueUsed` of a lifted-function-property name whose
- * only possible value-use is its own defining write. Called once through
- * `buildProgramIndex`'s enrichment callback, after member resolution exists
- * and before address-taken roots freeze or any boundary consumer runs.
+ * Remove a lifted function-property name from the mutable address-taken census
+ * when its defining write is the only possible value use. This runs inside
+ * buildProgramIndex after member resolution exists and before roots freeze.
  *
- * Prepare's `fn.prop = arrow` lift substitutes `fn.prop = fn$prop` — a
- * SYNTHESIZED name that cannot appear anywhere else in the whole program by
- * construction (the original source never spells it; nothing before this
- * point in the pipeline re-derives or re-emits it). program-facts.js's
- * whole-program `valueUsed` walk marks a bare func-ref RHS of any `=`
- * (`observeNodeFacts`'s own comment: "so resolveClosureWidth sizes the
- * closure ABI to its arity") — sound for a genuinely first-class use
- * (`store[0] = pick3`, callable through an unknown later dispatch), but this
- * ONE write is not that: it is prepare's own bookkeeping, and every call
- * this index can trace to it goes through the SAME direct `.`-property path
- * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMemberSourceId`
- * independently re-derives the identical `(base, prop) → fn$prop` fact —
- * meaning `base` passed this file's own escape/shadow/reassignment proof —
- * the write is provably fully covered: no truly indirect/closure call can
- * reach `fn$prop` through it, so marking it `valueUsed` only forces every
- * downstream boundary decision (`makeBoundaryData`'s `uncovered`,
- * `representationCallArgAction`'s materialization) onto the conservative,
- * closure-shaped path a REAL indirectly-reachable function needs.
+ * Prepare rewrites `fn.prop = arrow` to `fn.prop = fn$prop`. The synthesized
+ * name cannot occur in user source. When `resolveMemberSourceId` independently
+ * proves the same `(fn, prop)` target under its escape, shadow, reassignment,
+ * and write conditions, the defining write is fully covered by direct member
+ * dispatch and is not a genuine indirect root.
  *
- * Deliberately narrower than "any index-resolved property": an
- * object-literal receiver (Shape #8, `ns.parse = someExistingFn`) resolves
- * to a real, independently-named, PRE-EXISTING function that this write is
- * merely ONE reference to — it may legitimately have other value-uses this
- * index has no way to rule out, so it is left in `valueUsed` untouched. Only
- * a name matching the exact `${base}$${prop}` synthesis convention, with
- * `base` itself a same-module function declaration, carries the "cannot
- * exist anywhere else" guarantee this release depends on.
+ * This does not release an ordinary object-literal member that references an
+ * existing function. Such a function may have unrelated value uses. Only the
+ * exact `${base}$${prop}` synthesis, with a same-module function base and the
+ * member proof above, carries the single-use guarantee.
  */
-export function releaseLiftedValueUsed(ctx, programFacts, programIndex) {
-  const valueUsed = programFacts?.valueUsed
-  if (!valueUsed || !valueUsed.size || !programIndex) return
+export function releaseLiftedAddressTakenNames(ctx, programFacts, programIndex) {
+  const addressTakenNames = programFacts?.addressTakenNames
+  if (!addressTakenNames || !addressTakenNames.size || !programIndex) return
   const release = []
-  for (const name of valueUsed) {
+  for (const name of addressTakenNames) {
     const cut = name.lastIndexOf('$')
     if (cut <= 0 || cut === name.length - 1) continue
     const base = name.slice(0, cut), prop = name.slice(cut + 1)
@@ -926,5 +909,5 @@ export function releaseLiftedValueUsed(ctx, programFacts, programIndex) {
     const sourceId = programIndex.resolveMemberSourceId(base, prop)
     if (programIndex.sourceFunctionById(sourceId)?.name === name) release.push(name)
   }
-  for (const name of release) valueUsed.delete(name)
+  for (const name of release) addressTakenNames.delete(name)
 }

@@ -499,7 +499,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const soleCallerExport = func.exported && sites?.length === 1
     if (func.raw || !func.body || func.rest) continue
     if (func.exported && !soleCallerExport) continue
-    if (programFacts.valueUsed.has(func.name) && !soleCallerExport) continue
+    if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
     if (paramNames.size && some(func.body, n => {
@@ -565,7 +565,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         // through it breaks that harmless caller/callee collection cycle and
         // recognizes the same transitive hot path the next fixpoint would.
         const prospectiveLeaf = callerFunc && !callerFunc.exported &&
-          !programFacts.valueUsed.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
+          !programFacts.addressTakenNames.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
           nodeSize(callerFunc.body) <= 48
         if (!caller || (!candidates.has(caller) && !prospectiveLeaf) || seen.has(caller)) return false
         const callerSites = sitesByCallee.get(caller)
@@ -868,7 +868,7 @@ export const specializeFixedRestCalls = (programFacts) => {
     if (site.synthetic) continue
     const func = ctx.funcs.map.get(site.callee)
     if (!func?.rest || func.exported || func.raw || !func.body) continue
-    if (programFacts.valueUsed.has(func.name)) continue
+    if (programFacts.addressTakenNames.has(func.name)) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     if (site.argList.some(a => Array.isArray(a) && a[0] === '...')) continue
 

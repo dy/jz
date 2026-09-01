@@ -511,7 +511,7 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
     { callee: 'target', argList: [], callerFunc: dead, node: ['()', 'target'] },
     { callee: 'target', argList: [], callerFunc: orphan, node: ['()', 'target'] },
   ]
-  const valueUsed = new Set(['dead', 'orphan'])
+  const addressTakenNames = new Set(['dead', 'orphan'])
   const index = buildProgramIndex({
     module: { moduleInits: [] },
     funcs: {
@@ -521,9 +521,9 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
       multiProp: new Set(),
     },
   }, {
-    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed, callSites,
+    nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames, callSites,
   }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'),
-  () => valueUsed.delete('orphan'))
+  () => addressTakenNames.delete('orphan'))
   const targetSourceId = index.sourceIdOf('target')
   const targetGraphId = index.graphFunctionIdOfName('target')
   const callerGraphId = index.graphFunctionIdOfName('caller')
@@ -580,9 +580,11 @@ test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', as
       eligibleSites: [], fallback: source,
     })
     const facts = {
-      nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(), callSites: [],
+      nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(), callSites: [],
     }
     const index = buildProgramIndex(ctx, facts, null)
+    is('addressTakenNames' in facts, false, 'the source-name census is consumed and deleted')
+    is('valueUsed' in facts, false, 'the compatibility key does not survive ProgramIndex build')
     ctx.plans.programIndex = index
     const guarded = materializeVariant({
       origin: fixed, name: 'source$guarded', kind: 'typed-guard', paramReps,
@@ -657,7 +659,7 @@ test('invariant: ProgramIndex SCCs and reachability match an independent closure
       multiProp: new Set(),
     },
   }, {
-    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(['f7']), callSites,
+    nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(['f7']), callSites,
   }, null)
   const graph = index.getCallGraph()
   is(graph.componentCount, 7)

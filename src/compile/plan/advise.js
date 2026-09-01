@@ -339,7 +339,7 @@ function adviseGenericDispatch() {
 export function adviseProgram(programFacts) {
   adviseHeapGrowth()
   adviseSetMapIterationOrder()
-  if (programFacts) adviseJsstringCarrier(programFacts.paramReps, programFacts.valueUsed)
+  if (programFacts) adviseJsstringCarrier(programFacts.paramReps, programFacts.programIndex.addressTaken)
   adviseSimdLoops()
   adviseGenericDispatch()
 }

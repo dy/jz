@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.78x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,501,939 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.60x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,502,495 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -348,7 +348,7 @@ Production migration reuses the normalized production program and existing emitt
 - [x] separate source, variant, and graph IDs with no generic integer accessor
 - [x] register all five specialization families through ProgramIndex and normalize variants of variants to one source ID
 - [x] assert variant signatures, parameter facts, and FunctionPlans are derived rather than shared
-- [ ] remove the `programFacts.valueUsed` compatibility key during the parameter/result ABI slice
+- [x] delete the source-name address-taken census at ProgramIndex build and route every later reader to numeric bits
 - [ ] assign final concrete Wasm function IDs after variant identity closes
 - [ ] assign final type, global, schema, and data IDs once
 
@@ -368,7 +368,7 @@ Second production slice verification:
 - direct edges and SCC spans use flat CSR, with no retained per-caller or per-component buckets
 - the prior nested-bucket attempt was rejected after warm self-host round two trapped on a two-argument direct call
 - a 12-function independent transitive closure agrees with every ProgramIndex SCC pair and reachable ID
-- lifted-value release runs before roots freeze; later `valueUsed` readers receive a read-only view over numeric address-taken bits
+- lifted-value release runs before roots freeze; ProgramIndex then deletes the source-name census and owns every later address-taken read
 - native: 3,896 pass, 1 skip
 - opt3: 3,896 pass, 1 skip
 - WASI: 3,895 pass, 1 skip
@@ -392,6 +392,20 @@ Third production slice verification:
 - recursive self-compile: 321 modules, 6,856,720 input bytes, 14,061,026 output bytes, 4,115,653,840 heap bytes, 179,313,456 bytes headroom
 - compact threshold: pass at 2,256,528 bytes versus the 14,501,939-byte production compiler
 
+Fourth production slice verification:
+
+- ProgramFacts uses `addressTakenNames` only as a pre-index source census
+- ProgramIndex converts that census to numeric bits and removes the key before narrowing
+- every narrowing, representation, closure, and slot-hazard reader now uses `ProgramIndex.addressTaken`
+- native: 3,898 pass, 1 skip
+- opt3: 3,898 pass, 1 skip
+- WASI: 3,897 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- functional self-compile: 23 tests and 224 assertions, including forty compile-clear rounds
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,856,174 input bytes, 14,061,598 output bytes, 4,116,258,840 heap bytes, 178,708,456 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,502,495-byte production compiler
+
 Per-slice recursive and artifact ratchet:
 
 | Production identity slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
@@ -399,6 +413,7 @@ Per-slice recursive and artifact ratchet:
 | member source IDs | 14,457,881 | 4,106,338,664 | 188,628,632 | baseline |
 | direct graph, SCCs, address-taken | 14,483,762 | 4,111,732,856 | 183,234,440 | +25,881 bytes, -5,394,192 headroom |
 | source and variant ID split | 14,501,939 | 4,115,653,840 | 179,313,456 | +18,177 bytes, -3,920,984 headroom |
+| delete address-taken compatibility | 14,502,495 | 4,116,258,840 | 178,708,456 | +556 bytes, -605,000 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -519,7 +534,7 @@ Close production function identity without routing source to the prototype:
 4. Delete the surviving registry writer for final function order in the same slice.
 5. Preserve production WAT byte for byte and keep representation authorities unchanged.
 6. Record recursive headroom and compiler artifact size for the slice.
-7. Then begin M3 with parameter/result ABI, including removal of the `valueUsed` compatibility key.
+7. Then begin M3 with parameter/result ABI; the address-taken compatibility key is already gone.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

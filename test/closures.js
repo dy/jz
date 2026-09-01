@@ -783,7 +783,7 @@ test('trampoline arity: closure ABI widens to a table-resident function arity', 
   // first-class value; the sole indirect call passes 1 arg, so maxCall=1, and
   // a lifted def's param list is never re-observed by the arity scan (it walks
   // bodies, not param lists) so maxDef misses it too. The closure ABI width
-  // must be widened by `valueUsed` arities — otherwise the boundary trampoline
+  // must be widened by ProgramIndex address-taken arities, otherwise the boundary trampoline
   // forwards `$__a2` against a 2-param trampoline → "Unknown local $__a2" at
   // assemble time.
   const { put, run } = runHost(`

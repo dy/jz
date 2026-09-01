@@ -588,7 +588,7 @@ function buildBodyData(ctx, identity, sig, body, localReps, boundary, options) {
   const closureBoxParams = new Set()
   // Boundaries are uncovered only for generic closures, exports, or named
   // functions used through the first-class value ABI. At body-plan time the
-  // original valueUsed Set is no longer carried, so recover the third case
+  // source-name address-taken Set is no longer carried, so recover the third case
   // from the frozen boundary plus the two exclusions.
   const valueAbiIdentity = boundary.covered === false && !options.generic && !isExported(ctx, identity)
   const valueAbiParamCandidates = new Set()

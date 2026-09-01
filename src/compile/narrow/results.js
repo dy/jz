@@ -612,10 +612,10 @@ const _FIELD_TO_SLICE = {
 }
 
 /** Propagate Array<T> element facts from return paths into caller paramReps (phase G). */
-export function narrowReturnArrayElems(field, paramReps, valueUsed) {
+export function narrowReturnArrayElems(field, paramReps, addressTaken) {
   const sliceKey = _FIELD_TO_SLICE[field]
   const targets = ctx.funcs.list.filter(f =>
-    !f.raw && !f.exported && !valueUsed.has(f.name) &&
+    !f.raw && !f.exported && !addressTaken.has(f.name) &&
     f.valResult === VAL.ARRAY && f[field] == null
   )
   let changed = true

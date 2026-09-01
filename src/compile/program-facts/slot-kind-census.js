@@ -312,7 +312,7 @@ export function observeProgramSlots(ast, opts) {
   // Sound to rebuild: every kind consumer left reads at emit, after this.
   if (opts?.fresh) { slotFacts.clear(); dictValueTypes.clear(); mapValueTypes.clear() }
   const hazards = collectSlotWriteHazards(ast, opts?.fresh
-    ? { paramReps: opts.paramReps, callSites: opts.callSites, valueUsed: opts.valueUsed } : undefined)
+    ? { paramReps: opts.paramReps, callSites: opts.callSites, addressTaken: opts.addressTaken } : undefined)
   // Hazard fail-OPEN belt (slotBigintObserved's own doc, ctx.js): a slot the
   // kind census can't resolve precisely (Object.assign/spread merges,
   // computed-key writes, extern constructors) marks BIGINT-possible instead

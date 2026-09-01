@@ -10,9 +10,9 @@
  *     rounds 2-3. `readonlyParamReps`/`freezeCallSites` below close each one
  *     off at its own true last-producer point (plan/index.js's own call
  *     sites document exactly where).
- *     `valueUsed` has an earlier transfer point: ProgramIndex consumes the
- *     mutable Set after enrichment and replaces it with a read-only numeric
- *     address-taken view before this module's later freeze points.
+ *     `addressTakenNames` has an earlier transfer point: ProgramIndex consumes
+ *     the mutable Set after enrichment, publishes numeric address-taken bits,
+ *     and deletes the source-name census before later freeze points.
  *  2. `programFacts` itself is an OPEN BAG — `collectProgramFacts` returns a
  *     plain object with a fixed, documented key set, but nothing stops a
  *     later pass from stapling on an undocumented new one the way
@@ -72,7 +72,7 @@
  *  `programFacts` is an undocumented producer that bypassed this file's own
  *  contract. */
 export const FACT_KEYS = new Set([
-  'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'valueUsed', 'callSites',
+  'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'addressTakenNames', 'callSites',
   'computedCallSites',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasMapSet', 'hasBigint', 'writtenProps', 'literalWriteKeys', 'arrResized',

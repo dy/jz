@@ -72,9 +72,9 @@
  * `.callSites` are mutated in place after publication through plan's own
  * round 3 (`narrowSignatures` and its `specialize*` siblings), then frozen or
  * view-wrapped by `plan/index.js` via this module's own `freeze.js`. The mutable
- * `valueUsed` source census ends earlier: ProgramIndex applies lifted-value
- * release, converts it to numeric address-taken bits, and replaces this key
- * with a read-only `has`/`size` compatibility view before any later consumer.
+ * `addressTakenNames` ends earlier: ProgramIndex applies lifted-value release,
+ * converts the source-name census to numeric address-taken bits, and deletes
+ * the key before any later consumer.
  *
  * @module program-facts
  */

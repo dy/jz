@@ -34,7 +34,7 @@ export function jsstringEnabled() {
  *  site lattice isn't needed; just guard on host and run the use-scan. */
 export function applyJsstringBoundaryCarrierStandalone(programFacts) {
   if (!jsstringEnabled()) return
-  applyJsstringBoundaryCarrier(new Map(), programFacts.valueUsed)
+  applyJsstringBoundaryCarrier(new Map(), programFacts.programIndex.addressTaken)
 }
 
 // ── jsstring boundary carrier ───────────────────────────────────────────────
@@ -116,12 +116,12 @@ function paramAllUsesJsstringMappable(body, name, safeCC) {
   return { ok, stringDiscriminating, reason }
 }
 
-export function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
+export function applyJsstringBoundaryCarrier(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.exported) continue
     if (!func.body) continue
     if (func.rest) continue                          // rest position stays packed-array
-    if (valueUsed.has(func.name)) continue           // value-used → callers may pass non-string
+    if (addressTaken.has(func.name)) continue       // indirect callers may pass non-string
     // Pre-compute the in-bounds .charCodeAt callee nodes once per body.
     const safeCC = new Set()
     scanBoundedLoops(func.body, safeCC)
@@ -156,12 +156,12 @@ export function applyJsstringBoundaryCarrier(paramReps, valueUsed) {
 }
 
 /** Soft warnings when a string param could use the externref carrier but doesn't. */
-export function adviseJsstringCarrier(paramReps, valueUsed) {
+export function adviseJsstringCarrier(paramReps, addressTaken) {
   if (!warningsView().warnings || !jsstringEnabled()) return
 
   for (const func of ctx.funcs.list) {
     if (func.raw || !func.exported || !func.body || func.rest) continue
-    if (valueUsed?.has(func.name)) continue
+    if (addressTaken?.has(func.name)) continue
 
     const safeCC = new Set()
     scanBoundedLoops(func.body, safeCC)

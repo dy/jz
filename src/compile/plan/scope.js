@@ -1176,7 +1176,7 @@ export const resolveClosureWidth = (programFacts) => {
 
 export const canSkipWholeProgramNarrowing = (programFacts) =>
   programFacts.callSites.length === 0 &&
-  programFacts.valueUsed.size === 0 &&
+  programFacts.programIndex.addressTaken.size === 0 &&
   !programFacts.anyDyn &&
   programFacts.propMap.size === 0 &&
   !programFacts.hasSchemaLiterals &&

@@ -2,7 +2,7 @@
  * Signature narrowing — fixpoint analysis that mutates each user func's `sig`
  * based on call-site observations.
  *
- * Reads programFacts.callSites + valueUsed; mutates sig.params/results,
+ * Reads programFacts.callSites plus ProgramIndex address-taken facts; mutates sig.params/results,
  * func.valResult, and programFacts.paramReps. Pure w.r.t. the AST — only
  * function `sig` records change.
  *
@@ -43,7 +43,8 @@ import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrie
 import { makeMapOverlay } from '../map-overlay.js'
 
 export default function narrowSignatures(programFacts, ast) {
-  const { callSites, valueUsed, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
+  const { callSites, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
+  const addressTaken = programFacts.programIndex.addressTaken
 
   // Dead callers must not poison live signature facts. ProgramIndex owns the
   // numeric roots and direct-edge closure; this consumer only compacts the rich
@@ -77,7 +78,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Body-driven result kinds do not depend on the parameter lattice. Settle
   // them before caller contexts are built so those contexts are born against
   // the final value-result view instead of immediately becoming stale.
-  const funcsWithNarrowableResult = narrowableFuncs(valueUsed)
+  const funcsWithNarrowableResult = narrowableFuncs(addressTaken)
   narrowValResults(funcsWithNarrowableResult)
 
   // D: Call-site type propagation — infer param types from how functions are called.
@@ -139,7 +140,7 @@ export default function narrowSignatures(programFacts, ast) {
   const siteState = cs => {
     const { callee, argList, callerFunc } = cs
     const func = ctx.funcs.map.get(callee)
-    if (!func || func.exported || valueUsed.has(callee)) return null
+    if (!func || func.exported || addressTaken.has(callee)) return null
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
     paramFactsCache.clear()
@@ -673,14 +674,14 @@ export default function narrowSignatures(programFacts, ast) {
   // Apply i32 specialization: for non-value-used funcs with consistent i32 call
   // sites and no defaults/rest at that position, narrow sig.params[k].type.
   // Exports too — boundary wrapper handles the f64→i32 truncation at the JS edge.
-  applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee)
+  applyI32ParamSpecialization(paramReps, addressTaken, sitesByCallee)
 
   // intConst validation: a param marked with a unanimous integer literal at every call
   // site is only safe to substitute if the body never reassigns it. Clear intConst on any
   // param whose name appears on the LHS of an assignment / `++` / `--`. Skip exported
   // (callable from JS with arbitrary value), value-used (closure callees), raw, defaulted,
   // and rest params — same exclusions as the wasm-narrowing pass above.
-  validateIntConstParams(paramReps, valueUsed)
+  validateIntConstParams(paramReps, addressTaken)
 
   // Pointer-ABI specialization: for non-forwarding pointer params consistent across
   // call sites, narrow from NaN-boxed f64 to i32 offset. Eliminates per-call __ptr_offset
@@ -692,7 +693,7 @@ export default function narrowSignatures(programFacts, ast) {
   //     (aux carries element-type, handled separately by applyTypedPointerParamAbi).
   //   - exclude params with defaults (nullish sentinel needs the f64 NaN space).
   //   - exclude rest position (array pack/unpack stays f64).
-  applyPointerParamAbi(paramReps, valueUsed, hardParamVal)
+  applyPointerParamAbi(paramReps, addressTaken, hardParamVal)
 
   // E: numeric (i32) result narrowing — kept here, after applyI32ParamSpecialization,
   // so a body returning `param + 1` sees param already narrowed to i32. (E2 / VAL
@@ -707,9 +708,9 @@ export default function narrowSignatures(programFacts, ast) {
   // Cache invalidation: analyzeBody.valTypes is body-keyed, and entries cached
   // during the first D pass have stale (null) `valTypeOf(call)` results because
   // valResult was unset back then.
-  narrowReturnArrayElems('arrayElemSchema', paramReps, valueUsed)
-  narrowReturnArrayElems('arrayElemSchemaSet', paramReps, valueUsed)
-  narrowReturnArrayElems('arrayElemValType', paramReps, valueUsed)
+  narrowReturnArrayElems('arrayElemSchema', paramReps, addressTaken)
+  narrowReturnArrayElems('arrayElemSchemaSet', paramReps, addressTaken)
+  narrowReturnArrayElems('arrayElemValType', paramReps, addressTaken)
   phase.clearNarrowingBodyState()
   phase.refreshValTypes()
   // Re-observe schema slot val-types now that E2 has set `valResult` on user
@@ -914,7 +915,7 @@ export default function narrowSignatures(programFacts, ast) {
   // A length without a settled ctor is unusable evidence (the receiver never
   // takes the typed read path) and a length on a host-reachable or rebound
   // param is unsound — same exclusion discipline as intConst.
-  validateTypedLenParams(paramReps, valueUsed)
+  validateTypedLenParams(paramReps, addressTaken)
 
   // PARAM LENGTH-BOUND relation (ledger-performance.md §6.1): does param k's
   // value never exceed param r's runtime `.length`? Extends the SAME
@@ -947,7 +948,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Host-reachable functions, rest/default positions on either side, and a
   // body that writes either name invalidate the theorem — same discipline as
   // validateTypedLenParams (param-abi.js).
-  validateLenBoundOfParams(paramReps, valueUsed)
+  validateLenBoundOfParams(paramReps, addressTaken)
 
   // G: TYPED pointer-ABI narrowing — once .typedCtor agrees on a single
   // ctor across all call sites, narrow the param from NaN-boxed f64 to raw
@@ -957,7 +958,7 @@ export default function narrowSignatures(programFacts, ast) {
   // Call sites coerce via coerceArg → ptrOffsetIR(arg, VAL.TYPED).
   // Safety: same exclusions as the OBJECT/SET/MAP/BUFFER narrowing above —
   // exported, value-used, raw, defaults, rest position.
-  applyTypedPointerParamAbi(paramReps, valueUsed)
+  applyTypedPointerParamAbi(paramReps, addressTaken)
 
   // H: Post-F/G re-fixpoint — propagates VAL kinds through bimorphic call sites
   // where ptrKind narrowed but ptrAux disagreed (e.g. `sum(f64arr)` and `sum(i32arr)`
@@ -1028,7 +1029,7 @@ export default function narrowSignatures(programFacts, ast) {
   // producer — results, typedCtor, enrichment — has run). A param whose exact `val`
   // just poisoned to null because two sites disagree (ARRAY vs TYPED) may still
   // qualify here — that's the whole point (reps.js recvArrTyped doc). Computed for
-  // every param position regardless of exported/valueUsed status: an exported
+  // every param position regardless of exported/address-taken status: an exported
   // function has no in-program call sites, so hardParamRecvArrTyped's fold sees
   // none and returns false — declines safely, no separate gating needed.
   for (const [fname, reps] of paramReps)
@@ -1227,13 +1228,13 @@ export default function narrowSignatures(programFacts, ast) {
   // ctors at call sites). Their callers post-F pass them as i32 (pointer ABI),
   // so r.wasm flips to 'i32' here — but narrowing now breaks the clone path
   // that still needs to mint per-ctor sigs with ptrKind=TYPED, ptrAux=ctor-aux.
-  applyI32ParamSpecialization(paramReps, valueUsed, sitesByCallee, { skipTyped: true })
+  applyI32ParamSpecialization(paramReps, addressTaken, sitesByCallee, { skipTyped: true })
 
   // J: jsstring boundary opt-in — for exported funcs with a string param whose
   // every use is mappable to a wasm:js-string builtin, flip the param's wasm
   // slot from f64 (nanbox SSO carrier) to externref so the JS host passes the
   // native string directly. Zero copy, zero transcoding. See applyJsstringBoundaryCarrier.
-  if (jsstringEnabled()) applyJsstringBoundaryCarrier(paramReps, valueUsed)
+  if (jsstringEnabled()) applyJsstringBoundaryCarrier(paramReps, addressTaken)
 
   // Stamp the settled per-param val kind onto sig.params (mirror of emitFunc's
   // updateRep(pname, { val: r.val }) merge — same source, same condition). The
@@ -1255,7 +1256,7 @@ export default function narrowSignatures(programFacts, ast) {
   // exclusion-projection contract): mark 'closed' ONLY for a func whose every
   // call site this fixpoint's `callSites` census actually enumerated — not
   // raw (no facts model), not exported (no external JS/host caller with
-  // arbitrary args), and its name never escaped into `valueUsed` (no
+  // arbitrary args), and its name is not address-taken (no
   // indirect/first-class-value call — stored/passed/returned as a value —
   // that could invoke it outside the literal `f(...)` nodes `callSites`
   // tracked). Same predicate `narrowReturnArrayElems`'s own `targets` filter
@@ -1265,7 +1266,7 @@ export default function narrowSignatures(programFacts, ast) {
   // ADD later; downgrading a wrongly-'closed' mark is not, so this only ever
   // marks 'closed' where the predicate holds, never guesses.
   for (const func of ctx.funcs.list) {
-    if (func.raw || func.exported || valueUsed.has(func.name)) continue
+    if (func.raw || func.exported || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     for (const r of reps.values()) r.kindsCoverage = 'closed'
