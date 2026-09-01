@@ -421,9 +421,9 @@ export function collectProgramFacts(ast) {
   // only here, and without these sites the param lattice settles callees
   // blind — _i64Arith.r never proved BIGINT, _i64Hex16's radix-toString
   // misformatted raw i64 bits (the speed-tier lab throw), and
-  // filterLiveCallSites culled both as dead code. Collect ONLY '()' sites
+  // the later reachability filter culled both as dead code. Collect ONLY '()' sites
   // (callerFunc = null — module scope; narrow's callerCtx already carries a
-  // null entry and filterLiveCallSites keeps null-caller sites and marks
+  // null entry and ProgramIndex keeps null-caller sites and marks
   // their callees live). Everything else stays on the reduced initFacts
   // path: a full walkFactsRoot here would re-register schemas and promote
   // init-stored func REFS into valueUsed — a program-wide dispatch behavior
@@ -516,8 +516,8 @@ export function collectProgramFacts(ast) {
  *  as `callSites`), resolve `TABLE` through ProgramIndex and, when it proves
  *  closed, synthesize call-site observations into `programFacts.callSites`.
  *  Param narrowing then sees the same arguments a bare-name call would.
- *  This must run after `programFacts.programIndex` is built and before
- *  narrowSignatures reads `programFacts.callSites`.
+ *  This runs while ProgramIndex is still local to plan(), before its direct
+ *  call graph is finalized and before narrowSignatures reads call sites.
  *
  *  Two resolved-member shapes, per program-index.js's `foldWrite`:
  *   - a same-module named function (`resolveMemberId`'s own shape, e.g. an
@@ -572,8 +572,7 @@ export function collectProgramFacts(ast) {
  *  `specializeFixedRestCalls` (the one place `setCallArgs` rewrites a call
  *  node's own arguments) both skip `synthetic` sites for exactly this
  *  reason — see their own comments at the skip. */
-export function synthesizeComputedDispatchCallSites(programFacts) {
-  const programIndex = programFacts.programIndex
+export function synthesizeComputedDispatchCallSites(programFacts, programIndex) {
   const resolveComputedIds = programIndex?.resolveComputedIds
   if (!resolveComputedIds || !programFacts.computedCallSites.length) return
 

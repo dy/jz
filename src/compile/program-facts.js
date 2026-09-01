@@ -48,11 +48,11 @@
  *      cache hit as a result, not a correctness order — see analyzeBody call
  *      graph in that file for the exact `hasSchemaLiterals`/`hasMapSet` gates).
  *      `synthesizeComputedDispatchCallSites` is a separate, later entry point
- *      (plan/index.js, immediately after `buildProgramIndex`) that resolves
- *      `collectProgramFacts`'s own stashed `computedCallSites` candidates
- *      through ProgramIndex and enriches `callSites` in place. See
- *      its own doc comment for the two-hop (named-member / inline-arrow-member)
- *      resolution it performs.
+ *      used while ProgramIndex remains local to plan(). It resolves
+ *      `collectProgramFacts`'s stashed `computedCallSites` candidates, enriches
+ *      `callSites` in place, and finishes before ProgramIndex freezes numeric
+ *      direct edges and roots. See its own doc comment for the two-hop
+ *      (named-member / inline-arrow-member) resolution it performs.
  *   6. `program-facts/freeze.js` — `readonlyParamReps`/`freezeCallSites`/
  *      `assertProgramFactsShape`: the freeze discipline for the two STAGED
  *      facts (`paramReps`/`callSites`, settled by `plan/index.js`'s own round

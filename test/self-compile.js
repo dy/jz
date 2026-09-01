@@ -286,6 +286,29 @@ test('self-compile: warm-instance reuse — compile, _clear(), compile again, by
   }
 })
 
+// ProgramIndex builds direct edges with two flat CSR passes. A transient
+// per-caller array-of-arrays produced correct round-one bytes but left the
+// self-hosted arena in a state where the same two-argument direct-call source
+// trapped on the first compile after `_clear()`. Keep this source separate from
+// the string-only warm case above because one real caller-to-callee edge is the
+// trigger this pin must preserve.
+test('self-compile: warm direct-call graph survives repeated clear', () => {
+  getSelf()
+  const src = 'let mul=(x,y)=>x*y;export let main=(x,y)=>{x=+x;y=+y;return mul(x,y)+1}'
+  const fresh = instantiate(readFileSync(SELF), { memory: 8192 })
+  const freshOut = fresh.exports.default(fresh.memory.String(src), 0, fresh.memory.String('false'))
+  const baseline = new Uint8Array(fresh.memory.read(freshOut))
+  const warm = instantiate(readFileSync(SELF), { memory: 8192 })
+  for (let round = 0; round < 4; round++) {
+    const out = warm.exports.default(warm.memory.String(src), 0, warm.memory.String('false'))
+    const bytes = new Uint8Array(warm.memory.read(out))
+    is(bytes.length, baseline.length, `round ${round}: direct-call byte length matches fresh`)
+    ok(bytes.every((byte, i) => byte === baseline[i]), `round ${round}: direct-call bytes match fresh`)
+    is(instantiate(bytes, { memory: 64 }).exports.main(3, 4), 13, `round ${round}: direct call executes`)
+    warm.instance.exports._clear()
+  }
+})
+
 // Warm-instance reuse WITHOUT any `_clear()` — the bump arena grows monotonically
 // across every compile, exactly the condition under which narrow.js's pointer-ABI
 // fixes (applyPointerParamAbi's missing ptrAux, passthroughPtrParam's recursive

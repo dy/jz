@@ -1031,7 +1031,7 @@ export function reset(proto, globals, bridge) {
   // loop/closure-plan reads, src/optimize/vectorize.js's loopPlanLink read)
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
-    programIndex: null,           // frozen numeric function identities and member-call targets
+    programIndex: null,           // frozen numeric function identities, call targets, roots, and direct reachability
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → linearly-owned ordinary-function facts
     functionWorking: new WeakMap(), // handle → linearly-owned closure/start ActiveFunction frame

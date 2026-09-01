@@ -140,33 +140,23 @@ export default function plan(ast, profiler) {
   ctx.types.arrResized = programFacts.arrResized
   ctx.types.nameEscapes = programFacts.nameEscapes
   ctx.types.literalObjectVars = programFacts.literalObjectVars
-  // ProgramIndex identity slice: the single frozen authority for stable
-  // function IDs and same-module member-call targets. Built once after every
-  // AST-mutating early-plan pass settles and before narrowing, representation
-  // solving, or emission. Compatibility consumers project numeric IDs back to
-  // live function records through functionById; no consumer stores a second
-  // member-target table. Published on ctx.types for emission readers.
-  programFacts.programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast))
-  ctx.plans.programIndex = programFacts.programIndex
-  // Computed-dispatch call-site synthesis (program-facts.js's own doc on
-  // synthesizeComputedDispatchCallSites has the full reasoning): must run
-  // AFTER ProgramIndex exists (it resolves through resolveComputedIds) and
-  // BEFORE anything reads programFacts.callSites for real — narrowSignatures
-  // below is the first and primary reader, but materializeAutoBoxSchemas/
-  // resolveClosureWidth/canSkipWholeProgramNarrowing all run first in this
-  // function, so this sits right at the earliest safe point, immediately
-  // after ProgramIndex itself. Mutates programFacts.callSites in place (pushes
-  // only) — the same "enrich in place, never re-collected past here"
-  // contract this function's own header already documents for
-  // narrowSignatures' paramReps writes.
-  t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts))
+  // ProgramIndex identity and direct-graph slice. Build numeric identities and
+  // member resolvers after every early AST mutation. Its builder exposes one
+  // temporary resolver to computed-dispatch synthesis, then freezes numeric
+  // call edges, roots, and reachability before returning. Only that closed index
+  // is published. Compatibility consumers project IDs back through functionById;
+  // no second member-target or call-graph table survives.
+  const programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast,
+    resolver => t('synthesizeComputedDispatchCallSites', () =>
+      synthesizeComputedDispatchCallSites(programFacts, resolver))))
+  programFacts.programIndex = programIndex
+  ctx.plans.programIndex = programIndex
   // Shape check (.work/archive/program-facts-split.md §7.1): this is the ONLY staple-on
   // site anywhere in src/compile/ that adds a top-level key to `programFacts`
   // after `collectProgramFacts` publishes it — the moment it lands is the
   // right place to assert no OTHER, undocumented key has snuck on too.
-  // Placed after synthesizeComputedDispatchCallSites (which only enriches
-  // the existing `callSites` array, never stapling a new key) so this same
-  // check also covers that call, not only ProgramIndex above.
+  // Placed after call-site synthesis and graph finalization so this same check
+  // covers the complete ProgramIndex build, not only its identity census.
   // Always-on (core-simplification-audit.md §4(ii) slice 7 — measured <0.03 ms/compile,
   // see assertProgramFactsShape's own doc for the numbers).
   assertProgramFactsShape(programFacts, 'post-programIndex')

@@ -361,25 +361,24 @@ function collectNestedEscapes(ast, moduleInits, funcsList, nestedObjects) {
 }
 
 /**
- * Build the frozen ProgramIndex identity and member-target slice. Called once
- * from plan/index.js after the early-plan AST-mutating passes (inlining/SROA/flattening/
- * devirtualization) settle and before solveRepresentationBoundaries/
- * narrowSignatures run — every later plan pass and every emission site sees
- * the identical, already-closed snapshot. Never re-derived, never mutated:
- * requirement (1) of the finish-order item this file implements.
+ * Build the complete ProgramIndex after the early-plan AST mutations settle.
+ * An optional enrichment callback receives a temporary identity/member resolver
+ * so computed call observations can be synthesized before numeric direct edges,
+ * roots, and reachability are frozen. Only the final closed index is returned.
  *
- * @returns a frozen numeric identity and member-target authority.
+ * @returns a frozen numeric identity, member-target, and direct-call authority.
  *  `resolveMemberId` returns a stable function ID or -1. `functionById`
  *  projects that ID to the live function record for compatibility consumers.
  *  `resolveComputedIds` returns a closed mixed set of numeric named-function
  *  IDs and inline arrow AST nodes, or null when any member is unresolved.
- *  This first production slice indexes the prepared and imported snapshot.
- *  Variants minted later by narrowing remain on the existing registry until
- *  final function identity moves to ProgramIndex in a later slice.
+ *  This production slice indexes the prepared and imported snapshot, including
+ *  its pre-narrowing direct-call graph. Variants minted later by narrowing
+ *  remain on the existing registry until final function identity moves to
+ *  ProgramIndex in a later slice.
  */
-export function buildProgramIndex(ctx, programFacts, ast) {
+export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   const functions = []
-  const seenFunctions = new Map()
+  let seenFunctions = new Map()
   const functionNameIds = new Map()
   const addFunction = (name, func) => {
     if (!func) return
@@ -497,6 +496,81 @@ export function buildProgramIndex(ctx, programFacts, ast) {
   const functionById = id => Number.isInteger(id) && id >= 0 && id < functions.length ? functions[id] : null
   const functionIdOfName = name => functionNameIds.get(name) ?? -1
 
+  if (enrichCallSites) enrichCallSites(Object.freeze({
+    functionCount: functions.length,
+    functionById,
+    functionIdOfName,
+    resolveMemberId,
+    resolveComputedIds,
+  }))
+
+  const count = functions.length
+  const callSites = programFacts.callSites || []
+  // Count and fill flat CSR in two passes. Do not stage per-caller nested arrays:
+  // that shape produced correct first-round bytes but trapped after a self-hosted
+  // `_clear()`, while this flat ownership survives repeated arena rewinds.
+  const edgeCount = new Array(count).fill(0)
+  for (const site of callSites) {
+    const targetId = functionNameIds.get(site.callee) ?? -1
+    if (targetId < 0) throw new Error(`ProgramIndex has no function ID for direct callee '${site.callee}'`)
+    if (site.callerFunc == null) continue
+    const callerId = seenFunctions.get(site.callerFunc) ?? functionNameIds.get(site.callerFunc.name) ?? -1
+    if (callerId < 0) throw new Error(`ProgramIndex has no function ID for direct caller '${site.callerFunc.name}'`)
+    edgeCount[callerId]++
+  }
+  const edgeStart = new Array(count)
+  let totalEdges = 0
+  for (let funcId = 0; funcId < count; funcId++) {
+    edgeStart[funcId] = totalEdges
+    totalEdges += edgeCount[funcId]
+  }
+  const edgeTarget = new Array(totalEdges)
+  const edgeCursor = edgeStart.slice()
+  for (const site of callSites) {
+    if (site.callerFunc == null) continue
+    const callerId = seenFunctions.get(site.callerFunc) ?? functionNameIds.get(site.callerFunc.name)
+    edgeTarget[edgeCursor[callerId]++] = functionNameIds.get(site.callee)
+  }
+  const rootIds = []
+  const rootSeen = new Array(count).fill(false)
+  for (const func of ctx.funcs.list) {
+    if (!func.exported && !programFacts.valueUsed?.has(func.name)) continue
+    const id = functionNameIds.get(func.name) ?? -1
+    if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
+  for (const site of callSites) if (site.callerFunc == null) {
+    const id = functionNameIds.get(site.callee) ?? -1
+    if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
+  const reachable = new Array(count).fill(0)
+  const stack = rootIds.slice()
+  while (stack.length) {
+    const funcId = stack.pop()
+    if (reachable[funcId]) continue
+    reachable[funcId] = 1
+    const start = edgeStart[funcId], end = start + edgeCount[funcId]
+    for (let i = start; i < end; i++) stack.push(edgeTarget[i])
+  }
+  Object.freeze(edgeStart)
+  Object.freeze(edgeCount)
+  Object.freeze(edgeTarget)
+  Object.freeze(rootIds)
+  Object.freeze(reachable)
+  const callGraph = Object.freeze({ edgeStart, edgeCount, edgeTarget, rootIds, reachable })
+  seenFunctions = null
+
+  const filterCallSitesToReachable = callSites => {
+    let write = 0
+    for (let read = 0; read < callSites.length; read++) {
+      const site = callSites[read]
+      const callerId = site.callerFunc == null ? -1 : functionNameIds.get(site.callerFunc.name) ?? -1
+      if (site.callerFunc == null || callerId >= 0 && reachable[callerId]) callSites[write++] = site
+    }
+    callSites.length = write
+  }
+  const getCallGraph = () => callGraph
+  const isReachable = funcId => !!reachable[funcId]
+
   Object.freeze(functions)
   return Object.freeze({
     functionCount: functions.length,
@@ -504,6 +578,9 @@ export function buildProgramIndex(ctx, programFacts, ast) {
     functionIdOfName,
     resolveMemberId,
     resolveComputedIds,
+    filterCallSitesToReachable,
+    getCallGraph,
+    isReachable,
   })
 }
 

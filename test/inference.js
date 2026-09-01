@@ -2030,7 +2030,7 @@ test('bigint∪null: kind carries through the nullish ternary arm, guards stay l
 // sites — so a const table of arrows (watr's FOLD/FOLD2 shape) called helpers
 // with args the param lattice never saw: the callee settled blind, its
 // bigint receiver fell to the number fork ("0.000…" hex), and
-// filterLiveCallSites culled the whole chain as dead (the speed-tier lab-row
+// the call-site reachability filter culled the whole chain as dead (the speed-tier lab-row
 // throw). collectProgramFacts now walks moduleInits for '()' sites
 // (callerFunc = null — module scope), and the EXISTING lattice types the
 // chain: table args like `BigInt(x) * 3n` prove BIGINT with no caller

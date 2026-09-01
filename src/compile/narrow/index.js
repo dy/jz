@@ -35,7 +35,7 @@ import {
 import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType, inferSchemaId, inferValType, inferTypedCtor,
 } from '../infer.js'
-import { RECUR_INT_OPS, assertValKindConsistent, filterLiveCallSites, buildCallerTypedLenCtx, enrichCallerValTypesFromPointerParams, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
+import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, enrichCallerValTypesFromPointerParams, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
 import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
 import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnArrayElems } from './results.js'
 import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
@@ -45,13 +45,10 @@ import { makeMapOverlay } from '../map-overlay.js'
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, valueUsed, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
 
-  // Reachability filter: dead callerFuncs (e.g. unused stdlib helpers from bundled
-  // modules) shouldn't poison narrowing of live functions. Without this, a never-
-  // executed call like `checksumF64 → mix(h, u[i])` would force mix's `x` rep to
-  // bimorphic (f64 ∪ i32) and block i32 narrowing of mix's hot caller (runKernel).
-  // Live = exported ∪ value-used ∪ transitively reached from those + top-level.
-  // Top-level call sites have callerFunc === null and are unconditionally live.
-  filterLiveCallSites(callSites, valueUsed)
+  // Dead callers must not poison live signature facts. ProgramIndex owns the
+  // numeric roots and direct-edge closure; this consumer only compacts the rich
+  // call-site observations to that already-final reachability set.
+  programFacts.programIndex.filterCallSitesToReachable(callSites)
 
   // Callee-indexed view of `callSites`, built ONCE per narrowSignatures call.
   // Several consumers below (hardParamVal, hardParamRecvArrTyped,
@@ -62,7 +59,7 @@ export default function narrowSignatures(programFacts, ast) {
   // param — O(functions × params × callSites), the pass's own dominant cost on
   // a program this size (self-hosted-only: native V8 GCs the resulting churn;
   // the self-host bump arena can't, see research.md). `callSites` is stable
-  // from here on — `filterLiveCallSites`, just above, is the ONLY place
+  // from here on; ProgramIndex compaction just above is the ONLY place
   // anywhere in this module that mutates it (in-place compaction), and it has
   // already run — so one grouping pass here replaces every one of those scans
   // with an O(1) `.get(funcName)` lookup into just that callee's own sites,

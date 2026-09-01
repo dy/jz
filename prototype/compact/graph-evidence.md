@@ -120,3 +120,15 @@ Persistent result summaries and disposable local inference now share one express
 | 2,048 | 5,262,264 | 2,109,832 | 1,949,120 | 38,814 |
 
 Output hashes, maximum function WAT, and one-slot scratch remain unchanged. The machine had about 12.3 GiB of allocated swap, so heap and timing values remain directional.
+
+## Production direct-call graph rerun
+
+Production now builds roots and direct edges as flat numeric CSR inside its ProgramIndex. This changes the shared parser dependency graph but not compact lowering. The staged compiler graph hash is `0fd3f19bd0f9b291277e3889583fb766a85d1baa740864421eb19abdb9579070`; the direct graph hash is `97ce69fbfcda5f06c27f1e05e46637b7af9ae1e4f487701a9abe4754579cd14c`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,308,016 | 667,944 | 245,768 | 2,333 |
+| 512 | 2,328,248 | 1,057,696 | 557,056 | 9,629 |
+| 2,048 | 5,269,408 | 2,112,096 | 1,949,120 | 38,814 |
+
+All three output hashes remain unchanged and byte-identical. Function scratch remains one slot and maximum finalized function WAT remains 18 nodes. The machine had about 12.1 GiB of allocated swap, so heap and timing values remain directional.

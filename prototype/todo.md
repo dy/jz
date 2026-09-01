@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.16x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,457,881 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 13.28x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,466,780 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -342,7 +342,7 @@ Production migration reuses the normalized production program and existing emitt
 - [x] redirect every member-target reader through `resolveMemberId` and `functionById`
 - [x] delete the superseded CallTargetIndex file, maps, API, and writer
 - [x] preserve all 568 production refactor-oracle outputs byte for byte
-- [ ] move direct call edges and roots from ProgramFacts into ProgramIndex
+- [x] move direct call edges and roots from the narrowing reachability filter into ProgramIndex
 - [ ] add conservative dynamic-call roots and SCC summaries
 - [ ] assign final function, type, global, schema, and data IDs once
 
@@ -356,6 +356,18 @@ First production slice verification:
 - recursive self-compile: 321 modules, 6,840,880 input bytes, 14,016,983 output bytes, 4,106,338,664 heap bytes, 188,628,632 bytes headroom
 
 The opt0 leg reaches the same pre-existing shared-dispatch `Date.valueOf()` failure after 3,894 passes and one skip. Recursive completion remains green, but its memory efficiency remains red. Do not migrate representations in the same change.
+
+Second production slice verification:
+
+- direct edges use two-pass flat CSR, with no retained per-caller buckets
+- the prior nested-bucket attempt was rejected after warm self-host round two trapped on a two-argument direct call
+- native: 3,895 pass, 1 skip
+- opt3: 3,895 pass, 1 skip
+- WASI: 3,894 pass, 1 skip
+- functional self-compile: 23 tests and 224 assertions, including four compile-clear direct-call rounds
+- refactor oracle: all 568 outputs byte-identical to `4da2a2e7`
+- recursive self-compile: 321 modules, 6,842,354 input bytes, 14,025,859 output bytes, 4,107,965,288 heap bytes, 187,002,008 bytes headroom
+- compact threshold: pass at 2,256,496 bytes versus the 14,466,780-byte production compiler
 
 ### M3. Representation and typed storage
 

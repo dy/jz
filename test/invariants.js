@@ -500,8 +500,14 @@ test('invariant: closure dedup groups alpha-duplicates, JSON-null class, and ord
 
 test('invariant: ProgramIndex owns stable numeric function and member-target identities', () => {
   const target = { name: 'target', sig: { params: [], results: ['f64'] }, body: ['return', [null, 1]] }
-  const caller = { name: 'caller', sig: { params: [], results: ['f64'] }, body: ['return', ['()', ['.', 'ns', 'run'], null]] }
-  const funcs = [target, caller]
+  const caller = { name: 'caller', exported: true, sig: { params: [], results: ['f64'] }, body: ['return', ['()', ['.', 'ns', 'run'], null]] }
+  const dead = { name: 'dead', sig: { params: [], results: ['f64'] }, body: ['return', ['()', 'target', null]] }
+  const funcs = [target, caller, dead]
+  const callSites = [
+    { callee: 'target', argList: [], callerFunc: caller, node: ['()', 'target'] },
+    { callee: 'caller', argList: [], callerFunc: null, node: ['()', 'caller'] },
+    { callee: 'target', argList: [], callerFunc: dead, node: ['()', 'target'] },
+  ]
   const index = buildProgramIndex({
     module: { moduleInits: [] },
     funcs: {
@@ -511,15 +517,31 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
       multiProp: new Set(),
     },
   }, {
-    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(),
+    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(), callSites,
   }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'))
   const targetId = index.functionIdOfName('target')
+  const callerId = index.functionIdOfName('caller')
+  const deadId = index.functionIdOfName('dead')
   is(targetId, 0)
-  is(index.functionCount, 2)
+  is(index.functionCount, 3)
   is(index.functionById(targetId), target)
   is(index.resolveMemberId('ns', 'run'), targetId)
   is(index.resolveComputedIds('ns').join(','), String(targetId))
   is(index.resolveMemberId('ns', 'missing'), -1)
+
+  const graph = index.getCallGraph()
+  is(graph.rootIds.join(','), String(callerId))
+  is(graph.edgeStart.join(','), '0,0,1')
+  is(graph.edgeCount.join(','), '0,1,1')
+  is(graph.edgeTarget.join(','), `${targetId},${targetId}`)
+  ok(index.isReachable(targetId), 'the transitive target is reachable')
+  ok(index.isReachable(callerId), 'the module-call root is reachable')
+  ok(!index.isReachable(deadId), 'an unrooted caller remains unreachable')
+  index.filterCallSitesToReachable(callSites)
+  is(callSites.length, 2)
+  is(callSites.map(site => site.callee).join(','), 'target,caller')
+  throws(() => graph.edgeTarget.push(deadId), /not extensible/)
+  is(index.finalizeCallGraph, undefined, 'the published ProgramIndex exposes no graph writer')
 })
 
 test('invariant: readonlyParamReps exposes get (+ the .raw restore hook), not a mutator — a stray write throws', async () => {

@@ -38,32 +38,6 @@ export function assertValKindConsistent(paramReps) {
         throw new Error(`possibleKinds/val consistency: ${fname} param ${k} val=${r.val} missing from possibleKinds=${r.possibleKinds ? [...r.possibleKinds].join(',') : 'undefined'}`)
 }
 
-export function filterLiveCallSites(callSites, valueUsed) {
-  if (!callSites.length) return
-
-  const live = new Set()
-  for (const f of ctx.funcs.list) {
-    if (f.exported || valueUsed.has(f.name)) live.add(f.name)
-  }
-
-  let changed = true
-  while (changed) {
-    changed = false
-    for (const cs of callSites) {
-      if (cs.callerFunc === null || live.has(cs.callerFunc.name)) {
-        if (!live.has(cs.callee)) { live.add(cs.callee); changed = true }
-      }
-    }
-  }
-
-  let w = 0
-  for (let r = 0; r < callSites.length; r++) {
-    const cs = callSites[r]
-    if (cs.callerFunc === null || live.has(cs.callerFunc.name)) callSites[w++] = cs
-  }
-  callSites.length = w
-}
-
 export function buildCallerCtx() {
   const callerCtx = new Map()
   const globalTE = ctx.scope.globalTypedElem || new Map()
