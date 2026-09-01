@@ -327,6 +327,14 @@ export default function compile(ast, profiler) {
   // Emission and assembly ordering below read this order, not the registry.
   timePhase(profiler, 'finalizeConcreteFunctionIds', () =>
     programFacts.programIndex.finalizeConcreteFunctionIds())
+  // Parameter-ABI ownership transfer: the lattice's settled rows move to
+  // concrete-ID slots and the name-keyed key dies here, so no later reader
+  // can consult the analysis index.
+  timePhase(profiler, 'publishParameterAbi', () => {
+    programFacts.programIndex.publishParameterAbi(programFacts.paramReps)
+    const retiredParamRepsKey = 'paramReps'
+    delete programFacts[retiredParamRepsKey]
+  })
   // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
   // above) — this is the freeze point after which NO ctx.features key may change

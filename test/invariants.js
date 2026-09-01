@@ -699,12 +699,20 @@ test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', as
     throws(() => ctx.funcs.list.push(source), /not extensible/)
     is(index.finalizeConcreteFunctionIds(), concrete, 'concrete finalize is idempotent')
 
+    throws(() => index.parameterAbiOf(source), /not published/)
+    is(index.publishParameterAbi(paramReps), 3)
+    is(index.parameterAbiOf(source), paramReps.get('source'), 'the settled source row transfers by reference')
+    is(index.parameterAbiOf(fixed), paramReps.get('source$fixed'), 'a variant reads its own derived row')
+    ok(index.parameterAbiOf(fixed) !== index.parameterAbiOf(source), 'variant and source rows stay distinct')
+    throws(() => index.publishParameterAbi(paramReps), /already published/)
+
     const facts2 = {
       nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(), callSites: [],
     }
     const index2 = buildProgramIndex(ctx, facts2, null)
     throws(() => index2.finalizeConcreteFunctionIds(), /finalized variant identities/)
     throws(() => index2.concreteFunctionOrder(), /not finalized/)
+    throws(() => index2.publishParameterAbi(paramReps), /concrete function IDs/)
   } finally {
     ctx.funcs = savedFuncs
     ctx.plans = savedPlans
@@ -726,6 +734,13 @@ test('architecture: ProgramIndex variant and boundary facts have one writer each
   is(boundaryWriters.join(','), 'src/compile/representation-plan/boundaries.js')
   is(boundaryAssignments.join(','), '', 'no identity-keyed boundary field writer survives')
   is(concreteFinalizers.join(','), 'src/compile/index.js')
+  const abiPublishers = []
+  for (const file of jsFiles(join(ROOT, 'src'))) {
+    if (/\.publishParameterAbi\s*\(/.test(readFileSync(file, 'utf8'))) abiPublishers.push(relative(ROOT, file))
+  }
+  is(abiPublishers.join(','), 'src/compile/index.js')
+  ok(!/paramReps/.test(readFileSync(join(ROOT, 'src', 'compile', 'emit-func.js'), 'utf8')),
+    'emission reads ProgramIndex parameter ABI, not the analysis lattice')
 })
 
 test('architecture: emission order is the frozen concrete function order', () => {

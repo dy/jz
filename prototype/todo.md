@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 14.13x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,519,509 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 13.66x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,522,343 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -351,6 +351,8 @@ Production migration reuses the normalized production program and existing emitt
 - [x] delete the source-name address-taken census at ProgramIndex build and route every later reader to numeric bits
 - [x] assign final concrete Wasm function IDs after variant identity closes
 - [ ] assign final type, global, schema, and data IDs once
+
+The type/global/schema/data close is evidence-triggered: schema mint, static-data intern, the globals snapshot, and the $ftN finalizer are each single-writer today, so a numeric ProgramIndex close without a consumer would only add a parallel path. It lands with M4 lowering or M6 assembly, the first stage that needs those IDs before emission.
 
 First production slice verification:
 
@@ -431,6 +433,7 @@ Per-slice recursive and artifact ratchet:
 | named BigInt ABI boundaries | 14,509,328 | 4,117,821,616 | 177,145,680 | +6,833 bytes, -1,562,776 headroom |
 | anonymous BigInt boundaries | 14,509,947 | 4,117,854,848 | 177,112,448 | +619 bytes, -33,232 headroom |
 | concrete Wasm function IDs | 14,519,509 | 4,119,704,568 | 175,262,728 | +9,562 bytes, -1,849,720 headroom |
+| parameter-ABI emission rows | 14,522,343 | 4,120,236,904 | 174,730,392 | +2,834 bytes, -532,336 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -440,7 +443,7 @@ Migrate one decision family at a time:
 
 1. [x] named-function BigInt parameter and result boundaries
 2. [x] anonymous closure/start BigInt boundaries
-3. [ ] non-BigInt parameter and result ABI
+3. [ ] non-BigInt parameter and result ABI (first slice landed: emission parameter rows transfer to concrete-ID slots at close and `programFacts.paramReps` dies there; the lattice remains name-keyed inside plan, and result ABI remains on the narrowed signature)
 4. [ ] local numeric versus pointer representation
 5. [ ] typed storage constructor and element width
 6. [ ] pointer relocation and never-grown facts
@@ -492,6 +495,20 @@ Anonymous closure/start BigInt boundary slice verification:
 - refactor oracle: all 568 outputs remain byte-identical
 - recursive self-compile: 321 modules, 6,861,127 input bytes, 14,069,042 output bytes, 4,117,854,848 heap bytes, 177,112,448 bytes headroom
 - compact threshold: pass at 2,256,528 bytes versus the 14,509,947-byte production compiler
+
+Non-BigInt parameter-ABI emission slice verification:
+
+- `publishParameterAbi` transfers the settled parameter rows to concrete-ID slots at close; `programFacts.paramReps` dies there through the retired-key pattern (a static-key delete is rejected by the self-hosted build, by design)
+- emission reads `parameterAbiOf`; a source scan pins `emit-func.js` free of the analysis lattice
+- native: 3,901 pass, 1 skip
+- opt3: 3,901 pass, 1 skip
+- WASI: 3,900 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,865,967 input bytes, 14,081,405 output bytes, 4,120,236,904 heap bytes, 174,730,392 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,522,343-byte production compiler
 
 ### M4. Function-at-a-time lowering
 

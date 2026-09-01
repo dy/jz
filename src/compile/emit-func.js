@@ -27,14 +27,12 @@ import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-
  * schema param bindings during emission so they cannot leak between functions.
  */
 export function emitFunc(func, functionPlan, programFacts) {
-  const { paramReps } = programFacts
-
   // Raw WAT functions (e.g., _alloc, _clear from memory module)
   if (func.raw) return parseWat(func.raw)
 
   const { name, body, exported, sig } = func
   const multi = sig.results.length > 1
-  const _reps = paramReps.get(name)
+  const _reps = programFacts.programIndex.parameterAbiOf(func)
 
   const previousFrame = enterFunc(sig, body, { exported })
   let schemaVarsPrev = null

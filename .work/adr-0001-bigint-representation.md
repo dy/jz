@@ -72,8 +72,9 @@ In order:
    interop decoder and hand-built wrapper lane are deleted.
 4. **In progress:** every parameter/result boundary (named source, variant, and anonymous
    closure/start) now publishes into ProgramIndex; body-local actions remain in RepresentationPlan.
-   Remaining follow-up: collapse the duplicate semantic-kind lattice onto canonical kind facts
-   and move `programFacts.paramReps` to the surviving signature solution.
+   Remaining follow-up: collapse the duplicate semantic-kind lattice onto canonical kind facts.
+   `programFacts.paramReps` now dies at concrete-ID close: emission reads ProgramIndex
+   parameter-ABI rows; the name-keyed lattice lives only inside plan().
 5. **Done:** erasure-diag.js and bigint-boxed-stats.js deleted as blocks.
 6. **Done:** obsolete direction documents point here; .work/archive/bigint-retirement-design.md remains
    historical evidence of the wall.

@@ -744,6 +744,26 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     return concreteIdOfVariant(variantIdOf(funcOrName))
   }
 
+  // Parameter-ABI rows for emission (M3 family 3, first slice): once concrete
+  // IDs close, the settled per-function rows of the name-keyed analysis
+  // lattice transfer here by reference and the lattice key dies at the
+  // publish site. Result ABI stays on the narrowed signature record.
+  let paramAbiRows = null
+  const publishParameterAbi = paramReps => {
+    if (!concreteIndex)
+      throw new Error('ProgramIndex parameter ABI requires finalized concrete function IDs')
+    if (paramAbiRows)
+      throw new Error('ProgramIndex parameter ABI already published')
+    paramAbiRows = concreteFunctions.map(func => paramReps?.get(func.name) || null)
+    Object.freeze(paramAbiRows)
+    return paramAbiRows.length
+  }
+  const parameterAbiOf = funcOrName => {
+    if (!paramAbiRows) throw new Error('ProgramIndex parameter ABI is not published')
+    const id = concreteIdOf(funcOrName)
+    return id >= 0 ? paramAbiRows[id] : null
+  }
+
   // Direct-call SCCs use a third, explicit graph-node space. It contains every
   // callable present when the graph freezes, including pre-index fixed-rest
   // variants, but never doubles as either sourceId or variantId.
@@ -988,6 +1008,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     concreteIdOfSource,
     concreteIdOfVariant,
     concreteIdOf,
+    publishParameterAbi,
+    parameterAbiOf,
     graphFunctionCount: graphFunctions.length,
     graphFunctionById,
     graphFunctionIdOfName,
