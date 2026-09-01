@@ -11,8 +11,9 @@
  * knows WHETHER to specialize, WHAT the clone's sig/facts must say, and
  * WHICH call sites qualify. What was duplicated five times, byte-for-byte,
  * is pure MECHANISM: mint a collision-free name, build the clone object,
- * register it into ctx.func.{list,map,names}, copy+patch its paramReps
- * entry, and retarget the qualifying call edges. That mechanism now lives
+ * register it into ctx.funcs.{list,map,names}, copy and patch its paramReps
+ * entry, assign its ProgramIndex variant identity, and retarget qualifying
+ * call edges. That mechanism now lives
  * here, once.
  *
  * ATOMICITY (the audit's specific ask): a call edge is TWO things pointing
@@ -46,6 +47,8 @@ import { cloneRep } from '../param-reps.js'
  * @param {string} opts.name          Desired clone name, already carrying the
  *   path's own naming convention (ctor-combo suffix, dom-kind suffix,
  *   `$union`, `$spec`, `#restN`).
+ * @param {string} opts.kind          Stable specialization family tag. This is
+ *   identity metadata, not a representation fact.
  * @param {object} [opts.sig]         Full replacement `{params, results}`.
  *   Omitted → a fresh shallow copy of `origin.sig` (the VAL-kind dichotomy
  *   shape: the clone's ABI is unchanged, only its paramReps facts are pinned).
@@ -71,13 +74,16 @@ import { cloneRep } from '../param-reps.js'
  * @returns {object} the materialized (or reused) clone func.
  */
 export function materializeVariant({
-  origin, key, name, sig, body, cloneFields, paramReps, factOverrides, eligibleSites, fallback,
+  origin, key, name, kind, sig, body, cloneFields, paramReps, factOverrides, eligibleSites, fallback,
 }) {
+  if (typeof kind !== 'string' || !kind)
+    throw new Error(`materializeVariant: missing specialization kind for ${name || '<unnamed>'}`)
   if (fallback !== origin)
     throw new Error(`materializeVariant: fallback must be origin (${origin?.name} vs ${fallback?.name})`)
 
   let cloneName = name
   let clone = key != null ? ctx.funcs.map.get(cloneName) : null
+  let created = false
   if (!clone) {
     if (key == null) while (ctx.funcs.names.has(cloneName)) cloneName += '$'
     clone = {
@@ -91,6 +97,7 @@ export function materializeVariant({
     ctx.funcs.list.push(clone)
     ctx.funcs.map.set(cloneName, clone)
     ctx.funcs.names.add(cloneName)
+    created = true
 
     if (paramReps) {
       const reps = paramReps.get(origin.name)
@@ -112,6 +119,12 @@ export function materializeVariant({
         paramReps.set(cloneName, cloneReps)
       }
     }
+  }
+
+  if (created) {
+    const index = ctx.plans.programIndex
+    if (index) index.registerVariantIdentity(clone, origin, kind)
+    else ctx.funcs.pendingVariants.push([clone, origin, kind])
   }
 
   for (const site of eligibleSites || []) {

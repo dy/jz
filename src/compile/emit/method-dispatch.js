@@ -627,8 +627,8 @@ function tryGenericEmitter({ obj, method, parsed, vt, callMethod }) {
 
 const indexedMemberFunction = (receiver, method) => {
   const index = ctx.plans.programIndex
-  const targetId = index?.resolveMemberId(receiver, method) ?? -1
-  return index?.functionById(targetId) ?? null
+  const sourceId = index?.resolveMemberSourceId(receiver, method) ?? -1
+  return index?.sourceFunctionById(sourceId) ?? null
 }
 
 function bigintMethodTargets(obj, method) {

@@ -328,7 +328,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         return
       }
       // Computed-member call `TABLE[key](args)`, a candidate for
-      // program-index.js's `resolveComputedIds`. Stashed here and resolved
+      // program-index.js's `resolveComputedSourceIds`. Stashed here and resolved
       // later by plan/index.js after buildProgramIndex runs. This walk happens
       // before the index exists, so it can only record the candidate.
       // No `return`: every existing fact this call's own subtree would
@@ -520,7 +520,7 @@ export function collectProgramFacts(ast) {
  *  call graph is finalized and before narrowSignatures reads call sites.
  *
  *  Two resolved-member shapes, per program-index.js's `foldWrite`:
- *   - a same-module named function (`resolveMemberId`'s own shape, e.g. an
+ *   - a same-module named function (`resolveMemberSourceId`'s own shape, e.g. an
  *     `ns.parse = parseNum`-style property): synthesized DIRECTLY, one call
  *     site per outer site, reusing that site's own `argList` verbatim — the
  *     member function receives exactly what a bare-name call to it would.
@@ -573,8 +573,8 @@ export function collectProgramFacts(ast) {
  *  node's own arguments) both skip `synthetic` sites for exactly this
  *  reason — see their own comments at the skip. */
 export function synthesizeComputedDispatchCallSites(programFacts, programIndex) {
-  const resolveComputedIds = programIndex?.resolveComputedIds
-  if (!resolveComputedIds || !programFacts.computedCallSites.length) return
+  const resolveComputedSourceIds = programIndex?.resolveComputedSourceIds
+  if (!resolveComputedSourceIds || !programFacts.computedCallSites.length) return
 
   // Does `node` contain a bare-string reference to any name in `names`,
   // anywhere — INCLUDING inside a further-nested `=>` (a captured reference
@@ -661,11 +661,11 @@ export function synthesizeComputedDispatchCallSites(programFacts, programIndex) 
   const claimedNodes = new Set()
 
   for (const site of programFacts.computedCallSites) {
-    const members = resolveComputedIds(site.objName)
+    const members = resolveComputedSourceIds(site.objName)
     if (!members) continue
     for (const member of members) {
       if (!Array.isArray(member)) {
-        const memberFunc = programIndex.functionById(member)
+        const memberFunc = programIndex.sourceFunctionById(member)
         if (!memberFunc) continue
         // Named-function member: has its own real paramReps identity —
         // synthesize directly, the outer site's argList unchanged, exactly

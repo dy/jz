@@ -1166,7 +1166,7 @@ export const resolveClosureWidth = (programFacts) => {
   let maxValueArity = 0
   const dynamicRoots = programFacts.programIndex.getCallGraph().dynamicRootIds
   for (let i = 0; i < dynamicRoots.length; i++) {
-    const n = programFacts.programIndex.functionById(dynamicRoots[i])?.sig?.params?.length ?? 0
+    const n = programFacts.programIndex.graphFunctionById(dynamicRoots[i])?.sig?.params?.length ?? 0
     if (n > maxValueArity) maxValueArity = n
   }
   ctx.closure.width = (hasSpread && hasRest)

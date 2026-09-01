@@ -144,3 +144,15 @@ Production direct reachability now closes over flat SCC spans and a condensed co
 | 2,048 | 5,263,472 | 2,112,096 | 1,949,120 | 38,814 |
 
 Compact output hashes and scratch high-water remain unchanged. The machine had about 12.1 GiB of allocated swap, so heap and timing values remain directional.
+
+## Production variant-identity rerun
+
+Production now keeps source, variant, and graph IDs in disjoint spaces and closes variant registration before emission. The staged compiler graph hash is `2ce280954e89c1b5b7630ea460cc92e00ea2e216ed9bd4033300bfbef0ee6326`; the direct graph hash is `28c966a97433867bec816ab53d95b46c741c4cb6b02c3dce7139a2838175385c`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,307,984 | 680,840 | 239,152 | 2,333 |
+| 512 | 2,327,920 | 1,057,696 | 557,056 | 9,629 |
+| 2,048 | 5,257,488 | 2,105,584 | 1,949,120 | 38,814 |
+
+All output hashes remain unchanged and byte-identical. Function scratch remains one slot and maximum finalized function WAT remains 18 nodes. The machine had about 11.9 GiB of allocated swap, so timing and small heap differences remain directional.

@@ -82,7 +82,7 @@ import { staticObjectProps } from '../static.js'
 // `ctx.funcs.names`/`ctx.funcs.map` (the function `fn$prop` itself) plus a
 // negative fact in `ctx.funcs.multiProp` (`"fn.prop"`) exactly when a SECOND
 // write to the same property occurs (wrapper-composition reassignment —
-// prepare's own "Collide → fresh name" branch). `resolveMemberId` below falls
+// prepare's own "Collide → fresh name" branch). `resolveMemberSourceId` below falls
 // back to these two facts when the census found no write to fold at all,
 // trusted the SAME way `tryFnPropCall`/`bigintMethodTargets` (emit.js)
 // already trust them for direct-call emission — a same-module function
@@ -188,7 +188,7 @@ function collectValueEscapes(ast, moduleInits, funcsList) {
  *  shapes resolve: a same-module named-function reference (`fn`, a
  *  `ctx.funcs.list` entry, converted to a numeric ID before publication),
  *  or an inline arrow literal (the node itself, which has no named-function
- *  identity and remains an AST value in `resolveComputedIds`), NOT a
+ *  identity and remains an AST value in `resolveComputedSourceIds`), NOT a
  *  `ctx.funcs.list` entry, since prepare.js never lifts an object-literal
  *  property's arrow into one — verified empirically, not assumed: a
  *  property value is either a bare name in `funcsNames` or it stays a
@@ -201,12 +201,12 @@ function collectValueEscapes(ast, moduleInits, funcsList) {
  *  two resolved shapes needs no tag: a named function is a numeric ID, while
  *  an arrow node is `['=>', params, body]`. `Array.isArray` tells them apart
  *  everywhere this table is read. */
-function foldWrite(table, functionNameIds, funcsNames, name, prop, valueNode) {
+function foldWrite(table, sourceNameIds, funcsNames, name, prop, valueNode) {
   let props = table.get(name)
   if (!props) { props = new Map(); table.set(name, props) }
   const prior = props.get(prop)
   if (prior === POISON) return
-  const resolved = isFuncRef(valueNode, funcsNames) ? functionNameIds.get(valueNode)
+  const resolved = isFuncRef(valueNode, funcsNames) ? sourceNameIds.get(valueNode)
     : (Array.isArray(valueNode) && valueNode[0] === '=>') ? valueNode : null
   if (resolved == null) { props.set(prop, POISON); return }
   if (prior === undefined) { props.set(prop, resolved); return }
@@ -221,7 +221,7 @@ function foldWrite(table, functionNameIds, funcsNames, name, prop, valueNode) {
  *  trusted for calls that follow the rebind. Root-level only: stops at
  *  `=>`, the same scope collectDispatchTableClosures already uses for its
  *  own inline-property scan (representation-plan.js). */
-function collectMemberWrites(root, table, rebound, functionNameIds, funcsNames) {
+function collectMemberWrites(root, table, rebound, sourceNameIds, funcsNames) {
   const enter = node => {
     const op = node[0]
     if (op === '=>') return false
@@ -239,7 +239,7 @@ function collectMemberWrites(root, table, rebound, functionNameIds, funcsNames) 
           if (Array.isArray(d[2]) && d[2][0] === '{}') {
             const parsed = staticObjectProps(d[2].slice(1))
             if (parsed) for (let k = 0; k < parsed.names.length; k++)
-              foldWrite(table, functionNameIds, funcsNames, d[1], parsed.names[k], parsed.values[k])
+              foldWrite(table, sourceNameIds, funcsNames, d[1], parsed.names[k], parsed.values[k])
           }
           walkAst(d[2], { enter })
         } else walkAst(d, { enter })
@@ -251,9 +251,9 @@ function collectMemberWrites(root, table, rebound, functionNameIds, funcsNames) 
       if (typeof lhs === 'string') {
         rebound.add(lhs)
       } else if (Array.isArray(lhs) && lhs[0] === '.' && typeof lhs[1] === 'string' && typeof lhs[2] === 'string') {
-        foldWrite(table, functionNameIds, funcsNames, lhs[1], lhs[2], op === '=' ? rhs : null)
+        foldWrite(table, sourceNameIds, funcsNames, lhs[1], lhs[2], op === '=' ? rhs : null)
       } else if (Array.isArray(lhs) && lhs[0] === '[]' && typeof lhs[1] === 'string' && isLiteralStr(lhs[2])) {
-        foldWrite(table, functionNameIds, funcsNames, lhs[1], lhs[2][1], op === '=' ? rhs : null)
+        foldWrite(table, sourceNameIds, funcsNames, lhs[1], lhs[2][1], op === '=' ? rhs : null)
       }
     }
   }
@@ -272,7 +272,7 @@ const memberPathKey = path => path.join('.')
  * static function-property writes. The root object still has to pass the
  * ordinary ProgramIndex escape/shadow/dynamic-write proof; this layer adds
  * the corresponding proof for the intermediate object itself. */
-function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite, functionNameIds, funcsNames) {
+function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite, sourceNameIds, funcsNames) {
   const seedObject = (basePath, literal) => {
     const parsed = staticObjectProps(literal.slice(1))
     if (!parsed) return
@@ -283,7 +283,7 @@ function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite
       nestedObjects.add(key)
       const inner = staticObjectProps(value.slice(1))
       if (inner) for (let k = 0; k < inner.names.length; k++)
-        foldWrite(table, functionNameIds, funcsNames, key, inner.names[k], inner.values[k])
+        foldWrite(table, sourceNameIds, funcsNames, key, inner.names[k], inner.values[k])
       seedObject(path, value)
     }
   }
@@ -309,7 +309,7 @@ function collectNestedMemberWrites(root, nestedObjects, table, rebound, dynWrite
       if (path.length >= 3) {
         const base = memberPathKey(path.slice(0, -1))
         if (nestedObjects.has(base))
-          foldWrite(table, functionNameIds, funcsNames, base, path.at(-1), op === '=' ? rhs : null)
+          foldWrite(table, sourceNameIds, funcsNames, base, path.at(-1), op === '=' ? rhs : null)
       }
     } else if (Array.isArray(lhs) && lhs[0] === '[]') {
       const basePath = memberPath(lhs[1])
@@ -510,44 +510,159 @@ function buildSccSummary(functionCount, edgeStart, edgeCount, edgeTarget, rootId
  * so computed call observations can be synthesized before numeric direct edges,
  * roots, and reachability are frozen. Only the final closed index is returned.
  *
- * @returns a frozen numeric identity, member-target, direct-call, SCC, and reachability authority.
- *  `resolveMemberId` returns a stable function ID or -1. `functionById`
- *  projects that ID to the live function record for compatibility consumers.
- *  `resolveComputedIds` returns a closed mixed set of numeric named-function
- *  IDs and inline arrow AST nodes, or null when any member is unresolved.
- *  This production slice indexes the prepared and imported snapshot, including
- *  its pre-narrowing direct-call graph. Variants minted later by narrowing
- *  remain on the existing registry until final function identity moves to
- *  ProgramIndex in a later slice.
+ * Soundness conditions for numeric identity:
+ *
+ * - sourceId names one prepared, imported, or pre-index synthesized function;
+ * - variantId names one materialized specialization and carries one sourceId;
+ * - graphId names one callable present when direct SCC reachability freezes;
+ * - no accessor accepts another space accidentally;
+ * - every variant signature, parameter-fact map, and FunctionPlan is derived,
+ *   never shared with its source.
+ *
+ * Member proofs additionally require the closed receiver conditions documented
+ * at this file's header. `resolveMemberSourceId` returns a sourceId or -1.
+ * `resolveComputedSourceIds` returns sourceIds and inline arrow AST nodes, or
+ * null when any member is unresolved. Graph arrays never serve as source or
+ * variant fact arrays.
+ *
+ * @returns a frozen ProgramIndex API. Source and graph facts are closed here.
+ *  Variant registration remains open only through materializeVariant until
+ *  `finalizeVariantIdentities` runs after every specialization producer.
  */
 export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
-  const functions = []
-  let seenFunctions = new Map()
-  const functionNameIds = new Map()
-  const addFunction = (name, func) => {
-    if (!func) return
-    let id = seenFunctions.get(func)
+  // Source and specialization IDs are disjoint spaces. Fixed-rest variants can
+  // precede this build, so materializeVariant leaves a flat transfer log that
+  // is consumed here. No variant is ever admitted to the source arrays.
+  const pendingVariants = ctx.funcs.pendingVariants || []
+  const pendingVariantFunctions = new Set()
+  for (const row of pendingVariants) pendingVariantFunctions.add(row[0])
+
+  const sourceFunctions = []
+  const sourceObjectIds = new Map()
+  const sourceNameIds = new Map()
+  const addSourceFunction = (name, func) => {
+    if (!func || pendingVariantFunctions.has(func)) return
+    let id = sourceObjectIds.get(func)
     if (id === undefined) {
-      id = functions.length
-      functions.push(func)
-      seenFunctions.set(func, id)
+      id = sourceFunctions.length
+      sourceFunctions.push(func)
+      sourceObjectIds.set(func, id)
     }
-    if (typeof name === 'string') functionNameIds.set(name, id)
+    if (typeof name === 'string') sourceNameIds.set(name, id)
   }
-  for (const func of ctx.funcs.list) addFunction(func.name, func)
-  for (const [name, func] of ctx.funcs.map) addFunction(name, func)
+  for (const func of ctx.funcs.list) addSourceFunction(func.name, func)
+  for (const [name, func] of ctx.funcs.map) addSourceFunction(name, func)
+
+  const variantFunctions = [], variantSourceIds = [], variantKinds = []
+  const variantObjectIds = new Map(), variantNameIds = new Map()
+  let variantIndex = null
+  const sourceFunctionById = id => Number.isInteger(id) && id >= 0 && id < sourceFunctions.length ? sourceFunctions[id] : null
+  const sourceIdOf = funcOrName => typeof funcOrName === 'string'
+    ? sourceNameIds.get(funcOrName) ?? -1
+    : sourceObjectIds.get(funcOrName) ?? -1
+  const variantFunctionById = id => Number.isInteger(id) && id >= 0 && id < variantFunctions.length ? variantFunctions[id] : null
+  const variantIdOf = funcOrName => typeof funcOrName === 'string'
+    ? variantNameIds.get(funcOrName) ?? -1
+    : variantObjectIds.get(funcOrName) ?? -1
+  const sourceIdOfVariant = variantId => Number.isInteger(variantId) && variantId >= 0 && variantId < variantSourceIds.length
+    ? variantSourceIds[variantId] : -1
+  const sourceIdForOrigin = func => {
+    const sourceId = sourceObjectIds.get(func)
+    if (sourceId !== undefined) return sourceId
+    const variantId = variantObjectIds.get(func)
+    return variantId === undefined ? -1 : variantSourceIds[variantId]
+  }
+  const registerVariantIdentity = (variant, origin, kind) => {
+    if (variantIndex) throw new Error(`ProgramIndex variant identities already finalized before '${variant?.name || '<anonymous>'}'`)
+    const sourceId = sourceIdForOrigin(origin)
+    if (sourceId < 0) throw new Error(`ProgramIndex has no source ID for variant origin '${origin?.name || '<anonymous>'}'`)
+    const prior = variantObjectIds.get(variant)
+    if (prior !== undefined) {
+      if (variantSourceIds[prior] !== sourceId || variantKinds[prior] !== kind)
+        throw new Error(`ProgramIndex variant identity conflict for '${variant?.name || '<anonymous>'}'`)
+      return prior
+    }
+    const id = variantFunctions.length
+    variantFunctions.push(variant)
+    variantSourceIds.push(sourceId)
+    variantKinds.push(kind)
+    variantObjectIds.set(variant, id)
+    variantNameIds.set(variant.name, id)
+    return id
+  }
+  for (const [variant, origin, kind] of pendingVariants)
+    registerVariantIdentity(variant, origin, kind)
+  for (const [name, func] of ctx.funcs.map) {
+    const id = variantObjectIds.get(func)
+    if (id !== undefined) variantNameIds.set(name, id)
+  }
+  ctx.funcs.pendingVariants = null
+
+  const finalizeVariantIdentities = (paramReps, planOf) => {
+    if (variantIndex) return variantIndex
+    for (const func of ctx.funcs.list)
+      if (sourceIdOf(func) < 0 && variantIdOf(func) < 0)
+        throw new Error(`ProgramIndex has no source or variant identity for '${func?.name || '<anonymous>'}'`)
+    for (let variantId = 0; variantId < variantFunctions.length; variantId++) {
+      const variant = variantFunctions[variantId]
+      const source = sourceFunctions[variantSourceIds[variantId]]
+      if (!source || variant === source)
+        throw new Error(`ProgramIndex variant ${variantId} has no distinct source function`)
+      if (variant.sig === source.sig)
+        throw new Error(`ProgramIndex variant '${variant.name}' shares its source signature record`)
+      const variantReps = paramReps?.get(variant.name)
+      const sourceReps = paramReps?.get(source.name)
+      if (variantReps && sourceReps && variantReps === sourceReps)
+        throw new Error(`ProgramIndex variant '${variant.name}' shares its source parameter facts`)
+      if (planOf) {
+        const variantPlan = planOf(variant)
+        const sourcePlan = planOf(source)
+        if (variantPlan === sourcePlan)
+          throw new Error(`ProgramIndex variant '${variant.name}' shares its source FunctionPlan`)
+      }
+    }
+    Object.freeze(variantFunctions)
+    Object.freeze(variantSourceIds)
+    Object.freeze(variantKinds)
+    variantIndex = Object.freeze({
+      variantCount: variantFunctions.length,
+      variantSourceIds,
+      variantKinds,
+    })
+    return variantIndex
+  }
+  const getVariantIndex = () => variantIndex
+
+  // Direct-call SCCs use a third, explicit graph-node space. It contains every
+  // callable present when the graph freezes, including pre-index fixed-rest
+  // variants, but never doubles as either sourceId or variantId.
+  const graphFunctions = []
+  let graphObjectIds = new Map()
+  const graphNameIds = new Map()
+  const addGraphFunction = (name, func) => {
+    if (!func) return
+    let id = graphObjectIds.get(func)
+    if (id === undefined) {
+      id = graphFunctions.length
+      graphFunctions.push(func)
+      graphObjectIds.set(func, id)
+    }
+    if (typeof name === 'string') graphNameIds.set(name, id)
+  }
+  for (const func of ctx.funcs.list) addGraphFunction(func.name, func)
+  for (const [name, func] of ctx.funcs.map) addGraphFunction(name, func)
 
   const shadowed = collectShadowedNames(ast, ctx.module.moduleInits, ctx.funcs.list)
 
   const table = new Map()
   const rebound = new Set()
   const roots = [ast, ...(ctx.module.moduleInits || [])]
-  for (const root of roots) collectMemberWrites(root, table, rebound, functionNameIds, ctx.funcs.names)
+  for (const root of roots) collectMemberWrites(root, table, rebound, sourceNameIds, ctx.funcs.names)
 
   const nestedObjects = new Set(), nestedTable = new Map()
   const nestedRebound = new Set(), nestedDynWrite = new Set()
   for (const root of roots)
-    collectNestedMemberWrites(root, nestedObjects, nestedTable, nestedRebound, nestedDynWrite, functionNameIds, ctx.funcs.names)
+    collectNestedMemberWrites(root, nestedObjects, nestedTable, nestedRebound, nestedDynWrite, sourceNameIds, ctx.funcs.names)
   const nestedEscapes = collectNestedEscapes(ast, ctx.module.moduleInits, ctx.funcs.list, nestedObjects)
 
   const nameEscapes = programFacts?.nameEscapes
@@ -567,7 +682,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     return !shadowed.has(name) && !rebound.has(name) && !(dynWriteVars && dynWriteVars.has(name)) && !valueEscapes.has(name)
   }
 
-  const resolveMemberId = (objName, prop) => {
+  const resolveMemberSourceId = (objName, prop) => {
     if (typeof prop !== 'string') return -1
     const path = memberPath(objName)
     if (path && path.length > 1) {
@@ -581,9 +696,9 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     const isFuncBase = ctx.funcs.names.has(objName)
     if (!(isFuncBase ? safeFuncBase(objName) : safeReceiver(objName))) return -1
     const targetId = table.get(objName)?.get(prop)
-    // Only a named-function resolution is `resolveMemberId`'s contract. An
+    // Only a named-function resolution is `resolveMemberSourceId`'s contract. An
     // arrow-node resolution (foldWrite's other resolved shape, retained for
-    // resolveComputedIds below) is deliberately declined here: nothing that
+    // resolveComputedSourceIds below) is deliberately declined here: nothing that
     // asks for one numeric function identity expects (or
     // could use) a bare AST node in place of a ctx.funcs.list entry.
     if (targetId === POISON || Array.isArray(targetId)) return -1
@@ -597,14 +712,14 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     // `bigintMethodTargets` already gate on), same `${objName}$${prop}` name
     // emission's own direct-call path uses.
     if (ctx.funcs.multiProp.has(`${objName}.${prop}`)) return -1
-    return functionNameIds.get(`${objName}$${prop}`) ?? -1
+    return sourceNameIds.get(`${objName}$${prop}`) ?? -1
   }
 
   /**
-   * Computed-member-call sibling of `resolveMemberId`: `TABLE[key](args)`
+   * Computed-member-call sibling of `resolveMemberSourceId`: `TABLE[key](args)`
    * where `key` is not statically known. Resolves to the closed SET of
    * every one of `objName`'s properties — a same-module named function
-   * (`resolveMemberId`'s named-function shape) or an inline arrow literal (the `['=>',
+   * (`resolveMemberSourceId`'s named-function shape) or an inline arrow literal (the `['=>',
    * params, body]` node — watr's actual `HANDLER` shape, every property an
    * arrow literal, none a reference to a pre-existing declared function;
    * see .work/archive/string-method-guess-notes.md "Third follow-up session" for
@@ -614,18 +729,18 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
    * the same property: `foldWrite`'s POISON). "Closed" here means what it
    * means throughout this file: every property this walk can see is
    * accounted for, under the IDENTICAL `safeReceiver` eligibility
-   * (shadowed/rebound/escapes/dynWriteVars) `resolveMemberId` already
+   * (shadowed/rebound/escapes/dynWriteVars) `resolveMemberSourceId` already
    * applies — a table with even one dynamically-written or non-function
    * property, or that itself escapes/reassigns/shadows, resolves nothing,
    * same fail-closed discipline as everywhere else in this file. An empty
    * table (no property ever statically folded — e.g. a non-static-key
    * object literal, `staticObjectProps` returning null) also resolves
-   * nothing: `resolveComputedIds` never claims a set it has zero evidence
+   * nothing: `resolveComputedSourceIds` never claims a set it has zero evidence
    * for. Callers get back a mixed array (numeric function IDs and/or arrow
    * nodes) and must discriminate with `Array.isArray` per element, exactly
    * as `foldWrite`'s own doc above does.
    */
-  const resolveComputedIds = (objName) => {
+  const resolveComputedSourceIds = (objName) => {
     if (typeof objName !== 'string' || !safeReceiver(objName)) return null
     const props = table.get(objName)
     if (!props || !props.size) return null
@@ -637,28 +752,28 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     return members
   }
 
-  const functionById = id => Number.isInteger(id) && id >= 0 && id < functions.length ? functions[id] : null
-  const functionIdOfName = name => functionNameIds.get(name) ?? -1
+  const graphFunctionById = id => Number.isInteger(id) && id >= 0 && id < graphFunctions.length ? graphFunctions[id] : null
+  const graphFunctionIdOfName = name => graphNameIds.get(name) ?? -1
 
   if (enrichCallSites) enrichCallSites(Object.freeze({
-    functionCount: functions.length,
-    functionById,
-    functionIdOfName,
-    resolveMemberId,
-    resolveComputedIds,
+    sourceFunctionCount: sourceFunctions.length,
+    sourceFunctionById,
+    sourceIdOf,
+    resolveMemberSourceId,
+    resolveComputedSourceIds,
   }))
 
-  const count = functions.length
+  const count = graphFunctions.length
   const callSites = programFacts.callSites || []
   // Count and fill flat CSR in two passes. Do not stage per-caller nested arrays:
   // that shape produced correct first-round bytes but trapped after a self-hosted
   // `_clear()`, while this flat ownership survives repeated arena rewinds.
   const edgeCount = new Array(count).fill(0)
   for (const site of callSites) {
-    const targetId = functionNameIds.get(site.callee) ?? -1
+    const targetId = graphNameIds.get(site.callee) ?? -1
     if (targetId < 0) throw new Error(`ProgramIndex has no function ID for direct callee '${site.callee}'`)
     if (site.callerFunc == null) continue
-    const callerId = seenFunctions.get(site.callerFunc) ?? functionNameIds.get(site.callerFunc.name) ?? -1
+    const callerId = graphObjectIds.get(site.callerFunc) ?? graphNameIds.get(site.callerFunc.name) ?? -1
     if (callerId < 0) throw new Error(`ProgramIndex has no function ID for direct caller '${site.callerFunc.name}'`)
     edgeCount[callerId]++
   }
@@ -672,29 +787,29 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   const edgeCursor = edgeStart.slice()
   for (const site of callSites) {
     if (site.callerFunc == null) continue
-    const callerId = seenFunctions.get(site.callerFunc) ?? functionNameIds.get(site.callerFunc.name)
-    edgeTarget[edgeCursor[callerId]++] = functionNameIds.get(site.callee)
+    const callerId = graphObjectIds.get(site.callerFunc) ?? graphNameIds.get(site.callerFunc.name)
+    edgeTarget[edgeCursor[callerId]++] = graphNameIds.get(site.callee)
   }
   const rootIds = [], dynamicRootIds = []
   const rootSeen = new Array(count).fill(false)
   const addressTakenBits = new Array(count).fill(0)
   for (const name of programFacts.valueUsed || []) {
-    const id = functionNameIds.get(name) ?? -1
+    const id = graphNameIds.get(name) ?? -1
     if (id >= 0 && !addressTakenBits[id]) {
       addressTakenBits[id] = 1
       dynamicRootIds.push(id)
     }
   }
-  const isAddressTaken = idOrName => {
-    const id = Number.isInteger(idOrName) ? idOrName : functionNameIds.get(idOrName) ?? -1
+  const isGraphAddressTaken = idOrName => {
+    const id = Number.isInteger(idOrName) ? idOrName : graphNameIds.get(idOrName) ?? -1
     return id >= 0 && !!addressTakenBits[id]
   }
-  const addressTaken = Object.freeze({ size: dynamicRootIds.length, has: name => isAddressTaken(name) })
+  const addressTaken = Object.freeze({ size: dynamicRootIds.length, has: name => isGraphAddressTaken(name) })
   // ProgramFacts owns the mutable source census only through enrichment. Every
   // later compatibility reader sees this read-only numeric ProgramIndex view.
   programFacts.valueUsed = addressTaken
   for (const func of ctx.funcs.list) {
-    const id = functionNameIds.get(func.name) ?? -1
+    const id = graphNameIds.get(func.name) ?? -1
     if (id >= 0 && func.exported && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (let i = 0; i < dynamicRootIds.length; i++) {
@@ -702,7 +817,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     if (!rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (const site of callSites) if (site.callerFunc == null) {
-    const id = functionNameIds.get(site.callee) ?? -1
+    const id = graphNameIds.get(site.callee) ?? -1
     if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   const scc = buildSccSummary(count, edgeStart, edgeCount, edgeTarget, rootIds)
@@ -726,32 +841,42 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     componentReachable: scc.componentReachable,
     reachable,
   })
-  seenFunctions = null
+  graphObjectIds = null
 
   const filterCallSitesToReachable = callSites => {
     let write = 0
     for (let read = 0; read < callSites.length; read++) {
       const site = callSites[read]
-      const callerId = site.callerFunc == null ? -1 : functionNameIds.get(site.callerFunc.name) ?? -1
+      const callerId = site.callerFunc == null ? -1 : graphNameIds.get(site.callerFunc.name) ?? -1
       if (site.callerFunc == null || callerId >= 0 && reachable[callerId]) callSites[write++] = site
     }
     callSites.length = write
   }
   const getCallGraph = () => callGraph
-  const isReachable = funcId => !!reachable[funcId]
+  const isGraphReachable = graphId => !!reachable[graphId]
 
-  Object.freeze(functions)
+  Object.freeze(sourceFunctions)
+  Object.freeze(graphFunctions)
   return Object.freeze({
-    functionCount: functions.length,
-    functionById,
-    functionIdOfName,
-    resolveMemberId,
-    resolveComputedIds,
+    sourceFunctionCount: sourceFunctions.length,
+    sourceFunctionById,
+    sourceIdOf,
+    variantFunctionById,
+    variantIdOf,
+    sourceIdOfVariant,
+    registerVariantIdentity,
+    finalizeVariantIdentities,
+    getVariantIndex,
+    graphFunctionCount: graphFunctions.length,
+    graphFunctionById,
+    graphFunctionIdOfName,
+    resolveMemberSourceId,
+    resolveComputedSourceIds,
     addressTaken,
-    isAddressTaken,
+    isGraphAddressTaken,
     filterCallSitesToReachable,
     getCallGraph,
-    isReachable,
+    isGraphReachable,
   })
 }
 
@@ -771,7 +896,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
  * (`store[0] = pick3`, callable through an unknown later dispatch), but this
  * ONE write is not that: it is prepare's own bookkeeping, and every call
  * this index can trace to it goes through the SAME direct `.`-property path
- * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMemberId`
+ * (`tryFnPropCall`, emit.js) a bare-name call would. When `resolveMemberSourceId`
  * independently re-derives the identical `(base, prop) → fn$prop` fact —
  * meaning `base` passed this file's own escape/shadow/reassignment proof —
  * the write is provably fully covered: no truly indirect/closure call can
@@ -798,8 +923,8 @@ export function releaseLiftedValueUsed(ctx, programFacts, programIndex) {
     if (cut <= 0 || cut === name.length - 1) continue
     const base = name.slice(0, cut), prop = name.slice(cut + 1)
     if (!ctx.funcs.names.has(base)) continue
-    const targetId = programIndex.resolveMemberId(base, prop)
-    if (programIndex.functionById(targetId)?.name === name) release.push(name)
+    const sourceId = programIndex.resolveMemberSourceId(base, prop)
+    if (programIndex.sourceFunctionById(sourceId)?.name === name) release.push(name)
   }
   for (const name of release) valueUsed.delete(name)
 }

@@ -161,7 +161,7 @@ export function specializeBimorphicTyped(programFacts) {
       // `arr[i]` lowers to direct typed load. cloneRep is a true clone, so
       // pinning typedCtor on it leaves the source rep untouched (__obj_clone).
       materializeVariant({
-        origin: func, name: `${func.name}$${suffix}`, sig: cloneSig, paramReps,
+        origin: func, name: `${func.name}$${suffix}`, kind: 'typed-ctor', sig: cloneSig, paramReps,
         factOverrides: bimorphic.map((k, i) => ({
           k, patch: r => { r.typedCtor = cmb[i]; r.val = VAL.TYPED; joinKinds(r, 'possibleKinds', [VAL.TYPED]) },
         })),
@@ -290,7 +290,7 @@ export function specializeValKindDichotomy(programFacts) {
     // the clone this used to build by hand.
     const eligibleSites = sites.filter((_, si) => pins.every((pn, pi) => perPosKinds[pi][si] === pn.domKind))
     const clone = materializeVariant({
-      origin: func, name: `${func.name}$${pins.map(pn => pn.domKind).join('$')}`, paramReps,
+      origin: func, name: `${func.name}$${pins.map(pn => pn.domKind).join('$')}`, kind: 'val-kind', paramReps,
       factOverrides: pins.map(({ k, domKind }) => ({
         k, patch: r => { r.val = domKind; joinKinds(r, 'possibleKinds', [domKind]) },
       })),
@@ -393,7 +393,7 @@ export function specializeUnionCursorParams(programFacts) {
       results: [...func.sig.results],
     }
     const clone = materializeVariant({
-      origin: func, name: `${func.name}$union`, sig: cloneSig,
+      origin: func, name: `${func.name}$union`, kind: 'union-cursor', sig: cloneSig,
       paramReps, eligibleSites: sites, fallback: func,
     })
     clones.push(clone)
@@ -651,7 +651,7 @@ export function speculateTypedParams(programFacts, ast) {
     // ctx.types.specFns) — a genuinely unique step this analysis keeps as
     // its own policy rather than a static call-edge retarget.
     const clone = materializeVariant({
-      origin: func, name: `${func.name}$spec`, sig: cloneSig, paramReps,
+      origin: func, name: `${func.name}$spec`, kind: 'typed-guard', sig: cloneSig, paramReps,
       factOverrides: specs.map(s => ({
         k: s.k,
         patch: r => { r.typedCtor = s.ctor; r.val = VAL.TYPED; joinKinds(r, 'possibleKinds', [VAL.TYPED]) },

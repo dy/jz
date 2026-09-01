@@ -524,42 +524,116 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
     nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed, callSites,
   }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'),
   () => valueUsed.delete('orphan'))
-  const targetId = index.functionIdOfName('target')
-  const callerId = index.functionIdOfName('caller')
-  const deadId = index.functionIdOfName('dead')
-  const orphanId = index.functionIdOfName('orphan')
-  is(targetId, 0)
-  is(index.functionCount, 4)
-  is(index.functionById(targetId), target)
-  is(index.resolveMemberId('ns', 'run'), targetId)
-  is(index.resolveComputedIds('ns').join(','), String(targetId))
-  is(index.resolveMemberId('ns', 'missing'), -1)
+  const targetSourceId = index.sourceIdOf('target')
+  const targetGraphId = index.graphFunctionIdOfName('target')
+  const callerGraphId = index.graphFunctionIdOfName('caller')
+  const deadGraphId = index.graphFunctionIdOfName('dead')
+  const orphanGraphId = index.graphFunctionIdOfName('orphan')
+  is(targetSourceId, 0)
+  is(index.sourceFunctionCount, 4)
+  is(index.graphFunctionCount, 4)
+  is(index.sourceFunctionById(targetSourceId), target)
+  is(index.resolveMemberSourceId('ns', 'run'), targetSourceId)
+  is(index.resolveComputedSourceIds('ns').join(','), String(targetSourceId))
+  is(index.resolveMemberSourceId('ns', 'missing'), -1)
 
   const graph = index.getCallGraph()
-  is(graph.rootIds.join(','), `${callerId},${deadId}`)
-  is(graph.dynamicRootIds.join(','), String(deadId))
+  is(graph.rootIds.join(','), `${callerGraphId},${deadGraphId}`)
+  is(graph.dynamicRootIds.join(','), String(deadGraphId))
   is(index.addressTaken.size, 1)
   ok(index.addressTaken.has('dead'), 'address-taken compatibility reads the numeric index')
   ok(!index.addressTaken.has('orphan'), 'enrichment release settles before address-taken freeze')
-  ok(index.isAddressTaken(deadId), 'numeric address-taken query agrees with the name view')
+  ok(index.isGraphAddressTaken(deadGraphId), 'numeric graph address-taken query agrees with the name view')
   is(graph.addressTakenBits.join(','), '0,0,1,0')
   throws(() => index.addressTaken.add('orphan'), /is not a function/)
   is(graph.edgeStart.join(','), '0,1,2,3')
   is(graph.edgeCount.join(','), '1,1,1,1')
-  is(graph.edgeTarget.join(','), `${callerId},${targetId},${targetId},${targetId}`)
+  is(graph.edgeTarget.join(','), `${callerGraphId},${targetGraphId},${targetGraphId},${targetGraphId}`)
   is(graph.componentCount, 3)
-  is(graph.componentOf[targetId], graph.componentOf[callerId], 'the recursive pair shares one SCC')
-  is(graph.componentSize[graph.componentOf[targetId]], 2)
-  ok(index.isReachable(targetId), 'the transitive target is reachable')
-  ok(index.isReachable(callerId), 'the module-call root is reachable')
-  ok(index.isReachable(deadId), 'an address-taken function is a conservative dynamic root')
-  ok(!index.isReachable(orphanId), 'an unrooted caller remains unreachable')
+  is(graph.componentOf[targetGraphId], graph.componentOf[callerGraphId], 'the recursive pair shares one SCC')
+  is(graph.componentSize[graph.componentOf[targetGraphId]], 2)
+  ok(index.isGraphReachable(targetGraphId), 'the transitive target is reachable')
+  ok(index.isGraphReachable(callerGraphId), 'the module-call root is reachable')
+  ok(index.isGraphReachable(deadGraphId), 'an address-taken function is a conservative dynamic root')
+  ok(!index.isGraphReachable(orphanGraphId), 'an unrooted caller remains unreachable')
   index.filterCallSitesToReachable(callSites)
   is(callSites.length, 4)
   is(callSites.map(site => site.callee).join(','), 'caller,target,caller,target')
-  throws(() => graph.edgeTarget.push(deadId), /not extensible/)
-  throws(() => graph.componentOf.push(deadId), /not extensible/)
+  throws(() => graph.edgeTarget.push(deadGraphId), /not extensible/)
+  throws(() => graph.componentOf.push(deadGraphId), /not extensible/)
   is(index.finalizeCallGraph, undefined, 'the published ProgramIndex exposes no graph writer')
+})
+
+test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', async () => {
+  const { materializeVariant } = await import('../src/compile/variant.js')
+  const savedFuncs = ctx.funcs, savedPlans = ctx.plans
+  try {
+    const source = { name: 'source', exported: false, sig: { params: [{ name: 'x', type: 'f64' }], results: ['f64'] }, body: ['return', 'x'] }
+    ctx.funcs = {
+      list: [source], map: new Map([['source', source]]), names: new Set(['source']),
+      multiProp: new Set(), pendingVariants: [],
+    }
+    ctx.plans = {}
+    const paramReps = new Map([['source', new Map([[0, { val: 'NUMBER' }]])]])
+    const fixed = materializeVariant({
+      origin: source, name: 'source$fixed', kind: 'fixed-rest', paramReps,
+      eligibleSites: [], fallback: source,
+    })
+    const facts = {
+      nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(), callSites: [],
+    }
+    const index = buildProgramIndex(ctx, facts, null)
+    ctx.plans.programIndex = index
+    const guarded = materializeVariant({
+      origin: fixed, name: 'source$guarded', kind: 'typed-guard', paramReps,
+      eligibleSites: [], fallback: fixed,
+    })
+
+    is(index.sourceFunctionCount, 1)
+    is(index.sourceIdOf(source), 0)
+    is(index.sourceIdOf(fixed), -1, 'a variant never aliases its source ID')
+    is(index.variantIdOf(source), -1, 'a source never aliases a variant ID')
+    is(index.variantIdOf(fixed), 0)
+    is(index.variantIdOf(guarded), 1)
+    is(index.sourceIdOfVariant(0), 0)
+    is(index.sourceIdOfVariant(1), 0, 'a variant of a variant normalizes to the source ID')
+    is(index.sourceFunctionById(0), source)
+    is(index.variantFunctionById(0), fixed)
+    is(index.variantFunctionById(1), guarded)
+    is(index.graphFunctionCount, 2, 'the frozen graph includes only callables present at graph build')
+    ok(index.graphFunctionIdOfName('source') >= 0)
+    ok(index.graphFunctionIdOfName('source$fixed') >= 0)
+    is(index.graphFunctionIdOfName('source$guarded'), -1)
+    is(index.functionById, undefined, 'no untyped function-ID accessor survives')
+    is(index.functionIdOfName, undefined, 'no untyped name-to-ID accessor survives')
+
+    const sourcePlan = {}, fixedPlan = {}, guardedPlan = {}
+    const plans = new Map([[source, sourcePlan], [fixed, fixedPlan], [guarded, guardedPlan]])
+    const variants = index.finalizeVariantIdentities(paramReps, func => plans.get(func))
+    is(variants.variantCount, 2)
+    is(variants.variantSourceIds.join(','), '0,0')
+    is(variants.variantKinds.join(','), 'fixed-rest,typed-guard')
+    ok(fixed.sig !== source.sig && guarded.sig !== source.sig, 'variant signatures are derived records')
+    ok(paramReps.get(fixed.name) !== paramReps.get(source.name), 'variant parameter facts are derived records')
+    ok(paramReps.get(guarded.name) !== paramReps.get(fixed.name), 'nested variant facts are derived again')
+    ok(fixedPlan !== sourcePlan && guardedPlan !== sourcePlan, 'variant FunctionPlans are distinct')
+    throws(() => variants.variantSourceIds.push(0), /not extensible/)
+    throws(() => index.registerVariantIdentity({ name: 'late' }, source, 'late'), /already finalized/)
+  } finally {
+    ctx.funcs = savedFuncs
+    ctx.plans = savedPlans
+  }
+})
+
+test('architecture: materializeVariant is the sole ProgramIndex variant-ID writer', () => {
+  const registrations = [], finalizers = []
+  for (const file of jsFiles(join(ROOT, 'src', 'compile'))) {
+    const src = readFileSync(file, 'utf8')
+    if (/\.registerVariantIdentity\s*\(/.test(src)) registrations.push(relative(ROOT, file))
+    if (/\.finalizeVariantIdentities\s*\(/.test(src)) finalizers.push(relative(ROOT, file))
+  }
+  is(registrations.join(','), 'src/compile/variant.js')
+  is(finalizers.join(','), 'src/compile/index.js')
 })
 
 test('invariant: ProgramIndex SCCs and reachability match an independent closure', () => {
@@ -604,7 +678,7 @@ test('invariant: ProgramIndex SCCs and reachability match an independent closure
   const roots = [0, 7, 10]
   for (let id = 0; id < count; id++) {
     const expected = roots.some(root => reach[root][id])
-    if (!reachMismatch && index.isReachable(id) !== expected) reachMismatch = String(id)
+    if (!reachMismatch && index.isGraphReachable(id) !== expected) reachMismatch = String(id)
   }
   ok(!componentMismatch, componentMismatch ? `SCC mismatch at ${componentMismatch}` : 'all SCC pairs match')
   ok(!reachMismatch, reachMismatch ? `reachability mismatch at ${reachMismatch}` : 'all reachable IDs match')

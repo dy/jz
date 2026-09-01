@@ -900,7 +900,7 @@ export const specializeFixedRestCalls = (programFacts) => {
     // sig object also trips the self-compile codegen, so the explicit form is
     // both simpler and the one that round-trips through jz.wasm.
     materializeVariant({
-      origin: func, key: cloneName, name: cloneName,
+      origin: func, key: cloneName, name: cloneName, kind: 'fixed-rest',
       sig: { params: [...fixedParams, ...restParams.map(name => ({ name, type: 'f64' }))], results: [...func.sig.results] },
       body: rewritten.node,
       cloneFields: { rest: null },

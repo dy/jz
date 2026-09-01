@@ -3704,7 +3704,7 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   // walker; program-facts.js's own doc on synthesizeComputedDispatchCallSites
   // has the full mechanism). `instr`'s own `out` literal is genuinely,
   // monomorphically an array at the one real call site. ProgramIndex's
-  // resolveComputedIds proves HANDLER closed (every property a same-module
+  // resolveComputedSourceIds proves HANDLER closed (every property a same-module
   // arrow, no escape/dynWrite/shadow/rebind), and the synthesis walks `a`'s
   // own body for its call to push2, substituting `a`'s formal params with
   // `instr`'s actual arguments.
@@ -3723,8 +3723,8 @@ test('closed computed-dispatch table: a member forwarded into a named function g
   `
   // Negative control: byte-identical shape, except HANDLER is also handed to
   // an unrelated function (`leak`) — a genuine value-escaping use (passed as
-  // an argument, not a `[]`-receiver/`__keys_ro` read), so resolveComputedIds
-  // must decline the whole table, same as resolveMemberId already would.
+  // an argument, not a `[]`-receiver/`__keys_ro` read), so resolveComputedSourceIds
+  // must decline the whole table, same as resolveMemberSourceId already would.
   // push2's `buf` stays exactly as unprovable as it always was: real runtime
   // dispatch, not a wrong guess.
   const escapedSrc = `
@@ -4117,7 +4117,7 @@ test('DictKindIndex: the for-in-unroll census survives a same-module named-funct
 })
 
 test('DictKindIndex: a POSITIONAL array-of-arrows dispatch table forwards the same way as an object-literal table (positive, watr\'s real build[] shape)', () => {
-  // resolveComputedIds (program-index.js) resolves only object-literal
+  // resolveComputedSourceIds (program-index.js) resolves only object-literal
   // tables (its own header: property writes are `{}`-literal only) — watr's
   // real `build[SECTION.code](item, ctx)` is a numerically-indexed ARRAY of
   // arrows instead (needed for a real WASM call_indirect), which this file's

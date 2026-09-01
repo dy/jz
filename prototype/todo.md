@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 12.63x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,483,762 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.78x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,501,939 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -339,13 +339,18 @@ Production migration reuses the normalized production program and existing emitt
 - [x] define the production ProgramIndex lifecycle on `ctx.plans`
 - [x] assign stable numeric IDs to prepared and imported functions
 - [x] migrate same-module member targets to numeric IDs
-- [x] redirect every member-target reader through `resolveMemberId` and `functionById`
+- [x] redirect every member-target reader through `resolveMemberSourceId` and `sourceFunctionById`
 - [x] delete the superseded CallTargetIndex file, maps, API, and writer
 - [x] preserve all 568 production refactor-oracle outputs byte for byte
 - [x] move direct call edges and roots from the narrowing reachability filter into ProgramIndex
 - [x] add conservative address-taken roots and SCC-condensed reachability summaries
 - [x] transfer the mutable address-taken census to numeric ProgramIndex bits and a read-only compatibility view
-- [ ] assign final function, type, global, schema, and data IDs once
+- [x] separate source, variant, and graph IDs with no generic integer accessor
+- [x] register all five specialization families through ProgramIndex and normalize variants of variants to one source ID
+- [x] assert variant signatures, parameter facts, and FunctionPlans are derived rather than shared
+- [ ] remove the `programFacts.valueUsed` compatibility key during the parameter/result ABI slice
+- [ ] assign final concrete Wasm function IDs after variant identity closes
+- [ ] assign final type, global, schema, and data IDs once
 
 First production slice verification:
 
@@ -372,6 +377,31 @@ Second production slice verification:
 - recursive self-compile: 321 modules, 6,849,173 input bytes, 14,042,851 output bytes, 4,111,732,856 heap bytes, 183,234,440 bytes headroom
 - compact threshold: pass at 2,256,496 bytes versus the 14,483,762-byte production compiler
 
+Third production slice verification:
+
+- source IDs, variant IDs, and graph IDs have separate arrays and accessors; generic integer accessors are absent
+- fixed-rest, typed-ctor, VAL-kind, union-cursor, and typed-guard variants register through one materializer
+- a variant of a variant resolves to the original source ID
+- variant signatures, parameter facts, and FunctionPlans are asserted distinct from source facts before emission
+- native: 3,898 pass, 1 skip
+- opt3: 3,898 pass, 1 skip
+- WASI: 3,897 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- functional self-compile: 23 tests and 224 assertions, including forty compile-clear rounds
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,856,720 input bytes, 14,061,026 output bytes, 4,115,653,840 heap bytes, 179,313,456 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,501,939-byte production compiler
+
+Per-slice recursive and artifact ratchet:
+
+| Production identity slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
+| --- | ---: | ---: | ---: | ---: |
+| member source IDs | 14,457,881 | 4,106,338,664 | 188,628,632 | baseline |
+| direct graph, SCCs, address-taken | 14,483,762 | 4,111,732,856 | 183,234,440 | +25,881 bytes, -5,394,192 headroom |
+| source and variant ID split | 14,501,939 | 4,115,653,840 | 179,313,456 | +18,177 bytes, -3,920,984 headroom |
+
+A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
+
 ### M3. Representation and typed storage
 
 Migrate one decision family at a time:
@@ -386,6 +416,8 @@ Migrate one decision family at a time:
 
 For each family:
 
+- [ ] copy the producer's C1-C5b and shape #6-#9 soundness conditions into the ProgramIndex field documentation
+- [ ] run the complete `test/data.js` pin set through both native and kernel targets
 - [ ] add numeric ProgramIndex or function-scratch fields
 - [ ] redirect every reader
 - [ ] delete the old plan writer and identity side tables
@@ -393,6 +425,8 @@ For each family:
 - [ ] pin f64, i32 pointer, and i64 host-carrier WAT shapes
 
 Representation migration is complete only when `RepresentationPlan`, `TypedStoragePlan`, and parameter representation maps have either become views of ProgramIndex or have been deleted. There must not be two authorities during a release candidate.
+
+Before the first representation slice that intentionally changes bytes, record the expected WAT decision change, its producer, and its affected oracle rows. Promotion then requires an attributed oracle diff, the full native/opt3/WASI battery, kernel `test/data.js`, and the ledger pins. A dirty oracle without that attribution remains a failure.
 
 ### M4. Function-at-a-time lowering
 
@@ -403,6 +437,7 @@ Representation migration is complete only when `RepresentationPlan`, `TypedStora
 - [ ] transfer its finalized body to module ownership
 - [ ] reset all local facts, plans, worklists, and temporary IR
 - [ ] prove no FunctionPlan or AST identity map survives the reset
+- [ ] compile once in canonical function order and once in reverse lowering order, then assert byte identity after canonical assembly
 - [ ] remove all-functions analyze-then-emit storage
 
 Initial promotion must preserve emitted WAT. Do not redesign the emitter while changing its lifetime.
@@ -476,15 +511,15 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Continue production identity migration without routing source to the prototype:
+Close production function identity without routing source to the prototype:
 
-1. Move direct named-call edges and export roots from ProgramFacts into ProgramIndex.
-2. Give each edge numeric caller and callee IDs while retaining AST nodes only where a mutating specialization still needs them.
-3. Redirect reachability and read-only call-graph consumers.
-4. Delete the superseded edge writer and name-keyed edge views in the same slice.
+1. Assign concrete Wasm function IDs once after `finalizeVariantIdentities`.
+2. Keep source IDs, variant IDs, graph IDs, and concrete Wasm IDs in separate arrays with explicit conversion accessors.
+3. Redirect function emission and assembly ordering to the concrete IDs.
+4. Delete the surviving registry writer for final function order in the same slice.
 5. Preserve production WAT byte for byte and keep representation authorities unchanged.
-6. Run focused identity and reachability tests, the full suite, matrix, self-compile, and recursive checks appropriate to the production change.
-7. Repeat production graph evidence before adding SCC summaries.
+6. Record recursive headroom and compiler artifact size for the slice.
+7. Then begin M3 with parameter/result ABI, including removal of the `valueUsed` compatibility key.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

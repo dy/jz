@@ -316,6 +316,12 @@ export default function compile(ast, profiler) {
       }
     })
   }
+  // Every specialization producer has now run, including union-cursor clones.
+  // Close the disjoint variant ID space before emission and prove each variant's
+  // signature, parameter facts, and FunctionPlan were derived rather than shared.
+  timePhase(profiler, 'finalizeVariantIdentities', () =>
+    programFacts.programIndex.finalizeVariantIdentities(
+      programFacts.paramReps, func => functionPlanOf(ctx, func)))
   // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
   // above) — this is the freeze point after which NO ctx.features key may change

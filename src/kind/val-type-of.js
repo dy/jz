@@ -4,7 +4,7 @@
  * per-op value-KIND resolution, including call-node resolution for both
  * bare-name callees (`kind-traits.js`'s `calleeValType`) and same-module
  * `.`-member callees via frozen ProgramIndex IDs
- * (`ctx.plans.programIndex.resolveMemberId`, see VT['()'], phase-c-unification
+ * (`ctx.plans.programIndex.resolveMemberSourceId`, see VT['()'], phase-c-unification
  * shape #7-#9: this resolution must stay exactly as landed there) plus
  * method-kind dispatch (`kind-traits.js`'s `methodValType`).
  *
@@ -610,7 +610,7 @@ VT['()'] = (args) => {
     // BEFORE methodValType's builtin-method-name dispatch below: a resolved
     // same-module function is a strictly stronger, structural proof than a
     // name-only builtin-method guess (methodValType's `push` arm, e.g.,
-    // matches on the property name alone, unconditionally). resolveMemberId
+    // matches on the property name alone, unconditionally). resolveMemberSourceId
     // itself refuses anything shadowed, reassigned, dynamically written, or
     // escaping the module (its own header) — an ordinary Array/Map/String/
     // TypedArray `.method()` call can never spuriously resolve here.
@@ -625,8 +625,8 @@ VT['()'] = (args) => {
     // that same proof: "what VAL kind does this call produce," asked and
     // answered exactly once, here, for every consumer of valTypeOf.
     const programIndex = ctx.plans.programIndex
-    const targetId = programIndex?.resolveMemberId(obj, method) ?? -1
-    const resolved = programIndex?.functionById(targetId)
+    const sourceId = programIndex?.resolveMemberSourceId(obj, method) ?? -1
+    const resolved = programIndex?.sourceFunctionById(sourceId)
     if (resolved?.valResult) return resolved.valResult
     // INVARIANT: NO `.get` short-circuit here: mapValueKindOf
     // (kind/dict-census.js) is a censusMaybeUndefinedKind-only helper —

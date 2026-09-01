@@ -143,8 +143,9 @@ export default function plan(ast, profiler) {
   // ProgramIndex identity and direct-graph slice. Build numeric identities and
   // member resolvers after every early AST mutation. Its builder exposes one
   // temporary resolver to computed-dispatch synthesis and lifted-value release,
-  // then freezes numeric call edges, roots, and reachability. Only that closed index
-  // is published. Compatibility consumers project IDs back through functionById;
+  // then freezes numeric call edges, roots, and reachability. The published index
+  // keeps only its variant-ID registrar open until the post-analysis specialization
+  // boundary. Consumers use explicitly typed source or graph accessors;
   // no second member-target or call-graph table survives.
   const programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast,
     resolver => {
@@ -166,7 +167,7 @@ export default function plan(ast, profiler) {
   // receiver used as a static string-keyed dictionary (a `for (k in OBJ) T[k] =
   // …` unroll over a constant object literal — never schema-registered, since
   // that mechanism only fires on a `{}`-literal AST node). Depends on
-  // ProgramIndex.resolveComputedIds (the HANDLER-forwarding alias channel), so it
+  // ProgramIndex.resolveComputedSourceIds (the HANDLER-forwarding alias channel), so it
   // must run after the index above; independent of synthesizeComputedDispatch-
   // CallSites/releaseLiftedValueUsed (neither reads nor feeds it), placed here
   // only to keep every "built once, right after ProgramIndex" fact together.

@@ -517,10 +517,10 @@ export function reset(proto, globals, bridge) {
     moduleLoopCaptured: new Set(),
   }
 
-  // Compile-lifetime function registry. This is the authoritative program
-  // catalog; unlike ctx.func's active analysis/emission frame it is never
-  // replaced at function entry. Keep the record identity stable for the whole
-  // session while prepare/variant/plan append and index functions.
+  // Compile-lifetime compatibility registry. Prepare appends source functions;
+  // materializeVariant appends concrete specializations. ProgramIndex assigns
+  // those two families disjoint numeric identities. Unlike ctx.func's active
+  // frame, this record is never replaced at function entry.
   ctx.funcs = {
     list: [],
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
@@ -528,6 +528,11 @@ export function reset(proto, globals, bridge) {
     multiProp: new Set(),  // Set<"obj.prop"> — function-properties assigned >1× (wrapper composition); suppresses the static fn.prop() direct call
     exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
     globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
+    // Flat pre-index transfer log: [variant, immediateOrigin, kind]. It exists
+    // only because fixed-rest specialization precedes ProgramIndex construction.
+    // buildProgramIndex consumes it once and sets it to null; every later
+    // variant registers directly with ProgramIndex through materializeVariant.
+    pendingVariants: [],
   }
 
   // Prepare/session synthetic names must not consume the active frame's temp
@@ -1031,7 +1036,7 @@ export function reset(proto, globals, bridge) {
   // loop/closure-plan reads, src/optimize/vectorize.js's loopPlanLink read)
   // read ctx.plans.* — no import-time WeakMap binding to go stale.
   ctx.plans = {
-    programIndex: null,           // frozen numeric identities, call targets, roots, SCCs, and reachability
+    programIndex: null,           // frozen source/graph facts plus the variant-ID registrar, closed before emit
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → linearly-owned ordinary-function facts
     functionWorking: new WeakMap(), // handle → linearly-owned closure/start ActiveFunction frame

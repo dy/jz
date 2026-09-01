@@ -205,8 +205,8 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
   const programIndex = programFacts.programIndex
   const resolveMemberCallee = calleeNode => {
     if (!Array.isArray(calleeNode) || calleeNode[0] !== '.' || typeof calleeNode[2] !== 'string') return null
-    const targetId = programIndex?.resolveMemberId(calleeNode[1], calleeNode[2]) ?? -1
-    return programIndex?.functionById(targetId) ?? null
+    const sourceId = programIndex?.resolveMemberSourceId(calleeNode[1], calleeNode[2]) ?? -1
+    return programIndex?.sourceFunctionById(sourceId) ?? null
   }
 
   const namesFor = func => {
@@ -540,7 +540,7 @@ export function solveBigintProvenance(ctx, programFacts, ast) {
     if (!indirectResult) {
       const dynamicRoots = programFacts.programIndex.getCallGraph().dynamicRootIds
       for (let i = 0; i < dynamicRoots.length; i++) {
-        const name = programFacts.programIndex.functionById(dynamicRoots[i])?.name
+        const name = programFacts.programIndex.graphFunctionById(dynamicRoots[i])?.name
         if (name && results.has(name)) { indirectResult = true; graphChanged = true; break }
       }
     }
