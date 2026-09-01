@@ -6,7 +6,7 @@ The prototype implements the proposed production stages for a narrow numeric sub
 parse
 prepare and validate
 numeric ProgramIndex and reachability
-per-function scalar WAT lowering
+per-function scalar and SIMD WAT lowering
 optional watr optimize
 watr compile
 ```
@@ -22,8 +22,9 @@ program-index.js  persistent numeric identities and cross-function facts
 reps.js           scalar representation IDs and physical Wasm types
 ops.js            single numeric source-operator classifier
 constants.js      pure scalar constant-evaluation authority
-lower.js          function-local facts and AST to WAT lowering
+lower.js          function-local facts and AST to scalar or SIMD WAT
 backend.js        unchanged watr optimize and compile boundary
+dsp-bench.mjs     typed-map runtime direction
 direct.js         frozen direct-binary control
 ```
 
@@ -48,12 +49,16 @@ The full migration plan and stop rules are in [`../todo.md`](../todo.md).
 - Number bitwise operators, shifts, and their compound assignments
 - exact `ToInt32` and `ToUint32` for every f64 magnitude
 - `Math.imul` and `Math.clz32`
+- fixed module-level `Float64Array` owners, full aliases, and `subarray(0)` views
+- proven-range `.length`, f64 load, and f64 store
+- raw i32 pointer induction for canonical typed loops
+- optional f64x2 map vectorization with scalar cleanup
 
 The default `abi: 'js'` contract requires every exported parameter to begin with `p = +p`. The Wasm f64 call boundary then performs the same `ToNumber` operation as the source. Tests cover strings, `null`, booleans, `undefined`, signed zero, ordered object coercion, and TypeErrors from BigInt and Symbol. Without this proof, JavaScript could concatenate where Wasm adds.
 
 `compileCompact(source, { abi: 'raw' })` admits unguarded numeric parameters. This is an explicit typed-host contract: every parameter and result is f64 and callers provide numbers. It matches the raw scalar lane in `test/abi.js`; it does not claim JavaScript coercion semantics for nonnumeric arguments. ProgramIndex owns this decision. Prepare only validates source structure.
 
-Strings inside compiled code, objects, arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Dynamic `%` and `**` also reject until their exact numeric lowering exists. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
+Strings inside compiled code, objects, general arrays, closures, dynamic calls, exceptions, imports, and unknown coercions reject. Only the fixed module-level `Float64Array` forms listed above are accepted. Dynamic `%` and `**` also reject until their exact numeric lowering exists. Internal calls require exact arity rather than synthesizing missing values or evaluating and discarding extra arguments. Exported function declarations reject because JavaScript functions are constructable while Wasm exports are not. Exported arrows preserve that boundary property.
 
 Production JZ must use its existing representation proofs or reject. It cannot require users to add coercion guards.
 
@@ -65,9 +70,9 @@ Production JZ must use its existing representation proofs or reject. It cannot r
 
 ### Prepare
 
-`prepareCompactAst(ast)` validates the supported syntax, extracts function records, and records local declarations. It does not choose an ABI, resolve calls, infer representations, mark reachability, or emit WAT.
+`prepareCompactAst(ast)` validates the supported syntax, extracts function and static-storage records, and records local declarations. It does not choose an ABI, resolve calls, infer representations, mark reachability, or emit WAT.
 
-Prepared function records are positional:
+The prepared program is `[functions, storages]`. Function records are positional:
 
 ```js
 [name, params, bodyAst, exported, locals, mutableFlags]
@@ -86,14 +91,19 @@ Prepared function records are positional:
 - one explicit JavaScript or raw ABI mode
 - deduplicated type IDs
 - final Wasm function IDs for reachable functions and the optional exact-conversion helper
+- static storage owners, byte bases, lengths, element widths, alias groups, and relocation states
+- per-function direct storage reads and writes plus transitive purity
+- one explicit scalar or SIMD profile bit
 
 Names remain for diagnostics, exports, and the current lower-time lookup. Unreachable functions and constant-dead branches are validated but not emitted.
 
-The current index still retains AST bodies and source names. It does not yet have numeric schemas, globals, typed storage, closure summaries, or data owners.
+Storage fields allocate only when the prepared program declares typed storage. The current index still retains AST bodies and source names. It does not yet have numeric schemas, general globals, closure summaries, or dynamic data owners.
 
 ### Lower
 
-`lowerFunction(index, funcId)` creates one scalar WAT function. Numeric control IDs, lexical target records, local representation and range facts, reusable expression temporaries, and their high-water marks live in function scratch. Values use short positional wrappers while lowering; finalized WAT owns none of those facts. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+`lowerFunction(index, funcId)` creates one WAT function. Numeric control IDs, lexical target records, local representation and range facts, alias checks, raw pointer plans, invariant splats, reusable expression temporaries, and their high-water marks live in function scratch. Values use short positional wrappers while lowering; finalized WAT owns none of those facts. Nested loops and repeated compiles share no state. `lowerProgram(index)` retains finalized WAT functions until module completion.
+
+Canonical typed loops hoist storage bases and advance i32 pointers. `simd: true` packs pure f64 maps into two lanes when ranges are proven, storage does not relocate, and alias groups are independent or use the same element. Odd lengths end with one scalar element. Alias, relocation, range, local-effect, and transitive global-write vetoes stay scalar. [`dsp-evidence.md`](dsp-evidence.md) records byte equality and runtime direction.
 
 Unknown f64 bitwise operands use one module-owned exact conversion helper. Constants, proven ranges, i32 locals, and direct i32 results bypass it. Signed and unsigned i32 share Wasm storage but widen through different f64 conversions. Exported JavaScript and raw ABI signatures remain f64.
 
@@ -106,6 +116,7 @@ Graph measurements found no material lookup cost. A persistent instruction tape 
 ```js
 compileCompact(source, { optimize: true }) // current watr/optimize, then compile
 compileCompact(source, { wat: true })      // return the lowered WAT array
+compileCompact(source, { simd: true })     // enable proven f64x2 maps
 ```
 
 The optimized path covers nested loops, lexical control transfer, update values, comma effects, and short-circuit joins. Lowering derives WAT local names from numeric binding IDs because watr 5.10.1 CSE invalidates named local writes only. Wasm still uses numeric local indices, and graph output remains byte-identical to the direct control. The general numeric-index fix is committed upstream as watr `b53c92c`; this branch does not depend on it. The installed watr package is unchanged.
@@ -126,7 +137,9 @@ The optimized path covers nested loops, lexical control transfer, update values,
 | Reject unsupported source | Preserve semantics without a dynamic fallback | Coverage is intentionally small |
 | Keep the direct encoder frozen | Retain an independent lower bound | It is a second prototype artifact, never a production path |
 
-The prototype does not establish memory behavior for parsing, the production object model, stdlib realization, closures, snapshots, or current vectorization. It also does not prove that whole-module watr optimization fits the recursive memory target.
+The prototype does not establish memory behavior for parsing, the production object model, stdlib realization, closures, snapshots, dynamic typed storage, or the production vectorizer's full recognizer set. It also does not prove that whole-module watr optimization fits the recursive memory target.
+
+The typed DSP proof is the final standalone feature slice. Further prototype changes are limited to regressions and evidence. New implementation work migrates proven authorities into production.
 
 ## Promotion rule
 
@@ -148,6 +161,7 @@ Run the graph-scaling experiment before adding syntax.
 ```sh
 node test/compact-prototype.js
 node prototype/compact/graph-bench.mjs
+node prototype/compact/dsp-bench.mjs
 node prototype/compact/bench.mjs
 ```
 
@@ -155,20 +169,21 @@ Do not add these commands to `test/index.js` or `package.json` while the work re
 
 The graph benchmark runs the staged and frozen direct backends in fresh processes at 128, 512, and 2,048 functions. It records source, compiler, and output hashes, phase time, post-GC heap, retained WAT, and maximum function scratch. [`graph-evidence.md`](graph-evidence.md) records byte-identical output at every size, plateauing scratch, and finalized WAT as the largest staged-only linear owner.
 
-The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, integer kernels, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
+The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, integer and typed kernels, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
 
 Latest loaded-machine result against the fresh 14,451,722-byte `dist/jz.wasm`:
 
-- staged compiler: 2,180,186 bytes, 6.63x smaller
-- staged source graph: 72 modules, 987,325 source bytes
-- compile-speed geomean: 44.14x
-- minimum compile speedup: 4.61x
-- emitted-size geomean: 27.93x smaller
+- staged compiler: 2,257,243 bytes, 6.40x smaller
+- staged source graph: 72 modules, 1,016,484 source bytes
+- compile-speed geomean: 41.35x
+- minimum compile speedup: 5.78x
+- emitted-size geomean: 20.81x smaller
 - constant modules tie production at 41 bytes
 - the exact bitwise row is 212 bytes versus production's 120 bytes
+- the typed SIMD row compiles 16.00x faster and emits 287 bytes versus production's 568 bytes
 
-The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs already remove that helper where possible. The typed-memory slice must strengthen those general proofs rather than weaken the conversion boundary.
+The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs remove that helper where possible. The typed row's win does not offset this per-case loss.
 
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
-The machine had about 12.5 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.
+The machine had about 11.6 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

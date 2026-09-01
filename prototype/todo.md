@@ -260,8 +260,8 @@ Verification for this slice:
 - `npm test`: 3,894 pass, 1 skip
 - `npm run test:opt3`: 3,894 pass, 1 skip
 - `npm run test:wasi`: 3,893 pass, 1 skip
-- compact prototype after scalar integer lowering: 22 tests and 526 assertions
-- self-compiled compact benchmark: threshold pass, including raw A to A to B, integer kernels, and constant `%` and `**`
+- compact prototype after typed DSP: 26 tests and 629 assertions
+- self-compiled compact benchmark: threshold pass, including raw A to A to B, integer and typed kernels, and constant `%` and `**`
 
 The opt0 matrix leg remains red on the standalone `test/date.js` shared-dispatch `.valueOf()` case that predates this prototype slice. Functional self-compile passed 22 tests and 212 assertions; its separate performance process remains red because `scripts/self.js` reads an undefined `__heap_mark`. Both failures stay outside the compact feature lane.
 
@@ -300,6 +300,28 @@ Status: implemented on the isolated prototype.
 - [x] preserve graph output hashes and one-slot scratch on f64-only graphs
 
 Comparison values remain rejected outside condition positions. Dynamic `%` and `**` remain rejected. The exact bitwise benchmark row emits 212 bytes versus production's 120 bytes, so this slice is proven semantically but is not eligible for production promotion yet. Typed-memory range and storage proofs must remove the general helper from proven kernels without weakening unknown-value semantics.
+
+### M1d. Float64Array DSP proof
+
+Status: implemented on the isolated prototype. Standalone feature expansion stops here.
+
+- [x] prepare fixed module-level `Float64Array` owners, full aliases, and `subarray(0)` views
+- [x] assign storage bases, owner IDs, alias groups, element widths, and relocation states in ProgramIndex
+- [x] allocate storage fact families only when source declares typed storage
+- [x] record direct storage reads and writes plus transitive function purity
+- [x] validate every source function, including unreachable bodies, for proven in-range access
+- [x] lower f64 loads and stores through raw i32 pointers
+- [x] hoist scalar loop bases and advance pointer induction by eight bytes
+- [x] vectorize pure maps with f64x2 arithmetic and sixteen-byte pointer induction
+- [x] hoist invariant scalar splats and emit odd-length scalar cleanup
+- [x] preserve byte-identical scalar and SIMD memory before and after watr optimization
+- [x] keep alias, relocation, range, local-effect, and global-write vetoes scalar
+- [x] pin typed A to A to B reuse in both optimization modes
+- [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
+
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 16.00x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,257,243 bytes versus 14,451,722 bytes. These timings were gathered with about 11.6 GiB of swap and do not certify release performance.
+
+The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
 ### M2. Production identity migration
 
@@ -407,6 +429,8 @@ prototype/compact/lower.js          function-local scalar WAT lowering
 prototype/compact/backend.js        unchanged watr boundary
 prototype/compact/direct.js         frozen direct-binary control
 prototype/compact/graph-bench.mjs   source-hashed graph allocation experiment
+prototype/compact/dsp-bench.mjs     typed-map runtime direction
+prototype/compact/dsp-evidence.md   typed correctness and performance record
 prototype/compact/bench.mjs         artifact and compile comparison
 ```
 
@@ -414,18 +438,17 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Prove typed memory with one Float64Array DSP path:
+Begin production identity migration without routing source to the prototype:
 
-1. Add typed construction, length, load, and store to the prepared subset.
-2. Represent proven internal data pointers as raw i32 while host ABI values remain f64.
-3. Record storage element width, relocation, and alias groups in the ProgramIndex.
-4. Infer loop ranges, purity, and global writes in disposable function scratch.
-5. Run scalar pointer cleanup and LICM before vectorization.
-6. Pin one SIMD-positive kernel and relocation, alias, range, and effect veto kernels.
-7. Compare SIMD and scalar output byte for byte, including cleanup iterations.
-8. Rerun graph scaling and the self-compiled benchmark, then stop standalone feature expansion.
+1. Define production ProgramIndex field constants and lifecycle ownership in `src/compile/`.
+2. Move frozen CallTargetIndex function IDs, direct edges, roots, and final Wasm IDs into it.
+3. Redirect every current reader in one slice.
+4. Delete the superseded CallTargetIndex maps and writers in that same slice.
+5. Preserve production WAT byte for byte and keep representation authorities unchanged.
+6. Run focused identity and reachability tests, the full suite, matrix, self-compile, and recursive checks appropriate to the production change.
+7. Repeat the generated graph evidence against production before migrating representations.
 
-The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
+Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 
 ## Expert test
 

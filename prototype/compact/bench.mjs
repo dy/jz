@@ -25,6 +25,13 @@ const fullModule = toModule(FULL_BYTES)
 const artifactShrink = FULL_BYTES.length / compactBytes.length
 
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i])
+const DSP_SOURCE = `const a=new Float64Array(64);const b=new Float64Array(64);export let f=(x)=>{
+  for(let i=0;i<a.length;i++)a[i]=x+i
+  for(let j=0;j<b.length;j++)b[j]=a[j]*2+1
+  let sum=0
+  for(let k=0;k<b.length;k++)sum+=b[k]
+  return sum
+}`
 // mem.read returns typed-array views into compiler memory. Copy before _clear()
 // so retained-output checks cannot alias the next compile's arena.
 const readBytes = (instance, ptr) => new Uint8Array(instance.memory.read(ptr))
@@ -44,6 +51,7 @@ const verifyReuse = () => {
     [control.source, 'f', [], 30],
     [unsigned.source, 'main', [], 4],
     [integer.source, 'f', [1, 2, 3], 5689143],
+    [DSP_SOURCE, 'f', [3], 4480, { simd: true }],
   ]
   const runCases = (optimize) => {
     let first = null, firstSnapshot = null
@@ -54,9 +62,9 @@ const verifyReuse = () => {
     const referenceB = readBytes(reference, reference.exports.default(referenceSource, referenceOptions))
     reference.instance.exports._clear()
     for (let i = 0; i < cases.length; i++) {
-      const [source, exportName, args, expected] = cases[i]
+      const [source, exportName, args, expected, extra = {}] = cases[i]
       const sourcePtr = compiler.memory.String(source)
-      const optionsPtr = compiler.memory.Object(optimize ? { abi: 'raw', optimize: true } : { abi: 'raw' })
+      const optionsPtr = compiler.memory.Object({ abi: 'raw', ...extra, ...(optimize ? { optimize: true } : {}) })
       const output = readBytes(compiler, compiler.exports.default(sourcePtr, optionsPtr))
       const value = new WebAssembly.Instance(new WebAssembly.Module(output)).exports[exportName](...args)
       if (!Object.is(value, expected)) throw new Error(`${mode}reuse case ${i}: got ${value}, expected ${expected}`)
@@ -88,6 +96,7 @@ const CASES = [
   ['for-loop', 'export let f=n=>{n=+n;let s=0;for(let i=0;i<n;i++)s+=i;return s}', [100], 4950],
   ['while-loop', 'export let f=n=>{n=+n;let s=0;let i=0;while(i<n){s+=i;i++}return s}', [100], 4950],
   ['bitwise', scalarCase('differential-fnv-i32').source, [1, 2, 3], 5689143],
+  ['typed-simd', DSP_SOURCE, [3], 4480, { simd: true }],
 ]
 
 const median = (values) => {
@@ -95,21 +104,21 @@ const median = (values) => {
   return values[values.length >> 1]
 }
 
-const compileOnce = (module, source, compact) => {
+const compileOnce = (module, source, compact, options = {}) => {
   const instance = instantiate(module, { memory: 1024, externref: false })
   const sourcePtr = instance.memory.String(source)
   return compact
-    ? readBytes(instance, instance.exports.default(sourcePtr, instance.memory.Object({ abi: 'raw' })))
+    ? readBytes(instance, instance.exports.default(sourcePtr, instance.memory.Object({ abi: 'raw', ...options })))
     : readBytes(instance, instance.exports.default(sourcePtr, 0, instance.memory.String('false')))
 }
 
 // One instance per case, reset after each compile. Source marshaling and reset stay
 // outside the timed interval. This bounds memory and measures the compiler body.
-const timedCompiler = (module, source, compact, runs = 17, warm = 5) => {
+const timedCompiler = (module, source, compact, options = {}, runs = 17, warm = 5) => {
   const instance = instantiate(module, { memory: 1024, externref: false })
   const sample = () => {
     const sourcePtr = instance.memory.String(source)
-    const optPtr = compact ? instance.memory.Object({ abi: 'raw' }) : instance.memory.String('false')
+    const optPtr = compact ? instance.memory.Object({ abi: 'raw', ...options }) : instance.memory.String('false')
     const start = performance.now()
     if (compact) readBytes(instance, instance.exports.default(sourcePtr, optPtr))
     else readBytes(instance, instance.exports.default(sourcePtr, 0, optPtr))
@@ -133,8 +142,8 @@ console.log(`artifact ratio:  ${artifactShrink.toFixed(2)}x smaller\n`)
 console.log('case          compact ms   full ms   speedup   compact B   jz-size B   shrink')
 console.log('-'.repeat(82))
 
-for (const [name, source, args, expected] of CASES) {
-  const compactOut = compileOnce(compactModule, source, true)
+for (const [name, source, args, expected, options = {}] of CASES) {
+  const compactOut = compileOnce(compactModule, source, true, options)
   const fullOut = compileOnce(fullModule, source, false)
   const compactProgram = new WebAssembly.Instance(new WebAssembly.Module(compactOut))
   const fullProgram = instantiate(fullOut)
@@ -143,7 +152,7 @@ for (const [name, source, args, expected] of CASES) {
   if (!Object.is(compactValue, expected) || !Object.is(fullValue, expected))
     throw new Error(`${name}: result mismatch compact=${compactValue} full=${fullValue} expected=${expected}`)
 
-  const compactMs = timedCompiler(compactModule, source, true)
+  const compactMs = timedCompiler(compactModule, source, true, options)
   const fullMs = timedCompiler(fullModule, source, false)
   if (!(compactMs > 0) || !Number.isFinite(compactMs) || !(fullMs > 0) || !Number.isFinite(fullMs))
     throw new Error(`${name}: invalid timing compact=${compactMs} full=${fullMs}`)

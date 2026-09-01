@@ -2,16 +2,20 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import compileCompact, { compileCompactAst } from '../prototype/compact/compiler.js'
 import compileDirect from '../prototype/compact/direct.js'
+import { compileWat } from '../prototype/compact/backend.js'
 import { generateDirectCallGraph } from '../prototype/compact/graph-corpus.js'
 import { lowerProgram } from '../prototype/compact/lower.js'
 import { prepareCompactAst } from '../prototype/compact/prepare.js'
 import {
   ABI_RAW, I_ABI_MODE, I_EDGE_TARGET, I_EXACT_I32_OWNS_TYPE, I_EXACT_I32_TYPE_ID,
   I_EXACT_I32_WASM_ID,
-  I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_REACHABLE,
-  I_FN_RESULT_REP, I_FN_TYPE_ID, I_FN_WASM_ID, I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP,
-  REP_F64, REP_I32, REP_U32,
-  buildProgramIndex, functionCount,
+  I_FN_EDGE_COUNT, I_FN_EDGE_START, I_FN_PURE, I_FN_REACHABLE,
+  I_FN_RESULT_REP, I_FN_STORAGE_READ_COUNT, I_FN_STORAGE_WRITE_COUNT,
+  I_FN_TYPE_ID, I_FN_WASM_ID, I_MEMORY_BYTES, I_SIMD_ENABLED,
+  I_STORAGE_ALIAS_GROUP, I_STORAGE_BASE, I_STORAGE_LENGTH, I_STORAGE_NAME, I_STORAGE_OWNER,
+  I_STORAGE_RELOCATION, I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP,
+  REP_F64, REP_I32, REP_U32, STORAGE_FIXED,
+  buildProgramIndex, functionCount, storageCount,
 } from '../prototype/compact/program-index.js'
 import { parse } from '../src/parse.js'
 import { scalarCase, scalarCasesIn, SCALAR_CORE_CASES } from './_scalar-core-cases.js'
@@ -22,6 +26,24 @@ const instantiateRaw = (source, options) => new WebAssembly.Instance(new WebAsse
 )).exports
 const sameNumber = (a, b) => Object.is(a, b) || Number.isNaN(a) && Number.isNaN(b)
 const sameBytes = (a, b) => a.length === b.length && a.every((byte, i) => byte === b[i])
+const SIMD_MAP_SOURCE = `
+  const a = new Float64Array(5)
+  const b = new Float64Array(5)
+  export let f = (x, scale, bias) => {
+    a[0] = -0
+    a[1] = x
+    a[2] = -x
+    a[3] = x * 0
+    a[4] = 0 / 0
+    for (let i = 0; i < b.length; i++) b[i] = -(a[i] * scale - bias) / 2 + bias
+    return b[0] + b[3]
+  }
+`
+const SIMD_ALIAS_SOURCE = `const a=new Float64Array(6);const alias=a;export let f=()=>{
+  a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5;a[5]=6
+  for(let i=0;i<a.length-1;i++)a[i]=alias[i+1]*2
+  return a[0]+a[4]+a[5]
+}`
 
 test('compact prototype: smallest module and ULEB count boundary', () => {
   const smallest = compileCompact('export let f=()=>0')
@@ -213,6 +235,186 @@ test('compact prototype: bitwise effects, compound assignments, and ABI conversi
   throws(() => compileCompact('export let f=x=>Math.abs(x)', { abi: 'raw' }), /unsupported/)
 })
 
+test('compact prototype: static Float64Array storage owns layout and range facts', () => {
+  const source = `
+    const a = new Float64Array(5)
+    const alias = a
+    const b = new Float64Array(3)
+    let fill = () => { for (let i = 0; i < a.length; i++) a[i] = i + 0.5; return a.length }
+    let read = () => alias[2]
+    let invoke = () => fill()
+    export let run = () => {
+      invoke()
+      for (let j = 0; j < b.length; j++) b[j] = a[j] * 2
+      return read() + b[2]
+    }
+  `
+  const index = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw' })
+  is(storageCount(index), 3)
+  is(index[I_STORAGE_LENGTH].join(','), '5,5,3')
+  is(index[I_STORAGE_BASE].join(','), '0,0,48')
+  is(index[I_STORAGE_ALIAS_GROUP].join(','), '0,0,1')
+  is(index[I_STORAGE_OWNER].join(','), '0,0,2')
+  is(index[I_STORAGE_RELOCATION].join(','), `${STORAGE_FIXED},${STORAGE_FIXED},${STORAGE_FIXED}`)
+  is(index[I_MEMORY_BYTES], 72)
+  is(index[I_FN_STORAGE_READ_COUNT].join(','), '0,1,0,2')
+  is(index[I_FN_STORAGE_WRITE_COUNT].join(','), '1,0,0,1')
+  is(index[I_FN_PURE].join(','), '0,1,0,0')
+
+  const before = JSON.stringify(index)
+  const metrics = {}
+  const wat = lowerProgram(index, metrics)
+  is(JSON.stringify(index), before)
+  is(metrics.maxLoopRangeFacts, 1)
+  ok(metrics.maxScratchSlots >= 3, 'loop range bounds live only in function scratch')
+  const watText = JSON.stringify(wat)
+  ok(watText.includes('["memory",1]'), 'typed storage owns one memory page')
+  ok(watText.includes('["i32.const",48]'), 'second owner uses its raw i32 base')
+  ok(!watText.includes('f64.convert_i32_u'), 'storage addresses never cross an f64 boundary')
+
+  for (const optimize of [false, true]) {
+    const { run } = instantiateRaw(source, { optimize })
+    is(run(), 7.5)
+    is(run(), 7.5)
+  }
+
+  throws(() => compileCompact('const a=new Float64Array(4);export let f=i=>a[i]', { abi: 'raw' }), /index is not proven/)
+  throws(() => compileCompact('const a=new Float64Array(4);export let f=()=>a[4]', { abi: 'raw' }), /index is not proven/)
+  throws(() => compileCompact('const a=new Float64Array(4);export let f=i=>{if(false)return a[i];return 0}', { abi: 'raw' }), /index is not proven/)
+  throws(() => compileCompact('const a=new Float64Array(4);let dead=i=>a[i];export let f=()=>0', { abi: 'raw' }), /index is not proven/)
+  throws(() => compileCompact('const a=new Float64Array(4);export let f=()=>{for(let i=0;i<a.length;i++){i=10;a[i]=1}return 0}', { abi: 'raw' }), /index is not proven/)
+  throws(() => compileCompact('const b=a;const a=new Float64Array(4);export let f=()=>0', { abi: 'raw' }), /earlier binding/)
+  throws(() => compileCompact('const a=new Float64Array(4);export let f=()=>{let a=0;return a[0]}', { abi: 'raw' }), /dynamic storage through local/)
+  throws(() => compileCompact('export let f=()=>{let a=new Float64Array(4);return 0}', { abi: 'raw' }), /unsupported new/)
+  throws(() => compileCompact('const a=new Int32Array(4);export let f=()=>0', { abi: 'raw' }), /unsupported/)
+})
+
+test('compact prototype: Float64Array SIMD map is byte-exact with scalar cleanup', () => {
+  const source = SIMD_MAP_SOURCE
+  const scalarIndex = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw', simd: false })
+  const simdIndex = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw', simd: true })
+  is(scalarIndex[I_SIMD_ENABLED], 0)
+  is(simdIndex[I_SIMD_ENABLED], 1)
+  const scalarMetrics = {}, simdMetrics = {}
+  const scalarWat = lowerProgram(scalarIndex, scalarMetrics)
+  const simdWat = lowerProgram(simdIndex, simdMetrics)
+  const scalarText = JSON.stringify(scalarWat), simdText = JSON.stringify(simdWat)
+  ok(!scalarText.includes('v128'), 'scalar control contains no SIMD instruction')
+  ok(simdText.includes('v128.load') && simdText.includes('v128.store'), 'map uses packed loads and stores')
+  for (const op of ['f64x2.mul', 'f64x2.sub', 'f64x2.neg', 'f64x2.div', 'f64x2.add'])
+    ok(simdText.includes(op), `${op} stays lane-local`)
+  is(simdMetrics.simdLoopCount, 1)
+  is(simdMetrics.simdVetoAlias, 0)
+  is(simdMetrics.simdVetoRelocation, 0)
+  is(simdMetrics.simdVetoRange, 0)
+  is(simdMetrics.simdVetoEffect, 0)
+  ok(simdMetrics.maxPointerTemps >= 2, 'source and destination bases use raw i32 pointer induction')
+  is(simdMetrics.maxInvariantTemps, 2, 'scale and bias are splatted once outside the loop')
+
+  scalarWat.push(['export', '"memory"', ['memory', 0]])
+  simdWat.push(['export', '"memory"', ['memory', 0]])
+  const scalarModule = new WebAssembly.Module(compileWat(scalarWat))
+  const simdModule = new WebAssembly.Module(compileWat(simdWat))
+  const cases = [[3, 2, 1], [NaN, 1, -0], [-0, -1, 0.5], [Infinity, 0, -1]]
+  const js = new Function(`${source.replace(/export\s+let\s+f\s*=/, 'let f =')}\n;return f`)()
+  for (const args of cases) {
+    const scalar = new WebAssembly.Instance(scalarModule).exports
+    const vector = new WebAssembly.Instance(simdModule).exports
+    const scalarResult = scalar.f(...args), vectorResult = vector.f(...args), expected = js(...args)
+    ok(sameNumber(scalarResult, expected), `scalar result for ${args.map(String).join(', ')}`)
+    ok(sameNumber(vectorResult, expected), `SIMD result for ${args.map(String).join(', ')}`)
+    const scalarBytes = new Uint8Array(scalar.memory.buffer, 0, scalarIndex[I_MEMORY_BYTES])
+    const vectorBytes = new Uint8Array(vector.memory.buffer, 0, simdIndex[I_MEMORY_BYTES])
+    ok(sameBytes(scalarBytes, vectorBytes), `SIMD memory matches scalar for ${args.map(String).join(', ')}`)
+  }
+  const optimizedScalarWat = compileCompact(source, { abi: 'raw', simd: false, optimize: true, wat: true })
+  const optimizedSimdWat = compileCompact(source, { abi: 'raw', simd: true, optimize: true, wat: true })
+  optimizedScalarWat.push(['export', '"memory"', ['memory', 0]])
+  optimizedSimdWat.push(['export', '"memory"', ['memory', 0]])
+  const optimizedScalar = new WebAssembly.Instance(new WebAssembly.Module(compileWat(optimizedScalarWat))).exports
+  const optimizedSimd = new WebAssembly.Instance(new WebAssembly.Module(compileWat(optimizedSimdWat))).exports
+  const optimizedArgs = [3, 2, 1]
+  ok(sameNumber(optimizedScalar.f(...optimizedArgs), js(...optimizedArgs)), 'watr preserves the scalar map')
+  ok(sameNumber(optimizedSimd.f(...optimizedArgs), js(...optimizedArgs)), 'watr preserves the SIMD map')
+  ok(sameBytes(
+    new Uint8Array(optimizedScalar.memory.buffer, 0, scalarIndex[I_MEMORY_BYTES]),
+    new Uint8Array(optimizedSimd.memory.buffer, 0, simdIndex[I_MEMORY_BYTES]),
+  ), 'optimized SIMD memory matches optimized scalar memory')
+  throws(() => compileCompact(source, { abi: 'raw', simd: 'yes' }), /unknown SIMD mode/)
+})
+
+test('compact prototype: Float64Array SIMD vetoes are explicit and scalar', () => {
+  const distinctSource = `const a=new Float64Array(6);const b=new Float64Array(5);export let f=()=>{
+    a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5;a[5]=6
+    for(let i=0;i<b.length;i++)b[i]=a[i+1]*2
+    return b[0]+b[4]
+  }`
+  const distinctIndex = buildProgramIndex(prepareCompactAst(parse(distinctSource)), { abi: 'raw', simd: true })
+  const distinctMetrics = {}
+  const distinctWat = lowerProgram(distinctIndex, distinctMetrics)
+  is(distinctMetrics.simdLoopCount, 1, 'different alias groups admit a shifted packed load')
+  is(distinctMetrics.simdVetoAlias, 0)
+  ok(JSON.stringify(distinctWat).includes('v128.load'))
+  is(new WebAssembly.Instance(new WebAssembly.Module(compileWat(distinctWat))).exports.f(), 16)
+
+  const cases = [
+    ['alias', SIMD_ALIAS_SOURCE, 22, 'simdVetoAlias'],
+    ['relocation', `const a=new Float64Array(5);const view=a.subarray(0);const b=new Float64Array(5);export let f=()=>{
+      a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5
+      for(let i=0;i<b.length;i++)b[i]=view[i]*2
+      return b[0]+b[4]
+    }`, 12, 'simdVetoRelocation'],
+    ['range', `const a=new Float64Array(5);const b=new Float64Array(5);export let f=()=>{
+      a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5
+      for(let i=1;i<b.length;i++)b[i]=a[i]*2
+      return b[0]+b[1]+b[4]
+    }`, 14, 'simdVetoRange'],
+    ['effect', `const a=new Float64Array(5);const b=new Float64Array(5);export let f=()=>{
+      let s=0;a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5
+      for(let i=0;i<b.length;i++){s+=a[i];b[i]=a[i]*2}
+      return s+b[4]
+    }`, 25, 'simdVetoEffect'],
+    ['global-write', `const a=new Float64Array(5);const b=new Float64Array(5)
+      let touch=x=>{a[0]=x;return x}
+      export let f=()=>{a[0]=1;a[1]=2;a[2]=3;a[3]=4;a[4]=5
+        for(let i=0;i<b.length;i++)b[i]=touch(a[i])
+        return a[0]+b[4]
+      }`, 10, 'simdVetoGlobalWrite'],
+  ]
+  for (const [name, source, expected, veto] of cases) {
+    const index = buildProgramIndex(prepareCompactAst(parse(source)), { abi: 'raw', simd: true })
+    const metrics = {}
+    const wat = lowerProgram(index, metrics)
+    is(metrics.simdLoopCount || 0, 0, `${name}: loop stays scalar`)
+    is(metrics[veto], 1, `${name}: records its veto`)
+    ok(!JSON.stringify(wat).includes('v128'), `${name}: emits no packed instruction`)
+    const js = new Function(`${source.replace(/export\s+let\s+f\s*=/, 'let f =')}\n;return f`)()
+    is(js(), expected, `${name}: JavaScript oracle`)
+    is(new WebAssembly.Instance(new WebAssembly.Module(compileWat(wat))).exports.f(), expected)
+    if (name === 'relocation') {
+      is(metrics.maxPointerTemps, 1, 'relocatable source base is not hoisted')
+      ok(JSON.stringify(wat).includes('i32.shl'), 'relocatable source recomputes its scalar address')
+    }
+  }
+  const relocated = buildProgramIndex(prepareCompactAst(parse(cases[1][1])), { abi: 'raw', simd: true })
+  is(relocated[I_STORAGE_RELOCATION].join(','), `${STORAGE_FIXED},1,${STORAGE_FIXED}`)
+})
+
+test('compact prototype: typed compiler reuse A to A to B', () => {
+  for (const optimize of [false, true]) {
+    const options = { abi: 'raw', simd: true, optimize }
+    const referenceB = compileCompact(SIMD_ALIAS_SOURCE, options)
+    const firstA = compileCompact(SIMD_MAP_SOURCE, options)
+    const secondA = compileCompact(SIMD_MAP_SOURCE, options)
+    const afterA = compileCompact(SIMD_ALIAS_SOURCE, options)
+    const mode = optimize ? 'optimized' : 'plain'
+    ok(sameBytes(firstA, secondA), `${mode} typed A to A is byte-identical`)
+    ok(sameBytes(referenceB, afterA), `${mode} typed B is independent of prior A compiles`)
+    is(new WebAssembly.Instance(new WebAssembly.Module(firstA)).exports.f(3, 2, 1), 3)
+    is(new WebAssembly.Instance(new WebAssembly.Module(afterA)).exports.f(), 22)
+  }
+})
+
 test('compact prototype: conditionals and zero-iteration loops', () => {
   const abs = instantiate('export let f=x=>{x=+x;if((x>0))return x;else return -x}').f
   is(abs(-9), 9)
@@ -268,6 +470,8 @@ test('compact prototype: numeric index, reachability, and watr boundary', () => 
   is(index[I_TYPE_PARAM_COUNT].join(','), '1')
   is(index[I_FN_EDGE_COUNT].join(','), '0,0,1')
   is(index[I_EDGE_TARGET][index[I_FN_EDGE_START][2]], 1)
+  is(index[I_STORAGE_NAME], null)
+  is(index[I_FN_PURE], null)
 
   const indexBefore = JSON.stringify(index)
   const wat = lowerProgram(index)

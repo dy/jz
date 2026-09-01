@@ -6,6 +6,7 @@
 
 import {
   F_BODY, F_EXPORT, F_LOCALS, F_MUTABLES, F_NAME, F_PARAMS,
+  P_FUNCTIONS, P_STORAGES, S_ALIAS_NAME, S_LENGTH, S_NAME, S_RELOCATION,
   argsOf, bodyList, err, forHead, reject,
 } from './prepare.js'
 import { constantScalar, isBooleanLiteral } from './constants.js'
@@ -48,8 +49,42 @@ export const I_TYPE_RESULT_REP = 20
 export const I_EXACT_I32_WASM_ID = 21
 export const I_EXACT_I32_TYPE_ID = 22
 export const I_EXACT_I32_OWNS_TYPE = 23
+export const I_STORAGE_NAME = 24
+export const I_STORAGE_LENGTH = 25
+export const I_STORAGE_BASE = 26
+export const I_STORAGE_ALIAS_GROUP = 27
+export const I_STORAGE_OWNER = 28
+export const I_STORAGE_RELOCATION = 29
+export const I_STORAGE_ELEMENT_BYTES = 30
+export const I_MEMORY_BYTES = 31
+export const I_FN_STORAGE_READ_START = 32
+export const I_FN_STORAGE_READ_COUNT = 33
+export const I_FN_STORAGE_WRITE_START = 34
+export const I_FN_STORAGE_WRITE_COUNT = 35
+export const I_STORAGE_READ = 36
+export const I_STORAGE_WRITE = 37
+export const I_FN_PURE = 38
+export const I_SIMD_ENABLED = 39
+
+export const STORAGE_FIXED = 0
+export const STORAGE_MAY_RELOCATE = 1
 
 export const functionCount = (index) => index[I_FN_NAME].length
+export const storageCount = (index) => index[I_STORAGE_NAME]?.length || 0
+
+export const findStorageId = (index, name) => {
+  const names = index[I_STORAGE_NAME]
+  if (!names) return -1
+  for (let i = 0; i < names.length; i++) if (names[i] === name) return i
+  return -1
+}
+
+export const storageTargetId = (index, funcId, name) => {
+  if (findBindingId(index, funcId, name) >= 0) err(`dynamic storage through local '${name}' is unsupported`)
+  const storageId = findStorageId(index, name)
+  if (storageId < 0) err(`unknown typed storage '${name}'`)
+  return storageId
+}
 
 export const findFunctionId = (index, name) => {
   const names = index[I_FN_NAME]
@@ -75,6 +110,13 @@ export const callTargetId = (index, funcId, name) => {
   const target = findFunctionId(index, name)
   if (target < 0) err(`unknown direct function '${name}'`)
   return target
+}
+
+const recordStorage = (index, funcId, startField, poolField, storageId) => {
+  const pool = index[poolField]
+  const start = index[startField][funcId]
+  for (let i = start; i < pool.length; i++) if (pool[i] === storageId) return
+  pool.push(storageId)
 }
 
 const checkCall = (node, declared, assigned, index, funcId, edges) => {
@@ -113,6 +155,16 @@ function checkExpr(node, declared, assigned, index, funcId, edges) {
   if (op === '()' && node.length === 2) { checkExpr(node[1], declared, assigned, index, funcId, edges); return }
   if (op === '()' && typeof node[1] === 'string') { checkCall(node, declared, assigned, index, funcId, edges); return }
   if (op === '()') { checkBuiltinCall(node, declared, assigned, index, funcId, edges); return }
+  if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
+    const storageId = storageTargetId(index, funcId, node[1])
+    checkExpr(node[2], declared, assigned, index, funcId, edges)
+    recordStorage(index, funcId, I_FN_STORAGE_READ_START, I_STORAGE_READ, storageId)
+    return
+  }
+  if (op === '.' && node.length === 3 && typeof node[1] === 'string' && node[2] === 'length') {
+    storageTargetId(index, funcId, node[1])
+    return
+  }
   if (op === '?' && node.length === 4) {
     checkExpr(node[1], declared, assigned, index, funcId, edges)
     checkExpr(node[2], declared, assigned, index, funcId, edges)
@@ -196,6 +248,13 @@ function checkStmt(node, declared, assigned, index, funcId, edges, controls) {
     return
   }
   if (op === '=') {
+    if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3 && typeof node[1][1] === 'string') {
+      const storageId = storageTargetId(index, funcId, node[1][1])
+      checkExpr(node[1][2], declared, assigned, index, funcId, edges)
+      checkExpr(node[2], declared, assigned, index, funcId, edges)
+      recordStorage(index, funcId, I_FN_STORAGE_WRITE_START, I_STORAGE_WRITE, storageId)
+      return
+    }
     const local = checkAssignTarget(node[1], declared, assigned, index, funcId, false)
     checkExpr(node[2], declared, assigned, index, funcId, edges)
     assigned[local] = true
@@ -293,6 +352,58 @@ const abiMode = (options) => {
   err(`unknown ABI '${abi}'`)
 }
 
+const simdMode = (options) => {
+  const simd = options?.simd ?? false
+  if (simd === true || simd === 1) return 1
+  if (simd === false || simd === 0) return 0
+  err(`unknown SIMD mode '${simd}'`)
+}
+
+const buildStorages = (index, storages) => {
+  if (!storages.length) return
+  for (let storageId = 0; storageId < storages.length; storageId++) {
+    index[I_STORAGE_NAME][storageId] = storages[storageId][S_NAME]
+    index[I_STORAGE_LENGTH][storageId] = storages[storageId][S_LENGTH]
+    index[I_STORAGE_BASE][storageId] = -1
+    index[I_STORAGE_ALIAS_GROUP][storageId] = -1
+    index[I_STORAGE_OWNER][storageId] = -1
+    index[I_STORAGE_RELOCATION][storageId] = storages[storageId][S_RELOCATION]
+    index[I_STORAGE_ELEMENT_BYTES][storageId] = 8
+  }
+
+  let offset = 0, nextGroup = 0
+  const resolving = new Array(storages.length).fill(0)
+  const resolve = (storageId) => {
+    if (index[I_STORAGE_OWNER][storageId] >= 0) return
+    if (resolving[storageId]) err(`typed storage alias cycle at '${index[I_STORAGE_NAME][storageId]}'`)
+    resolving[storageId] = 1
+    const alias = storages[storageId][S_ALIAS_NAME]
+    if (alias == null) {
+      offset = Math.ceil(offset / 16) * 16
+      const bytes = index[I_STORAGE_LENGTH][storageId] * 8
+      if (offset + bytes > 4294967296) err('typed storage exceeds wasm32 memory')
+      index[I_STORAGE_BASE][storageId] = offset
+      index[I_STORAGE_ALIAS_GROUP][storageId] = nextGroup++
+      index[I_STORAGE_OWNER][storageId] = storageId
+      offset += bytes
+    } else {
+      const target = findStorageId(index, alias)
+      if (target < 0) err(`unknown typed storage alias '${alias}'`)
+      if (target >= storageId) err(`typed storage alias '${index[I_STORAGE_NAME][storageId]}' must reference an earlier binding`)
+      resolve(target)
+      index[I_STORAGE_LENGTH][storageId] = index[I_STORAGE_LENGTH][target]
+      index[I_STORAGE_BASE][storageId] = index[I_STORAGE_BASE][target]
+      index[I_STORAGE_ALIAS_GROUP][storageId] = index[I_STORAGE_ALIAS_GROUP][target]
+      index[I_STORAGE_OWNER][storageId] = index[I_STORAGE_OWNER][target]
+      index[I_STORAGE_RELOCATION][storageId] = Math.max(
+        index[I_STORAGE_RELOCATION][storageId], index[I_STORAGE_RELOCATION][target])
+    }
+    resolving[storageId] = 0
+  }
+  for (let storageId = 0; storageId < storages.length; storageId++) resolve(storageId)
+  index[I_MEMORY_BYTES] = offset
+}
+
 const markReachable = (index) => {
   const reachable = index[I_FN_REACHABLE]
   const stack = []
@@ -369,6 +480,25 @@ const inferResultReps = (index) => {
   for (let funcId = 0; funcId < functionCount(index); funcId++) if (reps[funcId] === REP_UNKNOWN) reps[funcId] = REP_F64
 }
 
+const inferPurity = (index) => {
+  const pure = index[I_FN_PURE]
+  for (let funcId = 0; funcId < functionCount(index); funcId++)
+    pure[funcId] = index[I_FN_STORAGE_WRITE_COUNT][funcId] === 0 ? 1 : 0
+  for (let pass = 0; pass < functionCount(index); pass++) {
+    let changed = false
+    for (let funcId = 0; funcId < functionCount(index); funcId++) {
+      if (!pure[funcId]) continue
+      const start = index[I_FN_EDGE_START][funcId], count = index[I_FN_EDGE_COUNT][funcId]
+      for (let i = 0; i < count; i++) if (!pure[index[I_EDGE_TARGET][start + i]]) {
+        pure[funcId] = 0
+        changed = true
+        break
+      }
+    }
+    if (!changed) break
+  }
+}
+
 const mayNeedExactI32 = (node) => {
   if (!Array.isArray(node)) return false
   const op = node[0]
@@ -410,15 +540,37 @@ const assignFinalIds = (index) => {
   index[I_EXACT_I32_WASM_ID] = wasmId
 }
 
-export function buildProgramIndex(funcs, options) {
+export function buildProgramIndex(program, options) {
+  const funcs = program[P_FUNCTIONS]
+  const storages = program[P_STORAGES]
   const count = funcs.length
   const abi = abiMode(options)
+  const simd = simdMode(options)
   const index = [
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count),
     new Array(count), new Array(count), new Array(count), new Array(count), new Array(count).fill(0),
     new Array(count).fill(-1), new Array(count).fill(-1), [], [], [], [], [], [], [], abi, [], -1, -1, 0,
+    null, null, null, null, null, null, null, 0,
+    null, null, null, null, null, null, null, simd,
   ]
 
+  if (storages.length) {
+    index[I_STORAGE_NAME] = []
+    index[I_STORAGE_LENGTH] = []
+    index[I_STORAGE_BASE] = []
+    index[I_STORAGE_ALIAS_GROUP] = []
+    index[I_STORAGE_OWNER] = []
+    index[I_STORAGE_RELOCATION] = []
+    index[I_STORAGE_ELEMENT_BYTES] = []
+    index[I_FN_STORAGE_READ_START] = new Array(count)
+    index[I_FN_STORAGE_READ_COUNT] = new Array(count)
+    index[I_FN_STORAGE_WRITE_START] = new Array(count)
+    index[I_FN_STORAGE_WRITE_COUNT] = new Array(count)
+    index[I_STORAGE_READ] = []
+    index[I_STORAGE_WRITE] = []
+    index[I_FN_PURE] = new Array(count)
+  }
+  buildStorages(index, storages)
   for (let funcId = 0; funcId < count; funcId++) {
     const func = funcs[funcId]
     index[I_FN_NAME][funcId] = func[F_NAME]
@@ -449,11 +601,20 @@ export function buildProgramIndex(funcs, options) {
   const edges = index[I_EDGE_TARGET]
   for (let funcId = 0; funcId < count; funcId++) {
     index[I_FN_EDGE_START][funcId] = edges.length
+    if (storages.length) {
+      index[I_FN_STORAGE_READ_START][funcId] = index[I_STORAGE_READ].length
+      index[I_FN_STORAGE_WRITE_START][funcId] = index[I_STORAGE_WRITE].length
+    }
     checkFunction(index, funcId, edges)
     index[I_FN_EDGE_COUNT][funcId] = edges.length - index[I_FN_EDGE_START][funcId]
+    if (storages.length) {
+      index[I_FN_STORAGE_READ_COUNT][funcId] = index[I_STORAGE_READ].length - index[I_FN_STORAGE_READ_START][funcId]
+      index[I_FN_STORAGE_WRITE_COUNT][funcId] = index[I_STORAGE_WRITE].length - index[I_FN_STORAGE_WRITE_START][funcId]
+    }
   }
 
   markReachable(index)
+  if (storages.length) inferPurity(index)
   inferResultReps(index)
   assignFinalIds(index)
   return index

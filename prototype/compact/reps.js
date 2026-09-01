@@ -6,7 +6,8 @@ export const REP_UNKNOWN = 0
 export const REP_F64 = 1
 export const REP_I32 = 2
 export const REP_U32 = 3
+export const REP_PTR = 4
 
 export const isI32Rep = (rep) => rep === REP_I32 || rep === REP_U32
-export const physicalRep = (rep) => isI32Rep(rep) ? REP_I32 : REP_F64
-export const wasmType = (rep) => isI32Rep(rep) ? 'i32' : 'f64'
+export const physicalRep = (rep) => isI32Rep(rep) || rep === REP_PTR ? REP_I32 : REP_F64
+export const wasmType = (rep) => isI32Rep(rep) || rep === REP_PTR ? 'i32' : 'f64'

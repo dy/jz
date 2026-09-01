@@ -96,3 +96,15 @@ The integer slice added signed and unsigned result summaries, disposable local r
 All output hashes remain unchanged and byte-identical between staged and direct lowering. Scratch remains one slot, with zero representation or range facts for this f64-only graph. Maximum finalized function WAT remains 18 nodes. The machine still had about 12.5 GiB of allocated swap, so heap and timing differences from the scalar-control run are directional rather than a regression claim.
 
 `--json` now keeps stdout machine-readable and reports the swap warning on stderr.
+
+## Typed DSP rerun
+
+Static typed-storage fields allocate only when a prepared program declares storage. The scalar graph therefore retains null storage families and creates no range, pointer, alias, relocation, purity, or SIMD scratch facts. The staged compiler graph hash was `d26a891655166ffe5062346b09d42381b86feb6cf068469a0d5197ceb886f052`; the direct graph hash remained `d6df7bf2cea69fd7bcc10efff9f555d9cd62e6a50e2272575d31302a345f89d4`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,314,432 | 667,944 | 237,664 | 2,333 |
+| 512 | 2,310,448 | 1,071,224 | 555,568 | 9,629 |
+| 2,048 | 5,247,616 | 2,110,104 | 1,948,432 | 38,814 |
+
+All binaries retain the earlier output hashes and remain byte-identical to the direct control. Function scratch remains one slot, and finalized function WAT remains 18 nodes. The machine had about 11.6 GiB of allocated swap, so heap and timing values remain directional.

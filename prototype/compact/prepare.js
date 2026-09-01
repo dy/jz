@@ -20,6 +20,17 @@ export const F_EXPORT = 3
 export const F_LOCALS = 4
 export const F_MUTABLES = 5
 
+export const P_FUNCTIONS = 0
+export const P_STORAGES = 1
+
+export const S_NAME = 0
+export const S_LENGTH = 1
+export const S_ALIAS_NAME = 2
+export const S_RELOCATION = 3
+
+export const STORAGE_SOURCE_FIXED = 0
+export const STORAGE_SOURCE_MAY_RELOCATE = 1
+
 export const err = (message) => { throw new SyntaxError(`compact prototype: ${message}`) }
 export const opName = (node) => Array.isArray(node) ? String(node[0]) : typeof node
 export const reject = (node, where) => err(`${where}: unsupported ${opName(node)}`)
@@ -84,6 +95,29 @@ const collectLocals = (node, func) => {
     return
   }
   for (let i = 1; i < node.length; i++) collectLocals(node[i], func)
+}
+
+const storageOf = (node) => {
+  if (!Array.isArray(node) || node[0] !== 'let' && node[0] !== 'const' || node.length !== 2) return null
+  const decl = node[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const value = decl[2]
+  if (typeof value === 'string') return [decl[1], -1, value, STORAGE_SOURCE_FIXED]
+  if (Array.isArray(value) && value[0] === '()' && Array.isArray(value[1]) && value[1][0] === '.' &&
+      typeof value[1][1] === 'string' && value[1][2] === 'subarray') {
+    const args = argsOf(value[2])
+    if (args.length !== 1 || constantNumber(args[0]) !== 0)
+      err(`Float64Array view '${decl[1]}' supports only subarray(0)`)
+    return [decl[1], -1, value[1][1], STORAGE_SOURCE_MAY_RELOCATE]
+  }
+  if (!Array.isArray(value) || value[0] !== 'new' || value.length !== 2 ||
+      !Array.isArray(value[1]) || value[1][0] !== '()' || value[1][1] !== 'Float64Array') return null
+  const args = argsOf(value[1][2])
+  if (args.length !== 1) err(`Float64Array '${decl[1]}' needs one constant length`)
+  const length = constantNumber(args[0])
+  if (!Number.isInteger(length) || length < 0 || length > 0x1fffffff)
+    err(`Float64Array '${decl[1]}' length must be an integer in [0, 536870911]`)
+  return [decl[1], length, null, STORAGE_SOURCE_FIXED]
 }
 
 const declarationOf = (node, exported) => {
@@ -220,6 +254,11 @@ function validateExpr(node) {
     for (let i = 0; i < args.length; i++) validateExpr(args[i])
     return
   }
+  if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
+    validateExpr(node[2])
+    return
+  }
+  if (op === '.' && node.length === 3 && typeof node[1] === 'string' && node[2] === 'length') return
   if (op === '?' && node.length === 4) {
     validateCondition(node[1])
     validateExpr(node[2])
@@ -271,7 +310,10 @@ const validateStmt = (node) => {
     return
   }
   if (op === '=' || assignmentKind(op) !== OP_NONE || bitwiseAssignmentKind(op) !== BIT_NONE) {
-    if (typeof node[1] !== 'string') reject(node[1], 'assignment target')
+    if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3 && typeof node[1][1] === 'string') {
+      if (op !== '=') reject(node, 'typed storage assignment')
+      validateExpr(node[1][2])
+    } else if (typeof node[1] !== 'string') reject(node[1], 'assignment target')
     validateExpr(node[2])
     return
   }
@@ -327,10 +369,21 @@ const validateBody = (body) => {
 
 export function prepareCompactAst(ast) {
   const top = list(ast)
-  const funcs = []
+  const funcs = [], storages = []
   for (let i = 0; i < top.length; i++) {
+    const storage = storageOf(top[i])
+    if (storage) {
+      for (let j = 0; j < storages.length; j++) if (storages[j][S_NAME] === storage[S_NAME])
+        err(`duplicate storage '${storage[S_NAME]}'`)
+      for (let j = 0; j < funcs.length; j++) if (funcs[j][F_NAME] === storage[S_NAME])
+        err(`duplicate top-level name '${storage[S_NAME]}'`)
+      storages.push(storage)
+      continue
+    }
     const func = declarationOf(top[i], false)
     for (let j = 0; j < funcs.length; j++) if (funcs[j][F_NAME] === func[F_NAME]) err(`duplicate function '${func[F_NAME]}'`)
+    for (let j = 0; j < storages.length; j++) if (storages[j][S_NAME] === func[F_NAME])
+      err(`duplicate top-level name '${func[F_NAME]}'`)
     collectLocals(func[F_BODY], func)
     validateBody(func[F_BODY])
     const body = func[F_BODY]
@@ -339,5 +392,5 @@ export function prepareCompactAst(ast) {
     if (func[F_EXPORT]) validateExportName(func[F_NAME])
     funcs.push(func)
   }
-  return funcs
+  return [funcs, storages]
 }

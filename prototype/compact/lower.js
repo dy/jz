@@ -15,12 +15,14 @@ import {
 import {
   I_EXACT_I32_OWNS_TYPE, I_EXACT_I32_TYPE_ID, I_EXACT_I32_WASM_ID,
   I_EXPORT_FUNC, I_EXPORT_NAME,
-  I_FN_BODY, I_FN_LOCAL_COUNT,
+  I_FN_BODY, I_FN_LOCAL_COUNT, I_FN_PURE,
   I_FN_PARAM_COUNT, I_FN_REACHABLE, I_FN_RESULT_REP, I_FN_TYPE_ID, I_FN_WASM_ID,
+  I_MEMORY_BYTES, I_SIMD_ENABLED, I_STORAGE_ALIAS_GROUP, I_STORAGE_BASE, I_STORAGE_LENGTH,
+  I_STORAGE_OWNER, I_STORAGE_RELOCATION, STORAGE_FIXED,
   I_TYPE_PARAM_COUNT, I_TYPE_RESULT_REP,
-  callTargetId, functionCount, localIndex,
+  callTargetId, functionCount, localIndex, storageCount, storageTargetId,
 } from './program-index.js'
-import { REP_F64, REP_I32, REP_U32, isI32Rep, wasmType } from './reps.js'
+import { REP_F64, REP_I32, REP_PTR, REP_U32, isI32Rep, wasmType } from './reps.js'
 
 const C_SOURCE_LABEL = 0
 const C_BREAK_LABEL = 1
@@ -66,6 +68,7 @@ const releaseTemp = (scratch, local, type = 'f64') => {
 const asF64 = (value, scratch) => {
   const rep = repOf(scratch, value)
   if (rep === REP_F64) return value
+  if (rep === REP_PTR) err('internal typed-storage pointer escaped into a JavaScript value')
   return typed(scratch,
     [rep === REP_U32 ? 'f64.convert_i32_u' : 'f64.convert_i32_s', rawValue(value)], REP_F64,
     rangeOf(scratch, value) || intrinsicRange(rep))
@@ -253,6 +256,156 @@ const analyzeBindings = (index, funcId) => {
   return { reps, ranges }
 }
 
+const loopBound = (node, index, funcId) => {
+  const folded = constantScalar(node)
+  if (folded && Number.isInteger(folded[0])) return folded[0]
+  if (Array.isArray(node) && node[0] === '.' && node.length === 3 && node[2] === 'length') {
+    const storageId = storageTargetId(index, funcId, node[1])
+    return index[I_STORAGE_LENGTH][storageId]
+  }
+  if (Array.isArray(node) && node[0] === '()' && node.length === 2) return loopBound(node[1], index, funcId)
+  if (Array.isArray(node) && (node[0] === '+' || node[0] === '-') && node.length === 3) {
+    const left = loopBound(node[1], index, funcId), right = constantScalar(node[2])
+    if (left != null && right && Number.isInteger(right[0])) return node[0] === '+' ? left + right[0] : left - right[0]
+  }
+  return null
+}
+
+const writesLocal = (node, name) => {
+  if (!Array.isArray(node)) return false
+  if ((node[0] === '=' || assignmentKind(node[0]) !== OP_NONE ||
+       bitwiseAssignmentKind(node[0]) !== BIT_NONE || node[0] === '++' || node[0] === '--') &&
+      node[1] === name) return true
+  for (let i = 1; i < node.length; i++) if (writesLocal(node[i], name)) return true
+  return false
+}
+
+const canonicalForRange = (node, index, funcId) => {
+  if (!Array.isArray(node) || node[0] !== 'for') return null
+  const head = forHead(node[1])
+  const init = head[0], condition = head[1], step = head[2]
+  if (!Array.isArray(init) || init[0] !== 'let' || init.length !== 2) return null
+  const decl = init[1]
+  if (!Array.isArray(decl) || decl[0] !== '=' || typeof decl[1] !== 'string') return null
+  const start = constantScalar(decl[2])
+  if (!start || !Number.isInteger(start[0])) return null
+  if (!Array.isArray(condition) || condition[0] !== '<' || condition[1] !== decl[1]) return null
+  const bound = loopBound(condition[2], index, funcId)
+  if (!Number.isInteger(bound) || bound < start[0]) return null
+  const increments = Array.isArray(step) && step[0] === '++' && step[1] === decl[1] ||
+    Array.isArray(step) && step[0] === '+=' && step[1] === decl[1] && constantScalar(step[2])?.[0] === 1
+  if (!increments || writesLocal(node[2], decl[1])) return null
+  const local = localIndex(index, funcId, decl[1])
+  return local < 0 ? null : [local, start[0], bound - 1, decl[1], bound]
+}
+
+const storageIndexRange = (node, index, funcId, scratch) => {
+  const folded = constantScalar(node)
+  if (folded && Number.isInteger(folded[0])) return [folded[0], folded[0]]
+  const bounded = loopBound(node, index, funcId)
+  if (Number.isInteger(bounded)) return [bounded, bounded]
+  if (typeof node === 'string') {
+    const local = localIndex(index, funcId, node)
+    return local < 0 ? null : scratch.loopRanges[local]
+  }
+  if (!Array.isArray(node)) return null
+  if (node[0] === '()' && node.length === 2) return storageIndexRange(node[1], index, funcId, scratch)
+  if ((node[0] === '+' || node[0] === '-') && node.length === 3) {
+    const left = storageIndexRange(node[1], index, funcId, scratch)
+    const right = constantScalar(node[2])
+    if (!left || !right || !Number.isInteger(right[0])) return null
+    const delta = node[0] === '+' ? right[0] : -right[0]
+    return [left[0] + delta, left[1] + delta]
+  }
+  return null
+}
+
+const checkStorageRange = (name, subscript, index, funcId, scratch) => {
+  const storageId = storageTargetId(index, funcId, name)
+  const range = storageIndexRange(subscript, index, funcId, scratch)
+  const length = index[I_STORAGE_LENGTH][storageId]
+  if (!range || range[0] < 0 || range[1] >= length)
+    err(`typed storage '${name}' index is not proven inside [0, ${length})`)
+  return [storageId, range]
+}
+
+const loopIndexOffset = (node, name) => {
+  if (node === name) return 0
+  if (!Array.isArray(node)) return null
+  if (node[0] === '()' && node.length === 2) return loopIndexOffset(node[1], name)
+  if ((node[0] === '+' || node[0] === '-') && node.length === 3 && node[1] === name) {
+    const value = constantScalar(node[2])
+    if (value && Number.isInteger(value[0])) return node[0] === '+' ? value[0] : -value[0]
+  }
+  return null
+}
+
+const loopStorageOwners = (node, loopName, index, funcId) => {
+  const owners = [], movable = []
+  const visit = (node) => {
+    if (!Array.isArray(node)) return
+    if (node[0] === '[]' && node.length === 3 && typeof node[1] === 'string' &&
+        loopIndexOffset(node[2], loopName) != null) {
+      const storageId = storageTargetId(index, funcId, node[1])
+      const owner = index[I_STORAGE_OWNER][storageId]
+      if (index[I_STORAGE_RELOCATION][storageId] !== STORAGE_FIXED) {
+        if (!movable.includes(owner)) movable.push(owner)
+      } else if (!owners.includes(owner)) owners.push(owner)
+      visit(node[2])
+      return
+    }
+    for (let i = 1; i < node.length; i++) visit(node[i])
+  }
+  visit(node)
+  return owners.filter(owner => !movable.includes(owner))
+}
+
+const storageAddress = (name, subscript, index, funcId, scratch) => {
+  const checked = checkStorageRange(name, subscript, index, funcId, scratch)
+  const storageId = checked[0], range = checked[1]
+  const owner = index[I_STORAGE_OWNER][storageId]
+  for (let i = scratch.pointerPlans.length - 1; i >= 0; i--) {
+    const plan = scratch.pointerPlans[i]
+    const offset = loopIndexOffset(subscript, plan[0])
+    if (offset == null) continue
+    for (let j = 1; j < plan.length; j++) if (plan[j][0] === owner) {
+      const base = ['local.get', watLocal(plan[j][1])]
+      const address = offset ? ['i32.add', base, ['i32.const', offset * 8]] : base
+      return typed(scratch, address, REP_PTR, [
+        index[I_STORAGE_BASE][storageId] + range[0] * 8,
+        index[I_STORAGE_BASE][storageId] + range[1] * 8,
+      ])
+    }
+  }
+  const value = exactI32Bits(emitExpr(subscript, index, funcId, scratch), scratch)
+  const scaled = ['i32.shl', rawValue(value), ['i32.const', 3]]
+  const base = index[I_STORAGE_BASE][storageId]
+  const address = base ? ['i32.add', ['i32.const', base | 0], scaled] : scaled
+  return typed(scratch, address, REP_PTR, [base + range[0] * 8, base + range[1] * 8])
+}
+
+const validateStorageRanges = (node, index, funcId, scratch) => {
+  if (!Array.isArray(node)) return
+  if (node[0] === '[]' && node.length === 3 && typeof node[1] === 'string') {
+    checkStorageRange(node[1], node[2], index, funcId, scratch)
+    validateStorageRanges(node[2], index, funcId, scratch)
+    return
+  }
+  if (node[0] === 'for') {
+    const head = forHead(node[1])
+    validateStorageRanges(head[0], index, funcId, scratch)
+    validateStorageRanges(head[1], index, funcId, scratch)
+    const range = canonicalForRange(node, index, funcId)
+    const saved = range ? scratch.loopRanges[range[0]] : null
+    if (range) scratch.loopRanges[range[0]] = [range[1], range[2]]
+    validateStorageRanges(node[2], index, funcId, scratch)
+    validateStorageRanges(head[2], index, funcId, scratch)
+    if (range) scratch.loopRanges[range[0]] = saved
+    return
+  }
+  for (let i = 1; i < node.length; i++) validateStorageRanges(node[i], index, funcId, scratch)
+}
+
 const pushControls = (scratch, labels, breakLabel, continueLabel) => {
   if (!labels.length) labels = [null]
   for (let i = 0; i < labels.length; i++) {
@@ -305,7 +458,7 @@ function emitCondition(node, index, funcId, scratch) {
 }
 
 const localValue = (local, scratch) => typed(scratch, ['local.get', watLocal(local)],
-  scratch.bindingReps[local], scratch.bindingRanges[local])
+  scratch.bindingReps[local], scratch.loopRanges[local] || scratch.bindingRanges[local])
 
 const emitUpdateExpr = (node, index, funcId, scratch) => {
   const local = localIndex(index, funcId, node[1])
@@ -416,6 +569,12 @@ function emitExpr(node, index, funcId, scratch) {
   if (folded) return foldedValue(folded, scratch)
   const op = node[0]
   if (op === '()' && node.length === 2) return emitExpr(node[1], index, funcId, scratch)
+  if (op === '[]' && node.length === 3 && typeof node[1] === 'string')
+    return typed(scratch, ['f64.load', rawValue(storageAddress(node[1], node[2], index, funcId, scratch))], REP_F64)
+  if (op === '.' && node.length === 3 && typeof node[1] === 'string' && node[2] === 'length') {
+    const storageId = storageTargetId(index, funcId, node[1])
+    return foldedValue([index[I_STORAGE_LENGTH][storageId], REP_F64], scratch)
+  }
   if (op === '+' && node.length === 2) return emitExpr(node[1], index, funcId, scratch)
   if (op === '-' && node.length === 2) {
     const value = asF64(emitExpr(node[1], index, funcId, scratch), scratch)
@@ -487,7 +646,188 @@ const needsContinueBlock = (node, labels, nested = 0) => {
   return false
 }
 
+const containsTypedStore = (node) => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '=' && Array.isArray(node[1]) && node[1][0] === '[]') return true
+  for (let i = 1; i < node.length; i++) if (containsTypedStore(node[i])) return true
+  return false
+}
+
+const singleLoopStatement = (node) => {
+  if (!Array.isArray(node)) return null
+  if (node[0] !== '{}' && node[0] !== ';') return node
+  const stmts = bodyList(node)
+  return stmts.length === 1 ? stmts[0] : null
+}
+
+const hasImpureCall = (node, index, funcId) => {
+  if (!Array.isArray(node)) return false
+  if (node[0] === '()' && typeof node[1] === 'string' &&
+      !index[I_FN_PURE][callTargetId(index, funcId, node[1])]) return true
+  for (let i = 1; i < node.length; i++) if (hasImpureCall(node[i], index, funcId)) return true
+  return false
+}
+
+const analyzeSimdExpr = (node, loopName, index, funcId, loads, splats) => {
+  const folded = constantScalar(node)
+  if (folded) return true
+  if (typeof node === 'string') {
+    const local = localIndex(index, funcId, node)
+    if (node === loopName || local < 0) return false
+    if (!splats.includes(local)) splats.push(local)
+    return true
+  }
+  if (!Array.isArray(node)) return false
+  const op = node[0]
+  if (op === '()' && node.length === 2 || op === '+' && node.length === 2 || op === '-' && node.length === 2)
+    return analyzeSimdExpr(node[1], loopName, index, funcId, loads, splats)
+  if (op === '[]' && node.length === 3 && typeof node[1] === 'string') {
+    const offset = loopIndexOffset(node[2], loopName)
+    if (offset == null) return false
+    const storageId = storageTargetId(index, funcId, node[1])
+    loads.push([storageId, offset])
+    return true
+  }
+  if (op === '.' && node.length === 3 && node[2] === 'length') {
+    storageTargetId(index, funcId, node[1])
+    return true
+  }
+  return arithmeticWat(arithmeticKind(op)) != null && node.length === 3 &&
+    analyzeSimdExpr(node[1], loopName, index, funcId, loads, splats) &&
+    analyzeSimdExpr(node[2], loopName, index, funcId, loads, splats)
+}
+
+const pointerAddress = (plan, owner, byteOffset = 0) => {
+  for (let i = 1; i < plan.length; i++) if (plan[i][0] === owner) {
+    const base = ['local.get', watLocal(plan[i][1])]
+    return byteOffset ? ['i32.add', base, ['i32.const', byteOffset]] : base
+  }
+  return null
+}
+
+const emitSimdExpr = (node, loopName, plan, splatPlan, index, funcId, scratch) => {
+  const folded = constantScalar(node)
+  if (folded) return ['f64x2.splat', ['f64.const', folded[0]]]
+  if (typeof node === 'string') {
+    const local = localIndex(index, funcId, node)
+    for (let i = 0; i < splatPlan.length; i++) if (splatPlan[i][0] === local)
+      return ['local.get', watLocal(splatPlan[i][1])]
+  }
+  const op = node[0]
+  if (op === '()' && node.length === 2 || op === '+' && node.length === 2)
+    return emitSimdExpr(node[1], loopName, plan, splatPlan, index, funcId, scratch)
+  if (op === '-' && node.length === 2)
+    return ['f64x2.neg', emitSimdExpr(node[1], loopName, plan, splatPlan, index, funcId, scratch)]
+  if (op === '[]') {
+    const storageId = storageTargetId(index, funcId, node[1])
+    const owner = index[I_STORAGE_OWNER][storageId]
+    return ['v128.load', pointerAddress(plan, owner, loopIndexOffset(node[2], loopName) * 8)]
+  }
+  if (op === '.') {
+    const storageId = storageTargetId(index, funcId, node[1])
+    return ['f64x2.splat', ['f64.const', index[I_STORAGE_LENGTH][storageId]]]
+  }
+  const scalar = arithmeticWat(arithmeticKind(op))
+  return [`f64x2.${scalar.slice(4)}`,
+    emitSimdExpr(node[1], loopName, plan, splatPlan, index, funcId, scratch),
+    emitSimdExpr(node[2], loopName, plan, splatPlan, index, funcId, scratch)]
+}
+
+const tryAppendSimdLoop = (out, node, labels, index, funcId, scratch) => {
+  if (!index[I_SIMD_ENABLED] || node[0] !== 'for' || labels.length) return false
+  const stmt = singleLoopStatement(node[2])
+  const typedStore = Array.isArray(stmt) && stmt[0] === '=' && Array.isArray(stmt[1]) &&
+    stmt[1][0] === '[]' && stmt[1].length === 3 && typeof stmt[1][1] === 'string'
+  if (!typedStore) {
+    if (containsTypedStore(node[2])) scratch.simdVetoEffect++
+    return false
+  }
+  const range = canonicalForRange(node, index, funcId)
+  if (!range || range[1] !== 0 || range[4] < 2 || loopIndexOffset(stmt[1][2], range[3]) !== 0) {
+    scratch.simdVetoRange++
+    return false
+  }
+
+  const destination = storageTargetId(index, funcId, stmt[1][1])
+  const loads = [], splats = []
+  if (!analyzeSimdExpr(stmt[2], range[3], index, funcId, loads, splats)) {
+    if (hasImpureCall(stmt[2], index, funcId)) scratch.simdVetoGlobalWrite++
+    else scratch.simdVetoEffect++
+    return false
+  }
+  if (index[I_STORAGE_RELOCATION][destination] !== STORAGE_FIXED ||
+      loads.some(load => index[I_STORAGE_RELOCATION][load[0]] !== STORAGE_FIXED)) {
+    scratch.simdVetoRelocation++
+    return false
+  }
+  const destinationGroup = index[I_STORAGE_ALIAS_GROUP][destination]
+  if (loads.some(load => index[I_STORAGE_ALIAS_GROUP][load[0]] === destinationGroup && load[1] !== 0)) {
+    scratch.simdVetoAlias++
+    return false
+  }
+
+  const owners = [index[I_STORAGE_OWNER][destination]]
+  for (let i = 0; i < loads.length; i++) {
+    const owner = index[I_STORAGE_OWNER][loads[i][0]]
+    if (!owners.includes(owner)) owners.push(owner)
+  }
+  const counter = acquireTemp(scratch, 'i32')
+  const plan = [range[3]], splatPlan = []
+  for (let i = 0; i < splats.length; i++) {
+    const temp = acquireTemp(scratch, 'v128')
+    splatPlan.push([splats[i], temp])
+    out.push(['local.set', watLocal(temp), ['f64x2.splat',
+      rawValue(asF64(localValue(splats[i], scratch), scratch))]])
+  }
+  scratch.activeInvariantTemps += splatPlan.length
+  if (scratch.activeInvariantTemps > scratch.maxInvariantTemps)
+    scratch.maxInvariantTemps = scratch.activeInvariantTemps
+  out.push(['local.set', watLocal(counter), ['i32.const', 0]])
+  for (let i = 0; i < owners.length; i++) {
+    const temp = acquireTemp(scratch, 'i32')
+    plan.push([owners[i], temp])
+    out.push(['local.set', watLocal(temp), ['i32.const', index[I_STORAGE_BASE][owners[i]] | 0]])
+  }
+  const savedRange = scratch.loopRanges[range[0]]
+  scratch.loopRanges[range[0]] = [0, range[4] - 1]
+  scratch.pointerPlans.push(plan)
+  scratch.activeLoopRanges++
+  scratch.activePointerTemps += owners.length
+  scratch.maxLoopRangeFacts = Math.max(scratch.maxLoopRangeFacts, scratch.activeLoopRanges)
+  scratch.maxPointerTemps = Math.max(scratch.maxPointerTemps, scratch.activePointerTemps)
+
+  const id = scratch.labelUid++
+  const breakLabel = `$break${id}`, loopLabel = `$loop${id}`
+  const loop = ['loop', loopLabel,
+    ['br_if', breakLabel, ['i32.ge_u', ['local.get', watLocal(counter)], ['i32.const', range[4] - 1]]],
+    ['v128.store', pointerAddress(plan, index[I_STORAGE_OWNER][destination]),
+      emitSimdExpr(stmt[2], range[3], plan, splatPlan, index, funcId, scratch)],
+    ['local.set', watLocal(counter), ['i32.add', ['local.get', watLocal(counter)], ['i32.const', 2]]]]
+  for (let i = 1; i < plan.length; i++) loop.push(['local.set', watLocal(plan[i][1]),
+    ['i32.add', ['local.get', watLocal(plan[i][1])], ['i32.const', 16]]])
+  loop.push(['br', loopLabel])
+  out.push(['block', breakLabel, loop])
+
+  if (range[4] & 1) {
+    const address = storageAddress(stmt[1][1], stmt[1][2], index, funcId, scratch)
+    const value = asF64(emitExpr(stmt[2], index, funcId, scratch), scratch)
+    out.push(['f64.store', rawValue(address), rawValue(value)])
+  }
+
+  scratch.pointerPlans.pop()
+  scratch.loopRanges[range[0]] = savedRange
+  scratch.activeLoopRanges--
+  scratch.activePointerTemps -= owners.length
+  for (let i = plan.length - 1; i >= 1; i--) releaseTemp(scratch, plan[i][1], 'i32')
+  for (let i = splatPlan.length - 1; i >= 0; i--) releaseTemp(scratch, splatPlan[i][1], 'v128')
+  scratch.activeInvariantTemps -= splatPlan.length
+  releaseTemp(scratch, counter, 'i32')
+  scratch.simdLoops++
+  return true
+}
+
 const appendLoop = (out, node, labels, index, funcId, scratch) => {
+  if (tryAppendSimdLoop(out, node, labels, index, funcId, scratch)) return
   const op = node[0]
   if (op === 'while' && constantTruth(node[1]) === 0) return
   const head = op === 'for' ? forHead(node[1]) : null
@@ -506,6 +846,27 @@ const appendLoop = (out, node, labels, index, funcId, scratch) => {
   else if (op === 'for' && head[1] != null) loop.push(['br_if', breakLabel, ['i32.eqz', emitCondition(head[1], index, funcId, scratch)]])
 
   const controlCount = pushControls(scratch, labels, breakLabel, continueLabel)
+  const forRange = op === 'for' ? canonicalForRange(node, index, funcId) : null
+  const savedRange = forRange ? scratch.loopRanges[forRange[0]] : null
+  let pointerPlan = null
+  if (forRange) {
+    scratch.loopRanges[forRange[0]] = [forRange[1], forRange[2]]
+    scratch.activeLoopRanges++
+    if (scratch.activeLoopRanges > scratch.maxLoopRangeFacts) scratch.maxLoopRangeFacts = scratch.activeLoopRanges
+    const owners = loopStorageOwners(bodyNode, forRange[3], index, funcId)
+    if (owners.length) {
+      pointerPlan = [forRange[3]]
+      for (let i = 0; i < owners.length; i++) {
+        const temp = acquireTemp(scratch, 'i32')
+        const base = index[I_STORAGE_BASE][owners[i]] + forRange[1] * 8
+        out.push(['local.set', watLocal(temp), ['i32.const', base | 0]])
+        pointerPlan.push([owners[i], temp])
+      }
+      scratch.pointerPlans.push(pointerPlan)
+      scratch.activePointerTemps += owners.length
+      if (scratch.activePointerTemps > scratch.maxPointerTemps) scratch.maxPointerTemps = scratch.activePointerTemps
+    }
+  }
   if (!hasContinue) appendStmt(loop, bodyNode, index, funcId, scratch)
   else {
     const body = ['block', continueLabel]
@@ -515,6 +876,17 @@ const appendLoop = (out, node, labels, index, funcId, scratch) => {
   popControls(scratch, controlCount)
 
   if (op === 'for') appendStmt(loop, head[2], index, funcId, scratch)
+  if (pointerPlan) {
+    for (let i = 1; i < pointerPlan.length; i++) loop.push(['local.set', watLocal(pointerPlan[i][1]),
+      ['i32.add', ['local.get', watLocal(pointerPlan[i][1])], ['i32.const', 8]]])
+    scratch.pointerPlans.pop()
+    for (let i = pointerPlan.length - 1; i >= 1; i--) releaseTemp(scratch, pointerPlan[i][1], 'i32')
+    scratch.activePointerTemps -= pointerPlan.length - 1
+  }
+  if (forRange) {
+    scratch.loopRanges[forRange[0]] = savedRange
+    scratch.activeLoopRanges--
+  }
   if (op === 'do') loop.push(['br_if', loopLabel, emitCondition(node[2], index, funcId, scratch)])
   else loop.push(['br', loopLabel])
   out.push(['block', breakLabel, loop])
@@ -551,7 +923,16 @@ const appendStmt = (out, node, index, funcId, scratch) => {
     for (let i = 1; i < node.length; i++) out.push(emitSet(node[i][1], node[i][2], index, funcId, scratch))
     return
   }
-  if (op === '=') { out.push(emitSet(node[1], node[2], index, funcId, scratch)); return }
+  if (op === '=') {
+    if (Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 3 && typeof node[1][1] === 'string') {
+      const address = storageAddress(node[1][1], node[1][2], index, funcId, scratch)
+      const value = asF64(emitExpr(node[2], index, funcId, scratch), scratch)
+      out.push(['f64.store', rawValue(address), rawValue(value)])
+      return
+    }
+    out.push(emitSet(node[1], node[2], index, funcId, scratch))
+    return
+  }
   const assignment = arithmeticWat(assignmentKind(op))
   if (assignment) {
     const local = localIndex(index, funcId, node[1])
@@ -619,7 +1000,16 @@ const treeNodeCount = (node) => {
   return count
 }
 
+const validateFunctionStorageRanges = (index, funcId) => {
+  if (!storageCount(index)) return
+  const locals = index[I_FN_PARAM_COUNT][funcId] + index[I_FN_LOCAL_COUNT][funcId]
+  validateStorageRanges(index[I_FN_BODY][funcId], index, funcId, {
+    loopRanges: new Array(locals).fill(null),
+  })
+}
+
 export function lowerFunction(index, funcId, metrics, moduleState) {
+  if (!moduleState?.rangesValidated) validateFunctionStorageRanges(index, funcId)
   const sourceLocals = index[I_FN_LOCAL_COUNT][funcId]
   const bindingAnalysis = analyzeBindings(index, funcId)
   const scratch = {
@@ -633,6 +1023,20 @@ export function lowerFunction(index, funcId, metrics, moduleState) {
     maxControlDepth: 0,
     bindingReps: bindingAnalysis.reps,
     bindingRanges: bindingAnalysis.ranges,
+    loopRanges: new Array(index[I_FN_PARAM_COUNT][funcId] + sourceLocals).fill(null),
+    activeLoopRanges: 0,
+    maxLoopRangeFacts: 0,
+    pointerPlans: [],
+    activePointerTemps: 0,
+    maxPointerTemps: 0,
+    activeInvariantTemps: 0,
+    maxInvariantTemps: 0,
+    simdLoops: 0,
+    simdVetoAlias: 0,
+    simdVetoRelocation: 0,
+    simdVetoRange: 0,
+    simdVetoEffect: 0,
+    simdVetoGlobalWrite: 0,
     moduleState,
   }
   const instructions = []
@@ -644,7 +1048,10 @@ export function lowerFunction(index, funcId, metrics, moduleState) {
     appendStmt(instructions, body, index, funcId, scratch)
     instructions.push(['unreachable'])
   }
-  if (scratch.activeTemps !== 0) err(`internal temporary lifetime leak in function ${funcId}`)
+  if (scratch.activeTemps !== 0 || scratch.activeLoopRanges !== 0 ||
+      scratch.activePointerTemps !== 0 || scratch.pointerPlans.length !== 0 ||
+      scratch.activeInvariantTemps !== 0)
+    err(`internal scratch lifetime leak in function ${funcId}`)
 
   const fn = ['func', ['type', index[I_FN_TYPE_ID][funcId]]]
   const params = index[I_FN_PARAM_COUNT][funcId]
@@ -658,11 +1065,20 @@ export function lowerFunction(index, funcId, metrics, moduleState) {
 
   if (metrics) {
     metrics.functionCount = (metrics.functionCount || 0) + 1
-    const slots = 1 + scratch.maxTemporaryLocals + scratch.maxControlDepth * 4
+    const slots = 1 + scratch.maxTemporaryLocals + scratch.maxControlDepth * 4 + scratch.maxLoopRangeFacts * 2
     metrics.maxScratchSlots = Math.max(metrics.maxScratchSlots || 0, slots)
     metrics.maxLoopLabels = Math.max(metrics.maxLoopLabels || 0, scratch.labelUid)
     metrics.maxControlDepth = Math.max(metrics.maxControlDepth || 0, scratch.maxControlDepth)
     metrics.maxTemporaryLocals = Math.max(metrics.maxTemporaryLocals || 0, scratch.maxTemporaryLocals)
+    metrics.maxLoopRangeFacts = Math.max(metrics.maxLoopRangeFacts || 0, scratch.maxLoopRangeFacts)
+    metrics.maxPointerTemps = Math.max(metrics.maxPointerTemps || 0, scratch.maxPointerTemps)
+    metrics.maxInvariantTemps = Math.max(metrics.maxInvariantTemps || 0, scratch.maxInvariantTemps)
+    metrics.simdLoopCount = (metrics.simdLoopCount || 0) + scratch.simdLoops
+    metrics.simdVetoAlias = (metrics.simdVetoAlias || 0) + scratch.simdVetoAlias
+    metrics.simdVetoRelocation = (metrics.simdVetoRelocation || 0) + scratch.simdVetoRelocation
+    metrics.simdVetoRange = (metrics.simdVetoRange || 0) + scratch.simdVetoRange
+    metrics.simdVetoEffect = (metrics.simdVetoEffect || 0) + scratch.simdVetoEffect
+    metrics.simdVetoGlobalWrite = (metrics.simdVetoGlobalWrite || 0) + scratch.simdVetoGlobalWrite
     metrics.maxRepresentationFacts = Math.max(metrics.maxRepresentationFacts || 0,
       scratch.bindingReps.reduce((n, rep) => n + (isI32Rep(rep) ? 1 : 0), 0))
     metrics.maxRangeFacts = Math.max(metrics.maxRangeFacts || 0,
@@ -673,7 +1089,12 @@ export function lowerFunction(index, funcId, metrics, moduleState) {
 }
 
 export function lowerProgram(index, metrics) {
-  const moduleState = { exactI32WasmId: index[I_EXACT_I32_WASM_ID], needsExactI32: false }
+  for (let funcId = 0; funcId < functionCount(index); funcId++) validateFunctionStorageRanges(index, funcId)
+  const moduleState = {
+    exactI32WasmId: index[I_EXACT_I32_WASM_ID],
+    needsExactI32: false,
+    rangesValidated: true,
+  }
   const functions = []
   for (let funcId = 0; funcId < functionCount(index); funcId++) {
     if (index[I_FN_REACHABLE][funcId]) functions.push(lowerFunction(index, funcId, metrics, moduleState))
@@ -689,6 +1110,7 @@ export function lowerProgram(index, metrics) {
     signature.push(['result', wasmType(results[typeId])])
     module.push(['type', signature])
   }
+  if (index[I_MEMORY_BYTES] > 0) module.push(['memory', Math.ceil(index[I_MEMORY_BYTES] / 65536)])
   for (let i = 0; i < functions.length; i++) module.push(functions[i])
   if (moduleState.needsExactI32) {
     module.push(exactI32Helper(index[I_EXACT_I32_TYPE_ID]))
