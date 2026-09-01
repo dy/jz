@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 13.28x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,466,780 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 12.72x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,496 bytes versus 14,480,545 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -343,7 +343,7 @@ Production migration reuses the normalized production program and existing emitt
 - [x] delete the superseded CallTargetIndex file, maps, API, and writer
 - [x] preserve all 568 production refactor-oracle outputs byte for byte
 - [x] move direct call edges and roots from the narrowing reachability filter into ProgramIndex
-- [ ] add conservative dynamic-call roots and SCC summaries
+- [x] add conservative address-taken roots and SCC-condensed reachability summaries
 - [ ] assign final function, type, global, schema, and data IDs once
 
 First production slice verification:
@@ -359,15 +359,16 @@ The opt0 leg reaches the same pre-existing shared-dispatch `Date.valueOf()` fail
 
 Second production slice verification:
 
-- direct edges use two-pass flat CSR, with no retained per-caller buckets
+- direct edges and SCC spans use flat CSR, with no retained per-caller or per-component buckets
 - the prior nested-bucket attempt was rejected after warm self-host round two trapped on a two-argument direct call
-- native: 3,895 pass, 1 skip
-- opt3: 3,895 pass, 1 skip
-- WASI: 3,894 pass, 1 skip
+- a 12-function independent transitive closure agrees with every ProgramIndex SCC pair and reachable ID
+- native: 3,896 pass, 1 skip
+- opt3: 3,896 pass, 1 skip
+- WASI: 3,895 pass, 1 skip
 - functional self-compile: 23 tests and 224 assertions, including four compile-clear direct-call rounds
-- refactor oracle: all 568 outputs byte-identical to `4da2a2e7`
-- recursive self-compile: 321 modules, 6,842,354 input bytes, 14,025,859 output bytes, 4,107,965,288 heap bytes, 187,002,008 bytes headroom
-- compact threshold: pass at 2,256,496 bytes versus the 14,466,780-byte production compiler
+- refactor oracle: all 568 outputs remain byte-identical across the direct-edge and SCC slices
+- recursive self-compile: 321 modules, 6,848,556 input bytes, 14,039,640 output bytes, 4,111,100,192 heap bytes, 183,867,104 bytes headroom
+- compact threshold: pass at 2,256,496 bytes versus the 14,480,545-byte production compiler
 
 ### M3. Representation and typed storage
 

@@ -132,3 +132,15 @@ Production now builds roots and direct edges as flat numeric CSR inside its Prog
 | 2,048 | 5,269,408 | 2,112,096 | 1,949,120 | 38,814 |
 
 All three output hashes remain unchanged and byte-identical. Function scratch remains one slot and maximum finalized function WAT remains 18 nodes. The machine had about 12.1 GiB of allocated swap, so heap and timing values remain directional.
+
+## Production SCC rerun
+
+Production direct reachability now closes over flat SCC spans and a condensed component graph. The staged compiler graph hash is `bceae1b69badf8544cc902fc3e174f5faa5efd23ab4ba0721e617e3fe97b190f`; the direct graph hash is `596f2540653d261573595f3029c8340a1ab07090ad65a32460780df00a56fb2f`.
+
+| Functions | Staged peak heap | Direct peak heap | Retained WAT delta | Output |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 1,308,016 | 667,944 | 245,768 | 2,333 |
+| 512 | 2,328,120 | 1,057,928 | 557,056 | 9,629 |
+| 2,048 | 5,263,472 | 2,112,096 | 1,949,120 | 38,814 |
+
+Compact output hashes and scratch high-water remain unchanged. The machine had about 12.1 GiB of allocated swap, so heap and timing values remain directional.

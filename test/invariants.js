@@ -502,11 +502,14 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
   const target = { name: 'target', sig: { params: [], results: ['f64'] }, body: ['return', [null, 1]] }
   const caller = { name: 'caller', exported: true, sig: { params: [], results: ['f64'] }, body: ['return', ['()', ['.', 'ns', 'run'], null]] }
   const dead = { name: 'dead', sig: { params: [], results: ['f64'] }, body: ['return', ['()', 'target', null]] }
-  const funcs = [target, caller, dead]
+  const orphan = { name: 'orphan', sig: { params: [], results: ['f64'] }, body: ['return', ['()', 'target', null]] }
+  const funcs = [target, caller, dead, orphan]
   const callSites = [
+    { callee: 'caller', argList: [], callerFunc: target, node: ['()', 'caller'] },
     { callee: 'target', argList: [], callerFunc: caller, node: ['()', 'target'] },
     { callee: 'caller', argList: [], callerFunc: null, node: ['()', 'caller'] },
     { callee: 'target', argList: [], callerFunc: dead, node: ['()', 'target'] },
+    { callee: 'target', argList: [], callerFunc: orphan, node: ['()', 'target'] },
   ]
   const index = buildProgramIndex({
     module: { moduleInits: [] },
@@ -517,31 +520,86 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
       multiProp: new Set(),
     },
   }, {
-    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(), callSites,
+    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(['dead']), callSites,
   }, parse('let target=()=>1;const ns={run:target};export let caller=()=>ns.run()'))
   const targetId = index.functionIdOfName('target')
   const callerId = index.functionIdOfName('caller')
   const deadId = index.functionIdOfName('dead')
+  const orphanId = index.functionIdOfName('orphan')
   is(targetId, 0)
-  is(index.functionCount, 3)
+  is(index.functionCount, 4)
   is(index.functionById(targetId), target)
   is(index.resolveMemberId('ns', 'run'), targetId)
   is(index.resolveComputedIds('ns').join(','), String(targetId))
   is(index.resolveMemberId('ns', 'missing'), -1)
 
   const graph = index.getCallGraph()
-  is(graph.rootIds.join(','), String(callerId))
-  is(graph.edgeStart.join(','), '0,0,1')
-  is(graph.edgeCount.join(','), '0,1,1')
-  is(graph.edgeTarget.join(','), `${targetId},${targetId}`)
+  is(graph.rootIds.join(','), `${callerId},${deadId}`)
+  is(graph.dynamicRootIds.join(','), String(deadId))
+  is(graph.edgeStart.join(','), '0,1,2,3')
+  is(graph.edgeCount.join(','), '1,1,1,1')
+  is(graph.edgeTarget.join(','), `${callerId},${targetId},${targetId},${targetId}`)
+  is(graph.componentCount, 3)
+  is(graph.componentOf[targetId], graph.componentOf[callerId], 'the recursive pair shares one SCC')
+  is(graph.componentSize[graph.componentOf[targetId]], 2)
   ok(index.isReachable(targetId), 'the transitive target is reachable')
   ok(index.isReachable(callerId), 'the module-call root is reachable')
-  ok(!index.isReachable(deadId), 'an unrooted caller remains unreachable')
+  ok(index.isReachable(deadId), 'an address-taken function is a conservative dynamic root')
+  ok(!index.isReachable(orphanId), 'an unrooted caller remains unreachable')
   index.filterCallSitesToReachable(callSites)
-  is(callSites.length, 2)
-  is(callSites.map(site => site.callee).join(','), 'target,caller')
+  is(callSites.length, 4)
+  is(callSites.map(site => site.callee).join(','), 'caller,target,caller,target')
   throws(() => graph.edgeTarget.push(deadId), /not extensible/)
+  throws(() => graph.componentOf.push(deadId), /not extensible/)
   is(index.finalizeCallGraph, undefined, 'the published ProgramIndex exposes no graph writer')
+})
+
+test('invariant: ProgramIndex SCCs and reachability match an independent closure', () => {
+  const count = 12
+  const funcs = Array.from({ length: count }, (_, id) => ({
+    name: `f${id}`, exported: id === 0,
+    sig: { params: [], results: ['f64'] }, body: null,
+  }))
+  const pairs = [[0, 1], [1, 2], [2, 0], [2, 3], [3, 4], [4, 3],
+    [5, 6], [6, 5], [7, 5], [8, 9], [10, 11], [11, 10]]
+  const callSites = pairs.map(([from, to]) => ({
+    callee: `f${to}`, argList: [], callerFunc: funcs[from], node: ['()', `f${to}`],
+  }))
+  callSites.push({ callee: 'f10', argList: [], callerFunc: null, node: ['()', 'f10'] })
+  const index = buildProgramIndex({
+    module: { moduleInits: [] },
+    funcs: {
+      list: funcs,
+      map: new Map(funcs.map(func => [func.name, func])),
+      names: new Set(funcs.map(func => func.name)),
+      multiProp: new Set(),
+    },
+  }, {
+    nameEscapes: new Set(), dynWriteVars: new Set(), valueUsed: new Set(['f7']), callSites,
+  }, null)
+  const graph = index.getCallGraph()
+  is(graph.componentCount, 7)
+  is(graph.rootIds.join(','), '0,7,10')
+  is(graph.dynamicRootIds.join(','), '7')
+
+  const reach = Array.from({ length: count }, () => new Array(count).fill(false))
+  for (let id = 0; id < count; id++) reach[id][id] = true
+  for (const [from, to] of pairs) reach[from][to] = true
+  for (let via = 0; via < count; via++) for (let from = 0; from < count; from++)
+    for (let to = 0; to < count; to++) reach[from][to] ||= reach[from][via] && reach[via][to]
+  let componentMismatch = '', reachMismatch = ''
+  for (let a = 0; a < count; a++) for (let b = 0; b < count; b++) {
+    const sameReferenceComponent = reach[a][b] && reach[b][a]
+    if (!componentMismatch && (graph.componentOf[a] === graph.componentOf[b]) !== sameReferenceComponent)
+      componentMismatch = `${a},${b}`
+  }
+  const roots = [0, 7, 10]
+  for (let id = 0; id < count; id++) {
+    const expected = roots.some(root => reach[root][id])
+    if (!reachMismatch && index.isReachable(id) !== expected) reachMismatch = String(id)
+  }
+  ok(!componentMismatch, componentMismatch ? `SCC mismatch at ${componentMismatch}` : 'all SCC pairs match')
+  ok(!reachMismatch, reachMismatch ? `reachability mismatch at ${reachMismatch}` : 'all reachable IDs match')
 })
 
 test('invariant: readonlyParamReps exposes get (+ the .raw restore hook), not a mutator — a stray write throws', async () => {

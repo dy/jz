@@ -360,13 +360,157 @@ function collectNestedEscapes(ast, moduleInits, funcsList, nestedObjects) {
   return out
 }
 
+// Build SCC spans and the condensed component graph from direct-edge CSR.
+// Scratch uses only flat arrays. Nested per-node buckets are unsafe under the
+// self-hosted arena rewind and would also retain a second graph shape.
+function buildSccSummary(functionCount, edgeStart, edgeCount, edgeTarget, rootIds) {
+  const seen = new Array(functionCount).fill(false)
+  const finish = []
+  const nodeStack = [], nextStack = []
+  for (let root = 0; root < functionCount; root++) {
+    if (seen[root]) continue
+    seen[root] = true
+    nodeStack.push(root)
+    nextStack.push(edgeStart[root])
+    while (nodeStack.length) {
+      const top = nodeStack.length - 1
+      const node = nodeStack[top]
+      const next = nextStack[top]
+      const end = edgeStart[node] + edgeCount[node]
+      if (next < end) {
+        nextStack[top] = next + 1
+        const target = edgeTarget[next]
+        if (!seen[target]) {
+          seen[target] = true
+          nodeStack.push(target)
+          nextStack.push(edgeStart[target])
+        }
+      } else {
+        finish.push(node)
+        nodeStack.pop()
+        nextStack.pop()
+      }
+    }
+  }
+
+  const reverseCount = new Array(functionCount).fill(0)
+  for (let source = 0; source < functionCount; source++) {
+    const end = edgeStart[source] + edgeCount[source]
+    for (let edge = edgeStart[source]; edge < end; edge++) reverseCount[edgeTarget[edge]]++
+  }
+  const reverseStart = new Array(functionCount)
+  let reverseTotal = 0
+  for (let funcId = 0; funcId < functionCount; funcId++) {
+    reverseStart[funcId] = reverseTotal
+    reverseTotal += reverseCount[funcId]
+  }
+  const reverseTarget = new Array(reverseTotal)
+  const reverseCursor = reverseStart.slice()
+  for (let source = 0; source < functionCount; source++) {
+    const end = edgeStart[source] + edgeCount[source]
+    for (let edge = edgeStart[source]; edge < end; edge++) {
+      const target = edgeTarget[edge]
+      reverseTarget[reverseCursor[target]++] = source
+    }
+  }
+
+  const componentOf = new Array(functionCount).fill(-1)
+  const componentStack = []
+  let componentCount = 0
+  for (let order = finish.length - 1; order >= 0; order--) {
+    const root = finish[order]
+    if (componentOf[root] >= 0) continue
+    componentOf[root] = componentCount
+    componentStack.push(root)
+    while (componentStack.length) {
+      const node = componentStack.pop()
+      const end = reverseStart[node] + reverseCount[node]
+      for (let edge = reverseStart[node]; edge < end; edge++) {
+        const target = reverseTarget[edge]
+        if (componentOf[target] >= 0) continue
+        componentOf[target] = componentCount
+        componentStack.push(target)
+      }
+    }
+    componentCount++
+  }
+
+  const componentSize = new Array(componentCount).fill(0)
+  for (let funcId = 0; funcId < functionCount; funcId++) componentSize[componentOf[funcId]]++
+  const componentStart = new Array(componentCount)
+  let componentTotal = 0
+  for (let componentId = 0; componentId < componentCount; componentId++) {
+    componentStart[componentId] = componentTotal
+    componentTotal += componentSize[componentId]
+  }
+  const componentFunction = new Array(functionCount)
+  const componentCursor = componentStart.slice()
+  for (let funcId = 0; funcId < functionCount; funcId++)
+    componentFunction[componentCursor[componentOf[funcId]]++] = funcId
+
+  const componentEdgeCount = new Array(componentCount).fill(0)
+  for (let source = 0; source < functionCount; source++) {
+    const sourceComponent = componentOf[source]
+    const end = edgeStart[source] + edgeCount[source]
+    for (let edge = edgeStart[source]; edge < end; edge++)
+      if (componentOf[edgeTarget[edge]] !== sourceComponent) componentEdgeCount[sourceComponent]++
+  }
+  const componentEdgeStart = new Array(componentCount)
+  let componentEdgeTotal = 0
+  for (let componentId = 0; componentId < componentCount; componentId++) {
+    componentEdgeStart[componentId] = componentEdgeTotal
+    componentEdgeTotal += componentEdgeCount[componentId]
+  }
+  const componentEdgeTarget = new Array(componentEdgeTotal)
+  const componentEdgeCursor = componentEdgeStart.slice()
+  for (let source = 0; source < functionCount; source++) {
+    const sourceComponent = componentOf[source]
+    const end = edgeStart[source] + edgeCount[source]
+    for (let edge = edgeStart[source]; edge < end; edge++) {
+      const targetComponent = componentOf[edgeTarget[edge]]
+      if (targetComponent !== sourceComponent)
+        componentEdgeTarget[componentEdgeCursor[sourceComponent]++] = targetComponent
+    }
+  }
+
+  const componentReachable = new Array(componentCount).fill(0)
+  const reachStack = []
+  for (let i = 0; i < rootIds.length; i++) reachStack.push(componentOf[rootIds[i]])
+  while (reachStack.length) {
+    const componentId = reachStack.pop()
+    if (componentReachable[componentId]) continue
+    componentReachable[componentId] = 1
+    const end = componentEdgeStart[componentId] + componentEdgeCount[componentId]
+    for (let edge = componentEdgeStart[componentId]; edge < end; edge++)
+      reachStack.push(componentEdgeTarget[edge])
+  }
+  const reachable = new Array(functionCount)
+  for (let funcId = 0; funcId < functionCount; funcId++)
+    reachable[funcId] = componentReachable[componentOf[funcId]]
+
+  Object.freeze(componentOf)
+  Object.freeze(componentStart)
+  Object.freeze(componentSize)
+  Object.freeze(componentFunction)
+  Object.freeze(componentEdgeStart)
+  Object.freeze(componentEdgeCount)
+  Object.freeze(componentEdgeTarget)
+  Object.freeze(componentReachable)
+  Object.freeze(reachable)
+  return Object.freeze({
+    componentCount, componentOf, componentStart, componentSize, componentFunction,
+    componentEdgeStart, componentEdgeCount, componentEdgeTarget, componentReachable,
+    reachable,
+  })
+}
+
 /**
  * Build the complete ProgramIndex after the early-plan AST mutations settle.
  * An optional enrichment callback receives a temporary identity/member resolver
  * so computed call observations can be synthesized before numeric direct edges,
  * roots, and reachability are frozen. Only the final closed index is returned.
  *
- * @returns a frozen numeric identity, member-target, and direct-call authority.
+ * @returns a frozen numeric identity, member-target, direct-call, SCC, and reachability authority.
  *  `resolveMemberId` returns a stable function ID or -1. `functionById`
  *  projects that ID to the live function record for compatibility consumers.
  *  `resolveComputedIds` returns a closed mixed set of numeric named-function
@@ -531,32 +675,40 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     const callerId = seenFunctions.get(site.callerFunc) ?? functionNameIds.get(site.callerFunc.name)
     edgeTarget[edgeCursor[callerId]++] = functionNameIds.get(site.callee)
   }
-  const rootIds = []
+  const rootIds = [], dynamicRootIds = []
   const rootSeen = new Array(count).fill(false)
+  const dynamicRootSeen = new Array(count).fill(false)
   for (const func of ctx.funcs.list) {
-    if (!func.exported && !programFacts.valueUsed?.has(func.name)) continue
     const id = functionNameIds.get(func.name) ?? -1
-    if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+    if (id < 0) continue
+    const dynamic = programFacts.valueUsed?.has(func.name) === true
+    if (dynamic && !dynamicRootSeen[id]) { dynamicRootSeen[id] = true; dynamicRootIds.push(id) }
+    if ((func.exported || dynamic) && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (const site of callSites) if (site.callerFunc == null) {
     const id = functionNameIds.get(site.callee) ?? -1
     if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
-  const reachable = new Array(count).fill(0)
-  const stack = rootIds.slice()
-  while (stack.length) {
-    const funcId = stack.pop()
-    if (reachable[funcId]) continue
-    reachable[funcId] = 1
-    const start = edgeStart[funcId], end = start + edgeCount[funcId]
-    for (let i = start; i < end; i++) stack.push(edgeTarget[i])
-  }
+  const scc = buildSccSummary(count, edgeStart, edgeCount, edgeTarget, rootIds)
+  const reachable = scc.reachable
   Object.freeze(edgeStart)
   Object.freeze(edgeCount)
   Object.freeze(edgeTarget)
   Object.freeze(rootIds)
-  Object.freeze(reachable)
-  const callGraph = Object.freeze({ edgeStart, edgeCount, edgeTarget, rootIds, reachable })
+  Object.freeze(dynamicRootIds)
+  const callGraph = Object.freeze({
+    edgeStart, edgeCount, edgeTarget, rootIds, dynamicRootIds,
+    componentCount: scc.componentCount,
+    componentOf: scc.componentOf,
+    componentStart: scc.componentStart,
+    componentSize: scc.componentSize,
+    componentFunction: scc.componentFunction,
+    componentEdgeStart: scc.componentEdgeStart,
+    componentEdgeCount: scc.componentEdgeCount,
+    componentEdgeTarget: scc.componentEdgeTarget,
+    componentReachable: scc.componentReachable,
+    reachable,
+  })
   seenFunctions = null
 
   const filterCallSitesToReachable = callSites => {
