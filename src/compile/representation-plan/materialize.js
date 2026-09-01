@@ -4,6 +4,7 @@ import {
   BIGINT_REP_BOXED, BOXED_BIGINT, JOIN_OPS, NO_BIGINT, RAW_BIGINT, REP_EDGE_REJECT, bigintRepBits,
   bigintRepIsClosed, definiteBigint, edgeAction, isBigintOrigin, programPlanRecord,
 } from './common.js'
+import { boundaryDataOf } from './boundaries.js'
 
 export function representationPlanOf(ctx, identity) {
   const program = programPlanRecord(ctx)
@@ -19,7 +20,8 @@ export function representationBoundaryOf(ctx, identity) {
   const func = typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity
   const handle = (func && ctx.plans.representations.get(func)) || (program?.bigint === false ? program.emptyHandle : null)
   const record = handle && ctx.plans.representationData.get(handle)
-  if (!handle || (!record?.programEmpty && record?.boundary?.kind !== 'boundary'))
+  const boundary = func && boundaryDataOf(ctx, func)
+  if (!handle || (!record?.programEmpty && boundary?.kind !== 'boundary'))
     throw new Error(`Representation boundary missing for ${identity?.name || identity || '<anonymous>'}`)
   return handle
 }
@@ -27,7 +29,7 @@ export function representationBoundaryOf(ctx, identity) {
 export function representationParamRep(ctx, identity, index, target = true) {
   const record = ctx.plans.representationData.get(representationBoundaryOf(ctx, identity))
   if (record.programEmpty) return NO_BIGINT
-  const data = record.boundary
+  const data = boundaryDataOf(ctx, typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity)
   const param = data.params[index]
   if (target || !record.body) return target ? param?.target : param?.current
 
@@ -50,7 +52,7 @@ export function representationParamRep(ctx, identity, index, target = true) {
 export function representationResultRep(ctx, identity, target = true) {
   const record = ctx.plans.representationData.get(representationBoundaryOf(ctx, identity))
   if (record.programEmpty) return NO_BIGINT
-  const data = record.boundary
+  const data = boundaryDataOf(ctx, typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity)
   return target ? data.result.target : data.result.current
 }
 
@@ -65,7 +67,7 @@ export function representationBindingRep(ctx, plan, name, target = true) {
 export function representationActionCount(ctx, plan, action) {
   const record = ctx.plans.representationData.get(plan)
   if (record?.programEmpty) return 0
-  const data = record?.body || record?.boundary
+  const data = record?.body
   if (!data) throw new Error('Invalid RepresentationPlan handle')
   let n = 0
   for (let i = 3; i < data.edges.length; i += 4) if (data.edges[i] === action) n++
@@ -75,9 +77,10 @@ export function representationActionCount(ctx, plan, action) {
 export function representationBoundaryActionCount(ctx, identity, action) {
   const record = ctx.plans.representationData.get(representationBoundaryOf(ctx, identity))
   if (record.programEmpty) return 0
+  const boundary = boundaryDataOf(ctx, typeof identity === 'string' ? ctx.funcs.map.get(identity) : identity)
   let n = 0
-  for (let i = 3; i < record.boundary.edges.length; i += 4)
-    if (record.boundary.edges[i] === action) n++
+  for (let i = 3; i < boundary.edges.length; i += 4)
+    if (boundary.edges[i] === action) n++
   return n
 }
 
@@ -128,11 +131,12 @@ export function representationActiveMaterializedRep(ctx, name) {
   if (!body) return NO_BIGINT
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
-  const k = record?.boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
+  const boundary = record?.body?.boundary
+  const k = boundary?.func?.sig?.params?.findIndex(p => p.name === name) ?? -1
   if (k >= 0) {
     const boundaryReady = record.body?.hostBoxParams?.has(k) || record.body?.closureBoxParams?.has(k)
-    const ready = record.boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
-    return (record.boundary.covered === true && ready) || boundaryReady ? activeRep(ctx, name, true) : NO_BIGINT
+    const ready = boundary.params[k]?.stable === true || record.body?.materializedNames?.has(name)
+    return (boundary.covered === true && ready) || boundaryReady ? activeRep(ctx, name, true) : NO_BIGINT
   }
   return record?.body?.materializedNames?.has(name) ? activeRep(ctx, name, true) : NO_BIGINT
 }
@@ -182,7 +186,7 @@ export function representationReturnAction(ctx, source) {
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
   if (record?.body?.materializedResult !== true) return REP_EDGE_REJECT
-  return edgeAction(activeEmittedRep(ctx, source), record.body.resultTarget ?? record.boundary.result.target)
+  return edgeAction(activeEmittedRep(ctx, source), record.body.resultTarget ?? record.body.boundary.result.target)
 }
 
 /** Frozen action for one plain declaration/assignment write. */
@@ -223,7 +227,7 @@ export function representationUnaryUpdateAction(ctx, name) {
   activeBody(ctx, 'representationUnaryUpdateAction')
   const handle = ctx.plans.representations.get(ctx.func.current)
   const record = handle && ctx.plans.representationData.get(handle)
-  const body = record && record.body, boundary = record && record.boundary
+  const body = record && record.body, boundary = body && body.boundary
   if (!body || !boundary) return REP_EDGE_REJECT
   let semantic = body.semanticNames ? body.semanticNames.get(name) : null
   let target = body.targetNames ? body.targetNames.get(name) : null
@@ -316,7 +320,7 @@ export function representationResultTagRequired(ctx, func, seen = new WeakSet(),
   seen.add(func)
   const handle = ctx.plans.representations.get(func)
   const record = handle && ctx.plans.representationData.get(handle)
-  const r = record?.boundary?.result
+  const r = boundaryDataOf(ctx, func)?.result
   if (r == null) return false
   // The boundary record's CURRENT is too coarse here: BOTH a raw member-slot
   // read (o.n on a decl-literal raw slot — statements' ++/-- pins) AND a

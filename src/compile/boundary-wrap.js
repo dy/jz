@@ -63,7 +63,8 @@ export const isBoundaryWrapped = (func) => {
  */
 export function synthesizeBoundaryWrappers() {
   const wrappers = []
-  for (const func of ctx.funcs.list) {
+  // Wrapper output order follows the frozen concrete function order.
+  for (const func of ctx.plans.programIndex.concreteFunctionOrder()) {
     if (!isBoundaryWrapped(func)) continue
     const { name, sig } = func
     // i64 boundary carrier (Safari-safe). A genuine number is never a NaN-box, so it crosses

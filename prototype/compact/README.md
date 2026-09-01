@@ -171,19 +171,19 @@ The graph benchmark runs the staged and frozen direct backends in fresh processe
 
 The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, integer and typed kernels, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
 
-Latest loaded-machine result against the fresh 14,502,495-byte `dist/jz.wasm`:
+Latest loaded-machine result against the fresh 14,519,509-byte `dist/jz.wasm`:
 
 - staged compiler: 2,256,528 bytes, 6.43x smaller
-- staged source graph: 72 modules, 1,016,861 source bytes
-- compile-speed geomean: 41.22x
-- minimum compile speedup: 4.81x
+- staged source graph: 72 modules, 1,016,838 source bytes
+- compile-speed geomean: 38.49x
+- minimum compile speedup: 4.43x
 - emitted-size geomean: 20.81x smaller
 - constant modules tie production at 41 bytes
 - the exact bitwise row is 212 bytes versus production's 120 bytes
-- the typed SIMD row compiles 15.60x faster and emits 287 bytes versus production's 568 bytes
+- the typed SIMD row compiles 14.13x faster and emits 287 bytes versus production's 568 bytes
 
 The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs remove that helper where possible. The typed row's win does not offset this per-case loss.
 
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
-The machine had about 11.4 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.
+The machine had about 9.6 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

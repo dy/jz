@@ -553,7 +553,26 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   for (const func of ctx.funcs.list) addSourceFunction(func.name, func)
   for (const [name, func] of ctx.funcs.map) addSourceFunction(name, func)
 
-  const variantFunctions = [], variantSourceIds = [], variantKinds = []
+  // BigInt ABI boundary authority for every callable: named sources and
+  // specialization variants use the frozen ID arrays below; anonymous closure
+  // bodies and the synthetic start frame use the append-only anonymous space,
+  // because they materialize during emission, after variant identity closes.
+  // RepresentationPlan owns body-local actions only; no identity keeps a second
+  // boundary record. Soundness conditions carried from ledger-correctness
+  // section 1:
+  //
+  // - C1: a closed possibleKinds set stays precise; missing coverage stays open.
+  // - C2-C5b: host lanes, joins, direct returns, and body normalization may only
+  //   consume the published target after their own producer proof succeeds.
+  // - Shape 6: storage-aware bigintOnly/neverBool facts preserve the legacy
+  //   carrier and nullish bits; they refine semantics, never invent presence.
+  // - Shapes 7-9: computed/member targets come from this index, ordinary
+  //   address-taken functions remain uncovered, and call arguments convert at
+  //   the edge rather than trusting source magnitude or a result-wide guess.
+  const sourceBoundaryData = new Array(sourceFunctions.length).fill(null)
+  const variantFunctions = [], variantSourceIds = [], variantKinds = [], variantBoundaryData = []
+  const anonymousBoundaryKinds = [], anonymousBoundaryData = []
+  const anonymousBoundaryIds = new Map()
   const variantObjectIds = new Map(), variantNameIds = new Map()
   let variantIndex = null
   const sourceFunctionById = id => Number.isInteger(id) && id >= 0 && id < sourceFunctions.length ? sourceFunctions[id] : null
@@ -566,6 +585,41 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     : variantObjectIds.get(funcOrName) ?? -1
   const sourceIdOfVariant = variantId => Number.isInteger(variantId) && variantId >= 0 && variantId < variantSourceIds.length
     ? variantSourceIds[variantId] : -1
+  const publishFunctionBoundaryData = (func, data, anonymousKind) => {
+    const sourceId = sourceIdOf(func)
+    if (sourceId >= 0) {
+      if (sourceBoundaryData[sourceId])
+        throw new Error(`ProgramIndex boundary already published for source '${func?.name || '<anonymous>'}'`)
+      sourceBoundaryData[sourceId] = data
+      return data
+    }
+    const variantId = variantIdOf(func)
+    if (variantId >= 0) {
+      if (variantBoundaryData[variantId])
+        throw new Error(`ProgramIndex boundary already published for variant '${func?.name || '<anonymous>'}'`)
+      variantBoundaryData[variantId] = data
+      return data
+    }
+    if (anonymousKind !== 'closure' && anonymousKind !== 'start') return null
+    if (anonymousBoundaryIds.has(func))
+      throw new Error(`ProgramIndex boundary already published for ${anonymousKind} '${func?.name || '<anonymous>'}'`)
+    anonymousBoundaryIds.set(func, anonymousBoundaryData.length)
+    anonymousBoundaryKinds.push(anonymousKind)
+    anonymousBoundaryData.push(data)
+    return data
+  }
+  const functionBoundaryData = funcOrName => {
+    const sourceId = sourceIdOf(funcOrName)
+    if (sourceId >= 0) return sourceBoundaryData[sourceId]
+    const variantId = variantIdOf(funcOrName)
+    if (variantId >= 0) return variantBoundaryData[variantId]
+    const anonymousId = anonymousBoundaryIds.get(funcOrName)
+    return anonymousId !== undefined ? anonymousBoundaryData[anonymousId] : null
+  }
+  const anonymousBoundaryKindOf = func => {
+    const anonymousId = anonymousBoundaryIds.get(func)
+    return anonymousId !== undefined ? anonymousBoundaryKinds[anonymousId] : null
+  }
   const sourceIdForOrigin = func => {
     const sourceId = sourceObjectIds.get(func)
     if (sourceId !== undefined) return sourceId
@@ -586,6 +640,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     variantFunctions.push(variant)
     variantSourceIds.push(sourceId)
     variantKinds.push(kind)
+    variantBoundaryData.push(null)
     variantObjectIds.set(variant, id)
     variantNameIds.set(variant.name, id)
     return id
@@ -621,17 +676,73 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
           throw new Error(`ProgramIndex variant '${variant.name}' shares its source FunctionPlan`)
       }
     }
+    Object.freeze(sourceBoundaryData)
     Object.freeze(variantFunctions)
     Object.freeze(variantSourceIds)
     Object.freeze(variantKinds)
+    Object.freeze(variantBoundaryData)
     variantIndex = Object.freeze({
       variantCount: variantFunctions.length,
       variantSourceIds,
       variantKinds,
+      variantBoundaryData,
     })
     return variantIndex
   }
   const getVariantIndex = () => variantIndex
+
+  // Concrete Wasm function IDs: the final emission order for named callables,
+  // assigned once after variant identity closes. Source, variant, graph, and
+  // concrete IDs stay in separate arrays with explicit conversion accessors.
+  // Closing this space freezes ctx.funcs.list, so the registry that used to
+  // carry emission order accepts no later writer.
+  let concreteIndex = null
+  const concreteFunctions = []
+  const concreteIdsBySource = new Array(sourceFunctions.length).fill(-1)
+  let concreteIdsByVariant = null
+  const finalizeConcreteFunctionIds = () => {
+    if (concreteIndex) return concreteIndex
+    if (!variantIndex)
+      throw new Error('ProgramIndex concrete function IDs require finalized variant identities')
+    concreteIdsByVariant = new Array(variantFunctions.length).fill(-1)
+    for (const func of ctx.funcs.list) {
+      const id = concreteFunctions.length
+      const sourceId = sourceIdOf(func), variantId = variantIdOf(func)
+      if (sourceId >= 0) {
+        if (concreteIdsBySource[sourceId] >= 0)
+          throw new Error(`ProgramIndex concrete ID already assigned for source '${func.name}'`)
+        concreteIdsBySource[sourceId] = id
+      } else if (variantId >= 0) {
+        if (concreteIdsByVariant[variantId] >= 0)
+          throw new Error(`ProgramIndex concrete ID already assigned for variant '${func.name}'`)
+        concreteIdsByVariant[variantId] = id
+      } else {
+        throw new Error(`ProgramIndex has no identity for concrete function '${func?.name || '<anonymous>'}'`)
+      }
+      concreteFunctions.push(func)
+    }
+    Object.freeze(concreteFunctions)
+    Object.freeze(concreteIdsBySource)
+    Object.freeze(concreteIdsByVariant)
+    Object.freeze(ctx.funcs.list)
+    concreteIndex = Object.freeze({ concreteCount: concreteFunctions.length })
+    return concreteIndex
+  }
+  const concreteFunctionOrder = () => {
+    if (!concreteIndex) throw new Error('ProgramIndex concrete function IDs are not finalized')
+    return concreteFunctions
+  }
+  const concreteFunctionById = id => Number.isInteger(id) && id >= 0 && id < concreteFunctions.length
+    ? concreteFunctions[id] : null
+  const concreteIdOfSource = sourceId => Number.isInteger(sourceId) && sourceId >= 0 && sourceId < concreteIdsBySource.length
+    ? concreteIdsBySource[sourceId] : -1
+  const concreteIdOfVariant = variantId => concreteIdsByVariant && Number.isInteger(variantId)
+    && variantId >= 0 && variantId < concreteIdsByVariant.length ? concreteIdsByVariant[variantId] : -1
+  const concreteIdOf = funcOrName => {
+    const sourceId = sourceIdOf(funcOrName)
+    if (sourceId >= 0) return concreteIdOfSource(sourceId)
+    return concreteIdOfVariant(variantIdOf(funcOrName))
+  }
 
   // Direct-call SCCs use a third, explicit graph-node space. It contains every
   // callable present when the graph freezes, including pre-index fixed-rest
@@ -865,9 +976,18 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     variantFunctionById,
     variantIdOf,
     sourceIdOfVariant,
+    publishFunctionBoundaryData,
+    functionBoundaryData,
+    anonymousBoundaryKindOf,
     registerVariantIdentity,
     finalizeVariantIdentities,
     getVariantIndex,
+    finalizeConcreteFunctionIds,
+    concreteFunctionOrder,
+    concreteFunctionById,
+    concreteIdOfSource,
+    concreteIdOfVariant,
+    concreteIdOf,
     graphFunctionCount: graphFunctions.length,
     graphFunctionById,
     graphFunctionIdOfName,

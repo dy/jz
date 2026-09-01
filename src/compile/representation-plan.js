@@ -1,6 +1,8 @@
 /**
- * RepresentationPlan — the sole BigInt-representation authority (ADR-0001,
- * .work/adr-0001-bigint-representation.md). Every edge (call arg, binding
+ * RepresentationPlan owns BigInt body-local actions (ADR-0001,
+ * .work/adr-0001-bigint-representation.md). ProgramIndex owns every
+ * parameter/result boundary: named sources, specialization variants, and the
+ * anonymous closure/start space. Every edge (call arg, binding
  * write, return, storage, join arm, host boundary) gets exactly one action
  * (KEEP/BOX/UNBOX/HOST_BOX/REJECT); analysis discovers facts, the plan
  * chooses actions, emission never reconstructs a plan decision.

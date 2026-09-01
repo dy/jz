@@ -15,8 +15,9 @@ ledger" points here.
 
 One continuous campaign (phase-c-unification → Shape #6 → #7 → #7-residual
 → #8 → #9 → member-callee-binding-write), all the same root mechanism:
-`RepresentationPlan` (`src/compile/representation-plan/`, sole authority
-per ADR-0001) must PROVE a value is BigInt and MATERIALIZE it (BOX/UNBOX
+ProgramIndex boundaries plus RepresentationPlan body facts
+(the disjoint authorities in ADR-0001) must PROVE a value is BigInt and
+MATERIALIZE it (BOX/UNBOX
 at every producer/consumer edge) before any reader trusts a raw i64
 payload; every family below is a place the proof chain broke at a
 boundary: call arguments, closures, `.`-member dispatch, storage reads,
@@ -118,7 +119,7 @@ and `i64.parse` attached to a named function declaration (`fn.prop =
 arrow`) both leave the reassigned param unmaterialized: watr's actual
 memory64/float_memory64/call_indirect64 CI trio.
 
-**Root cause**: `call-target-index.js`'s `resolveMember` only resolves an
+**Root cause**: the predecessor call-target index's `resolveMember` only resolved an
 object-literal `ns.parse = namedFn` shape (Shape #8); a lifted
 function-property write can get REMOVED by `flattenFuncNamespaces` once
 proven call-only, invisible to the points-to census; `safeReceiver`'s
@@ -128,9 +129,10 @@ proven call-only, invisible to the points-to census; `safeReceiver`'s
 **Fix (`fix/fnprop-call-target`)**: `resolveMember` extended to the named-
 function-property lift shape; a narrower `collectValueEscapes` gate used
 only for a function-declaration receiver (does the name appear anywhere
-OTHER than a call-callee or safe receiver position); `releaseLiftedValueUsed`
-releases a lifted `fn$prop`'s own defining write from `valueUsed` once the
-index re-derives the identical fact.
+OTHER than a call-callee or safe receiver position); today's
+`releaseLiftedAddressTakenNames` releases a lifted `fn$prop` defining write
+from the pre-index address-taken census once ProgramIndex re-derives the
+identical fact.
 
 **Watr trio stayed red after this fix**: attributed to Shape #9 (below):
 `encode.js`'s `i64(n, buffer)` reassigns its OWN param
@@ -148,7 +150,7 @@ byte-identical native vs. kernel, ruling out that machinery as the site,
 pointing instead at `kind.js`'s Tier-1 `VT['()']` reading
 `ctx.funcs.map.get(fname).valResult` with no ordering guarantee against
 late-synthesized `.`-member callees DURING THE KERNEL'S OWN BUILD.
-**Retired 2026-08-28**: replaced by `call-target-index.js`: ONE frozen,
+**Retired 2026-08-28**: replaced first by CallTargetIndex and now by numeric ProgramIndex: one frozen,
 computed-once-before-any-consumer index. The four i64Hex hazard fixes from
 that branch (BigInt64Array box-tag-vs-raw hex reads) were independently
 sound and ported. One hunk (BigInt64Array/BigUint64Array element-store
@@ -196,7 +198,7 @@ share the proof. No new box/unbox primitive needed.
 **Two new residuals pinned KNOWN-WRONG** (separate scope, comparably sized
 to the closure-materialization subsystem): (1) index-resolved `.`-member
 callee (`obj.leb = leb; obj.leb(n)`): writing a function's value to ANY
-property marks it `valueUsed`, forcing `uncovered`, excluding it from the
+property marks it address-taken, forcing `uncovered`, excluding it from the
 fixpoint AND routing emission through `trySchemaClosureCall`'s generic
 closure dispatch (never `representationCallArgAction` at all); (2)
 `buildBodyData`'s `directCallBoundary` is bare-name-only, no
@@ -212,8 +214,8 @@ baseline (confirms shape #9 was never watr's real `i64.parse` failure).
 **Final architecture** (superseding three earlier per-site-widening
 attempts that each regressed something: see "false starts" below):
 `src/kind.js`'s `valTypeOf` (`VT['()']`'s `.`-member branch) now resolves
-a `.`-member callee itself, via `ctx.types.callTargets?.resolveMember(obj,
-method)?.valResult`, mirroring `calleeValType`'s existing bare-name tail
+a `.`-member callee itself, via `ctx.plans.programIndex.resolveMemberSourceId`
+and `sourceFunctionById`, mirroring `calleeValType`'s existing bare-name tail
 exactly. Every OTHER consumer (`edgeMaterializable`'s BOX/UNBOX gate,
 `ir.js`'s `applyBigintRepresentationAction`) reverts byte-for-byte to
 `valTypeOf(node) === VAL.BIGINT` and inherits the fix for free: no
@@ -457,7 +459,7 @@ variations on one bug:
    `HANDLER[imm](nodes,ctx,op,out)` (watr's real opcode dispatch, ~30
    inline-arrow properties) is invisible to `program-facts.js`'s call-site
    walker (`isFuncRef` requires a literal bare-name callee). New
-   `call-target-index.js`: `resolveComputed(objName)` resolves BOTH
+   ProgramIndex: `resolveComputedSourceIds(objName)` resolves BOTH
    named-function-reference members (Shape-8-shaped) AND inline-arrow-
    literal members (watr's real shape: discovered only after an
    incorrect first assumption that all members were named-function
@@ -503,7 +505,7 @@ variations on one bug:
    body is exactly `OBJNAME[K](args forwarded)`, an alias question, not a
    kind question) and via `Object.assign(SIZE_HANDLER, {...})` (a batch
    write shape no resolver in the codebase recognizes): both real,
-   generalizable, NOT attempted (would touch `call-target-index.js`'s
+   generalizable, NOT attempted (would touch ProgramIndex's
    `foldWrite`, a foundational primitive with a 3-prior-revert
    unsoundness history for exactly this class of "small extension").
 

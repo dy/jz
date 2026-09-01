@@ -1,3 +1,10 @@
+/**
+ * BigInt ABI boundary producer. Every boundary publishes into ProgramIndex
+ * numeric slots: named sources and specialization variants use the frozen ID
+ * arrays; anonymous closure bodies and the synthetic start frame use the
+ * append-only anonymous space. RepresentationPlan records carry body facts
+ * only; no identity keeps a second boundary writer.
+ */
 import { isReassigned } from '../../ast.js'
 import { VAL } from '../../reps.js'
 import {
@@ -178,22 +185,39 @@ const makeBoundaryData = (ctx, func, paramReps, options = {}) => {
   }
 }
 
+const ensureBodyHandle = (ctx, identity) => {
+  let handle = ctx.plans.representations.get(identity)
+  if (!handle) {
+    handle = {}
+    ctx.plans.representationData.set(handle, { body: null })
+    ctx.plans.representations.set(identity, handle)
+  }
+  if (identity?.sig) {
+    ctx.plans.representations.set(identity.sig, handle)
+    if (identity.sig.params) ctx.plans.representations.set(identity.sig.params, handle)
+  }
+  return handle
+}
+
+export const boundaryDataOf = (ctx, identity) => {
+  const indexed = ctx.plans.programIndex?.functionBoundaryData(identity)
+  if (indexed) return indexed
+  // Signature- and params-keyed lookups resolve through the body's captured
+  // reference to the exact ProgramIndex boundary object: a view, not a copy.
+  const handle = ctx.plans.representations.get(identity)
+  const record = handle && ctx.plans.representationData.get(handle)
+  return record?.body?.boundary || null
+}
+
 const publishBoundary = (ctx, func, data) => {
-  let handle = ctx.plans.representations.get(func)
-  if (handle) {
-    const record = ctx.plans.representationData.get(handle)
-    if (record?.boundary)
-      throw new Error(`Representation boundary already published for ${func?.name || '<anonymous>'}`)
-    record.boundary = data
-    return handle
-  }
-  handle = {}
-  ctx.plans.representationData.set(handle, { boundary: data, body: null })
-  ctx.plans.representations.set(func, handle)
-  if (func?.sig) {
-    ctx.plans.representations.set(func.sig, handle)
-    if (func.sig.params) ctx.plans.representations.set(func.sig.params, handle)
-  }
+  const index = ctx.plans.programIndex
+  if (!index)
+    throw new Error(`ProgramIndex missing for boundary '${func?.name || '<anonymous>'}'`)
+  const indexed = index.sourceIdOf(func) >= 0 || index.variantIdOf(func) >= 0
+  if (!indexed && ctx.funcs.map.get(func?.name) === func)
+    throw new Error(`ProgramIndex has no identity for named boundary '${func.name}'`)
+  const handle = ensureBodyHandle(ctx, func)
+  index.publishFunctionBoundaryData(func, data, func?.moduleScope === true ? 'start' : 'closure')
   return handle
 }
 
@@ -214,7 +238,7 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
   if (!bigint) {
     const handle = {}
     program.emptyHandle = handle
-    ctx.plans.representationData.set(handle, { programEmpty: true, boundary: null, body: null })
+    ctx.plans.representationData.set(handle, { programEmpty: true, body: null })
     return
   }
   program.provenance = solveBigintProvenance(ctx, programFacts, ast)
@@ -237,7 +261,7 @@ export function solveRepresentationBoundaries(ctx, programFacts, ast) {
 
 export function ensureBoundary(ctx, identity, sig, options = {}) {
   const handle = ctx.plans.representations.get(identity)
-  if (handle && ctx.plans.representationData.get(handle)?.boundary) return handle
+  if (handle && boundaryDataOf(ctx, identity)) return handle
   const func = identity?.sig ? identity : {
     name: identity?.name || sig?.name,
     sig,

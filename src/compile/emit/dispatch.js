@@ -206,7 +206,8 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
     if (param.ptrKind === VAL.OBJECT) return asPtrOffset(ir, param.ptrKind)
     return ptrOffsetIR(ir, param.ptrKind)
   }
-  // RepresentationPlan is the sole call-edge carrier authority. A nullable
+  // ProgramIndex boundary facts plus the active RepresentationPlan body action
+  // are the sole call-edge carrier authority. A nullable
   // BigInt merge can still carry its nullish sentinel, so normalization must
   // preserve that member instead of treating it as a box or raw i64 payload.
   // Shape #6: valTypeOf(node) is NOT the gate for whether repAction applies —
@@ -267,9 +268,9 @@ function padArgs(args, params) {
 
 /** Emit a node list as call arguments for the given param list: per-param
  *  coercion then arity padding. Used at every direct-call site. */
-export function emitCallArgs(argNodes, params) {
+export function emitCallArgs(argNodes, params, func) {
   return padArgs(argNodes.map((a, k) =>
-    coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, params, k))), params)
+    coerceArg(argIR(a), params[k], a, representationCallArgAction(ctx, a, func, k))), params)
 }
 
 /** Fuse `a + b` when it tops a string-concat chain of ≥3 leaves: evaluate
@@ -636,7 +637,7 @@ export function emitDecl(...inits) {
         }
         if (match && targets.length === n) {
           const argList = commaList(init[2])
-          const emittedArgs = emitCallArgs(argList, func.sig.params)
+          const emittedArgs = emitCallArgs(argList, func.sig.params, func)
           result.push(['call', `$${init[1]}`, ...emittedArgs])
           for (let k = n - 1; k >= 0; k--)
             result.push(['local.set', `$${targets[k]}`])

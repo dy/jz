@@ -2,6 +2,7 @@ import {
   ANY_BIGINT, BIGINT_REP_NONE, BOXED_BIGINT, REP_EDGE_KEEP, REP_EDGE_REJECT, bigintRepBits, edgeAction,
   programPlanRecord,
 } from './common.js'
+import { boundaryDataOf } from './boundaries.js'
 import { activeEmittedRep, activeRep, activeStorageSourceRep } from './materialize.js'
 
 /** Frozen action for one generic closure/call_indirect argument slot. */
@@ -11,11 +12,11 @@ export function representationClosureArgAction(ctx, source) {
 }
 
 /** Current source→callee target action for one direct-call argument. */
-export function representationCallArgAction(ctx, node, params, index) {
+export function representationCallArgAction(ctx, node, func, index) {
   if (programPlanRecord(ctx)?.bigint === false) return REP_EDGE_KEEP
-  const targetHandle = ctx.plans.representations.get(params)
+  const targetHandle = ctx.plans.representations.get(func)
   const targetRecord = targetHandle && ctx.plans.representationData.get(targetHandle)
-  const targetBoundary = targetRecord?.boundary
+  const targetBoundary = boundaryDataOf(ctx, func)
   if (!targetBoundary) return REP_EDGE_REJECT
   // A reassigned parameter is ready only when Slice 3b can normalize its
   // complete plain-write def set; otherwise switching entry alone would split

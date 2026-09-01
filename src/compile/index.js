@@ -322,6 +322,11 @@ export default function compile(ast, profiler) {
   timePhase(profiler, 'finalizeVariantIdentities', () =>
     programFacts.programIndex.finalizeVariantIdentities(
       programFacts.paramReps, func => functionPlanOf(ctx, func)))
+  // Concrete Wasm function IDs: one assignment of the final emission order,
+  // freezing the registry list so no later writer reorders or grows it.
+  // Emission and assembly ordering below read this order, not the registry.
+  timePhase(profiler, 'finalizeConcreteFunctionIds', () =>
+    programFacts.programIndex.finalizeConcreteFunctionIds())
   // FeaturePlan freeze (.work/evidence.md §FeaturePlan freeze): every per-function
   // analyze pass has now run (analyzeFuncs + structInline/unionInline/unionClones
   // above) — this is the freeze point after which NO ctx.features key may change
@@ -341,7 +346,7 @@ export default function compile(ast, profiler) {
     const out = []
     beginAssignedMemo()
     try {
-      for (const func of ctx.funcs.list) {
+      for (const func of programFacts.programIndex.concreteFunctionOrder()) {
         if (func.raw) out.push(emitFunc(func, null, programFacts))
         else {
           const functionPlan = functionPlanOf(ctx, func)
@@ -526,7 +531,7 @@ export default function compile(ast, profiler) {
   const lateI64 = []
   const lateHostAbi = []
   const lateNamedExports = []
-  for (const f of ctx.funcs.list) {
+  for (const f of programFacts.programIndex.concreteFunctionOrder()) {
     if (isExported(f) && f.rest) {
       const fixed = f.sig.params.length - 1
       for (const exportName of exportNamesOf(f.name)) lateRest.push({ name: exportName, fixed })
@@ -564,7 +569,7 @@ export default function compile(ast, profiler) {
       continue
     }
     if (typeof val !== 'string') continue
-    const func = ctx.funcs.list.find(f => f.name === val)
+    const func = programFacts.programIndex.concreteFunctionOrder().find(f => f.name === val)
     if (func) lateNamedExports.push(['export', `"${name}"`, ['func', `$${isBoundaryWrapped(func) ? val + '$exp' : val}`]])
     else if (ctx.scope.globals.has(val)) lateNamedExports.push(['export', `"${name}"`, ['global', `$${val}`]])
   }
@@ -574,7 +579,7 @@ export default function compile(ast, profiler) {
     i64: lateI64,
     hostAbi: lateHostAbi,
     namedExports: lateNamedExports,
-    userFuncs: new Set(ctx.funcs.list.map(f => `$${f.name}`)),
+    userFuncs: new Set(programFacts.programIndex.concreteFunctionOrder().map(f => `$${f.name}`)),
     errorSidEntries: [...ctx.schema.errorSidEntries()],
   }
 

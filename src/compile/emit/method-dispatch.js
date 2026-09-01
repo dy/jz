@@ -166,7 +166,7 @@ function tryFnPropCall(callee, obj, method, parsed) {
     const fname = `${obj}$${method}`
     if (ctx.funcs.names.has(fname)) {
       const func = ctx.funcs.map.get(fname)
-      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params)
+      const emittedArgs = emitCallArgs(parsed.normal, func.sig.params, func)
       // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
       // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param
       // hook), but a devirtualized direct call pushes exactly sig arity — extras

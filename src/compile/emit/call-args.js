@@ -36,7 +36,7 @@ export function materializeMulti(callNode) {
   const func = ctx.funcs.map.get(name)
   const n = func.sig.results.length
   const argList = commaList(callNode[2])
-  const emittedArgs = emitCallArgs(argList, func.sig.params)
+  const emittedArgs = emitCallArgs(argList, func.sig.params, func)
   const temps = Array.from({ length: n }, () => temp())
   const out = allocPtr({ type: 1, len: n, tag: 'marr' })
   const ir = [out.init, ['call', `$${name}`, ...emittedArgs]]

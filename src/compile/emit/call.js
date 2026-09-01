@@ -34,7 +34,7 @@ function emitSpeculativeCall(callee, spec, argNodes, func) {
   for (let k = 0; k < params.length; k++) {
     if (k < argNodes.length) {
       const ir = coerceArg(argIR(argNodes[k]), params[k], argNodes[k],
-        representationCallArgAction(ctx, argNodes[k], params, k))
+        representationCallArgAction(ctx, argNodes[k], func, k))
       // Temp width follows the PARAM's ABI (coerceArg's contract), not the IR
       // tag — pointer-ABI coercions (`__ptr_offset`) come back untagged i32.
       const pt = params[k].ptrKind != null || params[k].type === 'i32' ? 'i32' : 'f64'
@@ -124,7 +124,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
     }
     // Pad missing fixed args with `undefined` so default-param init triggers per spec.
     const fixedParams = func.sig.params.slice(0, fixedParamCount)
-    const emittedFixed = emitCallArgs(parsed.normal.slice(0, fixedParamCount), fixedParams)
+    const emittedFixed = emitCallArgs(parsed.normal.slice(0, fixedParamCount), fixedParams, func)
 
     // Reconstruct with spreads, then take rest args
     const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
@@ -152,7 +152,7 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
   // stubs) since wasm validates arg count. Use ?? rather than || so a
   // legitimate 0-arity callee isn't bypassed.
   const params = func?.sig.params ?? []
-  const args = func ? emitCallArgs(parsed.normal, params)
+  const args = func ? emitCallArgs(parsed.normal, params, func)
                     : parsed.normal.map(a => coerceArg(argIR(a), undefined, a))
   if (func && args.length > params.length) args.length = params.length
   // Multi-value return: materialize as heap array (caller expects single pointer).

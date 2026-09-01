@@ -1040,8 +1040,8 @@ export function reset(proto, globals, bridge) {
     functions: new WeakMap(),     // prepared function record → opaque FunctionPlan handle
     functionData: new WeakMap(),  // handle → linearly-owned ordinary-function facts
     functionWorking: new WeakMap(), // handle → linearly-owned closure/start ActiveFunction frame
-    representations: new WeakMap(), // function/start/closure identity → opaque RepresentationPlan handle
-    representationData: new WeakMap(), // handle → private boundary/body facts (representation-plan.js only)
+    representations: new WeakMap(), // function/start/closure identity → opaque body handle
+    representationData: new WeakMap(), // handle → body facts; every boundary lives in ProgramIndex
     typedStorage: new WeakMap(), // function/start/closure identity → opaque TypedStoragePlan handle
     typedStorageData: new WeakMap(), // handle → frozen typed receiver/result facts (typed-storage-plan.js only)
     typedStorageProgram: { initialized: false, calls: new Map(), info: new Map(), hasTypedFields: false },

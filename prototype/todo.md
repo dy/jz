@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.60x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,502,495 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 14.13x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,519,509 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -349,7 +349,7 @@ Production migration reuses the normalized production program and existing emitt
 - [x] register all five specialization families through ProgramIndex and normalize variants of variants to one source ID
 - [x] assert variant signatures, parameter facts, and FunctionPlans are derived rather than shared
 - [x] delete the source-name address-taken census at ProgramIndex build and route every later reader to numeric bits
-- [ ] assign final concrete Wasm function IDs after variant identity closes
+- [x] assign final concrete Wasm function IDs after variant identity closes
 - [ ] assign final type, global, schema, and data IDs once
 
 First production slice verification:
@@ -406,14 +406,31 @@ Fourth production slice verification:
 - recursive self-compile: 321 modules, 6,856,174 input bytes, 14,061,598 output bytes, 4,116,258,840 heap bytes, 178,708,456 bytes headroom
 - compact threshold: pass at 2,256,528 bytes versus the 14,502,495-byte production compiler
 
+Fifth production slice verification:
+
+- concrete Wasm function IDs are assigned once after variant identity closes; `finalizeConcreteFunctionIds` freezes `ctx.funcs.list`, so the registry carries existence, never order
+- function emission, boundary-wrapper synthesis, and late export metadata iterate the frozen concrete order through explicit per-space accessors; no generic accessor exists
+- native: 3,901 pass, 1 skip
+- opt3: 3,901 pass, 1 skip
+- WASI: 3,900 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,864,583 input bytes, 14,078,604 output bytes, 4,119,704,568 heap bytes, 175,262,728 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,519,509-byte production compiler
+
 Per-slice recursive and artifact ratchet:
 
-| Production identity slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
+| Production migration slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
 | --- | ---: | ---: | ---: | ---: |
 | member source IDs | 14,457,881 | 4,106,338,664 | 188,628,632 | baseline |
 | direct graph, SCCs, address-taken | 14,483,762 | 4,111,732,856 | 183,234,440 | +25,881 bytes, -5,394,192 headroom |
 | source and variant ID split | 14,501,939 | 4,115,653,840 | 179,313,456 | +18,177 bytes, -3,920,984 headroom |
 | delete address-taken compatibility | 14,502,495 | 4,116,258,840 | 178,708,456 | +556 bytes, -605,000 headroom |
+| named BigInt ABI boundaries | 14,509,328 | 4,117,821,616 | 177,145,680 | +6,833 bytes, -1,562,776 headroom |
+| anonymous BigInt boundaries | 14,509,947 | 4,117,854,848 | 177,112,448 | +619 bytes, -33,232 headroom |
+| concrete Wasm function IDs | 14,519,509 | 4,119,704,568 | 175,262,728 | +9,562 bytes, -1,849,720 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -421,13 +438,15 @@ A slice that consumes 50 MiB of recursive headroom is an attributed finding befo
 
 Migrate one decision family at a time:
 
-1. parameter and result ABI
-2. local numeric versus pointer representation
-3. typed storage constructor and element width
-4. pointer relocation and never-grown facts
-5. alias groups
-6. BigInt boundary actions
-7. closure capture representation
+1. [x] named-function BigInt parameter and result boundaries
+2. [x] anonymous closure/start BigInt boundaries
+3. [ ] non-BigInt parameter and result ABI
+4. [ ] local numeric versus pointer representation
+5. [ ] typed storage constructor and element width
+6. [ ] pointer relocation and never-grown facts
+7. [ ] alias groups
+8. [ ] body-local BigInt actions
+9. [ ] closure capture representation
 
 For each family:
 
@@ -442,6 +461,37 @@ For each family:
 Representation migration is complete only when `RepresentationPlan`, `TypedStoragePlan`, and parameter representation maps have either become views of ProgramIndex or have been deleted. There must not be two authorities during a release candidate.
 
 Before the first representation slice that intentionally changes bytes, record the expected WAT decision change, its producer, and its affected oracle rows. Promotion then requires an attributed oracle diff, the full native/opt3/WASI battery, kernel `test/data.js`, and the ledger pins. A dirty oracle without that attribution remains a failure.
+
+Named-function BigInt boundary slice verification:
+
+- ProgramIndex source and variant arrays own named parameter/result boundary records
+- RepresentationPlan records for named functions retain body facts only; anonymous closure/start boundaries remain there without identity overlap
+- C1-C5b and Shape 6-9 soundness conditions are copied onto the ProgramIndex boundary family
+- direct call argument readers now carry the callee identity rather than recovering authority from a parameter-array object
+- native: 3,899 pass, 1 skip
+- opt3: 3,899 pass, 1 skip
+- WASI: 3,898 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,860,013 input bytes, 14,068,399 output bytes, 4,117,821,616 heap bytes, 177,145,680 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,509,328-byte production compiler
+
+Anonymous closure/start BigInt boundary slice verification:
+
+- ProgramIndex owns every parameter/result boundary; anonymous closure bodies and the synthetic start frame publish into an append-only anonymous space that opens after variant identity closes
+- the identity-keyed RepresentationPlan boundary writer is deleted; records carry body facts only, and a source scan pins the absence of any boundary-field assignment
+- duplicate anonymous publish throws, an indexed identity never aliases the anonymous space, and a missing ProgramIndex fails the publish immediately
+- native: 3,900 pass, 1 skip
+- opt3: 3,900 pass, 1 skip
+- WASI: 3,899 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- refactor oracle: all 568 outputs remain byte-identical
+- recursive self-compile: 321 modules, 6,861,127 input bytes, 14,069,042 output bytes, 4,117,854,848 heap bytes, 177,112,448 bytes headroom
+- compact threshold: pass at 2,256,528 bytes versus the 14,509,947-byte production compiler
 
 ### M4. Function-at-a-time lowering
 
@@ -526,15 +576,12 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 ## Immediate next slice
 
-Close production function identity without routing source to the prototype:
+Production function identity is closed: concrete Wasm function IDs freeze the registry order once after `finalizeVariantIdentities`, and emission, wrapper synthesis, and late export metadata read that order. Next:
 
-1. Assign concrete Wasm function IDs once after `finalizeVariantIdentities`.
-2. Keep source IDs, variant IDs, graph IDs, and concrete Wasm IDs in separate arrays with explicit conversion accessors.
-3. Redirect function emission and assembly ordering to the concrete IDs.
-4. Delete the surviving registry writer for final function order in the same slice.
-5. Preserve production WAT byte for byte and keep representation authorities unchanged.
-6. Record recursive headroom and compiler artifact size for the slice.
-7. Then begin M3 with parameter/result ABI; the address-taken compatibility key is already gone.
+1. Assign final type, global, schema, and data IDs once, closing each space with one writer.
+2. Continue M3 with family 3, non-BigInt parameter and result ABI, deleting its previous plan writer in the same slice.
+3. Preserve production WAT byte for byte while representation authorities migrate.
+4. Record recursive headroom and compiler artifact size for every slice.
 
 Do not add more prototype syntax. The completed graph experiment is recorded in `compact/graph-evidence.md`. It found byte-identical output, linear retained growth, and plateauing function scratch. Lower-time name lookup was not material. Finalized WAT was the largest staged-only owner, so an owned watr API remains an evidence-triggered backend lane rather than a reason to add a numeric body tape.
 

@@ -12,7 +12,7 @@ import {
   noBigintSemantic, packSemantic, programPlanRecord, sameSem, semAll, semBottom, semKind, semanticClosed,
   semanticFromRep, semanticKinds, semanticObserved, targetRepFor,
 } from './common.js'
-import { ensureBoundary } from './boundaries.js'
+import { boundaryDataOf, ensureBoundary } from './boundaries.js'
 import { deriveLocalProvenance } from './provenance.js'
 
 const EMPTY_KIND_MAP = new Map()
@@ -25,8 +25,7 @@ const joinArms = node => node[0] === '?:' ? [node[2], node[3]] : [node[1], node[
 
 const directCallBoundary = (ctx, name) => {
   const func = ctx.funcs.map.get(name)
-  const handle = func && ctx.plans.representations.get(func)
-  return handle ? ctx.plans.representationData.get(handle)?.boundary || null : null
+  return func ? boundaryDataOf(ctx, func) : null
 }
 
 /** True iff SOME return tail of `body` is the bare name `paramName`, verbatim
@@ -919,7 +918,7 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
   // identity emission will see later too — the missing key, added once,
   // covers every accessor uniformly instead of patching each one.
   if (ctx.func.current && ctx.func.current !== sig) ctx.plans.representations.set(ctx.func.current, handle)
-  record.body = buildBodyData(ctx, identity, sig, body, localReps, record.boundary, planOptions)
+  record.body = buildBodyData(ctx, identity, sig, body, localReps, boundaryDataOf(ctx, identity), planOptions)
   if (DBG_INVARIANTS) assertRepresentationPlan(ctx, handle)
   return handle
 }
@@ -928,7 +927,7 @@ export function mintRepresentationPlan(ctx, identity, sig, body, localReps, opti
 function assertRepresentationPlan(ctx, plan) {
   const record = ctx.plans.representationData.get(plan)
   if (record?.programEmpty) return true
-  const data = record?.body || record?.boundary
+  const data = record?.body
   if (!data) throw new Error('Invalid RepresentationPlan handle')
   for (let i = 0; i < data.edges.length; i += 4) {
     const kind = EDGE_KIND_NAME[data.edges[i]] || 'unknown'

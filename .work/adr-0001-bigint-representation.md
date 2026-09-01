@@ -38,10 +38,12 @@ Therefore:
 - **Tagged carrier is the universal correct crossing** for any BigInt∪other edge
   (call, storage, closure, return, host). Raw i64 is an *optimization* applied only where
   the plan proves single-representation flow end-to-end.
-- **RepresentationPlan is the sole representation authority.** Every edge gets exactly one
-  action (RAW / BOX / REJECT). Analysis discovers facts; the plan chooses actions; emission
-  never reconstructs a plan decision; optimizers preserve plan-materialized unions or
-  invalidate the plan (this is the C5 obligation — see Consequences).
+- **Each identity and edge has one representation authority.** ProgramIndex owns every
+  parameter/result boundary: named sources, specialization variants, and the anonymous
+  closure/start space. RepresentationPlan owns body-local actions. No function keeps both
+  boundary writers. Analysis discovers facts; the owning plan chooses actions; emission never
+  reconstructs a decision; optimizers preserve plan-materialized unions or invalidate the
+  plan (this is the C5 obligation; see Consequences).
 - **Host boundary is evidence-based per slot, one descriptor.** The wrapper dispatches on a
   per-export per-slot policy emitted by the compiler (RAW_BIGINT | TAGGED_VALUE | NUMBER |
   EXTERNREF, plus rest-element policy) — never by guessing from the absence of a box marker.
@@ -68,8 +70,10 @@ In order:
 2. **Done:** joint dispatch is feature- and plan-gated; zero-BigInt programs emit no arms.
 3. **Done (20fe3b22):** the result sentinel custom-section field, layout tables,
    interop decoder and hand-built wrapper lane are deleted.
-4. **Remaining architectural follow-up:** collapse the duplicate semantic-kind lattice
-   onto canonical kind facts; move `programFacts.paramReps` to SignatureSolution.
+4. **In progress:** every parameter/result boundary (named source, variant, and anonymous
+   closure/start) now publishes into ProgramIndex; body-local actions remain in RepresentationPlan.
+   Remaining follow-up: collapse the duplicate semantic-kind lattice onto canonical kind facts
+   and move `programFacts.paramReps` to the surviving signature solution.
 5. **Done:** erasure-diag.js and bigint-boxed-stats.js deleted as blocks.
 6. **Done:** obsolete direction documents point here; .work/archive/bigint-retirement-design.md remains
    historical evidence of the wall.

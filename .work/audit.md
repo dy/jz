@@ -1372,9 +1372,9 @@ product-facing capability; the "overdone" claim here is about the
 *pattern* (one file per idiom, unbounded growth) not about any individual
 file being wasteful.
 
-**8. NOT overdone, on inspection: the BigInt representation-plan
-subsystem** (`src/compile/representation-plan/`, 6 files, 2,716 lines
-including barrel, sole authority per ADR-0001). This *looks* like a
+**8. NOT overdone, on inspection: the BigInt representation
+subsystem** (ProgramIndex boundaries plus `src/compile/representation-plan/`
+body facts, disjoint per ADR-0001). This *looks* like a
 dedicated subsystem for one narrow value kind and would be an easy target
 by pattern-matching alone. It is not: the "one representation authority -
 complete" entry in `archive/handoff-2026-08-22.md` records that this

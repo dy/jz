@@ -276,6 +276,47 @@ test('architecture: missing active BigInt RepresentationPlan fails closed', () =
   throws(() => representationStorageWriteAction(fake, 1), /RepresentationPlan active body missing/)
 })
 
+test('architecture: named BigInt boundaries live only in ProgramIndex', () => {
+  if (onKernel()) return
+  compile('export let f = (x) => { x = BigInt(x); return x + 1n }')
+  const func = ctx.funcs.map.get('f')
+  const index = ctx.plans.programIndex
+  const boundary = index.functionBoundaryData(func)
+  ok(boundary?.kind === 'boundary', 'ProgramIndex owns the named function boundary')
+  const handle = ctx.plans.representations.get(func)
+  const record = handle && ctx.plans.representationData.get(handle)
+  is(Object.prototype.hasOwnProperty.call(record, 'boundary'), false,
+    'the named FunctionPlan record has no duplicate boundary writer')
+  is(record?.body?.boundary, boundary, 'body analysis reads the exact ProgramIndex boundary')
+})
+
+test('architecture: anonymous closure/start boundaries live only in ProgramIndex', () => {
+  if (onKernel()) return
+  compile(`
+    let seed = 1n
+    seed = seed + 2n
+    export let make = (a) => {
+      let base = BigInt(a) + seed
+      let f = (y) => y + base
+      return f
+    }
+  `)
+  const index = ctx.plans.programIndex
+  const anonymous = [...(ctx.closure.bodies || [])]
+  ok(ctx.plans.start, 'the module body compiles through a start frame')
+  anonymous.push(ctx.plans.start)
+  ok(anonymous.length >= 2, 'the program produces at least one closure body and the start frame')
+  for (const identity of anonymous) {
+    const boundary = index.functionBoundaryData(identity)
+    ok(boundary?.kind === 'boundary', 'ProgramIndex owns the anonymous boundary')
+    is(index.anonymousBoundaryKindOf(identity), identity.moduleScope === true ? 'start' : 'closure')
+    const record = ctx.plans.representationData.get(ctx.plans.representations.get(identity))
+    is(Object.prototype.hasOwnProperty.call(record, 'boundary'), false,
+      'the anonymous record has no duplicate boundary writer')
+    is(record?.body?.boundary, boundary, 'body analysis reads the exact ProgramIndex boundary')
+  }
+})
+
 test('architecture: typed emitters consume TypedStoragePlan, not live ctor maps', () => {
   const files = [
     'module/array.js', 'module/typedarray.js',
@@ -609,33 +650,94 @@ test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', as
     is(index.functionById, undefined, 'no untyped function-ID accessor survives')
     is(index.functionIdOfName, undefined, 'no untyped name-to-ID accessor survives')
 
+    const sourceBoundary = { kind: 'boundary', owner: 'source' }
+    const fixedBoundary = { kind: 'boundary', owner: 'fixed' }
+    index.publishFunctionBoundaryData(source, sourceBoundary)
+    index.publishFunctionBoundaryData(fixed, fixedBoundary)
+    is(index.functionBoundaryData(source), sourceBoundary)
+    is(index.functionBoundaryData(fixed), fixedBoundary)
+    is(index.functionBoundaryData(guarded), null)
+
     const sourcePlan = {}, fixedPlan = {}, guardedPlan = {}
     const plans = new Map([[source, sourcePlan], [fixed, fixedPlan], [guarded, guardedPlan]])
     const variants = index.finalizeVariantIdentities(paramReps, func => plans.get(func))
     is(variants.variantCount, 2)
     is(variants.variantSourceIds.join(','), '0,0')
     is(variants.variantKinds.join(','), 'fixed-rest,typed-guard')
+    is(variants.variantBoundaryData[0], fixedBoundary)
+    is(variants.variantBoundaryData[1], null)
     ok(fixed.sig !== source.sig && guarded.sig !== source.sig, 'variant signatures are derived records')
     ok(paramReps.get(fixed.name) !== paramReps.get(source.name), 'variant parameter facts are derived records')
     ok(paramReps.get(guarded.name) !== paramReps.get(fixed.name), 'nested variant facts are derived again')
     ok(fixedPlan !== sourcePlan && guardedPlan !== sourcePlan, 'variant FunctionPlans are distinct')
     throws(() => variants.variantSourceIds.push(0), /not extensible/)
     throws(() => index.registerVariantIdentity({ name: 'late' }, source, 'late'), /already finalized/)
+    throws(() => index.publishFunctionBoundaryData(guarded, { kind: 'boundary' }), /read only/)
+
+    const closureIdentity = { name: 'cb0' }, startIdentity = { name: '__start', moduleScope: true }
+    const closureBoundary = { kind: 'boundary' }, startBoundary = { kind: 'boundary' }
+    is(index.publishFunctionBoundaryData(closureIdentity, closureBoundary, 'closure'), closureBoundary,
+      'the anonymous boundary space stays open after variant identity closes')
+    is(index.publishFunctionBoundaryData(startIdentity, startBoundary, 'start'), startBoundary)
+    is(index.functionBoundaryData(closureIdentity), closureBoundary)
+    is(index.functionBoundaryData(startIdentity), startBoundary)
+    is(index.anonymousBoundaryKindOf(closureIdentity), 'closure')
+    is(index.anonymousBoundaryKindOf(startIdentity), 'start')
+    is(index.anonymousBoundaryKindOf(source), null, 'an indexed identity never aliases the anonymous space')
+    throws(() => index.publishFunctionBoundaryData(closureIdentity, closureBoundary, 'closure'), /already published/)
+
+    const concrete = index.finalizeConcreteFunctionIds()
+    is(concrete.concreteCount, ctx.funcs.list.length)
+    is(index.concreteFunctionOrder().map(f => f.name).join(','),
+      ctx.funcs.list.map(f => f.name).join(','), 'concrete order is the final emission order')
+    is(index.concreteIdOf(source), 0)
+    is(index.concreteIdOf(fixed), 1)
+    is(index.concreteFunctionById(index.concreteIdOf(guarded)), guarded)
+    is(index.concreteIdOfSource(index.sourceIdOf(source)), 0)
+    is(index.concreteIdOfVariant(index.variantIdOf(guarded)), 2)
+    ok(Object.isFrozen(ctx.funcs.list), 'the registry list freezes at concrete-ID close')
+    throws(() => ctx.funcs.list.push(source), /not extensible/)
+    is(index.finalizeConcreteFunctionIds(), concrete, 'concrete finalize is idempotent')
+
+    const facts2 = {
+      nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(), callSites: [],
+    }
+    const index2 = buildProgramIndex(ctx, facts2, null)
+    throws(() => index2.finalizeConcreteFunctionIds(), /finalized variant identities/)
+    throws(() => index2.concreteFunctionOrder(), /not finalized/)
   } finally {
     ctx.funcs = savedFuncs
     ctx.plans = savedPlans
   }
 })
 
-test('architecture: materializeVariant is the sole ProgramIndex variant-ID writer', () => {
-  const registrations = [], finalizers = []
-  for (const file of jsFiles(join(ROOT, 'src', 'compile'))) {
+test('architecture: ProgramIndex variant and boundary facts have one writer each', () => {
+  const registrations = [], finalizers = [], boundaryWriters = [], boundaryAssignments = [], concreteFinalizers = []
+  for (const file of jsFiles(join(ROOT, 'src'))) {
     const src = readFileSync(file, 'utf8')
     if (/\.registerVariantIdentity\s*\(/.test(src)) registrations.push(relative(ROOT, file))
     if (/\.finalizeVariantIdentities\s*\(/.test(src)) finalizers.push(relative(ROOT, file))
+    if (/\.publishFunctionBoundaryData\s*\(/.test(src)) boundaryWriters.push(relative(ROOT, file))
+    if (/\.boundary\s*=[^=]/.test(src)) boundaryAssignments.push(relative(ROOT, file))
+    if (/\.finalizeConcreteFunctionIds\s*\(/.test(src)) concreteFinalizers.push(relative(ROOT, file))
   }
   is(registrations.join(','), 'src/compile/variant.js')
   is(finalizers.join(','), 'src/compile/index.js')
+  is(boundaryWriters.join(','), 'src/compile/representation-plan/boundaries.js')
+  is(boundaryAssignments.join(','), '', 'no identity-keyed boundary field writer survives')
+  is(concreteFinalizers.join(','), 'src/compile/index.js')
+})
+
+test('architecture: emission order is the frozen concrete function order', () => {
+  if (onKernel()) return
+  compile('let a = (x) => x + 1; export let b = (y) => a(y) * 2')
+  const index = ctx.plans.programIndex
+  const order = index.concreteFunctionOrder()
+  is(order.map(f => f.name).join(','), ctx.funcs.list.map(f => f.name).join(','),
+    'concrete order matches the closed registry exactly')
+  ok(Object.isFrozen(ctx.funcs.list), 'the registry list is frozen after concrete-ID close')
+  ok(order.every((f, id) => index.concreteIdOf(f) === id && index.concreteFunctionById(id) === f),
+    'concrete IDs are bijective over the emission order')
 })
 
 test('invariant: ProgramIndex SCCs and reachability match an independent closure', () => {
