@@ -2121,3 +2121,37 @@ test('objects: buffer-family names are ordinary props off collections', () => {
   is(r.real(), '16:0:ab:16', 'real views keep header reads, typed and dispatched')
   is(r.prim(), 1, 'number receiver yields undefined')
 })
+
+// A local cursor over a heterogeneous record stream (`const o = rows[i]`)
+// keeps its member schema: a field a member lacks reads `undefined`, and
+// reads under a `tag === C` branch (the read itself as discriminant, or a
+// `const k = o.k` alias) resolve to that member. The packed union carrier
+// takes the shape only when every read resolves; the boxed shape must agree.
+test('objects: a record-stream cursor keeps its member schema', () => {
+  const head = `export let f = (n) => {
+    const rows = []
+    let s = 0x1234abcd | 0
+    for (let i = 0; i < n; i++) {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+      const k = s & 3, a = (s >>> 3) & 1023, b = (s >>> 13) & 1023
+      if (k === 0) rows.push({ k: k, x: a, y: b })
+      else if (k === 1) rows.push({ k: k, r: a })
+      else if (k === 2) rows.push({ k: k, w: a, h: b, d: b })
+      else rows.push({ k: k, n: b, s: a })
+    }
+    let sum = 0
+    `
+  const tails = {
+    'direct discriminant': 'for (let i = 0; i < rows.length; i++) { const o = rows[i]; if (o.k === 0) sum = (sum + o.x + o.y) | 0; else if (o.k === 1) sum = (sum + Math.imul(o.r, 3)) | 0; else if (o.k === 2) sum = (sum + Math.imul(o.w, o.h) - o.d) | 0; else sum = (sum + Math.imul(o.n, o.s)) | 0 } return sum }',
+    'alias discriminant': 'for (let i = 0; i < rows.length; i++) { const o = rows[i]; const k = o.k; if (k === 0) sum = (sum + o.x + o.y) | 0; else if (k === 1) sum = (sum + Math.imul(o.r, 3)) | 0; else if (k === 2) sum = (sum + Math.imul(o.w, o.h) - o.d) | 0; else sum = (sum + Math.imul(o.n, o.s)) | 0 } return sum }',
+    'unresolved member read': 'for (let i = 0; i < rows.length; i++) { const o = rows[i]; if (o.k === 0) sum = (sum + o.x + o.y) | 0; else if (o.k === 1) sum = (sum + Math.imul(o.r, 3)) | 0; else sum = (sum + Math.imul(o.n, o.s)) | 0 } return sum }',
+    'missing field is undefined': 'for (let i = 0; i < rows.length; i++) { const o = rows[i]; sum += (o.n === undefined ? 100 : 0) + (o.k === 3 ? o.n : 0) } return sum }',
+  }
+  for (const [name, tail] of Object.entries(tails)) {
+    const src = head + tail
+    const e = {}
+    new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
+    for (const optimize of [0, 2, 3, 'size'])
+      is(jz(src, { optimize }).exports.f(1000), e.f(1000), `${name} @O${optimize}`)
+  }
+})

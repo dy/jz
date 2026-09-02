@@ -51,6 +51,7 @@ import { mintLoopPlans } from './loop-model.js'
 import { mintClosureEnvPlans } from './closure-plan.js'
 import { mintRepresentationPlan, representationHostBoxesParam, representationProgramHasBigint, representationReturnAction } from './representation-plan.js'
 import { mintTypedStoragePlan } from './typed-storage-plan.js'
+import { unboxAdmittedCursors } from './analyze/ptr-eligibility.js'
 import { narrowBoundedSquare } from './loop-square.js'
 import { specializeUnionCursorParams } from './narrow.js'
 import { cloneRep, paramValTrustworthy } from '../param-reps.js'
@@ -329,6 +330,15 @@ export default function compile(ast, profiler) {
         const facts = analyzeFuncForEmit(clone, programFacts)
         publishPlan(clone, facts)
         captureFuncInspect(clone, facts, programFacts)
+      }
+      // Only an admitted local cursor unboxes to a cell address; an
+      // unadmitted one keeps its box, where the member schema lives
+      // (ptr-eligibility.js). The verdict lands after analysis, so the
+      // admitted cursors' storage is settled here on the published plan.
+      if (ctx.schema.inlineUnionCursors?.size) for (const func of ctx.funcs.list) {
+        const cursors = !func.raw && reachableForLowering(func) ? ctx.schema.inlineUnionCursors.get(func.sig) : null
+        if (!cursors) continue
+        unboxAdmittedCursors(ctx, functionPlanOf(ctx, func), func, cursors)
       }
     })
   }

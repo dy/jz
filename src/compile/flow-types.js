@@ -108,18 +108,25 @@ export function extractRefinements(cond, out, sense = true) {
 /** When an exact integer comparison uses an immutable `obj.tag` alias,
  * select the matching censused schema as a guarded fast-path hint. The runtime
  * sid guard remains the proof; the census only orders speculation. */
-function refineIntegerDiscriminant(a, b, out) {
+// The discriminant of `tag === C`: an immutable `const k = o.k` alias, or the
+// read `o.k` itself, either way {obj, prop}.
+const discriminantOf = (a, b) => {
   const lit = n => typeof n === 'number' && Number.isInteger(n) ? n
     : Array.isArray(n) && n[0] == null && Number.isInteger(n[1]) ? n[1]
     : null
-  let name, value
+  const readOf = n => typeof n === 'string' ? constPropAliases().get(n)
+    : Array.isArray(n) && n[0] === '.' && n.length === 3 && typeof n[1] === 'string' && typeof n[2] === 'string'
+      ? { obj: n[1], prop: n[2] } : null
   const bv = lit(b), av = lit(a)
-  if (typeof a === 'string' && bv != null) { name = a; value = bv }
-  else if (typeof b === 'string' && av != null) { name = b; value = av }
-  else return
+  const alias = bv != null ? readOf(a) : av != null ? readOf(b) : null
+  if (!alias || ctx.module.writtenProps?.has(alias.prop)) return null
+  return { alias, value: bv != null ? bv : av }
+}
 
-  const alias = constPropAliases().get(name)
-  if (!alias || ctx.module.writtenProps?.has(alias.prop)) return
+function refineIntegerDiscriminant(a, b, out) {
+  const d = discriminantOf(a, b)
+  if (!d) return
+  const { alias, value } = d
 
   // CLOSED-UNION PROOF channel: the receiver provably holds one of a closed
   // schema set (`const o = rows[i]` over a censused heterogeneous stream —
@@ -177,16 +184,9 @@ function refineIntegerDiscriminant(a, b, out) {
  *  members are kept — superset-sound). Open receivers get nothing (a hint
  *  would be speculation with no guard to back it). */
 function excludeIntegerDiscriminant(a, b, out) {
-  const lit = n => typeof n === 'number' && Number.isInteger(n) ? n
-    : Array.isArray(n) && n[0] == null && Number.isInteger(n[1]) ? n[1]
-    : null
-  let name, value
-  const bv = lit(b), av = lit(a)
-  if (typeof a === 'string' && bv != null) { name = a; value = bv }
-  else if (typeof b === 'string' && av != null) { name = b; value = av }
-  else return
-  const alias = constPropAliases().get(name)
-  if (!alias || ctx.module.writtenProps?.has(alias.prop)) return
+  const d = discriminantOf(a, b)
+  if (!d) return
+  const { alias, value } = d
   const closedSet = out.get(alias.obj)?.schemaIdSet
     ?? ctx.func.refinements?.get(alias.obj)?.schemaIdSet
     ?? ctx.func.localReps?.get(alias.obj)?.schemaIdSet

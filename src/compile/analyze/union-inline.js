@@ -166,11 +166,18 @@ export function unionInlinePass(programFacts) {
     // Discriminant narrowing of a member set under refs (Map tagLocal → int
     // exact | Set excluded). A member whose censused const for the tag slot
     // contradicts the refinement is excluded; unknown-const members stay.
+    // A refinement key is a tag-alias local (`const k = o.k; if (k === 0)`)
+    // or a direct cursor read (`if (o.k === 0)`), keyed `o\x00k`.
+    const readKey = (obj, prop) => obj + '\x00' + prop
+    const aliasOf = (t) => {
+      const i = t.indexOf('\x00')
+      return i < 0 ? tagAlias.get(t) : { obj: t.slice(0, i), prop: t.slice(i + 1) }
+    }
     const narrow = (sids, oName, refs) => {
       if (!refs) return sids
       let out = sids
       for (const [t, v] of refs) {
-        const al = tagAlias.get(t)
+        const al = aliasOf(t)
         if (!al || al.obj !== oName) continue
         out = out.filter(sid => {
           const slot = propsOf(sid).indexOf(al.prop)
@@ -186,8 +193,11 @@ export function unionInlinePass(programFacts) {
     const condNV = (cond) => {
       if (!Array.isArray(cond) || cond[0] !== '===') return null
       const a = cond[1], b = cond[2], av = intLit(a), bv = intLit(b)
-      if (typeof a === 'string' && bv != null) return [a, bv]
-      if (typeof b === 'string' && av != null) return [b, av]
+      const key = (x) => typeof x === 'string' ? x
+        : Array.isArray(x) && x[0] === '.' && typeof x[1] === 'string' && cursor.has(x[1]) && typeof x[2] === 'string'
+          ? readKey(x[1], x[2]) : null
+      if (key(a) != null && bv != null) return [key(a), bv]
+      if (key(b) != null && av != null) return [key(b), av]
       return null
     }
     const thenRefs = (cond, refs) => {

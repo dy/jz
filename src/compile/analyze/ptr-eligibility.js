@@ -62,7 +62,7 @@ export function unboxablePtrs(body, locals, boxed) {
   //   SET/MAP/BUFFER/TYPED ← `new X(...)`
   // Validating the exact ctor→VAL match keeps the analysis tied to valTypeOf, so when
   // that helper grows (e.g. `Array.from` → ARRAY), we don't drift out of sync.
-  const isFreshInit = (expr, kind) => {
+  const isFreshInit = (expr, kind, unionCursor = false) => {
     if (!Array.isArray(expr)) return false
     if (kind === VAL.OBJECT) {
       if (expr[0] === '{}') return true
@@ -82,11 +82,12 @@ export function unboxablePtrs(body, locals, boxed) {
       if (expr[0] === '[]' && typeof expr[1] === 'string') {
         const r = ctx.func.localReps?.get(expr[1])
         if (r?.arrayElemSchema != null) return true
-        // Closed-union element: an OBJECT of some member schema on EITHER
-        // layout (plain ptr or inline cell) — unboxing to a raw offset is
-        // valid regardless of whether unionInlinePass (which runs later)
-        // admits the packed carrier.
-        return (r?.arrayElemSchemaSet?.length ?? 0) >= 2
+        // Closed-union element: the member schema lives in the box's aux
+        // bits and a raw offset cannot carry it back (a rebox would stamp
+        // schema 0, and a dynamic read then misses every other member's
+        // props). Only a union the packed carrier admitted is unboxed: its
+        // cursor is a cell address whose reads resolve statically.
+        return (r?.arrayElemSchemaSet?.length ?? 0) >= 2 && !!unionCursor
       }
       return false
     }
@@ -122,7 +123,7 @@ export function unboxablePtrs(body, locals, boxed) {
     if (!UNBOXABLE_KINDS.has(vt)) continue
     if (locals.get(name) !== 'f64') continue
     if (boxed?.has(name)) continue
-    if (!isFreshInit(s[BINDING_USE_INIT], vt)) continue
+    if (!isFreshInit(s[BINDING_USE_INIT], vt, !!ctx.schema?.inlineUnionCursors?.get(ctx.func.current)?.has(name))) continue
     const ok = s[BINDING_USE_USES].every(u =>
       u[BINDING_USE_KIND] !== USE.REASSIGN &&
       !(u[BINDING_USE_KIND] === USE.COMPARE && u[BINDING_USE_NULL_CMP]))
@@ -347,4 +348,21 @@ export function cseSafeLoadBases(body, locals, localReps) {
     if (k != null && !storeKinds.has(k)) safe.add(name)
   }
   return safe
+}
+
+/** Settle an admitted union cursor's storage on its published plan: a local
+ *  `const o = rows[i]` the union registry admitted holds a packed-cell
+ *  address, so it takes i32 storage with the OBJECT pointer kind, exactly
+ *  what unboxablePtrs would have chosen had the verdict preceded analysis. */
+export function unboxAdmittedCursors(ctx, plan, func, cursors) {
+  const data = ctx.plans.functionData.get(plan)
+  if (!data) return
+  const params = new Set((func.sig?.params || []).map(p => p.name))
+  for (const name of cursors.keys()) {
+    if (params.has(name) || data.boxed?.has(name) || data.locals.get(name) !== 'f64') continue
+    const rep = data.localReps?.get(name)
+    if (rep?.val !== VAL.OBJECT || rep.ptrKind != null) continue
+    data.locals.set(name, 'i32')
+    rep.ptrKind = VAL.OBJECT
+  }
 }
