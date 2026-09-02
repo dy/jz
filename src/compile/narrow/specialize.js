@@ -20,6 +20,7 @@ import { paramFactsOf, joinKinds } from '../../param-reps.js'
 import { inferValType, inferTypedCtor } from '../infer.js'
 import { materializeVariant } from '../variant.js'
 import { assertValKindConsistent, buildCallerTypedCtx, buildCallerCtx } from './caller-ctx.js'
+import { isExported } from '../func-exports.js'
 
 /**
  * Phase: bimorphic typed-array param specialization.
@@ -77,7 +78,7 @@ export function specializeBimorphicTyped(programFacts) {
   // Snapshot ctx.funcs.list — we'll be appending clones during the loop.
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     if (func.rest) continue
     const reps = paramReps.get(func.name)
@@ -231,7 +232,7 @@ export function specializeValKindDichotomy(programFacts) {
 
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     if (func.rest) continue
     const reps = paramReps.get(func.name)
@@ -362,7 +363,7 @@ export function specializeUnionCursorParams(programFacts) {
     collectUnionSites(func.body, func, candidateNames, sitesByCallee)
   const originals = ctx.funcs.list.slice()
   for (const func of originals) {
-    if (func.exported || func.raw || func.rest || !func.body || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || func.rest || !func.body || addressTaken.has(func.name)) continue
     const cursors = cursorsBySig.get(func.sig)
     if (!cursors?.size) continue
     const idxs = []

@@ -16,6 +16,7 @@ import { some } from '../../ast.js'
 import { isLiteralStr } from '../../ir.js'
 import { scanBoundedLoops } from '../../type.js'
 import { VAL, updateRep } from '../../reps.js'
+import { isExported } from '../func-exports.js'
 
 /** Gate the jsstring carrier on the host. ON by default for the JS host: a
  *  js-host build is already JS-locked (it imports `env.*`), so the externref +
@@ -118,7 +119,7 @@ function paramAllUsesJsstringMappable(body, name, safeCC) {
 
 export function applyJsstringBoundaryCarrier(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (func.raw || !func.exported) continue
+    if (func.raw || !isExported(func)) continue
     if (!func.body) continue
     if (func.rest) continue                          // rest position stays packed-array
     if (addressTaken.has(func.name)) continue       // indirect callers may pass non-string
@@ -160,7 +161,7 @@ export function adviseJsstringCarrier(paramReps, addressTaken) {
   if (!warningsView().warnings || !jsstringEnabled()) return
 
   for (const func of ctx.funcs.list) {
-    if (func.raw || !func.exported || !func.body || func.rest) continue
+    if (func.raw || !isExported(func) || !func.body || func.rest) continue
     if (addressTaken?.has(func.name)) continue
 
     const safeCC = new Set()

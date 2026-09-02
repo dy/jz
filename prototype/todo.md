@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.13x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,523,120 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 14.83x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,528 bytes versus 14,523,519 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -422,6 +422,21 @@ Fifth production slice verification:
 - recursive self-compile: 321 modules, 6,864,583 input bytes, 14,078,604 output bytes, 4,119,704,568 heap bytes, 175,262,728 bytes headroom
 - compact threshold: pass at 2,256,528 bytes versus the 14,519,509-byte production compiler
 
+Sixth production slice verification (attributed byte diff):
+
+- one host-callability predicate: `isExportedIn` in `func-exports.js` resolves the syntactic flag plus `ctx.funcs.exports` alias and re-export targets; ProgramIndex roots, narrowing coverage, host-ABI gates, inlining, hazard and literal censuses, and the active-function frame read it, and the representation-plan copy delegates to it
+- the raw `func.exported` flag survives only where the syntactic fact is the question, the inline export-attribute sites in `emit-func.js` and `boundary-wrap.js`, pinned by a source scan over `src` and `module`
+- reproducer: the watr bundle carried 5 re-exported entry points (`watr`, `compile`, `parse`, `print`, `sourceMapURL`) with `exported=false`, three of them index-unreachable; a bundle re-export pin now asserts the target and a callee reached only through it are roots
+- refactor oracle: 564 outputs byte-identical; the 4 watr rows differ by +120, +155, +252, and +128 bytes at O0, O2, O3, and size. Attribution: the re-exported entry points' call sites re-enter the lattice; `m6_template$compile.backend` widens i32 to f64 because `m6_template$watr`'s site now joins the consensus (the old i32 came from a census that had dropped that caller), `m6_template$watr.backend` narrows f64 to i32 on the evidence it now has, and one extra hoisted constant renumbers 57 otherwise-unchanged functions
+- native: 3,903 pass, 1 skip
+- opt3: 3,903 pass, 1 skip
+- WASI: 3,902 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- recursive self-compile: 321 modules, 6,868,457 input bytes, 14,082,566 output bytes, 4,121,053,816 heap bytes, 173,913,480 bytes headroom; elapsed unchanged at 30,953 ms
+- compact threshold: pass at 2,256,528 bytes versus the 14,523,519-byte production compiler
+
 Per-slice recursive and artifact ratchet:
 
 | Production migration slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
@@ -435,6 +450,7 @@ Per-slice recursive and artifact ratchet:
 | concrete Wasm function IDs | 14,519,509 | 4,119,704,568 | 175,262,728 | +9,562 bytes, -1,849,720 headroom |
 | parameter-ABI emission rows | 14,522,343 | 4,120,236,904 | 174,730,392 | +2,834 bytes, -532,336 headroom |
 | SRoA collect-during-analyze | 14,523,120 | 4,120,384,696 | 174,582,600 | +777 bytes, -147,792 headroom |
+| canonical export roots | 14,523,519 | 4,121,053,816 | 173,913,480 | +399 bytes, -669,120 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -610,7 +626,7 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
-1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels.
+1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. Before any gating, ProgramIndex reachability must be complete: the export-root gap is closed (canonical `isExported` roots), but `.`-member calls resolved through member targets (`i32.parse(n)` to `i32$parse`, the ledger's Shape 8) contribute no graph edges, so on the watr bundle seven live member-property functions and their private callees remain index-unreachable at O3. Add a member-call-site census feeding `resolveMemberSourceId` edges, with the watr specimen as the pin, before gating.
 2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is closer: structInline and unionInline now collect per-function summaries inside the analyze loop and decide from summaries alone. Remaining between analyze and emit: union-cursor cloning (whole-program specialization over the settled registry) and the identity/ABI closes, all of which need only an analyze-complete barrier, not retained plans or bodies.
 3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 

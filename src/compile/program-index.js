@@ -1,5 +1,6 @@
 import { MUTATE_OPS, isFuncRef, isLiteralStr, collectAllBoundNames, walkAst } from '../ast.js'
 import { staticObjectProps } from '../static.js'
+import { isExported } from './func-exports.js'
 
 // ProgramIndex member-target family (.work/archive/v1-architecture-campaign.md finish-order item 1).
 // This is the canonical, frozen, same-module resolver for a `.`-member call's
@@ -942,7 +943,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   delete programFacts[retiredAddressTakenKey]
   for (const func of ctx.funcs.list) {
     const id = graphNameIds.get(func.name) ?? -1
-    if (id >= 0 && func.exported && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+    if (id >= 0 && isExported(func) && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   for (let i = 0; i < dynamicRootIds.length; i++) {
     const id = dynamicRootIds[i]

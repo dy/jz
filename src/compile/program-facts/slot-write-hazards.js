@@ -15,6 +15,7 @@ import { objLiteralSchemaId } from '../../static.js'
 import { analyzeBody } from '../analyze.js'
 import { withValueOverlay } from '../flow-state.js'
 import { collectBodyElemSids } from './shared.js'
+import { isExported } from '../func-exports.js'
 
 // ————————————————————————————— slot-write hazards —————————————————————————————
 // The slot censuses (slotIntCertain here, slotTypes/slotTypedCtors in
@@ -168,7 +169,7 @@ export function collectSlotWriteHazards(ast, opts) {
     const func = ctx.funcs.map?.get(funcName)
     const params = func?.sig?.params
     const restIdx = func?.rest && params ? params.length - 1 : -1
-    if (!func || func.raw || func.exported || addressTaken?.has(funcName) || !params?.length || paramIdx === restIdx) {
+    if (!func || func.raw || isExported(func) || addressTaken?.has(funcName) || !params?.length || paramIdx === restIdx) {
       paramUnionMemo.set(key, 'ALL')
       return 'ALL'
     }

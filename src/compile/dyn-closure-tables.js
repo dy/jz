@@ -51,6 +51,7 @@ import {
 } from './analyze-scans.js'
 import { closureBodyReturnKind } from './flow-types.js'
 import { VAL } from '../reps.js'
+import { isExported } from './func-exports.js'
 
 // A candidate table may safely appear as: a `V[idx]` READ (any key — call
 // sites read-then-call, `.length`, comparisons, whatever) or a PLAIN
@@ -578,7 +579,7 @@ function proveClosureFactory(calleeName, programFacts, cache) {
   let verdict = ctx.scope.directReturnClosures?.get(calleeName) || null
   if (!verdict) {
     const fn = ctx.funcs.map?.get(calleeName)
-    if (fn && !fn.raw && fn.body && fn.defaults && !fn.exported && !programFacts.programIndex.addressTaken.has(calleeName)) {
+    if (fn && !fn.raw && fn.body && fn.defaults && !isExported(fn) && !programFacts.programIndex.addressTaken.has(calleeName)) {
       const rets = extractReturnExprs(fn.body)
       if (rets && rets.length) {
         for (const pname of Object.keys(fn.defaults)) {

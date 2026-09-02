@@ -29,13 +29,14 @@ import { ctx } from '../ctx.js'
  *  the value-scan picks up `export { f }` / `export { f as g }` / `export
  *  default f` where the source name appears as a *value* keyed under the
  *  public name. */
-export const isExported = f => {
-  if (f.exported) return true
-  for (const val of Object.values(ctx.funcs.exports)) {
-    if (val === f.name) return true
+export const isExportedIn = (funcs, f) => {
+  if (f?.exported) return true
+  for (const val of Object.values(funcs.exports || {})) {
+    if (val === f?.name) return true
   }
   return false
 }
+export const isExported = f => isExportedIn(ctx.funcs, f)
 
 /** Collect JS-visible export names that resolve to `funcName` (as an array).
  *  Used to emit per-export ABI metadata in custom sections — one entry per

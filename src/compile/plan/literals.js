@@ -41,6 +41,7 @@ import {
   isSimpleArg, fixedScalarTypedArray, fixedTypedArraysInBody, maxScalarTypedArrayLen, freshTypedArrayLocals,
   collectBindings,
 } from './common.js'
+import { isExported } from '../func-exports.js'
 
 // === Loop unrolling & scalarization ===
 
@@ -460,7 +461,7 @@ const unrollTypedArrayLoops = (node, names) => {
 }
 
 const scalarTypedParamCandidates = (func, sites, fixedByFunc) => {
-  if (!sites?.length || func.exported || func.raw || !func.body || !Array.isArray(func.body) || func.body[0] !== '{}') return new Map()
+  if (!sites?.length || isExported(func) || func.raw || !func.body || !Array.isArray(func.body) || func.body[0] !== '{}') return new Map()
   if (some(func.body, n => n[0] === 'return' || n[0] === 'throw')) return new Map()
   const params = func.sig?.params || []
   const cands = new Map()

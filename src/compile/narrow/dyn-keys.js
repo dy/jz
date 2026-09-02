@@ -11,6 +11,7 @@ import { ctx } from '../../ctx.js'
 import { REFS_THROUGH_ARROWS, walkAst, some } from '../../ast.js'
 import { isLiteralStr } from '../../ir.js'
 import { VAL } from '../../reps.js'
+import { isExported } from '../func-exports.js'
 
 /**
  * Phase: refine ctx.types.anyDynKey using post-narrowSignatures type info.
@@ -80,7 +81,7 @@ export function refineDynKeys(programFacts) {
   // Live: anything reachable from exports/first-class value uses. Skipping
   // dead helpers (unused benchlib imports) keeps their generic params from
   // pretending to be dyn-key access.
-  const isLive = f => f.exported || paramReps.has(f.name) || addressTaken.has(f.name)
+  const isLive = f => isExported(f) || paramReps.has(f.name) || addressTaken.has(f.name)
 
   const topMap = buildTypeMap(null, null, null)
   for (const f of ctx.funcs.list) {

@@ -14,6 +14,7 @@ import { intLevelMap } from '../../type.js'
 import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 import { PTR_ABI_KINDS } from './caller-ctx.js'
+import { isExported } from '../func-exports.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -142,7 +143,7 @@ export function applyI32ParamSpecialization(paramReps, addressTaken, sitesByCall
 // `.length` fold must not trust.
 export function validateTypedLenParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    const hostReachable = func.exported || func.raw || addressTaken.has(func.name)
+    const hostReachable = isExported(func) || func.raw || addressTaken.has(func.name)
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -172,7 +173,7 @@ export function validateTypedLenParams(paramReps, addressTaken) {
 // ledger-performance.md §6.1 for the full soundness contract.
 export function validateLenBoundOfParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    const hostReachable = func.exported || func.raw || addressTaken.has(func.name)
+    const hostReachable = isExported(func) || func.raw || addressTaken.has(func.name)
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -192,7 +193,7 @@ export function validateLenBoundOfParams(paramReps, addressTaken) {
 
 export function validateIntConstParams(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     if (!func.body) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
@@ -214,7 +215,7 @@ export function validateIntConstParams(paramReps, addressTaken) {
 
 export function applyPointerParamAbi(paramReps, addressTaken, hardParamVal) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -275,7 +276,7 @@ export function narrowableFuncs(addressTaken) {
 
 export function applyTypedPointerParamAbi(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (func.exported || func.raw || addressTaken.has(func.name)) continue
+    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1

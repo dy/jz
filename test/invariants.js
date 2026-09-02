@@ -20,6 +20,7 @@ import { run } from './util.js'
 import { onKernel } from './_matrix.js'
 import { representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { buildProgramIndex } from '../src/compile/program-index.js'
+import { isExported } from '../src/compile/func-exports.js'
 import { parse } from '../src/parse.js'
 
 // === Helper: compile with WAT output for structural inspection ===
@@ -741,6 +742,42 @@ test('architecture: ProgramIndex variant and boundary facts have one writer each
   is(abiPublishers.join(','), 'src/compile/index.js')
   ok(!/paramReps/.test(readFileSync(join(ROOT, 'src', 'compile', 'emit-func.js'), 'utf8')),
     'emission reads ProgramIndex parameter ABI, not the analysis lattice')
+})
+
+test('architecture: host-callability reads the canonical export predicate', () => {
+  // The raw `func.exported` flag means "declared with `export` in its own
+  // module" and is read only where that syntactic fact is the question: the
+  // inline `(export …)` attribute sites and the active-function frame record.
+  // Every host-callability decision (roots, coverage, host ABI, inlining)
+  // goes through isExported / isExportedIn, which also resolves aliases and
+  // bundle re-exports.
+  const allowed = new Set([
+    'src/compile/func-exports.js', 'src/compile/active-function.js',
+    'src/compile/boundary-wrap.js', 'src/compile/emit-func.js',
+  ])
+  const offenders = []
+  for (const file of [...jsFiles(join(ROOT, 'src')), ...jsFiles(join(ROOT, 'module'))]) {
+    const rel = relative(ROOT, file)
+    if (allowed.has(rel)) continue
+    const code = readFileSync(file, 'utf8').split('\n')
+      .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n')
+    if (/(?<![.\w])(?:func|f|fn|callerFunc)\??\.exported\b/.test(code)) offenders.push(rel)
+  }
+  is(offenders.join(','), '', 'no host-callability reader consults the raw export flag')
+})
+
+test('invariant: re-exported entry points are ProgramIndex roots', () => {
+  if (onKernel()) return
+  compile("export { f } from './m.jz'", {
+    modules: { './m.jz': 'let helper = (x) => x > 0 ? helper(x - 1) + 1 : 0\nexport let f = (y) => helper(y) * 2' },
+  })
+  const index = ctx.plans.programIndex
+  const target = ctx.funcs.list.find(fn => !fn.raw && isExported(fn) && !fn.exported)
+  ok(target, 'the bundle re-export resolves to a target without the syntactic flag')
+  ok(index.isGraphReachable(index.graphFunctionIdOfName(target.name)), 'the re-exported target is a root')
+  const helper = ctx.funcs.list.find(fn => !fn.raw && /helper$/.test(fn.name))
+  ok(helper && index.isGraphReachable(index.graphFunctionIdOfName(helper.name)),
+    'a callee reached only through the re-exported entry is reachable')
 })
 
 test('architecture: emission order is the frozen concrete function order', () => {

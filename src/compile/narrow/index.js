@@ -41,6 +41,7 @@ import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnA
 import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
 import { makeMapOverlay } from '../map-overlay.js'
+import { isExported } from '../func-exports.js'
 
 export default function narrowSignatures(programFacts, ast) {
   const { callSites, paramReps, hasSchemaLiterals, hasMapSet } = programFacts
@@ -140,7 +141,7 @@ export default function narrowSignatures(programFacts, ast) {
   const siteState = cs => {
     const { callee, argList, callerFunc } = cs
     const func = ctx.funcs.map.get(callee)
-    if (!func || func.exported || addressTaken.has(callee)) return null
+    if (!func || isExported(func) || addressTaken.has(callee)) return null
     const ctxEntry = callerCtx.get(callerFunc)
     if (!ctxEntry) return null
     paramFactsCache.clear()
@@ -1266,7 +1267,7 @@ export default function narrowSignatures(programFacts, ast) {
   // ADD later; downgrading a wrongly-'closed' mark is not, so this only ever
   // marks 'closed' where the predicate holds, never guesses.
   for (const func of ctx.funcs.list) {
-    if (func.raw || func.exported || addressTaken.has(func.name)) continue
+    if (func.raw || isExported(func) || addressTaken.has(func.name)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     for (const r of reps.values()) r.kindsCoverage = 'closed'

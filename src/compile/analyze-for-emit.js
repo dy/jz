@@ -63,7 +63,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   if (_o && _o.clampPeel !== false && isBlockBody(func.body)) func.body = peelClampedStencil(func.body)
 
   const { name, body, sig } = func
-  const previousFrame = enterFunc(sig, body, { exported: func.exported })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
   try {
 
   const block = isBlockBody(body)
@@ -261,7 +261,7 @@ export function analyzeFuncForEmit(func, programFacts) {
   // Block AND expression bodies: value-bound arrows (`export let f = (a,b) => a*b`) are
   // skipped by narrowValResults, so without trusting their params here they'd fall to the
   // i64 boundary carrier. The closure path runs the same proof at line ~1300.
-  if (func.exported) {
+  if (isExported(func)) {
     for (const p of sig.params) {
       if (p.type === 'f64' && p.ptrKind == null && !p.jsstring
           && !func.defaults?.[p.name] && !ctx.func.boxed?.has(p.name)

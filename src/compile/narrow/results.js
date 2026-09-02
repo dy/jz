@@ -22,6 +22,7 @@ import {
 import { VAL, lookupValType } from '../../reps.js'
 import { paramFactsOf } from '../../param-reps.js'
 import { inferSchemaId } from '../infer.js'
+import { isExported } from '../func-exports.js'
 
 /**
  * Phase E: numeric result narrowing.
@@ -615,7 +616,7 @@ const _FIELD_TO_SLICE = {
 export function narrowReturnArrayElems(field, paramReps, addressTaken) {
   const sliceKey = _FIELD_TO_SLICE[field]
   const targets = ctx.funcs.list.filter(f =>
-    !f.raw && !f.exported && !addressTaken.has(f.name) &&
+    !f.raw && !isExported(f) && !addressTaken.has(f.name) &&
     f.valResult === VAL.ARRAY && f[field] == null
   )
   let changed = true

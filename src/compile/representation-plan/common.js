@@ -1,5 +1,6 @@
 import { ASSIGN_OPS, walkAst } from '../../ast.js'
 import { KIND_UNIVERSE, VAL } from '../../reps.js'
+import { isExportedIn } from '../func-exports.js'
 
 // RepresentationPlan v2 uses compact scalar facts. The low two bits describe
 // the representation of the BigInt member (if one is semantically possible);
@@ -117,12 +118,7 @@ export const targetRepFor = (sem, current) => {
   return BOXED_BIGINT
 }
 
-export const isExported = (ctx, func) => {
-  if (func?.exported) return true
-  for (const value of Object.values(ctx.funcs.exports || {}))
-    if (value === func?.name) return true
-  return false
-}
+export const isExported = (ctx, func) => isExportedIn(ctx.funcs, func)
 
 export const noBigintSemantic = () => packSemantic(ALL_KIND_BITS & ~BIGINT_KIND_BIT, true, true)
 

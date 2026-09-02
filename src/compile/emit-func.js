@@ -19,6 +19,7 @@ import { recordParamClosureDefault, recordDirectReturnClosure } from './dyn-clos
 import { enterFunc, emitPreboxedLocalInits } from './func-entry.js'
 import { isBoundaryWrapped } from './boundary-wrap.js'
 import { hoistInvariantParamCoercions, hoistUnionCursorUnbox } from './coercion-hoist.js'
+import { isExported } from './func-exports.js'
 
 /**
  * Phase: emit one user function to WAT IR.
@@ -34,7 +35,7 @@ export function emitFunc(func, functionPlan, programFacts) {
   const multi = sig.results.length > 1
   const _reps = programFacts.programIndex.parameterAbiOf(func)
 
-  const previousFrame = enterFunc(sig, body, { exported })
+  const previousFrame = enterFunc(sig, body, { exported: isExported(func) })
   let schemaVarsPrev = null
   try {
   // Escape-boxing gate for return-position BOOL literals/expressions (emit.js

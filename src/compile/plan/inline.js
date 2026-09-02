@@ -42,6 +42,7 @@ import {
   fixedTypedArraysInBody, forLoopBodyIndex, withForLoopBody,
 } from './common.js'
 import { materializeVariant } from '../variant.js'
+import { isExported } from '../func-exports.js'
 
 // Returns { prefix, value } where prefix is the substituted body statements
 // (excluding any trailing `return X`), and value is the substituted return
@@ -496,9 +497,9 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // floatbeat): inline into the caller's loop but keep the export for external
     // one-off calls (bench beat()). Multi-caller exports stay outlined so V8 can
     // tier-up shared kernels.
-    const soleCallerExport = func.exported && sites?.length === 1
+    const soleCallerExport = isExported(func) && sites?.length === 1
     if (func.raw || !func.body || func.rest) continue
-    if (func.exported && !soleCallerExport) continue
+    if (isExported(func) && !soleCallerExport) continue
     if (programFacts.addressTakenNames.has(func.name) && !soleCallerExport) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     const paramNames = new Set((func.sig?.params || []).map(p => p.name))
@@ -564,7 +565,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
         // calls the leaf currently being considered (sdRep ← sdf). Looking
         // through it breaks that harmless caller/callee collection cycle and
         // recognizes the same transitive hot path the next fixpoint would.
-        const prospectiveLeaf = callerFunc && !callerFunc.exported &&
+        const prospectiveLeaf = callerFunc && !isExported(callerFunc) &&
           !programFacts.addressTakenNames.has(caller) && loopDepth(callerFunc.body, 0) === 0 &&
           nodeSize(callerFunc.body) <= 48
         if (!caller || (!candidates.has(caller) && !prospectiveLeaf) || seen.has(caller)) return false
@@ -624,7 +625,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
   for (const [name, func] of candidates) {
     const sites = sitesByCallee.get(name)
     const fixedSiteExported = hasFixedTypedArraySites(func, sites) &&
-      !sites.some(site => site.callerFunc?.exported && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))
+      !sites.some(site => isExported(site.callerFunc) && site.callerFunc.body && containsNode(site.callerFunc.body, site.node))
     // Forwarders cross into an exported caller too: the tier-up rationale that
     // keeps candidates out of exports concerns relocated loop kernels, not
     // these tiny leaves — and inlining one devirtualizes a closure dispatch.
@@ -639,8 +640,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // Exception: fixed-size typed-array callees should inline into the exported
     // caller so scalar replacement can cross the call boundary and remove the
     // caller's heap arrays.
-    const activeCandidates = func.exported ? exportedCandidates : candidates
-    if (func.exported && !activeCandidates.size) continue
+    const activeCandidates = isExported(func) ? exportedCandidates : candidates
+    if (isExported(func) && !activeCandidates.size) continue
     // Expression-bodied arrows (`() => expr`) have func.body as the return
     // value itself — never a `{}` block. inlineInStmt treats its argument as a
     // statement (discards the return value of any top-level candidate call),
@@ -650,7 +651,7 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     const isExprBody = !Array.isArray(func.body) || func.body[0] !== '{}'
     // Expression-position pass takes the leaf-safe subset for exports — the same tier-up
     // rationale as the statement path (leaves into exports are fine; relocated kernels are not).
-    const exprActive = func.exported
+    const exprActive = isExported(func)
       ? new Map([...exprOnlyCandidates].filter(([n]) => exportedCandidates.has(n)))
       : exprOnlyCandidates
     // Iterate to a (bounded) fixpoint: inlining a call whose args are themselves candidate calls
@@ -867,7 +868,7 @@ export const specializeFixedRestCalls = (programFacts) => {
     // identical retarget-loop skip, for the same reason).
     if (site.synthetic) continue
     const func = ctx.funcs.map.get(site.callee)
-    if (!func?.rest || func.exported || func.raw || !func.body) continue
+    if (!func?.rest || isExported(func) || func.raw || !func.body) continue
     if (programFacts.addressTakenNames.has(func.name)) continue
     if (func.defaults && Object.keys(func.defaults).length) continue
     if (site.argList.some(a => Array.isArray(a) && a[0] === '...')) continue

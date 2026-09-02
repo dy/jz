@@ -29,6 +29,7 @@ import { eqIdentityChain } from '../layout-kinds.js'
 import { registerF16 } from './core/f16.js'
 import { registerErrorClasses } from './core/error-object.js'
 import { registerDurableLog } from './core/durable-log.js'
+import { isExported } from '../src/compile/func-exports.js'
 
 const NAN_BITS = nanPrefixHex()
 
@@ -1520,7 +1521,7 @@ export default (ctx) => {
   const hasExternalIngress = () => {
     if (externalIngress == null) externalIngress = ctx.transform.targetProfile.envImports && (
       ctx.module.imports.some(i => i[3]?.[0] === 'func') ||
-      ctx.funcs.list.some(f => f.exported && f.sig?.params?.some(p => p.type === 'f64'))
+      ctx.funcs.list.some(f => isExported(f) && f.sig?.params?.some(p => p.type === 'f64'))
     )
     return externalIngress
   }
