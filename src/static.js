@@ -61,6 +61,12 @@ export function constIntExpr(node) {
   if (op === '-') return a - b
   if (op === '*') return a * b
   if (op === '<<') return a << b
+  if (op === '>>') return a >> b
+  if (op === '>>>') return a >>> b
+  if (op === '&') return a & b
+  if (op === '|') return a | b
+  if (op === '^') return a ^ b
+  if (op === '%') return b === 0 ? null : a % b
   return null
 }
 
@@ -142,6 +148,17 @@ export function intExprRange(n) {
   if ((op === 'u-' || op === '-') && n.length === 2) {
     const a = intExprRange(n[1])
     return a ? [-a[1], -a[0]] : null
+  }
+  // `x % K` by a positive literal on an integer-hulled dividend: the
+  // remainder takes the dividend's sign and stays below K (a `>>>`/`&` form
+  // is non-negative by the rules above, so `(s >>> 8) % 6` is [0, 5]).
+  if (op === '%' && n.length === 3) {
+    const k = constIntExpr(n[2]), a = intExprRange(n[1])
+    if (k != null && k > 0 && a) {
+      if (a[0] >= 0) return [0, Math.min(a[1], k - 1)]
+      if (a[1] <= 0) return [Math.max(a[0], 1 - k), 0]
+      return [Math.max(a[0], 1 - k), Math.min(a[1], k - 1)]
+    }
   }
   // `++x`/`--x` as an expression VALUE is always the NEW (post-mutation) value at
   // this AST layer — postfix `x++`'s old-value form is `(++x) - 1` (ast.js), so a

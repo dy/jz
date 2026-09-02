@@ -304,7 +304,9 @@ test('devirtSchemaReads: stable receiver hoists one sid; proven discriminant fie
   }
   const geo = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? o.r * 3 + o.x : o.w * o.h }
   export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  // `geo` is a hot leaf the speed tier would splice into f's loop; the pass
+  // under test needs it as its own function, so keep it out of the inliner.
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const gAt = w.indexOf('(func $geo')
   ok(gAt >= 0, 'geo compiles as its own function pre-watr')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
@@ -371,7 +373,7 @@ test('devirtSchemaReads: duplicate read of the same (receiver, prop) reuses one 
   const geo = (o) => { const s = o.t; return s === 0 ? o.x * 2 + o.y : s === 1 ? ${body} : o.w * o.h }
   export let f = () => { const rows = mkRows(); let acc = 0; for (let i = 0; i < rows.length; i++) acc += geo(rows[i]); return acc }`
   const src = mkSrc('o.r * (o.r + 3)')
-  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false } })
+  const w = jz.compile(src, { wat: true, optimize: { level: 'speed', watr: false, sourceInline: false } })
   const gAt = w.indexOf('(func $geo')
   const geoWat = w.slice(gAt, w.indexOf('(func', gAt + 1))
   ok(/\$__dsrm\d+/.test(geoWat), 'duplicated read tees its i64 into a memo local')
@@ -801,7 +803,11 @@ test('peephole: eq-zero canonicalizes computed operands and preserves bare-local
 test('peephole: eq-zero keeps dense-switch lowering and non-switch values across O0/O2/O3', () => {
   const ops = (fn, op) => count(fn, n => n[0] === op)
   for (const optimize of [0, 2, 3]) {
-    const pre = parse(EQ_ZERO_KERNEL, preWatr(optimize))
+    // The speed tier splices the hot leaf into chain's loop (its scrutinee
+    // then rides a tee, which watr's chainTable does not lower); the shape
+    // under test is the standalone function's, so keep it out of the inliner.
+    const structural = optimize === 3 ? { level: 3, sourceInline: false } : optimize
+    const pre = parse(EQ_ZERO_KERNEL, preWatr(structural))
     const dispatch = findFunc(pre, '$dispatch')
     const masked = findFunc(pre, '$masked')
     const reversed = findFunc(pre, '$reversed')
@@ -813,7 +819,7 @@ test('peephole: eq-zero keeps dense-switch lowering and non-switch values across
     } else {
       is(ops(masked, 'i32.eqz'), 1, `O${optimize}: right-zero computed comparison uses eqz before watr`)
       is(ops(reversed, 'i32.eqz'), 1, `O${optimize}: left-zero computed comparison uses eqz before watr`)
-      is(count(parse(EQ_ZERO_KERNEL, optimize), n => n[0] === 'br_table'), 1,
+      is(count(parse(EQ_ZERO_KERNEL, structural), n => n[0] === 'br_table'), 1,
         `O${optimize}: the complete dense chain reaches one br_table`)
     }
 
@@ -2203,15 +2209,16 @@ test('promoteIntArrayLiterals: bare-name escape disqualifies', () => {
 })
 
 test('promoteIntArrayLiterals: closure-capture disqualifies', () => {
-  // The inliner is happy to fold trivial arrows; give the closure a side
-  // effect so it survives to the promotion gate as a real captured closure.
+  // The inliner folds a local arrow wherever every call folds; a bare
+  // reference to it (`pick`) keeps it a real captured closure for the gate.
   const src = `
     export const main = (k) => {
       let count = 0
       const xs = [1, 2, 3, 4, 5]
       const at = (i) => { count = count + 1; return xs[i] }
+      const pick = k < 0 ? at : at
       let s = 0
-      for (let i = 0; i < xs.length; i++) s += at((i + (k & 0)) | 0)
+      for (let i = 0; i < xs.length; i++) s += pick((i + (k & 0)) | 0)
       return s + count
     }
   `

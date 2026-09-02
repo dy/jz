@@ -983,3 +983,65 @@ useful finding: bucket (b) was "one hard case, then three", and is now
 one missing general-array range-proof class." That class, if built, would
 likely unblock both remaining instances at once — a genuine next campaign
 target, not merely two more one-off gaps.
+
+---
+
+### 7. Size rows closed as codegen classes (2026-09-02)
+
+Method as §3: `optimize:'size'` bytes per bench case against AS; per-function
+attribution from the reassembled WAT (`scripts`-free scratch: watr's
+`compile.js` over `compile(src,{wat:true})`, code-section entry sizes by
+index). Every class below is a general lowering with a differential test
+and a byte ratchet in `test/minimal-output.js`; the bench sources are
+untouched.
+
+| class | mechanism | rows moved (jz bytes, before → after; AS) |
+|---|---|---|
+| multi-cell push | `__arr_push_slot(ptr, strideB) → (ptr, slot)` reserves a structInline/union element out of line; a site stores only its fields; used when the receiver has ≥2 push sites in the function (a lone site keeps the inline sequence, the helper alone outweighs it); `.push` in statement position returns void | shapes 2712 → 2061 (1695) |
+| field bounds | interval prover: `^` joins `|`'s field rule, compound assignments transfer through the evaluator (`bit >>= 1`), and a widened name retries the fixpoint at its power-of-two field (lo 0, hi 2^k−1) as one inductive trial adopted only when every field and every name it un-nulls holds; `constIntExpr` folds `>> >>> & | ^ %` so `new Float64Array(N >> 1)` is a static length | fft 2261 → 2023 (1758) |
+| owned view base | `new T(x.buffer, x.byteOffset, n)` over an owned typed array reads x's data offset directly (no BUFFER box, no forwarding chase) | resample 1812 → 1473 (1463) |
+| post-inc int read | a proven `src[ip++]` of an integer element keeps the convert outermost so an integer store or `|0` peels it (no ToUint8 select chain) | lz 1986 → 1967 (1910) |
+| `sourceInlineDup` | size tier: a looped kernel with several call sites stays one function (`pass(a,b)` ×2 was spliced twice) | resample, sdf, bezfit, slices |
+| local lambda hoist | `inlineLocalLambdas` hoists calls to a small loop-free block lambda out of expression position (multi-declarator `const a = rnd(), b = rnd()`, compound `f |= rnd() & 1`, and `out[w++] = rnd()` when the callee commutes with the index write: no calls, no memory writes, no shared name); adopted only when every site folds, else withdrawn. The compound-assignment case also reaches the speed tier's hot-leaf inliner, so `acc += geo(o)` now splices like `acc = acc + geo(o)` did; a multi-use arithmetic argument (`dispatch(i % 6, …)`) is bound to a temp instead of re-evaluated per use | glyfparse 2944 → 2802 (2408), bezfit 3369 → 3328 (3017), sdf 2460 → 2351 (2209), slices 1869 → 1794 (1657) |
+| uint32 draws | `narrowUint32` admits a `>>>`-shaped initializer (`const u = s >>> 0`); `%` by a positive literal on a uint32 dividend is `i32.rem_u` | same rows |
+| long concat | `s + BASE` with a side statically longer than the SSO capacity (a literal, a module-const string) is heap-only: `__str_concat_raw{,_fresh}_long` twins without the empty/SSO arms; the self-accumulating form keeps its bump-extend | tokenizer 1775 → 1482 (1551) |
+| factory length | a typed factory whose returned local is `new T(n)` with `n` a call-site constant publishes `sig.typedLen`; the caller's `const sig = mkSignal(N)` proves its accesses like a local constructor (`re[i] = sig[i]` in fft's reset) | fft 2004 → 1964 (1758) |
+| lean grow | `__memgrow` counts pages in i32 (`next >>> 16` plus a partial page) and drops the wasm32-ceiling clamp the exact-delta retry already covers: −19 B in every allocating binary | noise 1870 → 1851 (1868), resample → 1358 (1463) |
+| print lines | console templates lower to `strcat`; the flatten matched a `.concat` chain that no longer exists, so every `console.log(\`a=${x}\`)` linked ryu and the string runtime (6,012 B for one line → 150 B); both hosts printed booleans as `0`/`1` | not a bench row (the bench offloads `printResult`) |
+
+Found and fixed on the way: `out[w++] = draw()` spliced the callee's
+prefix before the index effect (wrong order at every tier; pinned in
+`minimal-output.js`).
+
+Open, with the mechanism named:
+
+- (closed the same day) `const o = rows[i]` with `if (o.k === 0)` as the
+  discriminant now takes the union carrier like the `const k = o.k` alias
+  form (21,632 → 1,203 B); on the way, a union-set cursor the carrier did
+  NOT admit was being unboxed to a raw offset and reboxed with schema 0, so
+  a dynamic read of a member's own field returned `undefined` at every tier
+  (pinned in `test/objects.js`); an unadmitted cursor keeps its box, an
+  admitted one settles to i32 storage after the registry verdict.
+- immutable (1512 vs 1481), lz (1948 vs 1910): a local array grown only
+  through its own name (`ps.push(…)`, `ps[i] = …`, never aliased, stored,
+  passed or captured before its last use) is always current, so its reads
+  need no forwarding chase (`__ptr_offset`, 72 B plus a call per site: a
+  mask would do). Needs an audit that every grow path writes the pointer
+  back before the fact is trusted; memory-safety-critical, like neverGrown.
+- watr's `chainTable` lowers a dense `if (t === K)` chain only over bare
+  `local.get` compares; when the scrutinee's `local.set` is fused into a
+  `local.tee` at the head (the shape an inlined `dispatch(i % 6, …)` takes
+  at the speed tier), the chain keeps its if-ladder. A leading-tee hoist in
+  watr's matcher would recover the br_table.
+- wordcount (4791 vs 3480): the string runtime (`__str_eq` 448 B, `__str_hash`
+  346 B, `__arr_push1` 260 B, the inlined dictionary probe in `runKernel`)
+  against AS's `Map<string,i32>` primitives; a -Os twin of the equality and
+  hash walks (no hot/cold split, no 4-byte chunking) is the named lever; shapes
+  (1986 vs 1695): union push sites still zero-fill their unused lanes per
+  site, and `main` carries the inlined setup; fft (1964 vs 1758): the
+  butterfly's `re[a]`, `re[b]`, `wre[k]` need the power-of-two stride
+  relation (`i` a multiple of `len`, `len | n`) the interval prover cannot
+  express, and the size tier runs no loop versioning; glyfparse (2783 vs
+  2408): `w` stays f64 because the trip count through `np = 20 + rnd() %
+  101` needs a return-range fact for the (now inlined) draw and a budget
+  over data-dependent trips.

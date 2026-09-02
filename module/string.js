@@ -44,7 +44,7 @@ const SSO_SLICE_I64 = '0x' + (LAYOUT.SSO_BIT | LAYOUT.SLICE_BIT).toString(16) + 
 // (SLICE_BIT at 45 stays 0). 6 chars fit (6*7=42, + 3-bit len). ASCII-only — a byte
 // ≥0x80 falls back to a heap string. The 7-bit-uniform layout makes equal short strings
 // content-bit-equal (so `op === 'tag'` is a bare i64.eq) and never touches memory.
-const MAX_SSO =6
+const MAX_SSO = LAYOUT.MAX_SSO
 const SSO_LEN_SHIFT = 10  // length occupies aux bits 10-12 (= payload bits 42-44)
 const SSO_CHAR_MASK = '0x3ffffffffff'  // payload bits 0-41: the 6 × 7-bit char lanes
 // JS: ASCII string → { aux, offset }, or null when ineligible (too long / non-ASCII).
@@ -165,6 +165,8 @@ export default (ctx) => {
     __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_concat_fresh: ['__to_str', '__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_concat_raw_fresh: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
+    __str_concat_raw_long: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
+    __str_concat_raw_fresh_long: ['__str_byteLen', '__alloc', '__mkptr', '__str_copy'],
     __str_append_byte: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_copy: [],
     // __str_slice/_view are FUNCTION templates: resolveIncludes' auto-dep scan realizes the
@@ -1366,6 +1368,23 @@ export default (ctx) => {
       (then (return (call $__mkptr (i32.const ${PTR.STRING}) (i32.const ${LAYOUT.SSO_BIT}) (i32.const 0)))))
     ${ssoResultFast}
     ${concatSsoPack}${allocCopyTail}`)
+
+  // Long twins: a side statically longer than the SSO capacity (a literal, a
+  // module-const string) makes the result heap-only, so the empty and SSO
+  // arms are dead — only the bump-extend (`_long`) or the fresh copy remains.
+  wat('__str_concat_raw_long', `(func $__str_concat_raw_long (param $a i64) (param $b i64) (result f64)
+    (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
+    (local $ta i32) (local $aoff i32) (local $newHeap i32)
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $total (i32.add (local.get $alen) (local.get $blen)))
+    ${concatFast}${allocCopyTail}`)
+
+  wat('__str_concat_raw_fresh_long', `(func $__str_concat_raw_fresh_long (param $a i64) (param $b i64) (result f64)
+    (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
+    (local.set $alen (call $__str_byteLen (local.get $a)))
+    (local.set $blen (call $__str_byteLen (local.get $b)))
+    (local.set $total (i32.add (local.get $alen) (local.get $blen)))${allocCopyTail}`)
 
   wat('__str_replace', `(func $__str_replace (param $str i64) (param $search i64) (param $repl i64) (result f64)
     (local $idx i32) (local $slen i32)

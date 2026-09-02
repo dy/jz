@@ -17,8 +17,9 @@ What this session established and closed on the way:
 - [x] numeric array-like export parameters arrive as `Float64Array` and copy back when written (the wrapper never copied writes back before); the body and its callees read typed storage; a probe 23,822 to 791 bytes
 - [x] real programs: `scripts/library-census.mjs`; color-space whole and 28 of 37 audio packages compile after 16 fixed classes; remaining rejections are object rest on unknown shapes, `try` across `await`, top-level `await`; web-audio-api needs class accessors (phase 4)
 - [x] `scripts/compile-budget.mjs` against the 0.9.2 tag: library bytes +2 to 13%, compile time +14 to 34%, cumulative correctness on unknown receivers (real Error objects, the `.set` dispatch fork, erased-provenance rejection); 70% of compile time is watr scaling with emitted WAT
-- [ ] the size rows: wordcount and tokenizer are the string runtime (`__to_str`, ryu, hashing) against AS's string primitives; shapes, slices, resample, fft, glyfparse are dynamic-receiver forks and allocator/header weight on small kernels
-- [ ] the speed rows: trace and sdf are call-heavy recursion with boxed tuples (multi-value return materialization, closure dispatch); sort is the comparator call; glyfparse is byte-scan dispatch; the rest are within 5% and move with watr's own peephole
+- [x] size rows closed as codegen classes (2026-09-02, `.work/ledger-performance.md` §7): tokenizer, resample, noise, raytrace, delayline; each a general lowering with its differential test and byte ratchet in `test/minimal-output.js` (multi-cell push slots, power-of-two field bounds in the interval prover, owned typed views, local-lambda splicing with uint32 draws, long-literal concat twins, factory result lengths, a leaner `__memgrow`)
+- [ ] the size rows still red, with the mechanism each needs: wordcount (the `__str_eq`/`__str_hash` walks against AS's Map primitives, a -Os twin), shapes and fft (the harness's inlined setup; fft's butterfly needs the power-of-two stride relation the prover cannot express), glyfparse (`w` stays f64 without a return-range fact and a budget over data-dependent trips), bezfit, sdf, slices, lz, immutable (a locally-grown array's reads need no forwarding chase)
+- [ ] the speed rows: every measurement this session ran on a loaded machine (jz and the rival lanes concurrently; `sort` measured 6.1 and 19.3 ms on one binary), so the speed ledger is unmeasured until a quiet sequential run; the last quiet run (2026-08-27) named trace and sdf (call-heavy recursion with boxed tuples), sort (the comparator call), glyfparse (byte-scan dispatch), the rest within 5%
 - [ ] the conditional row's NaN canonicalization on `-x` (82 vs 61 bytes) drops under the typed ABI (phase 3)
 - [ ] `optimize: 'size'` emits 24% less than the default on parser-like code (jessie 87,584 against 115,508): the default profile's speed-for-size trades become receiver-aware or `size` becomes the library default
 - [ ] README numbers restated under their contract (typed or guarded ABI); tag 1.0.0 when the ledger is empty
@@ -57,6 +58,10 @@ Grow `core/` out of the migrated `src/` stages and give it the IR. Two halves, e
 - [ ] i32 parameters and results carried as i32; the exact-conversion helper appears only where JS semantics require ToInt32 of an f64
 - [ ] acorn as the parser; the early-errors checker and the accept ledger are not ported
 - [ ] watr stays the encoder and final peephole
+- [ ] one range analysis on the IR replaces the five integer-range channels the v1 size closes had to touch in parallel (`constIntExpr`, `intExprRange`, the interval prover's own evaluator, `narrowUint32`, the `.unsigned` IR flag); the power-of-two field rule and the uint32 remainder rule become cases of it, and `exprType`'s mirror of emit's `%` rule (two places that agree by discipline) disappears because a storage type is a property of the IR value
+- [ ] one function summary per function (parameter kinds, constants, lengths, schemas; result kind, aux, length, range) replaces the spread of `paramReps` fields, `sig.ptrKind`/`ptrAux`/`typedLen` and `valResult`; the factory-length fact and glyfparse's missing return range are its first two consumers
+- [ ] a compiler decision never runs a transcendental: the field bound went through `Math.log2` and diverged by one ulp between the native and the self-hosted compiler (kernel parity caught it); integer arithmetic only
+- [ ] a congruence domain for the stride relation (`i` a multiple of `len`, `len | n`): the radix-2 butterfly is the exit specimen
 
 Exit proof: the compact corpus and the numeric bench cases compile through the IR; the bitwise row beats 120 bytes; the typed SIMD row keeps its 287-byte, 4.69x win; peak compile memory is linear in function count.
 
@@ -75,6 +80,7 @@ Exit proof: the typed-kinds corpus (`spec/subset.md`) compiles through the IR wi
 - [ ] `array T`, `dict V`, `Map`, `Set`, JSON, Number, Math, Date (UTC), RegExp subset; per-container free lists so a long-lived container reuses its own cells
 - [ ] the `any` operations: tagging, kind checks, and the good-parts operators over the subset kinds
 - [ ] every runtime function is jz source compiled by the core; a runtime function the core compiles badly is a core inference gap and goes on the roadmap
+- [ ] a runtime function specializes by its call-site facts through the ordinary inliner, never by a hand-written twin: `__str_concat` carries six template twins today (`_raw`, `_fresh`, `_raw_fresh`, `_long`, `_fresh_long`); the exit proof compiles the concat family from one jz source and matches each twin's bytes at its call sites, and the `-Os` walks (`__str_eq`, `__str_hash`) are the size profile of that same source
 - [ ] the WAT template registry, its two registration dialects, and its integrity verifier are not ported
 
 Exit proof: the runtime passes its own differential tests against JS, and the core's compile of the runtime is at least as small as the equivalent WAT template family.

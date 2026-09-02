@@ -308,9 +308,16 @@ export default (ctx) => {
         // Eager construction pins this closure's own kind (byte-neutral natively).
         const strideConst = ['i32.const', stride]
         const tagIR = mkPtrIR(PTR.TYPED, typedAux(name, true), ['local.get', `$${dst}`])
+        // `x.buffer` of an owned typed array shares x's data offset: read it from
+        // x directly (an unboxed typed local is its offset) instead of boxing a
+        // BUFFER pointer and chasing forwarding it can never carry.
+        const ownedBase = Array.isArray(lenExpr) && lenExpr[0] === '.' && lenExpr[2] === 'buffer'
+          && (c => c?.startsWith('new.') && !c.endsWith('.view') && TYPED_ELEM_CODE[c.slice(4)] != null)(plannedTypedStorageCtor(ctx, lenExpr[1]))
+          ? ptrOffsetIR(emit(lenExpr[1]), VAL.TYPED) : null
         return typed(['block', ['result', 'f64'],
-          ['local.set', `$${src}`, asF64(emit(lenExpr))],
-          ['local.set', `$${parentOff}`, ptrOffsetIR(['local.get', `$${src}`], srcType)],
+          ...(ownedBase ? [['local.set', `$${parentOff}`, ownedBase]] : [
+            ['local.set', `$${src}`, asF64(emit(lenExpr))],
+            ['local.set', `$${parentOff}`, ptrOffsetIR(['local.get', `$${src}`], srcType)]]),
           ['local.set', `$${byteLen}`, ['i32.mul', asI32(emit(lenExpr2)), strideConst]],
           ['local.set', `$${dst}`, ['call', '$__alloc', ['i32.const', 16]]],
           ['i32.store', ['local.get', `$${dst}`], ['local.get', `$${byteLen}`]],
@@ -1731,7 +1738,13 @@ export default (ctx) => {
       vi = ['local.get', `$${ti}`]
     }
     const off = ['i32.add', typedDataAddr(objIR, isView), ['i32.shl', vi, ['i32.const', SHIFT[et]]]]
-    const value = post ? ['block', ['result', 'f64'], ...post.pre, loadOf(off)]
+    // A post-increment read of an integer element keeps the convert outermost
+    // (`convert(block (result i32) pre… load)`), so an integer store or `|0`
+    // consumer peels it back to the raw i32 exactly as for a plain read.
+    const intElem = et <= 5 && !isBigInt && !r.isF16
+    const value = post ? (intElem
+        ? [(et & 1) ? 'f64.convert_i32_u' : 'f64.convert_i32_s', ['block', ['result', 'i32'], ...post.pre, [LOAD[et], off]]]
+        : ['block', ['result', 'f64'], ...post.pre, loadOf(off)])
       : indexPre ? ['block', ['result', 'f64'], indexPre,
           ['if', ['result', 'f64'], indexValid, ['then', loadOf(off)], ['else', undefExpr()]]]
       : loadOf(off)

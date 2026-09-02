@@ -91,11 +91,25 @@ const inlinedBody = (func, args) => {
   // never duplicating the expression. This lets nested calls inline: `lerp(grad(a), grad(b), u)`
   // binds `t0 = grad(a); t1 = grad(b)` and substitutes the body with t0/t1; a later inliner pass
   // then folds grad into those temp decls (the fixpoint in inlineHotInternalCalls).
+  // An arithmetic arg that the body reads more than once (`dispatch(i % 6, …)`
+  // switching on `op` five times) is bound too: substituting it re-evaluates
+  // the expression per use and hides the dense-chain shape (`op === 0` on a
+  // computed operand folds to eqz) from the switch lowering.
   const subst = new Map()
   const argPrefix = []
+  const uses = (name) => {
+    let n = 0
+    const walk = (x) => {
+      if (x === name) n++
+      else if (Array.isArray(x) && x[0] !== 'str') for (let i = 1; i < x.length; i++) walk(x[i])
+    }
+    walk(func.body)
+    return n
+  }
   for (let i = 0; i < params.length; i++) {
     const arg = args[i]
-    if (isSimpleArg(arg)) { subst.set(params[i].name, arg); continue }
+    const atom = typeof arg === 'string' || typeof arg === 'number' || (Array.isArray(arg) && (arg[0] == null || arg[0] === 'str'))
+    if (isSimpleArg(arg) && (atom || uses(params[i].name) <= 1)) { subst.set(params[i].name, arg); continue }
     const tmp = `${T}inarg${freshId(ctx)}`
     argPrefix.push(['const', ['=', tmp, arg]])
     subst.set(params[i].name, tmp)
@@ -147,6 +161,25 @@ const partitionInvariantPrefix = (prefix, variantNames) => {
     hoisted.push(s)
   }
   return { hoisted, rest: prefix.slice(i) }
+}
+
+// Names an lvalue's evaluation writes (`out[w++]` → {w}), `true` for an opaque
+// effect (a call, a member write), `false` for none.
+const lhsWrites = (n) => {
+  if (some(n, x => x[0] === '()' || x[0] === '?.()' || x[0] === 'new' || (MUTATE_OPS.has(x[0]) && typeof x[1] !== 'string'))) return true
+  const w = new Set()
+  walkAst(n, { enter: x => { if (MUTATE_OPS.has(x[0]) && typeof x[1] === 'string') w.add(x[1]) } })
+  return w.size ? w : false
+}
+const prefixCommutesWithLhs = (prefix, lhs) => {
+  if (typeof lhs === 'string' || !prefix.length) return true
+  const seen = lhsWrites(lhs)
+  if (seen === false) return true
+  if (seen === true) return false
+  const body = [';', ...prefix]
+  if (some(body, n => n[0] === '()' || n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string'))) return false
+  for (const x of seen) if (refsName(body, x, REFS_IN_EXPR)) return false
+  return true
 }
 
 const spliceInlinedShape = (prefix, valueStmt, loopVariantNames) => {
@@ -264,10 +297,13 @@ const inlineInStmt = (stmt, candidates, loopVariantNames = null) => {
   }
   // `X = call(...)` at statement position: inline as prefix + assign(value).
   // LHS may be a name or an indexed lvalue (`out[i] = beat(...)` in fill loops).
+  // The LHS reference is evaluated before the call, so an effect in it
+  // (`out[w++] = draw()`) admits the splice only when the callee's prefix
+  // commutes with it: no calls, no memory writes, no name the LHS wrote.
   if (stmt[0] === '=' && isCandidateCall(stmt[2], candidates)) {
     const args = callArgs(stmt[2])
     const shape = args && inlinedBody(candidates.get(stmt[2][1]), args)
-    if (shape && shape.value !== null) {
+    if (shape && shape.value !== null && prefixCommutesWithLhs(shape.prefix, stmt[1])) {
       return spliceInlinedShape(shape.prefix, ['=', stmt[1], shape.value], loopVariantNames)
     }
   }
@@ -354,7 +390,7 @@ const containsEffect = (n) => some(n, n => (n[0] === '()' && !pureSIMDCall(n)) |
 // + count. Statement HEADERS that are expression positions (for-init/update, while/if test)
 // are left untouched: there's no sound place for a hoisted decl there, so those calls just
 // stay outlined. Conservatively leaves unrecognized statement shapes alone.
-const hoistNestedCalls = (body, blockNames) => {
+const hoistNestedCalls = (body, blockNames, bodies = null) => {
   if (!blockNames.size || !Array.isArray(body)) return { node: body, changed: false }
   let changed = false
   const seq = (stmts) => stmts.length === 1 ? stmts[0] : [';', ...stmts]
@@ -364,9 +400,21 @@ const hoistNestedCalls = (body, blockNames) => {
   // left-to-right through evaluation order: a call or assignment LEFT IN PLACE marks every
   // later position. A hoisted call moves as a unit — its args run in a fresh inner eff, and
   // it does NOT advance the outer eff (the whole unit relocates together, order intact).
+  // `eff.seen` is `true` for an opaque effect, or the SET of names a preceding plain
+  // assignment wrote (`out[w++] = rnd()`): a callee whose body (`bodies`) touches no
+  // memory, calls nothing and shares no name with that set commutes with it.
+  const commutes = (name, seen) => {
+    if (seen === false) return true
+    if (seen === true) return false
+    const b = bodies?.get(name)
+    if (!b || some(b, n => n[0] === '()' || n[0] === 'new' || (MUTATE_OPS.has(n[0]) && typeof n[1] !== 'string'))) return false
+    for (const x of seen) if (refsName(b, x, REFS_IN_EXPR)) return false
+    return true
+  }
+  const note = (eff, w) => { eff.seen = eff.seen === true || w === true ? true : w === false ? eff.seen : eff.seen === false ? w : new Set([...eff.seen, ...w]) }
   const hExpr = (n, pre, cond, eff) => {
     if (!Array.isArray(n) || n[0] === '=>') return n
-    if (!cond && !eff.seen && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1])) {
+    if (!cond && n[0] === '()' && typeof n[1] === 'string' && blockNames.has(n[1]) && commutes(n[1], eff.seen)) {
       const call = [n[0], n[1], ...n.slice(2).map(a => hExpr(a, pre, false, { seen: false }))]
       const tmp = `${T}inl${freshId(ctx)}_h`
       pre.push(['const', ['=', tmp, call]])
@@ -387,7 +435,8 @@ const hoistNestedCalls = (body, blockNames) => {
     if (SHORT_CIRCUIT.has(n[0]))
       return [n[0], hExpr(n[1], pre, cond, eff), ...n.slice(2).map(c => hExpr(c, pre, true, eff))]
     const out = [n[0], ...n.slice(1).map(c => hExpr(c, pre, cond, eff))]
-    if ((n[0] === '()' && !pureSIMDCall(n)) || MUTATE_OPS.has(n[0])) eff.seen = true  // an effectful call/assign left in place is an effect
+    if (n[0] === '()' && !pureSIMDCall(n)) eff.seen = true  // an effectful call left in place is an opaque effect
+    else if (MUTATE_OPS.has(n[0])) note(eff, typeof n[1] === 'string' ? new Set([n[1]]) : true)
     return out
   }
   // A RHS that is DIRECTLY a candidate call is already folded by inlineInStmt's
@@ -410,11 +459,22 @@ const hoistNestedCalls = (body, blockNames) => {
           const pre = []; const rhs = hExpr(s[1][2], pre, false, { seen: false })
           return pre.length ? [...pre, [s[0], ['=', s[1][1], rhs]]] : [s]
         }
+        // Several declarators evaluate left to right; one effect state threads
+        // through them (a declared name is out of the callee's scope, so the
+        // binding itself is not an effect the callee can observe).
+        if (s.length > 2 && s.slice(1).every(d => Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && !directCall(d[2]))) {
+          const pre = [], eff = { seen: false }
+          const decls = s.slice(1).map(d => ['=', d[1], hExpr(d[2], pre, false, eff)])
+          return pre.length ? [...pre, [s[0], ...decls]] : [s]
+        }
         return [s]
       }
       // A computed assign target (`a[i]=…`) evaluates its index BEFORE the RHS, so an effect
       // there (`a[j++]=…`) must block hoisting too — seed eff.seen from the LHS.
-      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, { seen: containsEffect(s[1]) }); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      case '=': { if (directCall(s[2])) return [s]; const pre = []; const rhs = hExpr(s[2], pre, false, { seen: lhsWrites(s[1]) }); return pre.length ? [...pre, ['=', s[1], rhs]] : [s] }
+      // Compound assignment reads its target before the RHS (a read, not an effect).
+      case '+=': case '-=': case '*=': case '|=': case '&=': case '^=': case '<<=': case '>>=': case '>>>=':
+        { const pre = []; const rhs = hExpr(s[2], pre, false, { seen: lhsWrites(s[1]) }); return pre.length ? [...pre, [s[0], s[1], rhs]] : [s] }
       case 'return': { if (s.length < 2 || directCall(s[1])) return [s]; const pre = []; const v = hExpr(s[1], pre, false, { seen: false }); return pre.length ? [...pre, ['return', v]] : [s] }
       default: return [s]  // unrecognized shape (break/continue/throw/try/switch): leave alone
     }
@@ -526,6 +586,8 @@ export const inlineHotInternalCalls = (programFacts, ast) => {
     // inlined, some calls) makes duplicate pure subtrees structurally unequal.
     const leafSiteCap = (isTinyLeaf || isSmallLeaf) ? Math.max(8, Math.floor(360 / Math.max(1, nodeSize(func.body)))) : 8
     if (!sites || sites.length < 1 || (!isTinyLeaf && !isSmallLeaf && !fixedTypedArraySite && sites.length > 2) || sites.length > leafSiteCap) continue
+    // Size tier: a looped kernel is spliced only where that duplicates nothing.
+    if (hasLoop && sites.length > 1 && cfg && cfg.sourceInlineDup === false) continue
     const stmts = blockStmts(func.body)
     // Expression-bodied arrow funcs (`(c) => expr`) have no block — body IS the
     // return value. Treat as a "tiny leaf" branch handled below; force hasLoop=false.
@@ -792,25 +854,44 @@ const inlineLocalLambdasInBody = (getBody, setBody) => {
   if (!decls.size) return false
 
   const asFunc = info => ({ sig: { params: info.params.map(name => ({ name })) }, body: info.arrow[2] })
-  const stmtCands = new Map(), exprCands = new Map()
-  for (const [name, info] of decls)
-    (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
+  // A small loop-free block body (`const rnd = () => { s ^= …; return s >>> 0 }`)
+  // is reached in expression position by hoisting the call to a temp decl
+  // first — the closure it would otherwise become (env cell, boxed capture,
+  // f64 return) costs more than the spliced body at every site. Kept only
+  // when EVERY site folds: a surviving site would leave the closure alive
+  // beside the copies, so the pass reruns without that candidate.
+  const hoistable = (info) => Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}'
+    && !some(info.arrow[2], n => LOOP_OPS.has(n[0])) && nodeSize(info.arrow[2]) <= 48
+  for (;;) {
+    const stmtCands = new Map(), exprCands = new Map(), hoistNames = new Set()
+    for (const [name, info] of decls) {
+      (Array.isArray(info.arrow[2]) && info.arrow[2][0] === '{}' ? stmtCands : exprCands).set(name, asFunc(info))
+      if (hoistable(info)) hoistNames.add(name)
+    }
+    let out = body, didChange = false
+    if (hoistNames.size) {
+      const bodies = new Map([...decls].filter(([name]) => hoistNames.has(name)).map(([name, info]) => [name, info.arrow[2]]))
+      const h = hoistNestedCalls(out, hoistNames, bodies)
+      if (h.changed) { out = h.node; didChange = true }
+    }
+    if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r) { out = r.node; didChange = true } }
+    if (exprCands.size) { const next = inlineInExpr(out, exprCands); if (next !== out) { out = next; didChange = true } }
+    if (!didChange) return false
 
-  let out = body, didChange = false
-  if (stmtCands.size) { const r = inlineInStmt(out, stmtCands); if (r) { out = r.node; didChange = true } }
-  if (exprCands.size) { const next = inlineInExpr(out, exprCands); if (next !== out) { out = next; didChange = true } }
-  if (!didChange) return false
-
-  // Remove decls of candidates that are now fully consumed.
-  const newStmts = bodyStmtList(out)
-  const dead = new Set()
-  for (const [name, info] of decls) {
-    if (!newStmts.some(s => s !== info.stmt && refsName(s, name, REFS_IN_EXPR))) dead.add(info.stmt)
+    // Remove decls of candidates that are now fully consumed; a hoisted
+    // candidate that survives is withdrawn and the body rebuilt without it.
+    const newStmts = bodyStmtList(out)
+    const dead = new Set()
+    let retry = false
+    for (const [name, info] of decls) {
+      if (!newStmts.some(s => s !== info.stmt && refsName(s, name, REFS_IN_EXPR))) dead.add(info.stmt)
+      else if (hoistNames.has(name)) { decls.delete(name); retry = true }
+    }
+    if (retry) { if (!decls.size) return false; continue }
+    if (dead.size) out = removeStmts(out, dead) ?? [';']
+    setBody(out)
+    return true
   }
-  if (dead.size) out = removeStmts(out, dead) ?? [';']
-
-  setBody(out)
-  return true
 }
 
 export const inlineLocalLambdas = () => {

@@ -456,9 +456,11 @@ export const sso = {
       return ['call', '$' + fn, ssoI64(aF64), ssoI64(bF64)]
     },
 
-    /** Concat assuming both sides are already strings (skip ToString). */
-    concatRaw: (aF64, bF64, ctx, ext = false) => {
-      const fn = ext ? '__str_concat_raw' : '__str_concat_raw_fresh'
+    /** Concat assuming both sides are already strings (skip ToString).
+     *  `long`: a side is statically longer than the SSO capacity, so the
+     *  result is heap-only and the twin without SSO arms serves. */
+    concatRaw: (aF64, bF64, ctx, ext = false, long = false) => {
+      const fn = (ext ? '__str_concat_raw' : '__str_concat_raw_fresh') + (long ? '_long' : '')
       ctx.core.includes.add(fn)
       return ['call', '$' + fn, ssoI64(aF64), ssoI64(bF64)]
     },

@@ -4,7 +4,7 @@
  * @module compile/emit/arithmetic
  */
 
-import { ctx, err, inc } from '../../ctx.js'
+import { ctx, err, inc, LAYOUT } from '../../ctx.js'
 import {
   FALSE_NAN, NULL_NAN, TRUE_NAN, asF64, asI32, asI64, block64, emitNum, f64rem, fromI64, isLit, isPostfix, isPureIR, litVal, readI64, temp, toNumF64, toStrI64, typed, withTemp,
 } from '../../ir.js'
@@ -230,7 +230,12 @@ export const arithmeticOps = {
           ], 'f64')
         }
       }
-      return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx, selfAccum), 'f64')
+      // A side statically longer than the SSO capacity (a literal, a module
+      // const) makes the result heap-only: the twin without SSO arms serves.
+      const staticLen = (n) => Array.isArray(n) && n[0] === 'str' && typeof n[1] === 'string' ? n[1].length
+        : typeof n === 'string' ? ctx.scope.constStrs?.get(n)?.length ?? -1 : -1
+      const long = staticLen(a) > LAYOUT.MAX_SSO || staticLen(b) > LAYOUT.MAX_SSO
+      return typed(ctx.abi.string.ops.concatRaw(asF64(emit(a)), asF64(emit(b)), ctx, selfAccum, long), 'f64')
     }
     if (vtA === VAL.STRING || vtB === VAL.STRING) {
       // An OBJECT operand coerces via ToPrimitive(string) at compile time —
@@ -525,6 +530,18 @@ export const arithmeticOps = {
         : Array.isArray(va) && va[0] === 'f64.convert_i32_s' && !va.unsigned
           ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1]) : null
       if (pa) return typed(['i32.rem_s', pa, ['i32.const', litVal(vb) | 0]], 'i32')
+    }
+    // A uint32 dividend (`(s >>> 0) % K`, the xorshift draw) by a positive
+    // literal is `i32.rem_u` on its bits, exact; the remainder is below K, so
+    // it is a plain signed i32 whenever K fits one.
+    if (isLit(vb) && Number.isInteger(litVal(vb)) && litVal(vb) > 0 && litVal(vb) < 2 ** 32 && !vb.unsigned) {
+      const pa = isI32Num(va) && va.unsigned ? va
+        : Array.isArray(va) && va[0] === 'f64.convert_i32_u' ? (Array.isArray(va[1]) ? typed(va[1], 'i32') : va[1]) : null
+      if (pa) {
+        const r = typed(['i32.rem_u', pa, ['i32.const', litVal(vb) >>> 0 | 0]], 'i32')
+        if (litVal(vb) > 2 ** 31) r.unsigned = true
+        return r
+      }
     }
     // Fast path: positive literal divisor → inline a - trunc(a/b) * b.
     // Exact when |a| < 2^53 × |b| (all practical audio/control-range values).

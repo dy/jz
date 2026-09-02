@@ -68,6 +68,7 @@ export const PASS_NAMES = [
   'internStrings',            // slice/substring results probe the static-literal pool: equal-content → canonical bits (bit-eq fast paths)
   'hoistConstantPool',
   'sourceInline',
+  'sourceInlineDup',          // splice a looped kernel at MORE than one call site (×sites body duplication — speed-for-size)
   'smallConstForUnroll',
   'nestedSmallConstForUnroll',
   'splitScratch',             // SSA-split scalar scratch from unrolled loop copies, then LICM

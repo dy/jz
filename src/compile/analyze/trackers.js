@@ -55,7 +55,11 @@ export const makeTypedTracker = (get, set, del, getLen, setLen, delLen) => {
           // the source's static length: typed arrays never resize, and typedLen
           // facts are single-def-stable by construction (validate strips written
           // params; the tracker invalidates redefs), so the copy is exact.
-          const len = typedStaticLen(rhs) ?? (typeof rhs === 'string'
+          // A call to a typed factory carries the length its signature
+          // published (narrow/results.js).
+          const callLen = Array.isArray(rhs) && rhs[0] === '()' && typeof rhs[1] === 'string'
+            ? ctx.funcs.map?.get(rhs[1])?.sig?.typedLen ?? null : null
+          const len = typedStaticLen(rhs) ?? callLen ?? (typeof rhs === 'string'
             ? getLen(rhs) ?? ctx.func.typedLen?.get(rhs) ?? ctx.scope?.globalTypedLen?.get(rhs) ?? null
             : null)
           const prevLen = getLen(name)

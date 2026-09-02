@@ -29,6 +29,10 @@ import { idxKey, redeclaresName, collectDecls, isUnitDecrement } from './canonic
 // length are recorded proven; everything else stays checked/versioned.
 
 const IP_LIM = 0x40000000   // endpoints beyond ±2^30 widen to unknown (i32 headroom)
+// The smallest 2^k − 1 covering a non-negative m: the top of m's bit field. Integer
+// arithmetic on purpose — a transcendental (`Math.log2`) may differ in its last bit
+// between the native and the self-hosted compiler, and a proof must not.
+const fieldAbove = (m) => m <= 0 ? 0 : 2 ** (32 - Math.clz32(m)) - 1
 const ipOk = (v) => v != null && v[0] >= -IP_LIM && v[1] <= IP_LIM
 // Initializer roots whose true result can carry range facts through a named const.
 const RANGE_GUARD_OPS = new Set(['&&', '<', '<=', '>', '>=', '===', '!=='])
@@ -119,7 +123,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     }
     return null
   }
-  const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|'])
+  const ARITH = new Set(['+', '-', '*', '<<', '>>', '>>>', '&', '%', '|', '^'])
   const ev = (e) => {
     const n = constInt(e)
     if (n != null) return [n, n]
@@ -191,14 +195,11 @@ function scanIntervalIdx(body, out, lens, ranges) {
     else if (op === '>>' && B[0] === B[1] && B[0] >= 0 && B[0] <= 31) r = [A[0] >> B[0], A[1] >> B[0]]
     else if (op === '>>>' && B[0] === B[1] && B[0] >= 0 && A[0] >= 0) r = [A[0] >>> B[0], A[1] >>> B[0]]
     else if (op === '&' && B[0] === B[1] && B[0] >= 0 && B[0] <= 0x7fffffff) r = [0, B[0]]
-    // OR of two known non-negative fields cannot set a bit above either
+    // OR / XOR of two known non-negative fields cannot set a bit above either
     // operand's highest possible bit. This covers packed table indices such as
-    // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint.
-    else if (op === '|' && A[0] >= 0 && B[0] >= 0) {
-      const m = Math.max(A[1], B[1])
-      const hi = m === 0 ? 0 : 2 ** Math.ceil(Math.log2(m + 1)) - 1
-      r = [0, hi]
-    }
+    // `((a & 3) << 4) | (b >>> 4)` without assuming the fields are disjoint,
+    // and the bit-reversal cursor `j ^= bit` staying inside its field.
+    else if ((op === '|' || op === '^') && A[0] >= 0 && B[0] >= 0) r = [0, fieldAbove(Math.max(A[1], B[1]))]
     else if (op === '%' && B[0] === B[1] && B[0] > 0 && A[0] >= 0) r = [0, Math.min(A[1], B[0] - 1)]
     return ipOk(r) ? r : null
   }
@@ -374,6 +375,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
     const prevRec = recording
     recording = false
     seedFn(); applyCond(); walkPass()                   // pass A: discovery
+    const stepEnv = new Map(env)
     // WIDENING JOIN: an escaping bound widens to the i32 extreme instead of the
     // one-step hull — the pass-B seed's cond refinement then clamps it to the
     // loop bound. This is what turns `for (; x + 3 <= N; x += 3)` into the
@@ -387,14 +389,42 @@ function scanIntervalIdx(body, out, lens, ranges) {
         ? [b[0] < a[0] ? -IP_LIM : Math.min(a[0], b[0]), b[1] > a[1] ? IP_LIM : Math.max(a[1], b[1])]
         : null)
     }
+    // FIELD BOUNDS: a widened name may hold a bit-pattern invariant the linear
+    // hull cannot express — `bit >>= 1` never leaves [0, bit₀], `j ^= bit`
+    // never leaves the field below bit₀'s width — and the sentinel itself is
+    // too wide for the bit rules to verify. For every widened name whose edges
+    // are both non-negative, the field candidate is lo 0 and hi the smallest
+    // 2^k − 1 covering both edges; the candidates verify together in one pass
+    // after the sentinel pass, and a name adopts its field only when it holds.
+    const fields = new Map()
+    for (const [k2, j] of joined) {
+      if (!j || (j[0] !== -IP_LIM && j[1] !== IP_LIM)) continue
+      const a = entryEnv.get(k2), b = stepEnv.get(k2)
+      if (!a || !b || a[0] < 0 || b[0] < 0) continue
+      fields.set(k2, [j[0] === -IP_LIM ? 0 : j[0], j[1] === IP_LIM ? fieldAbove(Math.max(a[1], b[1])) : j[1]])
+    }
     restore(joined); seedFn(); applyCond(); walkPass()  // pass B: verify
     // the back edge re-evaluates the condition before re-entering the body, so
     // the state to verify against the invariant is walk-end ∩ cond
     applyCond()
-    for (const [k2, v2] of env) {
-      const j = joined.get(k2)
-      if (!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1])) joined.set(k2, null)
+    const holds = (k2, j) => { const v2 = env.get(k2); return !!(v2 && j && v2[0] >= j[0] && v2[1] <= j[1]) }
+    const failed = new Set()
+    for (const [k2, j] of joined) if (j && !holds(k2, j)) failed.add(k2)
+    if (fields.size) {
+      // The trial state is the sentinel join with the fields substituted, so a
+      // name that failed above only because a field name sat at its sentinel
+      // (`j ^= bit` with bit widened negative) verifies here against its own
+      // bound. The trial is inductive only as a whole: every field and every
+      // failed name must hold, or nothing from it is adopted.
+      const trial = new Map(joined)
+      for (const [k2, f] of fields) trial.set(k2, f)
+      restore(trial); seedFn(); applyCond(); walkPass(); applyCond()
+      if ([...fields].every(([k2, f]) => holds(k2, f)) && [...failed].every(k2 => holds(k2, joined.get(k2)))) {
+        for (const [k2, f] of fields) joined.set(k2, f)
+        failed.clear()
+      }
     }
+    for (const k2 of failed) joined.set(k2, null)
     // NARROWING (≤2 decreasing passes): the widened invariant is sound but
     // loose — a name with no cond conjunct to re-clamp it sits at ±IP_LIM even
     // when the loop's true range is finite (`i = child` copy chains: i only
@@ -510,10 +540,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
         if (cur) {
           if (op === '++') nv = [cur[0] + 1, cur[1] + 1]
           else if (op === '--') nv = [cur[0] - 1, cur[1] - 1]
-          else if (op === '+=' || op === '-=') {
-            const d = ev(n[2])
-            if (d) nv = op === '+=' ? [cur[0] + d[0], cur[1] + d[1]] : [cur[0] - d[1], cur[1] - d[0]]
-          }
+          else if (ARITH.has(op.slice(0, -1))) nv = ev([op.slice(0, -1), n[1], n[2]])
         }
         setEnv(n[1], nv)
       }

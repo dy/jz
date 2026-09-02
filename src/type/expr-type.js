@@ -225,8 +225,12 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   if (op === '%') {
     const ta = exprType(expr[1], locals, valTypes, strict), tb = exprType(expr[2], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
-    if (isUnsignedI32Expr(expr[1], locals) || isUnsignedI32Expr(expr[2], locals)) return 'f64'
     const dv = staticValue(expr[2])
+    if (isUnsignedI32Expr(expr[2], locals)) return 'f64'
+    // A uint32 dividend by a positive literal takes emit's `i32.rem_u` path;
+    // the remainder is below the divisor, a signed i32 whenever K ≤ 2^31.
+    if (isUnsignedI32Expr(expr[1], locals))
+      return (dv !== NO_VALUE && typeof dv === 'number' && Number.isInteger(dv) && dv > 0 && dv <= 0x80000000) ? 'i32' : 'f64'
     return (dv !== NO_VALUE && typeof dv === 'number' && dv !== 0 && Number.isInteger(dv)) ? 'i32' : 'f64'
   }
   // `*` — a JS multiply is an f64 operation; `i32.mul` reproduces it faithfully

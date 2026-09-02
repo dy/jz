@@ -784,7 +784,8 @@ export function scanNumericFill(body, isNumericRhs) {
 
 /**
  * Narrow uint32 accumulator locals to unsigned i32. A local qualifies when its
- * initializer is a non-negative integer literal in [0, 2^32) and every
+ * initializer is a non-negative integer literal in [0, 2^32) or itself a
+ * `(…) >>> k` (`const u = s >>> 0`, the xorshift draw) and every
  * reassignment is `name = (…) >>> k` — that WRITE invariant alone proves the
  * local always holds a canonical uint32 bit pattern (ToUint32 is idempotent:
  * re-masking an already-masked value is a no-op), independent of how the
@@ -827,7 +828,7 @@ export function narrowUint32(body, locals) {
         const d = node[i]
         if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') {
           const nm = d[1]
-          if (states.has(nm) || inClosure || !isU32Lit(d[2])) states.set(nm, 0)
+          if (states.has(nm) || inClosure || !(isU32Lit(d[2]) || (Array.isArray(d[2]) && d[2][0] === '>>>'))) states.set(nm, 0)
           else states.set(nm, 1)
           walk(d[2], inClosure)
         } else if (typeof d === 'string') states.set(d, 0)

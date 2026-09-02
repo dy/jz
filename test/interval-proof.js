@@ -173,3 +173,44 @@ test('interval proof: output is independent of prior guard shapes', () => {
       assertCompileHistoryIndependent(KERNEL, predecessors, { optimize, wat: true }, `O${optimize} WAT`)
   }
 })
+
+// Field bounds: a loop-carried cursor written only by xor / shift stays inside
+// its power-of-two field (the bit-reversal permutation of every radix-2 FFT).
+// The linear widening cannot see it; the fixpoint retries such names with the
+// field bound and adopts it only when the whole trial verifies.
+const BIT_REVERSAL = `
+export let rev = (seed) => {
+  const re = new Float64Array(256)
+  for (let i = 0; i < 256; i++) re[i] = (i * seed) | 0
+  let j = 0
+  for (let i = 1; i < 256; i++) {
+    let bit = 256 >> 1
+    for (; j & bit; bit >>= 1) j ^= bit
+    j ^= bit
+    if (i < j) { const t = re[i]; re[i] = re[j]; re[j] = t }
+  }
+  let h = 0
+  for (let i = 0; i < 256; i++) h = (h * 31 + re[i]) | 0
+  return h
+}`
+// The same cursor leaving its field (the extra +1, a mask above the length)
+// keeps its checked access.
+const FIELD_ESCAPES = [
+  ['affine step', `export let f = (n) => { const a = new Float64Array(64); let j = 0; for (let i = 0; i < n; i++) { j = (j ^ i) + 1; a[j] = i } return a[3] }`],
+  ['mask above length', `export let f = (n) => { const a = new Float64Array(64); let j = 0; for (let i = 0; i < n; i++) { j ^= 64; a[j] = i } return a[3] }`],
+]
+
+test('interval proof: xor/shift cursors are proven inside their field', () => {
+  const wat = compile(BIT_REVERSAL, { optimize: 3, wat: true })
+  ok(!hasTypedBoundsTemp(wat), 'bit-reversal accesses are raw')
+  const native = jsExports(BIT_REVERSAL).rev
+  for (const optimize of [0, 2, 3]) {
+    const wasm = jz(BIT_REVERSAL, { optimize }).exports.rev
+    is(wasm(1), native(1), `O${optimize}: permutation matches Node`)
+    is(wasm(7), native(7), `O${optimize}: permutation of another fill matches Node`)
+  }
+  for (const [name, src] of FIELD_ESCAPES) {
+    ok(hasTypedBoundsTemp(compile(src, { optimize: 3, wat: true })), `${name}: access stays checked`)
+    is(jz(src).exports.f(100), jsExports(src).f(100), `${name}: matches Node`)
+  }
+})

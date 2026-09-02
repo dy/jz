@@ -609,3 +609,261 @@ test('minimal: the compact-prototype bench rows stay at or below their recorded 
     ok(Object.is(exports.f(...args), expected), `${name}: result`)
   }
 })
+
+// === Size-tier codegen classes closed against the v1 ledger ===
+// Each pins one lowering with a differential run and a byte ratchet at
+// `optimize: 'size'` (the recorded value may only fall).
+const run = (src, opts) => new WebAssembly.Instance(new WebAssembly.Module(compile(src, { alloc: false, ...opts }))).exports
+const jsFn = (src, name) => { const e = {}; new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 =').replace(/export const (\w+)\s*=/g, 'exports.$1 ='))(e); return e[name] }
+
+// A union-typed array pushed from several literal sites reserves each element
+// through one __arr_push_slot call; the sites store only their fields.
+const UNION_PUSH = `const measure = (o) => {
+  const k = o.k
+  if (k === 0) return (o.x + o.y) | 0
+  else if (k === 1) return Math.imul(o.r, 3)
+  else if (k === 2) return (Math.imul(o.w, o.h) - o.d) | 0
+  return Math.imul(o.n, o.s)
+}
+export let f = (n) => {
+  const rows = []
+  let s = 0x1234abcd | 0
+  for (let i = 0; i < n; i++) {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+    const k = s & 3, a = (s >>> 3) & 1023, b = (s >>> 13) & 1023
+    if (k === 0) rows.push({ k: k, x: a, y: b })
+    else if (k === 1) rows.push({ k: k, r: a })
+    else if (k === 2) rows.push({ k: k, w: a, h: b, d: b })
+    else rows.push({ k: k, n: b, s: a })
+  }
+  let sum = 0
+  for (let i = 0; i < rows.length; i++) sum = (sum + measure(rows[i])) | 0
+  return sum
+}`
+test('minimal: multi-site union push reserves elements out of line', () => {
+  if (skip) return
+  const w = wat(UNION_PUSH, 'size')
+  is((w.match(/call \$__arr_push_slot/g) || []).length, 4, 'one reservation call per push site')
+  ok(!w.includes('$__arr_grow_known'), 'the grow sequence is not expanded per site')
+  is(run(UNION_PUSH, { optimize: 'size' }).f(1000), jsFn(UNION_PUSH, 'f')(1000))
+  is(run(UNION_PUSH, { optimize: 3 }).f(1000), jsFn(UNION_PUSH, 'f')(1000))
+  const bytes = compile(UNION_PUSH, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 1203, `union push: ${bytes} B (recorded 1203)`)
+})
+
+// `new T(x.buffer, x.byteOffset, n)` over an owned typed array reads x's data
+// offset directly: no boxed BUFFER pointer, no forwarding chase.
+const OWNED_VIEW = `export let f = (n) => {
+  const out = new Float64Array(n)
+  for (let i = 0; i < n; i++) out[i] = i * 1.5
+  const u = new Uint32Array(out.buffer, out.byteOffset, out.length * 2)
+  let h = 0x811c9dc5 | 0
+  for (let i = 0; i < u.length; i += 3) h = Math.imul(h ^ (u[i] | 0), 0x01000193) | 0
+  return h >>> 0
+}`
+test('minimal: a view over an owned typed array takes its base directly', () => {
+  if (skip) return
+  ok(!wat(OWNED_VIEW, 'size').includes('$__ptr_offset'), 'no pointer unboxing for x.buffer')
+  for (const n of [0, 7, 100]) is(run(OWNED_VIEW, { optimize: 'size' }).f(n), jsFn(OWNED_VIEW, 'f')(n), `n=${n}`)
+  const bytes = compile(OWNED_VIEW, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 529, `owned view: ${bytes} B (recorded 529)`)
+})
+
+// A proven post-increment read of an integer element feeds an integer store
+// as its raw i32 (no f64 round trip, no ToUint8 select chain).
+const BYTE_COPY = `export let f = (n) => {
+  const src = new Uint8Array(256), out = new Uint8Array(256)
+  for (let i = 0; i < 256; i++) src[i] = (i * 7) & 255
+  let ip = 0, op = 0
+  while (ip < 256) out[op++] = src[ip++]
+  let h = 0
+  for (let i = 0; i < 256; i++) h = (h * 31 + out[i]) | 0
+  return h + n
+}`
+test('minimal: post-increment byte copy stays on the integer path', () => {
+  if (skip) return
+  const w = wat(BYTE_COPY, 'size')
+  ok(!w.includes('trunc_sat'), 'no ToInt32 of the copied byte')
+  is(run(BYTE_COPY, { optimize: 'size' }).f(1), jsFn(BYTE_COPY, 'f')(1))
+  const bytes = compile(BYTE_COPY, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 475, `byte copy: ${bytes} B (recorded 475)`)
+})
+
+// A looped kernel called from two sites is one function at -Os (speed tiers
+// may still splice it per site).
+const TWO_SITE_KERNEL = `const pass = (a, b, m, step) => {
+  let phase = 1
+  for (let k = 0; k < m; k++) { const idx = phase | 0; b[k] = a[idx] * 0.5 + a[idx + 1] * 0.5; phase += step }
+}
+export let f = (n) => {
+  const a = new Float64Array(64), b = new Float64Array(32), c = new Float64Array(16)
+  for (let i = 0; i < 64; i++) a[i] = i
+  pass(a, b, 32, 1.5); pass(b, c, 16, 1.5)
+  let s = 0
+  for (let i = 0; i < 16; i++) s += c[i]
+  return s + n
+}`
+test('minimal: a two-site looped kernel is not duplicated at -Os', () => {
+  if (skip) return
+  is((wat(TWO_SITE_KERNEL, 'size').match(/call \$pass/g) || []).length, 2, 'both sites call the kernel')
+  is(run(TWO_SITE_KERNEL, { optimize: 'size' }).f(0), jsFn(TWO_SITE_KERNEL, 'f')(0))
+  const bytes = compile(TWO_SITE_KERNEL, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 671, `two-site kernel: ${bytes} B (recorded 671)`)
+})
+
+// `new Float64Array(N >> 1)` with a module const N is a static length.
+test('minimal: a folded constructor length is a static length', () => {
+  if (skip) return
+  const src = 'const N = 65536; export let f = () => { const w = new Float64Array(N >> 1); for (let k = 0; k < 32768; k++) w[k] = k; return w[5] }'
+  ok(!/\$[^\s)]*tbi\d*/.test(compile(src, { wat: true, optimize: { level: 'size', watr: false } })), 'no checked typed access')
+  is(run(src, { optimize: 'size' }).f(), 5)
+})
+
+// A small local lambda over a captured counter (`const rnd = () => { s ^= …;
+// return s >>> 0 }`) is spliced at every site, expression positions included
+// (a hoisted temp before the statement, commuting with a disjoint `w++` on
+// the store's own index); its draws are uint32 locals, so `% K` and `& m`
+// stay integer ops. No closure object, no env cell, no f64 remainder.
+const XORSHIFT_DRAWS = `export let f = (n) => {
+  let s = 0x9b3f017 | 0
+  const rnd = () => {
+    s ^= s << 13
+    s ^= s >>> 17
+    s ^= s << 5
+    return s >>> 0
+  }
+  const out = new Uint8Array(4096)
+  let w = 0, acc = 0
+  for (let r = 0; r < n; r++) {
+    const ax = (rnd() % 1000) * 0.1, ay = ((rnd() % 2000) - 1000) * 0.05
+    const kind = rnd() % 3
+    let fl = rnd() & 1
+    if (kind === 0) fl |= 0x02 | ((rnd() & 1) << 4)
+    else if (kind === 2) fl |= 0x10
+    out[w++] = fl
+    out[w++] = rnd() % 256
+    acc += ax + ay
+  }
+  let h = 0
+  for (let i = 0; i < w; i++) h = (h * 31 + out[i]) | 0
+  return h + acc
+}`
+test('minimal: a local xorshift lambda splices at every site as uint32 draws', () => {
+  if (skip) return
+  const w = wat(XORSHIFT_DRAWS, 'size')
+  ok(!/\(func \$\S*closure/.test(w), 'no closure function')
+  ok(!w.includes('call_indirect'), 'no indirect call')
+  ok(!w.includes('f64.trunc'), 'no f64 remainder emulation')
+  ok(w.includes('i32.rem_u'), 'uint32 draws take i32.rem_u')
+  for (const n of [0, 1, 500]) is(run(XORSHIFT_DRAWS, { optimize: 'size' }).f(n), jsFn(XORSHIFT_DRAWS, 'f')(n), `n=${n}`)
+  is(run(XORSHIFT_DRAWS, { optimize: 3 }).f(500), jsFn(XORSHIFT_DRAWS, 'f')(500), 'O3')
+  const bytes = compile(XORSHIFT_DRAWS, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 767, `xorshift draws: ${bytes} B (recorded 767)`)
+})
+
+// The hoist must keep evaluation order: a draw after an effectful call, or
+// after a store index that the lambda itself reads, stays in place.
+test('minimal: lambda hoisting keeps evaluation order against real effects', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    let s = 1, w = 0
+    const bump = () => { s = s * 3 + 1; return s }
+    const draw = () => { w = w + 2; return w }
+    const out = new Int32Array(64)
+    for (let i = 0; i < n; i++) {
+      out[w++] = draw()              // draw reads w: must run after w++
+      const v = bump() + draw()      // in order: bump first
+      out[i] = v + out[w & 63]
+    }
+    let h = 0
+    for (let i = 0; i < 64; i++) h = (h * 31 + out[i]) | 0
+    return h
+  }`
+  for (const optimize of ['size', 0, 3]) is(run(src, { optimize }).f(20), jsFn(src, 'f')(20), `O${optimize}`)
+})
+
+// `3 + ((s >>> 8) % 6)`: the remainder of a uint32 draw by a positive literal
+// is a bounded integer, so the sum stays an i32 local and its loop bound needs
+// no f64 snap.
+test('minimal: a uint32 remainder keeps its consumer an i32 local', () => {
+  if (skip) return
+  const src = 'export let f = (n) => { n = +n; let s = 0x1234abcd | 0; let t = 0; for (let i = 0; i < n; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; const len = 3 + ((s >>> 8) % 6); for (let j = 0; j < len; j++) t += j } return t }'
+  const w = wat(src, 'size')
+  ok(w.includes('(local $len i32)'), 'len is an i32 local')
+  ok(w.includes('i32.rem_u'), 'remainder is i32.rem_u')
+  is(run(src, { optimize: 'size' }).f(300), jsFn(src, 'f')(300))
+  is(run(src, { optimize: 3 }).f(300), jsFn(src, 'f')(300))
+})
+
+// A record-stream cursor whose discriminant is the read itself (`if (o.k === 0)`)
+// takes the packed union carrier like the `const k = o.k` alias form.
+test('minimal: a direct cursor-read discriminant admits the union carrier', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const rows = []
+    let s = 0x1234abcd | 0
+    for (let i = 0; i < n; i++) {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5
+      const k = s & 3, a = (s >>> 3) & 1023, b = (s >>> 13) & 1023
+      if (k === 0) rows.push({ k: k, x: a, y: b })
+      else if (k === 1) rows.push({ k: k, r: a })
+      else if (k === 2) rows.push({ k: k, w: a, h: b, d: b })
+      else rows.push({ k: k, n: b, s: a })
+    }
+    let sum = 0
+    for (let i = 0; i < rows.length; i++) {
+      const o = rows[i]
+      if (o.k === 0) sum = (sum + o.x + o.y) | 0
+      else if (o.k === 1) sum = (sum + Math.imul(o.r, 3)) | 0
+      else if (o.k === 2) sum = (sum + Math.imul(o.w, o.h) - o.d) | 0
+      else sum = (sum + Math.imul(o.n, o.s)) | 0
+    }
+    return sum
+  }`
+  const w = wat(src, 'size')
+  ok(!w.includes('__dyn_get'), 'no dynamic property reads')
+  ok(w.includes('call $__arr_push_slot'), 'packed union pushes')
+  is(run(src, { optimize: 'size' }).f(1000), jsFn(src, 'f')(1000))
+  const bytes = compile(src, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 1203, `record-stream cursor: ${bytes} B (recorded 1203)`)
+})
+
+// A concat with a side statically longer than the SSO capacity (a literal, a
+// module-const string) is heap-only: the twin without SSO arms serves, and the
+// self-accumulating form keeps its bump-extend.
+test('minimal: a long-literal concat skips the SSO arms', () => {
+  if (skip) return
+  const src = `const BASE = 'let alpha_12 = beta + 12345;\\n'
+  export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s = s + BASE; const t = s + 'x'; return s.length * 1000 + t.length }`
+  const w = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  ok(w.includes('call $__str_concat_raw_long'), 'the accumulation takes the long twin')
+  ok(!w.includes('call $__str_concat_raw '), 'no SSO-capable accumulation twin')
+  for (const n of [0, 1, 40]) is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `n=${n}`)
+  is(jz(src, { optimize: 3 }).exports.f(40), jsFn(src, 'f')(40), 'O3')
+  const bytes = compile(src, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 1127, `long concat: ${bytes} B (recorded 1127)`)
+})
+
+// A typed factory called with one constant (`mkSignal(N)`, `const out = new
+// Float64Array(n)` returned) publishes its result's static length, so the
+// caller's binding proves its accesses like a local constructor would.
+test('minimal: a typed factory result carries its static length', () => {
+  if (skip) return
+  const src = `const N = 4096
+  const mk = (n) => { const out = new Float64Array(n); let s = 7; for (let i = 0; i < n; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; out[i] = (s >>> 0) / 4294967296 } return out }
+  export let f = () => {
+    const sig = mk(N), re = new Float64Array(N)
+    for (let i = 0; i < N; i++) re[i] = sig[i] * 2
+    let h = 0
+    for (let i = 0; i < N; i += 64) h = (h * 31 + (re[i] * 1000 | 0)) | 0
+    return h
+  }`
+  const pre = (s) => compile(s, { wat: true, optimize: { level: 'size', watr: false } })
+  ok(!/\$[^\s)]*tbi\d*/.test(pre(src)), 'no checked access on the factory result')
+  is(jz(src, { optimize: 'size' }).exports.f(), jsFn(src, 'f')())
+  is(jz(src, { optimize: 3 }).exports.f(), jsFn(src, 'f')())
+  // Two call sites with different constants publish nothing.
+  const two = src.replace('const sig = mk(N), re', 'const sig = mk(N), other = mk(64), re').replace('return h\n', 'return h + other[3]\n')
+  ok(/\$[^\s)]*tbi\d*/.test(pre(two)), 'disagreeing call sites keep the check')
+  is(jz(two, { optimize: 'size' }).exports.f(), jsFn(two, 'f')())
+})

@@ -21,6 +21,7 @@ export const LAYOUT = {
   SSO_BIT: 0x4000,
   SLICE_BIT: 0x2000,
   SLICE_LEN_MASK: 0x1FFF,
+  MAX_SSO: 6,                // ASCII chars an SSO string holds inline (6 × 7-bit lanes)
 }
 
 /** 4-bit tagged-pointer type codes. */

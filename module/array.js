@@ -13,7 +13,7 @@ import { typed, asF64, asI64, asI32, asI32Sat, UNDEF_NAN, temp, tempI32, allocPt
 import { inBoundsArrIdx, typedIdxProven } from '../src/type.js'
 import { emit, spread, deps, idx as emitIndex, storedValue, storedValueNarrow, storedValuePlanned } from '../src/bridge.js'
 import { valTypeOf } from '../src/kind.js'
-import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral } from '../src/ast.js'
+import { extractParams, classifyParam, PARAM_NAME, ASSIGN_OPS, isUndefinedLiteral, walkAst } from '../src/ast.js'
 import { staticPropertyKey, staticObjectProps, inlineArraySid, inlineArrayUnion, staticIndexKey, intLiteralValue, structLiteralFields } from '../src/static.js'
 import { VAL, lookupValType, lookupNotString, isDisjointFrom, KIND_UNIVERSE, mayBeUndefined, repOf } from '../src/reps.js'
 import { structInline } from '../src/abi/index.js'
@@ -196,6 +196,7 @@ export default (ctx) => {
     __arr_typed_obj_set_idx: () => ['__arr_typed_set_idx', '__ptr_type', '__dyn_set', '__i32_to_str',
       ...(ctx.linkDemand.external ? ['__ext_set'] : [])],
     __arr_push1: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
+    __arr_push_slot: ['__arr_grow_known', '__ptr_offset_fwd', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_set_length: ['__arr_grow_known', '__ptr_offset', '__ptr_type', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_unshift: ['__arr_grow', '__len', '__ptr_offset', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
     __arr_splice: ['__arr_grow', '__len', '__ptr_offset', '__alloc_hdr', '__mkptr', ...(needsDurableFwdLog() ? ['__durable_arr_snap'] : [])],
@@ -474,6 +475,32 @@ export default (ctx) => {
     (f64.store (i32.add (local.get $base) (i32.shl (local.get $len) (i32.const 3))) (local.get $val))
     (i32.store (i32.sub (local.get $base) (i32.const 8)) (i32.add (local.get $len) (i32.const 1)))
     (local.get $p))`
+
+  // Reserve one element of `strideB` bytes on a known ARRAY whose header len
+  // counts physical 8-byte cells: grow if needed, bump len to ⌈(n+1)·strideB/8⌉
+  // and return (array pointer, element address). The caller stores the fields.
+  // One call per structInline / union push site instead of the grow-and-index
+  // sequence inlined at each; the logical count n = ⌊len·8/strideB⌋ is exact
+  // for every stride ≥ 8 (the ceil slack is under one cell).
+  // `zero` clears the element first (a union member writes only its own
+  // lanes; the rest read as 0 by the carrier's contract).
+  ctx.core.stdlib['__arr_push_slot'] = `(func $__arr_push_slot (param $ptr i64) (param $strideB i32) (param $zero i32) (result f64 i32)
+    (local $p f64) (local $base i32) (local $n i32) (local $len i32) (local $slot i32)
+    (local.set $p (f64.reinterpret_i64 (local.get $ptr)))
+    (local.set $base (i32.wrap_i64 (i64.and (local.get $ptr) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    ${followForwardingWat('$base', { lowGuard: true })}
+    ${durableArrSnapIR('base')}
+    (local.set $n (i32.div_u (i32.shl (i32.load (i32.sub (local.get $base) (i32.const 8))) (i32.const 3)) (local.get $strideB)))
+    (local.set $len (i32.shr_u (i32.add (i32.mul (i32.add (local.get $n) (i32.const 1)) (local.get $strideB)) (i32.const 7)) (i32.const 3)))
+    (if (i32.lt_s (i32.load (i32.sub (local.get $base) (i32.const 4))) (local.get $len))
+      (then
+        (local.set $p (call $__arr_grow_known (local.get $ptr) (local.get $len)))
+        (local.set $base (i32.wrap_i64 (i64.and (i64.reinterpret_f64 (local.get $p)) (i64.const ${LAYOUT.OFFSET_MASK}))))))
+    (i32.store (i32.sub (local.get $base) (i32.const 8)) (local.get $len))
+    (local.set $slot (i32.add (local.get $base) (i32.mul (local.get $n) (local.get $strideB))))
+    (if (local.get $zero) (then (memory.fill (local.get $slot) (i32.const 0) (local.get $strideB))))
+    (local.get $p)
+    (local.get $slot))`
 
   // arr.length = N. Truncation (N ≤ len) just rewrites the len word in place — no
   // relocation, so aliases keep their pointer. Growth past capacity relocates via
@@ -1194,12 +1221,67 @@ export default (ctx) => {
     }
     const va = asF64(emit(arr))
     const t = temp('pp'), len = tempI32('pl')
+    // The pointer may relocate on grow: a named receiver is rebound to it (an
+    // expression receiver reaches the moved buffer through forwarding).
+    const writeBack = (body) => {
+      if (typeof arr !== 'string') return
+      if (ctx.func.boxed?.has(arr))
+        body.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(arr)}`], ['local.get', `$${t}`]])
+      else if (ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr))
+        body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])
+      else
+        body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
+    }
 
     // Known ARRAY → inline len as `i32.load(off - 8)` (ARRAY branch of __len). Saves a
     // full __ptr_type + dispatch per push site. The off<8 nullish guard in __len is
     // unreachable here: .push on a nullish var is a JS error before we get here.
     const vt = typeof arr === 'string' ? lookupValType(arr) : valTypeOf(arr)
     const inlineLen = vt === VAL.ARRAY
+
+    // Multi-cell element (structInline / union) on a known ARRAY pushed from
+    // several sites of this function: __arr_push_slot reserves the element out
+    // of line and each site stores only its fields, instead of the grow-and-
+    // index sequence expanded per literal site. A lone site keeps the inline
+    // sequence (the helper alone outweighs it).
+    const pushSites = (name) => {
+      let n = 0
+      walkAst(ctx.func.body, { enter: x => {
+        if (x[0] === '=>') return false
+        if (x[0] === '()' && Array.isArray(x[1]) && x[1][0] === '.' && x[1][1] === name && x[1][2] === 'push') n++
+      } })
+      return n
+    }
+    if (inlineLen && (unionB || (inlSid != null && inlK > 1)) && typeof arr === 'string' && ctx.func.body && pushSites(arr) > 1) {
+      inc('__arr_push_slot')
+      const strideB = unionB || inlCpe * 8
+      const lanes = unionB ? inlUnion.stride : inlK
+      const laneB = unionB || inlPacked ? 4 : 8
+      const slot = tempI32('ps')
+      const body = [['local.set', `$${t}`, va]]
+      const isZeroLit = (v) => Array.isArray(v) && v[0] == null && v[1] === 0
+      for (let e = 0; e < vals.length; e += lanes) {
+        // A union member's padding lanes are literal zeros: the helper clears
+        // the element and the site skips them.
+        const zero = unionB && vals.slice(e, e + lanes).some(isZeroLit) ? 1 : 0
+        body.push(['local.set', `$${t}`, ['local.set', `$${slot}`,
+          ['call', '$__arr_push_slot', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i32.const', strideB], ['i32.const', zero]]]])
+        for (let j = 0; j < lanes; j++) {
+          if (zero && isZeroLit(vals[e + j])) continue
+          const addr = j === 0 ? ['local.get', `$${slot}`] : ['i32.add', ['local.get', `$${slot}`], ['i32.const', j * laneB]]
+          body.push(laneB === 4 ? ['i32.store', addr, asI32(emit(vals[e + j]))]
+            : ['f64.store', addr, taggedStoredValue(vals[e + j])])
+        }
+      }
+      writeBack(body)
+      if (void_) return typed(['block', ...body], 'void')
+      body.push(['f64.convert_i32_s', ['i32.div_u',
+        ['i32.shl', ['i32.load', ['i32.sub',
+          ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]], ['i32.const', 8]]], ['i32.const', 3]],
+        ['i32.const', strideB]]])
+      return typed(['block', ['result', 'f64'], ...body], 'f64')
+    }
+
     const grow = inlineLen ? '__arr_grow_known' : '__arr_grow'
     inc(grow)
 
@@ -1286,16 +1368,8 @@ export default (ctx) => {
     // skips __set_len's tag/forward dispatch), update source variable (pointer
     // may have changed from grow), return new length
     body.push(['i32.store', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]], ['local.get', `$${len}`]])
-    // Update the source variable if it's a named variable (so arr still points to valid memory)
-    if (typeof arr === 'string') {
-      if (ctx.func.boxed?.has(arr)) {
-        body.push(['f64.store', ['local.get', `$${ctx.func.boxed.get(arr)}`], ['local.get', `$${t}`]])
-      }
-      else if (ctx.scope.globals.has(arr) && !ctx.func.locals?.has(arr))
-        body.push(['global.set', `$${arr}`, ['local.get', `$${t}`]])
-      else
-        body.push(['local.set', `$${arr}`, ['local.get', `$${t}`]])
-    }
+    writeBack(body)
+    if (void_) return typed(['block', ...body], 'void')
     // structInline: `len` counts physical cells — `.push` returns the JS array
     // length, i.e. the logical element count (byte-stride unions carry it in
     // `ulg` directly; cell carriers divide by cells-per-element).

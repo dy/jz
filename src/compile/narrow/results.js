@@ -11,10 +11,10 @@
 import { ctx } from '../../ctx.js'
 import { withCurrentFunction, withFunctionFields, withTypedElems } from '../flow-state.js'
 import {
-  isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, walkAst, some,
+  isBlockBody, alwaysReturns, hasBareReturn, returnExprs, callArgs, walkAst, some, isReassigned,
 } from '../../ast.js'
 import { analyzeBody, reanalyzeBody, invalidateBodies } from '../analyze.js'
-import { exprType, typedElemCtor } from '../../type.js'
+import { exprType, typedElemCtor, typedStaticLen } from '../../type.js'
 import { typedElemAux, ctorFromElemAux } from '../../../layout.js'
 import {
   valTypeOf, valTypeOfWithLocals, hasAmbiguousBoolMerge, exprMayBeUndefinedIn,
@@ -600,10 +600,38 @@ export function narrowPointerResults(funcs, paramReps) {
         func.sig.results = ['i32']
         func.sig.ptrKind = VAL.TYPED
         func.sig.ptrAux = aux0
+        // A factory returning one local of static length (`const out = new
+        // Float64Array(n)` with `n` a call-site constant) publishes that length:
+        // the caller's binding (`const sig = mkSignal(N)`) then proves its
+        // own accesses exactly as a local constructor would.
+        const L = isBlock ? typedLenOfReturns(func, exprs, paramFactsOf(paramReps, func, 'intConst')) : null
+        if (L != null) func.sig.typedLen = L
         changed = true
       }
     }
   }
+}
+
+/** Static element count every return of `func` carries: each return is a
+ *  bare local declared once as `new T(<expr>)` and never reassigned, where
+ *  `<expr>` folds under the params' call-site constants (`intConsts`). */
+function typedLenOfReturns(func, exprs, intConsts) {
+  const subst = (n) => typeof n === 'string' ? (intConsts?.get(n) != null ? [, intConsts.get(n)] : n)
+    : Array.isArray(n) && n[0] !== 'str' ? n.map((c, i) => i === 0 ? c : subst(c)) : n
+  let L = null
+  for (const e of exprs) {
+    if (typeof e !== 'string' || isReassigned(func.body, e)) return null
+    let init = null, decls = 0
+    walkAst(func.body, { enter: n => {
+      if (n[0] === '=>') return false
+      if ((n[0] === 'const' || n[0] === 'let') && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && n[1][1] === e) { decls++; init = n[1][2] }
+    } })
+    if (decls !== 1 || !Array.isArray(init) || init[0] !== '()' || typeof init[1] !== 'string' || !init[1].startsWith('new.')) return null
+    const len = typedStaticLen(['()', init[1], subst(init[2])])
+    if (len == null || (L != null && L !== len)) return null
+    L = len
+  }
+  return L
 }
 
 const _FIELD_TO_SLICE = {

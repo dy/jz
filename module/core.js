@@ -445,17 +445,16 @@ export default (ctx) => {
   // embedding (watr called thousands of times) into O(n²) — each memory.grow may
   // relocate and copy the whole heap — so we request at least the current size
   // (≥2× total) in one shot; only on hitting the declared maximum do we fall back
-  // to the bare minimum. `$need` is the TOTAL pages required to cover $next; the
-  // byte size of memory ((memory.size)<<16) is computed in i64 because it
-  // overflows i32 at the wasm32 max of 65536 pages (4 GiB) — without that,
-  // capacity reads as 0 and every allocation spuriously tries to grow past the
-  // ceiling, trapping near 4 GiB.
+  // to the bare minimum. `$need` is the TOTAL pages required to cover $next,
+  // computed as a page count (`next >>> 16` plus a partial page) so nothing
+  // overflows i32 at the wasm32 max of 65536 pages (4 GiB); the byte capacity
+  // itself lives in the i64 `__heap_end64`.
   ctx.core.stdlib['__memgrow'] = `(func $__memgrow (param $next i32)
     (local $cur i32) (local $need i32) (local $floor i32)
-    (local.set $need (i32.wrap_i64 (i64.shr_u (i64.add (i64.extend_i32_u (local.get $next)) (i64.const 65535)) (i64.const 16))))
+    (local.set $need (i32.add (i32.shr_u (local.get $next) (i32.const 16)) (i32.ne (i32.and (local.get $next) (i32.const 65535)) (i32.const 0))))
     (if (i32.gt_u (local.get $need) (memory.size))
       (then
-        (if (i64.gt_u (i64.extend_i32_u (local.get $need)) (i64.const 65536)) (then (unreachable)))
+        (if (i32.gt_u (local.get $need) (i32.const 65536)) (then (unreachable)))
         (local.set $cur (i32.sub (local.get $need) (memory.size)))            ;; minimum delta
         ;; Geometric floor: 2x below 2048 pages (128 MiB), 1.5x to 4096 pages
         ;; (256 MiB), 1.0625x (1/16) above. Committed memory is a high-water
@@ -474,8 +473,7 @@ export default (ctx) => {
         (if (i32.ge_u (memory.size) (i32.const 4096))
           (then (local.set $floor (i32.shr_u (memory.size) (i32.const 4)))))
         (if (i32.lt_u (local.get $cur) (local.get $floor)) (then (local.set $cur (local.get $floor))))  ;; geometric
-        (if (i32.gt_u (i32.add (local.get $cur) (memory.size)) (i32.const 65536))
-          (then (local.set $cur (i32.sub (i32.const 65536) (memory.size)))))  ;; cap at wasm32 max
+        ;; a floor past the wasm32 ceiling or the engine's limit fails; the exact delta retries
         (if (i32.eq (memory.grow (local.get $cur)) (i32.const -1))
           (then (if (i32.eq (memory.grow (i32.sub (local.get $need) (memory.size))) (i32.const -1))
             (then (unreachable)))))))
