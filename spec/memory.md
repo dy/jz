@@ -1,28 +1,33 @@
 # Memory model
 
-Two storage domains, chosen by kind, never by a global switch.
+One storage domain, linear memory, managed by regions. There is no garbage collector: no engine-scheduled pause, no nondeterministic release. Every function pays its own memory tax at its own exit, so a render callback that allocates nothing that escapes runs with zero release cost, and one that does releases exactly what it made.
 
-## Dynamic tier: wasm GC
+## Regions
 
-Objects, dictionaries, strings, arrays, closures, Map, Set, and boxed values are wasm GC structs and arrays. The engine collects them. There is no manual reset, no arena, and no pointer invalidation for these kinds. Strings are GC `i16` arrays and cross to the host through the js-string builtins the compiler already imports.
+- Every function call owns a region: allocations that do not escape the call are released when it returns, in one operation.
+- A value escapes when it is returned, stored into a value of a longer-lived region, captured by a closure that escapes, or handed to the host. Escape is decided by analysis per function, on the IR, with the same fail-closed rule as types: a value whose lifetime cannot be bounded is an error at the site, with the region that would bound it named.
+- An escaping value is allocated directly in the region it escapes to; nothing is copied at return.
+- The module owns a session region: values that must live for the program (an audio graph, a parser's tables) allocate there. The session region is released only by the host through the module's `release()` export, which invalidates every session handle at once, deterministically, at a moment the host chooses.
+- A named region is a value: `region()` creates one, `r.alloc`-scoped allocation happens by passing it as the target scope, and `r.release()` frees everything in it. This is the tool for lifetimes that are neither a call nor the session (a voice, a request, an animation frame).
 
-This is what a long-lived program needs: an audio graph keeps its nodes alive for a session, a parser keeps its tables. Bump allocation with a global reset was correct for a kernel and wrong for these programs; it is retired.
+## Containers that shrink
 
-## Typed tier: linear memory for typed storage
+A dictionary, array, or string that grows and shrinks inside one region reuses its own freed cells through a per-container free list, so a long-lived container does not leak inside the session region. Releasing the container's region releases the free list with it.
 
-Typed arrays live in linear memory: one region per buffer, fixed while a view exists, bounds-checked at access. This keeps SIMD loads, host views over exported memory, and zero-copy sharing between tiers. Structs in the typed tier are GC structs with unboxed fields on the `gc` target and linear-memory records with an arena on the `nogc` target.
+## Typed storage
+
+Typed arrays are contiguous regions of their own: fixed while a view exists, bounds-checked, shared with the host as views over exported memory, and the target of SIMD loads. A typed array's lifetime follows the region rule like any other value.
 
 ## Targets
 
-- `gc` (browsers, Node, wasmtime): the full product, both tiers.
-- `nogc` (minimal WASI embedders): the typed tier only. Allocation is an arena scoped to each exported call; a typed function that would return a heap handle to the host is rejected with the site named. Programs that need the dynamic tier are rejected on this target with the first dynamic function named in the report.
+One target: wasm with linear memory. Browsers, Node, wasmtime, and WASI embedders all run the same module; nothing depends on the GC proposal. Threads and shared memory are an option on top, not a separate target.
 
 ## Rules
 
-- No compile-time memory layout is observable from source: no `memory.reset`, no address arithmetic, no handle that outlives its scope on `nogc`.
-- Host-visible buffers are typed arrays over exported linear memory; growth of linear memory preserves existing views by the wasm memory contract.
-- The runtime (`spec/subset.md`, written in jz) allocates only through these two domains; a runtime function that needs a third mechanism is a design error, not a special case.
+- No compile-time layout is observable from source: no address arithmetic, no manual free of an individual value, no handle that outlives its region.
+- The runtime (written in jz) allocates only through regions; a runtime function that needs another mechanism is a design error.
+- The release tax is visible: the tier report lists, per function, what it allocates and which region it escapes to.
 
 ## What this retires
 
-`memory.reset()`, the realloc forwarding chains, the interned-data reclamation passes, the checkpoint and rehydration machinery, and every workaround whose reason was the 4 GiB self-compile ceiling.
+`memory.reset()` as a global reset, the realloc forwarding chains, the interned-data reclamation passes, the checkpoint and rehydration machinery, and every workaround whose reason was the 4 GiB self-compile ceiling.

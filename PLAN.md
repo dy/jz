@@ -4,7 +4,7 @@
 
 The compact prototype is the compiler. It grows into the core under `core/`, ships as the compiler when it passes the good-parts corpus, and the current `src/` pipeline retires then. The prototype is not a sub-product from this point: it has its own tests, its own gates, and its own release path from phase 1 on.
 
-The product is good-parts JS: a documented subset of JavaScript compiled to efficient, small, safe wasm, in two explicit tiers. The typed tier compiles numeric and fixed-shape code with static types and no boxing. The dynamic tier compiles the rest with JS semantics through a runtime written in jz. The tier of every function is decided by rule and reported, never guessed per value. Divergence from JS is rejected or reported at compile time, never silent.
+The product is good-parts JS: a documented subset of JavaScript compiled to efficient, small, safe wasm, on one lattice of kinds. Typed functions carry static kinds with no boxing; a function that needs the tagged `any` kind is boxed and calls a small runtime written in jz for those operations. The tier of every function is decided by rule and reported, never guessed per value. Memory is regions with a deterministic release, no collector. Divergence from JS is rejected or reported at compile time, never silent.
 
 The specs in `spec/` define the product. This file sequences the work. `prototype/todo.md` is the record of the retired migration plan and stays only as evidence until phase 5.
 
@@ -24,50 +24,52 @@ Each phase ends with an exit proof. No phase starts before the previous exit pro
 
 ### Phase 0. Product specification
 
-- [x] `spec/subset.md`: what is in the dynamic tier, what is in the typed tier, what is rejected, and the divergence policy.
-- [x] `spec/tiers.md`: the tier assignment rule, the signature fixpoint, and the tier report.
-- [x] `spec/boundary.md`: the typed/dynamic boundary and the two host ABIs.
-- [x] `spec/memory.md`: wasm GC for the dynamic tier, linear memory for typed storage, the GC-less target.
+- [x] `spec/subset.md`: the kinds and their contracts, the runtime, what is rejected, and the divergence policy.
+- [x] `spec/tiers.md`: one lattice with `any` as top, the tier rule, the signature fixpoint, and the tier report.
+- [x] `spec/boundary.md`: the typed/boxed boundary and the two host ABIs.
+- [x] `spec/memory.md`: regions with per-call release, the session region, named regions; one linear-memory target.
 
-Exit proof: every current test file maps to one of in-dynamic, in-typed, or rejected in `spec/subset.md`, and every README "what differs from JS" item is either a typed-tier contract or a reported divergence.
+Exit proof: every current test file maps to typed kinds, runtime kinds and `any`, compiler evidence, or rejection in `spec/subset.md`, and every README "what differs from JS" item is a corrected behavior, a contract, or a reported divergence.
 
 ### Phase 1. Typed core with an IR
 
 Move `prototype/compact/` to `core/` and give it the IR.
 
-- [ ] one typed IR: SSA with a CFG and one lattice (i32, i64, f64, v128, ptr T, struct S, typedarray T, closure C)
+- [ ] one typed IR: SSA with a CFG and one lattice (`f64`, `i32`, `i64`, `v128`, `str`, `typedarray T`, `struct S`, `array T`, `dict V`, `closure C`, `any`)
 - [ ] every optimization (LICM, CSE, vectorization, pointer simplification) is dataflow on the IR; the WAT-array matchers are not ported
 - [ ] i32 parameters and results carried as i32; the exact-conversion helper appears only where JS semantics require ToInt32 of an f64
 - [ ] typed arrays of every element type, structs with unboxed fields, closures over those
+- [ ] regions: per-call release, escape analysis on the IR, the session region, named regions; the tier report lists what each function lets escape
 - [ ] acorn as the parser; the early-errors checker and the accept ledger are not ported
 - [ ] the call graph is complete by construction, gated by the reachability probe over the core corpus
 - [ ] watr stays the encoder and final peephole
 
 Exit proof: the compact corpus and the numeric bench cases compile through the IR; the bitwise row beats 120 bytes; the typed SIMD row keeps its 287-byte, 4.69x win; peak compile memory is linear in function count.
 
-### Phase 2. Runtime in jz on wasm GC
+### Phase 2. Runtime in jz on regions
 
-- [ ] strings as GC i16 arrays with js-string builtins at host crossings, JS length and indexing semantics
-- [ ] arrays, objects with static shapes and a dictionary fallback, closures, Map, Set, JSON, Number, Math, Date (UTC), RegExp subset
+- [ ] strings with UTF-16 code-unit semantics in region storage, js-string builtins at host crossings
+- [ ] `array T`, `dict V`, `Map`, `Set`, JSON, Number, Math, Date (UTC), RegExp subset; per-container free lists so a long-lived container reuses its own cells
+- [ ] the `any` operations: tagging, kind checks, and the good-parts operators over the subset kinds
 - [ ] every runtime function is jz source compiled by the core; a runtime function the core compiles badly is a core inference gap and goes on the roadmap
 - [ ] the WAT template registry, its two registration dialects, and its integrity verifier are not ported
 
 Exit proof: the runtime passes its own differential tests against JS, and the core's compile of the runtime is at least as small as the equivalent WAT template family.
 
-### Phase 3. Dynamic tier and the tier report
+### Phase 3. Boxed functions and the tier report
 
-- [ ] dynamic-tier lowering: generic operators to runtime calls, boxing and unboxing at the boundary per `spec/boundary.md`
+- [ ] boxed-function lowering: `any` operators to runtime calls, tagging and kind checks at the boundary per `spec/boundary.md`
 - [ ] the tier report: per function, its tier, the first site that decided it, and what would change it
 - [ ] the guarded and typed host ABIs per `spec/boundary.md`
 - [ ] async, generators, and classes as specified
 
-Exit proof: a program mixing both tiers compiles with a report that names every boundary crossing, and the report is stable across compiles.
+Exit proof: a program mixing typed and boxed functions compiles with a report that names every boundary crossing and every escaping allocation, and the report is stable across compiles.
 
 ### Phase 4. The good-parts corpus
 
 - [ ] port `test/` in subset order: numeric, typed storage, structs, closures, strings, objects, collections, JSON, async, classes, modules, host interop
 - [ ] every ported test is a differential test against JS where the subset promises JS semantics, and a contract test where the typed tier defines the behavior
-- [ ] web-audio-api compiles as the flagship: a long-lived node graph in the dynamic tier, DSP kernels in the typed tier, the report showing the boundary
+- [ ] web-audio-api compiles as the flagship: a long-lived node graph in the session region, DSP kernels typed with nothing escaping, the report showing the boundary and the regions
 - [ ] regression gates against ourselves on `bench/`; no competitor claims in CI or the README
 
 Exit proof: the ported corpus passes, the flagship compiles and runs its own tests, and every remaining old-compiler test is either ported, mapped to a rejection, or deleted with a reason.
@@ -93,7 +95,7 @@ Self-compilation is a demo. It never gates a slice and never dictates source sty
 
 ## Numbers
 
-Report numbers only under their stated contract: guarded ABI or typed ABI, dynamic tier or typed tier, target `gc` or `nogc`. Baselines are hand-written wasm and AssemblyScript on the same kernels, and JS on the same programs. Ratios against the retired compiler are transition evidence, not product numbers.
+Report numbers only under their stated contract: guarded ABI or typed ABI, typed or boxed function. Baselines are hand-written wasm and AssemblyScript on the same kernels, and JS on the same programs. Ratios against the retired compiler are transition evidence, not product numbers.
 
 ## Working discipline
 
