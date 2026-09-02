@@ -1,7 +1,7 @@
 // Static typed storage: a constant-length typed array constructed once at module
 // scope lives in the data segment. No allocator, no start-time construction; the
 // base is an immutable global the static-prefix strip rebases; `.length` and
-// `.byteLength` fold to constants. The compact prototype's typed row (287 bytes)
+// `.byteLength` fold to constants. The retired compact prototype's typed row (287 bytes)
 // was this placement; production carried ~330 bytes of allocator around the same
 // loops.
 import test from 'tst'

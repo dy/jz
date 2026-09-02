@@ -7,7 +7,7 @@
  * the optimized output must be reachable in ProgramIndex. An emitted but
  * index-unreachable function is a missing root or edge class, and gating
  * analysis or emission on that index would drop live code. This is the first
- * gate of the M4 reachability slice (prototype/todo.md, "Immediate next
+ * gate of the M4 reachability slice (the retired staged-migration record, "Immediate next
  * slice") and stays useful afterwards as the census-completeness pin.
  *
  *   node scripts/reachability-probe.mjs [--only <substring>] [--full]

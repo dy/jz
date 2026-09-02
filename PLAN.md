@@ -2,26 +2,26 @@
 
 ## Decision
 
-The compact prototype is the compiler. It grows into the core under `core/`, ships as the compiler when it passes the good-parts corpus, and the current `src/` pipeline retires then. The prototype is not a sub-product from this point: it has its own tests, its own gates, and its own release path from phase 1 on.
+JZ compiles good-parts JS to efficient, small, safe wasm on one lattice of kinds. Typed functions carry static kinds with no boxing; a function that needs the tagged `any` kind is boxed and calls a small runtime written in jz for those operations. The tier of every function is decided by rule and reported, never guessed per value. Memory is regions with a deterministic release, no collector. Divergence from JS is rejected or reported at compile time, never silent.
 
-The product is good-parts JS: a documented subset of JavaScript compiled to efficient, small, safe wasm, on one lattice of kinds. Typed functions carry static kinds with no boxing; a function that needs the tagged `any` kind is boxed and calls a small runtime written in jz for those operations. The tier of every function is decided by rule and reported, never guessed per value. Memory is regions with a deterministic release, no collector. Divergence from JS is rejected or reported at compile time, never silent.
+The compiler is `src/`. The compact prototype (2026-08) proved the staged pipeline: no global compile state, per-function scratch, a numeric ProgramIndex with reachability before lowering, one function at a time into watr. Those stages were migrated into `src/` slice by slice (M0 to M8, the reachability gate last) and the prototype was retired on 2026-09-02 once production matched or beat it on every row it compiled; its corpus (`test/_scalar-core-cases.js`) and its bench rows (`test/minimal-output.js`) are production gates. Its remaining lead, compile speed on 40-byte inputs and a 6.45x smaller self-hosted artifact for a 74-source subset, is not a number any user of the compiler sees. The specs in `spec/` define the product. This file sequences the work.
 
-The specs in `spec/` define the product. This file sequences the work. `prototype/todo.md` is the record of the retired migration plan and stays only as evidence until phase 5.
+## v1: the ledger at zero
 
-## v1 first
+v1 is a measurement, not a milestone: `scripts/v1-ledger.mjs` over `bench/results.json` prints every row where a wasm lane with parity runs faster than jz, and every row where AssemblyScript emits fewer bytes. v1 ships when it prints nothing. The last full run (2026-08-27, before this session's work) has 22 red speed rows (worst: trace 1.56x vs c-wasm, shapes 1.43x vs AS, sdf 1.29x, sort 1.21x, glyfparse 1.17x; twelve within 5%) and 24 red size rows (worst: wordcount 4.71x, shapes 1.78x, fft 1.36x, resample 1.32x, tokenizer 1.35x, slices 1.30x; ten within 5%). Each red row is a codegen class in `src/`, closed with its differential test and its ratchet; the bench file is refreshed with `bench/bench.mjs --targets=jz,<lane> --json --merge` after each close.
 
-v1 ships from `src/` as soon as it is faster, smaller, and more correct than 0.9.2 on the programs people bring to it; the phases below are the v2 arc and start after the tag. The prototype is consumed into v1 where its win is real and measured, not where its bench flattered it: the 20x emitted-size headline came from the `x = +x` guard idiom pulling the ToNumber runtime into 40-byte kernels, and one deletion closed it (58 bytes against the prototype's 64). What remains of the prototype's lead is specific:
+What this session established and closed on the way:
 
-- [x] numeric export boundary: the guard idiom is free, the wrapper hands `f64` slots the host value raw so the JS-API's ToNumber is the coercion, and every box-capable parameter rides the `i64` lane
-- [x] the typed SIMD row: 220 bytes against the prototype's 287. The gap was never SIMD: production built two constant-length module arrays through the allocator at start. A constant-length typed array constructed once at module scope now lives in static storage, its base a memarg offset; such a program keeps no allocator and no start function, and the examples corpus lost 232 KB
-- [ ] the conditional row: 82 bytes against 61 is the NaN canonicalization production keeps on a `-x` result; the prototype's `abi: 'raw'` never canonicalizes. Stays until the typed ABI (phase 3) can drop it under contract
-- [x] real programs, first pass: `scripts/library-census.mjs` over color-space (170 modules) and 37 audio packages. Fixed classes: module-level destructuring took no module prefix; a one-statement block read as a declaration in statement position; a do-while tail read as a loop head; `export *` overrode a local export; a guarded clone of a rest-lowered function fell outside the lowering gate; a tuple-returning function property never materialized; `fn.prop = function name () {}` took the dynamic object path; Math.hypot/min/max with spreads; spread into fixed-arity calls; `Ctor.prototype.m.call`; builtins as values; SRoA facts missing on property arrows; module init in value context. color-space compiles whole; with `export * as ns` re-exports, 28 of 37 audio packages compile; the rest are object rest on unknown shapes (3), `try` across `await` (5), and top-level `await` (1), all documented rejections. web-audio-api needs class accessors (phase 4)
-- [ ] `scripts/compile-budget.mjs` (time, peak memory, bytes per entry, `--baseline`, `--root <checkout>`) against the 0.9.2 tag. Current state on this machine: jessie 115,508 bytes in 1,045 ms against 107,653 in 781; color-space batch 60,643 in 523 against 59,488 in 458; audio/eq 151,211 in 2,510 against 140,371 in 1,966; audio/denoise 314,671 in 4,220 against 277,543 in 3,389 (0.9.2 rejects color-space whole and watr). The growth is cumulative over 1,752 commits of correctness families, three of them visible on eq: real Error objects (+3.8 KB), the STRING/TYPED/generic `.set` dispatch fork (+6.3 KB), erased-provenance rejection (+4.1 KB); the reachability gate took 15.6 KB back. Of eq's 155 KB, 101 KB is user code (`refine`, 90 source lines, is 17 KB of forks on unknown receivers) and 32 KB runtime. watr's optimizer is 70% of compile time and scales with emitted WAT
-- [x] the size lever is receiver kinds, not deletion: parameters of internal functions fed from exported ones inherit the host's uncertainty, so every `arr[i]` and `o.k` forks. The first boundary rule of spec/boundary.md is in: an exported parameter used only as a numeric array-like (numeric-index reads and writes, `.length`, `subarray`/`slice` views, `set`/`fill`, forwarded to a function that does the same, or returned) arrives as a `Float64Array` copy and, when written, is copied back after the call (the wrapper never copied writes back before, so in-place DSP through the wrapper silently mutated a private copy). The body and every callee fed from it read typed storage: the probe drops from 23,822 to 791 bytes, audio/weighting from 56,453 to 39,750, biquad's lowpass mutates the host's Float32Array in place within f32 rounding of the JS reference. A parameter indexed by an unproven key, indexed into a string concat, or handed to an unknown callee keeps the dynamic path. Options objects (`params.state ??=`, `opts.fs ?? 44100`) are the remaining dynamic receivers; they persist state on the host's object and are the `dict` kind by design. `optimize: 'size'` emits 24% less than the default on parser-like code (jessie 87,584 against 115,508) and is the documented choice for libraries
-- [ ] README numbers restated under their contract (typed or guarded ABI), against V8 and hand-written wasm
-- [ ] tag 1.0.0
-
-Exit proof: the libraries above compile, run their own tests through jz, and each is smaller and faster than under 0.9.2; the compact bench's every row is at or below the prototype's bytes except where the prototype's own README records the loss.
+- [x] numeric export boundary: the `x = +x` guard is free, the wrapper hands `f64` slots the host value raw so the JS-API's ToNumber is the coercion, every box-capable parameter rides the `i64` lane
+- [x] constant-length module typed arrays are static storage: no allocator, no start function, memarg addressing; typed row 568 to 220 bytes, examples corpus −232 KB
+- [x] numeric array-like export parameters arrive as `Float64Array` and copy back when written (the wrapper never copied writes back before); the body and its callees read typed storage; a probe 23,822 to 791 bytes
+- [x] real programs: `scripts/library-census.mjs`; color-space whole and 28 of 37 audio packages compile after 16 fixed classes; remaining rejections are object rest on unknown shapes, `try` across `await`, top-level `await`; web-audio-api needs class accessors (phase 4)
+- [x] `scripts/compile-budget.mjs` against the 0.9.2 tag: library bytes +2 to 13%, compile time +14 to 34%, cumulative correctness on unknown receivers (real Error objects, the `.set` dispatch fork, erased-provenance rejection); 70% of compile time is watr scaling with emitted WAT
+- [ ] the size rows: wordcount and tokenizer are the string runtime (`__to_str`, ryu, hashing) against AS's string primitives; shapes, slices, resample, fft, glyfparse are dynamic-receiver forks and allocator/header weight on small kernels
+- [ ] the speed rows: trace and sdf are call-heavy recursion with boxed tuples (multi-value return materialization, closure dispatch); sort is the comparator call; glyfparse is byte-scan dispatch; the rest are within 5% and move with watr's own peephole
+- [ ] the conditional row's NaN canonicalization on `-x` (82 vs 61 bytes) drops under the typed ABI (phase 3)
+- [ ] `optimize: 'size'` emits 24% less than the default on parser-like code (jessie 87,584 against 115,508): the default profile's speed-for-size trades become receiver-aware or `size` becomes the library default
+- [ ] README numbers restated under their contract (typed or guarded ABI); tag 1.0.0 when the ledger is empty
 
 ## What transfers from the current compiler
 
@@ -29,7 +29,6 @@ Exit proof: the libraries above compile, run their own tests through jz, and eac
 - `module/*.js` WAT templates: the reference behavior for the runtime rewritten in jz (phase 2).
 - `bench/` and `examples/`: the performance evidence set, used as regression gates against ourselves.
 - `scripts/reachability-probe.mjs` and the eight call-graph classes it pinned: the completeness gate for the core's call graph.
-- `prototype/compact/`: the seed of `core/` (no global compile state, per-function scratch, numeric identity index, watr backend).
 
 Code outside these does not transfer. Where a behavior is needed, the corpus defines it and the core reimplements it on the IR.
 
@@ -48,11 +47,11 @@ Exit proof: every current test file maps to typed kinds, runtime kinds and `any`
 
 ### Phase 1. Typed core with an IR
 
-Move `prototype/compact/` to `core/` and give it the IR. Two halves, each with its own exit proof.
+Grow `core/` out of the migrated `src/` stages and give it the IR. Two halves, each with its own exit proof.
 
 #### 1a. The IR at parity (weeks 1 to 6)
 
-- [ ] `core/` with its own test entry in `test/index.js`, its bench, and its gates from the first commit
+- [ ] `core/` with its own test entry in `test/index.js`, its bench, and its gates from the first commit; the v1 ledger stays the outer gate
 - [ ] one typed IR: SSA with a CFG and one lattice (`f64`, `i32`, `i64`, `v128`, `str`, `typedarray T`, `struct S`, `array T`, `dict V`, `closure C`, `any`)
 - [ ] every optimization (LICM, CSE, vectorization, pointer simplification) is dataflow on the IR; the WAT-array matchers are not ported
 - [ ] i32 parameters and results carried as i32; the exact-conversion helper appears only where JS semantics require ToInt32 of an f64
@@ -100,7 +99,7 @@ Exit proof: the ported corpus passes, the flagship compiles and runs its own tes
 
 ### Phase 5. Retirement
 
-- [ ] `core/` becomes `src/`; the old `src/`, `module/`, `jzify/` templates, and `prototype/` are deleted
+- [ ] `core/` becomes `src/`; the old `src/`, `module/`, and `jzify/` templates are deleted
 - [ ] `.work/` leaves the repository; `PLAN.md` and `spec/` are the only planning prose
 - [ ] the last release of the old compiler is tagged for users who need the retired surface
 - [ ] README describes the two tiers, the subset, and the numbers under their stated contracts

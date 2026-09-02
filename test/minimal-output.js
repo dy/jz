@@ -577,3 +577,35 @@ if (!skip) {
     ok(perInstance <= 120, `${perInstance}B/instance steady-state heap growth (2-slot object: 16B payload + 16B header = 32B — well under the original 3-slot ~60-100B ledger estimate)`)
   })
 }
+
+// The compact prototype's bench rows, kept as a production size ratchet now that
+// the prototype is retired (prototype/compact/README.md's correction, 2026-09-02).
+// Each row's byte count at `optimize: 'size'` may only fall; the recorded value is
+// production's, with the prototype's own figure alongside for the record.
+test('minimal: the compact-prototype bench rows stay at or below their recorded bytes', () => {
+  if (skip) return
+  const DSP = `const a=new Float64Array(64);const b=new Float64Array(64);export let f=(x)=>{
+    for(let i=0;i<a.length;i++)a[i]=x+i
+    for(let j=0;j<b.length;j++)b[j]=a[j]*2+1
+    let sum=0
+    for(let k=0;k<b.length;k++)sum+=b[k]
+    return sum
+  }`
+  const ROWS = [
+    ['constant', 'export let f = () => 1 + 2 * 3', [], 7, 41, 41],
+    ['nan-fold', 'export let f = () => 0 / 0', [], NaN, 41, 41],
+    ['arithmetic', 'export let f = x => { x=+x; return x*x*0.5+3 }', [8], 35, 58, 64],
+    ['direct-call', 'let mul=(x,y)=>x*y; export let f=(x,y)=>{x=+x;y=+y;return mul(x,y)+1}', [3, 4], 13, 49, 69],
+    ['conditional', 'export let f=x=>{x=+x;if(x>0)return x;else return -x}', [-9], 9, 82, 61],
+    ['for-loop', 'export let f=n=>{n=+n;let s=0;for(let i=0;i<n;i++)s+=i;return s}', [100], 4950, 74, 102],
+    ['while-loop', 'export let f=n=>{n=+n;let s=0;let i=0;while(i<n){s+=i;i++}return s}', [100], 4950, 74, 102],
+    ['bitwise', scalarCase('differential-fnv-i32').source, [1, 2, 3], 5689143, 120, 212],
+    ['typed-simd', DSP, [3], 4480, 220, 287],
+  ]
+  for (const [name, src, args, expected, recorded] of ROWS) {
+    const bytes = compile(src, { optimize: 'size', alloc: false })
+    ok(bytes.length <= recorded, `${name}: ${bytes.length} B (recorded ${recorded})`)
+    const { exports } = new WebAssembly.Instance(new WebAssembly.Module(bytes))
+    ok(Object.is(exports.f(...args), expected), `${name}: result`)
+  }
+})
