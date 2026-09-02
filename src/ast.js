@@ -714,3 +714,8 @@ export function someDeep(node, pred) {
 /** Alias for {@link extractParams}. */
 export const paramList = extractParams
 
+
+/** Accessor slot suffixes: jzify lowers `get x()`/`set x(v)` to the methods
+ *  `x__get`/`x__set` on the instance; the emitter dispatches `o.x` reads and
+ *  `o.x = v` writes through them on OBJECT/unknown receivers. */
+export const ACCESSOR_GET = '__get', ACCESSOR_SET = '__set'

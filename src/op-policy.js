@@ -49,7 +49,6 @@ export const JZIFY_CLASS_ERRORS = {
   computedStaticField: 'non-constant computed static class fields are not supported — use a literal name',
   computedField: 'non-constant computed/destructured class fields are not supported — use a literal field name',
   computedStaticMember: 'non-constant computed static class member names are not supported — use a literal name',
-  accessor: 'class getters/setters are not supported — jz objects have no accessors',
   staticMember: 'this `static` member shape is not supported (static fields, methods and blocks are)',
   superProp: '`super` property access is not supported: no class inheritance',
 }

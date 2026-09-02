@@ -2,8 +2,9 @@
 // plus `extends`, `super(…)`, `static` members, and private `#fields`.
 // Classes are pure desugaring — an instance is a plain object, methods are
 // per-instance arrows capturing it, `this` is renamed to that object, `new C(a)`
-// becomes `C(a)`. Rejected: full `super.x` property semantics, getters/setters,
-// non-constant computed member names.
+// becomes `C(a)`, `get x()`/`set x(v)` become the `x__get`/`x__set` slots the
+// property reader and store dispatch through. Rejected: full `super.x`
+// property semantics, non-constant computed member names.
 import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { onWasi } from './_matrix.js'
@@ -359,8 +360,73 @@ test('class extends: super["method"] call dispatches to base implementation', ()
 
 test('rejects `super` property read', () => rejects(`class B { x(){ return 1 } } class A extends B { y(){ return super.x } } export let run = () => 1`, /super/))
 test('rejects dynamic super member call', () => rejects(`class B { x(){ return 1 } } class A extends B { y(k){ return super[k]() } } export let run = () => 1`, /super/))
-test('rejects getters', () => rejects(`class A { get x(){ return 1 } } export let run = () => 1`, /getter/))
-test('rejects setters', () => rejects(`class A { set x(v){ } } export let run = () => 1`, /setter|accessor/))
+// Accessors lower to the `x__get`/`x__set` slots; a read or write of the
+// name dispatches through them on OBJECT/unknown receivers (a known schema
+// statically, an unknown receiver by a runtime probe with the plain access as
+// the fallback), and every other receiver kind keeps its own lowering.
+test('class accessors: getter and setter on a known instance', () => {
+  if (onWasi()) return
+  const { run } = compile(`
+    class Param {
+      #v = 1
+      #writes = 0
+      get value() { return this.#v * 10 }
+      set value(v) { this.#writes++; this.#v = v }
+      get writes() { return this.#writes }
+    }
+    export let run = () => {
+      const p = new Param()
+      p.value = 4
+      p.value += 1
+      return p.value * 100 + p.writes
+    }
+  `)
+  is(run(), 41002)   // set 4, read 40 + 1 → set 41, read 410; two writes
+})
+
+test('class accessors: unknown receiver probes, a plain object reads its field', () => {
+  if (onWasi()) return
+  const { run } = compile(`
+    class Ctx {
+      #len = 7
+      get length() { return this.#len }
+      set length(n) { this.#len = n * 2 }
+    }
+    const lengthOf = (o) => o.length
+    const setLength = (o, n) => { o.length = n; return o }
+    export let run = () => {
+      const c = new Ctx()
+      const arr = [1, 2, 3]
+      const plain = { length: 5 }
+      setLength(c, 3)
+      return lengthOf(c) * 100 + lengthOf(plain) * 10 + lengthOf(arr) + arr.length * 1000 + 'abcd'.length * 10000
+    }
+  `)
+  is(run(), 43653)
+})
+
+test('object-literal accessors and a static accessor pair', () => {
+  if (onWasi()) return
+  const { run } = compile(`
+    const o = { base: 2, get twice() { return this.base * 2 }, set twice(v) { this.base = v / 2 } }
+    class K {
+      tag = 1
+      static get unit() { return 3 }
+    }
+    export let run = () => { o.twice = 10; return o.twice * 100 + K.unit }
+  `)
+  is(run(), 1003)
+})
+
+test('accessor: a derived class inherits the base getter', () => {
+  if (onWasi()) return
+  const { run } = compile(`
+    class B { #n = 2; get n() { return this.#n + 1 } }
+    class D extends B { m() { return this.n * 5 } }
+    export let run = () => new D().m()
+  `)
+  is(run(), 15)
+})
 test('rejects dynamic computed class fields', () => rejects(`let key = "x"; class A { [key] = 1 } export let run = () => 1`, /computed/))
 test('rejects dynamic computed class methods', () => rejects(`let key = "x"; class A { [key]() { return 1 } } export let run = () => 1`, /computed/))
 

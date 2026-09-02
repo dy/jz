@@ -4,7 +4,7 @@
 // microtask queue drains at host boundaries (export return, timer tick) and
 // the interop wrapper adopts promise-shaped returns into HOST Promises —
 // pending ones settle from the after-tick sweep. Pay-per-use: sync programs
-// never link any of it. v1 rejects: try/catch across await (precise message).
+// never link any of it. try/catch across await routes the rejection to the catch.
 // Divergences (documented): job ordering is per-drain-cycle; no unhandled-
 // rejection reporting; no SuppressedError.
 import test from 'tst'
@@ -12,8 +12,8 @@ import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
 import { onWasi, onKernel } from './_matrix.js'
 
-const val = async (src) => {
-  const r = jz(src).exports.f()
+const val = async (src, ...args) => {
+  const r = jz(src).exports.f(...args)
   ok(r instanceof Promise, 'async export adopts into a host Promise')
   return r
 }
@@ -75,10 +75,41 @@ test('async: pending export parks on wasm timers, host Promise settles', async (
   is(await val(src), 12)
 })
 
-test('async: v1 rejects try across await with a precise message', () => {
+// try/catch across an await: the machine's try regions route an awaited
+// rejection (and a throw after the await) to the catch; a fulfilled await
+// continues past it; the catch's own await works; a `finally` that awaits
+// stays out with a precise message.
+test('async: try/catch across await routes the rejection to the catch', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `
+    const fail = async (n) => { if (n > 2) throw 42; return n * 10 }
+    const tag = async (v) => v + 1000
+    export let f = async (n) => {
+      let out = 0
+      try { out = await fail(n); out += 1; if (n === 2) throw 5 } catch (e) { out = await tag(e) }
+      return out * 1000 + n
+    }`
+  is(await val(src, 1), 11001)
+  is(await val(src, 5), 1042005)
+  is(await val(src, 2), 1005002)
+})
+
+test('async: destructuring declarations across an await', async () => {
+  if (onWasi() || onKernel()) return
+  const src = `
+    const get = async (n) => ({ a: n, b: n * 2, arr: [7, 8, 9] })
+    export let f = async (n) => {
+      let { a, b: c, d = 5 } = await get(n)
+      const { arr: [x, , y, ...rest] } = await get(n)
+      return a + c * 10 + d * 100 + x * 1000 + y * 10000 + rest.length * 100000
+    }`
+  is(await val(src, 3), 97563)
+})
+
+test('async: a finally that awaits is a precise reject', () => {
   let e
-  try { jz.compile(`async function g() { try { await 1 } catch (x) {} } export let f = () => 1`) } catch (x) { e = x }
-  ok(e && e.message.includes('across `await`'), `precise reject: ${e?.message?.slice(0, 80)}`)
+  try { jz.compile(`async function g() { try { await 1 } finally { await 2 } } export let f = () => 1`) } catch (x) { e = x }
+  ok(e && e.message.includes('finally'), `precise reject: ${e?.message?.slice(0, 80)}`)
 })
 
 // Async HOST IMPORTS — a host function returning a thenable becomes a jz

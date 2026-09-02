@@ -8,14 +8,15 @@
  */
 
 import { dataAlign, dataPush, dataLen, pushStaticSlots } from '../src/static-data.js'
-import { typed, asF64, asI64, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
+import { typed, asF64, asI64, asI32, NULL_NAN, UNDEF_NAN, temp, tempI32, tempI64, block64, ptrTypeEq, dispatchByPtrType, allocPtr, needsDynShadow, mkPtrIR, extractF64Bits, slotAddr, elemLoad, elemStore, freshId, undefExpr } from '../src/ir.js'
 import { emit, storedValue, storedValueNarrow } from '../src/bridge.js'
 import { staticArrayPtr } from './array.js'
 import { GROW_QUAD_CAP } from './collection.js'
 import { valTypeOf, shapeOf } from '../src/kind.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
 import { ctx, err, inc, PTR, LAYOUT, declGlobal, DBG_INVARIANTS } from '../src/ctx.js'
-import { isReassigned, MUTATE_OPS, some } from '../src/ast.js'
+import { isReassigned, MUTATE_OPS, some, JZ_UNDEF } from '../src/ast.js'
+import { staticObjectProps } from '../src/static.js'
 import { ERR, ERR_CLASS_NAMES, ERR_SCHEMA_PROPS } from '../err-codes.js'
 
 // Object.prototype.toString tag per value category. Matches what JS engines
@@ -745,8 +746,48 @@ export default (ctx) => {
     return typed(['block', ['result', 'f64'], ...body], 'f64')
   }
 
-  ctx.core.emit['Object.defineProperty'] = () => {
-    err('Object.defineProperty descriptor semantics are outside jz scope; jzify only folds static bundler export helpers — for a plain data property, use `obj.prop = value` instead')
+  // `Object.defineProperty(o, k, d)` defines the data property `o[k] = d.value`:
+  // jz has no descriptors (writable/enumerable/configurable carry no meaning
+  // here – a documented divergence) and accessors are declared on classes, so
+  // a descriptor holding `get`/`set` is a compile-time reject when literal and
+  // a TypeError when it arrives at runtime. A literal key with a literal
+  // descriptor is the static store; the expression's value is `o`.
+  ctx.core.emit['Object.defineProperty'] = (obj, key, desc) => {
+    const k = Array.isArray(key) && (key[0] === 'str' || key[0] == null) && typeof key[1] === 'string' ? key[1] : null
+    const props = Array.isArray(desc) && desc[0] === '{}' ? staticObjectProps(desc.slice(1)) : null
+    if (props?.names.some(n => n === 'get' || n === 'set'))
+      err('Object.defineProperty with an accessor descriptor is outside jz scope; declare `get`/`set` on the class instead')
+    const t = temp('dp')
+    const vi = props ? props.names.indexOf('value') : -1
+    if (k != null && props && vi >= 0) return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(obj))],
+      ['drop', asF64(emit(['=', ['.', t, k], props.values[vi]]))],
+      ['local.get', `$${t}`]], 'f64')
+    const kt = temp('dk'), d = temp('dd')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${t}`, asF64(emit(obj))],
+      ['local.set', `$${kt}`, asF64(emit(key))],
+      ['local.set', `$${d}`, asF64(emit(desc))],
+      ['if', emit(['||', ['!==', ['.', d, 'get'], JZ_UNDEF], ['!==', ['.', d, 'set'], JZ_UNDEF]]),
+        ['then', ['global.set', '$__jz_last_err_bits', ['i64.reinterpret_f64', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]], ['throw', '$__jz_err', ['f64.const', ERR.ACCESSOR_DESCRIPTOR]]]],
+      // a descriptor without `value` leaves the property as it is
+      ['if', asI32(emit(['in', ['str', 'value'], d])),
+        ['then', ['drop', asF64(emit(['=', ['[]', t, kt], ['.', d, 'value']]))]]],
+      ['local.get', `$${t}`]], 'f64')
+  }
+
+  // `Object.getOwnPropertyDescriptor(o, k)`: jz objects hold plain data
+  // properties, so the descriptor is the value under the data-property flags,
+  // or undefined when the key is absent (an undefined-valued key reads as
+  // absent: a documented divergence of the descriptor-free model).
+  ctx.core.emit['Object.getOwnPropertyDescriptor'] = (obj, key) => {
+    const o = temp('gd'), k = temp('gk')
+    return typed(['block', ['result', 'f64'],
+      ['local.set', `$${o}`, asF64(emit(obj))],
+      ['local.set', `$${k}`, asF64(emit(key))],
+      asF64(emit(['?:', ['===', ['[]', o, k], JZ_UNDEF],
+        JZ_UNDEF,
+        ['{}', [',', [':', 'value', ['[]', o, k]], [':', 'writable', ['bool', 1]], [':', 'enumerable', ['bool', 1]], [':', 'configurable', ['bool', 1]]]]]))], 'f64')
   }
 
   // Object.fromEntries(arr) → creates HASH from array of [key, value] pairs.

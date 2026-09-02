@@ -176,12 +176,13 @@ See [all examples](https://jz.js.org/examples/).
 │   var  function  arguments  switch                                     │
 │   class  new  this  extends  super  private/static fields              │
 │   generators  iterator helpers  async/await  Promise  for await        │
-│   loose equality  instanceof  WeakMap  WeakSet                         │
+│   loose equality  instanceof  WeakMap  WeakSet  WeakRef                │
+│   EventTarget  Event  CustomEvent  DOMException                        │
 └────────────────────────────────────────────────────────────────────────┘
 
 not supported
   eval  Function  with  Proxy  Reflect
-  property descriptors  getters/setters  live prototypes
+  property descriptors  live prototypes
   dynamic import  DOM  Intl  Temporal  Node APIs
 ```
 
@@ -203,11 +204,16 @@ not supported
   ASCII-only; Unicode property classes, normalization, and locale tables are
   unsupported.
 - **Objects.** Literal fields have fixed slots; computed keys use hash storage.
-  Live prototype chains, property descriptors, accessors, Proxy, and Reflect
-  do not exist: `__proto__`, delegation, and monkey-patching are unsupported,
+  Class and literal `get`/`set` accessors are methods with property syntax,
+  resolved statically on a known shape. Live prototype chains, property
+  descriptors, Proxy, and Reflect do not exist: `__proto__`, delegation, and
+  monkey-patching are unsupported,
   `Object.create(proto)` makes a shallow copy, method dispatch is static, and
-  traps cannot attach to compile-time struct offsets. Literal shapes are
-  fixed, so `delete o[k]` works only in dictionary mode.
+  traps cannot attach to compile-time struct offsets. `C.prototype` of a
+  class is an empty object, `Object.getOwnPropertyDescriptor` reports a data
+  descriptor, and `Object.defineProperty` stores the value (an accessor
+  descriptor is a TypeError). Literal shapes are fixed, so `delete o[k]`
+  works only in dictionary mode.
 - **Dynamic keys.** Runtime boolean keys use their numeric carrier, so `o[b]`
   reads `'1'` for `true`. Static boolean keys fold correctly.
 - **Array indices.** Indices coerce to `i32`. Plain arrays are bounds checked;
@@ -226,7 +232,7 @@ not supported
   WeakRef and FinalizationRegistry have nothing to observe; `WeakMap` and
   `WeakSet` use `Map` and `Set` semantics.
 - **Generators and async.** Both lower to state machines. Jobs drain at host
-  boundaries; `try` across `yield` or `await` is unsupported.
+  boundaries; a `finally` that yields is unsupported.
 - **Dates.** Date getters use UTC. Intl and Temporal are absent: ICU, CLDR,
   and timezone tables exceed the intended module size.
 - **Runtime compilation.** `eval`, the `Function` constructor, and `with` would

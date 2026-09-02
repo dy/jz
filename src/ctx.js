@@ -487,6 +487,7 @@ export function reset(proto, globals, bridge) {
     demanded: new Set(),
     importSources: null,  // user compile's bundled source graph; reset() clears it every session
     importAsts: null,   // self-compile: pre-parsed [specifier, ast] pairs (the kernel can't parse).
+    rootExports: null,  // the program's export table while a nested module prepares (std host-boundary re-exports)
                         // Consulted by prepareModule before falling back to ctx.transform.parse(source).
     hostImports: null,
     hostImportValTypes: new Map(),
@@ -890,6 +891,12 @@ export function reset(proto, globals, bridge) {
     helperCallsites: false, // profiling-only: export mutable i64 counters for selected runtime
                             // helper callsites after optimization, so hot helpers can be traced
                             // back to the compiled function that calls them.
+    accessorNames: null, // Set of property names some class or object literal defines an accessor
+    dynamicAccessorNames: null, // the subset a derived class installs dynamically (jzify/classes.js recordAccessor)
+                         // for (jzify/classes.js records `get x`/`set x` as it lowers them to the
+                         // `x__get`/`x__set` slots; every module is lowered before emit). The `.`
+                         // reader and the property store dispatch these names on OBJECT/unknown
+                         // receivers (module/core.js, src/compile/emit-assign.js).
     compactCollections: false, // self-compile artifact build profile only: omit the redundant
                                // Set/Map/HASH i32 probe lane and probe the entry-resident hash.
                                // Ordinary user outputs keep the faster lane layout.

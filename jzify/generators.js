@@ -21,7 +21,7 @@
  * @module jzify/generators
  */
 
-import { walkAst, some } from '../src/ast.js'
+import { walkAst, some, isBlockBody } from '../src/ast.js'
 
 const isYield = (n) => Array.isArray(n) && (n[0] === 'yield' || n[0] === 'yield*')
 // THE one canonical function boundary for every control-effects walker in
@@ -75,153 +75,169 @@ const blockStmts = (b) =>
   : Array.isArray(b) && b[0] === ';' ? b.slice(1)
   : [b]
 
-const S = { NEXT: '__s', SENT: '__sent' }
+const S = { NEXT: '__s', SENT: '__sent', ERR: '__err', THR: '__thr', THRSET: '__thrset' }
 
-// ES2025 iterator helpers on iterator VALUES — injected (pay-per-use) when a
-// program that mints iterators also uses helper methods in non-fusable
-// positions (chain stored as a value, helper on an unknown receiver) or tests
-// `instanceof Iterator`. Generator objects then mint through __it_mk, whose
-// helpers each wrap the source in a fresh decorated iterator — lazy,
-// spec-shaped (value+counter callbacks, early return() on short-circuit).
-// Fusable chains still fuse (zero-cost path unchanged); this is the fallback
-// that makes helper results first-class values.
-export const ITER_HELPERS_RUNTIME = `
-let __it_fn = (f, name) => { if (f == null || typeof f !== 'function') throw 'TypeError: ' + name + ' callback must be callable' }
-let __it_cl = (it) => { if (typeof it.return === 'function') it.return(undefined) }
-let __it_lim = (n, name) => {
-  if (typeof n === 'object') throw 'TypeError: ' + name + ' limit is an object (with valueOf/toString) — jz has no general ToPrimitive dynamic dispatch for a value received through an untyped parameter; call .valueOf()/.toString() (or Number()) yourself before passing the result'
-  let lim = +n
-  if (lim !== lim) throw 'RangeError: ' + name + ' limit must not be NaN'
-  lim = Math.trunc(lim)
-  if (lim < 0) throw 'RangeError: ' + name + ' limit must be non-negative'
-  return lim
-}
-let __it_mk = (nx, rt, th) => {
-  let it = { next: nx, return: rt, throw: th, '@@iterator': undefined,
-    map: undefined, filter: undefined, take: undefined, drop: undefined, flatMap: undefined,
-    toArray: undefined, reduce: undefined, forEach: undefined, some: undefined, every: undefined, find: undefined }
-  it[Symbol.iterator] = () => it
-  it.map = (f) => { __it_fn(f, 'map'); let c = 0; return __it_mk((v) => {
-    let r = it.next(v)
-    if (r.done) return r
-    let m = f(r.value, c)
-    c++
-    return { value: m, done: false }
-  }, it.return, it.throw) }
-  it.filter = (f) => { __it_fn(f, 'filter'); let c = 0; return __it_mk((v) => {
-    let r = it.next(v)
-    while (!r.done) { let hit = f(r.value, c); c++; if (hit) return { value: r.value, done: false }; r = it.next() }
-    return r
-  }, it.return, it.throw) }
-  it.take = (n) => {
-    let lim = __it_lim(n, 'take')
-    let c = 0
-    return __it_mk(() => {
-      if (c >= lim) { __it_cl(it); return { value: undefined, done: true } }
-      c++
-      return it.next()
-    }, it.return, it.throw)
-  }
-  it.drop = (n) => {
-    let lim = __it_lim(n, 'drop')
-    let c = 0
-    return __it_mk(() => {
-      while (c < lim) { c++; let r0 = it.next(); if (r0.done) return r0 }
-      return it.next()
-    }, it.return, it.throw)
-  }
-  it.flatMap = (f) => {
-    __it_fn(f, 'flatMap')
-    let inner = null, c = 0
-    return __it_mk(() => {
-      while (true) {
-        if (inner != null) {
-          let ri = inner.next()
-          if (!ri.done) return ri
-          inner = null
-        }
-        let r = it.next()
-        if (r.done) return r
-        let m = f(r.value, c)
-        c++
-        inner = __it_from(m)
-      }
-    }, (rv) => {
-      // closing the helper closes the ACTIVE inner iterator first (spec:
-      // IteratorClose forwards through the flattening), then the source.
-      if (inner != null) { let i2 = inner; inner = null; __it_cl(i2) }
-      if (typeof it.return === 'function') return it.return(rv)
-      return { value: rv, done: true }
-    }, it.throw)
-  }
-  it.toArray = () => { let a = [], r = it.next(); while (!r.done) { a.push(r.value); r = it.next() } return a }
-  it.reduce = (f, init) => {
-    __it_fn(f, 'reduce')
-    let acc = init, c = 0
-    if (init === undefined) {
-      let r0 = it.next()
-      if (r0.done) throw 'TypeError: Reduce of empty iterator with no initial value'
-      acc = r0.value
-      c = 1
-    }
-    let r = it.next()
-    while (!r.done) { acc = f(acc, r.value, c); c++; r = it.next() }
-    return acc
-  }
-  it.forEach = (f) => { __it_fn(f, 'forEach'); let c = 0, r = it.next(); while (!r.done) { f(r.value, c); c++; r = it.next() } }
-  it.some = (f) => { __it_fn(f, 'some'); let c = 0, r = it.next(); while (!r.done) { if (f(r.value, c)) { __it_cl(it); return true } c++; r = it.next() } return false }
-  it.every = (f) => { __it_fn(f, 'every'); let c = 0, r = it.next(); while (!r.done) { if (!f(r.value, c)) { __it_cl(it); return false } c++; r = it.next() } return true }
-  it.find = (f) => { __it_fn(f, 'find'); let c = 0, r = it.next(); while (!r.done) { if (f(r.value, c)) { __it_cl(it); return r.value } c++; r = it.next() } return undefined }
-  return it
-}
-let __it_from = (v) => {
-  if (v == null) throw 'TypeError: value is not iterable'
-  let w = v
-  if (typeof w === 'object' && w[Symbol.iterator] != null) {
-    if (typeof w[Symbol.iterator] !== 'function') throw 'TypeError: [Symbol.iterator] is not callable'
-    w = w[Symbol.iterator]()
-  }
-  if (typeof w === 'object' && w.next != null) return w
-  let ix = 0
-  return __it_mk(() => {
-    if (ix >= v.length) return { value: undefined, done: true }
-    let e = v[ix]
-    ix++
-    return { value: e, done: false }
-  }, undefined, undefined)
-}
-`
-
-// Array.from over iterator values — rewires \`Array.from(x)\` in iterator-
-// minting programs: protocol values materialize, arrays COPY (from() always
-// returns a fresh array), array-likes build by length. Injected on use only.
-export const ITER_ARR_RUNTIME = `
-let __it_arr = (v) => {
-  if (v == null) throw 'TypeError: value is not iterable'
-  let w = v
-  if (typeof w === 'object' && w[Symbol.iterator] != null) w = w[Symbol.iterator]()
-  if (typeof w === 'object' && w.next != null) {
-    let a = [], r = w.next()
-    while (!r.done) { a.push(r.value); r = w.next() }
-    return a
-  }
-  let a = [], n = v.length
-  for (let i = 0; i < n; i++) a.push(v[i])
-  return a
-}
-`
+// ES2025 iterator helpers on iterator VALUES ride `jz:iter-helpers` (src/std),
+// imported when a program that mints iterators also uses helper methods in
+// non-fusable positions (chain stored as a value, helper on an unknown
+// receiver) or tests `instanceof Iterator`; generator objects then mint
+// through `__it_mk`. `Array.from(x)` over iterator values rides `jz:iter-arr`.
 
 export function createGeneratorLowering({ transform, err, generatorNames, genTemp, iterProto }) {
+  // A destructuring declaration in the body binds through a temp: the machine
+  // hoists plain names only, so `let { a, b: c, d = 1 } = e` becomes the
+  // declarators `t = e, a = t.a, c = t.b, d = t.d ?? 1` (arrays by index, a
+  // rest element by slice, nested patterns recursively). prepare's own
+  // destructuring never sees a generator body (the machine lowers first).
+  const patternDecls = (pat, src, out) => {
+    const items = (n) => n == null ? [] : Array.isArray(n) && n[0] === ',' ? n.slice(1) : [n]
+    const bind = (target, value) => {
+      if (typeof target === 'string') { out.push(['=', target, value]); return }
+      if (Array.isArray(target) && target[0] === '=') {   // default: `name = dflt`
+        const t = genTemp('pd'); out.push(['=', t, value])
+        bind(target[1], ['??', t, target[2]]); return
+      }
+      if (Array.isArray(target) && (target[0] === '{}' || target[0] === '[]')) {
+        const t = genTemp('pt'); out.push(['=', t, value]); patternDecls(target, t, out); return
+      }
+      err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
+    }
+    if (pat[0] === '{}') {
+      for (const it of items(pat[1])) {
+        if (typeof it === 'string') bind(it, ['.', src, it])
+        else if (Array.isArray(it) && it[0] === ':') bind(it[2], ['.', src, it[1]])
+        else if (Array.isArray(it) && it[0] === '=') bind(it, ['.', src, it[1]])
+        else err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
+      }
+    } else {
+      items(pat[1]).forEach((it, i) => {
+        if (it == null) return
+        if (Array.isArray(it) && it[0] === '...') bind(it[1], ['()', ['.', src, 'slice'], [null, i]])
+        else bind(it, ['[]', src, [null, i]])
+      })
+    }
+  }
+  const desugarPatternDecls = (node) => {
+    if (!Array.isArray(node)) return node
+    if (FN_BOUNDARY_OPS.has(node[0])) return node
+    if ((node[0] === 'let' || node[0] === 'const') && node.some((d, i) => i > 0 && Array.isArray(d) && d[0] === '=' && Array.isArray(d[1]))) {
+      // one declarator per statement: the machine's `let x = yield E` case
+      // takes a lone declarator, and the temp's initializer may be that yield
+      const out = []
+      for (let i = 1; i < node.length; i++) {
+        const d = node[i]
+        if (Array.isArray(d) && d[0] === '=' && Array.isArray(d[1])) {
+          const t = genTemp('pv'); out.push(['=', t, desugarPatternDecls(d[2])]); patternDecls(d[1], t, out)
+        } else out.push(Array.isArray(d) ? ['=', d[1], desugarPatternDecls(d[2])] : d)
+      }
+      return [';', ...out.map(d => ['let', d])]
+    }
+    return node.map((n, i) => i === 0 ? n : desugarPatternDecls(n))
+  }
+  // Hoisting flattens block scopes into the factory scope: a name declared in
+  // two blocks (`for (let i …)` twice, an `i` in each `if` arm) would be one
+  // hoisted local, so every later declaration renames apart (`i`, `i$1`) with
+  // its references, scope by scope, before the collect below. A block, a loop
+  // head, an `if` arm and a catch clause open a scope; a nested function sees
+  // the renamed outer name unless it rebinds it, and its own declarations are
+  // not hoisted, so they keep their spelling.
+  const uniqueLocals = (body) => {
+    const taken = new Set()
+    let uid = 0
+    const declNames = (st) => {
+      const out = []
+      if (Array.isArray(st) && (st[0] === 'let' || st[0] === 'const'))
+        for (let i = 1; i < st.length; i++) { const d = st[i]; const n = Array.isArray(d) && d[0] === '=' ? d[1] : d; if (typeof n === 'string') out.push(n) }
+      return out
+    }
+    // declare the statement's names into env: a repeat renames, a first keeps its spelling
+    const declare = (st, env, hoisted) => {
+      for (const n of declNames(st)) {
+        if (!hoisted) { env.delete(n); continue }
+        if (taken.has(n)) env.set(n, `${n}$${++uid}`)
+        else { taken.add(n); env.delete(n) }
+      }
+    }
+    const paramNames = (params) => { const out = []; walkAst(Array.isArray(params) ? params : [null, params], { enter: n => { for (const c of n) if (typeof c === 'string' && c !== '()' && c !== ',' && c !== '...' && c !== '=') out.push(c) } }); return out }
+    const walk = (n, env, hoisted) => {
+      if (typeof n === 'string') return env.get(n) ?? n
+      if (!Array.isArray(n) || n[0] == null || n[0] === 'str') return n
+      const op = n[0]
+      if (op === '.' || op === '?.') return [op, walk(n[1], env, hoisted), n[2]]
+      if (op === ':') return [op, n[1], walk(n[2], env, hoisted)]
+      if (op === 'class') return n
+      // object literal shorthand `{ i }` is key and reference at once
+      if (op === '{}' && n.length === 2 && !isBlockBody(n)) {
+        const items = Array.isArray(n[1]) && n[1][0] === ',' ? n[1].slice(1) : [n[1]]
+        const out = items.map(it => typeof it === 'string' && env.has(it) ? [':', it, env.get(it)] : walk(it, env, hoisted))
+        return ['{}', out.length === 1 ? out[0] : [',', ...out]]
+      }
+      if (op === '=>' || op === 'function' || op === 'function*' || op === 'async') {
+        if (op === 'async') return [op, walk(n[1], env, false)]
+        const inner = new Map(env)
+        const params = op === '=>' ? n[1] : n[2], body = op === '=>' ? n[2] : n[3]
+        for (const p of paramNames(params)) inner.delete(p)
+        const out = n.slice()
+        out[op === '=>' ? 1 : 2] = walk(params, inner, false)
+        out[op === '=>' ? 2 : 3] = scope(body, inner, false)
+        return out
+      }
+      if (op === 'for') {
+        const inner = new Map(env)
+        const head = n[1]
+        let outHead
+        if (Array.isArray(head) && (head[0] === 'of' || head[0] === 'in')) {
+          declare(head[1], inner, hoisted)
+          outHead = [head[0], walk(head[1], inner, hoisted), walk(head[2], env, hoisted)]
+        } else if (Array.isArray(head) && head[0] === ';') {
+          if (Array.isArray(head[1]) && (head[1][0] === 'let' || head[1][0] === 'const')) declare(head[1], inner, hoisted)
+          outHead = head.map((c, i) => i === 0 ? c : walk(c, inner, hoisted))
+        } else outHead = walk(head, inner, hoisted)
+        return ['for', outHead, scope(n[2], inner, hoisted)]
+      }
+      if (op === 'while' || op === 'do') return [op, walk(n[1], env, hoisted), scope(n[2], env, hoisted)]
+      if (op === 'if') return ['if', walk(n[1], env, hoisted), scope(n[2], env, hoisted), ...(n.length > 3 ? [scope(n[3], env, hoisted)] : [])]
+      if (op === 'try') return n.map((c, i) => {
+        if (i === 0) return c
+        if (Array.isArray(c) && c[0] === 'catch') { const inner = new Map(env); if (typeof c[1] === 'string') inner.delete(c[1]); return ['catch', c[1], scope(c[2], inner, hoisted)] }
+        if (Array.isArray(c) && c[0] === 'finally') return ['finally', scope(c[1], env, hoisted)]
+        return scope(c, env, hoisted)
+      })
+      if (op === '{}') return scope(n, env, hoisted)
+      if (op === 'switch') { const inner = new Map(env); return n.map((c, i) => i === 0 ? c : walk(c, inner, hoisted)) }
+      if (op === ';') return list(n.slice(1), env, hoisted, ';')
+      if (op === 'let' || op === 'const') {
+        // the declarator's own initializer sees the new name (`let go = () => go()`)
+        declare(n, env, hoisted)
+        return n.map((d, i) => i === 0 ? d : typeof d === 'string' ? (env.get(d) ?? d) : ['=', walk(d[1], env, hoisted), walk(d[2], env, hoisted)])
+      }
+      return n.map((c, i) => i === 0 ? c : walk(c, env, hoisted))
+    }
+    // a statement in scope position: a block, a sequence or a lone statement
+    const scope = (n, env, hoisted) => {
+      const inner = new Map(env)
+      if (Array.isArray(n) && n[0] === '{}' && isBlockBody(n)) {
+        const stmts = n.length === 1 ? [] : Array.isArray(n[1]) && n[1][0] === ';' ? n[1].slice(1) : [n[1]]
+        const out = list(stmts, inner, hoisted, ';')
+        return ['{}', out]
+      }
+      return walk(n, inner, hoisted)
+    }
+    // statements sharing one scope, in order: a declaration renames what follows
+    const list = (stmts, env, hoisted, head) => [head, ...stmts.map(st => walk(st, env, hoisted))]
+    const env = new Map()
+    return body.map(st => walk(st, env, true))
+  }
   // Collect every let/const binding name in the body — generator locals live in
-  // the factory scope so they survive across next() resumes. Shadowing across
-  // sibling blocks would collide after hoisting — reject (rename support later).
+  // the factory scope so they survive across next() resumes (shadowing renamed
+  // apart by uniqueLocals above).
   const collectLocals = (node, out, path) => walkAst(node, { enter: n => {
     if ((n[0] === 'let' || n[0] === 'const')) {
       for (let i = 1; i < n.length; i++) {
         const d = n[i]
         const name = Array.isArray(d) && d[0] === '=' ? d[1] : d
         if (typeof name !== 'string')
-          err('generators v1: destructuring declarations inside a generator body are not supported yet — bind names first')
+          err('generators v1: this destructuring shape inside a generator body is not supported yet – bind names first')
         if (out.has(name)) err(`generators v1: '${name}' is declared twice in the generator body — hoisted locals must be unique`)
         out.add(name)
       }
@@ -249,6 +265,8 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       }
     }
 
+    for (let i = 0; i < body.length; i++) body[i] = desugarPatternDecls(body[i])
+    body.splice(0, body.length, ...uniqueLocals(body))
     const locals = new Set()
     for (const st of body) collectLocals(st, locals)
 
@@ -256,7 +274,12 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     // states[i] = list of statements; terminators are written explicitly as
     // `__s = k` + return/continue shapes. State 0 is the entry; -1 is done.
     const states = []
-    const newState = () => (states.push([]), states.length - 1)
+    // a `try` spanning a yield is a REGION of states: every state created while
+    // its body flattens records the catch state as its handler (-1: none); the
+    // dispatch loop routes an exception raised in a state to that handler
+    const stateHandler = []
+    let curHandler = -1
+    const newState = () => (states.push([]), stateHandler.push(curHandler), states.length - 1)
     const stmtsOf = (id) => states[id]
     const setState = (id) => [';;set', id]           // internal marker, resolved below
     const gotoIR = (id) => [[';;set', id], [';;continue']]
@@ -337,6 +360,15 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
         if (st[2][0] === 'yield*') return flattenStmt(desugarYieldStar(st[2][1], st[1]), cur, loopCtx)
         return emitYield(cur, st[2], st[1])
       }
+      // `name.prop = yield E` (a field set from an await): the value lands in a
+      // temp at the resume, then the store – the receiver is a plain name, so
+      // evaluating it after the yield changes nothing observable
+      if (op === '=' && Array.isArray(st[1]) && st[1][0] === '.' && typeof st[1][1] === 'string' && isYield(st[2]) && st[2][0] === 'yield') {
+        const t = genTemp('ya'); locals.add(t)
+        const resume = emitYield(cur, st[2], t)
+        stmtsOf(resume).push(['=', st[1], t])
+        return resume
+      }
 
       // --- return ---
       if (op === 'return') {
@@ -356,6 +388,11 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
       // block — name the v1 limit instead of leaking an unresolvable ref ---
       if (op === 'function' && st[1])
         err(`generators v1: function declaration '${st[1]}' inside a decomposed async/generator block is not supported yet — move it to the function's top level or bind it as \`const ${st[1]} = function () { … }\``)
+
+      // --- a statement list flattens statement by statement: its `let`s are
+      // hoisted machine locals and must become assignments, never a nested
+      // block's own bindings shadowing them ---
+      if (op === '{}' || op === ';') return flattenList(blockStmts(st), cur, loopCtx)
 
       // --- compound statements stay atomic only when they carry no yield, no
       // plain return (see hasReturn — a nested return must reach the `return`
@@ -431,9 +468,37 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
         stmtsOf(stepS).push(...gotoIR(test))
         return exit
       }
-      if (op === '{}' || op === ';') return flattenList(blockStmts(st), cur, loopCtx)
-      if (op === 'try' || op === 'catch' || op === 'finally')
-        err('generators v1: try/catch across a yield is not supported yet — let the exception propagate out of the generator, or move the try into a non-yielding helper')
+      if (op === 'try') {
+        // try/catch across a yield (an await): the try body's states carry the
+        // catch state as their handler; the catch binds the machine's `__err`.
+        // A `finally` that yields, or a return/break/continue leaving a try
+        // that has a finally (the finally would be skipped), stays out of v1.
+        const catchC = st.find((c, i) => i > 1 && Array.isArray(c) && c[0] === 'catch')
+        const finallyC = st.find((c, i) => i > 1 && Array.isArray(c) && c[0] === 'finally')
+        if (finallyC && (hasYield(finallyC[1]) || hasReturn(st[1]) || (catchC && hasReturn(catchC[2])) || hasFreeJump(st[1]) || (catchC && hasFreeJump(catchC[2]))))
+          err('generators v1: a `finally` that yields, or a return/break/continue leaving a try with a finally, is not supported yet across a yield')
+        if (!catchC) {   // try/finally only: run the finally after the body (no yield in it)
+          const bEnd = flattenList(blockStmts(st[1]), cur, loopCtx)
+          if (bEnd == null) return null
+          for (const f of blockStmts(finallyC[1])) stmtsOf(bEnd).push(transform(f))
+          return bEnd
+        }
+        const catchS = newState(), after = newState()   // outside the region
+        const outer = curHandler
+        curHandler = catchS
+        const bodyS = newState()
+        stmtsOf(cur).push(...gotoIR(bodyS))
+        const bEnd = flattenList(blockStmts(st[1]), bodyS, loopCtx)
+        curHandler = outer
+        const fin = finallyC ? blockStmts(finallyC[1]).map(transform) : []
+        if (bEnd != null) stmtsOf(bEnd).push(...fin, ...gotoIR(after))
+        if (catchC[1] != null) { locals.add(catchC[1]); stmtsOf(catchS).push(['=', catchC[1], S.ERR]) }
+        const cEnd = flattenList(blockStmts(catchC[2]), catchS, loopCtx)
+        if (cEnd != null) stmtsOf(cEnd).push(...fin, ...gotoIR(after))
+        return after
+      }
+      if (op === 'catch' || op === 'finally')
+        err('generators v1: a stray catch/finally clause across a yield')
       err(`generators v1: yield inside \`${op}\` is not supported yet — hoist the yield to statement position`)
     }
 
@@ -457,13 +522,29 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     for (let i = states.length - 1; i >= 0; i--)
       dispatch = ['if', ['===', S.NEXT, [null, i]], ['{}', [';', ...states[i].map(resolve), ['continue']]], ['{}', [';', dispatch]]]
 
+    // try regions: the dispatch runs under one catch that routes an exception
+    // raised in a region state to its handler (`__err` carries it) and closes
+    // the machine on any other; an injected throw(v) is raised at the resume
+    // point, inside that catch, so it reaches the same handlers
+    const handlers = new Map()
+    stateHandler.forEach((h, i) => { if (h >= 0) (handlers.get(h) ?? handlers.set(h, []).get(h)).push(i) })
+    const guarded = handlers.size > 0
+    let route = [';', ['=', S.NEXT, [null, -1]], ['throw', '__e']]
+    for (const [h, ids] of handlers) {
+      const cond = ids.map(i => ['===', S.NEXT, [null, i]]).reduce((a, b) => ['||', a, b])
+      route = ['if', cond, ['{}', [';', ['=', S.ERR, '__e'], ['=', S.NEXT, [null, h]], ['continue']]], ['{}', route]]
+    }
+    const loopBody = guarded
+      ? ['try', [';', ['if', S.THRSET, ['{}', [';', ['=', S.THRSET, [null, false]], ['throw', S.THR]]]], dispatch], ['catch', '__e', ['{}', route]]]
+      : dispatch
     const nextBody = ['{}', [';',
       ['=', S.SENT, '__in'],
-      ['while', [null, true], ['{}', [';', dispatch]]],
+      ['while', [null, true], ['{}', [';', loopBody]]],
     ]]
 
     const decls = [
       ['let', ['=', S.NEXT, [null, 0]], ['=', S.SENT, [null, undefined]],
+        ...(guarded ? [['=', S.ERR, [null, undefined]], ['=', S.THR, [null, undefined]], ['=', S.THRSET, [null, false]]] : []),
         ...[...locals].map(n => ['=', n, [null, undefined]])],
       ['const', ['=', '__next', ['=>', '__in', nextBody]]],
     ]
@@ -472,17 +553,16 @@ export function createGeneratorLowering({ transform, err, generatorNames, genTem
     const returnFn = ['=>', '__v', ['{}', [';',
       ['=', S.NEXT, [null, -1]],
       ['return', ['{}', [',', [':', 'value', '__v'], [':', 'done', [null, true]]]]]]]]
-    // throw(v): no try may span a yield (v1 rejects it), so every injected
-    // exception is unhandled by spec — close the machine, rethrow to the
-    // caller of throw() (catchable jz throw).
-    const throwFn = ['=>', '__v', ['{}', [';',
-      ['=', S.NEXT, [null, -1]],
-      ['throw', '__v']]]]
+    // throw(v): with try regions the exception is raised at the resume point
+    // (the machine's own catch routes it); without, no handler can exist, so
+    // close the machine and rethrow to the caller of throw().
+    const throwFn = guarded
+      ? ['=>', '__v', ['{}', [';', ['=', S.THR, '__v'], ['=', S.THRSET, [null, true]], ['return', ['()', '__next', [null, undefined]]]]]]
+      : ['=>', '__v', ['{}', [';', ['=', S.NEXT, [null, -1]], ['throw', '__v']]]]
 
     // Helper-bearing programs mint through __it_mk (decorated iterator —
     // map/filter/… as value-position methods); others keep the bare record.
     if (iterProto?.helpers) {
-      iterProto.helpersUsed = true
       return ['=>', params, ['{}', [';', ...decls,
         ['return', ['()', '__it_mk', [',', nextFn, returnFn, throwFn]]]]]]
     }

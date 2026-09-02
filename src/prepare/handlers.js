@@ -26,11 +26,12 @@ import { NO_VALUE, staticObjectProps, staticPropertyKey, staticValue } from '../
 import { TYPED_ELEM_NAMES } from '../../layout.js'
 import { ERR_CLASS_NAMES } from '../../err-codes.js'
 import { hasFunc, isFuncValueLocal, isUnresolvableBareIdent, renameFunc, shadowsBuiltin } from './closure-lift.js'
+import { STD_HOST_EXPORTS } from '../std/index.js'
 import { MUTATING_ARRAY_METHODS, alwaysFalsy, alwaysTruthy, dropDeadPostfix, foldConstIf, stringValue, stripBoolNot, truncateUnreachable } from './const-fold.js'
 import { arrayLiteralItems, isDestructPattern, patternItems, simpleArrayPatternItems, substPattern } from './destructure.js'
 import { boundSafeCalls, mintLocal, scanReassignedTopLevel, writesReceiver } from './ident-purity.js'
 import { bindStaticConst, bindStaticGlobal, deleteStaticGlobal, hoistIndexedConstLiterals, invalidateMutatedArray, staticString, staticStringArrayValues, staticStringExpr, stringArrayValues } from './literals.js'
-import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
+import { INTRINSIC_CALLEES, addHostImport, builtinAliasKeyOf, bundledSource, foldImportMetaResolve, foldNamespaceIntrospection, importMetaUrl, isBundledModule, isImportMeta, isImportMetaProp, moduleAstFor, namespaceMemberAliases, namespaceMemberAssigns, namespaceModOf, recordModuleInitFacts, resolveImportMeta } from './module-resolve.js'
 import { bindAssignSchema, bindDeclSchema, censusUnknownInitDecl, conditionalSpreadGroupPrepare, inferAssignSchema, objLiteralSid } from './schema.js'
 import { bindingNames, bodyCapturesName, collectLoopDeclNames, declareGlobal, inlineArrayLen, isDeclared, markLoopLocal, mintForScope, popScope, prescanBlockDecls, pushScope, resolveScope, substIdents, withLoopLocalNames } from './scope.js'
 import { CONSTANTS, ERR_CLASS_SET, F64_CONSTANTS, GLOBALS, INSTANCEOF_ALLOW, NS_CTORS, SIMD_NS, STATIC_ARRAYS, STATIC_CONSTS, STATIC_STRINGS, assignedStaticGlobals, builtinMemberKey, freshPrepareId, funcLocalNames, funcValueNames, loopLocalNames, mutatedArrayNames, ownerStack, prepState, promiseRecvNames, renameSerial, scopes, staticConstScopes, withResolversRecvNames } from './state.js'
@@ -614,7 +615,7 @@ const handlers = {
 
     // Tier 2: Source module (bundling)
     if (isBundledModule(mod)) {
-      const resolved = prepareModule(mod, ctx.module.importSources?.[mod])
+      const resolved = prepareModule(mod, bundledSource(mod))
       // Default import: import name from 'mod' → bind to default export
       if (typeof specifiers === 'string') {
         const mangled = resolved.exports.get('default')
@@ -690,7 +691,15 @@ const handlers = {
   // IS A — B is unreachable; dual for `&&`. Both operands are prepped first so
   // policy checks still fire (same discipline as emit's literal-LHS fold, which
   // preps-then-skips); only the dead subtree is dropped from the program.
-  '||'(a, b) { const pa = prep(a), pb = prep(b); return alwaysTruthy(pa) ? pa : ['||', pa, pb] },
+  // The one exception: a top-level function or class value is never falsy,
+  // and its fallback is a builtin the program cannot resolve as a value
+  // (`globalThis.DOMException || Error` after the std-global rewrite), so the
+  // fallback is dropped unprepped.
+  '||'(a, b) {
+    const pa = prep(a)
+    if (typeof pa === 'string' && hasFunc(pa) && !(scopes.length && isDeclared(pa))) return pa
+    const pb = prep(b); return alwaysTruthy(pa) ? pa : ['||', pa, pb]
+  },
   '&&'(a, b) { const pa = prep(a), pb = prep(b); return alwaysFalsy(pa) ? pa : ['&&', pa, pb] },
 
   // Statements
@@ -760,7 +769,7 @@ const handlers = {
       if (!mod || typeof mod !== 'string') return null
       // Source module re-export
       if (isBundledModule(mod)) {
-        const resolved = prepareModule(mod, ctx.module.importSources?.[mod])
+        const resolved = prepareModule(mod, bundledSource(mod))
         if (decl[1] === '*') {
           // export * from './mod' → register all exports. A local export of the
           // same name shadows the star's (ES: star exports never override local
@@ -2609,6 +2618,8 @@ function prepareModule(specifier, source) {
 
   // Save caller state
   const savedScope = ctx.scope.chain, savedExports = ctx.funcs.exports
+  // the program's export table: the outermost caller's
+  if (ctx.module.moduleStack.length === 1) ctx.module.rootExports = savedExports
   const savedFuncCount = ctx.funcs.list.length  // track new funcs from this module
   const savedModulePrefix = ctx.module.currentPrefix
   ctx.scope.chain = derive(savedScope)  // inherit parent scope
@@ -2777,6 +2788,11 @@ function prepareModule(specifier, source) {
 
   const result = { exports: moduleExports }
   ctx.module.resolvedModules.set(specifier, result)
+  // a std module's host-boundary contract (`__mt_drain`, `__p_state`, …)
+  // is read off the instance by plain name: re-export it from the program
+  // from whichever module pulled the runtime in
+  for (const name of STD_HOST_EXPORTS[specifier] ?? [])
+    if (!(name in ctx.module.rootExports)) ctx.module.rootExports[name] = moduleExports.get(name)
   return result
   } finally {
     // ALWAYS restore caller state (FE-6): if `prep(ast)` or a recursive import threw

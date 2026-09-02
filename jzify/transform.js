@@ -293,7 +293,6 @@ export function createTransform(opts) {
     if (!_gen?.iterProto?.on) return null
     const v = e[1]
     if (Array.isArray(v) && (v[0] === '[]' || v[0] == null)) return null
-    _gen.iterProto.drain = true
     return ['...', ['()', '__it_drain', transform(v)]]
   }
   const wrapArg = (a) => (Array.isArray(a) && a[0] === '...' && wrapSpreadDrain(a)) || transform(a)
@@ -327,30 +326,31 @@ export function createTransform(opts) {
     },
 
     '()'(callee, ...rest) {
-      // Promise API rides the async runtime: new Promise(fn) arrives here as a
-      // plain call (the `new` handler unwraps unknown ctors), statics by name.
-      if (_gen?.noteAsync) {
+      // a dynamic import inside a function body has no static graph position
+      // (the module-level `await import('x')` hoists, index.js)
+      if (callee === 'import' && !shadowsBuiltin('import'))
+        throw new Error('jzify: dynamic import() inside a function body is not supported – jz resolves the module graph at compile time; use a static import, or a module-level `await import(\'x\')` with a literal specifier')
+      // Promise API rides the async runtime (`jz:async`): new Promise(fn)
+      // arrives here as a plain call (the `new` handler unwraps unknown
+      // ctors), statics by name.
+      if (_gen) {
         if (callee === 'Promise' && !shadowsBuiltin('Promise') && rest.length) {
-          _gen.noteAsync()
           return ['()', '__p_exec', ...rest.map(a => a == null ? a : transform(a))]
         }
         if (Array.isArray(callee) && callee[0] === '.' && callee[1] === 'Promise' &&
             !shadowsBuiltin('Promise') && P_STATIC[callee[2]]) {
-          _gen.noteAsync()
           return ['()', P_STATIC[callee[2]], ...rest.map(a => a == null ? a : transform(a))]
         }
         // queueMicrotask(fn) IS the runtime's job queue: push onto __mt, drained
         // at the same host boundaries promise jobs are. Evaluates to undefined
         // per spec (push's return length is discarded by the comma).
         if (callee === 'queueMicrotask' && !shadowsBuiltin('queueMicrotask') && rest.length) {
-          _gen.noteAsync()
           return [',', ['()', ['.', '__mt', 'push'], ...rest.map(a => a == null ? a : transform(a))], 'undefined']
         }
       }
-      // URLSearchParams rides a spliced jz-source runtime (jzify/webrt.js);
+      // URLSearchParams rides the jz-source std module `jz:usp` (src/std/usp.js);
       // `new URLSearchParams(x)` unwraps to this same call via the `new` handler.
-      if (callee === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && _gen?.webrt) {
-        _gen.webrt.usp = true
+      if (callee === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && _gen) {
         return ['()', '__usp_new', ...rest.map(a => a == null ? a : transform(a))]
       }
       // Terminal iterator helper (toArray/reduce/forEach/some/every/find) on a
@@ -370,7 +370,6 @@ export function createTransform(opts) {
       if (_gen && Array.isArray(callee) && callee[0] === '.' && callee[2] === '@@iterator' &&
           rest.every(a => a == null) && Array.isArray(callee[1]) &&
           ((callee[1][0] === '[]' && callee[1].length === 2) || (callee[1][0] == null && typeof callee[1][1] === 'string'))) {
-        _gen.iterProto.fromUsed = true
         return ['()', '__it_from', transform(callee[1])]
       }
       // Array.from over iterator values (iterator-minting programs only):
@@ -378,7 +377,6 @@ export function createTransform(opts) {
       // build by length. `Array.from(x, fn)` maps the materialized array.
       if (_gen?.iterProto?.on && Array.isArray(callee) && callee[0] === '.' &&
           callee[1] === 'Array' && !shadowsBuiltin('Array') && callee[2] === 'from' && rest.length === 1) {
-        _gen.iterProto.arr = true
         const args = Array.isArray(rest[0]) && rest[0][0] === ',' ? rest[0].slice(1) : [rest[0]]
         const drained = ['()', '__it_arr', transform(args[0])]
         if (args.length >= 2) return ['()', ['.', drained, 'map'], transform(args[1])]
@@ -527,8 +525,7 @@ export function createTransform(opts) {
         return ['new', transform(ctor), ...cargs.map(transform)]
       // paren-less `new URLSearchParams` (ctor arrives as a bare string —
       // the call-node form unwraps through the '()' handler below)
-      if (name === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && typeof ctor === 'string' && _gen?.webrt) {
-        _gen.webrt.usp = true
+      if (name === 'URLSearchParams' && !shadowsBuiltin('URLSearchParams') && typeof ctor === 'string' && _gen) {
         return ['()', '__usp_new']
       }
       if (Array.isArray(ctor) && ctor[0] === '()') return transform(ctor)
@@ -542,8 +539,7 @@ export function createTransform(opts) {
       if (typeof rawName === 'string' && shadowsBuiltin(rawName))
         return ['instanceof', transform(val), transform(ctor)]
       // promise-shape probe — promises are fixed-shape objects, no ctor chain
-      if (ctor === 'Promise' && _gen?.noteAsync) {
-        _gen.noteAsync()
+      if (ctor === 'Promise' && _gen) {
         const t0 = transform(val)
         return ['&&', ['!=', t0, [null, null]], ['==', ['.', t0, '__p'], [null, 1]]]
       }
@@ -651,6 +647,8 @@ export function createTransform(opts) {
     ';'(...args) { return transformScope([';', ...args]) },
 
     '{}'(...args) {
+      const withAccessors = opts.lowerObjectLiteralAccessors?.()(args)
+      if (withAccessors) args = withAccessors
       const loweredObject = lowerObjectLiteralThis(args)
       if (loweredObject) return loweredObject
 
@@ -666,6 +664,17 @@ export function createTransform(opts) {
     'export'(inner) {
       if (Array.isArray(inner) && inner[0] === 'function' && inner[1]) {
         return ['export', hoistFnDecl(inner[1], inner[2], inner[3])]
+      }
+      // `export function* g` / `export async function f` / `export async function* g`:
+      // the same const bindings the statement-level hoist makes, exported
+      if (Array.isArray(inner) && inner[0] === 'function*' && inner[1] && _gen)
+        return ['export', ['const', ['=', inner[1], _gen.lowerGenerator(...argsLowered(inner[2], inner[3]))]]]
+      if (Array.isArray(inner) && inner[0] === 'async' && Array.isArray(inner[1]) && inner[1][1]) {
+        const fn = inner[1]
+        if (fn[0] === 'function' && _gen?.lowerAsync)
+          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsync(...argsLowered(fn[2], fn[3])))]]]
+        if (fn[0] === 'function*' && _gen?.lowerAsyncGen)
+          return ['export', ['const', ['=', fn[1], transform(_gen.lowerAsyncGen(...argsLowered(fn[2], fn[3])))]]]
       }
       if (Array.isArray(inner) && inner[0] === 'class' && inner[1]) {
         return ['export', ['let', ['=', inner[1], lowerClass(inner[1], inner[2], inner[3])]]]

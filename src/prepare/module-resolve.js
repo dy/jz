@@ -7,6 +7,7 @@
  */
 
 import { VAL } from '../reps.js'
+import { STD_SOURCES } from '../std/index.js'
 import { ctx, err } from '../ctx.js'
 import { isFuncRef } from '../ir.js'
 import { TIMER_NAMES, hasModule, includeModule } from '../autoload.js'
@@ -300,6 +301,10 @@ export function moduleAstFor(specifier) {
   return undefined
 }
 
+/** Source of a bundled module: the compile's own graph first, then jz's
+ *  standard modules (`jz:events`), or undefined. */
+export const bundledSource = mod => ctx.module.importSources?.[mod] ?? STD_SOURCES[mod]
+
 /** True when `mod` is bundled in-process — as source (host parses it) or as a
  *  pre-parsed AST (self-compile kernel). Either path routes through prepareModule. */
-export const isBundledModule = mod => !!ctx.module.importSources?.[mod] || moduleAstFor(mod) !== undefined
+export const isBundledModule = mod => bundledSource(mod) != null || moduleAstFor(mod) !== undefined

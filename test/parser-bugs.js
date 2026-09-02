@@ -54,10 +54,12 @@ const rejects = (src, match) => {
     if (match) ok(err.message.includes(match), `error should mention '${match}': ${err && err.message}`)
 }
 
-test('object getter/setter rejected (PARSE-3): jz objects have no accessors', () => {
-    // Previously compiled to dead code → o.x read undefined (silent miscompile).
-    rejects('export let f = () => { let o = { get x() { return 42 } }; return o.x }', 'getter/setter')
-    rejects('export let f = () => { let o = { set x(v) {} }; return 1 }', 'getter/setter')
+test('object getter/setter lower to accessor slots (PARSE-3)', () => {
+    // Once compiled to dead code → o.x read undefined (silent miscompile); an
+    // object-literal accessor now takes the same `x__get`/`x__set` slot as a
+    // class accessor (jzify/classes.js).
+    is(jz('export let f = () => { let o = { get x() { return 42 } }; return o.x }').exports.f(), 42)
+    is(jz('export let f = () => { let o = { v: 1, set x(v) { this.v = v } }; o.x = 5; return o.v }').exports.f(), 5)
     // Methods, spread, shorthand, plain props must still compile.
     is(jz('export let f = () => { let o = { g() { return 7 } }; return o.g() }').exports.f(), 7)
     is(jz('export let f = () => { let a = 5; let o = { a, b: 2 }; return o.a + o.b }').exports.f(), 7)
@@ -477,19 +479,17 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     for (let i = 0; i < 100 && st === '@pending'; i++) st = inst.exports.check()
     is(st, 'cc=1')  // was cc=0 before the fix (@@iterator never called)
 
-    // jzify runtime-splice quiescence: ASYNC_RUNTIME's own transform wraps
-    // `__p_try`'s `fn(...aa)` in `__it_drain` AFTER the linear splice chain
-    // already checked the drain flag — the reference was left a FREE NAME and
-    // emitted `local.get $__it_drain` (undeclared local, zero-init garbage →
-    // call_indirect table[0]; masked because the path was dead here). The
-    // splice loop now re-checks to quiescence: every referenced runtime helper
-    // must be DEFINED in the module, not merely referenced. `__p_try` is
-    // `Promise.try`'s helper, so the program must use it for the helper to be
-    // reachable at all: analysis and emission follow ProgramIndex
-    // reachability, and a dead runtime helper leaves no trace at any tier.
+    // The promise runtime once spliced into the user module, and its own
+    // transform wrapped `__p_try`'s `fn(...aa)` in `__it_drain` AFTER the
+    // splice chain had checked the drain flag – the reference was left a FREE
+    // NAME and emitted `local.get $__it_drain` (undeclared local, zero-init
+    // garbage → call_indirect table[0]; masked because the path was dead
+    // here). The runtime is now the std module `jz:async`, transformed in its
+    // own scope, where a rest array's spread needs no drain: every helper a
+    // lowering references resolves through an import, never a free name.
     const codeTry = code.replace('go(); return 1', 'go(); Promise.try(() => 0); return 1')
     const wat0 = compile(codeTry, { jzify: true, wat: true, optimize: 0 })
-    ok(wat0.includes('(func $__it_drain'), 'async-runtime-introduced drain helper is spliced at O0 (defined, not a free name)')
+    ok(wat0.includes('(func $jz_async$__p_try'), '`Promise.try` reaches the std runtime helper at O0')
     ok(!wat0.includes('local.get $__it_drain'), 'no free-name drain reference at O0')
     const watS = compile(code, { jzify: true, wat: true })
     ok(!watS.includes('local.get $__it_drain'), 'no free-name drain reference survives at the default tier (inline/treeshake of the DEFINED helper is fine)')

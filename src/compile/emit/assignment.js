@@ -110,6 +110,7 @@ export const assignmentOps = {
     if (typeof name === 'string' && isConst(name)) err(`Assignment to const '${name}' — const bindings can't be reassigned after initialization; declare it with let instead`)
     if (Array.isArray(name) && name[0] === '[]') return emitElementAssign(name[1], name[2], val)
     if (Array.isArray(name) && name[0] === '.')  return emitPropertyAssign(name[1], name[2], val)
+    if (Array.isArray(name) && name[0] === '.raw')  return emitPropertyAssign(name[1], name[2], val, true)   // the accessor probe's plain-store arm
     if (typeof name !== 'string') err(`Assignment to non-variable: ${JSON.stringify(name)} — jz assigns to a plain variable, obj.prop, or arr[i] only`)
     // Plain reassignment (`x = …`, `name` already bound) reaches a DIFFERENT
     // emitter than a decl-with-init (emitDecl above) — the ambiguous-identity

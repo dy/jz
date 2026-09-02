@@ -260,9 +260,13 @@ export function coerceArg(ir, param, node, repAction = REP_EDGE_REJECT) {
 /** Pad an emitted-args array up to a signature's arity with type-appropriate
  *  defaults (`i32.const 0` for i32 params, `undefExpr()` for f64). Mutates and
  *  returns `args` for chaining. */
+// A missing argument is `undefined` in the parameter's carrier: an i64 host
+// import takes the box bits, an i32 slot its zero.
 function padArgs(args, params) {
-  while (args.length < params.length)
-    args.push(params[args.length].type === 'i32' ? typed(['i32.const', 0], 'i32') : undefExpr())
+  while (args.length < params.length) {
+    const t = params[args.length].type
+    args.push(t === 'i32' ? typed(['i32.const', 0], 'i32') : t === 'i64' ? asI64(undefExpr()) : undefExpr())
+  }
   return args
 }
 

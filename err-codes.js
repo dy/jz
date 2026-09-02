@@ -75,6 +75,7 @@ export const ERR = {
                                 // the BigInt operand's type (ES2024 13.15.3 step 6)
   ARRAY_FROM_ITERABLE: 117,    // Array.from — iterable protocol unsupported for this source
   ERROR_MESSAGE_OBJECT: 118,   // Error(message) — runtime object ToPrimitive path is unsupported
+  ACCESSOR_DESCRIPTOR: 119,    // Object.defineProperty – accessor descriptor (get/set) at runtime
 
   // ── 2xx RangeError-class ─────────────────────────────────────────────────
   ARRAY_WITH_INDEX: 200,       // Array.prototype.with — index out of range
@@ -127,6 +128,7 @@ export const ERR_INFO = {
   [ERR.JSON_CIRCULAR]: { name: 'TypeError', message: 'Converting circular structure to JSON' },
   [ERR.JSON_BIGINT]: { name: 'TypeError', message: 'Do not know how to serialize a BigInt' },
   [ERR.OBJECT_NULLISH]: { name: 'TypeError', message: 'Cannot convert undefined or null to object' },
+  [ERR.ACCESSOR_DESCRIPTOR]: { name: 'TypeError', message: 'Accessor descriptors are declared on classes; Object.defineProperty defines data properties' },
   [ERR.SYMBOL_TO_NUMBER]: { name: 'TypeError', message: 'Cannot convert a Symbol value to a number' },
   [ERR.STRING_SEARCH_REGEX]: { name: 'TypeError', message: 'First argument must not be a regular expression' },
   [ERR.ENCODE_INTO_RECEIVER]: { name: 'TypeError', message: 'encodeInto: destination must be a Uint8Array' },

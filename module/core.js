@@ -14,7 +14,7 @@ import { typed, asF64, asI32, asI64, NULL_NAN, UNDEF_NAN, TOMB_NAN, FALSE_NAN, T
 import { emit, emitIdentitySafe, spread, deps, wat } from '../src/bridge.js'
 import { reconstructArgsWithSpreads } from '../src/ir.js'
 import { valTypeOf, shapeOf, hasAmbiguousBoolMerge } from '../src/kind.js'
-import { T } from '../src/ast.js'
+import { T, ACCESSOR_GET } from '../src/ast.js'
 import { inlineArraySid, inlineArrayUnion } from '../src/static.js'
 import { packedI32, structInline } from '../src/abi/index.js'
 import { VAL, lookupValType, repOf } from '../src/reps.js'
@@ -1835,7 +1835,48 @@ export default (ctx) => {
 
   // === Property dispatch (.length, .prop) ===
 
-  ctx.core.emit['.'] = (obj, prop) => {
+  // Accessor dispatch (jzify/classes.js lowers `get x()` to the `x__get` slot
+  // and records `x` in ctx.transform.accessorNames): an OBJECT/unknown receiver
+  // reads `o.x` through its getter when the schema is known to carry the slot,
+  // or probes for it at runtime and falls back to the plain read (`.raw`, the
+  // same reader with the dispatch off). Receivers of any other kind (array,
+  // string, typed array, collection) never carry accessors and keep their own
+  // `.x` lowering untouched; a known schema without the slot reads plainly.
+  const accessorRead = (obj, prop) => {
+    const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    // OBJECT, unknown, or CLOSURE (a class's static accessors live on its
+    // factory as dynamic properties); every other kind carries no accessors
+    if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
+    const getter = prop + ACCESSOR_GET
+    // a schema carrying the slot resolves statically
+    if ((typeof obj === 'string' && ctx.schema.idOf(obj) != null && ctx.schema.slotOf(obj, getter) >= 0)
+        || (Array.isArray(obj) && ctx.schema.list[literalSid(obj)]?.includes(getter)))
+      return emit(['()', ['.', obj, getter]])
+    // a literal without the slot cannot have gained one, nor can a schema
+    // unless a derived class installs the slot dynamically, nor a
+    // scalar-replaced literal; anything else probes
+    if (Array.isArray(obj) && obj[0] === '{}') return null
+    if (typeof obj === 'string' && (ctx.func.flatObjects?.has(obj)
+        || (ctx.schema.idOf(obj) != null && !ctx.transform.dynamicAccessorNames?.has(prop)))) return null
+    let recv = obj
+    const pre = []
+    if (typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+    const node = emit(['?:', ['===', ['typeof', ['.', recv, getter]], ['str', 'function']],
+      ['()', ['.', recv, getter]], ['.raw', recv, prop]])
+    return pre.length ? typed(['block', ['result', 'f64'], ...pre, asF64(node)], 'f64') : node
+  }
+  ctx.core.emit['.raw'] = (obj, prop) => dotRead(obj, prop, true)
+  ctx.core.emit['.'] = (obj, prop) => dotRead(obj, prop, false)
+  const dotRead = (obj, prop, raw) => {
+    if (!raw && ctx.transform.accessorNames?.has(prop)) {
+      const acc = accessorRead(obj, prop)
+      if (acc) return acc
+    }
+    // `C.prototype` of a class (a factory closure): jz classes have no
+    // prototype object – methods live on the instance – so the read is a
+    // fresh empty object, and prototype reflection (`getOwnPropertyNames(C.prototype)`)
+    // sees nothing to touch
+    if (prop === 'prototype' && (typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)) === VAL.CLOSURE) return emit(['{}'])
     // SRoA flat object: `o.prop` → `local.get $o#i` (analyze.js scanFlatObjects).
     const flatR = typeof obj === 'string' ? ctx.func.flatObjects?.get(obj) : null
     if (flatR) {
@@ -2053,6 +2094,9 @@ export default (ctx) => {
     const gKey = `.${prop}`
     const g = ctx.core.emit[gKey]
     if (g && ctx.core.getters.has(gKey)) return g(t)
+    // an accessor name reads through the hoisted temp's own `.` dispatch
+    // (the runtime probe; the receiver is evaluated once either way)
+    if (ctx.transform.accessorNames?.has(prop) && (vt == null || vt === VAL.OBJECT || vt === VAL.CLOSURE)) return emit(['.', t, prop])
     return emitPropAccess(typed(['local.get', `$${t}`], 'f64'), obj, prop)
   })
 

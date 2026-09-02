@@ -3,8 +3,8 @@
 // body is a dispatch loop over hoisted locals; `{ next, return }` are ordinary
 // closures over that state (mutable captures). for-of over a KNOWN generator
 // call desugars to while-next (inside AND outside generator bodies). Sync only.
-// v1 rejects (precise messages): yield*, yield in arbitrary expressions,
-// try across yield, yield inside for-of/for-in bodies.
+// v1 rejects (precise messages): yield in arbitrary expressions, a finally
+// that yields, yield inside for-of/for-in bodies.
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import jz from '../index.js'
@@ -71,8 +71,29 @@ test('generators: v1 rejections are precise', () => {
     let e; try { jz.compile(src) } catch (x) { e = x }
     ok(e && e.message.includes(needle), `${needle}: got ${e?.message?.slice(0, 90)}`)
   }
-  rejects(`function* g() { try { yield 1 } catch (e) {} } export let f = () => 1`, 'try/catch across a yield')
+  rejects(`function* g() { try { yield 1 } finally { yield 2 } } export let f = () => 1`, 'finally')
   rejects(`export let f = () => { let y = yield 1; return y }`, 'yield outside a generator')
+})
+
+// try/catch across a yield: the try body's states carry the catch state as
+// their handler; a throw raised in the body after a resume, or injected by
+// throw() at the suspension point, lands in the catch; a finally without a
+// yield runs on both paths; states outside any region close the machine.
+test('generators: try/catch across a yield', () => {
+  const run = (src) => jz(src, { jzify: true }).exports.f()
+  is(run(`function* g() { let log = 0; try { log = log*10+1; const x = yield 1; log = log*10+2; if (x > 0) throw 7; log = log*10+3 } catch (e) { log = log*10+9 } return log*10+4 }
+    export let f = () => { const it = g(); it.next(); return it.next(5).value }`), 1294)
+  is(run(`function* g() { let log = 0; try { log = log*10+1; yield 1; log = log*10+2 } catch (e) { log = log*10+e } return log*10+4 }
+    export let f = () => { const it = g(); it.next(); return it.throw(9).value }`), 194)
+  is(run(`function* g() { let log = 0; try { yield 1; log = log*10+2 } finally { log = log*10+5 } return log }
+    export let f = () => { const it = g(); it.next(); return it.next().value }`), 25)
+  // destructuring declarations bind through a temp (object keys, renames,
+  // defaults, array holes and rest, nested), across yields and in one state
+  is(run(`function* g() { let [p, , q = 4, ...r] = [1, 2]; yield p; const { z, w: v } = { z: q * 5, w: r.length }; yield z + v }
+    export let f = () => { const it = g(); return it.next().value * 100 + it.next().value }`), 120)
+  // no handler at the suspension point: throw() rethrows and closes
+  is(run(`function* g() { yield 1; yield 2 }
+    export let f = () => { const it = g(); it.next(); let got = 0; try { it.throw(3) } catch (e) { got = e } return got * 10 + (it.next().done ? 1 : 0) }`), 31)
 })
 
 // ES2025 iterator helpers as FUSED loops: a chain rooted at a known generator
@@ -261,4 +282,9 @@ test('generator arguments ownership: outer function is not rest-lowered for a ne
     return result.value
   }`, { jzify: true })
   is(exports._run(), 23)
+})
+
+test('generators: shadowed locals rename apart before hoisting (sibling loops, if arms, catch, closures)', () => {
+  is(j(`function* g(n) { for (let i = 0; i < n; i++) yield i; for (let i = 0; i < n; i++) yield i * 10; let w = (e) => e + w.k; w.k = 5; yield w(1) } export let f = () => [...g(2)].join(',')`), '0,1,0,10,6')
+  is(j(`function* g() { let s = 0; if (s === 0) { let i = 100; s += i } else { let i = 200; s += i } const fns = []; for (const i of [1, 2]) fns.push(() => i); for (let i = 0; i < 2; i++) s += fns[i](); const { i } = { i: 1000 }; yield s + i } export let f = () => [...g()][0]`), 100 + 3 + 1000)
 })

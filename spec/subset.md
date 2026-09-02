@@ -22,11 +22,11 @@ JZ compiles this subset of JavaScript. Every value has one kind from the lattice
 
 ## Runtime
 
-Written in jz, compiled by the core, loaded per feature only when a program uses it: `Math`, `Number`, `String`, `Array`, `Object` (literal helpers, `keys`, `values`, `entries`, `assign`, `freeze` as identity), `JSON`, `RegExp` (the current supported grammar), `Symbol.iterator` protocol, `Date` (UTC getters), `TextEncoder`, base64 and hex codecs, `structuredClone` over the kinds above, timers, crypto randomness, `URLSearchParams`.
+Written in jz, compiled by the core, loaded per feature only when a program uses it: `Math`, `Number`, `String`, `Array`, `Object` (literal helpers, `keys`, `values`, `entries`, `assign`, `freeze` as identity), `JSON`, `RegExp` (the current supported grammar), `Symbol.iterator` protocol, `Date` (UTC getters), `TextEncoder`, base64 and hex codecs, `structuredClone` over the kinds above, timers, crypto randomness, `URLSearchParams`, `Event`, `CustomEvent`, `EventTarget`, `DOMException`, `WeakRef`, `FinalizationRegistry` (nothing to observe: a reference stays alive). A module referencing one of these globals imports its `jz:` module implicitly; the bundler prepares it once, so a class or the promise runtime has one identity per program.
 
 ## Rejected
 
-`eval`, the `Function` constructor, `with`, `Proxy`, `Reflect`, property descriptors, accessors installed at runtime (`Object.defineProperty`), live prototype chains, `__proto__`, `Object.create(proto)`, monkey-patching builtins, `arguments` beyond rest forwarding, dynamic `import`, Annex B syntax, `try` across `yield` or `await`, general BigInt arithmetic, objects whose shape changes after creation (adding a key to a struct; use `dict`), Intl, Temporal, DOM and Node services (they cross as host imports), and any string operation that needs locale or normalization tables.
+`eval`, the `Function` constructor, `with`, `Proxy`, `Reflect`, property descriptors (`Object.defineProperty` stores a data descriptor's value; an accessor descriptor is a TypeError), live prototype chains, `__proto__`, `Object.create(proto)`, monkey-patching builtins, `arguments` beyond rest forwarding, dynamic `import` beyond a module-level `await import('x')` with a literal specifier (bundled as a static import), Annex B syntax, a `finally` that yields, general BigInt arithmetic, objects whose shape changes after creation (adding a key to a struct; use `dict`), Intl, Temporal, DOM and Node services (they cross as host imports), and any string operation that needs locale or normalization tables.
 
 ## Divergence policy
 
@@ -46,11 +46,11 @@ The current strict and jzify modes map onto the subset with three corrected dive
 | BigInt is 64-bit and wraps | typed contract: `i64` through typed storage and `asIntN`/`asUintN`; general BigInt rejected |
 | transcendentals differ in last bits | contract, reported once per module |
 | strings are UTF-8 bytes | corrected: UTF-16 code units |
-| objects: no live prototypes, descriptors, accessors, Proxy, Reflect | rejected list |
+| objects: no live prototypes, descriptors, runtime-installed accessors, Proxy, Reflect | rejected list |
 | dynamic boolean keys read as `'1'` | corrected: JS semantics on `dict` |
 | indices coerce to i32; typed arrays unchecked | contract: bounds-checked, trap out of range, reported |
 | no garbage collector, `memory.reset()` | replaced by regions (`spec/memory.md`) |
-| `try` across `yield`/`await` unsupported | rejected list |
+| a `finally` that yields is unsupported | rejected list |
 | Date getters use UTC; no Intl or Temporal | reported divergence for local-time getters; Intl and Temporal rejected |
 | no `eval`, `Function`, `with` | rejected list |
 | DOM, Node, Annex B | rejected list; services cross as host imports |

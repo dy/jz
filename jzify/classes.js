@@ -3,8 +3,8 @@
  * @module jzify/classes
  */
 
-import { extractParams as paramList, objectLiteralEntries } from '../src/ast.js'
-import { err } from '../src/ctx.js'
+import { extractParams as paramList, objectLiteralEntries, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
+import { ctx, err } from '../src/ctx.js'
 
 export function createClassLowering({ transform, names, JC, constStrings }) {
 // === class lowering ===
@@ -31,9 +31,18 @@ export function createClassLowering({ transform, names, JC, constStrings }) {
 // when the derived constructor is implicit — then applies D's own fields and
 // methods over it.
 //
+// Accessors lower to method slots: `get x() {…}` → `x__get: () => …`,
+// `set x(v) {…}` → `x__set: (v) => …`, on the instance (or the class for a
+// static pair). The name is recorded in `ctx.transform.accessorNames`; the
+// emitter turns `o.x` reads and `o.x = v` writes on OBJECT/unknown receivers
+// into slot calls (module/core.js, src/compile/emit-assign.js) – a proven
+// schema resolves statically, an unknown receiver probes for the slot first.
+// A receiver of any other kind (array, string, typed array) is untouched, so
+// `.length` on those keeps its lowering.
+//
 // Out of scope (rejected with a clear message): full `super.foo` property
-// semantics, getters/setters, non-constant computed member names. Private
-// `#name` members are kept as the literal key string `#name` (jz allows it).
+// semantics, non-constant computed member names. Private `#name` members are
+// kept as the literal key string `#name` (jz allows it).
 const DEFAULT_DERIVED_CTOR_ARITY = 8
 
 const arrowParams = params => Array.isArray(params) && params[0] === '()' ? params : ['()', params]
@@ -52,6 +61,32 @@ function renameThis(node, to) {
   if (node[0] === '.' || node[0] === '?.') return [node[0], renameThis(node[1], to), node[2]]
   if (node[0] === ':') return [node[0], node[1], renameThis(node[2], to)]
   return node.map(n => renameThis(n, to))
+}
+
+// Two pre-class-era idioms in a class body, normalized before the lowering:
+//  - `this.m = function (…) { … this … }` installs a method on the instance;
+//    its `this` is that instance whenever it is called as `obj.m()`, the one
+//    way such a method is called – an arrow, so the `this` rename and the
+//    super lowering see it as a method body (a function expression anywhere
+//    else keeps its own dynamic `this` and is rejected downstream);
+//  - `Base.prototype.m.call(this, …args)` in a class extending `Base` is the
+//    explicit form of `super.m(…args)`.
+function normalizeClassIdioms(node, base) {
+  if (!Array.isArray(node)) return node
+  if (node[0] === 'class') return node
+  if (node[0] === '=' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'this'
+      && Array.isArray(node[2]) && node[2][0] === 'function' && !node[2][1])
+    return ['=', node[1], ['=>', arrowParams(node[2][2] ?? null), block(normalizeClassIdioms(node[2][3], base))]]
+  if (node[0] === 'function') return node
+  if (base != null && node[0] === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][2] === 'call') {
+    const args = node[2] === 'this' ? [] : Array.isArray(node[2]) && node[2][0] === ',' && node[2][1] === 'this' ? node[2].slice(2) : null
+    const m = node[1][1]   // ['.', ['.', Base, 'prototype'], name]
+    if (args && Array.isArray(m) && m[0] === '.' && Array.isArray(m[1]) && m[1][0] === '.' && m[1][1] === base && m[1][2] === 'prototype' && typeof m[2] === 'string') {
+      const rest = args.map(n => normalizeClassIdioms(n, base))
+      return ['()', ['.', 'super', m[2]], rest.length === 0 ? null : rest.length === 1 ? rest[0] : [',', ...rest]]
+    }
+  }
+  return node.map((n, i) => i === 0 ? n : normalizeClassIdioms(n, base))
 }
 
 function usesThis(node) {
@@ -161,6 +196,20 @@ function objectMethodUsesThis(prop) {
   return false
 }
 
+// Object-literal accessors take the same slots as class accessors; the entry
+// list is rewritten in place so the `this` lowering below sees plain methods.
+function lowerObjectLiteralAccessors(args) {
+  const props = objectLiteralEntries(args)
+  if (!props.some(p => Array.isArray(p) && (p[0] === 'get' || p[0] === 'set'))) return null
+  const out = props.map(p => {
+    if (!Array.isArray(p) || (p[0] !== 'get' && p[0] !== 'set')) return p
+    const [slot, params, body] = accessorMethod(p, constStrings)
+    // a statement-shaped body is what the `this` lowering recognizes as a method
+    return [':', slot, ['=>', params, isStatementBody(body) ? body : [';', body]]]
+  })
+  return out.length === 1 ? [out[0]] : [[',', ...out]]
+}
+
 function lowerObjectLiteralThis(args) {
   const props = objectLiteralEntries(args)
   if (props.length === 0 || !props.some(objectMethodUsesThis)) return null
@@ -186,12 +235,47 @@ function lowerObjectLiteralThis(args) {
 // enrichment guards simply no-op; the `jzify:` prefix marks the phase.
 function jzifyError(msg) { err(`jzify: ${msg}`) }
 
+// `get x()` / `set x(v)` → the slot name the emitter dispatches through, and
+// the program-wide record the emitter consults. A derived class installs its
+// accessor on the base instance as a dynamic property (`self.x__get = …`
+// after the base factory), so `x` may reach a receiver whose schema does not
+// list it: those names are the `dynamicAccessorNames` the emitter probes for;
+// every other accessor is a literal slot, visible in the schema or absent.
+const accessorSlot = (kind, key) => key + (kind === 'get' ? ACCESSOR_GET : ACCESSOR_SET)
+const recordAccessor = (key, dynamic) => {
+  (ctx.transform.accessorNames ??= new Set()).add(key)
+  if (dynamic) (ctx.transform.dynamicAccessorNames ??= new Set()).add(key)
+}
+// [kind, key, params, body] → [slot, params, body] (a method entry)
+function accessorMethod(it, constStrings, dynamic) {
+  const key = typeof it[1] === 'string' ? it[1] : constStringKey(it[1], constStrings)
+  if (key == null) jzifyError(JC.computedMember)
+  recordAccessor(key, dynamic)
+  return [accessorSlot(it[0], key), arrowParams(it[2] ?? null), it[3]]
+}
+
 function lowerClass(name, heritage, body) {
   let ctorParams = null, ctorBody = null
   const methods = [], fields = [], statics = []
-  for (const it of classBodyItems(body)) {
+  const items = classBodyItems(normalizeClassIdioms(body, typeof heritage === 'string' ? heritage : null))
+  for (let ix = 0; ix < items.length; ix++) {
+    const it = items[ix]
     if (typeof it === 'string') { fields.push([it, null]); continue }   // bare `x;`
     if (!Array.isArray(it)) continue
+    // `static get x() {…}` parses as a static field `get` followed by the
+    // method `x`: the pair is a static accessor
+    if (it[0] === 'static' && (it[1] === 'get' || it[1] === 'set') && it.length === 2) {
+      const next = items[ix + 1]
+      if (Array.isArray(next) && next[0] === ':' && Array.isArray(next[2]) && next[2][0] === '=>') {
+        const key = constStringKey(next[1], constStrings)
+        if (key == null) jzifyError(JC.computedStaticMember)
+        recordAccessor(key, true)
+        statics.push([accessorSlot(it[1], key), next[2], true])
+        ix++
+        continue
+      }
+    }
+    if (it[0] === 'get' || it[0] === 'set') { methods.push(accessorMethod(it, constStrings, heritage != null)); continue }
     const bareFieldName = constStringKey(it, constStrings)
     if (bareFieldName != null) { fields.push([bareFieldName, null]); continue }
     if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === '=>') {
@@ -199,6 +283,13 @@ function lowerClass(name, heritage, body) {
       if (key == null) jzifyError(JC.computedMember)
       if (key === 'constructor' && typeof it[1] === 'string') { ctorParams = it[2][1]; ctorBody = it[2][2] }
       else methods.push([key, it[2][1], it[2][2]])
+      continue
+    }
+    // async method `async m() {}` – an async arrow over the same self
+    if (it[0] === ':' && Array.isArray(it[2]) && it[2][0] === 'async' && Array.isArray(it[2][1]) && it[2][1][0] === '=>') {
+      const key = constStringKey(it[1], constStrings)
+      if (key == null) jzifyError(JC.computedMember)
+      methods.push([key, it[2][1][1], it[2][1][2], 'async'])
       continue
     }
     // Generator method `*g() {}` — value is a function* expression (parser emits
@@ -252,7 +343,6 @@ function lowerClass(name, heritage, body) {
       statics.push([null, it[1], 'block'])
       continue
     }
-    if (it[0] === 'get' || it[0] === 'set') jzifyError(JC.accessor)
     if (it[0] === 'static') jzifyError(JC.staticMember)
     jzifyError(`unsupported class member shape (jz recognizes fields, methods, and static fields/methods/blocks only): ${JSON.stringify(it).slice(0, 60)}`)
   }
@@ -281,10 +371,13 @@ function lowerClass(name, heritage, body) {
     if (init != null && !usesThis(init)) litProps.push([':', fname, transform(init)])
     else { litProps.push([':', fname, UNDEF]); if (init != null) deferred.push([fname, init]) }
   }
-  for (const [mname, mparams, mbody, gen] of methods)
-    litProps.push([':', mname, gen
-      ? transform(['function*', null, mparams, renameThis(mbody, self)])
-      : transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, self))])])
+  const methodValue = (mparams, mbody, kind, to) => kind === 'gen'
+    ? transform(['function*', null, mparams, renameThis(mbody, to)])
+    : kind === 'async'
+      ? transform(['async', ['=>', mparams ?? ['()', null], block(renameThis(mbody, to))]])
+      : transform(['=>', mparams ?? ['()', null], block(renameThis(mbody, to))])
+  for (const [mname, mparams, mbody, kind] of methods)
+    litProps.push([':', mname, methodValue(mparams, mbody, kind, self)])
   const lit = ['{}', litProps.length === 0 ? null : litProps.length === 1 ? litProps[0] : [',', ...litProps]]
   let params = ctorParams ?? ['()', null]
   const dynamicBase = heritage != null && typeof heritage !== 'string'
@@ -307,10 +400,8 @@ function lowerClass(name, heritage, body) {
     }
     for (const [fname, init] of fields)
       stmts.push(['=', ['.', self, fname], init != null ? transform(renameThis(rewriteSuperMethodCalls(init, superMethodVars), self)) : UNDEF])
-    for (const [mname, mparams, mbody, gen] of methods)
-      stmts.push(['=', ['.', self, mname], gen
-        ? transform(['function*', null, mparams, renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self)])
-        : transform(['=>', mparams ?? ['()', null], block(renameThis(rewriteSuperMethodCalls(mbody, superMethodVars), self))])])
+    for (const [mname, mparams, mbody, kind] of methods)
+      stmts.push(['=', ['.', self, mname], methodValue(mparams, rewriteSuperMethodCalls(mbody, superMethodVars), kind, self)])
     ctorBody = rewriteSuperMethodCalls(ctorBody, superMethodVars)
     if (defaultArgs) params = ['()', defaultArgs.length === 1 ? defaultArgs[0] : [',', ...defaultArgs]]
   } else {
@@ -354,7 +445,7 @@ function lowerClass(name, heritage, body) {
   return ['()', ['()', ['=>', null, ['{}', [';', ...staticStmts]]]], null]
 }
 
-  return { lowerClass, lowerObjectLiteralThis }
+  return { lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors }
 }
 
 // ── Pseudo-classical fold ────────────────────────────────────────────────────

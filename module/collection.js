@@ -17,7 +17,7 @@ import { emit, deps, call, storedValue, storedValuePlanned } from '../src/bridge
 import { REP_EDGE_REJECT, representationStorageWriteAction } from '../src/compile/representation-plan.js'
 import { valTypeOf } from '../src/kind.js'
 import { VAL, lookupValType } from '../src/reps.js'
-import { hasOwnContinue, isBlockBody, isLiteralStr } from '../src/ast.js'
+import { hasOwnContinue, isBlockBody, isLiteralStr, ACCESSOR_GET, ACCESSOR_SET } from '../src/ast.js'
 import { ctx, inc, PTR, LAYOUT, registerGetter, declGlobal, setLinkDemand } from '../src/ctx.js'
 import { dataLen } from '../src/static-data.js'
 import { STR_INTERN_BIT, STR_HCACHE_BIT, ssoBitI64Hex, encodePtrHi, i64Hex } from '../layout.js'
@@ -2361,6 +2361,18 @@ export default (ctx) => {
   // === `in` operator: key in obj → HASH key existence check ===
   ctx.core.emit['in'] = (key, obj) => {
     const objType = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+    // an accessor lives in its `x__get` / `x__set` slot (jzify/classes.js):
+    // `'x' in o` holds through either; a computed key that happens to name an
+    // accessor is a documented miss
+    if (Array.isArray(key) && key[0] === 'str' && ctx.transform.accessorNames?.has(key[1]) && !key.accessorProbe
+        && (objType == null || objType === VAL.OBJECT || objType === VAL.CLOSURE)) {
+      const raw = Object.assign(['str', key[1]], { accessorProbe: true })
+      let recv = obj
+      const pre = []
+      if (typeof obj !== 'string') { recv = temp('in_o'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+      const probe = emit(['||', ['in', raw, recv], ['||', ['in', ['str', key[1] + ACCESSOR_GET], recv], ['in', ['str', key[1] + ACCESSOR_SET], recv]]])
+      return pre.length ? typed(['block', ['result', 'i32'], ...pre, asI32(probe)], 'i32') : probe
+    }
 
     // A precise, closed OBJECT schema answers membership without reading a
     // field value or pulling the dynamic-property runtime. This is both more

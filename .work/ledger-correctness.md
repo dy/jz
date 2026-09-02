@@ -815,3 +815,73 @@ default off.
   root-caused to varying depth, none reaching a landed patch): flagged
   precisely, with reproduction commands, rather than left to be
   re-discovered.
+
+## 6. Per-module runtime splices: two microtask queues in one program (2026-09-02, CLOSED)
+
+**Symptom**: web-audio-api's `OfflineAudioContext.startRendering()` awaited
+from an entry module returned a promise that never settled (`st: 0`, host
+Promise pending forever). No error, no trap.
+
+**Root cause**: jzify spliced the promise runtime (`__p_*`, `__mt`, `__sq`,
+`__drain`) as source into EVERY module that contained async syntax
+(`prependRuntime` in jzify/index.js, per `prepareModule` → per-module
+jzify). Each copy owned its own microtask queue and its own `__drain`; the
+host boundary (`interop.js`) drained only the entry's `__mt_drain`. A
+promise minted by module A (`__p_new` of A's copy) and awaited in module B
+subscribed through B's `__p_sub` into A's promise object; A's `__p_settle`
+pushed A's `__sq`, which nothing ever drained. The same duplication cost
+bytes (a 20-module async library carried 20 copies of ~30 functions), gave
+`instanceof Event` per-module class identities, and leaked each copy's
+`export let __mt_drain` as a mangled program export (`m72_utils$__p_make`).
+
+**Fix**: the runtimes are standard modules in jz's own subset (`src/std`:
+`jz:async`, `jz:asyncgen`, `jz:iter`, `jz:iter-arr`, `jz:iter-helpers`,
+`jz:usp`, plus `jz:events`, `jz:domexception`, `jz:weakref` for the
+user-visible globals). A module that references one of their exports
+without declaring it gets the import implicitly (`implicitStdImports`,
+jzify/index.js, run before transform for user globals and after transform
+for the lowering helpers); `prepareModule` caches by specifier, so the
+program holds one copy, one queue, one class identity. The host-boundary
+contract (`__mt_drain`, `__p_state`, `__p_value`, `__p_make`, `__p_finish`)
+is re-exported from the program's export table by whichever module pulled
+`jz:async` in (`STD_HOST_EXPORTS`, `ctx.module.rootExports`). Pay-per-use
+holds: a sync program references nothing and links nothing (test/std.js
+pins the byte-identity check).
+
+**Gate**: test/std.js "one promise runtime across modules" (a promise
+settled in one module resolves an await in another; one `__p_settle` in
+the program; the boundary exports present); "one class identity across
+modules". The web-audio-api render (`scripts/library-census.mjs` compiles
+it; the offline oscillator+gain render matches Node bit for bit).
+
+## 7. Host import call with fewer arguments than its declared params: invalid wasm (2026-09-02, CLOSED)
+
+**Symptom**: `WebAssembly.Module(): call[1] expected type i64, found
+global.get of type f64` for any call of a host import (`imports: { m: { f:
+{ params: 3 } } }`) that passed fewer arguments than `params`.
+
+**Root cause**: `padArgs` (src/compile/emit/dispatch.js) padded a missing
+argument with the f64 `undefined` box for every non-i32 parameter; a host
+import's parameters are i64 (the NaN-box carrier, `addHostImport`), so the
+pad had the wrong carrier and only the arity-exact case validated.
+
+**Fix**: a missing argument is `undefined` in the parameter's carrier
+(`asI64(undefExpr())` for an i64 slot). Gate: test/std.js "host import: a
+missing argument crosses as undefined in the i64 carrier".
+
+## 8. Accessor probe on a scalar-replaced literal: "not in scope" (2026-09-02, CLOSED)
+
+**Symptom**: `let format = { a: 1 }; if (x) format.bufferSize = y` failed
+to compile with `'formatf707_5' is not in scope` once any class in the
+program declared `get bufferSize()`.
+
+**Root cause**: the accessor store probed every OBJECT receiver whose schema
+lacked the setter slot (`typeof o.bufferSize__set === 'function'`), and the
+probe read the receiver by name; a literal that never escapes is scalar-
+replaced (`ctx.func.flatObjects`) and has no pointer local to read.
+
+**Fix**: a schema without the slot can only hold it when a DERIVED class
+installs the accessor dynamically (`self.x__set = …` after the base
+factory); jzify records those names (`ctx.transform.dynamicAccessorNames`)
+and only they probe. A literal schema, a flat object, or any other schema
+without the slot stores and reads plainly. Gate: test/std.js "accessors".

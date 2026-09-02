@@ -796,8 +796,9 @@ export const wrap = (memSrc, inst, state) => {
     } catch { /* ignore */ }
   }
   const mem = memory(memSrc)
-  // Async boundary: a module compiled from async source exports __mt_drain /
-  // __p_state / __p_value (the jzify-injected runtime). Every export call ends
+  // Async boundary: a program with async source anywhere in its graph exports
+  // __mt_drain / __p_state / __p_value (the `jz:async` std module's contract,
+  // re-exported by prepare). Every export call ends
   // the "turn" — the microtask queue drains — and a promise-shaped return
   // adopts into a HOST Promise: settled ones immediately, pending ones (parked
   // on a timer) settle from the after-tick sweep. Sync modules: finishRet is

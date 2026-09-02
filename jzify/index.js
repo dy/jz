@@ -9,8 +9,8 @@
 
 import { JZIFY_CLASS_ERRORS as JC } from '../src/op-policy.js'
 import { parse } from '../src/parse.js'
-import { createAsyncLowering, ASYNC_RUNTIME, ASYNC_GEN_RUNTIME } from './async.js'
-import { USP_RUNTIME } from './webrt.js'
+import { createAsyncLowering } from './async.js'
+import { STD_GLOBALS } from '../src/std/index.js'
 import { createNames } from './names.js'
 import { foldStaticExportHelpers, foldStaticBundlerHelpers, canonicalizeObjectIdioms } from './bundler.js'
 import { createSwitchLowering, normalizeCaseBody } from './switch.js'
@@ -18,7 +18,7 @@ import { createClassLowering, foldPseudoClassical } from './classes.js'
 import { hoistVars, prependDecls } from './hoist-vars.js'
 import { createArgumentsLowering } from './arguments.js'
 import { createTransform, bindGenerators } from './transform.js'
-import { createGeneratorLowering, ITER_HELPERS_RUNTIME, ITER_ARR_RUNTIME } from './generators.js'
+import { createGeneratorLowering } from './generators.js'
 import { collectParamNames, extractParams, isBlockBody, JZ_BLOCK_OPS } from '../src/ast.js'
 
 const names = createNames()
@@ -160,7 +160,7 @@ const buildBuiltinScopes = root => {
 }
 const { lowerArguments, transformPattern, bindTransform } = createArgumentsLowering(names)
 
-let lowerClass, lowerObjectLiteralThis, transformSwitch
+let lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors, transformSwitch
 let transform, transformScope
 
 ;({ transform, transformScope } = createTransform({
@@ -171,13 +171,14 @@ let transform, transformScope
   transformSwitch: (...a) => transformSwitch(...a),
   lowerClass: () => lowerClass,
   lowerObjectLiteralThis: () => lowerObjectLiteralThis,
+  lowerObjectLiteralAccessors: () => lowerObjectLiteralAccessors,
   shadowsBuiltin: shadowsJzifyBuiltin,
   withBuiltinScope,
 }))
 bindTransform(transform)
 
 const constStrings = new Map()
-;({ lowerClass, lowerObjectLiteralThis } = createClassLowering({ transform, names, JC, constStrings }))
+;({ lowerClass, lowerObjectLiteralThis, lowerObjectLiteralAccessors } = createClassLowering({ transform, names, JC, constStrings }))
 const generatorNames = new Set()
 // Program mints iterator objects (generators anywhere, hand-rolled `next()`
 // members, `[Symbol.iterator]` methods) — gates the for-of protocol fork so
@@ -185,26 +186,10 @@ const generatorNames = new Set()
 const iterProto = { on: false }
 const genErr = (msg) => { throw new Error('jzify: ' + msg) }
 const { lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, unwindChain, fuseTerminal, fusedLoop, isTerminal } = createGeneratorLowering({ transform, err: genErr, generatorNames, genTemp: (t) => names.genTemp(t), iterProto })
-const { lowerAsync, lowerAsyncGen, noteAsync, asyncUsed, agenUsed, resetAsync } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
-// Web-runtime splice flags (URLSearchParams, …) — reset per transform run.
-const webrt = { usp: false }
-bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, noteAsync, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal, webrt })
+const { lowerAsync, lowerAsyncGen } = createAsyncLowering({ genTemp: (t) => names.genTemp(t), err: genErr })
+bindGenerators({ lowerGenerator, desugarForOfGenerator, desugarForOfProtocol, lowerAsync, lowerAsyncGen, generatorNames, iterProto, unwindChain, fuseTerminal, fusedLoop, isTerminal })
 transformSwitch = createSwitchLowering(transform, names)
 
-// Spread normalization for iterator values — injected only when a spread site
-// wrapped in __drain (iterProto.drain). Arrays/strings/Sets/Maps pass through
-// untouched (the existing spread machinery owns them); machines and
-// @@iterator providers materialize.
-const ITER_RUNTIME = `
-let __it_drain = (v) => {
-  if (v == null) return v
-  if (typeof v === 'object' && v['@@iterator'] != null) v = v['@@iterator']()
-  if (typeof v !== 'object' || v.next == null) return v
-  let r = v.next(), a = []
-  while (!r.done) { a.push(r.value); r = v.next() }
-  return a
-}
-`
 
 const isSymbolWellKnown = (n, which) => Array.isArray(n) && n[0] === '.' && n[1] === 'Symbol' && n[2] === which
 const WELL_KNOWN = { iterator: '@@iterator', dispose: '@@dispose', asyncIterator: '@@asyncIterator' }
@@ -231,6 +216,10 @@ function canonSymbols(node) {
     if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && ITER_HELPER_NAMES.has(node[1][2]))
       iterProto.helpers = true
     if (op === 'instanceof' && node[2] === 'Iterator' && !shadowsJzifyBuiltin('Iterator')) iterProto.helpers = true
+    // a well-known symbol is a reserved prop with no slot to assign: the
+    // polyfill `Symbol.dispose ||= Symbol('dispose')` is a no-op statement
+    if (!shadowsJzifyBuiltin('Symbol') && (op === '||=' || op === '??=' || op === '=') &&
+        Object.keys(WELL_KNOWN).some(k => isSymbolWellKnown(node[1], k))) { node.splice(0, node.length, null); return node }
     // computed key: [':', ['[]', Symbol.X], value]
     if (!shadowsJzifyBuiltin('Symbol') && op === ':' && Array.isArray(node[1]) && node[1][0] === '[]' && node[1].length === 2) {
       for (const [k, prop] of Object.entries(WELL_KNOWN))
@@ -244,6 +233,82 @@ function canonSymbols(node) {
     for (let i = 1; i < node.length; i++) canonSymbols(node[i])
     return node
   })
+}
+
+// `await import('x')` at module level with a literal specifier is a static
+// import in all but syntax: hoist `import * as __dynN from 'x'` and read the
+// namespace in place (`(await import('m')).default` → `__dynN.default`); the
+// resolver already bundles 'x' (src/resolve.js dynImportRe). A `try` around
+// the optional load stays, now around a plain assignment. Nested function
+// bodies are not touched: a real runtime import there stays a reject.
+function hoistModuleDynamicImports(ast) {
+  if (!Array.isArray(ast)) return ast
+  const hoisted = []
+  const isDyn = (n) => Array.isArray(n) && n[0] === 'await' && Array.isArray(n[1]) && n[1][0] === '()' && n[1][1] === 'import'
+    && Array.isArray(n[1][2]) && n[1][2][0] == null && typeof n[1][2][1] === 'string'
+  const walk = (n) => {
+    if (!Array.isArray(n)) return n
+    if (n[0] === '=>' || n[0] === 'function' || n[0] === 'function*' || n[0] === 'class' || n[0] === 'async') return n
+    const dyn = isDyn(n) ? n : n[0] === '()' && n.length === 2 && isDyn(n[1]) ? n[1] : null   // `(await import('x'))`
+    if (dyn) {
+      const ns = `__dyn${hoisted.length}`
+      hoisted.push(['import', ['from', ['as', '*', ns], [null, dyn[1][2][1]]]])
+      return ns
+    }
+    return n.map((c, i) => i === 0 ? c : walk(c))
+  }
+  const out = walk(ast)
+  if (!hoisted.length) return ast
+  const stmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
+  return [';', ...hoisted, ...stmts]
+}
+
+// A module referencing a standard-module global (`Event`, `EventTarget`) it
+// does not declare at top level gets the import implicitly:
+// `import { Event, EventTarget } from 'jz:events'` (src/std). The bundler
+// prepares a specifier once, so every module shares one class identity.
+function implicitStdImports(ast) {
+  if (!Array.isArray(ast)) return ast
+  const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
+  const declared = new Set()
+  const bindImport = (spec) => {
+    if (typeof spec === 'string') declared.add(spec)
+    else if (Array.isArray(spec) && spec[0] === 'as') declared.add(spec[2])
+    else if (Array.isArray(spec) && spec[0] === '{}')
+      for (const it of (Array.isArray(spec[1]) && spec[1][0] === ',' ? spec[1].slice(1) : [spec[1]]))
+        if (typeof it === 'string') declared.add(it); else if (Array.isArray(it) && it[0] === 'as') declared.add(it[2])
+  }
+  const declare = (st) => {
+    if (!Array.isArray(st)) return
+    if (st[0] === 'export' || st[0] === 'default' || st[0] === 'async') return declare(st[1])
+    if (st[0] === 'import' && Array.isArray(st[1]) && st[1][0] === 'from') return bindImport(st[1][1])
+    if ((st[0] === 'class' || st[0] === 'function' || st[0] === 'function*') && typeof st[1] === 'string') declared.add(st[1])
+    if (st[0] === 'const' || st[0] === 'let' || st[0] === 'var')
+      for (let i = 1; i < st.length; i++) { const d = st[i]; if (typeof d === 'string') declared.add(d); else if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string') declared.add(d[1]) }
+  }
+  for (const st of stmts) declare(st)
+  const used = new Set()
+  const ref = (n) => { if (STD_GLOBALS[n] && !declared.has(n)) used.add(n) }
+  // `globalThis.Event` is the same global (feature probes: `globalThis.DOMException || Error`)
+  const viaGlobalThis = (n) => Array.isArray(n) && (n[0] === '.' || n[0] === '?.') && n[1] === 'globalThis'
+    && typeof n[2] === 'string' && STD_GLOBALS[n[2]] && !declared.has(n[2]) && !declared.has('globalThis')
+  const walk = (n) => {
+    if (typeof n === 'string') return ref(n)
+    if (!Array.isArray(n) || n[0] === 'str' || n[0] == null) return
+    // property names are literal keys: `o.Event`, `{ Event: v }`, `import { Event as E }`
+    if (n[0] === '.' || n[0] === '?.') return walk(n[1])
+    if (n[0] === ':') return walk(n[2])
+    for (let i = 1; i < n.length; i++) {
+      if (viaGlobalThis(n[i])) n[i] = n[i][2]
+      walk(n[i])
+    }
+  }
+  walk(ast)
+  if (!used.size) return ast
+  const byModule = new Map()
+  for (const nm of used) { const mod = STD_GLOBALS[nm]; (byModule.get(mod) ?? byModule.set(mod, []).get(mod)).push(nm) }
+  const imports = [...byModule].map(([mod, names]) => ['import', ['from', ['{}', names.length === 1 ? names[0] : [',', ...names]], [null, mod]]])
+  return [';', ...imports, ...stmts]
 }
 
 /**
@@ -261,10 +326,9 @@ export default function jzify(ast) {
   generatorNames.clear()
   iterProto.on = false
   iterProto.helpers = false
-  iterProto.helpersUsed = false
-  iterProto.arr = false
-  iterProto.fromUsed = false
   ast = canonSymbols(ast)
+  ast = hoistModuleDynamicImports(ast)
+  ast = implicitStdImports(ast)
   if (Array.isArray(ast)) {
     const stmts = ast[0] === ';' ? ast.slice(1) : [ast]
     for (const st of stmts) {
@@ -284,56 +348,11 @@ export default function jzify(ast) {
   if (hoisted.size) ast = prependDecls(ast, hoisted)
   if (Array.isArray(ast) && ast[0] === ';') ast = [';', ...foldPseudoClassical(ast.slice(1))]
   builtinScopes = buildBuiltinScopes(ast)
-  resetAsync()
-  iterProto.drain = false
-  webrt.usp = false
   let out = transformScope(ast)
-  const prepend = (src) => {
-    // Runtimes ride the same well-known-symbol canonicalization as user code.
-    const runtimeAst = parse(src)
-    const priorScopes = builtinScopes
-    builtinScopes = buildBuiltinScopes(runtimeAst)
-    let rt
-    try { rt = transformScope(canonSymbols(runtimeAst)) }
-    finally { builtinScopes = priorScopes }
-    const rtStmts = Array.isArray(rt) && rt[0] === ';' ? rt.slice(1) : [rt]
-    const outStmts = Array.isArray(out) && out[0] === ';' ? out.slice(1) : [out]
-    out = [';', ...rtStmts, ...outStmts]
-  }
-  // Runtime splices, to QUIESCENCE: each prepended runtime is itself
-  // transformed, and that transform can flag a need whose check has already
-  // passed in a single linear chain — ASYNC_RUNTIME's `__p_try` holds
-  // `fn(...aa)`, which wraps to `fn(...__it_drain(aa))`, so a linear chain
-  // left `__it_drain` a free name (→ `local.get` of an undeclared local in
-  // `$__p_try`). Loop until no runtime is newly needed; each splices once.
-  // First pass preserves the historical order exactly:
-  //  - spread-of-iterator sites wrapped in __drain → ITER_RUNTIME
-  //    (pass-through for arrays/strings; materializes machines/providers).
-  //  - Array.from-over-iterators sites → __it_arr (materialize/copy).
-  //  - helper-bearing generator mints (__it_mk) or literal-receiver
-  //    [Symbol.iterator]() mints (__it_from) → decorated-iterator factory.
-  //  - URLSearchParams sites → the jz-source implementation (webrt.js).
-  //  - async generators → tagged-yield driver, checked BEFORE the promise
-  //    runtime so it lands AFTER it in module order (it calls __p_*).
-  //  - async anywhere → the plain-jz promise runtime (microtask queue,
-  //    __async_run driver, promise shape + boundary readers) ahead of user
-  //    code. Sync programs never reach this — byte-identical.
-  const spliced = {}
-  const spliceOnce = () => {
-    let did = false
-    const need = (key, cond, src) => {
-      if (!cond || spliced[key]) return
-      spliced[key] = did = true
-      prepend(src)
-    }
-    need('drain', iterProto.drain, ITER_RUNTIME)
-    need('arr', iterProto.arr, ITER_ARR_RUNTIME)
-    need('helpers', iterProto.helpersUsed || iterProto.fromUsed, ITER_HELPERS_RUNTIME)
-    need('usp', webrt.usp, USP_RUNTIME)
-    need('agen', agenUsed(), ASYNC_GEN_RUNTIME)
-    need('async', asyncUsed(), ASYNC_RUNTIME)
-    return did
-  }
-  while (spliceOnce()) {}
+  // The lowerings reference runtime helpers (`__p_new`, `__it_drain`,
+  // `__usp_new`) as free names: each resolves to its std module through the
+  // same implicit import as a user-visible global. A sync program references
+  // none and compiles byte-identically.
+  out = implicitStdImports(out)
   return foldStaticBundlerHelpers(foldStaticExportHelpers(canonicalizeObjectIdioms(out)))
 }

@@ -12,7 +12,7 @@ import { OPTF } from '../ctx.js'
  */
 
 import { ctx, err, inc, warnDeopt, PTR, LAYOUT, setLinkDemand } from '../ctx.js'
-import { T, walkAst } from '../ast.js'
+import { T, walkAst, ACCESSOR_SET } from '../ast.js'
 import { staticPropertyKey, staticIndexKey, staticObjectProps, inlineArraySid, structLiteralFields, inplaceKey } from '../static.js'
 import { packedI32, structInline } from '../abi/index.js'
 import { i64Hex, encodePtrHi } from '../../layout.js'
@@ -813,7 +813,42 @@ export function emitElementAssign(arr, idx, val) {
  *    - Hoisted-but-not-declared binding (treat as dyn)
  *    - Non-string receiver expr → __dyn_set
  *    Default: __hash_set on a string-named receiver. */
-export function emitPropertyAssign(obj, prop, val) {
+// Accessor dispatch for stores, the write side of module/core.js accessorRead:
+// `o.x = v` on an OBJECT/unknown receiver calls the `x__set` slot when the
+// schema is known to carry it, or probes for it at runtime and falls back to
+// the plain store (`.raw` target). The expression's value stays `v`.
+function accessorStore(obj, prop, val) {
+  const vt = typeof obj === 'string' ? lookupValType(obj) : valTypeOf(obj)
+  if (vt != null && vt !== VAL.OBJECT && vt !== VAL.CLOSURE) return null
+  const setter = prop + ACCESSOR_SET
+  // a schema carrying the slot calls it statically; a literal without the slot
+  // stores plainly; anything else probes (see module/core.js accessorRead)
+  const sid = typeof obj === 'string' ? ctx.schema.idOf(obj) : null
+  const known = sid != null && ctx.schema.slotOf(obj, setter) >= 0
+  if (Array.isArray(obj) && obj[0] === '{}') return null
+  // a schema without the slot holds it only when a derived class installs it
+  // dynamically; a scalar-replaced literal never leaves its function
+  if (sid != null && !known && !ctx.transform.dynamicAccessorNames?.has(prop)) return null
+  if (typeof obj === 'string' && ctx.func.flatObjects?.has(obj)) return null
+  const void_ = ctx.func._expect === 'void'
+  // JS order: the receiver, then the value
+  const pre = []
+  let recv = obj
+  if (!known && typeof obj !== 'string') { recv = temp('acc'); pre.push(['local.set', `$${recv}`, asF64(emit(obj))]) }
+  const vT = temp('accv')
+  pre.push(['local.set', `$${vT}`, asF64(emit(val))])
+  const call = ['()', ['.', recv, setter], vT]
+  const body = known ? call
+    : ['?:', ['===', ['typeof', ['.', recv, setter]], ['str', 'function']], call, ['=', ['.raw', recv, prop], vT]]
+  if (void_) return typed(['block', ...pre, ['drop', asF64(emit(body))]], 'void')
+  return typed(['block', ['result', 'f64'], ...pre, ['drop', asF64(emit(body))], ['local.get', `$${vT}`]], 'f64')
+}
+
+export function emitPropertyAssign(obj, prop, val, raw = false) {
+  if (!raw && ctx.transform.accessorNames?.has(prop)) {
+    const acc = accessorStore(obj, prop, val)
+    if (acc) return acc
+  }
   // Regex instances carry lastIndex in compiler-generated globals, not as an
   // ordinary object slot. Accepting a source write would update only a dynamic
   // sidecar while exec() reads the hidden global, a silent split-brain value.

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Library census: compile real programs and report what it cost.
 //
-//   node scripts/library-census.mjs <entry.js>... [--json]
+//   node scripts/library-census.mjs <entry.js>... [--json] [--external=pkg,pkg/sub]
+//
+// `--external` names packages left as host imports (a library's codec, device
+// and filesystem edges); the entry's own graph must compile without it.
 //
 // Per entry: status, wasm bytes, compile time, export lanes (f64 numeric slots
 // against i64 dynamic ones), realized runtime functions, and warning counts by
@@ -15,6 +18,7 @@ import { resolveModuleGraph } from '../src/resolve.js'
 
 const args = process.argv.slice(2)
 const json = args.includes('--json')
+const external = args.filter(a => a.startsWith('--external=')).flatMap(a => a.slice(11).split(',')).filter(Boolean)
 const entries = args.filter(a => !a.startsWith('--'))
 if (!entries.length) {
   console.error('usage: node scripts/library-census.mjs <entry.js>... [--json]')
@@ -31,7 +35,7 @@ const census = (entry) => {
   const row = { entry, status: 'ok' }
   let graph
   try {
-    graph = resolveModuleGraph(path, { resolveNode: true })
+    graph = resolveModuleGraph(path, { resolveNode: true, external })
   } catch (e) {
     return { ...row, status: 'resolve', error: String(e.message).split('\n')[0] }
   }
@@ -41,7 +45,9 @@ const census = (entry) => {
   const t = performance.now()
   let bytes
   try {
-    bytes = compile(graph.code, { modules: graph.modules, optimize: 2, warnings, whyNotSimd: true })
+    // an external's names bind as generic host functions (8 boxed params)
+    const imports = Object.fromEntries(Object.entries(graph.externals ?? {}).map(([spec, names]) => [spec, Object.fromEntries(names.map(n => [n, { params: 8 }]))]))
+    bytes = compile(graph.code, { modules: graph.modules, imports, optimize: 2, warnings, whyNotSimd: true })
   } catch (e) {
     return { ...row, status: 'compile', ms: +(performance.now() - t).toFixed(1), error: String(e.message).split('\n')[0].slice(0, 160) }
   }

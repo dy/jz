@@ -70,7 +70,10 @@ const KEY_RE = /^\.(?:([a-z0-9]+):)?([A-Za-z_$][\w$]*)$/
 //                        source property is ever spelled `slice#view`, so
 //                        includeForProperty/tryStaticDispatch never construct
 //                        this key from a real `.prop` access.
-const NON_METHOD_KEYS = new Set(['.', '.typed:[]', '.typed:[]=', '.string:slice#view'])
+//   '.raw'             – the `.` reader with accessor dispatch off (the
+//                        accessor probe's fallback target, module/core.js),
+//                        an internal op, not a property name.
+const NON_METHOD_KEYS = new Set(['.', '.raw', '.typed:[]', '.typed:[]=', '.string:slice#view'])
 
 export function deriveMethodModules() {
   beginSession({
