@@ -808,6 +808,26 @@ test('invariant: member-property calls are ProgramIndex edges and roots', () => 
   ok(index2.isGraphReachable(index2.graphFunctionIdOfName('helper')), 'and its callees follow')
 })
 
+test('invariant: namespace-computed dispatch reaches its arms and their members', () => {
+  if (onKernel()) return
+  const m = 'export let a = (x) => x + 1\nexport let b = (x) => x * 2\nb.parse = (s) => s.length\nexport let four = (p, q, r, s) => p + 1'
+  compile("import * as ns from './m.jz'\nexport let pick2 = (k, s) => ns[k].parse(s)", { modules: { './m.jz': m } })
+  const index = ctx.plans.programIndex
+  const parse = ctx.funcs.list.find(fn => !fn.raw && /b\$parse$/.test(fn.name))
+  ok(parse && index.isGraphReachable(index.graphFunctionIdOfName(parse.name)),
+    'a member call on the lowered `?:` chain reaches each arm\'s member target')
+
+  compile([
+    "import * as ns from './m.jz'",
+    'const H = { go: (k, v) => ns[k](v) }',
+    'export let run = (op, k, v) => H[op](k, v)',
+  ].join('\n'), { modules: { './m.jz': m } })
+  const index2 = ctx.plans.programIndex
+  const four = ctx.funcs.list.find(fn => !fn.raw && /four$/.test(fn.name))
+  ok(four && index2.isGraphReachable(index2.graphFunctionIdOfName(four.name)),
+    'an arm called with an arity shortfall inside an inline dispatch member still gets its graph edge')
+})
+
 test('architecture: emission order is the frozen concrete function order', () => {
   if (onKernel()) return
   compile('let a = (x) => x + 1; export let b = (y) => a(y) * 2')

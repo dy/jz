@@ -898,12 +898,14 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   const count = graphFunctions.length
   const callSites = programFacts.callSites || []
   // `.`-member calls resolve through the member tables above into ordinary
-  // graph edges (Shape 8, `i32.parse(n)` to `i32$parse`); a module-scope
-  // member call roots its target. The census is consumed here once and its
-  // key retired, so no later stage sees a second call-site table.
+  // graph edges (Shape 8, `i32.parse(n)` to `i32$parse`); dispatch-synthesis
+  // adds pre-resolved `{ callee }` entries for arms whose lattice site was
+  // declined on arity; a module-scope entry roots its target. The census is
+  // consumed here once and its key retired, so no later stage sees a second
+  // call-site table.
   const memberEdgeCallers = [], memberEdgeTargets = [], memberRootIds = []
   for (const site of programFacts.memberCallSites || []) {
-    const sourceId = resolveMemberSourceId(site.objName, site.prop)
+    const sourceId = site.callee != null ? sourceIdOf(site.callee) : resolveMemberSourceId(site.objName, site.prop)
     if (sourceId < 0) continue
     const targetId = graphObjectIds.get(sourceFunctionById(sourceId)) ?? -1
     if (targetId < 0) continue

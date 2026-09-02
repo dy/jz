@@ -78,7 +78,7 @@
  *
  * @module program-facts
  */
-export { observeNodeFacts, collectProgramFacts, synthesizeComputedDispatchCallSites } from './program-facts/walk-facts.js'
+export { observeNodeFacts, collectProgramFacts, synthesizeComputedDispatchCallSites, synthesizeMemberDispatchCallSites } from './program-facts/walk-facts.js'
 export { resetProgramFactsCache, invalidateProgramFactsCache } from './program-facts/cache.js'
 export { observeProgramSlots } from './program-facts/slot-kind-census.js'
 export { analyzeSchemaSlotIntCertain } from './program-facts/slot-int-census.js'

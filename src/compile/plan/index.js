@@ -30,7 +30,8 @@ import { ctx } from '../../ctx.js'
 import { invalidateAllBodyFacts } from '../analyze.js'
 import {
   collectProgramFacts, analyzeSchemaSlotIntCertain, observeProgramSlots, analyzeParamNeverGrown,
-  synthesizeComputedDispatchCallSites, readonlyParamReps, freezeCallSites, assertProgramFactsShape,
+  synthesizeComputedDispatchCallSites, synthesizeMemberDispatchCallSites, readonlyParamReps, freezeCallSites,
+  assertProgramFactsShape,
 } from '../program-facts.js'
 import { buildProgramIndex, releaseLiftedAddressTakenNames } from '../program-index.js'
 import { buildDictKindIndex } from '../dict-kind-index.js'
@@ -150,6 +151,7 @@ export default function plan(ast, profiler) {
   const programIndex = t('buildProgramIndex', () => buildProgramIndex(ctx, programFacts, ast,
     resolver => {
       t('synthesizeComputedDispatchCallSites', () => synthesizeComputedDispatchCallSites(programFacts, resolver))
+      t('synthesizeMemberDispatchCallSites', () => synthesizeMemberDispatchCallSites(programFacts, resolver))
       t('releaseLiftedAddressTakenNames', () => releaseLiftedAddressTakenNames(ctx, programFacts, resolver))
     }))
   programFacts.programIndex = programIndex

@@ -228,6 +228,7 @@ function emptyWalkFacts() {
     hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
+    memberDispatchSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -262,6 +263,17 @@ function mergeWalkFacts(into, from) {
   into.callSites.push(...from.callSites)
   into.computedCallSites.push(...from.computedCallSites)
   into.memberCallSites.push(...from.memberCallSites)
+  into.memberDispatchSites.push(...from.memberDispatchSites)
+}
+
+/** Bare-name leaves of a `?:` chain over function references, the shape
+ *  prepare lowers a namespace-computed access (`ns[k]`) to. Null when any
+ *  arm is neither a name, a nested chain, nor the `undefined` fallback. */
+const dispatchLeaves = (node, out = []) => {
+  if (typeof node === 'string') { out.push(node); return out }
+  if (node == null || (Array.isArray(node) && node[0] == null)) return out
+  if (!Array.isArray(node) || node[0] !== '?:' || node.length !== 4) return null
+  return dispatchLeaves(node[2], out) && dispatchLeaves(node[3], out)
 }
 
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
@@ -352,6 +364,20 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
           typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
         acc.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: caller })
+      // Member call on a `?:` chain over function references, `ns[k].prop(args)`
+      // after prepare lowers the namespace access. Emission devirtualizes it
+      // per arm, so each arm's member target is a real direct call: the index
+      // synthesizes one call site per resolved arm (synthesizeMemberDispatch-
+      // CallSites), feeding both the graph and the parameter lattice.
+      if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+          Array.isArray(node[1][1]) && node[1][1][0] === '?:' && typeof node[1][2] === 'string') {
+        const leaves = dispatchLeaves(node[1][1])
+        if (leaves && leaves.length) {
+          const a = node[2]
+          const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
+          acc.memberDispatchSites.push({ leaves, prop: node[1][2], argList, callerFunc: caller, node })
+        }
+      }
       if ((op === '.' || op === '?.') && isFuncRef(node[1], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
         for (let i = 1; i < node.length; i++) {
@@ -518,6 +544,7 @@ export function collectProgramFacts(ast) {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, addressTakenNames, callSites,
     computedCallSites: f.computedCallSites,
     memberCallSites: f.memberCallSites,
+    memberDispatchSites: f.memberDispatchSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
     hasBigint: f.hasBigint, writtenProps: f.writtenProps,
@@ -729,18 +756,41 @@ export function synthesizeComputedDispatchCallSites(programFacts, programIndex) 
         if (i < site.argList.length) subst.set(name, site.argList[i])
         else unsuppliable.add(name)
       }
+      // One inner call resolved to `callee`: always a call-graph edge (the
+      // call is real whatever its arity), and a lattice site only under the
+      // same unsuppliable-param and arity gates as before.
+      const innerSite = (n, callee) => {
+        programFacts.memberCallSites.push({ callee, callerFunc: site.callerFunc })
+        const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
+        const ok = (!unsuppliable.size || innerArgList.every(a => !mentionsAny(a, unsuppliable))) &&
+          !calleeArityShortfalls(callee, innerArgList.length)
+        if (ok)
+          programFacts.callSites.push({
+            callee, argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
+          })
+      }
       const walkInner = (n) => {
         if (!Array.isArray(n)) return
         if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
         if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
           claimedNodes.add(n)
-          const innerArgList = commaList(n[2]).map(a => substitute(a, subst))
-          const ok = (!unsuppliable.size || innerArgList.every(a => !mentionsAny(a, unsuppliable))) &&
-            !calleeArityShortfalls(n[1], innerArgList.length)
-          if (ok)
-            programFacts.callSites.push({
-              callee: n[1], argList: innerArgList, callerFunc: site.callerFunc, node: n, synthetic: true,
-            })
+          innerSite(n, n[1])
+        } else if (n[0] === '()' && Array.isArray(n[1])) {
+          // A namespace-computed access prepare lowered to a `?:` chain over
+          // function references (`encode[t](...)`), or a member call on such a
+          // chain (`encode[t].parse(...)`): emission devirtualizes per arm,
+          // so each arm is a direct inner call of its own. The ordinary
+          // walker registers neither form, so nothing is claimed.
+          const callee = n[1]
+          const leaves = callee[0] === '?:' ? dispatchLeaves(callee)
+            : (callee[0] === '.' || callee[0] === '?.') && Array.isArray(callee[1]) && callee[1][0] === '?:' &&
+              typeof callee[2] === 'string' ? dispatchLeaves(callee[1]) : null
+          if (leaves) for (const leaf of leaves) {
+            if (callee[0] === '?:') { if (ctx.funcs.names.has(leaf)) innerSite(n, leaf); continue }
+            const targetId = programIndex.resolveMemberSourceId(leaf, callee[2])
+            const target = targetId >= 0 ? programIndex.sourceFunctionById(targetId) : null
+            if (target) innerSite(n, target.name)
+          }
         }
         for (let i = 1; i < n.length; i++) walkInner(n[i])
       }
@@ -750,4 +800,25 @@ export function synthesizeComputedDispatchCallSites(programFacts, programIndex) 
 
   if (claimedNodes.size)
     programFacts.callSites = programFacts.callSites.filter(cs => cs.synthetic || !claimedNodes.has(cs.node))
+}
+
+/** Member calls on a `?:` chain over function references (`ns[k].prop(args)`
+ *  after prepare lowers the namespace access): one synthetic direct call
+ *  site per arm whose member target resolves, exactly the calls emission
+ *  devirtualizes to. The census is consumed here once and its key retired. */
+export function synthesizeMemberDispatchCallSites(programFacts, programIndex) {
+  const resolveMemberSourceId = programIndex?.resolveMemberSourceId
+  if (resolveMemberSourceId) for (const site of programFacts.memberDispatchSites || []) {
+    for (const leaf of site.leaves) {
+      const targetId = resolveMemberSourceId(leaf, site.prop)
+      if (targetId < 0) continue
+      const target = programIndex.sourceFunctionById(targetId)
+      if (!target) continue
+      programFacts.callSites.push({
+        callee: target.name, argList: site.argList, callerFunc: site.callerFunc, node: site.node, synthetic: true,
+      })
+    }
+  }
+  const retiredMemberDispatchKey = 'memberDispatchSites'
+  delete programFacts[retiredMemberDispatchKey]
 }

@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 14.84x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,498 bytes versus 14,530,671 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.11x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,492 bytes versus 14,541,732 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -453,6 +453,22 @@ Seventh production slice verification (attributed byte diff):
 - recursive self-compile: 321 modules, 6,871,110 input bytes, 14,089,750 output bytes, 4,122,542,760 heap bytes, 172,424,536 bytes headroom; elapsed 31,265 ms
 - compact threshold: pass at 2,256,498 bytes versus the 14,530,671-byte production compiler; the staged artifact shrank 30 bytes on the same complete-evidence effect
 
+Eighth production slice verification (attributed byte diff):
+
+- namespace-computed dispatch (`ns[k](args)`, `ns[k].prop(args)`) is censused as `memberDispatchSites` on the lowered `?:` chains and synthesized at index build into one direct call site per resolved arm; inside inline dispatch-table arrows the computed-dispatch hop synthesizes the same two forms, and every resolved inner call now records a graph edge even when its lattice site is declined on an arity shortfall (bare-name inner calls included, which lost the edge before)
+- pins: a member call on the lowered chain reaches each arm's member target; an arm called with an arity shortfall inside an inline dispatch member keeps its graph edge
+- watr probe at O3: zero emitted-but-unreachable functions (from 2); the eight index-dead functions are all treeshaken
+- refactor oracle: 560 outputs byte-identical; 8 watr-derived rows shrink by 6 bytes each. Attribution: `m0_compile$parseUint` and `m1_encode$f32` each turn a `(result i64)` block with reinterpret round-trips into `(result f64)` once a dispatch-synthesized site supplies numeric kind evidence for a parameter
+- native: 3,905 pass, 1 skip
+- opt3: 3,905 pass, 1 skip
+- WASI: 3,904 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- recursive self-compile: 321 modules, 6,875,608 input bytes, 14,100,810 output bytes, 4,125,719,984 heap bytes, 169,247,312 bytes headroom; elapsed 31,308 ms
+- compact threshold: pass at 2,256,492 bytes versus the 14,541,732-byte production compiler
+- compiler artifact +11,061 bytes: the compiler's own dispatch-table sites now feed its lattice, widening parameters that had narrowed on partial evidence
+
 Per-slice recursive and artifact ratchet:
 
 | Production migration slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
@@ -468,6 +484,7 @@ Per-slice recursive and artifact ratchet:
 | SRoA collect-during-analyze | 14,523,120 | 4,120,384,696 | 174,582,600 | +777 bytes, -147,792 headroom |
 | canonical export roots | 14,523,519 | 4,121,053,816 | 173,913,480 | +399 bytes, -669,120 headroom |
 | member-call edges | 14,530,671 | 4,122,542,760 | 172,424,536 | +7,152 bytes, -1,488,944 headroom |
+| namespace dispatch sites | 14,541,732 | 4,125,719,984 | 169,247,312 | +11,061 bytes, -3,177,224 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -643,7 +660,7 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
-1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. Before any gating, ProgramIndex reachability must be complete. Closed so far: export roots (canonical `isExported`) and `.`-member call edges through `resolveMemberSourceId` (Shape 8, with module-scope member calls as roots). Residual on the watr bundle at O3: `m1_encode$f16` and `m1_encode$f16$bits`, reached only through `encode[t](...)` and `encode[t].parse(...)`, where prepare lowers the namespace-computed access to a ternary chain over function references and the chain then serves as a member receiver. The plain `(c ? a : b)(v)` shape already marks its arms address-taken; the receiver-position chain does not. Model that shape (edges or address-taken arms) and re-run the watr probe to zero before gating.
+1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. ProgramIndex reachability is now complete on the watr bundle: export roots (canonical `isExported`), `.`-member call edges through `resolveMemberSourceId` (Shape 8, module-scope member calls as roots), and namespace-computed dispatch (`ns[k](args)` and `ns[k].prop(args)` lowered to `?:` chains, including inside inline dispatch-table arrows) synthesize per-arm sites, with a graph edge for every resolved arm even where the lattice site is declined on arity. The O3 probe reports zero emitted-but-unreachable functions. The gating slice can start; keep the probe as its first gate on every corpus specimen.
 2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is closer: structInline and unionInline now collect per-function summaries inside the analyze loop and decide from summaries alone. Remaining between analyze and emit: union-cursor cloning (whole-program specialization over the settled registry) and the identity/ABI closes, all of which need only an analyze-complete barrier, not retained plans or bodies.
 3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 
