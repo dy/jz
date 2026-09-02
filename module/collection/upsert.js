@@ -32,6 +32,34 @@ export const collectionLaneBytes = () => ctx.transform.compactCollections ? 0 : 
 export const collectionStride = (entrySize) => entrySize + collectionLaneBytes()
 const hasProbeLane = () => collectionLaneBytes() !== 0
 
+// The key's hash into `$h`. Speed tiers inline `$__str_hash`'s two FAST arms
+// (the SSO arithmetic mix and the heap lazy-hash-cell load, one of which the
+// dictionary-count hot path pays per probe) and call the helper only for the
+// cold shapes (interned statics, uncached walk, the one-in-4G mix that hashes
+// to 0), which recomputes identically; the gates and the post-mix clamp
+// (`i32.le_s`: every negative hash shifts by 2) mirror `$__str_hash`'s own
+// exactly, so the inline value is bit-equal to the helper's and to the lazy
+// cells. The size tier (`leanRuntime`) calls the helper outright.
+const keyHashIR = (hashFn = '$__str_hash') => hashFn !== '$__str_hash' || ctx.transform.optimize?.leanRuntime
+  ? `(local.set $h (call ${hashFn} (local.get $key)))`
+  : `(local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
+    (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
+    (local.set $h (i32.const 0))
+    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
+      (then
+        (if (i32.shr_u (local.get $kaux) (i32.const 14))
+          (then
+            (local.set $h (i32.mul
+              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
+              (i32.const 0xC2B2AE35)))
+            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
+            (if (i32.le_s (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
+          (else
+            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
+                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
+              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
+    (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))`
+
 // Shared grow-capacity policy for every open-addressing Set/Map/Hash table
 // (genUpsert, genUpsertGrow, genSlotUpsert, genEphemeralSlotUpsert — four
 // otherwise-independent grow blocks, all doubling `cap` at 75% load; this is
@@ -595,34 +623,7 @@ function genSlotUpsert(name, entrySize, hashFn, eqExpr) {
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))))
-    ${hashFn === '$__str_hash' ? `;; tiered $__str_hash: the two FAST arms inline — SSO arithmetic mix and
-    ;; the heap lazy-hash-cell load, one of which the dictionary-count hot path
-    ;; pays per probe. Cold shapes (interned statics, uncached walk — and the
-    ;; one-in-4G SSO mix that hashes to 0) call the helper, which recomputes
-    ;; identically. Gates mirror $__str_hash's own exactly.
-    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-    (local.set $h (i32.const 0))
-    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
-      (then
-        (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
-        (if (i32.shr_u (local.get $kaux) (i32.const 14))
-          (then
-            (local.set $h (i32.mul
-              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
-              (i32.const 0xC2B2AE35)))
-            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
-            ;; $__str_hash's post-mix clamp, replicated EXACTLY (i32.le_s — it
-            ;; shifts every NEGATIVE-signed hash by 2, not just 0/1): the
-            ;; tiered value must be bit-equal to the helper's return and to
-            ;; the lazy hash cells (they cache post-clamp values).
-            (if (i32.le_s (local.get $h) (i32.const 1))
-              (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
-          (else
-            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
-                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
-              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
-    (if (i32.eqz (local.get $h)) (then (local.set $h (call ${hashFn} (local.get $key)))))`
-    : `(local.set $h (call ${hashFn} (local.get $key)))`}
+    ${keyHashIR(hashFn)}
     ${probeStart(entrySize)}
     (block $done (loop $probe
       ${probeHashLoad()}
@@ -749,24 +750,7 @@ function genEphemeralSlotUpsert(name, entrySize) {
         (i32.store (i32.sub (local.get $off) (i32.const 4)) (i32.const -1))
         (local.set $off (local.get $newptr))
         (local.set $cap (local.get $newcap))))
-    ;; Cached/tiny string hash fast paths inline (same contract as __str_hash).
-    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-    (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $h (i32.const 0))
-    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
-      (then
-        (if (i32.shr_u (local.get $kaux) (i32.const 14))
-          (then
-            (local.set $h (i32.mul
-              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
-              (i32.const 0xC2B2AE35)))
-            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
-            (if (i32.le_s (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
-          (else
-            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
-                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
-              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
-    (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))
+    ${keyHashIR()}
     ${startProbe}
     (block $done (loop $probe
       (local.set $hw ${loadProbeHash})
@@ -804,23 +788,7 @@ function genEphemeralFixedSlot(name, entrySize) {
     (local.set $cap (local.get $capHint))
     (if (i32.eqz (local.get $cap))
       (then (local.set $cap (i32.load (i32.sub (local.get $off) (i32.const 4))))))
-    (local.set $kaux (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.AUX_SHIFT})) (i64.const ${LAYOUT.AUX_MASK}))))
-    (local.set $koff (i32.wrap_i64 (i64.and (local.get $key) (i64.const ${LAYOUT.OFFSET_MASK}))))
-    (local.set $h (i32.const 0))
-    (if (i32.eq (i32.wrap_i64 (i64.and (i64.shr_u (local.get $key) (i64.const ${LAYOUT.TAG_SHIFT})) (i64.const ${LAYOUT.TAG_MASK}))) (i32.const ${PTR.STRING}))
-      (then
-        (if (i32.shr_u (local.get $kaux) (i32.const 14))
-          (then
-            (local.set $h (i32.mul
-              (i32.xor (local.get $koff) (i32.mul (i32.xor (i32.and (local.get $kaux) (i32.const 0x1FFF)) (i32.const 0x9E3779B9)) (i32.const 0x85EBCA6B)))
-              (i32.const 0xC2B2AE35)))
-            (local.set $h (i32.xor (local.get $h) (i32.shr_u (local.get $h) (i32.const 15))))
-            (if (i32.le_s (local.get $h) (i32.const 1)) (then (local.set $h (i32.add (local.get $h) (i32.const 2))))))
-          (else
-            (if (i32.and (i32.ge_u (local.get $koff) (i32.const 8))
-                  (i32.eq (i32.and (local.get $kaux) (i32.const ${LAYOUT.SLICE_BIT | STR_HCACHE_BIT})) (i32.const ${STR_HCACHE_BIT})))
-              (then (local.set $h (i32.load (i32.sub (local.get $koff) (i32.const 8))))))))))
-    (if (i32.eqz (local.get $h)) (then (local.set $h (call $__str_hash (local.get $key)))))
+    ${keyHashIR()}
     ${indexedProbeStart(entrySize)}
     (block $done (loop $probe
       ${probeHashLoad()}

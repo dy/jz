@@ -2155,3 +2155,18 @@ test('objects: a record-stream cursor keeps its member schema', () => {
       is(jz(src, { optimize }).exports.f(1000), e.f(1000), `${name} @O${optimize}`)
   }
 })
+
+// An in-place replace store (`arr[i] = {…}` over the tracked cursor `const p =
+// arr[i]`) whose read nobody proved in-bounds: past the length the cursor is
+// `undefined` (raw pointer 0). The store must extend the array with a fresh
+// object at every tier, never write through the null pointer (it did, at the
+// size tier: address 0, array unchanged).
+test('in-place replace store past the length extends the array at every tier', () => {
+  const src = `const mk = () => { const a = []; for (let i = 0; i < 4; i++) a.push({ x: i, y: 2 }); return a }
+  const run = (ps, n) => { let s = 0; for (let i = 0; i < n; i++) { const p = ps[i]; const nx = ((p ? p.x : 0) + 1) | 0; ps[i] = { x: nx, y: 1 }; s = (s + nx) | 0 } return s * 100 + ps.length }
+  export let f = (n) => run(mk(), n)`
+  const e = {}
+  new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e)
+  for (const optimize of [0, 2, 3, 'size'])
+    for (const n of [2, 4, 6, 9]) is(jz(src, { optimize }).exports.f(n), e.f(n), `n=${n} @O${optimize}`)
+})

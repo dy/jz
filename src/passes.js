@@ -46,6 +46,7 @@ export const PASS_NAMES = [
   'maskedSuffixGuard',        // all-false SIMD masks skip large pure producer suffixes
   'hoistLoopGlobalPtrOffset', // per-loop complement: narrower write/call scan lets a clean loop hoist inside an otherwise-poisoned function
   'fusedRewrite',             // peephole + ptr-helper inline + memarg fold
+  'chainConditions',          // `&&`/`||` diamonds in a condition position → jump-if-false/true branch chains
   'inlinePtrOffsetFast',      // speed-tier only: inline __ptr_offset's loop-free body (mask+tag
                               // test+forwarding bounds/sentinel check) at each surviving call site
                               // — the cold relocation-chase call ($__ptr_offset_fwd) stays out-of-
@@ -107,6 +108,9 @@ export const PASS_NAMES = [
 export const TUNING_KEYS = [
   'level', 'arrayMinCap', 'arrayLiteralMinCap', 'hashSmallInitCap', 'collectionInitCap', 'watrProfile', 'watrGuard', 'watrLicm',
   'reduceUnroll', 'relaxedSimd', 'inlineFns', 'rotateLoops', 'leanCheckedIdx', 'watrIfset',
+  'leanRuntime',              // size tier: runtime walks link their simplest correct body (no hot/cold
+                              // split, no chunked scan, no per-site hash fast arms) — the -Os profile
+                              // of the string equality/hash family
   'scalarTypedLoopUnroll', 'scalarTypedNestedUnroll', 'scalarTypedArrayLen',
   'snapshotInit',
   'rationalConst',            // SEMANTIC precision lowering (rational constant carry — pinned

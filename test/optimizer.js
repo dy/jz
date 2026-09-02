@@ -3383,8 +3383,9 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
   })()
   is(got, ref, 'encode checksum matches reference bit-for-bit')
 
-  // Negative control 1: conditional step whose two arms carry DIFFERENT deltas —
-  // no fact (bails, does not union into an interval — a named scope boundary).
+  // A conditional step whose two arms carry DIFFERENT deltas: the arm maximum
+  // budgets the hull (`[0, 2N]`, maxAdvanceBudget), so the counter keeps i32
+  // storage; the value is the same at every tier.
   const condStep = `
     const N = ${N}
     const encode = (src, out) => {
@@ -3398,7 +3399,12 @@ test('co-induction accumulator fact: base64 op-counter recovers i32 storage (IND
     export let f = (src, out) => encode(src, out)
   `
   const wCond = jz.compile(condStep, { wat: true, optimize: 'speed' })
-  ok(/\(local \$\S*op f64\)/.test(wCond), 'conditional differing-delta accumulator stays f64 (no fact)')
+  ok(/\(local \$\S*op i32\)/.test(wCond), 'conditional differing-delta accumulator takes the arm-max budget (i32)')
+  {
+    const src3 = new Uint8Array(N); for (let i = 0; i < N; i++) src3[i] = (i * 7 + 3) & 0xff
+    let expect = 0; for (let i = 0; i < N; i++) expect += src3[i] > 0 ? 1 : 2
+    for (const O of [0, 'size', 'speed']) is(jz(condStep, { optimize: O }).exports.f(src3, new Uint8Array(4)), expect, `budgeted counter O${O}`)
+  }
 
   // Negative control 2: a write to `op` OUTSIDE the loop body — no fact.
   const outsideWrite = `
@@ -4789,8 +4795,10 @@ test('select-gate FLAG veto: nested-if load-bearing cond stays if/else, plain-co
     const tree = parse(pickChild, optimize)
     const fn = findFunc(tree, '$f') || findFunc(tree, '$f$exp')
     const top = topExpr(fn)
-    is(Array.isArray(top) && top[0], 'if', `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
-    ok(count(fn, n => n[0] === 'if') >= 1, `O${JSON.stringify(optimize)}: compiles as if/else`)
+    // if/else, or its jump-chain form (chainConditions lowers the value-if
+    // whose test holds the `&&` diamond to a result block with one branch per operand)
+    ok(Array.isArray(top) && (top[0] === 'if' || top[0] === 'block'), `O${JSON.stringify(optimize)}: nested-if load-bearing flag never selects`)
+    ok(count(fn, n => n[0] === 'if' || n[0] === 'br_if') >= 1, `O${JSON.stringify(optimize)}: compiles as branches`)
   }
   for (const optimize of [false, 2, 3, 'speed']) {
     const { f } = run(pickChild, { optimize })
@@ -4859,4 +4867,32 @@ test('stripCanon sees through a hoisted-call temp (hoistNestedCalls single-def b
   const wat = jz.compile(src, { wat: true, optimize: 'speed' })
   const fn = wat.split('(func ').find(c => c.startsWith('$render')) || ''
   ok(!/local\.tee[\s\S]{0,40}f64\.neg/.test(fn), 'no tee-guarded NaN-canon wrapper survives around f64.neg')
+})
+
+// `&&`/`||` in a condition position lower to branch chains (optimize/cond-chains.js):
+// one conditional branch per operand, no value diamond, no phi. The short-circuit
+// order and count of evaluations are those of the diamond, so side effects in the
+// operands land exactly once and only when reached.
+test('condition chains: short-circuit tests branch per operand, evaluating each once', () => {
+  if (onKernel()) return
+  const src = `let log = 0
+  const a = (x) => { log = log * 10 + 1; return x > 0 }
+  const b = (x) => { log = log * 10 + 2; return x > 1 }
+  const c = (x) => { log = log * 10 + 3; return x > 2 }
+  export let f = (x) => {
+    log = 0
+    let r = 0
+    if (a(x) && b(x) && c(x)) r += 1; else r += 10
+    if (a(x) || b(x)) r += 100
+    if ((a(x) && b(x)) || c(x)) r += 1000; else r += 10000
+    let i = 0
+    while (a(i) && i < x) i++
+    return r * 100000 + i * 1000 + (log % 1000)
+  }`
+  const w = compile(src, { wat: true, optimize: { level: 3, watr: false, sourceInline: false } })
+  const body = w.slice(w.indexOf('(func $f'))
+  ok(!/\(if\s*\(result i32\)\s*\(local\.tee/.test(body), 'no value diamond in the function')
+  ok(body.includes('$__cc'), 'the jump chain is present')
+  const ref = (x) => { let e = {}; new Function('exports', src.replace(/export let (\w+)\s*=/g, 'exports.$1 ='))(e); return e.f(x) }
+  for (const O of [0, 2, 3, 'size']) for (const x of [0, 1, 2, 3, 5]) is(jz(src, { optimize: O }).exports.f(x), ref(x), `O${O} x=${x}`)
 })

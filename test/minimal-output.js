@@ -833,15 +833,24 @@ test('minimal: a direct cursor-read discriminant admits the union carrier', () =
 // self-accumulating form keeps its bump-extend.
 test('minimal: a long-literal concat skips the SSO arms', () => {
   if (skip) return
-  const src = `const BASE = 'let alpha_12 = beta + 12345;\\n'
-  export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s = s + BASE; const t = s + 'x'; return s.length * 1000 + t.length }`
-  const w = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  const acc = `const BASE = 'let alpha_12 = beta + 12345;\\n'
+  export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s = s + BASE; return s.length }`
+  const w = compile(acc, { wat: true, optimize: { level: 'size', watr: false } })
   ok(w.includes('call $__str_concat_raw_long'), 'the accumulation takes the long twin')
   ok(!w.includes('call $__str_concat_raw '), 'no SSO-capable accumulation twin')
+  for (const n of [0, 1, 40]) is(jz(acc, { optimize: 'size' }).exports.f(n), jsFn(acc, 'f')(n), `n=${n}`)
+  // The size tier links one body for the family: with a fresh concat in the
+  // program the twin's sites take the general form (bridge.js general()).
+  const src = `const BASE = 'let alpha_12 = beta + 12345;\\n'
+  export let f = (n) => { let s = ''; for (let i = 0; i < n; i++) s = s + BASE; const t = s + 'x'; return s.length * 1000 + t.length }`
+  const post = compile(src, { wat: true, optimize: 'size' })
+  ok(!post.includes('$__str_concat_raw_long'), 'the long twin collapses into the fresh body')
+  const speed = compile(src, { wat: true, optimize: { level: 3, watr: false } })
+  ok(speed.includes('call $__str_concat_raw_long'), 'the speed tier keeps the twin')
   for (const n of [0, 1, 40]) is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `n=${n}`)
   is(jz(src, { optimize: 3 }).exports.f(40), jsFn(src, 'f')(40), 'O3')
   const bytes = compile(src, { optimize: 'size', alloc: false }).length
-  ok(bytes <= 1127, `long concat: ${bytes} B (recorded 1127)`)
+  ok(bytes <= 1043, `long concat: ${bytes} B (recorded 1043)`)
 })
 
 // A typed factory called with one constant (`mkSignal(N)`, `const out = new
@@ -866,4 +875,104 @@ test('minimal: a typed factory result carries its static length', () => {
   const two = src.replace('const sig = mk(N), re', 'const sig = mk(N), other = mk(64), re').replace('return h\n', 'return h + other[3]\n')
   ok(/\$[^\s)]*tbi\d*/.test(pre(two)), 'disagreeing call sites keep the check')
   is(jz(two, { optimize: 'size' }).exports.f(), jsFn(two, 'f')())
+})
+
+// The size tier links the runtime's plain walks: `__str_eq` is one loop through
+// the encoding-agnostic accessors (no hot/cold split, no 4-byte chunking) and
+// `__str_hash` the SSO mix plus the byte FNV; the dictionary probes call the
+// hash instead of inlining its fast arms. The hash values match the speed
+// tier's bit for bit (the literal prehash is computed from the same walk).
+test('minimal: the size tier links the plain string walks', () => {
+  if (skip) return
+  const src = `const words = ['alpha', 'beta', 'gamma_long_key', 'delta', 'alpha', 'gamma_long_key', 'epsilon_longer']
+  export let f = (n) => {
+    const counts = {}
+    for (let i = 0; i < n; i++) { const w = words[i % words.length]; counts[w] = (counts[w] | 0) + 1 }
+    let h = 0
+    for (let i = 0; i < words.length; i++) h = (h * 31 + (counts[words[i]] | 0)) | 0
+    return h * 7 + (words[2] === 'gamma_' + 'long_key' ? 1 : 0) + (words[0] === words[4] ? 2 : 0)
+  }`
+  const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  ok(!pre.includes('$__str_eq_cold'), 'no hot/cold split')
+  const post = compile(src, { wat: true, optimize: 'size' })
+  const eqBody = post.slice(post.indexOf('(func $__str_eq'), post.indexOf('(func', post.indexOf('(func $__str_eq') + 10))
+  ok(eqBody.includes('call $__char_at') && !eqBody.includes('i32.load offset'), 'the byte walk through __char_at')
+  for (const n of [0, 3, 50]) {
+    is(jz(src, { optimize: 'size' }).exports.f(n), jsFn(src, 'f')(n), `size n=${n}`)
+    is(jz(src, { optimize: 3 }).exports.f(n), jsFn(src, 'f')(n), `speed n=${n}`)
+  }
+  const bytes = compile(src, { optimize: 'size', alloc: false }).length
+  ok(bytes <= 2466, `dictionary count: ${bytes} B (recorded 2466)`)
+})
+
+// A ring value under a branchless conditional narrows: `x = c ? x + d : x - d`
+// over i32 x and a byte d computes in i32 (no f64 add, no +∞ guard), and a
+// post-increment index into a checked read is `r - 1` over the incremented
+// local, not `wrap(trunc(f64(r) - 1))`.
+test('minimal: select and post-increment indices narrow to the i32 ring', () => {
+  if (skip) return
+  const src = `const decode = (stream, flags, n) => {
+    let x = 0, r = 0, h = 0
+    for (let i = 0; i < n; i++) {
+      const f = flags[i]
+      if (f & 2) { const d = stream[r++]; x = (f & 16) ? x + d : x - d }
+      h = Math.imul(h ^ x, 16777619)
+    }
+    return h
+  }
+  export let f = (seed) => {
+    const stream = new Uint8Array(64), flags = new Uint8Array(64)
+    let s = seed | 0
+    for (let i = 0; i < 64; i++) { s = (s * 1103515245 + 12345) | 0; stream[i] = s >>> 24; flags[i] = (s >>> 8) & 255 }
+    return decode(stream, flags, 64)
+  }`
+  const w = compile(src, { wat: true, optimize: { level: 3, watr: false, sourceInline: false } })
+  const body = w.slice(w.indexOf('(func $decode'), w.indexOf('(func $f'))
+  ok(!body.includes('f64.add') && !body.includes('f64.sub'), 'no f64 arithmetic on the accumulator')
+  ok(!body.includes('trunc_sat'), 'no conversion on the index')
+  for (const seed of [7, 12345]) {
+    const ref = jsFn(src, 'f')(seed)
+    is(jz(src, { optimize: 3 }).exports.f(seed), ref, `speed seed=${seed}`)
+    is(jz(src, { optimize: 'size' }).exports.f(seed), ref, `size seed=${seed}`)
+  }
+})
+
+// An array grown only through its own name (push, element write, `.length =`)
+// with every grow written back is never stale: its reads, length reads and
+// push sites take the raw offset instead of following forwarding. An alias or
+// an escape (a call argument, a capture, a store) keeps the follow.
+test('minimal: an own-name-current array reads without the forwarding follow', () => {
+  if (skip) return
+  const src = `export let f = (n) => {
+    const a = []
+    for (let i = 0; i < n; i++) a.push(i * 3)
+    a[n + 2] = 7
+    let s = 0
+    for (let i = 0; i < a.length; i++) s += a[i] | 0
+    a.length = 2
+    return s * 1000 + a.length * 10 + (a[1] | 0)
+  }`
+  const pre = compile(src, { wat: true, optimize: { level: 'size', watr: false } })
+  const body = pre.slice(pre.indexOf('(func $f'), pre.indexOf('(func', pre.indexOf('(func $f') + 10))
+  ok(!body.includes('call $__ptr_offset '), 'no forwarding follow in the function')
+  for (const n of [0, 1, 5, 40]) for (const O of [0, 'size', 3]) is(jz(src, { optimize: O }).exports.f(n), jsFn(src, 'f')(n), `O${O} n=${n}`)
+  // an alias can grow the array behind the binding's back: the follow stays
+  const aliased = src.replace('a[n + 2] = 7', 'const b = a; b.push(9); b[n + 2] = 7')
+  const pre2 = compile(aliased, { wat: true, optimize: { level: 'size', watr: false } })
+  ok(pre2.includes('call $__ptr_offset '), 'an alias keeps the follow')
+  for (const n of [0, 5, 40]) is(jz(aliased, { optimize: 'size' }).exports.f(n), jsFn(aliased, 'f')(n), `aliased n=${n}`)
+  // a nested function holds its own copy of the pointer: its push relocates
+  // behind this function's local (the self-hosted compiler's `out.push` inside
+  // a `forEach` callback trapped on exactly this)
+  const captured = `export let f = (n) => {
+    const a = []
+    const seed = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    for (let i = 0; i < n; i++) seed.forEach(v => { a.push(v * 3 + i) })
+    let s = 0
+    for (let i = 0; i < a.length; i++) s += a[i] | 0
+    return s * 1000 + a.length
+  }`
+  const pre3 = compile(captured, { wat: true, optimize: { level: 'size', watr: false, sourceInline: false } })
+  ok(pre3.includes('call $__ptr_offset '), 'a captured array keeps the follow')
+  for (const n of [0, 5, 40]) for (const O of [0, 'size', 3]) is(jz(captured, { optimize: O }).exports.f(n), jsFn(captured, 'f')(n), `captured O${O} n=${n}`)
 })

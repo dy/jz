@@ -22,7 +22,7 @@
  */
 
 import { typed, asF64, asI32, asI32Sat, asI64, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN, mkPtrIR, temp, tempI32, toNumF64, toStrI64, MAX_CLOSURE_ARITY } from '../src/ir.js'
-import { emit, emitIdentitySafe, argIR, bool, method, deps, wat, bind } from '../src/bridge.js'
+import { emit, emitIdentitySafe, argIR, bool, method, deps, general, wat, bind } from '../src/bridge.js'
 import { valTypeOf, hasAmbiguousBoolMerge, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, err, declGlobal, setLinkDemand } from '../src/ctx.js'
@@ -160,6 +160,8 @@ const internProbeWat = (ipExpr, guard = '(i32.const 1)') => ctx.scope.globals.ha
 
 
 export default (ctx) => {
+  // Size tier: the runtime walks link their plain bodies (see `__str_eq`).
+  const lean = !!ctx.transform.optimize?.leanRuntime
   deps({
     __str_concat: ['__to_str', '__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
     __str_concat_raw: ['__str_byteLen', '__alloc', '__memgrow', '__mkptr', '__str_copy'],
@@ -193,7 +195,7 @@ export default (ctx) => {
     __str_idx: ['__char1byte'],
     __sso_norm: [],
     __bytes_decode: ['__typed_data', '__len', '__alloc', '__mkptr', '__sso_norm'],
-    __str_eq: ['__str_eq_cold'],
+    __str_eq: lean ? ['__char_at', '__str_byteLen'] : ['__str_eq_cold'],
     __str_eq_cold: ['__char_at', '__str_byteLen'],
     __str_cmp: ['__char_at', '__str_byteLen'],
     __str_range_eq: ['__char_at', '__str_byteLen'],
@@ -416,7 +418,32 @@ export default (ctx) => {
   // the engine's wasm inliner — the call overhead disappears at every site
   // while the byte-walk lives in __str_eq_cold. Mirrors the __ptr_offset_fwd
   // split; a body containing a loop is excluded from V8's inliner.
-  wat('__str_eq', () => `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+  // Size tier (`leanRuntime`): the same decision as the tiered pair below in one
+  // loop-free prelude plus the byte walk through the encoding-agnostic accessors
+  // the cold path already links (`__str_byteLen`, `__char_at`). No hot/cold
+  // split, no canonical-interned arm, no 4-byte chunking: a third of the bytes.
+  wat('__str_eq', () => lean ? `(func $__str_eq (param $a i64) (param $b i64) (result i32)
+    (local $len i32) (local $i i32)
+    (if (i64.eq (local.get $a) (local.get $b))
+      (then (return (i32.const 1))))
+    ${ctx.features.sso ? `
+    ;; ANY SSO operand ⇒ bit-ne decided content-ne (the ≤${MAX_SSO}-ASCII invariant)
+    (if (i64.ne (i64.and (i64.or (local.get $a) (local.get $b)) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then (return (i32.const 0))))` : `
+    ;; both SSO ⇒ bit-ne already decided content-ne
+    (if (i64.ne (i64.and (i64.and (local.get $a) (local.get $b)) (i64.const ${SSO_BIT_I64})) (i64.const 0))
+      (then (return (i32.const 0))))`}
+    (local.set $len (call $__str_byteLen (local.get $a)))
+    (if (i32.ne (local.get $len) (call $__str_byteLen (local.get $b)))
+      (then (return (i32.const 0))))
+    (block $d (loop $l
+      (br_if $d (i32.ge_s (local.get $i) (local.get $len)))
+      (if (i32.ne (call $__char_at (local.get $a) (local.get $i))
+                  (call $__char_at (local.get $b) (local.get $i)))
+        (then (return (i32.const 0))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $l)))
+    (i32.const 1))` : `(func $__str_eq (param $a i64) (param $b i64) (result i32)
     (local $axA i32) (local $axB i32) (local $offA i32) (local $offB i32)
     (if (i64.eq (local.get $a) (local.get $b))
       (then (return (i32.const 1))))
@@ -1372,6 +1399,18 @@ export default (ctx) => {
   // Long twins: a side statically longer than the SSO capacity (a literal, a
   // module-const string) makes the result heap-only, so the empty and SSO
   // arms are dead — only the bump-extend (`_long`) or the fresh copy remains.
+  //
+  // The family's general forms: the fresh copy is correct at every site the
+  // bump-extend is (it never touches `a`), and the full body at every site a
+  // `_long` twin is. The size tier links a twin only when its general form
+  // is not reachable anyway (stdlib-pull.js collapseTwins).
+  general({
+    __str_concat_raw: ['__str_concat_raw_fresh', '__str_concat_fresh'],
+    __str_concat_raw_fresh: ['__str_concat_fresh'],
+    __str_concat: ['__str_concat_fresh'],
+    __str_concat_raw_long: ['__str_concat_raw', '__str_concat_raw_fresh', '__str_concat_fresh'],
+    __str_concat_raw_fresh_long: ['__str_concat_raw_fresh', '__str_concat_fresh'],
+  })
   wat('__str_concat_raw_long', `(func $__str_concat_raw_long (param $a i64) (param $b i64) (result f64)
     (local $alen i32) (local $blen i32) (local $total i32) (local $off i32)
     (local $ta i32) (local $aoff i32) (local $newHeap i32)

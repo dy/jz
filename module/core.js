@@ -33,6 +33,17 @@ import { isExported } from '../src/compile/func-exports.js'
 
 const NAN_BITS = nanPrefixHex()
 
+// A never-relocated (neverGrown) or own-name-current (ownCurrent) array binding
+// always holds the live pointer: its base is the raw offset, no forwarding follow
+// (scanObjectArrayFacts, module/array.js currentBinding for the reader).
+const liveArrayBinding = (name) => {
+  const r = ctx.func.localReps?.get(name)
+  return r?.neverGrown === true || r?.ownCurrent === true
+}
+const arrayBaseIR = (obj) => typeof obj === 'string' && liveArrayBinding(obj)
+  ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', asF64(emit(obj))], ['i64.const', LAYOUT.OFFSET_MASK]]]
+  : ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY)
+
 export default (ctx) => {
   const lane = collectionLaneBytes()
   deps({
@@ -1905,7 +1916,7 @@ export default (ctx) => {
       const inlSid = inlineArraySid(obj)
       const inlU = inlSid == null ? inlineArrayUnion(obj) : null
       if (inlSid != null || inlU != null) {
-        const physLen = ['i32.load', ['i32.sub', ptrOffsetIR(asF64(emit(obj)), VAL.ARRAY), ['i32.const', 8]]]
+        const physLen = ['i32.load', ['i32.sub', arrayBaseIR(obj), ['i32.const', 8]]]
         // Union arrays are BYTE-STRIDE (stride·4 B/record, header len in
         // physical 8-byte cells): logical = ⌊len·8 / strideB⌋ — exact for
         // every stride ≥ 2 (ceil(n·s/8)·8 < (n+1)·s always holds there).
@@ -1926,6 +1937,10 @@ export default (ctx) => {
       // (schema slot / hash key), never a builtin length — resolve statically
       // instead of paying __length's runtime dispatch.
       if (vt === VAL.OBJECT || vt === VAL.HASH) return emitPropAccess(emit(obj), obj, 'length')
+      // A never-relocated or own-name-current array binding reads its header
+      // off the raw offset (no forwarding follow).
+      if (vt === VAL.ARRAY && typeof obj === 'string' && liveArrayBinding(obj))
+        return typed(['f64.convert_i32_s', ['i32.load', ['i32.sub', arrayBaseIR(obj), ['i32.const', 8]]]], 'f64')
       const arrayOrTyped = vt == null && rep?.recvArrTyped === true
       // jsstring carrier: keep the externref-typed IR so emitLengthAccess can
       // dispatch to `wasm:js-string.length` instead of forcing through f64.

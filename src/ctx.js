@@ -459,6 +459,10 @@ export function reset(proto, globals, bridge) {
                             // check today (verifyEmitIntegrity stays ctx.core.emit-only,
                             // per its own doc comment); wat()'s pre-write check alone uses
                             // regStdlibOrder/Dialect/Module.
+    stdlibGeneral: {},      // twin → its general forms, nearest first (bridge.js general()):
+                            // a template specialized by a call-site fact and the body that
+                            // is correct at every site. The size tier's link collapses a twin
+                            // whose general form the program links anyway (stdlib-pull.js).
                         // MUST remain last: adding fields before stdlib/stdlibDeps/… shifts
                         // their slot indices and breaks the self-compile compiled kernel's reads.
   }

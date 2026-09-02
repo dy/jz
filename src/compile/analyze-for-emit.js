@@ -328,6 +328,9 @@ export function analyzeFuncForEmit(func, programFacts) {
   }
   // Never-relocated array bindings — the `[]` reader skips the forwarding follow.
   if (bodyFacts?.neverGrown) for (const name of bodyFacts.neverGrown) updateRep(name, { neverGrown: true })
+  // Own-name-current bindings — grown only through their own name, every grow
+  // written back: the reader and the push site skip the follow as well.
+  if (bodyFacts?.ownCurrent) for (const name of bodyFacts.ownCurrent) updateRep(name, { ownCurrent: true })
   // Proven uint32 accumulator locals — readVar tags reads `.unsigned` so the
   // f64 round-trip widens with convert_i32_u (not _s).
   if (bodyFacts?.unsignedLocals) for (const n of bodyFacts.unsignedLocals) updateRep(n, { unsigned: true })

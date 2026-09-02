@@ -19,6 +19,7 @@ import {
 } from './peephole.js'
 import { hoistInvariantPtrOffset, splitLoopPrivateScratch, hoistInvariantLoop, narrowLoopBound, cseScalarLoad } from './licm.js'
 import { propagateSingleUse, foldSetToTee } from './locals.js'
+import { chainConditions } from './cond-chains.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
@@ -176,6 +177,10 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // loop condition for a fused conditional back-edge (1.35× on the lz/qoi scalar scans). watr's
   // loopify is disabled when vectorizing, so nothing downstream reverts the rotation.
   if (cfg && cfg.rotateLoops === true) rotateLoops(fn)
+  // Short-circuit diamonds in condition positions → branch chains (one conditional
+  // branch per operand, as C lowers `if (a && b)`) — after rotateLoops so a fused
+  // back-edge's `&&` test chains too.
+  if (!cfg || cfg.chainConditions !== false) chainConditions(fn)
   // Canonicalize boolean conditions (strip redundant `!= 0` / double-`eqz`) — after
   // rotateLoops so its fused back-edges get cleaned too. Tied to the peephole pass.
   if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(fn)

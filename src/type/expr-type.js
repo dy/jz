@@ -17,7 +17,7 @@ import {
   exprPresentValIn, exprMapGetShapedIn,
 } from '../kind.js'
 import { propValType, CMP_OPS } from '../kind-traits.js'
-import { NO_VALUE, staticValue, intExprRange } from '../static.js'
+import { NO_VALUE, staticValue, intExprRange, constIntExpr } from '../static.js'
 import { typedElemAux } from '../../layout.js'
 import { typedStorageNameCtor } from '../typed-context.js'
 import { inBoundsCharCodeAt } from './canonical-bounds.js'
@@ -225,7 +225,8 @@ export function exprType(expr, locals, valTypes, strict, bodyRoot) {
   if (op === '%') {
     const ta = exprType(expr[1], locals, valTypes, strict), tb = exprType(expr[2], locals, valTypes, strict)
     if (ta !== 'i32' || tb !== 'i32') return 'f64'
-    const dv = staticValue(expr[2])
+    // the divisor as a folded module-const expression (`MAXPTS - 20 + 1`) is a literal too
+    const dv = staticValue(expr[2]) !== NO_VALUE ? staticValue(expr[2]) : (constIntExpr(expr[2]) ?? NO_VALUE)
     if (isUnsignedI32Expr(expr[2], locals)) return 'f64'
     // A uint32 dividend by a positive literal takes emit's `i32.rem_u` path;
     // the remainder is below the divisor, a signed i32 whenever K ≤ 2^31.

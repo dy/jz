@@ -3,13 +3,14 @@
  * @module analyze-scans
  */
 
-import { ASSIGN_OPS, MUTATE_OPS, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst } from '../ast.js'
+import { ASSIGN_OPS, MUTATE_OPS, collectAssignedNames, collectParamNames, extractParams, REFS_IN_EXPR, refsName, some, T, isLiteralStr, walkAst, isReassigned } from '../ast.js'
 import { ctx, getFactStore } from '../ctx.js'
 import {
   staticObjectProps, staticArrayElems, staticIndexKey, staticValue, intExprRange, NO_VALUE,
   constIntExpr, guardCounterName, forCounterRange,
 } from '../static.js'
 import { exprType } from '../type.js'
+import { maxAdvanceBudget } from '../type/canonical-bounds.js'
 import { repOf, updateRep } from '../reps.js'
 
 export function findFreeVars(node, bound, free, scope) {
@@ -675,12 +676,67 @@ export function safeReads(node, name) {
 // Per-binding classification shared by scanNeverGrown and scanObjectArrayFacts
 // (walk-count design A1) — factored out for the same reason as
 // flatObjectCandidate above.
+const freshArrayInit = (s) => s[BINDING_USE_DECLS] === 1 && Array.isArray(s[BINDING_USE_INIT])
+  && (s[BINDING_USE_INIT][0] === '[' || (s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2))
 function neverGrownCandidate(name, s, body) {
   // Candidate: a single-declaration binding initialized from a fresh array literal.
-  if (s[BINDING_USE_DECLS] !== 1 || !Array.isArray(s[BINDING_USE_INIT])) return false
-  if (s[BINDING_USE_INIT][0] !== '[' && !(s[BINDING_USE_INIT][0] === '[]' && s[BINDING_USE_INIT].length <= 2)) return false
-  return safeReads(body, name)
+  return freshArrayInit(s) && safeReads(body, name)
 }
+
+/**
+ * Own-name-current array bindings — reads through them may skip the forwarding
+ * follow like a neverGrown binding's, though the array DOES grow: every grow
+ * runs through the binding's own name and writes the (possibly relocated)
+ * pointer back to it, so the binding is never stale. Beyond safeReads' pure
+ * reads this admits exactly the grow sites whose emitters persist the pointer:
+ * `a.push(…)` (module/array.js writeBack), `a[i] = v` (emit-assign.js
+ * persistBinding) and `a.length = n` (`__arr_set_length` with persist); and
+ * `return a`, after which no read of this function follows. A bare alias, a
+ * capture, a call argument, a store into a container — anything that could
+ * grow the array through another name — disqualifies exactly as for safeReads.
+ * The fact is NOT neverGrown: the header relocates, so no base hoists across a
+ * grow (licm.js keys off neverGrown alone). A nested function holding the name
+ * disqualifies too: it captures the pointer by value and a push inside it
+ * would relocate behind this function's copy.
+ */
+export function ownReads(node, name) {
+  if (typeof node === 'string') return node !== name
+  if (!Array.isArray(node)) return true
+  const op = node[0]
+  // A nested function captures the pointer by value (the binding is never
+  // reassigned, so it is not boxed): a push inside it relocates behind this
+  // function's copy. Any mention inside an arrow disqualifies.
+  if (op === '=>') return !refsName(node, name, REFS_IN_EXPR)
+  if (op === 'return' && node[1] === name) return true
+  if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === name && node[1][2] === 'push')
+    return node.slice(2).every(a => ownReads(a, name))
+  if (op === '=' && Array.isArray(node[1]) && node[1][1] === name
+      && ((node[1][0] === '[]' && ownReads(node[1][2], name)) || (node[1][0] === '.' && node[1][2] === 'length')))
+    return ownReads(node[2], name)
+  if (op === '()') {
+    const c = node[1]
+    if (c === name) return false
+    if (Array.isArray(c) && (c[0] === '.' || c[0] === '?.' || c[0] === '[]' || c[0] === '?.[]') && c[1] === name) return false
+  }
+  if (grownOrEscapes(op)) {
+    const t = node[1]
+    if (t === name) return false
+    if (Array.isArray(t) && (t[0] === '[]' || t[0] === '.' || t[0] === '?.') && t[1] === name) return false
+  }
+  if (op === 'let' || op === 'const' || op === 'var') {
+    for (let i = 1; i < node.length; i++) {
+      const d = node[i]
+      if (Array.isArray(d) && d[0] === '=' && !ownReads(d[2], name)) return false
+    }
+    return true
+  }
+  if ((op === '.' || op === '?.') && node[1] === name) return node[2] === 'length'
+  if (op === '[]' && node[1] === name) return ownReads(node[2], name)
+  if (op === '...' && node[1] === name) return false
+  for (let i = 1; i < node.length; i++) if (!ownReads(node[i], name)) return false
+  return true
+}
+const ownCurrentCandidate = (name, s, body) => freshArrayInit(s) && ownReads(body, name)
 
 export function scanNeverGrown(body) {
   const out = new Set()
@@ -702,14 +758,15 @@ export function scanNeverGrown(body) {
  * direct test coverage.
  */
 export function scanObjectArrayFacts(body) {
-  let flatObjects = null, sliceViews = null, neverGrown = null
+  let flatObjects = null, sliceViews = null, neverGrown = null, ownCurrent = null
   for (const [name, s] of scanBindingUses(body)) {
     const entry = flatObjectCandidate(name, s, body)
     if (entry) (flatObjects ||= new Map()).set(name, entry)
     if (sliceViewCandidate(s)) (sliceViews ||= new Set()).add(name)
     if (neverGrownCandidate(name, s, body)) (neverGrown ||= new Set()).add(name)
+    else if (ownCurrentCandidate(name, s, body)) (ownCurrent ||= new Set()).add(name)
   }
-  return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET]
+  return [flatObjects || EMPTY_SCAN_MAP, sliceViews || EMPTY_SCAN_SET, neverGrown || EMPTY_SCAN_SET, ownCurrent || EMPTY_SCAN_SET]
 }
 
 /**
@@ -1261,6 +1318,9 @@ function collectConstStep(node, name) {
  *  takes precedence; in practice the two are mutually exclusive since
  *  processDecl only stamps non-reassigned names and this only considers
  *  MUTATE_OPS-written ones). */
+// A name written inside any closure of `body` can change at any call.
+const closureWrites = (body, name) => some(body, n => n[0] === '=>' && isReassigned(n, name))
+
 export function stampCoInductionRanges(body) {
   walkAst(body, { enter: node => {
     if (node[0] === 'for' && node.length === 5) {
@@ -1278,7 +1338,17 @@ export function stampCoInductionRanges(body) {
             if (!initRange) continue
             if (writesOutsideLoop(body, loopBody, name)) continue
             const delta = collectConstStep(loopBody, name)
-            if (delta == null || (delta.P === 0 && delta.N === 0 && delta.D === 0)) continue
+            if (delta == null) {
+              // Not a fixed per-iteration step (arms that advance differently,
+              // a nested counted loop): a monotone cursor still has the budget
+              // hull `[init, init + trips × maxAdvance]` when every write is a
+              // positive constant step (maxAdvanceBudget, canonical-bounds.js).
+              const adv = maxAdvanceBudget(loopBody, name, { constInt: constIntExpr, evRange: intExprRange, closureWrites: EMPTY_SCAN_SET, MUTATE_OPS })
+              const hi = adv != null ? initRange[1] + trips * adv : null
+              if (adv != null && adv > 0 && Number.isFinite(hi) && !closureWrites(body, name)) updateRep(name, { range: [initRange[0], hi] })
+              continue
+            }
+            if (delta.P === 0 && delta.N === 0 && delta.D === 0) continue
             const { P, N, D } = delta
             const lastStart = D * (trips - 1)
             const lo = Math.min(initRange[0], initRange[0] + lastStart) - N

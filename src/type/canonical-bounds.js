@@ -269,3 +269,134 @@ export function litBoundArrIdx(ctx) {
   return getFactStore().aiLitBounds.get(body) || NO_LIT_BOUNDS
 }
 const NO_LIT_BOUNDS = new Map()
+
+/**
+ * Maximum advance of the counter `name` over ONE execution of `root` (a loop
+ * body), or null when a write to it is not a positive constant step or the
+ * control shape is not admitted. Mutually exclusive arms contribute their
+ * maximum; a nested counted loop contributes trips × its body's own budget:
+ *   `for (iv = A; iv </<= B; iv += c)` with A, c literals and B bounded by
+ *   `evRange` (a decl of `root` evaluates through its initializer when nothing
+ *   else writes it — `const np = 20 + rnd() % 101`);
+ *   `while (x </<= B)` where x starts at a literal (its declaration in `root`,
+ *   written nowhere but inside the loop) and every write in the loop is `x++`
+ *   or `x += e` with e a literal ≥ 1 or a loop-declared counter that starts
+ *   ≥ 1 and only grows — each iteration advances x by at least 1.
+ * An abrupt edge out of a nested loop keeps the bound (fewer trips, never
+ * more). Both the interval prover (advanceBudget) and the analysis-time
+ * co-induction stamp state their cursor budgets through this one walk.
+ */
+export function maxAdvanceBudget(root, name, { constInt, evRange, closureWrites, MUTATE_OPS }) {
+  const stmts = Array.isArray(root) && (root[0] === ';' || root[0] === '{}') ? root.slice(1) : [root]
+  const bodyDecls = new Map()
+  for (const st of stmts) collectDecls(st, bodyDecls)
+  // A body decl written nowhere else stands for its initializer, transitively
+  // (`np` → `20 + t % 101` → `20 + (s >>> 0) % 101`), so the range evaluator
+  // sees the shapes it knows (`>>>`, masks, moduli) instead of provisional names.
+  const stable = (nm) => bodyDecls.has(nm) && !closureWrites.has(nm) && !isReassigned(root, nm)
+  const subst = (e, depth = 0) => {
+    if (typeof e === 'string') return stable(e) && depth < 8 ? subst(bodyDecls.get(e), depth + 1) : e
+    if (!Array.isArray(e) || e[0] === '=>' || e[0] === '()' ) return e
+    return e.map((c, i) => i === 0 ? c : subst(c, depth))
+  }
+  const evIn = (e) => evRange(subst(e))
+  const boundHi = (cond, iv) => {
+    if (!Array.isArray(cond) || cond.length !== 3 || (cond[0] !== '<' && cond[0] !== '<=') || cond[1] !== iv) return null
+    const B = evIn(cond[2])
+    return B ? B[1] + (cond[0] === '<=' ? 1 : 0) : null
+  }
+  // writes to `nm` in `r`, each as a node — a declarator's `=` is a binding, not a write
+  const writesTo = (r, nm) => {
+    const out = []
+    const walk = (y) => {
+      if (!Array.isArray(y)) return
+      if (y[0] === 'let' || y[0] === 'const' || y[0] === 'var') {
+        for (let i = 1; i < y.length; i++) if (Array.isArray(y[i]) && y[i][0] === '=') walk(y[i][2])
+        return
+      }
+      if (MUTATE_OPS.has(y[0]) && y[1] === nm) out.push(y)
+      for (let i = 1; i < y.length; i++) walk(y[i])
+    }
+    walk(r)
+    return out
+  }
+  const countWrites = (r, nm) => writesTo(r, nm).length
+  const nestedTrips = (n) => {
+    if (n[0] === 'for' && n.length === 5) {
+      const [, init, cond, step, lb] = n
+      const decls = new Map(); collectDecls(init, decls)
+      if (decls.size !== 1) return null
+      const [iv, initE] = [...decls][0]
+      const A = constInt(initE)
+      const c = Array.isArray(step) && step[1] === iv ? (step[0] === '++' ? 1 : step[0] === '+=' ? constInt(step[2]) : null) : null
+      const H = boundHi(cond, iv)
+      if (A == null || c == null || c <= 0 || H == null || isReassigned(lb, iv) || closureWrites.has(iv)) return null
+      return Math.max(0, Math.ceil((H - A) / c))
+    }
+    if (n[0] === 'while' && n.length === 3) {
+      const [, cond, lb] = n
+      const x = Array.isArray(cond) ? cond[1] : null
+      if (typeof x !== 'string' || !bodyDecls.has(x) || closureWrites.has(x)) return null
+      const A = constInt(bodyDecls.get(x)), H = boundHi(cond, x)
+      if (A == null || H == null) return null
+      const loopDecls = new Map()
+      for (const st of (Array.isArray(lb) && (lb[0] === ';' || lb[0] === '{}') ? lb.slice(1) : [lb])) collectDecls(st, loopDecls)
+      const grows = (e) => {
+        const k = constInt(e)
+        if (k != null) return k >= 1
+        if (typeof e !== 'string' || closureWrites.has(e) || !loopDecls.has(e)) return false
+        const e0 = constInt(loopDecls.get(e))
+        if (e0 == null || e0 < 1) return false
+        const ws = writesTo(lb, e)
+        const mono = ws.every(y => y[0] === '++' || (y[0] === '+=' && constInt(y[2]) > 0))
+        return mono && countWrites(root, e) === ws.length
+      }
+      const ws = writesTo(lb, x)
+      const ok = ws.length > 0 && ws.every(y => y[0] === '++' || (y[0] === '+=' && grows(y[2])))
+      if (!ok || countWrites(root, x) !== ws.length) return null
+      return Math.max(0, H - A)
+    }
+    return null
+  }
+  const delta = (n) => {
+    if (n[0] === '++') return 1
+    if (n[0] === '+=') { const d = constInt(n[2]); return d != null && d > 0 ? d : null }
+    if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') {
+      const d = n[2][1] === name ? constInt(n[2][2]) : n[2][2] === name ? constInt(n[2][1]) : null
+      return d != null && d > 0 ? d : null
+    }
+    return null
+  }
+  const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
+  const eff = (n) => {
+    if (!Array.isArray(n)) return 0
+    const op = n[0]
+    if (op === '=>') return closureWrites.has(name) ? null : 0
+    if (MUTATE_OPS.has(op) && n[1] === name) return delta(n)
+    if (op === 'if') {
+      const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
+      return c == null || a == null || b == null ? null : c + Math.max(a, b)
+    }
+    if (op === '?:') {
+      const c = eff(n[1]), a = eff(n[2]), b = eff(n[3])
+      return c == null || a == null || b == null ? null : c + Math.max(a, b)
+    }
+    if (op === '&&' || op === '||') {
+      const a = eff(n[1]), b = eff(n[2])
+      return a == null || b == null ? null : a + Math.max(0, b)
+    }
+    if ((op === 'for' || op === 'while') && isReassigned(n, name)) {
+      const trips = nestedTrips(n)
+      if (trips == null) return null
+      const head = op === 'for' ? eff(n[1]) : 0
+      const per = op === 'for' ? seq([n[2], n[3], n[4]]) : seq([n[1], n[2]])
+      return head == null || per == null ? null : head + trips * per
+    }
+    if (op === 'while' || op === 'for' || op === 'do' || op === 'for-of' || op === 'for-in' ||
+        op === 'switch' || op === 'try' || op === 'catch' || op === 'finally' ||
+        op === 'break' || op === 'continue' || op === 'return' || op === 'throw')
+      return isReassigned(n, name) ? null : 0
+    return seq(n.slice(1))
+  }
+  return eff(root)
+}

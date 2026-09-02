@@ -125,6 +125,11 @@ export const hostImport = (mod, name, fn) => {
 /** WAT stdlib→stdlib deps for `resolveIncludes()`. */
 export const deps = (map) => Object.assign(ctx.core.stdlibDeps, map)
 
+/** Twin → general forms, nearest first: `general({ __str_concat_raw: ['__str_concat_raw_fresh'] })`
+ *  says every `__str_concat_raw` site is also correct calling `__str_concat_raw_fresh`.
+ *  The size tier links one body for the family when the general one is reachable anyway. */
+export const general = (map) => Object.assign(ctx.core.stdlibGeneral, map)
+
 /** WAT stdlib body (+ optional deps edge for resolveIncludes). */
 export const wat = (name, body, depNames = []) => {
   registerName(ctx.core.stdlib, ctx.core.regStdlibOrder, ctx.core.regStdlibDialect, ctx.core.regStdlibModule, ctx.core.regStdlibValue, name, 'wat', body)

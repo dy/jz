@@ -617,6 +617,16 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return ['i64.extend_i32_s', a[1]]
     if (Array.isArray(a) && a[0] === 'f64.convert_i32_u' && a.length === 2) return ['i64.extend_i32_u', a[1]]
   }
+  // rounding an integer-valued f64 (a converted i32) is the identity: the loop
+  // bound hoist's `ceil` over an i32 bound, then `trunc_sat(convert(x))` → x
+  if ((op === 'f64.ceil' || op === 'f64.floor' || op === 'f64.trunc' || op === 'f64.nearest') && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && (a[0] === 'f64.convert_i32_s' || a[0] === 'f64.convert_i32_u') && a.length === 2) return a
+  }
+  if (op === 'i32.trunc_sat_f64_s' && node.length === 2) {
+    const a = node[1]
+    if (Array.isArray(a) && a[0] === 'f64.convert_i32_s' && a.length === 2) return a[1]
+  }
   // Rep-specific folds (NaN-box layout-aware reinterpret/wrap simplifications under
   // the nanbox preset). See abi/number/<rep>.js — each rep owns the rules that
   // depend on its own carrier layout. The universal `i32.wrap_i64 (i64.extend_i32_*)`
@@ -834,4 +844,20 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     }
   }
   return node
+}
+
+/** `i32.wrap_i64` keeps the low 32 bits, so a low-word mask under it is
+ *  redundant: `wrap(and(bits, 0xFFFFFFFF))` → `wrap(bits)` (the raw-offset read
+ *  of a live array binding, the hoisted global bases). A MODULE-level tail
+ *  pass, after hoistGlobalConstLoads and the global-base hoists whose
+ *  recognizers match the masked form. */
+export function foldLowWordMasks(fn) {
+  const isMask = (c) => Array.isArray(c) && c[0] === 'i64.const'
+    && (c[1] === 0xFFFFFFFF || c[1] === '0xFFFFFFFF' || c[1] === '4294967295')
+  walkAst(fn, { enter: n => {
+    if (n[0] === 'i32.wrap_i64' && n.length === 2) {
+      const a = n[1]
+      if (Array.isArray(a) && a[0] === 'i64.and' && a.length === 3 && isMask(a[2])) n[1] = a[1]
+    }
+  } })
 }

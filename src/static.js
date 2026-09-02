@@ -159,6 +159,10 @@ export function intExprRange(n) {
       if (a[1] <= 0) return [Math.max(a[0], 1 - k), 0]
       return [Math.max(a[0], 1 - k), Math.min(a[1], k - 1)]
     }
+    // a uint32 dividend (`x >>> 0`, or a name carrying that draw, beyond the
+    // i32 hull) is non-negative by construction: `rnd() % 101` is [0, 100]
+    if (k != null && k > 0 && !a && ((Array.isArray(n[1]) && n[1][0] === '>>>' && n[1].length === 3)
+        || (typeof n[1] === 'string' && repOf(n[1])?.unsigned === true))) return [0, k - 1]
   }
   // `++x`/`--x` as an expression VALUE is always the NEW (post-mutation) value at
   // this AST layer — postfix `x++`'s old-value form is `(++x) - 1` (ast.js), so a

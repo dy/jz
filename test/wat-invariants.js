@@ -84,10 +84,13 @@ test('ablation: hoistGlobalPtrOffset lifts the global NaN-box base decode out of
 // `i32.wrap_i64(i64.and(i64.reinterpret_f64(global.get $G), OFFSET_MASK))`, or
 // the equivalent `call $__ptr_offset` form (module-global STRING/TYPED/OBJECT/
 // BUFFER/CLOSURE pointees never forward, so both compute the same offset).
+// the raw base of a global: `wrap(reinterpret(global.get))`, with or without the
+// low-word mask (foldLowWordMasks strips it), or the forwarding follow
 const STRING_BASE_DECODE = (n) =>
-  (n[0] === 'i32.wrap_i64' && Array.isArray(n[1]) && n[1][0] === 'i64.and'
-    && Array.isArray(n[1][1]) && n[1][1][0] === 'i64.reinterpret_f64'
-    && Array.isArray(n[1][1][1]) && n[1][1][1][0] === 'global.get')
+  (n[0] === 'i32.wrap_i64' && Array.isArray(n[1]) && (
+    (n[1][0] === 'i64.and' && Array.isArray(n[1][1]) && n[1][1][0] === 'i64.reinterpret_f64'
+      && Array.isArray(n[1][1][1]) && n[1][1][1][0] === 'global.get')
+    || (n[1][0] === 'i64.reinterpret_f64' && Array.isArray(n[1][1]) && n[1][1][0] === 'global.get')))
   || (n[0] === 'call' && n[1] === '$__ptr_offset')
 
 test('ablation: hoistLoopGlobalPtrOffset hoists a string-global scan loop past a call to a PROVABLY-clean named function, inside a function poisoned elsewhere by an unrelated call_indirect', () => {

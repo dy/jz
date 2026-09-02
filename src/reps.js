@@ -276,7 +276,7 @@ export const VAL = {
 export const REP_FIELDS = new Set([
   'val', 'ptrKind', 'ptrAux', 'schemaId', 'intConst', 'intCertain', 'notString',
   'arrayElemSchema', 'arrayElemSchemaSet', 'schemaIdSet', 'arrayElemValType', 'arrayElemRange', 'arrayLen', 'arrayElemElemValType', 'arrayElemTypedCtor', 'carrier', 'unsigned', 'jsonShape', 'range',
-  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'recvArrTyped', 'dictValueValType',
+  'typedCtor', 'wasm', 'nullable', 'neverGrown', 'ownCurrent', 'recvArrTyped', 'dictValueValType',
   'mapValueValType', 'mayBeUndefined', 'presentVal', 'presence', 'localMapBigintUnknown',
 ])
 

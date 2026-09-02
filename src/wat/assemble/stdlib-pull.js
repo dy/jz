@@ -138,12 +138,37 @@ export function appendLateStdlib(moduleArr, pushTarget = moduleArr) {
   }
 }
 
+/** Size tier: a stdlib twin (a body specialized by a call-site fact) whose general
+ *  form the program reaches anyway is one body too many. Redirect its user-code
+ *  calls to the nearest reachable general form (bridge.js general()); the
+ *  reachability pass below then drops the twin. Template-internal references
+ *  stay as written. */
+function collapseTwins(sec) {
+  const generalOf = ctx.core.stdlibGeneral
+  const refs = new Set()
+  const scan = (n) => { if ((n[0] === 'call' || n[0] === 'return_call') && typeof n[1] === 'string' && n[1][0] === '$') refs.add(n[1].slice(1)) }
+  for (const fn of sec.funcs) walkAst(fn, { enter: scan })
+  for (const fn of sec.start) walkAst(fn, { enter: scan })
+  const to = new Map()
+  for (const twin in generalOf) {
+    if (!refs.has(twin)) continue
+    const g = generalOf[twin].find(name => refs.has(name))
+    if (g) to.set('$' + twin, '$' + g)
+  }
+  if (!to.size) return
+  const end = (name) => to.has(name) ? end(to.get(name)) : name
+  const rewrite = (n) => { if ((n[0] === 'call' || n[0] === 'return_call') && to.has(n[1])) n[1] = end(n[1]) }
+  for (const fn of sec.funcs) walkAst(fn, { enter: rewrite })
+  for (const fn of sec.start) walkAst(fn, { enter: rewrite })
+}
+
 /**
  * Phase: pull stdlib + memory.
  */
 export function pullStdlib(sec) {
   installHelperCounters()
   resolveIncludes()
+  if (ctx.transform.optimize?.leanRuntime) collapseTwins(sec)
 
   // Reachability, not inclusion, decides what the output needs. `ctx.core.includes`
   // accumulates everything a module *might* use (eager module-load `inc`s + transitive

@@ -58,6 +58,12 @@ export const asI32 = n => {
   // narrowed param read 0x7fffffff for any hi-word ≥ 2^31 (every negative
   // f64's upper half — the bug that corrupted extractF64Bits' static slots
   // for negative fields). Same lowering and |x| ≥ 2^63 boundary as toI32.
+  // An exact-int tree of {+,−,×,neg,select} over i32 leaves computes in the
+  // mod-2^32 ring (narrowI32): the same value the wrap below yields, with no
+  // conversion at all (`stream[r++]`'s index is `r − 1` over the incremented
+  // local, not `wrap(trunc(f64(r) − 1))`).
+  const nw = narrowI32(n, true)
+  if (nw) return nw.node
   const rng = f64Range(n)
   if (rng && rng.lo >= I32_MIN && rng.hi <= I32_MAX) return typed(['i32.trunc_sat_f64_s', n], 'i32')
   return typed(['i32.wrap_i64', ['i64.trunc_sat_f64_s', n]], 'i32')
@@ -182,6 +188,18 @@ const narrowI32 = (x, isRoot) => {
     if (!a) return null
     return { node: typed(['i32.sub', ['i32.const', 0], a.node], 'i32'), maxAbs: a.maxAbs, faithful: false }
   }
+  // A branchless conditional over two ring values is a ring value: ToInt32
+  // distributes over `select` (`x = c ? x + d : x - d`, the delta-decoder
+  // accumulator). The condition is i32 by validation and stays as is.
+  if (op === 'select' && x.length === 4) {
+    const a = narrowI32(x[1]), b = narrowI32(x[2])
+    if (!a || !b) return null
+    const node = typed(['select', a.node, b.node, x[3]], 'i32')
+    // two uint32 arms join to a uint32: the i32 bits keep their unsigned magnitude
+    const isU = (e) => Array.isArray(e) && (e[0] === 'f64.convert_i32_u' || e.unsigned === true)
+    if (isU(x[1]) && isU(x[2])) node.unsigned = true
+    return { node, maxAbs: Math.max(a.maxAbs, b.maxAbs), faithful: a.faithful && b.faithful }
+  }
   if (op === 'f64.div' && isRoot) {
     const a = narrowI32(x[1])
     if (!a || !a.faithful) return null
@@ -267,6 +285,7 @@ export const f64Range = (n, get) => {
       const p = [a.lo / c, a.hi / c]
       return fin(Math.min(...p), Math.max(...p))
     }
+    if (op === 'select' && n.length === 4) { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.max(a.hi, b.hi)) }
     if (op === 'f64.min') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.min(a.lo, b.lo), Math.min(a.hi, b.hi)) }
     if (op === 'f64.max') { const a = r(n[1]), b = r(n[2]); return a && b && fin(Math.max(a.lo, b.lo), Math.max(a.hi, b.hi)) }
     return null

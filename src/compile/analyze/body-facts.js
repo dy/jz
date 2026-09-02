@@ -8,7 +8,7 @@
  * @module compile/analyze/body-facts
  */
 import { ctx, getFactStore } from '../../ctx.js'
-import { commaList, isReassigned, collectParamNames } from '../../ast.js'
+import { commaList, isReassigned, collectParamNames, walkAst, some } from '../../ast.js'
 import { withFunctionField } from '../flow-state.js'
 import { VAL, updateRep } from '../../reps.js'
 import { valTypeOf } from '../../kind.js'
@@ -71,7 +71,7 @@ export function resetBodyFactsCache() { getFactStore().bodyFacts.clear() }
  */
 const EMPTY_BODY_FACT_MAP = new Map()
 const EMPTY_BODY_FACT_SET = new Set()
-const EMPTY_OBJECT_ARRAY_FACTS = [EMPTY_BODY_FACT_MAP, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET]
+const EMPTY_OBJECT_ARRAY_FACTS = [EMPTY_BODY_FACT_MAP, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET, EMPTY_BODY_FACT_SET]
 
 export function analyzeBody(body) {
   // Non-object bodies (`() => 0`, `() => x`, missing) have nothing to observe
@@ -662,6 +662,38 @@ export function analyzeBody(body) {
     // reconsidered with final types — and stays f64, since a relational compare
     // is a non-transparent read that disqualifies narrowing anyway.
     unsignedLocals = narrowUint32(body, locals)
+    // A narrowing above retypes a never-reassigned decl whose initializer
+    // reads the narrowed name (`const np = 20 + t % 101` over `const t = s
+    // >>> 0`): the first pass typed it f64 through t's provisional f64. Re-
+    // derive such decls under the final local types, to a fixpoint (a
+    // retyped decl may feed the next). Initializers processDecl types by
+    // their own shape (`>>>`, a typed read) are left as they are.
+    if (unsignedLocals.size) {
+      // the range evaluator reads the uint32 fact off the rep (`t % 101` over
+      // `const t = s >>> 0` is [0, 100]): stamp it now, ahead of analyze-for-emit's own copy
+      for (const nm of unsignedLocals) updateRep(nm, { unsigned: true })
+      let narrowed = new Set(unsignedLocals)
+      while (narrowed.size) {
+        const next = new Set()
+        walkAst(body, { enter: n => {
+          if (n[0] === '=>') return false
+          if (n[0] !== 'const' && n[0] !== 'let') return
+          for (let i = 1; i < n.length; i++) {
+            const d = n[i]
+            if (!Array.isArray(d) || d[0] !== '=' || typeof d[1] !== 'string' || !Array.isArray(d[2])) continue
+            const [name, rhs] = [d[1], d[2]]
+            if (locals.get(name) !== 'f64' || rhs[0] === '>>>' || rhs[0] === '[]' || unsignedLocals.has(name)) continue
+            if (!some(rhs, x => x.some(c => typeof c === 'string' && narrowed.has(c)))) continue
+            if (n[0] === 'let' && isReassigned(body, name)) continue
+            // a proven SIGNED hull only: a bare uint32 name flowing through (`c ? h : h2`)
+            // keeps its magnitude in f64 storage
+            const r = intExprRange(rhs)
+            if (r && r[0] >= -0x80000000 && r[1] <= 0x7fffffff && exprType(rhs, locals) === 'i32') { locals.set(name, 'i32'); next.add(name) }
+          }
+        } })
+        narrowed = next
+      }
+    }
     // Numeric-fill arrays — fresh `Array(n)`/`[]` whose every element write stores a
     // Number, so `a[i]` reads can skip __to_num (the win `[1,2,3]` already gets, for the
     // construct-then-fill kernel shape). Runs HERE, inside the val-type overlay, so a
@@ -688,7 +720,7 @@ export function analyzeBody(body) {
   // cross-dependency between the three (walk-count design A1,
   // .work/archive/walk-count-design.md §1.3/§5 item 1) — so one fused scan computes
   // all three instead of three separate full-body scans.
-  const [flatObjects, sliceViews, neverGrown] = doSchemas
+  const [flatObjects, sliceViews, neverGrown, ownCurrent] = doSchemas
     ? scanObjectArrayFacts(body)
     : EMPTY_OBJECT_ARRAY_FACTS
   for (const [name, props] of flatObjects) {
@@ -704,7 +736,7 @@ export function analyzeBody(body) {
     typedElems,
     typedLens: typedLens || EMPTY_BODY_FACT_MAP,
     escapes: escapes || EMPTY_BODY_FACT_MAP,
-    flatObjects, sliceViews, unsignedLocals, neverGrown, numericFill,
+    flatObjects, sliceViews, unsignedLocals, neverGrown, ownCurrent, numericFill,
   }
   // null (not '') when ctx.func.current is unset at capture time — some legitimate
   // callers (plan/literals.js's AST-rewrite passes, narrow.js's refreshCallerLocals)

@@ -1008,6 +1008,13 @@ untouched.
 | factory length | a typed factory whose returned local is `new T(n)` with `n` a call-site constant publishes `sig.typedLen`; the caller's `const sig = mkSignal(N)` proves its accesses like a local constructor (`re[i] = sig[i]` in fft's reset) | fft 2004 → 1964 (1758) |
 | lean grow | `__memgrow` counts pages in i32 (`next >>> 16` plus a partial page) and drops the wasm32-ceiling clamp the exact-delta retry already covers: −19 B in every allocating binary | noise 1870 → 1851 (1868), resample → 1358 (1463) |
 | print lines | console templates lower to `strcat`; the flatten matched a `.concat` chain that no longer exists, so every `console.log(\`a=${x}\`)` linked ryu and the string runtime (6,012 B for one line → 150 B); both hosts printed booleans as `0`/`1` | not a bench row (the bench offloads `printResult`) |
+| lean walks | size tier (`leanRuntime`): `__str_eq` is one prelude plus the byte walk through `__char_at`/`__str_byteLen` (448 → 96 B, no hot/cold split, no 4-byte chunking), `__str_hash` the SSO mix plus the byte FNV (346 → 171 B, no cache arms, no unroll), and the dictionary probes call the hash instead of inlining its fast arms (`keyHashIR`, one helper for the three templates) | wordcount 4791 → 4112 (3480) |
+| twin subsumption | a runtime twin declares its general forms (`general()`, bridge.js): the size tier's link redirects a twin's user calls to the nearest reachable general body and drops the twin (`collapseTwins`, stdlib-pull.js); the concat family is the first (`raw` ⊂ `raw_fresh` ⊂ `fresh`, `_long` ⊂ the full body) | wordcount → 3786 (one concat body instead of two inlined) |
+| condition chains | `&&`/`||` value diamonds in a condition position (void `if`, `br_if`, a value `if` such as heapsort's `child = (child + 1 < n && a[child] < a[child + 1]) ? child + 1 : child`; under the `!= 0` truthiness wrapper) lower to jump-if-false/true branch chains (`chainConditions`, optimize/cond-chains.js): one conditional branch per operand, no phi; the trace scan loop spent 40% of its time in the diamonds | trace 1.49x → 1.03x vs C (paired), 2329 → 2042 B at speed; every open size row −2..−50 B |
+| ring select | `narrowI32` distributes ToInt32 through `select` (`x = c ? x + d : x − d` computes in i32) and `asI32` ring-narrows before its range fallback (`stream[r++]`'s index is `r − 1`, not `wrap(trunc(f64(r) − 1))`) | glyfparse 1.25x → 1.10x vs C (paired), 2783 → 2730 |
+| own-name-current | an array grown only through its own name with every grow written back (`push`, `a[i] =`, `.length =`; `return a` admitted; any mention inside a nested function disqualifies, a closure holds its own copy of the pointer: the self-hosted compiler trapped on `out.push` inside a `forEach` callback before that rule) reads, measures and pushes off the raw offset (`ownReads`, analyze-scans.js; `ownCurrent` rep); the redundant low-word mask under `i32.wrap_i64` folds away (`foldLowWordMasks`, after the global-base hoists that match the masked form) | shapes 1986 → 1884 (1695), immutable 1512 → 1490 (1481), wordcount → 3725 |
+| i32 RMW | an i32-lean dictionary value computes in i32 end to end: the old value is the raw cell and the rhs narrows through the ring (`(v \| 0) + 1` is one `i32.add`), no f64 round trip between the load and the store | wordcount 3725 → 3701 |
+| cursor budget | one advance budget for both range channels (`maxAdvanceBudget`, canonical-bounds.js): mutually exclusive arms contribute their maximum, a nested counted loop trips × its body's budget (`for` with a literal step and a bounded limit; `while (x < B)` over a counter that starts at a literal and grows by ≥ 1 per iteration), a body decl evaluates through its initializer; the analysis-time co-induction stamp uses it where the exact-step rule fails, so `w` (glyfparse's stream cursor, 8 `w++` sites under three nested loops) has the hull [0, 432000] and i32 storage; `x % K` over a uint32 draw (`>>>`, a const bound to one) is [0, K−1] in `intExprRange` and the prover; a decl whose initializer reads a narrowed uint32 name retypes to i32 under a proven signed hull; a `%` divisor folds through module consts | glyfparse 2730 → 2348 (2408) closed |
 
 Found and fixed on the way: `out[w++] = draw()` spliced the callee's
 prefix before the index effect (wrong order at every tier; pinned in
@@ -1022,12 +1029,20 @@ Open, with the mechanism named:
   a dynamic read of a member's own field returned `undefined` at every tier
   (pinned in `test/objects.js`); an unadmitted cursor keeps its box, an
   admitted one settles to i32 storage after the registry verdict.
-- immutable (1512 vs 1481), lz (1948 vs 1910): a local array grown only
-  through its own name (`ps.push(…)`, `ps[i] = …`, never aliased, stored,
-  passed or captured before its last use) is always current, so its reads
-  need no forwarding chase (`__ptr_offset`, 72 B plus a call per site: a
-  mask would do). Needs an audit that every grow path writes the pointer
-  back before the fact is trusted; memory-safety-critical, like neverGrown.
+- (closed) immutable, lz: the own-name-current fact above; a PARAM array
+  whose element writes are struct-inline replace-stores never relocates
+  either (runKernel's `ps[i] = {…}`), but `paramNeverGrown` runs before the
+  carrier verdict and rejects the write: the summary should carry it.
+- (fixed) the in-place replace store's strongest form (`const p = arr[i];
+  arr[i] = {…}` with `p` an unboxed OBJECT pointer) stored through `p` with
+  no test: past the length `p` is `undefined`, carried as pointer 0, so the
+  size tier wrote address 0 and left the array short (`(p ? p.x : 0) + 1`
+  over 6 with 4 pushed: 1204 at size, 1206 elsewhere). An unproven read now
+  tests the pointer and a miss takes the generic extend (test/objects.js).
+  The structInline carrier's replace store still drops a write past the
+  length, by its documented contract: its admission requires a same-index
+  cursor projection that JS itself throws on past the length, so the tiers
+  differ only on a program that throws in JS.
 - watr's `chainTable` lowers a dense `if (t === K)` chain only over bare
   `local.get` compares; when the scrutinee's `local.set` is fused into a
   `local.tee` at the head (the shape an inlined `dispatch(i % 6, …)` takes

@@ -233,8 +233,9 @@ test('paramReps val: consistent ARRAY callers fold to direct header read', () =>
   `, { wat: true, optimize: { watr: false } })
   is(count(wat, /\$__length\b/g), 0)
   is(count(wat, /\$__len\b/g), 0)
-  // Body should contain a direct header load (i32.load over __ptr_offset - 8).
-  ok(/\(i32\.load[\s\S]*?\$__ptr_offset[\s\S]*?\(i32\.const 8\)/.test(wat),
+  // Body should contain a direct header load (i32.load at base - 8; a never-
+  // grown param's base is the raw offset, no forwarding follow).
+  ok(/\(i32\.load[\s\S]*?(\$__ptr_offset|i32\.wrap_i64)[\s\S]*?\(i32\.const 8\)/.test(wat),
     'expected direct header i32.load')
 })
 

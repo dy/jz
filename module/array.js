@@ -157,6 +157,11 @@ const headerPropsToGlobalIR = () => needsArrayDynMove() ? `
             (global.set $__enumc_off (i32.const 0))
             (i64.store (i32.sub (local.get $newOff) (i32.const 16)) ${DYN_PROPS_GLOBAL_SENTINEL}))))) ` : ''
 
+// An own-name-current array binding (scanObjectArrayFacts ownReads): grown only
+// through its own name with every grow written back, so the local always holds
+// the live pointer and reads through it need no forwarding follow.
+const currentBinding = (name) => ctx.func.localReps?.get(name)?.ownCurrent === true
+
 export default (ctx) => {
   // Slice 4c/4e (RepresentationPlan v2): ONE plan-driven representation
   // decision for every fresh VALUE slot an array producer stores — literals
@@ -860,8 +865,12 @@ export default (ctx) => {
       // post-header offset `wrap(reinterpret(ptr) & OFFSET_MASK)`, no __ptr_offset call.
       // Memory-safe ONLY under that proof — a relocated array read through this stale
       // base would corrupt memory (see scanNeverGrown's default-deny rationale).
+      // An own-name-current binding (scanObjectArrayFacts ownReads: every grow
+      // runs through this name and writes the pointer back) is never stale
+      // either, so its reads take the raw base too; its header may relocate
+      // between reads, which only neverGrown rules out (no base hoists here).
       const neverGrown = typeof arr === 'string' && ctx.func.localReps?.get(arr)?.neverGrown === true
-      const arrBase = () => neverGrown
+      const arrBase = () => neverGrown || (typeof arr === 'string' && currentBinding(arr))
         ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ptrExpr], ['i64.const', LAYOUT.OFFSET_MASK]]]
         : (inc('__ptr_offset'), ['call', '$__ptr_offset', ['i64.reinterpret_f64', ptrExpr]])
       // structInline Array<S>: element i is K consecutive inline f64 schema
@@ -1289,13 +1298,19 @@ export default (ctx) => {
       ['local.set', `$${t}`, va],
     ]
     const pushBase = tempI32('pb')
+    // An own-name-current receiver holds the live pointer (and a grow's result
+    // is fresh), so its base is the raw offset; anything else follows forwarding.
+    const current = typeof arr === 'string' && currentBinding(arr)
+    const baseOf = () => current
+      ? ['i32.wrap_i64', ['i64.and', ['i64.reinterpret_f64', ['local.get', `$${t}`]], ['i64.const', LAYOUT.OFFSET_MASK]]]
+      : ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]
     if (inlineLen) {
       // Hoist offset once; reuse for len load, cap-fits check, store base, and
       // post-grow rebase. On cap-fits (the common path) we skip __arr_grow's call
       // dispatch and prologue entirely; on grow we re-extract offset because the
       // alloc may have relocated the buffer.
       body.push(
-        ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]],
+        ['local.set', `$${pushBase}`, baseOf()],
         ['local.set', `$${len}`,
           ['i32.load', ['i32.sub', ['local.get', `$${pushBase}`], ['i32.const', 8]]]],
         ['if',
@@ -1305,7 +1320,7 @@ export default (ctx) => {
           ['then',
             ['local.set', `$${t}`, ['call', `$${grow}`, ['i64.reinterpret_f64', ['local.get', `$${t}`]],
               ['i32.add', ['local.get', `$${len}`], ['i32.const', pushCells]]]],
-            ['local.set', `$${pushBase}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${t}`]]]]]],
+            ['local.set', `$${pushBase}`, baseOf()]]],
       )
     } else {
       body.push(

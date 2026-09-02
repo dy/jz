@@ -19,6 +19,7 @@ import {
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
   hoistConstantPool, specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
+import { foldLowWordMasks } from '../../optimize/peephole.js'
 import { findBodyStart } from '../../ir.js'
 import { dataLen } from '../../static-data.js'
 import { assembleView } from '../../session-views.js'
@@ -208,6 +209,9 @@ export function optimizeModule(sec, profiler) {
       if (wantMasks) guardMaskedVectorSuffix(s, memoryWrites)
     }
   })
+  // Redundant low-word masks under `i32.wrap_i64` go last: the global-base
+  // hoists above recognize the masked form.
+  if (!cfg || cfg.fusedRewrite !== false) for (const fn of allFuncs) foldLowWordMasks(fn)
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.

@@ -17,7 +17,7 @@ import {
 import { ctx, getFactStore } from '../ctx.js'
 import { intLiteralValue } from '../static.js'
 import { exprType } from './expr-type.js'
-import { idxKey, redeclaresName, collectDecls, isUnitDecrement } from './canonical-bounds.js'
+import { idxKey, redeclaresName, collectDecls, isUnitDecrement, maxAdvanceBudget } from './canonical-bounds.js'
 
 // === Static interval proof (typedIdxProven class 5) ===
 // A tiny abstract interpreter over integer INTERVALS for const-bound loop nests —
@@ -90,6 +90,16 @@ function scanIntervalIdx(body, out, lens, ranges) {
   const collectNames = (n, set) => someDeep(n, x => { if (typeof x === 'string') set.add(x); return false })
   collectClosureWrites(body, false)
   const activeFacts = new Map()   // name → [lo, hi] theorem stamped by a rewrite pass (peel)
+  // consts bound to a uint32 draw (`const h = s >>> 0`): non-negative even
+  // where the interval cannot hold the value — the `%` rule's dividend
+  const nonNegConsts = new Set()
+  walkAst(body, { enter: n => {
+    if (n[0] === '=>') return false
+    if (n[0] === 'const') for (let i = 1; i < n.length; i++) {
+      const d = n[i]
+      if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && Array.isArray(d[2]) && d[2][0] === '>>>' && !closureWrites.has(d[1])) nonNegConsts.add(d[1])
+    }
+  } })
   // Preserve range facts through an immutable named guard:
   // `const inside = x >= 0 && x < W; if (inside) out[x] = 1`.
   // A definition is usable only while every referenced binding is unchanged;
@@ -182,6 +192,13 @@ function scanIntervalIdx(body, out, lens, ranges) {
         const m = intLiteralValue(x) ?? intLiteralValue(y)
         if (m != null && m >= 0 && m <= 0x7fffffff) return [0, m]
       }
+      // a positive literal modulus over a dividend that is non-negative by
+      // construction (`>>>`, a non-negative mask, a const bound to one) — the
+      // draw `rnd() % 101` over a uint32 word the interval cannot hold (beyond IP_LIM)
+      if (op === '%' && B && B[0] === B[1] && B[0] > 0
+          && ((Array.isArray(x) && (x[0] === '>>>' || (x[0] === '&' && (intLiteralValue(x[1]) ?? intLiteralValue(x[2])) >= 0)))
+            || (typeof x === 'string' && nonNegConsts.has(x))))
+        return [0, B[0] - 1]
       return null
     }
     let r = null
@@ -621,43 +638,7 @@ function scanIntervalIdx(body, out, lens, ranges) {
       // advance along any one body path; over a literal-trip loop this gives a
       // whole-body invariant `entry <= cursor <= entry + trips*maxAdvance`.
       // Unknown writes, nested control loops, abrupt edges, or closures reject.
-      const advanceBudget = (root, name) => {
-        const seq = (xs) => { let n = 0; for (const x of xs) { const d = eff(x); if (d == null) return null; n += d } return n }
-        const delta = (n) => {
-          if (!Array.isArray(n) || n[1] !== name) return null
-          if (n[0] === '++') return 1
-          if (n[0] === '+=') { const d = constInt(n[2]); return d != null && d > 0 ? d : null }
-          if (n[0] === '=' && Array.isArray(n[2]) && n[2][0] === '+') {
-            const d = n[2][1] === name ? constInt(n[2][2]) : n[2][2] === name ? constInt(n[2][1]) : null
-            return d != null && d > 0 ? d : null
-          }
-          return null
-        }
-        const eff = (n) => {
-          if (!Array.isArray(n)) return 0
-          const op2 = n[0]
-          if (op2 === '=>') return closureWrites.has(name) ? null : 0
-          if (MUTATE_OPS.has(op2) && n[1] === name) return delta(n)
-          if (op2 === 'if') {
-            const c = eff(n[1]), a = eff(n[2]), b = n.length > 3 ? eff(n[3]) : 0
-            return c == null || a == null || b == null ? null : c + Math.max(a, b)
-          }
-          if (op2 === '?:') {
-            const c = eff(n[1]), a = eff(n[2]), b = eff(n[3])
-            return c == null || a == null || b == null ? null : c + Math.max(a, b)
-          }
-          if (op2 === '&&' || op2 === '||') {
-            const a = eff(n[1]), b = eff(n[2])
-            return a == null || b == null ? null : a + Math.max(0, b)
-          }
-          if (op2 === 'while' || op2 === 'for' || op2 === 'do' || op2 === 'for-of' || op2 === 'for-in' ||
-              op2 === 'switch' || op2 === 'try' || op2 === 'catch' || op2 === 'finally' ||
-              op2 === 'break' || op2 === 'continue' || op2 === 'return' || op2 === 'throw')
-            return isReassigned(n, name) ? null : 0
-          return seq(n.slice(1))
-        }
-        return eff(root)
-      }
+      const advanceBudget = (root, name) => maxAdvanceBudget(root, name, { constInt, evRange: ev, closureWrites, MUTATE_OPS })
       // Two-counter amortized budget. Track `cursor + credit` path-sensitively
       // through one loop body. This proves buffered/RLE emitters where a rare
       // path writes K+1 bytes only after `credit > 0` and resets the credit:

@@ -28,6 +28,7 @@ import {
 import { emit, storedValue, storedValueNarrow } from '../bridge.js'
 import { REP_EDGE_BOX, representationProgramHasBigint, representationStorageWriteAction } from './representation-plan.js'
 import { plannedTypedStorageInfo } from './typed-storage-plan.js'
+import { typedIdxProven, inBoundsArrIdx } from '../type.js'
 
 // Boxed-bool-aware store value: booleans persist as their tagged atom. Now
 // THE chokepoint, promoted to bridge.js (research.md §Carrier invariant) — every
@@ -203,10 +204,13 @@ function tryHashRmwFusion(arr, idx, val) {
   const subst = (n) => !Array.isArray(n) ? n
     : (n[0] === '[]' && _rmwStructEq(n, readNode)) ? oldT
     : n.map((c, i) => i === 0 ? c : subst(c))
-  const oT = temp('rmo'), kT = temp('rmk'), oldT = temp('rmold'), resT = temp('rmres')
-  const slotT = tempI32('rms')
   const lean = ctx.func.leanHashLocals?.has(arr)
-  const i32Values = lean && ctx.func.i32HashLocals?.has(arr)
+  const i32Values = lean && at === VAL.HASH && ctx.func.i32HashLocals?.has(arr)
+  // i32-lean values compute in i32 end to end: the old value is the raw cell
+  // and the rhs narrows through the ring (`(v | 0) + 1` is one `i32.add`),
+  // no f64 round trip between the load and the store.
+  const oT = temp('rmo'), kT = temp('rmk'), oldT = i32Values ? tempI32('rmold') : temp('rmold'), resT = i32Values ? tempI32('rmres') : temp('rmres')
+  const slotT = tempI32('rms')
   const domain = lean ? ctx.func.leanHashDomains?.get(arr) : null
   const domainLen = domain ? repOf(domain)?.arrayLen : null
   // The no-growth probe is valid only when analysis proved the source domain's
@@ -238,12 +242,12 @@ function tryHashRmwFusion(arr, idx, val) {
   // functions, zero duplication cost, strictly more precise reachability — it can
   // only ever shrink a module, never grow one).
   inc(fixed ? '__hash_slot_eph_fixed' : lean ? '__hash_slot_eph' : '__hash_slot', ...(at === VAL.HASH ? [] : ['__dyn_set']))
-  const resIR = asF64(emit(subst(val)))
+  const resIR = i32Values ? asI32(emit(subst(val))) : asF64(emit(subst(val)))
   // Statically-numeric result (isNumericIR — the counting idiom's
   // `(o[k]|0)+1`): a plain number is never an ephemeral pointer, so
   // __slot_write's durable-heal barrier is provably dead — store bare and
   // skip the call + per-token __is_eph_bits test it wraps.
-  const bare = isNumericIR(resIR)
+  const bare = i32Values || isNumericIR(resIR)
   if (!bare) inc('__slot_write')
   const writeBack = bare
     ? ['i64.store', ['local.get', `$${slotT}`], ['i64.reinterpret_f64', ['local.get', `$${resT}`]]]
@@ -272,13 +276,13 @@ function tryHashRmwFusion(arr, idx, val) {
         ['i64.reinterpret_f64', ['local.get', `$${oT}`]],
         ['i64.reinterpret_f64', ['local.get', `$${kT}`]])],
       ['local.set', `$${oldT}`, i32Values
-        ? ['f64.convert_i32_s', ['i32.load', ['local.get', `$${slotT}`]]]
+        ? ['i32.load', ['local.get', `$${slotT}`]]
         : ['f64.load', ['local.get', `$${slotT}`]]],
       ['local.set', `$${resT}`, resIR],
       i32Values
-        ? ['i32.store', ['local.get', `$${slotT}`], asI32(typed(['local.get', `$${resT}`], 'f64'))]
+        ? ['i32.store', ['local.get', `$${slotT}`], ['local.get', `$${resT}`]]
         : writeBack,
-      ['local.get', `$${resT}`]], 'f64')
+      i32Values ? ['f64.convert_i32_s', ['local.get', `$${resT}`]] : ['local.get', `$${resT}`]], 'f64')
   }
   return typed(['block', ['result', 'f64'],
     ['local.set', `$${oT}`, asF64(emit(arr))],
@@ -357,10 +361,31 @@ function tryInplaceReplaceStore(arr, idx, val) {
   // spill values, N stores, done).
   if (aliasType === 'i32' && repOf(entry.alias)?.ptrKind === VAL.OBJECT
       && (ctx.schema.vars.get(entry.alias) ?? repOf(entry.alias)?.schemaId) === sid) {
-    return typed(['block', ['result', 'f64'],
-      ...parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)]),
-      ...slots.map((slot, i) => ops.store(['local.get', `$${entry.alias}`], slot, ['local.get', `$${vTs[i]}`])),
-      mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${entry.alias}`])], 'f64')
+    // The alias came from `arr[idx]`; an index nobody proved in-bounds reads
+    // `undefined` past the length, which the raw pointer carries as 0. A
+    // store through it would write address 0 and never extend the array: the
+    // in-place stores run only behind a non-null test, and a miss takes the
+    // generic store (fresh object, array-extend) — the same JS result at every
+    // tier. A proven read needs no test.
+    const provenRead = (typeof idx === 'string' && inBoundsArrIdx(ctx).has(arr + '\x00' + idx))
+      || (repOf(arr)?.arrayLen != null && typedIdxProven(arr, idx))
+    const spill = parsed.values.map((v, i) => ['local.set', `$${vTs[i]}`, storedValue(v)])
+    const stores = slots.map((slot, i) => ops.store(['local.get', `$${entry.alias}`], slot, ['local.get', `$${vTs[i]}`]))
+    const ptr = mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${entry.alias}`])
+    if (provenRead) return typed(['block', ['result', 'f64'], ...spill, ...stores, ptr], 'f64')
+    inc('__alloc_hdr')
+    const hT = tempI32('iph'), kT = tempI32('ipk'), aTb = temp('ipa')
+    const miss = ['block', ['result', 'f64'],
+      ['local.set', `$${aTb}`, asF64(emit(arr))],
+      ['local.set', `$${kT}`, asI32(emit(idx))],
+      ['local.set', `$${hT}`, ['call', '$__alloc_hdr', ['i32.const', 0], ['i32.const', ops.allocSlots(schema.length)]]],
+      ...slots.map((slot, i) => ops.store(['local.get', `$${hT}`], slot, ['local.get', `$${vTs[i]}`])),
+      storeArrayPayload(typed(['local.get', `$${aTb}`], 'f64'), ['f64.convert_i32_s', ['local.get', `$${kT}`]],
+        mkPtrIR(PTR.OBJECT, sid, ['local.get', `$${hT}`]), persistBinding(arr))]
+    return typed(['block', ['result', 'f64'], ...spill,
+      ['if', ['result', 'f64'], ['local.get', `$${entry.alias}`],
+        ['then', ...stores, ptr],
+        ['else', miss]]], 'f64')
   }
   const reuse = aliasOk && aliasType === 'f64' ? ['local.get', `$${entry.alias}`] : null
   inc('__alloc_hdr')
