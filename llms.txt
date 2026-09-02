@@ -1,0 +1,22 @@
+# jz
+
+> Compile the numeric JavaScript you already test to lean GC-free WASM — same source, no rewrite, type annotations, or runtime.
+
+JZ compiles a distilled JavaScript subset, Crockford's "good parts", into native-grade WASM. Valid JZ is valid JS: the same source runs as plain JS or compiles without rewrite to .wasm – sandboxed, portable, memory-safe.
+
+## Docs
+
+- [README](https://jz.js.org/README.md): install, usage, the supported subset, FAQ
+- [Stability contract](https://jz.js.org/STABILITY.md): what stays fixed across versions
+- [Contributing](https://jz.js.org/CONTRIBUTING.md): architecture, tests, performance invariants
+
+## Try
+
+- [REPL](https://jz.js.org/repl/): compile and run in the browser
+- [Examples](https://jz.js.org/examples/): live demos compiled from plain JS
+- [Benchmarks](https://jz.js.org/bench/): jz against V8, Porffor, AssemblyScript and native
+
+## Source
+
+- [GitHub](https://github.com/dy/jz)
+- [npm](https://www.npmjs.com/package/jz)

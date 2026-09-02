@@ -1,4 +1,4 @@
-<a href="https://dy.github.io/jz/"><img src="jz.svg" alt="JZ logo" width="120"/></a>
+<a href="https://jz.js.org/"><img src="jz.svg" alt="JZ logo" width="120"/></a>
 
 ![stability](https://img.shields.io/badge/stability-experimental-black) [![npm](https://img.shields.io/npm/v/jz?color=black)](https://www.npmjs.com/package/jz) [![test](https://github.com/dy/jz/actions/workflows/test.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/test.yml) [![bench](https://github.com/dy/jz/actions/workflows/bench.yml/badge.svg)](https://github.com/dy/jz/actions/workflows/bench.yml)
 
@@ -14,7 +14,7 @@
 | Hashing, checksums, RNG | Tiny calls where the JS/WASM boundary dominates |
 
 
-**[site](https://dy.github.io/jz/)**  /  **[try it](https://dy.github.io/jz/repl/)**  /  **[examples](https://dy.github.io/jz/examples/)**  /  **[benchmarks](https://dy.github.io/jz/bench/)**  /  **[stability contract](STABILITY.md)**
+**[site](https://jz.js.org/)**  /  **[try it](https://jz.js.org/repl/)**  /  **[examples](https://jz.js.org/examples/)**  /  **[benchmarks](https://jz.js.org/bench/)**  /  **[stability contract](STABILITY.md)**
 
 <sup>Used by: [color-space](https://github.com/colorjs/color-space), [audiojs](https://github.com/audiojs/)</sup>
 
@@ -145,13 +145,13 @@ Options:
 
 <table>
 <tr>
-<td width="33%"><a href="https://dy.github.io/jz/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b></td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/dwa/"><img src="examples/thumbs/dwa.webp" width="100%" alt="Dynamic Window Approach"></a><br><b>robot motion</b></td>
-<td width="33%"><a href="https://dy.github.io/jz/examples/hydrogen/"><img src="examples/thumbs/hydrogen.webp" width="100%" alt="Hydrogen orbital"></a><br><b>hydrogen</b></td>
+<td width="33%"><a href="https://jz.js.org/examples/chladni/"><img src="examples/thumbs/chladni.webp" width="100%" alt="Chladni plate"></a><br><b>chladni</b></td>
+<td width="33%"><a href="https://jz.js.org/examples/dwa/"><img src="examples/thumbs/dwa.webp" width="100%" alt="Dynamic Window Approach"></a><br><b>robot motion</b></td>
+<td width="33%"><a href="https://jz.js.org/examples/hydrogen/"><img src="examples/thumbs/hydrogen.webp" width="100%" alt="Hydrogen orbital"></a><br><b>hydrogen</b></td>
 </tr>
 </table>
 
-See [all examples](https://dy.github.io/jz/examples/).
+See [all examples](https://jz.js.org/examples/).
 
 ## FAQ
 
@@ -423,7 +423,7 @@ JZ leads V8 and AssemblyScript by geometric mean on the covered corpus and
 targets near-native speed. The release gate is stricter than an average: JZ
 must be the fastest WASM on every case. Per-case numbers, missing target
 coverage, and every measured loss stay visible on the
-[bench page](https://dy.github.io/jz/bench/); a rival win is a bug to close,
+[bench page](https://jz.js.org/bench/); a rival win is a bug to close,
 not an exception to hide.
 
 </details>
@@ -436,7 +436,7 @@ empty program emits an empty module. Runtime helpers and standard-library kernel
 are included only when reachable.
 
 In the published benchmark corpus, size-optimized JZ stays within the 1.05×
-AssemblyScript geomean band. The [bench page](https://dy.github.io/jz/bench/)
+AssemblyScript geomean band. The [bench page](https://jz.js.org/bench/)
 carries the current ratio.
 AssemblyScript's ports use unchecked array access while JZ retains JavaScript
 out-of-bounds guards. Most JZ modules in the corpus are single-digit kilobytes.

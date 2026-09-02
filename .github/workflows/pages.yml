@@ -4,7 +4,7 @@ name: pages
 # This replaces the old "deploy from branch" model. dist/jz.js, dist/interop.js and
 # the example *.wasm are no longer committed — they're built here and uploaded as the
 # Pages artifact, so `main` stays source-only. The deployed URL is unchanged
-# (https://dy.github.io/jz/); only the source of the bytes moves from the raw repo to
+# (https://jz.js.org/); only the source of the bytes moves from the raw repo to
 # this build artifact.
 #
 # One-time setup: Settings → Pages → Source = GitHub Actions.
@@ -66,6 +66,8 @@ jobs:
           done
           # bench/web/*.wasm — built above (gitignored), feeds bench/index.html's live runner.
           mkdir -p _site/bench/web && cp bench/web/*.wasm _site/bench/web/
+          # sitemap.xml — the site pages + every example page, listed from what _site actually holds.
+          node scripts/sitemap.mjs _site > _site/sitemap.xml
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

@@ -77,7 +77,7 @@ smoke test and `test:self` for the bundle. Edit source, not output.
   is served "from master."
 - **Deploy** — `pages.yml` builds `dist/` + example wasm and uploads them alongside
   the tracked files as the Pages artifact. Pages Source = **GitHub Actions** (not a
-  branch); URL unchanged (https://dy.github.io/jz/).
+  branch); URL https://jz.js.org/ (dy.github.io/jz redirects there).
 - **npm** — `prepare` builds `dist/` before pack, so the published tarball ships
   `dist/jz.js` + `dist/interop.js` (in `package.json` "files"). `dist/jz.wasm` is the
   self-compile artifact — never served, never published.

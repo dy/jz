@@ -41,7 +41,6 @@
     "dist/interop.js",
     "README.md",
     "jz.svg",
-    "alternatives.svg",
     "bench/bench.svg"
   ],
   "bin": {
@@ -88,7 +87,7 @@
   "bugs": {
     "url": "https://github.com/dy/jz/issues"
   },
-  "homepage": "https://github.com/dy/jz#readme",
+  "homepage": "https://jz.js.org",
   "author": "Dmitry Iv",
   "license": "MIT",
   "dependencies": {

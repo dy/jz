@@ -7,18 +7,18 @@
     <script>(() => { try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'dark' } catch (e) { document.documentElement.dataset.theme = 'dark' } })()</script>
     <title>JZ – JS→WASM compiler for numeric code (DSP, audio, math)</title>
     <meta name="description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
-    <link rel="canonical" href="https://dy.github.io/jz/">
+    <link rel="canonical" href="https://jz.js.org/">
     <meta name="theme-color" content="#000000">
     <!-- social card — 1200×630 og:image (assets/og.png) for a rich preview -->
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://dy.github.io/jz/">
+    <meta property="og:url" content="https://jz.js.org/">
     <meta property="og:title" content="JZ – JS→WASM compiler for numeric code (DSP, audio, math)">
     <meta property="og:description" content="Compile numeric JavaScript to fast, minimal WebAssembly – no rewrite, no annotations, no runtime, no GC.">
-    <meta property="og:image" content="https://dy.github.io/jz/assets/og.png">
+    <meta property="og:image" content="https://jz.js.org/assets/og.png">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:image" content="https://dy.github.io/jz/assets/og.png">
+    <meta name="twitter:image" content="https://jz.js.org/assets/og.png">
     <link rel="icon" href="jz.svg" type="image/svg+xml">
     <link rel="stylesheet" href="assets/site.css">
     <style>
@@ -1031,12 +1031,10 @@
       }
 
       /* rows + dividers span the full container; only the text is capped to a readable width */
-      .faq h2 {
-        font-size: clamp(22px, 3vw, 32px);
-        font-weight: 700;
-        letter-spacing: -.015em;
-        line-height: 1.06;
-        margin: 0 0 clamp(20px, 2.6vw, 32px);
+      /* each question is an h2 for the page outline; it renders as the summary's own text */
+      .faq summary .fq {
+        font: inherit;
+        margin: 0;
       }
 
       .faq details {
@@ -1380,7 +1378,7 @@
       <div class="faq-wrap">
 
         <details name="faq" open>
-          <summary><span class="fq">What is JZ?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">What is JZ?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1424,7 +1422,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">What is supported?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">What is supported?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1447,7 +1445,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">Why no types?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Why no types?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">Ordinary code already carries useful type evidence: <code>let x = 0.5</code>, <code>Float32Array</code>, an array index, a loop counter. JZ infers it instead of turning the file into another language. Ambiguous values take a slower, always-correct dynamic path.</div>
@@ -1455,7 +1453,7 @@
 
 
         <details name="faq">
-          <summary><span class="fq">Why not Porffor, scriptc, or AssemblyScript?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Why not Porffor, scriptc, or AssemblyScript?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1465,7 +1463,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">Why not Rust, Go, or C?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Why not Rust, Go, or C?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1475,7 +1473,7 @@
 
 
         <details name="faq">
-          <summary><span class="fq">Is it fast?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Is it fast?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1486,7 +1484,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">How can it beat V8?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">How can it beat V8?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1495,7 +1493,7 @@
         </details>
 
         <details name="faq" id="native">
-          <summary><span class="fq">Can it go native?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Can it go native?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1504,7 +1502,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">Can it compile itself?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Can it compile itself?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">JZ compiles itself to <a href="https://github.com/dy/jz/releases/latest/" target="_blank" rel="noopener"><code>jz.wasm</code></a>, and the self-compiled build passes the full test suite in CI. <a href="https://github.com/dy/jz/actions/workflows/selfhost.yml" target="_blank"
@@ -1512,7 +1510,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">Is it production ready?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">Is it production ready?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">
@@ -1524,7 +1522,7 @@
         </details>
 
         <details name="faq">
-          <summary><span class="fq">How do I use it?</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <summary><h2 class="fq">How do I use it?</h2><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M6 9l6 6 6-6" />
             </svg></summary>
           <div class="ans">The CLI (<code>jz kernel.js</code>) or the API (<code>compile()</code>) produces a plain <code>.wasm</code> you load like any other module. <a href="https://github.com/dy/jz" target="_blank"
