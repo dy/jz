@@ -623,9 +623,11 @@ test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', as
     })
     const facts = {
       nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(), callSites: [],
+      memberCallSites: [],
     }
     const index = buildProgramIndex(ctx, facts, null)
     is('addressTakenNames' in facts, false, 'the source-name census is consumed and deleted')
+    is('memberCallSites' in facts, false, 'the member call-site census is consumed and deleted')
     is('valueUsed' in facts, false, 'the compatibility key does not survive ProgramIndex build')
     ctx.plans.programIndex = index
     const guarded = materializeVariant({
@@ -778,6 +780,32 @@ test('invariant: re-exported entry points are ProgramIndex roots', () => {
   const helper = ctx.funcs.list.find(fn => !fn.raw && /helper$/.test(fn.name))
   ok(helper && index.isGraphReachable(index.graphFunctionIdOfName(helper.name)),
     'a callee reached only through the re-exported entry is reachable')
+})
+
+test('invariant: member-property calls are ProgramIndex edges and roots', () => {
+  if (onKernel()) return
+  compile([
+    'let helper = (s) => s > 0 ? helper(s - 1) + 2 : 0',
+    'let ns = (x) => x',
+    'ns.parse = (s) => helper(s) + 1',
+    'export let use = (s) => ns.parse(s)',
+  ].join('\n'))
+  const index = ctx.plans.programIndex
+  const reach = name => index.isGraphReachable(index.graphFunctionIdOfName(name))
+  ok(index.graphFunctionIdOfName('ns$parse') >= 0, 'the function property lifts to a graph node')
+  ok(reach('ns$parse'), 'a `.`-member call resolved through member targets is an edge')
+  ok(reach('helper'), 'a callee reached only inside the member-property body is reachable')
+
+  compile([
+    'let helper = (s) => s > 0 ? helper(s - 1) + 2 : 0',
+    'let ns = (x) => x',
+    'ns.parse = (s) => helper(s) + 1',
+    'let seed = ns.parse(3)',
+    'export let read = () => seed',
+  ].join('\n'))
+  const index2 = ctx.plans.programIndex
+  ok(index2.isGraphReachable(index2.graphFunctionIdOfName('ns$parse')), 'a module-scope member call roots its target')
+  ok(index2.isGraphReachable(index2.graphFunctionIdOfName('helper')), 'and its callees follow')
 })
 
 test('architecture: emission order is the frozen concrete function order', () => {

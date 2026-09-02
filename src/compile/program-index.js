@@ -897,6 +897,24 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
 
   const count = graphFunctions.length
   const callSites = programFacts.callSites || []
+  // `.`-member calls resolve through the member tables above into ordinary
+  // graph edges (Shape 8, `i32.parse(n)` to `i32$parse`); a module-scope
+  // member call roots its target. The census is consumed here once and its
+  // key retired, so no later stage sees a second call-site table.
+  const memberEdgeCallers = [], memberEdgeTargets = [], memberRootIds = []
+  for (const site of programFacts.memberCallSites || []) {
+    const sourceId = resolveMemberSourceId(site.objName, site.prop)
+    if (sourceId < 0) continue
+    const targetId = graphObjectIds.get(sourceFunctionById(sourceId)) ?? -1
+    if (targetId < 0) continue
+    if (site.callerFunc == null) { memberRootIds.push(targetId); continue }
+    const callerId = graphObjectIds.get(site.callerFunc) ?? graphNameIds.get(site.callerFunc.name) ?? -1
+    if (callerId < 0) throw new Error(`ProgramIndex has no function ID for member caller '${site.callerFunc.name}'`)
+    memberEdgeCallers.push(callerId)
+    memberEdgeTargets.push(targetId)
+  }
+  const retiredMemberSitesKey = 'memberCallSites'
+  delete programFacts[retiredMemberSitesKey]
   // Count and fill flat CSR in two passes. Do not stage per-caller nested arrays:
   // that shape produced correct first-round bytes but trapped after a self-hosted
   // `_clear()`, while this flat ownership survives repeated arena rewinds.
@@ -909,6 +927,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     if (callerId < 0) throw new Error(`ProgramIndex has no function ID for direct caller '${site.callerFunc.name}'`)
     edgeCount[callerId]++
   }
+  for (let i = 0; i < memberEdgeCallers.length; i++) edgeCount[memberEdgeCallers[i]]++
   const edgeStart = new Array(count)
   let totalEdges = 0
   for (let funcId = 0; funcId < count; funcId++) {
@@ -922,6 +941,8 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     const callerId = graphObjectIds.get(site.callerFunc) ?? graphNameIds.get(site.callerFunc.name)
     edgeTarget[edgeCursor[callerId]++] = graphNameIds.get(site.callee)
   }
+  for (let i = 0; i < memberEdgeCallers.length; i++)
+    edgeTarget[edgeCursor[memberEdgeCallers[i]]++] = memberEdgeTargets[i]
   const rootIds = [], dynamicRootIds = []
   const rootSeen = new Array(count).fill(false)
   const addressTakenBits = new Array(count).fill(0)
@@ -952,6 +973,10 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   for (const site of callSites) if (site.callerFunc == null) {
     const id = graphNameIds.get(site.callee) ?? -1
     if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
+  for (let i = 0; i < memberRootIds.length; i++) {
+    const id = memberRootIds[i]
+    if (!rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
   const scc = buildSccSummary(count, edgeStart, edgeCount, edgeTarget, rootIds)
   const reachable = scc.reachable

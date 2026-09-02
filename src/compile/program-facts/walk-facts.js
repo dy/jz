@@ -227,7 +227,7 @@ function emptyWalkFacts() {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
     hasMapSet: false, hasBigint: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
-    propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [],
+    propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -261,6 +261,7 @@ function mergeWalkFacts(into, from) {
   for (const v of from.addressTakenNames) into.addressTakenNames.add(v)
   into.callSites.push(...from.callSites)
   into.computedCallSites.push(...from.computedCallSites)
+  into.memberCallSites.push(...from.memberCallSites)
 }
 
 /** Walk one AST root and accumulate program facts. Function bodies are WeakMap-cached
@@ -341,6 +342,16 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
         const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
         acc.computedCallSites.push({ objName: node[1][1], argList, callerFunc: caller, node })
       }
+      // `.`-member call `ns.prop(args)` on a bare-name receiver: a direct-call
+      // graph edge once ProgramIndex resolves the member target (the ledger's
+      // Shape 8, `i32.parse(n)` to `i32$parse`). Nested receivers are left
+      // out: a named function stored in a nested literal is address-taken and
+      // therefore already a root. Recorded only; the index resolves it at
+      // build and retires the census. Additive like the computed-member
+      // branch above: no other observation changes.
+      if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+          typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
+        acc.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: caller })
       if ((op === '.' || op === '?.') && isFuncRef(node[1], ctx.funcs.names)) return
       if (op === 'let' || op === 'const') {
         for (let i = 1; i < node.length; i++) {
@@ -434,6 +445,9 @@ export function collectProgramFacts(ast) {
       const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
+    if (node[0] === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+        typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
+      f.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: null })
   } })
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
@@ -503,6 +517,7 @@ export function collectProgramFacts(ast) {
   return {
     dynVars: f.dynVars, dynWriteVars: f.dynWriteVars, anyDyn: f.anyDyn, propMap, addressTakenNames, callSites,
     computedCallSites: f.computedCallSites,
+    memberCallSites: f.memberCallSites,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
     hasBigint: f.hasBigint, writtenProps: f.writtenProps,
