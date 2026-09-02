@@ -110,8 +110,14 @@ export function analyzeClosureBodyForEmit(cb) {
     const parentBoxedCaptures = seedClosureFrame(cb, prevSchemaVars, prevTypedElems)
     const block = isBlockBody(cb.body)
     if (block) {
-      for (const [k, v] of reanalyzeBody(cb.body).locals)
+      // The body facts mint SRoA slot locals (`o#i`) and record which bindings
+      // they dissolve; the frame needs both, or a read of the dissolved binding
+      // resolves nothing (`let out = [0, 0, 0]; out[0]` in a property arrow).
+      const facts = reanalyzeBody(cb.body)
+      for (const [k, v] of facts.locals)
         if (!ctx.func.locals.has(k)) ctx.func.locals.set(k, v)
+      ctx.func.flatObjects = facts.flatObjects ?? new Map()
+      ctx.func.sliceViews = facts.sliceViews ?? new Set()
       inferLocals(cb.body, cb.params.filter(p => !ctx.func.localReps?.get(p)?.val))
       boxedCaptures(cb.body)
       for (const name of ctx.func.boxed.keys())

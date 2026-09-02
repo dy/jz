@@ -228,7 +228,9 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
   if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) {
     ctx.func.repsFrozen = true
     assertCtxInvariants('pre-emit')
-    moduleInits.push(...normalizeEmittedIR(emit(mi)))
+    // Statement context, like the entry program below: a module init whose
+    // last statement is an assignment must not leave its value on the stack.
+    moduleInits.push(...normalizeEmittedIR(emitVoid(mi)))
   }
   // __start has no result: emit the top-level program in void context so a
   // single bare expression cannot leave a value on the start stack.

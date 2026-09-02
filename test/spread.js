@@ -2,7 +2,7 @@
 import test from 'tst'
 import { is, ok } from 'tst/assert.js'
 import { run } from './util.js'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import { belowOpt } from './_matrix.js'
 
 // ============================================
@@ -494,4 +494,25 @@ test('unshift: spread args land in argument order', () => {
     }
   `)
   is(r.go(), '[1,2,3,9]|[2,3,9]|[1,2,3,4,5,9]')
+})
+
+test('spread into a fixed-arity function fills its parameters from the array', () => {
+  const { exports } = jz(`const mat3 = (m, x, y, z) => [x * m[0] + y * m[1] + z * m[2], x * m[3] + y * m[4] + z * m[5], x * m[6] + y * m[7] + z * m[8]]
+    const M = [1, 0, 0, 0, 2, 0, 0, 0, 3]
+    let add3 = (a, b, c) => a + b * 10 + c * 100
+    let pair = (a, b) => [a + 1, b + 1]
+    export let a = (v) => mat3(M, ...v)[2]
+    export let b = (v) => add3(...v)
+    export let c = (v) => add3(1, ...v)
+    export let d = (v) => add3(...v, 5)
+    export let e = (v) => pair(...v)[1]
+    export let f = () => add3(...[7])
+    export let g = (lms) => { const [X, Y, Z] = mat3(M, ...lms); return X + Y * 10 + Z * 100 }`)
+  is(exports.a([1, 2, 3]), 9)
+  is(exports.b([1, 2, 3]), 321)
+  is(exports.c([2, 3]), 321)
+  is(exports.d([1, 2]), 521)
+  is(exports.e([1, 2]), 3)
+  ok(Number.isNaN(exports.f()), 'missing parameters are undefined')
+  is(exports.g([1, 2, 3]), 941)
 })

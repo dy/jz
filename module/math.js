@@ -233,6 +233,21 @@ export default (ctx) => {
     if (a === undefined) return typed(['f64.const', ident], 'f64')
     // Spread: Math.min(...arr) — array contents unknown, keep canon
     if (!b && Array.isArray(a) && a[0] === '...') return canon(emitArrayReduce(op, a[1], ident))
+    // Mixed: Math.max(1e-12, ...scores) folds scalars and spread elements in
+    // order into one accumulator (a scalar operand still ToNumbers).
+    const all = b === undefined ? [a] : [a, b, ...rest]
+    if (all.some(x => Array.isArray(x) && x[0] === '...')) {
+      const acc = temp('mr')
+      const steps = []
+      for (const x of all) {
+        if (Array.isArray(x) && x[0] === '...')
+          steps.push(...arrayLoop(emit(x[1]), (_ptr, _len, _i, item) => [
+            ['local.set', `$${acc}`, [op, ['local.get', `$${acc}`], asF64(item)]]]))
+        else steps.push(['local.set', `$${acc}`, [op, ['local.get', `$${acc}`], toNumF64(x, emit(x))]])
+      }
+      return canon(typed(['block', ['result', 'f64'],
+        ['local.set', `$${acc}`, ['f64.const', ident]], ...steps, ['local.get', `$${acc}`]], 'f64'))
+    }
     const src = b === undefined ? [a] : [a, b, ...rest]
     const ev = src.map(x => emit(x))
     let r = typed([op, toNumF64(src[0], ev[0]),
@@ -459,6 +474,18 @@ export default (ctx) => {
   reg('math.cbrt', ['math.cbrt'], a => fn('math.cbrt', a))
   reg('math.hypot', ['math.hypot'], (a, b, ...rest) => {
     if (a === undefined) return typed(['f64.const', 0], 'f64')
+    // Spread: Math.hypot(...arr) folds the kernel pairwise over the elements
+    // (hypot(hypot(a, b), c) is the same overflow-safe magnitude).
+    if (!b && Array.isArray(a) && a[0] === '...') {
+      const acc = temp('hy')
+      const loop = arrayLoop(emit(a[1]), (_ptr, _len, _i, item) => [
+        ['local.set', `$${acc}`, ['call', '$math.hypot', ['local.get', `$${acc}`], asF64(item)]]
+      ])
+      return typed(['block', ['result', 'f64'],
+        ['local.set', `$${acc}`, ['f64.const', 0]],
+        ...loop,
+        ['local.get', `$${acc}`]], 'f64')
+    }
     if (b === undefined) return f('f64.abs', a)
     let r = fn('math.hypot', a, b)
     // ToNumber every rest arg too (matches min/max) — an object arg's valueOf

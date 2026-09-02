@@ -1897,3 +1897,16 @@ test('Array.of', () => {
   is(runHost(`export let f = () => Array.of().length`).f(), 0)
   is(runHost(`export let f = () => { let xs=[1,2]; return Array.of(...xs,3).join(",") }`).f(), '1,2,3')  // spread
 })
+
+test('Ctor.prototype.method.call(receiver, …) is the method on the receiver', () => {
+  const { exports } = jz(`
+    export let a = (src) => { let r = Array.prototype.slice.call(src, 1, 3); return r.length * 100 + r[0] }
+    export let b = (data) => { let s = Float32Array.prototype.slice.call(data, 1, 3); return s.length * 100 + s[1] }
+    export let c = (arr) => Array.prototype.indexOf.call(arr, 7)
+    export let d = () => Array.prototype.join.call([1, 2, 3], '-')`)
+  is(exports.a([5, 6, 7, 8]), 206)
+  is(exports.a(new Float32Array([5, 6, 7, 8])), 206)
+  is(exports.b(new Float32Array([1, 2, 3, 4])), 203)
+  is(exports.c([3, 7]), 1)
+  is(exports.d(), '1-2-3')
+})

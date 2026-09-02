@@ -635,8 +635,8 @@ export function emitDecl(...inits) {
           if (ctx.func.boxed.has(next[1]) || isGlobal(next[1])) { match = false; break }
           targets.push(next[1])
         }
-        if (match && targets.length === n) {
-          const argList = commaList(init[2])
+        const argList = commaList(init[2])
+        if (match && targets.length === n && !argList.some(a => Array.isArray(a) && a[0] === '...')) {
           const emittedArgs = emitCallArgs(argList, func.sig.params, func)
           result.push(['call', `$${init[1]}`, ...emittedArgs])
           for (let k = n - 1; k >= 0; k--)

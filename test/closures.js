@@ -1772,3 +1772,24 @@ test('closure-plan: dedupClosureBodies SENTINEL/isSentinel shape (a6220d95 self-
   is(classify([undefined, null, NaN]), -6)
   is(classify([[1, [2, 3]], 4]), 24)
 })
+
+test('a builtin used as a value is a lifted arrow of its arity', () => {
+  const { exports } = jz(`
+    export let a = (xs) => xs.every(Number.isFinite)
+    export let b = (xs) => xs.map(Math.round)
+    export let c = (xs) => xs.filter(Number.isInteger).length`)
+  is(exports.a([1, 2]), true)
+  is(exports.a([1, Infinity]), false)
+  is(exports.b([1.4, 2.6]).join(), '1,3')
+  is(exports.c([1, 1.5, 2]), 2)
+})
+
+test('a property arrow dissolves its literal array local like a lifted function', () => {
+  // SRoA minted `out#0..2` slot locals for the closure but never installed the
+  // flat-object facts on its frame, so `out[0]` resolved nothing.
+  const { exports } = jz(`const hcl = { name: 'hcl' }
+    hcl.rgb = (h) => { let out = [0, 0, 0]; out[0] = h; return out[0] + out[1] }
+    const lit = { rgb: (h) => { const out = [0, 0, 0]; return out[0] + h } }
+    export let f = (h) => hcl.rgb(h) * 10 + lit.rgb(h)`)
+  is(exports.f(2), 22)
+})

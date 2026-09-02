@@ -922,3 +922,18 @@ test('Math.hypot/asinh/acosh: no spurious overflow/underflow at range extremes',
   almost(r.ac(1e300), 691.4686750787736, 1e-10)
   ok(Number.isNaN(r.ac(0.5)))
 })
+
+test('Math.hypot/min/max: spread and mixed scalar-spread arguments', () => {
+  const { exports } = jz(`export let h = (v) => Math.hypot(...v)
+    export let h0 = () => Math.hypot(...[])
+    export let mx = (v) => Math.max(1e-12, ...v)
+    export let mn = (v) => Math.min(...v, 2, ...v)
+    export let mx0 = () => Math.max(...[], 7)`)
+  is(exports.h([3, 4]), 5)
+  is(exports.h([3, 4, 12]), 13)
+  is(exports.h0(), 0)
+  is(exports.mx([0.5, 3, -1]), 3)
+  is(exports.mx([]), 1e-12)
+  is(exports.mn([5, 9]), 2)
+  is(exports.mx0(), 7)
+})

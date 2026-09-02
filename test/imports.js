@@ -1043,3 +1043,13 @@ test('a local export shadows the same name from export *', () => {
   const first = jz(`export * from './wf.js'\nexport function cola (win, hop) { return 1 }`, { modules }).exports
   is(first.cola(2, 3), 1)
 })
+
+test('a function local may shadow an import; the module init is a statement', () => {
+  // The imported module's `export default 7` init was emitted in value context,
+  // leaving the assignment's value on the start function's stack.
+  const mods = { './rgb.js': 'const rgb = { name: "rgb" }\nexport default rgb', './n.js': 'export default 7' }
+  const a = jz(`import rgb from './rgb.js'\nexport let f = (h) => { let rgb = [0, 0, 0]; if (h > 0) { rgb[0] = 1; rgb[1] = h } else { rgb[2] = 2 } return rgb[0] + rgb[1] * 10 }`, { modules: mods }).exports
+  is(a.f(3), 31)
+  const b = jz(`import n from './n.js'\nexport let f = (h) => { let n = 5; return n + h }`, { modules: mods }).exports
+  is(b.f(3), 8)
+})

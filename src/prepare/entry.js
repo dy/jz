@@ -31,10 +31,10 @@
  * @module prepare
  */
 
-import { ctx } from '../ctx.js'
+import { ctx, emitArity } from '../ctx.js'
 import { TIMER_NAMES, includeForCallableValue, includeForTimerRuntime, includeModule } from '../autoload.js'
 import { FIRST_CLASS_BUILTIN_NAMES } from '../compile/emit.js'
-import { walkAst } from '../ast.js'
+import { T, walkAst } from '../ast.js'
 import { MUTATING_ARRAY_METHODS } from './const-fold.js'
 import { prep } from './handlers.js'
 import { normalizeIdents, scanReassignedTopLevel } from './ident-purity.js'
@@ -44,6 +44,48 @@ import { fuseSparseMapReads } from './sparse-map.js'
 import { prepState, resetPrepState } from './state.js'
 
 
+
+// A builtin function referenced as a value (`xs.every(Number.isFinite)`,
+// `arr.map(Math.round)`) that has no hand-written closure form becomes a
+// top-level arrow of the builtin's arity, lifted like any user function, so
+// the closure machinery carries it. Callee positions and property keys are
+// not values. The wrapper is minted once per builtin.
+const wrapBuiltinValues = (ast) => {
+  const wrappers = new Map()
+  const inits = []
+  const isBuiltinValue = (s) => typeof s === 'string' && s.includes('.') && !FIRST_CLASS_BUILTIN_NAMES.has(s)
+    && ctx.core.emit[s] != null && emitArity(ctx.core.emit[s]) > 0 && !ctx.funcs.names.has(s)
+  const wrapperFor = (name) => {
+    let w = wrappers.get(name)
+    if (w) return w
+    w = `${T}bw${wrappers.size}_${name.replace(/\W/g, '_')}`
+    const n = emitArity(ctx.core.emit[name])
+    const params = Array.from({ length: n }, (_, i) => `${T}a${i}`)
+    const args = params.length === 1 ? params[0] : [',', ...params]
+    const decl = prep(['const', ['=', w, ['=>', ['()', args], ['()', name, args]]]])
+    if (decl != null) inits.push(decl)
+    wrappers.set(name, w)
+    return w
+  }
+  const visit = (n) => {
+    if (!Array.isArray(n) || n[0] == null || n[0] === 'str' || n[0] === '`') return
+    const op = n[0]
+    for (let i = 1; i < n.length; i++) {
+      const child = n[i]
+      if (typeof child === 'string') {
+        if (op === '()' && i === 1) continue
+        if ((op === '.' || op === '?.') && i === 2) continue
+        if (op === ':' && i === 1) continue
+        if (isBuiltinValue(child)) n[i] = wrapperFor(child)
+      } else visit(child)
+    }
+  }
+  visit(ast)
+  if (ctx.module.moduleInits) for (const mi of ctx.module.moduleInits) visit(mi)
+  for (const f of ctx.funcs.list) if (f.body) visit(f.body)
+  if (!inits.length) return ast
+  return Array.isArray(ast) && ast[0] === ';' ? [';', ...inits, ...ast.slice(1)] : [';', ...inits, ast]
+}
 
 export default function prepare(node) {
   // This direct call must stay even though reset()'s RESET_HOOKS (ctx.js) also
@@ -75,7 +117,8 @@ export default function prepare(node) {
   seedStaticGlobalAssignments(node)
   node = hoistIndexedConstLiterals(node)
   prepState.reassignedTopLevel = scanReassignedTopLevel(node)
-  const ast = prep(node)
+  let ast = prep(node)
+  ast = wrapBuiltinValues(ast)
   // Top-level functions referenced as first-class values (e.g. `let o = { fn: g }`,
   // `arr.push(g)`, `return g`) need trampoline emission, which depends on the fn
   // module's closure.table machinery. defFunc paths don't trigger fn-module load,

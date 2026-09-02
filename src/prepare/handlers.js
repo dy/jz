@@ -1024,6 +1024,7 @@ const handlers = {
       ?? dispatchConstructorCall(callee, args)
       ?? foldNamespaceIntrospection(callee, args)
       ?? foldFnCallApplyBind(callee, args)
+      ?? foldPrototypeBorrow(callee, args)
       ?? foldJsonReviver(callee, args)
     if (folded !== undefined) return folded
 
@@ -2309,6 +2310,28 @@ function dispatchConstructorCall(callee, args) {
 // sequence. Anything not provably a function keeps the runtime path (a user
 // object may legitimately carry its own `call` property). Previously these
 // silently returned undefined (.call/.apply) or trapped (table OOB, .bind).
+// `Ctor.prototype.m.call(recv, …)` (the array-like borrow idiom) is a static
+// method call on the receiver: a typed constructor's method on its own kind,
+// or an Array method applied to a copy (`Array.prototype.slice.call(typed)`
+// returns a plain array, so the receiver copies through Array.from first).
+// Mutating Array methods on a copy would lose the write; they keep the reject.
+const BORROW_CTORS = new Set(['Array', ...TYPED_ELEM_NAMES])
+const ARRAY_COPY_SAFE = new Set(['slice', 'map', 'filter', 'join', 'indexOf', 'lastIndexOf', 'includes',
+  'reduce', 'reduceRight', 'forEach', 'some', 'every', 'find', 'findIndex', 'findLast', 'findLastIndex', 'concat', 'at', 'flat', 'flatMap', 'entries', 'keys', 'values', 'toString'])
+function foldPrototypeBorrow(callee, args) {
+  if (!Array.isArray(callee) || callee[0] !== '.' || callee[2] !== 'call') return undefined
+  const method = callee[1]
+  if (!Array.isArray(method) || method[0] !== '.' || typeof method[2] !== 'string') return undefined
+  const proto = method[1]
+  if (!Array.isArray(proto) || proto[0] !== '.' || proto[2] !== 'prototype' || typeof proto[1] !== 'string') return undefined
+  const ctor = proto[1]
+  if (!BORROW_CTORS.has(ctor) || shadowsBuiltin(ctor) || (scopes.length && isDeclared(ctor))) return undefined
+  const [recv, ...rest] = handlerArgs(args)
+  if (recv == null) return undefined
+  if (ctor === 'Array' && !ARRAY_COPY_SAFE.has(method[2])) return undefined
+  const base = ctor === 'Array' ? ['()', ['.', 'Array', 'from'], recv] : recv
+  return prep(['()', ['.', base, method[2]], rest.length === 0 ? null : rest.length === 1 ? rest[0] : [',', ...rest]])
+}
 function foldFnCallApplyBind(callee, args) {
   if (!Array.isArray(callee) || callee[0] !== '.') return undefined
   let [, name, meth] = callee

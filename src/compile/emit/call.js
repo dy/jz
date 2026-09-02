@@ -135,7 +135,36 @@ function emitDirectFunctionCall(callee, parsed, callArgs) {
     return attachSigMeta(typed(['call', `$${callee}`, ...emittedFixed, arrayIR], func.sig.results[0]), func.sig)
   }
 
-  // Regular function call without rest params
+  // Regular function call with a spread (`mat3(M, ...xyz)`): build the full
+  // argument array at runtime and read each fixed slot out of it, `undefined`
+  // past its end, the same split the rest-param path does for its fixed prefix.
+  if (parsed.hasSpread && func) {
+    const combined = reconstructArgsWithSpreads(parsed.normal, parsed.spreads)
+    const aVal = temp('sa'), aOff = tempI32('sao'), aLen = tempI32('sal')
+    const loads = func.sig.params.map((p, k) => coerceArg(typed(['if', ['result', 'f64'],
+      ['i32.gt_s', ['local.get', `$${aLen}`], ['i32.const', k]],
+      ['then', ['f64.load', ['i32.add', ['local.get', `$${aOff}`], ['i32.const', k * 8]]]],
+      ['else', undefExpr()]], 'f64'), p))
+    const resultType = func.sig.results.length === 1 ? func.sig.results[0] : null
+    const callIR = ['call', `$${callee}`, ...loads]
+    const setup = [
+      ['local.set', `$${aVal}`, asF64(buildArrayWithSpreads(combined))],
+      ['local.set', `$${aOff}`, ['call', '$__ptr_offset', ['i64.reinterpret_f64', ['local.get', `$${aVal}`]]]],
+      ['local.set', `$${aLen}`, ['i32.load', ['i32.sub', ['local.get', `$${aOff}`], ['i32.const', 8]]]]]
+    if (func.sig.results.length > 1) {
+      // Multi-value result: materialize like materializeMulti, from the split args.
+      const n = func.sig.results.length
+      const temps = Array.from({ length: n }, () => temp())
+      const out = allocPtr({ type: PTR.ARRAY, len: n, tag: 'marr' })
+      const ir = [...setup, out.init, callIR]
+      for (let k = n - 1; k >= 0; k--) ir.push(['local.set', `$${temps[k]}`])
+      for (let k = 0; k < n; k++)
+        ir.push(['f64.store', ['i32.add', ['local.get', `$${out.local}`], ['i32.const', k * 8]], ['local.get', `$${temps[k]}`]])
+      ir.push(out.ptr)
+      return typed(['block', ['result', 'f64'], ...ir], 'f64')
+    }
+    return attachSigMeta(typed(['block', ['result', resultType], ...setup, callIR], resultType), func.sig)
+  }
   if (parsed.hasSpread) err(`Spread not supported in calls to non-variadic function ${callee} — pass arguments individually, or give ${callee} a rest parameter (...args)`)
   // Speculative typed dispatch (narrow's speculateTypedParams): route the call
   // through a per-arg tag guard to the typed clone; a miss takes the original
