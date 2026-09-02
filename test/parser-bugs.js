@@ -483,9 +483,14 @@ test('param narrowing: pointer-carrying i32 args are not integer evidence', () =
     // emitted `local.get $__it_drain` (undeclared local, zero-init garbage →
     // call_indirect table[0]; masked because the path was dead here). The
     // splice loop now re-checks to quiescence: every referenced runtime helper
-    // must be DEFINED in the module, not merely referenced.
-    const wat0 = compile(code, { jzify: true, wat: true, optimize: 0 })
+    // must be DEFINED in the module, not merely referenced. `__p_try` is
+    // `Promise.try`'s helper, so the program must use it for the helper to be
+    // reachable at all: analysis and emission follow ProgramIndex
+    // reachability, and a dead runtime helper leaves no trace at any tier.
+    const codeTry = code.replace('go(); return 1', 'go(); Promise.try(() => 0); return 1')
+    const wat0 = compile(codeTry, { jzify: true, wat: true, optimize: 0 })
     ok(wat0.includes('(func $__it_drain'), 'async-runtime-introduced drain helper is spliced at O0 (defined, not a free name)')
+    ok(!wat0.includes('local.get $__it_drain'), 'no free-name drain reference at O0')
     const watS = compile(code, { jzify: true, wat: true })
     ok(!watS.includes('local.get $__it_drain'), 'no free-name drain reference survives at the default tier (inline/treeshake of the DEFINED helper is fine)')
 })

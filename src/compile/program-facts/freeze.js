@@ -73,9 +73,9 @@
  *  contract. */
 export const FACT_KEYS = new Set([
   'dynVars', 'dynWriteVars', 'anyDyn', 'propMap', 'addressTakenNames', 'callSites',
-  'computedCallSites', 'memberCallSites', 'memberDispatchSites',
+  'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
-  'hasMapSet', 'hasBigint', 'writtenProps', 'literalWriteKeys', 'arrResized',
+  'hasMapSet', 'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
   'nameEscapes', 'literalObjectVars', 'programIndex', 'dictKinds',
 ])
 

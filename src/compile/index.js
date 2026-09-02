@@ -293,9 +293,13 @@ export default function compile(ast, profiler) {
   // consumer takes the plain path.
   const structInline = ctx.transform.optimize?.structInline !== false ? structInlinePass(programFacts) : null
   const unionInline = ctx.transform.optimize?.unionInline !== false ? unionInlinePass(programFacts) : null
+  // Reachability precedes body analysis (M4): a function the frozen graph
+  // does not reach is neither analyzed nor emitted. Unsupported syntax in
+  // such a body still rejects, at prepare, before any of this runs.
+  const { reachableForLowering } = programFacts.programIndex
   timePhase(profiler, 'analyzeFuncs', () => {
     for (const func of ctx.funcs.list) {
-      if (func.raw) continue
+      if (func.raw || !reachableForLowering(func)) continue
       const facts = analyzeFuncForEmit(func, programFacts)
       publishPlan(func, facts)
       captureFuncInspect(func, facts, programFacts)
@@ -317,6 +321,7 @@ export default function compile(ast, profiler) {
     // per clone rather than sharing the original's f64-sig facts.
     timePhase(profiler, 'unionClones', () => {
       for (const clone of specializeUnionCursorParams(programFacts)) {
+        if (!reachableForLowering(clone)) continue
         const facts = analyzeFuncForEmit(clone, programFacts)
         publishPlan(clone, facts)
         captureFuncInspect(clone, facts, programFacts)
@@ -328,7 +333,7 @@ export default function compile(ast, profiler) {
   // signature, parameter facts, and FunctionPlan were derived rather than shared.
   timePhase(profiler, 'finalizeVariantIdentities', () =>
     programFacts.programIndex.finalizeVariantIdentities(
-      programFacts.paramReps, func => functionPlanOf(ctx, func)))
+      programFacts.paramReps, func => ctx.plans.functions.get(func)))
   // Concrete Wasm function IDs: one assignment of the final emission order,
   // freezing the registry list so no later writer reorders or grows it.
   // Emission and assembly ordering below read this order, not the registry.
@@ -363,6 +368,7 @@ export default function compile(ast, profiler) {
     try {
       for (const func of programFacts.programIndex.concreteFunctionOrder()) {
         if (func.raw) out.push(emitFunc(func, null, programFacts))
+        else if (!reachableForLowering(func)) continue
         else {
           const functionPlan = functionPlanOf(ctx, func)
           out.push(emitFunc(func, functionPlan, programFacts))
@@ -599,6 +605,9 @@ export default function compile(ast, profiler) {
   }
 
   timePhase(profiler, 'pullStdlib', () => pullStdlib(sec))
+  // The host last-error channel follows the source: a `throw` in a function
+  // that reachability never lowered still declares and exports it.
+  if (programFacts.hasThrow) ctx.runtime.throws = ctx.runtime.userThrows = true
   ensureThrowRuntime(sec)
   lateFacts.errorSidEntries = [...ctx.schema.errorSidEntries()]
 

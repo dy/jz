@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.26x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,358 bytes versus 14,542,559 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.97x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,234,176 bytes versus 14,415,726 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -501,6 +501,7 @@ Per-slice recursive and artifact ratchet:
 | member-call edges | 14,530,671 | 4,122,542,760 | 172,424,536 | +7,152 bytes, -1,488,944 headroom |
 | namespace dispatch sites | 14,541,732 | 4,125,719,984 | 169,247,312 | +11,061 bytes, -3,177,224 headroom |
 | corpus reachability closure | 14,542,559 | 4,125,883,160 | 169,084,136 | +827 bytes, -163,176 headroom |
+| reachability gate | 14,415,726 | 4,090,501,072 | 204,466,224 | -126,833 bytes, +35,382,088 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -579,9 +580,9 @@ Non-BigInt parameter-ABI emission slice verification:
 
 ### M4. Function-at-a-time lowering
 
-- [ ] split correctness validation from expensive optimization analysis
-- [ ] validate unsupported syntax in all functions, including unreachable ones
-- [ ] analyze only reachable bodies
+- [x] split correctness validation from expensive optimization analysis (validation rejects at prepare, before any analysis; the gate below skips analysis, never validation)
+- [x] validate unsupported syntax in all functions, including unreachable ones
+- [x] analyze only reachable bodies
 - [ ] lower one function through the existing scalar WAT emitter
 - [ ] transfer its finalized body to module ownership
 - [ ] reset all local facts, plans, worklists, and temporary IR
@@ -590,6 +591,25 @@ Non-BigInt parameter-ABI emission slice verification:
 - [ ] remove all-functions analyze-then-emit storage
 
 Initial promotion must preserve emitted WAT. Do not redesign the emitter while changing its lifetime.
+
+Reachability gate slice verification (attributed byte diff):
+
+- `reachableForLowering` (ProgramIndex) gates `analyzeFuncs`, union-cursor clone analysis, and function emission: a named function the frozen graph does not reach publishes no FunctionPlan and emits nothing; raw WAT functions always lower and a late variant follows its source
+- validation is untouched: unsupported syntax in an unreachable body still rejects at prepare, pinned at both optimize levels
+- the host last-error channel follows the source: `hasThrow` is a program fact, so a `throw` in a never-lowered function still declares and exports `__jz_last_err_bits`
+- escape classes closed for the gate: a function-property read in value position takes the member's address and roots the base; a truthiness-test read (`&&`, `||`, `!`, `?:`, `if`, `while`, `do`, `for`, `??`) roots without taking the address; a write target reads nothing; `ns.prop?.(args)` roots base and member; a global-devirtualized arrow takes the address; any function reference in a value position of a module-init statement is a root
+- `npm run test:reach`: 142 specimens, zero compile errors, zero unsound functions
+- refactor oracle: 297 of 568 outputs differ, 244 smaller, 53 same size (renumbering), none larger, no error-class change; 730,740 bytes removed across the corpus
+- `test/parser-bugs.js`'s quiescence pin now exercises `Promise.try`, so the drain helper it asserts is live; a dead runtime helper leaves no trace, like any dead function
+- native: 3,908 pass, 1 skip
+- opt3: 3,908 pass, 1 skip
+- WASI: 3,907 pass, 1 skip
+- opt0: 3,907 pass with only the recorded `Date.valueOf()` shared-dispatch failure
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- recursive self-compile: 321 modules, 6,884,118 input bytes, 13,974,679 output bytes, 4,090,501,072 heap bytes, 204,466,224 bytes headroom (35,382,088 more); elapsed 31,359 ms
+- compact threshold: pass at 2,234,176 bytes (22,182 fewer) versus the 14,415,726-byte production compiler (126,833 fewer)
 
 ### M5. Loop optimization and SIMD
 
@@ -676,7 +696,7 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
-1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. ProgramIndex reachability is complete across the refactor-oracle corpus: `npm run test:reach` (`scripts/reachability-probe.mjs`) compiles all 142 specimens at O3 and reports zero emitted-but-unreachable functions. Root and edge classes closed on the way: export roots through the canonical `isExported`; `.`-member call edges through `resolveMemberSourceId` with module-scope member calls as roots; namespace-computed dispatch (`ns[k](args)`, `ns[k].prop(args)`, lowered to `?:` chains, inside inline dispatch-table arrows too) as per-arm sites with an edge for every resolved arm even where the lattice site is declined on arity; multi-written function properties root every lifted implementation as address-taken; `?.()` calls census like `()`; a function reference stored by a module-init write is a root without becoming address-taken; and default-parameter expressions are walked as their function's own facts. The gating slice can start with the probe as its first gate.
+1. The reachability gate has landed: analysis and emission follow ProgramIndex reachability, validation stays at prepare, and `npm run test:reach` (`scripts/reachability-probe.mjs`) is the completeness gate for every later census change (142 specimens, zero compile errors, zero unsound functions). Its attributed diff removed 730,740 bytes across the corpus and 126,833 bytes from the compiler artifact.
 2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is closer: structInline and unionInline now collect per-function summaries inside the analyze loop and decide from summaries alone. Remaining between analyze and emit: union-cursor cloning (whole-program specialization over the settled registry) and the identity/ABI closes, all of which need only an analyze-complete barrier, not retained plans or bodies.
 3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 

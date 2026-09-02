@@ -31,6 +31,10 @@ const recordObjectLiteralDef = (facts, name, direct) => {
   if (!direct || !facts.objectLiteralDefs.has(name)) facts.objectLiteralDefs.set(name, direct)
 }
 
+// Per-op slots whose value is consumed only as a truthiness test. A member read
+// in one of them reaches its target without handing the callable on.
+const TEST_SLOTS = { '&&': [1], '||': [1], '!': [1], '?:': [1], 'if': [1], 'while': [1], 'do': [2], 'for': [2], '??': [1] }
+
 const ESCAPE_SKIP = {
   '.': true, '?.': true,          // receiver never escapes via the read itself; slot2 is a prop NAME
   'str': true,                    // payload
@@ -60,6 +64,10 @@ export function observeNodeFacts(node, f) {
       (Array.isArray(args[0]) && typeof args[0][2] === 'string' &&
         (args[0][2] === 'getBigInt64' || args[0][2] === 'getBigUint64'))
     ))) f.hasBigint = true
+  // Source-level throw presence: the host last-error channel (throw-runtime.js)
+  // follows the SOURCE, so a throw inside a function that reachability never
+  // lowers still declares it, at every optimize level.
+  if (op === 'throw') f.hasThrow = true
   // ---- const-array stability lattice (module/array.js static base/len fold) ----
   // arrResized: names whose array may change length or relocate — any indexed write
   // (an out-of-range write grows), `.length =`, or a resizing method call.
@@ -225,10 +233,10 @@ export function observeNodeFacts(node, f) {
 function emptyWalkFacts() {
   return {
     dynVars: new Set(), dynWriteVars: new Set(), anyDyn: false, hasSchemaLiterals: false,
-    hasMapSet: false, hasBigint: false,
+    hasMapSet: false, hasBigint: false, hasThrow: false,
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
-    memberDispatchSites: [],
+    memberDispatchSites: [], memberValueReads: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
     arrResized: new Set(), nameEscapes: new Set(),
     objectLiteralDefs: new Map(),
@@ -242,6 +250,7 @@ function mergeWalkFacts(into, from) {
   if (from.hasSchemaLiterals) into.hasSchemaLiterals = true
   if (from.hasMapSet) into.hasMapSet = true
   if (from.hasBigint) into.hasBigint = true
+  if (from.hasThrow) into.hasThrow = true
   if (from.maxDef > into.maxDef) into.maxDef = from.maxDef
   if (from.maxCall > into.maxCall) into.maxCall = from.maxCall
   if (from.hasRest) into.hasRest = true
@@ -264,6 +273,7 @@ function mergeWalkFacts(into, from) {
   into.computedCallSites.push(...from.computedCallSites)
   into.memberCallSites.push(...from.memberCallSites)
   into.memberDispatchSites.push(...from.memberDispatchSites)
+  into.memberValueReads.push(...from.memberValueReads)
 }
 
 /** Bare-name leaves of a `?:` chain over function references, the shape
@@ -286,6 +296,8 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
     if (hit?.gen === pf.gen) return hit.facts
   }
   const acc = emptyWalkFacts()
+  const calleeMembers = new WeakSet()   // `.` nodes seen as a call's callee, not a value read
+  const testMembers = new WeakSet()     // `.` nodes consumed only as a truthiness test
   // A concise arrow whose whole body is one bare identifier has no enclosing
   // array node for observeNodeFacts to visit. The value is returned, hence the
   // referenced object escapes just like `return name` in a block body.
@@ -306,6 +318,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       for (let i = 1; i < node.length; i++) walkFacts(node[i], fullWalk, true, caller)
       return
     }
+    // A member read consumed only as a truthiness test (`parse.asi && …`,
+    // `if (ns.hook)`, `!ns.hook`, `cond ? …`) never hands the callable on.
+    if (TEST_SLOTS[op]) for (const i of TEST_SLOTS[op])
+      if (Array.isArray(node[i]) && (node[i][0] === '.' || node[i][0] === '?.')) testMembers.add(node[i])
+    // A write target (`ns.p = fn`, `ns.p ??= fn`) stores into the slot; it reads
+    // no function value.
+    if (MUTATE_OPS.has(op) && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) calleeMembers.add(node[1])
     if (fullWalk) {
       if (doSchema && op === '=' && Array.isArray(node[1]) && node[1][0] === '.') {
         const [, obj, prop] = node[1]
@@ -365,8 +384,13 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // build and retires the census. Additive like the computed-member
       // branch above: no other observation changes.
       if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
-          typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
+          typeof node[1][1] === 'string' && typeof node[1][2] === 'string') {
         acc.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: caller })
+        calleeMembers.add(node[1])
+        // `ns.prop?.(args)` tests the property value before calling it, which
+        // materializes the base and the member as values.
+        if (op === '?.()') acc.memberValueReads.push({ objName: node[1][1], prop: node[1][2] })
+      }
       // Member call on a `?:` chain over function references, `ns[k].prop(args)`
       // after prepare lowers the namespace access. Emission devirtualizes it
       // per arm, so each arm's member target is a real direct call: the index
@@ -381,7 +405,17 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           acc.memberDispatchSites.push({ leaves, prop: node[1][2], argList, callerFunc: caller, node })
         }
       }
-      if ((op === '.' || op === '?.') && isFuncRef(node[1], ctx.funcs.names)) return
+      if ((op === '.' || op === '?.') && isFuncRef(node[1], ctx.funcs.names)) {
+        // A function-property read in callee position resolves through the
+        // member table (the site above). A truthiness test reaches the member
+        // (a root) without escaping it. Anywhere else the implementation
+        // escapes as a value (`const saved = base.method`), so the index marks
+        // it address-taken. The base function is materialized to reach the
+        // slot in every case, so it is always a root.
+        if (!calleeMembers.has(node) && typeof node[2] === 'string')
+          acc.memberValueReads.push({ objName: node[1], prop: node[2], test: testMembers.has(node) })
+        return
+      }
       if (op === 'let' || op === 'const') {
         for (let i = 1; i < node.length; i++) {
           const decl = node[i]
@@ -476,6 +510,7 @@ export function collectProgramFacts(ast) {
   // path: a full walkFactsRoot here would re-register schemas and promote
   // init-stored func REFS into addressTakenNames, a program-wide dispatch behavior
   // change this census repair must not smuggle in.
+  const initCalleeMembers = new WeakSet()
   const initCallSites = (node) => walkAst(node, { enter: node => {
     const isCallOp = node[0] === '()' || node[0] === '?.()'
     if (isCallOp && isFuncRef(node[1], ctx.funcs.names)) {
@@ -484,15 +519,27 @@ export function collectProgramFacts(ast) {
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
     if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
-        typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
+        typeof node[1][1] === 'string' && typeof node[1][2] === 'string') {
       f.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: null })
-    // A function reference stored by a module-init write (`const asi = parse.asi
-    // = fn`, `loc = fn`) is live through that binding, so the target is a
-    // reachability root. This is a root only: the reduced init census keeps
-    // such refs out of addressTakenNames on purpose (see above), and this
-    // must not change dispatch or coverage.
-    if (node[0] === '=' && isFuncRef(node[2], ctx.funcs.names))
-      f.memberCallSites.push({ callee: node[2], callerFunc: null })
+      initCalleeMembers.add(node[1])
+      if (node[0] === '?.()') f.memberValueReads.push({ objName: node[1][1], prop: node[1][2] })
+    }
+    // A function reference in any value position of a module-init statement
+    // (`const asi = parse.asi = fn`, `make(double, square)`, `{ parse, compile
+    // }`, `[a, b]`) is live through that binding, argument, or literal, so the
+    // target is a reachability root. Roots only: the reduced init census keeps
+    // such refs out of addressTakenNames on purpose (see above), and this must
+    // not change dispatch or coverage. A call's callee slot is the site above
+    // and a member receiver is a namespace, not a value; everything else roots.
+    for (let i = 1; i < node.length; i++) {
+      if (!isFuncRef(node[i], ctx.funcs.names)) continue
+      if (i === 1 && (isCallOp || node[0] === '.' || node[0] === '?.')) continue
+      f.memberCallSites.push({ callee: node[i], callerFunc: null })
+    }
+    if (MUTATE_OPS.has(node[0]) && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.')) initCalleeMembers.add(node[1])
+    if ((node[0] === '.' || node[0] === '?.') && isFuncRef(node[1], ctx.funcs.names) &&
+        typeof node[2] === 'string' && !initCalleeMembers.has(node))
+      f.memberValueReads.push({ objName: node[1], prop: node[2] })
   } })
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
@@ -520,6 +567,7 @@ export function collectProgramFacts(ast) {
     if (doSchema && initFacts.hasSchemaLiterals) f.hasSchemaLiterals = true
     if (doSchema && initFacts.hasMapSet) f.hasMapSet = true
     if (initFacts.hasBigint) f.hasBigint = true
+    if (initFacts.hasThrow) f.hasThrow = true
   }
 
   // Slot-type observation pass: walk every `{}` literal with the right scope's
@@ -564,9 +612,10 @@ export function collectProgramFacts(ast) {
     computedCallSites: f.computedCallSites,
     memberCallSites: f.memberCallSites,
     memberDispatchSites: f.memberDispatchSites,
+    memberValueReads: f.memberValueReads,
     maxDef: f.maxDef, maxCall: f.maxCall, hasRest: f.hasRest, hasSpread: f.hasSpread,
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
-    hasBigint: f.hasBigint, writtenProps: f.writtenProps,
+    hasBigint: f.hasBigint, hasThrow: f.hasThrow, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
     arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
   }

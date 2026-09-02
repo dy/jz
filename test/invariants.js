@@ -855,6 +855,56 @@ test('invariant: multi-written properties, optional calls, init-stored refs, and
   ok(reach(index, 'helper'), 'a call inside a default-parameter expression is an edge of its function')
 })
 
+test('invariant: value reads, global devirt, and init arguments take the function address', () => {
+  if (onKernel()) return
+  const reach = (index, name) => index.isGraphReachable(index.graphFunctionIdOfName(name))
+
+  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nconst saved = ns.p\nexport let h = (v) => saved(v)')
+  let index = ctx.plans.programIndex
+  ok(index.addressTaken.has('ns$p') && reach(index, 'ns$p'),
+    'a function-property read in value position takes the member\'s address')
+  ok(reach(index, 'ns') && !index.addressTaken.has('ns'), 'the base function is a root, its parameters stay covered')
+
+  compile('let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let h = (v) => ns.p && v ? 1 : 0')
+  index = ctx.plans.programIndex
+  ok(reach(index, 'ns$p') && !index.addressTaken.has('ns$p'),
+    'a member read consumed only as a truthiness test is a root without taking the address')
+
+  compile("import { use } from './m.jz'\nexport let h = (v) => use(v)", {
+    modules: { './m.jz': 'let ns = (x) => x\nns.p = (v) => v > 0 ? ns.p(v - 1) + 1 : 0\nexport let use = (v) => ns.p(v)' },
+  })
+  index = ctx.plans.programIndex
+  const lifted = ctx.funcs.list.find(fn => !fn.raw && /ns\$p$/.test(fn.name))
+  ok(lifted && reach(index, lifted.name) && !index.addressTaken.has(lifted.name),
+    'a module-init write target stores into the slot without reading a function value')
+
+  compile('let g\ng ??= (x) => x > 0 ? g(x - 1) + 1 : 0\nexport let h = (v) => g(v)')
+  index = ctx.plans.programIndex
+  const devirt = [...(ctx.funcs.globalDevirt?.values() || [])]
+  ok(devirt.length && devirt.every(n => index.addressTaken.has(n) && reach(index, n)),
+    'a lifted arrow reached through global devirtualization takes the address')
+
+  compile("import thing from './dep.jz'\nexport let test = (x) => thing(x)", {
+    modules: { './dep.jz': 'let make = (a) => (x) => a(x) + 1\nlet double = (x) => x > 0 ? double(x - 1) + 2 : 0\nexport default make(double)' },
+  })
+  index = ctx.plans.programIndex
+  const dbl = ctx.funcs.list.find(fn => !fn.raw && /double$/.test(fn.name))
+  ok(dbl && reach(index, dbl.name), 'a function passed as an argument at module init is a root')
+})
+
+test('invariant: unreachable functions are neither analyzed nor emitted, and still validate', () => {
+  if (onKernel()) return
+  const base = 'export let f = (x) => x + 1'
+  const dead = 'let dead = (s) => "unreachable literal " + s\n' + base
+  for (const optimize of [false, true]) {
+    const a = compile(base, { optimize }), b = compile(dead, { optimize })
+    ok(Buffer.from(a).equals(Buffer.from(b)), `dead code leaves no trace at optimize=${optimize}`)
+  }
+  compile(dead)
+  is(ctx.plans.functions.get(ctx.funcs.map.get('dead')), undefined, 'the dead function publishes no FunctionPlan')
+  throws(() => compile('let dead = (s) => { with (s) { return x } }\n' + base), /not supported/)
+})
+
 test('architecture: emission order is the frozen concrete function order', () => {
   if (onKernel()) return
   compile('let a = (x) => x + 1; export let b = (y) => a(y) * 2')

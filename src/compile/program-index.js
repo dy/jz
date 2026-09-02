@@ -673,7 +673,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
       if (planOf) {
         const variantPlan = planOf(variant)
         const sourcePlan = planOf(source)
-        if (variantPlan === sourcePlan)
+        if (variantPlan && variantPlan === sourcePlan)
           throw new Error(`ProgramIndex variant '${variant.name}' shares its source FunctionPlan`)
       }
     }
@@ -967,6 +967,32 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
       dynamicRootIds.push(id)
     }
   }
+  // Two more escapes of a function's identity: a function-property read in
+  // value position (`const saved = base.method`) resolves to the member it
+  // names, and a global that plan/scope.js devirtualizes (`ctx.funcs.
+  // globalDevirt`) holds the lifted arrow's value. Both targets are called
+  // through channels the call-site census never sees, so they are
+  // address-taken like any other stored function reference.
+  const takeAddress = name => {
+    const id = graphNameIds.get(name) ?? -1
+    if (id >= 0 && !addressTakenBits[id]) { addressTakenBits[id] = 1; dynamicRootIds.push(id) }
+  }
+  // The base function is materialized to reach the slot, so it is a root but
+  // its own parameters stay covered; a truthiness test roots the member the
+  // same way; a value read escapes the member, so it takes the address.
+  const memberReadRootIds = []
+  for (const read of programFacts.memberValueReads || []) {
+    const baseId = graphNameIds.get(read.objName) ?? -1
+    if (baseId >= 0) memberReadRootIds.push(baseId)
+    const sourceId = resolveMemberSourceId(read.objName, read.prop)
+    if (sourceId < 0) continue
+    const targetName = sourceFunctionById(sourceId).name
+    if (read.test) memberReadRootIds.push(graphNameIds.get(targetName))
+    else takeAddress(targetName)
+  }
+  const retiredMemberReadsKey = 'memberValueReads'
+  delete programFacts[retiredMemberReadsKey]
+  if (ctx.funcs.globalDevirt) for (const name of ctx.funcs.globalDevirt.values()) takeAddress(name)
   const isGraphAddressTaken = idOrName => {
     const id = Number.isInteger(idOrName) ? idOrName : graphNameIds.get(idOrName) ?? -1
     return id >= 0 && !!addressTakenBits[id]
@@ -992,6 +1018,10 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     const id = memberRootIds[i]
     if (!rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
   }
+  for (let i = 0; i < memberReadRootIds.length; i++) {
+    const id = memberReadRootIds[i]
+    if (id >= 0 && !rootSeen[id]) { rootSeen[id] = true; rootIds.push(id) }
+  }
   const scc = buildSccSummary(count, edgeStart, edgeCount, edgeTarget, rootIds)
   const reachable = scc.reachable
   Object.freeze(edgeStart)
@@ -1014,6 +1044,18 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     reachable,
   })
   graphObjectIds = null
+
+  // Lowering gate (M4): analyze and emit a named function only when the
+  // frozen graph reaches it. Raw WAT functions are runtime-demanded, not
+  // source-called, so they always lower; a variant minted after the graph
+  // froze follows its source; anything else unknown to the graph lowers.
+  const reachableForLowering = func => {
+    if (!func || func.raw) return true
+    const graphId = graphNameIds.get(func.name) ?? -1
+    if (graphId >= 0) return !!reachable[graphId]
+    const variantId = variantIdOf(func)
+    return variantId < 0 || reachableForLowering(sourceFunctions[variantSourceIds[variantId]])
+  }
 
   const filterCallSitesToReachable = callSites => {
     let write = 0
@@ -1053,6 +1095,7 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
     graphFunctionCount: graphFunctions.length,
     graphFunctionById,
     graphFunctionIdOfName,
+    reachableForLowering,
     resolveMemberSourceId,
     resolveComputedSourceIds,
     addressTaken,
