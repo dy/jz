@@ -1,5 +1,7 @@
 # Staged compiler migration
 
+Superseded by `PLAN.md` and `spec/`: the compact prototype becomes the core and the migration below is closed. This file stays as the verification record of the slices that landed, until phase 5 removes it.
+
 ## Decision
 
 Build the compiler around one frozen program index and one function-local lowering lifetime. Keep watr as the optimizer and binary owner. Preserve the current JZ dialect exactly. Do not add language coverage while changing the architecture.
