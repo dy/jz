@@ -932,3 +932,15 @@ test('else boundaries distinguish ASI, empty statements, and IdentifierName prop
     ok(Array.isArray(parse('class C { get else() { return 1 } set else(v) {} }')),
       '`else` remains an IdentifierName in class methods')
 })
+
+test('a one-statement block is a block: sole declarations inside braces stay accepted', () => {
+    // The parser collapses `{ stmt }` to `stmt`, so the source scanner, not the
+    // AST, decides whether a declaration had its braces. A do-while tail heads
+    // no statement either: a declaration on the next line is the next statement.
+    is(jz('export let f = (x) => { if (x) { const t = x * 2; return t } return 0 }').exports.f(3), 6)
+    is(jz('export let f = (x) => { let n = 0; while (x > 0) { const d = 1; x -= d; n++ } return n }').exports.f(3), 3)
+    is(jz('export let f = (x) => { let n = 0; do { const d = 1; x -= d; n++ } while (x > 0)\n  const y = n * 10\n  return y }').exports.f(3), 30)
+    is(jz('export let f = (x) => { l: { const t = x; if (t) break l } return x }').exports.f(4), 4)
+    rejects('export let f = () => { if (true) const x = 1; return 1 }', 'block in statement position')
+    rejects('export let f = () => { while (false) let\n[x] = 0; return 1 }', 'block in statement position')
+})

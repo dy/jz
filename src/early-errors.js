@@ -503,6 +503,9 @@ const validateLexicalSource = (src, strict) => {
             fail('if consequent requires a semicolon or LineTerminator before else')
         }
       }
+      // A do-while tail (`} while (cond)`) heads no statement: whatever follows
+      // its parentheses is the next statement, declarations included.
+      let doTail = false
       if (word === 'while') {
         const prev = previousSourceToken(src, start)
         if (prev[0] >= 0 && src[prev[0]] === ';') {
@@ -510,6 +513,7 @@ const validateLexicalSource = (src, strict) => {
           if (doBlockEnds.has(beforeSemi[0]))
             fail('semicolon is not allowed between a do body and while')
         }
+        doTail = prev[0] >= 0 && doBlockEnds.has(prev[0])
       }
       // A classic for head needs exactly two semicolons; a for-in/of head
       // needs a top-level `in`/`of` and none. Record only the outermost header
@@ -553,9 +557,15 @@ const validateLexicalSource = (src, strict) => {
       if (expectStatement) {
         let declaration = word === 'let' || word === 'const' || word === 'class' || word === 'function'
         if (word === 'let') {
+          // Bare `let` before a LineTerminator may ASI-split into a sloppy
+          // identifier reference, except `let [`: ExpressionStatement excludes
+          // that token pair outright, so it has no parse in this slot.
           let k = i
           while (src[k] === ' ' || src[k] === '\t') k++
-          if (src[k] === '\n' || src[k] === '\r' || src[k] === '/' && src[k + 1] === '/') declaration = false
+          if (src[k] === '\n' || src[k] === '\r' || src[k] === '/' && src[k + 1] === '/') {
+            while (isWhitespaceCode(src.charCodeAt(k)) || src[k] === '/' && src[k + 1] === '/' && (k = src.indexOf('\n', k)) > 0) k++
+            declaration = src[k] === '['
+          }
         }
         if (word === 'async') {
           let k = i
@@ -566,7 +576,7 @@ const validateLexicalSource = (src, strict) => {
         expectStatement = false
       }
       if (!(pendingControl === 'for' && word === 'await'))
-        pendingControl = lastPunct !== '.' && /^(if|while|for|with)$/.test(word) ? word : null
+        pendingControl = !doTail && lastPunct !== '.' && /^(if|while|for|with)$/.test(word) ? word : null
       if (word === 'else' || word === 'do') expectStatement = true
       if (word === 'do' && lastPunct !== '.') pendingDo = true
       canRegex = /^(return|throw|case|delete|void|typeof|new|in|instanceof|yield|await|else|do)$/.test(word)
@@ -1735,8 +1745,10 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
       return
     }
 
+    // A declaration in a single-Statement slot is rejected by the source scanner
+    // (`if (x) const …`); the AST cannot tell it from a one-statement block, which
+    // the parser collapses to its statement.
     if (op === 'class') {
-      if (soleStmt) fail('class declaration requires a block in statement position')
       needsLexical = true
       validateClass(node, cx, walk, source)
       if (node[2]) walk(node[2], cx)
@@ -1757,11 +1769,6 @@ export function validateEarlyErrors(ast, source, sourceType = 'jz') {
       // ExpressionStatement's own grammar excludes that exact two-token
       // sequence unconditionally (no "[no LineTerminator here]" on it), so
       // it has no valid parse in this position regardless of what follows.
-      if (op === 'const' && soleStmt) fail('lexical declaration requires a block in statement position')
-      if (op === 'let' && soleStmt) {
-        const first = isNode(node[1]) && node[1][0] === '=' ? node[1][1] : node[1]
-        if (isNode(first) && first[0] === '[]') fail('lexical declaration requires a block in statement position')
-      }
       for (let i = 1; i < node.length; i++) {
         const d = node[i]
         const initialized = isNode(d) && d[0] === '='
