@@ -2073,12 +2073,20 @@ function prepDecl(op, ...inits) {
           } else top.set(n, n)
           if (declName !== n) patRenames.set(n, declName)
         }
+        // A depth-0 target in a bundled module takes the module prefix like a
+        // plain declaration, so two modules destructuring the same name keep
+        // distinct globals.
+        if (prepState.depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') {
+          declName = `${ctx.module.currentPrefix}$${n}`
+          ctx.scope.chain[n] = declName
+          patRenames.set(n, declName)
+        }
         if (!isLoopLocal) declareGlobal(declName)
         // Destructure targets hold source-prop values of unknown shape — census
         // as non-literal binding sites (raw + module-prefixed key for depth-0
         // globals; whichever spelling later consumers resolve through is barred).
         censusUnknownInitDecl(declName)
-        if (prepState.depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(`${ctx.module.currentPrefix}$${n}`)
+        if (prepState.depth === 0 && !isLoopLocal && ctx.module.currentPrefix && typeof n === 'string') censusUnknownInitDecl(n)
         if ((prepState.depth !== 0 || isLoopLocal) && typeof declName === 'string' && fnNames) fnNames.add(declName)
       }
       if (patRenames.size) name = substPattern(name, patRenames)

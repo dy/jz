@@ -1017,3 +1017,17 @@ test('cross-module: aliased re-export survives a second module hop', () => {
   )
   is(exports.f(5), 10)
 })
+
+test('module-level destructuring takes the module prefix like a plain declaration', () => {
+  // Two modules destructuring the same names kept one shared global (and the
+  // second declaration was reported as a compiler-internal name conflict).
+  const { exports } = jz(`import { fa } from './a.js'; import { fb } from './b.js'
+    const [Xw, Yw] = [7, 8]
+    export let f = () => fa() * 100 + fb() * 10 + Xw + Yw`, {
+    modules: {
+      './a.js': 'const wp = [1, 2, 3]\nconst [Xw, Yw, Zw] = wp\nexport let fa = () => Xw + Yw + Zw',
+      './b.js': 'const [Xw, Yw, Zw] = [4, 5, 6]\nexport let fb = () => Xw * Zw',
+    },
+  })
+  is(exports.f(), 6 * 100 + 24 * 10 + 15)
+})
