@@ -497,6 +497,7 @@ const censusBigintUnaryVT = (base) => (args) =>
 VT['u-'] = censusBigintUnaryVT(numericBinaryVT)
 VT['~'] = censusBigintUnaryVT(numericUnaryVT)
 VT['>>>'] = VT['u+'] = () => VAL.NUMBER
+VT.nan = () => VAL.NUMBER   // parse.js's self-describing `NaN` marker
 
 VT['+'] = (args) => {
   const ta = valTypeOf(args[0]), tb = valTypeOf(args[1])

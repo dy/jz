@@ -606,7 +606,7 @@ export const inferModuleIntGlobals = (ast) => {
     if (!Array.isArray(e)) return false
     const op = e[0]
     if (op == null) return typeof e[1] === 'number' && !Number.isInteger(e[1])
-    if (op === '/' || op === '**') return true
+    if (op === 'nan' || op === '/' || op === '**') return true   // NaN is parse.js's marker, not an integer
     if (INT_COERCE_OPS.has(op) || COMPARE_OPS.has(op)) return false
     if (op === '?:') return producesFraction(e[2]) || producesFraction(e[3])
     if (op === '&&' || op === '||' || op === '??') return producesFraction(e[1]) || producesFraction(e[2])

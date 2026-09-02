@@ -125,6 +125,69 @@ test('host:js top-level console.log decodes after memory attaches', () => {
   is(logged[0], 'boot undefined null', `logged=${JSON.stringify(logged)}`)
 })
 
+// A print line is the host's to format: a template (or a `'a=' + x` chain)
+// whose parts are strings, numbers and booleans crosses as its parts, so the
+// binary never links __to_str / ryu / __itoa / __str_concat for it. A part
+// that prints through its own ToString (a class instance, an array) keeps
+// the template as one string. Differential against the same source under JS.
+const PRINT_SRC = `
+  const pr = (a, b, c) => { console.log(\`a=\${a} b=\${b} c=\${c}\`) }
+  export let f = (x, y) => {
+    x = +x; y = +y
+    pr(x, y | 0, x > y)
+    console.log("n=" + x + " s=" + "q" + y, \`\${-0}|\${1 / 0}|\${NaN}\`, "" + (x + y))
+    console.log(\`arr=\${[1, 2]} o=\${{ a: 1 }} t=\${true} u=\${undefined} n=\${null}\`, x > y, !x)
+    return 1
+  }`
+const printRef = () => {
+  const lines = [], orig = console.log
+  console.log = (...a) => lines.push(a.join(' '))
+  try {
+    const pr = (a, b, c) => { console.log(`a=${a} b=${b} c=${c}`) }
+    const f = (x, y) => {
+      x = +x; y = +y
+      pr(x, y | 0, x > y)
+      console.log("n=" + x + " s=" + "q" + y, `${-0}|${1 / 0}|${NaN}`, "" + (x + y))
+      console.log(`arr=${[1, 2]} o=${{ a: 1 }} t=${true} u=${undefined} n=${null}`, x > y, !x)
+    }
+    f(1.5, 2.7)
+  } finally { console.log = orig }
+  return lines.join('\n') + '\n'
+}
+// The exact-part subset alone links no string runtime.
+const PRINT_EXACT = `
+  const pr = (a, b, c) => { console.log(\`a=\${a} b=\${b} c=\${c}\`) }
+  export let f = (x, y) => {
+    x = +x; y = +y
+    pr(x, y | 0, x > y)
+    console.log("n=" + x + " s=" + "q" + y, \`\${-0}|\${1 / 0}|\${NaN}\`, "" + (x + y))
+    return 1
+  }`
+
+test('host:js console.log: template parts print host-side, booleans as booleans', () => {
+  const wat = compile(PRINT_EXACT, { host: 'js', wat: true })
+  for (const fn of ['__to_str', '__itoa', '__ftoa', '__str_concat', '__strcat'])
+    ok(!wat.includes(`$${fn}`), `${fn} linked for a print line`)
+  const lines = [], orig = console.log
+  console.log = (...a) => lines.push(a.join(' '))
+  let ret
+  try { ret = jz(PRINT_SRC, { host: 'js' }).exports.f(1.5, 2.7) } finally { console.log = orig }
+  is(ret, 1)
+  is(lines.join('\n') + '\n', printRef())
+})
+
+test('WASI console.log: template parts print per part', () => {
+  const captured = []
+  const imports = wasi({ write: (fd, text) => captured.push(text) })
+  const wasm = compile(PRINT_SRC, { host: 'wasi' })
+  const mod = new WebAssembly.Module(wasm)
+  const inst = new WebAssembly.Instance(mod, imports)
+  const exps = adaptI64(mod, inst.exports)
+  imports._setMemory(exps.memory)
+  is(exps.f(1.5, 2.7), 1)
+  is(captured.join(''), printRef())
+})
+
 test('WASI polyfill: fd_read returns stdin bytes via opts.read', () => {
   const fixture = '{"a":1}'
   const encoder = new TextEncoder()

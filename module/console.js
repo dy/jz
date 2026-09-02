@@ -23,29 +23,40 @@
  * @module console
  */
 
-import { typed, asF64, asI64, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
-import { emit, deps, reg, hostImport } from '../src/bridge.js'
+import { typed, asF64, asI64, carrierF64Narrow, mkPtrIR, NULL_NAN, UNDEF_NAN, FALSE_NAN, TRUE_NAN } from '../src/ir.js'
+import { emit, bool, deps, reg, hostImport } from '../src/bridge.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { exprType } from '../src/type.js'
 import { VAL } from '../src/reps.js'
 import { inc, PTR, LAYOUT } from '../src/ctx.js'
 
-// Template-literal concat chains (`a${x}b`) lower to ['()', ['.', X, 'concat'], Y]
-// in prepare. Walking left from the chain root recovers the parts in order; if the
-// base is a `['str', ...]` it's a template-shaped chain (vs an arbitrary user
-// .concat call). Returning the parts lets console.log skip __str_concat/__to_str
-// entirely — biquad's only string churn is the perf-summary line.
+// A template literal (`a${x}b`) lowers to ['strcat', ...parts] in prepare; a
+// `'a=' + x + ' b=' + y` chain is a left-leaning `+` tree rooted at a string
+// literal, so every step is string concat by JS semantics. Both flatten to their
+// parts in order when every part prints exactly as ToString would (a string, a
+// number, a boolean): console then prints each part on its own and the binary
+// never links __str_concat/__to_str/ryu/__itoa for the line. Any other part (an
+// object with its own toString, an array, a maybe-undefined census read) keeps
+// the template as one string built by the concat machinery.
+const flatExact = (p) => {
+  const vt = valTypeOf(p)
+  return vt === VAL.BOOL || ((vt === VAL.STRING || vt === VAL.NUMBER) && !censusMaybeUndefined(p))
+}
 const flattenTemplateConcat = (node) => {
-  const parts = []
-  let n = node
-  while (Array.isArray(n) && n[0] === '()' && n.length === 3 &&
-         Array.isArray(n[1]) && n[1][0] === '.' && n[1][2] === 'concat') {
-    parts.unshift(n[2])
-    n = n[1][1]
+  if (!Array.isArray(node)) return null
+  let parts = null
+  if (node[0] === 'strcat') parts = node.slice(1)
+  else {
+    parts = []
+    let n = node
+    while (Array.isArray(n) && n[0] === '+' && n.length === 3) {
+      parts.unshift(n[2])
+      n = n[1]
+    }
+    if (!parts.length || !(Array.isArray(n) && n[0] === 'str')) return null
+    parts.unshift(n)
   }
-  if (!(Array.isArray(n) && n[0] === 'str')) return null
-  parts.unshift(n)
-  return parts
+  return parts.every(flatExact) ? parts : null
 }
 
 const setupWasi = (ctx) => {
@@ -177,6 +188,10 @@ const setupWasi = (ctx) => {
         if (vt === VAL.STRING && !censusMaybeUndefined(part)) {
           inc('__write_str')
           ir.push(['call', '$__write_str', ['i32.const', fd], asI64(emit(part))])
+        } else if (vt === VAL.BOOL) {
+          // 0/1 carrier: select the interned "true"/"false" literal.
+          inc('__write_str')
+          ir.push(['call', '$__write_str', ['i32.const', fd], asI64(bool(part))])
         } else if (vt === VAL.NUMBER && !censusMaybeUndefined(part)) {
           if (exprType(part, ctx.func.locals) === 'i32') {
             inc('__write_int')
@@ -240,7 +255,9 @@ const setupJsHost = (ctx) => {
 
   // Empty SSO string ("") for zero-arg console.log() — host reads as "".
   const emptyStr = () => mkPtrIR(PTR.STRING, LAYOUT.SSO_BIT, 0)
-  const asI64Bits = (e) => ['i64.reinterpret_f64', asF64(emit(e))]
+  // A print slot is an observation site: a BOOL part rides the 0/1 carrier and
+  // must cross as its TRUE/FALSE atom so the host prints "true", not "1".
+  const asI64Bits = (e) => ['i64.reinterpret_f64', carrierF64Narrow(e, emit(e))]
 
   const makeConsole = (method, fd) => {
     ctx.core.emit[`console.${method}`] = (...args) => {
