@@ -271,7 +271,10 @@ export function analyzeFuncForEmit(func, programFacts) {
           // number). The latter catches `acc + cre` float kernels whose `+` would
           // otherwise pull a per-iteration string-concat fork (julia, floatbeats).
           && (paramAllUsesNumeric(body, p.name) || paramNeverString(body, p.name)))
-        updateRep(p.name, { val: VAL.NUMBER })
+        // An f64 slot holds a genuine number (the JS API's ToNumber made
+        // `undefined` NaN), and neither proof admits a nullish test, so the
+        // UNDEF-pad nullability is moot: reads and loop bounds stay plain.
+        updateRep(p.name, { val: VAL.NUMBER, nullable: false })
     }
   }
   // Sound load-CSE: cache a repeated pure typed-array load `arr[idx]` when every intervening

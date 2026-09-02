@@ -1,5 +1,5 @@
 import { ctx } from '../ctx.js'
-import { MUTATE_OPS } from '../ast.js'
+import { MUTATE_OPS, T, walkAst } from '../ast.js'
 import { typedCtorRawOf } from '../static.js'
 
 // `recv[i] = v` into a numeric typed array: SetValueInBuffer ToNumbers the value,
@@ -137,6 +137,11 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       return
     }
     if (MUTATE_OPS.has(op) && names.has(node[1])) { ok = false; return }
+    // Compound assignment: `-=`/`*=`/… ToNumber the value; `+=` does so when the
+    // target is a numeric local (`let s = 0; s += a[i]`, the accumulator idiom).
+    if (typeof op === 'string' && op.length >= 2 && op.endsWith('=') && op !== '==' && op !== '===' && op !== '!=' && op !== '!==' && op !== '<=' && op !== '>=' && op !== '=' && node.length === 3 && typeof node[1] === 'string') {
+      if (op !== '+=' || numericLocals.has(node[1])) { numOperand(node[2]); return }
+    }
     if (numericTypedStore(node)) { if (!names.has(node[1][2])) walk(node[1][2]); numOperand(node[2]); return }
     if (typedIndex(node)) { if (!names.has(node[2])) walk(node[2]); return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
@@ -362,4 +367,165 @@ export function paramNeverString(body, name) {
   }
   walk(body)
   return ok
+}
+
+/** Exported-param `name` used only as a numeric array-like: every use is an
+ *  element read `name[i]`, an element write `name[i] = v` (or compound/update),
+ *  `name.length`, or a forward into a user function whose parameter is itself
+ *  numeric array-like (recursive, cycle guarded), and at least one such use
+ *  exists, plus `return name` (the storage is returned; identity is not
+ *  preserved). No reassignment, no other escape. Returns null when not, else
+ *  `{ writes }`. Under the export contract the host value is normalized to a
+ *  Float64Array at entry and, when written, copied back on return (interop,
+ *  `jz:i64exp` `t`), so the body reads and writes typed storage: no receiver
+ *  fork, no ToNumber runtime. An element is a number wherever it flows, which
+ *  is JS for the numeric arrays such a parameter is written for. */
+const TYPED_RECEIVER_METHODS = new Set(['subarray', 'slice', 'set', 'fill', 'copyWithin', 'indexOf', 'lastIndexOf', 'includes', 'at'])
+const TYPED_WRITE_METHODS = new Set(['set', 'fill', 'copyWithin'])
+export function paramNumericArrayLike(body, name, _seen = new Set()) {
+  if (body == null) return null
+  let ok = true, used = false, writes = false, forwardProven = false
+  const flat1 = (a) => Array.isArray(a) && a[0] === ',' ? a.slice(1).flatMap(flat1) : [a]
+  const closures = new Map()
+  // Views and copies of the receiver (`let h = data.subarray(a, b)`, `.slice`)
+  // are the same storage kind: their uses count as the receiver's.
+  const names = new Set([name])
+  for (let grew = true; grew;) {
+    grew = false
+    walkAst(body, { enter: (n) => {
+      if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+        const init = n[1][2]
+        if (Array.isArray(init) && init[0] === '()' && Array.isArray(init[1]) && init[1][0] === '.' && names.has(init[1][1])
+            && (init[1][2] === 'subarray' || init[1][2] === 'slice') && !names.has(n[1][1])) { names.add(n[1][1]); grew = true }
+      }
+    } })
+  }
+  // Locals with a numeric initializer (loop counters, `let j = i * 2`): an
+  // index that is one of these, a literal, arithmetic over them, `.length`, a
+  // bitwise result or a Math call is a numeric index. An unproven key (`o[k]`
+  // with `k` a parameter) is the dictionary idiom and disqualifies the receiver.
+  const numericLocals = new Set()
+  walkAst(body, { enter: (n) => {
+    if ((n[0] === 'let' || n[0] === 'const') && n.length === 2 && Array.isArray(n[1]) && n[1][0] === '=' && typeof n[1][1] === 'string') {
+      const init = n[1][2]
+      if (Array.isArray(init) && init[0] === '=>' && !closures.has(n[1][1])) {
+        const ps = Array.isArray(init[1]) ? init[1].slice(1) : [init[1]]
+        if (ps.every(p => typeof p === 'string')) closures.set(n[1][1], { params: ps, body: init[2] })
+      }
+    }
+    if (n[0] === 'let' || n[0] === 'const' || n[0] === 'var')
+      for (let i = 1; i < n.length; i++) {
+        const d = n[i]
+        if (Array.isArray(d) && d[0] === '=' && typeof d[1] === 'string' && numericIndex(d[2])) numericLocals.add(d[1])
+      }
+  } })
+  function numericIndex(e) {
+    if (typeof e === 'number') return true
+    if (typeof e === 'string') return numericLocals.has(e)
+    if (!Array.isArray(e)) return false
+    const op = e[0]
+    if (op == null) return typeof e[1] === 'number'
+    if (op === 'u-' || op === 'u+' || op === '~') return numericIndex(e[1])
+    if (op === '-' && e.length === 2) return numericIndex(e[1])
+    if ((NUM_BIN_OPS.has(op) || op === '+' || op === '-') && e.length === 3) return numericIndex(e[1]) && numericIndex(e[2])
+    if (op === '.' && e[2] === 'length') return true
+    if (op === '()' && ((typeof e[1] === 'string' && e[1].startsWith('math.')) || (Array.isArray(e[1]) && e[1][0] === '.' && e[1][1] === 'Math'))) return true
+    if (op === '?:') return numericIndex(e[2]) && numericIndex(e[3])
+    if (op === '[]' && e.length === 3) return numericIndex(e[2])   // an element of a numeric array
+    return false
+  }
+  const walk = (node) => {
+    if (!ok) return
+    if (typeof node === 'string') { if (names.has(node)) ok = false; return }
+    if (!Array.isArray(node)) return
+    const op = node[0]
+    if (op == null || op === 'str' || op === 'template') return
+    // The alias declaration itself: the view/copy call is a use, its args walk.
+    if ((op === 'let' || op === 'const') && node.length === 2 && Array.isArray(node[1]) && node[1][0] === '=' && names.has(node[1][1]) && node[1][1] !== name) {
+      const init = node[1][2]
+      used = true
+      for (let i = 2; i < init.length; i++) walk(init[i])
+      return
+    }
+    if (op === '=>') {
+      const ps = node[1]
+      const shadowed = Array.isArray(ps) ? ps.some(p => names.has(p) || (Array.isArray(p) && names.has(p[1]))) : names.has(ps)
+      if (!shadowed) { walk(node[1]); walk(node[2]) }
+      return
+    }
+    if (MUTATE_OPS.has(op)) {
+      const t = node[1]
+      if (names.has(t) || (Array.isArray(t) && t[0] === '.' && names.has(t[1]))) { ok = false; return }
+      if (Array.isArray(t) && t[0] === '[]' && names.has(t[1])) {
+        const v = node[2]
+        if (!numericIndex(t[2]) || (Array.isArray(v) && (v[0] === 'str' || v[0] === 'template' || (v[0] === '+' && v.length === 3 && (isStrLiteral(v[1]) || isStrLiteral(v[2])))))) { ok = false; return }
+        writes = true; used = true
+        walk(t[2]); for (let i = 2; i < node.length; i++) walk(node[i])
+        return
+      }
+    }
+    if (op === 'delete') { if (Array.isArray(node[1]) && names.has(node[1][1])) { ok = false; return } }
+    if (op === '[]' && node.length === 3 && names.has(node[1])) {
+      if (!numericIndex(node[2])) { ok = false; return }
+      used = true; walk(node[2]); return
+    }
+    // Typed-array methods on the receiver keep it typed (`data.subarray(a, b)`,
+    // `out.set(src)`); the writing ones mark the storage for copy-back, and a
+    // `fill` with a numeric value proves the elements numeric.
+    if (op === '()' && Array.isArray(node[1]) && node[1][0] === '.' && names.has(node[1][1]) && TYPED_RECEIVER_METHODS.has(node[1][2])) {
+      used = true
+      if (TYPED_WRITE_METHODS.has(node[1][2])) writes = true
+      if (node[1][2] === 'fill' && numericIndex(node[2])) forwardProven = true
+      for (let i = 2; i < node.length; i++) walk(node[i])
+      return
+    }
+    // `return data` on an in-place kernel returns the storage itself (the host
+    // sees a typed array with the same contents; identity is not preserved).
+    if (op === 'return' && names.has(node[1])) { used = true; return }
+    if ((op === '.' || op === '?.') && names.has(node[1])) { if (node[2] !== 'length') ok = false; else used = true; return }
+    if (op === '()' && typeof node[1] === 'string') {
+      const args = node.slice(2).flatMap(flat1)
+      const cl = closures.get(node[1])
+      const fn = cl ? null : ctx.funcs.map?.get(node[1])
+      for (let i = 0; i < args.length; i++) {
+        if (!names.has(args[i])) { walk(args[i]); continue }
+        const target = cl ? cl.params[i] : (fn && fn.body && !fn.raw && !fn.rest && fn.sig?.params?.[i]?.name)
+        const targetBody = cl ? cl.body : fn?.body
+        const inner = target && !_seen.has(node[1] + '#' + i) && paramNumericArrayLike(targetBody, target, new Set([..._seen, node[1] + '#' + i]))
+        if (!inner) { ok = false; return }
+        used = true; forwardProven = true
+        if (inner.writes) writes = true
+      }
+      return
+    }
+    for (let i = 1; i < node.length; i++) walk(node[i])
+  }
+  walk(body)
+  if (!ok || !used) return null
+  // The elements must be numbers wherever they flow: substitute every read
+  // `name[i]` with one pseudo binding and require it numeric-compatible (the
+  // same judgement a numeric parameter gets, `+` allowed, keys, unknown
+  // callees, returns and escapes rejected). A string indexed by a loop counter
+  // whose characters become dictionary keys fails here.
+  const elem = `${T}elem`
+  const isElemRead = (n) => Array.isArray(n) && n[0] === '[]' && n.length === 3 && names.has(n[1]) && numericIndex(n[2])
+  const subst = (n) => {
+    if (!Array.isArray(n)) return n
+    if (isElemRead(n)) return elem
+    // A write through the receiver was validated above; keep only the value it
+    // stores, in the numeric context the store gives it (`a[i] *= k` reads as
+    // `elem * k`, `a[i] = v` as `v`, `a[i]++` as `+elem`).
+    if (MUTATE_OPS.has(n[0]) && isElemRead(n[1])) {
+      const op = n[0]
+      if (op === '=') return subst(n[2])
+      if (op === '++' || op === '--') return ['u+', elem]
+      return [op.slice(0, -1), elem, subst(n[2])]
+    }
+    return n.map(subst)
+  }
+  // Proof, not mere compatibility: `buf + s[i]` over a string local never
+  // forces a number, so a string parameter indexed into a concat stays a string.
+  // A callee that proved the forwarded value supplies the proof for this body.
+  if (!paramAllUsesNumeric(subst(body), elem, new Set(), !forwardProven)) return null
+  return { writes }
 }

@@ -1147,8 +1147,12 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
   // read undefined). Selection is now by a single RECEIVER pointer-kind tag
   // test (ARRAY/TYPED → the lean __typed_idx read; else → __dyn_get_expr's
   // ToPropertyKey read) — not a per-key __is_str_key dispatch.
+  // `g` forwards an unknown value into `f`, so `f`'s receiver stays unproven
+  // (an export used only as a numeric array-like would otherwise take the typed
+  // boundary contract and read typed storage outright).
   const unopt = compile(`
     export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
+    export let g = (x) => f(x)
   `, { wat: true, optimize: false })
   const fUnopt = unopt.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
   const nu = (re) => (fUnopt.match(re) || []).length
@@ -1164,6 +1168,7 @@ test('codegen: unknown-receiver index with NUMBER key guards receiver kind once,
   // inlined load with no boxing of $i.
   const wat = compile(`
     export let f = (a) => { let s = 0; for (let i = 0; i < 100; i++) s = s + (a[i] | 0); return s }
+    export let g = (x) => f(x)
   `, { wat: true })
   const fMatch = wat.match(/\(func \$f[\s\S]*?\n  \)/)?.[0] || ''
   ok(/\$__typed_idx[\s\S]*?\(local\.get \$i\)/.test(fMatch)

@@ -771,7 +771,7 @@ export const wrap = (memSrc, inst, state) => {
   const i64Exp = new Map()
   const i64Bytes = customSection(mod, 'jz:i64exp')
   if (i64Bytes) {
-    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r }) }
+    try { for (const e of JSON.parse(td.decode(i64Bytes))) i64Exp.set(e.name, { p: new Set(e.p || []), r: !!e.r, t: e.t || null }) }
     catch { /* ignore */ }
   }
   // jz:hostabi — the ONE authority for per-slot host-BigInt ingress policy
@@ -987,7 +987,7 @@ export const wrap = (memSrc, inst, state) => {
   // arg. An i64-carrier param (per jz:i64exp) gets the box bits: `coerce` for
   // pure-scalar modules, `mem.wrapVal` for heap modules. The box never materializes
   // as f64, so JSC can't canonicalize it.
-  const i64Arg = (ie, ext, box, hostAbi, name) => (x, i) => {
+  const i64Arg = (ie, ext, box, hostAbi, name, writeBack) => (x, i) => {
     if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
     const plainBigint = typeof x === 'bigint' && !isBox(x)
     // f64 slot: proven numeric (every box-capable param takes the i64 lane, per
@@ -1016,6 +1016,27 @@ export const wrap = (memSrc, inst, state) => {
     //     params and silently garbled every numeric one (the dyn-keys
     //     zero-evidence pin) — refuses loudly with both remedies named
     //     instead.
+    // A slot the compiler proved a numeric array-like (`t`, per jz:i64exp) is
+    // normalized to that typed array before boxing: the body reads typed
+    // storage. Element conversion is ToNumber, as the numeric reads would apply.
+    // A `+` suffix marks a slot the body writes: the storage is copied back into
+    // the host value after the call (the host array itself is never a view).
+    const typedSlot = ie?.t?.[i]
+    let host = null
+    if (typedSlot) {
+      const writes = typedSlot.endsWith('+')
+      const Ctor = globalThis[writes ? typedSlot.slice(0, -1) : typedSlot]
+      // A jz buffer of the same kind is the storage itself (zero copy); one of
+      // another kind converts through its view like any host array. A box is an
+      // i64 carrier or the legacy f64 NaN carrier (a NaN number).
+      if ((typeof x === 'bigint' && isBox(x)) || (typeof x === 'number' && x !== x)) {
+        const view = mem.read(x)
+        if (!(view instanceof Ctor)) { if (writes && ArrayBuffer.isView(view)) host = view; x = Ctor.from(view) }
+      } else {
+        if (writes && x != null && typeof x === 'object') host = x
+        x = x instanceof Ctor ? x : Ctor.from(x)
+      }
+    }
     let w
     if (plainBigint) {
       if (hostAbi?.raw?.has(i)) w = x
@@ -1045,7 +1066,19 @@ export const wrap = (memSrc, inst, state) => {
         throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
       return encodeSSO(w)
     }
-    return bits(w)                                   // i64 param: pass the box bits
+    const b = bits(w)                                // i64 param: pass the box bits
+    if (host && writeBack) writeBack.push([host, b])
+    return b
+  }
+  // After the call: copy each written typed slot back into the host value it
+  // came from. A typed host array takes the storage through `set`; a plain
+  // array element by element.
+  const copyBack = (writeBack) => {
+    for (const [host, b] of writeBack) {
+      const view = mem.read(b)
+      if (ArrayBuffer.isView(host)) host.set(view.subarray(0, host.length))
+      else for (let i = 0; i < host.length && i < view.length; i++) host[i] = view[i]
+    }
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -1098,7 +1131,8 @@ export const wrap = (memSrc, inst, state) => {
       const ie = i64Exp.get(name)
       const hostAbi = hostAbiExp.get(name)
       exports[name] = (...args) => {
-        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name))
+        const writeBack = ie?.t ? [] : null
+        const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack))
         while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
         const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
@@ -1106,6 +1140,7 @@ export const wrap = (memSrc, inst, state) => {
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
           const ret = fn.apply(null, a)
+          if (writeBack?.length) copyBack(writeBack)
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {
@@ -1119,10 +1154,12 @@ export const wrap = (memSrc, inst, state) => {
       const len = fn.length
       exports[name] = (...args) => {
         while (args.length < len) args.push(undefined)
+        const writeBack = ie?.t ? [] : null
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.
         if (lastErrBitsWritable) lastErrBits.value = 0n
         try {
-          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name)))
+          const ret = fn.apply(null, args.map(i64Arg(ie, ext, memWrapVal, hostAbi, name, writeBack)))
+          if (writeBack?.length) copyBack(writeBack)
           if (typeof ret === 'bigint' && !(ie && ie.r)) return ret
           return finishRet(ret, readRet)
         } catch (error) {

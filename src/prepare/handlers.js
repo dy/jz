@@ -640,6 +640,12 @@ const handlers = {
           const alias = typeof item === 'string' ? item : item[2]
           const mangled = resolved.exports.get(name)
           if (!mangled) err(`'${name}' is not exported from '${mod}' — check the module's export list`)
+          if (mangled instanceof Map) {
+            // A namespace re-export (`export * as name from`): bind as `import * as`.
+            if (!ctx.module.namespaces) ctx.module.namespaces = Object.create(null)
+            ctx.module.namespaces[alias] = mangled
+            continue
+          }
           ctx.scope.chain[alias] = mangled
         }
       }
@@ -762,6 +768,10 @@ const handlers = {
           for (const [name, mangled] of resolved.exports) {
             if (name !== 'default' && !(name in ctx.funcs.exports)) ctx.funcs.exports[name] = mangled
           }
+        } else if (Array.isArray(decl[1]) && decl[1][0] === 'as' && decl[1][1] === '*' && typeof decl[1][2] === 'string') {
+          // export * as ns from './mod' → the name is a namespace: an importer
+          // binds it like `import * as ns` and resolves `ns.member` statically.
+          ctx.funcs.exports[decl[1][2]] = resolved.exports
         } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
           // export { a, b as c } from './mod'
           const inner = decl[1][1]
@@ -2658,6 +2668,8 @@ function prepareModule(specifier, source) {
       // Will resolve after all named exports are mangled
       continue
     }
+    // Namespace re-export (`export * as ns from`): the map passes through as is.
+    if (val instanceof Map) { moduleExports.set(name, val); continue }
     // Re-export alias: export { x } from './mod' → pass through inner module's mangled name
     if (typeof val === 'string') {
       if (val.startsWith(prefix + '$')) {

@@ -20,7 +20,8 @@
  * @module test/_matrix
  */
 
-import { f64ToI64, i64ToF64, coerce } from '../interop.js'
+import { f64ToI64, i64ToF64, coerce, memory as jzMemory } from '../interop.js'
+import { PTR, encodePtrHi, encodeTypedElemAux } from '../layout.js'
 
 // i64 bits for an arg: a box (BigInt, incl. coerce's null/undef sentinels) passes through;
 // a number / f64 NaN-box reinterprets to its bits (intact on V8, where tests run).
@@ -46,14 +47,38 @@ export function adaptI64(mod, raw) {
     if (typeof fn !== 'function') { out[name] = fn; continue }
     const sig = i64Exp.get(name)
     if (!sig) { out[name] = fn; continue }
-    const piSet = new Set(sig.p), r = sig.r, m = sig.m
+    const piSet = new Set(sig.p), r = sig.r, m = sig.m, t = sig.t || null
+    // A `t` slot takes typed storage the raw host builds itself: allocate in the
+    // instance's memory, write the TYPED header (props word, byteLen, byteLen),
+    // fill from the array-like, pass the box; a `+` slot copies back after.
+    const typedArg = (x, ctor, writes, back) => {
+      const Ctor = globalThis[ctor]
+      const src = x instanceof Ctor ? x : Ctor.from(typeof x === 'number' && x !== x ? jzMemory(raw.memory).read(x) : x)
+      const bytes = src.length * Ctor.BYTES_PER_ELEMENT
+      const hdr = raw._alloc(16 + bytes)
+      const dv = new DataView(raw.memory.buffer)
+      dv.setBigInt64(hdr, 0n, true); dv.setInt32(hdr + 8, bytes, true); dv.setInt32(hdr + 12, bytes, true)
+      new Ctor(raw.memory.buffer, hdr + 16, src.length).set(src)
+      if (writes && x !== null && typeof x === 'object') back.push([x, hdr + 16, src.length, Ctor])
+      return (BigInt(encodePtrHi(PTR.TYPED, encodeTypedElemAux(ctor))) << 32n) | BigInt((hdr + 16) >>> 0)
+    }
     out[name] = (...args) => {
       // Pad to the wasm arity: an i64 param requires a BigInt, so a missing arg must be a
       // box (UNDEF_NAN) — `undefined` throws "Cannot convert undefined to a BigInt". coerce
       // maps null/undefined → atom box; a number / f64 NaN-box reinterprets to its bits.
       while (args.length < fn.length) args.push(undefined)
-      const a = args.map((x, i) => piSet.has(i) ? argBits(coerce(x)) : x)
+      const back = []
+      const a = args.map((x, i) => {
+        const slot = t?.[String(i)]
+        if (slot) return typedArg(x, slot.endsWith('+') ? slot.slice(0, -1) : slot, slot.endsWith('+'), back)
+        return piSet.has(i) ? argBits(coerce(x)) : x
+      })
       const ret = fn(...a)
+      for (const [host, off, len, Ctor] of back) {
+        const view = new Ctor(raw.memory.buffer, off, len)
+        if (ArrayBuffer.isView(host)) host.set(view.subarray(0, host.length))
+        else for (let i = 0; i < host.length && i < len; i++) host[i] = view[i]
+      }
       // `m`: a multi-value tuple crosses as i64 lanes — reinterpret each back to the f64
       // NaN-box ABI (numbers restore; boxes' bits are exact on V8, where tests run).
       if (m) return ret.map(i64ToF64)

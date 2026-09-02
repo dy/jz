@@ -184,6 +184,8 @@ Latest loaded-machine result against the fresh 14,415,726-byte `dist/jz.wasm`:
 
 The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs remove that helper where possible. The typed row's win does not offset this per-case loss.
 
+Correction (2026-09-02): the emitted-size geomean above was an artifact of the `p = +p` guard idiom every scalar row carries. Production treated the guard as a dynamic ToNumber and pulled its string runtime into 40-byte kernels (17,887 bytes for the arithmetic row); the guard is free now, and constant-length module typed arrays are static storage. Production sizes at `optimize: 'size'` per row: constant 41, nan-fold 41, arithmetic 58 (prototype 64), direct-call 49 (69), conditional 82 (61: production keeps the NaN canonicalization on `-x`), for-loop 74 (102), while-loop 74 (102), bitwise 120 (212), typed-simd 220 (287). What remains of the prototype's lead is compile speed on tiny inputs and the 6.45x smaller self-hosted artifact, neither of which is a library user's number. PLAN.md carries the consequences.
+
 Generic optimization has a fixed cost on tiny modules. The benchmark exercises it during semantic and reuse checks, while timed rows compare matching optimize-off paths. Production uses the same profile-controlled policy.
 
 The machine had about 9.6 GiB of allocated swap, so these timings do not certify release performance. The artifact ratio compares compilers with different language coverage and does not predict production savings.

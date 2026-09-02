@@ -23,13 +23,22 @@ const fProcess = (src, opt = speed) => {
 // polymorphic; with the pass it grows a base-hoisted fast loop that vectorizes to f64x2.
 const SELF_MAP = 'export function process(buf, n) { for (let i = 0; i < n; i++) buf[i] = buf[i] * 2.0 + 1.0 }'
 
+// An export whose parameter is used only as a numeric array-like takes the
+// typed boundary contract (`Float64Array` at entry): its loop is typed storage
+// outright and vectorizes with no unswitch. The unswitch is for the
+// polymorphic shape: a function also called inside the module with other kinds.
+const POLY_MAP = `${SELF_MAP}
+  export let runX = (x) => process(x, 4)`
+
 test('unswitch: Float64Array param self-map gets a vectorized fast path', () => {
-  ok(/\$__utb/.test(fProcess(SELF_MAP)), 'base hoisted to a $__utb local (unswitch fired)')
-  ok(/v128|f64x2/.test(fProcess(SELF_MAP)), 'fast loop lifts to SIMD lanes')
+  ok(!/\$__utb/.test(fProcess(SELF_MAP)), 'boundary-typed export: no unswitch needed')
+  ok(/v128|f64x2/.test(fProcess(SELF_MAP)), 'typed loop lifts to SIMD lanes')
+  ok(/\$__utb/.test(fProcess(POLY_MAP)), 'polymorphic shape: base hoisted to a $__utb local (unswitch fired)')
+  ok(/v128|f64x2/.test(fProcess(POLY_MAP)), 'fast loop lifts to SIMD lanes')
 })
 
 test('ablation: pass off → the polymorphic param loop does NOT vectorize', () => {
-  const off = fProcess(SELF_MAP, { level: 'speed', unswitchTypedParamLoop: false })
+  const off = fProcess(POLY_MAP, { level: 'speed', unswitchTypedParamLoop: false })
   ok(!/\$__utb/.test(off), 'control: no base-hoist with pass OFF')
   ok(!/v128|f64x2/.test(off), 'control: scalar polymorphic loop with pass OFF (the deopt this pass removes)')
 })

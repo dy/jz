@@ -324,3 +324,68 @@ test('interop: a box-capable export param never rides the f64 lane', () => {
   is(exports.f(10), true)
   is(exports.f('10'), false)
 })
+
+// ── numeric array-like export parameters ────────────────────────────────────
+// A parameter the body only indexes, measures, writes by element, forwards to
+// a function that does the same, or returns, is a numeric array-like: the
+// wrapper normalizes the host value to a Float64Array copy at entry and, when
+// the body writes it, copies the storage back after the call. The body reads
+// and writes typed storage directly: no receiver fork, no ToNumber runtime.
+
+test('interop: a numeric array-like parameter is typed storage inside, any array-like outside', () => {
+  const src = `function sum(w, t) { let s = 0; for (let i = 0; i < t.length; i++) s += w[i] * t[i]; return s }
+    export let fit = (target) => { let w = new Float64Array(target.length); for (let i = 0; i < w.length; i++) w[i] = i; return sum(w, target) }
+    export let first = (a) => a[1] * 10 + a.length`
+  const bytes = compile(src)
+  ok(bytes.length < 2000, `${bytes.length} bytes: no fork, no ToNumber runtime`)
+  const lanes = JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0]))
+  is(lanes.find(e => e.name === 'fit').t['0'], 'Float64Array')
+  const { exports } = interop.instantiate(bytes)
+  is(exports.fit([1, 2, 3]), 8)
+  is(exports.fit(new Float64Array([1, 2, 3])), 8)
+  is(exports.fit(new Float32Array([1, 2, 3])), 8)
+  is(exports.fit(new Uint8Array([1, 2, 3])), 8)
+  is(exports.first([5, 6, 7]), 63)
+  throws(() => exports.fit(null), TypeError, 'null is not array-like, as JS would throw on null.length')
+})
+
+test('interop: a written array-like parameter copies its storage back to the host', () => {
+  const src = `export let scale = (a, k) => { for (let i = 0; i < a.length; i++) a[i] *= k; return a }`
+  const { exports, memory } = interop.instantiate(compile(src))
+  const arr = [1, 2, 3], f64 = new Float64Array([1, 2, 3]), f32 = new Float32Array([1, 2, 3])
+  const out = exports.scale(arr, 2)
+  is(arr.join(), '2,4,6', 'a plain array is written back')
+  is(out.join(), '2,4,6', 'the returned storage holds the result')
+  exports.scale(f64, 3)
+  is(f64.join(), '3,6,9')
+  exports.scale(f32, 10)
+  is(f32.join(), '10,20,30', 'another element kind is written back through set')
+  const buf = memory.Float64Array([1, 2, 3])
+  exports.scale(buf, 5)
+  is(Array.from(memory.read(buf)).join(), '5,10,15', 'a jz buffer stays a live view')
+})
+
+test('interop: typed views, typed methods and accumulators keep an array-like parameter typed', () => {
+  const src = `export let head = (data, n) => { let h = data.subarray(0, n); let s = 0; for (let i = 0; i < h.length; i++) s += h[i]; return s }
+    export let fillz = (data) => { data.fill(0); data[0] = 7; return data.length }
+    export let copy = (dst, src) => { dst.set(src); return dst[1] * 2 }
+    export let keyed = (o, k) => o[k]
+    export let chars = (s) => { let buf = ''; for (let i = 0; i < s.length; i++) buf = buf + s[i]; return buf.length }`
+  const bytes = compile(src)
+  const lanes = Object.fromEntries(JSON.parse(new TextDecoder().decode(WebAssembly.Module.customSections(interop.toModule(bytes), 'jz:i64exp')[0])).map(e => [e.name, e.t ?? null]))
+  is(lanes.head['0'], 'Float64Array', 'a subarray view of the parameter is the same storage')
+  is(lanes.fillz['0'], 'Float64Array+', 'fill writes, so the storage copies back')
+  is(lanes.copy['0'], 'Float64Array+')
+  is(lanes.keyed, null, 'an unproven key is the dictionary idiom')
+  is(lanes.chars, null, 'a string indexed into a concat stays a string')
+  const { exports } = interop.instantiate(bytes)
+  is(exports.head(new Float32Array([1, 2, 3, 4]), 3), 6)
+  is(exports.head([1, 2, 3, 4], 2), 3)
+  const z = [5, 6, 7]
+  is(exports.fillz(z), 3)
+  is(z.join(), '7,0,0')
+  const dst = new Float64Array(3)
+  is(exports.copy(dst, [4, 5, 6]), 10)
+  is(dst.join(), '4,5,6')
+  is(exports.chars('banana'), 6)
+})

@@ -37,11 +37,23 @@ test('features.external OFF: schema object — no __ext_* imports', () => {
 
 test('features.external ON: erased indexable .length may be an external array-like', () => {
   if (onWasi()) return
-  const w = wat(`export let s = (a) => {
+  // An export used only as a numeric array-like takes the typed boundary
+  // contract: the wrapper normalizes any host array-like (externals included)
+  // to a Float64Array before the call, so the body needs no host read.
+  const typed = wat(`export let s = (a) => {
     let t = 0
     for (let i = 0; i < a.length; i++) t += a[i]
     return t
   }`)
+  is(hasImport(typed, '__ext_prop'), false)
+  // Forwarded an unknown value from another export, the receiver stays
+  // erased and may be an external array-like: the host read is present.
+  const w = wat(`export let s = (a) => {
+    let t = 0
+    for (let i = 0; i < a.length; i++) t += a[i]
+    return t
+  }
+  export let g = (x) => s(x)`)
   is(hasImport(w, '__ext_prop'), true)
   is(hasImport(w, '__ext_has'), false)
 })

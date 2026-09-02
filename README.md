@@ -213,6 +213,14 @@ not supported
 - **Array indices.** Indices coerce to `i32`. Plain arrays are bounds checked;
   typed arrays use raw fixed-size linear-memory access, so invalid indices can
   read unrelated memory or trap.
+- **Host boundary.** An exported parameter used only as a number takes an `f64`
+  slot: the JS API's own ToNumber applies, as `+x` would. An exported parameter
+  used only as a numeric array (element reads and writes with numeric indices,
+  `.length`, `subarray`/`slice` views, `set`/`fill`, forwarded or returned)
+  arrives as a `Float64Array` copy and, when the body writes it, its storage is
+  copied back into the host array after the call; the identity of a returned
+  parameter is not preserved. Any other host value is copied in; a jz buffer
+  (`memory.Float64Array(...)`) is the storage itself.
 - **Memory.** There is no garbage collector. Call `memory.reset()` between
   independent allocation batches; it invalidates every previous pointer.
   WeakRef and FinalizationRegistry have nothing to observe; `WeakMap` and

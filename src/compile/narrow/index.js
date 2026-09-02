@@ -36,7 +36,7 @@ import {
   inferArrElemSchema, inferArrElemSchemaSet, inferArrElemValType, inferSchemaId, inferValType, inferTypedCtor,
 } from '../infer.js'
 import { RECUR_INT_OPS, assertValKindConsistent, buildCallerTypedLenCtx, enrichCallerValTypesFromPointerParams, resetParamWasmFacts, createPhaseState } from './caller-ctx.js'
-import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi } from './param-abi.js'
+import { applyI32ParamSpecialization, validateTypedLenParams, validateLenBoundOfParams, validateIntConstParams, applyPointerParamAbi, narrowableFuncs, applyTypedPointerParamAbi, applyExportTypedArrayAbi } from './param-abi.js'
 import { narrowI32Results, narrowValResults, narrowPointerResults, narrowReturnArrayElems } from './results.js'
 import { inferInternalArrayLengths, arrayReadProvenInBounds, inferTypedValueRanges, boundedByCallerLength } from './summaries.js'
 import { jsstringEnabled, applyJsstringBoundaryCarrier } from './jsstring-carrier.js'
@@ -75,6 +75,11 @@ export default function narrowSignatures(programFacts, ast) {
     const list = sitesByCallee.get(cs.callee)
     if (list) list.push(cs); else sitesByCallee.set(cs.callee, [cs])
   }
+
+  // Export parameters used only as numeric array-likes take the typed pointer
+  // ABI before the lattice runs, so every callee fed from them sees a typed
+  // argument (the wrapper normalizes the host value at entry).
+  applyExportTypedArrayAbi(paramReps, callSites, addressTaken)
 
   // Body-driven result kinds do not depend on the parameter lattice. Settle
   // them before caller contexts are built so those contexts are born against

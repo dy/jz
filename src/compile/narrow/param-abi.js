@@ -15,6 +15,8 @@ import { typedElemAux } from '../../../layout.js'
 import { VAL } from '../../reps.js'
 import { PTR_ABI_KINDS } from './caller-ctx.js'
 import { isExported } from '../func-exports.js'
+import { paramNumericArrayLike } from '../param-numeric.js'
+import { ensureParamRep } from '../../param-reps.js'
 
 // narrowMutatedParams: admit a body-WRITTEN param into the i32 specialization
 // when every mutation of it is provably int-preserving. Reuses type.js's
@@ -276,7 +278,12 @@ export function narrowableFuncs(addressTaken) {
 
 export function applyTypedPointerParamAbi(paramReps, addressTaken) {
   for (const func of ctx.funcs.list) {
-    if (isExported(func) || func.raw || addressTaken.has(func.name)) continue
+    if (func.raw || addressTaken.has(func.name)) continue
+    // An exported function narrows only the parameters the export contract
+    // normalizes at entry (applyExportTypedArrayAbi); the host may pass anything
+    // to the rest.
+    const exported = isExported(func)
+    if (exported && !func.sig.params.some(p => p.boundaryTyped)) continue
     const reps = paramReps.get(func.name)
     if (!reps) continue
     const restIdx = func.rest ? func.sig.params.length - 1 : -1
@@ -284,6 +291,7 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
     for (const [k, r] of reps) {
       const ctor = r.typedCtor
       if (ctor == null) continue
+      if (exported && !func.sig.params[k]?.boundaryTyped) continue
       if (k === restIdx) continue
       if (k >= func.sig.params.length) continue
       const p = func.sig.params[k]
@@ -303,3 +311,37 @@ export function applyTypedPointerParamAbi(paramReps, addressTaken) {
   }
 }
 
+
+/** Exported parameters used only as numeric array-likes (paramNumericArrayLike)
+ *  take the typed pointer ABI as Float64Array: the wrapper normalizes the host
+ *  value at entry (`jz:i64exp` `t`), the lattice sees a typed argument at every
+ *  forward, and the body reads typed storage. Seeded before the signature
+ *  fixpoint so callees fed from the parameter inherit the kind. */
+export function applyExportTypedArrayAbi(paramReps, callSites, addressTaken) {
+  const calledInside = new Set()
+  for (const cs of callSites) calledInside.add(cs.callee)
+  for (const func of ctx.funcs.list) {
+    if (!isExported(func) || func.raw || !func.body) continue
+    // The contract holds at the boundary only: an internal caller or a value
+    // use could hand the function any array, so such exports keep the dynamic path.
+    if (calledInside.has(func.name) || addressTaken.has(func.name)) continue
+    const restIdx = func.rest ? func.sig.params.length - 1 : -1
+    func.sig.params.forEach((p, k) => {
+      if (k === restIdx || p.type !== 'f64' || p.ptrKind != null || p.jsstring || func.defaults?.[p.name] != null) return
+      const use = paramNumericArrayLike(func.body, p.name)
+      if (!use) return
+      const rep = ensureParamRep(paramReps, func.name, k)
+      rep.val = VAL.TYPED
+      rep.typedCtor = 'new.Float64Array'
+      rep.recvArrTyped = true   // the receiver IS typed: no runtime kind probe at reads
+      // The pointer narrowing itself waits for applyTypedPointerParamAbi, after
+      // the fixpoint: an i32 signature this early reads as a numeric i32 at
+      // every forward (applyI32ParamSpecialization) instead of a pointer. A
+      // trailing `+` asks the wrapper to copy the storage back after the call.
+      p.boundaryTyped = use.writes ? 'Float64Array+' : 'Float64Array'
+      // The typed readers live in the typedarray module, which only a source
+      // constructor would otherwise pull in.
+      ctx.module.include?.('typedarray')
+    })
+  }
+}

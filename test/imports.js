@@ -1053,3 +1053,13 @@ test('a function local may shadow an import; the module init is a statement', ()
   const b = jz(`import n from './n.js'\nexport let f = (h) => { let n = 5; return n + h }`, { modules: mods }).exports
   is(b.f(3), 8)
 })
+
+test('export * as ns from a module binds the namespace for importers', () => {
+  const { exports } = jz(`import { allpass, lowpass } from './biquad.js'
+    export let f = (x) => allpass.first(x) * 10 + allpass.second(x) + lowpass(x)`, { modules: {
+    './biquad.js': `export { default as lowpass } from './lowpass.js'\nexport * as allpass from './allpass.js'`,
+    './lowpass.js': `export default (x) => x + 1`,
+    './allpass.js': `export function first (x) { return x * 2 }\nexport function second (x) { return x * 3 }`,
+  } })
+  is(exports.f(2), 49)
+})

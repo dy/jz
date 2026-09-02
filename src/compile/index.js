@@ -576,9 +576,11 @@ export default function compile(ast, profiler) {
       }
     }
     if (isExported(f) && isBoundaryWrapped(f) && f._exportI64) {
-      const { p, r, m } = f._exportI64
+      const { p, r, m, t } = f._exportI64
       for (const exportName of exportNamesOf(f.name))
-        lateI64.push(m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p })
+        lateI64.push(t
+          ? (m ? { name: exportName, p, m, t } : r ? { name: exportName, p, r, t } : { name: exportName, p, t })
+          : (m ? { name: exportName, p, m } : r ? { name: exportName, p, r } : { name: exportName, p }))
     }
     if (isExported(f)) {
       const tag = []
