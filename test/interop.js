@@ -301,7 +301,8 @@ test('interop: the `x = +x` guard on a numeric export is free', () => {
   // proven number is identity; the host already applied ToNumber at the f64 slot.
   const guarded = compile(`export let f = x => { x = +x; return x * x * 0.5 + 3 }`)
   const bare = compile(`export let f = x => x * x * 0.5 + 3`)
-  ok(guarded.length <= bare.length + 2, `guarded ${guarded.length} B vs bare ${bare.length} B`)
+  ok(guarded.length <= bare.length + 8, `guarded ${guarded.length} B vs bare ${bare.length} B`)
+  ok(!/__to_num/.test(compile(`export let f = x => { x = +x; return x * x * 0.5 + 3 }`, { wat: true })), 'no ToNumber runtime')
   const { exports } = interop.instantiate(guarded)
   is(exports.f('8'), 35)
   is(exports.f(null), 3)

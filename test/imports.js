@@ -1031,3 +1031,15 @@ test('module-level destructuring takes the module prefix like a plain declaratio
   })
   is(exports.f(), 6 * 100 + 24 * 10 + 15)
 })
+
+test('a local export shadows the same name from export *', () => {
+  const src = `import * as wf from './wf.js'
+    export function cola (win, hop) { return wf.cola(win, hop) + win }
+    export * from './wf.js'`
+  const modules = { './wf.js': `export function cola (fn, N) { return fn * N }\nexport function gen (n) { return n * 2 }` }
+  const { exports } = jz(src, { modules })
+  is(exports.cola(2, 3), 8)
+  is(exports.gen(4), 8)
+  const first = jz(`export * from './wf.js'\nexport function cola (win, hop) { return 1 }`, { modules }).exports
+  is(first.cola(2, 3), 1)
+})

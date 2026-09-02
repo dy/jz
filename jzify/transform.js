@@ -135,6 +135,17 @@ export function createTransform(opts) {
     return t
   }
 
+  // Whether an identifier token appears anywhere in `node` outside literals and
+  // property keys (a conservative free-variable test: any mention keeps the binding).
+  function mentions(node, name) {
+    if (node === name) return true
+    if (!Array.isArray(node) || node[0] == null) return false
+    if (node[0] === '.' || node[0] === '?.') return mentions(node[1], name)
+    if (node[0] === ':') return mentions(node[2], name)
+    for (let i = 1; i < node.length; i++) if (mentions(node[i], name)) return true
+    return false
+  }
+
   function hoistFnDecl(name, params, body) {
     const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
     const decl = ['const', ['=', name, ['=>', p2, wrapArrowBody(b2)]]]
@@ -403,6 +414,10 @@ export function createTransform(opts) {
     'function'(name, params, body) {
       const [p2, b2] = lowerArguments(params, functionBodyBlock(body))
       const arrow = ['=>', p2, wrapArrowBody(b2)]
+      // The name of a named function expression binds only inside its body. A
+      // body that never mentions it (`fn.coefs = function coefs () {}`, named
+      // for stack traces) is the plain arrow, which keeps the property lift.
+      if (name && !mentions(body, name) && !mentions(params, name)) return arrow
       if (name) {
         return ['()', ['()', ['=>', null, ['{}', [';',
           ['let', name],

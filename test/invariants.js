@@ -11,7 +11,7 @@ import test from 'tst'
 import { is, ok, throws } from 'tst/assert.js'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, relative } from 'path'
-import { compile } from '../index.js'
+import jz, { compile } from '../index.js'
 import { ctx, reset, DBG_INVARIANTS } from '../src/ctx.js'
 import { analyzeBody, reanalyzeBody, setFuncBody } from '../src/compile/analyze.js'
 import { emit, emitter, emitVoid as flat, emitBlockBody as body, emitBoolStr as bool, emitIndex as idx, buildArrayWithSpreads as spread, emitIdentitySafe } from '../src/compile/emit.js'
@@ -1059,4 +1059,36 @@ test('invariant: paramReps/callSites consumer order independence — a function\
   ok(g1 && g2, `both compiles must emit $g: ${JSON.stringify([!!g1, !!g2])}`)
   is(stripIdCounters(f1), stripIdCounters(f2), 'f\'s own compiled body is structurally identical regardless of declaration order relative to g')
   is(stripIdCounters(g1), stripIdCounters(g2), 'g\'s own compiled body is structurally identical regardless of declaration order relative to f')
+})
+
+test('invariant: a guarded clone of a rest-lowered function reaches through its source family', () => {
+  // `resample(data, { from, to } = {})` lowers to a rest variant; a speculative
+  // typed clone of that variant resolves its identity to the unlowered root,
+  // which nothing calls. The reachability gate skipped the clone while the
+  // guarded call sites still named it (watr: unknown func).
+  const modules = {
+    './resample.js': `export default function resample(data, { from = 44100, to = 44100 } = {}) { let out = new Float32Array(Math.round(data.length * to / from)); for (let i = 0; i < out.length; i++) out[i] = data[Math.min(data.length - 1, Math.floor(i * from / to))]; return out }`,
+    './shape.js': `import resample from './resample.js'
+export function shape(data, fn, { fs = 44100, oversample = 1 } = {}) {
+  if (oversample > 1) {
+    let up = resample(data, { from: fs, to: fs * oversample })
+    for (let i = 0; i < up.length; i++) up[i] = fn(up[i])
+    let down = resample(up, { from: fs * oversample, to: fs })
+    let out = new Float32Array(data.length)
+    out.set(down.subarray(0, Math.min(data.length, down.length)))
+    return out
+  }
+  let out = new Float32Array(data.length)
+  for (let i = 0; i < data.length; i++) out[i] = fn(data[i])
+  return out
+}`,
+    './softclip.js': `import { shape } from './shape.js'
+export default function softclip(data, opts = {}) { const fn = (x) => Math.tanh(x); return shape(data, fn, { fs: opts.fs ?? 44100, oversample: opts.oversample ?? 1 }) }
+export function block(buf, fs, oversample) { const fn = (x) => x * 0.5; let out = shape(buf, fn, { fs, oversample }); return out }`,
+  }
+  const { exports } = jz(`import softclip, { block } from './softclip.js'
+export let a = (x) => softclip(new Float32Array([x]), { oversample: 2 })[0]
+export let b = (x) => block(new Float32Array([x]), 48000, 1)[0]`, { modules, optimize: 2 })
+  ok(Math.abs(exports.a(0.5) - Math.tanh(0.5)) < 1e-6)
+  is(exports.b(4), 2)
 })

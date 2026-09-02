@@ -16,7 +16,7 @@ import { censusMaybeUndefined, hasAmbiguousBoolMerge, valTypeOf } from '../../ki
 import { VAL, lookupValType, repOf } from '../../reps.js'
 import { inBoundsCharCodeAt } from '../../type.js'
 import { REP_EDGE_BOX, REP_EDGE_REJECT, representationResultTagRequired, representationStorageWriteAction } from '../representation-plan.js'
-import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread } from './call-args.js'
+import { attachSigMeta, buildArrayWithSpreads, emitMethodCallSpread, materializeMulti } from './call-args.js'
 import { emit, emitCallArgs, emitIdentitySafe } from './dispatch.js'
 import { stringOps } from './shared.js'
 
@@ -166,6 +166,9 @@ function tryFnPropCall(callee, obj, method, parsed) {
     const fname = `${obj}$${method}`
     if (ctx.funcs.names.has(fname)) {
       const func = ctx.funcs.map.get(fname)
+      // A tuple-returning lift (`fn.coefs = (fs) => [a, b]`) materializes like
+      // a plain direct call: the caller holds one pointer, not N lanes.
+      if (func.sig.results.length > 1) return materializeMulti(['()', fname, parsed.normal.length > 1 ? [',', ...parsed.normal] : parsed.normal[0]])
       const emittedArgs = emitCallArgs(parsed.normal, func.sig.params, func)
       // Drop extras like the plain-call path (emit.js regular-call arm): the dyn
       // closure ABI absorbed over-arity (`parse.enter?.(p, end)` on a 0-param

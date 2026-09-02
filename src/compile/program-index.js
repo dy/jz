@@ -1049,12 +1049,29 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
   // frozen graph reaches it. Raw WAT functions are runtime-demanded, not
   // source-called, so they always lower; a variant minted after the graph
   // froze follows its source; anything else unknown to the graph lowers.
+  // A variant minted after the graph froze is reachable when any function of
+  // its source family is: its root source, or a sibling variant that is a graph
+  // node (a guarded clone of a rest-lowered function reaches through the
+  // rest variant, never through the unlowered root).
+  let familyReachable = null
   const reachableForLowering = func => {
     if (!func || func.raw) return true
     const graphId = graphNameIds.get(func.name) ?? -1
     if (graphId >= 0) return !!reachable[graphId]
     const variantId = variantIdOf(func)
-    return variantId < 0 || reachableForLowering(sourceFunctions[variantSourceIds[variantId]])
+    if (variantId < 0) return true
+    if (!familyReachable) {
+      familyReachable = new Uint8Array(sourceFunctions.length)
+      for (let id = 0; id < sourceFunctions.length; id++) {
+        const g = graphNameIds.get(sourceFunctions[id]?.name) ?? -1
+        if (g >= 0 && reachable[g]) familyReachable[id] = 1
+      }
+      for (let id = 0; id < variantFunctions.length; id++) {
+        const g = graphNameIds.get(variantFunctions[id].name) ?? -1
+        if (g >= 0 && reachable[g]) familyReachable[variantSourceIds[id]] = 1
+      }
+    }
+    return !!familyReachable[variantSourceIds[variantId]]
   }
 
   const filterCallSitesToReachable = callSites => {

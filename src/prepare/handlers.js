@@ -756,9 +756,11 @@ const handlers = {
       if (isBundledModule(mod)) {
         const resolved = prepareModule(mod, ctx.module.importSources?.[mod])
         if (decl[1] === '*') {
-          // export * from './mod' → register all exports
+          // export * from './mod' → register all exports. A local export of the
+          // same name shadows the star's (ES: star exports never override local
+          // ones), whichever is declared first.
           for (const [name, mangled] of resolved.exports) {
-            if (name !== 'default') ctx.funcs.exports[name] = mangled
+            if (name !== 'default' && !(name in ctx.funcs.exports)) ctx.funcs.exports[name] = mangled
           }
         } else if (Array.isArray(decl[1]) && decl[1][0] === '{}') {
           // export { a, b as c } from './mod'
