@@ -269,3 +269,57 @@ test('interop: allocTyped rejects an unsupported ctor', () => {
   const { memory } = interop.instantiate(compile('export let f = () => 1'))
   throws(() => memory.allocTyped(Array, 4))
 })
+
+// ── numeric export boundary ─────────────────────────────────────────────────
+// A proven-numeric param is an f64 slot; every box-capable param takes the i64
+// lane (jz:i64exp). The wrapper hands an f64 slot the host value untouched, so the
+// WebAssembly JS-API's ToNumber at the call is the exact JS coercion.
+
+test('interop: an f64 slot receives the host value raw — ToNumber semantics of the JS-API', () => {
+  const { exports } = interop.instantiate(compile(`
+    export let dbl = (x) => x * 2
+    export let neg = (x) => -x
+    export let dec = (x) => x - 1
+    export let poly = (x) => x * x * 0.5 + 3`))
+  is(exports.dbl(null), 0)
+  ok(Number.isNaN(exports.dbl(undefined)))
+  is(exports.dbl('8'), 16)
+  is(exports.dbl(true), 2)
+  is(exports.dbl([4]), 8)
+  is(exports.dbl({ valueOf: () => 21 }), 42)
+  ok(Number.isNaN(exports.dbl('abc')))
+  is(Object.is(exports.neg(null), -0), true, '-null is -0 in JS')
+  is(exports.dec(null), -1)
+  is(exports.poly('8'), 35)
+  is(exports.poly(), NaN)
+  throws(() => exports.dbl(1n), TypeError, 'a plain BigInt into a numeric slot is a TypeError, as in JS')
+})
+
+test('interop: the `x = +x` guard on a numeric export is free', () => {
+  // The guard used to route through __to_num on the raw bits and pull the whole
+  // ToNumber string-parse runtime (~18 KB) into a 40-byte kernel. The unary plus on a
+  // proven number is identity; the host already applied ToNumber at the f64 slot.
+  const guarded = compile(`export let f = x => { x = +x; return x * x * 0.5 + 3 }`)
+  const bare = compile(`export let f = x => x * x * 0.5 + 3`)
+  ok(guarded.length <= bare.length + 2, `guarded ${guarded.length} B vs bare ${bare.length} B`)
+  const { exports } = interop.instantiate(guarded)
+  is(exports.f('8'), 35)
+  is(exports.f(null), 3)
+  ok(Number.isNaN(exports.f(undefined)))
+})
+
+test('interop: a box-capable export param never rides the f64 lane', () => {
+  // `Math.sumPrecise` takes an iterable, `x >= "9"` compares strings lexicographically:
+  // neither is a numeric proof, so the param crosses as i64 and the wrapper boxes it.
+  const lanes = (src) => {
+    const s = WebAssembly.Module.customSections(interop.toModule(compile(src)), 'jz:i64exp')
+    return s.length ? JSON.parse(new TextDecoder().decode(s[0])).find(e => e.name === 'f')?.p ?? [] : []
+  }
+  is(lanes(`export let f = (a) => Math.sumPrecise(a)`)[0], 0, 'sumPrecise arg is i64')
+  is(lanes(`export let f = (x) => x >= "9"`)[0], 0, 'string-literal relational partner is i64')
+  is(lanes(`export let f = (x) => x >= 9`).length, 0, 'numeric relational partner stays f64')
+  is(lanes(`export let f = (x) => Math.sin(x)`).length, 0, 'Math.sin arg stays f64')
+  const { exports } = interop.instantiate(compile(`export let f = (x) => x >= "9"`))
+  is(exports.f(10), true)
+  is(exports.f('10'), false)
+})

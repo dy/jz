@@ -121,10 +121,6 @@ export const assignmentOps = {
     rejectAmbiguousBoolIdentity(name, val)
     if (isNullishLit(val)) ctx.func.maybeNullish?.add(name)   // null-flow: later arithmetic on this var coerces
     const void_ = ctx.func._expect === 'void'
-    if (Array.isArray(val) && val[0] === 'u+' && val[1] === name) {
-      inc('__to_num')
-      return writeVar(name, typed(['call', '$__to_num', asI64(emit(name))], 'f64'), void_)
-    }
     // Self-accumulation `x = x + …` (incl. desugared `x += …`): the new value REPLACES x, so x's
     // old buffer is dead — the one context where a string concat may bump-EXTEND it in place. The
     // `+` handler reads this flag for its immediate concat; nested operands clear it (not the target).

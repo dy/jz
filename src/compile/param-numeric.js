@@ -212,10 +212,12 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
     // so a numeric kernel like `Math.sin(tick) + …` lost its NUMBER proof and paid a
     // per-use `__to_num` + a polymorphic-`+` string-concat fork (interference example).
     // The callee is the lowered `math.sin` string at emit time (post-autoload), or the
-    // raw `(. Math sin)` member pre-lowering — match both.
-    const isMathCall = op === '()' && (
-      (typeof node[1] === 'string' && node[1].startsWith('math.')) ||
-      (Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Math'))
+    // raw `(. Math sin)` member pre-lowering — match both. `Math.sumPrecise` takes an
+    // iterable, so its argument is a pointer, never a numeric proof.
+    const mathMethod = op !== '()' ? null
+      : (typeof node[1] === 'string' && node[1].startsWith('math.')) ? node[1].slice(5)
+      : (Array.isArray(node[1]) && node[1][0] === '.' && node[1][1] === 'Math') ? node[1][2] : null
+    const isMathCall = mathMethod != null && mathMethod !== 'sumPrecise'
     if (isMathCall) {
       const numArg = (a) => { if (Array.isArray(a) && a[0] === ',') { numArg(a[1]); numArg(a[2]) } else numOperand(a) }
       for (let i = 2; i < node.length; i++) numArg(node[i])
@@ -312,7 +314,11 @@ export function paramNeverString(body, name) {
       return
     }
     // Numeric/relational/bitwise binary + unary: param operand is fine, recurse rest.
+    // A relational compare against a string literal (`x >= "9"`) is string intent,
+    // same as concat: JS compares two strings lexicographically, so the param must
+    // keep its runtime string/number dispatch.
     if ((NUM_BIN_OPS.has(op) || REL_OPS.has(op)) && node.length === 3) {
+      if (REL_OPS.has(op) && (isStrLiteral(node[1]) || isStrLiteral(node[2]))) { ok = false; return }
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }

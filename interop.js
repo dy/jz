@@ -982,17 +982,23 @@ export const wrap = (memSrc, inst, state) => {
     throw wrapped
   }
   const exports = {}
-  // Wrap one positional arg. Externref slots (jsstring carrier) pass the JS
-  // value straight through — `mem.wrapVal` would NaN-box it — substituting a
-  // jsstring literal default for a missing arg. Every other slot marshals via
-  // `box`: `coerce` for pure-scalar modules, `mem.wrapVal` for heap modules.
-  const wrapArgAt = (ext, i, x, box) =>
-    ext?.has(i) ? (x === undefined && ext.def?.has(i) ? ext.def.get(i) : x) : box(x)
-  // Per-position arg marshaller: box the value, then for an i64-carrier param (per
-  // jz:i64exp) pass its i64 bits (a boxed value is already a BigInt; a numeric arg to a
-  // dynamic i64 param → its f64 bits). The box never materializes as f64, so JSC can't
-  // canonicalize it. Numeric/externref positions keep their f64/externref carrier.
+  // Per-position arg marshaller. Externref slots (jsstring carrier) pass the JS
+  // value straight through, substituting a jsstring literal default for a missing
+  // arg. An i64-carrier param (per jz:i64exp) gets the box bits: `coerce` for
+  // pure-scalar modules, `mem.wrapVal` for heap modules. The box never materializes
+  // as f64, so JSC can't canonicalize it.
   const i64Arg = (ie, ext, box, hostAbi, name) => (x, i) => {
+    if (ext?.has(i)) return x === undefined && ext.def?.has(i) ? ext.def.get(i) : x
+    const plainBigint = typeof x === 'bigint' && !isBox(x)
+    // f64 slot: proven numeric (every box-capable param takes the i64 lane, per
+    // jz:i64exp), so the JS-API's own ToNumber at the call is the exact JS coercion
+    // for every host value: null → 0, undefined → NaN, "8" → 8, valueOf objects.
+    // A jz-minted box reinterprets to its bits; a plain BigInt is a TypeError in
+    // JS too, named here with the remedies instead of the engine's message.
+    if (!(ie && ie.p.has(i))) {
+      if (plainBigint) throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
+      return typeof x === 'bigint' ? i64ToF64(x) : x
+    }
     // Phase-C C4b (correct-or-reject, audit P0 #1: dispatch on jz:hostabi's
     // own per-slot enum — never a boolean guess from the absence of a
     // different signal). A plain JS BigInt VALUE (not a jz-built NaN-box
@@ -1011,45 +1017,35 @@ export const wrap = (memSrc, inst, state) => {
     //     zero-evidence pin) — refuses loudly with both remedies named
     //     instead.
     let w
-    if (typeof x === 'bigint' && !isBox(x)) {
+    if (plainBigint) {
       if (hostAbi?.raw?.has(i)) w = x
       else if (hostAbi?.tag?.has(i)) w = mem.BigInt(x)
       else throw new TypeError(`jz: BigInt argument at param ${i} of ${name}() has no BigInt evidence in the compiled program — give the parameter a provable BigInt path (it then takes the tagged ingress), or pass a decimal string to a typeof-guarded normalizing parameter`)
     } else {
-      w = wrapArgAt(ext, i, x, box)
+      w = box(x)
     }
-    if (ie && ie.p.has(i)) {
-      // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
-      // atom, matching how the SAME slot already boxes null/undefined (via
-      // coerce/mem.wrapVal, both already BigInt by the time `w` is built here).
-      // Neither `coerce` nor `mem.wrapVal` special-case booleans — `box(x)`
-      // leaves a boolean as a plain JS boolean (scalar module) or Number-
-      // converts it (heap module) — so falling through to `bits(w)` below
-      // would reinterpret ToNumber(x)'s float bits (1.0/0.0), indistinguishable
-      // from a genuine number at typeof/===. This is the argument-side mirror
-      // of the return-boxing gap (audit #5 item 2, ledger "KERNEL LEG ZERO
-      // FAILS" boolconst row): same collision, opposite direction of the JS↔
-      // wasm boundary. Checked on the ORIGINAL arg `x` (not `w`) — deliberately
-      // independent of whatever coerce/wrapVal did to it. A plain (non-i64)
-      // f64 numeric slot is untouched: the WebAssembly JS-API's own ToNumber
-      // on a raw boolean argument already gives the correct 1/0 there (see the
-      // `typeof w === 'bigint' ? i64ToF64(w) : w` fallback below), so a proven-
-      // numeric export's `f(true)` keeps working via that native coercion.
-      if (typeof x === 'boolean') return x ? TRUE_NAN : FALSE_NAN
-      // i64-carrier slot: a string that coerce() left raw (scalar/memoryless module)
-      // must be NaN-box encoded. SSO handles ≤6 ASCII chars without heap memory; longer
-      // or non-ASCII strings need a heap that this module lacks — throw clearly.
-      if (typeof w === 'string') {
-        if (w.length > 6 || !/^[\x00-\x7f]*$/.test(w))
-          throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
-        return encodeSSO(w)
-      }
-      return bits(w)                                   // i64 param: pass the box bits
+    // i64-carrier slot: a raw JS boolean must cross as its TRUE_NAN/FALSE_NAN
+    // atom, matching how the SAME slot already boxes null/undefined (via
+    // coerce/mem.wrapVal, both already BigInt by the time `w` is built here).
+    // Neither `coerce` nor `mem.wrapVal` special-case booleans — `box(x)`
+    // leaves a boolean as a plain JS boolean (scalar module) or Number-
+    // converts it (heap module) — so falling through to `bits(w)` below
+    // would reinterpret ToNumber(x)'s float bits (1.0/0.0), indistinguishable
+    // from a genuine number at typeof/===. This is the argument-side mirror
+    // of the return-boxing gap (audit #5 item 2, ledger "KERNEL LEG ZERO
+    // FAILS" boolconst row): same collision, opposite direction of the JS↔
+    // wasm boundary. Checked on the ORIGINAL arg `x` (not `w`) — deliberately
+    // independent of whatever coerce/wrapVal did to it.
+    if (typeof x === 'boolean') return x ? TRUE_NAN : FALSE_NAN
+    // i64-carrier slot: a string that coerce() left raw (scalar/memoryless module)
+    // must be NaN-box encoded. SSO handles ≤6 ASCII chars without heap memory; longer
+    // or non-ASCII strings need a heap that this module lacks — throw clearly.
+    if (typeof w === 'string') {
+      if (w.length > 6 || !/^[\x00-\x7f]*$/.test(w))
+        throw new Error('jz: string arg too long or non-ASCII for memoryless module — compile with a string operation to enable heap marshaling')
+      return encodeSSO(w)
     }
-    // f64 position: a box (BigInt) must reinterpret to f64. Happens for an un-wrapped export
-    // (e.g. a multi-value result skips wrapping) whose boxed param keeps the legacy f64 carrier
-    // — intact on V8; that path is inherently JSC-limited for boxed lanes anyway.
-    return typeof w === 'bigint' ? i64ToF64(w) : w
+    return bits(w)                                   // i64 param: pass the box bits
   }
 
   // Pure scalar module (no memory): pass f64 values directly, no marshaling
@@ -1103,7 +1099,7 @@ export const wrap = (memSrc, inst, state) => {
       const hostAbi = hostAbiExp.get(name)
       exports[name] = (...args) => {
         const a = args.slice(0, fixed).map(i64Arg(ie, ext, memWrapVal, hostAbi, name))
-        while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : i64ToF64(UNDEF_NAN)) }
+        while (a.length < fixed) { const i = a.length; a.push(ie && ie.p.has(i) ? UNDEF_NAN : undefined) }
         const restArr = mem.Array(args.slice(fixed).map(restElemArg(hostAbi, name)))   // BigInt box (i64 carrier)
         a.push(ie && ie.p.has(fixed) ? restArr : i64ToF64(restArr))
         // audit-#8 P1-1 belt-and-braces — see the scalar-module wrapper above.

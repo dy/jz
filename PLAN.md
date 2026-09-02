@@ -8,6 +8,20 @@ The product is good-parts JS: a documented subset of JavaScript compiled to effi
 
 The specs in `spec/` define the product. This file sequences the work. `prototype/todo.md` is the record of the retired migration plan and stays only as evidence until phase 5.
 
+## v1 first
+
+v1 ships from `src/` as soon as it is faster, smaller, and more correct than 0.9.2 on the programs people bring to it; the phases below are the v2 arc and start after the tag. The prototype is consumed into v1 where its win is real and measured, not where its bench flattered it: the 20x emitted-size headline came from the `x = +x` guard idiom pulling the ToNumber runtime into 40-byte kernels, and one deletion closed it (58 bytes against the prototype's 64). What remains of the prototype's lead is specific:
+
+- [x] numeric export boundary: the guard idiom is free, the wrapper hands `f64` slots the host value raw so the JS-API's ToNumber is the coercion, and every box-capable parameter rides the `i64` lane
+- [ ] the typed SIMD row: 568 bytes against the prototype's 287; consume the pointer-induction and f64x2 map lowering into the production vectorizer
+- [ ] the conditional row: 82 bytes against 61; the if/else return shape
+- [ ] real programs: compile color-space, the audiojs packages, and the web-audio-api kernels; every failure and every realized runtime function is a listed class with a fix or a documented rejection
+- [ ] compile time and peak memory recorded on jessie, watr, and the three libraries above, gated against 0.9.2
+- [ ] README numbers restated under their contract (typed or guarded ABI), against V8 and hand-written wasm
+- [ ] tag 1.0.0
+
+Exit proof: the libraries above compile, run their own tests through jz, and each is smaller and faster than under 0.9.2; the compact bench's every row is at or below the prototype's bytes except where the prototype's own README records the loss.
+
 ## What transfers from the current compiler
 
 - `test/`: the corpus that defines the good-parts subset empirically. Ported in subset order (phase 4), never bulk-copied.
