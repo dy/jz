@@ -1,7 +1,7 @@
 {
  "meta": {
-  "date": "2026-08-27 17:09 UTC",
-  "commit": "4c38662f",
+  "date": "2026-09-02 20:43 UTC",
+  "commit": "e36aab3b",
   "host": {
    "platform": "darwin",
    "arch": "arm64",
@@ -9,7 +9,7 @@
   },
   "versions": {
    "jz": "0.9.2",
-   "watr": "5.9.1",
+   "watr": "5.10.1",
    "node": "v25.9.0",
    "asc": "Version 0.28.19",
    "porffor": "alpha 3 [git 03b6b54f; cli alpha 1 (ba4813d 2026-07-15)]",
@@ -45,9 +45,9 @@
   },
   "memory": "peak RSS per process run (/usr/bin/time -l)",
   "machineState": {
-   "swapUsedMB": 4199.75,
-   "uptimeDays": 47.78,
-   "load1": 9.42,
+   "swapUsedMB": 9417.81,
+   "uptimeDays": 53.93,
+   "load1": 3.55,
    "powermode": "AC"
   },
   "anchors": {
@@ -55,32 +55,32 @@
     {
      "case": "mat4",
      "target": "c-wasm",
-     "storedUs": 2554,
-     "freshUs": 2688,
-     "ratio": 1.0525,
+     "storedUs": 2502,
+     "freshUs": 2494,
+     "ratio": 1.0032,
      "pass": true
     },
     {
      "case": "fft",
      "target": "c-wasm",
-     "storedUs": 1139,
-     "freshUs": 1207,
-     "ratio": 1.0597,
+     "storedUs": 1096,
+     "freshUs": 1097,
+     "ratio": 1.0009,
      "pass": true
     },
     {
      "case": "synth",
      "target": "as",
-     "storedUs": 2471,
-     "freshUs": 2499,
-     "ratio": 1.0113,
+     "storedUs": 2403,
+     "freshUs": 2403,
+     "ratio": 1,
      "pass": true
     }
    ],
    "ratios": {
-    "c-wasm×mat4": 1.0525,
-    "c-wasm×fft": 1.0597,
-    "as×synth": 1.0113
+    "c-wasm×mat4": 1.0032,
+    "c-wasm×fft": 1.0009,
+    "as×synth": 1
    },
    "pass": true
   },
@@ -154,41 +154,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 167,
-     "bytes": 1113,
-     "memKb": 54912,
+     "medianUs": 151,
+     "bytes": 910,
+     "memKb": 54816,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1558,
+     "medianUs": 1546,
      "bytes": 1271,
-     "memKb": 54704,
-     "parity": "ok"
+     "memKb": 54544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1103,
+     "medianUs": 1213,
      "bytes": 2028935,
-     "memKb": 59456,
-     "parity": "ok"
+     "memKb": 59344,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 2165,
-     "bytes": 2588506,
-     "memKb": 65648,
-     "parity": "ok"
+     "medianUs": 2171,
+     "bytes": 2588498,
+     "memKb": 65744,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 878,
-     "bytes": 978079,
+     "medianUs": 822,
+     "bytes": 978067,
      "memKb": 58048,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 913,
-     "bytes": 947371,
-     "memKb": 57424,
-     "parity": "ok"
+     "medianUs": 879,
+     "bytes": 947330,
+     "memKb": 57520,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 366,
@@ -204,25 +209,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 117000,
-     "bytes": 1249420,
-     "memKb": 92464,
-     "parity": "ok"
+     "medianUs": 116000,
+     "bytes": 1237579,
+     "memKb": 91856,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 947,
-     "bytes": 224339,
-     "memKb": 64080,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/alpha/alpha.tinygo.wasm /Users/div/projects/jz/bench/alpha/alpha.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 1959,
+     "medianUs": 1921,
      "bytes": 12707,
-     "memKb": 26640,
-     "parity": "ok"
+     "memKb": 26720,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 119.3
+   "compileMs": 30
   },
   "aos": {
    "name": "AoS to SoA",
@@ -303,41 +309,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 684,
-     "bytes": 1972,
-     "memKb": 53200,
+     "medianUs": 660,
+     "bytes": 1590,
+     "memKb": 52752,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1371,
+     "medianUs": 1325,
      "bytes": 1957,
-     "memKb": 53008,
-     "parity": "ok"
+     "memKb": 52928,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2672,
+     "medianUs": 2544,
      "bytes": 2029432,
-     "memKb": 57792,
-     "parity": "ok"
+     "memKb": 57744,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 2866,
-     "bytes": 2590384,
+     "medianUs": 2752,
+     "bytes": 2590376,
      "memKb": 63616,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2433,
-     "bytes": 981019,
-     "memKb": 56288,
-     "parity": "ok"
+     "medianUs": 2386,
+     "bytes": 981007,
+     "memKb": 56352,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2639,
-     "bytes": 949565,
-     "memKb": 55536,
-     "parity": "ok"
+     "medianUs": 2693,
+     "bytes": 949524,
+     "memKb": 55328,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 644,
@@ -353,25 +364,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 189000,
-     "bytes": 1251990,
-     "memKb": 91408,
-     "parity": "ok"
+     "medianUs": 187000,
+     "bytes": 1235986,
+     "memKb": 91648,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 2679,
-     "bytes": 224859,
-     "memKb": 62416,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/aos/aos.tinygo.wasm /Users/div/projects/jz/bench/aos/aos.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 4779,
+     "medianUs": 4693,
      "bytes": 13108,
-     "memKb": 15328,
-     "parity": "ok"
+     "memKb": 15360,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 100.8
+   "compileMs": 29.2
   },
   "base64": {
    "name": "Base64 encode + decode",
@@ -440,41 +452,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 3618,
-     "bytes": 1701,
+     "medianUs": 3477,
+     "bytes": 1541,
      "memKb": 51568,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 4092,
+     "medianUs": 4032,
      "bytes": 1924,
-     "memKb": 51264,
-     "parity": "ok"
+     "memKb": 51456,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 3530,
-     "bytes": 2029532,
-     "memKb": 55904,
-     "parity": "ok"
+     "medianUs": 3406,
+     "bytes": 2029516,
+     "memKb": 55792,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 6890,
-     "bytes": 2594447,
-     "memKb": 64640,
-     "parity": "ok"
+     "medianUs": 6512,
+     "bytes": 2594438,
+     "memKb": 64112,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 3546,
-     "bytes": 39158,
-     "memKb": 51680,
-     "parity": "ok"
+     "medianUs": 3407,
+     "bytes": 39146,
+     "memKb": 51696,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 3605,
-     "bytes": 947640,
-     "memKb": 53536,
-     "parity": "ok"
+     "medianUs": 3456,
+     "bytes": 947599,
+     "memKb": 53488,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 3835,
@@ -490,41 +507,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 442000,
-     "bytes": 1264743,
-     "memKb": 90000,
-     "parity": "ok"
+     "medianUs": 436000,
+     "bytes": 1255384,
+     "memKb": 89312,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 3161,
-     "bytes": 224524,
-     "memKb": 53392,
-     "parity": "ok",
-     "measuredAt": "2eb3af0b"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/base64/base64.tinygo.wasm /Users/div/projects/jz/bench/base64/base64.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 9283,
+     "medianUs": 9498,
      "bytes": 14554,
-     "memKb": 15328,
-     "parity": "ok"
+     "memKb": 15312,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 89,
-   "paired": {
-    "jz/tinygo": {
-     "ratios": [
-      1.0926,
-      1.094,
-      1.094,
-      1.0942,
-      1.0945,
-      1.1012,
-      1.1097,
-      1.1099
-     ],
-     "median": 1.0945
-    }
-   }
+   "compileMs": 27.2
   },
   "bezfit": {
    "name": "bezfit",
@@ -579,29 +581,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 831,
-     "bytes": 3624,
-     "memKb": 57152,
+     "medianUs": 772,
+     "bytes": 3290,
+     "memKb": 56864,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 984,
+     "medianUs": 922,
      "bytes": 3017,
-     "memKb": 51632,
-     "parity": "ok"
+     "memKb": 51680,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 839,
+     "medianUs": 791,
      "bytes": 2031047,
-     "memKb": 56288,
-     "parity": "ok"
+     "memKb": 56224,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 851,
-     "bytes": 956051,
-     "memKb": 54096,
-     "parity": "ok"
+     "medianUs": 789,
+     "bytes": 956010,
+     "memKb": 54016,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 814,
@@ -617,13 +622,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 222000,
-     "bytes": 1299624,
-     "memKb": 89200,
-     "parity": "ok"
+     "medianUs": 221000,
+     "bytes": 1277422,
+     "memKb": 89456,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 838.7
+   "compileMs": 586
   },
   "biquad": {
    "name": "biquad filter cascade",
@@ -698,41 +704,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 4735,
-     "bytes": 1858,
-     "memKb": 59616,
+     "medianUs": 4590,
+     "bytes": 1409,
+     "memKb": 59120,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 6428,
+     "medianUs": 6303,
      "bytes": 1830,
-     "memKb": 58976,
-     "parity": "ok"
+     "memKb": 59216,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 5408,
+     "medianUs": 5276,
      "bytes": 2030200,
-     "memKb": 63488,
-     "parity": "ok"
+     "memKb": 63408,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 10943,
-     "bytes": 2591924,
-     "memKb": 75152,
-     "parity": "ok"
+     "medianUs": 11680,
+     "bytes": 2591916,
+     "memKb": 75056,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 4640,
-     "bytes": 982570,
-     "memKb": 62208,
-     "parity": "ok"
+     "medianUs": 4560,
+     "bytes": 982558,
+     "memKb": 62080,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5441,
-     "bytes": 948990,
-     "memKb": 61072,
-     "parity": "ok"
+     "medianUs": 5320,
+     "bytes": 948949,
+     "memKb": 61536,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 4610,
@@ -748,29 +759,30 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1147000,
-     "bytes": 1259142,
-     "memKb": 96352,
-     "parity": "ok"
+     "medianUs": 1023000,
+     "bytes": 1249415,
+     "memKb": 96592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 17714,
-     "bytes": 224675,
-     "memKb": 67520,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad.tinygo.wasm /Users/div/projects/jz/bench/biquad/biquad.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 23115,
+     "medianUs": 23922,
      "bytes": 13902,
-     "memKb": 22320,
-     "parity": "ok"
+     "memKb": 22384,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "wat": {
      "status": "fail",
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/biquad/biquad.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/biquad/biquad-wat.was"
     }
    },
-   "compileMs": 185.6
+   "compileMs": 52.1
   },
   "bitwise": {
    "name": "bitwise mix",
@@ -851,41 +863,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 951,
-     "bytes": 1100,
-     "memKb": 51968,
+     "medianUs": 922,
+     "bytes": 943,
+     "memKb": 51616,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 9120,
+     "medianUs": 8964,
      "bytes": 1319,
-     "memKb": 52000,
-     "parity": "ok"
+     "memKb": 52080,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 5944,
+     "medianUs": 5845,
      "bytes": 2029392,
-     "memKb": 56880,
-     "parity": "ok"
+     "memKb": 56928,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 16988,
+     "medianUs": 16682,
      "bytes": 2588585,
-     "memKb": 62832,
-     "parity": "ok"
+     "memKb": 62992,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 5690,
-     "bytes": 979390,
-     "memKb": 55648,
-     "parity": "ok"
+     "medianUs": 5590,
+     "bytes": 979378,
+     "memKb": 55520,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5749,
-     "bytes": 947193,
-     "memKb": 54080,
-     "parity": "ok"
+     "medianUs": 5982,
+     "bytes": 947152,
+     "memKb": 54272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1061,
@@ -901,25 +918,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1193000,
-     "bytes": 1252546,
-     "memKb": 88800,
-     "parity": "ok"
+     "medianUs": 1176000,
+     "bytes": 1236177,
+     "memKb": 89408,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 5898,
-     "bytes": 223980,
-     "memKb": 60288,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bitwise/bitwise.tinygo.wasm /Users/div/projects/jz/bench/bitwise/bitwise.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 12720,
+     "medianUs": 12485,
      "bytes": 12604,
-     "memKb": 14624,
-     "parity": "ok"
+     "memKb": 14640,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 88.2
+   "compileMs": 15.4
   },
   "blur": {
    "name": "blur",
@@ -988,41 +1006,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 889,
-     "bytes": 1538,
-     "memKb": 56672,
+     "medianUs": 866,
+     "bytes": 1301,
+     "memKb": 55216,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 4861,
+     "medianUs": 4714,
      "bytes": 1724,
-     "memKb": 54752,
-     "parity": "ok"
+     "memKb": 54544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 10807,
+     "medianUs": 11261,
      "bytes": 2030834,
-     "memKb": 61520,
-     "parity": "ok"
+     "memKb": 61376,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 15677,
-     "bytes": 2592188,
-     "memKb": 65744,
-     "parity": "ok"
+     "medianUs": 15910,
+     "bytes": 2592180,
+     "memKb": 66112,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 4086,
-     "bytes": 980890,
-     "memKb": 57648,
-     "parity": "ok"
+     "medianUs": 4089,
+     "bytes": 980878,
+     "memKb": 57616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 4101,
-     "bytes": 949563,
-     "memKb": 57008,
-     "parity": "ok"
+     "medianUs": 3967,
+     "bytes": 949522,
+     "memKb": 56928,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1170,
@@ -1038,25 +1061,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 718000,
-     "bytes": 1261424,
-     "memKb": 92672,
-     "parity": "ok"
+     "medianUs": 685000,
+     "bytes": 1251108,
+     "memKb": 92240,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 3310,
-     "bytes": 225107,
-     "memKb": 63056,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/blur/blur.tinygo.wasm /Users/div/projects/jz/bench/blur/blur.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 12494,
+     "medianUs": 11929,
      "bytes": 13862,
      "memKb": 27056,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 162.3
+   "compileMs": 57.5
   },
   "bytebeat": {
    "name": "bytebeat",
@@ -1125,41 +1149,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1563,
-     "bytes": 995,
-     "memKb": 53600,
+     "medianUs": 1491,
+     "bytes": 838,
+     "memKb": 53440,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3063,
+     "medianUs": 2965,
      "bytes": 1164,
-     "memKb": 53552,
-     "parity": "ok"
+     "memKb": 53648,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 4188,
+     "medianUs": 4094,
      "bytes": 2028401,
-     "memKb": 58016,
-     "parity": "ok"
+     "memKb": 58000,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 3871,
-     "bytes": 2588163,
-     "memKb": 64496,
-     "parity": "ok"
+     "medianUs": 4177,
+     "bytes": 2588154,
+     "memKb": 65040,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2813,
-     "bytes": 975795,
-     "memKb": 56496,
-     "parity": "ok"
+     "medianUs": 2744,
+     "bytes": 975783,
+     "memKb": 56672,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2812,
-     "bytes": 946792,
-     "memKb": 56080,
-     "parity": "ok"
+     "medianUs": 2749,
+     "bytes": 946751,
+     "memKb": 56032,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1840,
@@ -1175,25 +1204,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 232000,
-     "bytes": 1248917,
-     "memKb": 91136,
-     "parity": "ok"
+     "medianUs": 223000,
+     "bytes": 1234466,
+     "memKb": 91056,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 4959,
-     "bytes": 223854,
-     "memKb": 62480,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/bytebeat/bytebeat.tinygo.wasm /Users/div/projects/jz/bench/bytebeat/bytebeat.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 2555,
+     "medianUs": 2526,
      "bytes": 12434,
-     "memKb": 22768,
-     "parity": "ok"
+     "memKb": 22592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 85.8
+   "compileMs": 16.3
   },
   "callback": {
    "name": "callback map",
@@ -1274,41 +1304,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 351,
-     "bytes": 1669,
+     "medianUs": 236,
+     "bytes": 1203,
      "memKb": 51456,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 813,
+     "medianUs": 771,
      "bytes": 1814,
-     "memKb": 52464,
-     "parity": "ok"
+     "memKb": 52496,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 415,
+     "medianUs": 393,
      "bytes": 2028224,
-     "memKb": 55760,
-     "parity": "ok"
+     "memKb": 56048,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 952,
-     "bytes": 2588519,
-     "memKb": 63408,
-     "parity": "ok"
+     "medianUs": 926,
+     "bytes": 2588511,
+     "memKb": 63856,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 388,
-     "bytes": 977874,
+     "medianUs": 368,
+     "bytes": 977862,
      "memKb": 55168,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 500,
-     "bytes": 947447,
-     "memKb": 54496,
-     "parity": "ok"
+     "medianUs": 464,
+     "bytes": 947406,
+     "memKb": 54736,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 269,
@@ -1324,25 +1359,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 35000,
-     "bytes": 1246520,
-     "memKb": 89616,
-     "parity": "ok"
+     "medianUs": 34000,
+     "bytes": 1237603,
+     "memKb": 89248,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 489,
-     "bytes": 224894,
-     "memKb": 61744,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/callback/callback.tinygo.wasm /Users/div/projects/jz/bench/callback/callback.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 548,
+     "medianUs": 530,
      "bytes": 12288,
-     "memKb": 14576,
-     "parity": "ok"
+     "memKb": 14560,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 62.8
+   "compileMs": 20
   },
   "colorconv": {
    "name": "sRGB → Oklab batch",
@@ -1383,11 +1419,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 32574,
-     "bytes": 2459,
-     "memKb": 100496,
+     "medianUs": 30902,
+     "bytes": 1767,
+     "memKb": 99824,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 35586,
@@ -1403,13 +1439,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 556000,
-     "bytes": 1253775,
-     "memKb": 135872,
-     "parity": "DIFF"
+     "medianUs": 547000,
+     "bytes": 1244087,
+     "memKb": 136176,
+     "parity": "DIFF",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 116.3
+   "compileMs": 44.1
   },
   "colorlch": {
    "name": "sRGB → OkLCh (fused)",
@@ -1450,11 +1487,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 62648,
-     "bytes": 2969,
-     "memKb": 100656,
+     "medianUs": 61278,
+     "bytes": 2231,
+     "memKb": 99776,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 88314,
@@ -1470,13 +1507,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 720000,
-     "bytes": 1256384,
-     "memKb": 136464,
-     "parity": "DIFF"
+     "medianUs": 705000,
+     "bytes": 1244252,
+     "memKb": 135872,
+     "parity": "DIFF",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 124.1
+   "compileMs": 51.3
   },
   "colorlog": {
    "name": "ARRI LogC4 → XYZ",
@@ -1519,11 +1557,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 8693,
-     "bytes": 2018,
-     "memKb": 99984,
+     "medianUs": 8702,
+     "bytes": 1454,
+     "memKb": 99488,
      "parity": "DIFF",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 12373,
@@ -1539,41 +1577,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 618000,
-     "bytes": 1252718,
-     "memKb": 136256,
-     "parity": "DIFF"
+     "medianUs": 596000,
+     "bytes": 1242000,
+     "memKb": 135888,
+     "parity": "DIFF",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 101.1,
-   "paired": {
-    "jz/v8": {
-     "ratios": [
-      1.075,
-      1.0752,
-      1.0857,
-      1.108,
-      1.1135,
-      1.1151,
-      1.1187,
-      1.1259
-     ],
-     "median": 1.1135
-    },
-    "jz/jsc": {
-     "ratios": [
-      1.688,
-      1.6924,
-      1.6931,
-      1.6955,
-      1.6956,
-      1.6988,
-      1.7004,
-      1.7035
-     ],
-     "median": 1.6956
-    }
-   }
+   "compileMs": 36.1
   },
   "colorpq": {
    "name": "sRGB → JzAzBz (PQ)",
@@ -1615,11 +1626,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 69304,
-     "bytes": 5053,
-     "memKb": 101104,
+     "medianUs": 62344,
+     "bytes": 4098,
+     "memKb": 100288,
      "parity": "DIFF",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 58581,
@@ -1635,28 +1646,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1526000,
-     "bytes": 1257715,
-     "memKb": 136176,
-     "parity": "DIFF"
+     "medianUs": 1478000,
+     "bytes": 1246449,
+     "memKb": 136064,
+     "parity": "DIFF",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 213.6,
-   "paired": {
-    "jz/v8": {
-     "ratios": [
-      1.1721,
-      1.1749,
-      1.1755,
-      1.1757,
-      1.1758,
-      1.1777,
-      1.1785,
-      1.1833
-     ],
-     "median": 1.1758
-    }
-   }
+   "compileMs": 97.8
   },
   "conv2d": {
    "name": "int8 conv2d layer (NN inference)",
@@ -1725,41 +1722,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1317,
-     "bytes": 1535,
-     "memKb": 52160,
+     "medianUs": 1286,
+     "bytes": 1377,
+     "memKb": 51952,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 7921,
+     "medianUs": 7824,
      "bytes": 1696,
-     "memKb": 51232,
-     "parity": "ok"
+     "memKb": 51440,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2510,
+     "medianUs": 2477,
      "bytes": 2029453,
-     "memKb": 55760,
-     "parity": "ok"
+     "memKb": 55584,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 40357,
-     "bytes": 2591017,
-     "memKb": 62368,
-     "parity": "ok"
+     "medianUs": 42113,
+     "bytes": 2591009,
+     "memKb": 62224,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2824,
-     "bytes": 985808,
-     "memKb": 53792,
-     "parity": "ok"
+     "medianUs": 2789,
+     "bytes": 985796,
+     "memKb": 53680,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2534,
-     "bytes": 948407,
-     "memKb": 53488,
-     "parity": "ok"
+     "medianUs": 2470,
+     "bytes": 948366,
+     "memKb": 53568,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 2050,
@@ -1775,25 +1777,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1222000,
-     "bytes": 1260515,
-     "memKb": 89296,
-     "parity": "ok"
+     "medianUs": 1234000,
+     "bytes": 1255824,
+     "memKb": 89104,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 3187,
-     "bytes": 224285,
-     "memKb": 53312,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/conv2d/conv2d.tinygo.wasm /Users/div/projects/jz/bench/conv2d/conv2d.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 20121,
+     "medianUs": 21634,
      "bytes": 13485,
      "memKb": 15024,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 166.4
+   "compileMs": 91.4
   },
   "crc32": {
    "name": "CRC-32 table hash",
@@ -1868,41 +1871,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 8797,
-     "bytes": 1124,
+     "medianUs": 7596,
+     "bytes": 964,
      "memKb": 51424,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8643,
+     "medianUs": 8415,
      "bytes": 1359,
-     "memKb": 51648,
-     "parity": "ok"
+     "memKb": 51584,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 8642,
+     "medianUs": 8151,
      "bytes": 2029795,
-     "memKb": 56160,
-     "parity": "ok"
+     "memKb": 56000,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 9298,
-     "bytes": 2589198,
-     "memKb": 62592,
-     "parity": "ok"
+     "medianUs": 8714,
+     "bytes": 2589189,
+     "memKb": 62656,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 8686,
-     "bytes": 37023,
-     "memKb": 52896,
-     "parity": "ok"
+     "medianUs": 8112,
+     "bytes": 37011,
+     "memKb": 53088,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 8174,
-     "bytes": 946225,
-     "memKb": 54128,
-     "parity": "ok"
+     "medianUs": 7685,
+     "bytes": 946184,
+     "memKb": 54224,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 8405,
@@ -1918,25 +1926,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 170000,
-     "bytes": 1254053,
-     "memKb": 89360,
-     "parity": "ok"
+     "medianUs": 160000,
+     "bytes": 1243285,
+     "memKb": 89392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 9194,
-     "bytes": 224387,
-     "memKb": 60352,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/crc32/crc32.tinygo.wasm /Users/div/projects/jz/bench/crc32/crc32.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 8223,
+     "medianUs": 7955,
      "bytes": 12592,
-     "memKb": 14368,
-     "parity": "ok"
+     "memKb": 14320,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 64.8
+   "compileMs": 21.9
   },
   "delayline": {
    "name": "delayline",
@@ -1991,31 +2000,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 679,
-     "bytes": 1656,
-     "memKb": 54096,
+     "medianUs": 673,
+     "bytes": 1255,
+     "memKb": 53744,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 744,
+     "medianUs": 735,
      "bytes": 1470,
-     "memKb": 53840,
-     "parity": "ok"
+     "memKb": 53744,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 604,
+     "medianUs": 602,
      "bytes": 2029113,
-     "memKb": 57712,
+     "memKb": 57872,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
      "medianUs": 1406,
-     "bytes": 948267,
+     "bytes": 948214,
      "memKb": 56096,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 759,
@@ -2031,22 +2041,41 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 126000,
-     "bytes": 1257913,
-     "memKb": 91248,
-     "parity": "ok"
+     "medianUs": 125000,
+     "bytes": 1244965,
+     "memKb": 90880,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 70.7,
+   "compileMs": 25.9,
    "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.4748,
+      0.4775,
+      0.4793,
+      0.4801
+     ],
+     "median": 0.4793
+    },
     "jz/rust-wasm": {
      "ratios": [
-      1.106,
-      1.1128,
-      1.1144,
-      1.1153
+      1.1115,
+      1.113,
+      1.1179,
+      1.1213
      ],
-     "median": 1.1144
+     "median": 1.1179
+    },
+    "jz/as": {
+     "ratios": [
+      0.9088,
+      0.9141,
+      0.9146,
+      0.9194
+     ],
+     "median": 0.9146
     }
    }
   },
@@ -2089,11 +2118,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 44371,
-     "bytes": 3650,
-     "memKb": 60576,
+     "medianUs": 39801,
+     "bytes": 3288,
+     "memKb": 60128,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 44765,
@@ -2109,13 +2138,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 845000,
-     "bytes": 1273225,
-     "memKb": 97312,
-     "parity": "DIFF"
+     "medianUs": 796000,
+     "bytes": 1263283,
+     "memKb": 97504,
+     "parity": "DIFF",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 83.4
+   "compileMs": 44
   },
   "dict": {
    "name": "open-addressing hash table",
@@ -2184,41 +2214,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1957,
-     "bytes": 1330,
-     "memKb": 51760,
+     "medianUs": 1881,
+     "bytes": 1173,
+     "memKb": 51520,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 2344,
+     "medianUs": 2395,
      "bytes": 1467,
-     "memKb": 51376,
-     "parity": "ok"
+     "memKb": 51472,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 3556,
+     "medianUs": 3494,
      "bytes": 2029683,
-     "memKb": 57072,
-     "parity": "ok"
+     "memKb": 57344,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 6493,
-     "bytes": 2590161,
-     "memKb": 62528,
-     "parity": "ok"
+     "medianUs": 6659,
+     "bytes": 2590153,
+     "memKb": 62752,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 3573,
-     "bytes": 982534,
-     "memKb": 55872,
-     "parity": "ok"
+     "medianUs": 3570,
+     "bytes": 982522,
+     "memKb": 55936,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 3542,
-     "bytes": 946272,
-     "memKb": 54176,
-     "parity": "ok"
+     "medianUs": 3464,
+     "bytes": 946231,
+     "memKb": 53872,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1324,
@@ -2234,25 +2269,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 247000,
-     "bytes": 1256882,
-     "memKb": 89024,
-     "parity": "ok"
+     "medianUs": 243000,
+     "bytes": 1244765,
+     "memKb": 89168,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 3619,
-     "bytes": 223986,
-     "memKb": 60320,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dict/dict.tinygo.wasm /Users/div/projects/jz/bench/dict/dict.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 4347,
+     "medianUs": 4302,
      "bytes": 13045,
-     "memKb": 15328,
-     "parity": "ok"
+     "memKb": 15392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 62.3
+   "compileMs": 20.2
   },
   "dispatch": {
    "name": "function-table dispatch",
@@ -2321,41 +2357,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1845,
-     "bytes": 1813,
-     "memKb": 51616,
+     "medianUs": 1763,
+     "bytes": 1588,
+     "memKb": 51360,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 12981,
+     "medianUs": 12587,
      "bytes": 1614,
-     "memKb": 51600,
-     "parity": "ok"
+     "memKb": 51872,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 11420,
+     "medianUs": 11111,
      "bytes": 2029750,
-     "memKb": 56320,
-     "parity": "ok"
+     "memKb": 56400,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 11238,
-     "bytes": 2591936,
-     "memKb": 62816,
-     "parity": "ok"
+     "medianUs": 10933,
+     "bytes": 2591928,
+     "memKb": 63136,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 11000,
-     "bytes": 979469,
-     "memKb": 54784,
-     "parity": "ok"
+     "medianUs": 10648,
+     "bytes": 979457,
+     "memKb": 55120,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 12145,
-     "bytes": 947529,
-     "memKb": 54112,
-     "parity": "ok"
+     "medianUs": 11724,
+     "bytes": 947488,
+     "memKb": 54128,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1662,
@@ -2371,25 +2412,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 60000,
-     "bytes": 1256910,
-     "memKb": 89296,
-     "parity": "ok"
+     "medianUs": 58000,
+     "bytes": 1246249,
+     "memKb": 89008,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 11694,
-     "bytes": 225290,
-     "memKb": 61248,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dispatch/dispatch.tinygo.wasm /Users/div/projects/jz/bench/dispatch/dispatch.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 8857,
+     "medianUs": 8577,
      "bytes": 13161,
      "memKb": 14720,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 69.7
+   "compileMs": 20.8
   },
   "dotprod": {
    "name": "dotprod",
@@ -2458,41 +2500,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 152,
-     "bytes": 1069,
-     "memKb": 51872,
+     "medianUs": 148,
+     "bytes": 898,
+     "memKb": 51520,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3547,
+     "medianUs": 5088,
      "bytes": 1177,
-     "memKb": 51536,
-     "parity": "ok"
+     "memKb": 51616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2028,
+     "medianUs": 1853,
      "bytes": 2028065,
-     "memKb": 55808,
-     "parity": "ok"
+     "memKb": 56272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 3130,
-     "bytes": 2588392,
-     "memKb": 62832,
-     "parity": "ok"
+     "medianUs": 3260,
+     "bytes": 2588391,
+     "memKb": 62544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2045,
-     "bytes": 975987,
-     "memKb": 54416,
-     "parity": "ok"
+     "medianUs": 1959,
+     "bytes": 975975,
+     "memKb": 54608,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2049,
-     "bytes": 945542,
-     "memKb": 53888,
-     "parity": "ok"
+     "medianUs": 2048,
+     "bytes": 945501,
+     "memKb": 53792,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 148,
@@ -2508,25 +2555,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 104000,
-     "bytes": 1248913,
-     "memKb": 90560,
-     "parity": "ok"
+     "medianUs": 103000,
+     "bytes": 1239467,
+     "memKb": 90848,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 1988,
-     "bytes": 223553,
-     "memKb": 60288,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/dotprod/dotprod.tinygo.wasm /Users/div/projects/jz/bench/dotprod/dotprod.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 2063,
+     "medianUs": 2098,
      "bytes": 12482,
-     "memKb": 14448,
-     "parity": "ok"
+     "memKb": 14496,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 57.6
+   "compileMs": 18.4
   },
   "fft": {
    "name": "fft",
@@ -2595,41 +2643,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1057,
-     "bytes": 2384,
-     "memKb": 54768,
+     "medianUs": 1003,
+     "bytes": 1959,
+     "memKb": 54480,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1288,
+     "medianUs": 1237,
      "bytes": 1758,
-     "memKb": 54080,
-     "parity": "ok"
+     "memKb": 53840,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 965,
-     "bytes": 2029572,
-     "memKb": 57664,
-     "parity": "ok"
+     "medianUs": 994,
+     "bytes": 2029556,
+     "memKb": 57840,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 1739,
+     "medianUs": 1788,
      "bytes": 2592365,
-     "memKb": 65504,
-     "parity": "ok"
+     "memKb": 65328,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 1444,
-     "bytes": 985842,
-     "memKb": 57616,
-     "parity": "ok"
+     "medianUs": 1348,
+     "bytes": 985830,
+     "memKb": 57568,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 1139,
-     "bytes": 949571,
-     "memKb": 56000,
-     "parity": "ok"
+     "medianUs": 1086,
+     "bytes": 949530,
+     "memKb": 55904,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1089,
@@ -2645,25 +2698,73 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 121000,
-     "bytes": 1266580,
-     "memKb": 91712,
-     "parity": "ok"
+     "medianUs": 114000,
+     "bytes": 1258321,
+     "memKb": 91296,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 1089,
-     "bytes": 225175,
-     "memKb": 62832,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/fft/fft.tinygo.wasm /Users/div/projects/jz/bench/fft/fft.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 3431,
+     "medianUs": 3206,
      "bytes": 14524,
-     "memKb": 17856,
-     "parity": "ok"
+     "memKb": 17360,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 123.3
+   "compileMs": 53,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.916,
+      0.9234,
+      0.9276,
+      0.9466
+     ],
+     "median": 0.9276
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      1.006,
+      1.007,
+      1.0091,
+      1.0437
+     ],
+     "median": 1.0091
+    },
+    "jz/zig-wasm": {
+     "ratios": [
+      0.7411,
+      0.7419,
+      0.7493,
+      0.7649
+     ],
+     "median": 0.7493
+    },
+    "jz/as": {
+     "ratios": [
+      0.8076,
+      0.8095,
+      0.8105,
+      0.8324
+     ],
+     "median": 0.8105
+    },
+    "jz/moonbit": {
+     "ratios": [
+      0.3117,
+      0.3119,
+      0.3129,
+      0.3215
+     ],
+     "median": 0.3129
+    }
+   }
   },
   "fftplan": {
    "name": "fftplan",
@@ -2704,11 +2805,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1854,
-     "bytes": 30763,
-     "memKb": 53040,
+     "medianUs": 1808,
+     "bytes": 29003,
+     "memKb": 52304,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1597,
@@ -2724,13 +2825,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 340000,
-     "bytes": 1282023,
-     "memKb": 90112,
-     "parity": "ok"
+     "medianUs": 327000,
+     "bytes": 1274148,
+     "memKb": 89328,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 305.6
+   "compileMs": 267.4
   },
   "glyfparse": {
    "name": "glyfparse",
@@ -2785,31 +2887,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 3370,
-     "bytes": 3082,
-     "memKb": 53264,
+     "medianUs": 2968,
+     "bytes": 2348,
+     "memKb": 52528,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 11015,
+     "medianUs": 9539,
      "bytes": 2408,
-     "memKb": 52048,
-     "parity": "ok"
+     "memKb": 51984,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 3872,
+     "medianUs": 3560,
      "bytes": 2030771,
-     "memKb": 56784,
+     "memKb": 56880,
      "parity": "ok",
-     "measuredAt": "b5a01609"
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2883,
-     "bytes": 950084,
-     "memKb": 53936,
+     "medianUs": 3022,
+     "bytes": 950043,
+     "memKb": 54048,
      "parity": "ok",
-     "measuredAt": "b5a01609"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 3195,
@@ -2825,55 +2928,41 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 171000,
-     "bytes": 1273466,
-     "memKb": 90640,
-     "parity": "ok"
+     "medianUs": 166000,
+     "bytes": 1262086,
+     "memKb": 89808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 120.1,
+   "compileMs": 63,
    "paired": {
-    "jz/rust-wasm": {
-     "ratios": [
-      0.7904,
-      0.8363,
-      0.8377,
-      0.8691,
-      0.8691,
-      0.8716,
-      0.8834,
-      0.8918,
-      0.8933,
-      0.8937,
-      0.8974,
-      0.9156,
-      0.9193,
-      0.9304,
-      0.9316,
-      0.9763
-     ],
-     "median": 0.8933
-    },
     "jz/c-wasm": {
      "ratios": [
-      1.0715,
-      1.1004,
-      1.1122,
-      1.1336,
-      1.1488,
-      1.1507,
-      1.1797,
-      1.194,
-      1.2224,
-      1.225,
-      1.2605,
-      1.2807,
-      1.3185,
-      1.3365,
-      1.3906,
-      1.4457
+      0.7856,
+      0.9821,
+      1.0976,
+      1.1199
      ],
-     "median": 1.2224
+     "median": 1.0976
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.6289,
+      0.8337,
+      0.8362,
+      0.9283
+     ],
+     "median": 0.8362
+    },
+    "jz/as": {
+     "ratios": [
+      0.2335,
+      0.3103,
+      0.3125,
+      0.3655
+     ],
+     "median": 0.3125
     }
    }
   },
@@ -2944,41 +3033,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 3830,
-     "bytes": 1151,
-     "memKb": 51648,
+     "medianUs": 3580,
+     "bytes": 991,
+     "memKb": 51408,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3790,
+     "medianUs": 3591,
      "bytes": 1367,
-     "memKb": 51328,
-     "parity": "ok"
+     "memKb": 51152,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 4570,
+     "medianUs": 4399,
      "bytes": 2028622,
-     "memKb": 56112,
-     "parity": "ok"
+     "memKb": 56096,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 5107,
-     "bytes": 2589645,
-     "memKb": 63040,
-     "parity": "ok"
+     "medianUs": 4272,
+     "bytes": 2589637,
+     "memKb": 62784,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 5923,
-     "bytes": 36717,
-     "memKb": 52944,
-     "parity": "ok"
+     "medianUs": 5758,
+     "bytes": 36705,
+     "memKb": 52784,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 6348,
-     "bytes": 946030,
-     "memKb": 54064,
-     "parity": "ok"
+     "medianUs": 6168,
+     "bytes": 945989,
+     "memKb": 54272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 4430,
@@ -2994,25 +3088,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 774000,
-     "bytes": 1255232,
-     "memKb": 89248,
-     "parity": "ok"
+     "medianUs": 776000,
+     "bytes": 1243339,
+     "memKb": 88912,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 5838,
-     "bytes": 224184,
-     "memKb": 60256,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hash/hash.tinygo.wasm /Users/div/projects/jz/bench/hash/hash.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 6770,
+     "medianUs": 6556,
      "bytes": 12731,
-     "memKb": 14384,
-     "parity": "ok"
+     "memKb": 14400,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 57.6
+   "compileMs": 17.1
   },
   "hashjoin": {
    "name": "hashjoin",
@@ -3081,41 +3176,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 6014,
-     "bytes": 1495,
-     "memKb": 51856,
+     "medianUs": 4912,
+     "bytes": 1338,
+     "memKb": 51888,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 7368,
+     "medianUs": 7550,
      "bytes": 1561,
-     "memKb": 51696,
-     "parity": "ok"
+     "memKb": 51856,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 9655,
+     "medianUs": 10301,
      "bytes": 2029904,
-     "memKb": 57744,
-     "parity": "ok"
+     "memKb": 57616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 16084,
-     "bytes": 2590621,
-     "memKb": 63680,
-     "parity": "ok"
+     "medianUs": 15034,
+     "bytes": 2590613,
+     "memKb": 63472,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 9760,
-     "bytes": 983665,
-     "memKb": 56512,
-     "parity": "ok"
+     "medianUs": 8486,
+     "bytes": 983653,
+     "memKb": 56448,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 9320,
-     "bytes": 947006,
-     "memKb": 54608,
-     "parity": "ok"
+     "medianUs": 7909,
+     "bytes": 946965,
+     "memKb": 54448,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 5127,
@@ -3131,25 +3231,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 366000,
-     "bytes": 1262110,
-     "memKb": 89424,
-     "parity": "ok"
+     "medianUs": 354000,
+     "bytes": 1253224,
+     "memKb": 89552,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 14029,
-     "bytes": 224302,
-     "memKb": 60928,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/hashjoin/hashjoin.tinygo.wasm /Users/div/projects/jz/bench/hashjoin/hashjoin.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 10354,
+     "medianUs": 8600,
      "bytes": 13226,
-     "memKb": 16336,
-     "parity": "ok"
+     "memKb": 15648,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 63.7
+   "compileMs": 23.4
   },
   "heat": {
    "name": "2-D heat diffusion (5-point stencil)",
@@ -3218,41 +3319,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2210,
-     "bytes": 1445,
-     "memKb": 52800,
+     "medianUs": 2136,
+     "bytes": 1136,
+     "memKb": 52592,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8158,
+     "medianUs": 7871,
      "bytes": 1364,
-     "memKb": 52784,
-     "parity": "ok"
+     "memKb": 52704,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 9305,
+     "medianUs": 9043,
      "bytes": 2029053,
-     "memKb": 57536,
-     "parity": "ok"
+     "memKb": 57616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 11164,
-     "bytes": 2590607,
-     "memKb": 64000,
-     "parity": "ok"
+     "medianUs": 12359,
+     "bytes": 2590598,
+     "memKb": 64160,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 9318,
-     "bytes": 978950,
-     "memKb": 56512,
-     "parity": "ok"
+     "medianUs": 8965,
+     "bytes": 978938,
+     "memKb": 56464,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 9319,
-     "bytes": 948388,
-     "memKb": 55520,
-     "parity": "ok"
+     "medianUs": 8986,
+     "bytes": 948347,
+     "memKb": 55824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 2441,
@@ -3268,25 +3374,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 855000,
-     "bytes": 1254892,
-     "memKb": 90272,
-     "parity": "ok"
+     "medianUs": 789000,
+     "bytes": 1243493,
+     "memKb": 90144,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 10683,
-     "bytes": 224612,
-     "memKb": 62608,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/heat/heat.tinygo.wasm /Users/div/projects/jz/bench/heat/heat.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 23155,
+     "medianUs": 22890,
      "bytes": 12887,
-     "memKb": 15936,
-     "parity": "ok"
+     "memKb": 15632,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 80.2
+   "compileMs": 20.2
   },
   "immutable": {
    "name": "immutable-update particle step",
@@ -3355,41 +3462,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 156,
-     "bytes": 1851,
-     "memKb": 55216,
+     "medianUs": 137,
+     "bytes": 1490,
+     "memKb": 54432,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 723,
+     "medianUs": 662,
      "bytes": 1481,
-     "memKb": 216944,
-     "parity": "ok"
+     "memKb": 216864,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 455,
+     "medianUs": 442,
      "bytes": 2030294,
-     "memKb": 56464,
-     "parity": "ok"
+     "memKb": 56672,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 318,
-     "bytes": 2589585,
-     "memKb": 62448,
-     "parity": "ok"
+     "medianUs": 327,
+     "bytes": 2589576,
+     "memKb": 62592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 319,
-     "bytes": 41578,
-     "memKb": 53088,
-     "parity": "ok"
+     "medianUs": 309,
+     "bytes": 41566,
+     "memKb": 53328,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 308,
-     "bytes": 947033,
-     "memKb": 53904,
-     "parity": "ok"
+     "medianUs": 301,
+     "bytes": 946992,
+     "memKb": 53920,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 170,
@@ -3405,25 +3517,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 51000,
-     "bytes": 1256818,
-     "memKb": 91520,
-     "parity": "ok"
+     "medianUs": 49000,
+     "bytes": 1243443,
+     "memKb": 89984,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 459,
-     "bytes": 223917,
-     "memKb": 60272,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/immutable/immutable.tinygo.wasm /Users/div/projects/jz/bench/immutable/immutable.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 1492,
+     "medianUs": 1482,
      "bytes": 12896,
-     "memKb": 15968,
-     "parity": "ok"
+     "memKb": 15824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 72.5
+   "compileMs": 26.3
   },
   "jessie": {
    "name": "jessie parser",
@@ -3460,63 +3573,23 @@
      "measuredAt": "2eb3af0b"
     },
     "jz": {
-     "medianUs": 2110,
-     "bytes": 80770,
-     "memKb": 173808,
+     "medianUs": 1887,
+     "bytes": 77382,
+     "memKb": 173792,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "javy": {
-     "medianUs": 31000,
-     "bytes": 1637147,
-     "memKb": 93488,
-     "parity": "ok"
+     "medianUs": 29000,
+     "bytes": 1628033,
+     "memKb": 93216,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "porf-native": {
      "status": "fail",
      "reason": "exit null: time: command terminated abnormally\n        0.01 real         0.00 user         0.00 sys\n             4800512  maximum resident set size\n                   0  average shared memory size\n                   0  average unshared data size\n     ",
      "measuredAt": "de7cf4e6"
-    }
-   },
-   "paired": {
-    "jz/v8": {
-     "ratios": [
-      1.4245,
-      1.432,
-      1.4432,
-      1.4572,
-      1.4584,
-      1.4625,
-      1.4664,
-      1.4716
-     ],
-     "median": 1.4584
-    },
-    "jz/bun": {
-     "ratios": [
-      1.7831,
-      1.7967,
-      1.8,
-      1.8002,
-      1.8305,
-      1.8431,
-      1.8727,
-      1.8986
-     ],
-     "median": 1.8305
-    },
-    "jz/jsc": {
-     "ratios": [
-      1.6395,
-      1.6457,
-      1.6469,
-      1.6501,
-      1.6658,
-      1.6661,
-      1.6823,
-      1.7145
-     ],
-     "median": 1.6658
     }
    }
   },
@@ -3593,35 +3666,39 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 133,
-     "bytes": 8117,
-     "memKb": 61088,
+     "medianUs": 132,
+     "bytes": 7750,
+     "memKb": 61152,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 303,
-     "bytes": 2054580,
-     "memKb": 60880,
-     "parity": "ok"
+     "medianUs": 298,
+     "bytes": 2054564,
+     "memKb": 60544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 4202,
-     "bytes": 3266369,
-     "memKb": 82512,
-     "parity": "ok"
+     "medianUs": 4077,
+     "bytes": 3266361,
+     "memKb": 81856,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 713,
-     "bytes": 1168117,
-     "memKb": 67392,
-     "parity": "ok"
+     "medianUs": 717,
+     "bytes": 1168105,
+     "memKb": 67216,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 250,
-     "bytes": 990826,
+     "medianUs": 245,
+     "bytes": 990785,
      "memKb": 56608,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 63,
@@ -3638,24 +3715,25 @@
     },
     "javy": {
      "medianUs": 1000,
-     "bytes": 1246903,
-     "memKb": 89984,
-     "parity": "ok"
+     "bytes": 1238144,
+     "memKb": 89872,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 10344,
-     "bytes": 477807,
-     "memKb": 74752,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/json/json.tinygo.wasm /Users/div/projects/jz/bench/json/json.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 2504,
+     "medianUs": 2396,
      "bytes": 17807,
-     "memKb": 19120,
-     "parity": "ok"
+     "memKb": 17824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 130
+   "compileMs": 84.8
   },
   "levenshtein": {
    "name": "Levenshtein edit-distance DP",
@@ -3724,41 +3802,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1775,
-     "bytes": 1358,
-     "memKb": 51296,
+     "medianUs": 1683,
+     "bytes": 1160,
+     "memKb": 51264,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1918,
+     "medianUs": 1641,
      "bytes": 1564,
-     "memKb": 51200,
-     "parity": "ok"
+     "memKb": 51360,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 4878,
+     "medianUs": 4758,
      "bytes": 2029784,
-     "memKb": 57264,
-     "parity": "ok"
+     "memKb": 57152,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 5959,
+     "medianUs": 5704,
      "bytes": 2590364,
-     "memKb": 62400,
-     "parity": "ok"
+     "memKb": 62304,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 4907,
-     "bytes": 986310,
-     "memKb": 57056,
-     "parity": "ok"
+     "medianUs": 4757,
+     "bytes": 986298,
+     "memKb": 56816,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 4880,
-     "bytes": 948416,
+     "medianUs": 4653,
+     "bytes": 948375,
      "memKb": 54048,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 2606,
@@ -3774,25 +3857,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 234000,
-     "bytes": 1255713,
-     "memKb": 88848,
-     "parity": "ok"
+     "medianUs": 227000,
+     "bytes": 1245882,
+     "memKb": 89104,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 7423,
-     "bytes": 224234,
-     "memKb": 60432,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/levenshtein/levenshtein.tinygo.wasm /Users/div/projects/jz/bench/levenshtein/levenshtein.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 6083,
+     "medianUs": 6470,
      "bytes": 13109,
      "memKb": 14592,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 67.6
+   "compileMs": 23.9
   },
   "lorenz": {
    "name": "lorenz",
@@ -3861,41 +3945,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 14168,
-     "bytes": 1543,
-     "memKb": 51792,
+     "medianUs": 12310,
+     "bytes": 1234,
+     "memKb": 51680,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 12931,
+     "medianUs": 12200,
      "bytes": 1571,
-     "memKb": 51744,
-     "parity": "ok"
+     "memKb": 51776,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 13476,
+     "medianUs": 12484,
      "bytes": 2028461,
-     "memKb": 56128,
-     "parity": "ok"
+     "memKb": 56240,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 13817,
+     "medianUs": 12892,
      "bytes": 2589207,
-     "memKb": 62864,
-     "parity": "ok"
+     "memKb": 62720,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 13508,
-     "bytes": 37750,
-     "memKb": 51968,
-     "parity": "ok"
+     "medianUs": 12496,
+     "bytes": 37738,
+     "memKb": 51936,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 13481,
-     "bytes": 946767,
-     "memKb": 54048,
-     "parity": "ok"
+     "medianUs": 12500,
+     "bytes": 946726,
+     "memKb": 53968,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 12982,
@@ -3911,25 +4000,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 626000,
-     "bytes": 1255628,
-     "memKb": 89296,
-     "parity": "ok"
+     "medianUs": 610000,
+     "bytes": 1244189,
+     "memKb": 89456,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 14358,
-     "bytes": 223877,
-     "memKb": 53696,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lorenz/lorenz.tinygo.wasm /Users/div/projects/jz/bench/lorenz/lorenz.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 13755,
+     "medianUs": 12758,
      "bytes": 13147,
-     "memKb": 14992,
-     "parity": "ok"
+     "memKb": 15024,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 61.2
+   "compileMs": 20.8
   },
   "lz": {
    "name": "LZSS compress + inflate",
@@ -3998,44 +4088,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 11516,
-     "bytes": 2126,
-     "memKb": 53760,
+     "medianUs": 11447,
+     "bytes": 1928,
+     "memKb": 53504,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 14785,
+     "medianUs": 14535,
      "bytes": 1910,
-     "memKb": 51728,
-     "parity": "ok"
+     "memKb": 51568,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 14524,
+     "medianUs": 14228,
      "bytes": 2030070,
-     "memKb": 56416,
+     "memKb": 56384,
      "parity": "ok",
-     "measuredAt": "b5a01609"
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 65775,
-     "bytes": 2592907,
-     "memKb": 62176,
-     "parity": "ok"
+     "medianUs": 64587,
+     "bytes": 2592898,
+     "memKb": 63024,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 11002,
-     "bytes": 39164,
-     "memKb": 52160,
+     "medianUs": 10755,
+     "bytes": 39152,
+     "memKb": 52256,
      "parity": "ok",
-     "measuredAt": "b5a01609"
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 14758,
-     "bytes": 948662,
-     "memKb": 54032,
+     "medianUs": 13960,
+     "bytes": 948621,
+     "memKb": 53856,
      "parity": "ok",
-     "measuredAt": "b5a01609"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 14741,
@@ -4051,88 +4143,71 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1145000,
-     "bytes": 1268555,
-     "memKb": 89216,
-     "parity": "ok"
+     "medianUs": 1214000,
+     "bytes": 1256375,
+     "memKb": 89232,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 15025,
-     "bytes": 224933,
-     "memKb": 53840,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/lz/lz.tinygo.wasm /Users/div/projects/jz/bench/lz/lz.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 29912,
+     "medianUs": 30221,
      "bytes": 14095,
-     "memKb": 15040,
-     "parity": "ok"
+     "memKb": 15008,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 112.2,
+   "compileMs": 68.4,
    "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.7923,
+      0.8128,
+      0.8243,
+      0.8319
+     ],
+     "median": 0.8243
+    },
     "jz/rust-wasm": {
      "ratios": [
-      0.7766,
-      0.7842,
-      0.7852,
-      0.7859,
-      0.7869,
-      0.7875,
-      0.7875,
-      0.7877,
-      0.7879,
-      0.7901,
-      0.7904,
-      0.7904,
-      0.7913,
-      0.7955,
-      0.7956,
-      0.8138
+      0.7806,
+      0.7972,
+      0.8064,
+      0.8152
      ],
-     "median": 0.7879
+     "median": 0.8064
     },
     "jz/zig-wasm": {
      "ratios": [
-      1.0247,
-      1.0254,
-      1.0293,
-      1.0323,
-      1.0335,
-      1.0388,
-      1.0403,
-      1.0421,
-      1.0431,
-      1.0438,
-      1.0444,
-      1.0445,
-      1.0468,
-      1.0478,
-      1.0504,
-      1.077
+      1.0311,
+      1.0368,
+      1.0666,
+      1.0806
      ],
-     "median": 1.0431
+     "median": 1.0666
     },
-    "jz/c-wasm": {
+    "jz/as": {
      "ratios": [
-      0.7663,
-      0.7689,
-      0.77,
-      0.7718,
-      0.7742,
-      0.7751,
-      0.7752,
+      0.7634,
       0.7774,
-      0.7785,
-      0.7794,
-      0.7797,
-      0.7798,
-      0.7842,
-      0.7853,
-      0.7886,
-      0.8
+      0.7875,
+      0.7982
      ],
-     "median": 0.7785
+     "median": 0.7875
+    },
+    "jz/moonbit": {
+     "ratios": [
+      0.3712,
+      0.3749,
+      0.3818,
+      0.3838
+     ],
+     "median": 0.3818
     }
    }
   },
@@ -4203,41 +4278,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 4833,
-     "bytes": 1121,
-     "memKb": 52032,
+     "medianUs": 4374,
+     "bytes": 964,
+     "memKb": 51952,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8426,
+     "medianUs": 7832,
      "bytes": 1301,
-     "memKb": 51616,
-     "parity": "ok"
+     "memKb": 51696,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 14887,
+     "medianUs": 14237,
      "bytes": 2029917,
-     "memKb": 57424,
-     "parity": "ok"
+     "memKb": 57440,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 8905,
-     "bytes": 2588732,
-     "memKb": 62576,
-     "parity": "ok"
+     "medianUs": 8478,
+     "bytes": 2588724,
+     "memKb": 62416,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 14804,
-     "bytes": 980981,
-     "memKb": 55776,
-     "parity": "ok"
+     "medianUs": 14071,
+     "bytes": 980969,
+     "memKb": 55952,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 14908,
-     "bytes": 947591,
-     "memKb": 54384,
-     "parity": "ok"
+     "medianUs": 14078,
+     "bytes": 947550,
+     "memKb": 54176,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 4574,
@@ -4253,25 +4333,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 430000,
-     "bytes": 1250041,
-     "memKb": 90288,
-     "parity": "ok"
+     "medianUs": 425000,
+     "bytes": 1238877,
+     "memKb": 89296,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 15763,
-     "bytes": 223975,
-     "memKb": 61120,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mandelbrot/mandelbrot.tinygo.wasm /Users/div/projects/jz/bench/mandelbrot/mandelbrot.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 8774,
+     "medianUs": 8270,
      "bytes": 12622,
-     "memKb": 14688,
-     "parity": "ok"
+     "memKb": 14736,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 93.8
+   "compileMs": 20.9
   },
   "mat4": {
    "name": "mat4 multiply",
@@ -4346,41 +4427,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 775,
-     "bytes": 1522,
-     "memKb": 51472,
+     "medianUs": 743,
+     "bytes": 1215,
+     "memKb": 50976,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 6686,
+     "medianUs": 6531,
      "bytes": 1456,
-     "memKb": 51248,
-     "parity": "ok"
+     "memKb": 51264,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1178,
+     "medianUs": 1151,
      "bytes": 2029754,
-     "memKb": 55376,
-     "parity": "ok"
+     "memKb": 55392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 24721,
-     "bytes": 2589989,
-     "memKb": 62304,
-     "parity": "ok"
+     "medianUs": 24971,
+     "bytes": 2589981,
+     "memKb": 62336,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2379,
-     "bytes": 40598,
-     "memKb": 51616,
-     "parity": "ok"
+     "medianUs": 2328,
+     "bytes": 40586,
+     "memKb": 51408,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2554,
-     "bytes": 946299,
-     "memKb": 53328,
-     "parity": "ok"
+     "medianUs": 2502,
+     "bytes": 946258,
+     "memKb": 53616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 661,
@@ -4396,29 +4482,30 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1099000,
-     "bytes": 1253387,
-     "memKb": 89056,
-     "parity": "ok"
+     "medianUs": 1098000,
+     "bytes": 1237936,
+     "memKb": 88752,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 2653,
-     "bytes": 224215,
-     "memKb": 53120,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4.tinygo.wasm /Users/div/projects/jz/bench/mat4/mat4.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 18417,
+     "medianUs": 18190,
      "bytes": 13225,
-     "memKb": 14960,
-     "parity": "ok"
+     "memKb": 14880,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "wat": {
      "status": "fail",
      "reason": "exit 1: node:internal/errors:998\n  const err = new Error(message);\n              ^\n\nError: Command failed: wat2wasm \"/Users/div/projects/jz/bench/mat4/mat4.wat\" -o \"/var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/mat4/mat4-wat.wasm\"\n/User"
     }
    },
-   "compileMs": 81.4
+   "compileMs": 37.8
   },
   "matmul": {
    "name": "matrix multiply (A·Bᵀ)",
@@ -4487,41 +4574,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1883,
-     "bytes": 1384,
-     "memKb": 53184,
+     "medianUs": 1795,
+     "bytes": 1064,
+     "memKb": 53152,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8399,
+     "medianUs": 8083,
      "bytes": 1285,
-     "memKb": 52656,
-     "parity": "ok"
+     "memKb": 53168,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 16897,
+     "medianUs": 16028,
      "bytes": 2029311,
-     "memKb": 58304,
-     "parity": "ok"
+     "memKb": 58592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 28192,
+     "medianUs": 29953,
      "bytes": 2589010,
-     "memKb": 64016,
-     "parity": "ok"
+     "memKb": 64224,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 17189,
-     "bytes": 980182,
-     "memKb": 57552,
-     "parity": "ok"
+     "medianUs": 16244,
+     "bytes": 980170,
+     "memKb": 57376,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 17186,
-     "bytes": 948413,
-     "memKb": 56896,
-     "parity": "ok"
+     "medianUs": 16254,
+     "bytes": 948372,
+     "memKb": 56560,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1833,
@@ -4537,25 +4629,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 857000,
-     "bytes": 1250788,
-     "memKb": 90672,
-     "parity": "ok"
+     "medianUs": 840000,
+     "bytes": 1237829,
+     "memKb": 90304,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 31254,
-     "bytes": 224512,
-     "memKb": 62384,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/matmul/matmul.tinygo.wasm /Users/div/projects/jz/bench/matmul/matmul.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 18228,
+     "medianUs": 20092,
      "bytes": 12646,
-     "memKb": 16368,
-     "parity": "ok"
+     "memKb": 16160,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 62.5
+   "compileMs": 21.4
   },
   "nbody": {
    "name": "nbody",
@@ -4624,41 +4717,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 9186,
-     "bytes": 2205,
-     "memKb": 52224,
+     "medianUs": 8898,
+     "bytes": 1870,
+     "memKb": 51952,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 12874,
+     "medianUs": 12334,
      "bytes": 2174,
-     "memKb": 51248,
-     "parity": "ok"
+     "memKb": 51360,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 13274,
+     "medianUs": 12658,
      "bytes": 2029709,
-     "memKb": 55776,
-     "parity": "ok"
+     "memKb": 55888,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 14962,
-     "bytes": 2594183,
-     "memKb": 62992,
-     "parity": "ok"
+     "medianUs": 13732,
+     "bytes": 2594174,
+     "memKb": 62704,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 26361,
-     "bytes": 40489,
-     "memKb": 53216,
-     "parity": "ok"
+     "medianUs": 25569,
+     "bytes": 40477,
+     "memKb": 53264,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 13139,
-     "bytes": 949960,
-     "memKb": 53600,
-     "parity": "ok"
+     "medianUs": 12592,
+     "bytes": 949919,
+     "memKb": 53808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 8213,
@@ -4674,25 +4772,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1710000,
-     "bytes": 1263133,
-     "memKb": 88736,
-     "parity": "ok"
+     "medianUs": 1553000,
+     "bytes": 1251828,
+     "memKb": 88800,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 13272,
-     "bytes": 225078,
-     "memKb": 53376,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nbody/nbody.tinygo.wasm /Users/div/projects/jz/bench/nbody/nbody.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 22137,
+     "medianUs": 21356,
      "bytes": 14645,
-     "memKb": 15376,
-     "parity": "ok"
+     "memKb": 15312,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 109.5
+   "compileMs": 39.9
   },
   "noise": {
    "name": "Perlin fBm noise field",
@@ -4761,41 +4860,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1303,
-     "bytes": 2168,
-     "memKb": 51952,
+     "medianUs": 1234,
+     "bytes": 1841,
+     "memKb": 51872,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1543,
+     "medianUs": 1483,
      "bytes": 1868,
-     "memKb": 51552,
-     "parity": "ok"
+     "memKb": 51840,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1466,
-     "bytes": 2029606,
-     "memKb": 56016,
-     "parity": "ok"
+     "medianUs": 1406,
+     "bytes": 2029590,
+     "memKb": 55904,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 7376,
-     "bytes": 2593023,
-     "memKb": 63488,
-     "parity": "ok"
+     "medianUs": 7051,
+     "bytes": 2593014,
+     "memKb": 63648,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 1575,
-     "bytes": 980427,
-     "memKb": 53792,
-     "parity": "ok"
+     "medianUs": 1499,
+     "bytes": 980415,
+     "memKb": 54016,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 1562,
-     "bytes": 950187,
-     "memKb": 54016,
-     "parity": "ok"
+     "medianUs": 1490,
+     "bytes": 950146,
+     "memKb": 54192,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 945,
@@ -4811,25 +4915,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 316000,
-     "bytes": 1261794,
-     "memKb": 89776,
-     "parity": "ok"
+     "medianUs": 308000,
+     "bytes": 1252513,
+     "memKb": 89584,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 1629,
-     "bytes": 224629,
-     "memKb": 53776,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/noise/noise.tinygo.wasm /Users/div/projects/jz/bench/noise/noise.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 4871,
+     "medianUs": 4637,
      "bytes": 13920,
-     "memKb": 15536,
-     "parity": "ok"
+     "memKb": 15168,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 173.8
+   "compileMs": 99.6
   },
   "nqueens": {
    "name": "N-Queens bitmask backtracking",
@@ -4898,41 +5003,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2807,
-     "bytes": 1167,
-     "memKb": 51232,
+     "medianUs": 2506,
+     "bytes": 946,
+     "memKb": 51136,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3985,
+     "medianUs": 3777,
      "bytes": 1410,
-     "memKb": 51184,
-     "parity": "ok"
+     "memKb": 51008,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2826,
+     "medianUs": 2670,
      "bytes": 2028975,
-     "memKb": 55632,
-     "parity": "ok"
+     "memKb": 55456,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 7176,
+     "medianUs": 6809,
      "bytes": 2589851,
-     "memKb": 62144,
-     "parity": "ok"
+     "memKb": 62544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2967,
-     "bytes": 40240,
-     "memKb": 51328,
-     "parity": "ok"
+     "medianUs": 2847,
+     "bytes": 40228,
+     "memKb": 51488,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2780,
-     "bytes": 945876,
-     "memKb": 53568,
-     "parity": "ok"
+     "medianUs": 2636,
+     "bytes": 945835,
+     "memKb": 53616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 3350,
@@ -4941,22 +5051,23 @@
      "parity": "ok"
     },
     "javy": {
-     "medianUs": 95000,
-     "bytes": 1253970,
-     "memKb": 90336,
-     "parity": "ok"
+     "medianUs": 87000,
+     "bytes": 1241359,
+     "memKb": 88608,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 3949,
-     "bytes": 224035,
-     "memKb": 53152,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/nqueens/nqueens.tinygo.wasm /Users/div/projects/jz/bench/nqueens/nqueens.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 3016,
+     "medianUs": 2821,
      "bytes": 12708,
-     "memKb": 14336,
-     "parity": "ok"
+     "memKb": 14352,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-w2c": {
      "medianUs": 2752,
@@ -4973,7 +5084,7 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 60.6
+   "compileMs": 17
   },
   "particle": {
    "name": "particle",
@@ -5042,41 +5153,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 6980,
-     "bytes": 1609,
-     "memKb": 53824,
+     "medianUs": 6699,
+     "bytes": 1301,
+     "memKb": 53344,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 46698,
+     "medianUs": 47133,
      "bytes": 1549,
-     "memKb": 53808,
-     "parity": "ok"
+     "memKb": 53600,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 34949,
+     "medianUs": 33686,
      "bytes": 2030533,
-     "memKb": 58736,
-     "parity": "ok"
+     "memKb": 58896,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 45575,
-     "bytes": 2590948,
-     "memKb": 65312,
-     "parity": "ok"
+     "medianUs": 44640,
+     "bytes": 2590940,
+     "memKb": 64848,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 36588,
-     "bytes": 979086,
-     "memKb": 56976,
-     "parity": "ok"
+     "medianUs": 35679,
+     "bytes": 979074,
+     "memKb": 57104,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 31842,
-     "bytes": 947585,
-     "memKb": 56416,
-     "parity": "ok"
+     "medianUs": 30178,
+     "bytes": 947544,
+     "memKb": 56432,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 10180,
@@ -5092,25 +5208,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 1826000,
-     "bytes": 1253747,
-     "memKb": 91760,
-     "parity": "ok"
+     "medianUs": 1768000,
+     "bytes": 1242691,
+     "memKb": 90976,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 39219,
-     "bytes": 224529,
-     "memKb": 63120,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/particle/particle.tinygo.wasm /Users/div/projects/jz/bench/particle/particle.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 60490,
+     "medianUs": 62620,
      "bytes": 13438,
-     "memKb": 16624,
-     "parity": "ok"
+     "memKb": 16672,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 99.3
+   "compileMs": 22.8
   },
   "poly": {
    "name": "polymorphic reduce",
@@ -5191,41 +5308,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 139,
-     "bytes": 1096,
+     "medianUs": 122,
+     "bytes": 985,
      "memKb": 51680,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 831,
+     "medianUs": 745,
      "bytes": 1291,
-     "memKb": 51520,
-     "parity": "ok"
+     "memKb": 51296,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 941,
+     "medianUs": 875,
      "bytes": 2028137,
-     "memKb": 55888,
-     "parity": "ok"
+     "memKb": 55872,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 2424,
-     "bytes": 2588585,
-     "memKb": 62560,
-     "parity": "ok"
+     "medianUs": 2354,
+     "bytes": 2588577,
+     "memKb": 62752,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 952,
-     "bytes": 976765,
-     "memKb": 54624,
-     "parity": "ok"
+     "medianUs": 874,
+     "bytes": 976753,
+     "memKb": 54448,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 941,
-     "bytes": 945732,
-     "memKb": 54224,
-     "parity": "ok"
+     "medianUs": 876,
+     "bytes": 945691,
+     "memKb": 53856,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 133,
@@ -5241,25 +5363,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 71000,
-     "bytes": 1250987,
-     "memKb": 89296,
-     "parity": "ok"
+     "medianUs": 70000,
+     "bytes": 1239937,
+     "memKb": 89072,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 1086,
-     "bytes": 223622,
-     "memKb": 59968,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/poly/poly.tinygo.wasm /Users/div/projects/jz/bench/poly/poly.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 914,
+     "medianUs": 910,
      "bytes": 12670,
-     "memKb": 14512,
-     "parity": "ok"
+     "memKb": 14528,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 61
+   "compileMs": 17.8
   },
   "provenance": {
    "name": "provenance",
@@ -5300,11 +5423,11 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1406,
-     "bytes": 30172,
-     "memKb": 52112,
+     "medianUs": 1331,
+     "bytes": 28133,
+     "memKb": 52080,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1157,
@@ -5320,13 +5443,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 258000,
-     "bytes": 1283523,
-     "memKb": 89776,
-     "parity": "ok"
+     "medianUs": 264000,
+     "bytes": 1274959,
+     "memKb": 89216,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 346
+   "compileMs": 271.1
   },
   "qoi": {
    "name": "QOI image codec (encode + decode)",
@@ -5395,41 +5519,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 8509,
-     "bytes": 2796,
-     "memKb": 53200,
+     "medianUs": 7646,
+     "bytes": 2625,
+     "memKb": 53104,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8788,
+     "medianUs": 9109,
      "bytes": 3012,
-     "memKb": 52560,
-     "parity": "ok"
+     "memKb": 52704,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 8599,
+     "medianUs": 8303,
      "bytes": 2031970,
-     "memKb": 57088,
-     "parity": "ok"
+     "memKb": 57264,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 20005,
+     "medianUs": 19561,
      "bytes": 2599943,
-     "memKb": 65120,
-     "parity": "ok"
+     "memKb": 64608,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 9196,
-     "bytes": 985625,
-     "memKb": 56400,
-     "parity": "ok"
+     "medianUs": 8136,
+     "bytes": 985613,
+     "memKb": 56192,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 8795,
-     "bytes": 951428,
-     "memKb": 54704,
-     "parity": "ok"
+     "medianUs": 8376,
+     "bytes": 951387,
+     "memKb": 54720,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 8246,
@@ -5445,25 +5574,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 592000,
-     "bytes": 1284557,
-     "memKb": 89840,
-     "parity": "ok"
+     "medianUs": 588000,
+     "bytes": 1276466,
+     "memKb": 90304,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 9159,
-     "bytes": 226542,
-     "memKb": 60560,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/qoi/qoi.tinygo.wasm /Users/div/projects/jz/bench/qoi/qoi.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 18931,
+     "medianUs": 18143,
      "bytes": 17474,
-     "memKb": 19296,
-     "parity": "ok"
+     "memKb": 19344,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 138.6
+   "compileMs": 64.9
   },
   "radixsort": {
    "name": "LSD radix sort (u32 keys)",
@@ -5533,43 +5663,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2395,
-     "bytes": 1424,
-     "memKb": 52288,
+     "medianUs": 2322,
+     "bytes": 1267,
+     "memKb": 52240,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3244,
+     "medianUs": 3192,
      "bytes": 1557,
      "memKb": 51504,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2330,
+     "medianUs": 2304,
      "bytes": 2030441,
-     "memKb": 57008,
-     "parity": "ok"
+     "memKb": 56976,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 7392,
-     "bytes": 2590815,
-     "memKb": 63392,
-     "parity": "ok"
+     "medianUs": 8028,
+     "bytes": 2590807,
+     "memKb": 63024,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2273,
-     "bytes": 981360,
+     "medianUs": 2260,
+     "bytes": 981336,
      "memKb": 54368,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5665,
-     "bytes": 948575,
-     "memKb": 54800,
+     "medianUs": 5610,
+     "bytes": 948522,
+     "memKb": 54640,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 3610,
@@ -5586,42 +5719,70 @@
     },
     "javy": {
      "medianUs": 423000,
-     "bytes": 1256132,
-     "memKb": 89312,
-     "parity": "ok"
+     "bytes": 1243211,
+     "memKb": 89024,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 2521,
-     "bytes": 224456,
-     "memKb": 53328,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/radixsort/radixsort.tinygo.wasm /Users/div/projects/jz/bench/radixsort/radixsort.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 13571,
+     "medianUs": 13076,
      "bytes": 13439,
-     "memKb": 15184,
-     "parity": "ok"
+     "memKb": 15232,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 114.2,
+   "compileMs": 38.4,
    "paired": {
     "jz/c-wasm": {
      "ratios": [
-      0.4161,
-      0.4166,
-      0.4168,
-      0.4208
+      0.4122,
+      0.4132,
+      0.4169,
+      0.4185
      ],
-     "median": 0.4168
+     "median": 0.4169
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      1.0048,
+      1.007,
+      1.0082,
+      1.0096
+     ],
+     "median": 1.0082
     },
     "jz/zig-wasm": {
      "ratios": [
-      1.0346,
-      1.0383,
-      1.0411,
-      1.0419
+      1.0239,
+      1.0279,
+      1.0289,
+      1.0293
      ],
-     "median": 1.0411
+     "median": 1.0289
+    },
+    "jz/as": {
+     "ratios": [
+      0.7264,
+      0.7268,
+      0.7278,
+      0.728
+     ],
+     "median": 0.7278
+    },
+    "jz/moonbit": {
+     "ratios": [
+      0.1499,
+      0.1773,
+      0.1808,
+      0.1822
+     ],
+     "median": 0.1808
     }
    }
   },
@@ -5692,41 +5853,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1107,
-     "bytes": 2242,
-     "memKb": 55280,
+     "medianUs": 1056,
+     "bytes": 1938,
+     "memKb": 54800,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1766,
+     "medianUs": 1739,
      "bytes": 2007,
-     "memKb": 54384,
-     "parity": "ok"
+     "memKb": 54544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1062,
+     "medianUs": 1030,
      "bytes": 2031003,
-     "memKb": 59232,
-     "parity": "ok"
+     "memKb": 59120,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 3598,
-     "bytes": 2593436,
-     "memKb": 66304,
-     "parity": "ok"
+     "medianUs": 3968,
+     "bytes": 2593428,
+     "memKb": 66496,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 1365,
-     "bytes": 989186,
-     "memKb": 57008,
-     "parity": "ok"
+     "medianUs": 1342,
+     "bytes": 989174,
+     "memKb": 56736,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 1394,
-     "bytes": 950374,
-     "memKb": 57104,
-     "parity": "ok"
+     "medianUs": 1371,
+     "bytes": 950333,
+     "memKb": 57136,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1110,
@@ -5742,25 +5908,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 228000,
-     "bytes": 1267177,
-     "memKb": 92256,
-     "parity": "ok"
+     "medianUs": 226000,
+     "bytes": 1257974,
+     "memKb": 92624,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 1417,
-     "bytes": 225566,
-     "memKb": 56672,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/raytrace/raytrace.tinygo.wasm /Users/div/projects/jz/bench/raytrace/raytrace.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 4985,
+     "medianUs": 4852,
      "bytes": 14918,
-     "memKb": 18608,
-     "parity": "ok"
+     "memKb": 18592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 127
+   "compileMs": 77.9
   },
   "resample": {
    "name": "resample",
@@ -5815,29 +5982,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1367,
-     "bytes": 1933,
-     "memKb": 52960,
+     "medianUs": 1311,
+     "bytes": 1346,
+     "memKb": 53024,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1449,
+     "medianUs": 1432,
      "bytes": 1463,
-     "memKb": 52592,
-     "parity": "ok"
+     "memKb": 52928,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1440,
+     "medianUs": 1427,
      "bytes": 2029436,
-     "memKb": 57264,
-     "parity": "ok"
+     "memKb": 57376,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 1433,
-     "bytes": 948883,
-     "memKb": 55008,
-     "parity": "ok"
+     "medianUs": 1409,
+     "bytes": 948842,
+     "memKb": 55184,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1300,
@@ -5853,13 +6023,14 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 161000,
-     "bytes": 1256679,
-     "memKb": 90688,
-     "parity": "ok"
+     "medianUs": 159000,
+     "bytes": 1246733,
+     "memKb": 90432,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 86.2
+   "compileMs": 39.3
   },
   "sdf": {
    "name": "sdf",
@@ -5914,29 +6085,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 6688,
-     "bytes": 2737,
-     "memKb": 54016,
+     "medianUs": 6280,
+     "bytes": 2303,
+     "memKb": 53872,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 5738,
+     "medianUs": 5680,
      "bytes": 2209,
-     "memKb": 53392,
-     "parity": "ok"
+     "memKb": 53616,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 5477,
+     "medianUs": 5359,
      "bytes": 2030360,
-     "memKb": 57360,
-     "parity": "ok"
+     "memKb": 57472,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5171,
-     "bytes": 950876,
-     "memKb": 55152,
-     "parity": "ok"
+     "medianUs": 5078,
+     "bytes": 950835,
+     "memKb": 55392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 6324,
@@ -5952,13 +6126,43 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 582000,
-     "bytes": 1267178,
-     "memKb": 90944,
-     "parity": "ok"
+     "medianUs": 575000,
+     "bytes": 1257009,
+     "memKb": 90912,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 103.7
+   "compileMs": 55.1,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      1.1701,
+      1.2438,
+      1.246,
+      1.2904
+     ],
+     "median": 1.246
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      1.1088,
+      1.177,
+      1.1787,
+      1.2391
+     ],
+     "median": 1.1787
+    },
+    "jz/as": {
+     "ratios": [
+      1.0461,
+      1.0864,
+      1.1095,
+      1.2006
+     ],
+     "median": 1.1095
+    }
+   }
   },
   "shapes": {
    "name": "polymorphic shape scan",
@@ -6027,41 +6231,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1550,
-     "bytes": 3023,
-     "memKb": 53104,
+     "medianUs": 1203,
+     "bytes": 1884,
+     "memKb": 52656,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1083,
+     "medianUs": 1056,
      "bytes": 1695,
-     "memKb": 52464,
-     "parity": "ok"
+     "memKb": 52688,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 4928,
+     "medianUs": 4677,
      "bytes": 2028868,
-     "memKb": 55776,
-     "parity": "ok"
+     "memKb": 55824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 4788,
-     "bytes": 2591202,
-     "memKb": 62896,
-     "parity": "ok"
+     "medianUs": 4841,
+     "bytes": 2591194,
+     "memKb": 63056,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 3162,
-     "bytes": 37342,
-     "memKb": 52608,
-     "parity": "ok"
+     "medianUs": 2656,
+     "bytes": 37330,
+     "memKb": 52544,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 4303,
-     "bytes": 945965,
-     "memKb": 53936,
-     "parity": "ok"
+     "medianUs": 4011,
+     "bytes": 945924,
+     "memKb": 53808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 1192,
@@ -6077,25 +6286,73 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 133000,
-     "bytes": 1261226,
-     "memKb": 91328,
-     "parity": "ok"
+     "medianUs": 130000,
+     "bytes": 1248179,
+     "memKb": 92144,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 4402,
-     "bytes": 224067,
-     "memKb": 53680,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/shapes/shapes.tinygo.wasm /Users/div/projects/jz/bench/shapes/shapes.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 7659,
+     "medianUs": 7412,
      "bytes": 13171,
-     "memKb": 16192,
-     "parity": "ok"
+     "memKb": 16224,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 98.4
+   "compileMs": 44.2,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.2897,
+      0.2914,
+      0.3037,
+      0.3343
+     ],
+     "median": 0.3037
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.245,
+      0.2469,
+      0.2577,
+      0.2867
+     ],
+     "median": 0.2577
+    },
+    "jz/zig-wasm": {
+     "ratios": [
+      0.3869,
+      0.4315,
+      0.514,
+      0.5995
+     ],
+     "median": 0.514
+    },
+    "jz/as": {
+     "ratios": [
+      1.0944,
+      1.1051,
+      1.1392,
+      1.2957
+     ],
+     "median": 1.1392
+    },
+    "jz/moonbit": {
+     "ratios": [
+      0.1516,
+      0.1553,
+      0.1633,
+      0.1809
+     ],
+     "median": 0.1633
+    }
+   }
   },
   "sieve": {
    "name": "Sieve of Eratosthenes",
@@ -6164,41 +6421,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 5184,
-     "bytes": 1090,
-     "memKb": 52672,
+     "medianUs": 4932,
+     "bytes": 933,
+     "memKb": 52656,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 6656,
+     "medianUs": 6517,
      "bytes": 1261,
-     "memKb": 52512,
-     "parity": "ok"
+     "memKb": 52656,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 5183,
-     "bytes": 2028851,
-     "memKb": 56784,
-     "parity": "ok"
+     "medianUs": 4949,
+     "bytes": 2028835,
+     "memKb": 56864,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 16516,
-     "bytes": 2588983,
-     "memKb": 63584,
-     "parity": "ok"
+     "medianUs": 15792,
+     "bytes": 2588975,
+     "memKb": 63648,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 5389,
-     "bytes": 977731,
-     "memKb": 55248,
-     "parity": "ok"
+     "medianUs": 5177,
+     "bytes": 977719,
+     "memKb": 55200,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5390,
-     "bytes": 948373,
-     "memKb": 55200,
-     "parity": "ok"
+     "medianUs": 5139,
+     "bytes": 948332,
+     "memKb": 55040,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 5018,
@@ -6214,25 +6476,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 632000,
-     "bytes": 1249243,
-     "memKb": 90128,
-     "parity": "ok"
+     "medianUs": 606000,
+     "bytes": 1237723,
+     "memKb": 90176,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 5229,
-     "bytes": 224238,
-     "memKb": 56000,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sieve/sieve.tinygo.wasm /Users/div/projects/jz/bench/sieve/sieve.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 13086,
+     "medianUs": 12735,
      "bytes": 12602,
-     "memKb": 18608,
-     "parity": "ok"
+     "memKb": 18624,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 83.4
+   "compileMs": 14.2
   },
   "slices": {
    "name": "slices",
@@ -6287,29 +6550,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2948,
-     "bytes": 2146,
-     "memKb": 56080,
+     "medianUs": 2719,
+     "bytes": 1730,
+     "memKb": 55968,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 3017,
+     "medianUs": 2894,
      "bytes": 1657,
-     "memKb": 55968,
-     "parity": "ok"
+     "memKb": 55808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2994,
+     "medianUs": 2834,
      "bytes": 2029639,
-     "memKb": 60256,
-     "parity": "ok"
+     "memKb": 60368,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2762,
-     "bytes": 949853,
-     "memKb": 58240,
-     "parity": "ok"
+     "medianUs": 2623,
+     "bytes": 949812,
+     "memKb": 58128,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 2801,
@@ -6325,13 +6591,43 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 186000,
-     "bytes": 1257185,
-     "memKb": 93120,
-     "parity": "ok"
+     "medianUs": 174000,
+     "bytes": 1244427,
+     "memKb": 93440,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 72.9
+   "compileMs": 31,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      1.0355,
+      1.0357,
+      1.0367,
+      1.0462
+     ],
+     "median": 1.0367
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.9452,
+      0.9584,
+      0.9598,
+      0.966
+     ],
+     "median": 0.9598
+    },
+    "jz/as": {
+     "ratios": [
+      0.9361,
+      0.9369,
+      0.9428,
+      0.9472
+     ],
+     "median": 0.9428
+    }
+   }
   },
   "sort": {
    "name": "in-place heapsort",
@@ -6407,43 +6703,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 6271,
-     "bytes": 1667,
-     "memKb": 51952,
+     "medianUs": 4590,
+     "bytes": 1352,
+     "memKb": 51680,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 7734,
+     "medianUs": 7607,
      "bytes": 1889,
-     "memKb": 51488,
-     "parity": "ok"
+     "memKb": 51520,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 6550,
+     "medianUs": 6637,
      "bytes": 2028945,
-     "memKb": 55808,
-     "parity": "ok"
+     "memKb": 55952,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 13447,
-     "bytes": 2590474,
-     "memKb": 62640,
-     "parity": "ok"
+     "medianUs": 12364,
+     "bytes": 2590466,
+     "memKb": 62272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 5187,
-     "bytes": 36760,
-     "memKb": 51984,
+     "medianUs": 4647,
+     "bytes": 36736,
+     "memKb": 51840,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5378,
-     "bytes": 946327,
-     "memKb": 53728,
+     "medianUs": 5935,
+     "bytes": 946274,
+     "memKb": 53616,
      "parity": "ok",
-     "measuredAt": "57ad846d"
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 7470,
@@ -6459,45 +6758,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 329000,
-     "bytes": 1257849,
-     "memKb": 88976,
-     "parity": "ok"
+     "medianUs": 323000,
+     "bytes": 1242931,
+     "memKb": 89376,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 7310,
-     "bytes": 224313,
-     "memKb": 53328,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/sort/sort.tinygo.wasm /Users/div/projects/jz/bench/sort/sort.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 13473,
+     "medianUs": 13487,
      "bytes": 13834,
      "memKb": 15264,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 65.3,
-   "paired": {
-    "jz/c-wasm": {
-     "ratios": [
-      0.7395,
-      0.8781,
-      0.9219,
-      0.9561
-     ],
-     "median": 0.9219
-    },
-    "jz/zig-wasm": {
-     "ratios": [
-      0.798,
-      0.9703,
-      1.0694,
-      1.0704
-     ],
-     "median": 1.0694
-    }
-   }
+   "compileMs": 23.9
   },
   "spmv": {
    "name": "sparse matrix×vector (CSR)",
@@ -6566,41 +6846,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2399,
-     "bytes": 1935,
-     "memKb": 52672,
+     "medianUs": 2504,
+     "bytes": 1443,
+     "memKb": 52464,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 2389,
+     "medianUs": 2452,
      "bytes": 1897,
-     "memKb": 52080,
-     "parity": "ok"
+     "memKb": 52208,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 12729,
+     "medianUs": 13195,
      "bytes": 2032733,
-     "memKb": 60576,
-     "parity": "ok"
+     "memKb": 60624,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 6511,
-     "bytes": 2592489,
-     "memKb": 63488,
-     "parity": "ok"
+     "medianUs": 9080,
+     "bytes": 2592481,
+     "memKb": 62944,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 6147,
-     "bytes": 986190,
-     "memKb": 56736,
-     "parity": "ok"
+     "medianUs": 6002,
+     "bytes": 986178,
+     "memKb": 56560,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 6041,
-     "bytes": 949927,
-     "memKb": 55952,
-     "parity": "ok"
+     "medianUs": 5932,
+     "bytes": 949886,
+     "memKb": 56160,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 3107,
@@ -6616,25 +6901,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 302000,
-     "bytes": 1255311,
-     "memKb": 89600,
-     "parity": "ok"
+     "medianUs": 298000,
+     "bytes": 1248247,
+     "memKb": 89696,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 9975,
-     "bytes": 225252,
-     "memKb": 63744,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/spmv/spmv.tinygo.wasm /Users/div/projects/jz/bench/spmv/spmv.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 10436,
+     "medianUs": 10124,
      "bytes": 13480,
-     "memKb": 16176,
-     "parity": "ok"
+     "memKb": 15552,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 68.8
+   "compileMs": 27.1
   },
   "strbuild": {
    "name": "per-record string formatting",
@@ -6703,41 +6989,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 383,
-     "bytes": 1911,
-     "memKb": 62576,
+     "medianUs": 371,
+     "bytes": 1742,
+     "memKb": 62560,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1451,
+     "medianUs": 1456,
      "bytes": 2480,
-     "memKb": 192160,
-     "parity": "ok"
+     "memKb": 192272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 1386,
-     "bytes": 2032172,
-     "memKb": 58992,
-     "parity": "ok"
+     "medianUs": 1360,
+     "bytes": 2032156,
+     "memKb": 59040,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 2628,
-     "bytes": 2590043,
-     "memKb": 72752,
-     "parity": "ok"
+     "medianUs": 2527,
+     "bytes": 2590035,
+     "memKb": 72000,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 416,
-     "bytes": 982719,
-     "memKb": 53968,
-     "parity": "ok"
+     "medianUs": 408,
+     "bytes": 982707,
+     "memKb": 54096,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 1948,
-     "bytes": 952136,
-     "memKb": 60032,
-     "parity": "ok"
+     "medianUs": 1870,
+     "bytes": 952095,
+     "memKb": 59808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 620,
@@ -6753,25 +7044,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 44000,
-     "bytes": 1252939,
-     "memKb": 91056,
-     "parity": "ok"
+     "medianUs": 43000,
+     "bytes": 1242153,
+     "memKb": 90752,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 14552,
-     "bytes": 225933,
-     "memKb": 53248,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/strbuild/strbuild.tinygo.wasm /Users/div/projects/jz/bench/strbuild/strbuild.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 4946,
+     "medianUs": 4783,
      "bytes": 13256,
-     "memKb": 16080,
-     "parity": "ok"
+     "memKb": 15968,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 56.9
+   "compileMs": 23
   },
   "synth": {
    "name": "synth",
@@ -6840,41 +7132,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 2558,
-     "bytes": 1895,
-     "memKb": 55392,
+     "medianUs": 2472,
+     "bytes": 1599,
+     "memKb": 55376,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 2471,
+     "medianUs": 2405,
      "bytes": 1797,
-     "memKb": 55216,
-     "parity": "ok"
+     "memKb": 55424,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 2513,
+     "medianUs": 2465,
      "bytes": 2028714,
-     "memKb": 59728,
-     "parity": "ok"
+     "memKb": 59808,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 4976,
-     "bytes": 2590032,
-     "memKb": 67120,
-     "parity": "ok"
+     "medianUs": 4922,
+     "bytes": 2590024,
+     "memKb": 67248,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2555,
-     "bytes": 977980,
-     "memKb": 57696,
-     "parity": "ok"
+     "medianUs": 2506,
+     "bytes": 977968,
+     "memKb": 57632,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 2558,
-     "bytes": 947663,
-     "memKb": 57728,
-     "parity": "ok"
+     "medianUs": 2488,
+     "bytes": 947622,
+     "memKb": 57712,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 2394,
@@ -6890,25 +7187,73 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 240000,
-     "bytes": 1260477,
-     "memKb": 94960,
-     "parity": "ok"
+     "medianUs": 234000,
+     "bytes": 1250123,
+     "memKb": 93392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 2731,
-     "bytes": 224102,
-     "memKb": 57296,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/synth/synth.tinygo.wasm /Users/div/projects/jz/bench/synth/synth.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 2223,
+     "medianUs": 2191,
      "bytes": 13297,
-     "memKb": 18880,
-     "parity": "ok"
+     "memKb": 18944,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 68.4
+   "compileMs": 29.6,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.9884,
+      0.9936,
+      0.9944,
+      0.9948
+     ],
+     "median": 0.9944
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.9976,
+      1.0028,
+      1.0045,
+      1.0069
+     ],
+     "median": 1.0045
+    },
+    "jz/zig-wasm": {
+     "ratios": [
+      0.9762,
+      0.9864,
+      0.988,
+      0.988
+     ],
+     "median": 0.988
+    },
+    "jz/as": {
+     "ratios": [
+      1.0237,
+      1.0262,
+      1.0296,
+      1.03
+     ],
+     "median": 1.0296
+    },
+    "jz/moonbit": {
+     "ratios": [
+      1.1131,
+      1.1273,
+      1.1292,
+      1.1329
+     ],
+     "median": 1.1292
+    }
+   }
   },
   "tokenizer": {
    "name": "tokenizer scan",
@@ -6989,41 +7334,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 46,
-     "bytes": 2094,
-     "memKb": 61744,
+     "medianUs": 42,
+     "bytes": 1442,
+     "memKb": 61264,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 62,
+     "medianUs": 53,
      "bytes": 1551,
-     "memKb": 51072,
-     "parity": "ok"
+     "memKb": 50944,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 151,
+     "medianUs": 147,
      "bytes": 2028051,
-     "memKb": 55712,
-     "parity": "ok"
+     "memKb": 55824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 185,
+     "medianUs": 179,
      "bytes": 2599006,
-     "memKb": 62480,
-     "parity": "ok"
+     "memKb": 62432,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 96,
-     "bytes": 975994,
-     "memKb": 54192,
-     "parity": "ok"
+     "medianUs": 98,
+     "bytes": 975982,
+     "memKb": 54480,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 83,
-     "bytes": 946160,
-     "memKb": 53840,
-     "parity": "ok"
+     "medianUs": 86,
+     "bytes": 948191,
+     "memKb": 53888,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 52,
@@ -7040,21 +7390,22 @@
     },
     "javy": {
      "medianUs": 6000,
-     "bytes": 1253119,
-     "memKb": 88912,
-     "parity": "ok"
+     "bytes": 1241882,
+     "memKb": 89056,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 107,
-     "bytes": 224826,
-     "memKb": 55792,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/tokenizer/tokenizer.tinygo.wasm /Users/div/projects/jz/bench/tokenizer/tokenizer.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 84,
+     "medianUs": 82,
      "bytes": 14495,
-     "memKb": 15072,
-     "parity": "ok"
+     "memKb": 15232,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-w2c2": {
      "medianUs": 161,
@@ -7064,7 +7415,7 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 103.4
+   "compileMs": 27.4
   },
   "trace": {
    "name": "trace",
@@ -7119,29 +7470,32 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 1023,
-     "bytes": 1908,
-     "memKb": 52848,
+     "medianUs": 655,
+     "bytes": 1565,
+     "memKb": 52672,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 1005,
+     "medianUs": 966,
      "bytes": 2013,
-     "memKb": 52768,
-     "parity": "ok"
+     "memKb": 53008,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 683,
-     "bytes": 2030288,
-     "memKb": 56992,
-     "parity": "ok"
+     "medianUs": 655,
+     "bytes": 2030272,
+     "memKb": 57136,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 655,
-     "bytes": 948445,
-     "memKb": 54160,
-     "parity": "ok"
+     "medianUs": 625,
+     "bytes": 948404,
+     "memKb": 54272,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 966,
@@ -7157,13 +7511,43 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 90000,
-     "bytes": 1266101,
-     "memKb": 91600,
-     "parity": "ok"
+     "medianUs": 88000,
+     "bytes": 1256948,
+     "memKb": 91360,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 80.8
+   "compileMs": 37.5,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      1.0316,
+      1.048,
+      1.0564,
+      1.0779
+     ],
+     "median": 1.0564
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.9939,
+      0.9939,
+      1,
+      1.0015
+     ],
+     "median": 1
+    },
+    "jz/as": {
+     "ratios": [
+      0.6753,
+      0.6771,
+      0.6791,
+      0.6842
+     ],
+     "median": 0.6791
+    }
+   }
   },
   "vm": {
    "name": "bytecode interpreter dispatch",
@@ -7232,41 +7616,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 6374,
-     "bytes": 1531,
-     "memKb": 51328,
+     "medianUs": 5942,
+     "bytes": 1374,
+     "memKb": 51168,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 11514,
+     "medianUs": 11304,
      "bytes": 1694,
-     "memKb": 51328,
-     "parity": "ok"
+     "memKb": 51392,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 6058,
+     "medianUs": 5988,
      "bytes": 2028821,
-     "memKb": 55472,
-     "parity": "ok"
+     "memKb": 55504,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 19436,
-     "bytes": 2590734,
-     "memKb": 62880,
-     "parity": "ok"
+     "medianUs": 20633,
+     "bytes": 2590725,
+     "memKb": 62592,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 14805,
-     "bytes": 979622,
-     "memKb": 54560,
-     "parity": "ok"
+     "medianUs": 14225,
+     "bytes": 979610,
+     "memKb": 54784,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 6173,
-     "bytes": 945350,
-     "memKb": 53568,
-     "parity": "ok"
+     "medianUs": 6134,
+     "bytes": 945309,
+     "memKb": 53536,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 59546,
@@ -7282,25 +7671,73 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 621000,
-     "bytes": 1259366,
-     "memKb": 89296,
-     "parity": "ok"
+     "medianUs": 594000,
+     "bytes": 1243401,
+     "memKb": 88960,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 8117,
-     "bytes": 224302,
-     "memKb": 53552,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/vm/vm.tinygo.wasm /Users/div/projects/jz/bench/vm/vm.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 16457,
+     "medianUs": 16023,
      "bytes": 13327,
-     "memKb": 14800,
-     "parity": "ok"
+     "memKb": 14736,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 63.5
+   "compileMs": 25.1,
+   "paired": {
+    "jz/c-wasm": {
+     "ratios": [
+      0.9037,
+      0.9258,
+      0.9704,
+      1.0243
+     ],
+     "median": 0.9704
+    },
+    "jz/rust-wasm": {
+     "ratios": [
+      0.9495,
+      0.9499,
+      0.9922,
+      1.0418
+     ],
+     "median": 0.9922
+    },
+    "jz/zig-wasm": {
+     "ratios": [
+      0.393,
+      0.3992,
+      0.419,
+      0.439
+     ],
+     "median": 0.419
+    },
+    "jz/as": {
+     "ratios": [
+      0.5024,
+      0.5144,
+      0.5154,
+      0.5724
+     ],
+     "median": 0.5154
+    },
+    "jz/moonbit": {
+     "ratios": [
+      0.3535,
+      0.355,
+      0.3821,
+      0.393
+     ],
+     "median": 0.3821
+    }
+   }
   },
   "watr": {
    "name": "watr WAT compiler",
@@ -7335,17 +7772,18 @@
      "parity": "ok"
     },
     "jz": {
-     "medianUs": 1117,
-     "bytes": 290999,
-     "memKb": 127328,
+     "medianUs": 1135,
+     "bytes": 308690,
+     "memKb": 128912,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "javy": {
      "medianUs": 8000,
-     "bytes": 2127295,
-     "memKb": 96032,
-     "parity": "ok"
+     "bytes": 2222514,
+     "memKb": 97376,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "porf-native": {
      "status": "fail",
@@ -7428,41 +7866,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 5754,
-     "bytes": 1655,
-     "memKb": 53200,
+     "medianUs": 5337,
+     "bytes": 1496,
+     "memKb": 52960,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 6182,
+     "medianUs": 5977,
      "bytes": 1751,
-     "memKb": 53008,
-     "parity": "ok"
+     "memKb": 52992,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 5749,
+     "medianUs": 5334,
      "bytes": 2028458,
-     "memKb": 57344,
-     "parity": "ok"
+     "memKb": 57232,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 11662,
-     "bytes": 2594820,
-     "memKb": 65728,
-     "parity": "ok"
+     "medianUs": 11422,
+     "bytes": 2594819,
+     "memKb": 65184,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 5789,
-     "bytes": 978615,
+     "medianUs": 5347,
+     "bytes": 978603,
      "memKb": 55584,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 5817,
-     "bytes": 946093,
-     "memKb": 54976,
-     "parity": "ok"
+     "medianUs": 5318,
+     "bytes": 946052,
+     "memKb": 55040,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 6559,
@@ -7478,25 +7921,26 @@
      "measuredAt": "57ad846d"
     },
     "javy": {
-     "medianUs": 686000,
-     "bytes": 1261493,
-     "memKb": 89968,
-     "parity": "ok"
+     "medianUs": 661000,
+     "bytes": 1253051,
+     "memKb": 90368,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 8079,
-     "bytes": 223884,
-     "memKb": 60768,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wav/wav.tinygo.wasm /Users/div/projects/jz/bench/wav/wav.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 8777,
+     "medianUs": 9535,
      "bytes": 13837,
-     "memKb": 17344,
-     "parity": "ok"
+     "memKb": 16768,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     }
    },
-   "compileMs": 78.3
+   "compileMs": 23.6
   },
   "wordcount": {
    "name": "word-frequency map (string keys)",
@@ -7565,41 +8009,46 @@
      "measuredAt": "4c38662f"
     },
     "jz": {
-     "medianUs": 742,
-     "bytes": 16372,
-     "memKb": 53280,
+     "medianUs": 659,
+     "bytes": 3701,
+     "memKb": 52880,
      "parity": "ok",
-     "measuredAt": "4c38662f"
+     "measuredAt": "e36aab3b"
     },
     "as": {
-     "medianUs": 8654,
+     "medianUs": 8669,
      "bytes": 3480,
-     "memKb": 59600,
-     "parity": "ok"
+     "memKb": 59824,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "rust-wasm": {
-     "medianUs": 4377,
-     "bytes": 2045889,
-     "memKb": 57984,
-     "parity": "ok"
+     "medianUs": 4366,
+     "bytes": 2045873,
+     "memKb": 58128,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "go-wasm": {
-     "medianUs": 9014,
-     "bytes": 2593684,
-     "memKb": 72784,
-     "parity": "ok"
+     "medianUs": 8747,
+     "bytes": 2593676,
+     "memKb": 73024,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "zig-wasm": {
-     "medianUs": 2363,
-     "bytes": 1019504,
-     "memKb": 55296,
-     "parity": "ok"
+     "medianUs": 2419,
+     "bytes": 1019492,
+     "memKb": 55440,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "c-wasm": {
-     "medianUs": 780,
-     "bytes": 947981,
-     "memKb": 54096,
-     "parity": "ok"
+     "medianUs": 1079,
+     "bytes": 947856,
+     "memKb": 53760,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-wasmtime": {
      "medianUs": 858,
@@ -7616,21 +8065,22 @@
     },
     "javy": {
      "medianUs": 24000,
-     "bytes": 1258088,
-     "memKb": 89648,
-     "parity": "ok"
+     "bytes": 1245426,
+     "memKb": 89472,
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "tinygo": {
-     "medianUs": 40958,
-     "bytes": 227860,
-     "memKb": 54720,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "Command failed: tinygo build -target=wasip1 -opt=2 -no-debug -o /var/folders/3t/xg6gkls520sbqc17r99qzmdw0000gn/T/jz-bench/wordcount/wordcount.tinygo.wasm /Users/div/projects/jz/bench/wordcount/wordcount.go\nerror: could not autodetect root directory, set the TINYGOROOT environment variable to override\n",
+     "measuredAt": "e36aab3b"
     },
     "moonbit": {
-     "medianUs": 11257,
+     "medianUs": 11085,
      "bytes": 16424,
      "memKb": 16096,
-     "parity": "ok"
+     "parity": "ok",
+     "measuredAt": "e36aab3b"
     },
     "jz-w2c2": {
      "medianUs": 1013,
@@ -7640,10 +8090,10 @@
      "measuredAt": "4ca94ca2"
     }
    },
-   "compileMs": 142.5
+   "compileMs": 53.3
   },
   "jz": {
-   "name": "jz JS compiler (self-host)",
+   "name": "jz JS compiler (self-compile)",
    "samples": 3,
    "stages": 3,
    "runs": 13,
@@ -7674,10 +8124,9 @@
      "parity": "ok"
     },
     "javy": {
-     "medianUs": 377000,
-     "bytes": 39723560,
-     "memKb": 312192,
-     "parity": "ok"
+     "status": "fail",
+     "reason": "exit 1: wasm://wasm/0b178e06:1\n\n\nRuntimeError: unreachable\n    at wasm://wasm/0b178e06:wasm-function[123]:0x73351\n    at wasm://wasm/0b178e06:wasm-function[239]:0x97e8b\n    at wasm://wasm/0b178e06:wasm-function[1218]:0xe93a1\n    at WASI.start (node",
+     "measuredAt": "e36aab3b"
     },
     "porf-native": {
      "status": "fail",
@@ -7686,8 +8135,8 @@
     },
     "jz": {
      "status": "fail",
-     "reason": "exit 1: wasm://wasm/03ab197a:1\n\n\nRangeError: Maximum call stack size exceeded\n    at wasm://wasm/03ab197a:wasm-function[2949]:0x787e3d\n    at wasm://wasm/03ab197a:wasm-function[3252]:0x898e80\n    at wasm://wasm/03ab197a:wasm-function[5071]:0xc6e16d\n",
-     "measuredAt": "de7cf4e6"
+     "reason": "exit 1: wasm://wasm/03f828de:1\n\n\nRuntimeError: unreachable\n    at wasm://wasm/03f828de:wasm-function[13]:0x106c6\n    at wasm://wasm/03f828de:wasm-function[14]:0x10816\n    at wasm://wasm/03f828de:wasm-function[110]:0x2c4af\n    at wasm://wasm/03f828d",
+     "measuredAt": "e36aab3b"
     }
    }
   }

@@ -35,15 +35,15 @@ export const SVG_PATH = join(ROOT, 'bench', 'bench.svg')
 export const SNAPSHOT_N = 52
 export const SNAPSHOT = [
   { label: 'JZ', sub: '-O3', ratio: 1.00 },
-  { label: 'native C', sub: 'clang -O3, ref', ratio: 0.96 },
-  { label: 'C', sub: 'clang → wasm', ratio: 1.88 },
-  { label: 'Rust', sub: 'rustc → wasm', ratio: 1.97 },
-  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.05 },
-  { label: 'Zig', sub: 'zig → wasm', ratio: 2.13 },
-  { label: 'V8', sub: 'Node (JS)', ratio: 2.16 },
-  { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.13 },
-  { label: 'Go', sub: 'gc → wasm', ratio: 4.36 },
-  { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 21.72 },
+  { label: 'native C', sub: 'clang -O3, ref', ratio: 1.04 },
+  { label: 'C', sub: 'clang → wasm', ratio: 2.00 },
+  { label: 'Rust', sub: 'rustc → wasm', ratio: 2.08 },
+  { label: 'AssemblyScript', sub: 'asc -O3', ratio: 2.17 },
+  { label: 'Zig', sub: 'zig → wasm', ratio: 2.21 },
+  { label: 'V8', sub: 'Node (JS)', ratio: 2.35 },
+  { label: 'MoonBit', sub: 'moonrun → wasm', ratio: 4.39 },
+  { label: 'Go', sub: 'gc → wasm', ratio: 4.71 },
+  { label: 'Porffor', sub: `native, runs 43 / ${SNAPSHOT_N}`, ratio: 23.76 },
 ]
 
 // native C (clang -O3, native binary) is the speed-of-light reference. Porffor
