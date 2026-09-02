@@ -86,6 +86,10 @@ export function observeNodeFacts(node, f) {
       else if (typeof d === 'string') recordObjectLiteralDef(f, d, false)
     }
   }
+  // typedRedefs: bare names written outside their declaration. A module global
+  // keeps its declaration-time literal typed length only while nothing rewrites it.
+  if (MUTATE_OPS.has(op) && typeof args[0] === 'string' && !(op === '=' && f._declEq?.has(node)))
+    f.typedRedefs.add(args[0])
   if (op === 'export') {
     // An exported binding is reachable by importers and the host — writes through
     // that path are outside this walk, so exported names count as escaped.
@@ -238,7 +242,7 @@ function emptyWalkFacts() {
     propMap: new Map(), addressTakenNames: new Set(), callSites: [], computedCallSites: [], memberCallSites: [],
     memberDispatchSites: [], memberValueReads: [],
     writtenProps: new Set(), literalWriteKeys: new Map(),
-    arrResized: new Set(), nameEscapes: new Set(),
+    arrResized: new Set(), nameEscapes: new Set(), typedRedefs: new Set(),
     objectLiteralDefs: new Map(),
   }
 }
@@ -258,6 +262,7 @@ function mergeWalkFacts(into, from) {
   for (const p of from.writtenProps) into.writtenProps.add(p)
   for (const v of from.arrResized) into.arrResized.add(v)
   for (const v of from.nameEscapes) into.nameEscapes.add(v)
+  for (const v of from.typedRedefs) into.typedRedefs.add(v)
   for (const [name, direct] of from.objectLiteralDefs)
     recordObjectLiteralDef(into, name, direct)
   for (const [obj, keys] of from.literalWriteKeys) {
@@ -552,6 +557,7 @@ export function collectProgramFacts(ast) {
     if (initFacts.writtenProps) for (const p of initFacts.writtenProps) f.writtenProps.add(p)
     if (initFacts.arrResized) for (const v of initFacts.arrResized) f.arrResized.add(v)
     if (initFacts.nameEscapes) for (const v of initFacts.nameEscapes) f.nameEscapes.add(v)
+    if (initFacts.typedRedefs) for (const v of initFacts.typedRedefs) f.typedRedefs.add(v)
     if (initFacts.objectLiteralDefs) for (const [name, direct] of initFacts.objectLiteralDefs)
       recordObjectLiteralDef(f, name, direct)
     if (initFacts.literalWriteKeys) for (const [obj, keys] of initFacts.literalWriteKeys) {
@@ -617,7 +623,7 @@ export function collectProgramFacts(ast) {
     paramReps, hasSchemaLiterals: f.hasSchemaLiterals, hasMapSet: f.hasMapSet,
     hasBigint: f.hasBigint, hasThrow: f.hasThrow, writtenProps: f.writtenProps,
     literalWriteKeys: f.literalWriteKeys,
-    arrResized: f.arrResized, nameEscapes: f.nameEscapes, literalObjectVars,
+    arrResized: f.arrResized, nameEscapes: f.nameEscapes, typedRedefs: f.typedRedefs, literalObjectVars,
   }
 }
 

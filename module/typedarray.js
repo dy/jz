@@ -48,7 +48,35 @@ const wrapIntIR = (v) => ['select',
   ['f64.ne', v, ['f64.const', Infinity]]]
 
 import { analyzeSimd, genSimdMap } from './typedarray/simd-map.js'
+import { dataAlign, dataPush, dataLen } from '../src/static-data.js'
+import { nonNegIntLiteral } from '../src/static.js'
 
+// Static typed storage: a constant-length typed array constructed at module
+// scope, in straight-line init (not inside a module-level loop), is built
+// exactly once, so it lives in the data segment instead of the heap. The
+// 16-byte header matches __alloc_hdr_n (props word, byteLen, byteLen); the
+// zero payload is data the packer elides; the base is a literal offset inside
+// the __mkptr call, which the static-prefix strip rebases like every other
+// static pointer and hoistConstGlobalInits then freezes into the binding's
+// own declaration. A program whose only storage is static keeps no allocator
+// and no start function. Capped so an un-optimized build (no packer) never
+// carries more than 64 KiB of zeros per array.
+const STATIC_TYPED_MAX_BYTES = 65536
+const staticStorageLen = (ctx, lenExpr) => {
+  if (!ctx.func.atModuleScope || ctx.memory.shared || ctx.func.stack.some(f => f.loop)) return null
+  return nonNegIntLiteral(lenExpr)
+}
+const staticStoragePtr = (aux, byteLen) => {
+  dataAlign(16)
+  const hdrOff = dataLen()
+  const hdr = new Uint8Array(16), dv = new DataView(hdr.buffer)
+  dv.setInt32(8, byteLen, true); dv.setInt32(12, byteLen, true)
+  let chunk = ''
+  for (let i = 0; i < 16; i++) chunk += String.fromCharCode(hdr[i])
+  dataPush(chunk)
+  dataPush('\0'.repeat(byteLen))
+  return mkPtrIR(PTR.TYPED, aux, ['i32.const', hdrOff + 16])
+}
 
 
 export default (ctx) => {
@@ -394,6 +422,9 @@ export default (ctx) => {
       }
       // Normal: allocate fresh typed array (lenExpr is numeric size). Header stores byteLen.
       const shift = SHIFT[elemType]
+      const staticLen = staticStorageLen(ctx, lenExpr)
+      if (staticLen != null && (staticLen << shift) <= STATIC_TYPED_MAX_BYTES)
+        return typed(staticStoragePtr(aux, staticLen << shift), 'f64')
       const lenL = tempI32('tan')
       const out = allocPtr({ type: PTR.TYPED, aux,
         len: ['i32.shl', ['local.get', `$${lenL}`], ['i32.const', shift]], stride: 1, tag: 'ta' })
@@ -509,6 +540,9 @@ export default (ctx) => {
             return typed(['f64.convert_i32_s',
               ['i32.load', ptrOffsetIR(emit(obj), VAL.TYPED)]], 'f64')
           }
+          // Same literal-size fact `.length` folds on (module/core.js).
+          const known = typeof obj === 'string' ? ctx.func.typedLen?.get(obj) ?? ctx.scope?.globalTypedLen?.get(obj) : null
+          if (known != null) return typed(['f64.const', known << SHIFT[et]], 'f64')
           return typed(['f64.convert_i32_s',
             ['i32.shl', ['call', '$__len', ['i64.reinterpret_f64', asF64(emit(obj))]], ['i32.const', SHIFT[et]]]], 'f64')
         }

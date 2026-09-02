@@ -1,5 +1,17 @@
 import { ctx } from '../ctx.js'
 import { MUTATE_OPS } from '../ast.js'
+import { typedCtorRawOf } from '../static.js'
+
+// `recv[i] = v` into a numeric typed array: SetValueInBuffer ToNumbers the value,
+// so the store slot is a ToNumber-forcing use like `*`. BigInt arrays ToBigInt.
+const numericTypedStore = (node) => node[0] === '=' && node.length === 3
+  && Array.isArray(node[1]) && node[1][0] === '[]' && typeof node[1][1] === 'string'
+  && /^new\.(?!Big)\w+Array$/.test(typedCtorRawOf(node[1][1]) ?? '')
+// `recv[i]` on a typed array: the index is numeric-COMPATIBLE, not proving (a
+// canonical numeric string indexes the same element; jz coerces indices to i32,
+// README "what differs"). An untyped receiver keeps its dynamic-key possibility.
+const typedIndex = (node) => node[0] === '[]' && node.length === 3
+  && typeof node[1] === 'string' && typedCtorRawOf(node[1]) != null
 
 // ── Loop-invariant exported-param coercion hoist ────────────────────────────
 //
@@ -125,6 +137,8 @@ export function paramAllUsesNumeric(body, name, _seen = new Set(), requireProof 
       return
     }
     if (MUTATE_OPS.has(op) && names.has(node[1])) { ok = false; return }
+    if (numericTypedStore(node)) { if (!names.has(node[1][2])) walk(node[1][2]); numOperand(node[2]); return }
+    if (typedIndex(node)) { if (!names.has(node[2])) walk(node[2]); return }
     if (NUM_BIN_OPS.has(op) && node.length === 3) {     // numeric binary: operands are ToNumber'd
       numOperand(node[1]); numOperand(node[2])
       return
@@ -313,6 +327,8 @@ export function paramNeverString(body, name) {
       for (let i = 1; i <= 2; i++) if (node[i] !== name) walk(node[i])
       return
     }
+    if (numericTypedStore(node)) { if (node[1][2] !== name) walk(node[1][2]); if (node[2] !== name) walk(node[2]); return }
+    if (typedIndex(node)) { if (node[2] !== name) walk(node[2]); return }
     // Numeric/relational/bitwise binary + unary: param operand is fine, recurse rest.
     // A relational compare against a string literal (`x >= "9"`) is string intent,
     // same as concat: JS compares two strings lexicographically, so the param must

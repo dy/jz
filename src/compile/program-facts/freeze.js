@@ -76,7 +76,7 @@ export const FACT_KEYS = new Set([
   'computedCallSites', 'memberCallSites', 'memberDispatchSites', 'memberValueReads',
   'maxDef', 'maxCall', 'hasRest', 'hasSpread', 'paramReps', 'hasSchemaLiterals',
   'hasMapSet', 'hasBigint', 'hasThrow', 'writtenProps', 'literalWriteKeys', 'arrResized',
-  'nameEscapes', 'literalObjectVars', 'programIndex', 'dictKinds',
+  'nameEscapes', 'typedRedefs', 'literalObjectVars', 'programIndex', 'dictKinds',
 ])
 
 /** Read-only view of a `paramReps`-shaped `Map<funcName, Map<paramIdx, rep>>`

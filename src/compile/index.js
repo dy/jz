@@ -248,6 +248,10 @@ export default function compile(ast, profiler) {
 
   const programFacts = timePhase(profiler, 'plan', () => plan(ast, profiler))
 
+  // A module global's declaration-time literal length holds only while nothing
+  // rewrites the binding (the element kind is an all-writers fact already).
+  for (const name of programFacts.typedRedefs) ctx.scope.globalTypedLen?.delete(name)
+
   // Closure-table planning is post-plan so every scan sees the final AST.
   // Same-body indirect devirt (dyn-closure-tables.js): which module globals are
   // structurally safe candidate closure tables (never alias/escape) — the
@@ -669,8 +673,25 @@ export default function compile(ast, profiler) {
     }
     return esc
   }
-  if (dataLen() && !ctx.memory.shared)
-    sec.data.push(['data', ['i32.const', 0], '"' + escBytes(dataString()) + '"'])
+  // Module-defined memory is zero-initialized, so a long zero run inside the
+  // segment (static typed storage's payload) ships as a gap between segments
+  // at every optimize level, not only where watr's packer runs.
+  if (dataLen() && !ctx.memory.shared) {
+    const data = dataString()
+    const GAP = 32
+    let at = 0
+    while (at < data.length) {
+      let end = at, zeros = 0
+      for (let i = at; i < data.length; i++) {
+        if (data.charCodeAt(i) === 0) { if (++zeros === GAP) { end = i + 1 - GAP; break } }
+        else zeros = 0
+        end = i + 1
+      }
+      if (end > at) sec.data.push(['data', ['i32.const', at], '"' + escBytes(data.slice(at, end)) + '"'])
+      at = end
+      while (at < data.length && data.charCodeAt(at) === 0) at++
+    }
+  }
   // Shared memory: no active segment at 0 (instances would collide) — ship the
   // static region (static strings + lazy conversion tables) as a PASSIVE segment,
   // memory.init it into __alloc'd space at start, and rebase its consumers:

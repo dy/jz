@@ -141,9 +141,18 @@ export function snapshotInit(module, watrCompile) {
 
   // ── capture ──
   const ex = inst.exports
+  // The image ends at the post-init heap top. A module with no allocator (every
+  // storage static) has no __heap: its init writes only below the initial pages,
+  // so the image is that span with the trailing zeros dropped.
   const heapFn = ex['__snapg$__heap']
-  if (!heapFn) { module.length -= getters.length; return false }
-  const heapTop = Number(heapFn())
+  let heapTop
+  if (heapFn) heapTop = Number(heapFn())
+  else {
+    const initialPages = Number(memNode.find(c => typeof c === 'number' || (typeof c === 'string' && /^\d+$/.test(c))) ?? 1)
+    heapTop = Math.min(initialPages * 65536, ex.memory.buffer.byteLength)
+    const bytes = new Uint8Array(ex.memory.buffer, 0, heapTop)
+    while (heapTop > 0 && bytes[heapTop - 1] === 0) heapTop--
+  }
   const image = new Uint8Array(ex.memory.buffer.slice(0, heapTop))
 
   const captured = new Map()

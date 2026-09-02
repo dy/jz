@@ -13,7 +13,7 @@ import { typed, asF64, asI32, asI64, toI32, toNumF64, NULL_NAN, UNDEF_NAN, FALSE
 import { ssoBitI64Hex, ptrNanHex, nanPrefixHex } from '../layout.js'
 import { emit, bool, deps, reg } from '../src/bridge.js'
 import { isReassigned } from '../src/ast.js'
-import { dataPush } from '../src/static-data.js'
+import { dataPush, dataAlign, dataLen } from '../src/static-data.js'
 import { valTypeOf, censusMaybeUndefined } from '../src/kind.js'
 import { VAL } from '../src/reps.js'
 import { ctx, inc, PTR, LAYOUT, declGlobal, err } from '../src/ctx.js'
@@ -867,9 +867,11 @@ export default (ctx) => {
   // R: Static strings seeded at address 0. Compile.js strips if __static_str unused.
   // 0=NaN 1=Infinity 2=-Infinity 3=true 4=false 5=null 6=undefined 7=[Array] 8=[Object]
   // 9=ok 10=not-equal 11=timed-out (Atomics.wait results, module/atomics.js)
+  // Padded to 16 so stripping the prefix keeps every later alignment.
   const staticStr = 'NaNInfinity-Infinitytruefalsenullundefined[Array][Object]oknot-equaltimed-out'
-  ctx.runtime.staticDataLen = staticStr.length
   dataPush(staticStr)
+  dataAlign(16)
+  ctx.runtime.staticDataLen = dataLen()
 
   // Eisel-Lemire power-of-10 table: 131 entries × 16 bytes = 2096 bytes,
   // staticStr.length = 57, pad 7 → table starts at byte 64 (always constant).

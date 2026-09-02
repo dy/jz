@@ -26,6 +26,7 @@ const TESTS = [
   'web-smoke',
   'webglobals',
   'snapshot',
+  'static-storage',
   'mem',
   'buffer',
   'workers',

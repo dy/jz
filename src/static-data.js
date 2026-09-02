@@ -21,9 +21,9 @@
 import { ctx } from './ctx.js'
 import { LAYOUT } from '../layout.js'
 
-const PAD = '\0\0\0\0\0\0\0'
+const PAD = '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0'
 
-/** Pad the segment to an `align`-byte boundary (align ≤ 8). */
+/** Pad the segment to an `align`-byte boundary (align ≤ 16). */
 export const dataAlign = (align) => {
   const r = ctx.runtime
   const pad = (align - (r.dataLen % align)) % align

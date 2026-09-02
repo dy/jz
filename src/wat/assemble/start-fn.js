@@ -303,6 +303,18 @@ export function buildStartFn(ast, sec, closureFuncs, compilePendingClosures) {
 export function hoistConstGlobalInits(sec) {
   const startFn = sec.start.find(n => Array.isArray(n) && n[0] === 'func' && n[1] === '$__start')
   if (!startFn) return
+  // The constant an init expression denotes, as the literal of a `${type}.const`,
+  // or null. A pointer-ABI global narrowed from a folded NaN-box pointer carries
+  // `i32.wrap_i64(i64.reinterpret_f64(f64.const nan:0x…))`: the box's low word.
+  const constLit = (c, type) => {
+    if (!Array.isArray(c)) return null
+    if (c[0] === `${type}.const`) return c[1]
+    if (type === 'i32' && c[0] === 'i32.wrap_i64' && Array.isArray(c[1]) && c[1][0] === 'i64.reinterpret_f64'
+        && Array.isArray(c[1][1]) && c[1][1][0] === 'f64.const'
+        && typeof c[1][1][1] === 'string' && c[1][1][1].startsWith('nan:0x'))
+      return Number(BigInt(c[1][1][1].slice(4)) & 0xFFFFFFFFn) | 0
+    return null
+  }
   const writes = new Map()
   const scan = (node) => {
     if (node[0] === 'global.set' && typeof node[1] === 'string') writes.set(node[1], (writes.get(node[1]) || 0) + 1)
@@ -315,8 +327,9 @@ export function hoistConstGlobalInits(sec) {
     const g = name && ctx.scope.globals.get(name)
     const c = stmt[2]
     if (!g || !g.mut || !ctx.scope.consts?.has(name) || !ctx.scope.userGlobals?.has(name)) continue
-    if (!Array.isArray(c) || c[0] !== `${g.type}.const`) continue
-    ctx.scope.globals.set(name, { ...g, mut: false, init: c[1] })
+    const lit = constLit(c, g.type)
+    if (lit == null) continue
+    ctx.scope.globals.set(name, { ...g, mut: false, init: lit })
     startFn.splice(i, 1)
   }
   // Hoisting can empty `__start`. The O2 watr pass prunes a bodyless start, but at

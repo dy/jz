@@ -83,7 +83,7 @@ export function recordModuleInitFacts(root) {
     hasFuncValue: false, timerNames: new Set(),
     maxDef: 0, maxCall: 0, hasRest: false, hasSpread: false,
     writtenProps: new Set(), literalWriteKeys: new Map(),
-    arrResized: new Set(), nameEscapes: new Set(),
+    arrResized: new Set(), nameEscapes: new Set(), typedRedefs: new Set(),
     objectLiteralDefs: new Map(),
   }
   const visitFuncValue = (node) => {
