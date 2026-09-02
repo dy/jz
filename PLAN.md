@@ -33,18 +33,27 @@ Exit proof: every current test file maps to typed kinds, runtime kinds and `any`
 
 ### Phase 1. Typed core with an IR
 
-Move `prototype/compact/` to `core/` and give it the IR.
+Move `prototype/compact/` to `core/` and give it the IR. Two halves, each with its own exit proof.
 
+#### 1a. The IR at parity (weeks 1 to 6)
+
+- [ ] `core/` with its own test entry in `test/index.js`, its bench, and its gates from the first commit
 - [ ] one typed IR: SSA with a CFG and one lattice (`f64`, `i32`, `i64`, `v128`, `str`, `typedarray T`, `struct S`, `array T`, `dict V`, `closure C`, `any`)
 - [ ] every optimization (LICM, CSE, vectorization, pointer simplification) is dataflow on the IR; the WAT-array matchers are not ported
 - [ ] i32 parameters and results carried as i32; the exact-conversion helper appears only where JS semantics require ToInt32 of an f64
-- [ ] typed arrays of every element type, structs with unboxed fields, closures over those
-- [ ] regions: per-call release, escape analysis on the IR, the session region, named regions; the tier report lists what each function lets escape
 - [ ] acorn as the parser; the early-errors checker and the accept ledger are not ported
-- [ ] the call graph is complete by construction, gated by the reachability probe over the core corpus
 - [ ] watr stays the encoder and final peephole
 
 Exit proof: the compact corpus and the numeric bench cases compile through the IR; the bitwise row beats 120 bytes; the typed SIMD row keeps its 287-byte, 4.69x win; peak compile memory is linear in function count.
+
+#### 1b. Storage, closures, regions (weeks 7 to 12)
+
+- [ ] typed arrays of every element type, structs with unboxed fields, closures over those; each with a named differential test file in `test/core/`
+- [ ] regions: per-call release, escape analysis on the IR, the session region, named regions; the tier report lists what each function lets escape
+- [ ] the call graph is complete by construction, gated by the reachability probe over the core corpus
+- [ ] the leak tripwire: a long-running loop over the flagship's node graph holds its memory flat; the test is the exit criterion for regions
+
+Exit proof: the typed-kinds corpus (`spec/subset.md`) compiles through the IR with its differential tests, the leak tripwire holds, and the reachability probe is zero. If the escape analysis rejects a construct the corpus needs, the fallback is named in `spec/memory.md` before phase 2 starts, not discovered in phase 4.
 
 ### Phase 2. Runtime in jz on regions
 
@@ -69,7 +78,7 @@ Exit proof: a program mixing typed and boxed functions compiles with a report th
 
 - [ ] port `test/` in subset order: numeric, typed storage, structs, closures, strings, objects, collections, JSON, async, classes, modules, host interop
 - [ ] every ported test is a differential test against JS where the subset promises JS semantics, and a contract test where the typed tier defines the behavior
-- [ ] web-audio-api compiles as the flagship: a long-lived node graph in the session region, DSP kernels typed with nothing escaping, the report showing the boundary and the regions
+- [ ] web-audio-api compiles as the flagship: a long-lived node graph in the session region, DSP kernels typed with nothing escaping, static accessors on fixed shapes as methods, the report showing the boundary and the regions
 - [ ] regression gates against ourselves on `bench/`; no competitor claims in CI or the README
 
 Exit proof: the ported corpus passes, the flagship compiles and runs its own tests, and every remaining old-compiler test is either ported, mapped to a rejection, or deleted with a reason.
@@ -90,6 +99,7 @@ Exit proof: one compiler, one IR, one runtime language, one spec.
 - the reachability probe at zero on the core corpus after any call-graph change
 - byte identity for refactor-only slices; an attributed diff otherwise
 - peak memory and compile time recorded per slice, gated against the previous slice
+- one external review at each phase exit; the architecture audit re-runs at the phase 3 exit
 
 Self-compilation is a demo. It never gates a slice and never dictates source style.
 
@@ -102,4 +112,5 @@ Report numbers only under their stated contract: guarded ABI or typed ABI, typed
 - The spec answers "is this in the subset". A change that needs more prose than a spec edit is the wrong change.
 - A commit is a rule, a runtime function, or a corpus slice, with its tests. Twenty commits a day is a symptom, not a pace.
 - Contributors enter through the runtime (jz source plus differential tests) and the tier report, not through compiler internals.
-- The migration slices on `main` stay as they are; the old compiler receives maintenance fixes only.
+- The migration slices on `main` stay as they are; the old compiler receives maintenance fixes only. `scripts/src-freeze.mjs` counts non-fix commits under `src/` since the freeze and fails above zero; it runs in CI.
+- Tripwires: `core/` with its test entry by week 1; the IR compiling the compact corpus by week 6; the leak tripwire test passing by week 12; a kernel figure under the typed ABI on the README by week 14. A missed tripwire is a plan review, not a note.

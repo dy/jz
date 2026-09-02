@@ -14,7 +14,7 @@ JZ compiles this subset of JavaScript. Every value has one kind from the lattice
 - `v128`: produced by vectorization, never by source.
 - `str`: JS strings, UTF-16 code units for `length`, indexing, slicing, search, and regular-expression positions; concatenation, comparison, the `String` methods in the runtime; ASCII and simple Unicode case mapping, no locale tables.
 - `typedarray T`: every `ArrayBuffer` view, `DataView`, `Float16Array`, `Atomics`. Access is bounds-checked and traps out of range; the trap is the contract and is reported.
-- `struct S`: an object literal or class instance with a fixed shape and typed fields, unboxed. Method dispatch is static.
+- `struct S`: an object literal or class instance with a fixed shape and typed fields, unboxed. Method dispatch is static. A `get` or `set` accessor declared on the shape is a method with property syntax; it is resolved statically like any method.
 - `array T`: a growable array of one kind, JS growth and bounds semantics, the `Array` methods in the runtime.
 - `dict V`: a string-keyed dictionary of one value kind (`dict any` for heterogeneous), `delete` and computed keys allowed; `Map` and `Set` are dictionaries with their JS API; `WeakMap` and `WeakSet` are `Map` and `Set`.
 - `closure C`: a function value with a typed signature and a fixed capture record.
@@ -26,7 +26,7 @@ Written in jz, compiled by the core, loaded per feature only when a program uses
 
 ## Rejected
 
-`eval`, the `Function` constructor, `with`, `Proxy`, `Reflect`, property descriptors, getters and setters, live prototype chains, `__proto__`, `Object.create(proto)`, monkey-patching builtins, `arguments` beyond rest forwarding, dynamic `import`, Annex B syntax, `try` across `yield` or `await`, general BigInt arithmetic, objects whose shape changes after creation (adding a key to a struct; use `dict`), Intl, Temporal, DOM and Node services (they cross as host imports), and any string operation that needs locale or normalization tables.
+`eval`, the `Function` constructor, `with`, `Proxy`, `Reflect`, property descriptors, accessors installed at runtime (`Object.defineProperty`), live prototype chains, `__proto__`, `Object.create(proto)`, monkey-patching builtins, `arguments` beyond rest forwarding, dynamic `import`, Annex B syntax, `try` across `yield` or `await`, general BigInt arithmetic, objects whose shape changes after creation (adding a key to a struct; use `dict`), Intl, Temporal, DOM and Node services (they cross as host imports), and any string operation that needs locale or normalization tables.
 
 ## Divergence policy
 

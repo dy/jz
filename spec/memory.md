@@ -22,6 +22,10 @@ Typed arrays are contiguous regions of their own: fixed while a view exists, bou
 
 One target: wasm with linear memory. Browsers, Node, wasmtime, and WASI embedders all run the same module; nothing depends on the GC proposal. Threads and shared memory are an option on top, not a separate target.
 
+## Fallback
+
+If escape analysis cannot bound a lifetime the corpus needs, the value is allocated in the session region and the tier report names it as a session escape. The host reclaims through `release()` as before; no collector is introduced. The leak tripwire (a long-running loop over the flagship's node graph, memory flat) decides whether the fallback is acceptable for a given construct, and a construct that fails it goes to the rejected list with its nearest in-subset form.
+
 ## Rules
 
 - No compile-time layout is observable from source: no address arithmetic, no manual free of an individual value, no handle that outlives its region.
