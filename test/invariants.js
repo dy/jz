@@ -560,7 +560,7 @@ test('invariant: ProgramIndex owns stable numeric function and member-target ide
       list: funcs,
       map: new Map(funcs.map(func => [func.name, func])),
       names: new Set(funcs.map(func => func.name)),
-      multiProp: new Set(),
+      multiProp: new Map(),
     },
   }, {
     nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames, callSites,
@@ -613,7 +613,7 @@ test('invariant: ProgramIndex keeps source, variant, and graph IDs disjoint', as
     const source = { name: 'source', exported: false, sig: { params: [{ name: 'x', type: 'f64' }], results: ['f64'] }, body: ['return', 'x'] }
     ctx.funcs = {
       list: [source], map: new Map([['source', source]]), names: new Set(['source']),
-      multiProp: new Set(), pendingVariants: [],
+      multiProp: new Map(), pendingVariants: [],
     }
     ctx.plans = {}
     const paramReps = new Map([['source', new Map([[0, { val: 'NUMBER' }]])]])
@@ -828,6 +828,33 @@ test('invariant: namespace-computed dispatch reaches its arms and their members'
     'an arm called with an arity shortfall inside an inline dispatch member still gets its graph edge')
 })
 
+test('invariant: multi-written properties, optional calls, init-stored refs, and defaults reach ProgramIndex', () => {
+  if (onKernel()) return
+  const reach = (index, name) => index.isGraphReachable(index.graphFunctionIdOfName(name))
+
+  compile('let ns = (x) => x\nns.p = (v) => v + 1\nns.p = (v) => v + 2\nexport let h = (v) => ns.p(v)')
+  let index = ctx.plans.programIndex
+  const lifts = ctx.funcs.list.filter(f => !f.raw && /^ns\$p/.test(f.name)).map(f => f.name)
+  is(lifts.length, 2, 'each write of a multi-written function property lifts its own implementation')
+  ok(lifts.every(n => index.addressTaken.has(n) && reach(index, n)),
+    'every lifted implementation of a multi-written property is address-taken and reachable')
+
+  compile('let f = (x) => x > 0 ? f(x - 1) + 1 : 0\nexport let h = (v) => f?.(v)')
+  index = ctx.plans.programIndex
+  ok(reach(index, 'f'), 'an optional call on a named function is a call-graph edge')
+
+  compile("import { g } from './m.jz'\nexport let read = () => g", {
+    modules: { './m.jz': 'let f = (x) => x > 0 ? f(x - 1) + 1 : 0\nexport let g = 0\ng = f' },
+  })
+  index = ctx.plans.programIndex
+  const stored = ctx.funcs.list.find(fn => !fn.raw && /f$/.test(fn.name))
+  ok(stored && reach(index, stored.name), 'a function reference stored by a module-init write is a root')
+
+  compile('let helper = (x) => x > 0 ? helper(x - 1) + 1 : 0\nlet d = (a, fn = (x) => helper(x)) => fn(a)\nexport let h = (v) => d(v)')
+  index = ctx.plans.programIndex
+  ok(reach(index, 'helper'), 'a call inside a default-parameter expression is an edge of its function')
+})
+
 test('architecture: emission order is the frozen concrete function order', () => {
   if (onKernel()) return
   compile('let a = (x) => x + 1; export let b = (y) => a(y) * 2')
@@ -858,7 +885,7 @@ test('invariant: ProgramIndex SCCs and reachability match an independent closure
       list: funcs,
       map: new Map(funcs.map(func => [func.name, func])),
       names: new Set(funcs.map(func => func.name)),
-      multiProp: new Set(),
+      multiProp: new Map(),
     },
   }, {
     nameEscapes: new Set(), dynWriteVars: new Set(), addressTakenNames: new Set(['f7']), callSites,

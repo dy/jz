@@ -171,16 +171,16 @@ The graph benchmark runs the staged and frozen direct backends in fresh processe
 
 The benchmark self-compiles the staged compiler. In both optimization modes, one reusable instance compiles A, A, B, integer and typed kernels, and the empty source. B must match a fresh-instance build, and empty input must produce the canonical 8-byte module. Timed rows compare optimize-off compilation with the current compiler's optimize-off path. Timed intervals include compilation and output copying; instantiation, source marshaling, and `_clear()` stay outside.
 
-Latest loaded-machine result against the fresh 14,541,732-byte `dist/jz.wasm`:
+Latest loaded-machine result against the fresh 14,542,559-byte `dist/jz.wasm`:
 
-- staged compiler: 2,256,492 bytes, 6.44x smaller
+- staged compiler: 2,256,358 bytes, 6.44x smaller
 - staged source graph: 72 modules, 1,016,838 source bytes
-- compile-speed geomean: 39.25x
-- minimum compile speedup: 4.35x
+- compile-speed geomean: 39.64x
+- minimum compile speedup: 4.23x
 - emitted-size geomean: 20.81x smaller
 - constant modules tie production at 41 bytes
 - the exact bitwise row is 212 bytes versus production's 120 bytes
-- the typed SIMD row compiles 15.11x faster and emits 287 bytes versus production's 568 bytes
+- the typed SIMD row compiles 15.26x faster and emits 287 bytes versus production's 568 bytes
 
 The bitwise size loss is visible and blocks production promotion. It is the current cost of exact conversion for unknown f64 operands; local i32 and range proofs remove that helper where possible. The typed row's win does not offset this per-case loss.
 

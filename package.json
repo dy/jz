@@ -62,6 +62,7 @@
     "test:ratchet": "node test/perf-ratchet.js",
     "test:self": "node test/self-compile.js && node test/self-compile-perf.js",
     "test:self:recursive": "npm run build && node scripts/recursive-self-check.mjs",
+    "test:reach": "node scripts/reachability-probe.mjs",
     "test:porffor-core": "node scripts/porffor-core-adapter.mjs --verify",
     "test:262": "node test/test262.js",
     "test:262:builtins": "node test/test262-builtins.js",

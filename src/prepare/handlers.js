@@ -356,8 +356,11 @@ const handlers = {
         // Reassignment → the property is mutable; record it so `fn.prop()` calls
         // emit a dynamic property read + indirect call instead of a direct call.
         if (ctx.funcs.names.has(name)) {
-          ctx.funcs.multiProp.add(`${fnBase}.${lhs[2]}`)
+          const key = `${fnBase}.${lhs[2]}`
+          let lifts = ctx.funcs.multiProp.get(key)
+          if (!lifts) ctx.funcs.multiProp.set(key, lifts = new Set([name]))
           do { name = `${fnBase}$${lhs[2]}$${freshPrepareId()}` } while (ctx.funcs.names.has(name))
+          lifts.add(name)
         }
         // Build the target `.` node directly from the resolved base — re-`prep`ing
         // the lhs would resolve a multiProp `fn.prop` to an rvalue (closure

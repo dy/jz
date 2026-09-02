@@ -955,6 +955,18 @@ export function buildProgramIndex(ctx, programFacts, ast, enrichCallSites) {
       dynamicRootIds.push(id)
     }
   }
+  // A function property assigned more than once dispatches through a mutable
+  // slot, so every lifted implementation escapes as a value: address-taken and
+  // a dynamic root, like a function reference stored anywhere else. The
+  // single-write lift stays exempt by design (its call sites resolve through
+  // the member table); the multi-write member resolves to nothing.
+  for (const lifts of ctx.funcs.multiProp.values()) for (const name of lifts) {
+    const id = graphNameIds.get(name) ?? -1
+    if (id >= 0 && !addressTakenBits[id]) {
+      addressTakenBits[id] = 1
+      dynamicRootIds.push(id)
+    }
+  }
   const isGraphAddressTaken = idOrName => {
     const id = Number.isInteger(idOrName) ? idOrName : graphNameIds.get(idOrName) ?? -1
     return id >= 0 && !!addressTakenBits[id]

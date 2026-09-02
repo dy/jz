@@ -319,7 +319,7 @@ Status: implemented on the isolated prototype. Standalone feature expansion stop
 - [x] pin typed A to A to B reuse in both optimization modes
 - [x] preserve every generated graph output hash and one-slot scratch on storage-free graphs
 
-Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.11x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,492 bytes versus 14,541,732 bytes. These timings were gathered on swapped machines and do not certify release performance.
+Runtime direction on a 4,097-element map is 4.69x SIMD over scalar, with identical result and 65,552 memory bytes. The self-hosted typed compile row is 15.26x faster and emits 287 bytes versus production's 568 bytes. The compact artifact is 2,256,358 bytes versus 14,542,559 bytes. These timings were gathered on swapped machines and do not certify release performance.
 
 The exact integer row remains a visible 212-byte loss versus production's 120 bytes. That per-case loss blocks promotion of the integer lowering even though the typed row wins. Do not weaken exact conversion to close it.
 
@@ -469,6 +469,21 @@ Eighth production slice verification (attributed byte diff):
 - compact threshold: pass at 2,256,492 bytes versus the 14,541,732-byte production compiler
 - compiler artifact +11,061 bytes: the compiler's own dispatch-table sites now feed its lattice, widening parameters that had narrowed on partial evidence
 
+Ninth production slice verification (attributed byte diff):
+
+- ProgramIndex reachability closes on the whole refactor-oracle corpus: `npm run test:reach` (`scripts/reachability-probe.mjs`) compiles all 142 specimens at O3 and reports zero emitted-but-unreachable functions (jessie had 14 after the dispatch slice)
+- classes closed: every lifted implementation of a multi-written function property (`ctx.funcs.multiProp` now maps each key to its lifts) is address-taken and rooted; `?.()` calls census like `()`; a function reference stored by a module-init write roots its target without becoming address-taken; default-parameter expressions are walked as their function's own facts (subscript's `dispatch(ops, tail, fn = (a, ...) => { ... loc(r, from) ... })`)
+- pins: one invariant test per class, four in all
+- refactor oracle: 564 outputs byte-identical; the 4 jessie rows grow by 3 to 10 bytes. Attribution: the multi-written `parse.id` family; the first implementation's result widens i32 to f64 to the uniform slot ABI now that it is address-taken, the second drops a redundant convert, and the dispatch trampoline gains the boolean normalization, so both implementations behind one mutable slot share one result ABI
+- native: 3,906 pass, 1 skip
+- opt3: 3,906 pass, 1 skip
+- WASI: 3,905 pass, 1 skip
+- kernel-target `test/data.js`: 210 tests and 1,162 assertions
+- kernel oracle: 15 tests and 738 assertions
+- functional self-compile: 23 tests and 224 assertions
+- recursive self-compile: 321 modules, 6,877,828 input bytes, 14,101,637 output bytes, 4,125,883,160 heap bytes, 169,084,136 bytes headroom; elapsed 31,760 ms
+- compact threshold: pass at 2,256,358 bytes versus the 14,542,559-byte production compiler
+
 Per-slice recursive and artifact ratchet:
 
 | Production migration slice | Compiler bytes | Recursive heap bytes | Headroom bytes | Change from prior |
@@ -485,6 +500,7 @@ Per-slice recursive and artifact ratchet:
 | canonical export roots | 14,523,519 | 4,121,053,816 | 173,913,480 | +399 bytes, -669,120 headroom |
 | member-call edges | 14,530,671 | 4,122,542,760 | 172,424,536 | +7,152 bytes, -1,488,944 headroom |
 | namespace dispatch sites | 14,541,732 | 4,125,719,984 | 169,247,312 | +11,061 bytes, -3,177,224 headroom |
+| corpus reachability closure | 14,542,559 | 4,125,883,160 | 169,084,136 | +827 bytes, -163,176 headroom |
 
 A slice that consumes 50 MiB of recursive headroom is an attributed finding before promotion, not deferred debt. Compiler artifact growth is recorded in the same table even when correctness output is unchanged.
 
@@ -660,7 +676,7 @@ The current ProgramIndex still retains body ASTs and source names. Lowering stil
 
 Identity is closed and emission consumes ProgramIndex parameter-ABI rows. M4 sequencing, with probe evidence recorded 2026-09-01:
 
-1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. ProgramIndex reachability is now complete on the watr bundle: export roots (canonical `isExported`), `.`-member call edges through `resolveMemberSourceId` (Shape 8, module-scope member calls as roots), and namespace-computed dispatch (`ns[k](args)` and `ns[k].prop(args)` lowered to `?:` chains, including inside inline dispatch-table arrows) synthesize per-arm sites, with a graph edge for every resolved arm even where the lattice site is declined on arity. The O3 probe reports zero emitted-but-unreachable functions. The gating slice can start; keep the probe as its first gate on every corpus specimen.
+1. Reachability-gated analysis and emission is an attributed byte-diff slice, not a refactor: at O3 a pruned function's interned string literals survive in today's data segment, and at O0 unreachable functions emit whole. Promotion needs the semantic oracle plus an explained WAT diff, and must preserve prepare-time rejection of unsupported syntax in unreachable bodies, which the current pipeline provides at both optimize levels. ProgramIndex reachability is complete across the refactor-oracle corpus: `npm run test:reach` (`scripts/reachability-probe.mjs`) compiles all 142 specimens at O3 and reports zero emitted-but-unreachable functions. Root and edge classes closed on the way: export roots through the canonical `isExported`; `.`-member call edges through `resolveMemberSourceId` with module-scope member calls as roots; namespace-computed dispatch (`ns[k](args)`, `ns[k].prop(args)`, lowered to `?:` chains, inside inline dispatch-table arrows too) as per-arm sites with an edge for every resolved arm even where the lattice site is declined on arity; multi-written function properties root every lifted implementation as address-taken; `?.()` calls census like `()`; a function reference stored by a module-init write is a root without becoming address-taken; and default-parameter expressions are walked as their function's own facts. The gating slice can start with the probe as its first gate.
 2. The byte-preserving M4 lifetime slice (analyze, lower, transfer, reset per function) is closer: structInline and unionInline now collect per-function summaries inside the analyze loop and decide from summaries alone. Remaining between analyze and emit: union-cursor cloning (whole-program specialization over the settled registry) and the identity/ABI closes, all of which need only an analyze-complete barrier, not retained plans or bodies.
 3. Remaining M3 families stay open behind these: local and typed-storage decisions already have single per-function authorities minted at analyze time; their re-homing lands with the M4 lifetime change that shortens their lifetimes.
 

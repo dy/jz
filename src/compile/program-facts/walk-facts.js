@@ -293,6 +293,9 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
   const walkFacts = (node, fullWalk, inArrow, caller) => {
     if (!Array.isArray(node)) return
     const op = node[0]
+    // `f?.(x)` on a named function is the same call site as `f(x)`: the
+    // callee is never nullish, so every census below treats both ops alike.
+    const isCallOp = op === '()' || op === '?.()'
     observeNodeFacts(node, acc)
     if (op === 'for-in' && ctx.transform.strict) err(`strict mode: \`for (... in ...)\` is not allowed (dynamic enumeration). Pass { strict: false } to enable.`)
     if (op === '{}' && doSchema) {
@@ -320,7 +323,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
           acc.propMap.get(obj).add(prop)
         }
       }
-      if (op === '()' && isFuncRef(node[1], ctx.funcs.names)) {
+      if (isCallOp && isFuncRef(node[1], ctx.funcs.names)) {
         // Record the call site even inside an arrow body. The param-inference
         // lattice (narrow.js) must see EVERY arg a callee receives — including
         // calls made from a closure (`mfb(() => ci(2))`) — or it over-specializes:
@@ -348,7 +351,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // otherwise contribute (nameEscapes on `key`, whatever the args
       // walk marks) still runs exactly as before this branch existed —
       // purely additive, changes no other observation.
-      if (op === '()' && Array.isArray(node[1]) && node[1][0] === '[]' &&
+      if (isCallOp && Array.isArray(node[1]) && node[1][0] === '[]' &&
           node[1].length === 3 && typeof node[1][1] === 'string') {
         const a = node[2]
         const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
@@ -361,7 +364,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // therefore already a root. Recorded only; the index resolves it at
       // build and retires the census. Additive like the computed-member
       // branch above: no other observation changes.
-      if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+      if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
           typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
         acc.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: caller })
       // Member call on a `?:` chain over function references, `ns[k].prop(args)`
@@ -369,7 +372,7 @@ function walkFactsRoot(root, full, callerFunc, doSchema, cache = true) {
       // per arm, so each arm's member target is a real direct call: the index
       // synthesizes one call site per resolved arm (synthesizeMemberDispatch-
       // CallSites), feeding both the graph and the parameter lattice.
-      if (op === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+      if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
           Array.isArray(node[1][1]) && node[1][1][0] === '?:' && typeof node[1][2] === 'string') {
         const leaves = dispatchLeaves(node[1][1])
         if (leaves && leaves.length) {
@@ -449,6 +452,14 @@ export function collectProgramFacts(ast) {
   mergeWalkFacts(f, walkFactsRoot(ast, true, null, doSchema, false))
   for (const func of ctx.funcs.list) {
     if (func.body && !func.raw) mergeWalkFacts(f, walkFactsRoot(func.body, true, func, doSchema, true))
+    // Default-parameter expressions evaluate inside the function on every call
+    // that omits the argument, so their calls, escapes, and literals are the
+    // function's own facts. They live outside `body` (prepare keeps them in
+    // `defaults`), so the body walk above never reaches them: subscript's
+    // `dispatch = (ops, tail, fn = (a, …) => { … loc(r, from) … }) => …`
+    // kept `loc` reachable only through this default.
+    if (func.defaults && !func.raw)
+      for (const expr of Object.values(func.defaults)) mergeWalkFacts(f, walkFactsRoot(expr, true, func, doSchema, false))
   }
   const { propMap, addressTakenNames, callSites } = f
   // Bundled sub-module inits live OUTSIDE `ast` (ctx.module.moduleInits — the
@@ -466,14 +477,22 @@ export function collectProgramFacts(ast) {
   // init-stored func REFS into addressTakenNames, a program-wide dispatch behavior
   // change this census repair must not smuggle in.
   const initCallSites = (node) => walkAst(node, { enter: node => {
-    if (node[0] === '()' && isFuncRef(node[1], ctx.funcs.names)) {
+    const isCallOp = node[0] === '()' || node[0] === '?.()'
+    if (isCallOp && isFuncRef(node[1], ctx.funcs.names)) {
       const a = node[2]
       const argList = a == null ? [] : (Array.isArray(a) && a[0] === ',') ? a.slice(1) : [a]
       f.callSites.push({ callee: node[1], argList, callerFunc: null, node })
     }
-    if (node[0] === '()' && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
+    if (isCallOp && Array.isArray(node[1]) && (node[1][0] === '.' || node[1][0] === '?.') &&
         typeof node[1][1] === 'string' && typeof node[1][2] === 'string')
       f.memberCallSites.push({ objName: node[1][1], prop: node[1][2], callerFunc: null })
+    // A function reference stored by a module-init write (`const asi = parse.asi
+    // = fn`, `loc = fn`) is live through that binding, so the target is a
+    // reachability root. This is a root only: the reduced init census keeps
+    // such refs out of addressTakenNames on purpose (see above), and this
+    // must not change dispatch or coverage.
+    if (node[0] === '=' && isFuncRef(node[2], ctx.funcs.names))
+      f.memberCallSites.push({ callee: node[2], callerFunc: null })
   } })
   if (ctx.module.moduleInits) for (const init of ctx.module.moduleInits) initCallSites(init)
   const initFacts = ctx.module.initFacts
@@ -772,10 +791,11 @@ export function synthesizeComputedDispatchCallSites(programFacts, programIndex) 
       const walkInner = (n) => {
         if (!Array.isArray(n)) return
         if (n[0] === '=>') return   // never descend into a deeper closure for DISCOVERY — same boundary as everywhere else
-        if (n[0] === '()' && isFuncRef(n[1], ctx.funcs.names)) {
+        const isCallOp = n[0] === '()' || n[0] === '?.()'
+        if (isCallOp && isFuncRef(n[1], ctx.funcs.names)) {
           claimedNodes.add(n)
           innerSite(n, n[1])
-        } else if (n[0] === '()' && Array.isArray(n[1])) {
+        } else if (isCallOp && Array.isArray(n[1])) {
           // A namespace-computed access prepare lowered to a `?:` chain over
           // function references (`encode[t](...)`), or a member call on such a
           // chain (`encode[t].parse(...)`): emission devirtualizes per arm,

@@ -525,7 +525,7 @@ export function reset(proto, globals, bridge) {
     list: [],
     names: new Set(),  // Set<string> — known func names (list + imported funcs); populated at compile() start
     map: new Map(),    // Map<string, func> — name → func entry; populated at compile() start
-    multiProp: new Set(),  // Set<"obj.prop"> — function-properties assigned >1× (wrapper composition); suppresses the static fn.prop() direct call
+    multiProp: new Map(),  // Map<"obj.prop", Set<liftedName>> — function-properties assigned >1× (wrapper composition) and every lifted implementation; suppresses the static fn.prop() direct call, and ProgramIndex roots the lifts as address-taken
     exports: Object.create(null),  // name-keyed: prototype-less (see derive) — `export let valueOf` must not hit Object.prototype
     globalDevirt: null, // Map<global, function name> published by plan/scope.js, consumed by emit
     // Flat pre-index transfer log: [variant, immediateOrigin, kind]. It exists
@@ -1217,7 +1217,7 @@ export function assertCtxInvariants(phase) {
     must(Array.isArray(ctx.funcs.list), 'funcs.list array')
     must(ctx.funcs.names instanceof Set, 'funcs.names Set')
     must(ctx.funcs.map instanceof Map, 'funcs.map Map')
-    must(ctx.funcs.multiProp instanceof Set, 'funcs.multiProp Set')
+    must(ctx.funcs.multiProp instanceof Map, 'funcs.multiProp Map')
     must(ctx.func.locals instanceof Map, 'func.locals Map')
     must(ctx.func.refinements instanceof Map, 'func.refinements Map')
   }
