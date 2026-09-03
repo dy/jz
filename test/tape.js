@@ -14,6 +14,9 @@ import { orderFuncs } from '../src/link/order.js'
 import { pruneUnusedThrowRuntime } from '../src/link/throw-runtime.js'
 import { stripLocalRenameSuffixes } from '../src/link/rename-locals.js'
 import { schemaSections } from '../src/link/sections.js'
+import { arenaRewind } from '../src/optimize/arena-rewind.js'
+import { sortLocalsByUse } from '../src/optimize/sort-locals.js'
+import { foldLowWordMasks } from '../src/optimize/low-word-mask.js'
 import { T as MARK } from '../src/ast.js'
 
 const same = (a, b) => {
@@ -184,4 +187,58 @@ test('link: the schema section lists only surviving schemas, by tag or by named 
   const schema = out.find(n => n[0] === '@custom' && n[1] === '"jz:schema"')[2]
   is(schema.join(','), [3, 1, 2, 1, 48, 2, 0, 1, 2, 1, 98, 1, 2, 1, 99].join(','), 'schema 0 shrinks to its id, 1 is tagged, 2 is used by name')
   is(out.find(n => n[0] === '@custom' && n[1] === '"jz:errcls"')[2].join(','), [1, 1, 10, 82, 97, 110, 103, 101, 69, 114, 114, 111, 114].join(','), 'only the surviving error class')
+})
+
+test('arena rewind on the tape: save at entry, restore around every return and the fall-through; unsafe callees veto', () => {
+  const alloc = ['call', '$__alloc', ['i32.const', 8]]
+  const m = ['module',
+    ['func', '$helper', ['result', 'i32'], ['call', '$__alloc_hdr', ['i32.const', 1]]],
+    ['func', '$f', ['export', '"f"'], ['result', 'f64'], ['local', '$x', 'i32'],
+      ['if', ['i32.eqz', ['local.get', '$x']], ['then', ['return', ['f64.const', 1]]]],
+      ['drop', ['call', '$helper']],
+      ['f64.convert_i32_s', alloc]],
+    ['func', '$g', ['result', 'i32'], ['drop', ['call', '$__alloc', ['i32.const', 8]]], ['global.set', '$k', ['i32.const', 1]], ['i32.const', 0]],
+    ['func', '$h', ['result', 'i32'], ['call', '$__alloc', ['i32.const', 8]]],
+  ]
+  const [out] = onTape(m, root => arenaRewind(root, { rewindable: new Map([['$f', 'f64'], ['$g', 'i32']]), heapAddr: null }))
+  const save = `$${MARK}heap_save0`, ret = `$${MARK}arena_ret0`
+  ok(same(out[2], ['func', '$f', ['export', '"f"'], ['result', 'f64'], ['local', '$x', 'i32'],
+    ['local', save, 'i32'], ['local', ret, 'f64'], ['local.set', save, ['global.get', '$__heap']],
+    ['if', ['i32.eqz', ['local.get', '$x']], ['then', ['return', ['block', ['result', 'f64'],
+      ['local.set', ret, ['f64.const', 1]], ['global.set', '$__heap', ['local.get', save]], ['local.get', ret]]]]],
+    ['drop', ['call', '$helper']],
+    ['local.set', ret, ['f64.convert_i32_s', alloc]], ['global.set', '$__heap', ['local.get', save]], ['local.get', ret]]),
+    'f rewinds: a transitively safe helper is fine')
+  ok(same(out[3], m[3]), 'a global.set vetoes')
+  ok(same(out[4], m[4]), 'a function the records do not allow is untouched')
+  const [shared] = onTape(m, root => arenaRewind(root, { rewindable: new Map([['$f', 'f64']]), heapAddr: 64 }))
+  ok(same(shared[2][7], ['local.set', save, ['i32.load', ['i32.const', 64]]]), 'shared memory keeps the heap pointer in memory')
+  const commented = ['module', ['func', '$t', ['result', 'i32'], ';; header\n', ['local', '$x', 'i32'], ['call', '$__alloc', ['i32.const', 8]], ';; trailing\n']]
+  const [c] = onTape(commented, root => arenaRewind(root, { rewindable: new Map([['$t', 'i32']]), heapAddr: null }))
+  ok(same(c[1], ['func', '$t', ['result', 'i32'], ';; header\n', ['local', '$x', 'i32'], ['local', save, 'i32'], ['local', `$${MARK}arena_ret0`, 'i32'], ['local.set', save, ['global.get', '$__heap']],
+    ['local.set', `$${MARK}arena_ret0`, ['call', '$__alloc', ['i32.const', 8]]], ['global.set', '$__heap', ['local.get', save]], ['local.get', `$${MARK}arena_ret0`]]), 'comment atoms: transparent in the header, dropped after the last instruction')
+})
+
+test('locals sort on the tape: by type under 128 declarations, by use above; params stay', () => {
+  const m = ['module', ['func', '$f', ['export', '"f"'], ['param', '$p', 'f64'], ['local', '$a', 'f64'], ['local', '$b', 'i32'], ['local', '$c', 'v128'], ['local', '$d', 'i32'], ['local.set', '$c', ['local.get', '$c']]]]
+  const [out] = onTape(m, root => sortLocalsByUse(root))
+  is(out[1].slice(3, 8).map(l => l[1]).join(' '), '$p $b $d $a $c', 'an exported function sorts too')
+  const commented = ['module', ['func', '$t', ['local', '$a', 'f64'], ';; a template comment\n', ['local', '$b', 'i32'], ['nop']]]
+  const [c] = onTape(commented, root => sortLocalsByUse(root))
+  is(c[1].slice(2, 5).map(l => Array.isArray(l) ? l[1] : l).join(' '), '$b ;; a template comment\n $a', 'a comment atom in the header is transparent')
+  const many = ['func', '$g', ['result', 'i32']]
+  for (let i = 0; i < 130; i++) many.push(['local', `$l${i}`, i % 2 ? 'f64' : 'i32'])
+  many.push(['drop', ['local.get', '$l129']], ['drop', ['local.get', '$l129']], ['drop', ['local.get', '$l7']], ['local.get', '$l0'])
+  const [big] = onTape(['module', many], root => sortLocalsByUse(root))
+  is(big[1].slice(3, 6).map(l => l[1]).join(' '), '$l129 $l0 $l7', 'the hottest local takes the low index; equal counts tie by type')
+})
+
+test('low-word mask fold on the tape', () => {
+  const m = ['module', ['func', '$f', ['result', 'i32'],
+    ['i32.add', ['i32.wrap_i64', ['i64.and', ['local.get', '$x'], ['i64.const', 0xFFFFFFFF]]],
+      ['i32.wrap_i64', ['i64.and', ['local.get', '$y'], ['i64.const', '0xFFFFFFFF']]]],
+    ['drop', ['i32.wrap_i64', ['i64.and', ['local.get', '$z'], ['i64.const', 0xFFFF]]]]]]
+  const [out] = onTape(m, root => foldLowWordMasks(root))
+  ok(same(out[1][3], ['i32.add', ['i32.wrap_i64', ['local.get', '$x']], ['i32.wrap_i64', ['local.get', '$y']]]), 'a full mask under wrap goes, number or text')
+  ok(same(out[1][4], m[1][4]), 'a narrower mask stays')
 })

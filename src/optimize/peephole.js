@@ -394,12 +394,12 @@ function toI32(n) {
 //                    i32.wrap_i64 over (i64.extend_i32_u/_s X) or (i64.or HIGH_ONLY extend X)
 //   foldMemarg     — (load/store (i32.add base (i32.const N)) …) → (load/store offset=N base …)
 // They discriminate on node[0] and don't overlap, so one visit suffices for all three.
-export function fusedRewrite(fn, counts) {
+export function fusedRewrite(fn) {
   if (!Array.isArray(fn) || fn[0] !== 'func') {
     if (Array.isArray(fn)) {
       for (let i = 0; i < fn.length; i++) {
         const c = fn[i]
-        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, counts, null, null)
+        if (Array.isArray(c)) fn[i] = walkRewrite(c, true, null, null)
       }
     }
     return
@@ -455,22 +455,18 @@ export function fusedRewrite(fn, counts) {
   }
   for (let i = bodyStart; i < fn.length; i++) {
     const c = fn[i]
-    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, counts, freshI64, freshF64, get)
+    if (Array.isArray(c)) fn[i] = walkRewrite(c, !skipInline, freshI64, freshF64, get)
   }
   if (newDecls.length) fn.splice(bodyStart, 0, ...newDecls)
 }
 
-function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
+function walkRewrite(node, doInline, freshI64, freshF64, get) {
   if (!Array.isArray(node)) return node
   for (let i = 0; i < node.length; i++) {
     const c = node[i]
-    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, counts, freshI64, freshF64, get)
+    if (Array.isArray(c)) node[i] = walkRewrite(c, doInline, freshI64, freshF64, get)
   }
   const op = node[0]
-  // Piggyback local-ref counting for sortLocalsByUse. `counts` may be undefined
-  // when fusedRewrite is called outside optimizeFunc (whole-module pass).
-  if (counts && (op === 'local.get' || op === 'local.set' || op === 'local.tee') && typeof node[1] === 'string')
-    counts.set(node[1], (counts.get(node[1]) || 0) + 1)
 
   // Generic-equality bit-eq fast path: $__eq's own first branch hoisted to the
   // site when both args duplicate cheaply (local.get / reinterpret of one).
@@ -844,20 +840,4 @@ function walkRewrite(node, doInline, counts, freshI64, freshF64, get) {
     }
   }
   return node
-}
-
-/** `i32.wrap_i64` keeps the low 32 bits, so a low-word mask under it is
- *  redundant: `wrap(and(bits, 0xFFFFFFFF))` → `wrap(bits)` (the raw-offset read
- *  of a live array binding, the hoisted global bases). A MODULE-level tail
- *  pass, after hoistGlobalConstLoads and the global-base hoists whose
- *  recognizers match the masked form. */
-export function foldLowWordMasks(fn) {
-  const isMask = (c) => Array.isArray(c) && c[0] === 'i64.const'
-    && (c[1] === 0xFFFFFFFF || c[1] === '0xFFFFFFFF' || c[1] === '4294967295')
-  walkAst(fn, { enter: n => {
-    if (n[0] === 'i32.wrap_i64' && n.length === 2) {
-      const a = n[1]
-      if (Array.isArray(a) && a[0] === 'i64.and' && a.length === 3 && isMask(a[2])) n[1] = a[1]
-    }
-  } })
 }

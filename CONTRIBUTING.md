@@ -22,8 +22,9 @@ jzify/          pre-compile desugar (index.js orchestrator + phase modules)
 src/
   prepare/      validate, normalize, extract exports/imports (index.js)
   compile/      analyze → infer → plan → narrow → emit; ProgramIndex; program facts; driver (index.js)
-  optimize/     WAT-array passes + vectorize.js; const-pool.js is a tape pass
+  optimize/     WAT-array passes + vectorize.js; const-pool, arena-rewind, sort-locals, low-word-mask are tape passes run by link
   link/         whole-module passes on the tape: treeshake, custom sections, throw-runtime prune, function order, local names (index.js)
+  summary/      the program summary: one kind per binding, slot and result, a whole-program fixpoint at compile entry (PLAN.md step 3)
   ir/           tape.js, the IR tape (parallel typed arrays); the WAT-array helpers until emit builds the tape
   wat/          assemble.js, codegen.js (AST → jz source printer), optimize.js
   abi/          NaN-box ABI helpers (string, array, object, number)

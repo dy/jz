@@ -23,7 +23,6 @@ import { chainConditions } from './cond-chains.js'
 import { promoteGlobals } from './globals.js'
 import { unswitchTypedParamLoop, unswitchStringRepLoop } from './unswitch.js'
 import { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
-import { sortLocalsByUse } from './sort-locals.js'
 
 // Debug-mode IR structural check (JZ_DEBUG_INVARIANTS=1). Zero production cost.
 const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANTS === '1'
@@ -33,8 +32,7 @@ const DBG_IR = typeof process !== 'undefined' && process.env?.JZ_DEBUG_INVARIANT
  * hoistPtrType runs first — it introduces new locals (`$__ptN`) that the fused
  * walk should see in their final form. fusedRewrite then collapses rebox/unbox
  * round-trips, inlines tiny ptr/is_* helpers, and folds (i32.add base const)
- * into memarg offset= form, all in a single bottom-up traversal — and
- * piggybacks local-ref counting so sortLocalsByUse skips its own walk.
+ * into memarg offset= form, all in a single bottom-up traversal.
  *
  * @param fn  func IR node
  * @param cfg optional resolved config from resolveOptimize() — when omitted, all on.
@@ -83,8 +81,7 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // Run at both maturity points (idempotent): pre-fusedRewrite catches the raw
   // ToInt32/ptr-offset/arithmetic shapes; post-hoistAddrBase catches cell loads.
   if (!cfg || cfg.hoistInvariantLoop !== false) hoistInvariantLoop(fn)
-  const counts = new Map()
-  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn, counts)
+  if (!cfg || cfg.fusedRewrite !== false) fusedRewrite(fn)
   if (cfg && cfg.unswitchStringRepLoop === true && ctx.funcs.list.length <= 64 &&
       fn.some(n => Array.isArray(n) && n[0] === 'local' && typeof n[1] === 'string' && n[1].endsWith('$ccsso')))
     unswitchStringRepLoop(fn)
@@ -184,7 +181,6 @@ export function optimizeFunc(fn, cfg, globalTypes, volatileGlobals, reachableWri
   // Canonicalize boolean conditions (strip redundant `!= 0` / double-`eqz`) — after
   // rotateLoops so its fused back-edges get cleaned too. Tied to the peephole pass.
   if (!cfg || cfg.fusedRewrite !== false) simplifyBoolContexts(fn)
-  if (!cfg || cfg.sortLocalsByUse !== false) sortLocalsByUse(fn, cfg && cfg.fusedRewrite !== false ? counts : null)
   // An optimizer pass that emits a malformed local — the class that otherwise dies
   // as an opaque watr "Duplicate/Unknown local $x" several phases on — is caught
   // here, pinned to the function and the bad name.

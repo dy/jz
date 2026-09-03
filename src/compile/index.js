@@ -28,7 +28,7 @@ import { dataLen, dataString, strPoolLen, strPoolString } from '../static-data.j
  */
 
 import parseWat from 'watr/parse'
-import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, declGlobal, assertCtxInvariants } from '../ctx.js'
+import { ctx, err, inc, resolveIncludes, PTR, LAYOUT, HEAP, declGlobal, assertCtxInvariants } from '../ctx.js'
 import { enterActiveFunction, restoreActiveFunction } from './active-function.js'
 import { enterPreparedFunction, functionPlanOf, installFunctionPlan, publishFunctionPlan, publishPreparedFunctionPlan, retireFunctionPlan } from './function-plan.js'
 import { makeMapOverlay, mapOrOverlaySize } from './map-overlay.js'
@@ -818,9 +818,19 @@ export default function compile(ast, profiler) {
     ...sec.tags, ...sec.table, ...sec.globals, ...sec.stdlib, ...sec.funcs, ...(startFn ? [startFn] : []),
     ...sec.elem, ...(startDir ? [startDir] : []), ...sec.customs,
   ]
+  // A function's record allows an arena rewind when it takes nothing and
+  // returns one scalar that is not a pointer (a boxed f64 result must be a
+  // number); link decides from the body.
+  const rewindable = new Map()
+  for (const f of ctx.funcs.list) {
+    if (f.raw || f.sig.params.length !== 0 || f.sig.results.length !== 1 || f.sig.ptrKind != null) continue
+    const ty = f.sig.results[0]
+    if (ty === 'i32' || (ty === 'f64' && f.valResult === VAL.NUMBER)) rewindable.set(`$${f.name}`, ty)
+  }
   return timePhase(profiler, 'link', () => link(module, {
     optimize: ctx.transform.optimize,
     userFuncs: lateFacts.userFuncs, userGlobals: ctx.scope.userGlobals,
+    rewindable, heapAddr: ctx.memory.shared ? HEAP.PTR_ADDR : null,
     schemas: ctx.schema.list, namedUses: ctx.schema.namedUses, errorSids: lateFacts.errorSidEntries,
     throws: ctx.runtime.throws, userThrows: ctx.runtime.userThrows, noEhAbort: ctx.transform.noEhAbort,
     rawAbi: ctx.transform.alloc === false,

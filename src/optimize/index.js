@@ -15,7 +15,7 @@
  * Passes:
  *   hoistPtrType      — repeated `(call $__ptr_type X)` on same X → single local.tee + local.get reuse
  *   fusedRewrite      — peephole rebox folds + inline ptr/is_* helpers + memarg-offset fold (one walk)
- *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices
+ *   sortLocalsByUse   — reorder local decls so hot ones get 1-byte LEB128 indices; a tape pass, run by src/link
  *   specializeMkptr   — `(call $__mkptr (i32.const T) (i32.const A) X)` → per-combo specialized helper (~4 B/site)
  *   hoistConstantPool — frequently-repeated f64.const values → globals (~7 B/reuse); a tape pass, run by src/link
  *
@@ -85,13 +85,6 @@ export { unswitchTypedParamLoop } from './unswitch.js'
 export { devirtSchemaReads, foldStaticConstArrayReads, devirtConstFnArrayCalls } from './devirt.js'
 
 
-// Encoding-compactness local reordering (sortLocalsByUse) — see
-// src/optimize/sort-locals.js for the full doc.
-export { sortLocalsByUse } from './sort-locals.js'
-
-// Module-level arena-rewind escape analysis (arenaRewindModule) — see
-// src/optimize/arena-rewind.js for the full doc.
-export { arenaRewindModule } from './arena-rewind.js'
 
 // The pass driver (optimizeFunc, the fixed per-function apply order) — see
 // src/optimize/driver.js for the full doc.

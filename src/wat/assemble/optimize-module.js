@@ -11,106 +11,15 @@
  */
 
 import parseWat from 'watr/parse'
-import { ctx, HEAP, declGlobal } from '../../ctx.js'
-import { T, walkAst } from '../../ast.js'
-import { VAL } from '../../reps.js'
+import { ctx, declGlobal } from '../../ctx.js'
+import { walkAst } from '../../ast.js'
 import {
   optimizeFunc, collectVolatileGlobals, collectReachableGlobalWrites, collectReachableMemoryWrites,
   hoistGlobalPtrOffset, hoistLoopGlobalPtrOffset, hoistStableGlobalConstLoads, guardMaskedVectorSuffix, hasIROp, stablePtrGlobalNames,
-  specializeMkptr, arenaRewindModule, buildPureFuncMap, inlinePureFnsInFn,
+  specializeMkptr, buildPureFuncMap, inlinePureFnsInFn,
 } from '../../optimize/index.js'
-import { foldLowWordMasks } from '../../optimize/peephole.js'
-import { findBodyStart } from '../../ir.js'
 import { dataLen } from '../../static-data.js'
-import { assembleView } from '../../session-views.js'
 import { appendLateStdlib } from './stdlib-pull.js'
-// memory[HEAP.PTR_ADDR] holds the heap pointer only for shared memory (wasm globals are
-// per-instance — see module/core.js comment). Non-shared memory uses $__heap.
-const heapUsesMem = () => assembleView().memory.shared
-
-const heapGetIR = () => heapUsesMem()
-  ? ['i32.load', ['i32.const', HEAP.PTR_ADDR]]
-  : ['global.get', '$__heap']
-
-const heapSetIR = value => heapUsesMem()
-  ? ['i32.store', ['i32.const', HEAP.PTR_ADDR], value]
-  : ['global.set', '$__heap', value]
-
-const ARENA_SAFE_CALLS = new Set([
-  '$__alloc', '$__alloc_hdr', '$__alloc_hdr_n', '$__mkptr',
-  '$__ptr_offset', '$__ptr_type', '$__ptr_aux',
-  '$__len', '$__cap', '$__typed_shift', '$__typed_data',
-])
-
-function applyArenaRewind(func, fn, safeCallees) {
-  if (ctx.transform.optimize?.arenaRewind === false) return false
-  if (func.raw || func.sig.params.length !== 0 || func.sig.results.length !== 1) return false
-  if (func.sig.ptrKind != null) return false
-  if (func.sig.results[0] === 'f64' && func.valResult !== VAL.NUMBER) return false
-  if (func.sig.results[0] !== 'f64' && func.sig.results[0] !== 'i32') return false
-
-  const bodyStart = findBodyStart(fn)
-  let hasAlloc = false
-  let unsafe = false
-  const scan = node => {
-    if (unsafe) return false
-    const op = node[0]
-    if (op === 'global.set' || op === 'return_call' || op === 'call_indirect' || op === 'call_ref') { unsafe = true; return false }
-    if (op === 'call') {
-      const name = node[1]
-      if (name === '$__alloc' || name === '$__alloc_hdr' || name === '$__alloc_hdr_n') hasAlloc = true
-      if (!(safeCallees ?? ARENA_SAFE_CALLS).has(name)) { unsafe = true; return false }
-    }
-  }
-  for (let i = bodyStart; i < fn.length; i++) walkAst(fn[i], { enter: scan })
-  if (unsafe || !hasAlloc) return false
-
-  let id = 0
-  const hasLocal = name => fn.some(n => Array.isArray(n) && n[0] === 'local' && n[1] === name)
-  while (hasLocal(`$${T}heap_save${id}`) || hasLocal(`$${T}arena_ret${id}`)) id++
-  const save = `$${T}heap_save${id}`
-  const ret = `$${T}arena_ret${id}`
-  const restore = () => heapSetIR(['local.get', save])
-  const resultType = func.sig.results[0]
-
-  // Rewrite the return's VALUE, not the return: `return` is stack-polymorphic
-  // (never falls through), so it validates in statement AND value position alike.
-  // The old form — a value-typed block AROUND the return — reified `(result T)`
-  // even where the return was a statement, leaving a phantom value on the stack
-  // of a void enclosing frame (a `return` inside try_table failed validation:
-  // "expected 0 elements on the stack for fallthru, found 1").
-  const endsWithReturn = fn.at(-1)?.[0] === 'return' || fn.at(-1)?.[0] === 'return_call'
-  // Retired onto walkAst (pipeline-minimality slice, `.work/archive/assemble-outliers.md`
-  // §5): a `return` node is replaced wholesale, never recursed into — its own
-  // value can't itself contain a nested statement-position `return`, so
-  // there is nothing further to rewrite inside it; every other node recurses
-  // normally. `enter`'s `(parent, index)` gives a valid slot to reassign even
-  // for a bare top-level `return` (walkAst visits every `fn[i]` from index 1,
-  // a strict superset of the original `bodyStart`-based loop — `fn[i]` for
-  // `i < bodyStart` are `local`/`param` decls, never `return`-shaped, so
-  // visiting them too is a no-op).
-  walkAst(fn, { enter: (node, parent, index) => {
-    if (node[0] === 'return' && node.length > 1) {
-      parent[index] = ['return', ['block',
-        ['result', resultType],
-        ['local.set', ret, node[1]],
-        restore(),
-        ['local.get', ret]]]
-      return false
-    }
-  } })
-  const newBodyStart = findBodyStart(fn)
-  fn.splice(newBodyStart, 0,
-    ['local', save, 'i32'],
-    ['local', ret, resultType],
-    ['local.set', save, heapGetIR()])
-  if (!endsWithReturn) {
-    const last = fn.pop()
-    fn.push(['local.set', ret, last], restore(), ['local.get', ret])
-  }
-  return true
-}
-
 /**
  * Phase: whole-module + per-function optimization passes.
  */
@@ -211,23 +120,10 @@ export function optimizeModule(sec, profiler) {
   })
   // Redundant low-word masks under `i32.wrap_i64` go last: the global-base
   // hoists above recognize the masked form.
-  if (!cfg || cfg.fusedRewrite !== false) for (const fn of allFuncs) foldLowWordMasks(fn)
   // The lane vectorizer can inject f64x2 stdlib mirrors ($math.log_v, $math.cos2, …)
   // absent from the already-pulled+treeshaken module. Append any now-referenced mirror
   // body to sec.stdlib — the pre-watr analogue of index.js's post-watr appendLateStdlib.
   if (cfg && cfg.vectorizeLaneLocal === true) t('appendLateStdlib', () => appendLateStdlib(allFuncs, sec.stdlib))
-  if (!cfg || cfg.arenaRewind !== false) {
-    const safeCallees = arenaRewindModule([...sec.funcs, ...sec.stdlib, ...sec.start])
-    const fnByName = new Map()
-    for (const fn of sec.funcs) {
-      if (Array.isArray(fn) && fn[0] === 'func' && typeof fn[1] === 'string')
-        fnByName.set(fn[1], fn)
-    }
-    for (const func of ctx.funcs.list) {
-      const fn = fnByName.get(`$${func.name}`)
-      if (fn) applyArenaRewind(func, fn, safeCallees)
-    }
-  }
   const dataBytes = dataLen()
   if (dataBytes > 1024 && !ctx.memory.shared) {
     // 64-byte heap-base alignment: the compiler's own vectorizer emits v128

@@ -1,55 +1,48 @@
 /**
- * Encoding-compactness pass: reorder local decls for 1-byte LEB128 indices.
+ * Local declaration order, on the tape. A `local.get/set/tee` encodes its
+ * index as a ULEB128: one byte under 128, two above. With at most 128
+ * declarations every index is one byte and only the locals vector matters,
+ * so locals group by type (stable within a type) and the vector squashes to
+ * one run per type. Above 128 the hottest locals take the low indices,
+ * counted over the body as it is now, after every rewrite; equal counts
+ * tie by type. Parameters never move: their slots are the call ABI.
  *
  * @module optimize/sort-locals
  */
-import { walkAst } from '../ast.js'
+import { T, NONE, intern, text, walk } from '../ir/tape.js'
 
-/**
- * Reorder non-param local decls by reference count (hot locals first).
- * WASM `local.get/set/tee` encode local idx as ULEB128 — 1 B for idx < 128, else 2 B.
- * Only the decl order changes; refs by name are unchanged and re-resolved by watr.
- * Params are fixed (their slot defines the call ABI) — only `(local …)` nodes move.
- */
-export function sortLocalsByUse(fn, precomputedCounts) {
-  if (!Array.isArray(fn) || fn[0] !== 'func') return
-  const localIdxs = []
-  let totalDecls = 0
-  let i
-  for (i = 2; i < fn.length; i++) {
-    const c = fn[i]
-    if (!Array.isArray(c)) continue
-    if (c[0] === 'param' || c[0] === 'result') { totalDecls++; continue }
-    if (c[0] === 'local') { localIdxs.push(i); totalDecls++; continue }
-    break
-  }
-  if (localIdxs.length < 2) return
-  if (totalDecls <= 128) {
-    // Every index fits 1-byte LEB, so ordering is free for the body — group
-    // same-type runs so the binary locals vector squashes to one (n, type)
-    // entry per type instead of a run per interleaving (wasm-opt emits two
-    // groups here; watr's encoder merges only CONSECUTIVE same-type runs).
-    // Stable within a type: original declaration order.
-    const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
-    const keyed = localIdxs.map((i, k) => [fn[i], k])
-    keyed.sort((a, b) => ((TYPE_ORDER[a[0][a[0].length - 1]] ?? 9) - (TYPE_ORDER[b[0][b[0].length - 1]] ?? 9)) || (a[1] - b[1]))
-    localIdxs.forEach((i, k) => { fn[i] = keyed[k][0] })
-    return
-  }
-  let counts = precomputedCounts
-  if (!counts) {
-    counts = new Map()
-    const recordRef = n => {
-      if (Array.isArray(n) && (n[0] === 'local.get' || n[0] === 'local.set' || n[0] === 'local.tee') && typeof n[1] === 'string')
-        counts.set(n[1], (counts.get(n[1]) || 0) + 1)
+const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
+
+export function sortLocalsByUse(root) {
+  const FUNC = intern('func'), PARAM = intern('param'), RESULT = intern('result'), LOCAL = intern('local')
+  const EXPORT = intern('export'), IMPORT = intern('import'), TYPE = intern('type')
+  const LOCAL_GET = intern('local.get'), LOCAL_SET = intern('local.set'), LOCAL_TEE = intern('local.tee')
+  const typeOf = (l) => TYPE_ORDER[text(T.next[T.a[l]])] ?? 9
+  for (let f = T.a[root]; f !== NONE; f = T.next[f]) {
+    if (T.op[f] !== FUNC) continue
+    const locals = []
+    let decls = 0, body = NONE
+    for (let c = T.next[T.a[f]]; c !== NONE; c = T.next[c]) {
+      const op = T.op[c]
+      if (op === PARAM || op === RESULT) { decls++; continue }
+      if (op === LOCAL) { locals.push(c); decls++; continue }
+      if (op < 0 || op === EXPORT || op === IMPORT || op === TYPE) continue  // a comment atom, or a header entry
+      body = c
+      break
     }
-    for (let i = totalDecls + 2; i < fn.length; i++) walkAst(fn[i], { enter: recordRef })
+    if (locals.length < 2) continue
+    const order = locals.map((l, k) => [T.a[l], typeOf(l), k])
+    if (decls <= 128) order.sort((a, b) => (a[1] - b[1]) || (a[2] - b[2]))
+    else {
+      const counts = new Map()
+      for (let c = body; c !== NONE; c = T.next[c]) walk(c, (id) => {
+        const op = T.op[id]
+        if (op === LOCAL_GET || op === LOCAL_SET || op === LOCAL_TEE) { const n = text(T.a[id]); if (n !== null) counts.set(n, (counts.get(n) || 0) + 1) }
+      })
+      const uses = (a) => counts.get(text(a[0])) || 0
+      order.sort((a, b) => (uses(b) - uses(a)) || (a[1] - b[1]) || (a[2] - b[2]))
+    }
+    // Every declaration is `(local $name type)`: the slots stay, their children move.
+    locals.forEach((l, k) => { T.a[l] = order[k][0] })
   }
-  const locals = localIdxs.map(i => fn[i])
-  const TYPE_ORDER = { i32: 0, i64: 1, f32: 2, f64: 3, v128: 4 }
-  // Hot-first for 1-byte LEB coverage; equal counts tie-break by type so the
-  // locals vector still squashes into runs where frequency permits.
-  locals.sort((a, b) => ((counts.get(b[1]) || 0) - (counts.get(a[1]) || 0)) ||
-    ((TYPE_ORDER[a[a.length - 1]] ?? 9) - (TYPE_ORDER[b[b.length - 1]] ?? 9)))
-  localIdxs.forEach((i, k) => { fn[i] = locals[k] })
 }
